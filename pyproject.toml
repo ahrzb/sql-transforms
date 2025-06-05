@@ -1,0 +1,54 @@
+[project]
+name = "sql-transform"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "datafusion>=46.0.0",
+    "pyarrow-stubs>=19.1",
+    "sqlglot>=26.16.2",
+]
+
+[dependency-groups]
+dev = [
+    "ipdb>=0.13.13",
+    "ipython>=9.2.0",
+    "mypy>=1.15.0",
+    "pyright>=1.1.400",
+    "pytest>=8.3.5",
+    "pytest-mypy>=1.0.1",
+    "ruff>=0.11.7",
+]
+
+[tool.pytest.ini_options]
+addopts = "--mypy --pdbcls=IPython.terminal.debugger:TerminalPdb"
+python_files = ["*_test.py"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+exclude = [
+  "**/*_test.py"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["./sql_transform"]
+
+[tool.ruff]
+fix = true
+lint.select = [
+  "E",    # pycodestyle errors
+  "F",    # pyflakes
+  "B",    # flake8-bugbear
+  "I",    # isort (import sorting)
+  "UP",   # pyupgrade (syntax modernization)
+  "C90",  # mccabe (complexity checks)
+  "UP",   # pyupgrade (suggests modern Python features)
+  "S",    # flake8-bandit (security issues)
+  "C4",   # flake8-comprehensions
+]
+# ignore the “Use of assert detected” warning
+lint.ignore = ["S101"]

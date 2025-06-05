@@ -1,0 +1,33 @@
+[tools]
+uv = "0.7.11"
+
+[tasks.fmt]
+description = "Format and lint code"
+run = ["uv run ruff check .", "uv run ruff format ."]
+
+[tasks.test]
+description = "Run tests"
+run = "uv run pytest"
+
+[tasks.test-watch]
+description = "Run tests in watch mode"
+run = "uv run pytest --no-cov -x -s -vv --ff --lf"
+
+[tasks.check]
+description = "Run all checks (format, lint, test, type check)"
+depends = ["fmt", "test"]
+
+[tasks.install]
+description = "Install dependencies"
+run = "uv sync"
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = [
+  "find . -type d -name __pycache__ -exec rm -rf {} +",
+  "find . -type f -name '*.pyc' -delete",
+  "rm -rf .pytest_cache",
+  "rm -rf build/",
+  "rm -rf dist/",
+  "rm -rf *.egg-info",
+]
