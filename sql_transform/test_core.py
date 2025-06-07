@@ -73,7 +73,9 @@ class TestParser:
                         AggregationRef(0, "feature1"): AggregateFunction(
                             "avg",
                             [ColumnRef("feature1")],
-                            over=WindowSpecification(partition_by=[ColumnRef("feature2")]),
+                            over=WindowSpecification(
+                                partition_by=[ColumnRef("feature2")]
+                            ),
                         )
                     },
                 ),
@@ -82,7 +84,10 @@ class TestParser:
     )
     def test_parse_basic(self, sql, expected):
         """Test basic SQL parsing."""
-        assert parse(sql) == expected
+        from sql_transform.context import SqlTransformContext
+
+        context = SqlTransformContext()
+        assert parse(sql, context) == expected
 
     @pytest.mark.parametrize(
         "sql,expected_operation,expected_args_count,alias",
@@ -120,7 +125,10 @@ class TestParser:
         self, sql, expected_operation, expected_args_count, alias
     ):
         """Test that custom functions are parsed correctly as aggregations."""
-        query = parse(sql)
+        from sql_transform.context import SqlTransformContext
+
+        context = SqlTransformContext()
+        query = parse(sql, context)
 
         assert len(query.columns) == 1
         assert alias in query.columns
@@ -198,7 +206,7 @@ class TestTransformer:
         context = SqlTransformContext()
         transformer = context.create_transformer(self._normalize_sql(sql))
         transformer.fit(sample_data)
-        result = transformer.transform(sample_data)
+        result = transformer.transform(sample_data, output_format="arrow")
 
         # Sort both tables by the first column to ensure consistent ordering
         first_col = list(expected_columns.keys())[0]
@@ -250,7 +258,7 @@ class TestTransformer:
         context = SqlTransformContext()
         transformer = context.create_transformer(self._normalize_sql(sql))
         transformer.fit(sample_data)
-        result = transformer.transform(sample_data)
+        result = transformer.transform(sample_data, output_format="arrow")
 
         # Sort both tables by the first column to ensure consistent ordering
         first_col = list(expected_columns.keys())[0]
@@ -281,9 +289,11 @@ class TestContext:
 
         class DummyTransform:
             def fit(self, data, **kwargs):
+                del data, kwargs  # Mark as intentionally unused
                 return self
 
             def transform(self, data, **kwargs):
+                del kwargs  # Mark as intentionally unused
                 return data
 
         transform = DummyTransform()
@@ -361,7 +371,7 @@ class TestDataFormats:
 
             pandas_result = from_arrow_table(arrow_result, "pandas")
             assert isinstance(pandas_result, pd.DataFrame)
-            
+
             # Verify data integrity
             assert list(pandas_result.columns) == list(sample_dict.keys())
             assert len(pandas_result) == len(sample_dict["feature1"])
@@ -379,7 +389,7 @@ class TestDataFormats:
 
             polars_result = from_arrow_table(arrow_result, "polars")
             assert isinstance(polars_result, pl.DataFrame)
-            
+
             # Verify data integrity
             assert list(polars_result.columns) == list(sample_dict.keys())
             assert len(polars_result) == len(sample_dict["feature1"])
@@ -407,7 +417,7 @@ class TestDataFormats:
             from_arrow_table(sample_arrow_table, "unsupported")
 
         with pytest.raises(ValueError, match="Unsupported data format"):
-            to_arrow_table("invalid_data")
+            to_arrow_table(123)  # type: ignore[arg-type]
 
 
 class TestMultiFormatTransformer:
@@ -479,7 +489,7 @@ class TestMultiFormatTransformer:
 
             # Convert to pandas DataFrame
             df = pd.DataFrame(sample_data_dict)
-            
+
             context = SqlTransformContext()
             transformer = context.create_transformer(
                 "SELECT feature1, feature2, feature1 + feature2 as sum_features FROM data"
@@ -504,7 +514,7 @@ class TestMultiFormatTransformer:
 
             # Convert to polars DataFrame
             df = pl.DataFrame(sample_data_dict)
-            
+
             context = SqlTransformContext()
             transformer = context.create_transformer(
                 "SELECT feature1, feature2, feature1 * feature2 as product FROM data"
@@ -516,7 +526,7 @@ class TestMultiFormatTransformer:
             # Result should auto-convert back to polars
             assert isinstance(result, pl.DataFrame)
             assert "feature1" in result.columns
-            assert "feature2" in result.columns  
+            assert "feature2" in result.columns
             assert "product" in result.columns
             assert len(result) == len(sample_data_dict["feature1"])
         except ImportError:

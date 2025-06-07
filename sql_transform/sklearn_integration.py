@@ -52,7 +52,7 @@ class TransformRegistry:
     def register(self, spec: TransformSpec):
         """Register a new transformer."""
         if spec.requires_sklearn and not SKLEARN_AVAILABLE:
-            warnings.warn(f"Skipping {spec.sql_name}: sklearn not available")
+            warnings.warn(f"Skipping {spec.sql_name}: sklearn not available", stacklevel=2)
             return
         self._transforms[spec.sql_name] = spec
 

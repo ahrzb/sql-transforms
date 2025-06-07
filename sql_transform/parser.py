@@ -1,10 +1,13 @@
 import ast
 import dataclasses
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import datafusion
 import sqlglot.expressions
 from datafusion import functions as F
+
+if TYPE_CHECKING:
+    from sql_transform.context import SqlTransformContext
 
 
 @dataclasses.dataclass
@@ -196,6 +199,7 @@ class WindowSpecification:
 @dataclasses.dataclass(frozen=True)
 class TransformFunction:
     """Represents a custom transform function that needs to be resolved at runtime."""
+
     operation: str
     args: list[Expression]
     over: WindowSpecification
@@ -203,7 +207,9 @@ class TransformFunction:
     def to_datafusion_expr(self, context=None):
         """Convert to datafusion expression, resolving transforms via context."""
         # This will be resolved at runtime by the transformer
-        raise NotImplementedError(f"Transform {self.operation} needs context resolution")
+        raise NotImplementedError(
+            f"Transform {self.operation} needs context resolution"
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -214,7 +220,7 @@ class AggregateFunction:
 
     def to_datafusion_expr(self):
         base_expr = self._get_base_expression()
-        
+
         # Apply window specification if present
         if self.over.partition_by:
             # For now, we'll handle windowing in the transformer
@@ -244,9 +250,9 @@ class AggregateFunction:
     def to_window_expr(self):
         """Convert to a DataFusion window expression."""
         import datafusion
-        
+
         base_expr = self._get_base_expression()
-        
+
         if self.over.partition_by:
             partition_exprs = [p.to_datafusion_expr() for p in self.over.partition_by]
             # DataFusion window syntax
@@ -254,7 +260,7 @@ class AggregateFunction:
                 fun=base_expr,
                 partition_by=partition_exprs,
                 order_by=[],  # We can extend this later
-                window_frame=None  # We can extend this later
+                window_frame=None,  # We can extend this later
             )
         else:
             return base_expr
@@ -263,8 +269,8 @@ class AggregateFunction:
 @dataclasses.dataclass
 class Query:
     columns: dict[str, Expression] = dataclasses.field(default_factory=dict)
-    aggregations: dict[AggregationRef, AggregateFunction | TransformFunction] = dataclasses.field(
-        default_factory=dict
+    aggregations: dict[AggregationRef, AggregateFunction | TransformFunction] = (
+        dataclasses.field(default_factory=dict)
     )
 
 
@@ -289,36 +295,24 @@ def parse_dot_expression(expression, aggregations, parse_expression):
         raise NotImplementedError(f"Unsupported dot expression: {expression}")
 
 
-def parse_anonymous_function(expression, aggregations, parse_expression):
+def parse_anonymous_function(expression, aggregations, parse_expression, context):
     """Parse anonymous function calls - distinguish between aggregations and transforms."""
     func_name = expression.this.lower()
     args = [parse_expression(arg) for arg in expression.expressions]
     hint = f"{func_name}_{args[0].hint_name() if args else 'none'}"
     ref = AggregationRef(len(aggregations), hint)
-    
-    # Built-in aggregation functions
-    builtin_aggregations = {
-        "avg", "sum", "count", "min", "max", "stddev", "variance", 
-        "first", "last", "median", "mode"
-    }
-    
-    if func_name in builtin_aggregations:
-        aggregations[ref] = AggregateFunction(
-            func_name, args, over=WindowSpecification()
-        )
-    else:
-        # Custom transform function (could be sklearn or user-defined)
-        aggregations[ref] = TransformFunction(
-            func_name, args, over=WindowSpecification()
-        )
-    
+
+    # Use context to resolve function
+    agg_or_transform = context.resolve_function(func_name, args)
+    aggregations[ref] = agg_or_transform
+
     return ref
 
 
-def parse(sql: str, context=None):
+def parse(sql: str, context: "SqlTransformContext") -> Query:
     query = sqlglot.parse_one(sql)
 
-    aggregations: dict[AggregationRef, AggregateFunction] = {}
+    aggregations: dict[AggregationRef, AggregateFunction | TransformFunction] = {}
 
     def parse_expression(expression: sqlglot.expressions.Expression) -> Expression:
         match expression:
@@ -330,7 +324,7 @@ def parse(sql: str, context=None):
                 if isinstance(value, str):
                     # Try to parse as number
                     try:
-                        if '.' in value:
+                        if "." in value:
                             value = float(value)
                         else:
                             value = int(value)
@@ -407,7 +401,7 @@ def parse(sql: str, context=None):
                 return parse_dot_expression(expression, aggregations, parse_expression)
             case sqlglot.expressions.Anonymous():
                 return parse_anonymous_function(
-                    expression, aggregations, parse_expression
+                    expression, aggregations, parse_expression, context
                 )
             case _:
                 raise NotImplementedError(f"Cannot parse {expression}")

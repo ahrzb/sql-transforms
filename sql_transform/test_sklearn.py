@@ -83,12 +83,10 @@ class TestSklearnIntegration:
                 assert transform not in transforms
 
 
-# TODO: End-to-end tests will be re-enabled once sklearn resolver is implemented
-@pytest.mark.skip(reason="End-to-end tests require sklearn resolver implementation")
 @pytest.mark.skipif(not SKLEARN_AVAILABLE, reason="sklearn not available")
 class TestSklearnEndToEnd:
     """End-to-end tests for sklearn transforms in SQL queries.
-    
+
     These tests show the expected behavior when sklearn transforms are fully integrated.
     Currently they will fail because the resolver step isn't implemented yet.
     """
@@ -105,7 +103,7 @@ class TestSklearnEndToEnd:
             }
         )
 
-        sql = "SELECT standardize(feature1) as std_feature1 FROM data"
+        sql = "SELECT sklearn.standardize(feature1) as std_feature1 FROM data"
 
         context = SqlTransformContext()
         transformer = context.create_transformer(sql)
@@ -139,9 +137,9 @@ class TestSklearnEndToEnd:
 
         sql = """
         SELECT 
-            standardize(income) as std_income,
-            minmax_scale(age, 0, 1) as scaled_age,
-            robust_scale(score) as robust_score
+            sklearn.standardize(income) as std_income,
+            sklearn.minmax_scale(age, 0, 1) as scaled_age,
+            sklearn.robust_scale(score) as robust_score
         FROM data
         """
 
