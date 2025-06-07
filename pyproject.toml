@@ -38,7 +38,17 @@ dev = [
     "scikit-learn>=1.0.0", # For testing sklearn integration
     "pandas>=1.5.0", # For testing pandas integration
     "polars>=0.20.0", # For testing polars integration
+    "pandas-stubs>=2.2.3.250527",
 ]
+
+[tool.mypy]
+# Handle libraries without type stubs
+[[tool.mypy.overrides]]
+module = [
+    "sklearn.*",
+    "scikit-learn.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = "--mypy --pdbcls=IPython.terminal.debugger:TerminalPdb"

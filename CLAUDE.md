@@ -71,6 +71,7 @@ The parser supports standard SQL plus ML-specific extensions:
 - Tests cover: basic parsing, transformations, window functions, multi-format I/O
 - Optional dependency tests (pandas, polars) skip gracefully if not installed
 - Use parametrized tests for SQL parsing validation
+- Test files always have the _test suffix, tests for file x.py, will be called x_test.py
 
 ## Current Status & Roadmap
 

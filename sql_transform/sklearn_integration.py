@@ -64,7 +64,8 @@ class TransformRegistry:
             # Check if this is a known sklearn transform that's not available
             if not SKLEARN_AVAILABLE and self._is_sklearn_transform(sql_name):
                 raise ValueError(
-                    f"Transform '{sql_name}' requires sklearn. Install with: pip install scikit-learn"
+                    f"Transform '{sql_name}' requires sklearn. "
+                    "Install with: pip install scikit-learn"
                 )
             raise ValueError(f"Unknown transform: {sql_name}")
         return self._transforms[sql_name]
@@ -243,7 +244,7 @@ def create_transformer(spec: TransformSpec, **sql_params):
     try:
         return spec.transformer_class(**sklearn_params)
     except TypeError as e:
-        raise ValueError(f"Invalid parameters for {spec.sql_name}: {e}")
+        raise ValueError(f"Invalid parameters for {spec.sql_name}: {e}") from e
 
 
 def check_sklearn_availability():

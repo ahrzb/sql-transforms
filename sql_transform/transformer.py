@@ -20,9 +20,6 @@ from sql_transform.parser import (
     Expression,
     TransformFunction,
 )
-from sql_transform.sklearn_integration import (
-    create_transformer,
-)
 
 
 class SQLTransformer:
@@ -70,7 +67,10 @@ class SQLTransformer:
     def _bfs_dependency_layers(
         self, dependencies: dict[AggregationRef, set[AggregationRef]]
     ) -> list[list[AggregationRef]]:
-        """Use BFS to group aggregations into dependency layers for parallel processing."""
+        """Use BFS to group aggregations into dependency layers.
+        
+        Enables parallel processing within each layer.
+        """
         all_nodes = set(self.query.aggregations.keys())
         processed: set[AggregationRef] = set()
         layers = []
@@ -100,30 +100,12 @@ class SQLTransformer:
     def _resolve_and_fit_transform(
         self, transform_func: TransformFunction, agg_ref_name: str, data: pa.Table
     ):
-        """Resolve and fit a sklearn transform function."""
+        """Resolve and fit a transform function."""
         try:
             # Get the transform spec from context
-            spec = self.context.get_sklearn_spec(transform_func.operation)
+            spec = self.context.get_transform_spec(transform_func.operation)
             if spec is None:
                 raise ValueError(f"Unknown transform: {transform_func.operation}")
-
-            # Extract parameters from transform args (skip first arg - column)
-            sql_params = {}
-            if len(transform_func.args) > 1:
-                from sql_transform.parser import LiteralValue
-
-                for i, arg in enumerate(transform_func.args[1:]):
-                    if isinstance(arg, LiteralValue):
-                        # Simple parameter mapping for now
-                        if transform_func.operation == "sklearn.minmax_scale":
-                            if i == 0:  # First param after column (min value)
-                                sql_params["min"] = arg.value
-                            elif i == 1:  # Second param after column (max value)
-                                sql_params["max"] = arg.value
-                        # Add more parameter mappings as needed
-
-            # Create and fit the sklearn transformer
-            sklearn_transformer = create_transformer(spec, **sql_params)
 
             # Get the column to transform (first argument)
             column_expr = transform_func.args[0]
@@ -137,12 +119,14 @@ class SQLTransformer:
                     "Complex expressions in transforms not yet supported"
                 )
 
-            # Extract the column data and fit the transformer
-            column_data = data[column_name].to_numpy().reshape(-1, 1)
-            sklearn_transformer.fit(column_data)
+            # Create fitter and fit the transform
+            fitter = spec.create_fitter(transform_func.args)
+            fitted_transform = fitter.fit(
+                data, column_name, {}
+            )  # Empty context for now
 
             # Store the fitted transformer
-            self.fitted_transforms[agg_ref_name] = sklearn_transformer
+            self.fitted_transforms[agg_ref_name] = fitted_transform
 
         except Exception as e:
             raise ValueError(
@@ -260,8 +244,8 @@ class SQLTransformer:
                         datafusion.literal(agg_value.column(col_name)[0].as_py()),
                     )
 
-        # Apply fitted sklearn transforms
-        for transform_name, sklearn_transformer in self.fitted_transforms.items():
+        # Apply fitted transforms
+        for transform_name, fitted_transform in self.fitted_transforms.items():
             # Find the original transform function to get the column name
             transform_func = None
             for agg_ref, agg_or_transform in self.query.aggregations.items():
@@ -279,16 +263,15 @@ class SQLTransformer:
                 if isinstance(column_expr, ColumnRef):
                     column_name = column_expr.name
 
-                    # Extract column data, transform it, and add back to dataframe
+                    # Apply the fitted transform
                     current_table = df.to_arrow_table()
-                    column_data = current_table[column_name].to_numpy().reshape(-1, 1)
-                    transformed_data = sklearn_transformer.transform(
-                        column_data
-                    ).flatten()
+                    transformed_data = fitted_transform.transform(
+                        current_table, column_name
+                    )
 
                     # Add the transformed column by rebuilding the Arrow table
                     new_table = current_table.append_column(
-                        transform_name, pa.array(transformed_data)
+                        transform_name, transformed_data
                     )
                     df = self.context.datafusion_ctx.from_arrow(new_table)
 

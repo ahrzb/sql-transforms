@@ -1,6 +1,6 @@
 """Data format conversion utilities for supporting multiple input/output formats."""
 
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 
@@ -10,11 +10,14 @@ if TYPE_CHECKING:
     import polars as pl  # type: ignore[import-untyped]
 
 # Type for supported data formats
-type DataInput = "(pa.Table | dict[str, list[Any]] | pd.DataFrame | pl.DataFrame | datafusion.DataFrame)"
+type DataInput = (
+    "pa.Table | dict[str, list[Any]] | pd.DataFrame | pl.DataFrame | "
+    "datafusion.DataFrame"
+)
 type DataOutput = DataInput
 
 
-def to_arrow_table(data: DataInput) -> pa.Table:
+def to_arrow_table(data: DataInput) -> pa.Table:  # noqa: C901
     """Convert various data formats to PyArrow Table for processing."""
     if isinstance(data, pa.Table):
         return data
@@ -70,14 +73,7 @@ def from_arrow_table(table: pa.Table, output_format: str) -> DataOutput:
         return table.to_pydict()
 
     if output_format == "pandas":
-        try:
-            import pandas
-
-            return table.to_pandas()
-        except ImportError as e:
-            raise ValueError(
-                "pandas not available. Install with: pip install pandas"
-            ) from e
+        return table.to_pandas()
 
     if output_format == "polars":
         try:

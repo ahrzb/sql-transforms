@@ -296,7 +296,10 @@ def parse_dot_expression(expression, aggregations, parse_expression):
 
 
 def parse_anonymous_function(expression, aggregations, parse_expression, context):
-    """Parse anonymous function calls - distinguish between aggregations and transforms."""
+    """Parse anonymous function calls.
+    
+    Distinguish between aggregations and transforms.
+    """
     func_name = expression.this.lower()
     args = [parse_expression(arg) for arg in expression.expressions]
     hint = f"{func_name}_{args[0].hint_name() if args else 'none'}"
@@ -309,12 +312,12 @@ def parse_anonymous_function(expression, aggregations, parse_expression, context
     return ref
 
 
-def parse(sql: str, context: "SqlTransformContext") -> Query:
+def parse(sql: str, context: "SqlTransformContext") -> Query:  # noqa: C901
     query = sqlglot.parse_one(sql)
 
     aggregations: dict[AggregationRef, AggregateFunction | TransformFunction] = {}
 
-    def parse_expression(expression: sqlglot.expressions.Expression) -> Expression:
+    def parse_expression(expression: sqlglot.expressions.Expression) -> Expression:  # noqa: C901
         match expression:
             case sqlglot.expressions.Column():
                 return ColumnRef(expression.this.this)

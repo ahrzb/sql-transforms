@@ -1,28 +1,31 @@
 """Context for registering transforms and managing SQL transformation environment."""
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING
 
 import datafusion
 
+from sql_transform.function_registry import (
+    AggregationRegistry,
+    FunctionResolver,
+    create_sklearn_registry,
+)
+
 if TYPE_CHECKING:
     from sql_transform.transformer import SQLTransformer
-
-
-class TransformFunction(Protocol):
-    """Protocol for transform functions that can be registered with the context."""
-
-    def fit(self, data: Any, **kwargs) -> Any: ...
-    def transform(self, data: Any, **kwargs) -> Any: ...
 
 
 class SqlTransformContext:
     """Context for managing SQL transformations."""
 
     def __init__(self):
-        self.transforms: dict[str, TransformFunction] = {}
+        # Initialize function registries
+        self.aggregation_registry = AggregationRegistry()
+        self.transform_registry = create_sklearn_registry()
+        self.function_resolver = FunctionResolver(
+            self.aggregation_registry, self.transform_registry
+        )
+
         self._datafusion_ctx: datafusion.SessionContext | None = None
-        self._sklearn_registry = None
-        self._initialize_sklearn_registry()
 
     @property
     def datafusion_ctx(self) -> datafusion.SessionContext:
@@ -31,27 +34,33 @@ class SqlTransformContext:
             self._datafusion_ctx = datafusion.SessionContext()
         return self._datafusion_ctx
 
-    def register_transform(self, name: str, transform_func: TransformFunction) -> None:
-        """Register a transform function that can be used in SQL queries."""
-        self.transforms[name] = transform_func
+    def register_aggregation(self, aggregation_spec):
+        """Register a custom aggregation function."""
+        self.aggregation_registry.register(aggregation_spec)
 
-    def get_transform(self, name: str) -> TransformFunction | None:
-        """Get a registered transform function by name."""
-        return self.transforms.get(name)
+    def register_transform(self, transform_spec):
+        """Register a custom transform function."""
+        self.transform_registry.register(transform_spec)
 
-    def list_transforms(self) -> list[str]:
-        """List all registered transform names."""
-        return list(self.transforms.keys())
+    def get_aggregation(self, name: str):
+        """Get a registered aggregation."""
+        return self.aggregation_registry.get(name)
 
-    def _initialize_sklearn_registry(self):
-        """Initialize the sklearn transform registry."""
-        try:
-            from sql_transform.sklearn_integration import TransformRegistry
+    def get_transform(self, name: str):
+        """Get a registered transform."""
+        return self.transform_registry.get(name)
 
-            self._sklearn_registry = TransformRegistry()
-        except ImportError:
-            # sklearn_integration not available
-            self._sklearn_registry = None
+    def list_functions(self) -> dict[str, tuple[str, str]]:
+        """List all registered functions with their type and description."""
+        return self.function_resolver.list_all_functions()
+
+    def list_aggregations(self) -> dict[str, str]:
+        """List all registered aggregations."""
+        return self.aggregation_registry.list_aggregations()
+
+    def list_transforms(self) -> dict[str, str]:
+        """List all registered transforms."""
+        return self.transform_registry.list_transforms()
 
     def resolve_function(self, function_name: str, args: list, over=None):
         """
@@ -74,48 +83,25 @@ class SqlTransformContext:
         if over is None:
             over = WindowSpecification()
 
-        # Built-in aggregation functions
-        builtin_aggregations = {
-            "avg",
-            "sum",
-            "count",
-            "min",
-            "max",
-            "stddev",
-            "variance",
-            "first",
-            "last",
-            "median",
-            "mode",
-        }
+        try:
+            func_type, _spec = self.function_resolver.resolve(function_name)
 
-        if function_name in builtin_aggregations:
-            return AggregateFunction(function_name, args, over=over)
-
-        # Check if it's a registered sklearn transform
-        if self._sklearn_registry:
-            try:
-                self._sklearn_registry.get(function_name)
-                # If we found it in the registry, it's a transform
+            if func_type == "aggregation":
+                return AggregateFunction(function_name, args, over=over)
+            else:  # transform
                 return TransformFunction(function_name, args, over=over)
-            except ValueError:
-                pass  # Not in sklearn registry
 
-        # Check if it's in our custom transforms registry
-        if function_name in self.transforms:
+        except ValueError:
+            # Unknown function - default to TransformFunction for extensibility
             return TransformFunction(function_name, args, over=over)
 
-        # Unknown function - treat as transform (will fail at runtime if not resolvable)
-        return TransformFunction(function_name, args, over=over)
+    def get_aggregation_spec(self, function_name: str):
+        """Get aggregation spec for DataFusion expression generation."""
+        return self.aggregation_registry.get(function_name)
 
-    def get_sklearn_spec(self, function_name: str):
-        """Get sklearn transform spec if available."""
-        if self._sklearn_registry:
-            try:
-                return self._sklearn_registry.get(function_name)
-            except ValueError:
-                return None
-        return None
+    def get_transform_spec(self, function_name: str):
+        """Get transform spec for fitting and applying."""
+        return self.transform_registry.get(function_name)
 
     def create_transformer(self, sql: str) -> "SQLTransformer":
         """Create a new SQLTransformer using this context."""
