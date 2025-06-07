@@ -1,5 +1,6 @@
 """Data format conversion utilities for supporting multiple input/output formats."""
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
 
 # Type for supported data formats
 type DataInput = (
-    "pa.Table | dict[str, list[Any]] | pd.DataFrame | pl.DataFrame | "
+    "pa.Table | Mapping[str, list[Any]] | pd.DataFrame | pl.DataFrame | "
     "datafusion.DataFrame"
 )
 type DataOutput = DataInput
@@ -24,7 +25,7 @@ def to_arrow_table(data: DataInput) -> pa.Table:  # noqa: C901
 
     if isinstance(data, dict):
         # Dict of lists format - convert to proper column format for PyArrow
-        return pa.table(data)
+        return pa.table(dict(data))
 
     # Check for pandas DataFrame with proper type checking
     try:
@@ -81,7 +82,7 @@ def from_arrow_table(table: pa.Table, output_format: str) -> DataOutput:
 
             polars_df = pl.from_arrow(table)
             assert hasattr(polars_df, "schema"), "Expected polars DataFrame"
-            return polars_df
+            return polars_df  # type: ignore[return-value]
         except ImportError as e:
             raise ValueError(
                 "polars not available. Install with: pip install polars"

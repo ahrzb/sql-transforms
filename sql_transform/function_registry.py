@@ -67,11 +67,10 @@ class SimpleAggregation:
             "min": datafusion.functions.min,
             "max": datafusion.functions.max,
             "stddev": datafusion.functions.stddev,
-            "variance": datafusion.functions.variance,
         }
 
         if self.name in mapping:
-            return mapping[self.name](column_expr)
+            return mapping[self.name](column_expr)  # type: ignore[operator]
         else:
             raise ValueError(f"Unknown aggregation: {self.name}")
 
@@ -134,7 +133,7 @@ class SklearnTransformSpec:
         name: str,
         sklearn_class: type,
         description: str = "",
-        arity: int | tuple[int, int] | None = (1, None),
+        arity: int | tuple[int, int] | None = None,
         param_mapping: dict[str, str] | None = None,
     ):
         self._name = name
@@ -206,7 +205,7 @@ class SklearnFittedTransform:
 class AggregationRegistry:
     """Registry for aggregation functions."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._aggregations: dict[str, AggregationSpec] = {}
         self._register_builtins()
 
@@ -245,7 +244,7 @@ class AggregationRegistry:
 class TransformRegistry:
     """Registry for transformation functions."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._transforms: dict[str, TransformSpec] = {}
 
     def register(self, transform: TransformSpec) -> None:
@@ -291,10 +290,14 @@ class FunctionResolver:
             ValueError if function is not found
         """
         if self.aggregations.is_aggregation(function_name):
-            return "aggregation", self.aggregations.get(function_name)
+            agg_spec = self.aggregations.get(function_name)
+            assert agg_spec is not None  # We just checked it exists
+            return "aggregation", agg_spec
 
         if self.transforms.is_transform(function_name):
-            return "transform", self.transforms.get(function_name)
+            transform_spec = self.transforms.get(function_name)
+            assert transform_spec is not None  # We just checked it exists
+            return "transform", transform_spec
 
         raise ValueError(f"Unknown function: {function_name}")
 

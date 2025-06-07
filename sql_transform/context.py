@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class SqlTransformContext:
     """Context for managing SQL transformations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Initialize function registries
         self.aggregation_registry = AggregationRegistry()
         self.transform_registry = create_sklearn_registry()

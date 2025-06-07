@@ -47,6 +47,8 @@ dev = [
 module = [
     "sklearn.*",
     "scikit-learn.*",
+    "datafusion",
+    "datafusion.*",
 ]
 ignore_missing_imports = true
 
@@ -81,3 +83,6 @@ lint.select = [
 ]
 # ignore the “Use of assert detected” warning
 lint.ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"*test*.py" = ["S608"]  # Ignore SQL injection warnings in test files

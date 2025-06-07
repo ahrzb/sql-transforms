@@ -5,6 +5,7 @@ This module provides sklearn transformer integration when sklearn is available,
 but gracefully degrades when it's not installed.
 """
 
+import textwrap
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -43,7 +44,7 @@ class TransformSpec:
 class TransformRegistry:
     """Registry for transformers that can be used in SQL."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._transforms: dict[str, TransformSpec] = {}
         self._register_builtin_transforms()
         if SKLEARN_AVAILABLE:
@@ -260,28 +261,34 @@ def get_example_sql():
     available_note = (
         ""
         if SKLEARN_AVAILABLE
-        else "\n-- Note: sklearn transforms require: pip install scikit-learn\n"
+        else "-- Note: sklearn transforms require: pip install scikit-learn"
     )
 
-    return f"""{available_note}
--- Scaling examples (requires sklearn)
-SELECT 
-    sklearn.standardize(feature1) as std_feature1,
-    sklearn.minmax_scale(feature2, min=0, max=1) as scaled_feature2,
-    sklearn.robust_scale(feature3) as robust_feature3
-FROM data;
+    sql_examples = textwrap.dedent("""
+        -- Scaling examples (requires sklearn)
+        SELECT 
+            sklearn.standardize(feature1) as std_feature1,
+            sklearn.minmax_scale(feature2, min=0, max=1) as scaled_feature2,
+            sklearn.robust_scale(feature3) as robust_feature3
+        FROM data;
 
--- Binning example (requires sklearn)
-SELECT
-    sklearn.kbins_discretize(feature1, n_bins=5, strategy='uniform') as binned_feature1
-FROM data;
+        -- Binning example (requires sklearn)
+        SELECT
+            sklearn.kbins_discretize(
+                feature1, n_bins=5, strategy='uniform'
+            ) as binned_feature1
+        FROM data;
 
--- Built-in aggregations (always available)
-SELECT
-    feature1 - avg(feature1) as centered_feature1,
-    avg(feature1) over (partition by class) as class_mean
-FROM data;
-"""
+        -- Built-in aggregations (always available)
+        SELECT
+            feature1 - avg(feature1) as centered_feature1,
+            avg(feature1) over (partition by class) as class_mean
+        FROM data;
+    """).strip()
+
+    if available_note:
+        return f"{available_note}\n\n{sql_examples}"  # noqa: S608
+    return sql_examples  # noqa: S608
 
 
 if __name__ == "__main__":

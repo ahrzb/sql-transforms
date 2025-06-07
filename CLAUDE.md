@@ -20,6 +20,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The project uses ruff for linting/formatting and mypy for type checking (via pytest-mypy).
 Always run `mise run fmt` before committing to ensure code quality.
 
+## Development Workflow
+- After every change run an automated formatting and linting (with fixes for common issues) so that you don't need to manually fix these things, you can create a mise task for it for simplicity
+
 ## Architecture Overview
 
 This is a declarative ML preprocessing library that uses SQL syntax to define feature transformations. The core architecture follows this pattern:

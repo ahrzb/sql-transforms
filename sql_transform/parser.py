@@ -22,11 +22,11 @@ class Register:
 
 @dataclasses.dataclass
 class PythonCode:
-    def __init__(self):
+    def __init__(self) -> None:
         self.next_register_id = 2
         self.code: list[ast.stmt] = []
         self.data = Register(0, "data")
-        self.result = self.assign("result", ast.Dict(elts=[], ctx=ast.Load()))
+        self.result = self.assign("result", ast.Dict(keys=[], values=[]))
 
     def lookup(self, register: Register) -> ast.expr:
         return ast.Name(id=register.hint, ctx=ast.Load())
@@ -297,7 +297,7 @@ def parse_dot_expression(expression, aggregations, parse_expression):
 
 def parse_anonymous_function(expression, aggregations, parse_expression, context):
     """Parse anonymous function calls.
-    
+
     Distinguish between aggregations and transforms.
     """
     func_name = expression.this.lower()

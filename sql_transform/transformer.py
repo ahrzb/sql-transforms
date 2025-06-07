@@ -68,7 +68,7 @@ class SQLTransformer:
         self, dependencies: dict[AggregationRef, set[AggregationRef]]
     ) -> list[list[AggregationRef]]:
         """Use BFS to group aggregations into dependency layers.
-        
+
         Enables parallel processing within each layer.
         """
         all_nodes = set(self.query.aggregations.keys())
