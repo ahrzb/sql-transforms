@@ -10,15 +10,8 @@ if TYPE_CHECKING:
     import polars as pl  # type: ignore[import-untyped]
 
 # Type for supported data formats
-DataInput = Union[
-    pa.Table,
-    dict[str, list[Any]],
-    "pd.DataFrame",  # pandas
-    "pl.DataFrame",  # polars
-    "datafusion.DataFrame",  # datafusion
-]
-
-DataOutput = DataInput
+type DataInput = "(pa.Table | dict[str, list[Any]] | pd.DataFrame | pl.DataFrame | datafusion.DataFrame)"
+type DataOutput = DataInput
 
 
 def to_arrow_table(data: DataInput) -> pa.Table:
@@ -30,31 +23,7 @@ def to_arrow_table(data: DataInput) -> pa.Table:
         # Dict of lists format - convert to proper column format for PyArrow
         return pa.table(data)
 
-    # Check for pandas DataFrame
-    if hasattr(data, "to_arrow") and hasattr(data, "columns"):
-        try:
-            return data.to_arrow()
-        except (AttributeError, TypeError):
-            # Not a pandas DataFrame or conversion failed
-            pass
-
-    # Check for polars DataFrame
-    if hasattr(data, "to_arrow") and hasattr(data, "schema"):
-        try:
-            return data.to_arrow()
-        except (AttributeError, TypeError):
-            # Not a polars DataFrame or conversion failed
-            pass
-
-    # Check for datafusion DataFrame
-    if hasattr(data, "to_arrow_table"):
-        try:
-            return data.to_arrow_table()
-        except (AttributeError, TypeError):
-            # Not a datafusion DataFrame or conversion failed
-            pass
-
-    # Try pandas conversion as fallback
+    # Check for pandas DataFrame with proper type checking
     try:
         import pandas as pd
 
@@ -63,13 +32,30 @@ def to_arrow_table(data: DataInput) -> pa.Table:
     except ImportError:
         pass
 
-    # Try polars conversion as fallback
+    # Check for polars DataFrame with proper type checking
     try:
         import polars as pl
 
-        if isinstance(pl.DataFrame, type) and isinstance(data, pl.DataFrame):
+        if isinstance(data, pl.DataFrame):
             return data.to_arrow()
     except ImportError:
+        pass
+
+    # Check for datafusion DataFrame with proper type checking
+    try:
+        import datafusion
+
+        if isinstance(data, datafusion.DataFrame):
+            return data.to_arrow_table()
+    except ImportError:
+        pass
+
+    # Check for additional PyArrow types
+    try:
+        if isinstance(data, pa.RecordBatch):
+            return pa.Table.from_batches([data])
+    except (TypeError, ValueError, pa.ArrowInvalid):
+        # RecordBatch conversion failed
         pass
 
     raise ValueError(f"Unsupported data format: {type(data)}")
@@ -97,9 +83,9 @@ def from_arrow_table(table: pa.Table, output_format: str) -> DataOutput:
         try:
             import polars as pl
 
-            result = pl.from_arrow(table)
-            assert hasattr(result, "schema"), "Expected polars DataFrame"
-            return result
+            polars_df = pl.from_arrow(table)
+            assert hasattr(polars_df, "schema"), "Expected polars DataFrame"
+            return polars_df
         except ImportError as e:
             raise ValueError(
                 "polars not available. Install with: pip install polars"
@@ -110,7 +96,11 @@ def from_arrow_table(table: pa.Table, output_format: str) -> DataOutput:
             import datafusion
 
             ctx = datafusion.SessionContext()
-            return ctx.from_arrow(table)
+            datafusion_df = ctx.from_arrow(table)
+            assert hasattr(datafusion_df, "to_arrow_table"), (
+                "Expected datafusion DataFrame"
+            )
+            return datafusion_df
         except ImportError as e:
             raise ValueError("datafusion not available") from e
 
@@ -138,14 +128,19 @@ def detect_input_format(data: DataInput) -> str:
     try:
         import polars as pl
 
-        if isinstance(pl.DataFrame, type) and isinstance(data, pl.DataFrame):
+        if isinstance(data, pl.DataFrame):
             return "polars"
     except ImportError:
         pass
 
     # Check datafusion
-    if hasattr(data, "to_arrow_table"):
-        return "datafusion"
+    try:
+        import datafusion
+
+        if isinstance(data, datafusion.DataFrame):
+            return "datafusion"
+    except ImportError:
+        pass
 
     return "unknown"
 
