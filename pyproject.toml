@@ -14,8 +14,16 @@ dependencies = [
 sklearn = [
     "scikit-learn>=1.0.0",
 ]
+pandas = [
+    "pandas>=1.5.0",
+]
+polars = [
+    "polars>=0.20.0",
+]
 all = [
     "scikit-learn>=1.0.0",
+    "pandas>=1.5.0",
+    "polars>=0.20.0",
 ]
 
 [dependency-groups]
@@ -27,7 +35,9 @@ dev = [
     "pytest>=8.3.5",
     "pytest-mypy>=1.0.1",
     "ruff>=0.11.7",
-    "scikit-learn>=1.0.0",  # For testing sklearn integration
+    "scikit-learn>=1.0.0", # For testing sklearn integration
+    "pandas>=1.5.0", # For testing pandas integration
+    "polars>=0.20.0", # For testing polars integration
 ]
 
 [tool.pytest.ini_options]

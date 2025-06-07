@@ -261,7 +261,18 @@ def parse(sql: str, context=None):
             case sqlglot.expressions.Column():
                 return ColumnRef(expression.this.this)
             case sqlglot.expressions.Literal():
-                return LiteralValue(expression.this)
+                # Try to convert to appropriate type
+                value = expression.this
+                if isinstance(value, str):
+                    # Try to parse as number
+                    try:
+                        if '.' in value:
+                            value = float(value)
+                        else:
+                            value = int(value)
+                    except ValueError:
+                        pass
+                return LiteralValue(value)
             case sqlglot.expressions.Avg():
                 expr = parse_expression(expression.this)
                 ref = AggregationRef(len(aggregations), expr.hint_name())
@@ -279,6 +290,22 @@ def parse(sql: str, context=None):
             case sqlglot.expressions.Sub():
                 return ApplyFunction(
                     "-",
+                    [
+                        parse_expression(expression.this),
+                        parse_expression(expression.expression),
+                    ],
+                )
+            case sqlglot.expressions.Add():
+                return ApplyFunction(
+                    "+",
+                    [
+                        parse_expression(expression.this),
+                        parse_expression(expression.expression),
+                    ],
+                )
+            case sqlglot.expressions.Mul():
+                return ApplyFunction(
+                    "*",
                     [
                         parse_expression(expression.this),
                         parse_expression(expression.expression),
@@ -312,8 +339,12 @@ def parse(sql: str, context=None):
 
     columns = {}
     for expression in query.expressions:
-        if not isinstance(expression, sqlglot.expressions.Alias):
-            raise NotImplementedError("Non aliased expressions not supported yet")
-        columns[expression.alias] = parse_expression(expression.this)
+        if isinstance(expression, sqlglot.expressions.Alias):
+            columns[expression.alias] = parse_expression(expression.this)
+        else:
+            # Auto-generate alias for non-aliased expressions
+            parsed_expr = parse_expression(expression)
+            alias = parsed_expr.hint_name()
+            columns[alias] = parsed_expr
 
     return Query(columns=columns, aggregations=aggregations)
