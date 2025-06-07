@@ -10,6 +10,14 @@ dependencies = [
     "sqlglot>=26.16.2",
 ]
 
+[project.optional-dependencies]
+sklearn = [
+    "scikit-learn>=1.0.0",
+]
+all = [
+    "scikit-learn>=1.0.0",
+]
+
 [dependency-groups]
 dev = [
     "ipdb>=0.13.13",
@@ -19,6 +27,7 @@ dev = [
     "pytest>=8.3.5",
     "pytest-mypy>=1.0.1",
     "ruff>=0.11.7",
+    "scikit-learn>=1.0.0",  # For testing sklearn integration
 ]
 
 [tool.pytest.ini_options]

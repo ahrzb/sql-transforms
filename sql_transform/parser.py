@@ -1,6 +1,6 @@
 import ast
 import dataclasses
-from typing import Protocol
+from typing import Any, Protocol
 
 import datafusion
 import sqlglot.expressions
@@ -64,7 +64,7 @@ class PythonCode:
 
 class Expression(Protocol):
     def hint_name(self) -> str: ...
-    def datafusion(self) -> datafusion.Expr: ...
+    def to_datafusion_expr(self) -> datafusion.Expr: ...
     def codegen(self, codegen: PythonCode) -> Register: ...
 
 
@@ -75,11 +75,25 @@ class ColumnRef(Expression):
     def hint_name(self):
         return self.name
 
-    def datafusion(self) -> datafusion.Expr:
+    def to_datafusion_expr(self) -> datafusion.Expr:
         return F.col(self.name)
 
     def codegen(self, codegen: PythonCode) -> Register:
         return codegen.assign(self.name, codegen.read_field(self.name))
+
+
+@dataclasses.dataclass(frozen=True)
+class LiteralValue(Expression):
+    value: Any
+
+    def hint_name(self):
+        return str(self.value)
+
+    def to_datafusion_expr(self) -> datafusion.Expr:
+        return datafusion.literal(self.value)
+
+    def codegen(self, codegen: PythonCode) -> Register:
+        return codegen.assign(f"lit_{self.value}", ast.Constant(value=self.value))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -94,7 +108,7 @@ class AggregationRef(Expression):
     def name(self) -> str:
         return f"{self.hint}_agg{self.id}"
 
-    def datafusion(self) -> datafusion.Expr:
+    def to_datafusion_expr(self) -> datafusion.Expr:
         return F.col(self.name)
 
     def codegen(self, codegen: PythonCode) -> Register:
@@ -117,16 +131,16 @@ class ApplyFunction(Expression):
         args = "_".join(arg.hint_name() for arg in self.args)
         return f"{name}_{args}"
 
-    def datafusion(self):
+    def to_datafusion_expr(self):
         match self.name, self.args:
             case "+", [a, b]:
-                return a.datafusion() + b.datafusion()
+                return a.to_datafusion_expr() + b.to_datafusion_expr()
             case "/", [a, b]:
-                return a.datafusion() / b.datafusion()
+                return a.to_datafusion_expr() / b.to_datafusion_expr()
             case "*", [a, b]:
-                return a.datafusion() * b.datafusion()
+                return a.to_datafusion_expr() * b.to_datafusion_expr()
             case "-", [a, b]:
-                return a.datafusion() - b.datafusion()
+                return a.to_datafusion_expr() - b.to_datafusion_expr()
             case _:
                 raise NotImplementedError()
 
@@ -185,12 +199,12 @@ class AggregateFunction:
     args: list[Expression]
     over: WindowSpecification
 
-    def datafusion(self):
+    def to_datafusion_expr(self):
         match self.operation, self.args:
             case "avg", [a]:
-                return F.avg(a.datafusion())
+                return F.avg(a.to_datafusion_expr())
             case "stddev", [a]:
-                return F.stddev(a.datafusion())
+                return F.stddev(a.to_datafusion_expr())
             case _:
                 raise NotImplementedError()
 
@@ -203,7 +217,41 @@ class Query:
     )
 
 
-def parse(sql: str):
+def parse_dot_expression(expression, aggregations, parse_expression):
+    """Parse dot expressions like sklearn.standardize."""
+    namespace = expression.this
+    func_expr = expression.expression
+    if (
+        isinstance(func_expr, sqlglot.expressions.Anonymous)
+        and str(namespace).lower() == "sklearn"
+    ):
+        # Parse sklearn.function_name as aggregation
+        func_name = f"sklearn.{func_expr.this.lower()}"
+        args = [parse_expression(arg) for arg in func_expr.expressions]
+        hint = f"{func_name}_{args[0].hint_name() if args else 'none'}"
+        ref = AggregationRef(len(aggregations), hint)
+        aggregations[ref] = AggregateFunction(
+            func_name, args, over=WindowSpecification()
+        )
+        return ref
+    else:
+        raise NotImplementedError(f"Unsupported dot expression: {expression}")
+
+
+def parse_anonymous_function(expression, aggregations, parse_expression):
+    """Parse anonymous function calls as aggregations."""
+    # Parse any function call as aggregation - resolver handles sklearn transforms
+    func_name = expression.this.lower()
+    args = [parse_expression(arg) for arg in expression.expressions]
+    hint = f"{func_name}_{args[0].hint_name() if args else 'none'}"
+    ref = AggregationRef(len(aggregations), hint)
+    aggregations[ref] = AggregateFunction(
+        func_name, args, over=WindowSpecification()
+    )
+    return ref
+
+
+def parse(sql: str, context=None):
     query = sqlglot.parse_one(sql)
 
     aggregations: dict[AggregationRef, AggregateFunction] = {}
@@ -212,6 +260,8 @@ def parse(sql: str):
         match expression:
             case sqlglot.expressions.Column():
                 return ColumnRef(expression.this.this)
+            case sqlglot.expressions.Literal():
+                return LiteralValue(expression.this)
             case sqlglot.expressions.Avg():
                 expr = parse_expression(expression.this)
                 ref = AggregationRef(len(aggregations), expr.hint_name())
@@ -251,6 +301,12 @@ def parse(sql: str):
                     raise NotImplementedError(
                         "Window functions only supported on aggregations"
                     )
+            case sqlglot.expressions.Dot():
+                return parse_dot_expression(expression, aggregations, parse_expression)
+            case sqlglot.expressions.Anonymous():
+                return parse_anonymous_function(
+                    expression, aggregations, parse_expression
+                )
             case _:
                 raise NotImplementedError(f"Cannot parse {expression}")
 
