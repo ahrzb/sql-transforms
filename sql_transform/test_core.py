@@ -214,6 +214,58 @@ class TestTransformer:
             )
         assert set(result.column_names) == set(expected_columns.keys())
 
+    @pytest.mark.parametrize(
+        "sql,expected_columns",
+        [
+            (
+                """
+                SELECT
+                    feature1 - avg(feature1) as centered_feature1,
+                    (feature1 - avg(feature1)) / stddev(feature1) as standardized_feature1
+                FROM data
+                """,
+                {
+                    "centered_feature1": [0.24, 0.04, -0.16, -0.26, 0.14],
+                    "standardized_feature1": [1.1574, 0.1929, -0.7716, -1.2538, 0.6751],
+                },
+            ),
+            (
+                """
+                SELECT
+                    avg(feature1) as global_avg,
+                    feature1 - avg(feature1) as centered,
+                    stddev(feature1 - avg(feature1)) as stddev_centered
+                FROM data
+                """,
+                {
+                    "global_avg": [4.86, 4.86, 4.86, 4.86, 4.86],
+                    "centered": [0.24, 0.04, -0.16, -0.26, 0.14],
+                    "stddev_centered": [0.2074, 0.2074, 0.2074, 0.2074, 0.2074],
+                },
+            ),
+        ],
+    )
+    def test_nested_aggregations(self, sample_data, sql, expected_columns):
+        """Test nested aggregations that depend on other aggregations."""
+        context = SqlTransformContext()
+        transformer = context.create_transformer(self._normalize_sql(sql))
+        transformer.fit(sample_data)
+        result = transformer.transform(sample_data)
+
+        # Sort both tables by the first column to ensure consistent ordering
+        first_col = list(expected_columns.keys())[0]
+        result_sorted = result.sort_by(first_col)
+        expected_table = pa.table(expected_columns)
+        expected_sorted = expected_table.sort_by(first_col)
+
+        for column in expected_columns.keys():
+            result_values = result_sorted[column].to_pylist()
+            expected_values = expected_sorted[column].to_pylist()
+            assert result_values == pytest.approx(expected_values, abs=1e-3), (
+                f"Column {column} values do not match"
+            )
+        assert set(result.column_names) == set(expected_columns.keys())
+
 
 class TestContext:
     """Test SqlTransformContext functionality."""

@@ -1,13 +1,13 @@
 """Data format conversion utilities for supporting multiple input/output formats."""
 
-from typing import Any, Dict, List, Union
+from typing import Any, Union
 
 import pyarrow as pa
 
 # Type for supported data formats
 DataInput = Union[
     pa.Table,
-    Dict[str, List[Any]], 
+    dict[str, list[Any]], 
     "pd.DataFrame",  # pandas
     "pl.DataFrame",  # polars
     "datafusion.DataFrame",  # datafusion

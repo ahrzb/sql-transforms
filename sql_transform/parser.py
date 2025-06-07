@@ -194,25 +194,76 @@ class WindowSpecification:
 
 
 @dataclasses.dataclass(frozen=True)
+class TransformFunction:
+    """Represents a custom transform function that needs to be resolved at runtime."""
+    operation: str
+    args: list[Expression]
+    over: WindowSpecification
+
+    def to_datafusion_expr(self, context=None):
+        """Convert to datafusion expression, resolving transforms via context."""
+        # This will be resolved at runtime by the transformer
+        raise NotImplementedError(f"Transform {self.operation} needs context resolution")
+
+
+@dataclasses.dataclass(frozen=True)
 class AggregateFunction:
     operation: str
     args: list[Expression]
     over: WindowSpecification
 
     def to_datafusion_expr(self):
+        base_expr = self._get_base_expression()
+        
+        # Apply window specification if present
+        if self.over.partition_by:
+            # For now, we'll handle windowing in the transformer
+            # DataFusion window functions need special handling
+            return base_expr
+        else:
+            return base_expr
+
+    def _get_base_expression(self):
+        """Get the base datafusion expression without windowing."""
         match self.operation, self.args:
             case "avg", [a]:
                 return F.avg(a.to_datafusion_expr())
             case "stddev", [a]:
                 return F.stddev(a.to_datafusion_expr())
+            case "sum", [a]:
+                return F.sum(a.to_datafusion_expr())
+            case "count", [a]:
+                return F.count(a.to_datafusion_expr())
+            case "min", [a]:
+                return F.min(a.to_datafusion_expr())
+            case "max", [a]:
+                return F.max(a.to_datafusion_expr())
             case _:
-                raise NotImplementedError()
+                raise NotImplementedError(f"Unsupported aggregation: {self.operation}")
+
+    def to_window_expr(self):
+        """Convert to a DataFusion window expression."""
+        import datafusion
+        
+        base_expr = self._get_base_expression()
+        
+        if self.over.partition_by:
+            partition_exprs = [p.to_datafusion_expr() for p in self.over.partition_by]
+            # DataFusion window syntax
+            return datafusion.WindowExpr(
+                fun=base_expr,
+                partition_by=partition_exprs,
+                order_by=[],  # We can extend this later
+                window_frame=None  # We can extend this later
+            )
+        else:
+            return base_expr
 
 
 @dataclasses.dataclass
 class Query:
     columns: dict[str, Expression] = dataclasses.field(default_factory=dict)
-    aggregations: dict[AggregationRef, AggregateFunction] = dataclasses.field(
+    aggregations: dict[AggregationRef, AggregateFunction | TransformFunction] = dataclasses.field(
         default_factory=dict
     )
 
@@ -225,12 +276,12 @@ def parse_dot_expression(expression, aggregations, parse_expression):
         isinstance(func_expr, sqlglot.expressions.Anonymous)
         and str(namespace).lower() == "sklearn"
     ):
-        # Parse sklearn.function_name as aggregation
+        # Parse sklearn.function_name as transform function
         func_name = f"sklearn.{func_expr.this.lower()}"
         args = [parse_expression(arg) for arg in func_expr.expressions]
         hint = f"{func_name}_{args[0].hint_name() if args else 'none'}"
         ref = AggregationRef(len(aggregations), hint)
-        aggregations[ref] = AggregateFunction(
+        aggregations[ref] = TransformFunction(
             func_name, args, over=WindowSpecification()
         )
         return ref
@@ -239,15 +290,28 @@ def parse_dot_expression(expression, aggregations, parse_expression):
 
 
 def parse_anonymous_function(expression, aggregations, parse_expression):
-    """Parse anonymous function calls as aggregations."""
-    # Parse any function call as aggregation - resolver handles sklearn transforms
+    """Parse anonymous function calls - distinguish between aggregations and transforms."""
     func_name = expression.this.lower()
     args = [parse_expression(arg) for arg in expression.expressions]
     hint = f"{func_name}_{args[0].hint_name() if args else 'none'}"
     ref = AggregationRef(len(aggregations), hint)
-    aggregations[ref] = AggregateFunction(
-        func_name, args, over=WindowSpecification()
-    )
+    
+    # Built-in aggregation functions
+    builtin_aggregations = {
+        "avg", "sum", "count", "min", "max", "stddev", "variance", 
+        "first", "last", "median", "mode"
+    }
+    
+    if func_name in builtin_aggregations:
+        aggregations[ref] = AggregateFunction(
+            func_name, args, over=WindowSpecification()
+        )
+    else:
+        # Custom transform function (could be sklearn or user-defined)
+        aggregations[ref] = TransformFunction(
+            func_name, args, over=WindowSpecification()
+        )
+    
     return ref
 
 
@@ -311,6 +375,17 @@ def parse(sql: str, context=None):
                         parse_expression(expression.expression),
                     ],
                 )
+            case sqlglot.expressions.Div():
+                return ApplyFunction(
+                    "/",
+                    [
+                        parse_expression(expression.this),
+                        parse_expression(expression.expression),
+                    ],
+                )
+            case sqlglot.expressions.Paren():
+                # Parentheses are just for grouping, parse the inner expression
+                return parse_expression(expression.this)
             case sqlglot.expressions.Window():
                 over = WindowSpecification(
                     partition_by=[
