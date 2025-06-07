@@ -11,10 +11,10 @@ if TYPE_CHECKING:
     import polars as pl  # type: ignore[import-untyped]
 
 # Type for supported data formats
-type DataInput = (
-    "pa.Table | Mapping[str, list[Any]] | pd.DataFrame | pl.DataFrame | "
-    "datafusion.DataFrame"
-)
+type DataInput = """
+    pa.Table | Mapping[str, list[Any]] | pd.DataFrame | pl.DataFrame
+    | datafusion.DataFrame
+"""
 type DataOutput = DataInput
 
 
