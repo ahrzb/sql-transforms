@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `mise tasks` - List all available tasks
 
 ### Running Specific Tests
-- `pytest sql_transform/test_core.py::TestParser::test_parse_basic` - Run single test
+- `pytest sql_transform/parser_test.py::TestParser::test_parse_basic` - Run single test
 - `pytest -k "test_parse"` - Run tests matching pattern
 - `pytest -x -s -vv` - Stop on first failure, verbose output
 
@@ -21,7 +21,9 @@ The project uses ruff for linting/formatting and mypy for type checking (via pyt
 Always run `mise run fmt` before committing to ensure code quality.
 
 ## Development Workflow
-- After every change run an automated formatting and linting (with fixes for common issues) so that you don't need to manually fix these things, you can create a mise task for it for simplicity
+- Always run `mise run fmt` after making changes to ensure consistent formatting
+- All tests must pass before committing changes
+- Follow the test naming convention: tests for `x.py` go in `x_test.py`
 
 ## Architecture Overview
 
@@ -34,25 +36,38 @@ SQL Query → Parser → AST → Fit Phase → Transform Phase
 ### Key Components
 
 1. **SqlTransformContext** (`sql_transform/context.py`)
-   - Central registry for transforms, UDFs, and DataFusion context
+   - Central registry for aggregations, transforms, and DataFusion context
    - Factory for creating SQLTransformer instances
-   - Manages transform resolution and custom function registration
+   - Manages function resolution through extensible registry system
+   - Resolves SQL function names to either AggregateFunction or TransformFunction
 
-2. **Parser** (`sql_transform/parser.py`)
-   - Converts SQL into internal AST representation
-   - Distinguishes between aggregations (built-in), transforms (custom), and window functions
+2. **Function Registry** (`sql_transform/function_registry.py`)
+   - **AggregationRegistry**: Built-in DataFusion aggregations (avg, sum, count, etc.)
+   - **TransformRegistry**: Custom transforms with fit/transform pattern
+   - **FunctionResolver**: Routes function names to appropriate registry
+   - Supports sklearn integration via `SklearnTransformSpec`
+
+3. **Parser** (`sql_transform/parser.py`)
+   - Converts SQL into internal AST representation using context-based function resolution
    - Key classes: `AggregateFunction`, `TransformFunction`, `WindowSpecification`
+   - No hardcoded function mappings - all functions resolved via context
+   - Supports window functions with DataFusion integration
 
-3. **SQLTransformer** (`sql_transform/transformer.py`)
+4. **SQLTransformer** (`sql_transform/transformer.py`)
    - Implements scikit-learn-style fit/transform pattern
-   - Fit phase: computes aggregations and statistics
-   - Transform phase: applies transformations using precomputed values
+   - Fit phase: computes aggregations and fits transforms using BFS dependency resolution
+   - Transform phase: applies precomputed values and fitted transforms
    - Supports multi-format I/O (pandas, polars, dict, arrow, datafusion)
 
-4. **Data Formats** (`sql_transform/data_formats.py`)
+5. **Data Formats** (`sql_transform/data_formats.py`)
    - Handles conversion between different data formats
    - All processing happens in DataFusion for performance
    - Auto-detects input format and converts output back to same format
+
+6. **Sklearn Integration** (`sql_transform/sklearn_integration.py`)
+   - Optional sklearn transformer integration when sklearn is available
+   - Maps SQL function names to sklearn classes (e.g., `sklearn.standardize` → `StandardScaler`)
+   - Graceful degradation when sklearn is not installed
 
 ### Core Concepts
 
@@ -70,17 +85,44 @@ The parser supports standard SQL plus ML-specific extensions:
 
 ## Testing Strategy
 
-- `sql_transform/test_core.py` - Consolidated test suite
-- Tests cover: basic parsing, transformations, window functions, multi-format I/O
-- Optional dependency tests (pandas, polars) skip gracefully if not installed
+### Test File Organization
+- **Component-specific tests**: `parser_test.py`, `transformer_test.py`, `context_test.py`, `data_formats_test.py`
+- **Integration tests**: `sklearn_integration_test.py` for end-to-end sklearn functionality
+- **Naming convention**: Tests for `x.py` are in `x_test.py` (not `test_x.py`)
+
+### Test Coverage
+- **Parser tests**: SQL parsing, function resolution, window functions
+- **Transformer tests**: Fit/transform patterns, multi-format I/O, nested aggregations
+- **Context tests**: Function registration, resolution, transformer creation
+- **Data format tests**: Conversion between pandas, polars, arrow, dict formats
+- **Optional dependency tests**: Skip gracefully when pandas/polars/sklearn unavailable
+
+### Testing Best Practices
 - Use parametrized tests for SQL parsing validation
-- Test files always have the _test suffix, tests for file x.py, will be called x_test.py
+- Test both positive and negative cases
+- Verify type checking passes with mypy integration
 
 ## Current Status & Roadmap
 
-**Current (Phase 1)**: Foundation with basic aggregations and window functions
-**Next (Phase 2)**: Statistical transforms (standardization, scaling)
-**Future**: Categorical encoding, text processing, type system
+### **Completed (Phase 1)**
+- ✅ Foundation with extensible function registry
+- ✅ Context-based aggregation and transform resolution
+- ✅ Window functions with DataFusion integration
+- ✅ Multi-format I/O (pandas, polars, dict, arrow)
+- ✅ BFS dependency resolution for nested aggregations
+- ✅ Sklearn transformer integration framework
+- ✅ Comprehensive test suite with proper organization
+
+### **Current Focus (Phase 2)**
+- Basic statistical transforms (standardization, scaling)
+- Enhanced sklearn integration with parameter mapping
+- Performance optimization for large datasets
+
+### **Future Phases**
+- Categorical encoding (one-hot, ordinal, target encoding)
+- Text processing (TF-IDF, tokenization)
+- Advanced type system with validation
+- Custom UDF registration API
 
 See VISION.md and TODO.md for detailed roadmap and immediate next steps.
 
