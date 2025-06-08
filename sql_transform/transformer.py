@@ -179,7 +179,9 @@ class SQLTransformer:
                                 )
                                 for p in agg_or_transform.over.partition_by
                             ],
-                            agg_or_transform.to_datafusion_expr().alias(agg_ref.name),
+                            agg_or_transform.to_datafusion_expr(self.context).alias(
+                                agg_ref.name
+                            ),
                         )
                         self.aggs.append((agg_or_transform, agg_df))
                         agg_results[agg_ref] = agg_df
@@ -187,7 +189,9 @@ class SQLTransformer:
                         # Regular aggregation - compute using current working_df
                         agg_df = working_df.aggregate(
                             [],  # No grouping for global aggregations
-                            agg_or_transform.to_datafusion_expr().alias(agg_ref.name),
+                            agg_or_transform.to_datafusion_expr(self.context).alias(
+                                agg_ref.name
+                            ),
                         )
                         self.aggs.append((agg_or_transform, agg_df))
                         agg_results[agg_ref] = agg_df

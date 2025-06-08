@@ -41,10 +41,10 @@ class TestParser:
                 """,
                 Query(
                     columns={
-                        "avg_feature1": AggregationRef(0, "feature1"),
+                        "avg_feature1": AggregationRef(0, "avg_feature1"),
                     },
                     aggregations={
-                        AggregationRef(0, "feature1"): AggregateFunction(
+                        AggregationRef(0, "avg_feature1"): AggregateFunction(
                             "avg", [ColumnRef("feature1")], over=WindowSpecification()
                         )
                     },
@@ -58,10 +58,10 @@ class TestParser:
                 """,
                 Query(
                     columns={
-                        "avg_feature1": AggregationRef(0, "feature1"),
+                        "avg_feature1": AggregationRef(0, "avg_feature1"),
                     },
                     aggregations={
-                        AggregationRef(0, "feature1"): AggregateFunction(
+                        AggregationRef(0, "avg_feature1"): AggregateFunction(
                             "avg",
                             [ColumnRef("feature1")],
                             over=WindowSpecification(

@@ -218,8 +218,8 @@ class AggregateFunction:
     args: list[Expression]
     over: WindowSpecification
 
-    def to_datafusion_expr(self):
-        base_expr = self._get_base_expression()
+    def to_datafusion_expr(self, context: "SqlTransformContext | None" = None):
+        base_expr = self._get_base_expression(context)
 
         # Apply window specification if present
         if self.over.partition_by:
@@ -229,41 +229,50 @@ class AggregateFunction:
         else:
             return base_expr
 
-    def _get_base_expression(self):
+    def _get_base_expression(self, context: "SqlTransformContext | None" = None):
         """Get the base datafusion expression without windowing."""
-        match self.operation, self.args:
-            case "avg", [a]:
-                return F.avg(a.to_datafusion_expr())
-            case "stddev", [a]:
-                return F.stddev(a.to_datafusion_expr())
-            case "sum", [a]:
-                return F.sum(a.to_datafusion_expr())
-            case "count", [a]:
-                return F.count(a.to_datafusion_expr())
-            case "min", [a]:
-                return F.min(a.to_datafusion_expr())
-            case "max", [a]:
-                return F.max(a.to_datafusion_expr())
-            case _:
-                raise NotImplementedError(f"Unsupported aggregation: {self.operation}")
+        if context is None:
+            raise ValueError("Context is required for aggregation resolution")
 
-    def to_window_expr(self):
+        # Use context's aggregation registry
+        agg_spec = context.get_aggregation_spec(self.operation)
+        if agg_spec is None:
+            raise NotImplementedError(f"Unsupported aggregation: {self.operation}")
+
+        column_expr = self.args[0].to_datafusion_expr() if self.args else None
+        return agg_spec.to_datafusion_expr(column_expr, self.args)
+
+    def to_window_expr(self, context: "SqlTransformContext | None" = None):
         """Convert to a DataFusion window expression."""
-        import datafusion
-
-        base_expr = self._get_base_expression()
+        from datafusion import functions as F
 
         if self.over.partition_by:
             partition_exprs = [p.to_datafusion_expr() for p in self.over.partition_by]
-            # DataFusion window syntax
-            return datafusion.WindowExpr(
-                fun=base_expr,
+
+            # Use DataFusion's window function constructor
+            # First get the base function name for the window function
+            if context is None:
+                raise ValueError(
+                    "Context is required for window aggregation resolution"
+                )
+
+            agg_spec = context.get_aggregation_spec(self.operation)
+            if agg_spec is None:
+                raise NotImplementedError(f"Unsupported aggregation: {self.operation}")
+
+            # Extract the column expression if present
+            column_expr = self.args[0].to_datafusion_expr() if self.args else None
+
+            # Use window function constructor
+            return F.window(
+                name=self.operation,
+                args=[column_expr] if column_expr is not None else [],
                 partition_by=partition_exprs,
                 order_by=[],  # We can extend this later
                 window_frame=None,  # We can extend this later
             )
         else:
-            return base_expr
+            return self._get_base_expression(context)
 
 
 @dataclasses.dataclass
@@ -336,17 +345,17 @@ def parse(sql: str, context: "SqlTransformContext") -> Query:  # noqa: C901
                 return LiteralValue(value)
             case sqlglot.expressions.Avg():
                 expr = parse_expression(expression.this)
-                ref = AggregationRef(len(aggregations), expr.hint_name())
-                aggregations[ref] = AggregateFunction(
-                    "avg", [expr], over=WindowSpecification()
-                )
+                hint = f"avg_{expr.hint_name()}"
+                ref = AggregationRef(len(aggregations), hint)
+                agg_or_transform = context.resolve_function("avg", [expr])
+                aggregations[ref] = agg_or_transform
                 return ref
             case sqlglot.expressions.Stddev():
                 expr = parse_expression(expression.this)
-                ref = AggregationRef(len(aggregations), expr.hint_name())
-                aggregations[ref] = AggregateFunction(
-                    "stddev", [expr], over=WindowSpecification()
-                )
+                hint = f"stddev_{expr.hint_name()}"
+                ref = AggregationRef(len(aggregations), hint)
+                agg_or_transform = context.resolve_function("stddev", [expr])
+                aggregations[ref] = agg_or_transform
                 return ref
             case sqlglot.expressions.Sub():
                 return ApplyFunction(
