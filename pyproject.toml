@@ -1,88 +1,37 @@
 [project]
 name = "sql-transform"
 version = "0.1.0"
-description = "Add your description here"
+description = "SQL-based data transforms on DataFusion"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "datafusion>=46.0.0",
-    "pyarrow-stubs>=19.1",
+    "pyarrow>=19.0",
     "sqlglot>=26.16.2",
-]
-
-[project.optional-dependencies]
-sklearn = [
-    "scikit-learn>=1.0.0",
-]
-pandas = [
-    "pandas>=1.5.0",
-]
-polars = [
-    "polars>=0.20.0",
-]
-all = [
-    "scikit-learn>=1.0.0",
-    "pandas>=1.5.0",
-    "polars>=0.20.0",
 ]
 
 [dependency-groups]
 dev = [
     "ipdb>=0.13.13",
     "ipython>=9.2.0",
-    "mypy>=1.15.0",
-    "pyright>=1.1.400",
     "pytest>=8.3.5",
-    "pytest-mypy>=1.0.1",
     "ruff>=0.11.7",
-    "scikit-learn>=1.0.0", # For testing sklearn integration
-    "pandas>=1.5.0", # For testing pandas integration
-    "polars>=0.20.0", # For testing polars integration
-    "pandas-stubs>=2.2.3.250527",
 ]
-
-[tool.mypy]
-# Handle libraries without type stubs
-[[tool.mypy.overrides]]
-module = [
-    "sklearn.*",
-    "scikit-learn.*",
-    "datafusion",
-    "datafusion.*",
-]
-ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-addopts = "--mypy --pdbcls=IPython.terminal.debugger:TerminalPdb"
-python_files = ["*_test.py"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-exclude = [
-  "**/*_test.py"
-]
+exclude = ["**/*_test.py"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["./sql_transform"]
 
 [tool.ruff]
 fix = true
-lint.select = [
-  "E",    # pycodestyle errors
-  "F",    # pyflakes
-  "B",    # flake8-bugbear
-  "I",    # isort (import sorting)
-  "UP",   # pyupgrade (syntax modernization)
-  "C90",  # mccabe (complexity checks)
-  "UP",   # pyupgrade (suggests modern Python features)
-  "S",    # flake8-bandit (security issues)
-  "C4",   # flake8-comprehensions
-]
-# ignore the “Use of assert detected” warning
+lint.select = ["E", "F", "B", "I", "UP", "C4", "S"]
 lint.ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
-"*test*.py" = ["S608"]  # Ignore SQL injection warnings in test files
+"*test*.py" = ["S608"]
