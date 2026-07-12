@@ -1,0 +1,2 @@
+class SQLTransform:
+    pass

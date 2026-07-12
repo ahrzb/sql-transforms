@@ -7,7 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "datafusion>=46.0.0",
     "pyarrow>=19.0",
-    "sqlglot>=26.16.2",
 ]
 
 [dependency-groups]
@@ -35,3 +34,6 @@ lint.ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
 "*test*.py" = ["S608"]
+
+[tool.pytest.ini_options]
+python_files = ["*_test.py"]
