@@ -47,7 +47,7 @@ def extract_state(
                 keys.extend(batch.column(0).to_pylist())
                 vals.extend(batch.column(1).to_pylist())
             state[out_alias] = {
-                "lookup": dict(zip(keys, vals)),
+                "lookup": dict(zip(keys, vals, strict=True)),
                 "partition_col": partition_col,
             }
 

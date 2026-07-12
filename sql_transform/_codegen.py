@@ -38,7 +38,7 @@ def generate_infer_fn(
         "    return {\n" + "\n".join(body_lines) + "\n    }"
     )
     namespace: dict = {}
-    exec(source, {}, namespace)
+    exec(source, {}, namespace)  # noqa: S102
     fn = namespace["_infer"]
 
     def bound(row: dict) -> dict:
