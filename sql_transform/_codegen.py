@@ -24,8 +24,13 @@ def generate_infer_fn(
 
     for raw_p in proj.projections():
         alias = raw_p.to_variant()
-        out_name = alias.alias()
-        code = _expr_to_python(alias.expr(), state, out_alias=out_name)
+        if isinstance(alias, Column):
+            # Bare column reference — no alias
+            out_name = alias.name()
+            code = _expr_to_python(raw_p, state, out_alias=out_name)
+        else:
+            out_name = alias.alias()
+            code = _expr_to_python(alias.expr(), state, out_alias=out_name)
         body_lines.append(f'        "{out_name}": {code},')
 
     source = (
