@@ -2,39 +2,42 @@
 
 ## Goal
 
-Extend `SQLTransform` to support:
+Extend `SQLTransform` with two new concerns, split into a two-phase architecture:
 
 1. **Sklearn transformers callable from SQL** — `SELECT svd(tfidf(text)) AS embedding FROM data`
-2. **JOINs as inference-time lookups** — `FROM data JOIN ref ON data.id = ref.id` materialized at fit time, used as lookup dicts at inference
+2. **JOINs as inference-time lookups** — `FROM data JOIN ref ON data.id = ref.id` materialized at fit time
 
-## Architecture
+## Architecture: Two Phases
 
 ```
-                     SQL string
-                         │
-          ┌──────────────┴──────────────┐
-          │  sqlglot parse              │
-          │  - extract transformer calls│
-          │  - build dependency DAG     │
-          │  - strip calls → clean SQL  │
-          └──────────────┬──────────────┘
-                         │
-          ┌──────────────┴──────────────┐
-          │  DataFusion parse + execute │
-          │  - window aggs (plan walk)  │
-          │  - JOIN handling (plan walk)│
-          └──────────────┬──────────────┘
-                         │
-          ┌──────────────┴──────────────┐
-          │  State extraction + codegen │
-          │  - window agg values        │
-          │  - JOIN lookup dicts        │
-          │  - fitted transformers      │
-          │  - generate Python infer fn │
-          └──────────────┬──────────────┘
-                         │
-                    callable: (row) -> dict
+                        raw SQL + training data
+                               │
+              ┌────────────────┴────────────────┐
+              │         PHASE 1: fit()           │
+              │  - parse SQL (sqlglot)           │
+              │  - fit transformers              │
+              │  - extract window agg values     │
+              │  - materialize JOIN lookups      │
+              │  - produce reduced SQL + state   │
+              │  - get reduced plan (DataFusion) │
+              └────────────────┬────────────────┘
+                               │
+                    state dict + reduced logical plan
+                               │
+              ┌────────────────┴────────────────┐
+              │       PHASE 2: interpret()       │
+              │  - walk plan expressions         │
+              │  - evaluate for single row       │
+              │  - resolve UDFs via state        │
+              │  - return {alias: value} dict    │
+              └────────────────┬────────────────┘
+                               │
+                         row result dict
 ```
+
+**Phase 1** learns from training data and emits a reduced DataFusion logical plan + state dict. The reduced plan has no window expressions, no JOINs — only table scans, arithmetic, built-in functions, and UDF calls.
+
+**Phase 2** is a row-by-row plan interpreter. It walks the logical plan tree and evaluates each expression node for a single input row. No exec(), no code generation. Testable in isolation: compare interpret() output against DataFusion batch result on 1-row tables.
 
 ## Public API
 
@@ -56,32 +59,56 @@ tfm = (
     .add_table("ref", ref_table)
 )
 
-tfm.fit(train)              # fits transformers, extracts state
-out = tfm.transform(test)   # pure Python, uses fitted state
-row = tfm._infer({"text": "hello", "age": 30, "id": 1})  # single row
+tfm.fit(train)              # Phase 1: learn state, produce reduced plan
+out = tfm.transform(test)   # Phase 2: interpret per row
+row = tfm._infer({"text": "hello", "age": 30, "id": 1})
 ```
 
 ### Builder methods
 
-- `SQLTransform(sql: str)` — constructor, stores SQL string
-- `register_transformer(name: str, transformer) -> Self` — registers an already-instantiated sklearn transformer. The `name` must match the function name used in SQL (e.g., `"tfidf"` → `tfidf(text)`).
-- `add_table(name: str, table: pa.Table) -> Self` — registers a pyarrow table referenced in SQL JOINs.
+- `SQLTransform(sql: str)` — stores raw SQL string
+- `register_transformer(name: str, transformer) -> Self` — registers an already-instantiated sklearn transformer. `name` matches function name used in SQL.
+- `add_table(name: str, table: pa.Table) -> Self` — registers a pyarrow table for JOIN references.
+- `from_file(path: str) -> SQLTransform` — classmethod, reads SQL from file.
 
-### From file
+### fit() flow (Phase 1)
 
-```python
-tfm = SQLTransform.from_file("features.sql")
+```
+1. Parse SQL with sqlglot → extract transformer call chains, build dependency DAG
+2. Pre-scan training data → fit transformers in DAG order
+3. Strip transformer calls from SQL → clean SQL with `NULL AS alias` placeholders
+4. Run clean SQL through DataFusion with all registered tables
+5. Walk logical plan (typed AST, no regex):
+   a. Extract window agg values (constants, partition lookups)
+   b. Extract JOIN conditions → build lookup dicts from right-side tables
+6. Build reduced SQL:
+   a. Window aggs → literal constants (age / 30.0)
+   b. JOIN columns → UDF calls (ref_lookup(id, 'temp'))
+   c. Transformers → UDF calls (tfidf_udf(text))
+7. Register UDFs (fitted transformers, lookup functions) in DataFusion session
+8. Run reduced SQL through DataFusion → get reduced logical plan
+9. Store state + reduced plan on self
+```
+
+### transform() / _infer() flow (Phase 2)
+
+```
+1. For each input row:
+   a. Call interpret(reduced_plan, row, state)
+   b. Collect result dict
+2. transform(): aggregate dicts → pyarrow Table
+3. _infer(): return single dict
 ```
 
 ### Error conditions
 
 - `transform()` or `_infer()` before `fit()` → `RuntimeError`
-- Registered transformer name not found in SQL → warning, no-op
-- JOIN right-side lookup misses on a row key → `KeyError` (strict 1-1 assumption)
+- Registered transformer name not found in SQL → warning
+- JOIN lookup misses on a row key → `KeyError` (strict 1-1 assumption)
+- Multi-row JOIN match per data row → `ValueError` at fit time
+- Non-equality JOIN ON condition → `ValueError` at fit time
 
 ## SQL Format
-
-### Allowed patterns
 
 ```sql
 SELECT
@@ -94,175 +121,207 @@ SELECT
 
     -- Transformer calls (nested composition supported)
     svd(tfidf(text)) AS embedding,
-    countvec(text) AS bow,
 
-    -- JOIN column references (FROM data JOIN ref ON ...)
+    -- JOIN column references
     ref.col
 
 FROM data
 [JOIN registered_table ON data.key = registered_table.key [AND ...]]
 ```
 
-### Constraints
-
-- `FROM data` must reference the main table (passed to `fit(table)`).
-- All JOIN right-side tables must be registered via `add_table()` before `fit()`.
-- JOINs must be 1-1 between `data` and each right-side table. Multi-row matches per data row are a `ValueError` at fit time.
-- Transformer calls use comma-separated args (no Python kwargs in SQL — kwargs passed at `register_transformer` time).
+Constraints:
+- `FROM data` references main table passed to `fit()`.
+- JOIN tables must be registered via `add_table()` before `fit()`.
+- JOINs must be 1-1 between `data` and each right-side table.
 - Transformer names must not collide with DataFusion built-in function names.
 
 ## Internal Components
 
-### `_transformers.py` (new)
+### `_interpreter.py` (replaces `_codegen.py`)
 
-Parses SQL text via sqlglot to extract transformer call chains.
+Row-by-row DataFusion logical plan interpreter. The core of Phase 2.
 
+```python
+def interpret(plan: LogicalPlan, row: dict, state: dict) -> dict:
+    """Evaluate a logical plan for a single input row.
+
+    plan: reduced logical plan (no windows, no joins)
+    row: {"col": val, ...} from the FROM table
+    state: learned state dict (UDF implementations, pre-computed values)
+
+    Returns: {"alias": value, ...} for each projection
+    """
 ```
-Input:  "SELECT svd(tfidf(text)) AS embedding FROM data"
-Output: {"embedding": TransformNode(name="svd", args=[TransformNode(name="tfidf", args=["text"])])}
-```
 
-**Parse flow:**
-1. Parse SQL with sqlglot
-2. Walk SELECT expressions, find function calls matching registered transformer names
-3. Build a tree of `TransformNode` objects (dependency DAG)
-4. Strip transformer calls from SQL AST, replace with `1 AS alias` placeholders
-5. Generate cleaned SQL string for DataFusion
+Walks the plan tree top-down:
 
-**Fit flow:**
-1. Topological sort transformer nodes (leaf-first: tfidf before svd)
-2. For each node in order:
-   a. If leaf (raw column arg): collect column values from training data
-   b. If internal (another transformer arg): transform using previous node's output
-   c. Fit transformer on collected/transformed values
-3. Store fitted transformers in state dict
+| Node type | Interpretation |
+|---|---|
+| `Projection` | Evaluate each projection expression → `{alias: value}` |
+| `TableScan` | Return the input `row` dict |
+| `Column(name)` | `row[name]` |
+| `Literal(value)` | `value` |
+| `BinaryExpr(op, left, right)` | `interpret(left) OP interpret(right)` |
+| `Alias(expr, name)` | `{name: interpret(expr)}` |
+| Built-in function call | Map DataFusion function → Python equivalent (UPPER, CONCAT, SUBSTR, ...) |
+| UDF call | `state["udf_name"](args)` — fitted transformer or lookup function |
+
+**Built-in function mapping:** DataFusion functions mapped to Python stdlib. Initial set: UPPER, LOWER, CONCAT, SUBSTR, TRIM, ABS, ROUND, CAST, NULLIF, COALESCE. Add more as needed.
+
+**UDF resolution:** State keys match UDF names. For fitted transformers: `state["tfidf_udf"]` is a callable that wraps `transformer.transform()`. For JOIN lookups: `state["ref_lookup"]` is a callable `(key, col) -> value`.
+
+**Testing strategy:** For each expression type, create a SQL query, run through DataFusion on 1-row table, run through interpret() with same row, assert equality. Covers: column ref, literal, arithmetic, built-in function, UDF, alias, projection.
 
 ### `_state.py` (rewrite)
 
-Replaces regex-based `display_indent()` parsing with typed AST walking.
+Typed AST walk of DataFusion logical plan. No regex.
 
+```python
+def extract_state(plan: LogicalPlan, ctx: SessionContext, table_name: str) -> dict:
+    """Walk logical plan, extract window agg values and JOIN lookups."""
 ```
-Input:  DataFusion logical plan (plan.to_variant())
-Output: state dict
-```
 
-**Window aggs:** Walk `Projection` → `Window` → `WindowExpr` → extract `fn`, `col`, `partition_by`. Execute separate queries for constants/lookups. No more regex.
+**Window aggs:** Walk `Projection.input()` → `Window.input()` → iterate `WindowExpr`. Extract fn name, column, partition_by columns. Run separate DataFusion queries for values.
 
-**JOIN lookups:** Walk plan for `Join` nodes. For each join on `data`:
-1. Get right-side table name
-2. Walk ON condition — must be `AND` of equality expressions (`data.col = ref.col`). Complex conditions (non-equality) → `ValueError` at fit time.
-3. Extract left keys (data cols) and right keys (ref cols) from equalities
-4. Materialize right table from registered pyarrow table: `{(key_tuple): {col: val, ...}}`
-5. Store in state: `{"lookup": dict, "keys": ["col1", "col2"]}`
+**JOIN lookups:** Walk plan for `Join` nodes where right side matches a registered table. Extract ON equality keys. Build lookup dict `{(key_tuple): {col: val, ...}}` from registered pyarrow table.
 
 **State shape:**
 
 ```python
 {
-    # Window aggs (unchanged structure)
     "age_norm": 30.0,
     "city_enc": {"lookup": {"tehran": 3.5}, "partition_col": "city"},
-
-    # JOIN lookups
-    "ref": {
-        "lookup": {
-            (1,): {"avg_temp": 22.5, "population": 1000},
-            (2,): {"avg_temp": 18.0, "population": 2000},
-        },
-        "keys": ["id"],
-    },
-
-    # Fitted transformers
-    "tfidf": fitted_TfidfVectorizer,
-    "svd": fitted_TruncatedSVD,
+    "ref": {"lookup": {(1,): {"avg_temp": 22.5}}, "keys": ["id"]},
 }
 ```
 
-### `_codegen.py` (rewrite)
+### `_transformers.py` (new)
 
-Walks DataFusion plan projections via typed AST (no regex column detection).
-Merges in transformer metadata for non-SQL columns.
-
-**Expression sources, in priority order:**
-
-| Plan expression | Codegen output |
-|---|---|
-| `Column` with table qualifier (`ref.col`) | `_state["ref"]["lookup"][keys]["col"]` |
-| `Column` without qualifier (`col`) | `row["col"]` |
-| `Alias` referencing window agg | `_state["alias"]` or `_state["alias"]["lookup"][row["part_col"]]` |
-| BinaryExpr (arithmetic) | `(left_expr op right_expr)` |
-| Transformer (from metametadata, not plan) | `_state["tfm"].transform([arg])[0]` (nested via walrus) |
-
-**Nested transformer codegen:**
-
-```sql
-svd(tfidf(text)) AS embedding
-```
+sqlglot-based parsing and fitting of sklearn transformer calls.
 
 ```python
-(_t0 := _state["tfidf"].transform([row["text"]])[0],
- _state["svd"].transform([_t0])[0])[1]
+def extract_transformer_calls(sql: str, registered: set[str]) -> dict:
+    """Parse SQL with sqlglot, find transformer calls, build DAG.
+
+    Returns: {
+        "embedding": TransformNode(name="svd", args=[
+            TransformNode(name="tfidf", args=["text"])
+        ])
+    }
+    """
+
+def fit_transformers(nodes: dict, table: pa.Table) -> dict:
+    """Fit transformers in topological order. Returns fitted instances dict."""
+
+def strip_transformer_calls(sql: str, registered: set[str]) -> str:
+    """Remove transformer calls from SQL, replace with placeholders."""
 ```
 
-Each inner call is bound to a temp variable via walrus, outer call uses it.
-
-**Multi-value outputs:** Transformers return whatever `.transform()` returns (sparse vector, array). DataFusion column type: `List` or `FixedSizeList`. No automatic column explosion — user pipes to another transformer or indexes manually.
-
 ### `__init__.py` (update)
-
-New builder methods + fit/transform integration.
 
 ```python
 class SQLTransform:
     def __init__(self, sql: str) -> None
     def register_transformer(self, name: str, transformer) -> Self
     def add_table(self, name: str, table: pa.Table) -> Self
-    def fit(self, table: pa.Table) -> Self
-    def transform(self, table: pa.Table) -> pa.Table
-    def _infer(self, row: dict) -> dict
+    def fit(self, table: pa.Table) -> Self      # Phase 1
+    def transform(self, table: pa.Table) -> pa.Table  # Phase 2
+    def _infer(self, row: dict) -> dict         # Phase 2 single row
     @classmethod
     def from_file(cls, path: str) -> SQLTransform
 ```
 
-**fit() flow:**
-1. Parse SQL with sqlglot → extract transformer calls, build DAG
-2. Clean SQL → strip transformer calls, replace with placeholders
-3. Pre-scan tables for transformer fitting (in DAG order)
-4. Register cleaned SQL tables in DataFusion session (main + add_table'd tables)
-5. Execute cleaned SQL → get logical plan
-6. Walk plan → extract window agg values + JOIN lookups (typed AST)
-7. Merge all state: window aggs + JOIN lookups + fitted transformers
-8. Generate inference function via codegen
+Internal state after fit():
+- `self._state`: combined state dict (agg values + lookup dicts + fitted transformers)
+- `self._reduced_plan`: DataFusion logical plan from reduced SQL
+- `self._udf_registry`: dict of `{name: callable}` for UDFs in reduced plan
 
-**transform() flow:**
-1. Assert fit() called
-2. Iterate rows, call inference function per row
-3. Return pyarrow Table from output rows
+### Reduced SQL Format
 
-## Dependency Changes
+Phase 1 transforms the original SQL into a reduced form:
 
-- **Add sqlglot** back for transformer call parsing (`pyproject.toml`).
+```
+Original:
+  SELECT svd(tfidf(text)) AS emb, age / MEAN(age) OVER () AS norm, ref.temp
+  FROM data JOIN ref ON data.id = ref.id
+
+Reduced:
+  SELECT svd_udf(tfidf_udf(text)) AS emb, age / 30.0 AS norm, ref_lookup(id, 'temp') AS temp
+  FROM data
+```
+
+- Window aggs → literal values from state
+- Transformer calls → UDF names (e.g., `tfidf` → `tfidf_udf`)
+- JOIN columns → UDF calls that do dict lookups (e.g., `ref.col` → `ref_lookup(key, 'col')`)
+- The reduced SQL is valid DataFusion SQL; it is parsed once to produce the `_reduced_plan` that Phase 2 interprets.
 
 ## Module Map
 
-| File | v1 behavior | v2 behavior |
-|---|---|---|
-| `_state.py` | regex on `display_indent()` → window agg values | typed AST walk → window agg values + JOIN lookups |
-| `_codegen.py` | regex-based column detection, plan walk for expressions | typed AST walk for all columns + merged transformer metadata |
-| `_transformers.py` | N/A | sqlglot parse → DAG → fit → provide metadata for codegen |
-| `__init__.py` | `fit(pa.Table)` + `transform(pa.Table)` | +`register_transformer`, +`add_table`, multi-phase fit |
+| File | v2 role |
+|---|---|
+| `_interpreter.py` | NEW: walk plan expressions, evaluate per row, map built-in functions |
+| `_state.py` | REWRITE: typed AST walk, extract window aggs + JOIN lookups |
+| `_transformers.py` | NEW: sqlglot parse, DAG build, fit, strip calls |
+| `__init__.py` | UPDATE: two-phase fit(), interpreter-backed transform/_infer |
+
+## Dependency Changes
+
+- **Add sqlglot** for transformer call parsing in `_transformers.py`.
+- DataFusion >=46.0.0, PyArrow >=19.0 (unchanged).
 
 ## Testing Strategy
 
-### Unit tests
+### `_interpreter.py` tests — the most critical
 
-| Module | Tests |
+Each test: write SQL → run DataFusion on single-row table → run interpret() on same row → compare.
+
+| Test | SQL |
 |---|---|
-| `_transformers.py` | Parse simple call, parse nested call, parse multiple independent calls, DAG ordering, SQL cleaning with placeholders, fit single transformer, fit nested chain, arg collection from column |
-| `_state.py` | Window agg (constant), window agg (partitioned), multi-window-agg, single-key JOIN lookup, multi-key JOIN lookup, mixed window+join |
-| `_codegen.py` | Column pass-through, window agg constant, window agg partitioned, single-key JOIN column, multi-key JOIN column, single transformer, nested transformer, mixed all three, simple arithmetic |
-| `__init__.py` | Full pipeline with all three sources, transformer composition, JOIN lookup on unseen data, fit returns self, from_file, error on fit-before-transform |
+| Column pass-through | `SELECT col FROM data` |
+| Literal | `SELECT 42 AS x FROM data` |
+| Arithmetic | `SELECT col / 2 AS x FROM data` |
+| Built-in UPPER | `SELECT UPPER(s) AS x FROM data` |
+| Built-in CONCAT | `SELECT CONCAT(a, b) AS x FROM data` |
+| Multiple columns | `SELECT a, b, a + b AS c FROM data` |
+| UDF call | `SELECT my_udf(col) AS x FROM data` (with registered UDF) |
+| Mixed | `SELECT UPPER(s) AS up, col / 2 AS half FROM data` |
+
+### `_state.py` tests
+
+| Test | Covers |
+|---|---|
+| Constant window agg | Walk plan, extract scalar |
+| Partitioned window agg | Walk plan, extract lookup |
+| Multi-window-agg | Two window aggs in one query |
+| Single-key JOIN | Extract 1-key lookup from JOIN plan |
+| Multi-key JOIN | Extract multi-key lookup from JOIN plan |
+| Mixed window+join | Both in one query |
+
+### `_transformers.py` tests
+
+| Test | Covers |
+|---|---|
+| Parse simple call | `tfidf(text) AS bow` → one node |
+| Parse nested call | `svd(tfidf(text)) AS emb` → two-node chain |
+| Parse multiple calls | Two independent transformer chains |
+| DAG ordering | Verify topological sort |
+| SQL stripping | Input with calls → valid DataFusion SQL |
+| Fit single transformer | Fit TfidfVectorizer on text column |
+| Fit nested chain | tfidf → transform → fit SVD on output |
+
+### `__init__.py` tests
+
+| Test | Covers |
+|---|---|
+| Full pipeline: all three sources | Window agg + transformer + JOIN in one query |
+| Unseen JOIN key | KeyError on missing lookup |
+| Transformer on unseen data | Transform with pre-fitted state |
+| fit() returns self | Sklearn pattern |
+| from_file() | Load SQL from file |
+| Error before fit | RuntimeError |
+| Nested transformer composition | `svd(tfidf(text))` → verify output shape |
+| Single-row _infer | Match batch transform row |
 
 ### Integration test
 
-End-to-end: `SELECT svd(tfidf(text)) AS emb, age / MEAN(age) OVER() AS norm, ref.temp FROM data JOIN ref ON data.id = ref.id` — fit on training, transform on test batch, _infer single row. Verify all three output columns.
+End-to-end: `SELECT svd(tfidf(text)) AS emb, age / MEAN(age) OVER() AS norm, ref.temp FROM data JOIN ref ON data.id = ref.id` — fit on training (4 rows), transform on test batch (2 rows), _infer single row. Verify all three output columns match expected values.
