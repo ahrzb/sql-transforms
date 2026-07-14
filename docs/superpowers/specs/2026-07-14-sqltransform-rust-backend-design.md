@@ -50,9 +50,16 @@ sql_transform/_state.py    (rewritten) — extract_state() walks the DataFusion
                               - rejects PARTITION BY (NotImplementedError)
                               - computes each DISTINCT (fn, col) once, not
                                 once per alias — dedups repeated aggregates
-                              - keys the state dict by `__{fn}_{col}`
+                              - keys the state dict by `{fn}_{col}`
                                 (lowercase, bare column name, qualifier
-                                stripped) instead of by output alias
+                                stripped, NO leading underscore — Pydantic
+                                v2 treats leading-underscore field names as
+                                private attributes, excluded from
+                                model_fields/model_validate, so the field
+                                name itself can't have one; only the SQL
+                                reference is qualified, e.g.
+                                `__STATE__.avg_age`) instead of by output
+                                alias
                               - returns a pydantic model INSTANCE
                                 (StateModel(**values)), not a raw dict
 
@@ -60,7 +67,7 @@ sql_transform/_codegen.py  (rewritten) — same tree-walk shape as today
                               (Column / BinaryExpr / Alias over the plan's
                               projections), retargeted to emit SQL TEXT
                               instead of Python source:
-                              - window-agg Column -> `__STATE__.__fn_col`
+                              - window-agg Column -> `__STATE__.fn_col`
                               - plain Column       -> `__THIS__.col`
                               - BinaryExpr          -> `(<left> <op> <right>)`
                               Produces `SELECT <exprs> FROM __THIS__, __STATE__`.
@@ -70,7 +77,7 @@ sql_transform/_codegen.py  (rewritten) — same tree-walk shape as today
 sql_transform/_schema.py   (new)      — pa.Table.schema -> synthesized
                               pydantic model (this_model default path) and
                               a state dict -> synthesized pydantic StateModel
-                              (all-float fields, one per __fn_col key).
+                              (all-float fields, one per fn_col key).
                               Both via pydantic.create_model, mirroring the
                               output_model synthesis InferFn already does
                               on the Rust side (schema.rs), just in Python
@@ -112,7 +119,9 @@ Nothing joins into `__STATE__` by key — it's always a single constant row, cro
 
 ## State Key Naming and Dedup
 
-State dict keys are `__{fn}_{col}`, lowercase, with the column's table qualifier stripped (`AVG(t.age)` and `AVG(age)` both key to `__avg_age`). This is a change from today's alias-keyed `_state.py` (`state["age_norm"] = ...`): if the same `(fn, col)` pair appears in two different projections (e.g. `age / AVG(age) OVER () AS age_norm, AVG(age) OVER () AS age_avg`), it's computed and stored exactly once, and both projections' rewritten SQL reference the same `__STATE__.__avg_age` field. `extract_state` collects the distinct `(fn, col)` pairs first, then runs one DataFusion query per distinct pair (not per occurrence).
+State dict keys are `{fn}_{col}`, lowercase, with the column's table qualifier stripped (`AVG(t.age)` and `AVG(age)` both key to `avg_age`) and **no leading underscore** — Pydantic v2 treats any leading-underscore field name as a private attribute (excluded from `model_fields`, unsettable via `model_validate`/constructor kwargs), so a field actually named `__avg_age` or `_avg_age` would be invisible to both `create_model` and `InferFn`'s `getattr`-based row conversion. The double-underscore *table* names (`__THIS__`, `__STATE__`) are unaffected — those are plain string keys in `row_tables`/`tables` dicts, not attribute names, so no such restriction applies to them.
+
+This is a change from today's alias-keyed `_state.py` (`state["age_norm"] = ...`): if the same `(fn, col)` pair appears in two different projections (e.g. `age / AVG(age) OVER () AS age_norm, AVG(age) OVER () AS age_avg`), it's computed and stored exactly once, and both projections' rewritten SQL reference the same `__STATE__.avg_age` field. `extract_state` collects the distinct `(fn, col)` pairs first, then runs one DataFusion query per distinct pair (not per occurrence).
 
 ## Error Handling
 
@@ -138,7 +147,7 @@ Port `_state_test.py`, `_codegen_test.py`, and `__init___test.py`'s existing non
 | Two projections referencing the same `(fn, col)` | Computed once, both rewritten refs point at the same `__STATE__` field |
 | `this_model` omitted | Synthesized correctly from `table.schema` (types + nullability) |
 | `this_model` supplied, compatible | Used as-is, `InferFn` builds successfully |
-| `this_model` supplied, incompatible (missing/extra/wrong-type field) | `InferFn`'s build-time `ValueError` propagates |
+| `this_model` missing a column the query references | `InferFn`'s build-time `ValueError` propagates (Rust's row-table validation only checks column *presence*, not type — a wrong-typed-but-present field is not a build-time error here, unlike `output_model`) |
 | Partitioned `OVER (PARTITION BY ...)` in source SQL | `NotImplementedError` from `extract_state`, before any Rust call |
 | `self._state` is a real pydantic instance | Typed access works (e.g. `state.__avg_age` is a `float`), not a dict |
 | SQL missing `__THIS__` | Clear error surfaces (whatever `InferFn` itself raises) |
