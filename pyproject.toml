@@ -13,19 +13,19 @@ dependencies = [
 dev = [
     "ipdb>=0.13.13",
     "ipython>=9.2.0",
+    "maturin>=1.14,<2.0",
     "pytest>=8.3.5",
     "ruff>=0.11.7",
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
 
-[tool.hatch.build]
-exclude = ["**/*_test.py"]
-
-[tool.hatch.build.targets.wheel]
-packages = ["./sql_transform"]
+[tool.maturin]
+module-name = "sql_transform._interpreter"
+python-source = "."
+exclude = ["**/*_test.py", "tests/**"]
 
 [tool.ruff]
 fix = true
@@ -37,4 +37,4 @@ lint.ignore = ["S101"]
 "_state.py" = ["S608"]
 
 [tool.pytest.ini_options]
-python_files = ["*_test.py"]
+python_files = ["*_test.py", "test_*.py"]

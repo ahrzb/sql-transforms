@@ -13,3 +13,11 @@ wheels/
 .claude
 
 .worktrees/
+
+# Rust build artifacts
+/target
+
+# Compiled PyO3 extension module (built in-place by `maturin develop`)
+sql_transform/_interpreter*.so
+sql_transform/_interpreter*.pyd
+sql_transform/_interpreter*.pdb
