@@ -29,7 +29,13 @@ impl From<InterpError> for PyErr {
 }
 
 pub enum RelNode {
-    TableScan { table: String },
+    TableScan {
+        table: String,
+    },
+    Filter {
+        input: Box<RelNode>,
+        predicate: Expr,
+    },
 }
 
 pub struct Plan {
@@ -64,7 +70,13 @@ pub fn build_plan(sql: &str) -> Result<Plan, InterpError> {
         }
     };
 
-    let input = build_from(&select.from)?;
+    let mut input = build_from(&select.from)?;
+    if let Some(predicate) = &select.selection {
+        input = RelNode::Filter {
+            input: Box::new(input),
+            predicate: crate::expr_build::convert_expr(predicate)?,
+        };
+    }
     let projection = build_projection(&select.projection)?;
 
     Ok(Plan { projection, input })
@@ -154,6 +166,16 @@ fn execute_rel(
                     row
                 })
                 .collect())
+        }
+        RelNode::Filter { input, predicate } => {
+            let rows = execute_rel(input, tables)?;
+            let mut out = Vec::new();
+            for row in rows {
+                if let Value::Bool(true) = crate::expr::eval(predicate, &row)? {
+                    out.push(row);
+                }
+            }
+            Ok(out)
         }
     }
 }

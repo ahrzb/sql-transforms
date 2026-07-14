@@ -104,3 +104,19 @@ def test_and_or_three_valued_logic():
     fn = InferFn(sql, row_tables=["data"], static_tables={})
     actual = fn.infer({"data": [{"age": 30}]})
     assert actual == _expected(sql, data)
+
+
+def test_where_filter():
+    sql = "SELECT x FROM data WHERE x > 5"
+    data = {"x": [3, 7, 10]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"x": 3}, {"x": 7}, {"x": 10}]})
+    assert actual == _expected(sql, data)
+
+
+def test_multi_row():
+    sql = "SELECT age FROM data"
+    data = {"age": [1, 2, 3]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"age": 1}, {"age": 2}, {"age": 3}]})
+    assert actual == _expected(sql, data)
