@@ -28,26 +28,25 @@ uv sync
 ### Basic Usage (No sklearn required)
 
 ```python
-from sql_transform import SQLTransformer
+from sql_transform import SQLTransform
 import pyarrow as pa
 
 # Create sample data
 data = pa.table({
     "feature1": [1.0, 2.0, 3.0, 4.0, 5.0],
-    "feature2": [10, 20, 30, 40, 50], 
-    "class": ["A", "A", "B", "B", "A"]
+    "feature2": [10, 20, 30, 40, 50],
 })
 
-# Define SQL transformation
+# Define SQL transformation -- input table is always referenced as __THIS__
 sql = """
-SELECT 
-    feature1 - avg(feature1) as centered_feature1,
-    avg(feature2) over (partition by class) as class_avg_feature2
-FROM data
+SELECT
+    feature1 / MEAN(feature1) OVER () AS feature1_norm,
+    feature2 / SUM(feature2) OVER () AS feature2_share
+FROM __THIS__
 """
 
 # Fit and transform
-transformer = SQLTransformer(sql)
+transformer = SQLTransform(sql)
 transformer.fit(data)
 result = transformer.transform(data)
 print(result)
@@ -100,8 +99,7 @@ result = transformer.transform(data)
 ## Features
 
 ###  Current
-- Basic SQL parsing (SELECT with aggregations)
-- Window functions with partitioning
+- Rust-backed inference via a rewritten-SQL pipeline (window aggregates against __THIS__/__STATE__)
 - DataFusion-based execution
 - Optional sklearn integration
 - Fit/transform ML pattern
