@@ -288,6 +288,20 @@ def test_join_row_and_static_table_single_row():
     assert result == [{"x": 5, "y": 10}]
 
 
+def test_join_row_and_static_table_reversed_on_order():
+    ref_table = pa.table({"id": [1, 2], "y": [10, 20]})
+    sql = "SELECT data.x, ref.y FROM data JOIN ref ON ref.id = data.id"
+
+    ctx = datafusion.SessionContext()
+    ctx.from_pydict({"id": [1, 2], "x": [5, 6]}, name="data")
+    ctx.from_arrow(ref_table, name="ref")
+    expected = ctx.sql(sql).collect()[0].to_pylist()
+
+    fn = InferFn(sql, row_tables=["data"], static_tables={"ref": ref_table})
+    actual = fn.infer({"data": [{"id": 1, "x": 5}, {"id": 2, "x": 6}]})
+    assert actual == expected
+
+
 def test_missing_lookup_key_raises_key_error():
     ref_table = pa.table({"id": [1], "y": [10]})
     sql = "SELECT data.x, ref.y FROM data JOIN ref ON data.id = ref.id"
