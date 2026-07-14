@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::PyErr;
 use sqlparser::ast::{
-    Expr as SqlExpr, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins,
+    BinaryOperator, Expr as SqlExpr, Join, JoinConstraint, JoinOperator, SelectItem, SetExpr,
+    Statement, TableFactor, TableWithJoins,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -35,6 +36,19 @@ pub enum RelNode {
     Filter {
         input: Box<RelNode>,
         predicate: Expr,
+    },
+    CrossJoin {
+        left: Box<RelNode>,
+        right: Box<RelNode>,
+    },
+    Join {
+        left: Box<RelNode>,
+        right: Box<RelNode>,
+        on: Vec<(Expr, Expr)>,
+    },
+    SubqueryAlias {
+        input: Box<RelNode>,
+        alias: String,
     },
 }
 
@@ -83,24 +97,115 @@ pub fn build_plan(sql: &str) -> Result<Plan, InterpError> {
 }
 
 fn build_from(from: &[TableWithJoins]) -> Result<RelNode, InterpError> {
-    if from.len() != 1 {
-        return Err(InterpError::Build(
-            "Multiple FROM tables are not yet supported".to_string(),
-        ));
+    if from.is_empty() {
+        return Err(InterpError::Build("FROM clause is required".to_string()));
     }
-    let twj = &from[0];
-    if !twj.joins.is_empty() {
-        return Err(InterpError::Build("JOIN is not yet supported".to_string()));
+    let mut seen_tables: HashSet<String> = HashSet::new();
+    let mut node = build_table_with_joins(&from[0], &mut seen_tables)?;
+    for twj in &from[1..] {
+        let right = build_table_with_joins(twj, &mut seen_tables)?;
+        node = RelNode::CrossJoin {
+            left: Box::new(node),
+            right: Box::new(right),
+        };
     }
-    build_table_factor(&twj.relation)
+    Ok(node)
 }
 
-fn build_table_factor(factor: &TableFactor) -> Result<RelNode, InterpError> {
-    match factor {
-        TableFactor::Table { name, .. } => Ok(RelNode::TableScan {
-            table: name.to_string(),
+fn build_table_with_joins(
+    twj: &TableWithJoins,
+    seen_tables: &mut HashSet<String>,
+) -> Result<RelNode, InterpError> {
+    let mut node = build_table_factor(&twj.relation, seen_tables)?;
+    for join in &twj.joins {
+        node = build_join(node, join, seen_tables)?;
+    }
+    Ok(node)
+}
+
+fn build_join(
+    left: RelNode,
+    join: &Join,
+    seen_tables: &mut HashSet<String>,
+) -> Result<RelNode, InterpError> {
+    let right = build_table_factor(&join.relation, seen_tables)?;
+    match &join.join_operator {
+        JoinOperator::Join(constraint) | JoinOperator::Inner(constraint) => {
+            let on_expr = require_on(constraint)?;
+            let on = extract_equality_keys(on_expr)?;
+            Ok(RelNode::Join {
+                left: Box::new(left),
+                right: Box::new(right),
+                on,
+            })
+        }
+        JoinOperator::CrossJoin(_) => Ok(RelNode::CrossJoin {
+            left: Box::new(left),
+            right: Box::new(right),
         }),
+        other => Err(InterpError::Build(format!(
+            "Unsupported JOIN type: {other:?} — only inner JOIN ... ON and CROSS JOIN are supported"
+        ))),
+    }
+}
+
+fn build_table_factor(
+    factor: &TableFactor,
+    seen_tables: &mut HashSet<String>,
+) -> Result<RelNode, InterpError> {
+    match factor {
+        TableFactor::Table { name, alias, .. } => {
+            let table = name.to_string();
+            if !seen_tables.insert(table.clone()) {
+                return Err(InterpError::Build(format!(
+                    "Self-joins are not supported: table '{table}' is referenced more than once"
+                )));
+            }
+            let scan = RelNode::TableScan { table };
+            Ok(match alias {
+                Some(a) => RelNode::SubqueryAlias {
+                    input: Box::new(scan),
+                    alias: a.name.value.clone(),
+                },
+                None => scan,
+            })
+        }
         _ => Err(InterpError::Build("Unsupported FROM clause".to_string())),
+    }
+}
+
+fn require_on(constraint: &JoinConstraint) -> Result<&SqlExpr, InterpError> {
+    match constraint {
+        JoinConstraint::On(e) => Ok(e),
+        _ => Err(InterpError::Build(
+            "JOIN requires an ON condition".to_string(),
+        )),
+    }
+}
+
+fn extract_equality_keys(expr: &SqlExpr) -> Result<Vec<(Expr, Expr)>, InterpError> {
+    match expr {
+        SqlExpr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
+            let mut pairs = extract_equality_keys(left)?;
+            pairs.extend(extract_equality_keys(right)?);
+            Ok(pairs)
+        }
+        SqlExpr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } => Ok(vec![(
+            crate::expr_build::convert_expr(left)?,
+            crate::expr_build::convert_expr(right)?,
+        )]),
+        _ => Err(InterpError::Build(
+            "JOIN ON condition must be an equality, or an AND of equalities, between columns"
+                .to_string(),
+        )),
     }
 }
 
@@ -176,6 +281,55 @@ fn execute_rel(
                 }
             }
             Ok(out)
+        }
+        RelNode::CrossJoin { left, right } => {
+            let left_rows = execute_rel(left, tables)?;
+            let right_rows = execute_rel(right, tables)?;
+            let mut out = Vec::with_capacity(left_rows.len() * right_rows.len());
+            for l in &left_rows {
+                for r in &right_rows {
+                    let mut merged = l.clone();
+                    merged.extend(r.clone());
+                    out.push(merged);
+                }
+            }
+            Ok(out)
+        }
+        RelNode::Join { left, right, on } => {
+            let left_rows = execute_rel(left, tables)?;
+            let right_rows = execute_rel(right, tables)?;
+            let mut out = Vec::new();
+            for l in &left_rows {
+                for r in &right_rows {
+                    let mut merged = l.clone();
+                    merged.extend(r.clone());
+                    let mut all_match = true;
+                    for (le, re) in on {
+                        let lv = crate::expr::eval(le, &merged)?;
+                        let rv = crate::expr::eval(re, &merged)?;
+                        if matches!(lv, Value::Null) || matches!(rv, Value::Null) || lv != rv {
+                            all_match = false;
+                            break;
+                        }
+                    }
+                    if all_match {
+                        out.push(merged);
+                    }
+                }
+            }
+            Ok(out)
+        }
+        RelNode::SubqueryAlias { input, alias } => {
+            let rows = execute_rel(input, tables)?;
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    let inner = row.into_values().next().unwrap_or_default();
+                    let mut renamed = Row::new();
+                    renamed.insert(alias.clone(), inner);
+                    renamed
+                })
+                .collect())
         }
     }
 }

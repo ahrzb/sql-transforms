@@ -192,3 +192,67 @@ def test_substring_bare_form_rejected_at_build_time():
             row_tables=["data"],
             static_tables={},
         )
+
+
+def test_cross_join():
+    sql = "SELECT a.x, b.y FROM a, b"
+    ctx = datafusion.SessionContext()
+    ctx.from_pydict({"x": [1]}, name="a")
+    ctx.from_pydict({"y": [2]}, name="b")
+    expected = ctx.sql(sql).collect()[0].to_pylist()
+
+    fn = InferFn(sql, row_tables=["a", "b"], static_tables={})
+    actual = fn.infer({"a": [{"x": 1}], "b": [{"y": 2}]})
+    assert actual == expected
+
+
+def test_inner_join_two_row_tables():
+    sql = "SELECT a.x, b.y FROM a JOIN b ON a.id = b.id"
+    ctx = datafusion.SessionContext()
+    ctx.from_pydict({"id": [1, 2], "x": [10, 20]}, name="a")
+    ctx.from_pydict({"id": [1, 2], "y": [100, 200]}, name="b")
+    expected = ctx.sql(sql).collect()[0].to_pylist()
+
+    fn = InferFn(sql, row_tables=["a", "b"], static_tables={})
+    actual = fn.infer(
+        {
+            "a": [{"id": 1, "x": 10}, {"id": 2, "x": 20}],
+            "b": [{"id": 1, "y": 100}, {"id": 2, "y": 200}],
+        }
+    )
+    assert actual == expected
+
+
+def test_inner_join_multi_key():
+    sql = "SELECT a.x, b.y FROM a JOIN b ON a.k1 = b.k1 AND a.k2 = b.k2"
+    ctx = datafusion.SessionContext()
+    ctx.from_pydict({"k1": [1], "k2": ["p"], "x": [10]}, name="a")
+    ctx.from_pydict({"k1": [1], "k2": ["p"], "y": [100]}, name="b")
+    expected = ctx.sql(sql).collect()[0].to_pylist()
+
+    fn = InferFn(sql, row_tables=["a", "b"], static_tables={})
+    actual = fn.infer(
+        {
+            "a": [{"k1": 1, "k2": "p", "x": 10}],
+            "b": [{"k1": 1, "k2": "p", "y": 100}],
+        }
+    )
+    assert actual == expected
+
+
+def test_error_left_join():
+    sql = "SELECT a.x FROM a LEFT JOIN b ON a.id = b.id"
+    with pytest.raises(ValueError):
+        InferFn(sql, row_tables=["a", "b"], static_tables={})
+
+
+def test_error_non_equality_on():
+    sql = "SELECT a.x FROM a JOIN b ON a.id > b.id"
+    with pytest.raises(ValueError):
+        InferFn(sql, row_tables=["a", "b"], static_tables={})
+
+
+def test_error_self_join():
+    sql = "SELECT a.x FROM a JOIN a ON a.id = a.id"
+    with pytest.raises(ValueError):
+        InferFn(sql, row_tables=["a"], static_tables={})
