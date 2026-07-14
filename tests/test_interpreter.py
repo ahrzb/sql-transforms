@@ -9,7 +9,7 @@ against real DataFusion batch output for the same SQL + data.
 import datafusion
 import pyarrow as pa
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from sql_transform._interpreter import InferFn
 
@@ -255,7 +255,7 @@ def test_user_supplied_output_model_non_nullable_but_inferred_nullable_defers_to
         sql, row_tables={"data": Data}, static_tables={}, output_model=NonNullResult
     )
     # A row that actually produces None fails at infer() time, not build time.
-    with pytest.raises(Exception):  # noqa: B017 -- pydantic.ValidationError
+    with pytest.raises(ValidationError):
         fn.infer({"data": [Data(age=1, name=None)]})
     # A row with a real value works fine.
     result = fn.infer({"data": [Data(age=1, name="alice")]})
@@ -307,3 +307,32 @@ def test_unused_model_fields_are_never_touched():
     row = WithExtra(age=5, unused=Poison())
     actual = fn.infer({"data": [row]})
     assert actual[0].age == 5
+
+
+def test_literal_only_projection_preserves_row_count():
+    """A projection that references NO columns of the row table still
+    preserves the row count — exercises the row-conversion fallback path
+    where `row_table_columns.get(table)` yields no columns to read."""
+    sql = "SELECT 1 AS marker FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    actual = fn.infer({"data": [Data(age=1), Data(age=2), Data(age=3)]})
+    assert len(actual) == 3
+    assert all(r.marker == 1 for r in actual)
+
+
+def test_nested_object_passthrough_through_output_model():
+    """A real (non-scalar) value flows through unchanged via the
+    model_validate-based output conversion — Base::Other -> typing.Any,
+    end-to-end with actual data."""
+    from pydantic import ConfigDict
+
+    class WithPayload(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        age: int
+        payload: object
+
+    sql = "SELECT payload FROM data"
+    fn = InferFn(sql, row_tables={"data": WithPayload}, static_tables={})
+    payload = {"nested": [1, 2, 3]}
+    result = fn.infer({"data": [WithPayload(age=1, payload=payload)]})
+    assert result[0].payload == payload
