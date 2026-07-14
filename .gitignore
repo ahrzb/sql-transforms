@@ -11,3 +11,5 @@ wheels/
 
 # Claude Code settings
 .claude
+
+.worktrees/
