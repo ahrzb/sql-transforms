@@ -82,3 +82,25 @@ def test_null_comparison_is_null():
     fn = InferFn(sql, row_tables=["data"], static_tables={})
     actual = fn.infer({"data": [{"age": 30}]})
     assert actual == _expected(sql, data)
+
+
+def test_and_or_three_valued_logic():
+    # age > 100 evaluates to FALSE for age=30, giving a real (non-literal)
+    # FALSE operand alongside literal NULL/TRUE to exercise SQL's
+    # three-valued AND/OR truth tables, including the asymmetric cases
+    # where a FALSE (for AND) or TRUE (for OR) operand short-circuits a
+    # NULL operand to a definite result instead of propagating NULL.
+    sql = (
+        "SELECT "
+        "age > 100 AND NULL AS false_and_null, "
+        "NULL AND age > 100 AS null_and_false, "
+        "NULL AND TRUE AS null_and_true, "
+        "NULL OR TRUE AS null_or_true, "
+        "TRUE OR NULL AS true_or_null, "
+        "NULL OR FALSE AS null_or_false "
+        "FROM data"
+    )
+    data = {"age": [30]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"age": 30}]})
+    assert actual == _expected(sql, data)
