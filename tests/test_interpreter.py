@@ -8,6 +8,7 @@ strategy.
 import datafusion
 import pyarrow as pa
 import pytest
+
 from sql_transform._interpreter import InferFn
 
 
@@ -349,3 +350,10 @@ def test_coalesce_all_null():
     fn = InferFn(sql, row_tables=["data"], static_tables={})
     actual = fn.infer({"data": [{"a": None, "b": None}]})
     assert actual == _expected(sql, data)
+
+
+def test_public_import_path():
+    from sql_transform import InferFn as PublicInferFn
+
+    fn = PublicInferFn("SELECT age FROM data", row_tables=["data"], static_tables={})
+    assert fn.infer({"data": [{"age": 5}]}) == [{"age": 5}]
