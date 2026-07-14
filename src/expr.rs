@@ -132,12 +132,52 @@ impl Value {
 
 #[derive(Clone)]
 pub enum Expr {
-    Column { table: Option<String>, name: String },
+    Column {
+        table: Option<String>,
+        name: String,
+    },
+    Literal(Value),
+    BinaryOp {
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Not(Box<Expr>),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    NotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    And,
+    Or,
 }
 
 pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::InterpError> {
     match expr {
         Expr::Column { table, name } => resolve_column(row, table.as_deref(), name),
+        Expr::Literal(v) => Ok(v.clone()),
+        Expr::BinaryOp { op, left, right } => {
+            let l = eval(left, row)?;
+            let r = eval(right, row)?;
+            eval_binary_op(*op, l, r)
+        }
+        Expr::Not(inner) => {
+            let v = eval(inner, row)?;
+            match as_tribool(&v)? {
+                Some(b) => Ok(Value::Bool(!b)),
+                None => Ok(Value::Null),
+            }
+        }
     }
 }
 
@@ -169,4 +209,112 @@ fn resolve_column(
     found
         .cloned()
         .ok_or_else(|| InterpError::Build(format!("Unknown column: {name}")))
+}
+
+fn eval_binary_op(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::InterpError> {
+    match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => arithmetic(op, l, r),
+        BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
+            comparison(op, l, r)
+        }
+        BinOp::And | BinOp::Or => logic(op, l, r),
+    }
+}
+
+fn arithmetic(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::InterpError> {
+    if matches!(l, Value::Null) || matches!(r, Value::Null) {
+        return Ok(Value::Null);
+    }
+    match (l, r) {
+        (Value::Int(a), Value::Int(b)) => Ok(match op {
+            BinOp::Add => Value::Int(a + b),
+            BinOp::Sub => Value::Int(a - b),
+            BinOp::Mul => Value::Int(a * b),
+            BinOp::Div => Value::Int(a / b),
+            BinOp::Mod => Value::Int(a % b),
+            _ => unreachable!(),
+        }),
+        (a, b) => {
+            let af = as_f64(&a)?;
+            let bf = as_f64(&b)?;
+            Ok(match op {
+                BinOp::Add => Value::Float(af + bf),
+                BinOp::Sub => Value::Float(af - bf),
+                BinOp::Mul => Value::Float(af * bf),
+                BinOp::Div => Value::Float(af / bf),
+                BinOp::Mod => Value::Float(af % bf),
+                _ => unreachable!(),
+            })
+        }
+    }
+}
+
+fn as_f64(v: &Value) -> Result<f64, crate::plan::InterpError> {
+    match v {
+        Value::Int(i) => Ok(*i as f64),
+        Value::Float(f) => Ok(*f),
+        other => Err(crate::plan::InterpError::Eval(format!(
+            "Cannot use a {} value in an arithmetic expression",
+            type_name(other)
+        ))),
+    }
+}
+
+fn comparison(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::InterpError> {
+    if matches!(l, Value::Null) || matches!(r, Value::Null) {
+        return Ok(Value::Null);
+    }
+    let ordering = compare_values(&l, &r)?;
+    Ok(Value::Bool(match op {
+        BinOp::Eq => ordering == std::cmp::Ordering::Equal,
+        BinOp::NotEq => ordering != std::cmp::Ordering::Equal,
+        BinOp::Lt => ordering == std::cmp::Ordering::Less,
+        BinOp::Gt => ordering == std::cmp::Ordering::Greater,
+        BinOp::LtEq => ordering != std::cmp::Ordering::Greater,
+        BinOp::GtEq => ordering != std::cmp::Ordering::Less,
+        _ => unreachable!(),
+    }))
+}
+
+fn compare_values(l: &Value, r: &Value) -> Result<std::cmp::Ordering, crate::plan::InterpError> {
+    match (l, r) {
+        (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
+        (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
+        (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
+        (a, b) => {
+            let af = as_f64(a)?;
+            let bf = as_f64(b)?;
+            af.partial_cmp(&bf)
+                .ok_or_else(|| crate::plan::InterpError::Eval("Cannot compare NaN".to_string()))
+        }
+    }
+}
+
+fn logic(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::InterpError> {
+    let lb = as_tribool(&l)?;
+    let rb = as_tribool(&r)?;
+    Ok(match op {
+        BinOp::And => match (lb, rb) {
+            (Some(false), _) | (_, Some(false)) => Value::Bool(false),
+            (Some(true), Some(true)) => Value::Bool(true),
+            _ => Value::Null,
+        },
+        BinOp::Or => match (lb, rb) {
+            (Some(true), _) | (_, Some(true)) => Value::Bool(true),
+            (Some(false), Some(false)) => Value::Bool(false),
+            _ => Value::Null,
+        },
+        _ => unreachable!(),
+    })
+}
+
+fn as_tribool(v: &Value) -> Result<Option<bool>, crate::plan::InterpError> {
+    match v {
+        Value::Bool(b) => Ok(Some(*b)),
+        Value::Null => Ok(None),
+        other => Err(crate::plan::InterpError::Eval(format!(
+            "Expected a boolean expression, got a {} value",
+            type_name(other)
+        ))),
+    }
 }

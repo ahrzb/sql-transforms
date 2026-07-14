@@ -34,3 +34,51 @@ def test_multiple_columns():
     fn = InferFn(sql, row_tables=["data"], static_tables={})
     actual = fn.infer({"data": [{"a": 1, "b": "x"}]})
     assert actual == _expected(sql, data)
+
+
+def test_literal():
+    sql = "SELECT 42 AS x FROM data"
+    data = {"age": [1]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"age": 1}]})
+    assert actual == _expected(sql, data)
+
+
+def test_arithmetic():
+    sql = "SELECT age / 2 AS half FROM data"
+    data = {"age": [30]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"age": 30}]})
+    assert actual == _expected(sql, data)
+
+
+def test_arithmetic_precedence():
+    sql = "SELECT (a + b) * c AS x FROM data"
+    data = {"a": [2], "b": [3], "c": [4]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"a": 2, "b": 3, "c": 4}]})
+    assert actual == _expected(sql, data)
+
+
+def test_negative_integer_division_truncates():
+    sql = "SELECT c / b AS x, c % b AS y FROM data"
+    data = {"c": [-7], "b": [2]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"c": -7, "b": 2}]})
+    assert actual == _expected(sql, data)
+
+
+def test_mixed_int_float_division():
+    sql = "SELECT a / f AS x FROM data"
+    data = {"a": [7], "f": [2.5]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"a": 7, "f": 2.5}]})
+    assert actual == _expected(sql, data)
+
+
+def test_null_comparison_is_null():
+    sql = "SELECT age > 100 AS gt, age > NULL AS gtnull FROM data"
+    data = {"age": [30]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"age": 30}]})
+    assert actual == _expected(sql, data)
