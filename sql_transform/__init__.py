@@ -9,7 +9,7 @@ import datafusion
 import pyarrow as pa
 from pydantic import BaseModel
 
-from sql_transform._codegen import rewrite_sql
+from sql_transform._rewrite import rewrite_sql
 from sql_transform._interpreter import InferFn
 from sql_transform._schema import synthesize_this_model
 from sql_transform._state import extract_state

@@ -3,7 +3,7 @@
 import datafusion
 import pytest
 
-from sql_transform._codegen import rewrite_sql
+from sql_transform._rewrite import rewrite_sql
 
 
 def _plan(sql: str, data: dict) -> datafusion.plan.LogicalPlan:
