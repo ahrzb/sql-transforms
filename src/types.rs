@@ -147,6 +147,22 @@ fn cast_target_base(target: CastType) -> Base {
     }
 }
 
+/// Is `inferred` provably safe to store in a field declared as `declared`?
+/// Anything not provably wrong is allowed through — Pydantic's own
+/// `model_validate()` is the real authority at `.infer()` time for
+/// anything this can't rule out.
+pub fn compatible(inferred: Base, declared: Base) -> bool {
+    match (inferred, declared) {
+        (a, b) if a == b => true,
+        // Every valid int is a valid float; Pydantic's default lax mode
+        // coerces this without loss.
+        (Base::Int, Base::Float) => true,
+        // We have no basis to say an unresolvable inferred type is wrong.
+        (Base::Other, _) => true,
+        _ => false,
+    }
+}
+
 fn function_type(name: &str, args: &[FieldType]) -> FieldType {
     let any_nullable = args.iter().any(|a| a.nullable);
     match name {

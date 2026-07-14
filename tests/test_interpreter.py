@@ -181,3 +181,82 @@ def test_output_model_comparison_is_bool():
     sql = "SELECT age > 18 AS is_adult FROM data"
     fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
     assert fn.output_model.model_fields["is_adult"].annotation is bool
+
+
+class Result(BaseModel):
+    age: int
+    doubled: int
+
+
+def test_user_supplied_output_model_compatible():
+    sql = "SELECT age, age * 2 AS doubled FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={}, output_model=Result)
+    assert fn.output_model is Result
+    results = fn.infer({"data": [Data(age=30)]})
+    assert isinstance(results[0], Result)
+    assert results[0] == Result(age=30, doubled=60)
+
+
+def test_user_supplied_output_model_widening_int_to_float_ok():
+    class WideResult(BaseModel):
+        age: float
+        doubled: int
+
+    sql = "SELECT age, age * 2 AS doubled FROM data"
+    fn = InferFn(
+        sql, row_tables={"data": Data}, static_tables={}, output_model=WideResult
+    )
+    results = fn.infer({"data": [Data(age=30)]})
+    assert results[0].age == 30.0
+
+
+def test_user_supplied_output_model_missing_field():
+    class Incomplete(BaseModel):
+        age: int
+        # missing "doubled"
+
+    sql = "SELECT age, age * 2 AS doubled FROM data"
+    with pytest.raises(ValueError):
+        InferFn(
+            sql, row_tables={"data": Data}, static_tables={}, output_model=Incomplete
+        )
+
+
+def test_user_supplied_output_model_extra_field():
+    class TooMany(BaseModel):
+        age: int
+        doubled: int
+        unrelated: str
+
+    sql = "SELECT age, age * 2 AS doubled FROM data"
+    with pytest.raises(ValueError):
+        InferFn(sql, row_tables={"data": Data}, static_tables={}, output_model=TooMany)
+
+
+def test_user_supplied_output_model_provably_wrong_base_type():
+    class WrongType(BaseModel):
+        age: str  # query produces Int, str is not provably compatible
+
+    sql = "SELECT age FROM data"
+    with pytest.raises(ValueError):
+        InferFn(
+            sql, row_tables={"data": Data}, static_tables={}, output_model=WrongType
+        )
+
+
+def test_user_supplied_output_model_non_nullable_but_inferred_nullable_defers_to_runtime():  # noqa: E501
+    class NonNullResult(BaseModel):
+        name: str  # declared non-nullable; `name` is Optional[str] on Data
+
+    sql = "SELECT name FROM data"
+    # Build succeeds — we can't PROVE `name` will be null, only that we
+    # can't prove it won't.
+    fn = InferFn(
+        sql, row_tables={"data": Data}, static_tables={}, output_model=NonNullResult
+    )
+    # A row that actually produces None fails at infer() time, not build time.
+    with pytest.raises(Exception):  # noqa: B017 -- pydantic.ValidationError
+        fn.infer({"data": [Data(age=1, name=None)]})
+    # A row with a real value works fine.
+    result = fn.infer({"data": [Data(age=1, name="alice")]})
+    assert result[0].name == "alice"

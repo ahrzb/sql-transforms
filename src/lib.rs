@@ -44,14 +44,60 @@ fn synthesize_output_model(
     Ok(model.unbind())
 }
 
+/// Validates a caller-supplied `output_model` against the query's inferred
+/// output shape. Only rejects what can be *proven* wrong at build time: a
+/// missing/extra field vs. the projection's aliases, or a base-type mismatch
+/// `types::compatible` can't excuse. Nullability mismatches are never a
+/// build-time error — see `types::compatible`'s docs and Task 2's
+/// deliberately conservative `infer_type`.
+fn validate_output_model(
+    py: Python<'_>,
+    model: &Py<PyAny>,
+    projection: &[(String, Expr)],
+    schemas: &HashMap<String, types::Schema>,
+) -> PyResult<()> {
+    let declared_schema = schema::from_pydantic_model(py, model)?;
+
+    let mut projected_aliases: HashSet<String> = HashSet::new();
+    for (alias, expr) in projection {
+        projected_aliases.insert(alias.clone());
+        let declared = declared_schema.get(alias).ok_or_else(|| {
+            plan::InterpError::Build(format!(
+                "output_model is missing field '{alias}' produced by the query"
+            ))
+        })?;
+        let inferred = types::infer_type(expr, schemas)?;
+        if !types::compatible(inferred.base, declared.base) {
+            return Err(plan::InterpError::Build(format!(
+                "output_model field '{alias}' is declared as a type incompatible with the \
+                 query's inferred output ({:?} vs declared {:?})",
+                inferred.base, declared.base
+            ))
+            .into());
+        }
+    }
+
+    let declared_fields: HashSet<String> = declared_schema.keys().cloned().collect();
+    let extra: Vec<&String> = declared_fields.difference(&projected_aliases).collect();
+    if !extra.is_empty() {
+        return Err(plan::InterpError::Build(format!(
+            "output_model declares fields not produced by the query: {extra:?}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 #[pymethods]
 impl InferFn {
     #[new]
+    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None))]
     fn new(
         py: Python<'_>,
         sql: String,
         row_tables: HashMap<String, Py<PyAny>>,
         static_tables: HashMap<String, Py<PyAny>>,
+        output_model: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         let raw_plan = plan::build_plan(&sql)?;
         let row_table_names: HashSet<String> = row_tables.keys().cloned().collect();
@@ -74,11 +120,22 @@ impl InferFn {
             &static_schemas,
         )?;
 
-        let output_model = synthesize_output_model(
-            py,
-            &optimized_plan.projection,
-            &column_validation.effective_schemas,
-        )?;
+        let output_model = match output_model {
+            Some(supplied) => {
+                validate_output_model(
+                    py,
+                    &supplied,
+                    &optimized_plan.projection,
+                    &column_validation.effective_schemas,
+                )?;
+                supplied
+            }
+            None => synthesize_output_model(
+                py,
+                &optimized_plan.projection,
+                &column_validation.effective_schemas,
+            )?,
+        };
 
         let mut lookups = HashMap::new();
         for spec in specs {
