@@ -10,6 +10,7 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use crate::expr::{Expr, Value};
+use crate::types::Schema;
 
 pub type Row = HashMap<String, HashMap<String, Value>>;
 
@@ -517,5 +518,223 @@ fn execute_rel(
             }
             Ok(out)
         }
+    }
+}
+
+pub struct ColumnValidation {
+    pub row_table_columns: HashMap<String, Vec<String>>,
+    pub effective_schemas: HashMap<String, Schema>,
+}
+
+/// Maps each relation's EFFECTIVE name (its alias if aliased, else its real
+/// table name — the qualifier `Expr::Column` references use after
+/// `SubqueryAlias` renaming) to its real table name and whether it's a row
+/// table (vs. static). Walks the already-optimized Plan, so any `Join` with
+/// a static side has already become a `LookupJoin`.
+fn resolve_tables(
+    node: &RelNode,
+    row_table_names: &HashSet<String>,
+    out: &mut HashMap<String, (String, bool)>,
+) {
+    match node {
+        RelNode::TableScan { table } => {
+            let is_row = row_table_names.contains(table);
+            out.insert(table.clone(), (table.clone(), is_row));
+        }
+        RelNode::SubqueryAlias { input, alias } => {
+            if let Some(real) = scan_table_name(input) {
+                let is_row = row_table_names.contains(real);
+                out.insert(alias.clone(), (real.to_string(), is_row));
+            }
+        }
+        RelNode::Filter { input, .. } => resolve_tables(input, row_table_names, out),
+        RelNode::CrossJoin { left, right } | RelNode::Join { left, right, .. } => {
+            resolve_tables(left, row_table_names, out);
+            resolve_tables(right, row_table_names, out);
+        }
+        RelNode::LookupJoin { input, table, .. } => {
+            resolve_tables(input, row_table_names, out);
+            out.insert(table.clone(), (table.clone(), false));
+        }
+    }
+}
+
+/// Validates every `Expr::Column` reference in the plan (projection, WHERE,
+/// JOIN ON) against the resolved table schemas, and collects — per row
+/// table's REAL name — the set of columns the query actually references.
+/// Also returns the effective-name -> Schema map (aliases resolved), reused
+/// by the output type-inference pass.
+pub fn validate_columns(
+    plan: &Plan,
+    row_table_names: &HashSet<String>,
+    row_schemas: &HashMap<String, Schema>,
+    static_schemas: &HashMap<String, Schema>,
+) -> Result<ColumnValidation, InterpError> {
+    let mut resolved = HashMap::new();
+    resolve_tables(&plan.input, row_table_names, &mut resolved);
+
+    let mut effective_schemas = HashMap::new();
+    for (effective_name, (real_name, is_row)) in &resolved {
+        let schema = if *is_row {
+            row_schemas.get(real_name)
+        } else {
+            static_schemas.get(real_name)
+        };
+        if let Some(s) = schema {
+            effective_schemas.insert(effective_name.clone(), s.clone());
+        }
+    }
+
+    let mut used_columns: HashMap<String, HashSet<String>> = HashMap::new();
+    for (_, e) in &plan.projection {
+        validate_expr(e, &resolved, row_schemas, static_schemas, &mut used_columns)?;
+    }
+    validate_rel(
+        &plan.input,
+        &resolved,
+        row_schemas,
+        static_schemas,
+        &mut used_columns,
+    )?;
+
+    Ok(ColumnValidation {
+        row_table_columns: used_columns
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect(),
+        effective_schemas,
+    })
+}
+
+fn validate_rel(
+    node: &RelNode,
+    resolved: &HashMap<String, (String, bool)>,
+    row_schemas: &HashMap<String, Schema>,
+    static_schemas: &HashMap<String, Schema>,
+    used_columns: &mut HashMap<String, HashSet<String>>,
+) -> Result<(), InterpError> {
+    match node {
+        RelNode::TableScan { .. } => Ok(()),
+        RelNode::Filter { input, predicate } => {
+            validate_expr(
+                predicate,
+                resolved,
+                row_schemas,
+                static_schemas,
+                used_columns,
+            )?;
+            validate_rel(input, resolved, row_schemas, static_schemas, used_columns)
+        }
+        RelNode::CrossJoin { left, right } => {
+            validate_rel(left, resolved, row_schemas, static_schemas, used_columns)?;
+            validate_rel(right, resolved, row_schemas, static_schemas, used_columns)
+        }
+        RelNode::Join { left, right, on } => {
+            for (l, r) in on {
+                validate_expr(l, resolved, row_schemas, static_schemas, used_columns)?;
+                validate_expr(r, resolved, row_schemas, static_schemas, used_columns)?;
+            }
+            validate_rel(left, resolved, row_schemas, static_schemas, used_columns)?;
+            validate_rel(right, resolved, row_schemas, static_schemas, used_columns)
+        }
+        RelNode::SubqueryAlias { input, .. } => {
+            validate_rel(input, resolved, row_schemas, static_schemas, used_columns)
+        }
+        RelNode::LookupJoin { input, keys, .. } => {
+            for k in keys {
+                validate_expr(k, resolved, row_schemas, static_schemas, used_columns)?;
+            }
+            validate_rel(input, resolved, row_schemas, static_schemas, used_columns)
+        }
+    }
+}
+
+fn validate_expr(
+    e: &Expr,
+    resolved: &HashMap<String, (String, bool)>,
+    row_schemas: &HashMap<String, Schema>,
+    static_schemas: &HashMap<String, Schema>,
+    used_columns: &mut HashMap<String, HashSet<String>>,
+) -> Result<(), InterpError> {
+    match e {
+        Expr::Column {
+            table: Some(t),
+            name,
+        } => {
+            let (real, is_row) = resolved
+                .get(t)
+                .ok_or_else(|| InterpError::Build(format!("Unknown table qualifier: {t}")))?;
+            check_column(real, *is_row, name, row_schemas, static_schemas)?;
+            if *is_row {
+                used_columns
+                    .entry(real.clone())
+                    .or_default()
+                    .insert(name.clone());
+            }
+            Ok(())
+        }
+        Expr::Column { table: None, name } => {
+            let mut matches: Vec<(&String, bool)> = Vec::new();
+            for (real, is_row) in resolved.values() {
+                let schema = if *is_row {
+                    row_schemas.get(real)
+                } else {
+                    static_schemas.get(real)
+                };
+                if schema.is_some_and(|s| s.contains_key(name)) {
+                    matches.push((real, *is_row));
+                }
+            }
+            match matches.as_slice() {
+                [] => Err(InterpError::Build(format!("Unknown column: {name}"))),
+                [(real, is_row)] => {
+                    if *is_row {
+                        used_columns
+                            .entry((*real).clone())
+                            .or_default()
+                            .insert(name.clone());
+                    }
+                    Ok(())
+                }
+                _ => Err(InterpError::Build(format!(
+                    "Ambiguous column reference: {name}"
+                ))),
+            }
+        }
+        Expr::Literal(_) => Ok(()),
+        Expr::BinaryOp { left, right, .. } => {
+            validate_expr(left, resolved, row_schemas, static_schemas, used_columns)?;
+            validate_expr(right, resolved, row_schemas, static_schemas, used_columns)
+        }
+        Expr::Not(inner) | Expr::Cast { expr: inner, .. } => {
+            validate_expr(inner, resolved, row_schemas, static_schemas, used_columns)
+        }
+        Expr::Function { args, .. } => {
+            for a in args {
+                validate_expr(a, resolved, row_schemas, static_schemas, used_columns)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn check_column(
+    real_table: &str,
+    is_row: bool,
+    name: &str,
+    row_schemas: &HashMap<String, Schema>,
+    static_schemas: &HashMap<String, Schema>,
+) -> Result<(), InterpError> {
+    let schema = if is_row {
+        row_schemas.get(real_table)
+    } else {
+        static_schemas.get(real_table)
+    };
+    match schema {
+        Some(s) if s.contains_key(name) => Ok(()),
+        Some(_) => Err(InterpError::Build(format!(
+            "Unknown column: {real_table}.{name}"
+        ))),
+        None => Err(InterpError::Build(format!("Unknown table: {real_table}"))),
     }
 }

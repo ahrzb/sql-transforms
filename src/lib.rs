@@ -7,6 +7,8 @@ mod expr;
 mod expr_build;
 mod lookup;
 mod plan;
+mod schema;
+mod types;
 
 use expr::Value;
 use lookup::LookupIndex;
@@ -16,6 +18,7 @@ use plan::Plan;
 struct InferFn {
     plan: Plan,
     lookups: HashMap<String, LookupIndex>,
+    row_table_columns: HashMap<String, Vec<String>>,
 }
 
 #[pymethods]
@@ -24,14 +27,29 @@ impl InferFn {
     fn new(
         py: Python<'_>,
         sql: String,
-        row_tables: Vec<String>,
+        row_tables: HashMap<String, Py<PyAny>>,
         static_tables: HashMap<String, Py<PyAny>>,
     ) -> PyResult<Self> {
-        let _ = &row_tables;
-
         let raw_plan = plan::build_plan(&sql)?;
+        let row_table_names: HashSet<String> = row_tables.keys().cloned().collect();
         let static_table_names: HashSet<String> = static_tables.keys().cloned().collect();
-        let (plan, specs) = plan::optimize(raw_plan, &static_table_names)?;
+        let (optimized_plan, specs) = plan::optimize(raw_plan, &static_table_names)?;
+
+        let mut row_schemas = HashMap::new();
+        for (name, model_class) in &row_tables {
+            row_schemas.insert(name.clone(), schema::from_pydantic_model(py, model_class)?);
+        }
+        let mut static_schemas = HashMap::new();
+        for (name, table_obj) in &static_tables {
+            static_schemas.insert(name.clone(), schema::from_arrow_table(py, table_obj)?);
+        }
+
+        let column_validation = plan::validate_columns(
+            &optimized_plan,
+            &row_table_names,
+            &row_schemas,
+            &static_schemas,
+        )?;
 
         let mut lookups = HashMap::new();
         for spec in specs {
@@ -45,7 +63,11 @@ impl InferFn {
             lookups.insert(spec.static_table, index);
         }
 
-        Ok(InferFn { plan, lookups })
+        Ok(InferFn {
+            plan: optimized_plan,
+            lookups,
+            row_table_columns: column_validation.row_table_columns,
+        })
     }
 
     fn infer(
@@ -53,16 +75,21 @@ impl InferFn {
         py: Python<'_>,
         tables: HashMap<String, Vec<Py<PyAny>>>,
     ) -> PyResult<Vec<Py<PyDict>>> {
+        let empty: Vec<String> = Vec::new();
         let mut value_tables: HashMap<String, Vec<HashMap<String, Value>>> = HashMap::new();
         for (table, rows) in &tables {
+            let columns = self.row_table_columns.get(table).unwrap_or(&empty);
             let mut out_rows = Vec::with_capacity(rows.len());
             for row_obj in rows {
                 let bound = row_obj.bind(py);
-                let dict = bound.cast::<PyDict>()?;
                 let mut row: HashMap<String, Value> = HashMap::new();
-                for (k, v) in dict.iter() {
-                    let key: String = k.extract()?;
-                    row.insert(key, Value::from_pyobject(&v)?);
+                for col in columns {
+                    let attr = bound.getattr(col.as_str()).map_err(|e| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "Row for table '{table}' is missing attribute '{col}': {e}"
+                        ))
+                    })?;
+                    row.insert(col.clone(), Value::from_pyobject(&attr)?);
                 }
                 out_rows.push(row);
             }
