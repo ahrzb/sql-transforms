@@ -65,17 +65,19 @@ class SQLTransform:
         )
         return self
 
+    def _infer_rows(self, this_rows: list[SimpleNamespace]) -> list[BaseModel]:
+        """Run InferFn.infer() for the given __THIS__ rows against learned state."""
+        assert self._infer_fn is not None
+        return self._infer_fn.infer(
+            {"__THIS__": this_rows, "__STATE__": [self._state]}
+        )
+
     def transform(self, table: pa.Table, /) -> pa.Table:
         """Apply transforms to batch data using learned state, via InferFn."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before transform()")
         rows = table.to_pylist()
-        out_rows = self._infer_fn.infer(
-            {
-                "__THIS__": [SimpleNamespace(**row) for row in rows],
-                "__STATE__": [self._state],
-            }
-        )
+        out_rows = self._infer_rows([SimpleNamespace(**row) for row in rows])
         out_dicts = [r.model_dump() for r in out_rows]
         return (
             pa.table({k: [r[k] for r in out_dicts] for k in out_dicts[0]})
@@ -87,7 +89,5 @@ class SQLTransform:
         """Single-row inference via InferFn."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before inference")
-        out_rows = self._infer_fn.infer(
-            {"__THIS__": [SimpleNamespace(**row)], "__STATE__": [self._state]}
-        )
+        out_rows = self._infer_rows([SimpleNamespace(**row)])
         return out_rows[0].model_dump()

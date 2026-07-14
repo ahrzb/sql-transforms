@@ -1,3 +1,5 @@
+from typing import Any
+
 import pyarrow as pa
 from pydantic import BaseModel
 
@@ -11,4 +13,4 @@ class InferFn:
         static_tables: dict[str, pa.Table],
         output_model: type[BaseModel] | None = None,
     ) -> None: ...
-    def infer(self, tables: dict[str, list[BaseModel]]) -> list[BaseModel]: ...
+    def infer(self, tables: dict[str, list[Any]]) -> list[BaseModel]: ...

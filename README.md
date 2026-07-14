@@ -55,7 +55,7 @@ print(result)
 ### With sklearn Integration
 
 ```python
-from sql_transform import SQLTransformer
+from sql_transform import SQLTransform
 
 # sklearn transforms are available when sklearn is installed
 sql = """
@@ -63,10 +63,10 @@ SELECT
     sklearn.standardize(feature1) as std_feature1,
     sklearn.minmax_scale(feature2, 0, 1) as scaled_feature2,
     sklearn.kbins_discretize(feature3, 5, 'uniform') as binned_feature3
-FROM data
+FROM __THIS__
 """
 
-transformer = SQLTransformer(sql)
+transformer = SQLTransform(sql)
 transformer.fit(data)
 result = transformer.transform(data)
 ```
@@ -108,7 +108,6 @@ result = transformer.transform(data)
 - More statistical transforms
 - Advanced text processing
 - Time series features  
-- Code generation for inference
 - Type system with schema inference
 
 ## Development
