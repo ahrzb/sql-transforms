@@ -120,3 +120,46 @@ def test_multi_row():
     fn = InferFn(sql, row_tables=["data"], static_tables={})
     actual = fn.infer({"data": [{"age": 1}, {"age": 2}, {"age": 3}]})
     assert actual == _expected(sql, data)
+
+
+def test_builtin_upper():
+    sql = "SELECT UPPER(name) AS up FROM data"
+    data = {"name": ["hello"]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"name": "hello"}]})
+    assert actual == _expected(sql, data)
+
+
+def test_builtin_concat():
+    sql = "SELECT CONCAT(a, '-', b) AS combo FROM data"
+    data = {"a": ["x"], "b": ["y"]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"a": "x", "b": "y"}]})
+    assert actual == _expected(sql, data)
+
+
+def test_builtin_substr_trim_abs_round():
+    sql = (
+        "SELECT SUBSTR(s, 2, 3) AS sub, TRIM(pad) AS t, "
+        "ABS(neg) AS ab, ROUND(pi) AS ro FROM data"
+    )
+    data = {"s": ["hello"], "pad": ["  x  "], "neg": [-5], "pi": [3.6]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"s": "hello", "pad": "  x  ", "neg": -5, "pi": 3.6}]})
+    assert actual == _expected(sql, data)
+
+
+def test_builtin_coalesce_nullif():
+    sql = "SELECT COALESCE(a, b, 5) AS co, NULLIF(x, x) AS ni FROM data"
+    data = {"a": [None], "b": [None], "x": [3]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"a": None, "b": None, "x": 3}]})
+    assert actual == _expected(sql, data)
+
+
+def test_cast():
+    sql = "SELECT CAST(age AS VARCHAR) AS s FROM data"
+    data = {"age": [42]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"age": 42}]})
+    assert actual == _expected(sql, data)

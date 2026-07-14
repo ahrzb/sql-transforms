@@ -1,6 +1,9 @@
-use sqlparser::ast::{BinaryOperator, Expr as SqlExpr, UnaryOperator, Value as SqlValue};
+use sqlparser::ast::{
+    BinaryOperator, DataType, Expr as SqlExpr, Function, FunctionArg, FunctionArgExpr,
+    FunctionArguments, UnaryOperator, Value as SqlValue,
+};
 
-use crate::expr::{BinOp, Expr, Value};
+use crate::expr::{BinOp, CastType, Expr, Value};
 use crate::plan::InterpError;
 
 pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
@@ -27,7 +30,97 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
                 right: Box::new(convert_expr(right)?),
             })
         }
+        SqlExpr::Function(func) => convert_function(func),
+        SqlExpr::Cast {
+            expr, data_type, ..
+        } => Ok(Expr::Cast {
+            expr: Box::new(convert_expr(expr)?),
+            target: convert_cast_type(data_type)?,
+        }),
+        // sqlparser 0.62 parses SUBSTR/SUBSTRING into a dedicated AST node
+        // rather than a generic Function call; normalize it to
+        // Expr::Function("substr", ...) so eval_builtin's dispatch handles
+        // both call syntaxes uniformly.
+        SqlExpr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            let mut args = vec![convert_expr(expr)?];
+            if let Some(from) = substring_from {
+                args.push(convert_expr(from)?);
+            }
+            if let Some(for_) = substring_for {
+                args.push(convert_expr(for_)?);
+            }
+            Ok(Expr::Function {
+                name: "substr".to_string(),
+                args,
+            })
+        }
+        // Likewise TRIM(expr) is a dedicated AST node. Only the plain form
+        // (no BOTH/LEADING/TRAILING side, no explicit trim characters) maps
+        // onto eval_builtin's "trim" (Rust's str::trim, whitespace only).
+        SqlExpr::Trim {
+            expr,
+            trim_where: None,
+            trim_what: None,
+            trim_characters: None,
+            ..
+        } => Ok(Expr::Function {
+            name: "trim".to_string(),
+            args: vec![convert_expr(expr)?],
+        }),
         _ => Err(InterpError::Build(format!("Unsupported expression: {e}"))),
+    }
+}
+
+fn convert_function(func: &Function) -> Result<Expr, InterpError> {
+    let name = func.name.to_string().to_lowercase();
+    let args = match &func.args {
+        FunctionArguments::List(list) => list
+            .args
+            .iter()
+            .map(convert_function_arg)
+            .collect::<Result<Vec<_>, _>>()?,
+        FunctionArguments::None => Vec::new(),
+        FunctionArguments::Subquery(_) => {
+            return Err(InterpError::Build(format!(
+                "Subquery arguments are not supported in function: {name}"
+            )))
+        }
+    };
+    Ok(Expr::Function { name, args })
+}
+
+fn convert_function_arg(arg: &FunctionArg) -> Result<Expr, InterpError> {
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => convert_expr(e),
+        _ => Err(InterpError::Build(
+            "Only plain positional function arguments are supported".to_string(),
+        )),
+    }
+}
+
+fn convert_cast_type(dt: &DataType) -> Result<CastType, InterpError> {
+    let name = dt.to_string().to_uppercase();
+    if name.starts_with("VARCHAR")
+        || name.starts_with("TEXT")
+        || name.starts_with("STRING")
+        || name.starts_with("CHAR")
+    {
+        Ok(CastType::Str)
+    } else if name.starts_with("BIGINT") || name.starts_with("INT") {
+        Ok(CastType::Int)
+    } else if name.starts_with("DOUBLE") || name.starts_with("FLOAT") || name.starts_with("REAL") {
+        Ok(CastType::Float)
+    } else if name.starts_with("BOOL") {
+        Ok(CastType::Bool)
+    } else {
+        Err(InterpError::Build(format!(
+            "Unsupported CAST target type: {name}"
+        )))
     }
 }
 

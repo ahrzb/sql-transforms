@@ -143,6 +143,22 @@ pub enum Expr {
         right: Box<Expr>,
     },
     Not(Box<Expr>),
+    Function {
+        name: String,
+        args: Vec<Expr>,
+    },
+    Cast {
+        expr: Box<Expr>,
+        target: CastType,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub enum CastType {
+    Str,
+    Int,
+    Float,
+    Bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -177,6 +193,17 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
                 Some(b) => Ok(Value::Bool(!b)),
                 None => Ok(Value::Null),
             }
+        }
+        Expr::Function { name, args } => {
+            let values: Vec<Value> = args
+                .iter()
+                .map(|a| eval(a, row))
+                .collect::<Result<_, _>>()?;
+            eval_builtin(name, values)
+        }
+        Expr::Cast { expr, target } => {
+            let v = eval(expr, row)?;
+            eval_cast(v, *target)
         }
     }
 }
@@ -317,4 +344,149 @@ fn as_tribool(v: &Value) -> Result<Option<bool>, crate::plan::InterpError> {
             type_name(other)
         ))),
     }
+}
+
+fn eval_builtin(name: &str, args: Vec<Value>) -> Result<Value, crate::plan::InterpError> {
+    use crate::plan::InterpError;
+
+    match name {
+        "upper" => Ok(Value::Str(as_str(&args, 0)?.to_uppercase())),
+        "lower" => Ok(Value::Str(as_str(&args, 0)?.to_lowercase())),
+        "trim" => Ok(Value::Str(as_str(&args, 0)?.trim().to_string())),
+        "concat" => {
+            let mut s = String::new();
+            for a in &args {
+                if !matches!(a, Value::Null) {
+                    s.push_str(&display_value(a));
+                }
+            }
+            Ok(Value::Str(s))
+        }
+        "abs" => match &args[0] {
+            Value::Int(i) => Ok(Value::Int(i.abs())),
+            Value::Float(f) => Ok(Value::Float(f.abs())),
+            Value::Null => Ok(Value::Null),
+            other => Err(InterpError::Eval(format!(
+                "ABS expects a number, got a {} value",
+                type_name(other)
+            ))),
+        },
+        "round" => match &args[0] {
+            Value::Float(f) => Ok(Value::Float(f.round())),
+            Value::Int(i) => Ok(Value::Int(*i)),
+            Value::Null => Ok(Value::Null),
+            other => Err(InterpError::Eval(format!(
+                "ROUND expects a number, got a {} value",
+                type_name(other)
+            ))),
+        },
+        "substr" | "substring" => {
+            let s = as_str(&args, 0)?;
+            let start = as_i64(&args, 1)?;
+            let length = if args.len() > 2 {
+                Some(as_i64(&args, 2)?)
+            } else {
+                None
+            };
+            Ok(Value::Str(substr(s, start, length)))
+        }
+        "coalesce" => Ok(args
+            .into_iter()
+            .find(|v| !matches!(v, Value::Null))
+            .unwrap_or(Value::Null)),
+        "nullif" => {
+            if args.len() != 2 {
+                return Err(InterpError::Eval("NULLIF expects 2 arguments".to_string()));
+            }
+            if args[0] == args[1] {
+                Ok(Value::Null)
+            } else {
+                Ok(args[0].clone())
+            }
+        }
+        other => Err(InterpError::Eval(format!("Unknown function: {other}"))),
+    }
+}
+
+fn as_str(args: &[Value], idx: usize) -> Result<&str, crate::plan::InterpError> {
+    match args.get(idx) {
+        Some(Value::Str(s)) => Ok(s.as_str()),
+        other => Err(crate::plan::InterpError::Eval(format!(
+            "Expected a string argument at position {idx}, got {:?}",
+            other.map(type_name)
+        ))),
+    }
+}
+
+fn as_i64(args: &[Value], idx: usize) -> Result<i64, crate::plan::InterpError> {
+    match args.get(idx) {
+        Some(Value::Int(i)) => Ok(*i),
+        other => Err(crate::plan::InterpError::Eval(format!(
+            "Expected an integer argument at position {idx}, got {:?}",
+            other.map(type_name)
+        ))),
+    }
+}
+
+fn substr(s: &str, start: i64, length: Option<i64>) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let idx = if start > 0 { (start - 1) as usize } else { 0 };
+    let idx = idx.min(chars.len());
+    let end = match length {
+        Some(len) => (idx + len.max(0) as usize).min(chars.len()),
+        None => chars.len(),
+    };
+    chars[idx..end].iter().collect()
+}
+
+fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpError> {
+    use crate::plan::InterpError;
+
+    if matches!(v, Value::Null) {
+        return Ok(Value::Null);
+    }
+    Ok(match target {
+        CastType::Str => Value::Str(display_value(&v)),
+        CastType::Int => match v {
+            Value::Int(i) => Value::Int(i),
+            Value::Float(f) => Value::Int(f.trunc() as i64),
+            Value::Str(s) => Value::Int(
+                s.trim()
+                    .parse::<i64>()
+                    .map_err(|_| InterpError::Eval(format!("Cannot cast '{s}' to INT")))?,
+            ),
+            Value::Bool(b) => Value::Int(b as i64),
+            Value::Null | Value::Object(_) => {
+                return Err(InterpError::Eval(
+                    "Cannot cast this value to INT".to_string(),
+                ))
+            }
+        },
+        CastType::Float => match v {
+            Value::Int(i) => Value::Float(i as f64),
+            Value::Float(f) => Value::Float(f),
+            Value::Str(s) => Value::Float(
+                s.trim()
+                    .parse::<f64>()
+                    .map_err(|_| InterpError::Eval(format!("Cannot cast '{s}' to FLOAT")))?,
+            ),
+            Value::Bool(b) => Value::Float(if b { 1.0 } else { 0.0 }),
+            Value::Null | Value::Object(_) => {
+                return Err(InterpError::Eval(
+                    "Cannot cast this value to FLOAT".to_string(),
+                ))
+            }
+        },
+        CastType::Bool => match v {
+            Value::Bool(b) => Value::Bool(b),
+            Value::Int(i) => Value::Bool(i != 0),
+            Value::Float(f) => Value::Bool(f != 0.0),
+            Value::Str(s) => Value::Bool(s.eq_ignore_ascii_case("true")),
+            Value::Null | Value::Object(_) => {
+                return Err(InterpError::Eval(
+                    "Cannot cast this value to BOOLEAN".to_string(),
+                ))
+            }
+        },
+    })
 }
