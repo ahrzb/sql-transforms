@@ -6,6 +6,7 @@ strategy.
 """
 
 import datafusion
+import pyarrow as pa
 import pytest
 from sql_transform._interpreter import InferFn
 
@@ -262,3 +263,46 @@ def test_error_alias_collision():
     sql = "SELECT a.x FROM a JOIN b AS a ON a.id = a.id"
     with pytest.raises(ValueError):
         InferFn(sql, row_tables=["a", "b"], static_tables={})
+
+
+def test_join_row_and_static_table():
+    ref_table = pa.table({"id": [1, 2], "y": [10, 20]})
+    sql = "SELECT data.x, ref.y FROM data JOIN ref ON data.id = ref.id"
+
+    ctx = datafusion.SessionContext()
+    ctx.from_pydict({"id": [1, 2], "x": [5, 6]}, name="data")
+    ctx.from_arrow(ref_table, name="ref")
+    expected = ctx.sql(sql).collect()[0].to_pylist()
+
+    fn = InferFn(sql, row_tables=["data"], static_tables={"ref": ref_table})
+    actual = fn.infer({"data": [{"id": 1, "x": 5}, {"id": 2, "x": 6}]})
+    assert actual == expected
+
+
+def test_join_row_and_static_table_single_row():
+    ref_table = pa.table({"id": [1, 2], "y": [10, 20]})
+    sql = "SELECT data.x, ref.y FROM data JOIN ref ON data.id = ref.id"
+
+    fn = InferFn(sql, row_tables=["data"], static_tables={"ref": ref_table})
+    result = fn.infer({"data": [{"id": 1, "x": 5}]})
+    assert result == [{"x": 5, "y": 10}]
+
+
+def test_missing_lookup_key_raises_key_error():
+    ref_table = pa.table({"id": [1], "y": [10]})
+    sql = "SELECT data.x, ref.y FROM data JOIN ref ON data.id = ref.id"
+
+    fn = InferFn(sql, row_tables=["data"], static_tables={"ref": ref_table})
+    with pytest.raises(KeyError) as exc_info:
+        fn.infer({"data": [{"id": 999, "x": 5}]})
+    message = str(exc_info.value)
+    assert "999" in message
+    assert "ref" in message
+
+
+def test_error_static_static_join():
+    ref1 = pa.table({"id": [1], "y": [10]})
+    ref2 = pa.table({"id": [1], "z": [20]})
+    sql = "SELECT ref1.y, ref2.z FROM ref1 JOIN ref2 ON ref1.id = ref2.id"
+    with pytest.raises(ValueError):
+        InferFn(sql, row_tables=[], static_tables={"ref1": ref1, "ref2": ref2})

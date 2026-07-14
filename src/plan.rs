@@ -50,11 +50,21 @@ pub enum RelNode {
         input: Box<RelNode>,
         alias: String,
     },
+    LookupJoin {
+        input: Box<RelNode>,
+        table: String,
+        keys: Vec<Expr>,
+    },
 }
 
 pub struct Plan {
     pub projection: Vec<(String, Expr)>,
     pub input: RelNode,
+}
+
+pub struct LookupSpec {
+    pub static_table: String,
+    pub key_columns: Vec<String>,
 }
 
 pub fn build_plan(sql: &str) -> Result<Plan, InterpError> {
@@ -249,11 +259,151 @@ fn column_name(e: &SqlExpr) -> Result<String, InterpError> {
     }
 }
 
+/// Walks a built `Plan`, rewriting any `Join` node where exactly one side is
+/// a scan of a table named in `static_tables` into a `RelNode::LookupJoin`.
+/// Returns an error if both sides of a `Join` are static tables (a
+/// static-to-static join isn't a lookup and isn't supported).
+pub fn optimize(
+    plan: Plan,
+    static_tables: &HashSet<String>,
+) -> Result<(Plan, Vec<LookupSpec>), InterpError> {
+    let mut specs = Vec::new();
+    let input = optimize_rel(plan.input, static_tables, &mut specs)?;
+    Ok((
+        Plan {
+            projection: plan.projection,
+            input,
+        },
+        specs,
+    ))
+}
+
+fn optimize_rel(
+    node: RelNode,
+    static_tables: &HashSet<String>,
+    specs: &mut Vec<LookupSpec>,
+) -> Result<RelNode, InterpError> {
+    match node {
+        RelNode::Join { left, right, on } => {
+            let left = optimize_rel(*left, static_tables, specs)?;
+            let right = optimize_rel(*right, static_tables, specs)?;
+            let left_static = scan_table_name(&left).filter(|t| static_tables.contains(*t));
+            let right_static = scan_table_name(&right).filter(|t| static_tables.contains(*t));
+            match (left_static, right_static) {
+                (Some(_), Some(_)) => Err(InterpError::Build(
+                    "Joining two static tables together is not supported".to_string(),
+                )),
+                (None, Some(table)) => {
+                    let table = table.to_string();
+                    let (keys, key_columns) = split_keys(&on, &table)?;
+                    specs.push(LookupSpec {
+                        static_table: table.clone(),
+                        key_columns,
+                    });
+                    Ok(RelNode::LookupJoin {
+                        input: Box::new(left),
+                        table,
+                        keys,
+                    })
+                }
+                (Some(table), None) => {
+                    let table = table.to_string();
+                    let (keys, key_columns) = split_keys(&on, &table)?;
+                    specs.push(LookupSpec {
+                        static_table: table.clone(),
+                        key_columns,
+                    });
+                    Ok(RelNode::LookupJoin {
+                        input: Box::new(right),
+                        table,
+                        keys,
+                    })
+                }
+                (None, None) => Ok(RelNode::Join {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    on,
+                }),
+            }
+        }
+        RelNode::CrossJoin { left, right } => Ok(RelNode::CrossJoin {
+            left: Box::new(optimize_rel(*left, static_tables, specs)?),
+            right: Box::new(optimize_rel(*right, static_tables, specs)?),
+        }),
+        RelNode::Filter { input, predicate } => Ok(RelNode::Filter {
+            input: Box::new(optimize_rel(*input, static_tables, specs)?),
+            predicate,
+        }),
+        RelNode::SubqueryAlias { input, alias } => Ok(RelNode::SubqueryAlias {
+            input: Box::new(optimize_rel(*input, static_tables, specs)?),
+            alias,
+        }),
+        other => Ok(other),
+    }
+}
+
+fn scan_table_name(node: &RelNode) -> Option<&str> {
+    match node {
+        RelNode::TableScan { table } => Some(table),
+        RelNode::SubqueryAlias { input, .. } => scan_table_name(input),
+        _ => None,
+    }
+}
+
+/// The qualifier (`table` part) of a plain `Expr::Column`, or `None` for
+/// anything else (unqualified column, literal, expression, ...).
+fn column_qualifier(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Column { table: Some(t), .. } => Some(t.as_str()),
+        _ => None,
+    }
+}
+
+/// Splits each ON-clause equality pair into (the static table's key column
+/// name, the row-side expression to evaluate it against).
+///
+/// The ON clause's tuple order reflects how the equality was *written*
+/// (`a = b` vs `b = a`), which is independent of which side of the JOIN is
+/// structurally left/right in the FROM clause — so this identifies the
+/// static side per-pair by matching each operand's column qualifier against
+/// `static_table`, rather than assuming a fixed position.
+fn split_keys(
+    on: &[(Expr, Expr)],
+    static_table: &str,
+) -> Result<(Vec<Expr>, Vec<String>), InterpError> {
+    let mut row_side_keys = Vec::new();
+    let mut static_col_names = Vec::new();
+    for (l, r) in on {
+        let static_expr = match (column_qualifier(l), column_qualifier(r)) {
+            (Some(t), _) if t == static_table => l,
+            (_, Some(t)) if t == static_table => r,
+            _ => {
+                return Err(InterpError::Build(format!(
+                    "JOIN ON keys against static table '{static_table}' must reference \
+                     the static table's columns by name (e.g. {static_table}.col)"
+                )))
+            }
+        };
+        let row_expr = if std::ptr::eq(static_expr, l) { r } else { l };
+        match static_expr {
+            Expr::Column { name, .. } => static_col_names.push(name.clone()),
+            _ => {
+                return Err(InterpError::Build(format!(
+                    "JOIN ON keys against static table '{static_table}' must be plain columns"
+                )))
+            }
+        }
+        row_side_keys.push(row_expr.clone());
+    }
+    Ok((row_side_keys, static_col_names))
+}
+
 pub fn execute(
     plan: &Plan,
     tables: &HashMap<String, Vec<HashMap<String, Value>>>,
+    lookups: &HashMap<String, crate::lookup::LookupIndex>,
 ) -> Result<Vec<HashMap<String, Value>>, InterpError> {
-    let rows = execute_rel(&plan.input, tables)?;
+    let rows = execute_rel(&plan.input, tables, lookups)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
         let mut result = HashMap::new();
@@ -268,6 +418,7 @@ pub fn execute(
 fn execute_rel(
     node: &RelNode,
     tables: &HashMap<String, Vec<HashMap<String, Value>>>,
+    lookups: &HashMap<String, crate::lookup::LookupIndex>,
 ) -> Result<Vec<Row>, InterpError> {
     match node {
         RelNode::TableScan { table } => {
@@ -284,7 +435,7 @@ fn execute_rel(
                 .collect())
         }
         RelNode::Filter { input, predicate } => {
-            let rows = execute_rel(input, tables)?;
+            let rows = execute_rel(input, tables, lookups)?;
             let mut out = Vec::new();
             for row in rows {
                 if let Value::Bool(true) = crate::expr::eval(predicate, &row)? {
@@ -294,8 +445,8 @@ fn execute_rel(
             Ok(out)
         }
         RelNode::CrossJoin { left, right } => {
-            let left_rows = execute_rel(left, tables)?;
-            let right_rows = execute_rel(right, tables)?;
+            let left_rows = execute_rel(left, tables, lookups)?;
+            let right_rows = execute_rel(right, tables, lookups)?;
             let mut out = Vec::with_capacity(left_rows.len() * right_rows.len());
             for l in &left_rows {
                 for r in &right_rows {
@@ -307,8 +458,8 @@ fn execute_rel(
             Ok(out)
         }
         RelNode::Join { left, right, on } => {
-            let left_rows = execute_rel(left, tables)?;
-            let right_rows = execute_rel(right, tables)?;
+            let left_rows = execute_rel(left, tables, lookups)?;
+            let right_rows = execute_rel(right, tables, lookups)?;
             let mut out = Vec::new();
             for l in &left_rows {
                 for r in &right_rows {
@@ -331,7 +482,7 @@ fn execute_rel(
             Ok(out)
         }
         RelNode::SubqueryAlias { input, alias } => {
-            let rows = execute_rel(input, tables)?;
+            let rows = execute_rel(input, tables, lookups)?;
             Ok(rows
                 .into_iter()
                 .map(|row| {
@@ -341,6 +492,30 @@ fn execute_rel(
                     renamed
                 })
                 .collect())
+        }
+        RelNode::LookupJoin { input, table, keys } => {
+            let rows = execute_rel(input, tables, lookups)?;
+            let index = lookups.get(table).ok_or_else(|| {
+                InterpError::Build(format!("No lookup index built for table: {table}"))
+            })?;
+            let mut out = Vec::with_capacity(rows.len());
+            for mut row in rows {
+                let key: Vec<Value> = keys
+                    .iter()
+                    .map(|k| crate::expr::eval(k, &row))
+                    .collect::<Result<_, _>>()?;
+                let hit = index.index.get(&key).ok_or_else(|| {
+                    let key_repr: Vec<String> =
+                        key.iter().map(crate::expr::display_value).collect();
+                    InterpError::MissingKey(format!(
+                        "No row in static table '{table}' matches key ({})",
+                        key_repr.join(", ")
+                    ))
+                })?;
+                row.insert(table.clone(), hit.clone());
+                out.push(row);
+            }
+            Ok(out)
         }
     }
 }
