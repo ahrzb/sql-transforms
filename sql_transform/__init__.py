@@ -7,7 +7,6 @@ from typing import Any
 import datafusion
 import pyarrow as pa
 
-from sql_transform._codegen import generate_infer_fn
 from sql_transform._interpreter import InferFn
 from sql_transform._state import extract_state
 

@@ -18,22 +18,6 @@ from datafusion.expr import Alias, BinaryExpr, Column
 from sql_transform._state import state_key
 
 
-def generate_infer_fn(
-    plan: datafusion.plan.LogicalPlan,
-    state: dict,
-) -> callable:
-    """DEPRECATED: Stub provided for import compatibility only.
-
-    The old Python codegen path has been removed. Task 4 will migrate
-    sql_transform to use rewrite_sql() with the Rust interpreter instead.
-    """
-    raise NotImplementedError(
-        "generate_infer_fn has been removed. "
-        "Use rewrite_sql() with sql_transform._interpreter.InferFn instead. "
-        "(Task 4 will migrate sql_transform.__init__.py)"
-    )
-
-
 def rewrite_sql(plan: datafusion.plan.LogicalPlan) -> str:
     """Return a SQL string equivalent to the plan's projection, with every
     window-aggregate reference replaced by a __STATE__ column reference."""
