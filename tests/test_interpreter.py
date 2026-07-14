@@ -260,3 +260,50 @@ def test_user_supplied_output_model_non_nullable_but_inferred_nullable_defers_to
     # A row with a real value works fine.
     result = fn.infer({"data": [Data(age=1, name="alice")]})
     assert result[0].name == "alice"
+
+
+def test_duck_typed_row_instance_works():
+    """A structurally-compatible instance of a DIFFERENT class than the one
+    declared in row_tables still works — no isinstance check, just getattr."""
+
+    class NotData:
+        def __init__(self, age):
+            self.age = age
+
+    sql = "SELECT age FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    actual = fn.infer({"data": [NotData(age=42)]})
+    assert actual[0].age == 42
+
+
+def test_row_instance_missing_referenced_attribute_raises_clear_error():
+    class Incomplete:
+        pass
+
+    sql = "SELECT age FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    with pytest.raises(ValueError, match="age"):
+        fn.infer({"data": [Incomplete()]})
+
+
+def test_unused_model_fields_are_never_touched():
+    """A row model can have fields the query doesn't reference — getattr
+    only pulls the columns actually used, so an unrelated/broken field on
+    the instance is never even accessed."""
+    from pydantic import ConfigDict
+
+    class Poison:
+        @property
+        def unused(self):
+            raise RuntimeError("should never be accessed")
+
+    class WithExtra(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        age: int
+        unused: object = None
+
+    sql = "SELECT age FROM data"
+    fn = InferFn(sql, row_tables={"data": WithExtra}, static_tables={})
+    row = WithExtra(age=5, unused=Poison())
+    actual = fn.infer({"data": [row]})
+    assert actual[0].age == 5
