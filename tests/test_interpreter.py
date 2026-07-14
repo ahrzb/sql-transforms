@@ -336,3 +336,26 @@ def test_nested_object_passthrough_through_output_model():
     payload = {"nested": [1, 2, 3]}
     result = fn.infer({"data": [WithPayload(age=1, payload=payload)]})
     assert result[0].payload == payload
+
+
+def test_infer_accepts_kwargs_instead_of_dict():
+    sql = "SELECT age FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    via_dict = _as_dicts(fn.infer({"data": [Data(age=1), Data(age=2)]}))
+    via_kwargs = _as_dicts(fn.infer(data=[Data(age=1), Data(age=2)]))
+    assert via_dict == via_kwargs == [{"age": 1}, {"age": 2}]
+
+
+def test_infer_accepts_kwargs_for_multi_table_join():
+    sql = "SELECT a.x, b.y FROM a JOIN b ON a.id = b.id"
+    fn = InferFn(sql, row_tables={"a": A, "b": B}, static_tables={})
+    result = fn.infer(a=[A(id=1, x=10)], b=[B(id=1, y=20)])
+    assert _as_dicts(result) == [{"x": 10, "y": 20}]
+
+
+def test_infer_merges_positional_dict_and_kwargs_kwargs_win():
+    sql = "SELECT age FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    # kwargs "data" overrides the positional dict's "data" entry
+    result = fn.infer({"data": [Data(age=999)]}, data=[Data(age=1), Data(age=2)])
+    assert _as_dicts(result) == [{"age": 1}, {"age": 2}]

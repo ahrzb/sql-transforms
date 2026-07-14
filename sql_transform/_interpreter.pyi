@@ -11,4 +11,8 @@ class InferFn:
         static_tables: dict[str, pa.Table],
         output_model: type[BaseModel] | None = None,
     ) -> None: ...
-    def infer(self, tables: dict[str, list[BaseModel]]) -> list[BaseModel]: ...
+    def infer(
+        self,
+        tables: dict[str, list[BaseModel]] | None = None,
+        **kwargs: list[BaseModel],
+    ) -> list[BaseModel]: ...

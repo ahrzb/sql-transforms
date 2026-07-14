@@ -157,14 +157,25 @@ impl InferFn {
         })
     }
 
+    #[pyo3(signature = (tables=None, **kwargs))]
     fn infer(
         &self,
         py: Python<'_>,
-        tables: HashMap<String, Vec<Py<PyAny>>>,
+        tables: Option<HashMap<String, Vec<Py<PyAny>>>>,
+        kwargs: Option<Bound<'_, PyDict>>,
     ) -> PyResult<Vec<Py<PyAny>>> {
+        let mut merged: HashMap<String, Vec<Py<PyAny>>> = tables.unwrap_or_default();
+        if let Some(kwargs) = kwargs {
+            for (k, v) in kwargs.iter() {
+                let key: String = k.extract()?;
+                let rows: Vec<Py<PyAny>> = v.extract()?;
+                merged.insert(key, rows);
+            }
+        }
+
         let empty: Vec<String> = Vec::new();
         let mut value_tables: HashMap<String, Vec<HashMap<String, Value>>> = HashMap::new();
-        for (table, rows) in &tables {
+        for (table, rows) in &merged {
             let columns = self.row_table_columns.get(table).unwrap_or(&empty);
             let mut out_rows = Vec::with_capacity(rows.len());
             for row_obj in rows {
