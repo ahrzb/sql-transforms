@@ -1,3 +1,5 @@
+from typing import Any
+
 import pyarrow as pa
 from pydantic import BaseModel
 
@@ -13,6 +15,6 @@ class InferFn:
     ) -> None: ...
     def infer(
         self,
-        tables: dict[str, list[BaseModel]] | None = None,
-        **kwargs: list[BaseModel],
+        tables: dict[str, list[Any]] | None = None,
+        **kwargs: list[Any],
     ) -> list[BaseModel]: ...

@@ -1,9 +1,11 @@
-"""Generate pure-Python inference functions from DataFusion logical plans.
+"""Rewrite DataFusion logical plans into SQL runnable by the Rust InferFn.
 
-Walks each top-level projection alias and converts its expression
-tree to Python code. Window aggregate references (Alias wrapping a
-Column, or bare Column with DataFusion-generated name) are replaced
-with state lookups.
+Walks each top-level projection alias and converts its expression tree
+into SQL text. Window aggregate references (Alias wrapping a Column, or a
+bare Column with a DataFusion-generated window-agg name) are rewritten
+into `__STATE__.<fn>_<col>` references; plain columns become
+`__THIS__.<col>` references. The result is `SELECT ... FROM __THIS__,
+__STATE__` -- a cross join, since __STATE__ is always exactly one row.
 """
 
 from __future__ import annotations
@@ -13,72 +15,54 @@ import re
 import datafusion
 from datafusion.expr import Alias, BinaryExpr, Column
 
+from sql_transform._state import state_key
 
-def generate_infer_fn(
-    plan: datafusion.plan.LogicalPlan,
-    state: dict,
-) -> callable:
-    """Return (row: dict) -> dict for single-row inference."""
+
+def rewrite_sql(plan: datafusion.plan.LogicalPlan) -> str:
+    """Return a SQL string equivalent to the plan's projection, with every
+    window-aggregate reference replaced by a __STATE__ column reference."""
     proj = plan.to_variant()
-    body_lines: list[str] = []
+    parts: list[str] = []
 
     for raw_p in proj.projections():
         alias = raw_p.to_variant()
         if isinstance(alias, Column):
-            # Bare column reference — no alias
             out_name = alias.name()
-            code = _expr_to_python(raw_p, state, out_alias=out_name)
+            expr_sql = _expr_to_sql(raw_p)
         else:
             out_name = alias.alias()
-            code = _expr_to_python(alias.expr(), state, out_alias=out_name)
-        body_lines.append(f'        "{out_name}": {code},')
+            expr_sql = _expr_to_sql(alias.expr())
+        parts.append(f"{expr_sql} AS {out_name}")
 
-    source = (
-        "def _infer(row, *, _state=None):\n"
-        "    return {\n" + "\n".join(body_lines) + "\n    }"
-    )
-    namespace: dict = {}
-    exec(source, {}, namespace)  # noqa: S102
-    fn = namespace["_infer"]
-
-    def bound(row: dict) -> dict:
-        return fn(row, _state=state)
-
-    return bound
+    return "SELECT " + ", ".join(parts) + " FROM __THIS__, __STATE__"
 
 
-def _expr_to_python(raw_expr, state: dict, out_alias: str = "") -> str:
-    """Convert a RawExpr tree to a Python expression string."""
+def _expr_to_sql(raw_expr) -> str:
+    """Convert a RawExpr tree to a SQL expression string."""
     expr = raw_expr.to_variant()
 
     if isinstance(expr, Column):
-        col_name = expr.name()
-        if _WINDOW_COL_RE.match(col_name):
-            val = state.get(out_alias)
-            if isinstance(val, dict) and "lookup" in val:
-                part_col = val["partition_col"]
-                return f'_state[{out_alias!r}]["lookup"][row["{part_col}"]]'
-            return f"_state[{out_alias!r}]"
-        return f'row["{col_name}"]'
+        return _column_to_sql(expr.name())
 
     if isinstance(expr, BinaryExpr):
-        left = _expr_to_python(expr.left(), state, out_alias)
-        right = _expr_to_python(expr.right(), state, out_alias)
+        left = _expr_to_sql(expr.left())
+        right = _expr_to_sql(expr.right())
         return f"({left} {expr.op()} {right})"
 
     if isinstance(expr, Alias):
-        inner = expr.expr().to_variant()
-        if isinstance(inner, Column):
-            val = state.get(out_alias)
-            if isinstance(val, dict) and "lookup" in val:
-                part_col = val["partition_col"]
-                return f'_state[{out_alias!r}]["lookup"][row["{part_col}"]]'
-            return f"_state[{out_alias!r}]"
-        return _expr_to_python(expr.expr(), state, out_alias)
+        return _expr_to_sql(expr.expr())
 
-    return f"None  # unrecognized: {type(expr).__name__}"
+    raise ValueError(f"Unrecognized expression node: {type(expr).__name__}")
+
+
+def _column_to_sql(col_name: str) -> str:
+    m = _WINDOW_COL_RE.match(col_name)
+    if m:
+        key = state_key(m.group("fn"), m.group("col"))
+        return f"__STATE__.{key}"
+    return f"__THIS__.{col_name}"
 
 
 # DataFusion generates window aggregate column names like:
 #   avg(data.age) ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-_WINDOW_COL_RE = re.compile(r"^\w+\([\w.]+\)\s")
+_WINDOW_COL_RE = re.compile(r"^(?P<fn>\w+)\((?:\w+\.)?(?P<col>\w+)\)\s")

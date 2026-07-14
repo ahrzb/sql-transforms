@@ -1,8 +1,14 @@
 """Tests for state extraction from DataFusion logical plans."""
 
 import datafusion
+import pytest
 
-from sql_transform._state import extract_state
+from sql_transform._state import extract_state, state_key
+
+
+def test_state_key_lowercases_and_strips_qualifier():
+    assert state_key("AVG", "age") == "avg_age"
+    assert state_key("avg", "AGE") == "avg_age"
 
 
 def test_extract_constant_window_agg():
@@ -15,36 +21,30 @@ def test_extract_constant_window_agg():
 
     state = extract_state(plan, ctx, "data")
 
-    assert "age_norm" in state
-    assert state["age_norm"] == 30.0
+    assert state.avg_age == 30.0
 
 
-def test_extract_partitioned_window_agg():
+def test_extract_dedups_repeated_aggregate():
     ctx = datafusion.SessionContext()
-    ctx.from_pydict(
-        {"city": ["a", "b", "a", "b"], "target": [1.0, 2.0, 3.0, 4.0]},
-        name="data",
-    )
+    ctx.from_pydict({"age": [25, 30, 35]}, name="data")
 
-    sql = "SELECT MEAN(target) OVER (PARTITION BY city) AS city_enc FROM data"
+    sql = (
+        "SELECT age / MEAN(age) OVER () AS age_norm, "
+        "MEAN(age) OVER () AS age_avg FROM data"
+    )
     df = ctx.sql(sql)
     plan = df.logical_plan()
 
     state = extract_state(plan, ctx, "data")
 
-    assert "city_enc" in state
-    assert state["city_enc"] == {
-        "lookup": {"a": 2.0, "b": 3.0},
-        "partition_col": "city",
-    }
+    # Both projections reference the same (fn, col) pair -> one field.
+    # DataFusion normalizes MEAN to avg internally, so the key is avg_age.
+    assert state.model_dump() == {"avg_age": 30.0}
 
 
-def test_multiple_window_aggs():
+def test_extract_multiple_distinct_aggregates():
     ctx = datafusion.SessionContext()
-    ctx.from_pydict(
-        {"age": [25, 30, 35], "score": [10, 20, 30]},
-        name="data",
-    )
+    ctx.from_pydict({"age": [25, 30, 35], "score": [10, 20, 30]}, name="data")
 
     sql = (
         "SELECT age / MEAN(age) OVER () AS age_norm, "
@@ -55,5 +55,33 @@ def test_multiple_window_aggs():
 
     state = extract_state(plan, ctx, "data")
 
-    assert state["age_norm"] == 30.0
-    assert state["score_norm"] == 60.0
+    assert state.avg_age == 30.0
+    assert state.sum_score == 60.0
+
+
+def test_extract_no_aggregates_returns_empty_state():
+    ctx = datafusion.SessionContext()
+    ctx.from_pydict({"age": [1, 2, 3]}, name="data")
+
+    sql = "SELECT age FROM data"
+    df = ctx.sql(sql)
+    plan = df.logical_plan()
+
+    state = extract_state(plan, ctx, "data")
+
+    assert state.model_dump() == {}
+
+
+def test_extract_partitioned_window_agg_raises_not_implemented():
+    ctx = datafusion.SessionContext()
+    ctx.from_pydict(
+        {"city": ["a", "b", "a", "b"], "target": [1.0, 2.0, 3.0, 4.0]},
+        name="data",
+    )
+
+    sql = "SELECT MEAN(target) OVER (PARTITION BY city) AS city_enc FROM data"
+    df = ctx.sql(sql)
+    plan = df.logical_plan()
+
+    with pytest.raises(NotImplementedError):
+        extract_state(plan, ctx, "data")
