@@ -10,6 +10,7 @@ mod plan;
 mod schema;
 mod types;
 
+use expr::Expr;
 use expr::Value;
 use lookup::LookupIndex;
 use plan::Plan;
@@ -19,6 +20,28 @@ struct InferFn {
     plan: Plan,
     lookups: HashMap<String, LookupIndex>,
     row_table_columns: HashMap<String, Vec<String>>,
+    #[pyo3(get)]
+    output_model: Py<PyAny>,
+}
+
+fn synthesize_output_model(
+    py: Python<'_>,
+    projection: &[(String, Expr)],
+    schemas: &HashMap<String, types::Schema>,
+) -> PyResult<Py<PyAny>> {
+    let pydantic = PyModule::import(py, "pydantic")?;
+    let create_model = pydantic.getattr("create_model")?;
+    let builtins = PyModule::import(py, "builtins")?;
+    let ellipsis = builtins.getattr("Ellipsis")?;
+
+    let kwargs = PyDict::new(py);
+    for (alias, expr) in projection {
+        let ft = types::infer_type(expr, schemas)?;
+        let py_type = schema::field_type_to_python(py, ft)?;
+        kwargs.set_item(alias, (py_type, &ellipsis))?;
+    }
+    let model = create_model.call(("OutputRow",), Some(&kwargs))?;
+    Ok(model.unbind())
 }
 
 #[pymethods]
@@ -51,6 +74,12 @@ impl InferFn {
             &static_schemas,
         )?;
 
+        let output_model = synthesize_output_model(
+            py,
+            &optimized_plan.projection,
+            &column_validation.effective_schemas,
+        )?;
+
         let mut lookups = HashMap::new();
         for spec in specs {
             let table_obj = static_tables.get(&spec.static_table).ok_or_else(|| {
@@ -67,6 +96,7 @@ impl InferFn {
             plan: optimized_plan,
             lookups,
             row_table_columns: column_validation.row_table_columns,
+            output_model,
         })
     }
 
@@ -74,7 +104,7 @@ impl InferFn {
         &self,
         py: Python<'_>,
         tables: HashMap<String, Vec<Py<PyAny>>>,
-    ) -> PyResult<Vec<Py<PyDict>>> {
+    ) -> PyResult<Vec<Py<PyAny>>> {
         let empty: Vec<String> = Vec::new();
         let mut value_tables: HashMap<String, Vec<HashMap<String, Value>>> = HashMap::new();
         for (table, rows) in &tables {
@@ -98,13 +128,15 @@ impl InferFn {
 
         let result_rows = plan::execute(&self.plan, &value_tables, &self.lookups)?;
 
+        let output_model = self.output_model.bind(py);
         let mut out = Vec::with_capacity(result_rows.len());
         for row in &result_rows {
             let dict = PyDict::new(py);
             for (k, v) in row {
                 dict.set_item(k, v.to_pyobject(py)?)?;
             }
-            out.push(dict.unbind());
+            let instance = output_model.call_method1("model_validate", (dict,))?;
+            out.push(instance.unbind());
         }
         Ok(out)
     }

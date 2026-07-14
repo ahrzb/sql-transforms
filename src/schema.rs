@@ -167,3 +167,25 @@ fn python_type_to_base(t: &Bound<'_, PyAny>) -> Base {
         None => Base::Other,
     }
 }
+
+/// Convert a FieldType into the Python type object `create_model` needs —
+/// the inverse of `annotation_to_field_type`: `Optional[T]` if nullable,
+/// else `T` directly. `Base::Other` maps to `typing.Any`.
+pub fn field_type_to_python(py: Python<'_>, ft: FieldType) -> PyResult<Py<PyAny>> {
+    let builtins = PyModule::import(py, "builtins")?;
+    let typing = PyModule::import(py, "typing")?;
+    let base_type: Py<PyAny> = match ft.base {
+        Base::Int => builtins.getattr("int")?.unbind(),
+        Base::Float => builtins.getattr("float")?.unbind(),
+        Base::Str => builtins.getattr("str")?.unbind(),
+        Base::Bool => builtins.getattr("bool")?.unbind(),
+        Base::Other => typing.getattr("Any")?.unbind(),
+    };
+    if !ft.nullable {
+        return Ok(base_type);
+    }
+    let none_type = py.None().bind(py).get_type().unbind();
+    let union = typing.getattr("Union")?;
+    let optional = union.call_method1("__getitem__", ((base_type, none_type),))?;
+    Ok(optional.unbind())
+}

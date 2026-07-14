@@ -20,6 +20,12 @@ def _expected(sql: str, data: dict) -> list[dict]:
     return ctx.sql(sql).collect()[0].to_pylist()
 
 
+def _as_dicts(rows: list) -> list[dict]:
+    """`.infer()` now returns synthesized-model instances, not dicts —
+    convert back to dicts to compare against real DataFusion output."""
+    return [r.model_dump() for r in rows]
+
+
 class Data(BaseModel):
     age: int
     name: str | None = None
@@ -34,21 +40,21 @@ def test_column_pass_through():
     sql = "SELECT age FROM data"
     fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
     actual = fn.infer({"data": [Data(age=30)]})
-    assert actual == _expected(sql, {"age": [30]})
+    assert _as_dicts(actual) == _expected(sql, {"age": [30]})
 
 
 def test_arithmetic_and_where():
     sql = "SELECT age, age * 2 AS doubled FROM data WHERE age > 18"
     fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
     actual = fn.infer({"data": [Data(age=15), Data(age=25), Data(age=40)]})
-    assert actual == _expected(sql, {"age": [15, 25, 40]})
+    assert _as_dicts(actual) == _expected(sql, {"age": [15, 25, 40]})
 
 
 def test_builtin_function_and_cast():
     sql = "SELECT UPPER(name) AS n, CAST(age AS VARCHAR) AS s FROM data"
     fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
     actual = fn.infer({"data": [Data(age=30, name="alice")]})
-    assert actual == _expected(sql, {"age": [30], "name": ["alice"]})
+    assert _as_dicts(actual) == _expected(sql, {"age": [30], "name": ["alice"]})
 
 
 class A(BaseModel):
@@ -70,7 +76,7 @@ def test_cross_join():
 
     fn = InferFn(sql, row_tables={"a": A, "b": B}, static_tables={})
     actual = fn.infer({"a": [A(id=1, x=10)], "b": [B(id=1, y=20)]})
-    assert actual == expected
+    assert _as_dicts(actual) == expected
 
 
 def test_inner_join():
@@ -87,14 +93,14 @@ def test_inner_join():
             "b": [B(id=1, y=100), B(id=2, y=200)],
         }
     )
-    assert actual == expected
+    assert _as_dicts(actual) == expected
 
 
 def test_aliased_row_table():
     sql = "SELECT d.age FROM data AS d WHERE d.age > 18"
     fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
     actual = fn.infer({"data": [Data(age=15), Data(age=25)]})
-    assert actual == _expected(sql, {"age": [15, 25]})
+    assert _as_dicts(actual) == _expected(sql, {"age": [15, 25]})
 
 
 def test_join_row_and_static_table():
@@ -112,7 +118,7 @@ def test_join_row_and_static_table():
 
     fn = InferFn(sql, row_tables={"data": RowWithId}, static_tables={"ref": ref_table})
     actual = fn.infer({"data": [RowWithId(id=1, x=5), RowWithId(id=2, x=6)]})
-    assert actual == expected
+    assert _as_dicts(actual) == expected
 
 
 def test_error_unknown_row_column():
@@ -132,3 +138,46 @@ def test_error_self_join_still_rejected():
     sql = "SELECT a.x FROM a JOIN a ON a.id = a.id"
     with pytest.raises(ValueError):
         InferFn(sql, row_tables={"a": A}, static_tables={})
+
+
+def test_output_model_is_synthesized_and_typed():
+    sql = "SELECT age, age * 2 AS doubled FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+
+    assert set(fn.output_model.model_fields) == {"age", "doubled"}
+    assert fn.output_model.model_fields["age"].annotation is int
+    assert fn.output_model.model_fields["doubled"].annotation is int
+
+    results = fn.infer({"data": [Data(age=30)]})
+    assert len(results) == 1
+    assert isinstance(results[0], fn.output_model)
+    assert results[0].age == 30
+    assert results[0].doubled == 60
+
+
+def test_output_model_nullable_column():
+    sql = "SELECT name FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    assert fn.output_model.model_fields["name"].annotation == (str | None)
+
+    results = fn.infer({"data": [Data(age=1, name=None)]})
+    assert results[0].name is None
+
+
+def test_output_model_cast_type_is_exact():
+    sql = "SELECT CAST(age AS VARCHAR) AS s FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    assert fn.output_model.model_fields["s"].annotation is str
+
+
+def test_output_model_division_promotes_to_float():
+    sql = "SELECT age / 2 AS half FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    # age (int) / 2 (int literal) -> Int per the truncating-int-division rule
+    assert fn.output_model.model_fields["half"].annotation is int
+
+
+def test_output_model_comparison_is_bool():
+    sql = "SELECT age > 18 AS is_adult FROM data"
+    fn = InferFn(sql, row_tables={"data": Data}, static_tables={})
+    assert fn.output_model.model_fields["is_adult"].annotation is bool
