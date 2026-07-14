@@ -71,6 +71,20 @@ def test_negative_integer_division_truncates():
     assert actual == _expected(sql, data)
 
 
+def test_integer_division_by_zero_raises_value_error():
+    sql = "SELECT a / b AS x FROM data"
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    with pytest.raises(ValueError):
+        fn.infer({"data": [{"a": 5, "b": 0}]})
+
+
+def test_integer_modulo_by_zero_raises_value_error():
+    sql = "SELECT a % b AS x FROM data"
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    with pytest.raises(ValueError):
+        fn.infer({"data": [{"a": 5, "b": 0}]})
+
+
 def test_mixed_int_float_division():
     sql = "SELECT a / f AS x FROM data"
     data = {"a": [7], "f": [2.5]}

@@ -253,14 +253,21 @@ fn arithmetic(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::Inter
         return Ok(Value::Null);
     }
     match (l, r) {
-        (Value::Int(a), Value::Int(b)) => Ok(match op {
-            BinOp::Add => Value::Int(a + b),
-            BinOp::Sub => Value::Int(a - b),
-            BinOp::Mul => Value::Int(a * b),
-            BinOp::Div => Value::Int(a / b),
-            BinOp::Mod => Value::Int(a % b),
-            _ => unreachable!(),
-        }),
+        (Value::Int(a), Value::Int(b)) => {
+            if matches!(op, BinOp::Div | BinOp::Mod) && b == 0 {
+                return Err(crate::plan::InterpError::Eval(
+                    "division by zero".to_string(),
+                ));
+            }
+            Ok(match op {
+                BinOp::Add => Value::Int(a + b),
+                BinOp::Sub => Value::Int(a - b),
+                BinOp::Mul => Value::Int(a * b),
+                BinOp::Div => Value::Int(a / b),
+                BinOp::Mod => Value::Int(a % b),
+                _ => unreachable!(),
+            })
+        }
         (a, b) => {
             let af = as_f64(&a)?;
             let bf = as_f64(&b)?;
