@@ -320,3 +320,32 @@ def test_error_static_static_join():
     sql = "SELECT ref1.y, ref2.z FROM ref1 JOIN ref2 ON ref1.id = ref2.id"
     with pytest.raises(ValueError):
         InferFn(sql, row_tables=[], static_tables={"ref1": ref1, "ref2": ref2})
+
+
+def test_empty_row_list_returns_empty():
+    fn = InferFn("SELECT age FROM data", row_tables=["data"], static_tables={})
+    assert fn.infer({"data": []}) == []
+
+
+def test_reusable_fn_different_inputs():
+    fn = InferFn("SELECT age FROM data", row_tables=["data"], static_tables={})
+    first = fn.infer({"data": [{"age": 1}]})
+    second = fn.infer({"data": [{"age": 2}]})
+    assert first == [{"age": 1}]
+    assert second == [{"age": 2}]
+
+
+def test_nested_object_passthrough():
+    sql = "SELECT payload FROM data"
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    payload = {"nested": [1, 2, 3]}
+    result = fn.infer({"data": [{"payload": payload}]})
+    assert result == [{"payload": payload}]
+
+
+def test_coalesce_all_null():
+    sql = "SELECT COALESCE(a, b) AS co FROM data"
+    data = {"a": [None], "b": [None]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"a": None, "b": None}]})
+    assert actual == _expected(sql, data)
