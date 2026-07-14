@@ -256,3 +256,9 @@ def test_error_self_join():
     sql = "SELECT a.x FROM a JOIN a ON a.id = a.id"
     with pytest.raises(ValueError):
         InferFn(sql, row_tables=["a"], static_tables={})
+
+
+def test_error_alias_collision():
+    sql = "SELECT a.x FROM a JOIN b AS a ON a.id = a.id"
+    with pytest.raises(ValueError):
+        InferFn(sql, row_tables=["a", "b"], static_tables={})

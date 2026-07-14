@@ -156,9 +156,20 @@ fn build_table_factor(
     match factor {
         TableFactor::Table { name, alias, .. } => {
             let table = name.to_string();
-            if !seen_tables.insert(table.clone()) {
+            // Track the EFFECTIVE output name (alias if present, else the real
+            // table name) — this is the key each relation's Row is stored
+            // under, so a collision here (whether from a true self-join like
+            // `FROM a JOIN a ON ...` or an alias collision like
+            // `FROM a JOIN b AS a ON ...`) would cause one side's data to
+            // silently overwrite the other's during row merging.
+            let effective_name = match &alias {
+                Some(a) => a.name.value.clone(),
+                None => table.clone(),
+            };
+            if !seen_tables.insert(effective_name.clone()) {
                 return Err(InterpError::Build(format!(
-                    "Self-joins are not supported: table '{table}' is referenced more than once"
+                    "table '{effective_name}' is referenced more than once in FROM/JOIN — \
+                     self-joins and alias collisions are not supported"
                 )));
             }
             let scan = RelNode::TableScan { table };
