@@ -10,6 +10,22 @@ def assert_approx_equal(actual: list, expected: list) -> None:
         assert abs(a - e) < 0.001
 
 
+def test_transform_before_fit_raises_runtime_error():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT age FROM __THIS__")
+    with pytest.raises(RuntimeError):
+        t.transform(pa.table({"age": [1]}))
+
+
+def test_infer_before_fit_raises_runtime_error():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT age FROM __THIS__")
+    with pytest.raises(RuntimeError):
+        t._infer({"age": 1})
+
+
 def test_fit_and_transform_batch_no_agg():
     from sql_transform import SQLTransform
 

@@ -27,7 +27,7 @@ def synthesize_state_model(state: dict[str, float]) -> type[BaseModel]:
     __STATE__'s row schema. Field names must have no leading underscore:
     Pydantic v2 treats those as private attributes, excluded from
     model_fields and unsettable via the constructor."""
-    fields = {key: (float, ...) for key in state}
+    fields = dict.fromkeys(state, (float, ...))
     return create_model("StateModel", **fields)
 
 

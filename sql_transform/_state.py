@@ -40,19 +40,41 @@ def extract_state(
 
     pairs: dict[tuple[str, str], None] = {}
     for m in _WINDOW_AGG_RE.finditer(display):
-        if m.group("partition"):
+        spec = m.group("spec")
+        if "PARTITION BY" in spec:
             raise NotImplementedError(
                 "PARTITION BY window aggregates are not yet supported by "
                 "the Rust-backed SQLTransform pipeline"
             )
-        pairs[(m.group("fn").lower(), m.group("col").lower())] = None
+        if "ORDER BY" in spec:
+            raise NotImplementedError(
+                "ORDER BY window aggregates are not yet supported by "
+                "the Rust-backed SQLTransform pipeline"
+            )
+        # Preserve the column's real case here -- lower-casing it would
+        # break the query below against a mixed-case schema, and would
+        # collide two distinct case-differing columns onto the same
+        # dedup key (state_key() below normalizes the STATE FIELD name
+        # to lowercase, which is a separate, intentional choice).
+        pairs[(m.group("fn"), m.group("col"))] = None
 
     values: dict[str, float] = {}
     for fn_name, col_name in pairs:
-        sql = f"SELECT {fn_name}({col_name}) FROM {table_name}"
+        # Quote the column name so DataFusion resolves it against the
+        # schema's real (possibly mixed-case) field name rather than
+        # case-folding an unquoted identifier to lowercase.
+        sql = f'SELECT {fn_name}("{col_name}") FROM {table_name}'
         result = ctx.sql(sql).collect()
         value = result[0].column(0)[0].as_py()
-        values[state_key(fn_name, col_name)] = float(value)
+        key = state_key(fn_name, col_name)
+        if key in values:
+            raise ValueError(
+                f"Ambiguous window aggregate: {fn_name}({col_name}) "
+                f"normalizes to the same state key {key!r} as another "
+                "aggregate in this query -- column names that differ only "
+                "by case aren't distinguished"
+            )
+        values[key] = float(value)
 
     state_model = synthesize_state_model(values)
     return state_model(**values)
@@ -61,6 +83,6 @@ def extract_state(
 _WINDOW_AGG_RE = re.compile(
     r"(?P<fn>\w+)"
     r"\((?:\w+)\.(?P<col>\w+)\)"
-    r"(?P<partition>\s+PARTITION\s+BY\s+\[(?:\w+)\.\w+\])?"
-    r"\s+ROWS\s+BETWEEN[^,\n]+"
+    r"(?P<spec>.*?)"
+    r"(?:ROWS|RANGE|GROUPS)\s+BETWEEN[^,\n]+"
 )

@@ -25,13 +25,26 @@ def rewrite_sql(plan: datafusion.plan.LogicalPlan) -> str:
     parts: list[str] = []
 
     for raw_p in proj.projections():
-        alias = raw_p.to_variant()
-        if isinstance(alias, Column):
-            out_name = alias.name()
-            expr_sql = _expr_to_sql(raw_p)
+        variant = raw_p.to_variant()
+        if isinstance(variant, Column):
+            out_name = variant.name()
+        elif isinstance(variant, Alias):
+            out_name = variant.alias()
         else:
-            out_name = alias.alias()
-            expr_sql = _expr_to_sql(alias.expr())
+            raise ValueError(
+                "Expression in SELECT list needs an alias (AS name): "
+                f"unsupported top-level expression {type(variant).__name__}"
+            )
+        if not _VALID_IDENT_RE.match(out_name):
+            raise ValueError(
+                "Expression in SELECT list needs an explicit alias (AS "
+                f"name) -- generated name {out_name!r} is not a valid "
+                "identifier"
+            )
+        # _expr_to_sql unwraps Alias internally, so this single call
+        # handles both the Column and Alias cases above identically --
+        # only out_name needed the branch.
+        expr_sql = _expr_to_sql(raw_p)
         parts.append(f"{expr_sql} AS {out_name}")
 
     return "SELECT " + ", ".join(parts) + " FROM __THIS__, __STATE__"
@@ -66,3 +79,8 @@ def _column_to_sql(col_name: str) -> str:
 # DataFusion generates window aggregate column names like:
 #   avg(data.age) ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
 _WINDOW_COL_RE = re.compile(r"^(?P<fn>\w+)\((?:\w+\.)?(?P<col>\w+)\)\s")
+
+# A bare SQL identifier -- used to reject DataFusion's raw display text
+# (e.g. "mean(data.age)") as an unsafe AS-name when the user didn't supply
+# an explicit alias for a window-aggregate projection.
+_VALID_IDENT_RE = re.compile(r"^\w+$")
