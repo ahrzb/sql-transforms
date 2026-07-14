@@ -371,3 +371,27 @@ def test_public_import_path():
 
     fn = PublicInferFn("SELECT age FROM data", row_tables=["data"], static_tables={})
     assert fn.infer({"data": [{"age": 5}]}) == [{"age": 5}]
+
+
+def test_upper_lower_trim_null_propagates():
+    sql = "SELECT UPPER(name) AS u, LOWER(name) AS l, TRIM(name) AS t FROM data"
+    data = {"name": [None]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"name": None}]})
+    assert actual == _expected(sql, data)
+
+
+def test_substr_null_string_arg_propagates():
+    sql = "SELECT SUBSTR(name, 1, 3) AS sub FROM data"
+    data = {"name": [None]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"name": None}]})
+    assert actual == _expected(sql, data)
+
+
+def test_substr_null_start_arg_propagates():
+    sql = "SELECT SUBSTR(s, n, 3) AS sub FROM data"
+    data = {"s": ["hello"], "n": [None]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"s": "hello", "n": None}]})
+    assert actual == _expected(sql, data)

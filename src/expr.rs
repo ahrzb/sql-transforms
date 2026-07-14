@@ -356,6 +356,12 @@ fn as_tribool(v: &Value) -> Result<Option<bool>, crate::plan::InterpError> {
 fn eval_builtin(name: &str, args: Vec<Value>) -> Result<Value, crate::plan::InterpError> {
     use crate::plan::InterpError;
 
+    if matches!(name, "upper" | "lower" | "trim" | "substr" | "substring")
+        && args.iter().any(|a| matches!(a, Value::Null))
+    {
+        return Ok(Value::Null);
+    }
+
     match name {
         "upper" => Ok(Value::Str(as_str(&args, 0)?.to_uppercase())),
         "lower" => Ok(Value::Str(as_str(&args, 0)?.to_lowercase())),
