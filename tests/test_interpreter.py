@@ -6,6 +6,7 @@ strategy.
 """
 
 import datafusion
+import pytest
 from sql_transform._interpreter import InferFn
 
 
@@ -163,3 +164,31 @@ def test_cast():
     fn = InferFn(sql, row_tables=["data"], static_tables={})
     actual = fn.infer({"data": [{"age": 42}]})
     assert actual == _expected(sql, data)
+
+
+def test_substring_for_only_takes_first_n_chars():
+    # SQL-92: SUBSTRING(expr FOR n) with no FROM means "the first n
+    # characters", equivalent to SUBSTRING(expr FROM 1 FOR n) — not
+    # "from position n to the end".
+    sql = "SELECT SUBSTRING(s FOR 3) AS sub FROM data"
+    data = {"s": ["hello"]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"s": "hello"}]})
+    assert actual == _expected(sql, data)
+
+
+def test_substring_from_only():
+    sql = "SELECT SUBSTRING(s FROM 2) AS sub FROM data"
+    data = {"s": ["hello"]}
+    fn = InferFn(sql, row_tables=["data"], static_tables={})
+    actual = fn.infer({"data": [{"s": "hello"}]})
+    assert actual == _expected(sql, data)
+
+
+def test_substring_bare_form_rejected_at_build_time():
+    with pytest.raises(ValueError):
+        InferFn(
+            "SELECT SUBSTRING(s) AS x FROM data",
+            row_tables=["data"],
+            static_tables={},
+        )

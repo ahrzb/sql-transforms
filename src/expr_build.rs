@@ -47,9 +47,18 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
             substring_for,
             ..
         } => {
+            if substring_from.is_none() && substring_for.is_none() {
+                return Err(InterpError::Build(
+                    "SUBSTRING requires FROM and/or FOR".to_string(),
+                ));
+            }
             let mut args = vec![convert_expr(expr)?];
-            if let Some(from) = substring_from {
-                args.push(convert_expr(from)?);
+            match substring_from {
+                Some(from) => args.push(convert_expr(from)?),
+                // SQL-92: SUBSTRING(expr FOR n) with no FROM means "the
+                // first n characters", equivalent to
+                // SUBSTRING(expr FROM 1 FOR n).
+                None => args.push(Expr::Literal(Value::Int(1))),
             }
             if let Some(for_) = substring_for {
                 args.push(convert_expr(for_)?);
