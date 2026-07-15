@@ -29,6 +29,10 @@ def run_batch(
     row with a row id, ask DataFusion to ORDER BY it (a real sort, unlike join
     order, so this is deterministic), and drop the id column before returning
     -- restoring the strict 1-to-1, input-order-preserving contract."""
+    if _ROW_ID in table.column_names:
+        raise ValueError(
+            f"__THIS__ must not contain a reserved column named {_ROW_ID!r}"
+        )
     numbered_table = table.append_column(
         _ROW_ID, pa.array(range(table.num_rows), type=pa.int64())
     )

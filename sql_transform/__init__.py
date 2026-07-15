@@ -80,9 +80,10 @@ class SQLTransform:
 
     def transform(self, table: pa.Table, /) -> pa.Table:
         """Batch-transform `table` through DataFusion using the frozen fit-time
-        state. Runs the rewritten SQL (`__THIS__ CROSS JOIN __STATE__`)
-        vectorized; returns a pyarrow Table. Use infer()/infer_batch() for
-        low-latency row-at-a-time inference through the Rust engine instead."""
+        state. Runs the rewritten SQL (`__THIS__` LEFT JOINed to the per-partition
+        state tables) vectorized; returns a pyarrow Table with rows in input order.
+        Use infer()/infer_batch() for low-latency row-at-a-time inference through
+        the Rust engine instead."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before transform")
         return run_batch(self._rewritten_sql, table, self._state_tables)
