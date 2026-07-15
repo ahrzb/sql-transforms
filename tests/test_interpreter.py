@@ -359,3 +359,59 @@ def test_infer_merges_positional_dict_and_kwargs_kwargs_win():
     # kwargs "data" overrides the positional dict's "data" entry
     result = fn.infer({"data": [Data(age=999)]}, data=[Data(age=1), Data(age=2)])
     assert _as_dicts(result) == [{"age": 1}, {"age": 2}]
+
+
+def test_left_lookup_join_hit_returns_value():
+    from types import SimpleNamespace
+
+    import pyarrow as pa
+    from pydantic import BaseModel
+
+    from sql_transform import InferFn
+
+    class Row(BaseModel):
+        city: str
+
+    ref = pa.table({"city": ["a", "b"], "enc": [1.5, 3.5]})
+    sql = "SELECT ref.enc FROM data LEFT JOIN ref ON data.city = ref.city"
+    fn = InferFn(sql, row_tables={"data": Row}, static_tables={"ref": ref})
+    out = fn.infer({"data": [SimpleNamespace(city="a")]})
+    assert out[0].enc == 1.5
+
+
+def test_left_lookup_join_miss_returns_null():
+    from types import SimpleNamespace
+
+    import pyarrow as pa
+    from pydantic import BaseModel
+
+    from sql_transform import InferFn
+
+    class Row(BaseModel):
+        city: str
+
+    ref = pa.table({"city": ["a"], "enc": [1.5]})
+    sql = "SELECT ref.enc FROM data LEFT JOIN ref ON data.city = ref.city"
+    fn = InferFn(sql, row_tables={"data": Row}, static_tables={"ref": ref})
+    out = fn.infer({"data": [SimpleNamespace(city="zzz")]})  # unseen key
+    assert out[0].enc is None
+
+
+def test_inner_lookup_join_miss_still_errors():
+    from types import SimpleNamespace
+
+    import pyarrow as pa
+    from pydantic import BaseModel
+
+    from sql_transform import InferFn
+
+    class Row(BaseModel):
+        city: str
+
+    ref = pa.table({"city": ["a"], "enc": [1.5]})
+    sql = "SELECT ref.enc FROM data JOIN ref ON data.city = ref.city"
+    fn = InferFn(sql, row_tables={"data": Row}, static_tables={"ref": ref})
+    # Inner-join key miss surfaces as KeyError (Rust InterpError::MissingKey
+    # maps to PyKeyError), unchanged by the LEFT-join work.
+    with pytest.raises(KeyError):
+        fn.infer({"data": [SimpleNamespace(city="zzz")]})

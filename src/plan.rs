@@ -46,6 +46,7 @@ pub enum RelNode {
         left: Box<RelNode>,
         right: Box<RelNode>,
         on: Vec<(Expr, Expr)>,
+        outer: bool,
     },
     SubqueryAlias {
         input: Box<RelNode>,
@@ -55,6 +56,7 @@ pub enum RelNode {
         input: Box<RelNode>,
         table: String,
         keys: Vec<Expr>,
+        outer: bool,
     },
 }
 
@@ -148,6 +150,17 @@ fn build_join(
                 left: Box::new(left),
                 right: Box::new(right),
                 on,
+                outer: false,
+            })
+        }
+        JoinOperator::Left(constraint) | JoinOperator::LeftOuter(constraint) => {
+            let on_expr = require_on(constraint)?;
+            let on = extract_equality_keys(on_expr)?;
+            Ok(RelNode::Join {
+                left: Box::new(left),
+                right: Box::new(right),
+                on,
+                outer: true,
             })
         }
         JoinOperator::CrossJoin(_) => Ok(RelNode::CrossJoin {
@@ -285,7 +298,12 @@ fn optimize_rel(
     specs: &mut Vec<LookupSpec>,
 ) -> Result<RelNode, InterpError> {
     match node {
-        RelNode::Join { left, right, on } => {
+        RelNode::Join {
+            left,
+            right,
+            on,
+            outer,
+        } => {
             let left = optimize_rel(*left, static_tables, specs)?;
             let right = optimize_rel(*right, static_tables, specs)?;
             let left_static = scan_table_name(&left).filter(|t| static_tables.contains(*t));
@@ -305,6 +323,7 @@ fn optimize_rel(
                         input: Box::new(left),
                         table,
                         keys,
+                        outer,
                     })
                 }
                 (Some(table), None) => {
@@ -318,13 +337,22 @@ fn optimize_rel(
                         input: Box::new(right),
                         table,
                         keys,
+                        outer,
                     })
                 }
-                (None, None) => Ok(RelNode::Join {
-                    left: Box::new(left),
-                    right: Box::new(right),
-                    on,
-                }),
+                (None, None) => {
+                    if outer {
+                        return Err(InterpError::Build(
+                            "LEFT JOIN is only supported against a static lookup table".to_string(),
+                        ));
+                    }
+                    Ok(RelNode::Join {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                        on,
+                        outer,
+                    })
+                }
             }
         }
         RelNode::CrossJoin { left, right } => Ok(RelNode::CrossJoin {
@@ -458,7 +486,9 @@ fn execute_rel(
             }
             Ok(out)
         }
-        RelNode::Join { left, right, on } => {
+        RelNode::Join {
+            left, right, on, ..
+        } => {
             let left_rows = execute_rel(left, tables, lookups)?;
             let right_rows = execute_rel(right, tables, lookups)?;
             let mut out = Vec::new();
@@ -494,7 +524,12 @@ fn execute_rel(
                 })
                 .collect())
         }
-        RelNode::LookupJoin { input, table, keys } => {
+        RelNode::LookupJoin {
+            input,
+            table,
+            keys,
+            outer,
+        } => {
             let rows = execute_rel(input, tables, lookups)?;
             let index = lookups.get(table).ok_or_else(|| {
                 InterpError::Build(format!("No lookup index built for table: {table}"))
@@ -505,15 +540,27 @@ fn execute_rel(
                     .iter()
                     .map(|k| crate::expr::eval(k, &row))
                     .collect::<Result<_, _>>()?;
-                let hit = index.index.get(&key).ok_or_else(|| {
-                    let key_repr: Vec<String> =
-                        key.iter().map(crate::expr::display_value).collect();
-                    InterpError::MissingKey(format!(
-                        "No row in static table '{table}' matches key ({})",
-                        key_repr.join(", ")
-                    ))
-                })?;
-                row.insert(table.clone(), hit.clone());
+                match index.index.get(&key) {
+                    Some(hit) => {
+                        row.insert(table.clone(), hit.clone());
+                    }
+                    None if *outer => {
+                        let null_row: HashMap<String, Value> = index
+                            .value_columns
+                            .iter()
+                            .map(|c| (c.clone(), Value::Null))
+                            .collect();
+                        row.insert(table.clone(), null_row);
+                    }
+                    None => {
+                        let key_repr: Vec<String> =
+                            key.iter().map(crate::expr::display_value).collect();
+                        return Err(InterpError::MissingKey(format!(
+                            "No row in static table '{table}' matches key ({})",
+                            key_repr.join(", ")
+                        )));
+                    }
+                }
                 out.push(row);
             }
             Ok(out)
@@ -629,7 +676,9 @@ fn validate_rel(
             validate_rel(left, resolved, row_schemas, static_schemas, used_columns)?;
             validate_rel(right, resolved, row_schemas, static_schemas, used_columns)
         }
-        RelNode::Join { left, right, on } => {
+        RelNode::Join {
+            left, right, on, ..
+        } => {
             for (l, r) in on {
                 validate_expr(l, resolved, row_schemas, static_schemas, used_columns)?;
                 validate_expr(r, resolved, row_schemas, static_schemas, used_columns)?;

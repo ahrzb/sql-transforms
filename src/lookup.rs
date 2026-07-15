@@ -8,6 +8,7 @@ use crate::plan::InterpError;
 
 pub struct LookupIndex {
     pub index: HashMap<Vec<Value>, HashMap<String, Value>>,
+    pub value_columns: Vec<String>,
 }
 
 pub fn build_index(
@@ -22,6 +23,15 @@ pub fn build_index(
     let rows: Vec<Py<PyAny>> = rows_obj.extract().map_err(|e| {
         InterpError::Build(format!("Static table must convert to a list of rows: {e}"))
     })?;
+
+    let all_columns: Vec<String> = bound
+        .getattr("column_names")
+        .and_then(|c| c.extract())
+        .map_err(|e| InterpError::Build(format!("Failed to read static table columns: {e}")))?;
+    let value_columns: Vec<String> = all_columns
+        .into_iter()
+        .filter(|c| !key_columns.contains(c))
+        .collect();
 
     let mut index = HashMap::new();
     for row_obj in rows {
@@ -63,5 +73,8 @@ pub fn build_index(
         index.insert(key, rest);
     }
 
-    Ok(LookupIndex { index })
+    Ok(LookupIndex {
+        index,
+        value_columns,
+    })
 }
