@@ -103,13 +103,16 @@ def _run_infer(query: str, tables: dict[str, Table]) -> list[dict]:
 
 
 def _canon(r: dict) -> tuple:
-    # Sortable key for order-insensitive comparison. None sorts before values.
+    # Sortable canonical key for order-insensitive comparison; both sides use
+    # the same key so the sort+zip pairing is consistent regardless of order.
     return tuple(sorted((k, v is None, str(v)) for k, v in r.items()))
 
 
 def _val_equal(a: Any, b: Any, tol: float) -> bool:
     if a is None or b is None:
         return a is None and b is None
+    if isinstance(a, bool) != isinstance(b, bool):
+        return False  # bool is an int subclass (True == 1); keep them distinct
     if isinstance(a, float) or isinstance(b, float):
         return abs(a - b) <= tol
     return a == b

@@ -59,3 +59,10 @@ def test_nullable_column_omitted_value():
 
 def test_check_both_raise_on_unknown_column():
     check_both_raise("SELECT nope FROM t", {"t": row(a=1)})
+
+
+def test_rows_equal_distinguishes_bool_from_int():
+    # bool is an int subclass in Python; the comparator must not conflate them.
+    assert not _rows_equal([{"x": True}], [{"x": 1}])
+    assert not _rows_equal([{"x": False}], [{"x": 0}])
+    assert _rows_equal([{"x": True}], [{"x": True}])
