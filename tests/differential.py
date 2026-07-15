@@ -113,7 +113,9 @@ def _val_equal(a: Any, b: Any, tol: float) -> bool:
         return a is None and b is None
     if isinstance(a, bool) != isinstance(b, bool):
         return False  # bool is an int subclass (True == 1); keep them distinct
-    if isinstance(a, float) or isinstance(b, float):
+    if isinstance(a, float) != isinstance(b, float):
+        return False  # int vs float is a real type divergence for the oracle
+    if isinstance(a, float):
         return abs(a - b) <= tol
     return a == b
 

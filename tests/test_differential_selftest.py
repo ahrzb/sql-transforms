@@ -66,3 +66,10 @@ def test_rows_equal_distinguishes_bool_from_int():
     assert not _rows_equal([{"x": True}], [{"x": 1}])
     assert not _rows_equal([{"x": False}], [{"x": 0}])
     assert _rows_equal([{"x": True}], [{"x": True}])
+
+
+def test_rows_equal_distinguishes_int_from_float():
+    # int vs float is a real type divergence for a differential oracle.
+    assert not _rows_equal([{"x": 1}], [{"x": 1.0}])
+    assert _rows_equal([{"x": 1.0}], [{"x": 1.0}])
+    assert _rows_equal([{"x": 1}], [{"x": 1}])
