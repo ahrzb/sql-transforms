@@ -1,31 +1,102 @@
 # Vision
 
-sql-transform lets you define ML feature transforms as SQL, and run them two ways:
+sql-transform is becoming a **compose-in, sklearn-compatible feature-transform
+library with a fast serving path**: typed transformers you drop into an existing
+sklearn pipeline that run online at low latency, with an optional SQL surface for
+authoring them declaratively. Two capabilities define it:
 
-1. **Easy authoring** — write a transform as a SQL expression instead of hand-rolled
-   Python/sklearn boilerplate.
-2. **Fast inference** — once fitted, apply that same SQL to single rows or batches
-   at low latency, without going back through a SQL engine.
+1. **Authoring** — express a transform as a typed, composable unit (optionally as a
+   SQL expression) instead of hand-rolled Python/sklearn glue.
+2. **Fast inference** — once fitted, apply it to single rows or batches at low
+   latency, without going back through a SQL engine.
 
-Everything else in this doc serves one of those two goals.
+Everything below serves one of those two, in service of a single near-term goal.
 
-## Typed transforms — why it matters
+## The bet
 
-Feature and training pipelines rot into unmaintainable messes: stringly-typed
-dict-passing, schemas that live only in someone's head, a column rename that
-breaks something three steps downstream with no warning until a garbled number
-shows up in production. sql-transform's bet is that **strong typing** is the
-antidote.
+Near-term, the target is concrete: **a well-adopted alternative to raw sklearn
+preprocessing transformers**, for people serving those transforms online at low
+latency. The feature-store direction is a *later* expansion, not the current goal —
+though, as the third hook shows, its groundwork falls out naturally. Three things,
+in order, are meant to earn adoption.
 
-Every transformer carries explicit, checkable schemas — Pydantic models for its
-input row (`__THIS__`), its learned state (`__STATE__`), and its output —
-validated when the transformer is built (columns checked against the model) and
-again at call time. That makes a transformer a typed, composable unit: you can
-see what it consumes and produces without running it, refactor it without fear,
-and catch a mismatch at the boundary instead of downstream. The aim is to turn a
-pile of glue code into a set of transformers whose types document and enforce how
-they fit together — so a growing pipeline stays legible instead of collapsing
-under its own weight.
+### 1. It composes in and just works — the wedge
+
+Not "swap your imports." The unit of adoption is dropping *one* of our transformers
+into an existing sklearn pipeline and having it compose seamlessly with sklearn's
+own transformers, the surrounding pandas/numpy/joblib tooling, and the model. That
+requires implementing sklearn's estimator interface (`fit`/`transform`/
+`get_feature_names_out`, `get_params`/`set_params`, cloneable) so ours are
+first-class citizens *inside* a stock `Pipeline`/`ColumnTransformer`. Adoption is
+incremental — one transformer at a time, coexisting with sklearn — far lower
+friction than wholesale replacement. It is also the answer to ONNX's weak spot: no
+export/convert step, no separate runtime, no new mental model — you stay in Python,
+in your existing pipeline, with your own objects.
+
+### 2. It's dramatically faster at n = 1 — the reason to switch
+
+Good DX gets someone to look; speed is what makes leaving raw sklearn rational.
+Both are required — great DX at equal speed just means "keep using sklearn."
+
+The speedup has a sharper source than "make it quick": the cost it targets is the
+**intermediate representation**, not the arithmetic. In a typical sklearn serving
+path a single request becomes a `dict` and then a pandas `DataFrame` so a
+`ColumnTransformer` can run over it — and the transform itself (subtract a mean,
+divide by a scale, look up a category) is nanoseconds. Building the DataFrame to
+hang that arithmetic off of is hundreds of microseconds: block manager, index,
+dtype inference, a Series per column. At `n = 1` that fixed cost never amortizes,
+so it *is* the latency. The same cost is invisible in training/batch land, where it
+spreads across 100k rows and vanishes — which is exactly why online serving is the
+case that suffers. Memory follows the same shape: a DataFrame per request is a
+burst of allocation and garbage on every call, and under concurrent load that churn
+surfaces as tail-latency jitter.
+
+So the bet for inference is `input → typed values → feature buffer → model.predict`,
+**never materializing a dict-of-columns or a DataFrame on the request path**. That
+is also why transforms are reimplemented rather than called faster — sklearn's API
+is DataFrame/array-in, so owning the transform logic is the only way to skip the
+intermediate. The per-transformer math is trivial; the value is entirely in the
+representation choice. The correctness bar is the opposite and unforgiving: the
+assembled feature vector must be bit-identical — same width, same column order — to
+what sklearn's `ColumnTransformer` would have produced, because a downstream model
+consumes it positionally and a mislabeled column returns a *confidently wrong*
+prediction, not an error. End-to-end assembly parity, not per-transformer
+correctness in isolation, is the real acceptance test. One consequence: falling back
+to the real sklearn object for a transform is *not free* — it drags the DataFrame
+back onto the request path, so hot-path features want native implementations even
+when individually uncommon.
+
+### 3. It exposes a legible, enforced feature contract — the moat
+
+The feature vector a model consumes is normally an opaque positional array, and
+that opacity is the root of the everyday pains of production ML: training/serving
+skew (the serving side reconstructs a contract nobody wrote down, and it drifts),
+un-debuggable predictions (decoding an anonymous vector to explain a score), and
+un-handoffable pipelines (a new owner has no spec of what the thing consumes or
+emits). Pipelines rot the same way and for the same reason — stringly-typed
+dict-passing, schemas that live only in someone's head, a column rename that breaks
+something three steps downstream with no warning until a garbled number shows up in
+production.
+
+The bet is that **strong typing is the antidote**. Every transformer carries
+explicit, checkable schemas — Pydantic models for its input row (`__THIS__`), its
+learned state (`__STATE__`), and its output — validated when the transformer is
+built (columns checked against the model) and again at call time. Because we own
+every transform, we can emit a typed, validated output schema that traces each
+feature back to the raw input that produced it. Two things make this more than
+sklearn's brittle `get_feature_names_out()`: *enforcement* — a schema mismatch
+errors at the boundary instead of yielding a silently wrong prediction — and
+*provenance* — raw column → feature, which is what makes a prediction debuggable and
+a pipeline handoff-able. The result turns a pile of glue code into a set of
+transformers whose types document and enforce how they fit together, so a growing
+pipeline stays legible instead of collapsing under its own weight.
+
+This contract is **decoupled from how transforms are authored**: SQL is one optional
+authoring surface for people who want declarative, inspectable transforms; the typed
+contract is delivered either way, including for a pipeline assembled purely through
+the compose-in API. And it is the bridge forward — a typed, validated,
+provenance-carrying feature contract *is* a proto feature-store contract, which is
+why that expansion is a natural next step rather than a pivot.
 
 ## How it works today
 
@@ -48,8 +119,8 @@ Two phases, two engines:
 Both paths run the *same* rewritten SQL against the *same* frozen state, so they
 return identical values on the normal numeric path. The split just picks the
 engine: DataFusion for large batches, the Rust interpreter for online inference.
-This is what makes goal 2 possible: fit pays the cost of a real query engine
-once; inference pays only for a lean interpreter walking a plan.
+This is what makes goal 2 possible: fit pays the cost of a real query engine once;
+inference pays only for a lean interpreter walking a plan.
 
 See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 (execution engine vs. authoring front-end).
