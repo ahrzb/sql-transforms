@@ -110,8 +110,12 @@ backends to the fitted state.
 - **Empty batch** (zero input rows): DataFusion returns zero rows with the
   correct output schema — strictly better than today's `pa.table({})`, which
   loses the schema.
-- **Error-semantics divergence** (see below): the two engines differ at edges
-  (div/mod-by-zero, NULL propagation, int/float coercion). This is accepted for
+- **Error-semantics divergence** (see below): on the *normal* numeric path the
+  two engines are verified identical (including float division by zero → `inf`
+  on both, and integer truncation on both). They diverge on **error type**: an
+  integer division/modulo by zero makes the Rust `InferFn` raise a clean
+  `ValueError`, while DataFusion raises its own `Exception`
+  ("DataFusion error: Arrow error: Divide by zero error"). This is accepted for
   now, documented in VISION.md, and pinned by an `xfail` test rather than left
   implicit.
 
@@ -132,21 +136,24 @@ backends to the fitted state.
 
 **The divergence gap (tracked, not swept under):**
 
-1. Add `test_batch_vs_infer_diverge_on_div_by_zero`: all-zero training data so
-   `MEAN(age) == 0`, query `SELECT age / MEAN(age) OVER () AS x FROM __THIS__`;
-   assert `transform` and `infer_batch` agree.
-2. Run it and **confirm it fails** — Rust `InferFn` raises a clean `ValueError`
-   on division by zero, while DataFusion yields `inf`/`NULL`/its own error. They
-   diverge.
-3. Mark it `@pytest.mark.xfail(reason="batch/inference engine semantics diverge
-   — see VISION.md", strict=True)`. It keeps running, stays red-tracked, and
-   auto-flips to a pass (failing loudly) the day the gap is closed. A plain
-   `skip` would silently hide it, so `xfail(strict=True)` is used instead.
+1. Add `test_transform_raises_clean_valueerror_on_div_by_zero`: fit on integer
+   columns, then `transform` a batch that divides by zero
+   (`SELECT a / b AS x FROM __THIS__`, batch `b == 0`). Assert `transform` raises
+   `ValueError` — the same clean error the Rust `infer` path raises.
+2. Run it and **confirm it fails** — the Rust path raises a clean `ValueError`,
+   but DataFusion raises its own `Exception` ("DataFusion error: Arrow error:
+   Divide by zero error"), which `pytest.raises(ValueError)` does not catch.
+3. Mark it `@pytest.mark.xfail(reason="batch (DataFusion) surfaces its own error
+   type, not the clean ValueError the Rust inference path raises — see
+   VISION.md", strict=True)`. It keeps running, stays red-tracked, and auto-flips
+   to a pass (failing loudly) the day the gap is closed. A plain `skip` would
+   silently hide it, so `xfail(strict=True)` is used instead.
 
 **VISION.md roadmap item (new):** "Unify batch (DataFusion) vs inference (Rust)
-semantics at edges — div/mod-by-zero, NULL propagation, int/float coercion.
-Currently divergent; tracked by the `xfail` equivalence test
-`test_batch_vs_infer_diverge_on_div_by_zero`."
+*error* semantics: an integer division/modulo by zero raises a clean `ValueError`
+from the Rust `InferFn` but a raw DataFusion `Exception` from the batch path.
+Normal numeric results are already identical across engines. Tracked by the
+`xfail` test `test_transform_raises_clean_valueerror_on_div_by_zero`."
 
 ## Non-goals
 
