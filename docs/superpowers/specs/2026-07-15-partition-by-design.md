@@ -105,7 +105,6 @@ fit(train_table):
     build a pyarrow state table straight from the result: key columns + value
     columns, all keeping their natural Arrow types (no float coercion)
     (empty key-set -> one row + __state_marker__=0 column)
-    synthesize the state model from the table's Arrow schema (nullable value fields)
   rewritten = rewrite_sql(tree, windows, state_tables)   # LEFT JOINs on key equality
   store: self._rewritten_sql, self._state_tables (dict[name -> pa.Table])
   build InferFn(rewritten, row_tables={"__THIS__": this_model},
@@ -134,12 +133,14 @@ infer/infer_batch(rows)  -> Rust InferFn:
   plus a `__state_marker__` column), and builds pyarrow tables straight from the
   results with **no float coercion** — value columns keep their natural Arrow type.
   `state_key` unchanged. The `NotImplementedError` for `has_partition` is removed;
-  the one for `has_order` stays.
-- **`sql_transform/_schema.py`** — `synthesize_state_model` becomes type-aware:
-  build the state model's fields from the state table's Arrow schema (reuse
-  `_arrow_type_to_python`) with **nullable** value fields (`T | None`, since a
-  LEFT-join miss is NULL), instead of the current float-only fields. Key columns are
-  modeled with their native types too.
+  the one for `has_order` stays. A shared `state_table_name(partition_cols)` helper
+  gives the deterministic table name (`__STATE__` / `__STATE_BY_city__`), used by
+  both `_state` and `_rewrite`.
+- **`sql_transform/_schema.py`** — `synthesize_state_model` is **removed**. State is
+  no longer a Pydantic row-model: state tables are passed to `InferFn` as *static*
+  `pa.Table`s (read directly, columns validated against the table's own schema) and
+  registered directly in DataFusion. Types (int/float/str/bool, nullable) flow from
+  the Arrow tables with no model synthesis. `synthesize_this_model` is unchanged.
 - **`sql_transform/_rewrite.py`** — `rewrite_sql` takes the state-table set and emits
   one LEFT JOIN per key-set with ANDed key equalities (`__THIS__.k = T.k`), replacing
   each window node with `T.<state_key>`. Global state joined on the marker constant.
