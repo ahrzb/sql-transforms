@@ -23,7 +23,7 @@ def test_infer_before_fit_raises_runtime_error():
 
     t = SQLTransform("SELECT age FROM __THIS__")
     with pytest.raises(RuntimeError):
-        t._infer({"age": 1})
+        t.infer({"age": 1})
 
 
 def test_fit_rejects_where_clause():
@@ -81,8 +81,8 @@ def test_single_row_inference():
 
     t = SQLTransform("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
     t.fit(pa.table({"age": [25, 30, 35]}))
-    result = t._infer({"age": 40})
-    assert abs(result["age_norm"] - 40 / 30) < 0.001
+    result = t.infer({"age": 40})
+    assert abs(result.age_norm - 40 / 30) < 0.001
 
 
 def test_multiple_columns():
@@ -115,8 +115,8 @@ def test_from_file(tmp_path):
 
     t = SQLTransform.from_file(str(sql_file))
     t.fit(pa.table({"age": [1, 2, 3]}))
-    result = t._infer({"age": 10})
-    assert "x" in result
+    result = t.infer({"age": 10})
+    assert hasattr(result, "x")
 
 
 def test_e2e_two_transforms_and_dedup():
@@ -146,13 +146,13 @@ def test_e2e_two_transforms_and_dedup():
     assert len(out) == 4
 
     row = {"age": 50, "income": 100_000}
-    result = t._infer(row)
+    result = t.infer(row)
 
     mean_age = 32.5
-    assert abs(result["age_norm"] - 50 / mean_age) < 0.001
+    assert abs(result.age_norm - 50 / mean_age) < 0.001
 
     total_income = 260_000.0
-    assert abs(result["income_share"] - 100_000 / total_income) < 0.001
+    assert abs(result.income_share - 100_000 / total_income) < 0.001
 
 
 def test_partitioned_agg_raises_not_implemented():
@@ -170,8 +170,8 @@ def test_this_model_omitted_synthesizes_from_table_schema():
 
     t = SQLTransform("SELECT age FROM __THIS__")
     t.fit(pa.table({"age": [1, 2, 3]}))
-    result = t._infer({"age": 5})
-    assert result["age"] == 5
+    result = t.infer({"age": 5})
+    assert result.age == 5
 
 
 def test_this_model_supplied_compatible():
@@ -182,8 +182,8 @@ def test_this_model_supplied_compatible():
 
     t = SQLTransform("SELECT age FROM __THIS__")
     t.fit(pa.table({"age": [1, 2, 3]}), this_model=Row)
-    result = t._infer({"age": 7})
-    assert result["age"] == 7
+    result = t.infer({"age": 7})
+    assert result.age == 7
 
 
 def test_this_model_supplied_missing_referenced_column_raises():
@@ -205,3 +205,42 @@ def test_state_is_typed_pydantic_instance():
     # DataFusion normalizes MEAN to avg internally, so the field is avg_age.
     assert isinstance(t._state.avg_age, float)
     assert t._state.avg_age == 30.0
+
+
+def test_infer_accepts_pydantic_model():
+    from sql_transform import SQLTransform
+
+    class Row(BaseModel):
+        age: int
+
+    t = SQLTransform("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
+    t.fit(pa.table({"age": [25, 30, 35]}), this_model=Row)
+    result = t.infer(Row(age=40))
+    assert abs(result.age_norm - 40 / 30) < 0.001
+
+
+def test_infer_batch_returns_typed_models():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
+    t.fit(pa.table({"age": [25, 30, 35]}))
+    out = t.infer_batch([{"age": 40}, {"age": 50}])
+    assert len(out) == 2
+    assert all(isinstance(o, BaseModel) for o in out)
+    assert abs(out[0].age_norm - 40 / 30) < 0.001
+    assert abs(out[1].age_norm - 50 / 30) < 0.001
+
+
+def test_transform_and_infer_batch_agree():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
+    t.fit(pa.table({"age": [25, 30, 35]}))
+
+    test = pa.table({"age": [40, 50, 60]})
+    batch = t.transform(test)
+    rows = t.infer_batch([{"age": 40}, {"age": 50}, {"age": 60}])
+
+    assert_approx_equal(
+        batch.column("age_norm").to_pylist(), [r.age_norm for r in rows]
+    )

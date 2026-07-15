@@ -9,6 +9,7 @@ import datafusion
 import pyarrow as pa
 from pydantic import BaseModel
 
+from sql_transform._batch import run_batch
 from sql_transform._interpreter import InferFn
 from sql_transform._rewrite import rewrite_sql
 from sql_transform._schema import synthesize_this_model
@@ -18,6 +19,14 @@ from sql_transform._state import extract_state
 __all__ = ["InferFn", "SQLTransform"]
 
 
+def _to_namespace(row: dict[str, Any] | BaseModel) -> SimpleNamespace:
+    """Normalize an inference input row (dict or Pydantic model) into the
+    SimpleNamespace of attributes the Rust InferFn reads."""
+    if isinstance(row, BaseModel):
+        return SimpleNamespace(**row.model_dump())
+    return SimpleNamespace(**row)
+
+
 class SQLTransform:
     """A transformer that applies SQL window-aggregate transforms.
 
@@ -25,18 +34,20 @@ class SQLTransform:
     aggregate state, rewrites the SQL into plain-column-reference form,
     and builds a Rust InferFn for evaluation.
 
-    transform() applies the transforms to batch data via InferFn.
+    transform() applies the transforms to batch data via DataFusion.
+    infer()/infer_batch() apply them row-at-a-time via the Rust InferFn.
 
     Usage:
         t = SQLTransform("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
         t.fit(train_table)
         out = t.transform(test_table)        # batch
-        out_row = t._infer({"age": 42})      # single row
+        out_row = t.infer({"age": 42})       # single row
     """
 
     def __init__(self, sql: str) -> None:
         self._sql = sql
         self._state: BaseModel | None = None
+        self._rewritten_sql: str | None = None
         self._infer_fn: InferFn | None = None
 
     @classmethod
@@ -59,32 +70,34 @@ class SQLTransform:
         ctx.from_arrow(table, name="__THIS__")
 
         self._state = extract_state(windows, ctx, "__THIS__")
-        rewritten_sql = rewrite_sql(tree, windows)
+        self._rewritten_sql = rewrite_sql(tree, windows)
         self._infer_fn = InferFn(
-            rewritten_sql,
+            self._rewritten_sql,
             row_tables={"__THIS__": this_model, "__STATE__": type(self._state)},
             static_tables={},
         )
         return self
 
-    def _infer_rows(self, this_rows: list[SimpleNamespace]) -> list[BaseModel]:
-        """Run InferFn.infer() for the given __THIS__ rows against learned state."""
+    def transform(self, table: pa.Table, /) -> pa.Table:
+        """Batch-transform `table` through DataFusion using the frozen fit-time
+        state. Runs the rewritten SQL (`__THIS__ CROSS JOIN __STATE__`)
+        vectorized; returns a pyarrow Table. Use infer()/infer_batch() for
+        low-latency row-at-a-time inference through the Rust engine instead."""
+        if self._infer_fn is None:
+            raise RuntimeError("Must call fit() before transform")
+        return run_batch(self._rewritten_sql, table, self._state)
+
+    def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
+        """Single-row inference through the Rust InferFn against the frozen
+        state. Accepts a dict or a Pydantic model; returns the typed output
+        model instance."""
+        return self.infer_batch([row])[0]
+
+    def infer_batch(self, rows: list[dict[str, Any] | BaseModel], /) -> list[BaseModel]:
+        """Many-rows inference through the Rust InferFn against the frozen
+        state. Accepts dicts and/or Pydantic models; returns a list of typed
+        output model instances."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before inference")
+        this_rows = [_to_namespace(row) for row in rows]
         return self._infer_fn.infer({"__THIS__": this_rows, "__STATE__": [self._state]})
-
-    def transform(self, table: pa.Table, /) -> pa.Table:
-        """Apply transforms to batch data using learned state, via InferFn."""
-        rows = table.to_pylist()
-        out_rows = self._infer_rows([SimpleNamespace(**row) for row in rows])
-        out_dicts = [r.model_dump() for r in out_rows]
-        return (
-            pa.table({k: [r[k] for r in out_dicts] for k in out_dicts[0]})
-            if out_dicts
-            else pa.table({})
-        )
-
-    def _infer(self, row: dict[str, Any]) -> dict[str, Any]:
-        """Single-row inference via InferFn."""
-        out_rows = self._infer_rows([SimpleNamespace(**row)])
-        return out_rows[0].model_dump()
