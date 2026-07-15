@@ -38,11 +38,13 @@ def static(schema, data) -> Table:   # preloaded static table (InferFn static_ta
 
 - **`Table`** is a small dataclass: `kind` (`"row"` | `"static"`), `schema`
   (`pa.Schema`), `rows` (`list[dict]`).
-- **`schema`** accepts either a **type-spec dict** — `{"a": "int", "b": "float?",
-  "name": "str"}` where the base is `int`/`float`/`str`/`bool` and a trailing `?`
-  marks the column nullable — **or a Pydantic `BaseModel` subclass** (used directly
-  as the `InferFn` row model, and reflected to a `pa.Schema` for DataFusion). Python
-  builtins (`int`, `float`, `str`, `bool`) are accepted as type values too.
+- **`schema`** is a **type-spec dict** — `{"a": "int", "b": "float?", "name":
+  "str"}` where the base is `int`/`float`/`str`/`bool` and a trailing `?` marks the
+  column nullable. Python builtins (`int`, `float`, `str`, `bool`) are accepted as
+  type values too. (A row table's `InferFn` Pydantic model is synthesized from this
+  via the existing `synthesize_this_model`; passing a pre-built model class is not
+  supported — the dict form covers every case and keeps the harness free of
+  annotation reflection.)
 - `row(**cols)` infers each column's type from its value (`int`→int64,
   `float`→float64, `str`→string, `bool`→bool; a `None` value makes the column
   nullable). It is the terse default for scalar decision tables; use `rows(...)`
@@ -55,9 +57,9 @@ def static(schema, data) -> Table:   # preloaded static table (InferFn static_ta
    `ctx.from_arrow(pa.Table.from_pylist(rows, schema))`; `ctx.sql(query).collect()`
    → `to_pylist()`.
 3. **Rust `InferFn`:** `row` tables → `synthesize_this_model(schema)` (existing
-   `_schema.py` helper) unless a `BaseModel` was supplied → `row_tables`; `static`
-   tables → `pa.Table` → `static_tables`. `InferFn(query, row_tables,
-   static_tables).infer({name: rows for row-tables})` → `model_dump()`.
+   `_schema.py` helper) → `row_tables`, and each row dict → a model instance;
+   `static` tables → `pa.Table` → `static_tables`. `InferFn(query, row_tables,
+   static_tables).infer({name: model-instances for row-tables})` → `model_dump()`.
 4. **Compare** with `_rows_equal` and, if `expect` given, compare to it too.
 
 ### `_rows_equal` — comparison semantics
