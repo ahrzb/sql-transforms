@@ -82,6 +82,17 @@ def build_state_tables(
                 f"FROM {table_name} GROUP BY {key_list}"
             )
             table = _collect(ctx, sql)
+            # An unseen partition key yields NULL for every value column after
+            # the LEFT JOIN, even for aggregates DataFusion types non-nullable
+            # (COUNT is int64 NOT NULL). Widen value columns to nullable so
+            # infer()'s output model accepts the NULL, matching transform().
+            schema = pa.schema(
+                [
+                    f.with_nullable(True) if f.name not in partition_cols else f
+                    for f in table.schema
+                ]
+            )
+            table = table.cast(schema)
         else:
             sql = f"SELECT {', '.join(value_exprs)} FROM {table_name}"
             table = _collect(ctx, sql)

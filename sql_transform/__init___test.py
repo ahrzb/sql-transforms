@@ -277,6 +277,23 @@ def test_partition_by_count_encoding_is_integer():
     assert isinstance(out.n, int)  # count encoding stays an int, not 2.0
 
 
+def test_partition_by_count_encoding_unseen_key_is_null_both_engines():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT COUNT(target) OVER (PARTITION BY city) AS n FROM __THIS__")
+    t.fit(pa.table({"city": ["a", "a", "b"], "target": [1, 2, 3]}))
+
+    # infer() must not raise on an unseen partition; it returns NULL.
+    assert t.infer({"city": "zzz", "target": 0}).n is None
+
+    # transform() and infer_batch() agree, both NULL at the unseen row.
+    batch = pa.table({"city": ["a", "zzz"], "target": [0, 0]})
+    out = t.transform(batch)
+    rows = t.infer_batch([{"city": "a", "target": 0}, {"city": "zzz", "target": 0}])
+    assert out.column("n").to_pylist() == [r.n for r in rows]
+    assert out.column("n").to_pylist()[1] is None
+
+
 def test_partition_by_transform_is_one_to_one_and_matches_infer():
     from sql_transform import SQLTransform
 
