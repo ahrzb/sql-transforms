@@ -14,7 +14,7 @@ from sql_transform._interpreter import InferFn
 from sql_transform._rewrite import rewrite_sql
 from sql_transform._schema import synthesize_this_model
 from sql_transform._sql import find_window_aggregates, parse_and_validate
-from sql_transform._state import extract_state
+from sql_transform._state import build_state_tables  # noqa: F401  # interim: Task 5 rewrites fit() to use this
 
 __all__ = ["InferFn", "SQLTransform"]
 
