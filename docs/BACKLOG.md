@@ -36,17 +36,6 @@ interpreter today. **Start:** prioritize by what authoring (goal 1) actually
 needs; `CASE WHEN` also needs Layer-1 interpreter support, not just a rewrite
 change.
 
-### Aggregate result typing (non-float aggregates)
-Window-aggregate state is hard-coerced to `float` in `_state.py` (`values[key] =
-float(value)`, and `synthesize_state_model` makes every field `float`). Numeric
-aggregates (`AVG`/`SUM`/`STDDEV`/`MIN`/`MAX`/`COUNT`) already work over `OVER ()`,
-but `MIN(name)` on a string raises `could not convert string to float`, and
-`COUNT` comes back as a float rather than an int. **Start:** carry each
-aggregate's real Arrow/Python type from the fit-time query into the synthesized
-state model instead of forcing `float` — unblocks `MIN`/`MAX` on strings/dates,
-`MODE`, and proper integer `COUNT`. Applies to both the global and (once it lands)
-the `PARTITION BY` state paths.
-
 ### `ORDER BY` / window frames (running, cumulative, moving aggregates)
 `AGG(col) OVER (ORDER BY ...)` and explicit `ROWS`/`RANGE BETWEEN` frames —
 running sums, cumulative means, moving windows. Currently rejected with
@@ -62,7 +51,9 @@ inference engine before investing.
 ### `PARTITION BY` window aggregates
 Per-partition learned state (target/categorical encoding) via LEFT-joined
 unique-keyed state tables; unseen partition → NULL; transform stays strictly
-1-to-1. Includes a Rust LEFT-lookup-join addition. Designed in
+1-to-1. Includes a Rust LEFT-lookup-join addition, and **folds in aggregate result
+typing** (state value columns keep real Arrow types — int/float/str/bool, nullable
+— instead of float coercion; enables integer count/ordinal encodings). Designed in
 [superpowers/specs/2026-07-15-partition-by-design.md](superpowers/specs/2026-07-15-partition-by-design.md)
 — move back to Open items only if it's shelved.
 

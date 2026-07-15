@@ -68,15 +68,30 @@ case-collision `ValueError` (two columns differing only by case mapping to the s
 `state_key`) applies per-table. Distinct key-sets with the same `(fn, col)` are
 distinct tables — no collision.
 
-## Value typing (scoped to float, deliberate)
+## Value typing: preserve real types (no float coercion)
 
-Partition **value** columns stay `float`, exactly as the global path does today
-(`extract_state` coerces to `float`). So `AVG`/`SUM`/`STDDEV`/`MIN`/`MAX`/`COUNT`
-etc. over numeric columns work; `MIN(name)` on a string column stays blocked by
-float-coercion — the same limitation as the global path, and out of scope here
-(tracked separately as the "aggregate result typing" backlog item). Partition
-**key** columns keep their native Arrow types (str/int) — they are join keys, never
-coerced.
+State value columns keep their **natural type** — `int`, `float`, `str`, `bool` —
+instead of today's blanket `float` coercion (`extract_state` does
+`values[key] = float(value)` and `synthesize_state_model` makes every field
+`float`). This is essential for categorical work: `COUNT(*) OVER (PARTITION BY
+city)` is an integer count-encoding, an ordinal id is an integer, not `20.0`.
+
+The mechanism makes this *the natural path, not extra work*: state tables are built
+directly from the `GROUP BY` / aggregate query results, whose columns already carry
+correct Arrow types. Nothing coerces them. The per-table state model is synthesized
+from the resulting Arrow schema (reusing `_schema.py`'s `_arrow_type_to_python`),
+and every value field is **nullable** (`T | None`) because a LEFT-join miss yields
+NULL. Partition **key** columns likewise keep their native types — they are join
+keys.
+
+This folds in what was the separate "aggregate result typing" backlog item, and it
+applies to **both** the global `OVER ()` state and the `PARTITION BY` state (the
+old global scalar path stops coercing too — its one-row table is built from the
+query result's real column type). Verified: the Rust `InferFn` already carries
+`int`/`float`/`str`/`bool` static-table columns through a lookup join with types
+intact (`Value` enum has `Int`/`Float`/`Str`/`Bool`/`Null`), so typed values need
+no Rust change — only the LEFT-lookup-join does. Multi-argument and expression
+aggregate arguments remain out of scope (single plain column only).
 
 ## Architecture & data flow
 
@@ -87,8 +102,10 @@ fit(train_table):
   groups   = group windows by partition-key-set
   for each group:
     run  SELECT <keys>, <agg1> AS k1, ... FROM __THIS__ GROUP BY <keys>   (DataFusion)
-    build a pyarrow state table: key columns (native type) + float value columns
+    build a pyarrow state table straight from the result: key columns + value
+    columns, all keeping their natural Arrow types (no float coercion)
     (empty key-set -> one row + __state_marker__=0 column)
+    synthesize the state model from the table's Arrow schema (nullable value fields)
   rewritten = rewrite_sql(tree, windows, state_tables)   # LEFT JOINs on key equality
   store: self._rewritten_sql, self._state_tables (dict[name -> pa.Table])
   build InferFn(rewritten, row_tables={"__THIS__": this_model},
@@ -113,10 +130,16 @@ infer/infer_batch(rows)  -> Rust InferFn:
   still rejected via `has_order`.
 - **`sql_transform/_state.py`** — `extract_state` is replaced by a builder that
   returns `dict[str, pa.Table]` (state-table-name → table): groups windows by
-  key-set, runs one `GROUP BY` query per group (empty key-set → the existing single
-  scalar query plus a `__state_marker__` column), builds pyarrow tables. `state_key`
-  unchanged. The `NotImplementedError` for `has_partition` is removed; the one for
-  `has_order` stays.
+  key-set, runs one `GROUP BY` query per group (empty key-set → a single-row query
+  plus a `__state_marker__` column), and builds pyarrow tables straight from the
+  results with **no float coercion** — value columns keep their natural Arrow type.
+  `state_key` unchanged. The `NotImplementedError` for `has_partition` is removed;
+  the one for `has_order` stays.
+- **`sql_transform/_schema.py`** — `synthesize_state_model` becomes type-aware:
+  build the state model's fields from the state table's Arrow schema (reuse
+  `_arrow_type_to_python`) with **nullable** value fields (`T | None`, since a
+  LEFT-join miss is NULL), instead of the current float-only fields. Key columns are
+  modeled with their native types too.
 - **`sql_transform/_rewrite.py`** — `rewrite_sql` takes the state-table set and emits
   one LEFT JOIN per key-set with ANDed key equalities (`__THIS__.k = T.k`), replacing
   each window node with `T.<state_key>`. Global state joined on the marker constant.
@@ -159,6 +182,11 @@ infer/infer_batch(rows)  -> Rust InferFn:
 - **`_state`** — `GROUP BY` builds the correct per-partition table; dedup within a
   key-set (repeated `(fn, col)` → one value column); distinct key-sets → distinct
   tables; empty key-set → one-row marker table.
+- **Value typing** — `COUNT(*) OVER (PARTITION BY city)` yields an **integer** value
+  column and integer output (count encoding), not `float`; a string-valued
+  aggregate (e.g. `MIN(name)`) yields a `str` column; state-model value fields are
+  nullable. Covers both the global and partition paths (the old global path no
+  longer coerces to float either).
 - **`_rewrite`** — correct LEFT JOIN emission for single and composite keys; global
   state joined on the marker; window nodes replaced by `T.<state_key>`.
 - **Rust (`tests/test_interpreter.py`)** — LEFT lookup join: hit returns the value,
@@ -173,8 +201,6 @@ infer/infer_batch(rows)  -> Rust InferFn:
 
 - `ORDER BY` / window frames (running/cumulative/moving aggregates) — a separate,
   harder effort (order-dependent streaming state); stays rejected.
-- Non-float aggregate result types (`MIN/MAX` on strings/dates, `MODE`, `COUNT`→int)
-  — the separate "aggregate result typing" backlog item.
 - Global-aggregate fallback / smoothing priors for unseen partitions — NULL only;
   users compose fallbacks in SQL.
 - Multi-argument or expression aggregate arguments — still single plain column.
