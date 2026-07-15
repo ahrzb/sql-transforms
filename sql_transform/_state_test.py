@@ -111,9 +111,7 @@ def test_extract_preserves_column_case_in_query():
     ctx = datafusion.SessionContext()
     ctx.from_pydict({"Age": [25.0, 30.0, 35.0]}, name="data")
 
-    windows = _windows(
-        'SELECT "Age" / MEAN("Age") OVER () AS age_norm FROM __THIS__'
-    )
+    windows = _windows('SELECT "Age" / MEAN("Age") OVER () AS age_norm FROM __THIS__')
     state = extract_state(windows, ctx, "data")
 
     assert state.avg_age == 30.0

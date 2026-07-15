@@ -27,7 +27,9 @@ def test_rewrite_constant_window_agg():
 
 def test_rewrite_bare_window_agg_alias():
     sql = _rewrite("SELECT MEAN(age) OVER () AS age_avg FROM __THIS__")
-    assert sql == "SELECT __STATE__.avg_age AS age_avg FROM __THIS__ CROSS JOIN __STATE__"
+    assert (
+        sql == "SELECT __STATE__.avg_age AS age_avg FROM __THIS__ CROSS JOIN __STATE__"
+    )
 
 
 def test_rewrite_multiple_projections():

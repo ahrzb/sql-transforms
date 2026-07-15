@@ -44,8 +44,7 @@ def parse_and_validate(sql: str) -> exp.Select:
     table = from_.this
     if table.name != "__THIS__" or table.alias:
         raise ValueError(
-            "FROM clause must be exactly __THIS__ (no alias); found "
-            f"{table.sql()!r}"
+            f"FROM clause must be exactly __THIS__ (no alias); found {table.sql()!r}"
         )
 
     for key, label in _UNSUPPORTED_CLAUSES.items():

@@ -84,9 +84,7 @@ def test_find_window_aggregates_detects_partition_by():
 
 
 def test_find_window_aggregates_detects_order_by():
-    tree = parse_and_validate(
-        "SELECT AVG(age) OVER (ORDER BY age) AS x FROM __THIS__"
-    )
+    tree = parse_and_validate("SELECT AVG(age) OVER (ORDER BY age) AS x FROM __THIS__")
     windows = find_window_aggregates(tree)
     assert windows[0].has_order is True
 
