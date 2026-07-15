@@ -64,8 +64,9 @@ Out-of-scope constructs raise a clear `ValueError` from `_sql.py`'s
 | Required alias on every SELECT item | ✅ (enforced) | `_rewrite.py` `rewrite_sql` |
 | Explicit `ValueError` naming the unsupported clause (`WHERE`/`JOIN`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`) instead of a downstream failure | ✅ | `_sql.py` `parse_and_validate` |
 | `MEAN` → `AVG` synonym (preserves pre-sqlglot behavior) | ✅ | `_sql.py` `_FUNCTION_SYNONYMS` |
-| `PARTITION BY` window aggregates | ❌ explicitly rejected | `_state.py` `extract_state` (via `WindowAgg.has_partition`) |
-| `ORDER BY` window aggregates | ❌ explicitly rejected | `_state.py` `extract_state` (via `WindowAgg.has_order`) |
+| `PARTITION BY` window aggregates (target/categorical encoding) | ✅ | `_state.py` `build_state_tables` (per-partition table) + `_rewrite.py` LEFT JOIN + Rust LEFT lookup join; unseen partition → NULL, transform stays 1-to-1 |
+| Per-partition/global state value types preserved (int/float/str/bool, nullable) | ✅ | `_state.py` `build_state_tables` (no float coercion) |
+| `ORDER BY` window aggregates | ❌ explicitly rejected | `_state.py` `build_state_tables` (via `WindowAgg.has_order`) |
 | Simple equality JOIN in authored SQL (row⋈row, row⋈static) | 🔜 v1 target of the sqlglot rewrite | not started |
 | `WHERE` in the authored SQL | ❌ deferred past v1 | rejected at parse time by `_sql.py` `parse_and_validate`; execution-side support deferred |
 | Function calls in SELECT (`UPPER(...)`, `CAST(...)`, etc.) — even though Layer 1 supports them | ❌ deferred past v1 | `_rewrite.py` `rewrite_sql` only handles plain columns, binary ops, and window aggregates |

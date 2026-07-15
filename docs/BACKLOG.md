@@ -46,17 +46,6 @@ inference would need streaming/sequence state. **Start:** treat as a research
 spike, not a small feature; decide whether it's even in scope for a row-at-a-time
 inference engine before investing.
 
-## In progress
-
-### `PARTITION BY` window aggregates
-Per-partition learned state (target/categorical encoding) via LEFT-joined
-unique-keyed state tables; unseen partition → NULL; transform stays strictly
-1-to-1. Includes a Rust LEFT-lookup-join addition, and **folds in aggregate result
-typing** (state value columns keep real Arrow types — int/float/str/bool, nullable
-— instead of float coercion; enables integer count/ordinal encodings). Designed in
-[superpowers/specs/2026-07-15-partition-by-design.md](superpowers/specs/2026-07-15-partition-by-design.md)
-— move back to Open items only if it's shelved.
-
 ## Considered — likely won't do
 
 ### Codegen / compiled inference path
