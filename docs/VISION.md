@@ -163,6 +163,7 @@ See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 
 ## Roadmap
 
-Deferred tasks and open questions live in [BACKLOG.md](BACKLOG.md) — when work is
-pushed out of current scope, it lands there. This doc stays focused on what the
-project is and how it works today.
+The sequenced path toward these goals — milestones and progress — lives in
+[ROADMAP.md](ROADMAP.md); the underlying scoped tasks and open questions live in
+[BACKLOG.md](BACKLOG.md). This doc stays focused on what the project is and where
+it's headed, not the step-by-step.

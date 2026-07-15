@@ -1,43 +1,37 @@
 # SQL Transforms
 
-Declarative ML preprocessing pipelines using SQL syntax.
+Define ML feature transforms as SQL, fit once, then run them at batch or
+low-latency single-row speed.
 
 ## Installation
 
-### Core Installation
 ```bash
 pip install sql-transform
 ```
 
-### With sklearn Integration
-```bash
-pip install sql-transform[sklearn]
-# or
-pip install sql-transform[all]
-```
+### Development
 
-### Development Installation
 ```bash
 git clone https://github.com/ahrzb/sql-transforms.git
 cd sql-transforms
-uv sync
+mise run install        # uv sync — installs deps and builds the Rust extension
 ```
 
-## Quick Start
+The inference engine is a Rust/PyO3 module built by [maturin](https://www.maturin.rs/).
+After changing Rust code, rebuild it with `uv run maturin develop`.
 
-### Basic Usage (No sklearn required)
+## Quick Start
 
 ```python
 from sql_transform import SQLTransform
 import pyarrow as pa
 
-# Create sample data
 data = pa.table({
     "feature1": [1.0, 2.0, 3.0, 4.0, 5.0],
     "feature2": [10, 20, 30, 40, 50],
 })
 
-# Define SQL transformation -- input table is always referenced as __THIS__
+# The input table is always referenced as __THIS__.
 sql = """
 SELECT
     feature1 / MEAN(feature1) OVER () AS feature1_norm,
@@ -45,9 +39,10 @@ SELECT
 FROM __THIS__
 """
 
-# Fit, then batch-transform through DataFusion (pyarrow in / pyarrow out)
 transformer = SQLTransform(sql)
 transformer.fit(data)
+
+# Batch transform through DataFusion (pyarrow in / pyarrow out).
 result = transformer.transform(data)
 print(result)
 
@@ -58,110 +53,77 @@ print(one.feature1_norm)
 many = transformer.infer_batch([{"feature1": 2.0, "feature2": 20}])
 ```
 
-### With sklearn Integration
+Per-group statistics use `OVER (PARTITION BY ...)` — the group means/counts/etc.
+are frozen at `fit` and looked up per row at inference:
 
 ```python
-from sql_transform import SQLTransform
-
-# sklearn transforms are available when sklearn is installed
-sql = """
-SELECT 
-    sklearn.standardize(feature1) as std_feature1,
-    sklearn.minmax_scale(feature2, 0, 1) as scaled_feature2,
-    sklearn.kbins_discretize(feature3, 5, 'uniform') as binned_feature3
-FROM __THIS__
-"""
-
-transformer = SQLTransform(sql)
-transformer.fit(data)
-result = transformer.transform(data)
+sql = "SELECT target / MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__"
 ```
 
-## Available Transforms
+## What it supports
 
-### Built-in Aggregations (Always Available)
-- `avg()`, `mean()` - Average/mean
-- `stddev()` - Standard deviation  
-- Window functions: `over (partition by ...)`
+- **Window aggregates**, computed once at `fit` and frozen: whole-table `OVER ()`
+  and per-group `OVER (PARTITION BY ...)` (e.g. `MEAN`, `SUM`, `COUNT`, `STDDEV`).
+- **Expressions** (batch and inference): arithmetic, comparisons, `CAST`,
+  `UPPER`/`LOWER`/`TRIM`/`SUBSTR`/`CONCAT`, `ABS`, `ROUND`, `COALESCE`, `NULLIF`,
+  with SQL NULL-propagation semantics.
+- **Joins**: `INNER`/`CROSS`, plus a static-table lookup join (a row joined to a
+  preloaded `pyarrow.Table` by key — no per-row Python callback).
+- **Typed I/O**: Pydantic models for the input row and output, validated when the
+  transformer is built and again at call time. Output is a typed model; the input
+  schema is auto-synthesized or user-supplied.
 
-### sklearn Transforms (Optional)
-
-#### Scaling
-- `sklearn.standardize(column)` - Z-score normalization
-- `sklearn.minmax_scale(column, min, max)` - Min-max scaling
-- `sklearn.robust_scale(column)` - Robust scaling (median/IQR)
-- `sklearn.quantile_transform(column, n_quantiles, distribution)` - Quantile transformation
-
-#### Binning
-- `sklearn.kbins_discretize(column, n_bins, strategy)` - K-bins discretizer
-
-#### Categorical Encoding  
-- `sklearn.onehot_encode(column)` - One-hot encoding
-- `sklearn.ordinal_encode(column)` - Ordinal encoding
-
-#### Text Processing
-- `sklearn.tfidf_vectorize(column, max_features)` - TF-IDF vectorization
-
-## Features
-
-###  Current
-- Rust-backed inference via a rewritten-SQL pipeline (window aggregates against __THIS__/__STATE__)
-- DataFusion-based execution
-- Optional sklearn integration
-- Fit/transform ML pattern
-
-### Roadmap
-- More statistical transforms
-- Advanced text processing
-- Time series features  
-- Type system with schema inference
-
-## Development
-
-### Running Tests
-```bash
-mise run test
-# or
-pytest
-```
-
-### Code Formatting
-```bash
-mise run fmt
-# or
-ruff check . && ruff format .
-```
-
-### Check Available Tasks
-```bash
-mise tasks
-```
+See [docs/SQL_SUPPORT.md](docs/SQL_SUPPORT.md) for the feature-by-feature tracker.
 
 ## Architecture
 
+Two phases, two engines, one rewritten query:
+
 ```
-SQL Query → Parser → AST → Analyzer → Optimizer → Code Generator
-                              ↓
-                         Fit Phase: Compute aggregations  
-                              ↓
-                      Transform Phase: Apply transformations
+SQL over __THIS__
+      │
+      ▼
+   fit(train) ── DataFusion runs the SQL, freezes each window-aggregate (e.g.
+      │          MEAN(age)) into a typed __STATE__, and rewrites the SQL to
+      │          reference __STATE__ + the raw row __THIS__ instead of
+      │          recomputing aggregates.
+      │
+      │  rewritten SQL + frozen state
+      ├───────────────────────────────┬───────────────────────────────┐
+      ▼                               ▼
+ transform(batch)                infer(row) / infer_batch(rows)
+ DataFusion, vectorized           Rust InferFn interpreter, row-at-a-time,
+ columnar over the batch          no SQL engine at call time
 ```
 
-The system separates **fit** (compute statistics) and **transform** (apply transformations) phases, making it suitable for ML pipelines where you fit on training data and transform both training and test data.
+Both paths run the **same** rewritten SQL against the **same** frozen state, so
+they return identical values on the normal numeric path. `fit` pays for a real
+query engine once; inference pays only for a lean interpreter walking a plan. This
+separation of **fit** (compute statistics) and **transform/infer** (apply them)
+is the standard ML pattern — fit on training data, apply to training and serving.
 
-## Examples
+## Development
 
-See the [examples](examples/) directory for more comprehensive examples and tutorials.
+```bash
+mise run test     # uv run pytest
+mise run fmt      # ruff check + format
+mise run check    # fmt + test
+mise tasks        # list all tasks
+```
+
+## Project docs
+
+- [docs/VISION.md](docs/VISION.md) — what the project is and where it's headed.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — the sequenced milestones and progress.
+- [docs/BACKLOG.md](docs/BACKLOG.md) — scoped tasks and open questions.
 
 ## Contributing
 
-1. Pick an item from [docs/BACKLOG.md](docs/BACKLOG.md)
-2. Create an issue
-3. Implement with tests
-4. Submit PR
-
-See [docs/VISION.md](docs/VISION.md) for the project vision and
-[docs/BACKLOG.md](docs/BACKLOG.md) for the roadmap.
+1. Pick an item from [docs/ROADMAP.md](docs/ROADMAP.md) or
+   [docs/BACKLOG.md](docs/BACKLOG.md).
+2. Open an issue.
+3. Implement with tests.
+4. Submit a PR.
 
 ## License
 
