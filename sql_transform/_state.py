@@ -1,76 +1,97 @@
-"""Extract learned state from SQLTransform's window aggregates.
+"""Build typed per-partition state tables from SQLTransform's window aggregates.
 
-Runs one DataFusion query per DISTINCT (function, column) pair found by
-_sql.py's find_window_aggregates(), and synthesizes a typed Pydantic
-model instance ("StateModel") keyed by `{fn}_{col}` (no leading
-underscore -- see state_key), suitable for use as InferFn's __STATE__ row
-table. DataFusion's only role here is executing those small per-aggregate
-queries -- it never parses or plans SQLTransform's original SQL.
+Groups window aggregates by their PARTITION BY key-set and runs one DataFusion
+GROUP BY query per group, producing a pyarrow state table (key columns + one
+value column per distinct (fn, col)) whose value columns keep their natural
+Arrow type -- no float coercion. The global OVER () group (empty key-set) gets a
+one-row table plus a constant __state_marker__ column so the rewrite can LEFT
+JOIN it uniformly. State tables are consumed as static tables by both engines
+(InferFn static_tables and DataFusion registration) -- there is no Pydantic
+state model anymore.
 """
 
 from __future__ import annotations
 
 import datafusion
-from pydantic import BaseModel
+import pyarrow as pa
 
-from sql_transform._schema import synthesize_state_model
 from sql_transform._sql import WindowAgg
+
+STATE_MARKER = "__state_marker__"
 
 
 def state_key(fn_name: str, col_name: str) -> str:
-    """The __STATE__ field name for a given aggregate function + column,
-    e.g. state_key("AVG", "age") == "avg_age". No leading underscore --
-    Pydantic v2 would treat that as a private attribute."""
+    """The state value-column name for an aggregate function + column,
+    e.g. state_key("AVG", "age") == "avg_age"."""
     return f"{fn_name.lower()}_{col_name.lower()}"
 
 
-def extract_state(
+def state_table_name(partition_cols: tuple[str, ...]) -> str:
+    """Deterministic state-table name for a partition-key-set. Empty key-set
+    (the global OVER () state) -> "__STATE__"; otherwise
+    "__STATE_BY_<cols joined by _>__"."""
+    if not partition_cols:
+        return "__STATE__"
+    return "__STATE_BY_" + "_".join(partition_cols) + "__"
+
+
+def build_state_tables(
     windows: list[WindowAgg],
     ctx: datafusion.SessionContext,
     table_name: str,
-) -> BaseModel:
-    """Return a synthesized StateModel instance with one float field per
-    distinct (fn, col) window aggregate in `windows`.
-
-    Raises NotImplementedError if any window aggregate uses PARTITION BY
-    or ORDER BY -- not yet supported by the Rust-backed pipeline.
-    """
-    pairs: dict[tuple[str, str], None] = {}
+) -> dict[str, pa.Table]:
+    """Return a dict of state-table-name -> pyarrow table, one per distinct
+    PARTITION BY key-set present in `windows`. Value columns keep their real
+    Arrow type. Raises NotImplementedError for ORDER BY window aggregates and
+    ValueError for a case-collision between two aggregates in the same table."""
+    # Group windows by partition-key-set, preserving discovery order.
+    groups: dict[tuple[str, ...], list[tuple[str, str]]] = {}
     for w in windows:
-        if w.has_partition:
-            raise NotImplementedError(
-                "PARTITION BY window aggregates are not yet supported by "
-                "the Rust-backed SQLTransform pipeline"
-            )
         if w.has_order:
             raise NotImplementedError(
                 "ORDER BY window aggregates are not yet supported by "
                 "the Rust-backed SQLTransform pipeline"
             )
-        # Preserve the column's real case here -- lower-casing it would
-        # break the query below against a mixed-case schema, and would
-        # collide two distinct case-differing columns onto the same
-        # dedup key (state_key() below normalizes the STATE FIELD name
-        # to lowercase, which is a separate, intentional choice).
-        pairs[(w.fn, w.col)] = None
+        groups.setdefault(w.partition_cols, []).append((w.fn, w.col))
 
-    values: dict[str, float] = {}
-    for fn_name, col_name in pairs:
-        # Quote the column name so DataFusion resolves it against the
-        # schema's real (possibly mixed-case) field name rather than
-        # case-folding an unquoted identifier to lowercase.
-        sql = f'SELECT {fn_name}("{col_name}") FROM {table_name}'
-        result = ctx.sql(sql).collect()
-        value = result[0].column(0)[0].as_py()
-        key = state_key(fn_name, col_name)
-        if key in values:
-            raise ValueError(
-                f"Ambiguous window aggregate: {fn_name}({col_name}) "
-                f"normalizes to the same state key {key!r} as another "
-                "aggregate in this query -- column names that differ only "
-                "by case aren't distinguished"
+    tables: dict[str, pa.Table] = {}
+    for partition_cols, members in groups.items():
+        # Dedup (fn, col) within the group; detect state_key collisions.
+        selected: dict[str, tuple[str, str]] = {}
+        for fn_name, col_name in members:
+            key = state_key(fn_name, col_name)
+            existing = selected.get(key)
+            if existing is not None and existing != (fn_name, col_name):
+                raise ValueError(
+                    f"Ambiguous window aggregate: {fn_name}({col_name}) "
+                    f"normalizes to the same state key {key!r} as another "
+                    "aggregate in this query -- names that differ only by case "
+                    "aren't distinguished"
+                )
+            selected[key] = (fn_name, col_name)
+
+        value_exprs = [
+            f'{fn_name}("{col_name}") AS {key}'
+            for key, (fn_name, col_name) in selected.items()
+        ]
+
+        if partition_cols:
+            key_list = ", ".join(f'"{c}"' for c in partition_cols)
+            sql = (
+                f"SELECT {key_list}, {', '.join(value_exprs)} "
+                f"FROM {table_name} GROUP BY {key_list}"
             )
-        values[key] = float(value)
+            table = _collect(ctx, sql)
+        else:
+            sql = f"SELECT {', '.join(value_exprs)} FROM {table_name}"
+            table = _collect(ctx, sql)
+            table = table.append_column(STATE_MARKER, pa.array([0], type=pa.int64()))
 
-    state_model = synthesize_state_model(values)
-    return state_model(**values)
+        tables[state_table_name(partition_cols)] = table
+
+    return tables
+
+
+def _collect(ctx: datafusion.SessionContext, sql: str) -> pa.Table:
+    df = ctx.sql(sql)
+    return pa.Table.from_batches(df.collect(), schema=df.schema())
