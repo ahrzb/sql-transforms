@@ -244,3 +244,17 @@ def test_transform_and_infer_batch_agree():
     assert_approx_equal(
         batch.column("age_norm").to_pylist(), [r.age_norm for r in rows]
     )
+
+
+@pytest.mark.xfail(
+    reason="batch (DataFusion) surfaces its own error type, not the clean "
+    "ValueError the Rust inference path raises -- see VISION.md",
+    strict=True,
+)
+def test_transform_raises_clean_valueerror_on_div_by_zero():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT a / b AS x FROM __THIS__")
+    t.fit(pa.table({"a": [1], "b": [1]}))
+    with pytest.raises(ValueError):
+        t.transform(pa.table({"a": [1], "b": [0]}))

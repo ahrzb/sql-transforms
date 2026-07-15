@@ -45,11 +45,17 @@ SELECT
 FROM __THIS__
 """
 
-# Fit and transform
+# Fit, then batch-transform through DataFusion (pyarrow in / pyarrow out)
 transformer = SQLTransform(sql)
 transformer.fit(data)
 result = transformer.transform(data)
 print(result)
+
+# Low-latency inference through the Rust engine (dict or Pydantic model in,
+# typed model out). infer() for one row, infer_batch() for many.
+one = transformer.infer({"feature1": 2.0, "feature2": 20})
+print(one.feature1_norm)
+many = transformer.infer_batch([{"feature1": 2.0, "feature2": 20}])
 ```
 
 ### With sklearn Integration

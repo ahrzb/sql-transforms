@@ -18,12 +18,19 @@ Two phases, two engines:
   into a typed Pydantic model, then rewrites the SQL to reference that precomputed
   state (`__STATE__`) plus the raw input row (`__THIS__`) instead of recomputing
   aggregates.
-- **`transform(table)` / `_infer(row)`** — the rewritten SQL runs through a small
-  Rust interpreter (`InferFn`, via pyo3), row-at-a-time, against the fitted state.
-  No DataFusion, no aggregation engine, at inference time — just expression eval,
-  scans, and joins against typed Pydantic rows.
+- **`transform(table)`** — batch execution through DataFusion: the rewritten SQL
+  (`__THIS__ CROSS JOIN __STATE__`) runs against the batch as `__THIS__` and the
+  frozen fit-time state as a one-row `__STATE__` table. Vectorized, columnar.
+- **`infer(row)` / `infer_batch(rows)`** — low-latency execution through the small
+  Rust interpreter (`InferFn`, via pyo3), row-at-a-time, against the same frozen
+  state. No SQL engine at call time — just expression eval, scans, and joins
+  against typed Pydantic rows. Accepts dicts or Pydantic models; returns typed
+  output models.
 
-This split is what makes goal 2 possible: fit pays the cost of a real query engine
+Both paths run the *same* rewritten SQL against the *same* frozen state, so they
+return identical values on the normal numeric path. The split just picks the
+engine: DataFusion for large batches, the Rust interpreter for online inference.
+This is what makes goal 2 possible: fit pays the cost of a real query engine
 once; inference pays only for a lean interpreter walking a plan.
 
 See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
@@ -67,6 +74,15 @@ See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 
 ## Open questions / roadmap candidates
 
+- **Unify batch vs inference error semantics.** `transform` (DataFusion) and
+  `infer`/`infer_batch` (Rust `InferFn`) return identical values on the normal
+  numeric path, but an integer division/modulo by zero raises a clean
+  `ValueError` from the Rust path and a raw DataFusion `Exception`
+  ("DataFusion error: Arrow error: Divide by zero error") from the batch path.
+  Tracked by the `xfail` test
+  `test_transform_raises_clean_valueerror_on_div_by_zero`; closing it means
+  catching DataFusion's error in `_batch.run_batch` and re-raising the same
+  clean `ValueError` the interpreter raises.
 - **Decided, in progress:** replace `_rewrite.py`'s DataFusion-plan-walk with a
   sqlglot-based rewrite of the original SQL text. Why: DataFusion's Python
   bindings don't fully expose plan introspection (`Expr::WindowFunction` has no
