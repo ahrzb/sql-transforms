@@ -135,7 +135,10 @@ def test_e2e_two_transforms_and_dedup():
     train = pa.table(
         {
             "age": [25, 30, 35, 40],
-            "income": [50_000, 60_000, 70_000, 80_000],
+            # Floats: SUM(income) now preserves its real Arrow type (no more
+            # float-coercing state model), so an int column would make this
+            # division integer division.
+            "income": [50_000.0, 60_000.0, 70_000.0, 80_000.0],
         }
     )
 
@@ -145,7 +148,7 @@ def test_e2e_two_transforms_and_dedup():
     assert out.schema.names == ["age_norm", "income_share"]
     assert len(out) == 4
 
-    row = {"age": 50, "income": 100_000}
+    row = {"age": 50, "income": 100_000.0}
     result = t.infer(row)
 
     mean_age = 32.5
@@ -153,16 +156,6 @@ def test_e2e_two_transforms_and_dedup():
 
     total_income = 260_000.0
     assert abs(result.income_share - 100_000 / total_income) < 0.001
-
-
-def test_partitioned_agg_raises_not_implemented():
-    from sql_transform import SQLTransform
-
-    sql = "SELECT MEAN(target) OVER (PARTITION BY city) AS city_enc FROM __THIS__"
-    t = SQLTransform(sql)
-    data = pa.table({"city": ["a", "b"], "target": [1.0, 2.0]})
-    with pytest.raises(NotImplementedError):
-        t.fit(data)
 
 
 def test_this_model_omitted_synthesizes_from_table_schema():
@@ -197,14 +190,13 @@ def test_this_model_supplied_missing_referenced_column_raises():
         t.fit(pa.table({"age": [1, 2, 3]}), this_model=IncompleteRow)
 
 
-def test_state_is_typed_pydantic_instance():
+def test_state_tables_hold_typed_values():
     from sql_transform import SQLTransform
 
     t = SQLTransform("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
     t.fit(pa.table({"age": [25, 30, 35]}))
-    # DataFusion normalizes MEAN to avg internally, so the field is avg_age.
-    assert isinstance(t._state.avg_age, float)
-    assert t._state.avg_age == 30.0
+    # State is a dict of pyarrow tables, not a Pydantic model.
+    assert t._state_tables["__STATE__"].column("avg_age").to_pylist() == [30.0]
 
 
 def test_infer_accepts_pydantic_model():
@@ -258,3 +250,51 @@ def test_transform_raises_clean_valueerror_on_div_by_zero():
     t.fit(pa.table({"a": [1], "b": [1]}))
     with pytest.raises(ValueError):
         t.transform(pa.table({"a": [1], "b": [0]}))
+
+
+def test_partition_by_target_encoding_seen_and_unseen():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform(
+        "SELECT MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__"
+    )
+    t.fit(pa.table({"city": ["a", "b", "a", "b"], "target": [1.0, 3.0, 2.0, 4.0]}))
+
+    seen = t.infer({"city": "a", "target": 0.0})
+    assert seen.enc == 1.5
+
+    unseen = t.infer({"city": "zzz", "target": 0.0})
+    assert unseen.enc is None  # unseen partition -> NULL
+
+
+def test_partition_by_count_encoding_is_integer():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT COUNT(target) OVER (PARTITION BY city) AS n FROM __THIS__")
+    t.fit(pa.table({"city": ["a", "a", "b"], "target": [1, 2, 3]}))
+    out = t.infer({"city": "a", "target": 0})
+    assert out.n == 2
+    assert isinstance(out.n, int)  # count encoding stays an int, not 2.0
+
+
+def test_partition_by_transform_is_one_to_one_and_matches_infer():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform(
+        "SELECT MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__"
+    )
+    t.fit(pa.table({"city": ["a", "b", "a", "b"], "target": [1.0, 3.0, 2.0, 4.0]}))
+
+    batch = pa.table({"city": ["a", "b", "zzz"], "target": [0.0, 0.0, 0.0]})
+    out = t.transform(batch)
+    assert out.num_rows == 3  # strictly 1-to-1, unseen row preserved
+
+    rows = t.infer_batch(
+        [
+            {"city": "a", "target": 0.0},
+            {"city": "b", "target": 0.0},
+            {"city": "zzz", "target": 0.0},
+        ]
+    )
+    assert out.column("enc").to_pylist() == [r.enc for r in rows]
+    assert out.column("enc").to_pylist()[2] is None  # unseen -> NULL, both engines

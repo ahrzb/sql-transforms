@@ -1,4 +1,4 @@
-"""Synthesize Pydantic models for SQLTransform's __THIS__ and __STATE__ tables."""
+"""Synthesize a Pydantic model for SQLTransform's __THIS__ table."""
 
 from __future__ import annotations
 
@@ -20,15 +20,6 @@ def synthesize_this_model(schema: pa.Schema) -> type[BaseModel]:
             py_type = base | None
         fields[field.name] = (py_type, ...)
     return create_model("ThisRow", **fields)
-
-
-def synthesize_state_model(state: dict[str, float]) -> type[BaseModel]:
-    """Build a Pydantic model with one float field per state key — used as
-    __STATE__'s row schema. Field names must have no leading underscore:
-    Pydantic v2 treats those as private attributes, excluded from
-    model_fields and unsettable via the constructor."""
-    fields = dict.fromkeys(state, (float, ...))
-    return create_model("StateModel", **fields)
 
 
 def _arrow_type_to_python(arrow_type: pa.DataType) -> object:

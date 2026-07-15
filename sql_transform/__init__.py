@@ -14,7 +14,7 @@ from sql_transform._interpreter import InferFn
 from sql_transform._rewrite import rewrite_sql
 from sql_transform._schema import synthesize_this_model
 from sql_transform._sql import find_window_aggregates, parse_and_validate
-from sql_transform._state import build_state_tables  # noqa: F401  # interim: Task 5 rewrites fit() to use this
+from sql_transform._state import build_state_tables
 
 __all__ = ["InferFn", "SQLTransform"]
 
@@ -46,7 +46,7 @@ class SQLTransform:
 
     def __init__(self, sql: str) -> None:
         self._sql = sql
-        self._state: BaseModel | None = None
+        self._state_tables: dict[str, pa.Table] | None = None
         self._rewritten_sql: str | None = None
         self._infer_fn: InferFn | None = None
 
@@ -69,12 +69,12 @@ class SQLTransform:
         ctx = datafusion.SessionContext()
         ctx.from_arrow(table, name="__THIS__")
 
-        self._state = extract_state(windows, ctx, "__THIS__")
+        self._state_tables = build_state_tables(windows, ctx, "__THIS__")
         self._rewritten_sql = rewrite_sql(tree, windows)
         self._infer_fn = InferFn(
             self._rewritten_sql,
-            row_tables={"__THIS__": this_model, "__STATE__": type(self._state)},
-            static_tables={},
+            row_tables={"__THIS__": this_model},
+            static_tables=self._state_tables,
         )
         return self
 
@@ -85,7 +85,7 @@ class SQLTransform:
         low-latency row-at-a-time inference through the Rust engine instead."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before transform")
-        return run_batch(self._rewritten_sql, table, self._state)
+        return run_batch(self._rewritten_sql, table, self._state_tables)
 
     def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
         """Single-row inference through the Rust InferFn against the frozen
@@ -100,4 +100,4 @@ class SQLTransform:
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before inference")
         this_rows = [_to_namespace(row) for row in rows]
-        return self._infer_fn.infer({"__THIS__": this_rows, "__STATE__": [self._state]})
+        return self._infer_fn.infer({"__THIS__": this_rows})

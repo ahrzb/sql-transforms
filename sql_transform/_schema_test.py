@@ -1,8 +1,8 @@
-"""Tests for pydantic model synthesis (__THIS__ and __STATE__ schemas)."""
+"""Tests for pydantic model synthesis (__THIS__ schema)."""
 
 import pyarrow as pa
 
-from sql_transform._schema import synthesize_state_model, synthesize_this_model
+from sql_transform._schema import synthesize_this_model
 
 
 def test_synthesize_this_model_basic_types():
@@ -34,21 +34,3 @@ def test_synthesize_this_model_nullable_field_accepts_none():
     model = synthesize_this_model(schema)
     instance = model(name=None)
     assert instance.name is None
-
-
-def test_synthesize_state_model_all_float_fields():
-    model = synthesize_state_model({"avg_age": 30.0, "sum_score": 60.0})
-    assert model.model_fields["avg_age"].annotation is float
-    assert model.model_fields["sum_score"].annotation is float
-
-
-def test_synthesize_state_model_instantiates_from_values():
-    model = synthesize_state_model({"avg_age": 30.0})
-    instance = model(avg_age=30.0)
-    assert instance.avg_age == 30.0
-
-
-def test_synthesize_state_model_empty_state_is_valid():
-    model = synthesize_state_model({})
-    instance = model()
-    assert instance.model_dump() == {}
