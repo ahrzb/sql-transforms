@@ -107,3 +107,34 @@ def test_find_window_aggregates_multiple_distinct():
     windows = find_window_aggregates(tree)
     assert len(windows) == 2
     assert {(w.fn, w.col) for w in windows} == {("AVG", "age"), ("SUM", "score")}
+
+
+def test_find_window_aggregates_partition_cols_empty_for_bare_over():
+    tree = parse_and_validate("SELECT AVG(age) OVER () AS x FROM __THIS__")
+    windows = find_window_aggregates(tree)
+    assert windows[0].partition_cols == ()
+
+
+def test_find_window_aggregates_single_partition_col():
+    tree = parse_and_validate(
+        "SELECT AVG(target) OVER (PARTITION BY city) AS x FROM __THIS__"
+    )
+    windows = find_window_aggregates(tree)
+    assert windows[0].partition_cols == ("city",)
+    assert windows[0].has_partition is True
+
+
+def test_find_window_aggregates_composite_partition_cols():
+    tree = parse_and_validate(
+        "SELECT AVG(target) OVER (PARTITION BY city, region) AS x FROM __THIS__"
+    )
+    windows = find_window_aggregates(tree)
+    assert windows[0].partition_cols == ("city", "region")
+
+
+def test_find_window_aggregates_rejects_non_column_partition():
+    tree = parse_and_validate(
+        "SELECT AVG(target) OVER (PARTITION BY city || 'x') AS y FROM __THIS__"
+    )
+    with pytest.raises(ValueError, match="PARTITION BY"):
+        find_window_aggregates(tree)

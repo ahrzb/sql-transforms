@@ -67,6 +67,7 @@ class WindowAgg:
     node: exp.Window
     fn: str
     col: str
+    partition_cols: tuple[str, ...]
     has_partition: bool
     has_order: bool
 
@@ -95,11 +96,21 @@ def find_window_aggregates(select: exp.Select) -> list[WindowAgg]:
             )
         col = args[0].name
 
+        partition_by = node.args.get("partition_by") or []
+        partition_cols: list[str] = []
+        for p in partition_by:
+            if not isinstance(p, exp.Column):
+                raise ValueError(
+                    f"PARTITION BY must be a list of plain columns: {node.sql()!r}"
+                )
+            partition_cols.append(p.name)
+
         windows.append(
             WindowAgg(
                 node=node,
                 fn=fn,
                 col=col,
+                partition_cols=tuple(partition_cols),
                 has_partition=bool(node.args.get("partition_by")),
                 has_order=bool(node.args.get("order")),
             )
