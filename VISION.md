@@ -67,6 +67,21 @@ See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 
 ## Open questions / roadmap candidates
 
+- **Decided, in progress:** replace `_rewrite.py`'s DataFusion-plan-walk with a
+  sqlglot-based rewrite of the original SQL text. Why: DataFusion's Python
+  bindings don't fully expose plan introspection (`Expr::WindowFunction` has no
+  `to_variant()` support in the installed version — needed an undocumented
+  workaround), and that gap would recur for every new construct the rewrite
+  tries to understand. This project already has precedent for the same lesson:
+  the Rust `InferFn` interpreter parses SQL with `sqlparser` directly rather
+  than via DataFusion's logical planner, for an analogous reason (see
+  [[project_phase2_interpreter_pyo3_gotchas]]). DataFusion's role is unchanged
+  otherwise — it remains the sole execution engine; sqlglot only changes how
+  `fit()` figures out what to rewrite. v1 scope is deliberately narrow: simple
+  projection + simple equality joins, not full SQL. Out-of-scope constructs
+  raise a clear error at rewrite time rather than failing confusingly in
+  `InferFn` later. Track progress in [SQL_SUPPORT.md](SQL_SUPPORT.md)'s Layer 2
+  table.
 - Bring sklearn-style transforms (scaling, encoding, binning) onto the new
   fit/state/InferFn pipeline, or decide they're out of scope for v0.
   See [[project_goal_and_planning]].
