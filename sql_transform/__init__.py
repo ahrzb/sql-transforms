@@ -9,9 +9,10 @@ import datafusion
 import pyarrow as pa
 from pydantic import BaseModel
 
-from sql_transform._rewrite import rewrite_sql
 from sql_transform._interpreter import InferFn
+from sql_transform._rewrite import rewrite_sql
 from sql_transform._schema import synthesize_this_model
+from sql_transform._sql import find_window_aggregates, parse_and_validate
 from sql_transform._state import extract_state
 
 __all__ = ["InferFn", "SQLTransform"]
@@ -51,13 +52,14 @@ class SQLTransform:
     ) -> SQLTransform:
         this_model = this_model or synthesize_this_model(table.schema)
 
+        tree = parse_and_validate(self._sql)
+        windows = find_window_aggregates(tree)
+
         ctx = datafusion.SessionContext()
         ctx.from_arrow(table, name="__THIS__")
-        df = ctx.sql(self._sql)
-        plan = df.logical_plan()
 
-        self._state = extract_state(plan, ctx, "__THIS__")
-        rewritten_sql = rewrite_sql(plan)
+        self._state = extract_state(windows, ctx, "__THIS__")
+        rewritten_sql = rewrite_sql(tree, windows)
         self._infer_fn = InferFn(
             rewritten_sql,
             row_tables={"__THIS__": this_model, "__STATE__": type(self._state)},

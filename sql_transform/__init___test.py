@@ -26,6 +26,22 @@ def test_infer_before_fit_raises_runtime_error():
         t._infer({"age": 1})
 
 
+def test_fit_rejects_where_clause():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT age FROM __THIS__ WHERE age > 1")
+    with pytest.raises(ValueError, match="WHERE"):
+        t.fit(pa.table({"age": [1, 2, 3]}))
+
+
+def test_fit_rejects_wrong_from_table():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT age FROM data")
+    with pytest.raises(ValueError, match="__THIS__"):
+        t.fit(pa.table({"age": [1, 2, 3]}))
+
+
 def test_fit_and_transform_batch_no_agg():
     from sql_transform import SQLTransform
 
