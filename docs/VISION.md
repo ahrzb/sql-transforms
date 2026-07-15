@@ -9,6 +9,24 @@ sql-transform lets you define ML feature transforms as SQL, and run them two way
 
 Everything else in this doc serves one of those two goals.
 
+## Typed transforms — why it matters
+
+Feature and training pipelines rot into unmaintainable messes: stringly-typed
+dict-passing, schemas that live only in someone's head, a column rename that
+breaks something three steps downstream with no warning until a garbled number
+shows up in production. sql-transform's bet is that **strong typing** is the
+antidote.
+
+Every transformer carries explicit, checkable schemas — Pydantic models for its
+input row (`__THIS__`), its learned state (`__STATE__`), and its output —
+validated when the transformer is built (columns checked against the model) and
+again at call time. That makes a transformer a typed, composable unit: you can
+see what it consumes and produces without running it, refactor it without fear,
+and catch a mismatch at the boundary instead of downstream. The aim is to turn a
+pile of glue code into a set of transformers whose types document and enforce how
+they fit together — so a growing pipeline stays legible instead of collapsing
+under its own weight.
+
 ## How it works today
 
 Two phases, two engines:
@@ -72,39 +90,8 @@ See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
   these but they predate the Rust rewrite and are not wired into the current
   interpreter/rewrite pipeline; status needs verification)
 
-## Open questions / roadmap candidates
+## Roadmap
 
-- **Unify batch vs inference error semantics.** `transform` (DataFusion) and
-  `infer`/`infer_batch` (Rust `InferFn`) return identical values on the normal
-  numeric path, but an integer division/modulo by zero raises a clean
-  `ValueError` from the Rust path and a raw DataFusion `Exception`
-  ("DataFusion error: Arrow error: Divide by zero error") from the batch path.
-  Tracked by the `xfail` test
-  `test_transform_raises_clean_valueerror_on_div_by_zero`; closing it means
-  catching DataFusion's error in `_batch.run_batch` and re-raising the same
-  clean `ValueError` the interpreter raises.
-- **Decided, in progress:** replace `_rewrite.py`'s DataFusion-plan-walk with a
-  sqlglot-based rewrite of the original SQL text. Why: DataFusion's Python
-  bindings don't fully expose plan introspection (`Expr::WindowFunction` has no
-  `to_variant()` support in the installed version — needed an undocumented
-  workaround), and that gap would recur for every new construct the rewrite
-  tries to understand. This project already has precedent for the same lesson:
-  the Rust `InferFn` interpreter parses SQL with `sqlparser` directly rather
-  than via DataFusion's logical planner, for an analogous reason (see
-  [[project_phase2_interpreter_pyo3_gotchas]]). DataFusion's role is unchanged
-  otherwise — it remains the sole execution engine; sqlglot only changes how
-  `fit()` figures out what to rewrite. v1 scope is deliberately narrow: simple
-  projection + simple equality joins, not full SQL. Out-of-scope constructs
-  raise a clear error at rewrite time rather than failing confusingly in
-  `InferFn` later. Track progress in [SQL_SUPPORT.md](SQL_SUPPORT.md)'s Layer 2
-  table.
-- Bring sklearn-style transforms (scaling, encoding, binning) onto the new
-  fit/state/InferFn pipeline, or decide they're out of scope for v0.
-  See [[project_goal_and_planning]].
-- Decide if/how `CASE WHEN` and outer joins matter for real feature-engineering
-  SQL before investing — prioritize by what authoring goal 1 actually needs.
-- Codegen / compiled inference path (older README roadmap item) — superseded by
-  the Rust `InferFn` interpreter; probably drop from roadmap unless interpreter
-  overhead becomes a measured bottleneck.
-- No `VISION.md`/`TODO.md` existed before this; this file is the first cut —
-  revise as the plan for each open question above gets decided.
+Deferred tasks and open questions live in [BACKLOG.md](BACKLOG.md) — when work is
+pushed out of current scope, it lands there. This doc stays focused on what the
+project is and how it works today.

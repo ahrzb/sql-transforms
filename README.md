@@ -155,12 +155,13 @@ See the [examples](examples/) directory for more comprehensive examples and tuto
 
 ## Contributing
 
-1. Pick an item from [TODO.md](TODO.md)
+1. Pick an item from [docs/BACKLOG.md](docs/BACKLOG.md)
 2. Create an issue
 3. Implement with tests
 4. Submit PR
 
-See [VISION.md](VISION.md) for the long-term roadmap.
+See [docs/VISION.md](docs/VISION.md) for the project vision and
+[docs/BACKLOG.md](docs/BACKLOG.md) for the roadmap.
 
 ## License
 

@@ -248,7 +248,7 @@ def test_transform_and_infer_batch_agree():
 
 @pytest.mark.xfail(
     reason="batch (DataFusion) surfaces its own error type, not the clean "
-    "ValueError the Rust inference path raises -- see VISION.md",
+    "ValueError the Rust inference path raises -- see docs/BACKLOG.md",
     strict=True,
 )
 def test_transform_raises_clean_valueerror_on_div_by_zero():
