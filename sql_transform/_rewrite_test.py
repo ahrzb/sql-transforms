@@ -1,4 +1,4 @@
-"""Tests for SQL rewriting via the sqlglot AST."""
+"""Tests for SQL rewriting into LEFT-joined state-table SQL."""
 
 import pytest
 
@@ -12,53 +12,60 @@ def _rewrite(sql: str) -> str:
     return rewrite_sql(tree, windows)
 
 
-def test_rewrite_simple_column_pass_through():
+def test_simple_column_no_state():
+    # No window aggregates -> no state join at all.
     sql = _rewrite("SELECT age AS just_age FROM __THIS__")
-    assert sql == "SELECT __THIS__.age AS just_age FROM __THIS__ CROSS JOIN __STATE__"
+    assert sql == "SELECT __THIS__.age AS just_age FROM __THIS__"
 
 
-def test_rewrite_constant_window_agg():
+def test_global_agg_left_joins_marker():
     sql = _rewrite("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
     assert sql == (
         "SELECT __THIS__.age / __STATE__.avg_age AS age_norm "
-        "FROM __THIS__ CROSS JOIN __STATE__"
+        "FROM __THIS__ LEFT JOIN __STATE__ ON __STATE__.__state_marker__ = 0"
     )
 
 
-def test_rewrite_bare_window_agg_alias():
-    sql = _rewrite("SELECT MEAN(age) OVER () AS age_avg FROM __THIS__")
-    assert (
-        sql == "SELECT __STATE__.avg_age AS age_avg FROM __THIS__ CROSS JOIN __STATE__"
+def test_partition_agg_left_joins_on_key():
+    sql = _rewrite("SELECT MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__")
+    assert sql == (
+        "SELECT __STATE_BY_city__.avg_target AS enc "
+        "FROM __THIS__ LEFT JOIN __STATE_BY_city__ "
+        "ON __THIS__.city = __STATE_BY_city__.city"
     )
 
 
-def test_rewrite_multiple_projections():
+def test_composite_partition_key_anded():
     sql = _rewrite(
-        "SELECT age / MEAN(age) OVER () AS age_norm, "
-        "score / SUM(score) OVER () AS score_norm FROM __THIS__"
+        "SELECT MEAN(target) OVER (PARTITION BY city, region) AS e FROM __THIS__"
     )
     assert sql == (
-        "SELECT __THIS__.age / __STATE__.avg_age AS age_norm, "
-        "__THIS__.score / __STATE__.sum_score AS score_norm "
-        "FROM __THIS__ CROSS JOIN __STATE__"
+        "SELECT __STATE_BY_city_region__.avg_target AS e "
+        "FROM __THIS__ LEFT JOIN __STATE_BY_city_region__ "
+        "ON __THIS__.city = __STATE_BY_city_region__.city "
+        "AND __THIS__.region = __STATE_BY_city_region__.region"
     )
 
 
-def test_rewrite_unaliased_expression_raises_clear_error():
+def test_mixed_global_and_partition():
+    sql = _rewrite(
+        "SELECT age / MEAN(age) OVER () AS n, "
+        "MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__"
+    )
+    assert sql == (
+        "SELECT __THIS__.age / __STATE__.avg_age AS n, "
+        "__STATE_BY_city__.avg_target AS enc "
+        "FROM __THIS__ "
+        "LEFT JOIN __STATE__ ON __STATE__.__state_marker__ = 0 "
+        "LEFT JOIN __STATE_BY_city__ ON __THIS__.city = __STATE_BY_city__.city"
+    )
+
+
+def test_unaliased_expression_raises():
     with pytest.raises(ValueError, match="needs an alias"):
         _rewrite("SELECT age / MEAN(age) OVER () FROM __THIS__")
 
 
-def test_rewrite_unaliased_bare_window_agg_raises_clear_error():
-    with pytest.raises(ValueError, match="needs an alias"):
-        _rewrite("SELECT MEAN(age) OVER () FROM __THIS__")
-
-
-def test_rewrite_bad_column_qualifier_raises():
+def test_bad_column_qualifier_raises():
     with pytest.raises(ValueError, match="does not refer to __THIS__"):
         _rewrite("SELECT foo.age AS x FROM __THIS__")
-
-
-def test_rewrite_already_qualified_column_stays_this():
-    sql = _rewrite("SELECT __THIS__.age AS x FROM __THIS__")
-    assert sql == "SELECT __THIS__.age AS x FROM __THIS__ CROSS JOIN __STATE__"
