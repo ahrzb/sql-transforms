@@ -36,12 +36,35 @@ interpreter today. **Start:** prioritize by what authoring (goal 1) actually
 needs; `CASE WHEN` also needs Layer-1 interpreter support, not just a rewrite
 change.
 
+### Aggregate result typing (non-float aggregates)
+Window-aggregate state is hard-coerced to `float` in `_state.py` (`values[key] =
+float(value)`, and `synthesize_state_model` makes every field `float`). Numeric
+aggregates (`AVG`/`SUM`/`STDDEV`/`MIN`/`MAX`/`COUNT`) already work over `OVER ()`,
+but `MIN(name)` on a string raises `could not convert string to float`, and
+`COUNT` comes back as a float rather than an int. **Start:** carry each
+aggregate's real Arrow/Python type from the fit-time query into the synthesized
+state model instead of forcing `float` — unblocks `MIN`/`MAX` on strings/dates,
+`MODE`, and proper integer `COUNT`. Applies to both the global and (once it lands)
+the `PARTITION BY` state paths.
+
+### `ORDER BY` / window frames (running, cumulative, moving aggregates)
+`AGG(col) OVER (ORDER BY ...)` and explicit `ROWS`/`RANGE BETWEEN` frames —
+running sums, cumulative means, moving windows. Currently rejected with
+`NotImplementedError` (`WindowAgg.has_order`). **Fundamentally harder:** these are
+order-dependent and stateful across rows, so they do not fit the "freeze a value
+at fit, broadcast at inference" model that `OVER ()` and `PARTITION BY` share —
+inference would need streaming/sequence state. **Start:** treat as a research
+spike, not a small feature; decide whether it's even in scope for a row-at-a-time
+inference engine before investing.
+
+## In progress
+
 ### `PARTITION BY` window aggregates
-Currently rejected with `NotImplementedError`. Candidate approach: join-based
-per-partition state tables synthesized at `fit()` time, plus any resulting growth
-of `SQLTransform`'s public API to supply the extra tables. The
-`WindowAgg.has_partition` structural flag already exists as a clean signal to
-build on. **Start:** design the per-partition state-table synthesis.
+Per-partition learned state (target/categorical encoding) via LEFT-joined
+unique-keyed state tables; unseen partition → NULL; transform stays strictly
+1-to-1. Includes a Rust LEFT-lookup-join addition. Designed in
+[superpowers/specs/2026-07-15-partition-by-design.md](superpowers/specs/2026-07-15-partition-by-design.md)
+— move back to Open items only if it's shelved.
 
 ## Considered — likely won't do
 
