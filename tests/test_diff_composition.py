@@ -78,3 +78,17 @@ def test_outer_aggregate_over_inlined_column_parity():
         t"/ AVG({scaler.transform}(age)) OVER () AS z FROM __THIS__"
     ).fit(train)
     _parity(composite, train)
+
+
+def test_outer_aggregate_over_inlined_column_finite_parity():
+    scaler, train = _fit_scaler()
+    # scaled=(age-25)/std; MAX(scaled)=15/std; z=scaled/MAX(scaled)=(age-25)/15
+    composite = SQLTransform(
+        t"SELECT {scaler.transform}(age) "
+        t"/ MAX({scaler.transform}(age)) OVER () AS z FROM __THIS__"
+    ).fit(train)
+    out = _parity(composite, train)  # asserts transform() vs infer() agree
+    # train age = [10,20,30,40] -> z = [-1, -1/3, 1/3, 1] (std cancels)
+    zs = sorted(r["z"] for r in out)
+    for got, exp in zip(zs, [-1.0, -1 / 3, 1 / 3, 1.0], strict=True):
+        assert abs(got - exp) < 1e-9, (zs,)
