@@ -21,17 +21,33 @@ Legend: `[x]` done · `[ ]` todo.
 ### M0 — Differential test harness ✅
 The parity oracle the rest of the track leans on: `transform` (DataFusion) and
 `infer` (Rust `InferFn`) proven to agree across the expression/join surface, so a
-regression in either engine is caught mechanically. Done — tasks 1–4 merged. One
-real bug it surfaced is tracked under Maintenance below.
+regression in either engine is caught mechanically. Done — tasks 1–4 merged. The
+one real bug it surfaced (LEFT-join nullability) is now fixed (see M1 below).
 
 ### M1 — Transformer foundation & sklearn parity
 *Serves VISION hook 1 (composes in) + the correctness bar of hook 2.* Get
 sklearn-compatible transformers composing into a stock pipeline and producing
 bit-identical output. Correctness and coverage first; speed is M3.
-- [ ] [Transformer execution model — UDF/UDAF, macros, composition](BACKLOG.md#transformer-execution-model--procedures-udfudaf-macros-composition) — the conceptual backbone the rest builds on
-- [x] [First slice: compose SQLTransforms via `{transform}(col)` references](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — **frozen path (`{a.transform}`) shipped** on master; fit-cascade / fan-out / multi-input deferred to follow-up slices (still tracked in the BACKLOG item)
-- [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — transformers + `Pipeline`/`ColumnTransformer` glue + assembly-parity harness + Python fallback
+
+**Ordering (decided 2026-07-16):** outstanding bugs → **recursive (fit-cascade)
+composition** of unfitted `SQLTransform`s → sklearn transformers. Rationale: the
+recursive composition primitive is exactly what stock sklearn `Pipeline.fit`
+needs (it clones + re-fits each step), so building it first de-risks the sklearn
+work that sits on top. The general **UDF/UDAF/macro execution-model spec is *not*
+on the critical path** — it isn't immediately useful; extract it from the concrete
+composition + sklearn work later, if/when it's actually needed.
+
+Done — foundation:
+- [x] [First slice: frozen composition `{a.transform}(col)`](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — shipped on master; the frozen-reuse primitive the recursive path extends.
 - [x] LEFT lookup-join output nullability bug — **fixed & merged** (`7cb7d3c`): threaded outer-nullability through `resolve_tables`, widening the outer side's columns to nullable in `effective_schemas`. Unblocks `OrdinalEncoder` unknown-category handling; the `strict` xfail retired to a normal passing regression test.
+
+Active — in order:
+1. [ ] [Fix identifier-quoting bug — composition inline + PARTITION BY joins](BACKLOG.md#identifier-quoting-not-preserved-in-composition-inline--partition-by-joins) — outstanding correctness bug; clear it before building on the composition path.
+2. [ ] [Recursive (fit-cascade) composition — unfitted `{a}(col)`](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — staged fit (fit inner → transform training forward → fit outer), learned state into the *composite*. The primitive sklearn `Pipeline` composition builds on. (Fan-out + multi-input still deferred — they re-enter with the sklearn transformers that need them, e.g. OneHot fan-out.)
+3. [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — transformers + `Pipeline`/`ColumnTransformer` glue + assembly-parity harness + Python fallback; built on the recursive composition above.
+
+Deferred off the critical path:
+- [ ] [Transformer execution model — UDF/UDAF, macros](BACKLOG.md#transformer-execution-model--procedures-udfudaf-macros-composition) — the "conceptual backbone," but not immediately useful; spec to be *extracted from* the concrete work above rather than written up front.
 
 ### M2 — Benchmark baseline
 *Gate before any optimization.* Stand up the measurement harness — single-row

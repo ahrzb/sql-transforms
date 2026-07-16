@@ -63,6 +63,12 @@ the intermediate"). **Scope:**
 The conceptual backbone the two items above build on (from a 2026-07-15 design
 discussion). Capture, not yet a spec.
 
+**Deprioritized off the M1 critical path (2026-07-16).** The general UDF/UDAF/macro
+registry isn't immediately useful — the concrete work (recursive composition, then
+sklearn transformers) doesn't need it up front. Treat the spec as something to
+*extract from* that concrete work once two contrasting transformer shapes exist,
+not to write ahead of it. The notes below stay as captured design thinking.
+
 - **A transformer = UDAF(s) + one UDF, never a single primitive.** A UDAF is
   `N→1` (aggregate training rows → *state*); a transform is `N→N` (per-row). So a
   UDAF is only ever the *fit* half. `StandardScaler` = UDAF{`mean`,`stddev`} → state
@@ -128,9 +134,13 @@ the outer taking its own window aggregate over the inlined column works; a bare
 `{a}` on a fitted object and `{a.transform}` on an unfit object both error
 explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting —
 but with a known gap now tracked separately (see "Identifier quoting not preserved
-…" below). **The live remaining work is the "Deferred to follow-up slices" list at
-the end of this entry** (fit-cascade, fan-out, multi-input); everything between
-here and there is kept as the design reference those slices build on.
+…" below). **Live remaining work = the "Deferred to follow-up slices" list at the
+end of this entry.** Per the 2026-07-16 M1 ordering, **fit-cascade (unfitted
+`{a}(col)`) is promoted to the active next slice** (after the identifier-quoting
+bug fix); **fan-out + multi-input stay deferred** and re-enter with the sklearn
+transformers that need them (OneHot fan-out, multi-input encoders). Everything
+between here and the deferred list is kept as the design reference those slices
+build on.
 
 The first implementable step of the execution model above, and the primitive
 everything else (our `Pipeline`, sklearn composition) is built on: let one
