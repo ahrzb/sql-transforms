@@ -116,6 +116,8 @@ mise tasks        # list all tasks
 - [docs/VISION.md](docs/VISION.md) — what the project is and where it's headed.
 - [docs/ROADMAP.md](docs/ROADMAP.md) — the sequenced milestones and progress.
 - [docs/BACKLOG.md](docs/BACKLOG.md) — scoped tasks and open questions.
+- [docs/DATAFUSION_FUNCTIONS.md](docs/DATAFUSION_FUNCTIONS.md) — the DataFusion
+  function/aggregate catalogue (the interpreter's parity target), auto-generated.
 
 ## Contributing
 
