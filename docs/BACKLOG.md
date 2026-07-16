@@ -48,6 +48,10 @@ transformer.**
   input, contiguous feature buffer) is the *separate* M3 item on top of Phase B's
   native transforms — not part of this item.
 
+Phase A is sliced into ordered tickets **A1 (thin vertical) → A2 (`ColumnTransformer`
+glue, incl. a multi-output transformer) → A3 (breadth)** — the authoritative
+breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
+
 **Scope:**
 - **Two integration directions, compose-first:** (a) *compose* — our transformers
   are sklearn estimators the user drops into their own `Pipeline`/`ColumnTransformer`
