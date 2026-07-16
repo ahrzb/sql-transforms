@@ -1,7 +1,10 @@
 """Differential coverage of the Rust engine's scalar expression surface."""
 
+import pyarrow as pa
 import pytest
-from differential import check, rows
+from differential import _rows_equal, check, rows
+
+from sql_transform import SQLTransform
 
 
 @pytest.mark.parametrize(
@@ -117,3 +120,47 @@ def test_abs_and_round():
         "SELECT ABS(x) AS a, ROUND(y) AS r FROM t",
         {"t": rows({"x": "int", "y": "float"}, [{"x": -4, "y": 2.6}])},
     )
+
+
+def test_window_aggregate_over_expression_parity():
+    train = pa.table({"x": [1.0, 2.0, 3.0, 4.0]})
+    t = SQLTransform(
+        "SELECT x / AVG(x + 1) OVER () AS r FROM __THIS__"
+    ).fit(train)
+    batch_out = t.transform(train).to_pylist()
+    infer_out = [r.model_dump() for r in t.infer_batch(train.to_pylist())]
+    assert _rows_equal(batch_out, infer_out)
+    # AVG(x+1) over [2,3,4,5] = 3.5
+    assert abs(batch_out[0]["r"] - (1.0 / 3.5)) < 1e-9
+
+
+def test_window_aggregate_quoted_case_sensitive_column_plain_parity():
+    train = pa.table({"Age": [10.0, 20.0, 30.0, 40.0]})
+    t = SQLTransform(
+        'SELECT "Age" / AVG("Age") OVER () AS r FROM __THIS__'
+    ).fit(train)
+    batch_out = t.transform(train).to_pylist()
+    infer_out = [r.model_dump() for r in t.infer_batch(train.to_pylist())]
+    assert _rows_equal(batch_out, infer_out)
+    # AVG([10,20,30,40]) = 25.0
+    assert abs(batch_out[0]["r"] - (10.0 / 25.0)) < 1e-9
+
+
+def test_window_aggregate_quoted_case_sensitive_column_expression_parity():
+    train = pa.table({"Age": [10.0, 20.0, 30.0, 40.0]})
+    t = SQLTransform(
+        'SELECT "Age" / AVG("Age" + 1) OVER () AS r FROM __THIS__'
+    ).fit(train)
+    batch_out = t.transform(train).to_pylist()
+    infer_out = [r.model_dump() for r in t.infer_batch(train.to_pylist())]
+    assert _rows_equal(batch_out, infer_out)
+    # AVG([11,21,31,41]) = 26.0
+    assert abs(batch_out[0]["r"] - (10.0 / 26.0)) < 1e-9
+
+
+def test_window_aggregate_unquoted_case_sensitive_column_errors():
+    # DataFusion folds unquoted `Age` to `age`; with only `Age` in the table
+    # this errors, matching DataFusion's own case-folding behavior.
+    train = pa.table({"Age": [1.0, 2.0, 3.0]})
+    with pytest.raises(ValueError):
+        SQLTransform("SELECT Age / AVG(Age) OVER () AS r FROM __THIS__").fit(train)

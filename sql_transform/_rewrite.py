@@ -13,7 +13,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from sql_transform._sql import WindowAgg
-from sql_transform._state import STATE_MARKER, state_key, state_table_name
+from sql_transform._state import STATE_MARKER, state_table_name
 
 
 def rewrite_sql(
@@ -26,11 +26,7 @@ def rewrite_sql(
 
     Mutates `select` in place -- callers should not reuse it afterwards."""
     window_ref = {
-        id(w.node): (
-            state_table_name(w.partition_cols),
-            state_key(w.fn, w.col),
-            w.partition_cols,
-        )
+        id(w.node): (state_table_name(w.partition_cols), w.key, w.partition_cols)
         for w in windows
     }
 
@@ -58,7 +54,12 @@ def rewrite_sql(
                 raise ValueError(
                     f"Column qualifier {col_node.table!r} does not refer to __THIS__"
                 )
-            col_node.replace(exp.column(col_node.name, table="__THIS__"))
+            col_node.replace(
+                exp.Column(
+                    this=exp.to_identifier(col_node.name, quoted=col_node.this.quoted),
+                    table=exp.to_identifier("__THIS__"),
+                )
+            )
 
     for partition_cols in seen:
         table = state_table_name(partition_cols)

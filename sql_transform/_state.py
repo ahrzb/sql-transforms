@@ -45,35 +45,30 @@ def build_state_tables(
     Arrow type. Raises NotImplementedError for ORDER BY window aggregates and
     ValueError for a case-collision between two aggregates in the same table."""
     # Group windows by partition-key-set, preserving discovery order.
-    groups: dict[tuple[str, ...], list[tuple[str, str]]] = {}
+    groups: dict[tuple[str, ...], list[WindowAgg]] = {}
     for w in windows:
         if w.has_order:
             raise NotImplementedError(
                 "ORDER BY window aggregates are not yet supported by "
                 "the Rust-backed SQLTransform pipeline"
             )
-        groups.setdefault(w.partition_cols, []).append((w.fn, w.col))
+        groups.setdefault(w.partition_cols, []).append(w)
 
     tables: dict[str, pa.Table] = {}
     for partition_cols, members in groups.items():
-        # Dedup (fn, col) within the group; detect state_key collisions.
-        selected: dict[str, tuple[str, str]] = {}
-        for fn_name, col_name in members:
-            key = state_key(fn_name, col_name)
-            existing = selected.get(key)
-            if existing is not None and existing != (fn_name, col_name):
+        # Dedup by key within the group; detect state-key collisions.
+        selected: dict[str, WindowAgg] = {}
+        for w in members:
+            existing = selected.get(w.key)
+            if existing is not None and existing.arg.sql() != w.arg.sql():
                 raise ValueError(
-                    f"Ambiguous window aggregate: {fn_name}({col_name}) "
-                    f"normalizes to the same state key {key!r} as another "
-                    "aggregate in this query -- names that differ only by case "
-                    "aren't distinguished"
+                    f"Ambiguous window aggregate: {w.fn}({w.arg.sql()}) normalizes "
+                    f"to the same state key {w.key!r} as another aggregate in this "
+                    "query"
                 )
-            selected[key] = (fn_name, col_name)
+            selected[w.key] = w
 
-        value_exprs = [
-            f'{fn_name}("{col_name}") AS {key}'
-            for key, (fn_name, col_name) in selected.items()
-        ]
+        value_exprs = [f"{w.fn}({w.arg.sql()}) AS {key}" for key, w in selected.items()]
 
         if partition_cols:
             key_list = ", ".join(f'"{c}"' for c in partition_cols)

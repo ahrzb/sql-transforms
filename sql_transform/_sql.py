@@ -9,6 +9,7 @@ disagreed about the same window aggregate (fixed in commit 2b3171c).
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import sqlglot
@@ -66,7 +67,9 @@ class WindowAgg:
 
     node: exp.Window
     fn: str
-    col: str
+    arg: exp.Expression        # the aggregate's single argument (column or expression)
+    col: str | None            # arg's column name, or None if arg is an expression
+    key: str                   # state value-column name (fn_col, or fn_e<hash>)
     partition_cols: tuple[str, ...]
     has_partition: bool
     has_order: bool
@@ -75,8 +78,9 @@ class WindowAgg:
 def find_window_aggregates(select: exp.Select) -> list[WindowAgg]:
     """Find every window-aggregate node in `select`'s projection list.
 
-    Raises ValueError if a window aggregate's argument isn't a single
-    plain column -- multi-arg and expression aggregates aren't supported.
+    Raises ValueError if a window aggregate doesn't take exactly one
+    argument -- multi-arg aggregates aren't supported. The single argument
+    may be a plain column or an arbitrary scalar expression.
     """
     windows: list[WindowAgg] = []
     for node in select.find_all(exp.Window):
@@ -89,12 +93,19 @@ def find_window_aggregates(select: exp.Select) -> list[WindowAgg]:
             args = [func.this]
         fn = _FUNCTION_SYNONYMS.get(fn, fn)
 
-        if len(args) != 1 or not isinstance(args[0], exp.Column):
+        if len(args) != 1:
             raise ValueError(
-                "Window aggregate argument must be a single plain column: "
+                "Window aggregate must take exactly one argument: "
                 f"{node.sql()!r}"
             )
-        col = args[0].name
+        arg = args[0]
+        if isinstance(arg, exp.Column):
+            col = arg.name
+            key = f"{fn.lower()}_{col.lower()}"          # matches state_key(fn, col)
+        else:
+            col = None
+            digest = hashlib.blake2s(arg.sql().encode(), digest_size=4).hexdigest()
+            key = f"{fn.lower()}_e{digest}"
 
         partition_by = node.args.get("partition_by") or []
         partition_cols: list[str] = []
@@ -109,7 +120,9 @@ def find_window_aggregates(select: exp.Select) -> list[WindowAgg]:
             WindowAgg(
                 node=node,
                 fn=fn,
+                arg=arg,
                 col=col,
+                key=key,
                 partition_cols=tuple(partition_cols),
                 has_partition=bool(node.args.get("partition_by")),
                 has_order=bool(node.args.get("order")),

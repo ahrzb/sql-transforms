@@ -89,9 +89,20 @@ def test_find_window_aggregates_detects_order_by():
     assert windows[0].has_order is True
 
 
-def test_find_window_aggregates_rejects_non_column_argument():
+def test_find_window_aggregates_accepts_expression_argument():
     tree = parse_and_validate("SELECT AVG(age + 1) OVER () AS x FROM __THIS__")
-    with pytest.raises(ValueError, match="single plain column"):
+    windows = find_window_aggregates(tree)
+    assert len(windows) == 1
+    assert windows[0].col is None
+    assert windows[0].arg.sql() == "age + 1"
+    assert windows[0].key.startswith("avg_e")
+
+
+def test_find_window_aggregates_rejects_multi_arg():
+    tree = parse_and_validate(
+        "SELECT MYAGG(age, score) OVER () AS x FROM __THIS__"
+    )
+    with pytest.raises(ValueError, match="exactly one argument"):
         find_window_aggregates(tree)
 
 
