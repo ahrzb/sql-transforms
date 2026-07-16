@@ -31,7 +31,7 @@ def test_partition_agg_left_joins_on_key():
     assert sql == (
         "SELECT __STATE_BY_city__.avg_target AS enc "
         "FROM __THIS__ LEFT JOIN __STATE_BY_city__ "
-        "ON __THIS__.city = __STATE_BY_city__.city"
+        'ON __THIS__."city" = __STATE_BY_city__."city"'
     )
 
 
@@ -42,8 +42,8 @@ def test_composite_partition_key_anded():
     assert sql == (
         "SELECT __STATE_BY_city_region__.avg_target AS e "
         "FROM __THIS__ LEFT JOIN __STATE_BY_city_region__ "
-        "ON __THIS__.city = __STATE_BY_city_region__.city "
-        "AND __THIS__.region = __STATE_BY_city_region__.region"
+        'ON __THIS__."city" = __STATE_BY_city_region__."city" '
+        'AND __THIS__."region" = __STATE_BY_city_region__."region"'
     )
 
 
@@ -57,7 +57,7 @@ def test_mixed_global_and_partition():
         "__STATE_BY_city__.avg_target AS enc "
         "FROM __THIS__ "
         "LEFT JOIN __STATE__ ON __STATE__.__state_marker__ = 0 "
-        "LEFT JOIN __STATE_BY_city__ ON __THIS__.city = __STATE_BY_city__.city"
+        'LEFT JOIN __STATE_BY_city__ ON __THIS__."city" = __STATE_BY_city__."city"'
     )
 
 

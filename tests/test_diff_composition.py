@@ -92,3 +92,18 @@ def test_outer_aggregate_over_inlined_column_finite_parity():
     zs = sorted(r["z"] for r in out)
     for got, exp in zip(zs, [-1.0, -1 / 3, 1 / 3, 1.0], strict=True):
         assert abs(got - exp) < 1e-9, (zs,)
+
+
+def test_composition_over_quoted_capitalized_column_parity():
+    # Regression: a fitted transform composed over a quoted case-sensitive column
+    # must keep the quoting when inlined; else the rewrite emits __THIS__.Age
+    # (unquoted -> DataFusion folds to `age`) and fit() fails "No field named age".
+    train = pa.table({"Age": [10.0, 20.0, 30.0, 40.0]})
+    scaler = SQLTransform(
+        'SELECT ("Age" - AVG("Age") OVER ()) / STDDEV("Age") OVER () AS s FROM __THIS__'
+    ).fit(train)
+    composite = SQLTransform(
+        t'SELECT {scaler.transform}("Age") AS s2 FROM __THIS__'
+    ).fit(train)
+    out = _parity(composite, train)
+    assert abs(out[0]["s2"] - ((10.0 - 25.0) / 12.909944487358056)) < 1e-9

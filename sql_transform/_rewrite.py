@@ -66,7 +66,12 @@ def rewrite_sql(
         if not partition_cols:
             on = f"{table}.{STATE_MARKER} = 0"
         else:
-            on = " AND ".join(f"__THIS__.{c} = {table}.{c}" for c in partition_cols)
+            # Quote the join-key identifiers with their exact names -- matching
+            # build_state_tables' quoted GROUP BY -- so a case-sensitive partition
+            # column resolves (DataFusion folds unquoted identifiers to lowercase).
+            on = " AND ".join(
+                f'__THIS__."{c}" = {table}."{c}"' for c in partition_cols
+            )
         select.join(exp.to_table(table), on=on, join_type="LEFT", copy=False)
 
     for table in extra_marker_tables:

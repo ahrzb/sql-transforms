@@ -67,21 +67,34 @@ def inline_references(select: exp.Select, refs: dict[str, Ref]) -> InlineResult:
     scoped_state: dict[str, pa.Table] = {}
     for i, (name, ref) in enumerate(refs.items()):
         node = _find_call(select, name, ref)
-        argcol = _single_col_arg(node, ref)
+        arg = _single_col_arg(node, ref)
+        argcol, argcol_quoted = arg.name, arg.this.quoted
         _require_frozen_fitted(ref)
         expr, inner_col, scope, state = _frozen_expr(ref.transform, i)
 
         # noqa false positive: rewrite() is invoked synchronously via
         # expr.transform() on the next line, within this same loop iteration --
-        # argcol/inner_col/scope are never read after the loop advances, so the
+        # the closed-over locals are never read after the loop advances, so the
         # usual late-binding closure bug doesn't apply here.
         def rewrite(n: exp.Expression) -> exp.Expression:
             if isinstance(n, exp.Column):
                 if n.table == "__THIS__":
-                    col = argcol if n.name == inner_col else n.name  # noqa: B023
-                    return exp.column(col, table="__THIS__")
+                    # Preserve the column's quoting verbatim (DataFusion folds
+                    # unquoted identifiers to lowercase); the remapped input
+                    # column takes the call-site column's quoting.
+                    if n.name == inner_col:  # noqa: B023
+                        col, quoted = argcol, argcol_quoted  # noqa: B023
+                    else:
+                        col, quoted = n.name, n.this.quoted
+                    return exp.Column(
+                        this=exp.to_identifier(col, quoted=quoted),
+                        table=exp.to_identifier("__THIS__"),
+                    )
                 if n.table and n.table.startswith("__STATE"):
-                    return exp.column(n.name, table=scope)  # noqa: B023
+                    return exp.Column(
+                        this=exp.to_identifier(n.name, quoted=n.this.quoted),
+                        table=exp.to_identifier(scope),  # noqa: B023
+                    )
             return n
 
         node.replace(expr.transform(rewrite))
@@ -99,14 +112,14 @@ def _find_call(select: exp.Select, name: str, ref: Ref) -> exp.Anonymous:
     )
 
 
-def _single_col_arg(node: exp.Anonymous, ref: Ref) -> str:
+def _single_col_arg(node: exp.Anonymous, ref: Ref) -> exp.Column:
     args = node.expressions
     if len(args) != 1 or not isinstance(args[0], exp.Column):
         raise ValueError(
             f"a referenced transform must be applied to a single input column, "
             f"e.g. {{{ref.expr_text}}}(age)"
         )
-    return args[0].name
+    return args[0]
 
 
 def _require_frozen_fitted(ref: Ref) -> None:

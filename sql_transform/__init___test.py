@@ -267,6 +267,21 @@ def test_partition_by_target_encoding_seen_and_unseen():
     assert unseen.enc is None  # unseen partition -> NULL
 
 
+def test_partition_by_quoted_case_sensitive_column_parity():
+    from sql_transform import SQLTransform
+
+    # A case-sensitive (quoted) PARTITION BY column must resolve on both engines.
+    # Regression: the rewrite's join keys were unquoted, so `"City"` folded to
+    # `city` and transform() failed at fit-eval. Keys are now quoted verbatim.
+    t = SQLTransform('SELECT v / AVG(v) OVER (PARTITION BY "City") AS r FROM __THIS__')
+    train = pa.table({"City": ["A", "A", "B"], "v": [1.0, 3.0, 5.0]})
+    t.fit(train)
+    rows = train.to_pylist()
+    batch = [r["r"] for r in t.transform(train).to_pylist()]
+    infer = [m.model_dump()["r"] for m in t.infer_batch(rows)]
+    assert batch == infer == [0.5, 1.5, 1.0]
+
+
 def test_partition_by_count_encoding_is_integer():
     from sql_transform import SQLTransform
 
