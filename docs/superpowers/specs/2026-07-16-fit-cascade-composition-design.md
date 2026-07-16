@@ -1,20 +1,18 @@
 # Recursive (fit-cascade) composition — Design **[PARKED]**
 
-> **STATUS: PARKED — blocked on Rust struct-type support.** The mechanism and
-> semantics below are settled, but the **output-type model was decided to be
-> struct + `.*`** (see "Output-type model" §), which the Rust `InferFn` does not
-> support today (it has scalar primitives + an opaque `Value::Object` passthrough,
-> no struct with named fields / `.field` / `.*`). That support is a foundational
-> prerequisite, so this spec is parked until the **Rust struct-support** backlog
-> ticket is scoped and landed. Do NOT proceed to writing-plans from this doc yet.
+> **STATUS: UNBLOCKED — parked pending go-ahead to start.** The mechanism and
+> semantics below are settled. The one prerequisite (a type layer that can carry a
+> struct output) is **satisfied**: the rich (recursive)
+> [type system + `UNNEST`](2026-07-16-rich-type-system-design.md) first slice
+> shipped to master (`4809470`), so struct/list + `unnest` now exist on the engine.
+> No technical blocker remains — this spec is held only until the fit-cascade slice
+> is chosen to start.
 >
-> **Update (2026-07-16):** the blocking dependency is now the broader
-> [rich (recursive) type system + `UNNEST`](2026-07-16-rich-type-system-design.md)
-> foundation, which superseded the narrow struct ticket. The output-type model
-> shifts from **struct + `.*`** to **struct + `UNNEST`** on that type layer
-> (DataFusion has no `struct.*`). The "Output-type model" § below still says `.*` —
-> left as-is on purpose; Dev reconciles it to `UNNEST` when this spec is unparked.
-> Resume gate = the rich-type foundation landing.
+> **On pickup, one reconciliation:** the output-type model is now **struct +
+> `UNNEST`** on the new type layer, *not* the earlier **struct + `.*`** (DataFusion
+> has no `struct.*`). The "Output-type model" § below still says `.*` — left as-is
+> on purpose; reconcile it to `UNNEST` when picking this up, then proceed to
+> writing-plans.
 
 **Goal:** Let an outer `SQLTransform` reference an **unfit** `SQLTransform` via
 `{a}(col)`, fitting `a` into the composite during `fit` (staged, sklearn-style),

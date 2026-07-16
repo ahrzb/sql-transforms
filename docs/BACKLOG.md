@@ -127,6 +127,13 @@ not to write ahead of it. The notes below stay as captured design thinking.
   a raw `:param` template string or a structured InferFn-AST builder.
 
 ### Rich (recursive) type system and UNNEST
+**✅ First slice shipped** — on master (`4809470`). Recursive `Value`/`Base` spine,
+struct + list types, schema-driven Python↔`Value` marshalling (nested output
+models), `s.x` field access, `unnest(struct)`→columns, `unnest(list)`→rows
+(`RelNode::Unnest`), struct equality + join-keys. +17 differential parity tests
+(159→176), no regressions. **Live remaining work = the fast-follow types and the
+deferred edges below — none block anything.**
+
 Foundation for the composition output model, fan-out transformers, and the M4
 feature contract. **Supersedes the narrower "Rust struct-support" ticket** — its
 five bullets (struct `Value`, field access, output-model synthesis, DataFusion
@@ -162,14 +169,24 @@ recursive spine lands.
 node); `unnest(list)` empty/NULL cardinality re-verify; struct field-order
 round-trip; table-alias vs struct-field-name precedence in `s.x`.
 
-**Deferred parity gap: ordered comparison (`<`,`>`,`<=`,`>=`) on structs/lists.**
-`=`/`!=` on structs/lists is implemented (structural equality, `src/expr.rs`
-`comparison`). Verified DataFusion supports **lexicographic ordering** for `<` on
-both structs and lists (`named_struct('x',1) < named_struct('x',2)` → `true`;
-`[1,2] < [1,3]` → `true`) — so a full parity fix would need real lexicographic
-`Ord` on `Value::Struct`/`List`. Not implemented this slice (clean runtime error
-instead, via `compare_values`'s scalar-only `as_f64` fallback); pick up if a
-real query needs ordered struct/list comparison.
+**Deferred edges (rich-type slice) — all fail loud, none block:**
+- **Ordered comparison (`<`,`>`,`<=`,`>=`) on structs/lists.** `=`/`!=` are
+  implemented (structural equality, `src/expr.rs` `comparison`); DataFusion does
+  **lexicographic ordering** for `<`/`>` on structs and lists
+  (`named_struct('x',1) < named_struct('x',2)` → `true`; `[1,2] < [1,3]` → `true`),
+  which we don't — a full fix needs real lexicographic `Ord` on
+  `Value::Struct`/`List`. Clean runtime error today (`compare_values`' scalar-only
+  `as_f64` fallback). Pick up if a real query needs ordered struct/list comparison.
+- **Static-table struct/list values stay `Value::Object` (`src/lookup.rs`).** A
+  struct/list column in a static lookup table isn't marshalled into the recursive
+  `Value`, so a struct join-key against a static table **never matches**. Scalar
+  keys unaffected.
+- **Null-struct field access — accepted divergence.** Field access on a NULL struct
+  yields InferFn `NULL` vs DataFusion's quirky `0`. Values-only parity is the bar
+  and DataFusion's `0` is the odd one, so this is accepted, not a fix.
+- **`unnest` naming edges.** `unnest(x) AS <existing col>` raises a spurious
+  ambiguity error; an unaliased `unnest(list)` column is named `"unnest"`.
+  Cosmetic/edge; revisit if it bites real queries.
 
 ### Compose SQLTransforms via `{transform}(col)` references — follow-up slices
 **✅ First slice (frozen path) shipped** — on master (through `bb22526`).
@@ -181,13 +198,13 @@ explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting
 (the earlier quoting gap in the inline + PARTITION BY paths is fixed, `c056ec3`).
 **Live remaining work = the "Deferred to follow-up slices" list at the
 end of this entry.** Per the 2026-07-16 M1 ordering, **fit-cascade (unfitted
-`{a}(col)`) is the active next slice — but its design is now settled and *parked***
-pending the **rich type system + UNNEST** foundation (the output model is a struct,
-unpacked via `UNNEST` on the new type layer — *not* the earlier struct + `.*`): see
-the parked spec
-[fit-cascade design](superpowers/specs/2026-07-16-fit-cascade-composition-design.md)
-and the "Rich (recursive) type system and UNNEST" entry above. It resumes once that
-foundation lands. **Fan-out + multi-input stay deferred** and re-enter with the sklearn
+`{a}(col)`) is the active next slice — design settled, and **now unblocked**: its
+struct + `UNNEST` output-model dependency is **satisfied** by the shipped rich-type
+first slice (`4809470`). Still *parked pending a go-ahead to start* (not a technical
+blocker anymore). Output model = struct + `UNNEST` on the new type layer (*not* the
+earlier struct + `.*`). See the spec
+[fit-cascade design](superpowers/specs/2026-07-16-fit-cascade-composition-design.md);
+its Output-type § still says `.*` and gets reconciled to `UNNEST` when picked up. **Fan-out + multi-input stay deferred** and re-enter with the sklearn
 transformers that need them (OneHot fan-out, multi-input encoders). Everything
 between here and the deferred list is kept as the design reference those slices
 build on.
