@@ -44,15 +44,17 @@ fused composite; A keeps everything in the one inline+cross-join mechanism with 
 materialized intermediates. (C is the more sklearn-literal staging; recorded as a
 fallback if A's fused fit proves awkward.)
 
-**Provenance — a build constraint on this inline pipeline (for error attribution).**
-Tag each expression node with its origin — the referenced transformer / ref scope
-(`__STATE_R{i}__`) plus the authored SQL span — at build, and **preserve the tag
-across every nested inline** so the `b→a→outer` chain survives fusion. Once
-expressions fuse into one flat per-row expression the origin is unrecoverable, so
-this must be threaded from the first line, not bolted on later. A runtime failure
-then renders back to e.g. *"div-by-zero in `{scaler}` applied to `age`, from
-`x / STDDEV(x) OVER ()` in the scaler def."* (Serves the error-attribution BACKLOG
-item; cheaper to carry from the start than reconstruct.)
+**Provenance — a build constraint on this inline pipeline (readiness, not the
+feature).** Keep *all* inlining centralized in `inline_references` (one choke point)
+so origin tags — referenced transformer / ref scope (`__STATE_R{i}__`) + authored
+SQL span — can later thread through a single place, targeting a rendered failure
+like *"div-by-zero in `{scaler}` applied to `age`, from `x / STDDEV(x) OVER ()`."*
+Full **runtime** attribution is the separate error-attribution BACKLOG item, and it
+needs Rust work: the composite's rewritten SQL reaches `InferFn` as a **string**, so
+a build-time tag on the sqlglot AST does not survive to the interpreter — the tag
+must be propagated *through* the Rust engine and back out on error. This slice only
+owes the **centralization** (cheap now; scattering inlining would make the later
+threading far harder), not the tagging or the render.
 
 ## Settled: semantics
 
