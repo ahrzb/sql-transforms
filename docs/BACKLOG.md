@@ -196,18 +196,21 @@ the outer taking its own window aggregate over the inlined column works; a bare
 `{a}` on a fitted object and `{a.transform}` on an unfit object both error
 explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting
 (the earlier quoting gap in the inline + PARTITION BY paths is fixed, `c056ec3`).
-**Live remaining work = the "Deferred to follow-up slices" list at the
-end of this entry.** Per the 2026-07-16 M1 ordering, **fit-cascade (unfitted
-`{a}(col)`) is the active next slice — design settled, and **now unblocked**: its
-struct + `UNNEST` output-model dependency is **satisfied** by the shipped rich-type
-first slice (`4809470`). Still *parked pending a go-ahead to start* (not a technical
-blocker anymore). Output model = struct + `UNNEST` on the new type layer (*not* the
-earlier struct + `.*`). See the spec
-[fit-cascade design](superpowers/specs/2026-07-16-fit-cascade-composition-design.md);
-its Output-type § still says `.*` and gets reconciled to `UNNEST` when picked up. **Fan-out + multi-input stay deferred** and re-enter with the sklearn
-transformers that need them (OneHot fan-out, multi-input encoders). Everything
-between here and the deferred list is kept as the design reference those slices
-build on.
+**✅ Second slice (fit-cascade) shipped** — on master (`5ac613e`, suite 188).
+An outer `SQLTransform` can reference an **unfit** `SQLTransform` via `{a}(col)`;
+the ref's window-aggregate state is fit **into the composite** during the
+composite's `.fit()` (sklearn-staged), with arbitrary nesting/chaining
+(`{a}({b}(x))`), outer aggregates over the cascade, and free mixing with the frozen
+path (`{a}({b.transform}(x))`). `transform`/`infer` parity holds across the matrix.
+Single-output `{a}(col)` auto-unwraps to a scalar (consistent with the frozen path);
+the ref is never mutated (clone contract). Design/decisions in the
+[fit-cascade spec](superpowers/specs/2026-07-16-fit-cascade-composition-design.md).
+
+**Live remaining work = the "Deferred to follow-up slices" list at the end of this
+entry** — now just multi-output fan-out, multi-input refs, and unfit-*composite*
+refs (all error explicitly today). They re-enter with the sklearn transformers that
+need them (OneHot fan-out, multi-input encoders). Everything between here and the
+deferred list is kept as the design reference those slices build on.
 
 The first implementable step of the execution model above, and the primitive
 everything else (our `Pipeline`, sklearn composition) is built on: let one
@@ -288,16 +291,19 @@ clones each step and fits the clone, never the original — so the same `a` can 
 referenced by many composites without interference, and fitting one composite never
 leaks state into `a` or into another composite.
 
-Deferred to follow-up slices (designed-around now, not built):
-- **Fit-cascade (`{a}(col)` on an unfit transform)** — the staged fit + nested-window
-  problem (an inner still-live `OVER (...)` can't inline into another window agg's
-  argument; fit must stage: fit inner → transform training forward → fit outer),
-  writing the learned state into the *composite* (not back to `a`, per above). The
-  frozen path avoids the staging entirely.
+Deferred to follow-up slices (error explicitly today, not built):
 - **Multi-output fan-out** referenced transforms (OneHot) — output naming/placement +
-  column-count-from-state.
+  column-count-from-state; unpacks via `unnest({a}(col))` on the shipped struct type.
 - **Multi-input** referenced transforms — positional/named binding for
   `{transform}(a, b)`.
+- **Unfit-*composite* references** — a `{a}(col)` where `a` is itself a composite
+  (deeper recursion). Frozen-composite refs already work; unfit-composite is the
+  deferred deeper case.
+- **Minor, guarded** (found in fit-cascade review, `5ac613e`): a referenced
+  transform whose *inner definition* has >1 distinct `PARTITION BY` set would collide
+  on `fit_into_scope`'s single-scope state key — raised as a loud
+  `NotImplementedError` (can't silently corrupt). Unreachable for this slice's
+  single-in/out refs; revisit when partitioned or multi-input refs land.
 
 ### Error attribution — failure → authored SQL span → composite transformer part
 As nested/composite transformers land, a runtime interpreter failure (div/mod by
@@ -314,15 +320,22 @@ STDDEV(x) OVER ()` in the scaler's definition."
 
 **Why:** composition makes failures un-attributable exactly when there are the most
 places to look. This is the debuggability half of VISION hook 3 (provenance) — a
-prediction/pipeline you can't locate a fault in isn't handoff-able. Value grows with
-nesting depth, so it's worth doing **alongside or right after fit-cascade + deeper
-composition**, not before (little to attribute until transformers nest).
+prediction/pipeline you can't locate a fault in isn't handoff-able. Now live as of
+the fit-cascade slice (nesting exists), so this is worth doing next to any further
+composition work.
 
-**Start:** carry source provenance on expression nodes through the rewrite/inline
-pipeline — tag each node at build with its originating transformer/ref scope + a
-span into that transformer's authored SQL, and preserve/extend the tag across
-`inline_references` so nested inlines keep the b→a→outer chain. On interpreter
-error, render the attributed location from the tag. Distinct from the "error-type
+**Readiness done (`5ac613e`), the feature is not.** The fit-cascade slice kept
+*all* inlining centralized in `inline_references` — one choke point where origin
+tags (referenced transformer / ref scope `__STATE_R{i}__` + authored SQL span) can
+later thread through a single place, instead of scattering the work. That's the
+cheap part, and it's landed.
+
+**The remaining work needs Rust.** The composite's rewritten SQL reaches `InferFn`
+as a **string**, so a build-time tag on the sqlglot AST does *not* survive to the
+interpreter — the tag has to be propagated *through* the Rust engine and surfaced
+back out on error. **Start:** thread the origin tag from `inline_references` into the
+program the interpreter runs, carry it on the executing node, and render the
+attributed location when the interpreter raises. Distinct from the "error-type
 parity across engines" non-goal below — that's about *which exception type* each
 engine raises; this is about *locating* a failure in the authored source, and
 applies equally to both engines.
