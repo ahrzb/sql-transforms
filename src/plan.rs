@@ -58,7 +58,20 @@ pub enum RelNode {
         keys: Vec<Expr>,
         outer: bool,
     },
+    /// Row-multiplying `unnest(list)`: evaluates `list_expr` per input row and
+    /// emits one output row per list element, binding it to `output_col`. A
+    /// NULL or empty list emits zero rows (matches DataFusion).
+    Unnest {
+        input: Box<RelNode>,
+        list_expr: Expr,
+        output_col: String,
+    },
 }
+
+/// Synthetic outer key under which `RelNode::Unnest` binds its emitted element
+/// column — in the runtime `Row` and in the validation-time effective-schema
+/// map. The NUL byte can never collide with a real SQL table/alias identifier.
+const UNNEST_KEY: &str = "\0unnest";
 
 pub struct Plan {
     pub projection: Vec<(String, Expr)>,
@@ -573,6 +586,37 @@ fn execute_rel(
             }
             Ok(out)
         }
+        RelNode::Unnest {
+            input,
+            list_expr,
+            output_col,
+        } => {
+            let rows = execute_rel(input, tables, lookups)?;
+            let mut out = Vec::new();
+            for row in rows {
+                match crate::expr::eval(list_expr, &row)? {
+                    Value::List(items) => {
+                        // An empty list falls out here as zero iterations.
+                        for item in items {
+                            let mut new_row = row.clone();
+                            let mut bound = HashMap::new();
+                            bound.insert(output_col.clone(), item);
+                            new_row.insert(UNNEST_KEY.to_string(), bound);
+                            out.push(new_row);
+                        }
+                    }
+                    // NULL list -> zero rows (matches DataFusion).
+                    Value::Null => {}
+                    other => {
+                        return Err(InterpError::Eval(format!(
+                            "unnest() expected a list, got a {} value",
+                            crate::expr::type_name(&other)
+                        )))
+                    }
+                }
+            }
+            Ok(out)
+        }
     }
 }
 
@@ -637,6 +681,11 @@ fn resolve_tables(
                 nullable_out.insert(table.clone());
             }
         }
+        // The emitted column lives under a synthetic key resolved via
+        // effective_schemas, not `resolved` — just recurse into the input.
+        RelNode::Unnest { input, .. } => {
+            resolve_tables(input, row_table_names, nullable, out, nullable_out)
+        }
     }
 }
 
@@ -684,6 +733,7 @@ pub fn validate_columns(
 
     let mut used_columns: HashMap<String, HashSet<String>> = HashMap::new();
     let mut expanded_projection = Vec::with_capacity(plan.projection.len());
+    let mut unnest_seen = false;
     for (name, mut e) in std::mem::take(&mut plan.projection) {
         validate_expr(
             &mut e,
@@ -693,6 +743,33 @@ pub fn validate_columns(
             &effective_schemas,
             &mut used_columns,
         )?;
+        // Task 6: `unnest(list)` multiplies rows. Wrap the input rel in an
+        // `Unnest` node and replace the projection item with a plain reference
+        // to the emitted column. (The `unnest(struct)` case types as a struct
+        // and is handled by `expand_unnest_struct` below.)
+        if let Some((list_expr, elem_ft)) = unnest_list_element(&e, &effective_schemas)? {
+            if unnest_seen {
+                return Err(InterpError::Build(
+                    "Only one unnest(list) per query is supported".to_string(),
+                ));
+            }
+            unnest_seen = true;
+            let old_input =
+                std::mem::replace(&mut plan.input, RelNode::TableScan { table: String::new() });
+            plan.input = RelNode::Unnest {
+                input: Box::new(old_input),
+                list_expr,
+                output_col: name.clone(),
+            };
+            // Register the emitted column so output-model synthesis (`infer_type`)
+            // and downstream validation resolve the unqualified `output_col`.
+            effective_schemas
+                .entry(UNNEST_KEY.to_string())
+                .or_default()
+                .insert(name.clone(), elem_ft);
+            expanded_projection.push((name.clone(), Expr::Column { table: None, name }));
+            continue;
+        }
         match expand_unnest_struct(&e, &effective_schemas)? {
             Some(fields) => expanded_projection.extend(fields),
             None => expanded_projection.push((name, e)),
@@ -829,6 +906,26 @@ fn validate_rel(
                 used_columns,
             )
         }
+        RelNode::Unnest {
+            input, list_expr, ..
+        } => {
+            validate_expr(
+                list_expr,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )?;
+            validate_rel(
+                input,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )
+        }
     }
 }
 
@@ -838,6 +935,26 @@ fn validate_rel(
 /// `"<arg display>.<field>"`, ignoring any alias on the SELECT item -- see
 /// `unnest_display_name`). Returns `None` for anything else (including
 /// `unnest()` on a list, left untouched for Task 6's list-unnest).
+/// If `e` is `unnest(<arg>)` and `<arg>` types as a list, returns the argument
+/// (the list expression) and the list's element `FieldType`. Returns `None` for
+/// anything else (a struct-typed `unnest`, a non-`unnest` expression, ...).
+fn unnest_list_element(
+    e: &Expr,
+    effective_schemas: &HashMap<String, Schema>,
+) -> Result<Option<(Expr, crate::types::FieldType)>, InterpError> {
+    let Expr::Function { name, args } = e else {
+        return Ok(None);
+    };
+    if name != "unnest" || args.len() != 1 {
+        return Ok(None);
+    }
+    let arg_ty = crate::types::infer_type(&args[0], effective_schemas)?;
+    let crate::types::Base::List(elem) = arg_ty.base else {
+        return Ok(None);
+    };
+    Ok(Some((args[0].clone(), *elem)))
+}
+
 fn expand_unnest_struct(
     e: &Expr,
     effective_schemas: &HashMap<String, Schema>,

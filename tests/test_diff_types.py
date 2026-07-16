@@ -87,3 +87,52 @@ def test_unnest_struct_column_expands_columns():
         "SELECT unnest(s) FROM t",
         {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 5, "y": 9}}])},
     )
+
+
+def test_unnest_list_expands_rows():
+    check(
+        "SELECT id, unnest(vals) AS v FROM t",
+        {
+            "t": rows(
+                {"id": "int", "vals": "list[int]?"},
+                [
+                    {"id": 1, "vals": [10, 20, 30]},
+                    {"id": 2, "vals": []},
+                    {"id": 3, "vals": None},
+                ],
+            )
+        },
+        expect=[{"id": 1, "v": 10}, {"id": 1, "v": 20}, {"id": 1, "v": 30}],
+    )
+    # empty list (id=2) and NULL list (id=3) both -> zero rows
+
+
+def test_unnest_list_all_dropped_yields_no_rows():
+    # Every input row's list is empty or NULL -> zero output rows.
+    check(
+        "SELECT id, unnest(vals) AS v FROM t",
+        {
+            "t": rows(
+                {"id": "int", "vals": "list[int]?"},
+                [{"id": 1, "vals": []}, {"id": 2, "vals": None}],
+            )
+        },
+        expect=[],
+    )
+
+
+def test_unnest_list_preserves_other_columns():
+    # Multiple non-unnest columns ride along on each emitted row.
+    check(
+        "SELECT id, label, unnest(vals) AS v FROM t",
+        {
+            "t": rows(
+                {"id": "int", "label": "str", "vals": "list[int]?"},
+                [{"id": 1, "label": "a", "vals": [7, 8]}],
+            )
+        },
+        expect=[
+            {"id": 1, "label": "a", "v": 7},
+            {"id": 1, "label": "a", "v": 8},
+        ],
+    )
