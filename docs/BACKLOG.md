@@ -184,18 +184,17 @@ and `infer` (Rust); a bare `{scaler}` on a fitted object raises the explicit
 fit-cascade-not-implemented error; and `{scaler.transform}` on an *unfit* object errors.
 
 Open (this slice):
-- **API surface / Python version:** t-strings are PEP 750 / Python **3.14**, which is
-  released (3.14.0, Oct 2025); this project runs on **3.13.11** today, so the native
-  `t"..."` form needs a Python-floor bump to 3.14. **Prefer the bump** — a t-string
-  doesn't eval to a `str`; it produces a `Template` exposing literal parts and
-  interpolations *separately*, so an embedded `SQLTransform` arrives as the **real
-  object**, not a stringified repr to parse back out. That makes `{scaler}(age)` a
-  clean hand-off of the `scaler` object into the composition — a genuine structural
-  fit, not just sugar over an f-string. Fallback if the bump is deferred: a custom
-  template type / `.format`-style builder on 3.13 that carries the objects. The
-  `{transform}(col)` call-on-a-column shape is the target regardless. **Start:** check
-  the 3.14 bump is clean for this project (deps — pyo3/maturin, datafusion, pydantic;
-  CI matrix) before committing to the t-string surface.
+- **API surface — t-string (gate RESOLVED):** the Python floor is now **3.14**
+  (`chore: bump Python floor to 3.14`), so PEP 750 t-strings are available natively.
+  The bump was verified clean: builds on `abi3-py314`, full suite green on 3.14.6, and
+  the one real 3.14 incompatibility — `typing.Union` became a class, breaking
+  `call_method1("__getitem__", …)` — is fixed in `src/schema.rs` (`get_item`). No CI
+  matrix exists to gate. This unblocks the intended surface: a t-string doesn't eval
+  to a `str` — it produces a `Template` exposing literal parts and interpolations
+  *separately*, so an embedded `SQLTransform` arrives as the **real object**, not a
+  stringified repr to parse back out, making `{scaler}(age)` a genuine structural
+  hand-off. Residual API question: the concrete `SQLTransform(t"…")` constructor shape
+  (accept a `Template`, walk its interpolations to bind each embedded transform).
 - **Reference mechanism:** embed by Python object (t-string interpolation, the
   intended form) vs by name in a registry — confirm object-embedding is the surface.
 - **`__STATE__` name-scoping token:** the concrete collision-safe naming for merged

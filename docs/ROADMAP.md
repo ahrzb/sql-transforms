@@ -29,7 +29,7 @@ real bug it surfaced is tracked under Maintenance below.
 sklearn-compatible transformers composing into a stock pipeline and producing
 bit-identical output. Correctness and coverage first; speed is M3.
 - [ ] [Transformer execution model — UDF/UDAF, macros, composition](BACKLOG.md#transformer-execution-model--procedures-udfudaf-macros-composition) — the conceptual backbone the rest builds on
-- [ ] [First slice: compose SQLTransforms via `{transform}(col)` references](BACKLOG.md#first-slice-compose-sqltransforms-via-transformcol-references)
+- [ ] [First slice: compose SQLTransforms via `{transform}(col)` references](BACKLOG.md#first-slice-compose-sqltransforms-via-transformcol-references) — t-string prerequisite cleared (Python floor now **3.14** ✅); ready to brainstorm/spec
 - [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — transformers + `Pipeline`/`ColumnTransformer` glue + assembly-parity harness + Python fallback
 
 ### M2 — Benchmark baseline
