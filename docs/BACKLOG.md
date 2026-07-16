@@ -23,7 +23,32 @@ is shippable on its own — correct-but-not-yet-fast (via Python fallback) is a 
 milestone that de-risks the semantics. Supersedes the old README `sklearn.*`
 surface and the earlier "decide in/out of scope" question — it's in scope as the
 primary serving goal (see [VISION.md](VISION.md), "Positioning" + "Serving without
-the intermediate"). **Scope:**
+the intermediate").
+
+**Sequencing (decided 2026-07-16): Python-fallback-first, then optimize per
+transformer.**
+- **Phase A — compose-in surface, fallback-backed.** Stand up the whole structural
+  surface end to end with every transformer backed by the **real sklearn object**
+  (the Python fallback): the estimator interface, the `Pipeline`/`ColumnTransformer`
+  glue, and the assembly-parity harness. Ships hooks 1 (composes in) + 3 (typed
+  contract) and proves the *structure* is right — does ours actually slot into a
+  stock pipeline, does column routing + concatenation yield a bit-identical vector —
+  before any engine reimplementation. The fallback is trivially parity-correct (it
+  *is* sklearn), so it doubles as the oracle for Phase B. Explicitly **not** a speed
+  win (fallback is slower than raw sklearn — extra indirection + still builds the
+  DataFrame); it's the correctness/structure milestone.
+- **Phase B — native per transformer.** Replace each transformer's internals with a
+  **native** engine implementation (SQLTransform/expression, no sklearn call), one at
+  a time, each diffed against the fallback until bit-identical, then flipped over.
+  Same public API throughout, so speed arrives transparently, transformer by
+  transformer. Ordering within B: `StandardScaler` as the thin vertical (scalar
+  state, no fan-out) to shake out the native path, `OneHotEncoder` next for the hard
+  cases (fan-out + unknown-category).
+- The **n = 1 serving-path optimization** (delete the dict/DataFrame, Rust-parse
+  input, contiguous feature buffer) is the *separate* M3 item on top of Phase B's
+  native transforms — not part of this item.
+
+**Scope:**
 - **Two integration directions, compose-first:** (a) *compose* — our transformers
   are sklearn estimators the user drops into their own `Pipeline`/`ColumnTransformer`
   (primary; the incremental, low-friction adoption path, one transformer at a time,
