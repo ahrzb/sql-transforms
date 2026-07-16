@@ -75,3 +75,15 @@ def test_qualified_struct_field_access():
         "SELECT t.s.x AS v FROM t",
         {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 5, "y": 9}}])},
     )
+
+
+def test_unnest_struct_expands_columns():
+    check("SELECT unnest(named_struct('x', a, 'y', b)) FROM t",
+          {"t": __import__("differential").rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])})
+
+
+def test_unnest_struct_column_expands_columns():
+    check(
+        "SELECT unnest(s) FROM t",
+        {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 5, "y": 9}}])},
+    )

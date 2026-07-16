@@ -267,6 +267,14 @@ fn column_name(e: &SqlExpr) -> Result<String, InterpError> {
         SqlExpr::CompoundIdentifier(parts) => {
             Ok(parts.last().map(|i| i.value.clone()).unwrap_or_default())
         }
+        // `unnest(struct_expr)` expands into per-field columns during
+        // validate_columns (once the arg's type is known), which replaces
+        // this placeholder name entirely. Only reachable unaliased here
+        // because DataFusion allows it; other bare function calls still
+        // require an alias below.
+        SqlExpr::Function(func) if func.name.to_string().eq_ignore_ascii_case("unnest") => {
+            Ok("unnest".to_string())
+        }
         _ => Err(InterpError::Build(
             "Expression in SELECT list needs an alias (AS name)".to_string(),
         )),
@@ -675,16 +683,22 @@ pub fn validate_columns(
     }
 
     let mut used_columns: HashMap<String, HashSet<String>> = HashMap::new();
-    for (_, e) in &mut plan.projection {
+    let mut expanded_projection = Vec::with_capacity(plan.projection.len());
+    for (name, mut e) in std::mem::take(&mut plan.projection) {
         validate_expr(
-            e,
+            &mut e,
             &resolved,
             row_schemas,
             static_schemas,
             &effective_schemas,
             &mut used_columns,
         )?;
+        match expand_unnest_struct(&e, &effective_schemas)? {
+            Some(fields) => expanded_projection.extend(fields),
+            None => expanded_projection.push((name, e)),
+        }
     }
+    plan.projection = expanded_projection;
     validate_rel(
         &mut plan.input,
         &resolved,
@@ -815,6 +829,98 @@ fn validate_rel(
                 used_columns,
             )
         }
+    }
+}
+
+/// If `e` is `unnest(<arg>)` and `<arg>` types as a struct, returns the
+/// per-field projection columns it expands into (DataFusion flattens a
+/// struct-typed `unnest()` into one output column per field, named
+/// `"<arg display>.<field>"`, ignoring any alias on the SELECT item -- see
+/// `unnest_display_name`). Returns `None` for anything else (including
+/// `unnest()` on a list, left untouched for Task 6's list-unnest).
+fn expand_unnest_struct(
+    e: &Expr,
+    effective_schemas: &HashMap<String, Schema>,
+) -> Result<Option<Vec<(String, Expr)>>, InterpError> {
+    let Expr::Function { name, args } = e else {
+        return Ok(None);
+    };
+    if name != "unnest" || args.len() != 1 {
+        return Ok(None);
+    }
+    let arg = &args[0];
+    let arg_ty = crate::types::infer_type(arg, effective_schemas)?;
+    let crate::types::Base::Struct(fields) = &arg_ty.base else {
+        return Ok(None);
+    };
+    let arg_display = unnest_display_name(arg, effective_schemas)?;
+    Ok(Some(
+        fields
+            .iter()
+            .map(|(field_name, _)| {
+                (
+                    format!("{arg_display}.{field_name}"),
+                    Expr::FieldAccess {
+                        base: Box::new(arg.clone()),
+                        field: field_name.clone(),
+                    },
+                )
+            })
+            .collect(),
+    ))
+}
+
+/// Renders an expression the way DataFusion's logical-plan `Expr::Display`
+/// does, for the shapes `unnest()`'s argument can take -- a (possibly
+/// qualified) column, a struct-field access, or a `named_struct(...)`
+/// construction. This is what DataFusion derives its `unnest(...)` output
+/// column names from, so matching it exactly is required for the
+/// differential tests to agree column-for-column.
+///
+/// ponytail: only covers the node shapes reachable as an `unnest()` arg
+/// today (struct columns, struct field access, `named_struct`/`struct()`
+/// literals over plain columns). `Expr::Struct` can't tell `named_struct(...)`
+/// and `struct(...)` apart post-conversion (both collapse to the same node),
+/// so this always renders as `named_struct(...)`; DataFusion names a
+/// `struct()`-built unnest differently. Widen if that combination needs
+/// differential coverage.
+fn unnest_display_name(
+    e: &Expr,
+    effective_schemas: &HashMap<String, Schema>,
+) -> Result<String, InterpError> {
+    match e {
+        Expr::Column {
+            table: Some(t),
+            name,
+        } => Ok(format!("{t}.{name}")),
+        Expr::Column { table: None, name } => {
+            let qualifier = effective_schemas
+                .iter()
+                .find(|(_, schema)| schema.contains_key(name))
+                .map(|(qualifier, _)| qualifier.clone())
+                .ok_or_else(|| InterpError::Build(format!("Unknown column: {name}")))?;
+            Ok(format!("{qualifier}.{name}"))
+        }
+        Expr::FieldAccess { base, field } => Ok(format!(
+            "{}.{field}",
+            unnest_display_name(base, effective_schemas)?
+        )),
+        Expr::Struct(fields) => {
+            let inner = fields
+                .iter()
+                .map(|(key, value)| {
+                    Ok(format!(
+                        "Utf8(\"{key}\"),{}",
+                        unnest_display_name(value, effective_schemas)?
+                    ))
+                })
+                .collect::<Result<Vec<_>, InterpError>>()?
+                .join(",");
+            Ok(format!("named_struct({inner})"))
+        }
+        _ => Err(InterpError::Build(
+            "unnest() argument is too complex to name".to_string(),
+        )),
     }
 }
 
