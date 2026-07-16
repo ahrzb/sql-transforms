@@ -93,8 +93,7 @@ impl std::hash::Hash for Value {
     }
 }
 
-/// Human-readable type name for error messages (Value has no Debug impl
-/// because Py<PyAny> can't derive one without a GIL token).
+/// Human-readable type name for error messages.
 pub fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(_) => "int",

@@ -183,15 +183,17 @@ pub fn compatible(inferred: &Base, declared: &Base) -> bool {
         (Base::Int, Base::Float) => true,
         // We have no basis to say an unresolvable inferred type is wrong.
         (Base::Other, _) => true,
-        // Struct compatible iff same field names (in order) with
-        // compatible field types; list iff compatible element type.
+        // Struct compatible iff same set of field names (order-independent)
+        // with compatible field types per name; list iff compatible element
+        // type.
         (Base::Struct(a_fields), Base::Struct(b_fields)) => {
             a_fields.len() == b_fields.len()
-                && a_fields.iter().zip(b_fields.iter()).all(
-                    |((a_name, a_ft), (b_name, b_ft))| {
-                        a_name == b_name && compatible(&a_ft.base, &b_ft.base)
-                    },
-                )
+                && a_fields.iter().all(|(a_name, a_ft)| {
+                    b_fields
+                        .iter()
+                        .find(|(b_name, _)| b_name == a_name)
+                        .is_some_and(|(_, b_ft)| compatible(&a_ft.base, &b_ft.base))
+                })
         }
         (Base::List(a_inner), Base::List(b_inner)) => compatible(&a_inner.base, &b_inner.base),
         _ => false,
@@ -227,5 +229,32 @@ fn function_type(name: &str, args: &[FieldType]) -> FieldType {
             base: Base::Other,
             nullable: true,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ft(base: Base) -> FieldType {
+        FieldType {
+            base,
+            nullable: false,
+        }
+    }
+
+    #[test]
+    fn struct_compatibility_is_name_keyed_not_positional() {
+        let xy = Base::Struct(vec![("x".into(), ft(Base::Int)), ("y".into(), ft(Base::Str))]);
+        let yx = Base::Struct(vec![("y".into(), ft(Base::Str)), ("x".into(), ft(Base::Int))]);
+        assert!(compatible(&xy, &yx), "same names+types, reordered, should be compatible");
+
+        let different_names =
+            Base::Struct(vec![("x".into(), ft(Base::Int)), ("z".into(), ft(Base::Str))]);
+        assert!(!compatible(&xy, &different_names));
+
+        let different_types =
+            Base::Struct(vec![("x".into(), ft(Base::Str)), ("y".into(), ft(Base::Str))]);
+        assert!(!compatible(&xy, &different_types));
     }
 }
