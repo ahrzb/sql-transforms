@@ -116,6 +116,8 @@ def _val_equal(a: Any, b: Any, tol: float) -> bool:
     if isinstance(a, float) != isinstance(b, float):
         return False  # int vs float is a real type divergence for the oracle
     if isinstance(a, float):
+        if a == b:
+            return True  # handles equal +-inf, where abs(a - b) is nan
         return abs(a - b) <= tol
     return a == b
 

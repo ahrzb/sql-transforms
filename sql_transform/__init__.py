@@ -75,7 +75,9 @@ class SQLTransform:
         ctx = datafusion.SessionContext()
         ctx.from_arrow(table, name="__THIS__")
 
-        own_state = build_state_tables(windows, ctx, "__THIS__")
+        own_state = build_state_tables(
+            windows, ctx, "__THIS__", join_tables=inline.scoped_state
+        )
         self._state_tables = {**inline.scoped_state, **own_state}
         self._rewritten_sql = rewrite_sql(
             tree, windows, extra_marker_tables=tuple(inline.scoped_state)

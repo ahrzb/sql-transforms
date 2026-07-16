@@ -69,3 +69,12 @@ def test_referenced_transform_not_mutated():
     SQLTransform(t"SELECT {scaler.transform}(age) AS s FROM __THIS__").fit(train)
     after = scaler.transform(train).to_pylist()
     assert before == after  # scaler still fitted + unchanged
+
+
+def test_outer_aggregate_over_inlined_column_parity():
+    scaler, train = _fit_scaler()
+    composite = SQLTransform(
+        t"SELECT {scaler.transform}(age) "
+        t"/ AVG({scaler.transform}(age)) OVER () AS z FROM __THIS__"
+    ).fit(train)
+    _parity(composite, train)

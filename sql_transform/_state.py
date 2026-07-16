@@ -39,11 +39,18 @@ def build_state_tables(
     windows: list[WindowAgg],
     ctx: datafusion.SessionContext,
     table_name: str,
+    join_tables: dict[str, pa.Table] | None = None,
 ) -> dict[str, pa.Table]:
     """Return a dict of state-table-name -> pyarrow table, one per distinct
     PARTITION BY key-set present in `windows`. Value columns keep their real
     Arrow type. Raises NotImplementedError for ORDER BY window aggregates and
-    ValueError for a case-collision between two aggregates in the same table."""
+    ValueError for a case-collision between two aggregates in the same table.
+
+    `join_tables` (e.g. inlined transforms' scoped state) are registered in
+    `ctx` and CROSS JOINed into the extraction query, so aggregates whose
+    argument references that state (e.g. AVG(<expr referencing scoped
+    state>) OVER ()) can resolve it. They are one-row/global tables, so the
+    cross join preserves cardinality and is a no-op when unreferenced."""
     # Group windows by partition-key-set, preserving discovery order.
     groups: dict[tuple[str, ...], list[WindowAgg]] = {}
     for w in windows:
@@ -53,6 +60,13 @@ def build_state_tables(
                 "the Rust-backed SQLTransform pipeline"
             )
         groups.setdefault(w.partition_cols, []).append(w)
+
+    join_tables = join_tables or {}
+    for name, tbl in join_tables.items():
+        ctx.from_arrow(tbl, name=name)
+    from_sql = table_name
+    for name in join_tables:
+        from_sql += f" CROSS JOIN {name}"
 
     tables: dict[str, pa.Table] = {}
     for partition_cols, members in groups.items():
@@ -74,7 +88,7 @@ def build_state_tables(
             key_list = ", ".join(f'"{c}"' for c in partition_cols)
             sql = (
                 f"SELECT {key_list}, {', '.join(value_exprs)} "
-                f"FROM {table_name} GROUP BY {key_list}"
+                f"FROM {from_sql} GROUP BY {key_list}"
             )
             table = _collect(ctx, sql)
             # An unseen partition key yields NULL for every value column after
@@ -89,7 +103,7 @@ def build_state_tables(
             )
             table = table.cast(schema)
         else:
-            sql = f"SELECT {', '.join(value_exprs)} FROM {table_name}"
+            sql = f"SELECT {', '.join(value_exprs)} FROM {from_sql}"
             table = _collect(ctx, sql)
             table = table.append_column(STATE_MARKER, pa.array([0], type=pa.int64()))
 
