@@ -264,6 +264,10 @@ pub enum Expr {
     },
     Struct(Vec<(String, Expr)>),
     List(Vec<Expr>),
+    FieldAccess {
+        base: Box<Expr>,
+        field: String,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -331,6 +335,22 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
                 .map(|e| eval(e, row))
                 .collect::<Result<_, _>>()?;
             Ok(Value::List(values))
+        }
+        Expr::FieldAccess { base, field } => {
+            let v = eval(base, row)?;
+            match v {
+                Value::Struct(fields) => fields
+                    .into_iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, v)| v)
+                    .ok_or_else(|| {
+                        crate::plan::InterpError::Eval(format!("Unknown struct field: {field}"))
+                    }),
+                other => Err(crate::plan::InterpError::Eval(format!(
+                    "Cannot access field '{field}' on a {} value",
+                    type_name(&other)
+                ))),
+            }
         }
     }
 }

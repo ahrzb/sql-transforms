@@ -638,7 +638,7 @@ fn resolve_tables(
 /// Also returns the effective-name -> Schema map (aliases resolved), reused
 /// by the output type-inference pass.
 pub fn validate_columns(
-    plan: &Plan,
+    plan: &mut Plan,
     row_table_names: &HashSet<String>,
     row_schemas: &HashMap<String, Schema>,
     static_schemas: &HashMap<String, Schema>,
@@ -675,14 +675,22 @@ pub fn validate_columns(
     }
 
     let mut used_columns: HashMap<String, HashSet<String>> = HashMap::new();
-    for (_, e) in &plan.projection {
-        validate_expr(e, &resolved, row_schemas, static_schemas, &mut used_columns)?;
+    for (_, e) in &mut plan.projection {
+        validate_expr(
+            e,
+            &resolved,
+            row_schemas,
+            static_schemas,
+            &effective_schemas,
+            &mut used_columns,
+        )?;
     }
     validate_rel(
-        &plan.input,
+        &mut plan.input,
         &resolved,
         row_schemas,
         static_schemas,
+        &effective_schemas,
         &mut used_columns,
     )?;
 
@@ -696,10 +704,11 @@ pub fn validate_columns(
 }
 
 fn validate_rel(
-    node: &RelNode,
+    node: &mut RelNode,
     resolved: &HashMap<String, (String, bool)>,
     row_schemas: &HashMap<String, Schema>,
     static_schemas: &HashMap<String, Schema>,
+    effective_schemas: &HashMap<String, Schema>,
     used_columns: &mut HashMap<String, HashSet<String>>,
 ) -> Result<(), InterpError> {
     match node {
@@ -710,41 +719,111 @@ fn validate_rel(
                 resolved,
                 row_schemas,
                 static_schemas,
+                effective_schemas,
                 used_columns,
             )?;
-            validate_rel(input, resolved, row_schemas, static_schemas, used_columns)
+            validate_rel(
+                input,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )
         }
         RelNode::CrossJoin { left, right } => {
-            validate_rel(left, resolved, row_schemas, static_schemas, used_columns)?;
-            validate_rel(right, resolved, row_schemas, static_schemas, used_columns)
+            validate_rel(
+                left,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )?;
+            validate_rel(
+                right,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )
         }
         RelNode::Join {
             left, right, on, ..
         } => {
-            for (l, r) in on {
-                validate_expr(l, resolved, row_schemas, static_schemas, used_columns)?;
-                validate_expr(r, resolved, row_schemas, static_schemas, used_columns)?;
+            for (l, r) in on.iter_mut() {
+                validate_expr(
+                    l,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
+                    used_columns,
+                )?;
+                validate_expr(
+                    r,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
+                    used_columns,
+                )?;
             }
-            validate_rel(left, resolved, row_schemas, static_schemas, used_columns)?;
-            validate_rel(right, resolved, row_schemas, static_schemas, used_columns)
+            validate_rel(
+                left,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )?;
+            validate_rel(
+                right,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )
         }
-        RelNode::SubqueryAlias { input, .. } => {
-            validate_rel(input, resolved, row_schemas, static_schemas, used_columns)
-        }
+        RelNode::SubqueryAlias { input, .. } => validate_rel(
+            input,
+            resolved,
+            row_schemas,
+            static_schemas,
+            effective_schemas,
+            used_columns,
+        ),
         RelNode::LookupJoin { input, keys, .. } => {
-            for k in keys {
-                validate_expr(k, resolved, row_schemas, static_schemas, used_columns)?;
+            for k in keys.iter_mut() {
+                validate_expr(
+                    k,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
+                    used_columns,
+                )?;
             }
-            validate_rel(input, resolved, row_schemas, static_schemas, used_columns)
+            validate_rel(
+                input,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )
         }
     }
 }
 
 fn validate_expr(
-    e: &Expr,
+    e: &mut Expr,
     resolved: &HashMap<String, (String, bool)>,
     row_schemas: &HashMap<String, Schema>,
     static_schemas: &HashMap<String, Schema>,
+    effective_schemas: &HashMap<String, Schema>,
     used_columns: &mut HashMap<String, HashSet<String>>,
 ) -> Result<(), InterpError> {
     match e {
@@ -752,17 +831,38 @@ fn validate_expr(
             table: Some(t),
             name,
         } => {
-            let (real, is_row) = resolved
-                .get(t)
-                .ok_or_else(|| InterpError::Build(format!("Unknown table qualifier: {t}")))?;
-            check_column(real, *is_row, name, row_schemas, static_schemas)?;
-            if *is_row {
-                used_columns
-                    .entry(real.clone())
-                    .or_default()
-                    .insert(name.clone());
+            if let Some((real, is_row)) = resolved.get(t.as_str()) {
+                check_column(real, *is_row, name, row_schemas, static_schemas)?;
+                if *is_row {
+                    used_columns
+                        .entry(real.clone())
+                        .or_default()
+                        .insert(name.clone());
+                }
+                return Ok(());
             }
-            Ok(())
+            // `t` isn't a relation alias -- the "table.column" parse was
+            // wrong; reinterpret it as struct field access: `t` an in-scope
+            // column, `name` one of its struct fields. Precedence rule: a
+            // relation alias always wins, so this fallback only runs once
+            // the alias lookup above has failed.
+            let base_name = t.clone();
+            let field = name.clone();
+            *e = Expr::FieldAccess {
+                base: Box::new(Expr::Column {
+                    table: None,
+                    name: base_name,
+                }),
+                field,
+            };
+            validate_expr(
+                e,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )
         }
         Expr::Column { table: None, name } => {
             let mut matches: Vec<(&String, bool)> = Vec::new();
@@ -794,23 +894,79 @@ fn validate_expr(
         }
         Expr::Literal(_) => Ok(()),
         Expr::BinaryOp { left, right, .. } => {
-            validate_expr(left, resolved, row_schemas, static_schemas, used_columns)?;
-            validate_expr(right, resolved, row_schemas, static_schemas, used_columns)
+            validate_expr(
+                left,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )?;
+            validate_expr(
+                right,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )
         }
-        Expr::Not(inner) | Expr::Cast { expr: inner, .. } => {
-            validate_expr(inner, resolved, row_schemas, static_schemas, used_columns)
-        }
+        Expr::Not(inner) | Expr::Cast { expr: inner, .. } => validate_expr(
+            inner,
+            resolved,
+            row_schemas,
+            static_schemas,
+            effective_schemas,
+            used_columns,
+        ),
         Expr::Function { args, .. } | Expr::List(args) => {
             for a in args {
-                validate_expr(a, resolved, row_schemas, static_schemas, used_columns)?;
+                validate_expr(
+                    a,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
+                    used_columns,
+                )?;
             }
             Ok(())
         }
         Expr::Struct(fields) => {
             for (_, v) in fields {
-                validate_expr(v, resolved, row_schemas, static_schemas, used_columns)?;
+                validate_expr(
+                    v,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
+                    used_columns,
+                )?;
             }
             Ok(())
+        }
+        Expr::FieldAccess { base, field } => {
+            validate_expr(
+                base,
+                resolved,
+                row_schemas,
+                static_schemas,
+                effective_schemas,
+                used_columns,
+            )?;
+            let base_ty = crate::types::infer_type(base, effective_schemas)?;
+            match &base_ty.base {
+                crate::types::Base::Struct(fields) => {
+                    if fields.iter().any(|(name, _)| name == field) {
+                        Ok(())
+                    } else {
+                        Err(InterpError::Build(format!("Unknown struct field: {field}")))
+                    }
+                }
+                _ => Err(InterpError::Build(format!(
+                    "Cannot access field '{field}' on a non-struct column"
+                ))),
+            }
         }
     }
 }

@@ -12,10 +12,28 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
             table: None,
             name: ident.value.clone(),
         }),
-        SqlExpr::CompoundIdentifier(parts) if parts.len() == 2 => Ok(Expr::Column {
-            table: Some(parts[0].value.clone()),
-            name: parts[1].value.clone(),
-        }),
+        // `a.b` is ambiguous at parse time -- it's either `table.column` or
+        // `struct_col.field`, and we don't know the relation-alias set here
+        // (that only exists once the row/static tables are supplied, in
+        // plan::validate_columns). Parse the first two parts as
+        // Column{table,name} (today's `table.column` shape) and layer any
+        // further dotted parts on top as FieldAccess (so `s.a.b` parses as
+        // field `b` of field `a` of column-or-table `s`). validate_expr
+        // rewrites the Column node into a FieldAccess when its `table` part
+        // turns out not to be a relation alias -- see plan.rs.
+        SqlExpr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+            let mut expr = Expr::Column {
+                table: Some(parts[0].value.clone()),
+                name: parts[1].value.clone(),
+            };
+            for part in &parts[2..] {
+                expr = Expr::FieldAccess {
+                    base: Box::new(expr),
+                    field: part.value.clone(),
+                };
+            }
+            Ok(expr)
+        }
         SqlExpr::Value(vws) => Ok(Expr::Literal(convert_literal(&vws.value)?)),
         SqlExpr::Nested(inner) => convert_expr(inner),
         SqlExpr::UnaryOp {

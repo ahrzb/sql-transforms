@@ -103,7 +103,7 @@ impl InferFn {
         let raw_plan = plan::build_plan(&sql)?;
         let row_table_names: HashSet<String> = row_tables.keys().cloned().collect();
         let static_table_names: HashSet<String> = static_tables.keys().cloned().collect();
-        let (optimized_plan, specs) = plan::optimize(raw_plan, &static_table_names)?;
+        let (mut optimized_plan, specs) = plan::optimize(raw_plan, &static_table_names)?;
 
         let mut row_schemas = HashMap::new();
         for (name, model_class) in &row_tables {
@@ -115,7 +115,7 @@ impl InferFn {
         }
 
         let column_validation = plan::validate_columns(
-            &optimized_plan,
+            &mut optimized_plan,
             &row_table_names,
             &row_schemas,
             &static_schemas,

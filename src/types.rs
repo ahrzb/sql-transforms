@@ -85,6 +85,22 @@ pub fn infer_type(
                 nullable: false,
             })
         }
+        Expr::FieldAccess { base, field } => {
+            let base_ty = infer_type(base, schemas)?;
+            match &base_ty.base {
+                Base::Struct(fields) => fields
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, ft)| FieldType {
+                        base: ft.base.clone(),
+                        nullable: ft.nullable || base_ty.nullable,
+                    })
+                    .ok_or_else(|| InterpError::Build(format!("Unknown struct field: {field}"))),
+                _ => Err(InterpError::Build(format!(
+                    "Cannot access field '{field}' on a non-struct column"
+                ))),
+            }
+        }
     }
 }
 

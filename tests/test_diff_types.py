@@ -55,3 +55,9 @@ def test_deep_nesting_roundtrip():
             )
         },
     )
+
+
+def test_struct_field_access():
+    check("SELECT s.x AS fx FROM t",
+          {"t": rows({"s": "struct{x:int,y:int}"},
+                     [{"s": {"x": 5, "y": 9}}])})
