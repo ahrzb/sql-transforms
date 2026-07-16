@@ -299,6 +299,34 @@ Deferred to follow-up slices (designed-around now, not built):
 - **Multi-input** referenced transforms — positional/named binding for
   `{transform}(a, b)`.
 
+### Error attribution — failure → authored SQL span → composite transformer part
+As nested/composite transformers land, a runtime interpreter failure (div/mod by
+zero, bad cast, unknown-category lookup miss, type error) points at a node in the
+*fused* per-row expression — which has lost track of where it came from.
+Composition fuses N transformers' rewrites into one flat expression over `__THIS__`
++ name-scoped `__STATE_R{i}__` states, and nesting (`{a}({b}(x))`) inlines
+b→a→outer, so a failing node can originate several inlining layers deep. **Goal:**
+attribute a failure back through the chain — *failing op → the span of the authored
+SQL that produced it → the specific transformer (and, for a composite, which
+referenced part at which nesting depth)*. Turn "ValueError: division by zero" into
+something like "division by zero in `{scaler}` applied to `age` — from `x /
+STDDEV(x) OVER ()` in the scaler's definition."
+
+**Why:** composition makes failures un-attributable exactly when there are the most
+places to look. This is the debuggability half of VISION hook 3 (provenance) — a
+prediction/pipeline you can't locate a fault in isn't handoff-able. Value grows with
+nesting depth, so it's worth doing **alongside or right after fit-cascade + deeper
+composition**, not before (little to attribute until transformers nest).
+
+**Start:** carry source provenance on expression nodes through the rewrite/inline
+pipeline — tag each node at build with its originating transformer/ref scope + a
+span into that transformer's authored SQL, and preserve/extend the tag across
+`inline_references` so nested inlines keep the b→a→outer chain. On interpreter
+error, render the attributed location from the tag. Distinct from the "error-type
+parity across engines" non-goal below — that's about *which exception type* each
+engine raises; this is about *locating* a failure in the authored source, and
+applies equally to both engines.
+
 ### Rust-optimized serving inference path
 Make the preprocessing above *fast at n = 1*: keep the dict/DataFrame off the
 request path entirely, parse request JSON in Rust into typed values, run native
@@ -381,9 +409,7 @@ user relies on. Concretely, integer div/modulo-by-zero raising a clean `ValueErr
 from the Rust path vs a raw DataFusion `Exception` ("DataFusion error: Arrow error:
 Divide by zero error") from the batch path is **accepted by design**, not a gap to
 close. (Was previously an open "unify error semantics" item; descoped here.)
-
-Code heads-up for whoever touches this: the strict-`xfail`
-`test_transform_raises_clean_valueerror_on_div_by_zero` was written assuming
-unification, so under this decision it now asserts a *permanent accepted
-divergence* rather than a pending fix — it wants rewording or removal on the code
-side (Dev's lane), not a fix.
+Locked in by the positive test
+`test_div_by_zero_raises_on_both_engines_with_different_error_types`, which asserts
+both engines error on integer div/mod-by-zero with *different* hierarchies (Rust
+infer → clean `ValueError`; DataFusion batch → its own non-`ValueError` `Exception`).
