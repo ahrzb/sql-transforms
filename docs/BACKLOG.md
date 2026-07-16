@@ -313,23 +313,6 @@ around:
   process-level parallelism / predict-side GIL release as the likelier
   concurrency answer.
 
-### LEFT lookup join output nullability (found by the differential harness)
-A raw `InferFn` `LEFT JOIN` onto a static table whose value columns are declared
-**non-nullable** raises a pydantic `ValidationError` on an unmatched key instead of
-returning NULL. The row-level executor already produces the correct `NULL`; only
-the synthesized *output model* is wrong — `resolve_tables` in `src/plan.rs` drops
-the `outer` flag (via `..`) when building `effective_schemas`, so
-`src/types.rs::resolve_column_type` types the LEFT-joined column non-nullable and
-`OutputRow(**row)` rejects the runtime `None`. Masked in the `SQLTransform`
-PARTITION BY path (which widens state columns to nullable in `_state.py`) and in
-`test_interpreter.py::test_left_lookup_join_miss_returns_null` (bare `pa.table`
-defaults to nullable) — the differential harness's `static({"y": "int"})` builds
-`nullable=False`, exposing it. Directly blocks `OrdinalEncoder` unknown-category
-handling (unseen category = a LEFT-lookup miss). **Start:** widen an outer join's
-lookup-side columns to nullable when computing `effective_schemas`. Tracked by the
-`strict=True` xfail `tests/test_diff_relational.py::test_left_lookup_join_hit_and_miss`,
-which flips to a pass (forcing the decorator's removal) when fixed.
-
 ## Considered — likely won't do
 
 ### Codegen / compiled inference path

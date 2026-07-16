@@ -31,7 +31,7 @@ bit-identical output. Correctness and coverage first; speed is M3.
 - [ ] [Transformer execution model — UDF/UDAF, macros, composition](BACKLOG.md#transformer-execution-model--procedures-udfudaf-macros-composition) — the conceptual backbone the rest builds on
 - [x] [First slice: compose SQLTransforms via `{transform}(col)` references](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — **frozen path (`{a.transform}`) shipped** on master; fit-cascade / fan-out / multi-input deferred to follow-up slices (still tracked in the BACKLOG item)
 - [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — transformers + `Pipeline`/`ColumnTransformer` glue + assembly-parity harness + Python fallback
-- [ ] [LEFT lookup-join output nullability bug](BACKLOG.md#left-lookup-join-output-nullability-found-by-the-differential-harness) — **critical-path blocker**: gates `OrdinalEncoder` unknown-category handling (an unseen category is a LEFT-lookup miss). Small, scoped fix in `src/plan.rs`; xfail waiting to flip. Surfaced by M0's harness.
+- [x] LEFT lookup-join output nullability bug — **fixed & merged** (`7cb7d3c`): threaded outer-nullability through `resolve_tables`, widening the outer side's columns to nullable in `effective_schemas`. Unblocks `OrdinalEncoder` unknown-category handling; the `strict` xfail retired to a normal passing regression test.
 
 ### M2 — Benchmark baseline
 *Gate before any optimization.* Stand up the measurement harness — single-row
