@@ -1,6 +1,5 @@
 """Differential coverage of the Rust engine's relational surface."""
 
-import pytest
 from differential import check, rows, static
 
 
@@ -50,28 +49,10 @@ def test_row_static_lookup_join():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Confirmed Rust-engine bug, not a harness mistake: InferFn's output-"
-        "schema synthesis infers nullability from each table's own declared "
-        "schema only (src/types.rs resolve_column_type, fed by "
-        "src/plan.rs::validate_columns' effective_schemas), which never "
-        "threads the `outer: bool` flag on RelNode::Join/LookupJoin. So the "
-        "synthesized OutputRow model declares `ref.y` as a required "
-        "(non-nullable) int even though this is a LEFT JOIN. At runtime the "
-        "unmatched id=99 row legitimately produces y=None, and constructing "
-        "OutputRow(**row) in _run_infer raises "
-        "pydantic_core.ValidationError (int_type on None) -- an InferFn-"
-        "internal crash, before DataFusion's output is even compared. "
-        "DataFusion has no such issue (LEFT JOIN columns are nullable "
-        "there). Fix belongs in src/types.rs/plan.rs: an outer join's "
-        "right-side (or LookupJoin's lookup-side) columns must be widened "
-        "to nullable when computing effective_schemas."
-    ),
-)
 def test_left_lookup_join_hit_and_miss():
     # id=99 has no match -> LEFT JOIN yields NULL for ref.y on BOTH engines.
+    # Regression: the synthesized output model must type ref.y nullable (outer
+    # side of the LEFT join), so the unmatched y=None validates instead of raising.
     check(
         "SELECT data.x, ref.y FROM data LEFT JOIN ref ON data.id = ref.id",
         {

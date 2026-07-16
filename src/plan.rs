@@ -581,27 +581,53 @@ pub struct ColumnValidation {
 fn resolve_tables(
     node: &RelNode,
     row_table_names: &HashSet<String>,
+    nullable: bool,
     out: &mut HashMap<String, (String, bool)>,
+    nullable_out: &mut HashSet<String>,
 ) {
     match node {
         RelNode::TableScan { table } => {
             let is_row = row_table_names.contains(table);
             out.insert(table.clone(), (table.clone(), is_row));
+            if nullable {
+                nullable_out.insert(table.clone());
+            }
         }
         RelNode::SubqueryAlias { input, alias } => {
             if let Some(real) = scan_table_name(input) {
                 let is_row = row_table_names.contains(real);
                 out.insert(alias.clone(), (real.to_string(), is_row));
+                if nullable {
+                    nullable_out.insert(alias.clone());
+                }
             }
         }
-        RelNode::Filter { input, .. } => resolve_tables(input, row_table_names, out),
-        RelNode::CrossJoin { left, right } | RelNode::Join { left, right, .. } => {
-            resolve_tables(left, row_table_names, out);
-            resolve_tables(right, row_table_names, out);
+        RelNode::Filter { input, .. } => {
+            resolve_tables(input, row_table_names, nullable, out, nullable_out)
         }
-        RelNode::LookupJoin { input, table, .. } => {
-            resolve_tables(input, row_table_names, out);
+        RelNode::CrossJoin { left, right } => {
+            resolve_tables(left, row_table_names, nullable, out, nullable_out);
+            resolve_tables(right, row_table_names, nullable, out, nullable_out);
+        }
+        // A LEFT join makes its right side nullable; nested joins stay nullable.
+        // NB: post-optimize `outer` is structurally always false here -- a LEFT
+        // Join with a static side becomes a LookupJoin, and a row-to-row LEFT
+        // JOIN is rejected in optimize_rel. The `|| *outer` is kept correct in
+        // case that restriction is ever relaxed.
+        RelNode::Join {
+            left, right, outer, ..
+        } => {
+            resolve_tables(left, row_table_names, nullable, out, nullable_out);
+            resolve_tables(right, row_table_names, nullable || *outer, out, nullable_out);
+        }
+        RelNode::LookupJoin {
+            input, table, outer, ..
+        } => {
+            resolve_tables(input, row_table_names, nullable, out, nullable_out);
             out.insert(table.clone(), (table.clone(), false));
+            if nullable || *outer {
+                nullable_out.insert(table.clone());
+            }
         }
     }
 }
@@ -618,7 +644,14 @@ pub fn validate_columns(
     static_schemas: &HashMap<String, Schema>,
 ) -> Result<ColumnValidation, InterpError> {
     let mut resolved = HashMap::new();
-    resolve_tables(&plan.input, row_table_names, &mut resolved);
+    let mut nullable_tables = HashSet::new();
+    resolve_tables(
+        &plan.input,
+        row_table_names,
+        false,
+        &mut resolved,
+        &mut nullable_tables,
+    );
 
     let mut effective_schemas = HashMap::new();
     for (effective_name, (real_name, is_row)) in &resolved {
@@ -628,7 +661,16 @@ pub fn validate_columns(
             static_schemas.get(real_name)
         };
         if let Some(s) = schema {
-            effective_schemas.insert(effective_name.clone(), s.clone());
+            let mut s = s.clone();
+            // Columns from the nullable side of an outer join can be NULL on an
+            // unmatched row, so the synthesized output type must be nullable even
+            // when the source table declares the column non-nullable.
+            if nullable_tables.contains(effective_name) {
+                for ft in s.values_mut() {
+                    ft.nullable = true;
+                }
+            }
+            effective_schemas.insert(effective_name.clone(), s);
         }
     }
 
