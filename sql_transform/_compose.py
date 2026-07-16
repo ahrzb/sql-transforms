@@ -3,7 +3,9 @@
 `SQLTransform(t"... {a.transform}(col) ...")` desugars to plain SQL with
 `__COMPOSE_i__(col)` placeholder calls plus a ref map; at fit() the placeholders
 are replaced by the referenced transform's frozen scalar expression, remapped to
-`col` and state name-scoped to `__STATE_R{i}__`. Frozen path only.
+`col` and state name-scoped to `__STATE_R{i}__`. Both frozen (`{a.transform}`)
+and unfit (`{a}`) refs are supported, including nesting/chaining and mixing
+the two.
 """
 
 from __future__ import annotations
@@ -12,9 +14,14 @@ import inspect
 from dataclasses import dataclass
 from string.templatelib import Template
 
+import datafusion
 import pyarrow as pa
 import sqlglot
 from sqlglot import exp
+
+from sql_transform._rewrite import rewrite_sql
+from sql_transform._sql import find_window_aggregates, parse_and_validate
+from sql_transform._state import build_state_tables
 
 
 @dataclass(frozen=True)
@@ -61,45 +68,150 @@ def desugar_template(template: Template) -> tuple[str, dict[str, Ref]]:
     return "".join(parts), refs
 
 
-def inline_references(select: exp.Select, refs: dict[str, Ref]) -> InlineResult:
-    """Replace each __COMPOSE_i__(col) node with the referenced transform's frozen,
-    remapped, name-scoped expression. Mutates `select`. Empty refs -> no-op."""
+def inline_references(
+    select: exp.Select,
+    refs: dict[str, Ref],
+    ctx: datafusion.SessionContext,
+    training: pa.Table,
+) -> InlineResult:
+    """Replace each __COMPOSE_i__(arg) node with the referenced transform's
+    frozen, remapped, name-scoped expression. `arg` may itself contain deeper
+    __COMPOSE_j__(...) placeholders ({a}({b}(col))); those are resolved first,
+    bottom-up, into an inlined expression that becomes the outer ref's input,
+    with the inner refs' state cross-joined into the outer's fit. For a frozen
+    ref ({a.transform}), inline its already-fitted state. For an unfit ref
+    ({a}), fit its DEFINITION into a fresh __STATE_R{i}__ scope first
+    (fit_into_scope), then inline that. Mutates `select`. Empty refs -> no-op."""
     scoped_state: dict[str, pa.Table] = {}
-    for i, (name, ref) in enumerate(refs.items()):
-        node = _find_call(select, name, ref)
-        arg = _single_col_arg(node, ref)
-        argcol, argcol_quoted = arg.name, arg.this.quoted
+    processed: set[str] = set()
+
+    def resolve_arg(node: exp.Anonymous, ref: Ref) -> exp.Expression:
+        args = node.expressions
+        if len(args) != 1:
+            raise ValueError(
+                f"{{{ref.expr_text}}} must be applied to a single input "
+                "column, e.g. {...}(age)"
+            )
+        arg = args[0]
+        if isinstance(arg, exp.Anonymous) and str(arg.this).upper() in refs:
+            return process_ref(str(arg.this).upper(), arg)
+        if isinstance(arg, exp.Column):
+            return exp.Column(
+                this=exp.to_identifier(arg.name, quoted=arg.this.quoted),
+                table=exp.to_identifier("__THIS__"),
+            )
+        raise ValueError(
+            f"{{{ref.expr_text}}} must be applied to a single input "
+            "column or another reference, e.g. {...}(age) or {...}({...}(age))"
+        )
+
+    def process_ref(name: str, node: exp.Anonymous) -> exp.Expression:
+        ref = refs[name]
+        i = int(name.removeprefix("__COMPOSE_").removesuffix("__"))
+        processed.add(name)
+        input_expr = resolve_arg(node, ref)  # recurses into deeper placeholders first
+
+        if not ref.frozen:
+            if ref.transform._infer_fn is not None:
+                raise ValueError(
+                    f"{{{ref.expr_text}}} is already fitted -- ambiguous: use "
+                    f"{{{ref.expr_text}.transform}} to reuse its frozen state, "
+                    f"or reference a fresh unfit instance to re-fit"
+                )
+            frozen_expr, state = fit_into_scope(
+                ref, input_expr, f"__STATE_R{i}__", scoped_state, ctx, training
+            )
+            scoped_state.update(state)
+            return frozen_expr
+
         _require_frozen_fitted(ref)
         expr, inner_col, scope, state = _frozen_expr(ref.transform, i)
 
-        # noqa false positive: rewrite() is invoked synchronously via
-        # expr.transform() on the next line, within this same loop iteration --
-        # the closed-over locals are never read after the loop advances, so the
-        # usual late-binding closure bug doesn't apply here.
         def rewrite(n: exp.Expression) -> exp.Expression:
             if isinstance(n, exp.Column):
                 if n.table == "__THIS__":
-                    # Preserve the column's quoting verbatim (DataFusion folds
-                    # unquoted identifiers to lowercase); the remapped input
-                    # column takes the call-site column's quoting.
-                    if n.name == inner_col:  # noqa: B023
-                        col, quoted = argcol, argcol_quoted  # noqa: B023
-                    else:
-                        col, quoted = n.name, n.this.quoted
+                    if n.name == inner_col:
+                        return input_expr.copy()
                     return exp.Column(
-                        this=exp.to_identifier(col, quoted=quoted),
+                        this=exp.to_identifier(n.name, quoted=n.this.quoted),
                         table=exp.to_identifier("__THIS__"),
                     )
                 if n.table and n.table.startswith("__STATE"):
                     return exp.Column(
                         this=exp.to_identifier(n.name, quoted=n.this.quoted),
-                        table=exp.to_identifier(scope),  # noqa: B023
+                        table=exp.to_identifier(scope),
                     )
             return n
 
-        node.replace(expr.transform(rewrite))
         scoped_state.update(state)
+        return expr.transform(rewrite)
+
+    for name, ref in refs.items():
+        if name in processed:
+            continue  # already inlined as a nested arg of an outer placeholder
+        node = _find_call(select, name, ref)
+        node.replace(process_ref(name, node))
     return InlineResult(scoped_state=scoped_state)
+
+
+def fit_into_scope(
+    ref: Ref,
+    input_expr: exp.Expression,
+    scope: str,
+    deeper_states: dict[str, pa.Table],
+    ctx: datafusion.SessionContext,
+    training: pa.Table,
+) -> tuple[exp.Expression, dict[str, pa.Table]]:
+    """Fit ref's DEFINITION into `scope`, its input remapped to input_expr,
+    cross-joining deeper scopes' states. Returns (frozen_expr, {scope: state}).
+
+    Never calls ref.transform.fit() -- parses ref.transform._sql (the
+    definition) fresh, so the referenced transform is left untouched
+    (clone contract)."""
+    tree = parse_and_validate(ref.transform._sql)
+    if len(tree.expressions) != 1:
+        raise ValueError("referenced transform must be single-output")
+    inner_cols = {c.name for c in tree.find_all(exp.Column)}
+    if len(inner_cols) != 1:
+        raise ValueError(
+            "referenced transform must read exactly one input column "
+            "(multi-input not yet supported)"
+        )
+    inner_col = next(iter(inner_cols))
+
+    # Remap inner's single __THIS__ column -> input_expr throughout the tree,
+    # so its window aggregates are over input_expr (agg-over-expression).
+    def remap(n):
+        if isinstance(n, exp.Column) and n.name == inner_col and not (
+            n.table and n.table.startswith("__STATE")
+        ):
+            return input_expr.copy()
+        return n
+
+    tree = tree.transform(remap)
+
+    windows = find_window_aggregates(tree)
+    own = build_state_tables(windows, ctx, "__THIS__", join_tables=deeper_states)
+    if len(own) > 1:
+        raise NotImplementedError(
+            "multiple partitioned state tables in a referenced transform are "
+            "not supported this slice"
+        )
+    # Scope: rename ref's produced state tables into `scope` and rewrite refs.
+    scoped_state, rename = {}, {}
+    for state_name, tbl in own.items():
+        rename[state_name] = scope
+        scoped_state[scope] = tbl
+    frozen = rewrite_sql(tree, windows, extra_marker_tables=())  # str
+    frozen_expr = sqlglot.parse_one(frozen).expressions[0]
+    if isinstance(frozen_expr, exp.Alias):
+        frozen_expr = frozen_expr.this
+    frozen_expr = frozen_expr.transform(
+        lambda n: exp.column(n.name, table=scope)
+        if isinstance(n, exp.Column) and n.table in rename
+        else n
+    )
+    return frozen_expr, scoped_state
 
 
 def _find_call(select: exp.Select, name: str, ref: Ref) -> exp.Anonymous:
@@ -112,22 +224,7 @@ def _find_call(select: exp.Select, name: str, ref: Ref) -> exp.Anonymous:
     )
 
 
-def _single_col_arg(node: exp.Anonymous, ref: Ref) -> exp.Column:
-    args = node.expressions
-    if len(args) != 1 or not isinstance(args[0], exp.Column):
-        raise ValueError(
-            f"a referenced transform must be applied to a single input column, "
-            f"e.g. {{{ref.expr_text}}}(age)"
-        )
-    return args[0]
-
-
 def _require_frozen_fitted(ref: Ref) -> None:
-    if not ref.frozen:
-        raise NotImplementedError(
-            f"fit-cascade composition ({{{ref.expr_text}}}(col)) is not yet "
-            f"implemented; fit it and reference {{{ref.expr_text}.transform}}(col)"
-        )
     if ref.transform._infer_fn is None:
         raise ValueError(
             f"referenced transform {{{ref.expr_text}}} is not fitted; "

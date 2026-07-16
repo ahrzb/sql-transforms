@@ -94,6 +94,17 @@ def test_outer_aggregate_over_inlined_column_finite_parity():
         assert abs(got - exp) < 1e-9, (zs,)
 
 
+def test_unfit_single_reference_parity():
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    scaler = SQLTransform(  # NOT fitted
+        "SELECT (age - AVG(age) OVER ()) / STDDEV(age) OVER () AS s FROM __THIS__"
+    )
+    composite = SQLTransform(t"SELECT {scaler}(age) AS s FROM __THIS__").fit(train)
+    out = _parity(composite, train)
+    assert abs(out[0]["s"] - ((10.0 - 25.0) / 12.909944487358056)) < 1e-9
+    assert scaler._infer_fn is None  # clone contract: scaler still unfit
+
+
 def test_composition_over_quoted_capitalized_column_parity():
     # Regression: a fitted transform composed over a quoted case-sensitive column
     # must keep the quoting when inlined; else the rewrite emits __THIS__.Age
@@ -107,3 +118,80 @@ def test_composition_over_quoted_capitalized_column_parity():
     ).fit(train)
     out = _parity(composite, train)
     assert abs(out[0]["s2"] - ((10.0 - 25.0) / 12.909944487358056)) < 1e-9
+
+
+def test_nested_unfit_refs_parity():
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    a = SQLTransform(
+        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
+    )
+    b = SQLTransform("SELECT v * 2 AS d FROM __THIS__")
+    composite = SQLTransform(t"SELECT {a}({b}(age)) AS z FROM __THIS__").fit(train)
+    _parity(composite, train)  # b feeds a; a scales b(age)
+
+
+def test_mixed_frozen_and_unfit_parity():
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    frozen = SQLTransform("SELECT v * 2 AS d FROM __THIS__").fit(
+        pa.table({"v": [10.0, 20.0, 30.0, 40.0]})
+    )
+    unfit = SQLTransform(
+        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
+    )
+    composite = SQLTransform(
+        t"SELECT {unfit}({frozen.transform}(age)) AS z FROM __THIS__"
+    ).fit(train)
+    _parity(composite, train)
+
+
+def test_nested_unfit_refs_with_inner_state_parity():
+    # Regression: the inner ref's scoped state gets registered into ctx during
+    # fit_into_scope (as deeper_states), then fit()'s trailing
+    # build_state_tables(join_tables=inline.scoped_state) re-registers the same
+    # table name -> "table already exists" unless build_state_tables skips
+    # already-registered names.
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    b = SQLTransform("SELECT v / MAX(v) OVER () AS d FROM __THIS__")  # inner HAS state
+    a = SQLTransform(  # outer HAS state
+        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
+    )
+    composite = SQLTransform(t"SELECT {a}({b}(age)) AS z FROM __THIS__").fit(train)
+    _parity(composite, train)  # a(b(age)) with both carrying state -> cross-join must work
+
+
+def test_unfit_reference_clone_contract_refits_standalone():
+    # Clone contract: fit_into_scope parses `a._sql` (the definition), it
+    # never calls `a.fit()`. So after composite.fit(), `a` is still unfit
+    # and fitting it standalone afterward must still work and match a
+    # from-scratch fit of the same definition.
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    a = SQLTransform(
+        "SELECT (age - AVG(age) OVER ()) / STDDEV(age) OVER () AS s FROM __THIS__"
+    )
+    SQLTransform(t"SELECT {a}(age) AS z FROM __THIS__").fit(train)
+    assert a._infer_fn is None  # still unfit after being cascaded into composite
+
+    fitted = a.fit(train)  # standalone fit still works post-cascade
+    out = fitted.transform(train).to_pylist()
+    assert abs(out[0]["s"] - ((10.0 - 25.0) / 12.909944487358056)) < 1e-9
+
+
+def test_outer_aggregate_over_unfit_cascade_parity():
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    scaler = SQLTransform("SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__")
+    composite = SQLTransform(
+        t"SELECT {scaler}(age) / MAX({scaler}(age)) OVER () AS z FROM __THIS__"
+    ).fit(train)
+    _parity(composite, train)
+
+
+def test_frozen_outer_over_unfit_inner_parity():
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    inner = SQLTransform("SELECT v / MAX(v) OVER () AS d FROM __THIS__")  # unfit, has state
+    outer = SQLTransform(  # FROZEN outer
+        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
+    ).fit(pa.table({"v": [10.0, 20.0, 30.0, 40.0]}))
+    composite = SQLTransform(
+        t"SELECT {outer.transform}({inner}(age)) AS z FROM __THIS__"
+    ).fit(train)
+    _parity(composite, train)

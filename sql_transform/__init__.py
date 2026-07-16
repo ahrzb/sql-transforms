@@ -69,11 +69,12 @@ class SQLTransform:
         this_model = this_model or synthesize_this_model(table.schema)
 
         tree = parse_and_validate(self._sql)
-        inline = inline_references(tree, self._refs)
-        windows = find_window_aggregates(tree)
 
         ctx = datafusion.SessionContext()
         ctx.from_arrow(table, name="__THIS__")
+
+        inline = inline_references(tree, self._refs, ctx, table)
+        windows = find_window_aggregates(tree)
 
         own_state = build_state_tables(
             windows, ctx, "__THIS__", join_tables=inline.scoped_state

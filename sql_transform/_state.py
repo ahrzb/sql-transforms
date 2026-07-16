@@ -63,7 +63,12 @@ def build_state_tables(
 
     join_tables = join_tables or {}
     for name, tbl in join_tables.items():
-        ctx.from_arrow(tbl, name=name)
+        # These are static tables registered once and never mutated (e.g. a
+        # nested unfit ref's scoped state, already registered into ctx by an
+        # outer fit_into_scope call before this trailing build_state_tables
+        # runs) -- re-registering the same name is a no-op, not a collision.
+        if not ctx.table_exist(name):
+            ctx.from_arrow(tbl, name=name)
     from_sql = table_name
     for name in join_tables:
         from_sql += f" CROSS JOIN {name}"
