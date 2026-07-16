@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from string.templatelib import Template
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +11,7 @@ import pyarrow as pa
 from pydantic import BaseModel
 
 from sql_transform._batch import run_batch
+from sql_transform._compose import desugar_template, inline_references
 from sql_transform._interpreter import InferFn
 from sql_transform._rewrite import rewrite_sql
 from sql_transform._schema import synthesize_this_model
@@ -44,8 +46,11 @@ class SQLTransform:
         out_row = t.infer({"age": 42})       # single row
     """
 
-    def __init__(self, sql: str) -> None:
-        self._sql = sql
+    def __init__(self, sql: str | Template) -> None:
+        if isinstance(sql, Template):
+            self._sql, self._refs = desugar_template(sql)
+        else:
+            self._sql, self._refs = sql, {}
         self._state_tables: dict[str, pa.Table] | None = None
         self._rewritten_sql: str | None = None
         self._infer_fn: InferFn | None = None
@@ -64,13 +69,17 @@ class SQLTransform:
         this_model = this_model or synthesize_this_model(table.schema)
 
         tree = parse_and_validate(self._sql)
+        inline = inline_references(tree, self._refs)
         windows = find_window_aggregates(tree)
 
         ctx = datafusion.SessionContext()
         ctx.from_arrow(table, name="__THIS__")
 
-        self._state_tables = build_state_tables(windows, ctx, "__THIS__")
-        self._rewritten_sql = rewrite_sql(tree, windows)
+        own_state = build_state_tables(windows, ctx, "__THIS__")
+        self._state_tables = {**inline.scoped_state, **own_state}
+        self._rewritten_sql = rewrite_sql(
+            tree, windows, extra_marker_tables=tuple(inline.scoped_state)
+        )
         self._infer_fn = InferFn(
             self._rewritten_sql,
             row_tables={"__THIS__": this_model},

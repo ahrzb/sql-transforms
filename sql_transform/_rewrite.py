@@ -16,7 +16,11 @@ from sql_transform._sql import WindowAgg
 from sql_transform._state import STATE_MARKER, state_key, state_table_name
 
 
-def rewrite_sql(select: exp.Select, windows: list[WindowAgg]) -> str:
+def rewrite_sql(
+    select: exp.Select,
+    windows: list[WindowAgg],
+    extra_marker_tables: tuple[str, ...] = (),
+) -> str:
     """Return SQL equivalent to `select` with window aggregates replaced by
     state-table column references and one LEFT JOIN per partition-key-set.
 
@@ -63,5 +67,13 @@ def rewrite_sql(select: exp.Select, windows: list[WindowAgg]) -> str:
         else:
             on = " AND ".join(f"__THIS__.{c} = {table}.{c}" for c in partition_cols)
         select.join(exp.to_table(table), on=on, join_type="LEFT", copy=False)
+
+    for table in extra_marker_tables:
+        select.join(
+            exp.to_table(table),
+            on=f"{table}.{STATE_MARKER} = 0",
+            join_type="LEFT",
+            copy=False,
+        )
 
     return select.sql()
