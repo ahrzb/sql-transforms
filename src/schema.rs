@@ -186,6 +186,9 @@ pub fn field_type_to_python(py: Python<'_>, ft: FieldType) -> PyResult<Py<PyAny>
     }
     let none_type = py.None().bind(py).get_type().unbind();
     let union = typing.getattr("Union")?;
-    let optional = union.call_method1("__getitem__", ((base_type, none_type),))?;
+    // Subscript via the item-access protocol (Union[T, None]). Python 3.14 made
+    // typing.Union a class, so call_method1("__getitem__", ...) hits the unbound
+    // descriptor and passes the key as self; get_item binds correctly on 3.13/3.14.
+    let optional = union.get_item((base_type, none_type))?;
     Ok(optional.unbind())
 }

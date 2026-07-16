@@ -3,7 +3,7 @@ name = "sql-transform"
 version = "0.1.0"
 description = "SQL-based data transforms on DataFusion"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "datafusion>=46.0.0",
     "pyarrow>=19.0",
