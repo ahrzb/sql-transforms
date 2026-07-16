@@ -40,11 +40,11 @@ composition + sklearn work later, if/when it's actually needed.
 Done — foundation:
 - [x] [First slice: frozen composition `{a.transform}(col)`](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — shipped on master; the frozen-reuse primitive the recursive path extends.
 - [x] LEFT lookup-join output nullability bug — **fixed & merged** (`7cb7d3c`): threaded outer-nullability through `resolve_tables`, widening the outer side's columns to nullable in `effective_schemas`. Unblocks `OrdinalEncoder` unknown-category handling; the `strict` xfail retired to a normal passing regression test.
+- [x] Identifier-quoting bug (composition inline + PARTITION BY joins) — **fixed & merged** (`c056ec3`): carried the `.quoted` flag through the composition inline + remap, and quoted the PARTITION BY join keys to match the quoted GROUP BY. Two regression tests proving `transform`==`infer` parity on quoted columns.
 
 Active — in order:
-1. [ ] [Fix identifier-quoting bug — composition inline + PARTITION BY joins](BACKLOG.md#identifier-quoting-not-preserved-in-composition-inline--partition-by-joins) — outstanding correctness bug; clear it before building on the composition path.
-2. [ ] [Recursive (fit-cascade) composition — unfitted `{a}(col)`](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — staged fit (fit inner → transform training forward → fit outer), learned state into the *composite*. The primitive sklearn `Pipeline` composition builds on. (Fan-out + multi-input still deferred — they re-enter with the sklearn transformers that need them, e.g. OneHot fan-out.)
-3. [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — transformers + `Pipeline`/`ColumnTransformer` glue + assembly-parity harness + Python fallback; built on the recursive composition above.
+1. [ ] [Recursive (fit-cascade) composition — unfitted `{a}(col)`](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — staged fit (fit inner → transform training forward → fit outer), learned state into the *composite*. The primitive sklearn `Pipeline` composition builds on. (Fan-out + multi-input still deferred — they re-enter with the sklearn transformers that need them, e.g. OneHot fan-out.)
+2. [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — transformers + `Pipeline`/`ColumnTransformer` glue + assembly-parity harness + Python fallback; built on the recursive composition above.
 
 Deferred off the critical path:
 - [ ] [Transformer execution model — UDF/UDAF, macros](BACKLOG.md#transformer-execution-model--procedures-udfudaf-macros-composition) — the "conceptual backbone," but not immediately useful; spec to be *extracted from* the concrete work above rather than written up front.

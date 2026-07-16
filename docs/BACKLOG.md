@@ -132,9 +132,9 @@ not to write ahead of it. The notes below stay as captured design thinking.
 into one per-row expression with exact `transform`/`infer` differential parity;
 the outer taking its own window aggregate over the inlined column works; a bare
 `{a}` on a fitted object and `{a.transform}` on an unfit object both error
-explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting —
-but with a known gap now tracked separately (see "Identifier quoting not preserved
-…" below). **Live remaining work = the "Deferred to follow-up slices" list at the
+explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting
+(the earlier quoting gap in the inline + PARTITION BY paths is fixed, `c056ec3`).
+**Live remaining work = the "Deferred to follow-up slices" list at the
 end of this entry.** Per the 2026-07-16 M1 ordering, **fit-cascade (unfitted
 `{a}(col)`) is promoted to the active next slice** (after the identifier-quoting
 bug fix); **fan-out + multi-input stay deferred** and re-enter with the sklearn
@@ -231,32 +231,6 @@ Deferred to follow-up slices (designed-around now, not built):
   column-count-from-state.
 - **Multi-input** referenced transforms — positional/named binding for
   `{transform}(a, b)`.
-
-### Identifier quoting not preserved in composition inline + PARTITION BY joins
-Two spots still emit column identifiers **unquoted**, breaking case-sensitive
-(quoted) column names — the same class Task 3 fixed for the SELECT-list rewrite,
-where the rule is **preserve the user's quoting verbatim** (DataFusion folds
-unquoted → lowercase, quoted → exact):
-- **Composition inline** (`sql_transform/_compose.py`): `inline_references`'s
-  `rewrite()` rebuilds columns with `exp.column(col, table="__THIS__")` and
-  `_single_col_arg` returns the bare `.name`, both dropping the `quoted` flag. So
-  composing over a quoted mixed-case column fails at fit:
-  `SQLTransform(t'SELECT {scaler.transform}("Age") AS s FROM __THIS__').fit(...)` →
-  `ValueError: No field named __this__.age`. Fails loudly (never silently wrong),
-  and only on the quoted/capitalized-column edge — all current composition tests
-  use lowercase `age`, so it shipped green.
-- **PARTITION BY join** (`sql_transform/_rewrite.py:69`): the join condition
-  `f"__THIS__.{c} = {table}.{c}"` renders partition keys unquoted. Not reachable
-  via composition today (partitioned inners are rejected as multi-input), but a
-  case-sensitive `PARTITION BY` column would hit it.
-
-**Start:** carry the column's `.quoted` flag through both spots exactly as
-`_rewrite.py:57-62` already does for the SELECT list — build the column with
-separate `this`/`table` identifiers, the column preserving `<node>.this.quoted`
-and the `__THIS__`/state-table qualifier left unquoted; have `_single_col_arg`
-return the arg `exp.Column` node so the remap keeps the call-site column's
-quoting. Add a differential composition test over a capitalized column to close
-the coverage hole. One identifier-verbatim fix covers both spots.
 
 ### Rust-optimized serving inference path
 Make the preprocessing above *fast at n = 1*: keep the dict/DataFrame off the
