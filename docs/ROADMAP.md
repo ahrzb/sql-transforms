@@ -47,7 +47,17 @@ Done — foundation:
 Active — in order:
 1. [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — **fallback-first (decided 2026-07-16)**, built on the recursive composition now shipped. Phase A (below) stands up the compose-in surface with real-sklearn-fallback internals; **Phase B** then swaps each transformer to a native engine implementation, one at a time, diffed against the fallback oracle, in **transformer-tier order** (see [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md): Tier 0 `StandardScaler`/`SimpleImputer`/`OrdinalEncoder`/`OneHotEncoder` → Tier 1 scalers + `TargetEncoder` → Tier 2). Most Tier 0/1 map onto already-shipped engine machinery (window aggs, `PARTITION BY`, `LookupJoin`, struct/`UNNEST`). n = 1 serving-path speed is the separate M3.
 
-   **Phase A slices (decided 2026-07-16):**
+   > **⚠ Phase A is being re-sequenced (2026-07-16).** AmirHossein narrowed the
+   > near-term target to the **fallback execution node** — running a fitted sklearn
+   > estimator as an opaque black-box step *inside our engine* (materialize columns →
+   > `.transform()` → read back → continue), the shippable-partial-coverage
+   > mechanism. The A1–A3 slices below assumed the *compose-in* direction (our
+   > estimators into a stock sklearn pipeline) first, which is now **deferred** (see
+   > BACKLOG "Estimator-interface compliance … — deferred"). Dev is designing the
+   > fallback-node shape; **treat A1–A3 as stale** until it lands and this re-sequences.
+   > Phase B (native per transformer) + the transformer prioritization are unaffected.
+
+   **Phase A slices (superseded — pending fallback-node design):**
    1. [ ] **A1 — thin vertical.** Estimator interface (`fit`/`transform`/`get_feature_names_out`/`get_params`/`set_params`/cloneable) on ONE transformer (`StandardScaler`), internals = real sklearn fallback, driven end-to-end through a stock sklearn `Pipeline`. **Stands up the [per-transformer differential parity harness](BACKLOG.md#per-transformer-differential-parity-harness)** (StandardScaler through the param + edge-case matrix). Ships hooks 1+3 on its own. Designs the `get_feature_names_out`/provenance **contract shape** (the hook-3 surface) — joint look before it hardens. NB: A1 is single-transformer parity; the full *assembly* oracle lands in A2.
    2. [ ] **A2 — `ColumnTransformer` glue.** Column routing + horizontal concat; the real end-to-end **assembly-parity** oracle — bit-identical width + column order + values vs stock `ColumnTransformer.transform()`. **Must include a multi-output transformer** (OneHot fallback is the natural one) so variable-width concat + feature-name expansion is actually exercised — single-output-only would pass on a degenerate case and hide the offset/naming risk. Provenance/feature-names must survive routing + concat in order.
    3. [ ] **A3 — breadth.** Remaining transformers fallback-backed; `get_feature_names_out` provenance uniform across all; sets up Phase B's per-transformer native swaps. (Unknown-category stays sklearn's job in fallback mode; native handling is Phase B.)

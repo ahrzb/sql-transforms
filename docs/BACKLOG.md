@@ -11,6 +11,22 @@ Each item: what, why deferred, and where to start.
 ## Open items
 
 ### sklearn transformer integration — functionality & parity
+> **⚠ REFRAME IN PROGRESS (2026-07-16).** AmirHossein narrowed the near-term target
+> to the **(b) fallback-execution-node** direction — running an already-fitted
+> sklearn estimator we have no native version of as an **opaque black-box step
+> inside our engine** (materialize input columns out of the Arrow/row representation
+> → call the fitted object's `.transform()` → read the result back in → continue).
+> Correct (it *is* sklearn) and inefficient (a Python call + materialized array on
+> the request path, breaks fusion) — but it makes partial coverage shippable and
+> lets native impls replace fallbacks one at a time. The **(a) compose-in direction**
+> (our own transformers as sklearn estimators dropped into someone else's pipeline)
+> is **deferred** — see the "Estimator-interface compliance" item below. The **Phase
+> A / A1–A2–A3 decomposition below assumed compose-in-first and is being
+> re-sequenced** around the fallback node; Dev is brainstorming the concrete
+> fallback-node shape with AmirHossein. Treat the Phase-A slices as stale until that
+> lands. The Phase B (native per transformer) intent and the transformer
+> prioritization are unaffected.
+
 Ship sklearn-compatible transformers that **compose into** a user's existing
 sklearn pipeline — implement the estimator interface (`fit`/`transform`/
 `get_feature_names_out`, `get_params`/`set_params`, cloneable) so ours are
@@ -90,6 +106,20 @@ breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
 
 The prioritized transformer list (tiers + native-machinery status + parity gotchas)
 lives in [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md).
+
+### Estimator-interface compliance of our transformers (compose-in / hook 1) — deferred
+Make *our* transformer objects pass sklearn's `check_estimator` conformance
+(`fit`/`transform`/`get_feature_names_out`/`get_params`/`set_params`/clone/
+`n_features_in_`/tags, etc.) so they drop into a **stock sklearn
+`Pipeline`/`ColumnTransformer`** and coexist with sklearn's own transformers — the
+**(a) compose-in** direction, VISION hook 1. **Deferred (2026-07-16):** it only
+matters once we surface our own estimator objects into *someone else's* sklearn
+pipeline; the near-term target is the other direction — the fallback execution node
+that runs fitted sklearn estimators inside *our* engine (see the reframe banner on
+the sklearn-integration item above). Fix later. **Start (when picked up):** run
+`sklearn.utils.estimator_checks.check_estimator` against our transformer base and
+close the gaps; this is also where the `get_feature_names_out` provenance contract
+(hook 3) gets pinned for external consumers.
 
 ### Per-transformer differential parity harness
 The oracle every sklearn transformer is validated against — the transformer analogue
