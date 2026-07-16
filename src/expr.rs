@@ -173,9 +173,20 @@ impl Value {
         }
         match base {
             Base::Struct(fields) => {
+                // Accept a dict (read by key) or a pydantic-model-like object
+                // (read by attr) as struct-shaped input; anything else (e.g.
+                // a bare scalar) is a genuine type mismatch and must error,
+                // not silently marshal into an all-null struct.
+                let dict = obj.cast::<PyDict>().ok();
+                if dict.is_none() && !obj.hasattr("model_fields").unwrap_or(false) {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Expected a struct/dict value for a struct-typed field: got {}",
+                        obj.get_type().name()?
+                    )));
+                }
                 let mut out = Vec::with_capacity(fields.len());
                 for (name, field_ft) in fields {
-                    let field_val = if let Ok(dict) = obj.cast::<PyDict>() {
+                    let field_val = if let Some(dict) = &dict {
                         dict.get_item(name)?
                     } else {
                         obj.getattr(name.as_str()).ok()
