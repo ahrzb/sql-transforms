@@ -7,6 +7,14 @@
 > no struct with named fields / `.field` / `.*`). That support is a foundational
 > prerequisite, so this spec is parked until the **Rust struct-support** backlog
 > ticket is scoped and landed. Do NOT proceed to writing-plans from this doc yet.
+>
+> **Update (2026-07-16):** the blocking dependency is now the broader
+> [rich (recursive) type system + `UNNEST`](2026-07-16-rich-type-system-design.md)
+> foundation, which superseded the narrow struct ticket. The output-type model
+> shifts from **struct + `.*`** to **struct + `UNNEST`** on that type layer
+> (DataFusion has no `struct.*`). The "Output-type model" § below still says `.*` —
+> left as-is on purpose; Dev reconciles it to `UNNEST` when this spec is unparked.
+> Resume gate = the rich-type foundation landing.
 
 **Goal:** Let an outer `SQLTransform` reference an **unfit** `SQLTransform` via
 `{a}(col)`, fitting `a` into the composite during `fit` (staged, sklearn-style),

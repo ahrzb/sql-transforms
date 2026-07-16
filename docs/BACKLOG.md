@@ -126,28 +126,41 @@ not to write ahead of it. The notes below stay as captured design thinking.
   registry, parity harness, and both impls agree on; and whether a SQL-defined UDF is
   a raw `:param` template string or a structured InferFn-AST builder.
 
-### Rust struct-type support
-Prerequisite for the composition output model + multi-output fan-out. The `InferFn`
-interpreter has scalar primitives + an opaque `Value::Object` passthrough — **no
-struct with named fields, no field access, no wildcard**. The recursive (fit-cascade)
-composition slice picked a **struct + `.*` output-type model** (a transformer's
-per-row output is a struct of named fields; unpack with `{a}(col).*` / `.field`),
-which the engine can't express today. So this is the foundational prerequisite for
-recursive composition (parked spec:
-[fit-cascade design](superpowers/specs/2026-07-16-fit-cascade-composition-design.md))
-and for multi-output/fan-out transformers (OneHot). Also pulls M4 feature-contract
-groundwork forward — a typed struct output *is* the contract surface. **Scope:**
-- A real struct `Value` with named fields, distinct from the opaque `Object`.
-- Field projection (`expr.field`) — eval + static type inference (`src/expr.rs`,
-  `src/types.rs`).
-- Wildcard `.*` expansion at the plan/rewrite layer (struct-valued projection → its
-  columns; `SELECT`-list placement + aliasing) (`src/plan.rs`).
-- Struct-aware output-model synthesis — nested Pydantic model or column expansion
-  (`src/schema.rs`: `field_type_to_python` / `synthesize_output_model`).
-- DataFusion (transform-path) `STRUCT` parity, enforced by the differential harness
-  (DataFusion has native `STRUCT`; the Rust side must agree).
-- **Open sub-question, owned by the resumed fit-cascade spec (not this ticket):**
-  whether single-output auto-unwraps to a scalar or stays a 1-field struct.
+### Rich (recursive) type system and UNNEST
+Foundation for the composition output model, fan-out transformers, and the M4
+feature contract. **Supersedes the narrower "Rust struct-support" ticket** — its
+five bullets (struct `Value`, field access, output-model synthesis, DataFusion
+parity) are subsumed here. Rather than bolt structs onto the closed scalar type
+layer, replace that layer with a **recursive, extensible, schema-driven** one so
+`InferFn` can carry the full pyarrow type surface. Spec:
+[rich type system design](superpowers/specs/2026-07-16-rich-type-system-design.md).
+
+**Why the pivot (2026-07-16):** composition needs structs; DataFusion has no
+`struct.*` — it uses **`UNNEST`** (`unnest(struct)`→columns, `unnest(list)`→rows),
+so we match that; and the engine should carry real feature-data types (also M4
+feature-contract groundwork). Build the type *layer* properly, not one type.
+
+**First slice** (reference semantics are DataFusion's throughout, differential-harness
+enforced):
+- Recursive `Value` (`Struct`/`List`, `src/expr.rs`) + recursive `Base`
+  (`src/types.rs`) — a **structural** change touching every `match Base` arm
+  (`compatible`, `field_type_to_python`, `arrow_type_to_base`, …); non-container
+  regressions staying green is the main risk.
+- Struct/list construction (`named_struct` / `[…]`) + `s.x` field access on aliased
+  struct **columns** (not `(expr).field` — DataFusion rejects that) (`src/expr_build.rs`).
+- `unnest(struct)` → columns: build-time projection expansion (cardinality-preserving).
+- `unnest(list)` → rows: **the hard novel piece** — a cardinality change (1 row → N),
+  modeled as a new `RelNode::Unnest` relational operator; empty/NULL list → 0 rows.
+  Land it last; split to an immediate fast-follow if it proves large.
+- Schema-driven Python↔`Value` marshalling both boundaries (dynamic in/out) +
+  pyarrow struct/list schema reading.
+
+**Fast-follows the spine enables (deferred, not this slice):** temporal
+(timestamp/date), decimal, map, dictionary, binary — localized additions once the
+recursive spine lands.
+**Open items (in spec):** sqlparser `UNNEST` AST shape (function vs. dedicated
+node); `unnest(list)` empty/NULL cardinality re-verify; struct field-order
+round-trip; table-alias vs struct-field-name precedence in `s.x`.
 
 ### Compose SQLTransforms via `{transform}(col)` references — follow-up slices
 **✅ First slice (frozen path) shipped** — on master (through `bb22526`).
@@ -160,11 +173,12 @@ explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting
 **Live remaining work = the "Deferred to follow-up slices" list at the
 end of this entry.** Per the 2026-07-16 M1 ordering, **fit-cascade (unfitted
 `{a}(col)`) is the active next slice — but its design is now settled and *parked***
-pending **Rust struct-type support** (the chosen struct + `.*` output model needs
-it): see the parked spec
+pending the **rich type system + UNNEST** foundation (the output model is a struct,
+unpacked via `UNNEST` on the new type layer — *not* the earlier struct + `.*`): see
+the parked spec
 [fit-cascade design](superpowers/specs/2026-07-16-fit-cascade-composition-design.md)
-and the "Rust struct-type support" entry above. It resumes once struct support
-lands. **Fan-out + multi-input stay deferred** and re-enter with the sklearn
+and the "Rich (recursive) type system and UNNEST" entry above. It resumes once that
+foundation lands. **Fan-out + multi-input stay deferred** and re-enter with the sklearn
 transformers that need them (OneHot fan-out, multi-input encoders). Everything
 between here and the deferred list is kept as the design reference those slices
 build on.
