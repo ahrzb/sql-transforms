@@ -238,18 +238,26 @@ def test_transform_and_infer_batch_agree():
     )
 
 
-@pytest.mark.xfail(
-    reason="batch (DataFusion) surfaces its own error type, not the clean "
-    "ValueError the Rust inference path raises -- see docs/BACKLOG.md",
-    strict=True,
-)
-def test_transform_raises_clean_valueerror_on_div_by_zero():
+def test_div_by_zero_raises_on_both_engines_with_different_error_types():
+    # Accepted divergence (docs/BACKLOG.md, "won't do"): matching the error *type*
+    # across engines is a non-goal -- only output *values* must match. Integer
+    # div/mod by zero errors on BOTH engines, but with different hierarchies: the
+    # Rust infer path raises a clean ValueError; DataFusion batch raises its own
+    # (non-ValueError) Exception. We require both to fail and to differ in type;
+    # we do NOT require them to match.
     from sql_transform import SQLTransform
 
     t = SQLTransform("SELECT a / b AS x FROM __THIS__")
     t.fit(pa.table({"a": [1], "b": [1]}))
-    with pytest.raises(ValueError):
+
+    # batch (DataFusion): raises, but NOT the clean ValueError the Rust path does.
+    with pytest.raises(Exception) as batch_err:
         t.transform(pa.table({"a": [1], "b": [0]}))
+    assert not isinstance(batch_err.value, ValueError)
+
+    # inference (Rust InferFn): raises a clean ValueError.
+    with pytest.raises(ValueError):
+        t.infer({"a": 1, "b": 0})
 
 
 def test_partition_by_target_encoding_seen_and_unseen():
