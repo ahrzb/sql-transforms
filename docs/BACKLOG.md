@@ -10,16 +10,6 @@ Each item: what, why deferred, and where to start.
 
 ## Open items
 
-### Unify batch vs inference error semantics
-`transform` (DataFusion) and `infer`/`infer_batch` (Rust `InferFn`) return
-identical values on the normal numeric path, but an integer division/modulo by
-zero raises a clean `ValueError` from the Rust path and a raw DataFusion
-`Exception` ("DataFusion error: Arrow error: Divide by zero error") from the batch
-path. Tracked by the strict-`xfail` test
-`test_transform_raises_clean_valueerror_on_div_by_zero`. **Start:** catch
-DataFusion's error in `_batch.run_batch` and re-raise the same clean `ValueError`
-the interpreter raises; the xfail flips to a pass when done.
-
 ### sklearn transformer integration — functionality & parity
 Ship sklearn-compatible transformers that **compose into** a user's existing
 sklearn pipeline — implement the estimator interface (`fit`/`transform`/
@@ -346,3 +336,20 @@ which flips to a pass (forcing the decorator's removal) when fixed.
 An older README roadmap item, superseded by the Rust `InferFn` interpreter. Keep
 parked unless interpreter overhead becomes a *measured* bottleneck; revisit only
 with a benchmark in hand.
+
+### Unify batch vs inference error *types* — non-goal (accepted divergence)
+`transform` (DataFusion) and `infer`/`infer_batch` (Rust `InferFn`) must return
+identical *values* on the normal numeric path — that parity is non-negotiable and
+the differential harness enforces it. But matching the **error type/message** each
+engine raises is an explicit **non-goal** (decision 2026-07-16): the two engines
+genuinely carry different failure information, and reconciling it buys nothing a
+user relies on. Concretely, integer div/modulo-by-zero raising a clean `ValueError`
+from the Rust path vs a raw DataFusion `Exception` ("DataFusion error: Arrow error:
+Divide by zero error") from the batch path is **accepted by design**, not a gap to
+close. (Was previously an open "unify error semantics" item; descoped here.)
+
+Code heads-up for whoever touches this: the strict-`xfail`
+`test_transform_raises_clean_valueerror_on_div_by_zero` was written assuming
+unification, so under this decision it now asserts a *permanent accepted
+divergence* rather than a pending fix — it wants rewording or removal on the code
+side (Dev's lane), not a fix.

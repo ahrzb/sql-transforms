@@ -31,6 +31,7 @@ bit-identical output. Correctness and coverage first; speed is M3.
 - [ ] [Transformer execution model — UDF/UDAF, macros, composition](BACKLOG.md#transformer-execution-model--procedures-udfudaf-macros-composition) — the conceptual backbone the rest builds on
 - [x] [First slice: compose SQLTransforms via `{transform}(col)` references](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — **frozen path (`{a.transform}`) shipped** on master; fit-cascade / fan-out / multi-input deferred to follow-up slices (still tracked in the BACKLOG item)
 - [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — transformers + `Pipeline`/`ColumnTransformer` glue + assembly-parity harness + Python fallback
+- [ ] [LEFT lookup-join output nullability bug](BACKLOG.md#left-lookup-join-output-nullability-found-by-the-differential-harness) — **critical-path blocker**: gates `OrdinalEncoder` unknown-category handling (an unseen category is a LEFT-lookup miss). Small, scoped fix in `src/plan.rs`; xfail waiting to flip. Surfaced by M0's harness.
 
 ### M2 — Benchmark baseline
 *Gate before any optimization.* Stand up the measurement harness — single-row
@@ -50,13 +51,9 @@ output schema — a mismatch errors at the boundary, and every feature traces ba
 the raw column that produced it.
 - [ ] Typed / validated / provenance feature contract — *(no BACKLOG item yet; scope once M1 lands)*
 
-## Maintenance & correctness
-Quality items not on the critical path to the goal, but worth clearing.
-- [ ] [Unify batch vs inference error semantics](BACKLOG.md#unify-batch-vs-inference-error-semantics)
-- [ ] [LEFT lookup-join output nullability bug](BACKLOG.md#left-lookup-join-output-nullability-found-by-the-differential-harness) — surfaced by M0's harness
-
 ## Later / parked
 - [ ] [`CASE WHEN` + outer joins in authored SQL](BACKLOG.md#case-when-and-outer-joins-in-authored-sql) — SQL surface; prioritize by what authoring actually needs
 - [ ] [`ORDER BY` / window frames](BACKLOG.md#order-by--window-frames-running-cumulative-moving-aggregates) — research spike; may not fit a row-at-a-time inference engine
 - **Feature-store expansion** — the post-adoption goal; M4's contract is its groundwork, so it's a natural next step rather than a pivot.
+- ~~Unify batch vs inference error semantics~~ — **won't do**: error-type parity across engines is a non-goal; only output *values* must match. Div/mod-by-zero raising a clean `ValueError` (Rust) vs a raw DataFusion `Exception` (batch) is accepted by design. See BACKLOG.
 - ~~Codegen / compiled inference path~~ — considered, likely won't do (superseded by the `InferFn` interpreter).
