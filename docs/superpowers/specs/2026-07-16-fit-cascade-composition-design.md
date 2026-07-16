@@ -1,18 +1,11 @@
-# Recursive (fit-cascade) composition — Design **[PARKED]**
+# Recursive (fit-cascade) composition — Design
 
-> **STATUS: UNBLOCKED — parked pending go-ahead to start.** The mechanism and
-> semantics below are settled. The one prerequisite (a type layer that can carry a
-> struct output) is **satisfied**: the rich (recursive)
-> [type system + `UNNEST`](2026-07-16-rich-type-system-design.md) first slice
-> shipped to master (`4809470`), so struct/list + `unnest` now exist on the engine.
-> No technical blocker remains — this spec is held only until the fit-cascade slice
-> is chosen to start.
->
-> **On pickup, one reconciliation:** the output-type model is now **struct +
-> `UNNEST`** on the new type layer, *not* the earlier **struct + `.*`** (DataFusion
-> has no `struct.*`). The "Output-type model" § below still says `.*` — left as-is
-> on purpose; reconcile it to `UNNEST` when picking this up, then proceed to
-> writing-plans.
+> **STATUS: design complete — ready for writing-plans.** Prerequisite satisfied
+> (the rich recursive [type system + `UNNEST`](2026-07-16-rich-type-system-design.md)
+> shipped to master, `4809470`). Output-type model reconciled to **struct +
+> `UNNEST`** (§ below). **Scope (decided 2026-07-16): single-input / single-output
+> this slice**; multi-output fan-out is designed here for coherence but deferred to
+> the sklearn slice that needs it (OneHot).
 
 **Goal:** Let an outer `SQLTransform` reference an **unfit** `SQLTransform` via
 `{a}(col)`, fitting `a` into the composite during `fit` (staged, sklearn-style),
@@ -51,6 +44,16 @@ fused composite; A keeps everything in the one inline+cross-join mechanism with 
 materialized intermediates. (C is the more sklearn-literal staging; recorded as a
 fallback if A's fused fit proves awkward.)
 
+**Provenance — a build constraint on this inline pipeline (for error attribution).**
+Tag each expression node with its origin — the referenced transformer / ref scope
+(`__STATE_R{i}__`) plus the authored SQL span — at build, and **preserve the tag
+across every nested inline** so the `b→a→outer` chain survives fusion. Once
+expressions fuse into one flat per-row expression the origin is unrecoverable, so
+this must be threaded from the first line, not bolted on later. A runtime failure
+then renders back to e.g. *"div-by-zero in `{scaler}` applied to `age`, from
+`x / STDDEV(x) OVER ()` in the scaler def."* (Serves the error-attribution BACKLOG
+item; cheaper to carry from the start than reconstruct.)
+
 ## Settled: semantics
 
 - `{a}` on **unfit** `a` → fits into the composite's own name-scoped state; **`a`
@@ -78,39 +81,36 @@ the concrete token. Flagged for a quick PM confirm.)
   composite refs already work. (Unfit-*composite* references = deeper recursion,
   deferred.)
 
-## Output-type model — **DECIDED: struct + `.*` — BLOCKING**
+## Output-type model — struct + `UNNEST` (single-output auto-unwraps)
 
-A transformer's per-row output is its **output row** — a value with named output
-fields. Decided model: **`{a}(col)` is a struct**; the user unpacks it —
-`{a}(col).*` expands to the output columns in a projection, `{a}(col).field`
-selects one. Single-output is a 1-field struct (or auto-unwraps to scalar — to be
-resolved).
+A transformer's per-row output is its **output row**. On the shipped rich-type
+layer the model is:
+- **Single-output `{a}(col)` → a scalar** (a 1-field output row, auto-unwrapped) —
+  usable directly in expressions (`{scaler}(age) / 2`, `AVG({scaler}(age)) OVER ()`).
+  This is exactly what the shipped frozen path (`{a.transform}(col)`) already does,
+  so the two paths stay consistent. **This slice implements this case.**
+- **Multi-output `{a}(col)` → a `struct`** (the N-field output row); expand it to
+  columns with **`unnest({a}(col))`** — the shipped `unnest(struct)`→columns. Using
+  a multi-output ref in a scalar position (arithmetic) errors, like any struct.
+  **Designed here for coherence; deferred** with fan-out (below), landing with the
+  sklearn transformer that needs it (OneHot).
 
-**This is not supported by the Rust engine today** and is the reason this spec is
-parked. Required Rust work (its own ticket, scope below):
-- a real **struct `Value`** with named fields (distinct from the opaque `Object`);
-- **field projection** (`expr.field`) in eval + static type inference;
-- **wildcard `.*` expansion** at the plan/rewrite layer (a struct-valued projection
-  → its columns), incl. how it interacts with `SELECT`-list placement + aliasing;
-- **struct-aware output-model synthesis** (`synthesize_output_model` /
-  `field_type_to_python`) — nested Pydantic model or column expansion;
-- **DataFusion (transform-path) parity** — DataFusion has native `STRUCT`; the Rust
-  side must agree, enforced by the differential harness.
+This supersedes the earlier **struct + `.*`** framing: DataFusion has no `struct.*`;
+`UNNEST` is its expansion mechanism, already matched by the engine. **No new Rust
+work** — single-output is a scalar (works today via the frozen-path machinery), and
+multi-output uses struct + `unnest`, both already shipped.
 
-Until that lands, the *single-output* cascade could in principle ship scalar-first
-(single-output is a scalar in either model), but per this decision the output type
-is foundational and should be built on struct support, not retrofitted — hence the
-park rather than a scalar-only partial ship.
-
-## Testing (when unparked)
+## Testing
 
 Differential parity (`transform` == `infer`) for: single `{a}(x)`, nested
 `{a}({b}(x))`, mixed `{a}({b.transform}(x))`, outer-aggregate-over-cascade; the
-clone contract (`a` still unfit after `composite.fit`); fitted-`{a}` errors; and —
-once struct support lands — struct output + `.*` unpacking parity.
+clone contract (`a` still unfit after `composite.fit`); fitted-`{a}` and
+unfit-`{a.transform}` errors; and **provenance rendered on a forced failure inside a
+nested ref** (locks the error-attribution threading). (Multi-output struct +
+`unnest` unpacking is deferred with fan-out.)
 
 ## Next
 
-1. **Rust struct-support ticket** (scoped separately, BACKLOG) — the prerequisite.
-2. Resume this spec once struct support is understood: finalize the output-type
-   semantics (auto-unwrap single-output? `.*` placement rules?), then writing-plans.
+Design complete → **writing-plans**. Task sequence: the recursive `inline_references`
+fit pipeline (`fit_into_scope` helper, with provenance threading) → nesting/chaining
+→ outer-aggregate-over-cascade → the error/clone-contract tests.
