@@ -133,14 +133,17 @@ def _frozen_expr(inner, i: int):
     expr = inner_select.expressions[0]
     if isinstance(expr, exp.Alias):
         expr = expr.this
-    this_cols = {c.name for c in expr.find_all(exp.Column) if c.table == "__THIS__"}
-    states = inner._state_tables or {}
-    if len(this_cols) > 1 or len(states) > 1:
+    # Derive input arity from the inner's ORIGINAL sql, not the rewritten
+    # projection: window-aggregate args and PARTITION BY keys are frozen into
+    # __STATE__ and vanish from the rewritten projection, undercounting inputs.
+    input_cols = {c.name for c in sqlglot.parse_one(inner._sql).find_all(exp.Column)}
+    if len(input_cols) != 1:
         raise ValueError(
             "referenced transform must read exactly one input column; "
             "multi-input (incl. PARTITION BY) references are not yet supported"
         )
-    inner_col = next(iter(this_cols), None)
+    inner_col = next(iter(input_cols))
+    states = inner._state_tables or {}
     scope = f"__STATE_R{i}__"
     scoped = {scope: next(iter(states.values()))} if states else {}
     return expr, inner_col, scope, scoped
