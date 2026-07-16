@@ -800,9 +800,15 @@ fn validate_expr(
         Expr::Not(inner) | Expr::Cast { expr: inner, .. } => {
             validate_expr(inner, resolved, row_schemas, static_schemas, used_columns)
         }
-        Expr::Function { args, .. } => {
+        Expr::Function { args, .. } | Expr::List(args) => {
             for a in args {
                 validate_expr(a, resolved, row_schemas, static_schemas, used_columns)?;
+            }
+            Ok(())
+        }
+        Expr::Struct(fields) => {
+            for (_, v) in fields {
+                validate_expr(v, resolved, row_schemas, static_schemas, used_columns)?;
             }
             Ok(())
         }

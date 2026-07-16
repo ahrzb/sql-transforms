@@ -64,6 +64,48 @@ pub fn infer_type(
                 .collect::<Result<_, _>>()?;
             Ok(function_type(name, &arg_types))
         }
+        Expr::Struct(fields) => {
+            let field_types = fields
+                .iter()
+                .map(|(name, e)| Ok((name.clone(), infer_type(e, schemas)?)))
+                .collect::<Result<_, InterpError>>()?;
+            Ok(FieldType {
+                base: Base::Struct(field_types),
+                nullable: false,
+            })
+        }
+        Expr::List(items) => {
+            let item_types = items
+                .iter()
+                .map(|e| infer_type(e, schemas))
+                .collect::<Result<Vec<_>, _>>()?;
+            let elem = unify_list_element_types(&item_types);
+            Ok(FieldType {
+                base: Base::List(Box::new(elem)),
+                nullable: false,
+            })
+        }
+    }
+}
+
+/// Unify element types for a list literal: identical types (by FieldType
+/// equality, so nullability must also agree) collapse to that type;
+/// anything else (including an empty list) is unresolvable.
+fn unify_list_element_types(item_types: &[FieldType]) -> FieldType {
+    let mut iter = item_types.iter();
+    let Some(first) = iter.next() else {
+        return FieldType {
+            base: Base::Other,
+            nullable: true,
+        };
+    };
+    if iter.all(|t| t == first) {
+        first.clone()
+    } else {
+        FieldType {
+            base: Base::Other,
+            nullable: true,
+        }
     }
 }
 

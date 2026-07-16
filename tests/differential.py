@@ -111,6 +111,16 @@ def _canon(r: dict) -> tuple:
 def _val_equal(a: Any, b: Any, tol: float) -> bool:
     if a is None or b is None:
         return a is None and b is None
+    if isinstance(a, dict) or isinstance(b, dict):
+        if not (isinstance(a, dict) and isinstance(b, dict)):
+            return False
+        return set(a) == set(b) and all(_val_equal(a[k], b[k], tol) for k in a)
+    if isinstance(a, list) or isinstance(b, list):
+        if not (isinstance(a, list) and isinstance(b, list)):
+            return False
+        return len(a) == len(b) and all(
+            _val_equal(x, y, tol) for x, y in zip(a, b, strict=True)
+        )
     if isinstance(a, bool) != isinstance(b, bool):
         return False  # bool is an int subclass (True == 1); keep them distinct
     if isinstance(a, float) != isinstance(b, float):

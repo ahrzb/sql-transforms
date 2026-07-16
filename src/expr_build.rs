@@ -1,5 +1,5 @@
 use sqlparser::ast::{
-    BinaryOperator, DataType, Expr as SqlExpr, Function, FunctionArg, FunctionArgExpr,
+    Array, BinaryOperator, DataType, Expr as SqlExpr, Function, FunctionArg, FunctionArgExpr,
     FunctionArguments, UnaryOperator, Value as SqlValue,
 };
 
@@ -31,6 +31,9 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
             })
         }
         SqlExpr::Function(func) => convert_function(func),
+        SqlExpr::Array(Array { elem, .. }) => Ok(Expr::List(
+            elem.iter().map(convert_expr).collect::<Result<_, _>>()?,
+        )),
         SqlExpr::Cast {
             expr, data_type, ..
         } => Ok(Expr::Cast {
@@ -100,6 +103,32 @@ fn convert_function(func: &Function) -> Result<Expr, InterpError> {
             )))
         }
     };
+    if name == "named_struct" {
+        if args.len() % 2 != 0 {
+            return Err(InterpError::Build(
+                "named_struct expects an even number of arguments (key, value, ...)".to_string(),
+            ));
+        }
+        let mut fields = Vec::with_capacity(args.len() / 2);
+        let mut it = args.into_iter();
+        while let (Some(key), Some(value)) = (it.next(), it.next()) {
+            let Expr::Literal(Value::Str(key)) = key else {
+                return Err(InterpError::Build(
+                    "named_struct field names must be string literals".to_string(),
+                ));
+            };
+            fields.push((key, value));
+        }
+        return Ok(Expr::Struct(fields));
+    }
+    if name == "struct" {
+        let fields = args
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (format!("c{i}"), e))
+            .collect();
+        return Ok(Expr::Struct(fields));
+    }
     Ok(Expr::Function { name, args })
 }
 

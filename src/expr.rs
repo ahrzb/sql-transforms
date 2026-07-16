@@ -202,6 +202,8 @@ pub enum Expr {
         expr: Box<Expr>,
         target: CastType,
     },
+    Struct(Vec<(String, Expr)>),
+    List(Vec<Expr>),
 }
 
 #[derive(Clone, Copy)]
@@ -255,6 +257,20 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
         Expr::Cast { expr, target } => {
             let v = eval(expr, row)?;
             eval_cast(v, *target)
+        }
+        Expr::Struct(fields) => {
+            let values = fields
+                .iter()
+                .map(|(k, e)| Ok((k.clone(), eval(e, row)?)))
+                .collect::<Result<_, crate::plan::InterpError>>()?;
+            Ok(Value::Struct(values))
+        }
+        Expr::List(items) => {
+            let values = items
+                .iter()
+                .map(|e| eval(e, row))
+                .collect::<Result<_, _>>()?;
+            Ok(Value::List(values))
         }
     }
 }
