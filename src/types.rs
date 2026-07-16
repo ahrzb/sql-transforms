@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Base {
     Int,
     Float,
@@ -9,9 +9,14 @@ pub enum Base {
     /// Unresolvable — a passthrough column, a multi-type union, an
     /// unsupported generic annotation, etc. Maps to Python `Any`.
     Other,
+    /// Ordered field list (name, type). Not `Copy` — Task 1 spine only,
+    /// no SQL construction surface yet.
+    Struct(Vec<(String, FieldType)>),
+    /// Element type.
+    List(Box<FieldType>),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FieldType {
     pub base: Base,
     pub nullable: bool,
@@ -71,7 +76,7 @@ fn resolve_column_type(
         return schemas
             .get(t)
             .and_then(|s| s.get(name))
-            .copied()
+            .cloned()
             .ok_or_else(|| InterpError::Build(format!("Unknown column: {t}.{name}")));
     }
     let mut found = None;
@@ -82,7 +87,7 @@ fn resolve_column_type(
                     "Ambiguous column reference: {name}"
                 )));
             }
-            found = Some(*ft);
+            found = Some(ft.clone());
         }
     }
     found.ok_or_else(|| InterpError::Build(format!("Unknown column: {name}")))
@@ -110,6 +115,25 @@ fn literal_type(v: &Value) -> FieldType {
             base: Base::Other,
             nullable: true,
         },
+        Value::Struct(fields) => FieldType {
+            base: Base::Struct(
+                fields
+                    .iter()
+                    .map(|(name, v)| (name.clone(), literal_type(v)))
+                    .collect(),
+            ),
+            nullable: false,
+        },
+        Value::List(items) => {
+            let inner = items.first().map(literal_type).unwrap_or(FieldType {
+                base: Base::Other,
+                nullable: true,
+            });
+            FieldType {
+                base: Base::List(Box::new(inner)),
+                nullable: false,
+            }
+        }
     }
 }
 
@@ -151,7 +175,7 @@ fn cast_target_base(target: CastType) -> Base {
 /// Anything not provably wrong is allowed through — Pydantic's own
 /// `model_validate()` is the real authority at `.infer()` time for
 /// anything this can't rule out.
-pub fn compatible(inferred: Base, declared: Base) -> bool {
+pub fn compatible(inferred: &Base, declared: &Base) -> bool {
     match (inferred, declared) {
         (a, b) if a == b => true,
         // Every valid int is a valid float; Pydantic's default lax mode
@@ -159,6 +183,17 @@ pub fn compatible(inferred: Base, declared: Base) -> bool {
         (Base::Int, Base::Float) => true,
         // We have no basis to say an unresolvable inferred type is wrong.
         (Base::Other, _) => true,
+        // Struct compatible iff same field names (in order) with
+        // compatible field types; list iff compatible element type.
+        (Base::Struct(a_fields), Base::Struct(b_fields)) => {
+            a_fields.len() == b_fields.len()
+                && a_fields.iter().zip(b_fields.iter()).all(
+                    |((a_name, a_ft), (b_name, b_ft))| {
+                        a_name == b_name && compatible(&a_ft.base, &b_ft.base)
+                    },
+                )
+        }
+        (Base::List(a_inner), Base::List(b_inner)) => compatible(&a_inner.base, &b_inner.base),
         _ => false,
     }
 }
@@ -171,7 +206,7 @@ fn function_type(name: &str, args: &[FieldType]) -> FieldType {
             nullable: any_nullable,
         },
         "abs" | "round" => {
-            let base = args.first().map(|a| a.base).unwrap_or(Base::Other);
+            let base = args.first().map(|a| a.base.clone()).unwrap_or(Base::Other);
             FieldType {
                 base,
                 nullable: any_nullable,
@@ -182,7 +217,7 @@ fn function_type(name: &str, args: &[FieldType]) -> FieldType {
             nullable: false,
         },
         "coalesce" | "nullif" => {
-            let base = args.first().map(|a| a.base).unwrap_or(Base::Other);
+            let base = args.first().map(|a| a.base.clone()).unwrap_or(Base::Other);
             FieldType {
                 base,
                 nullable: true,

@@ -67,7 +67,7 @@ fn validate_output_model(
             ))
         })?;
         let inferred = types::infer_type(expr, schemas)?;
-        if !types::compatible(inferred.base, declared.base) {
+        if !types::compatible(&inferred.base, &declared.base) {
             return Err(plan::InterpError::Build(format!(
                 "output_model field '{alias}' is declared as a type incompatible with the \
                  query's inferred output ({:?} vs declared {:?})",

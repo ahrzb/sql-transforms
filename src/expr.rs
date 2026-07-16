@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
+#[derive(Debug)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -11,6 +12,11 @@ pub enum Value {
     /// (e.g. a nested dict). Round-trips unchanged through column refs;
     /// arithmetic/comparison on it is a runtime error.
     Object(Py<PyAny>),
+    /// Ordered field list (name, value). Field order is significant for
+    /// equality/hash, mirroring `Base::Struct`.
+    Struct(Vec<(String, Value)>),
+    /// Ordered element list.
+    List(Vec<Value>),
 }
 
 impl Clone for Value {
@@ -25,6 +31,10 @@ impl Clone for Value {
             Value::Bool(b) => Value::Bool(*b),
             Value::Null => Value::Null,
             Value::Object(o) => Python::attach(|py| Value::Object(o.clone_ref(py))),
+            Value::Struct(fields) => {
+                Value::Struct(fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            }
+            Value::List(items) => Value::List(items.iter().map(|v| v.clone()).collect()),
         }
     }
 }
@@ -38,6 +48,8 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Null) => true,
             (Value::Object(a), Value::Object(b)) => a.as_ptr() == b.as_ptr(),
+            (Value::Struct(a), Value::Struct(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
             _ => false,
         }
     }
@@ -69,6 +81,14 @@ impl std::hash::Hash for Value {
                 5u8.hash(state);
                 (o.as_ptr() as usize).hash(state);
             }
+            Value::Struct(fields) => {
+                6u8.hash(state);
+                fields.hash(state);
+            }
+            Value::List(items) => {
+                7u8.hash(state);
+                items.hash(state);
+            }
         }
     }
 }
@@ -83,6 +103,8 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::Null => "null",
         Value::Object(_) => "object",
+        Value::Struct(_) => "struct",
+        Value::List(_) => "list",
     }
 }
 
@@ -95,6 +117,22 @@ pub fn display_value(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Null => String::new(),
         Value::Object(_) => "<object>".to_string(),
+        Value::Struct(fields) => {
+            let inner = fields
+                .iter()
+                .map(|(k, v)| format!("{k}: {}", display_value(v)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{inner}}}")
+        }
+        Value::List(items) => {
+            let inner = items
+                .iter()
+                .map(display_value)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{inner}]")
+        }
     }
 }
 
@@ -126,6 +164,20 @@ impl Value {
             Value::Bool(b) => b.into_pyobject(py)?.to_owned().into_any().unbind(),
             Value::Null => py.None(),
             Value::Object(o) => o.clone_ref(py),
+            Value::Struct(fields) => {
+                let dict = PyDict::new(py);
+                for (k, v) in fields {
+                    dict.set_item(k, v.to_pyobject(py)?)?;
+                }
+                dict.into_any().unbind()
+            }
+            Value::List(items) => {
+                let elements = items
+                    .iter()
+                    .map(|v| v.to_pyobject(py))
+                    .collect::<PyResult<Vec<_>>>()?;
+                PyList::new(py, elements)?.into_any().unbind()
+            }
         })
     }
 }
@@ -452,6 +504,21 @@ fn substr(s: &str, start: i64, length: Option<i64>) -> String {
     chars[idx..end].iter().collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn struct_and_list_value_equality() {
+        let a = Value::Struct(vec![("x".into(), Value::Int(1))]);
+        let b = Value::Struct(vec![("x".into(), Value::Int(1))]);
+        let c = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(c.clone(), c);
+    }
+}
+
 fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpError> {
     use crate::plan::InterpError;
 
@@ -469,7 +536,7 @@ fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpErr
                     .map_err(|_| InterpError::Eval(format!("Cannot cast '{s}' to INT")))?,
             ),
             Value::Bool(b) => Value::Int(b as i64),
-            Value::Null | Value::Object(_) => {
+            Value::Null | Value::Object(_) | Value::Struct(_) | Value::List(_) => {
                 return Err(InterpError::Eval(
                     "Cannot cast this value to INT".to_string(),
                 ))
@@ -484,7 +551,7 @@ fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpErr
                     .map_err(|_| InterpError::Eval(format!("Cannot cast '{s}' to FLOAT")))?,
             ),
             Value::Bool(b) => Value::Float(if b { 1.0 } else { 0.0 }),
-            Value::Null | Value::Object(_) => {
+            Value::Null | Value::Object(_) | Value::Struct(_) | Value::List(_) => {
                 return Err(InterpError::Eval(
                     "Cannot cast this value to FLOAT".to_string(),
                 ))
@@ -495,7 +562,7 @@ fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpErr
             Value::Int(i) => Value::Bool(i != 0),
             Value::Float(f) => Value::Bool(f != 0.0),
             Value::Str(s) => Value::Bool(s.eq_ignore_ascii_case("true")),
-            Value::Null | Value::Object(_) => {
+            Value::Null | Value::Object(_) | Value::Struct(_) | Value::List(_) => {
                 return Err(InterpError::Eval(
                     "Cannot cast this value to BOOLEAN".to_string(),
                 ))

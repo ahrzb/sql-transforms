@@ -179,7 +179,13 @@ pub fn field_type_to_python(py: Python<'_>, ft: FieldType) -> PyResult<Py<PyAny>
         Base::Float => builtins.getattr("float")?.unbind(),
         Base::Str => builtins.getattr("str")?.unbind(),
         Base::Bool => builtins.getattr("bool")?.unbind(),
-        Base::Other => typing.getattr("Any")?.unbind(),
+        // Placeholder — Task 3 turns this into a synthesized nested
+        // pydantic model.
+        Base::Other | Base::Struct(_) => typing.getattr("Any")?.unbind(),
+        Base::List(inner) => {
+            let inner_type = field_type_to_python(py, *inner)?;
+            builtins.getattr("list")?.get_item(inner_type)?.unbind()
+        }
     };
     if !ft.nullable {
         return Ok(base_type);
