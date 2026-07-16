@@ -130,7 +130,18 @@ discussion). Capture, not yet a spec.
   registry, parity harness, and both impls agree on; and whether a SQL-defined UDF is
   a raw `:param` template string or a structured InferFn-AST builder.
 
-### FIRST SLICE: compose SQLTransforms via `{transform}(col)` references
+### Compose SQLTransforms via `{transform}(col)` references — follow-up slices
+**✅ First slice (frozen path) shipped** — on master (through `bb22526`).
+`{a.transform}(col)` inlines a fitted transform's frozen scalar expression, fused
+into one per-row expression with exact `transform`/`infer` differential parity;
+the outer taking its own window aggregate over the inlined column works; a bare
+`{a}` on a fitted object and `{a.transform}` on an unfit object both error
+explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting —
+but with a known gap now tracked separately (see "Identifier quoting not preserved
+…" below). **The live remaining work is the "Deferred to follow-up slices" list at
+the end of this entry** (fit-cascade, fan-out, multi-input); everything between
+here and there is kept as the design reference those slices build on.
+
 The first implementable step of the execution model above, and the primitive
 everything else (our `Pipeline`, sklearn composition) is built on: let one
 `SQLTransform` reference **another `SQLTransform` object** inside its SQL, applied to
