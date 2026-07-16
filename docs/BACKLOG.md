@@ -126,6 +126,29 @@ not to write ahead of it. The notes below stay as captured design thinking.
   registry, parity harness, and both impls agree on; and whether a SQL-defined UDF is
   a raw `:param` template string or a structured InferFn-AST builder.
 
+### Rust struct-type support
+Prerequisite for the composition output model + multi-output fan-out. The `InferFn`
+interpreter has scalar primitives + an opaque `Value::Object` passthrough — **no
+struct with named fields, no field access, no wildcard**. The recursive (fit-cascade)
+composition slice picked a **struct + `.*` output-type model** (a transformer's
+per-row output is a struct of named fields; unpack with `{a}(col).*` / `.field`),
+which the engine can't express today. So this is the foundational prerequisite for
+recursive composition (parked spec:
+[fit-cascade design](superpowers/specs/2026-07-16-fit-cascade-composition-design.md))
+and for multi-output/fan-out transformers (OneHot). Also pulls M4 feature-contract
+groundwork forward — a typed struct output *is* the contract surface. **Scope:**
+- A real struct `Value` with named fields, distinct from the opaque `Object`.
+- Field projection (`expr.field`) — eval + static type inference (`src/expr.rs`,
+  `src/types.rs`).
+- Wildcard `.*` expansion at the plan/rewrite layer (struct-valued projection → its
+  columns; `SELECT`-list placement + aliasing) (`src/plan.rs`).
+- Struct-aware output-model synthesis — nested Pydantic model or column expansion
+  (`src/schema.rs`: `field_type_to_python` / `synthesize_output_model`).
+- DataFusion (transform-path) `STRUCT` parity, enforced by the differential harness
+  (DataFusion has native `STRUCT`; the Rust side must agree).
+- **Open sub-question, owned by the resumed fit-cascade spec (not this ticket):**
+  whether single-output auto-unwraps to a scalar or stays a 1-field struct.
+
 ### Compose SQLTransforms via `{transform}(col)` references — follow-up slices
 **✅ First slice (frozen path) shipped** — on master (through `bb22526`).
 `{a.transform}(col)` inlines a fitted transform's frozen scalar expression, fused
@@ -136,8 +159,12 @@ explicitly. Identifier handling locked to DataFusion-faithful verbatim quoting
 (the earlier quoting gap in the inline + PARTITION BY paths is fixed, `c056ec3`).
 **Live remaining work = the "Deferred to follow-up slices" list at the
 end of this entry.** Per the 2026-07-16 M1 ordering, **fit-cascade (unfitted
-`{a}(col)`) is promoted to the active next slice** (after the identifier-quoting
-bug fix); **fan-out + multi-input stay deferred** and re-enter with the sklearn
+`{a}(col)`) is the active next slice — but its design is now settled and *parked***
+pending **Rust struct-type support** (the chosen struct + `.*` output model needs
+it): see the parked spec
+[fit-cascade design](superpowers/specs/2026-07-16-fit-cascade-composition-design.md)
+and the "Rust struct-type support" entry above. It resumes once struct support
+lands. **Fan-out + multi-input stay deferred** and re-enter with the sklearn
 transformers that need them (OneHot fan-out, multi-input encoders). Everything
 between here and the deferred list is kept as the design reference those slices
 build on.
