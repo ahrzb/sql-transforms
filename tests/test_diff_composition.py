@@ -61,3 +61,11 @@ def test_repeated_and_multiple_references_parity():
     out = _parity(composite, train)
     assert out[0]["a"] == out[0]["b"]
     assert out[0]["c"] == 20.0  # doubler(age)=age*2 on train age[0]=10.0
+
+
+def test_referenced_transform_not_mutated():
+    scaler, train = _fit_scaler()
+    before = scaler.transform(train).to_pylist()
+    SQLTransform(t"SELECT {scaler.transform}(age) AS s FROM __THIS__").fit(train)
+    after = scaler.transform(train).to_pylist()
+    assert before == after  # scaler still fitted + unchanged

@@ -32,3 +32,26 @@ def test_multi_input_inner_raises_clean_value_error():
         SQLTransform(
             t"SELECT {grouped.transform}(age) AS e2 FROM __THIS__"
         ).fit(train)
+
+
+def test_frozen_reference_on_unfit_errors():
+    unfit = SQLTransform("SELECT age * 2 AS d FROM __THIS__")
+    train = pa.table({"age": [1.0, 2.0, 3.0]})
+    with pytest.raises(ValueError, match="not fitted"):
+        SQLTransform(t"SELECT {unfit.transform}(age) AS d FROM __THIS__").fit(train)
+
+
+def test_reference_not_applied_to_column_errors():
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    scaler = SQLTransform(
+        "SELECT (age - AVG(age) OVER ()) / STDDEV(age) OVER () AS s FROM __THIS__"
+    ).fit(train)
+    with pytest.raises(ValueError, match="single input column"):
+        SQLTransform(
+            t"SELECT {scaler.transform}(age + 1) AS s FROM __THIS__"
+        ).fit(train)
+
+
+def test_non_transform_interpolation_errors():
+    with pytest.raises(TypeError, match="SQLTransform"):
+        SQLTransform(t"SELECT {42}(age) AS s FROM __THIS__")
