@@ -88,6 +88,28 @@ breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
   directions work with fitted sklearn-estimator objects; the SQL authoring
   front-end is a separate question.
 
+The prioritized transformer list (tiers + native-machinery status + parity gotchas)
+lives in [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md).
+
+### Per-transformer differential parity harness
+The oracle every sklearn transformer is validated against — the transformer analogue
+of the M0 expression/join differential harness. For each transformer, a
+**parametrized parity matrix** asserts our `transform` output is bit-identical to the
+real sklearn object's, across (a) the parity-sensitive params (see the per-transformer
+notes in [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md) — e.g. `StandardScaler`
+population-vs-sample std, `OneHotEncoder` `handle_unknown`/`drop`/infrequent, exact-vs-
+approx quantiles for `RobustScaler`) and (b) input edge cases: nulls, unseen
+categories, single row vs batch, int/float/string dtypes, empty/degenerate columns.
+**Why its own item:** it's the mechanism behind Phase B's per-transformer native
+swaps — each native impl is diffed against the same matrix its Python fallback
+already passes, so a native/​sklearn divergence fails loud. **Distinct from** the
+end-to-end **assembly**-parity harness (Phase A2, the whole `ColumnTransformer`
+vector): this one is *leaf* correctness per transformer, that one is *assembly*
+correctness; both are needed and this one feeds that one. **Start:** stand it up in
+A1 alongside the first transformer (`StandardScaler`) — one transformer through the
+matrix — then grow the matrix per transformer as coverage lands. Reuses the existing
+differential-harness patterns (`tests/test_diff_*`).
+
 ### Transformer execution model — procedures (UDF/UDAF), macros, composition
 The conceptual backbone the two items above build on (from a 2026-07-15 design
 discussion). Capture, not yet a spec.

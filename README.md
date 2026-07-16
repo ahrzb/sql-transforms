@@ -118,6 +118,8 @@ mise tasks        # list all tasks
 - [docs/BACKLOG.md](docs/BACKLOG.md) — scoped tasks and open questions.
 - [docs/DATAFUSION_FUNCTIONS.md](docs/DATAFUSION_FUNCTIONS.md) — the DataFusion
   function/aggregate catalogue (the interpreter's parity target), auto-generated.
+- [docs/SKLEARN_TRANSFORMERS.md](docs/SKLEARN_TRANSFORMERS.md) — the prioritized
+  sklearn transformer implementation plan (tiers + native-machinery status).
 
 ## Contributing
 
