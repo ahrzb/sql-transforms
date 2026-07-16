@@ -155,6 +155,55 @@ impl Value {
         Ok(Value::Object(obj.clone().unbind()))
     }
 
+    /// Schema-driven read: converts a Python value into a `Value` per the
+    /// field's declared `Base`, recursing into `Struct`/`List` so a nested
+    /// dict/list is marshalled by its declared shape rather than falling
+    /// through to an opaque `Value::Object`. Scalars behave exactly like
+    /// `from_pyobject`. `obj` may be a raw `dict`/`list` OR (when the row
+    /// model declares a nested pydantic submodel / `list[X]`) an already-
+    /// validated nested `BaseModel` instance / `list` — struct field access
+    /// falls back from dict indexing to attribute access to cover both.
+    pub fn from_pyobject_typed(
+        obj: &Bound<'_, PyAny>,
+        base: &crate::types::Base,
+    ) -> PyResult<Value> {
+        use crate::types::Base;
+        if obj.is_none() {
+            return Ok(Value::Null);
+        }
+        match base {
+            Base::Struct(fields) => {
+                let mut out = Vec::with_capacity(fields.len());
+                for (name, field_ft) in fields {
+                    let field_val = if let Ok(dict) = obj.cast::<PyDict>() {
+                        dict.get_item(name)?
+                    } else {
+                        obj.getattr(name.as_str()).ok()
+                    };
+                    let v = match field_val {
+                        Some(item) => Value::from_pyobject_typed(&item, &field_ft.base)?,
+                        None => Value::Null,
+                    };
+                    out.push((name.clone(), v));
+                }
+                Ok(Value::Struct(out))
+            }
+            Base::List(inner) => {
+                let list = obj.cast::<PyList>().map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Expected a list value for a list-typed field: {e}"
+                    ))
+                })?;
+                let mut out = Vec::with_capacity(list.len());
+                for item in list.iter() {
+                    out.push(Value::from_pyobject_typed(&item, &inner.base)?);
+                }
+                Ok(Value::List(out))
+            }
+            _ => Value::from_pyobject(obj),
+        }
+    }
+
     pub fn to_pyobject(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(match self {
             Value::Int(i) => i.into_pyobject(py)?.into_any().unbind(),

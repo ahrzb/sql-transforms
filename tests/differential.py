@@ -34,16 +34,47 @@ class Table:
     rows: list[dict[str, Any]]
 
 
+def _split_struct_fields(inner: str) -> list[str]:
+    # Split "x:int,y:list[int]" on top-level commas only (not commas nested
+    # inside a struct{...}/list[...] sub-spec).
+    parts = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(inner):
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(inner[start:i])
+            start = i + 1
+    parts.append(inner[start:])
+    return parts
+
+
+def _arrow_type(spec: str) -> tuple[pa.DataType, bool]:
+    """Parse a type-spec string into (arrow type, nullable)."""
+    nullable = spec.endswith("?")
+    base = spec[:-1] if nullable else spec
+    if base.startswith("struct{") and base.endswith("}"):
+        inner = base[len("struct{") : -1]
+        fields = [_arrow_field(*part.split(":", 1)) for part in _split_struct_fields(inner)]
+        return pa.struct(fields), nullable
+    if base.startswith("list[") and base.endswith("]"):
+        elem_type, elem_nullable = _arrow_type(base[len("list[") : -1])
+        return pa.list_(pa.field("item", elem_type, nullable=elem_nullable)), nullable
+    if base not in _ARROW:
+        raise ValueError(f"Unknown column type {spec!r}")
+    return _ARROW[base], nullable
+
+
 def _arrow_field(name: str, spec: Any) -> pa.Field:
     if spec in _BUILTIN:  # python builtin type value
         spec = _BUILTIN[spec]
     if not isinstance(spec, str):
         raise ValueError(f"Unsupported column type {spec!r} for column {name!r}")
-    nullable = spec.endswith("?")
-    base = spec[:-1] if nullable else spec
-    if base not in _ARROW:
-        raise ValueError(f"Unknown column type {spec!r} for column {name!r}")
-    return pa.field(name, _ARROW[base], nullable=nullable)
+    arrow_type, nullable = _arrow_type(spec)
+    return pa.field(name, arrow_type, nullable=nullable)
 
 
 def _make(kind: str, schema: dict[str, Any], data: list[dict]) -> Table:

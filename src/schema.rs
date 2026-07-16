@@ -43,32 +43,55 @@ pub fn from_arrow_table(py: Python<'_>, table: &Py<PyAny>) -> Result<Schema, Int
         .getattr("names")
         .and_then(|n| n.extract())
         .map_err(|e| InterpError::Build(format!("Failed to read static table schema: {e}")))?;
+    let pa_types = PyModule::import(py, "pyarrow.types")
+        .map_err(|e| InterpError::Build(format!("Failed to import pyarrow.types: {e}")))?;
 
     let mut schema = Schema::new();
     for name in names {
         let field = arrow_schema
             .call_method1("field", (name.as_str(),))
             .map_err(|e| InterpError::Build(format!("Failed to read field '{name}': {e}")))?;
-        let nullable: bool = field
-            .getattr("nullable")
-            .and_then(|n| n.extract())
-            .map_err(|e| {
-                InterpError::Build(format!("Failed to read nullability of '{name}': {e}"))
-            })?;
-        let type_str: String = field
-            .getattr("type")
-            .and_then(|t| t.str())
-            .map(|s| s.to_string())
+        let field_type = arrow_field_to_field_type(&pa_types, &field)
             .map_err(|e| InterpError::Build(format!("Failed to read type of '{name}': {e}")))?;
-        schema.insert(
-            name,
-            FieldType {
-                base: arrow_type_to_base(&type_str),
-                nullable,
-            },
-        );
+        schema.insert(name, field_type);
     }
     Ok(schema)
+}
+
+/// Recursively resolves a `pyarrow.Field` (name/nullable/type) into a
+/// `FieldType`, walking `pa.StructType`/`pa.ListType` children rather than
+/// prefix-matching the type's string form — needed since a struct/list type's
+/// `str()` doesn't expose its nested field types.
+fn arrow_field_to_field_type(
+    pa_types: &Bound<'_, PyModule>,
+    field: &Bound<'_, PyAny>,
+) -> PyResult<FieldType> {
+    let nullable: bool = field.getattr("nullable")?.extract()?;
+    let ty = field.getattr("type")?;
+    let base = arrow_pytype_to_base(pa_types, &ty)?;
+    Ok(FieldType { base, nullable })
+}
+
+fn arrow_pytype_to_base(pa_types: &Bound<'_, PyModule>, ty: &Bound<'_, PyAny>) -> PyResult<Base> {
+    if pa_types.call_method1("is_struct", (ty,))?.extract::<bool>()? {
+        let num_fields: usize = ty.getattr("num_fields")?.extract()?;
+        let mut fields = Vec::with_capacity(num_fields);
+        for i in 0..num_fields {
+            let f = ty.call_method1("field", (i,))?;
+            let name: String = f.getattr("name")?.extract()?;
+            fields.push((name, arrow_field_to_field_type(pa_types, &f)?));
+        }
+        return Ok(Base::Struct(fields));
+    }
+    let is_list = pa_types.call_method1("is_list", (ty,))?.extract::<bool>()?
+        || pa_types.call_method1("is_large_list", (ty,))?.extract::<bool>()?;
+    if is_list {
+        let value_field = ty.getattr("value_field")?;
+        let inner = arrow_field_to_field_type(pa_types, &value_field)?;
+        return Ok(Base::List(Box::new(inner)));
+    }
+    let type_str: String = ty.str()?.extract()?;
+    Ok(arrow_type_to_base(&type_str))
 }
 
 fn arrow_type_to_base(type_str: &str) -> Base {
@@ -108,6 +131,13 @@ fn annotation_to_field_type(
         .map_err(|e| InterpError::Build(format!("Failed to inspect type annotation: {e}")))?;
 
     if origin.is_none() {
+        if is_pydantic_model_class(py, annotation)? {
+            let nested = from_pydantic_model(py, &annotation.clone().unbind())?;
+            return Ok(FieldType {
+                base: Base::Struct(nested.into_iter().collect()),
+                nullable: false,
+            });
+        }
         return Ok(FieldType {
             base: python_type_to_base(annotation),
             nullable: false,
@@ -120,35 +150,76 @@ fn annotation_to_field_type(
         || origin.is(&types_module
             .getattr("UnionType")
             .map_err(|e| InterpError::Build(format!("types.UnionType missing: {e}")))?);
-    if !is_union {
-        return Ok(FieldType {
-            base: Base::Other,
-            nullable: false,
-        });
+    if is_union {
+        let args: Vec<Py<PyAny>> = typing
+            .call_method1("get_args", (annotation,))
+            .and_then(|a| a.extract())
+            .map_err(|e| InterpError::Build(format!("Failed to inspect union args: {e}")))?;
+
+        let none_type = py.None().bind(py).get_type();
+        let mut non_none: Vec<Py<PyAny>> = Vec::new();
+        let mut nullable = false;
+        for arg in args {
+            if arg.bind(py).is(&none_type) {
+                nullable = true;
+            } else {
+                non_none.push(arg);
+            }
+        }
+
+        let base = if non_none.len() == 1 {
+            let inner =
+                annotation_to_field_type(py, typing, types_module, non_none[0].bind(py))?;
+            nullable = nullable || inner.nullable;
+            inner.base
+        } else {
+            Base::Other
+        };
+        return Ok(FieldType { base, nullable });
     }
 
-    let args: Vec<Py<PyAny>> = typing
-        .call_method1("get_args", (annotation,))
-        .and_then(|a| a.extract())
-        .map_err(|e| InterpError::Build(format!("Failed to inspect union args: {e}")))?;
-
-    let none_type = py.None().bind(py).get_type();
-    let mut non_none: Vec<Py<PyAny>> = Vec::new();
-    let mut nullable = false;
-    for arg in args {
-        if arg.bind(py).is(&none_type) {
-            nullable = true;
-        } else {
-            non_none.push(arg);
+    let builtins = PyModule::import(py, "builtins")
+        .map_err(|e| InterpError::Build(format!("Failed to import builtins: {e}")))?;
+    let is_list_generic = origin.is(&builtins
+        .getattr("list")
+        .map_err(|e| InterpError::Build(format!("builtins.list missing: {e}")))?);
+    if is_list_generic {
+        let args: Vec<Py<PyAny>> = typing
+            .call_method1("get_args", (annotation,))
+            .and_then(|a| a.extract())
+            .map_err(|e| InterpError::Build(format!("Failed to inspect list[..] args: {e}")))?;
+        if let [elem] = args.as_slice() {
+            let inner = annotation_to_field_type(py, typing, types_module, elem.bind(py))?;
+            return Ok(FieldType {
+                base: Base::List(Box::new(inner)),
+                nullable: false,
+            });
         }
     }
 
-    let base = if non_none.len() == 1 {
-        python_type_to_base(non_none[0].bind(py))
-    } else {
-        Base::Other
-    };
-    Ok(FieldType { base, nullable })
+    Ok(FieldType {
+        base: Base::Other,
+        nullable: false,
+    })
+}
+
+/// Is `annotation` a `pydantic.BaseModel` subclass (a nested struct field)?
+/// `issubclass()` raises `TypeError` for a non-class annotation (e.g.
+/// `typing.Any`, `list[int]`) — treated as "not a model", not an error.
+fn is_pydantic_model_class(py: Python<'_>, annotation: &Bound<'_, PyAny>) -> Result<bool, InterpError> {
+    let pydantic = PyModule::import(py, "pydantic")
+        .map_err(|e| InterpError::Build(format!("Failed to import pydantic: {e}")))?;
+    let base_model = pydantic
+        .getattr("BaseModel")
+        .map_err(|e| InterpError::Build(format!("pydantic.BaseModel missing: {e}")))?;
+    let builtins = PyModule::import(py, "builtins")
+        .map_err(|e| InterpError::Build(format!("Failed to import builtins: {e}")))?;
+    match builtins.call_method1("issubclass", (annotation, &base_model)) {
+        Ok(result) => result
+            .extract()
+            .map_err(|e| InterpError::Build(format!("issubclass result error: {e}"))),
+        Err(_) => Ok(false),
+    }
 }
 
 fn python_type_to_base(t: &Bound<'_, PyAny>) -> Base {
@@ -179,9 +250,18 @@ pub fn field_type_to_python(py: Python<'_>, ft: FieldType) -> PyResult<Py<PyAny>
         Base::Float => builtins.getattr("float")?.unbind(),
         Base::Str => builtins.getattr("str")?.unbind(),
         Base::Bool => builtins.getattr("bool")?.unbind(),
-        // Placeholder — Task 3 turns this into a synthesized nested
-        // pydantic model.
-        Base::Other | Base::Struct(_) => typing.getattr("Any")?.unbind(),
+        Base::Other => typing.getattr("Any")?.unbind(),
+        Base::Struct(fields) => {
+            let pydantic = PyModule::import(py, "pydantic")?;
+            let create_model = pydantic.getattr("create_model")?;
+            let ellipsis = builtins.getattr("Ellipsis")?;
+            let kwargs = PyDict::new(py);
+            for (name, field_ft) in fields {
+                let field_py_type = field_type_to_python(py, field_ft)?;
+                kwargs.set_item(name, (field_py_type, &ellipsis))?;
+            }
+            create_model.call(("StructModel",), Some(&kwargs))?.unbind()
+        }
         Base::List(inner) => {
             let inner_type = field_type_to_python(py, *inner)?;
             builtins.getattr("list")?.get_item(inner_type)?.unbind()

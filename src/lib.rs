@@ -20,6 +20,7 @@ struct InferFn {
     plan: Plan,
     lookups: HashMap<String, LookupIndex>,
     row_table_columns: HashMap<String, Vec<String>>,
+    row_schemas: HashMap<String, types::Schema>,
     #[pyo3(get)]
     output_model: Py<PyAny>,
 }
@@ -153,6 +154,7 @@ impl InferFn {
             plan: optimized_plan,
             lookups,
             row_table_columns: column_validation.row_table_columns,
+            row_schemas,
             output_model,
         })
     }
@@ -177,6 +179,7 @@ impl InferFn {
         let mut value_tables: HashMap<String, Vec<HashMap<String, Value>>> = HashMap::new();
         for (table, rows) in &merged {
             let columns = self.row_table_columns.get(table).unwrap_or(&empty);
+            let schema = self.row_schemas.get(table);
             let mut out_rows = Vec::with_capacity(rows.len());
             for row_obj in rows {
                 let bound = row_obj.bind(py);
@@ -187,7 +190,11 @@ impl InferFn {
                             "Row for table '{table}' is missing attribute '{col}': {e}"
                         ))
                     })?;
-                    row.insert(col.clone(), Value::from_pyobject(&attr)?);
+                    let value = match schema.and_then(|s| s.get(col)) {
+                        Some(ft) => Value::from_pyobject_typed(&attr, &ft.base)?,
+                        None => Value::from_pyobject(&attr)?,
+                    };
+                    row.insert(col.clone(), value);
                 }
                 out_rows.push(row);
             }
