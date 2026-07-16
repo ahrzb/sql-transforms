@@ -61,3 +61,17 @@ def test_struct_field_access():
     check("SELECT s.x AS fx FROM t",
           {"t": rows({"s": "struct{x:int,y:int}"},
                      [{"s": {"x": 5, "y": 9}}])})
+
+
+def test_nested_struct_field_access():
+    check(
+        "SELECT s.a.b AS v FROM t",
+        {"t": rows({"s": "struct{a:struct{b:int}}"}, [{"s": {"a": {"b": 7}}}])},
+    )
+
+
+def test_qualified_struct_field_access():
+    check(
+        "SELECT t.s.x AS v FROM t",
+        {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 5, "y": 9}}])},
+    )

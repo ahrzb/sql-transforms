@@ -339,6 +339,7 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
         Expr::FieldAccess { base, field } => {
             let v = eval(base, row)?;
             match v {
+                Value::Null => Ok(Value::Null),
                 Value::Struct(fields) => fields
                     .into_iter()
                     .find(|(name, _)| name == field)
