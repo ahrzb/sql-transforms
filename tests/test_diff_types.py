@@ -1,8 +1,10 @@
 import pyarrow as pa
 import pytest
 from differential import check, rows
+from pydantic import BaseModel
 
 from sql_transform import SQLTransform
+from sql_transform._interpreter import InferFn
 
 
 def test_struct_construct():
@@ -119,6 +121,61 @@ def test_unnest_list_all_dropped_yields_no_rows():
         },
         expect=[],
     )
+
+
+def test_struct_equality():
+    # s1 = s2 / s1 != s2 must use deep structural equality (DataFusion parity),
+    # not fall into the scalar-only arithmetic comparison path.
+    check(
+        "SELECT (s1 = s2) AS eq FROM t",
+        {
+            "t": rows(
+                {"s1": "struct{x:int,y:int}", "s2": "struct{x:int,y:int}"},
+                [
+                    {"s1": {"x": 1, "y": 2}, "s2": {"x": 1, "y": 2}},
+                    {"s1": {"x": 1, "y": 2}, "s2": {"x": 1, "y": 3}},
+                ],
+            )
+        },
+        expect=[{"eq": True}, {"eq": False}],
+    )
+
+
+def test_struct_as_join_key():
+    # A struct column used as a row x row JOIN key. Works today via `Value`'s
+    # structural PartialEq in execute_rel's Join arm; locked in here.
+    check(
+        "SELECT a.v, b.w FROM a JOIN b ON a.s = b.s",
+        {
+            "a": rows(
+                {"s": "struct{x:int,y:int}", "v": "int"},
+                [
+                    {"s": {"x": 1, "y": 2}, "v": 10},
+                    {"s": {"x": 3, "y": 4}, "v": 20},
+                ],
+            ),
+            "b": rows(
+                {"s": "struct{x:int,y:int}", "w": "int"},
+                [{"s": {"x": 1, "y": 2}, "w": 100}],
+            ),
+        },
+        expect=[{"v": 10, "w": 100}],
+    )
+
+
+class _TwoLists(BaseModel):
+    a: list[int]
+    b: list[int]
+
+
+def test_multi_unnest_rejected():
+    # Two unnest(list) calls in one query is a cross-product cardinality
+    # change we don't support (Task 6). DataFusion accepts it (cross product),
+    # so this diverges by design and can't go through check() -- direct
+    # InferFn construction instead.
+    sql = "SELECT unnest(a) AS ea, unnest(b) AS eb FROM t"
+    with pytest.raises(ValueError):
+        InferFn(sql, row_tables={"t": _TwoLists}, static_tables={})
 
 
 def test_unnest_list_preserves_other_columns():

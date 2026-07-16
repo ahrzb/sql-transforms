@@ -6,6 +6,25 @@ use crate::types::{Base, FieldType, Schema};
 
 /// Extract a Schema from a Pydantic v2 model class's `model_fields`.
 pub fn from_pydantic_model(py: Python<'_>, model_class: &Py<PyAny>) -> Result<Schema, InterpError> {
+    Ok(pydantic_model_fields_ordered(py, model_class)?
+        .into_iter()
+        .collect())
+}
+
+/// Extract a Pydantic v2 model class's fields as an order-preserving Vec
+/// (declaration order, from `model_fields` dict iteration order). `Schema`
+/// is a `HashMap` (column lookup by name doesn't care about order), but a
+/// nested struct's field order is semantically significant — it feeds
+/// `Base::Struct`/`Value::Struct`, whose `PartialEq`/`Hash` are order-
+/// sensitive (struct equality, join keys). Two independently-parsed structs
+/// with the same fields must agree on field order, so this must NOT round-
+/// trip through the `HashMap`-backed `Schema` (whose iteration order is
+/// randomized per-instance) before becoming a `Base::Struct` — see
+/// `annotation_to_field_type`'s nested-model branch below.
+fn pydantic_model_fields_ordered(
+    py: Python<'_>,
+    model_class: &Py<PyAny>,
+) -> Result<Vec<(String, FieldType)>, InterpError> {
     let bound = model_class.bind(py);
     let fields = bound
         .getattr("model_fields")
@@ -19,7 +38,7 @@ pub fn from_pydantic_model(py: Python<'_>, model_class: &Py<PyAny>) -> Result<Sc
     let types_module = PyModule::import(py, "types")
         .map_err(|e| InterpError::Build(format!("Failed to import types: {e}")))?;
 
-    let mut schema = Schema::new();
+    let mut out = Vec::new();
     for (name, field_info) in dict.iter() {
         let name: String = name
             .extract()
@@ -28,9 +47,9 @@ pub fn from_pydantic_model(py: Python<'_>, model_class: &Py<PyAny>) -> Result<Sc
             .getattr("annotation")
             .map_err(|e| InterpError::Build(format!("Field '{name}' has no annotation: {e}")))?;
         let field_type = annotation_to_field_type(py, &typing, &types_module, &annotation)?;
-        schema.insert(name, field_type);
+        out.push((name, field_type));
     }
-    Ok(schema)
+    Ok(out)
 }
 
 /// Extract a Schema from a `pyarrow.Table`'s `.schema`.
@@ -132,9 +151,9 @@ fn annotation_to_field_type(
 
     if origin.is_none() {
         if is_pydantic_model_class(py, annotation)? {
-            let nested = from_pydantic_model(py, &annotation.clone().unbind())?;
+            let nested = pydantic_model_fields_ordered(py, &annotation.clone().unbind())?;
             return Ok(FieldType {
-                base: Base::Struct(nested.into_iter().collect()),
+                base: Base::Struct(nested),
                 nullable: false,
             });
         }

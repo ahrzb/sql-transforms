@@ -446,6 +446,19 @@ fn comparison(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::Inter
     if matches!(l, Value::Null) || matches!(r, Value::Null) {
         return Ok(Value::Null);
     }
+    // Structs/lists support deep structural equality (DataFusion parity) but
+    // not ordering; route Eq/NotEq through the existing structural `PartialEq`
+    // on `Value` before falling into `compare_values`, which only handles
+    // scalars and would error on a container.
+    if matches!(op, BinOp::Eq | BinOp::NotEq)
+        && matches!(
+            (&l, &r),
+            (Value::Struct(_), _) | (Value::List(_), _) | (_, Value::Struct(_)) | (_, Value::List(_))
+        )
+    {
+        let eq = l == r;
+        return Ok(Value::Bool(if op == BinOp::Eq { eq } else { !eq }));
+    }
     let ordering = compare_values(&l, &r)?;
     Ok(Value::Bool(match op {
         BinOp::Eq => ordering == std::cmp::Ordering::Equal,

@@ -162,6 +162,15 @@ recursive spine lands.
 node); `unnest(list)` empty/NULL cardinality re-verify; struct field-order
 round-trip; table-alias vs struct-field-name precedence in `s.x`.
 
+**Deferred parity gap: ordered comparison (`<`,`>`,`<=`,`>=`) on structs/lists.**
+`=`/`!=` on structs/lists is implemented (structural equality, `src/expr.rs`
+`comparison`). Verified DataFusion supports **lexicographic ordering** for `<` on
+both structs and lists (`named_struct('x',1) < named_struct('x',2)` → `true`;
+`[1,2] < [1,3]` → `true`) — so a full parity fix would need real lexicographic
+`Ord` on `Value::Struct`/`List`. Not implemented this slice (clean runtime error
+instead, via `compare_values`'s scalar-only `as_f64` fallback); pick up if a
+real query needs ordered struct/list comparison.
+
 ### Compose SQLTransforms via `{transform}(col)` references — follow-up slices
 **✅ First slice (frozen path) shipped** — on master (through `bb22526`).
 `{a.transform}(col)` inlines a fitted transform's frozen scalar expression, fused
