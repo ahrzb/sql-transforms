@@ -254,6 +254,12 @@ shipped a defect.
   `this`, rest in `expressions`; `Nullif` → `this` + `expression`. An
   `e.this not in args` de-dup guard silently drops an argument for `COALESCE(a, a)`
   (equal sub-expressions compare equal), yielding arity 1.
+- ❌ **`UNNEST(a)` parses to a dedicated `exp.Unnest` class, not `exp.Anonymous`**
+  (found during Task 5 impl, 2026-07-17). So a name-match against `_DEFERRED_FUNCS`
+  never fires and the generic fallthrough raises plain `ValueError` — but the
+  harness needs `UnsupportedInCodegen` for deferred surface to *skip* rather than
+  count as a rejection-failure. Needs an explicit `isinstance(e, exp.Unnest)`
+  branch before the fallthrough.
 - ✅ `Substring` → `args["start"]` / `args["length"]`; `Cast` → `.to.sql()` gives
   `VARCHAR`/`BIGINT`/`DOUBLE`/`BOOLEAN` (prefix-matching works).
 - ✅ Join `kind`/`side` come back as `None` (not `""`), so `(x or "").upper()` is
