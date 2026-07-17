@@ -31,6 +31,13 @@ def _transformer_udf(
         `named_struct`). Its field-name set must equal `feature_names_in_`.
     out_schema: names+types of the returned struct (declared, not introspected).
     name: the reserved SQL identifier the UDF is registered and called under.
+
+    Invariant: `out_schema` must equal the transformer's NATURAL output dtype.
+    This engine coerces to it via a pyarrow cast (`pa.array(..., type=...)`);
+    the Rust `infer` engine reaches the same declared type by pydantic
+    coercion at model-validate time. Those two coercion rules only agree when
+    no real coercion happens -- i.e. when the declared type already matches
+    what `.transform` produces. Declaring a mismatched dtype would diverge.
     """
     feature_names = [str(n) for n in obj.feature_names_in_]
     in_type = pa.struct(list(in_schema))

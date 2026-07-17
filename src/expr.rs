@@ -436,6 +436,12 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
                         "transformer produced no output row: {e}"
                     ))
                 })?;
+                // Marshal each output position through the declared field
+                // type. Parity invariant: the declared output dtype must equal
+                // the transform's natural dtype -- here it drives pydantic
+                // coercion at model-validate time, and the DataFusion oracle
+                // reaches the same type via a pyarrow cast; the two agree only
+                // when no real coercion is needed (see _transformer_udf.py).
                 let mut out = Vec::with_capacity(output_fields.len());
                 for (i, (fname, ft)) in output_fields.iter().enumerate() {
                     let elem = y0.get_item(i).map_err(|e| {
