@@ -40,6 +40,12 @@ _COMMITTED = [
     # COALESCE(a, a) -- repeated args: the per-function arg extractor must NOT
     # de-dup equal sub-expressions down to arity 1 (a sqlglot-shape trap).
     ("SELECT COALESCE(a, a) AS x FROM t", {"t": rows({"a": "int?"}, [{"a": None}])}),
+    # COALESCE(int, float) types as the numeric supertype (float), so the float
+    # result is not pydantic-coerced back to int (same bug class as ROUND).
+    (
+        "SELECT COALESCE(a, b) AS x FROM t",
+        {"t": rows({"a": "int?", "b": "float"}, [{"a": 3, "b": 2.5}])},
+    ),
     ("SELECT NULLIF(a, 1) AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT CAST(a AS VARCHAR) AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT CAST(s AS BIGINT) AS x FROM t", {"t": rows({"s": "str"}, [{"s": "1"}])}),

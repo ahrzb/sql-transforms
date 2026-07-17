@@ -758,9 +758,29 @@ def _function_type(name: str, args: list) -> FieldType:
         return FieldType(FLOAT, any_nullable)
     if name == "concat":
         return FieldType(STR, False)
-    if name in ("coalesce", "nullif"):
+    if name == "coalesce":
+        # DataFusion types COALESCE as the common supertype of its args, so a
+        # mixed int/float coalesce is float (measured). args[0].base would
+        # mis-type COALESCE(int, float) as int and pydantic-coerce the result.
+        return FieldType(_common_base(args), True)
+    if name == "nullif":
+        # NULLIF(a, b) returns a or NULL, so its type is a's.
         return FieldType(args[0].base if args else OTHER, True)
     return FieldType(OTHER, True)
+
+
+def _common_base(args: list) -> Any:
+    """The supertype of a set of arg bases, matching DataFusion coercion for the
+    scalar surface: numeric args unify to FLOAT if any is FLOAT else INT; a single
+    shared base stays itself; anything else is unresolvable (OTHER)."""
+    bases = {a.base for a in args}
+    if not bases:
+        return OTHER
+    if bases <= {INT, FLOAT}:
+        return FLOAT if FLOAT in bases else INT
+    if len(bases) == 1:
+        return next(iter(bases))
+    return OTHER
 
 
 def referenced_tables(node: Any) -> list:
