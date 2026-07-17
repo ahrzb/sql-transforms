@@ -1168,6 +1168,19 @@ fn validate_expr(
             }
             Ok(())
         }
+        // Compiler-mandated: `Expr` exhaustiveness is checked at compile time
+        // and this match has no catch-all. Transformer resolution runs AFTER
+        // validate_columns, so no `Transform` node reaches here today; recurse
+        // into `arg` anyway so column validation stays correct if that ordering
+        // ever changes.
+        Expr::Transform { arg, .. } => validate_expr(
+            arg,
+            resolved,
+            row_schemas,
+            static_schemas,
+            effective_schemas,
+            used_columns,
+        ),
         Expr::FieldAccess { base, field } => {
             validate_expr(
                 base,

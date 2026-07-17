@@ -89,16 +89,106 @@ fn validate_output_model(
     Ok(())
 }
 
+/// A `transformers` registry entry resolved at build time: the fitted object,
+/// its `feature_names_in_` (input alignment order), and the caller-declared
+/// output field list (marshalling target, order significant).
+struct ResolvedTransformer {
+    obj: std::sync::Arc<Py<PyAny>>,
+    input_features: Vec<String>,
+    output_fields: Vec<(String, types::FieldType)>,
+}
+
+/// Reads `obj.feature_names_in_.tolist()`. Absence is a clear build error:
+/// the object was fit on bare arrays, so we cannot align inputs by name.
+fn read_feature_names_in(py: Python<'_>, obj: &Py<PyAny>) -> Result<Vec<String>, plan::InterpError> {
+    let bound = obj.bind(py);
+    let attr = bound.getattr("feature_names_in_").map_err(|_| {
+        plan::InterpError::Build(
+            "transformer has no `feature_names_in_`; fit it on named data \
+             (e.g. a pandas DataFrame) so input columns can be aligned by name"
+                .to_string(),
+        )
+    })?;
+    attr.call_method0("tolist")
+        .and_then(|l| l.extract::<Vec<String>>())
+        .map_err(|e| plan::InterpError::Build(format!("could not read feature_names_in_: {e}")))
+}
+
+/// Rewrites every `Expr::Function` whose name is a registered transformer into
+/// an `Expr::Transform`, recursing through the whole expression tree so a
+/// transformer call nested inside arithmetic is still resolved. A transformer
+/// call must have exactly one argument.
+fn resolve_transformers(
+    expr: Expr,
+    resolved: &HashMap<String, ResolvedTransformer>,
+) -> Result<Expr, plan::InterpError> {
+    match expr {
+        Expr::Function { name, args } => {
+            let mut new_args = Vec::with_capacity(args.len());
+            for a in args {
+                new_args.push(resolve_transformers(a, resolved)?);
+            }
+            if let Some(rt) = resolved.get(&name) {
+                if new_args.len() != 1 {
+                    return Err(plan::InterpError::Build(format!(
+                        "transformer '{name}' takes exactly one argument, got {}",
+                        new_args.len()
+                    )));
+                }
+                let arg = new_args.into_iter().next().unwrap();
+                return Ok(Expr::Transform {
+                    obj: rt.obj.clone(),
+                    input_features: rt.input_features.clone(),
+                    output_fields: rt.output_fields.clone(),
+                    arg: Box::new(arg),
+                });
+            }
+            Ok(Expr::Function { name, args: new_args })
+        }
+        Expr::BinaryOp { op, left, right } => Ok(Expr::BinaryOp {
+            op,
+            left: Box::new(resolve_transformers(*left, resolved)?),
+            right: Box::new(resolve_transformers(*right, resolved)?),
+        }),
+        Expr::Not(inner) => Ok(Expr::Not(Box::new(resolve_transformers(*inner, resolved)?))),
+        Expr::Cast { expr, target } => Ok(Expr::Cast {
+            expr: Box::new(resolve_transformers(*expr, resolved)?),
+            target,
+        }),
+        Expr::Struct(fields) => {
+            let mut out = Vec::with_capacity(fields.len());
+            for (k, v) in fields {
+                out.push((k, resolve_transformers(v, resolved)?));
+            }
+            Ok(Expr::Struct(out))
+        }
+        Expr::List(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for e in items {
+                out.push(resolve_transformers(e, resolved)?);
+            }
+            Ok(Expr::List(out))
+        }
+        Expr::FieldAccess { base, field } => Ok(Expr::FieldAccess {
+            base: Box::new(resolve_transformers(*base, resolved)?),
+            field,
+        }),
+        // Column, Literal, and an already-built Transform pass through.
+        other => Ok(other),
+    }
+}
+
 #[pymethods]
 impl InferFn {
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None))]
+    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None, transformers=None))]
     fn new(
         py: Python<'_>,
         sql: String,
         row_tables: HashMap<String, Py<PyAny>>,
         static_tables: HashMap<String, Py<PyAny>>,
         output_model: Option<Py<PyAny>>,
+        transformers: Option<HashMap<String, (Py<PyAny>, Py<PyAny>)>>,
     ) -> PyResult<Self> {
         let raw_plan = plan::build_plan(&sql)?;
         let row_table_names: HashSet<String> = row_tables.keys().cloned().collect();
@@ -120,6 +210,34 @@ impl InferFn {
             &row_schemas,
             &static_schemas,
         )?;
+
+        // Resolve registered transformers AFTER column validation (so
+        // validate_columns sees the plain Expr::Function and its named_struct
+        // arg -- no Transform arm needed there) and BEFORE output-model
+        // synthesis (so infer_type sees Expr::Transform and returns the
+        // declared output struct type). Reads feature_names_in_ here (with py).
+        let transformers = transformers.unwrap_or_default();
+        if !transformers.is_empty() {
+            let mut resolved: HashMap<String, ResolvedTransformer> = HashMap::new();
+            for (name, (obj, out_schema_obj)) in &transformers {
+                let input_features = read_feature_names_in(py, obj)?;
+                let output_fields = schema::arrow_schema_to_ordered_fields(py, out_schema_obj)?;
+                resolved.insert(
+                    name.clone(),
+                    ResolvedTransformer {
+                        obj: std::sync::Arc::new(obj.clone_ref(py)),
+                        input_features,
+                        output_fields,
+                    },
+                );
+            }
+            let projection = std::mem::take(&mut optimized_plan.projection);
+            let mut new_projection = Vec::with_capacity(projection.len());
+            for (alias, expr) in projection {
+                new_projection.push((alias, resolve_transformers(expr, &resolved)?));
+            }
+            optimized_plan.projection = new_projection;
+        }
 
         let output_model = match output_model {
             Some(supplied) => {
