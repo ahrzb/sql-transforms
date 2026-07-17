@@ -106,3 +106,68 @@ def test_truthy_is_strict_bool_true():
 )
 def test_display_matches_datafusion(value, expected):
     assert rt.display(value) == expected
+
+
+def test_comparison_propagates_null():
+    assert rt.eq(None, 1) is None
+    assert rt.lt(1, None) is None
+
+
+def test_comparison_across_int_and_float():
+    assert rt.eq(1, 1.0) is True
+    assert rt.lt(1, 1.5) is True
+    assert rt.gte(2.0, 2) is True
+
+
+def test_comparison_of_strings_and_bools():
+    assert rt.lt("a", "b") is True
+    assert rt.eq("a", "a") is True
+    assert rt.lt(False, True) is True
+
+
+def test_comparison_of_mismatched_types_errors():
+    # Rust falls through to as_f64, which errors on a string.
+    with pytest.raises(ValueError, match="arithmetic"):
+        rt.eq("a", 1)
+
+
+def test_comparison_of_nan_errors():
+    with pytest.raises(ValueError, match="NaN"):
+        rt.lt(math.nan, 1.0)
+
+
+def test_kleene_and():
+    assert rt.and_(True, True) is True
+    assert rt.and_(True, False) is False
+    assert rt.and_(False, None) is False  # false dominates
+    assert rt.and_(True, None) is None
+    assert rt.and_(None, None) is None
+
+
+def test_kleene_or():
+    assert rt.or_(False, False) is False
+    assert rt.or_(True, None) is True  # true dominates
+    assert rt.or_(False, None) is None
+    assert rt.or_(None, None) is None
+
+
+def test_not_is_tri_valued():
+    assert rt.not_(True) is False
+    assert rt.not_(False) is True
+    assert rt.not_(None) is None
+
+
+def test_logic_rejects_non_bool_even_when_other_side_decides():
+    # Rust's logic() calls as_tribool on BOTH operands before matching, so this
+    # errors rather than short-circuiting to False.
+    with pytest.raises(ValueError, match="boolean"):
+        rt.and_(False, 1)
+    with pytest.raises(ValueError, match="boolean"):
+        rt.or_(True, "x")
+
+
+def test_join_eq_is_type_strict_and_null_never_matches():
+    assert rt.join_eq(1, 1) is True
+    assert rt.join_eq(1, 1.0) is False  # Value::Int(1) != Value::Float(1.0)
+    assert rt.join_eq(None, None) is False  # NULL keys never match
+    assert rt.join_eq(None, 1) is False

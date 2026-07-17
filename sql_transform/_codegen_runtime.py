@@ -172,3 +172,82 @@ def mod(l: Any, r: Any) -> Any:  # noqa: E741
     if b == 0.0:
         return math.nan
     return math.fmod(a, b)
+
+
+def _cmp(l: Any, r: Any) -> int:  # noqa: E741
+    """Ordering mirroring expr::compare_values: same-type int/str/bool compare
+    directly, everything else goes through as_f (which errors on non-numbers)."""
+    tl, tr = type(l), type(r)
+    if tl is tr and tl in (int, str, bool):
+        return -1 if l < r else (0 if l == r else 1)
+    a, b = as_f(l), as_f(r)
+    if math.isnan(a) or math.isnan(b):
+        raise ValueError("Cannot compare NaN")
+    return -1 if a < b else (0 if a == b else 1)
+
+
+def eq(l: Any, r: Any) -> Any:  # noqa: E741
+    return None if l is None or r is None else _cmp(l, r) == 0
+
+
+def neq(l: Any, r: Any) -> Any:  # noqa: E741
+    return None if l is None or r is None else _cmp(l, r) != 0
+
+
+def lt(l: Any, r: Any) -> Any:  # noqa: E741
+    return None if l is None or r is None else _cmp(l, r) < 0
+
+
+def gt(l: Any, r: Any) -> Any:  # noqa: E741
+    return None if l is None or r is None else _cmp(l, r) > 0
+
+
+def lte(l: Any, r: Any) -> Any:  # noqa: E741
+    return None if l is None or r is None else _cmp(l, r) <= 0
+
+
+def gte(l: Any, r: Any) -> Any:  # noqa: E741
+    return None if l is None or r is None else _cmp(l, r) >= 0
+
+
+def _tribool(v: Any) -> bool | None:
+    if v is True:
+        return True
+    if v is False:
+        return False
+    if v is None:
+        return None
+    raise ValueError(f"Expected a boolean expression, got a {type_name(v)} value")
+
+
+def and_(l: Any, r: Any) -> Any:  # noqa: E741
+    # Both operands are converted before matching (expr::logic), so a non-bool
+    # errors even when the other operand would decide the result. No short-circuit.
+    lb, rb = _tribool(l), _tribool(r)
+    if lb is False or rb is False:
+        return False
+    if lb is True and rb is True:
+        return True
+    return None
+
+
+def or_(l: Any, r: Any) -> Any:  # noqa: E741
+    lb, rb = _tribool(l), _tribool(r)
+    if lb is True or rb is True:
+        return True
+    if lb is False and rb is False:
+        return False
+    return None
+
+
+def not_(v: Any) -> Any:
+    b = _tribool(v)
+    return None if b is None else (not b)
+
+
+def join_eq(a: Any, b: Any) -> bool:
+    """JOIN ON equality: a NULL on either side never matches, and equality is
+    type-strict (RelNode::Join compares Values, not Python numbers)."""
+    if a is None or b is None:
+        return False
+    return val_eq(a, b)
