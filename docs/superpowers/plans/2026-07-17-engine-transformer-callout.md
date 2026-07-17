@@ -255,7 +255,22 @@ Add a variant to the `pub enum Expr { … }` block (after `FieldAccess`):
 - [ ] **Step 2: Verify it compiles as non-exhaustive failures**
 
 Run: `cargo build`
-Expected: FAIL — `eval` (src/expr.rs) and `infer_type` (src/types.rs) `match` on `Expr` are now non-exhaustive (`error[E0004]: non-exhaustive patterns: \`&Transform { … }\` not covered`). This confirms exactly which sites need arms (validate_expr in plan.rs is **not** among them because resolution runs after it — see Step 6).
+Expected: FAIL — **three** `match`es on `Expr` are now non-exhaustive (`error[E0004]: non-exhaustive patterns: \`&Transform { … }\` not covered`): `eval` (src/expr.rs), `infer_type` (src/types.rs), and `validate_expr` (src/plan.rs). `validate_expr` has no catch-all `_` arm, and Rust exhaustiveness is checked at **compile time** regardless of runtime reachability — so even though transformer resolution runs after `validate_columns` (Step 6) and no `Transform` node reaches `validate_expr` at runtime, the arm is still compiler-mandated. Steps 3, 4, and 3b add these three arms.
+
+- [ ] **Step 3b: Add the compiler-mandated `validate_expr` arm**
+
+In `src/plan.rs`, in `fn validate_expr(...)`, add this arm to the `match e { … }` (alongside the other variant arms). It recurses into `arg` so column validation stays correct if the resolution ordering ever changes; today it is unreachable (resolution runs after this pass):
+
+```rust
+        Expr::Transform { arg, .. } => validate_expr(
+            arg,
+            resolved,
+            row_schemas,
+            static_schemas,
+            effective_schemas,
+            used_columns,
+        ),
+```
 
 - [ ] **Step 3: Add the `eval` arm**
 
@@ -829,7 +844,7 @@ git commit -m "test: differential parity for engine transformer callout"
 
 **Type consistency:** `Expr::Transform` fields (`obj: Arc<Py<PyAny>>`, `input_features: Vec<String>`, `output_fields: Vec<(String, FieldType)>`, `arg: Box<Expr>`) are identical in the variant definition (Step 1), the `eval` arm (Step 3), the `infer_type` arm (Step 4, using `..` for `obj`), and `resolve_transformers` (Step 6). `arrow_schema_to_ordered_fields` returns `Vec<(String, FieldType)>`, matching `ResolvedTransformer.output_fields` and the variant. `_transformer_udf(obj, in_schema, out_schema, name)` signature matches all call sites in Tasks 1 and 3.
 
-**Note on resolution ordering:** the spec said "before validate_columns"; this plan runs it **after** (before output-model synthesis). Equivalent validation (the un-rewritten `Expr::Function`'s `named_struct` arg validates the same columns), and it avoids adding a `Transform` arm to `validate_expr` — a strictly smaller change. Flagged so the reviewer treats it as a deliberate, justified deviation rather than a miss.
+**Note on resolution ordering:** the spec said "before validate_columns"; this plan runs it **after** (before output-model synthesis). Equivalent validation — the un-rewritten `Expr::Function`'s `named_struct` arg validates the same columns. (Correction, discovered during Task 2: `validate_expr` still needs a compiler-mandated `Transform` arm — Step 3b — because Rust exhaustiveness is compile-time; the after-validation ordering makes that arm unreachable at runtime, not unnecessary at compile time. It recurses into `arg`, so it is also correct should the ordering ever change.)
 
 ---
 
