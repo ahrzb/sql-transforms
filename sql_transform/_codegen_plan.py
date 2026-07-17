@@ -1,8 +1,10 @@
-"""Front-end for the codegen engine: type system, schema extraction, plan IR,
-sqlglot parsing, optimization and validation.
+"""Front-end for the codegen engine: type system and schema extraction from
+Pydantic models and Arrow schemas.
 
-Mirrors src/types.rs, src/schema.rs, src/expr_build.rs and src/plan.rs, but
-standalone on sqlglot -- the codegen engine must not depend on the Rust crate.
+Mirrors src/types.rs and src/schema.rs, but standalone -- the codegen engine
+must not depend on the Rust crate. Later tasks extend this module with plan
+IR, sqlglot parsing, optimization and validation (mirroring src/expr_build.rs
+and src/plan.rs).
 """
 
 from __future__ import annotations
