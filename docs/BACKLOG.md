@@ -156,13 +156,33 @@ Part 1 first. **Supersedes/splits** the bundled spec
 [opaque-transform-refs-design](superpowers/specs/2026-07-17-opaque-transform-refs-design.md)
 (`f213d6c`) and its predecessor mixed-pipeline draft (`963eea6`).
 
-**Part 1 — the Rust engine can use transformers (FIRST; active).** The row engine
-(`InferFn`) gains the capability to invoke an **opaque, already-fitted Python
-transformer** — an sklearn transformer *or* a whole fitted `Pipeline` — during
-evaluation: marshal the row's values out, call the object's `.transform()`, marshal
-the result back in. **Pure engine capability, independent of how it's expressed in
-SQL.** This is what makes partial coverage shippable: native where we have it, opaque
-where we don't. Fresh spec in progress (brainstorm → spec → plan).
+**Part 1 — the Rust engine can use transformers — ✅ SHIPPED (`4d5c85c`, 2026-07-17).**
+Both engines invoke an **opaque, already-fitted Python transformer** — an sklearn
+transformer *or* a whole fitted `Pipeline` — during one query: marshal the row's
+values out (aligned by `feature_names_in_`), call `.transform()`, marshal back through
+a declared `out_schema`. Differential parity green (`transform`=DataFusion oracle ==
+`infer`=Rust); suite 197 passed, `cargo test` 2 passed. Pure engine capability,
+independent of how it's expressed in SQL — native where we have it, opaque where we
+don't. Merge not pushed (local master).
+
+**Part 1 follow-ups — surfaced by review, belong to Part 2 (2026-07-17):**
+- **(a) Out-of-projection transformer calls — latent parity gap.** When a transformer
+  call isn't in the query's projection, Rust fails loud (`Unknown function`) while the
+  DataFusion oracle (globally-registered UDF) still executes it. Harmless today (Part 1
+  only calls in-projection) but diverges once Part 2 generates reserved names across
+  clauses. **Fix:** a build-time guard that rejects/resolves transformer refs across
+  *all* clauses, or register/resolve consistently so both engines agree.
+- **(b) Single-field 1-in/1-out transformers — missing parity coverage.** The oracle
+  marshals output via `y[:, i]`, assuming a 2-D transform result; a 1-D (single-output)
+  return would break that indexing. No 1-output transformer ships in Part 1 — **add a
+  differential parity case before one does.**
+- **(c) `out_schema` vs natural-dtype invariant — enforce or reconcile.** The declared
+  `out_schema` must equal the transform's natural output dtype. The engines reach the
+  declared type by *different coercion layers* (DataFusion UDF: pyarrow cast; Rust
+  infer: pydantic model-validate), which agree only when no real coercion happens.
+  Documented at both call sites (`ed09a47`) but convention, not enforced. **Fix:**
+  validate `out_schema` against the fitted transformer's actual output dtype at
+  registration, *or* reconcile the two coercion layers so a mismatch can't diverge.
 
 **Part 2 — the SQL / authoring surface (LATER).** How it's expressed and how it
 composes: the `{ref}` row→row model (`{pipeline}({features}(__THIS__))`),
