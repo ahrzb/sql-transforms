@@ -37,6 +37,9 @@ _COMMITTED = [
     ("SELECT ABS(a) AS x FROM t", {"t": rows({"a": "int"}, [{"a": -1}])}),
     ("SELECT ROUND(f) AS x FROM t", {"t": rows({"f": "float"}, [{"f": 1.5}])}),
     ("SELECT COALESCE(a, 0) AS x FROM t", {"t": rows({"a": "int?"}, [{"a": None}])}),
+    # COALESCE(a, a) -- repeated args: the per-function arg extractor must NOT
+    # de-dup equal sub-expressions down to arity 1 (a sqlglot-shape trap).
+    ("SELECT COALESCE(a, a) AS x FROM t", {"t": rows({"a": "int?"}, [{"a": None}])}),
     ("SELECT NULLIF(a, 1) AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT CAST(a AS VARCHAR) AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT CAST(s AS BIGINT) AS x FROM t", {"t": rows({"s": "str"}, [{"s": "1"}])}),
@@ -86,6 +89,12 @@ _DEFERRED = [
     ("SELECT unnest(l) AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
     ("SELECT s AS x FROM t", {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])}),
     ("SELECT l AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
+    # A struct in a comparison must defer, not silently mis-evaluate: DataFusion
+    # supports it, codegen does not yet, so it must raise (not return a wrong bool).
+    (
+        "SELECT (s = s) AS x FROM t",
+        {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])},
+    ),
 ]
 
 
