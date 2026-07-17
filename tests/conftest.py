@@ -36,3 +36,20 @@ def _backend(request: pytest.FixtureRequest):
     differential.set_backend(param)
     yield param
     differential.set_backend("rust")
+
+
+@pytest.fixture
+def rust_bug(request):
+    """Mark the current test xfail on the rust backend only.
+
+    For cases where the Rust engine disagrees with the DataFusion oracle: codegen
+    matches the oracle and passes, rust is a known bug tracked in BACKLOG.
+    strict=True so that fixing the Rust engine turns the xpass into a failure --
+    which is the reminder to delete the marker and the ticket.
+    """
+
+    def _mark(reason: str) -> None:
+        if differential._backend == "rust":
+            request.applymarker(pytest.mark.xfail(reason=reason, strict=True))
+
+    return _mark

@@ -1976,8 +1976,12 @@ def _function_type(name: str, args: list) -> FieldType:
     any_nullable = any(a.nullable for a in args)
     if name in _STR_FUNCS:
         return FieldType(STR, any_nullable)
-    if name in ("abs", "round"):
+    if name == "abs":
         return FieldType(args[0].base if args else OTHER, any_nullable)
+    if name == "round":
+        # DataFusion ROUND always yields a float, even for an int argument
+        # (measured: ROUND(3) -> 3.0). Rust types it as the arg base -- a bug.
+        return FieldType(FLOAT, any_nullable)
     if name == "concat":
         return FieldType(STR, False)
     if name in ("coalesce", "nullif"):

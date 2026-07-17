@@ -351,6 +351,11 @@ def test_infer_type_functions_and_casts():
     abs_i = cp.Func("abs", [cp.Column("t", "i")])
     assert cp.infer_type(abs_i, schemas) == cp.FieldType(cp.INT, True)  # keeps base
 
+    # ROUND always types as float, even on an int arg (DataFusion; Rust bug types
+    # it as the arg base, which pydantic then coerces the float result back to).
+    round_i = cp.Func("round", [cp.Column("t", "i")])
+    assert cp.infer_type(round_i, schemas) == cp.FieldType(cp.FLOAT, True)
+
     coalesce_i = cp.Func("coalesce", [cp.Column("t", "i")])
     assert cp.infer_type(coalesce_i, schemas).nullable is True
     assert cp.infer_type(cp.Cast(cp.Column("t", "i"), cp.STR), schemas) == (
