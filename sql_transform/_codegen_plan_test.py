@@ -241,3 +241,118 @@ def test_build_plan_defers_containers():
         cp.build_plan("SELECT unnest(a) AS x FROM t")
     with pytest.raises(cp.UnsupportedInCodegen):
         cp.build_plan("SELECT named_struct('k', a) AS x FROM t")
+
+
+def _schemas():
+    return (
+        {"t": {"a": cp.FieldType(cp.INT, False), "k": cp.FieldType(cp.INT, False)}},
+        {"s": {"k": cp.FieldType(cp.INT, False), "v": cp.FieldType(cp.FLOAT, False)}},
+    )
+
+
+def test_optimize_rewrites_a_static_join_into_a_lookup_join():
+    plan = cp.build_plan("SELECT v AS x FROM t JOIN s ON t.k = s.k")
+    plan, specs = cp.optimize(plan, {"s"})
+    assert isinstance(plan.input, cp.LookupJoin)
+    assert plan.input.table == "s"
+    assert plan.input.keys == [cp.Column("t", "k")]
+    assert specs[0].static_table == "s"
+    assert specs[0].key_columns == ["k"]
+
+
+def test_optimize_finds_the_static_side_regardless_of_on_order():
+    plan = cp.build_plan("SELECT v AS x FROM t JOIN s ON s.k = t.k")
+    plan, _ = cp.optimize(plan, {"s"})
+    assert plan.input.keys == [cp.Column("t", "k")]
+
+
+def test_optimize_rejects_a_static_to_static_join():
+    plan = cp.build_plan("SELECT v AS x FROM s JOIN s2 ON s.k = s2.k")
+    with pytest.raises(ValueError, match="two static tables"):
+        cp.optimize(plan, {"s", "s2"})
+
+
+def test_optimize_rejects_a_row_to_row_left_join():
+    plan = cp.build_plan("SELECT a AS x FROM t LEFT JOIN u ON t.k = u.k")
+    with pytest.raises(ValueError, match="only supported against a static"):
+        cp.optimize(plan, set())
+
+
+def test_validate_resolves_unqualified_columns_and_collects_used():
+    row, static = _schemas()
+    plan = cp.build_plan("SELECT a AS x FROM t")
+    v = cp.validate_columns(plan, {"t"}, row, static)
+    assert plan.projection[0][1] == cp.Column("t", "a")  # rewritten in place
+    assert v.row_table_columns == {"t": ["a"]}
+
+
+def test_validate_rejects_unknown_and_ambiguous_columns():
+    row, static = _schemas()
+    plan = cp.build_plan("SELECT nope AS x FROM t")
+    with pytest.raises(ValueError, match="Unknown column"):
+        cp.validate_columns(plan, {"t"}, row, static)
+
+    row2 = {
+        "t": {"a": cp.FieldType(cp.INT, False)},
+        "u": {"a": cp.FieldType(cp.INT, False)},
+    }
+    plan = cp.build_plan("SELECT a AS x FROM t CROSS JOIN u")
+    with pytest.raises(ValueError, match="Ambiguous"):
+        cp.validate_columns(plan, {"t", "u"}, row2, {})
+
+
+def test_validate_widens_the_outer_side_of_a_left_lookup_join_to_nullable():
+    row, static = _schemas()
+    plan = cp.build_plan("SELECT v AS x FROM t LEFT JOIN s ON t.k = s.k")
+    plan, _ = cp.optimize(plan, {"s"})
+    v = cp.validate_columns(plan, {"t"}, row, static)
+    assert v.effective_schemas["s"]["v"].nullable is True
+
+
+def test_validate_resolves_through_an_alias():
+    row, static = _schemas()
+    plan = cp.build_plan("SELECT z.a AS x FROM t AS z")
+    v = cp.validate_columns(plan, {"t"}, row, static)
+    assert v.effective_schemas["z"]["a"] == cp.FieldType(cp.INT, False)
+    assert v.row_table_columns == {"t": ["a"]}
+
+
+def test_infer_type_arithmetic_and_nullability():
+    schemas = {
+        "t": {
+            "i": cp.FieldType(cp.INT, False),
+            "f": cp.FieldType(cp.FLOAT, False),
+            "n": cp.FieldType(cp.INT, True),
+        }
+    }
+    add_i_lit = cp.BinaryOp("add", cp.Column("t", "i"), cp.Literal(1))
+    assert cp.infer_type(add_i_lit, schemas) == cp.FieldType(cp.INT, False)
+
+    add_i_f = cp.BinaryOp("add", cp.Column("t", "i"), cp.Column("t", "f"))
+    assert cp.infer_type(add_i_f, schemas) == cp.FieldType(cp.FLOAT, False)
+
+    add_i_n = cp.BinaryOp("add", cp.Column("t", "i"), cp.Column("t", "n"))
+    assert cp.infer_type(add_i_n, schemas) == cp.FieldType(cp.INT, True)
+
+    gt_i_lit = cp.BinaryOp("gt", cp.Column("t", "i"), cp.Literal(1))
+    assert cp.infer_type(gt_i_lit, schemas) == cp.FieldType(cp.BOOL, False)
+
+
+def test_infer_type_functions_and_casts():
+    schemas = {
+        "t": {"s": cp.FieldType(cp.STR, False), "i": cp.FieldType(cp.INT, True)}
+    }
+    upper_s = cp.Func("upper", [cp.Column("t", "s")])
+    assert cp.infer_type(upper_s, schemas).base == cp.STR
+
+    concat_i = cp.Func("concat", [cp.Column("t", "i")])
+    assert cp.infer_type(concat_i, schemas) == cp.FieldType(cp.STR, False)  # never null
+
+    abs_i = cp.Func("abs", [cp.Column("t", "i")])
+    assert cp.infer_type(abs_i, schemas) == cp.FieldType(cp.INT, True)  # keeps base
+
+    coalesce_i = cp.Func("coalesce", [cp.Column("t", "i")])
+    assert cp.infer_type(coalesce_i, schemas).nullable is True
+    assert cp.infer_type(cp.Cast(cp.Column("t", "i"), cp.STR), schemas) == (
+        cp.FieldType(cp.STR, True)
+    )

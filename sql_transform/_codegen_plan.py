@@ -451,3 +451,295 @@ def _build_projection(items: list) -> list:
         else:
             raise ValueError("Expression in SELECT list needs an alias (AS name)")
     return out
+
+
+@dataclass
+class LookupSpec:
+    static_table: str
+    key_columns: list
+
+
+def optimize(plan: Plan, static_tables: set) -> tuple:
+    """Rewrite every Join with exactly one static side into a LookupJoin
+    (mirrors plan::optimize)."""
+    specs: list = []
+    return Plan(plan.projection, _optimize_rel(plan.input, static_tables, specs)), specs
+
+
+def _optimize_rel(node: Any, static_tables: set, specs: list) -> Any:
+    if isinstance(node, Join):
+        left = _optimize_rel(node.left, static_tables, specs)
+        right = _optimize_rel(node.right, static_tables, specs)
+        left_name, right_name = scan_name(left), scan_name(right)
+        left_static = left_name if left_name in static_tables else None
+        right_static = right_name if right_name in static_tables else None
+        if left_static and right_static:
+            raise ValueError("Joining two static tables together is not supported")
+        if right_static or left_static:
+            table = right_static or left_static
+            other = left if right_static else right
+            keys, key_columns = _split_keys(node.on, table)
+            specs.append(LookupSpec(table, key_columns))
+            return LookupJoin(other, table, keys, node.outer)
+        if node.outer:
+            raise ValueError(
+                "LEFT JOIN is only supported against a static lookup table"
+            )
+        return Join(left, right, node.on, node.outer)
+    if isinstance(node, CrossJoin):
+        return CrossJoin(
+            _optimize_rel(node.left, static_tables, specs),
+            _optimize_rel(node.right, static_tables, specs),
+        )
+    if isinstance(node, Filter):
+        return Filter(_optimize_rel(node.input, static_tables, specs), node.predicate)
+    if isinstance(node, SubqueryAlias):
+        return SubqueryAlias(
+            _optimize_rel(node.input, static_tables, specs), node.alias
+        )
+    return node
+
+
+def scan_name(node: Any) -> str | None:
+    """The real table name a scan (possibly aliased) reads from."""
+    if isinstance(node, TableScan):
+        return node.table
+    if isinstance(node, SubqueryAlias):
+        return scan_name(node.input)
+    return None
+
+
+def _split_keys(on: list, static_table: str) -> tuple:
+    """Split each ON equality into (row-side expression, static key column).
+    The static side is identified per-pair by qualifier, since `a = b` vs
+    `b = a` is independent of which side is structurally left/right."""
+    row_keys, static_cols = [], []
+    for left, right in on:
+        lq = left.table if isinstance(left, Column) else None
+        rq = right.table if isinstance(right, Column) else None
+        if lq == static_table:
+            static_expr, row_expr = left, right
+        elif rq == static_table:
+            static_expr, row_expr = right, left
+        else:
+            raise ValueError(
+                f"JOIN ON keys against static table '{static_table}' must reference "
+                f"the static table's columns by name (e.g. {static_table}.col)"
+            )
+        if not isinstance(static_expr, Column):
+            raise ValueError(
+                f"JOIN ON keys against static table '{static_table}' must be "
+                "plain columns"
+            )
+        static_cols.append(static_expr.name)
+        row_keys.append(row_expr)
+    return row_keys, static_cols
+
+
+@dataclass
+class ColumnValidation:
+    row_table_columns: dict
+    effective_schemas: dict
+
+
+def validate_columns(
+    plan: Plan, row_table_names: set, row_schemas: dict, static_schemas: dict
+) -> ColumnValidation:
+    """Validate every column reference against the resolved table schemas,
+    rewrite unqualified refs to their effective table, and collect (per row
+    table's REAL name) the columns the query actually reads."""
+    resolved: dict = {}
+    nullable_tables: set = set()
+    _resolve_tables(plan.input, row_table_names, False, resolved, nullable_tables)
+
+    effective_schemas: dict = {}
+    for effective, (real, is_row) in resolved.items():
+        schema = (row_schemas if is_row else static_schemas).get(real)
+        if schema is None:
+            continue
+        if effective in nullable_tables:
+            # An unmatched outer row makes every column on that side NULL, so
+            # the synthesized output type must be nullable even when the source
+            # declares otherwise.
+            schema = {k: FieldType(v.base, True) for k, v in schema.items()}
+        effective_schemas[effective] = schema
+
+    used: dict = {}
+    for _, e in plan.projection:
+        _validate_expr(e, resolved, row_schemas, static_schemas, used)
+    _validate_rel(plan.input, resolved, row_schemas, static_schemas, used)
+    return ColumnValidation({k: sorted(v) for k, v in used.items()}, effective_schemas)
+
+
+def _resolve_tables(
+    node: Any, row_table_names: set, nullable: bool, out: dict, nullable_out: set
+) -> None:
+    if isinstance(node, TableScan):
+        out[node.table] = (node.table, node.table in row_table_names)
+        if nullable:
+            nullable_out.add(node.table)
+    elif isinstance(node, SubqueryAlias):
+        real = scan_name(node.input)
+        if real is not None:
+            out[node.alias] = (real, real in row_table_names)
+            if nullable:
+                nullable_out.add(node.alias)
+    elif isinstance(node, Filter):
+        _resolve_tables(node.input, row_table_names, nullable, out, nullable_out)
+    elif isinstance(node, CrossJoin):
+        _resolve_tables(node.left, row_table_names, nullable, out, nullable_out)
+        _resolve_tables(node.right, row_table_names, nullable, out, nullable_out)
+    elif isinstance(node, Join):
+        _resolve_tables(node.left, row_table_names, nullable, out, nullable_out)
+        _resolve_tables(
+            node.right, row_table_names, nullable or node.outer, out, nullable_out
+        )
+    elif isinstance(node, LookupJoin):
+        _resolve_tables(node.input, row_table_names, nullable, out, nullable_out)
+        out[node.table] = (node.table, False)
+        if nullable or node.outer:
+            nullable_out.add(node.table)
+
+
+def _validate_rel(node: Any, resolved, row_schemas, static_schemas, used) -> None:
+    if isinstance(node, Filter):
+        _validate_expr(node.predicate, resolved, row_schemas, static_schemas, used)
+        _validate_rel(node.input, resolved, row_schemas, static_schemas, used)
+    elif isinstance(node, CrossJoin):
+        _validate_rel(node.left, resolved, row_schemas, static_schemas, used)
+        _validate_rel(node.right, resolved, row_schemas, static_schemas, used)
+    elif isinstance(node, Join):
+        for left, right in node.on:
+            _validate_expr(left, resolved, row_schemas, static_schemas, used)
+            _validate_expr(right, resolved, row_schemas, static_schemas, used)
+        _validate_rel(node.left, resolved, row_schemas, static_schemas, used)
+        _validate_rel(node.right, resolved, row_schemas, static_schemas, used)
+    elif isinstance(node, SubqueryAlias):
+        _validate_rel(node.input, resolved, row_schemas, static_schemas, used)
+    elif isinstance(node, LookupJoin):
+        for k in node.keys:
+            _validate_expr(k, resolved, row_schemas, static_schemas, used)
+        _validate_rel(node.input, resolved, row_schemas, static_schemas, used)
+
+
+def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> None:
+    if isinstance(e, Column):
+        if e.table is not None:
+            entry = resolved.get(e.table)
+            if entry is None:
+                # Rust reinterprets this as struct field access; containers are
+                # deferred here, so it is simply an unknown reference.
+                raise ValueError(f"Unknown table: {e.table}")
+            real, is_row = entry
+            schema = (row_schemas if is_row else static_schemas).get(real)
+            if schema is None:
+                raise ValueError(f"Unknown table: {real}")
+            if e.name not in schema:
+                raise ValueError(f"Unknown column: {real}.{e.name}")
+            if is_row:
+                used.setdefault(real, set()).add(e.name)
+            return
+        matches = [
+            (effective, real, is_row)
+            for effective, (real, is_row) in resolved.items()
+            if e.name in ((row_schemas if is_row else static_schemas).get(real) or {})
+        ]
+        if not matches:
+            raise ValueError(f"Unknown column: {e.name}")
+        if len(matches) > 1:
+            raise ValueError(f"Ambiguous column reference: {e.name}")
+        effective, real, is_row = matches[0]
+        e.table = effective  # codegen emits a direct subscript off this
+        if is_row:
+            used.setdefault(real, set()).add(e.name)
+    elif isinstance(e, BinaryOp):
+        _validate_expr(e.left, resolved, row_schemas, static_schemas, used)
+        _validate_expr(e.right, resolved, row_schemas, static_schemas, used)
+    elif isinstance(e, Not):
+        _validate_expr(e.inner, resolved, row_schemas, static_schemas, used)
+    elif isinstance(e, Cast):
+        _validate_expr(e.expr, resolved, row_schemas, static_schemas, used)
+    elif isinstance(e, Func):
+        for a in e.args:
+            _validate_expr(a, resolved, row_schemas, static_schemas, used)
+
+
+_STR_FUNCS = frozenset({"upper", "lower", "trim", "substr", "substring"})
+
+
+def infer_type(e: Any, schemas: dict) -> FieldType:
+    """Statically infer a projection's FieldType, mirroring types::infer_type.
+    Sound but not tight on nullability: nullable means "cannot prove non-NULL"."""
+    if isinstance(e, Column):
+        return _resolve_column_type(e.table, e.name, schemas)
+    if isinstance(e, Literal):
+        return _literal_type(e.value)
+    if isinstance(e, BinaryOp):
+        left, right = infer_type(e.left, schemas), infer_type(e.right, schemas)
+        nullable = left.nullable or right.nullable
+        if e.op in ("add", "sub", "mul", "div", "mod"):
+            base = INT if left.base == INT and right.base == INT else FLOAT
+            return FieldType(base, nullable)
+        return FieldType(BOOL, nullable)
+    if isinstance(e, Not):
+        return FieldType(BOOL, infer_type(e.inner, schemas).nullable)
+    if isinstance(e, Cast):
+        return FieldType(e.target, infer_type(e.expr, schemas).nullable)
+    if isinstance(e, Func):
+        return _function_type(e.name, [infer_type(a, schemas) for a in e.args])
+    raise UnsupportedInCodegen(f"cannot infer the type of {type(e).__name__}")
+
+
+def _resolve_column_type(table: str | None, name: str, schemas: dict) -> FieldType:
+    if table is not None:
+        schema = schemas.get(table)
+        if schema is None or name not in schema:
+            raise ValueError(f"Unknown column: {table}.{name}")
+        return schema[name]
+    found = None
+    for schema in schemas.values():
+        if name in schema:
+            if found is not None:
+                raise ValueError(f"Ambiguous column reference: {name}")
+            found = schema[name]
+    if found is None:
+        raise ValueError(f"Unknown column: {name}")
+    return found
+
+
+def _literal_type(v: Any) -> FieldType:
+    if v is None:
+        return FieldType(OTHER, True)
+    t = type(v)
+    if t is bool:
+        return FieldType(BOOL, False)
+    if t is int:
+        return FieldType(INT, False)
+    if t is float:
+        return FieldType(FLOAT, False)
+    if t is str:
+        return FieldType(STR, False)
+    return FieldType(OTHER, True)
+
+
+def _function_type(name: str, args: list) -> FieldType:
+    any_nullable = any(a.nullable for a in args)
+    if name in _STR_FUNCS:
+        return FieldType(STR, any_nullable)
+    if name in ("abs", "round"):
+        return FieldType(args[0].base if args else OTHER, any_nullable)
+    if name == "concat":
+        return FieldType(STR, False)
+    if name in ("coalesce", "nullif"):
+        return FieldType(args[0].base if args else OTHER, True)
+    return FieldType(OTHER, True)
+
+
+def referenced_tables(node: Any) -> list:
+    if isinstance(node, TableScan):
+        return [node.table]
+    if isinstance(node, (SubqueryAlias, Filter, LookupJoin)):
+        return referenced_tables(node.input)
+    if isinstance(node, (CrossJoin, Join)):
+        return referenced_tables(node.left) + referenced_tables(node.right)
+    return []
