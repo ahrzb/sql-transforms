@@ -764,6 +764,18 @@ def test_standard_scaler_parity():
     _parity(sql, pa.Table.from_pandas(train), sc, schema, schema)
 
 
+def test_struct_field_order_independence_parity():
+    # The named_struct is authored in the OPPOSITE order to feature_names_in_
+    # (income, age vs age, income). Both engines must align by NAME, not
+    # position -- a positional bug in either would diverge here.
+    train = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]})
+    sc = StandardScaler().fit(train)  # feature_names_in_ == [age, income]
+    in_schema = pa.schema([("income", pa.float64()), ("age", pa.float64())])
+    out_schema = pa.schema([("age", pa.float64()), ("income", pa.float64())])
+    sql = "SELECT __tfm_0__(named_struct('income', income, 'age', age)) AS s FROM __THIS__"
+    _parity(sql, pa.Table.from_pandas(train), sc, in_schema, out_schema)
+
+
 def test_whole_pipeline_parity():
     train = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]})
     pipe = Pipeline([("sc", StandardScaler()), ("pt", PowerTransformer())]).fit(train)
