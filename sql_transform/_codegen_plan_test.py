@@ -3,6 +3,7 @@
 import typing
 
 import pyarrow as pa
+import pytest
 from pydantic import BaseModel
 
 from sql_transform import _codegen_plan as cp
@@ -109,3 +110,134 @@ def test_compatible_struct_and_list():
 
     # struct vs list -> not compatible.
     assert not cp.compatible(inferred, list_int)
+
+
+def test_build_plan_simple_projection():
+    plan = cp.build_plan("SELECT a AS x FROM t")
+    assert plan.input == cp.TableScan("t")
+    assert plan.projection == [("x", cp.Column(None, "a"))]
+
+
+def test_build_plan_unaliased_column_keeps_its_name():
+    plan = cp.build_plan("SELECT a FROM t")
+    assert plan.projection == [("a", cp.Column(None, "a"))]
+
+
+def test_build_plan_qualified_column():
+    plan = cp.build_plan("SELECT t.a AS x FROM t")
+    assert plan.projection == [("x", cp.Column("t", "a"))]
+
+
+def test_build_plan_requires_an_alias_for_expressions():
+    with pytest.raises(ValueError, match="alias"):
+        cp.build_plan("SELECT a + 1 FROM t")
+
+
+def test_build_plan_where_becomes_a_filter():
+    plan = cp.build_plan("SELECT a AS x FROM t WHERE a > 1")
+    assert isinstance(plan.input, cp.Filter)
+    assert plan.input.predicate == cp.BinaryOp(
+        "gt", cp.Column(None, "a"), cp.Literal(1)
+    )
+
+
+def test_build_plan_binary_ops_and_literals():
+    plan = cp.build_plan(
+        "SELECT a + 1 AS x, b / 2.0 AS y, c AS z FROM t WHERE c = 'hi'"
+    )
+    assert plan.projection[0][1] == cp.BinaryOp(
+        "add", cp.Column(None, "a"), cp.Literal(1)
+    )
+    assert plan.projection[1][1] == cp.BinaryOp(
+        "div", cp.Column(None, "b"), cp.Literal(2.0)
+    )
+    assert plan.input.predicate == cp.BinaryOp(
+        "eq", cp.Column(None, "c"), cp.Literal("hi")
+    )
+
+
+def test_build_plan_null_and_boolean_literals():
+    plan = cp.build_plan("SELECT NULL AS x, TRUE AS y FROM t")
+    assert plan.projection == [("x", cp.Literal(None)), ("y", cp.Literal(True))]
+
+
+def test_build_plan_alias():
+    plan = cp.build_plan("SELECT s.a AS x FROM t AS s")
+    assert plan.input == cp.SubqueryAlias(cp.TableScan("t"), "s")
+
+
+def test_build_plan_rejects_duplicate_relations():
+    with pytest.raises(ValueError, match="more than once"):
+        cp.build_plan("SELECT a AS x FROM t JOIN t ON t.a = t.a")
+
+
+def test_build_plan_cross_join():
+    plan = cp.build_plan("SELECT a AS x FROM t CROSS JOIN u")
+    assert plan.input == cp.CrossJoin(cp.TableScan("t"), cp.TableScan("u"))
+
+
+def test_build_plan_comma_join_is_a_cross_join():
+    plan = cp.build_plan("SELECT a AS x FROM t, u")
+    assert plan.input == cp.CrossJoin(cp.TableScan("t"), cp.TableScan("u"))
+
+
+def test_build_plan_inner_join_extracts_equality_keys():
+    plan = cp.build_plan("SELECT a AS x FROM t JOIN u ON t.k = u.k")
+    assert plan.input == cp.Join(
+        cp.TableScan("t"),
+        cp.TableScan("u"),
+        [(cp.Column("t", "k"), cp.Column("u", "k"))],
+        False,
+    )
+
+
+def test_build_plan_left_join_is_outer():
+    plan = cp.build_plan("SELECT a AS x FROM t LEFT JOIN u ON t.k = u.k")
+    assert plan.input.outer is True
+
+
+def test_build_plan_join_on_and_of_equalities():
+    plan = cp.build_plan("SELECT a AS x FROM t JOIN u ON t.k = u.k AND t.j = u.j")
+    assert len(plan.input.on) == 2
+
+
+def test_build_plan_rejects_non_equality_join_on():
+    with pytest.raises(ValueError, match="equalit"):
+        cp.build_plan("SELECT a AS x FROM t JOIN u ON t.k > u.k")
+
+
+def test_build_plan_functions_and_cast():
+    plan = cp.build_plan(
+        "SELECT UPPER(a) AS u, SUBSTR(a, 2, 3) AS s, COALESCE(a, b) AS c, "
+        "CAST(a AS VARCHAR) AS v FROM t"
+    )
+    assert plan.projection[0][1] == cp.Func("upper", [cp.Column(None, "a")])
+    assert plan.projection[1][1] == cp.Func(
+        "substr", [cp.Column(None, "a"), cp.Literal(2), cp.Literal(3)]
+    )
+    assert plan.projection[2][1] == cp.Func(
+        "coalesce", [cp.Column(None, "a"), cp.Column(None, "b")]
+    )
+    assert plan.projection[3][1] == cp.Cast(cp.Column(None, "a"), cp.STR)
+
+
+def test_build_plan_cast_targets():
+    plan = cp.build_plan(
+        "SELECT CAST(a AS BIGINT) AS i, CAST(a AS DOUBLE) AS f, "
+        "CAST(a AS BOOLEAN) AS b FROM t"
+    )
+    assert [e.target for _, e in plan.projection] == [cp.INT, cp.FLOAT, cp.BOOL]
+
+
+def test_build_plan_not_and_logic():
+    plan = cp.build_plan("SELECT a AS x FROM t WHERE NOT (a AND b)")
+    assert plan.input.predicate == cp.Not(
+        cp.BinaryOp("and", cp.Column(None, "a"), cp.Column(None, "b"))
+    )
+
+
+def test_build_plan_defers_containers():
+    with pytest.raises(cp.UnsupportedInCodegen):
+        cp.build_plan("SELECT unnest(a) AS x FROM t")
+    with pytest.raises(cp.UnsupportedInCodegen):
+        cp.build_plan("SELECT named_struct('k', a) AS x FROM t")
