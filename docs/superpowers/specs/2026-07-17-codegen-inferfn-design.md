@@ -1,6 +1,8 @@
 # Codegen engine (a codegen `InferFn`) — Scope
 
-> **STATUS: scope + front-end fork decided; plan written.** Front-end decided
+> **STATUS: built — codegen engine shipped and proven equivalent on the committed
+> surface (differential suite runs both backends). Containers/UNNEST deferred.**
+> Front-end decided
 > (fork B, Python/sqlglot — see below). Plan:
 > [2026-07-17-codegen-inferfn.md](../plans/2026-07-17-codegen-inferfn.md).
 >
