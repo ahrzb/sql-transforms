@@ -251,3 +251,157 @@ def join_eq(a: Any, b: Any) -> bool:
     if a is None or b is None:
         return False
     return val_eq(a, b)
+
+
+def as_s(v: Any) -> str:
+    if type(v) is str:
+        return v
+    raise ValueError(f"Expected a string argument, got {type_name(v)}")
+
+
+def as_i(v: Any) -> int:
+    if type(v) is int:
+        return v
+    raise ValueError(f"Expected an integer argument, got {type_name(v)}")
+
+
+def cast_str(v: Any) -> Any:
+    return None if v is None else display(v)
+
+
+def cast_int(v: Any) -> Any:
+    if v is None:
+        return None
+    t = type(v)
+    if t is bool:
+        return 1 if v else 0
+    if t is int:
+        return v
+    if t is float:
+        if math.isnan(v) or math.isinf(v):
+            raise ValueError("Cannot cast this value to INT")
+        return int(math.trunc(v))
+    if t is str:
+        try:
+            return int(v.strip())
+        except ValueError:
+            raise ValueError(f"Cannot cast '{v}' to INT") from None
+    raise ValueError("Cannot cast this value to INT")
+
+
+def cast_float(v: Any) -> Any:
+    if v is None:
+        return None
+    t = type(v)
+    if t is bool:
+        return 1.0 if v else 0.0
+    if t is int:
+        return float(v)
+    if t is float:
+        return v
+    if t is str:
+        try:
+            return float(v.strip())
+        except ValueError:
+            raise ValueError(f"Cannot cast '{v}' to FLOAT") from None
+    raise ValueError("Cannot cast this value to FLOAT")
+
+
+def cast_bool(v: Any) -> Any:
+    if v is None:
+        return None
+    t = type(v)
+    if t is bool:
+        return v
+    if t is int:
+        return v != 0
+    if t is float:
+        return v != 0.0
+    if t is str:
+        return v.lower() == "true"
+    raise ValueError("Cannot cast this value to BOOLEAN")
+
+
+def upper(*a: Any) -> Any:
+    return None if any(x is None for x in a) else as_s(a[0]).upper()
+
+
+def lower(*a: Any) -> Any:
+    return None if any(x is None for x in a) else as_s(a[0]).lower()
+
+
+def trim(*a: Any) -> Any:
+    return None if any(x is None for x in a) else as_s(a[0]).strip()
+
+
+def substr(*a: Any) -> Any:
+    if any(x is None for x in a):
+        return None
+    s = as_s(a[0])
+    start = as_i(a[1])
+    length = as_i(a[2]) if len(a) > 2 else None
+    idx = min((start - 1) if start > 0 else 0, len(s))
+    end = min(idx + max(length, 0), len(s)) if length is not None else len(s)
+    return s[idx:end]
+
+
+def concat(*a: Any) -> str:
+    return "".join(display(x) for x in a if x is not None)
+
+
+def abs_(*a: Any) -> Any:
+    v = a[0]
+    if v is None:
+        return None
+    t = type(v)
+    if t is int or t is float:
+        return abs(v)
+    raise ValueError(f"ABS expects a number, got a {type_name(v)} value")
+
+
+def round_(*a: Any) -> Any:
+    """ROUND always returns a float, including for an int argument.
+
+    Measured: DataFusion's ROUND(3) is 3.0; Rust returns 3 (int) -- a Rust bug
+    (xfail-ed + ticketed, Task 11). Rounding is half-away-from-zero, which
+    DataFusion and Rust agree on and Python's banker's round() does NOT.
+    """
+    v = a[0]
+    if v is None:
+        return None
+    t = type(v)
+    if t is int:
+        return float(v)
+    if t is float:
+        if math.isnan(v) or math.isinf(v):
+            return v
+        # math.floor/ceil return ints, so re-wrap to keep this a float.
+        return float(math.floor(v + 0.5)) if v >= 0 else float(math.ceil(v - 0.5))
+    raise ValueError(f"ROUND expects a number, got a {type_name(v)} value")
+
+
+def coalesce(*a: Any) -> Any:
+    for v in a:
+        if v is not None:
+            return v
+    return None
+
+
+def nullif(*a: Any) -> Any:
+    """NULLIF compares numerically across int/float, not by variant.
+
+    Measured: DataFusion's NULLIF(1, 1.0) is NULL; Rust returns 1 because its
+    Value equality is variant-tagged -- a Rust bug (xfail-ed + ticketed).
+    Deliberately NOT val_eq: lookup-join keys stay type-strict, NULLIF coerces.
+    `eq` returns None when either side is NULL, and NULLIF(NULL, NULL) must be
+    NULL -- which falls out, since a[0] is then NULL anyway.
+    """
+    if len(a) != 2:
+        raise ValueError("NULLIF expects 2 arguments")
+    return None if eq(a[0], a[1]) is True else a[0]
+
+
+def miss(table: str, k: tuple) -> str:
+    """Message for an inner lookup-join miss (plan.rs InterpError::MissingKey)."""
+    rendered = ", ".join(display(part[1]) for part in k)
+    return f"No row in static table '{table}' matches key ({rendered})"

@@ -171,3 +171,108 @@ def test_join_eq_is_type_strict_and_null_never_matches():
     assert rt.join_eq(1, 1.0) is False  # Value::Int(1) != Value::Float(1.0)
     assert rt.join_eq(None, None) is False  # NULL keys never match
     assert rt.join_eq(None, 1) is False
+
+
+def test_casts_propagate_null():
+    assert rt.cast_int(None) is None
+    assert rt.cast_str(None) is None
+
+
+def test_cast_int_truncates_floats():
+    assert rt.cast_int(1.9) == 1
+    assert rt.cast_int(-1.9) == -1
+
+
+def test_cast_int_parses_strings_and_errors_on_junk():
+    assert rt.cast_int(" 42 ") == 42
+    with pytest.raises(ValueError, match="Cannot cast"):
+        rt.cast_int("abc")
+
+
+def test_cast_bool_from_string_is_case_insensitive_true():
+    assert rt.cast_bool("TRUE") is True
+    assert rt.cast_bool("yes") is False
+
+
+def test_cast_float_and_bool_from_numbers():
+    assert rt.cast_float(1) == 1.0
+    assert rt.cast_float(True) == 1.0
+    assert rt.cast_bool(0) is False
+    assert rt.cast_bool(2) is True
+
+
+def test_cast_str_uses_datafusion_float_formatting():
+    # Measured: DataFusion's CAST(1.0 AS VARCHAR) is '1.0'. Rust gives '1' -- a
+    # Rust bug (see the DECIDED section in the design doc: codegen matches the
+    # DataFusion oracle, not Rust). cast_str delegates to `display`, which is
+    # already DataFusion-parity (test_display_matches_datafusion pins this).
+    assert rt.cast_str(1.0) == "1.0"
+
+
+def test_round_is_half_away_from_zero_not_bankers():
+    # Python's round(0.5) == 0 and round(2.5) == 2 (banker's); Rust rounds away.
+    assert rt.round_(0.5) == 1.0
+    assert rt.round_(2.5) == 3.0
+    assert rt.round_(-2.5) == -3.0
+    assert type(rt.round_(2.5)) is float  # must stay a float, not become an int
+
+
+def test_round_of_an_int_returns_a_float():
+    # Measured: DataFusion's ROUND(3) is 3.0. Rust returns int 3 -- a Rust bug.
+    assert rt.round_(3) == 3.0
+    assert type(rt.round_(3)) is float
+
+
+def test_abs_preserves_its_argument_type():
+    assert rt.abs_(-3) == 3
+    assert type(rt.abs_(-3)) is int
+    assert rt.abs_(-3.5) == 3.5
+
+
+def test_abs_and_round_reject_non_numbers():
+    with pytest.raises(ValueError, match="ABS"):
+        rt.abs_("x")
+    with pytest.raises(ValueError, match="ROUND"):
+        rt.round_("x")
+
+
+def test_string_builtins_propagate_null():
+    assert rt.upper(None) is None
+    assert rt.trim(None) is None
+    assert rt.substr(None, 1) is None
+    assert rt.substr("abc", None) is None
+
+
+def test_string_builtins():
+    assert rt.upper("aB") == "AB"
+    assert rt.lower("aB") == "ab"
+    assert rt.trim("  x  ") == "x"
+
+
+def test_substr_is_one_indexed_and_clamps():
+    assert rt.substr("hello", 2) == "ello"
+    assert rt.substr("hello", 2, 3) == "ell"
+    assert rt.substr("hello", 0) == "hello"  # start <= 0 clamps to the beginning
+    assert rt.substr("hello", 2, 99) == "ello"  # length clamps to the end
+    assert rt.substr("hello", 99) == ""
+
+
+def test_concat_skips_nulls_and_never_returns_null():
+    assert rt.concat("a", None, "b") == "ab"
+    assert rt.concat(None) == ""
+    assert rt.concat("n=", 1) == "n=1"
+
+
+def test_coalesce_returns_first_non_null():
+    assert rt.coalesce(None, None, 3) == 3
+    assert rt.coalesce(None, None) is None
+
+
+def test_nullif_compares_numerically_across_int_and_float():
+    assert rt.nullif(1, 1) is None
+    assert rt.nullif(1, 2) == 1
+    # Measured: DataFusion nulls this. Rust returns 1 (variant-tagged eq) -- a bug.
+    assert rt.nullif(1, 1.0) is None
+    assert rt.nullif(None, None) is None
+    assert rt.nullif(None, 1) is None  # a[0] is NULL, so the result is NULL
+    assert rt.nullif("a", "b") == "a"
