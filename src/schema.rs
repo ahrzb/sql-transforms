@@ -77,6 +77,37 @@ pub fn from_arrow_table(py: Python<'_>, table: &Py<PyAny>) -> Result<Schema, Int
     Ok(schema)
 }
 
+/// Parse a `pyarrow.Schema` object into an order-preserving `Vec` of
+/// `(name, FieldType)`. Unlike `from_arrow_table` (which reads a `pa.Table`
+/// and returns an unordered `Schema` HashMap), this takes a bare `pa.Schema`
+/// and preserves field order -- required because a transformer's declared
+/// output becomes a `Base::Struct`/`Value::Struct` whose field order is
+/// semantically significant.
+pub fn arrow_schema_to_ordered_fields(
+    py: Python<'_>,
+    schema_obj: &Py<PyAny>,
+) -> Result<Vec<(String, FieldType)>, InterpError> {
+    let bound = schema_obj.bind(py);
+    let names: Vec<String> = bound
+        .getattr("names")
+        .and_then(|n| n.extract())
+        .map_err(|e| {
+            InterpError::Build(format!("transformer output schema is not a pyarrow.Schema: {e}"))
+        })?;
+    let pa_types = PyModule::import(py, "pyarrow.types")
+        .map_err(|e| InterpError::Build(format!("Failed to import pyarrow.types: {e}")))?;
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let field = bound
+            .call_method1("field", (name.as_str(),))
+            .map_err(|e| InterpError::Build(format!("Failed to read output field '{name}': {e}")))?;
+        let ft = arrow_field_to_field_type(&pa_types, &field)
+            .map_err(|e| InterpError::Build(format!("Failed to read type of output field '{name}': {e}")))?;
+        out.push((name, ft));
+    }
+    Ok(out)
+}
+
 /// Recursively resolves a `pyarrow.Field` (name/nullable/type) into a
 /// `FieldType`, walking `pa.StructType`/`pa.ListType` children rather than
 /// prefix-matching the type's string form — needed since a struct/list type's

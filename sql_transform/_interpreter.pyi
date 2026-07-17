@@ -12,6 +12,7 @@ class InferFn:
         row_tables: dict[str, type[BaseModel]],
         static_tables: dict[str, pa.Table],
         output_model: type[BaseModel] | None = None,
+        transformers: dict[str, tuple[object, pa.Schema]] | None = None,
     ) -> None: ...
     def infer(
         self,

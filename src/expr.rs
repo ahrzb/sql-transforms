@@ -1,6 +1,10 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
+use std::sync::Arc;
+
+use crate::types::FieldType;
+
 #[derive(Debug)]
 pub enum Value {
     Int(i64),
@@ -268,6 +272,17 @@ pub enum Expr {
         base: Box<Expr>,
         field: String,
     },
+    /// Callout to an opaque, already-fitted Python transformer. `obj` is the
+    /// fitted sklearn object; `input_features` is its `feature_names_in_`
+    /// (the struct arg is reordered to this before `.transform`);
+    /// `output_fields` is the caller-declared output schema (marshalling
+    /// target, order significant); `arg` evaluates to the input `Value::Struct`.
+    Transform {
+        obj: Arc<Py<PyAny>>,
+        input_features: Vec<String>,
+        output_fields: Vec<(String, FieldType)>,
+        arg: Box<Expr>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -352,6 +367,91 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
                     type_name(&other)
                 ))),
             }
+        }
+        Expr::Transform {
+            obj,
+            input_features,
+            output_fields,
+            arg,
+        } => {
+            let fields = match eval(arg, row)? {
+                Value::Struct(f) => f,
+                Value::Null => return Ok(Value::Null),
+                other => {
+                    return Err(crate::plan::InterpError::Eval(format!(
+                        "transformer argument must be a struct, got a {} value",
+                        type_name(&other)
+                    )))
+                }
+            };
+            // infer() already holds the GIL; attach is cheap and re-entrant, so
+            // eval() stays a pure-Rust signature (no py token threaded through).
+            Python::attach(|py| -> Result<Value, crate::plan::InterpError> {
+                // Reorder the struct's fields to feature_names_in_ order, then
+                // build a 1-row Python list-of-lists. sklearn's check_array
+                // coerces it -- no numpy on the Rust side.
+                let mut ordered: Vec<Py<PyAny>> = Vec::with_capacity(input_features.len());
+                for feat in input_features {
+                    let value = fields
+                        .iter()
+                        .find(|(n, _)| n == feat)
+                        .map(|(_, v)| v)
+                        .ok_or_else(|| {
+                            crate::plan::InterpError::Eval(format!(
+                                "transformer input struct is missing field '{feat}'"
+                            ))
+                        })?;
+                    let py_val = value.to_pyobject(py).map_err(|e| {
+                        crate::plan::InterpError::Eval(format!(
+                            "marshalling transformer input failed: {e}"
+                        ))
+                    })?;
+                    ordered.push(py_val);
+                }
+                let row_list = PyList::new(py, ordered).map_err(|e| {
+                    crate::plan::InterpError::Eval(format!(
+                        "building transformer input row failed: {e}"
+                    ))
+                })?;
+                let x = PyList::new(py, [row_list]).map_err(|e| {
+                    crate::plan::InterpError::Eval(format!(
+                        "building transformer input matrix failed: {e}"
+                    ))
+                })?;
+                let y = obj
+                    .bind(py)
+                    .call_method1("transform", (x,))
+                    .map_err(|e| {
+                        crate::plan::InterpError::Eval(format!("transformer.transform failed: {e}"))
+                    })?;
+                // .tolist() turns numpy scalars into Python builtins so
+                // from_pyobject sees float/int/str, not opaque numpy objects.
+                let y_list = y.call_method0("tolist").map_err(|e| {
+                    crate::plan::InterpError::Eval(format!(
+                        "transformer output .tolist() failed: {e}"
+                    ))
+                })?;
+                let y0 = y_list.get_item(0).map_err(|e| {
+                    crate::plan::InterpError::Eval(format!(
+                        "transformer produced no output row: {e}"
+                    ))
+                })?;
+                let mut out = Vec::with_capacity(output_fields.len());
+                for (i, (fname, ft)) in output_fields.iter().enumerate() {
+                    let elem = y0.get_item(i).map_err(|e| {
+                        crate::plan::InterpError::Eval(format!(
+                            "transformer output missing position {i} for field '{fname}': {e}"
+                        ))
+                    })?;
+                    let val = Value::from_pyobject_typed(&elem, &ft.base).map_err(|e| {
+                        crate::plan::InterpError::Eval(format!(
+                            "marshalling transformer output field '{fname}' failed: {e}"
+                        ))
+                    })?;
+                    out.push((fname.clone(), val));
+                }
+                Ok(Value::Struct(out))
+            })
         }
     }
 }
