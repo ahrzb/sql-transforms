@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from sql_transform import _codegen_runtime as rt
+from sql_transform._codegen import runtime as rt
 
 
 def test_int_division_truncates_toward_zero():

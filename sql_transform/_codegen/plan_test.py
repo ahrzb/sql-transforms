@@ -6,7 +6,7 @@ import pyarrow as pa
 import pytest
 from pydantic import BaseModel
 
-from sql_transform import _codegen_plan as cp
+from sql_transform._codegen import plan as cp
 
 
 def test_schema_from_pydantic_reads_types_and_nullability():

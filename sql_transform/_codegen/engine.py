@@ -20,9 +20,9 @@ from typing import Any
 
 from pydantic import BaseModel, create_model
 
-from sql_transform import _codegen_plan as cp
-from sql_transform import _codegen_runtime as rt
-from sql_transform._codegen_plan import UnsupportedInCodegen
+from sql_transform._codegen import plan as cp
+from sql_transform._codegen import runtime as rt
+from sql_transform._codegen.plan import UnsupportedInCodegen
 
 __all__ = ["CodegenFn", "UnsupportedInCodegen"]
 

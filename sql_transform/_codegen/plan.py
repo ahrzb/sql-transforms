@@ -167,7 +167,7 @@ class Literal:
 
 @dataclass
 class BinaryOp:
-    op: str  # matches a function name in _codegen_runtime
+    op: str  # matches a function name in the runtime module
     left: Any
     right: Any
 
