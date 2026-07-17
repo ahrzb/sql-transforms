@@ -1,14 +1,26 @@
 # Opaque (non-native) transform refs — row→row composition — Design
 
-> **STATUS: design complete — ready for writing-plans.** Supersedes this file's
-> earlier "mixed native+fallback pipeline" draft (`963eea6`), which proposed a
-> separate Python-level `Pipeline` object with a step runner. That was a workaround
-> for an assumption we're instead breaking: an opaque transform *can* live inside
-> the expression. **There is no `Pipeline` object in this design.**
+> **⚠ STATUS: SUPERSEDED — SPLIT IN TWO (AmirHossein, 2026-07-17). Do NOT build from
+> this doc.** It bundled two layers, and the *surface* half began dragging real
+> engine complexity in for cosmetic reasons: the lowering wants a **derived table**
+> (to bind the struct once and project its fields with clean names, since DataFusion
+> won't let you alias `unnest` output or do inline field access), and supporting a
+> derived table in the row engine means **adding a projection node inside the
+> `RelNode` plan tree** (today `Plan { projection, input }` projects only at the top
+> level). That's engine surgery bought by a naming limitation in the *other* engine.
 >
-> Re-cuts the near-term M1 sklearn work: this lands *before* the compose-in /
-> estimator-interface surface (that direction is backlogged). PM to re-sequence
-> Phase A around it.
+> The work is now split — see BACKLOG "Opaque transform support — Part 1 → Part 2":
+> - **Part 1 (first, active):** the Rust row engine can invoke an opaque
+>   already-fitted Python transformer (marshal out → `.transform()` → marshal back).
+>   Pure engine capability, independent of SQL expression. **A fresh spec is being
+>   written for it** — use that, not this file.
+> - **Part 2 (later):** the SQL/authoring surface — the `{ref}` row→row model,
+>   multi-output native refs, lowering + output-column naming, the DataFusion-side
+>   UDF, cross-engine parity. **The derived-table lowering question belongs here and
+>   is being reconsidered.**
+>
+> Retained below as design reference for Part 2. Its own predecessor was the "mixed
+> native+fallback pipeline" draft (`963eea6`), also superseded.
 
 **Goal:** Let a `SQLTransform` reference an **opaque (non-native) transform** — a
 fitted sklearn transformer, or a whole fitted sklearn `Pipeline`, for which we have

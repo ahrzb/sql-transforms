@@ -56,6 +56,15 @@ Active — in order:
    > BACKLOG "Estimator-interface compliance … — deferred"). Dev is designing the
    > fallback-node shape; **treat A1–A3 as stale** until it lands and this re-sequences.
    > Phase B (native per transformer) + the transformer prioritization are unaffected.
+   >
+   > **Update (2026-07-17):** the fallback-node work is now **split in two** (see
+   > BACKLOG "Opaque transform support — Part 1 → Part 2"). **Part 1 — the Rust
+   > engine can invoke an opaque already-fitted Python transformer** (marshal out →
+   > `.transform()` → marshal back; pure engine capability) is the **active pickup**;
+   > **Part 2 — the SQL/authoring surface** (`{ref}` row→row model, lowering +
+   > output naming, DataFusion-side UDF, cross-engine parity) comes later. The split
+   > keeps Part 1 off the derived-table/projection-node engine surgery the bundled
+   > surface design was pulling in.
 
    **Phase A slices (superseded — pending fallback-node design):**
    1. [ ] **A1 — thin vertical.** Estimator interface (`fit`/`transform`/`get_feature_names_out`/`get_params`/`set_params`/cloneable) on ONE transformer (`StandardScaler`), internals = real sklearn fallback, driven end-to-end through a stock sklearn `Pipeline`. **Stands up the [per-transformer differential parity harness](BACKLOG.md#per-transformer-differential-parity-harness)** (StandardScaler through the param + edge-case matrix). Ships hooks 1+3 on its own. Designs the `get_feature_names_out`/provenance **contract shape** (the hook-3 surface) — joint look before it hardens. NB: A1 is single-transformer parity; the full *assembly* oracle lands in A2.

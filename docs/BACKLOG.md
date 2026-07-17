@@ -10,6 +10,49 @@ Each item: what, why deferred, and where to start.
 
 ## Open items
 
+### Rust engine (`InferFn`) parity bugs — `transform` ≠ `infer`
+Five divergences (reported 2026-07-17) where the Rust `infer` path disagrees with
+the DataFusion `transform` path on the same input — each **violates the README's
+core promise that the two return identical values** (a user gets a different answer
+at serving time than at batch time). Found while validating assumptions for the
+codegen engine; **pre-existing and unrelated to codegen**. They survive because the
+differential harness only pins the surface it *covers* — every one sits in a
+coverage gap, which is why the suite is green. **Causes below were verified against
+the source** (not just the report); the runtime values are as-reported and unverified.
+
+**Class A — value divergences** (both engines run the query, return different values):
+1. **`CAST(<float> AS VARCHAR)` renders wrong** — reported `infer` → `'1'`,
+   `transform` → `'1.0'`. Cause **confirmed**: `display_value` (`src/expr.rs:114`)
+   uses `f64::to_string`. Also affects `CONCAT`. Related: `1e300` expands to a
+   300-digit string vs DataFusion's `'1e300'`.
+2. **`ROUND(<int>)` returns the wrong type** — reported `infer` → int `3`,
+   `transform` → float `3.0`. Cause **confirmed**: `eval_builtin`'s `"round"` arm
+   (`src/expr.rs:550`) passes `Value::Int(i)` through unchanged. A *type*
+   divergence, not just formatting — and `src/types.rs:268` (`"abs" | "round"`)
+   clones the arg's base type, so it propagates into the synthesized output model.
+3. **`NULLIF(1, 1.0)` doesn't null** — reported `infer` → `1`, `transform` → `NULL`.
+   Cause **confirmed**: `"nullif"` (`src/expr.rs:575`) compares with `Value`'s
+   variant-tagged `PartialEq`, so `Int(1) != Float(1.0)`; DataFusion coerces
+   numerically.
+
+**Class B — surface gaps** (`infer` rejects what `transform` evaluates):
+4. **Unary minus unsupported** — `SELECT -a` / `SELECT -1` → `Unsupported
+   expression` from `infer`. Cause **confirmed**: `convert_expr`
+   (`src/expr_build.rs:39-42`) handles only `UnaryOperator::Not`.
+5. **`||` string concat unsupported** — `Unsupported operator: ||` from `infer`.
+   Cause **confirmed**: `convert_binary_operator` (`src/expr_build.rs:205`) has no
+   `StringConcat` arm.
+
+**⚠ None of these are pinned by a test today.** The report claimed Class A was held
+by a strict-`xfail` `tests/test_diff_rust_bugs.py` — **that file does not exist** in
+the repo, so the "can't rot silently" tripwire is *not* in place for either class.
+**Adding the pinning tests is part of this work**, not a precondition already met.
+
+**Start:** each bullet names its cause + site; fix independently. **DataFusion is the
+oracle** (`transform` *is* DataFusion, and the harness gates on it) — match
+DataFusion, don't codify current Rust behavior. Pin each with a strict `xfail` on the
+rust backend first so a fix flips it to a failure and forces the marker's removal.
+
 ### sklearn transformer integration — functionality & parity
 > **⚠ REFRAME IN PROGRESS (2026-07-16).** AmirHossein narrowed the near-term target
 > to the **(b) fallback-execution-node** direction — running an already-fitted
@@ -106,6 +149,36 @@ breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
 
 The prioritized transformer list (tiers + native-machinery status + parity gotchas)
 lives in [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md).
+
+### Opaque transform support — Part 1 (engine capability) → Part 2 (SQL surface)
+The near-term fallback-node work, **split into two tasks (AmirHossein, 2026-07-17)**,
+Part 1 first. **Supersedes/splits** the bundled spec
+[opaque-transform-refs-design](superpowers/specs/2026-07-17-opaque-transform-refs-design.md)
+(`f213d6c`) and its predecessor mixed-pipeline draft (`963eea6`).
+
+**Part 1 — the Rust engine can use transformers (FIRST; active).** The row engine
+(`InferFn`) gains the capability to invoke an **opaque, already-fitted Python
+transformer** — an sklearn transformer *or* a whole fitted `Pipeline` — during
+evaluation: marshal the row's values out, call the object's `.transform()`, marshal
+the result back in. **Pure engine capability, independent of how it's expressed in
+SQL.** This is what makes partial coverage shippable: native where we have it, opaque
+where we don't. Fresh spec in progress (brainstorm → spec → plan).
+
+**Part 2 — the SQL / authoring surface (LATER).** How it's expressed and how it
+composes: the `{ref}` row→row model (`{pipeline}({features}(__THIS__))`),
+multi-output native refs, the lowering + output-column naming, the DataFusion
+`transform`-side UDF, and `transform`==`infer` parity across the mix.
+
+**Why split:** the bundled spec's *surface* half started dragging real engine
+complexity in for cosmetic reasons — the lowering wants a **derived table** (to bind
+the struct once and project its fields with clean names, since DataFusion won't let
+you alias `unnest` output or do inline field access), and supporting a derived table
+in the row engine means **adding a projection node inside the `RelNode` plan tree**,
+because today `Plan { projection, input }` applies projection only at the top level.
+That's engine surgery bought by a naming limitation in the *other* engine.
+Splitting keeps Part 1 — a genuinely useful engine capability — from waiting on, or
+being contaminated by, the surface design. **The derived-table lowering question
+belongs to Part 2 and is being reconsidered there.**
 
 ### Estimator-interface compliance of our transformers (compose-in / hook 1) — deferred
 Make *our* transformer objects pass sklearn's `check_estimator` conformance
