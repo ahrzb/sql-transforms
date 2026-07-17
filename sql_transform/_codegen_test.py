@@ -6,6 +6,7 @@ cover the engine's own seams -- compilation, marshalling, output typing.
 
 import typing
 
+import pyarrow as pa
 import pytest
 from pydantic import BaseModel
 
@@ -128,3 +129,96 @@ def test_container_columns_are_deferred_not_silently_wrong():
 def test_generated_source_is_available_for_debugging():
     fn = CodegenFn("SELECT a AS x FROM t", {"t": Row}, {})
     assert "def _run(" in fn.source
+
+
+class Key(BaseModel):
+    k: int
+    a: int = 1
+
+
+def _lookup_table():
+    return pa.table(
+        {"k": pa.array([1, 2], type=pa.int64()), "v": pa.array([10.0, 20.0])}
+    )
+
+
+def test_cross_join_is_a_cartesian_product():
+    class L(BaseModel):
+        a: int
+
+    class R(BaseModel):
+        b: int
+
+    fn = CodegenFn("SELECT a AS x, b AS y FROM l CROSS JOIN r", {"l": L, "r": R}, {})
+    out = fn.infer({"l": [L(a=1), L(a=2)], "r": [R(b=9)]})
+    assert [(r.x, r.y) for r in out] == [(1, 9), (2, 9)]
+
+
+def test_inner_join_matches_on_keys():
+    class L(BaseModel):
+        k: int
+        a: int
+
+    class R(BaseModel):
+        k: int
+        b: int
+
+    fn = CodegenFn(
+        "SELECT a AS x, b AS y FROM l JOIN r ON l.k = r.k", {"l": L, "r": R}, {}
+    )
+    out = fn.infer({"l": [L(k=1, a=1), L(k=2, a=2)], "r": [R(k=2, b=9)]})
+    assert [(r.x, r.y) for r in out] == [(2, 9)]
+
+
+def test_inner_join_never_matches_null_keys():
+    class L(BaseModel):
+        k: int | None
+        a: int
+
+    class R(BaseModel):
+        k: int | None
+        b: int
+
+    fn = CodegenFn(
+        "SELECT a AS x, b AS y FROM l JOIN r ON l.k = r.k", {"l": L, "r": R}, {}
+    )
+    assert fn.infer({"l": [L(k=None, a=1)], "r": [R(k=None, b=9)]}) == []
+
+
+def test_lookup_join_binds_the_matching_static_row():
+    fn = CodegenFn(
+        "SELECT v AS x FROM t JOIN s ON t.k = s.k", {"t": Key}, {"s": _lookup_table()}
+    )
+    assert [r.x for r in fn.infer({"t": [Key(k=2)]})] == [20.0]
+
+
+def test_inner_lookup_join_miss_raises_key_error():
+    fn = CodegenFn(
+        "SELECT v AS x FROM t JOIN s ON t.k = s.k", {"t": Key}, {"s": _lookup_table()}
+    )
+    with pytest.raises(KeyError, match="No row in static table 's'"):
+        fn.infer({"t": [Key(k=99)]})
+
+
+def test_left_lookup_join_miss_yields_nulls_and_a_nullable_output():
+    fn = CodegenFn(
+        "SELECT v AS x FROM t LEFT JOIN s ON t.k = s.k",
+        {"t": Key},
+        {"s": _lookup_table()},
+    )
+    assert fn.output_model.model_fields["x"].annotation == typing.Optional[float]  # noqa: UP045
+    assert [r.x for r in fn.infer({"t": [Key(k=99)]})] == [None]
+
+
+def test_lookup_join_keys_are_type_strict():
+    # Value::Int(1) and Value::Float(1.0) hash differently, so a float key must
+    # not match an int key row -- Python's 1 == 1.0 would wrongly match.
+    class FloatKey(BaseModel):
+        k: float
+
+    fn = CodegenFn(
+        "SELECT v AS x FROM t LEFT JOIN s ON t.k = s.k",
+        {"t": FloatKey},
+        {"s": _lookup_table()},
+    )
+    assert [r.x for r in fn.infer({"t": [FloatKey(k=1.0)]})] == [None]

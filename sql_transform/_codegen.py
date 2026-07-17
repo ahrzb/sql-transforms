@@ -122,8 +122,70 @@ def _emit_rel(node: Any, env: dict, ind: int, em: _Emitter, body) -> None:
             body(inner, i + 1)
 
         _emit_rel(node.input, env, ind, em, filtered)
+    elif isinstance(node, cp.CrossJoin):
+
+        def crossed(inner: dict, i: int) -> None:
+            _emit_rel(node.right, inner, i, em, body)
+
+        _emit_rel(node.left, env, ind, em, crossed)
+    elif isinstance(node, cp.Join):
+
+        def left_done(env_l: dict, i: int) -> None:
+            def right_done(env_r: dict, j: int) -> None:
+                conds = " and ".join(
+                    f"rt.join_eq({_emit_expr(le, env_r)}, {_emit_expr(re, env_r)})"
+                    for le, re in node.on
+                )
+                em.line(j, f"if {conds}:")
+                body(env_r, j + 1)
+
+            _emit_rel(node.right, env_l, i, em, right_done)
+
+        _emit_rel(node.left, env, ind, em, left_done)
+    elif isinstance(node, cp.LookupJoin):
+
+        def looked_up(inner: dict, i: int) -> None:
+            keys = ", ".join(f"rt.key({_emit_expr(k, inner)})" for k in node.keys)
+            k = em.var("_k")
+            h = em.var("_h")
+            em.line(i, f"{k} = ({keys},)")
+            em.line(i, f"{h} = _lookups[{node.table!r}].get({k})")
+            em.line(i, f"if {h} is None:")
+            if node.outer:
+                em.line(i + 1, f"{h} = _nullrows[{node.table!r}]")
+            else:
+                em.line(i + 1, f"raise KeyError(rt.miss({node.table!r}, {k}))")
+            body({**inner, node.table: h}, i)
+
+        _emit_rel(node.input, env, ind, em, looked_up)
     else:
         raise UnsupportedInCodegen(f"cannot compile {type(node).__name__}")
+
+
+def _to_native(v: Any) -> Any:
+    """Recursively unwrap a row's Pydantic struct/list value into plain
+    dicts/lists. Struct columns can't reach a projected output (rejected as
+    UnsupportedInCodegen below), but a JOIN ON key CAN reference one -- and
+    two structurally-identical struct columns from different row tables are
+    two different synthesized Pydantic classes, so BaseModel.__eq__ (which
+    checks type identity) would wrongly call them unequal. Plain dicts
+    compare structurally, matching DataFusion/rt.val_eq's semantics."""
+    if isinstance(v, BaseModel):
+        return v.model_dump()
+    if isinstance(v, list):
+        return [_to_native(x) for x in v]
+    return v
+
+
+def _build_index(table: Any, key_columns: list) -> tuple:
+    """Index a static table by its type-tagged key tuple (mirrors lookup.rs).
+    Also returns the all-NULL value row a LEFT lookup miss binds."""
+    value_columns = [c for c in table.column_names if c not in key_columns]
+    index = {}
+    for row in table.to_pylist():
+        key = tuple(rt.key(row[c]) for c in key_columns)
+        index[key] = {c: row[c] for c in value_columns}
+    return index, dict.fromkeys(value_columns)
 
 
 def compile_plan(plan: cp.Plan) -> tuple:
@@ -157,8 +219,7 @@ class CodegenFn:
         output_model: type[BaseModel] | None = None,
     ) -> None:
         plan = cp.build_plan(sql)
-        # Lookup specs go unused until joins land (Task 9).
-        plan, _ = cp.optimize(plan, set(static_tables))
+        plan, specs = cp.optimize(plan, set(static_tables))
 
         row_schemas = {n: cp.schema_from_pydantic(m) for n, m in row_tables.items()}
         static_schemas = {n: cp.schema_from_arrow(t) for n, t in static_tables.items()}
@@ -186,6 +247,16 @@ class CodegenFn:
 
         self._lookups: dict = {}
         self._nullrows: dict = {}
+        for spec in specs:
+            table = static_tables.get(spec.static_table)
+            if table is None:
+                raise ValueError(
+                    f"SQL references static table '{spec.static_table}' that was "
+                    "not provided"
+                )
+            self._lookups[spec.static_table], self._nullrows[spec.static_table] = (
+                _build_index(table, spec.key_columns)
+            )
         self._row_table_columns = validation.row_table_columns
         self._referenced = cp.referenced_tables(plan.input)
         self._run, self.source = compile_plan(plan)
@@ -202,7 +273,7 @@ class CodegenFn:
                 row = {}
                 for col in columns:
                     try:
-                        row[col] = getattr(row_obj, col)
+                        row[col] = _to_native(getattr(row_obj, col))
                     except AttributeError as e:
                         raise ValueError(
                             f"Row for table '{table}' is missing attribute '{col}': {e}"
