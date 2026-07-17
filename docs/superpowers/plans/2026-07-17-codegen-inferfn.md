@@ -620,8 +620,9 @@ def test_cast_float_and_bool_from_numbers():
     assert rt.cast_bool(2) is True
 
 
-def test_cast_str_uses_rust_float_formatting():
-    assert rt.cast_str(1.0) == "1"
+def test_cast_str_uses_datafusion_float_formatting():
+    # DataFusion renders 1.0 as "1.0" (via display); Rust gives "1" -- a Rust bug.
+    assert rt.cast_str(1.0) == "1.0"
 
 
 def test_round_is_half_away_from_zero_not_bankers():
