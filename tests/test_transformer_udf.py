@@ -2,10 +2,18 @@
 
 import pandas as pd
 import pyarrow as pa
+import pytest
 from datafusion import SessionContext
 from sklearn.preprocessing import StandardScaler
 
 from sql_transform._transformer_udf import _transformer_udf
+
+# Both engines deliberately feed sklearn positionally-aligned nameless arrays
+# (we reorder to feature_names_in_ ourselves), so sklearn's redundant
+# "X does not have valid feature names" warning is a known false positive here.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:X does not have valid feature names:UserWarning"
+)
 
 
 def _collect(df) -> list[dict]:

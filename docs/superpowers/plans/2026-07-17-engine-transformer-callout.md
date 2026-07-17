@@ -86,10 +86,18 @@ Create `tests/test_transformer_udf.py`:
 
 import pandas as pd
 import pyarrow as pa
+import pytest
 from datafusion import SessionContext
 from sklearn.preprocessing import StandardScaler
 
 from sql_transform._transformer_udf import _transformer_udf
+
+# Both engines deliberately feed sklearn positionally-aligned nameless arrays
+# (we reorder to feature_names_in_ ourselves), so sklearn's redundant
+# "X does not have valid feature names" warning is a known false positive here.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:X does not have valid feature names:UserWarning"
+)
 
 
 def _collect(df) -> list[dict]:
@@ -621,6 +629,11 @@ from sklearn.preprocessing import StandardScaler
 from sql_transform._interpreter import InferFn
 from sql_transform._schema import synthesize_this_model
 
+# See test_transformer_udf.py: the nameless-input warning is a known false positive.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:X does not have valid feature names:UserWarning"
+)
+
 _THIS = pa.schema([("age", pa.float64()), ("income", pa.float64())])
 _OUT = pa.schema([("age", pa.float64()), ("income", pa.float64())])
 _SQL = "SELECT __tfm_0__(named_struct('age', age, 'income', income)) AS s FROM __THIS__"
@@ -703,6 +716,7 @@ Create `tests/test_diff_transformer_callout.py`:
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pytest
 from datafusion import SessionContext
 from differential import _rows_equal
 from sklearn.pipeline import Pipeline
@@ -711,6 +725,12 @@ from sklearn.preprocessing import OrdinalEncoder, PowerTransformer, StandardScal
 from sql_transform._interpreter import InferFn
 from sql_transform._schema import synthesize_this_model
 from sql_transform._transformer_udf import _transformer_udf
+
+# See test_transformer_udf.py: the nameless-input warning is a known false
+# positive; both the oracle UDF and the Rust infer path emit it.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:X does not have valid feature names:UserWarning"
+)
 
 
 def _parity(sql, table, obj, in_schema, out_schema, name="__tfm_0__"):
