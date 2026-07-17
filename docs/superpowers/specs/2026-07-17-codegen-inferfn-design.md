@@ -145,14 +145,24 @@ error-message parity is a non-goal (per BACKLOG), only values/error-hierarchy ma
   `upper`/`lower`/`trim`/`substr`/`substring`/`concat`/`abs`/`round`/`coalesce`/
   `nullif`), `Cast`.
 - Full value semantics + NULL rules above; typed Pydantic output model.
+- **Struct/list values as opaque JOIN-ON keys** — carve-out decided 2026-07-17
+  (AmirHossein), during Task 9. A struct-typed column used as a join key compares
+  structurally (matching DataFusion + the Rust engine, which both support it and
+  have a passing differential test). Implemented by unwrapping struct BaseModels to
+  plain dicts at input marshalling (`_to_native`); the build-time container guards
+  are untouched, so struct/list **projection, field access, and comparison in a
+  projection/WHERE all still defer**. Rationale: maximizes oracle parity (the goal),
+  and passing an opaque struct value through a join predicate is not "container
+  feature support" — the user still cannot project or manipulate it.
 
 **Deferred to fast-follows (non-blocking; codegen errors cleanly on these nodes
 until implemented):**
 - **Container exprs + `UNNEST`**: `Struct`, `List`, `FieldAccess`, `RelNode::Unnest`
-  (and struct/list structural equality). `InferFn` covers these today, so *full*
-  `InferFn` equivalence is reached in **two steps**: MVP (scalar) → containers. The
-  `Unnest` row in the table above is designed here for coherence but not built in
-  the MVP.
+  (and struct/list structural equality *in a projection/WHERE* — but NOT as a join
+  key, see the carve-out above). `InferFn` covers these today, so *full* `InferFn`
+  equivalence is reached in **two steps**: MVP (scalar + struct-join-keys) →
+  containers. The `Unnest` row in the table above is designed here for coherence
+  but not built in the MVP.
 - **Vectorized/columnar codegen path** (batch-shaped generated code).
 - **numpy-matrix output mode** (the boundary-floor-removing path; separate track).
 - **`CASE WHEN`** (not in `InferFn` today either — genuine new surface, own item).
