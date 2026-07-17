@@ -448,6 +448,12 @@ def _build_projection(items: list) -> list:
             out.append((item.name, _convert_expr(item)))
         elif isinstance(item, exp.Star):
             raise ValueError("Unsupported SELECT item: *")
+        elif isinstance(item, exp.Unnest):
+            # A bare `unnest(...)` (no AS) never reaches the exp.Alias branch
+            # above, so without this it falls to the generic "needs an alias"
+            # ValueError below instead of the UnsupportedInCodegen the harness
+            # expects for deferred container ops.
+            _convert_expr(item)
         else:
             raise ValueError("Expression in SELECT list needs an alias (AS name)")
     return out
@@ -627,8 +633,18 @@ def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> None:
         if e.table is not None:
             entry = resolved.get(e.table)
             if entry is None:
-                # Rust reinterprets this as struct field access; containers are
-                # deferred here, so it is simply an unknown reference.
+                # `s.x` (2-part struct field access, e.g. s is struct{x,y})
+                # parses identically to a table-qualified column -- with no
+                # `db`/`catalog` to flag it, unlike the 3-part `t.s.x` case in
+                # _convert_expr. Without this check it falls to the generic
+                # "unknown table" ValueError instead of the UnsupportedInCodegen
+                # the harness expects for deferred container ops.
+                for schema in (*row_schemas.values(), *static_schemas.values()):
+                    ft = (schema or {}).get(e.table)
+                    if ft is not None and is_container(ft.base):
+                        raise UnsupportedInCodegen(
+                            "struct field access is not supported in codegen yet"
+                        )
                 raise ValueError(f"Unknown table: {e.table}")
             real, is_row = entry
             schema = (row_schemas if is_row else static_schemas).get(real)
@@ -680,6 +696,14 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
         if e.op in ("add", "sub", "mul", "div", "mod"):
             base = INT if left.base == INT and right.base == INT else FLOAT
             return FieldType(base, nullable)
+        if is_container(left.base) or is_container(right.base):
+            # Comparing/combining structs or lists needs deep equality, which
+            # the runtime doesn't implement -- without this it silently reaches
+            # the scalar-only arithmetic comparison path and crashes instead of
+            # being reported as a deferred surface.
+            raise UnsupportedInCodegen(
+                "struct/list comparison is not supported in codegen yet"
+            )
         return FieldType(BOOL, nullable)
     if isinstance(e, Not):
         return FieldType(BOOL, infer_type(e.inner, schemas).nullable)

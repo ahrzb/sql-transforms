@@ -1,9 +1,19 @@
-"""Differential test harness for the Rust InferFn interpreter.
+"""Differential test harness for the serving engines.
 
-`check(query, tables)` runs a query through DataFusion (the oracle) AND the Rust
-InferFn over the same typed input, and asserts their output values match. Tests
-are native pytest parametrized decision tables (see test_diff_*.py). This module
-is NOT collected by pytest (no test_ prefix / _test suffix).
+`check(query, tables)` runs a query through DataFusion (the oracle) AND the
+serving engine selected by the active backend, and asserts their output values
+match. The backend is set per-test by the `_backend` fixture in conftest.py, so
+every case here runs once per engine:
+
+  * "rust"    — the Rust InferFn interpreter (sql_transform._interpreter)
+  * "codegen" — the codegen engine (sql_transform._codegen)
+
+Holding both to the same oracle is what makes them provably equivalent. Cases
+touching surface a backend explicitly defers raise UnsupportedInCodegen and are
+skipped loudly rather than passing silently.
+
+Tests are native pytest parametrized decision tables (see test_diff_*.py). This
+module is NOT collected by pytest (no test_ prefix / _test suffix).
 """
 
 from __future__ import annotations
@@ -14,7 +24,9 @@ from typing import Any
 
 import datafusion
 import pyarrow as pa
+import pytest
 
+from sql_transform._codegen import CodegenFn, UnsupportedInCodegen
 from sql_transform._interpreter import InferFn
 from sql_transform._schema import synthesize_this_model
 
@@ -118,7 +130,7 @@ def _run_datafusion(query: str, tables: dict[str, Table]) -> list[dict]:
     return pa.Table.from_batches(df.collect(), schema=df.schema()).to_pylist()
 
 
-def _run_infer(query: str, tables: dict[str, Table]) -> list[dict]:
+def _run_engine(engine: Any, query: str, tables: dict[str, Table]) -> list[dict]:
     row_models: dict[str, Any] = {}
     infer_rows: dict[str, list] = {}
     static_tables: dict[str, pa.Table] = {}
@@ -129,8 +141,35 @@ def _run_infer(query: str, tables: dict[str, Table]) -> list[dict]:
             infer_rows[name] = [model(**r) for r in tbl.rows]
         else:
             static_tables[name] = pa.Table.from_pylist(tbl.rows, schema=tbl.schema)
-    fn = InferFn(query, row_tables=row_models, static_tables=static_tables)
+    fn = engine(query, row_tables=row_models, static_tables=static_tables)
     return [r.model_dump() for r in fn.infer(infer_rows)]
+
+
+def _run_infer(query: str, tables: dict[str, Table]) -> list[dict]:
+    return _run_engine(InferFn, query, tables)
+
+
+def _run_codegen(query: str, tables: dict[str, Table]) -> list[dict]:
+    return _run_engine(CodegenFn, query, tables)
+
+
+BACKENDS = {"rust": _run_infer, "codegen": _run_codegen}
+_backend = "rust"
+
+
+def set_backend(name: str) -> None:
+    """Select which serving engine `check` exercises against the oracle.
+    Driven by the `_backend` fixture in conftest.py."""
+    global _backend
+    if name not in BACKENDS:
+        raise ValueError(
+            f"Unknown backend {name!r}; expected one of {sorted(BACKENDS)}"
+        )
+    _backend = name
+
+
+def _run_backend(query: str, tables: dict[str, Table]) -> list[dict]:
+    return BACKENDS[_backend](query, tables)
 
 
 def _canon(r: dict) -> tuple:
@@ -179,14 +218,18 @@ def check(
     tables: dict[str, Table],
     expect: list[dict] | None = None,
 ) -> None:
-    """Run `query` through DataFusion (oracle) AND the Rust InferFn over the same
-    typed tables; assert their output rows match (order-insensitive, float-
-    tolerant, NULL-aware). If `expect` is given, also assert output == expect."""
+    """Run `query` through DataFusion (oracle) AND the active backend engine over
+    the same typed tables; assert their output rows match (order-insensitive,
+    float-tolerant, NULL-aware). If `expect` is given, also assert
+    output == expect."""
     oracle = _run_datafusion(query, tables)
-    actual = _run_infer(query, tables)
+    try:
+        actual = _run_backend(query, tables)
+    except UnsupportedInCodegen as e:
+        pytest.skip(f"{_backend} defers this surface: {e}")
     assert _rows_equal(actual, oracle), (
-        f"Rust InferFn disagrees with DataFusion.\n  query: {query}\n"
-        f"  rust:       {actual}\n  datafusion: {oracle}"
+        f"{_backend} engine disagrees with DataFusion.\n  query: {query}\n"
+        f"  {_backend}: {actual}\n  datafusion: {oracle}"
     )
     if expect is not None:
         assert _rows_equal(actual, expect), (
@@ -200,11 +243,15 @@ def check_both_raise(
     tables: dict[str, Table],
     match: str | None = None,
 ) -> None:
-    """Assert BOTH engines reject `query` (at build or execution). If `match` is
-    given, each engine's error message must contain that regex."""
-    for runner in (_run_datafusion, _run_infer):
+    """Assert BOTH DataFusion and the active backend reject `query` (at build or
+    execution). If `match` is given, each engine's error message must contain
+    that regex."""
+    for runner in (_run_datafusion, _run_backend):
         try:
             runner(query, tables)
+        except UnsupportedInCodegen as e:
+            # A deferred surface is not a rejection -- don't let it pass as one.
+            pytest.skip(f"{_backend} defers this surface: {e}")
         except Exception as e:  # noqa: BLE001 -- differential harness, any error counts
             if match is not None and not re.search(match, str(e)):
                 raise AssertionError(
