@@ -79,7 +79,10 @@ def build_state_tables(
         selected: dict[str, WindowAgg] = {}
         for w in members:
             existing = selected.get(w.key)
-            if existing is not None and existing.arg.sql() != w.arg.sql():
+            if existing is not None and (existing.arg.sql(), existing.params) != (
+                w.arg.sql(),
+                w.params,
+            ):
                 raise ValueError(
                     f"Ambiguous window aggregate: {w.fn}({w.arg.sql()}) normalizes "
                     f"to the same state key {w.key!r} as another aggregate in this "
@@ -87,7 +90,7 @@ def build_state_tables(
                 )
             selected[w.key] = w
 
-        value_exprs = [f"{w.fn}({w.arg.sql()}) AS {key}" for key, w in selected.items()]
+        value_exprs = [f"{_agg_call(w)} AS {key}" for key, w in selected.items()]
 
         if partition_cols:
             key_list = ", ".join(f'"{c}"' for c in partition_cols)
@@ -115,6 +118,13 @@ def build_state_tables(
         tables[state_table_name(partition_cols)] = table
 
     return tables
+
+
+def _agg_call(w: WindowAgg) -> str:
+    """Render the aggregate call for the extraction query, including any extra
+    literal params (the quantile fraction), e.g. `PERCENTILE_CONT(x, 0.25)`."""
+    args = ", ".join([w.arg.sql(), *w.params])
+    return f"{w.fn}({args})"
 
 
 def _collect(ctx: datafusion.SessionContext, sql: str) -> pa.Table:
