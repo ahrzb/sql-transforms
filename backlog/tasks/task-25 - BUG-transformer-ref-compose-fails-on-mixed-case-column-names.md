@@ -2,8 +2,10 @@
 id: TASK-25
 title: 'BUG: transformer-ref compose fails on mixed-case column names'
 status: To Do
-assignee: []
+assignee:
+  - Wren
 created_date: '2026-07-18 19:01'
+updated_date: '2026-07-18 19:05'
 labels:
   - bug
   - transformer-refs
