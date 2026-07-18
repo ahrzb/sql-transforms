@@ -5,10 +5,11 @@ status: Done
 assignee:
   - Developer
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-18 14:28'
+updated_date: '2026-07-18 15:19'
 labels:
   - rust
   - parity
+milestone: m-1
 dependencies: []
 references:
   - docs/BACKLOG.md

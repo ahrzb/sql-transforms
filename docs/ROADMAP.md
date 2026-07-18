@@ -1,18 +1,21 @@
 # Roadmap
 
-The ordered path from where we are to the near-term goal in [VISION.md](VISION.md):
+The ordered path from where we are to the near-term goal in [Vision](<../backlog/docs/doc-3 - Vision.md>):
 **a well-adopted, compose-in sklearn transformer alternative for low-latency
 serving.** Milestones are sequenced; the checkboxes are the progress bar.
 
 **How this relates to the other docs — each fact lives in exactly one place:**
-- [VISION.md](VISION.md) — the destination (why / what), task-free.
-- **This file** — ordering, milestones, and progress. Each checklist item is a
-  *label that links to a [BACKLOG.md](BACKLOG.md) item*; it does not restate scope.
-- [BACKLOG.md](BACKLOG.md) — the source of truth for each task's detail.
+- [Vision](<../backlog/docs/doc-3 - Vision.md>) — the destination (why / what), task-free.
+- **This file** — the milestone *narrative*: ordering, rationale, and progress.
+- **Backlog.md** (`backlog/`) — the live task state and milestone grouping
+  (`backlog board`, `backlog milestone list`). The milestones there (M0–M4) mirror
+  this file's sections; individual tasks (TASK-N) are the actionable units.
+- [BACKLOG.md](BACKLOG.md) — the reasoning archive: *why* deferred, decision context,
+  source citations (not the live task list).
 - [SQL_SUPPORT.md](SQL_SUPPORT.md) — the per-feature SQL support matrix.
 
-When a task completes: tick its box here **and** remove/archive the BACKLOG item —
-one motion, so the two never drift.
+When a task completes: mark it **Done in Backlog.md** and tick its box here — the
+tool holds status, this file holds the narrative.
 
 Legend: `[x]` done · `[ ]` todo.
 

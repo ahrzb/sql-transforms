@@ -1,3 +1,9 @@
+---
+id: doc-3
+title: Vision
+type: other
+created_date: '2026-07-18 15:20'
+---
 # Vision
 
 sql-transform is becoming a **compose-in, sklearn-compatible feature-transform
@@ -122,7 +128,7 @@ engine: DataFusion for large batches, the native interpreter for online inferenc
 This is what makes goal 2 possible: fit pays the cost of a real query engine once;
 inference pays only for a lean interpreter walking a plan.
 
-See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
+See [SQL_SUPPORT.md](../../docs/SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 (execution engine vs. authoring front-end).
 
 ## What we have
@@ -164,6 +170,6 @@ See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 ## Roadmap
 
 The sequenced path toward these goals — milestones and progress — lives in
-[ROADMAP.md](ROADMAP.md); the underlying scoped tasks and open questions live in
-[BACKLOG.md](BACKLOG.md). This doc stays focused on what the project is and where
+[ROADMAP.md](../../docs/ROADMAP.md); the underlying scoped tasks and open questions live in
+[BACKLOG.md](../../docs/BACKLOG.md). This doc stays focused on what the project is and where
 it's headed, not the step-by-step.

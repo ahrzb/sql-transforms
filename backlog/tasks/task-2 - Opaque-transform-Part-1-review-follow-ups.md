@@ -4,10 +4,12 @@ title: Opaque transform Part-1 review follow-ups
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
+updated_date: '2026-07-18 15:19'
 labels:
   - rust
   - parity
   - opaque
+milestone: m-1
 dependencies: []
 references:
   - docs/BACKLOG.md

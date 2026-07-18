@@ -113,14 +113,15 @@ mise tasks        # list all tasks
 
 ## Project docs
 
-- [docs/VISION.md](docs/VISION.md) — what the project is and where it's headed.
-- [docs/ROADMAP.md](docs/ROADMAP.md) — the sequenced milestones and progress.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — the sequenced milestones (narrative) and progress.
 - [docs/BACKLOG.md](docs/BACKLOG.md) — the reasoning archive: *why* things were
   deferred, decision context, source citations. Actionable tasks live in Backlog.md.
 - **Backlog.md** (`backlog/`) — live task board (`backlog board` / `backlog task
-  list`), architecture decisions (`backlog/decisions/`), and reference docs
-  (`backlog/docs/`): the [DataFusion function catalogue](<backlog/docs/doc-1 - DataFusion-function-catalogue.md>)
-  (interpreter parity target, auto-generated) and the
+  list`) grouped by **milestones** (`backlog milestone list`), architecture
+  **decisions** (`backlog/decisions/`), and reference **docs** (`backlog/docs/`):
+  [Vision](<backlog/docs/doc-3 - Vision.md>) (what the project is and where it's
+  headed), the [DataFusion function catalogue](<backlog/docs/doc-1 - DataFusion-function-catalogue.md>)
+  (interpreter parity target, auto-generated), and the
   [sklearn transformer plan](<backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>)
   (tiers + native-machinery status).
 

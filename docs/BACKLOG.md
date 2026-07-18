@@ -2,7 +2,7 @@
 
 Deferred work. When a task is pushed out of the current scope — from a spec, a
 plan, a review, or a conversation — it lands here with enough context to pick up
-cold later. This is the parking lot; [VISION.md](VISION.md) stays focused on what
+cold later. This is the parking lot; [Vision](<../backlog/docs/doc-3 - Vision.md>) stays focused on what
 the project is and how it works *today*, and [SQL_SUPPORT.md](SQL_SUPPORT.md)
 tracks feature-by-feature support status.
 
@@ -126,7 +126,7 @@ It delivers the parity harness the optimized path (below) is validated against, 
 is shippable on its own — correct-but-not-yet-fast (via Python fallback) is a real
 milestone that de-risks the semantics. Supersedes the old README `sklearn.*`
 surface and the earlier "decide in/out of scope" question — it's in scope as the
-primary serving goal (see [VISION.md](VISION.md), "Positioning" + "Serving without
+primary serving goal (see [Vision](<../backlog/docs/doc-3 - Vision.md>), "Positioning" + "Serving without
 the intermediate").
 
 **Sequencing (decided 2026-07-16): Python-fallback-first, then optimize per
@@ -636,7 +636,7 @@ Several candidate optimizations for the online-inference path are currently
 extracting Python values into an owned Rust type and releasing the GIL
 (`allow_threads`) during compute; and — the load-bearing one — parsing request
 JSON in Rust so the dict/DataFrame never touches the request path (see
-[VISION.md](VISION.md), "Serving without the intermediate"). **Why deferred:**
+[Vision](<../backlog/docs/doc-3 - Vision.md>), "Serving without the intermediate"). **Why deferred:**
 building all three and attributing wins afterward is backwards. Each targets a
 different cost, and two are probably aimed at the wrong path — the arena and
 GIL-release mostly help the *batch/throughput* path, not the single-object
