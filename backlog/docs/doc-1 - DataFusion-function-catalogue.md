@@ -1,3 +1,9 @@
+---
+id: doc-1
+title: DataFusion function catalogue
+type: other
+created_date: '2026-07-18 14:01'
+---
 # DataFusion function & aggregate catalogue
 
 Auto-generated from the installed **DataFusion 54.0.0** (the engine behind the
@@ -5,7 +11,7 @@ Auto-generated from the installed **DataFusion 54.0.0** (the engine behind the
 **parity target**: every function here runs in the DataFusion (batch) path, so the
 Rust `InferFn` interpreter must match any of these it claims to support — and it is
 also the menu the authoring SQL surface can draw from. See
-[SQL_SUPPORT.md](SQL_SUPPORT.md) for what the *interpreter* implements today.
+[SQL_SUPPORT.md](../../docs/SQL_SUPPORT.md) for what the *interpreter* implements today.
 
 Regenerate after a DataFusion upgrade: `uv run python
 scripts/gen_datafusion_catalogue.py`. Signatures/descriptions are DataFusion's own

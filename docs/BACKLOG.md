@@ -60,9 +60,10 @@ test exists yet** for any of these. **Adding the pinning tests on master is part
 this work**, and it should not depend on the codegen branch landing.
 
 **Start:** each bullet names its cause + site; fix independently. **DataFusion is the
-oracle** (`transform` *is* DataFusion, and the harness gates on it) — match
-DataFusion, don't codify current Rust behavior. Pin each with a strict `xfail` on the
-rust backend first so a fix flips it to a failure and forces the marker's removal.
+oracle** (`transform` *is* DataFusion, and the harness gates on it — canonical:
+**decision-1**) — match DataFusion, don't codify current Rust behavior. Pin each with
+a strict `xfail` on the rust backend first so a fix flips it to a failure and forces
+the marker's removal. Task: **TASK-1**.
 
 **Update (2026-07-17) — codegen adversarial fresh-eyes review found 5 more Rust
 divergences on uncovered edge cases** (all verified against both engines; the
@@ -87,6 +88,8 @@ Realism (dev's read): #7 (substr) is the one worth fixing; #6 is a clean type bu
 #8/#9/#10 are low-realism edge cases. All uncovered — the engine is green as-is.
 
 ### sklearn transformer integration — functionality & parity
+*Strategy (native-goal + opaque-fallback, fallback-first) canonical record:*
+**decision-4**. Tasks: **TASK-5** (Phase B native), **TASK-6** (assembly surface).
 > **⚠ REFRAME IN PROGRESS (2026-07-16).** AmirHossein narrowed the near-term target
 > to the **(b) fallback-execution-node** direction — running an already-fitted
 > sklearn estimator we have no native version of as an **opaque black-box step
@@ -181,9 +184,12 @@ breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
   front-end is a separate question.
 
 The prioritized transformer list (tiers + native-machinery status + parity gotchas)
-lives in [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md).
+lives in [the sklearn transformer plan](<../backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>).
 
 ### Opaque transform support — Part 1 (engine capability) → Part 2 (SQL surface)
+*Split rationale (why Part 1/Part 2) canonical record:* **decision-3**. Follow-up
+tasks: **TASK-2** (Part 1), **TASK-3** (Part 2). Both parts have shipped; this entry
+retains the status + deferred-direction detail.
 The near-term fallback-node work, **split into two tasks (AmirHossein, 2026-07-17)**,
 Part 1 first. **Supersedes/splits** the bundled spec
 [opaque-transform-refs-design](superpowers/specs/2026-07-17-opaque-transform-refs-design.md)
@@ -282,7 +288,7 @@ The oracle every sklearn transformer is validated against — the transformer an
 of the M0 expression/join differential harness. For each transformer, a
 **parametrized parity matrix** asserts our `transform` output is bit-identical to the
 real sklearn object's, across (a) the parity-sensitive params (see the per-transformer
-notes in [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md) — e.g. `StandardScaler`
+notes in [the sklearn transformer plan](<../backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>) — e.g. `StandardScaler`
 population-vs-sample std, `OneHotEncoder` `handle_unknown`/`drop`/infrequent, exact-vs-
 approx quantiles for `RobustScaler`) and (b) input edge cases: nulls, unseen
 categories, single row vs batch, int/float/string dtypes, empty/degenerate columns.
@@ -669,16 +675,6 @@ Also needs codegen-side fixes for the shared bugs #7–#10 above if oracle parit
 the codegen path is wanted (it already fixed #2 ROUND and #6 COALESCE typing).
 
 ### Unify batch vs inference error *types* — non-goal (accepted divergence)
-`transform` (DataFusion) and `infer`/`infer_batch` (Rust `InferFn`) must return
-identical *values* on the normal numeric path — that parity is non-negotiable and
-the differential harness enforces it. But matching the **error type/message** each
-engine raises is an explicit **non-goal** (decision 2026-07-16): the two engines
-genuinely carry different failure information, and reconciling it buys nothing a
-user relies on. Concretely, integer div/modulo-by-zero raising a clean `ValueError`
-from the Rust path vs a raw DataFusion `Exception` ("DataFusion error: Arrow error:
-Divide by zero error") from the batch path is **accepted by design**, not a gap to
-close. (Was previously an open "unify error semantics" item; descoped here.)
-Locked in by the positive test
-`test_div_by_zero_raises_on_both_engines_with_different_error_types`, which asserts
-both engines error on integer div/mod-by-zero with *different* hierarchies (Rust
-infer → clean `ValueError`; DataFusion batch → its own non-`ValueError` `Exception`).
+**Decision:** error-type parity across engines is a non-goal; only output *values*
+must match. Canonical record: **decision-2** (`backlog/decisions/`). Locked in by
+`test_div_by_zero_raises_on_both_engines_with_different_error_types`.

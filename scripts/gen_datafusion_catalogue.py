@@ -1,4 +1,4 @@
-"""Generate docs/DATAFUSION_FUNCTIONS.md from the installed DataFusion.
+"""Generate the DataFusion function catalogue (Backlog.md doc-1) from installed DataFusion.
 
 The catalogue is the DataFusion (batch-path) function surface — the parity target
 the Rust InferFn interpreter matches against, and the menu the authoring SQL surface
@@ -16,7 +16,22 @@ from pathlib import Path
 
 from datafusion import SessionConfig, SessionContext
 
-OUT = Path(__file__).resolve().parent.parent / "docs" / "DATAFUSION_FUNCTIONS.md"
+# ponytail: filename is Backlog.md's tool-managed doc name (spaces + id); keep it in
+# sync with the doc-1 entry if the tool ever renumbers. Frontmatter below keeps the
+# regenerated file a valid Backlog.md doc.
+OUT = (
+    Path(__file__).resolve().parent.parent
+    / "backlog"
+    / "docs"
+    / "doc-1 - DataFusion-function-catalogue.md"
+)
+FRONTMATTER = [
+    "---",
+    "id: doc-1",
+    "title: DataFusion function catalogue",
+    "type: other",
+    "---",
+]
 
 
 def clean(s: str | None) -> str:
@@ -57,7 +72,7 @@ def main() -> None:
         "**parity target**: every function here runs in the DataFusion (batch) path, so the",
         "Rust `InferFn` interpreter must match any of these it claims to support — and it is",
         "also the menu the authoring SQL surface can draw from. See",
-        "[SQL_SUPPORT.md](SQL_SUPPORT.md) for what the *interpreter* implements today.",
+        "[SQL_SUPPORT.md](../../docs/SQL_SUPPORT.md) for what the *interpreter* implements today.",
         "",
         "Regenerate after a DataFusion upgrade: `uv run python",
         "scripts/gen_datafusion_catalogue.py`. Signatures/descriptions are DataFusion's own",
@@ -80,7 +95,7 @@ def main() -> None:
         ]
         lines.append("")
 
-    OUT.write_text("\n".join(lines), encoding="utf-8")
+    OUT.write_text("\n".join(FRONTMATTER + lines), encoding="utf-8")
     print(f"wrote {OUT} — {n_agg} aggregate, {n_win} window, {n_scalar} scalar")
 
 

@@ -1,8 +1,14 @@
+---
+id: doc-2
+title: sklearn transformer implementation plan
+type: other
+created_date: '2026-07-18 14:01'
+---
 # sklearn transformer implementation plan
 
 The prioritized list of sklearn transformers to implement, and the parity target for
-the [sklearn integration](BACKLOG.md#sklearn-transformer-integration--functionality--parity)
-work. Unlike [DATAFUSION_FUNCTIONS.md](DATAFUSION_FUNCTIONS.md) (an auto-generated,
+the [sklearn integration](../../docs/BACKLOG.md#sklearn-transformer-integration--functionality--parity)
+work. Unlike [the DataFusion function catalogue](<doc-1 - DataFusion-function-catalogue.md>) (an auto-generated,
 *exhaustive* engine surface), this is a **curated** list: we deliberately scope to
 **tabular preprocessing** and will never implement most of sklearn. It's a plan, not
 a catalogue of everything.
@@ -77,4 +83,4 @@ dtypes, empty/degenerate columns. This is the oracle behind Phase B's per-transf
 native swaps (native diffed against the same matrix the fallback passes), and it's
 distinct from — and feeds — the end-to-end **assembly**-parity harness (Phase A2,
 whole `ColumnTransformer` vector). Leaf correctness here; assembly correctness there.
-Tracked in [BACKLOG.md](BACKLOG.md#per-transformer-differential-parity-harness).
+Tracked in [BACKLOG.md](../../docs/BACKLOG.md#per-transformer-differential-parity-harness).

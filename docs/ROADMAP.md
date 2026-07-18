@@ -29,8 +29,9 @@ one real bug it surfaced (LEFT-join nullability) is now fixed (see M1 below).
 sklearn-compatible transformers composing into a stock pipeline and producing
 bit-identical output. Correctness and coverage first; speed is M3.
 
-**Ordering (decided 2026-07-16):** outstanding bugs → **recursive (fit-cascade)
-composition** of unfitted `SQLTransform`s → sklearn transformers. Rationale: the
+**Ordering (decided 2026-07-16 — canonical: decision-5):** outstanding bugs →
+**recursive (fit-cascade) composition** of unfitted `SQLTransform`s → sklearn
+transformers. Rationale: the
 recursive composition primitive is exactly what stock sklearn `Pipeline.fit`
 needs (it clones + re-fits each step), so building it first de-risks the sklearn
 work that sits on top. The general **UDF/UDAF/macro execution-model spec is *not*
@@ -45,7 +46,7 @@ Done — foundation:
 - [x] [Recursive (fit-cascade) composition — unfitted `{a}(col)`](BACKLOG.md#compose-sqltransforms-via-transformcol-references--follow-up-slices) — **shipped** (`5ac613e`, suite 188): outer `SQLTransform` references an unfit `SQLTransform` via `{a}(col)`, whose window-state fits into the composite during `.fit()` (sklearn-staged); arbitrary nesting/chaining `{a}({b}(x))`, outer aggregates over the cascade, free mixing with the frozen path; single-output auto-unwraps to scalar; clone contract (refs never mutated). `transform`/`infer` parity across the matrix. Multi-output fan-out / multi-input / unfit-composite refs still deferred (error explicitly). This is the primitive sklearn `Pipeline` composition builds on.
 
 Active — in order:
-1. [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — **fallback-first (decided 2026-07-16)**, built on the recursive composition now shipped. Phase A (below) stands up the compose-in surface with real-sklearn-fallback internals; **Phase B** then swaps each transformer to a native engine implementation, one at a time, diffed against the fallback oracle, in **transformer-tier order** (see [SKLEARN_TRANSFORMERS.md](SKLEARN_TRANSFORMERS.md): Tier 0 `StandardScaler`/`SimpleImputer`/`OrdinalEncoder`/`OneHotEncoder` → Tier 1 scalers + `TargetEncoder` → Tier 2). Most Tier 0/1 map onto already-shipped engine machinery (window aggs, `PARTITION BY`, `LookupJoin`, struct/`UNNEST`). n = 1 serving-path speed is the separate M3.
+1. [ ] [sklearn integration — functionality & parity](BACKLOG.md#sklearn-transformer-integration--functionality--parity) — **fallback-first (decided 2026-07-16)**, built on the recursive composition now shipped. Phase A (below) stands up the compose-in surface with real-sklearn-fallback internals; **Phase B** then swaps each transformer to a native engine implementation, one at a time, diffed against the fallback oracle, in **transformer-tier order** (see [the sklearn transformer plan](<../backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>): Tier 0 `StandardScaler`/`SimpleImputer`/`OrdinalEncoder`/`OneHotEncoder` → Tier 1 scalers + `TargetEncoder` → Tier 2). Most Tier 0/1 map onto already-shipped engine machinery (window aggs, `PARTITION BY`, `LookupJoin`, struct/`UNNEST`). n = 1 serving-path speed is the separate M3.
 
    > **⚠ Phase A is being re-sequenced (2026-07-16).** AmirHossein narrowed the
    > near-term target to the **fallback execution node** — running a fitted sklearn
@@ -101,5 +102,5 @@ the raw column that produced it.
 - [ ] [`CASE WHEN` + outer joins in authored SQL](BACKLOG.md#case-when-and-outer-joins-in-authored-sql) — SQL surface; prioritize by what authoring actually needs
 - [ ] [`ORDER BY` / window frames](BACKLOG.md#order-by--window-frames-running-cumulative-moving-aggregates) — research spike; may not fit a row-at-a-time inference engine
 - **Feature-store expansion** — the post-adoption goal; M4's contract is its groundwork, so it's a natural next step rather than a pivot.
-- ~~Unify batch vs inference error semantics~~ — **won't do**: error-type parity across engines is a non-goal; only output *values* must match. Div/mod-by-zero raising a clean `ValueError` (Rust) vs a raw DataFusion `Exception` (batch) is accepted by design. See BACKLOG.
+- ~~Unify batch vs inference error semantics~~ — **won't do**: error-type parity across engines is a non-goal; only output *values* must match. Div/mod-by-zero raising a clean `ValueError` (Rust) vs a raw DataFusion `Exception` (batch) is accepted by design. Canonical: decision-2; see BACKLOG.
 - ~~Codegen / compiled inference path~~ — considered, likely won't do (superseded by the `InferFn` interpreter).
