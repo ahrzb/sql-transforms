@@ -43,15 +43,39 @@ the source** (not just the report); the runtime values are as-reported and unver
    Cause **confirmed**: `convert_binary_operator` (`src/expr_build.rs:205`) has no
    `StringConcat` arm.
 
-**⚠ None of these are pinned by a test today.** The report claimed Class A was held
-by a strict-`xfail` `tests/test_diff_rust_bugs.py` — **that file does not exist** in
-the repo, so the "can't rot silently" tripwire is *not* in place for either class.
-**Adding the pinning tests is part of this work**, not a precondition already met.
+**⚠ Pinning status (updated 2026-07-17).** `tests/test_diff_rust_bugs.py` **now
+exists — but only on the codegen worktree/branch** (`worktree-codegen-inferfn`, not
+on master), where the codegen dev pinned `ROUND(int)` (#2) and the newly-found
+`COALESCE(int,float)` typing bug as strict `xfail`-on-rust. **On master no pinning
+test exists yet** for any of these. **Adding the pinning tests on master is part of
+this work**, and it should not depend on the codegen branch landing.
 
 **Start:** each bullet names its cause + site; fix independently. **DataFusion is the
 oracle** (`transform` *is* DataFusion, and the harness gates on it) — match
 DataFusion, don't codify current Rust behavior. Pin each with a strict `xfail` on the
 rust backend first so a fix flips it to a failure and forces the marker's removal.
+
+**Update (2026-07-17) — codegen adversarial fresh-eyes review found 5 more Rust
+divergences on uncovered edge cases** (all verified against both engines; the
+differential corpus never hit them). These are *additional* Rust `InferFn` bugs
+(oracle = DataFusion), independent of the codegen engine's own status:
+6. **`COALESCE(int, float)` mis-types** — reported `infer` → int `3` / `ValidationError`,
+   `transform` → float `3.0` (numeric supertype). **Same root as #3**: the
+   `NULLIF`/`COALESCE` output type is taken from `args[0].base` instead of the common
+   supertype. Codegen fixed its side (`_function_type` → common supertype) + pinned
+   xfail-on-rust; Rust still to fix.
+7. **`SUBSTR` with start ≤ 0** — `SUBSTR('hello',0,3)` → DF `'he'`, engines `'hel'`;
+   `SUBSTR('hello',-2,5)` → DF `'he'`, engines `'hello'`. DF uses Postgres windowing
+   (positions < 1 consume the length). Realistic; silent wrong string.
+8. **`NaN = NaN`** → DF `True`; both engines raise `Cannot compare NaN`. Reachable via
+   float ÷ 0.
+9. **`CAST(str AS BOOL)`** — DF accepts `'t'`/`'1'`/`'yes'` → `True`; engines accept
+   only `'true'`.
+10. **`CAST(str AS INT/FLOAT)` with surrounding whitespace** — `CAST(' 42 ' AS BIGINT)`
+    → DF **errors**; both engines strip whitespace and return `42`.
+
+Realism (dev's read): #7 (substr) is the one worth fixing; #6 is a clean type bug;
+#8/#9/#10 are low-realism edge cases. All uncovered — the engine is green as-is.
 
 ### sklearn transformer integration — functionality & parity
 > **⚠ REFRAME IN PROGRESS (2026-07-16).** AmirHossein narrowed the near-term target
@@ -585,6 +609,25 @@ around:
 An older README roadmap item, superseded by the Rust `InferFn` interpreter. Keep
 parked unless interpreter overhead becomes a *measured* bottleneck; revisit only
 with a benchmark in hand.
+
+**Update (2026-07-17) — a codegen engine now exists (fact, not yet a ratified
+direction).** The codegen dev built it on `worktree-codegen-inferfn` (`sql_transform/
+_codegen/`, plan `2026-07-17-codegen-inferfn.md`, 11 tasks): suite 397 passed / 14
+skipped (containers) / 3 xfailed (pinned Rust divergences), parity target =
+DataFusion oracle. The revisit-condition above ("benchmark in hand") is satisfied
+(the earlier n=1 boundary-bound benchmark), and an engine has been written — but
+**whether codegen is adopted as a maintained/default path vs. the Rust interpreter
+is AmirHossein's pending framing call; this note records the artifact, not a
+decision.** Its adversarial review surfaced **2 codegen-only parity divergences**
+(Rust already matches the oracle here — no Rust ticket):
+- **float→string for |x| < 1e-4** — `CAST(1e-5 AS VARCHAR)` → DF `'0.00001'`, Rust
+  `'0.00001'`, codegen `'1e-05'`; `1e-6` → DF `'1e-6'`, codegen `'1e-06'`. Realistic
+  (small feature values); DF's exact float formatting is a known rabbit hole.
+- **integer arithmetic overflow** — `9223372036854775807 * 2` → DF/Rust wrap to `-2`,
+  codegen (Python bigint) `18446744073709551614`. Rare in feature transforms; fix
+  touches all arithmetic ops.
+Also needs codegen-side fixes for the shared bugs #7–#10 above if oracle parity on
+the codegen path is wanted (it already fixed #2 ROUND and #6 COALESCE typing).
 
 ### Unify batch vs inference error *types* — non-goal (accepted divergence)
 `transform` (DataFusion) and `infer`/`infer_batch` (Rust `InferFn`) must return
