@@ -7,8 +7,9 @@ created_date: '2026-07-18 15:52'
 
 # Epic B — multi-language inference runtimes (design brief)
 
-**Status: UNSCOPED EPIC (milestone m-6), not prioritized.** Multi-quarter. Entry point
-is scoping/planning, not implementation. Captured from Fermi (Investigator) 2026-07-18;
+**Status: OUT OF SCOPE — parked as design, not in the work queue (AmirHossein 2026-07-19).**
+Was milestone m-6 (archived) with B1–B7 sketched below (never ticketed / archived if they were).
+Multi-quarter. Entry point is scoping/planning, not implementation. Captured from Fermi (Investigator) 2026-07-18;
 Substrait feasibility validated with **real artifacts**, not speculation. Rests on the
 two-engine framing (native engine = one-of-N), an open question not being ratified in
 the short term.
