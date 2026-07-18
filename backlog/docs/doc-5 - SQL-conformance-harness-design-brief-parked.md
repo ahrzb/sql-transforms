@@ -5,7 +5,7 @@ type: other
 created_date: '2026-07-18 23:28'
 ---
 **Status: OUT OF SCOPE — parked as design, not a milestone (AmirHossein 2026-07-19).**
-Was milestone m-5 (archived) with tasks S1–S4 (archived: former TASK-9/12/10/11). The
+Was a milestone (archived) with steps S1–S4 (archived: former TASK-9/12/10/11). The
 rationale is ratified and stays live as [[decision-6]]; this doc preserves the step-level
 build plan so the milestone can be re-opened cheaply when there's room. Not lost, just not
 in the current work queue.

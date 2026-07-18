@@ -1,13 +1,13 @@
 ---
 id: TASK-6
-title: ColumnTransformer assembly surface (Phase A2)
+title: ColumnTransformer assembly surface
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-18 15:19'
+updated_date: '2026-07-18 23:50'
 labels:
   - sklearn
-  - phase-a
+  - fallback
 milestone: m-1
 dependencies: []
 references:
@@ -19,7 +19,7 @@ ordinal: 6000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Column routing + horizontal concat; the end-to-end assembly-parity oracle: bit-identical width + column order + values vs stock ColumnTransformer.transform(). Must include a multi-output transformer. Detail in docs/ROADMAP.md M1 Phase A2 + docs/BACKLOG.md.
+Column routing + horizontal concat; the end-to-end assembly-parity oracle: bit-identical width + column order + values vs stock ColumnTransformer.transform(). Must include a multi-output transformer. Detail in docs/ROADMAP.md (ColumnTransformer-glue slice) + docs/BACKLOG.md.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

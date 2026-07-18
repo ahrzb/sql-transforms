@@ -1,14 +1,14 @@
 ---
 id: decision-5
 title: >-
-  M1 ordering: recursive composition before sklearn; execution-model spec
-  deferred
+  Transformer-foundation ordering: recursive composition before sklearn;
+  execution-model spec deferred
 date: '2026-07-18 14:00'
 status: accepted
 ---
 ## Context
 
-M1 (transformer foundation & sklearn parity) had several candidate first moves:
+The transformer-foundation & sklearn-parity phase had several candidate first moves:
 outstanding parity bugs, recursive composition of unfitted `SQLTransform`s, the
 sklearn transformers themselves, and a general UDF/UDAF/macro execution-model spec.
 
@@ -24,5 +24,6 @@ needed, rather than writing it up front.
 - Rationale: stock sklearn `Pipeline.fit` clones + re-fits each step, so the
   recursive-composition primitive is exactly what the sklearn work sits on —
   building it first de-risks sklearn. Shipped `5ac613e`.
-- The execution-model spec stays a captured idea, deprioritized off M1; it isn't
+- The execution-model spec stays a captured idea, deprioritized off the
+  transformer-foundation phase; it isn't
   immediately useful and the concrete composition + sklearn work doesn't need it.

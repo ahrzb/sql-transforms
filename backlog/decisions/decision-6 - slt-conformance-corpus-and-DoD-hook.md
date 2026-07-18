@@ -36,10 +36,10 @@ codegen) **and the live DataFusion oracle**, asserting *values* match.
 
 ## Consequences
 
-- Near-term infra milestone **m-5** (SQL-conformance harness), parallel to M1 Phase B.
-  Steps S1–S4 = TASK-9 / TASK-12 / TASK-10 / TASK-11.
+- Near-term infra milestone (SQL-conformance harness — **now parked, see doc-5**),
+  parallel to the native-swap phase. Steps S1–S4 (now archived: former TASK-9/12/10/11).
 - Harness is **observation-only, zero engine changes**; value divergences it surfaces
   become tickets (same process as TASK-1 native bugs / TASK-4 codegen bugs).
 - Feature tasks that add a scalar function gain the allowlist-extend DoD item.
-- Directly de-risks Phase B native-per-transformer swaps by widening the parity net to
+- Directly de-risks the native-swap phase's native-per-transformer swaps by widening the parity net to
   the full scalar surface.

@@ -1,13 +1,13 @@
 ---
 id: TASK-5
-title: 'Phase B: native per-transformer (Tier 0)'
+title: 'Native-swap: native per-transformer (Tier 0)'
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-18 15:19'
+updated_date: '2026-07-18 23:50'
 labels:
   - sklearn
-  - phase-b
+  - native-swap
 milestone: m-1
 dependencies: []
 references:
@@ -19,7 +19,7 @@ ordinal: 5000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Swap each fallback-backed transformer to a native engine impl, diffed against the fallback oracle, in tier order. Most Tier 0/1 map onto shipped machinery (window aggs, PARTITION BY, LookupJoin, struct/UNNEST). Full plan in docs/ROADMAP.md M1 + docs/SKLEARN_TRANSFORMERS.md.
+Swap each fallback-backed transformer to a native engine impl, diffed against the fallback oracle, in tier order. Most Tier 0/1 map onto shipped machinery (window aggs, PARTITION BY, LookupJoin, struct/UNNEST). Full plan in docs/ROADMAP.md (transformer-foundation section) + docs/SKLEARN_TRANSFORMERS.md.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

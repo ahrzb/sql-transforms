@@ -16,10 +16,10 @@ one at a time). We need both partial coverage *now* and a fast end state.
 
 **Native reimplementation is the end goal; the opaque fallback makes partial
 coverage shippable in the meantime (2026-07-16).** Sequence:
-- **Phase A — fallback-first:** stand up the whole compose-in surface with every
+- **Fallback phase — fallback-first:** stand up the whole compose-in surface with every
   transformer backed by the real sklearn object (opaque node). Proves structure +
   parity harness without engine reimplementation.
-- **Phase B — native per transformer:** swap each fallback to a native engine impl,
+- **Native-swap phase — native per transformer:** swap each fallback to a native engine impl,
   one at a time, diffed against the fallback oracle, in tier order.
 
 ## Consequences

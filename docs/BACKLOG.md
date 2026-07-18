@@ -15,7 +15,7 @@ Each item: what, why deferred, and where to start.
 > doesn't fit an atomic task. Rule: **actionable work → Backlog.md; context & decisions
 > → here.** Tasks link back with `--ref docs/BACKLOG.md`; don't duplicate detail across
 > the two. Seeded tasks: TASK-1 (native parity bugs), TASK-2/3 (opaque-transform
-> follow-ups), TASK-4 (codegen bugs), TASK-5/6 (Phase B + assembly).
+> follow-ups), TASK-4 (codegen bugs), TASK-5/6 (native-swap + assembly).
 
 ## Open items
 
@@ -98,7 +98,7 @@ Realism (dev's read): #7 (substr) is the one worth fixing; #6 is a clean type bu
 
 ### sklearn transformer integration — functionality & parity
 *Strategy (native-goal + opaque-fallback, fallback-first) canonical record:*
-**decision-4**. Tasks: **TASK-5** (Phase B native), **TASK-6** (assembly surface).
+**decision-4**. Tasks: **TASK-5** (native-swap), **TASK-6** (assembly surface).
 > **⚠ REFRAME IN PROGRESS (2026-07-16).** AmirHossein narrowed the near-term target
 > to the **(b) fallback-execution-node** direction — running an already-fitted
 > sklearn estimator we have no native version of as an **opaque black-box step
@@ -108,11 +108,11 @@ Realism (dev's read): #7 (substr) is the one worth fixing; #6 is a clean type bu
 > the request path, breaks fusion) — but it makes partial coverage shippable and
 > lets native impls replace fallbacks one at a time. The **(a) compose-in direction**
 > (our own transformers as sklearn estimators dropped into someone else's pipeline)
-> is **deferred** — see the "Estimator-interface compliance" item below. The **Phase
-> A / A1–A2–A3 decomposition below assumed compose-in-first and is being
+> is **deferred** — see the "Estimator-interface compliance" item below. The
+> **fallback-phase slice decomposition below assumed compose-in-first and is being
 > re-sequenced** around the fallback node; Dev is brainstorming the concrete
-> fallback-node shape with AmirHossein. Treat the Phase-A slices as stale until that
-> lands. The Phase B (native per transformer) intent and the transformer
+> fallback-node shape with AmirHossein. Treat the fallback-phase slices as stale until that
+> lands. The native-swap phase (native per transformer) intent and the transformer
 > prioritization are unaffected.
 
 Ship sklearn-compatible transformers that **compose into** a user's existing
@@ -131,17 +131,17 @@ the intermediate").
 
 **Sequencing (decided 2026-07-16): Python-fallback-first, then optimize per
 transformer.**
-- **Phase A — compose-in surface, fallback-backed.** Stand up the whole structural
+- **Fallback phase — compose-in surface, fallback-backed.** Stand up the whole structural
   surface end to end with every transformer backed by the **real sklearn object**
   (the Python fallback): the estimator interface, the `Pipeline`/`ColumnTransformer`
   glue, and the assembly-parity harness. Ships hooks 1 (composes in) + 3 (typed
   contract) and proves the *structure* is right — does ours actually slot into a
   stock pipeline, does column routing + concatenation yield a bit-identical vector —
   before any engine reimplementation. The fallback is trivially parity-correct (it
-  *is* sklearn), so it doubles as the oracle for Phase B. Explicitly **not** a speed
+  *is* sklearn), so it doubles as the oracle for the native-swap phase. Explicitly **not** a speed
   win (fallback is slower than raw sklearn — extra indirection + still builds the
   DataFrame); it's the correctness/structure milestone.
-- **Phase B — native per transformer.** Replace each transformer's internals with a
+- **Native-swap phase — native per transformer.** Replace each transformer's internals with a
   **native** engine implementation (SQLTransform/expression, no sklearn call), one at
   a time, each diffed against the fallback until bit-identical, then flipped over.
   Same public API throughout, so speed arrives transparently, transformer by
@@ -149,12 +149,12 @@ transformer.**
   state, no fan-out) to shake out the native path, `OneHotEncoder` next for the hard
   cases (fan-out + unknown-category).
 - The **n = 1 serving-path optimization** (delete the dict/DataFrame, Rust-parse
-  input, contiguous feature buffer) is the *separate* M3 item on top of Phase B's
-  native transforms — not part of this item.
+  input, contiguous feature buffer) is the *separate* serving-path item on top of the
+  native-swap phase's native transforms — not part of this item.
 
-Phase A is sliced into ordered tickets **A1 (thin vertical) → A2 (`ColumnTransformer`
-glue, incl. a multi-output transformer) → A3 (breadth)** — the authoritative
-breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
+The fallback phase is sliced into ordered slices — **thin-vertical → `ColumnTransformer`-glue
+(incl. a multi-output transformer) → breadth** — the authoritative
+breakdown + tick state live in the transformer-foundation section of [ROADMAP.md](ROADMAP.md).
 
 **Scope:**
 - **Two integration directions, compose-first:** (a) *compose* — our transformers
@@ -195,9 +195,9 @@ breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
 The prioritized transformer list (tiers + native-machinery status + parity gotchas)
 lives in [the sklearn transformer plan](<../backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>).
 
-### Feature-output model — records / dense / sparse (Epic A → M1)
+### Feature-output model — records / dense / sparse
 The output side of the serving use case (from Fermi/Investigator, 2026-07-18; **folded
-into M1**, tasks A1–A5 = TASK-13…17). Today the infer path returns pydantic records;
+into the transformer-foundation phase**, tasks TASK-13…17). Today the infer path returns pydantic records;
 sklearn interop needs numeric matrices, and text/categorical needs **sparse** output.
 Three output contracts: (1) pydantic records (current), (2) dense float64 `(n,k)`,
 (3) sparse CSR.
@@ -211,22 +211,24 @@ Connective design decisions (the tasks carry the rest):
 - **Dimension N + unseen-key handling come from the FITTED transform**, not the cell or
   a type-level policy. N pins `shape=(n,N)` so batch width can't drift — that drift is a
   **silent model-misalignment bug** (a batch missing the last vocab term materializes
-  narrower). Hence the **width-invariant assert** (A2).
-- **One SELECT → dense⊕sparse via type-directed decompose+assemble** (A4). sklearn
+  narrower). Hence the **width-invariant assert** (the sparse-column task, TASK-14).
+- **One SELECT → dense⊕sparse via type-directed decompose+assemble** (the assembler task,
+  TASK-16). sklearn
   `ColumnTransformer` is the **internal** assembly target (hstack + densify), *not* a
   user API — users write SQL, we compile the ColumnTransformer.
 - Fitted domains (vocab/idf, categories) ride the existing static_tables/lookup
   mechanism — no new artifact store.
-- **A5 (tfidf / array multi-hot) is the opaque one** — needs explode, so it maps onto
-  the shipped opaque-transform mechanism (decision-3). A2/A3 are fixed-fanout and
-  composable. This is the same fixed-fanout-composes / variable-expansion-is-opaque
-  boundary Epic B (m-6, doc-4) is built on.
+- **The tfidf / array multi-hot task (TASK-17) is the opaque one** — needs explode, so it
+  maps onto the shipped opaque-transform mechanism (decision-3). The sparse-column /
+  scalar-one-hot tasks are fixed-fanout and composable. This is the same
+  fixed-fanout-composes / variable-expansion-is-opaque boundary the multi-language
+  runtimes (doc-4) are built on.
 
 **Usability signal (2026-07-18, House Prices):** the column numeric/categorical roles
 still live in Python for the sklearn handoff, so with the literal-SQL form the column
 list is **duplicated (SQL + Python)** — a real papercut on wide (80-col) datasets.
-Motivates the A4 assembler owning column routing (compile the `ColumnTransformer` from
-the SQL, so roles aren't re-declared in Python). Not a separate task — an A4 design
+Motivates the assembler task (TASK-16) owning column routing (compile the `ColumnTransformer` from
+the SQL, so roles aren't re-declared in Python). Not a separate task — an assembler design
 constraint.
 
 ### Opaque transform support — Part 1 (engine capability) → Part 2 (SQL surface)
@@ -328,20 +330,20 @@ close the gaps; this is also where the `get_feature_names_out` provenance contra
 
 ### Per-transformer differential parity harness
 The oracle every sklearn transformer is validated against — the transformer analogue
-of the M0 expression/join differential harness. For each transformer, a
+of the differential test harness (expression/join). For each transformer, a
 **parametrized parity matrix** asserts our `transform` output is bit-identical to the
 real sklearn object's, across (a) the parity-sensitive params (see the per-transformer
 notes in [the sklearn transformer plan](<../backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>) — e.g. `StandardScaler`
 population-vs-sample std, `OneHotEncoder` `handle_unknown`/`drop`/infrequent, exact-vs-
 approx quantiles for `RobustScaler`) and (b) input edge cases: nulls, unseen
 categories, single row vs batch, int/float/string dtypes, empty/degenerate columns.
-**Why its own item:** it's the mechanism behind Phase B's per-transformer native
+**Why its own item:** it's the mechanism behind the native-swap phase's per-transformer native
 swaps — each native impl is diffed against the same matrix its Python fallback
 already passes, so a native/​sklearn divergence fails loud. **Distinct from** the
-end-to-end **assembly**-parity harness (Phase A2, the whole `ColumnTransformer`
+end-to-end **assembly**-parity harness (the ColumnTransformer-glue slice, the whole `ColumnTransformer`
 vector): this one is *leaf* correctness per transformer, that one is *assembly*
 correctness; both are needed and this one feeds that one. **Start:** stand it up in
-A1 alongside the first transformer (`StandardScaler`) — one transformer through the
+the thin-vertical slice alongside the first transformer (`StandardScaler`) — one transformer through the
 matrix — then grow the matrix per transformer as coverage lands. Reuses the existing
 differential-harness patterns (`tests/test_diff_*`).
 
@@ -349,7 +351,7 @@ differential-harness patterns (`tests/test_diff_*`).
 The conceptual backbone the two items above build on (from a 2026-07-15 design
 discussion). Capture, not yet a spec.
 
-**Deprioritized off the M1 critical path (2026-07-16).** The general UDF/UDAF/macro
+**Deprioritized off the transformer-foundation critical path (2026-07-16).** The general UDF/UDAF/macro
 registry isn't immediately useful — the concrete work (recursive composition, then
 sklearn transformers) doesn't need it up front. Treat the spec as something to
 *extract from* that concrete work once two contrasting transformer shapes exist,
@@ -420,7 +422,7 @@ models), `s.x` field access, `unnest(struct)`→columns, `unnest(list)`→rows
 (159→176), no regressions. **Live remaining work = the fast-follow types and the
 deferred edges below — none block anything.**
 
-Foundation for the composition output model, fan-out transformers, and the M4
+Foundation for the composition output model, fan-out transformers, and the
 feature contract. **Supersedes the narrower "Rust struct-support" ticket** — its
 five bullets (struct `Value`, field access, output-model synthesis, DataFusion
 parity) are subsumed here. Rather than bolt structs onto the closed scalar type
@@ -430,7 +432,7 @@ layer, replace that layer with a **recursive, extensible, schema-driven** one so
 
 **Why the pivot (2026-07-16):** composition needs structs; DataFusion has no
 `struct.*` — it uses **`UNNEST`** (`unnest(struct)`→columns, `unnest(list)`→rows),
-so we match that; and the engine should carry real feature-data types (also M4
+so we match that; and the engine should carry real feature-data types (also
 feature-contract groundwork). Build the type *layer* properly, not one type.
 
 **First slice** (reference semantics are DataFusion's throughout, differential-harness

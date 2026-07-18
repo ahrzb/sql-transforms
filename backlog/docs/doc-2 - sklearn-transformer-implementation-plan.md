@@ -13,7 +13,7 @@ work. Unlike [the DataFusion function catalogue](<doc-1 - DataFusion-function-ca
 **tabular preprocessing** and will never implement most of sklearn. It's a plan, not
 a catalogue of everything.
 
-Each transformer ships in two forms (see the BACKLOG item's Phase A / Phase B split):
+Each transformer ships in two forms (see the BACKLOG item's fallback / native-swap split):
 first a **Python fallback** (wraps the real sklearn object; trivially correct), then
 a **native** engine implementation (a SQLTransform/expression, no sklearn call at
 serve time). Both are validated by the per-transformer **differential parity harness**
@@ -30,7 +30,7 @@ Priority tiers reflect **what a served tabular request actually touches**, not r
 sklearn popularity — target users do mixed numeric/categorical tabular models
 (prediction, recommendation with high-cardinality IDs).
 
-## Tier 0 — co-first (M1 Phase B builds these first)
+## Tier 0 — co-first (the native-swap phase builds these first)
 
 | Transformer | Learns (state shape) | Native machinery | Parity notes |
 |---|---|---|---|
@@ -56,7 +56,7 @@ sklearn popularity — target users do mixed numeric/categorical tabular models
 per-row), `Binarizer` (threshold — no fit state), `KNNImputer` (needs neighbor lookup —
 expensive at serve, likely fallback-only). Prioritize by real demand.
 
-## Structural glue (not leaves, but required — Phase A)
+## Structural glue (not leaves, but required — fallback phase)
 
 `Pipeline` (sequencing), `ColumnTransformer` (column routing + horizontal concat — the
 assembly-parity surface), `FunctionTransformer` (stateless wrap of an arbitrary fn —
@@ -79,8 +79,8 @@ Every transformer — fallback and native — runs through a **parametrized pari
 matrix**: our `transform` output must be bit-identical to the real sklearn object's,
 across (a) a spread of the parity-sensitive params in the tables above and (b) input
 edge cases: nulls, unseen categories, single row vs batch, integer/float/string
-dtypes, empty/degenerate columns. This is the oracle behind Phase B's per-transformer
+dtypes, empty/degenerate columns. This is the oracle behind the native-swap phase's per-transformer
 native swaps (native diffed against the same matrix the fallback passes), and it's
-distinct from — and feeds — the end-to-end **assembly**-parity harness (Phase A2,
-whole `ColumnTransformer` vector). Leaf correctness here; assembly correctness there.
+distinct from — and feeds — the end-to-end **assembly**-parity harness (the ColumnTransformer-glue
+slice, whole `ColumnTransformer` vector). Leaf correctness here; assembly correctness there.
 Tracked in [BACKLOG.md](../../docs/BACKLOG.md#per-transformer-differential-parity-harness).
