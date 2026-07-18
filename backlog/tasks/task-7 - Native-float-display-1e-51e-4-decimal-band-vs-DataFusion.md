@@ -2,8 +2,7 @@
 id: TASK-7
 title: 'Native float display: [1e-5,1e-4) decimal band vs DataFusion'
 status: To Do
-assignee:
-  - Developer
+assignee: []
 created_date: '2026-07-18 14:28'
 updated_date: '2026-07-18 15:20'
 labels:
