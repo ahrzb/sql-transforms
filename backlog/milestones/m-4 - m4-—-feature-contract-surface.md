@@ -1,6 +1,6 @@
 ---
 id: m-4
-title: "M4 — Feature-contract surface"
+title: "Feature-contract surface"
 ---
 
 ## Description

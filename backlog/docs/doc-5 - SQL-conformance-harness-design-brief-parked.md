@@ -45,6 +45,6 @@ oracle-truth-not-golden-text, allowlist-driven extraction, the "steal-the-spec" 
 
 ## Relationships
 
-- Precursor pattern for Epic B's generative differential corpus (B4) — see [[doc-4]].
-- De-risks M1 Phase B native-per-transformer swaps by widening the parity net to the full
+- Precursor pattern for the multi-language runtimes' generative differential corpus — see [[doc-4]].
+- De-risks the native-per-transformer swaps by widening the parity net to the full
   scalar surface.

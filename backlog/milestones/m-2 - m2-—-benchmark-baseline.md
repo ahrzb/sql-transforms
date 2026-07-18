@@ -1,6 +1,6 @@
 ---
 id: m-2
-title: "M2 — Benchmark baseline"
+title: "Benchmark baseline"
 ---
 
 ## Description

@@ -124,8 +124,8 @@ mise tasks        # list all tasks
   (interpreter parity target, auto-generated), and the
   [sklearn transformer plan](<backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>)
   (tiers + native-machinery status), and the
-  [Epic B design brief](<backlog/docs/doc-4 - Epic-B-multi-language-inference-runtimes-design-brief.md>)
-  (multi-language serving — unscoped).
+  [Multi-language inference runtimes design brief](<backlog/docs/doc-4 - multi-language-inference-runtimes-design-brief.md>)
+  (multi-language serving — out of scope / parked).
 
 ## Contributing
 

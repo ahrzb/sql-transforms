@@ -1,9 +1,10 @@
 ---
 id: TASK-13
-title: 'Feature output A1: dense float64 (n,k) numpy mode'
+title: 'Feature output: dense float64 (n,k) numpy mode'
 status: To Do
 assignee: []
 created_date: '2026-07-18 15:52'
+updated_date: '2026-07-18 23:36'
 labels:
   - feature-output
 milestone: m-1
@@ -14,7 +15,7 @@ ordinal: 13000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Dense float64 (n,k) matrix output on the columnar path for numeric feature sets (scalers/trees/numeric sklearn). Immediate win, no new engine. Part of the Epic-A feature-output model (records/dense/sparse) folded into M1; see docs/BACKLOG.md 'Feature-output model'.
+Dense float64 (n,k) matrix output on the columnar path for numeric feature sets (scalers/trees/numeric sklearn). Immediate win, no new engine. Part of the feature-output model (records/dense/sparse); see docs/BACKLOG.md 'Feature-output model'.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

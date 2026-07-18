@@ -1,11 +1,12 @@
 ---
 id: TASK-14
 title: >-
-  Feature output A2: sparse COO struct column + CSR materializer +
-  width-invariant assert
+  Feature output: sparse COO struct column + CSR materializer + width-invariant
+  assert
 status: To Do
 assignee: []
 created_date: '2026-07-18 15:52'
+updated_date: '2026-07-18 23:35'
 labels:
   - feature-output
 milestone: m-1

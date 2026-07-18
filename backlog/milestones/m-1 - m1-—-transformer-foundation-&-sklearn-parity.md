@@ -1,6 +1,6 @@
 ---
 id: m-1
-title: "M1 — Transformer foundation & sklearn parity"
+title: "Transformer foundation & sklearn parity"
 ---
 
 ## Description

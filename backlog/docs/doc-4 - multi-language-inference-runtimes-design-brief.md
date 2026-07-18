@@ -1,14 +1,14 @@
 ---
 id: doc-4
-title: Epic B - multi-language inference runtimes (design brief)
+title: Multi-language inference runtimes (design brief)
 type: other
 created_date: '2026-07-18 15:52'
 ---
 
-# Epic B — multi-language inference runtimes (design brief)
+# Multi-language inference runtimes (design brief)
 
 **Status: OUT OF SCOPE — parked as design, not in the work queue (AmirHossein 2026-07-19).**
-Was milestone m-6 (archived) with B1–B7 sketched below (never ticketed / archived if they were).
+Was a milestone (archived) with the 7-step sketch below (never ticketed / archived if they were).
 Multi-quarter. Entry point is scoping/planning, not implementation. Captured from Fermi (Investigator) 2026-07-18;
 Substrait feasibility validated with **real artifacts**, not speculation. Rests on the
 two-engine framing (native engine = one-of-N), an open question not being ratified in
@@ -52,41 +52,43 @@ not a hub.
   the single point of failure for N independent reimplementations — coverage cannot
   depend on hand-written cases.
 
-## Task sketch (NOT yet tickets — scope first)
+## Step sketch (NOT yet tickets — scope first)
 
-- **B1 SPIKE** (cheap, highest-signal): push the full rewrite output (every supported
-  function/cast) through the producer; catalog coverage gaps (unnest known-blocked).
-  Output decides B2.
-- **B2 DECIDE + define the frozen inference IR**: Substrait-profile vs homegrown
-  tiny-protobuf IR (both give free N-language deser via protoc). Pre-resolved, small
-  primitive set, transforms as compositions.
-- **B3** serving artifact format: plan doc + Parquet fitted tables referenced by id.
-- **B4** generative differential corpus + cross-language conformance harness
-  (foundational — before any runtime).
-- **B5** reference runtime (Rust, one-of-N) + WASM target for JS.
-- **B6** first native runtime — pick by demand (likely Go or Node).
-- **B7** opaque-primitive contract: tokenize / hash / COO-construct / sparse-expansion,
-  per-runtime, corpus-gated.
+1. **Producer-coverage spike** (cheap, highest-signal): push the full rewrite output
+   (every supported function/cast) through the producer; catalog coverage gaps (unnest
+   known-blocked). Output decides the IR choice (step 2).
+2. **Decide + define the frozen inference IR**: Substrait-profile vs homegrown
+   tiny-protobuf IR (both give free N-language deser via protoc). Pre-resolved, small
+   primitive set, transforms as compositions.
+3. **Serving artifact format**: plan doc + Parquet fitted tables referenced by id.
+4. **Generative differential corpus + cross-language conformance harness**
+   (foundational — before any runtime).
+5. **Reference runtime** (Rust, one-of-N) + WASM target for JS.
+6. **First native runtime** — pick by demand (likely Go or Node).
+7. **Opaque-primitive contract**: tokenize / hash / COO-construct / sparse-expansion,
+   per-runtime, corpus-gated.
 
 ## Sequencing (lazy, demand-driven)
 
-Ship the IR/interchange spec (B1→B2→B3) + the corpus (B4) + the Rust reference runtime
-(B5) **first**. Add each backend-language runtime (B6) only when a real workload needs
-that stack. The corpus + spec are the sunk infra that makes the Nth runtime cheap; the
-runtimes themselves are demand-driven. **Do not commit to all four languages upfront.**
+Ship the IR/interchange spec (steps 1→2→3) + the corpus (step 4) + the Rust reference
+runtime (step 5) **first**. Add each backend-language runtime (step 6) only when a real
+workload needs that stack. The corpus + spec are the sunk infra that makes the Nth
+runtime cheap; the runtimes themselves are demand-driven. **Do not commit to all four
+languages upfront.**
 
 ## Open decisions (for scoping)
 
-1. Substrait-profile vs homegrown IR — **spike-gated by B1**.
+1. Substrait-profile vs homegrown IR — **spike-gated by step 1**.
 2. First backend language — demand-driven.
-3. How this sequences against transformer-refs / opaque-transform work: **Epic A's A5
-   (TASK-17) and B7 both lean on the opaque-transform mechanism** — a real dependency to
-   order.
+3. How this sequences against transformer-refs / opaque-transform work: **the
+   tfidf/multi-hot feature-output task (TASK-17) and the opaque-primitive step both lean
+   on the opaque-transform mechanism** — a real dependency to order.
 
 ## Relationships
 
 - Two-engine framing (native = one-of-N) is load-bearing here; open question, not
   ratified short-term.
-- Shares the opaque-transform mechanism (decision-3) with Epic A's A5 (TASK-17).
-- The conformance harness (m-5, decision-6) is a precursor pattern for B4's generative
-  corpus.
+- Shares the opaque-transform mechanism (decision-3) with the tfidf/multi-hot
+  feature-output task (TASK-17).
+- The conformance harness (doc-5, decision-6) is a precursor pattern for the generative
+  corpus (step 4).

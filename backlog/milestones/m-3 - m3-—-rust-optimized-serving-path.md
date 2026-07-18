@@ -1,6 +1,6 @@
 ---
 id: m-3
-title: "M3 — Rust-optimized serving path"
+title: "Rust-optimized serving path"
 ---
 
 ## Description
