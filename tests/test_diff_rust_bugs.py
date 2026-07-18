@@ -64,12 +64,12 @@ def test_cast_whitespace_string_to_number():
     check_both_raise("SELECT CAST(' 4.5 ' AS DOUBLE) AS n FROM __THIS__", {_R: row(z=0)})
 
 
-def test_float_display_small_decimal_band(rust_bug):
+def test_float_display_small_decimal_band(xfail_on_native):
     # Residual after the rust-parity-bugs float fix (found during the codegen
-    # merge, 2026-07-17): for |x| in [1e-5, 1e-4) the Rust engine renders
+    # merge, 2026-07-17): for |x| in [1e-5, 1e-4) the native engine renders
     # exponential ('1e-5') while DataFusion uses fixed decimal ('0.00001').
     # Codegen matches the oracle.
-    rust_bug(
+    xfail_on_native(
         "Rust residual: CAST(<float in [1e-5,1e-4)> AS VARCHAR) uses exponential "
         "form; DataFusion uses fixed decimal. e.g. 1e-5 -> '1e-5' vs '0.00001'."
     )

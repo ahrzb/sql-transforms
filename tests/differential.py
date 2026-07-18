@@ -5,7 +5,7 @@ serving engine selected by the active backend, and asserts their output values
 match. The backend is set per-test by the `_backend` fixture in conftest.py, so
 every case here runs once per engine:
 
-  * "rust"    — the Rust InferFn interpreter (sql_transform._interpreter)
+  * "native"  — the native InferFn interpreter (sql_transform._interpreter)
   * "codegen" — the codegen engine (sql_transform._codegen)
 
 Holding both to the same oracle is what makes them provably equivalent. Cases
@@ -153,8 +153,8 @@ def _run_codegen(query: str, tables: dict[str, Table]) -> list[dict]:
     return _run_engine(CodegenFn, query, tables)
 
 
-BACKENDS = {"rust": _run_infer, "codegen": _run_codegen}
-_backend = "rust"
+BACKENDS = {"native": _run_infer, "codegen": _run_codegen}
+_backend = "native"
 
 
 def set_backend(name: str) -> None:
