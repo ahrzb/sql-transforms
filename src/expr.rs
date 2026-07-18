@@ -668,7 +668,8 @@ fn eval_builtin(name: &str, args: Vec<Value>) -> Result<Value, crate::plan::Inte
         },
         "round" => match &args[0] {
             Value::Float(f) => Ok(Value::Float(f.round())),
-            Value::Int(i) => Ok(Value::Int(*i)),
+            // DataFusion's ROUND returns Float64 even for an integer arg.
+            Value::Int(i) => Ok(Value::Float(*i as f64)),
             Value::Null => Ok(Value::Null),
             other => Err(InterpError::Eval(format!(
                 "ROUND expects a number, got a {} value",
@@ -693,7 +694,14 @@ fn eval_builtin(name: &str, args: Vec<Value>) -> Result<Value, crate::plan::Inte
             if args.len() != 2 {
                 return Err(InterpError::Eval("NULLIF expects 2 arguments".to_string()));
             }
-            if args[0] == args[1] {
+            // DataFusion coerces numerically (NULLIF(1, 1.0) -> NULL), so
+            // compare through the numeric-aware comparison, not Value's
+            // variant-tagged PartialEq.
+            let equal = matches!(
+                comparison(BinOp::Eq, args[0].clone(), args[1].clone())?,
+                Value::Bool(true)
+            );
+            if equal {
                 Ok(Value::Null)
             } else {
                 Ok(args[0].clone())

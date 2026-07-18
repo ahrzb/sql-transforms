@@ -20,12 +20,10 @@ def test_float_display_cast_and_concat():
     check("SELECT CONCAT('v', x) AS s FROM __THIS__", {_R: row(x=1.0)})
 
 
-@pytest.mark.xfail(strict=True, reason="#2 ROUND(int) returns int, DF returns float")
 def test_round_int_returns_float():
     check("SELECT ROUND(x) AS r FROM __THIS__", {_R: row(x=3)})
 
 
-@pytest.mark.xfail(strict=True, reason="#3 NULLIF variant-tagged eq, DF coerces numerically")
 def test_nullif_numeric_coercion():
     check("SELECT NULLIF(1, 1.0) AS n FROM __THIS__", {_R: row(z=0)})
 
@@ -41,7 +39,6 @@ def test_string_concat_operator():
     check("SELECT a || 5 AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])})
 
 
-@pytest.mark.xfail(strict=True, reason="#6 COALESCE(int,float) mis-typed, DF is float supertype")
 def test_coalesce_numeric_supertype():
     check("SELECT COALESCE(3, 9.0) AS c FROM __THIS__", {_R: row(z=0)})
 
