@@ -8,6 +8,15 @@ tracks feature-by-feature support status.
 
 Each item: what, why deferred, and where to start.
 
+> **Two homes, no overlap (2026-07-18).** Actionable, pickup-able tasks now live in
+> **Backlog.md** (`backlog/tasks/*.md`; `backlog board` / `backlog task list`, or the
+> `backlog` MCP server). **This prose file stays the reasoning archive** — the *why*,
+> the decision history, verified source citations, and deferred/strategic context that
+> doesn't fit an atomic task. Rule: **actionable work → Backlog.md; context & decisions
+> → here.** Tasks link back with `--ref docs/BACKLOG.md`; don't duplicate detail across
+> the two. Seeded tasks: TASK-1 (Rust parity bugs), TASK-2/3 (opaque-transform
+> follow-ups), TASK-4 (codegen bugs), TASK-5/6 (Phase B + assembly).
+
 ## Open items
 
 ### Rust engine (`InferFn`) parity bugs — `transform` ≠ `infer`
