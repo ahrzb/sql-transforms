@@ -5,7 +5,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
 from sql_transform import SQLTransform
 
@@ -57,3 +57,32 @@ def test_nested_threading_parity():
     out_names = [str(n) for n in pca.get_feature_names_out()]
     got = np.array([[b["out"][n] for n in out_names] for b in batch])
     assert np.allclose(got, expected)
+
+
+def test_ordinal_encoder_ref_string_in_int_out():
+    train = pd.DataFrame({"color": ["red", "green", "blue", "red"], "size": ["S", "M", "L", "M"]})
+    enc = OrdinalEncoder(dtype=np.int64).fit(train)
+    t = SQLTransform(
+        t"SELECT {enc}(color, size) AS out FROM __THIS__"
+    ).fit(pa.Table.from_pandas(train))
+
+    test = pd.DataFrame({"color": ["blue", "red"], "size": ["L", "S"]})
+    batch = _both_engines(t, test)
+
+    expected = enc.transform(test)
+    got = np.array([[b["out"]["color"], b["out"]["size"]] for b in batch])
+    assert (got == expected).all()
+
+
+def test_transformer_and_native_window_agg_coexist():
+    # A native window agg over __THIS__ alongside a transformer call: proves the
+    # two compose without either engine choking. No agg reads the transformer output.
+    train = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]})
+    sc = StandardScaler().fit(train[["age", "income"]])
+    t = SQLTransform(
+        t"SELECT {sc}(age, income) AS out, age / (MEAN(age) OVER ()) AS an FROM __THIS__"
+    ).fit(pa.Table.from_pandas(train))
+
+    test = pd.DataFrame({"age": [25.0, 35.0], "income": [2.5, 3.5]})
+    batch = _both_engines(t, test)
+    assert np.allclose([b["an"] for b in batch], test["age"].to_numpy() / train["age"].mean())
