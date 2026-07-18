@@ -16,6 +16,7 @@ dev = [
     "ipdb>=0.13.13",
     "ipython>=9.2.0",
     "maturin>=1.14,<2.0",
+    "notebook>=7.6.0",
     "numpy>=2.0",
     "pandas>=2.0",
     "pytest>=8.3.5",
