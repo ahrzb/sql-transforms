@@ -6,11 +6,14 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-07-18 19:48'
+updated_date: '2026-07-18 20:45'
 labels:
   - bug
   - sql-surface
+  - usability
 milestone: m-1
 dependencies: []
+priority: high
 ordinal: 28000
 ---
 

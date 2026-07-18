@@ -4,10 +4,13 @@ title: CASE WHEN support in authored SQL
 status: To Do
 assignee: []
 created_date: '2026-07-18 19:45'
+updated_date: '2026-07-18 20:44'
 labels:
   - feature
   - sql-surface
+  - usability
 dependencies: []
+priority: high
 ordinal: 27000
 ---
 

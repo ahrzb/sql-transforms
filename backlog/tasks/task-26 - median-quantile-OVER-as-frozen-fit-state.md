@@ -8,6 +8,7 @@ created_date: '2026-07-18 19:01'
 updated_date: '2026-07-18 19:29'
 labels:
   - feature
+  - usability
 milestone: m-1
 dependencies: []
 ordinal: 26000
