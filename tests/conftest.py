@@ -3,13 +3,13 @@
 The diff tests call differential.check(), which compares ONE engine against the
 DataFusion oracle. Rather than touch 80 call sites, parametrize the modules that
 use the harness over the available backends and let the fixture point check() at
-each in turn -- so "rust" and "codegen" are each proven against the same oracle,
+each in turn -- so "native" and "codegen" are each proven against the same oracle,
 and appear as separate test IDs when one breaks.
 
 autouse is load-bearing and NOT stylistic. A non-autouse fixture named by
 `metafunc.fixturenames.append(...)` produces the parametrized IDs but is NEVER
 INSTANTIATED -- measured 2026-07-17: the ID said "codegen" while the engine in
-use was still "rust", so the whole suite ran the rust engine twice and reported a
+use was still "native", so the whole suite ran the native engine twice and reported a
 green bar for an engine that never executed. autouse forces instantiation.
 Modules that aren't parametrized have no request.param and fall through.
 """
@@ -35,20 +35,21 @@ def _backend(request: pytest.FixtureRequest):
         return
     differential.set_backend(param)
     yield param
-    differential.set_backend("rust")
+    differential.set_backend("native")
 
 
 @pytest.fixture
-def rust_bug(request):
-    """Mark the current test xfail on the rust backend only.
+def xfail_on_native(request):
+    """Mark the current test xfail on the native backend only.
 
-    For a residual case where the Rust engine still disagrees with the DataFusion
-    oracle while codegen matches it. strict=True so that fixing the Rust engine
-    turns the xpass into a failure -- the reminder to remove the marker.
+    For a residual case where the native engine still disagrees with the
+    DataFusion oracle while codegen matches it. strict=True so that fixing the
+    native engine turns the xpass into a failure -- the reminder to remove the
+    marker.
     """
 
     def _mark(reason: str) -> None:
-        if differential._backend == "rust":
+        if differential._backend == "native":
             request.applymarker(pytest.mark.xfail(reason=reason, strict=True))
 
     return _mark
