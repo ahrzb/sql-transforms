@@ -20,6 +20,15 @@ Each item: what, why deferred, and where to start.
 ## Open items
 
 ### Rust engine (`InferFn`) parity bugs — `transform` ≠ `infer`
+> **✅ RESOLVED (2026-07-18) — all 10 fixed & merged** (`rust-parity-bugs` → `b1a10bf`;
+> suite 211, 0 xfailed). Each was pinned first as a strict xfail-on-rust in
+> `tests/test_diff_rust_bugs.py` (now on master, repros confirmed against **live**
+> DataFusion), then fixed to match the oracle and the marker flipped. Tracking: **TASK-1
+> (Done)**. **One residual sub-case remains** — the codegen merge surfaced that the #1
+> float-display fix missed the `[1e-5, 1e-4)` band (native `'1e-5'` vs DF `'0.00001'`),
+> pinned as `test_float_display_small_decimal_band` → **TASK-7**. Minor/unspecified:
+> `SUBSTR` with a *negative length* (DF unprobed; impl returns `''`) — no divergence
+> surfaced, flagged for completeness. Detail below retained as the historical record.
 Five divergences (reported 2026-07-17) where the Rust `infer` path disagrees with
 the DataFusion `transform` path on the same input — each **violates the README's
 core promise that the two return identical values** (a user gets a different answer
@@ -664,7 +673,8 @@ DataFusion oracle. The revisit-condition above ("benchmark in hand") is satisfie
 **whether codegen is adopted as a maintained/default path vs. the Rust interpreter
 is AmirHossein's pending framing call; this note records the artifact, not a
 decision.** Its adversarial review surfaced **2 codegen-only parity divergences**
-(Rust already matches the oracle here — no Rust ticket):
+(Rust already matches the oracle here — no Rust ticket). **✅ Both fixed & merged into
+codegen (`131fa0b`); TASK-4 Done.** Retained for the record:
 - **float→string for |x| < 1e-4** — `CAST(1e-5 AS VARCHAR)` → DF `'0.00001'`, Rust
   `'0.00001'`, codegen `'1e-05'`; `1e-6` → DF `'1e-6'`, codegen `'1e-06'`. Realistic
   (small feature values); DF's exact float formatting is a known rabbit hole.
