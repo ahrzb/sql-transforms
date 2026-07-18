@@ -86,3 +86,23 @@ def test_transformer_and_native_window_agg_coexist():
     test = pd.DataFrame({"age": [25.0, 35.0], "income": [2.5, 3.5]})
     batch = _both_engines(t, test)
     assert np.allclose([b["an"] for b in batch], test["age"].to_numpy() / train["age"].mean())
+
+
+def test_camelcase_columns_compose():
+    # Regression for the House Prices (CamelCase) failure: a transformer ref on
+    # non-lowercase columns must survive both engines (same identifier-quoting
+    # class as c056ec3, which the transformer-ref path never carried).
+    train = pd.DataFrame(
+        {"LotArea": [1.0, 2.0, 3.0, 4.0], "YearBuilt": [1990.0, 2000.0, 2010.0, 2020.0]}
+    )
+    sc = StandardScaler().fit(train)
+    t = SQLTransform(
+        t"SELECT {sc}(LotArea, YearBuilt) AS out FROM __THIS__"
+    ).fit(pa.Table.from_pandas(train))
+
+    test = pd.DataFrame({"LotArea": [2.5], "YearBuilt": [2005.0]})
+    batch = _both_engines(t, test)
+
+    expected = sc.transform(test)
+    got = np.array([[b["out"]["LotArea"], b["out"]["YearBuilt"]] for b in batch])
+    assert np.allclose(got, expected)
