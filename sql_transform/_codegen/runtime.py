@@ -14,7 +14,11 @@ NULL is Python None throughout. Type tests are `type(v) is X` on purpose --
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
+
+# DataFusion str->int accepts only an optional sign and digits.
+_INT_STR = re.compile(r"[+-]?[0-9]+")
 
 
 def type_name(v: Any) -> str:
@@ -34,25 +38,31 @@ def type_name(v: Any) -> str:
 
 
 def _fmt_float(f: float) -> str:
-    """Render a float the way DataFusion does (NOT the way Rust does).
+    """Render a float the way DataFusion does (measured 2026-07-17).
 
-    Measured 2026-07-17 -- all three engines disagree here, and plain str() is
-    wrong twice:
-                      DataFusion    Rust        Python str()
-        1.0           "1.0"         "1"         "1.0"   <- str ok
-        0.1           "0.1"         "0.1"       "0.1"   <- str ok
-        NaN           "NaN"         "NaN"       "nan"   <- str WRONG
-        inf/-inf      "inf"/"-inf"  same        same    <- str ok
-        1e300         "1e300"       "1000...0"  "1e+300" <- str WRONG
-
-    Rust's "1" and its 300-digit 1e300 are both bugs (xfail-ed + ticketed).
+    DataFusion uses fixed notation for exponents in [-5, 15] and exponential
+    outside it, always with a bare exponent (no leading zero, no '+'):
+        1.0 -> "1.0"      0.1 -> "0.1"        1e-5 -> "0.00001"
+        1e-6 -> "1e-6"    1e16 -> "1e16"      NaN/inf -> "NaN"/"inf"/"-inf"
+    Python's repr() gives the same shortest round-trip digits but diverges in
+    two spots: it switches to exponential one decade earlier (1e-5 -> "1e-05")
+    and pads/​signs the exponent ("1e-06", "1e+16"). We fix up only those.
     """
     if math.isnan(f):
         return "NaN"
     if math.isinf(f):
         return "inf" if f > 0 else "-inf"
-    # Python writes exponents as "1e+300"; DataFusion omits the "+".
-    return str(f).replace("e+", "e")
+    s = repr(f)  # shortest round-trip
+    if "e" not in s:
+        return s  # already fixed notation; DataFusion agrees
+    mant, exp_str = s.split("e")
+    exp = int(exp_str)
+    if exp == -5:
+        # The one decade (1e-5..1e-4) where Python uses exp but DataFusion fixed.
+        sign = "-" if mant.startswith("-") else ""
+        intpart, _, frac = mant.lstrip("-").partition(".")
+        return f"{sign}0.{'0' * (5 - len(intpart))}{intpart}{frac}"
+    return f"{mant}e{exp}"  # bare exponent
 
 
 def display(v: Any) -> str:
@@ -127,11 +137,18 @@ def _float_div(a: float, b: float) -> float:
     return a / b
 
 
+def _wrap_i64(x: int) -> int:
+    """Wrap a Python bigint into i64 two's-complement range, like DataFusion's
+    integer arithmetic (measured: 9223372036854775807 * 2 -> -2). Python ints
+    never overflow, so without this codegen diverges at the i64 boundary."""
+    return (x + 0x8000000000000000) % 0x10000000000000000 - 0x8000000000000000
+
+
 def add(l: Any, r: Any) -> Any:  # noqa: E741
     if l is None or r is None:
         return None
     if type(l) is int and type(r) is int:
-        return l + r
+        return _wrap_i64(l + r)
     return as_f(l) + as_f(r)
 
 
@@ -139,7 +156,7 @@ def sub(l: Any, r: Any) -> Any:  # noqa: E741
     if l is None or r is None:
         return None
     if type(l) is int and type(r) is int:
-        return l - r
+        return _wrap_i64(l - r)
     return as_f(l) - as_f(r)
 
 
@@ -147,7 +164,7 @@ def mul(l: Any, r: Any) -> Any:  # noqa: E741
     if l is None or r is None:
         return None
     if type(l) is int and type(r) is int:
-        return l * r
+        return _wrap_i64(l * r)
     return as_f(l) * as_f(r)
 
 
@@ -157,7 +174,7 @@ def div(l: Any, r: Any) -> Any:  # noqa: E741
     if type(l) is int and type(r) is int:
         if r == 0:
             raise ValueError("division by zero")
-        return _trunc_div(l, r)
+        return _wrap_i64(_trunc_div(l, r))  # i64_MIN / -1 overflows
     return _float_div(as_f(l), as_f(r))
 
 
@@ -181,8 +198,13 @@ def _cmp(l: Any, r: Any) -> int:  # noqa: E741
     if tl is tr and tl in (int, str, bool):
         return -1 if l < r else (0 if l == r else 1)
     a, b = as_f(l), as_f(r)
-    if math.isnan(a) or math.isnan(b):
-        raise ValueError("Cannot compare NaN")
+    a_nan, b_nan = math.isnan(a), math.isnan(b)
+    if a_nan or b_nan:
+        # DataFusion total order (measured): NaN == NaN, and NaN sorts BELOW
+        # every non-NaN value, including -inf.
+        if a_nan and b_nan:
+            return 0
+        return -1 if a_nan else 1
     return -1 if a < b else (0 if a == b else 1)
 
 
@@ -282,10 +304,12 @@ def cast_int(v: Any) -> Any:
             raise ValueError("Cannot cast this value to INT")
         return int(math.trunc(v))
     if t is str:
-        try:
-            return int(v.strip())
-        except ValueError:
-            raise ValueError(f"Cannot cast '{v}' to INT") from None
+        # DataFusion accepts only an optional sign + digits -- no surrounding
+        # whitespace, decimals, or exponents (measured). Python int() would strip
+        # whitespace and accept underscores, so validate the exact shape first.
+        if not _INT_STR.fullmatch(v):
+            raise ValueError(f"Cannot cast '{v}' to INT")
+        return int(v)
     raise ValueError("Cannot cast this value to INT")
 
 
@@ -300,8 +324,12 @@ def cast_float(v: Any) -> Any:
     if t is float:
         return v
     if t is str:
+        # DataFusion rejects surrounding whitespace (measured); Python float()
+        # would strip it. Otherwise Python's parse matches (1e3, .5, 5., inf, nan).
+        if v != v.strip():
+            raise ValueError(f"Cannot cast '{v}' to FLOAT")
         try:
-            return float(v.strip())
+            return float(v)
         except ValueError:
             raise ValueError(f"Cannot cast '{v}' to FLOAT") from None
     raise ValueError("Cannot cast this value to FLOAT")
@@ -318,7 +346,14 @@ def cast_bool(v: Any) -> Any:
     if t is float:
         return v != 0.0
     if t is str:
-        return v.lower() == "true"
+        # DataFusion accepts a token set (case-insensitive, whitespace-trimmed)
+        # and errors on anything else (measured).
+        low = v.strip().lower()
+        if low in ("true", "t", "1", "yes", "y", "on"):
+            return True
+        if low in ("false", "f", "0", "no", "n", "off"):
+            return False
+        raise ValueError(f"Cannot cast '{v}' to BOOLEAN")
     raise ValueError("Cannot cast this value to BOOLEAN")
 
 
@@ -339,10 +374,19 @@ def substr(*a: Any) -> Any:
         return None
     s = as_s(a[0])
     start = as_i(a[1])
-    length = as_i(a[2]) if len(a) > 2 else None
-    idx = min((start - 1) if start > 0 else 0, len(s))
-    end = min(idx + max(length, 0), len(s)) if length is not None else len(s)
-    return s[idx:end]
+    n = len(s)
+    if len(a) <= 2:
+        return s[max(start, 1) - 1 :]
+    length = as_i(a[2])
+    if length < 0:
+        raise ValueError("negative substring length not allowed")
+    # DataFusion/Postgres windowing: the 1-indexed window is [start, start+length),
+    # intersected with the string's [1, n+1) -- positions < 1 consume the length
+    # rather than being clamped away. (Clamping start first, as before, was wrong
+    # for start <= 0: substr('hello', 0, 3) is 'he', not 'hel'.)
+    begin = max(start, 1)
+    end = min(start + length, n + 1)
+    return s[begin - 1 : end - 1] if end > begin else ""
 
 
 def concat(*a: Any) -> str:

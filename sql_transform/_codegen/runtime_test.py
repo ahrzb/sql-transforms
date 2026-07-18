@@ -131,9 +131,16 @@ def test_comparison_of_mismatched_types_errors():
         rt.eq("a", 1)
 
 
-def test_comparison_of_nan_errors():
-    with pytest.raises(ValueError, match="NaN"):
-        rt.lt(math.nan, 1.0)
+def test_nan_sorts_below_everything_and_equals_itself():
+    # DataFusion total order (measured): NaN == NaN, and NaN < every non-NaN
+    # value including -inf. (Rust raises here -- a Rust bug, ticketed.)
+    assert rt.eq(math.nan, math.nan) is True
+    assert rt.eq(math.nan, 1.0) is False
+    assert rt.lt(math.nan, 1.0) is True
+    assert rt.lt(math.nan, -math.inf) is True
+    assert rt.gt(math.nan, 1.0) is False
+    assert rt.lte(math.nan, math.nan) is True
+    assert rt.gte(1.0, math.nan) is True
 
 
 def test_kleene_and():
@@ -183,15 +190,34 @@ def test_cast_int_truncates_floats():
     assert rt.cast_int(-1.9) == -1
 
 
-def test_cast_int_parses_strings_and_errors_on_junk():
-    assert rt.cast_int(" 42 ") == 42
+def test_cast_int_accepts_signed_digits_only():
+    # DataFusion accepts an optional sign + digits, and rejects surrounding
+    # whitespace / decimals / exponents (measured). Python int() would strip
+    # whitespace, so this must not.
+    assert rt.cast_int("42") == 42
+    assert rt.cast_int("+7") == 7
+    assert rt.cast_int("-7") == -7
+    for junk in (" 42 ", "3.5", "1e3", "abc", ""):
+        with pytest.raises(ValueError, match="Cannot cast"):
+            rt.cast_int(junk)
+
+
+def test_cast_float_rejects_surrounding_whitespace():
+    assert rt.cast_float("3.5") == 3.5
+    assert rt.cast_float("1e3") == 1000.0
     with pytest.raises(ValueError, match="Cannot cast"):
-        rt.cast_int("abc")
+        rt.cast_float(" 3.5 ")
 
 
-def test_cast_bool_from_string_is_case_insensitive_true():
-    assert rt.cast_bool("TRUE") is True
-    assert rt.cast_bool("yes") is False
+def test_cast_bool_accepts_datafusion_token_set():
+    # Measured: case-insensitive, whitespace-trimmed, wider than just "true".
+    for s in ("true", "t", "1", "yes", "y", "on", " TRUE "):
+        assert rt.cast_bool(s) is True
+    for s in ("false", "f", "0", "no", "n", "off"):
+        assert rt.cast_bool(s) is False
+    for s in ("", "x", "2"):
+        with pytest.raises(ValueError, match="Cannot cast"):
+            rt.cast_bool(s)
 
 
 def test_cast_float_and_bool_from_numbers():
@@ -249,12 +275,44 @@ def test_string_builtins():
     assert rt.trim("  x  ") == "x"
 
 
-def test_substr_is_one_indexed_and_clamps():
+def test_substr_uses_postgres_windowing():
     assert rt.substr("hello", 2) == "ello"
     assert rt.substr("hello", 2, 3) == "ell"
-    assert rt.substr("hello", 0) == "hello"  # start <= 0 clamps to the beginning
-    assert rt.substr("hello", 2, 99) == "ello"  # length clamps to the end
+    assert rt.substr("hello", 2, 99) == "ello"  # length past the end clamps
     assert rt.substr("hello", 99) == ""
+    # start <= 0: the window is [start, start+length); positions < 1 CONSUME the
+    # length rather than being clamped away (measured vs DataFusion).
+    assert rt.substr("hello", 0, 3) == "he"  # not "hel"
+    assert rt.substr("hello", -2, 5) == "he"
+    assert rt.substr("hello", -1, 3) == "h"
+    assert rt.substr("hello", -5, 2) == ""
+    assert rt.substr("hello", 0) == "hello"  # no length: from position 1
+    with pytest.raises(ValueError, match="negative substring length"):
+        rt.substr("hello", 2, -1)
+
+
+def test_int_arithmetic_wraps_at_the_i64_boundary():
+    # DataFusion wraps i64 (measured); Python bigints would not.
+    imax = 9223372036854775807
+    assert rt.mul(imax, 2) == -2
+    assert rt.add(imax, 1) == -9223372036854775808
+    assert rt.sub(-9223372036854775808, 1) == imax
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (1e-5, "0.00001"),  # DataFusion uses fixed one decade lower than Python
+        (1.5e-5, "0.000015"),
+        (1e-6, "1e-6"),  # bare exponent: no leading zero, no '+'
+        (1.5e-6, "1.5e-6"),
+        (1e16, "1e16"),
+        (-1.5e-5, "-0.000015"),
+        (1234567.0, "1234567.0"),
+    ],
+)
+def test_display_small_and_large_floats_match_datafusion(value, expected):
+    assert rt.display(value) == expected
 
 
 def test_concat_skips_nulls_and_never_returns_null():
