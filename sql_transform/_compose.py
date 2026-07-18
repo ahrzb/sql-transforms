@@ -22,6 +22,7 @@ from sqlglot import exp
 from sql_transform._rewrite import rewrite_sql
 from sql_transform._sql import find_window_aggregates, parse_and_validate
 from sql_transform._state import build_state_tables
+from sql_transform._transformer_ref import is_transformer
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,7 @@ def desugar_template(template: Template) -> tuple[str, dict[str, Ref]]:
             ref = Ref(v.__self__, frozen=True, expr_text=item.expression)
         elif isinstance(v, SQLTransform):
             ref = Ref(v, frozen=False, expr_text=item.expression)
-        elif hasattr(v, "feature_names_in_") and hasattr(v, "transform"):
+        elif is_transformer(v):
             ref = Ref(v, frozen=False, expr_text=item.expression, is_transformer=True)
         else:
             raise TypeError(
