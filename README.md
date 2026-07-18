@@ -123,7 +123,9 @@ mise tasks        # list all tasks
   headed), the [DataFusion function catalogue](<backlog/docs/doc-1 - DataFusion-function-catalogue.md>)
   (interpreter parity target, auto-generated), and the
   [sklearn transformer plan](<backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>)
-  (tiers + native-machinery status).
+  (tiers + native-machinery status), and the
+  [Epic B design brief](<backlog/docs/doc-4 - Epic-B-multi-language-inference-runtimes-design-brief.md>)
+  (multi-language serving — unscoped).
 
 ## Contributing
 

@@ -195,6 +195,33 @@ breakdown + tick state live in the M1 section of [ROADMAP.md](ROADMAP.md).
 The prioritized transformer list (tiers + native-machinery status + parity gotchas)
 lives in [the sklearn transformer plan](<../backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>).
 
+### Feature-output model — records / dense / sparse (Epic A → M1)
+The output side of the serving use case (from Fermi/Investigator, 2026-07-18; **folded
+into M1**, tasks A1–A5 = TASK-13…17). Today the infer path returns pydantic records;
+sklearn interop needs numeric matrices, and text/categorical needs **sparse** output.
+Three output contracts: (1) pydantic records (current), (2) dense float64 `(n,k)`,
+(3) sparse CSR.
+
+Connective design decisions (the tasks carry the rest):
+- **Sparse feature = a per-row COO struct column** `struct<indices: list<int32>,
+  values: list<float64>>`. It's 1:1 with rows, so sparseness lives *inside the cell*,
+  not in row cardinality — that's what lets **one SELECT = a mixed dense+sparse feature
+  set**. Materializes to scipy CSR for free (concat arrays → data/indices, per-row
+  lengths → indptr).
+- **Dimension N + unseen-key handling come from the FITTED transform**, not the cell or
+  a type-level policy. N pins `shape=(n,N)` so batch width can't drift — that drift is a
+  **silent model-misalignment bug** (a batch missing the last vocab term materializes
+  narrower). Hence the **width-invariant assert** (A2).
+- **One SELECT → dense⊕sparse via type-directed decompose+assemble** (A4). sklearn
+  `ColumnTransformer` is the **internal** assembly target (hstack + densify), *not* a
+  user API — users write SQL, we compile the ColumnTransformer.
+- Fitted domains (vocab/idf, categories) ride the existing static_tables/lookup
+  mechanism — no new artifact store.
+- **A5 (tfidf / array multi-hot) is the opaque one** — needs explode, so it maps onto
+  the shipped opaque-transform mechanism (decision-3). A2/A3 are fixed-fanout and
+  composable. This is the same fixed-fanout-composes / variable-expansion-is-opaque
+  boundary Epic B (m-6, doc-4) is built on.
+
 ### Opaque transform support — Part 1 (engine capability) → Part 2 (SQL surface)
 *Split rationale (why Part 1/Part 2) canonical record:* **decision-3**. Follow-up
 tasks: **TASK-2** (Part 1), **TASK-3** (Part 2). Both parts have shipped; this entry

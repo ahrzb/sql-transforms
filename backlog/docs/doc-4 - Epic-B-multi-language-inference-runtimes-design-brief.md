@@ -1,0 +1,91 @@
+---
+id: doc-4
+title: Epic B - multi-language inference runtimes (design brief)
+type: other
+created_date: '2026-07-18 15:52'
+---
+
+# Epic B — multi-language inference runtimes (design brief)
+
+**Status: UNSCOPED EPIC (milestone m-6), not prioritized.** Multi-quarter. Entry point
+is scoping/planning, not implementation. Captured from Fermi (Investigator) 2026-07-18;
+Substrait feasibility validated with **real artifacts**, not speculation. Rests on the
+two-engine framing (native engine = one-of-N), an open question not being ratified in
+the short term.
+
+## Goal
+
+Serve trained SQL-transforms from **any backend language** (Go / Java / C# / Node) with
+**no Python, no DataFusion, and no FFI at inference time**. A Rust-core-plus-FFI hub was
+explicitly rejected — FFI / native-artifact friction kills backend adoption. Pure-native
+per language; WASM-from-Rust for JS only. The native Rust engine becomes **one-of-N**,
+not a hub.
+
+## Architecture (validated pieces marked ✓)
+
+- **Interchange is a serialized LOGICAL PLAN, not SQL.** Runtimes consume a plan
+  document + Parquet fitted tables → no runtime needs a SQL parser or query engine.
+  sqlglot stays the SQL front-end (parse / validate / window-rewrite); Substrait is
+  downstream of it, not a replacement.
+- ✓ **Substrait is emittable TODAY** from datafusion 54.0.0 python — zero new
+  deps/Rust/FFI: `Producer.to_substrait_plan(lp, ctx)` + `Serde.serialize_bytes`.
+  Planning is schema-only (no data). Proven sizes: projection 199B; the real rewritten
+  serving shape (projection + LEFT JOIN to state tables) 293B; GROUP BY/count 180B.
+- ✓ **Empirical limit:** `unnest`/explode is NOT emittable by the df 54.0.0 producer
+  ("Unsupported plan type: Unnest"). This draws a clean dividing line:
+  - **Composable on Substrait** (shared across all runtimes, free from a plan
+    interpreter): numeric/cast/CASE/coalesce, window-agg (rewritten to LEFT JOIN),
+    scalar one-hot (a join, no explode), aggregation. + tiny custom scalar primitives
+    (COO-construct, hash) implemented once per runtime.
+  - **Opaque per-runtime** (need explode → not producible): tfidf, array multi-hot —
+    map onto the existing opaque-transform concept (decision-3), corpus-gated.
+  So the boundary is **"fixed-fanout composes / variable-expansion is opaque"** — and
+  it's empirically grounded, not a guess.
+- Runtimes are thin **pre-resolved tree-walk interpreters** (columns→slot indices,
+  literals inlined, lookups by id). Small-batch serving is boundary-bound (per the
+  benchmark milestone) → a row executor is near-optimal; don't columnarize small-batch
+  input. Columnar executor added later for big batch, same IR. **Decouple IR (pin it)
+  from executor (vary per language/regime).**
+- **Parity: a GENERATIVE differential corpus** (fuzz exprs/SQL → DataFusion → freeze
+  expected), run in every runtime's CI. Doubles as the producer-coverage sweep. This is
+  the single point of failure for N independent reimplementations — coverage cannot
+  depend on hand-written cases.
+
+## Task sketch (NOT yet tickets — scope first)
+
+- **B1 SPIKE** (cheap, highest-signal): push the full rewrite output (every supported
+  function/cast) through the producer; catalog coverage gaps (unnest known-blocked).
+  Output decides B2.
+- **B2 DECIDE + define the frozen inference IR**: Substrait-profile vs homegrown
+  tiny-protobuf IR (both give free N-language deser via protoc). Pre-resolved, small
+  primitive set, transforms as compositions.
+- **B3** serving artifact format: plan doc + Parquet fitted tables referenced by id.
+- **B4** generative differential corpus + cross-language conformance harness
+  (foundational — before any runtime).
+- **B5** reference runtime (Rust, one-of-N) + WASM target for JS.
+- **B6** first native runtime — pick by demand (likely Go or Node).
+- **B7** opaque-primitive contract: tokenize / hash / COO-construct / sparse-expansion,
+  per-runtime, corpus-gated.
+
+## Sequencing (lazy, demand-driven)
+
+Ship the IR/interchange spec (B1→B2→B3) + the corpus (B4) + the Rust reference runtime
+(B5) **first**. Add each backend-language runtime (B6) only when a real workload needs
+that stack. The corpus + spec are the sunk infra that makes the Nth runtime cheap; the
+runtimes themselves are demand-driven. **Do not commit to all four languages upfront.**
+
+## Open decisions (for scoping)
+
+1. Substrait-profile vs homegrown IR — **spike-gated by B1**.
+2. First backend language — demand-driven.
+3. How this sequences against transformer-refs / opaque-transform work: **Epic A's A5
+   (TASK-17) and B7 both lean on the opaque-transform mechanism** — a real dependency to
+   order.
+
+## Relationships
+
+- Two-engine framing (native = one-of-N) is load-bearing here; open question, not
+  ratified short-term.
+- Shares the opaque-transform mechanism (decision-3) with Epic A's A5 (TASK-17).
+- The conformance harness (m-5, decision-6) is a precursor pattern for B4's generative
+  corpus.
