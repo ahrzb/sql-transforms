@@ -26,9 +26,10 @@ from sql_transform._state import build_state_tables
 
 @dataclass(frozen=True)
 class Ref:
-    transform: object  # a SQLTransform (imported lazily to avoid a cycle)
+    transform: object  # a SQLTransform, or a fitted transformer if is_transformer
     frozen: bool       # True for {a.transform}; False for bare {a}
     expr_text: str     # interpolation source, for error messages
+    is_transformer: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,8 @@ def desugar_template(template: Template) -> tuple[str, dict[str, Ref]]:
             ref = Ref(v.__self__, frozen=True, expr_text=item.expression)
         elif isinstance(v, SQLTransform):
             ref = Ref(v, frozen=False, expr_text=item.expression)
+        elif hasattr(v, "feature_names_in_") and hasattr(v, "transform"):
+            ref = Ref(v, frozen=False, expr_text=item.expression, is_transformer=True)
         else:
             raise TypeError(
                 f"interpolation {{{item.expression}}} must be a SQLTransform or "

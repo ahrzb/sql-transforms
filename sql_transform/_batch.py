@@ -12,6 +12,8 @@ import datafusion
 import pyarrow as pa
 import sqlglot
 
+from sql_transform._transformer_udf import _transformer_udf
+
 _ROW_ID = "__row_id__"
 
 
@@ -19,6 +21,7 @@ def run_batch(
     rewritten_sql: str,
     table: pa.Table,
     state_tables: dict[str, pa.Table],
+    transformers: dict[str, tuple[object, pa.Schema, pa.Schema]] | None = None,
 ) -> pa.Table:
     """Execute `rewritten_sql` against `table` (as __THIS__) and every state
     table (registered by name) via DataFusion, returning a pyarrow Table.
@@ -45,6 +48,8 @@ def run_batch(
     ctx.from_arrow(numbered_table, name="__THIS__")
     for name, state_table in state_tables.items():
         ctx.from_arrow(state_table, name=name)
+    for name, (obj, in_schema, out_schema) in (transformers or {}).items():
+        ctx.register_udf(_transformer_udf(obj, in_schema, out_schema, name))
     df = ctx.sql(tree.sql())
     # collect() returns [] for a zero-row result, so pass the schema explicitly.
     out = pa.Table.from_batches(df.collect(), schema=df.schema())
