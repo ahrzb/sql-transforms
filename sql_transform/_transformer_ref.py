@@ -29,7 +29,9 @@ def _named_struct(cols: list[str]) -> exp.Anonymous:
     args: list[exp.Expression] = []
     for c in cols:
         args.append(exp.Literal.string(c))
-        args.append(exp.column(c))
+        # quoted=True so DataFusion doesn't fold a mixed-case name (MSZoning ->
+        # mszoning). rewrite_sql carries the quoted flag through to __THIS__.col.
+        args.append(exp.column(c, quoted=True))
     return exp.Anonymous(this="named_struct", expressions=args)
 
 
