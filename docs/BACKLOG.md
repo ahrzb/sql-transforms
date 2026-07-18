@@ -222,6 +222,13 @@ Connective design decisions (the tasks carry the rest):
   composable. This is the same fixed-fanout-composes / variable-expansion-is-opaque
   boundary Epic B (m-6, doc-4) is built on.
 
+**Usability signal (2026-07-18, House Prices):** the column numeric/categorical roles
+still live in Python for the sklearn handoff, so with the literal-SQL form the column
+list is **duplicated (SQL + Python)** — a real papercut on wide (80-col) datasets.
+Motivates the A4 assembler owning column routing (compile the `ColumnTransformer` from
+the SQL, so roles aren't re-declared in Python). Not a separate task — an A4 design
+constraint.
+
 ### Opaque transform support — Part 1 (engine capability) → Part 2 (SQL surface)
 *Split rationale (why Part 1/Part 2) canonical record:* **decision-3**. Follow-up
 tasks: **TASK-2** (Part 1), **TASK-3** (Part 2). Both parts have shipped; this entry
