@@ -208,21 +208,51 @@ don't. Merge not pushed (local master).
   validate `out_schema` against the fitted transformer's actual output dtype at
   registration, *or* reconcile the two coercion layers so a mismatch can't diverge.
 
-**Part 2 — the SQL / authoring surface (LATER).** How it's expressed and how it
-composes: the `{ref}` row→row model (`{pipeline}({features}(__THIS__))`),
-multi-output native refs, the lowering + output-column naming, the DataFusion
-`transform`-side UDF, and `transform`==`infer` parity across the mix.
+**Part 2 — the SQL / authoring surface — ✅ SHIPPED (`6a270d4`, 2026-07-18).** A fitted
+sklearn transformer can be referenced as an opaque `{ref}` in an authored t-string —
+`SQLTransform(t"SELECT {svd}({w2v}(inp)) AS out FROM __THIS__")` — with single refs and
+nested threading `f(g(x))`; both engines (`transform`=DataFusion, `infer`=Rust)
+differentially equal. Python-only — reused Part 1's Rust `Expr::Transform` + DataFusion
+UDF unchanged. Suite 201. Spec `2026-07-18-transformer-refs-design.md`, plan
+`2026-07-18-transformer-refs.md`; the superseded `2026-07-17-opaque-transform-refs-design.md`
+was removed.
 
-**Why split:** the bundled spec's *surface* half started dragging real engine
-complexity in for cosmetic reasons — the lowering wants a **derived table** (to bind
-the struct once and project its fields with clean names, since DataFusion won't let
-you alias `unnest` output or do inline field access), and supporting a derived table
-in the row engine means **adding a projection node inside the `RelNode` plan tree**,
-because today `Plan { projection, input }` applies projection only at the top level.
-That's engine surgery bought by a naming limitation in the *other* engine.
-Splitting keeps Part 1 — a genuinely useful engine capability — from waiting on, or
-being contaminated by, the surface design. **The derived-table lowering question
-belongs to Part 2 and is being reconsidered there.**
+**Deferred (recorded in the spec): aggregate over a transformer's output** (and the
+full fit-staging machinery). It needs **inline struct-field access in the DataFusion
+serve query**, which DataFusion doesn't do — **the derived-table wall the split
+predicted is real.** In-scope cases sidestep it by passing whole structs through and
+never doing field access. This is the deferred direction; revisit if
+aggregate-over-output is actually needed (it's what fit-cascade-across-a-transformer
+would require).
+
+**Part 2 follow-ups — from the whole-branch review (opus; verdict ready-to-merge, no
+Critical/Important):**
+1. **Redundant fit-time work.** The single-transformer path runs `.transform()` on the
+   training data **twice** — once in `_derive_schemas` to sniff the `out_schema` dtype,
+   once in `_materialize` whose output is then discarded (no outer consumer). Cold-path
+   and correct, just wasteful. **Fix:** reuse the `_derive_schemas` probe output and
+   skip `_materialize` when a ref has no outer consumer.
+2. **Opaque error messages on out-of-scope paths** (both error *safely* — never wrong
+   output — but the messages are cryptic): (a) aggregate over transformer output → raw
+   DataFusion `Invalid function '__compose_0__'`; (b) unfitted transformer → `must be a
+   SQLTransform or its .transform` `TypeError`. **Fix:** explicit pre-checks with
+   friendly messages.
+3. **Negative / contract test coverage** (missing, cheap `pytest.raises`): mixed
+   leaf+nested args `{t}(a, {g}(b))`; aggregate-over-output; column vs
+   `feature_names_in_` mismatch; unfitted ref. **Plus** a regression test for
+   `transformer + PARTITION BY <transformer-input-col>` coexistence — parity holds
+   because `rewrite_sql` qualifies the `named_struct` columns to `__THIS__`, but it's
+   currently guarded only by a downstream side-effect, so lock it in.
+4. **Confirmatory only (low value):** a 3+ level nesting test.
+
+**Why the split was right (confirmed):** the bundled spec's *surface* half dragged real
+engine complexity in for cosmetic reasons — the lowering wanted a **derived table** (to
+bind the struct once and project its fields with clean names, since DataFusion won't let
+you alias `unnest` output or do inline field access), and supporting a derived table in
+the row engine means **adding a projection node inside the `RelNode` plan tree** (today
+`Plan { projection, input }` projects only at the top level). Part 2 shipped by
+**avoiding** that wall (whole-struct passthrough, no field access) and deferring the
+cases that hit it — exactly the containment the split bought.
 
 ### Estimator-interface compliance of our transformers (compose-in / hook 1) — deferred
 Make *our* transformer objects pass sklearn's `check_estimator` conformance

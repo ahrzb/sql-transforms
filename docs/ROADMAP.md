@@ -57,16 +57,19 @@ Active — in order:
    > fallback-node shape; **treat A1–A3 as stale** until it lands and this re-sequences.
    > Phase B (native per transformer) + the transformer prioritization are unaffected.
    >
-   > **Update (2026-07-17):** the fallback-node work is now **split in two** (see
-   > BACKLOG "Opaque transform support — Part 1 → Part 2"). **Part 1 — the Rust
-   > engine can invoke an opaque already-fitted Python transformer** (marshal out →
-   > `.transform()` → marshal back; pure engine capability) is **✅ shipped** (`4d5c85c`,
-   > suite 197, parity green). **Part 2 — the SQL/authoring surface** (`{ref}` row→row
-   > model, lowering + output naming, DataFusion-side UDF, cross-engine parity) comes
-   > later, and now carries three review follow-ups (out-of-projection parity gap,
-   > 1-in/1-out coverage, `out_schema` dtype invariant — see BACKLOG). The split kept
-   > Part 1 off the derived-table/projection-node engine surgery the bundled surface
-   > design was pulling in.
+   > **Update (2026-07-18):** the fallback-node work was **split in two** and **both
+   > shipped** (see BACKLOG "Opaque transform support — Part 1 → Part 2"). **Part 1 —
+   > the Rust engine can invoke an opaque already-fitted Python transformer** — **✅
+   > shipped** (`4d5c85c`, suite 197). **Part 2 — the SQL/authoring surface** (a fitted
+   > transformer as an opaque `{ref}` in an authored t-string, single + nested
+   > threading `f(g(x))`, both engines differentially equal) — **✅ shipped**
+   > (`6a270d4`, suite 201). Aggregate-over-transformer-output is **deferred** (needs
+   > inline struct-field access in DataFusion's serve query — the derived-table wall
+   > the split predicted; in-scope cases pass whole structs through and sidestep it).
+   > Both carry small review follow-ups in BACKLOG (fit-time double-transform, friendly
+   > errors, negative-test coverage; plus the Part-1 out-of-projection / 1-in-1-out /
+   > `out_schema`-dtype items). **Next:** Phase B native-per-transformer + the
+   > `ColumnTransformer` assembly surface.
 
    **Phase A slices (superseded — pending fallback-node design):**
    1. [ ] **A1 — thin vertical.** Estimator interface (`fit`/`transform`/`get_feature_names_out`/`get_params`/`set_params`/cloneable) on ONE transformer (`StandardScaler`), internals = real sklearn fallback, driven end-to-end through a stock sklearn `Pipeline`. **Stands up the [per-transformer differential parity harness](BACKLOG.md#per-transformer-differential-parity-harness)** (StandardScaler through the param + edge-case matrix). Ships hooks 1+3 on its own. Designs the `get_feature_names_out`/provenance **contract shape** (the hook-3 surface) — joint look before it hardens. NB: A1 is single-transformer parity; the full *assembly* oracle lands in A2.
