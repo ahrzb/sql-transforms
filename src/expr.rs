@@ -115,7 +115,9 @@ pub fn type_name(v: &Value) -> &'static str {
 pub fn display_value(v: &Value) -> String {
     match v {
         Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
+        // `{:?}` matches Arrow/DataFusion's Float64->Utf8 rendering (1.0 -> "1.0",
+        // 1e300 -> "1e300"), unlike `to_string` (1.0 -> "1", 1e300 -> 300 digits).
+        Value::Float(f) => format!("{f:?}"),
         Value::Str(s) => s.clone(),
         Value::Bool(b) => b.to_string(),
         Value::Null => String::new(),
@@ -600,8 +602,17 @@ fn compare_values(l: &Value, r: &Value) -> Result<std::cmp::Ordering, crate::pla
         (a, b) => {
             let af = as_f64(a)?;
             let bf = as_f64(b)?;
-            af.partial_cmp(&bf)
-                .ok_or_else(|| crate::plan::InterpError::Eval("Cannot compare NaN".to_string()))
+            // DataFusion float ordering: NaN == NaN and NaN sorts greatest.
+            // Keep partial_cmp for the normal path (so 0.0 == -0.0) and only
+            // special-case NaN, which partial_cmp reports as incomparable.
+            Ok(af.partial_cmp(&bf).unwrap_or_else(|| {
+                match (af.is_nan(), bf.is_nan()) {
+                    (true, true) => std::cmp::Ordering::Equal,
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    (false, false) => unreachable!("partial_cmp only fails on NaN"),
+                }
+            }))
         }
     }
 }
@@ -732,14 +743,19 @@ fn as_i64(args: &[Value], idx: usize) -> Result<i64, crate::plan::InterpError> {
 }
 
 fn substr(s: &str, start: i64, length: Option<i64>) -> String {
+    // Postgres/DataFusion windowing: the 1-based window is [start, start+length);
+    // positions < 1 are consumed by the length. SUBSTR('hello',0,3) -> 'he',
+    // SUBSTR('hello',-2,5) -> 'he'. `start` clamps up to 1; the end is
+    // start+length-1 (0-based exclusive), both clamped into [0, len].
     let chars: Vec<char> = s.chars().collect();
-    let idx = if start > 0 { (start - 1) as usize } else { 0 };
-    let idx = idx.min(chars.len());
+    let len = chars.len() as i64;
+    let begin = (start.max(1) - 1).clamp(0, len) as usize;
     let end = match length {
-        Some(len) => (idx + len.max(0) as usize).min(chars.len()),
-        None => chars.len(),
+        Some(l) => (start + l - 1).clamp(0, len) as usize,
+        None => len as usize,
     };
-    chars[idx..end].iter().collect()
+    let end = end.max(begin);
+    chars[begin..end].iter().collect()
 }
 
 #[cfg(test)]
@@ -768,9 +784,10 @@ fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpErr
         CastType::Int => match v {
             Value::Int(i) => Value::Int(i),
             Value::Float(f) => Value::Int(f.trunc() as i64),
+            // No trim: DataFusion's Utf8->Int cast rejects surrounding
+            // whitespace (CAST(' 42 ' AS BIGINT) errors), so we must too.
             Value::Str(s) => Value::Int(
-                s.trim()
-                    .parse::<i64>()
+                s.parse::<i64>()
                     .map_err(|_| InterpError::Eval(format!("Cannot cast '{s}' to INT")))?,
             ),
             Value::Bool(b) => Value::Int(b as i64),
@@ -783,9 +800,9 @@ fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpErr
         CastType::Float => match v {
             Value::Int(i) => Value::Float(i as f64),
             Value::Float(f) => Value::Float(f),
+            // No trim: match DataFusion, which rejects surrounding whitespace.
             Value::Str(s) => Value::Float(
-                s.trim()
-                    .parse::<f64>()
+                s.parse::<f64>()
                     .map_err(|_| InterpError::Eval(format!("Cannot cast '{s}' to FLOAT")))?,
             ),
             Value::Bool(b) => Value::Float(if b { 1.0 } else { 0.0 }),
@@ -799,7 +816,13 @@ fn eval_cast(v: Value, target: CastType) -> Result<Value, crate::plan::InterpErr
             Value::Bool(b) => Value::Bool(b),
             Value::Int(i) => Value::Bool(i != 0),
             Value::Float(f) => Value::Bool(f != 0.0),
-            Value::Str(s) => Value::Bool(s.eq_ignore_ascii_case("true")),
+            // DataFusion/Arrow's Utf8->Boolean accept set (case-insensitive);
+            // anything else errors, unlike the old "only 'true'" behavior.
+            Value::Str(s) => match s.to_ascii_lowercase().as_str() {
+                "true" | "t" | "yes" | "y" | "1" | "on" => Value::Bool(true),
+                "false" | "f" | "no" | "n" | "0" | "off" => Value::Bool(false),
+                _ => return Err(InterpError::Eval(format!("Cannot cast '{s}' to BOOLEAN"))),
+            },
             Value::Null | Value::Object(_) | Value::Struct(_) | Value::List(_) => {
                 return Err(InterpError::Eval(
                     "Cannot cast this value to BOOLEAN".to_string(),
