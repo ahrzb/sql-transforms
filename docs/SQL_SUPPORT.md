@@ -65,6 +65,7 @@ Out-of-scope constructs raise a clear `ValueError` from `_sql.py`'s
 | Explicit `ValueError` naming the unsupported clause (`WHERE`/`JOIN`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`) instead of a downstream failure | ✅ | `_sql.py` `parse_and_validate` |
 | `MEAN` → `AVG` synonym (preserves pre-sqlglot behavior) | ✅ | `_sql.py` `_FUNCTION_SYNONYMS` |
 | `PARTITION BY` window aggregates (target/categorical encoding) | ✅ | `_state.py` `build_state_tables` (per-partition table) + `_rewrite.py` LEFT JOIN + native LEFT lookup join; unseen partition → NULL, transform stays 1-to-1 |
+| Parameterized (quantile) window aggregate — `percentile_cont(x, q)` / `approx_percentile_cont` OVER, quantile fraction frozen at fit | ✅ | `_sql.py` `_PARAMETERIZED_AGGS` (folds the literal `q` into the state key so p25/p75 don't collide; rejects non-literal `q`) + `_state.py` extraction GROUP BY. `MEDIAN(x)` works as any 1-arg window fn |
 | Per-partition/global state value types preserved (int/float/str/bool, nullable) | ✅ | `_state.py` `build_state_tables` (no float coercion) |
 | `ORDER BY` window aggregates | ❌ explicitly rejected | `_state.py` `build_state_tables` (via `WindowAgg.has_order`) |
 | Simple equality JOIN in authored SQL (row⋈row, row⋈static) | 🔜 v1 target of the sqlglot rewrite | not started |
