@@ -20,7 +20,7 @@ Legend: `[x]` done · `[ ]` todo.
 
 ### M0 — Differential test harness ✅
 The parity oracle the rest of the track leans on: `transform` (DataFusion) and
-`infer` (Rust `InferFn`) proven to agree across the expression/join surface, so a
+`infer` (native `InferFn`) proven to agree across the expression/join surface, so a
 regression in either engine is caught mechanically. Done — tasks 1–4 merged. The
 one real bug it surfaced (LEFT-join nullability) is now fixed (see M1 below).
 
@@ -60,7 +60,7 @@ Active — in order:
    >
    > **Update (2026-07-18):** the fallback-node work was **split in two** and **both
    > shipped** (see BACKLOG "Opaque transform support — Part 1 → Part 2"). **Part 1 —
-   > the Rust engine can invoke an opaque already-fitted Python transformer** — **✅
+   > the native engine can invoke an opaque already-fitted Python transformer** — **✅
    > shipped** (`4d5c85c`, suite 197). **Part 2 — the SQL/authoring surface** (a fitted
    > transformer as an opaque `{ref}` in an authored t-string, single + nested
    > threading `f(g(x))`, both engines differentially equal) — **✅ shipped**
@@ -102,5 +102,5 @@ the raw column that produced it.
 - [ ] [`CASE WHEN` + outer joins in authored SQL](BACKLOG.md#case-when-and-outer-joins-in-authored-sql) — SQL surface; prioritize by what authoring actually needs
 - [ ] [`ORDER BY` / window frames](BACKLOG.md#order-by--window-frames-running-cumulative-moving-aggregates) — research spike; may not fit a row-at-a-time inference engine
 - **Feature-store expansion** — the post-adoption goal; M4's contract is its groundwork, so it's a natural next step rather than a pivot.
-- ~~Unify batch vs inference error semantics~~ — **won't do**: error-type parity across engines is a non-goal; only output *values* must match. Div/mod-by-zero raising a clean `ValueError` (Rust) vs a raw DataFusion `Exception` (batch) is accepted by design. Canonical: decision-2; see BACKLOG.
+- ~~Unify batch vs inference error semantics~~ — **won't do**: error-type parity across engines is a non-goal; only output *values* must match. Div/mod-by-zero raising a clean `ValueError` (native) vs a raw DataFusion `Exception` (batch) is accepted by design. Canonical: decision-2; see BACKLOG.
 - ~~Codegen / compiled inference path~~ — considered, likely won't do (superseded by the `InferFn` interpreter).

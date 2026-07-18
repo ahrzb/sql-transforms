@@ -111,14 +111,14 @@ Two phases, two engines:
   (`__THIS__ CROSS JOIN __STATE__`) runs against the batch as `__THIS__` and the
   frozen fit-time state as a one-row `__STATE__` table. Vectorized, columnar.
 - **`infer(row)` / `infer_batch(rows)`** — low-latency execution through the small
-  Rust interpreter (`InferFn`, via pyo3), row-at-a-time, against the same frozen
+  native interpreter (`InferFn`, via pyo3), row-at-a-time, against the same frozen
   state. No SQL engine at call time — just expression eval, scans, and joins
   against typed Pydantic rows. Accepts dicts or Pydantic models; returns typed
   output models.
 
 Both paths run the *same* rewritten SQL against the *same* frozen state, so they
 return identical values on the normal numeric path. The split just picks the
-engine: DataFusion for large batches, the Rust interpreter for online inference.
+engine: DataFusion for large batches, the native interpreter for online inference.
 This is what makes goal 2 possible: fit pays the cost of a real query engine once;
 inference pays only for a lean interpreter walking a plan.
 
@@ -133,7 +133,7 @@ See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 - Auto-synthesized Pydantic model for `__THIS__` (input row schema) when the user
   doesn't supply one; user can pass their own `this_model`.
 - SQL rewrite pass: window-aggregate SQL → plain `__STATE__`/`__THIS__` column-ref
-  SQL, ready for the Rust interpreter.
+  SQL, ready for the native interpreter.
 
 **Inference (`InferFn`, Rust/pyo3)**
 - Typed row tables in, typed output model out — Pydantic on both sides, validated
@@ -149,7 +149,7 @@ See [SQL_SUPPORT.md](SQL_SUPPORT.md) for the detailed feature-by-feature tracker
 - Output type: user-supplied `output_model`, or statically inferred/synthesized
   from the query.
 
-**Not yet supported in the Rust interpreter**
+**Not yet supported in the native interpreter**
 - `CASE WHEN`
 - `GROUP BY` / aggregates at inference time (by design — aggregation only happens
   during `fit`; open question whether inference ever needs it, e.g. for online

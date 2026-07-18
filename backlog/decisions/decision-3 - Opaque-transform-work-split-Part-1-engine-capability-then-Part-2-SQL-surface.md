@@ -19,7 +19,7 @@ projects only at the top level). Engine surgery bought by a naming limitation in
 ## Decision
 
 **Split the work in two (2026-07-17), Part 1 first.**
-- **Part 1 — engine capability:** the Rust engine can invoke an opaque already-fitted
+- **Part 1 — engine capability:** the native engine can invoke an opaque already-fitted
   Python transformer (marshal out → `.transform()` → marshal back). Independent of
   how it's expressed in SQL.
 - **Part 2 — SQL/authoring surface:** the `{ref}` row→row model, lowering + output

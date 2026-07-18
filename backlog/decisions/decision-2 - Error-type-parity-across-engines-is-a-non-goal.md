@@ -6,10 +6,10 @@ status: accepted
 ---
 ## Context
 
-`transform` (DataFusion) and `infer` (Rust) must return identical *values* on the
+`transform` (DataFusion) and `infer` (native) must return identical *values* on the
 normal numeric path — non-negotiable, enforced by the differential harness. But the
 two engines carry genuinely different failure information: e.g. integer
-div/modulo-by-zero raises a clean `ValueError` from Rust vs a raw DataFusion
+div/modulo-by-zero raises a clean `ValueError` from native vs a raw DataFusion
 `Exception` ("Arrow error: Divide by zero error") from the batch path.
 
 ## Decision

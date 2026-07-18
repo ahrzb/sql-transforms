@@ -14,12 +14,12 @@ Each item: what, why deferred, and where to start.
 > the decision history, verified source citations, and deferred/strategic context that
 > doesn't fit an atomic task. Rule: **actionable work → Backlog.md; context & decisions
 > → here.** Tasks link back with `--ref docs/BACKLOG.md`; don't duplicate detail across
-> the two. Seeded tasks: TASK-1 (Rust parity bugs), TASK-2/3 (opaque-transform
+> the two. Seeded tasks: TASK-1 (native parity bugs), TASK-2/3 (opaque-transform
 > follow-ups), TASK-4 (codegen bugs), TASK-5/6 (Phase B + assembly).
 
 ## Open items
 
-### Rust engine (`InferFn`) parity bugs — `transform` ≠ `infer`
+### Native engine (`InferFn`) parity bugs — `transform` ≠ `infer`
 > **✅ RESOLVED (2026-07-18) — all 10 fixed & merged** (`rust-parity-bugs` → `b1a10bf`;
 > suite 211, 0 xfailed). Each was pinned first as a strict xfail-on-rust in
 > `tests/test_diff_rust_bugs.py` (now on master, repros confirmed against **live**
@@ -29,7 +29,7 @@ Each item: what, why deferred, and where to start.
 > pinned as `test_float_display_small_decimal_band` → **TASK-7**. Minor/unspecified:
 > `SUBSTR` with a *negative length* (DF unprobed; impl returns `''`) — no divergence
 > surfaced, flagged for completeness. Detail below retained as the historical record.
-Five divergences (reported 2026-07-17) where the Rust `infer` path disagrees with
+Five divergences (reported 2026-07-17) where the native `infer` path disagrees with
 the DataFusion `transform` path on the same input — each **violates the README's
 core promise that the two return identical values** (a user gets a different answer
 at serving time than at batch time). Found while validating assumptions for the
@@ -70,19 +70,19 @@ this work**, and it should not depend on the codegen branch landing.
 
 **Start:** each bullet names its cause + site; fix independently. **DataFusion is the
 oracle** (`transform` *is* DataFusion, and the harness gates on it — canonical:
-**decision-1**) — match DataFusion, don't codify current Rust behavior. Pin each with
+**decision-1**) — match DataFusion, don't codify current native behavior. Pin each with
 a strict `xfail` on the rust backend first so a fix flips it to a failure and forces
 the marker's removal. Task: **TASK-1**.
 
-**Update (2026-07-17) — codegen adversarial fresh-eyes review found 5 more Rust
+**Update (2026-07-17) — codegen adversarial fresh-eyes review found 5 more native
 divergences on uncovered edge cases** (all verified against both engines; the
-differential corpus never hit them). These are *additional* Rust `InferFn` bugs
+differential corpus never hit them). These are *additional* native `InferFn` bugs
 (oracle = DataFusion), independent of the codegen engine's own status:
 6. **`COALESCE(int, float)` mis-types** — reported `infer` → int `3` / `ValidationError`,
    `transform` → float `3.0` (numeric supertype). **Same root as #3**: the
    `NULLIF`/`COALESCE` output type is taken from `args[0].base` instead of the common
    supertype. Codegen fixed its side (`_function_type` → common supertype) + pinned
-   xfail-on-rust; Rust still to fix.
+   xfail-on-rust; native still to fix.
 7. **`SUBSTR` with start ≤ 0** — `SUBSTR('hello',0,3)` → DF `'he'`, engines `'hel'`;
    `SUBSTR('hello',-2,5)` → DF `'he'`, engines `'hello'`. DF uses Postgres windowing
    (positions < 1 consume the length). Realistic; silent wrong string.
@@ -204,18 +204,18 @@ Part 1 first. **Supersedes/splits** the bundled spec
 [opaque-transform-refs-design](superpowers/specs/2026-07-17-opaque-transform-refs-design.md)
 (`f213d6c`) and its predecessor mixed-pipeline draft (`963eea6`).
 
-**Part 1 — the Rust engine can use transformers — ✅ SHIPPED (`4d5c85c`, 2026-07-17).**
+**Part 1 — the native engine can use transformers — ✅ SHIPPED (`4d5c85c`, 2026-07-17).**
 Both engines invoke an **opaque, already-fitted Python transformer** — an sklearn
 transformer *or* a whole fitted `Pipeline` — during one query: marshal the row's
 values out (aligned by `feature_names_in_`), call `.transform()`, marshal back through
 a declared `out_schema`. Differential parity green (`transform`=DataFusion oracle ==
-`infer`=Rust); suite 197 passed, `cargo test` 2 passed. Pure engine capability,
+`infer`=native); suite 197 passed, `cargo test` 2 passed. Pure engine capability,
 independent of how it's expressed in SQL — native where we have it, opaque where we
 don't. Merge not pushed (local master).
 
 **Part 1 follow-ups — surfaced by review, belong to Part 2 (2026-07-17):**
 - **(a) Out-of-projection transformer calls — latent parity gap.** When a transformer
-  call isn't in the query's projection, Rust fails loud (`Unknown function`) while the
+  call isn't in the query's projection, native fails loud (`Unknown function`) while the
   DataFusion oracle (globally-registered UDF) still executes it. Harmless today (Part 1
   only calls in-projection) but diverges once Part 2 generates reserved names across
   clauses. **Fix:** a build-time guard that rejects/resolves transformer refs across
@@ -226,7 +226,7 @@ don't. Merge not pushed (local master).
   differential parity case before one does.**
 - **(c) `out_schema` vs natural-dtype invariant — enforce or reconcile.** The declared
   `out_schema` must equal the transform's natural output dtype. The engines reach the
-  declared type by *different coercion layers* (DataFusion UDF: pyarrow cast; Rust
+  declared type by *different coercion layers* (DataFusion UDF: pyarrow cast; native
   infer: pydantic model-validate), which agree only when no real coercion happens.
   Documented at both call sites (`ed09a47`) but convention, not enforced. **Fix:**
   validate `out_schema` against the fitted transformer's actual output dtype at
@@ -235,7 +235,7 @@ don't. Merge not pushed (local master).
 **Part 2 — the SQL / authoring surface — ✅ SHIPPED (`6a270d4`, 2026-07-18).** A fitted
 sklearn transformer can be referenced as an opaque `{ref}` in an authored t-string —
 `SQLTransform(t"SELECT {svd}({w2v}(inp)) AS out FROM __THIS__")` — with single refs and
-nested threading `f(g(x))`; both engines (`transform`=DataFusion, `infer`=Rust)
+nested threading `f(g(x))`; both engines (`transform`=DataFusion, `infer`=native)
 differentially equal. Python-only — reused Part 1's Rust `Expr::Transform` + DataFusion
 UDF unchanged. Suite 201. Spec `2026-07-18-transformer-refs-design.md`, plan
 `2026-07-18-transformer-refs.md`; the superseded `2026-07-17-opaque-transform-refs-design.md`
@@ -344,8 +344,8 @@ not to write ahead of it. The notes below stay as captured design thinking.
   UDAF/UDWF** (DataFusion 54 supports `udf`/`udaf`/`udwf`, incl. Rust-backed via
   PyCapsule); one impl, done. **UDFs** are either **SQL-expressible** (arithmetic,
   `COALESCE`, `=`, `CAST` — runs on *both* `transform` (DataFusion) and `infer`
-  (Rust `InferFn`) for free) or a **genuinely new scalar op** needing a *dual* impl
-  (InferFn Rust built-in **and** a DataFusion UDF for batch), kept in lockstep by the
+  (native `InferFn`) for free) or a **genuinely new scalar op** needing a *dual* impl
+  (InferFn native built-in **and** a DataFusion UDF for batch), kept in lockstep by the
   differential harness. First cut should stay entirely in the SQL-expressible +
   DataFusion-UDAF lane (no new InferFn Rust ops).
 - **Composition: fuse at inference, stage at fit.** A fitted SQLTransformer used
@@ -513,7 +513,7 @@ Mechanics for the frozen path:
 `{scaler.transform}(age)` inside an outer `SQLTransform` — including the outer taking
 its own aggregate over the inlined column (`… / AVG({scaler.transform}(age)) OVER ()`)
 — fits + transforms/infers correctly, bit-identical between `transform` (DataFusion)
-and `infer` (Rust); a bare `{scaler}` on a fitted object raises the explicit
+and `infer` (native); a bare `{scaler}` on a fitted object raises the explicit
 fit-cascade-not-implemented error; and `{scaler.transform}` on an *unfit* object errors.
 
 Open (this slice):
@@ -584,7 +584,7 @@ cheap part, and it's landed.
 
 **The remaining work needs Rust.** The composite's rewritten SQL reaches `InferFn`
 as a **string**, so a build-time tag on the sqlglot AST does *not* survive to the
-interpreter — the tag has to be propagated *through* the Rust engine and surfaced
+interpreter — the tag has to be propagated *through* the native engine and surfaced
 back out on error. **Start:** thread the origin tag from `inline_references` into the
 program the interpreter runs, carry it on the executing node, and render the
 attributed location when the interpreter raises. Distinct from the "error-type
@@ -615,7 +615,7 @@ differently. **Scope:**
 
 ### `CASE WHEN` and outer joins in authored SQL
 Decide if/how `CASE WHEN` and `LEFT`/`RIGHT`/`FULL OUTER` joins matter for real
-feature-engineering SQL before investing — neither is supported in the Rust
+feature-engineering SQL before investing — neither is supported in the native
 interpreter today. **Start:** prioritize by what authoring (goal 1) actually
 needs; `CASE WHEN` also needs Layer-1 interpreter support, not just a rewrite
 change.
@@ -660,25 +660,25 @@ around:
 ## Considered — likely won't do
 
 ### Codegen / compiled inference path
-An older README roadmap item, superseded by the Rust `InferFn` interpreter. Keep
+An older README roadmap item, superseded by the native `InferFn` interpreter. Keep
 parked unless interpreter overhead becomes a *measured* bottleneck; revisit only
 with a benchmark in hand.
 
 **Update (2026-07-17) — a codegen engine now exists (fact, not yet a ratified
 direction).** The codegen dev built it on `worktree-codegen-inferfn` (`sql_transform/
 _codegen/`, plan `2026-07-17-codegen-inferfn.md`, 11 tasks): suite 397 passed / 14
-skipped (containers) / 3 xfailed (pinned Rust divergences), parity target =
+skipped (containers) / 3 xfailed (pinned native divergences), parity target =
 DataFusion oracle. The revisit-condition above ("benchmark in hand") is satisfied
 (the earlier n=1 boundary-bound benchmark), and an engine has been written — but
-**whether codegen is adopted as a maintained/default path vs. the Rust interpreter
+**whether codegen is adopted as a maintained/default path vs. the native interpreter
 is AmirHossein's pending framing call; this note records the artifact, not a
 decision.** Its adversarial review surfaced **2 codegen-only parity divergences**
-(Rust already matches the oracle here — no Rust ticket). **✅ Both fixed & merged into
+(native already matches the oracle here — no native ticket). **✅ Both fixed & merged into
 codegen (`131fa0b`); TASK-4 Done.** Retained for the record:
-- **float→string for |x| < 1e-4** — `CAST(1e-5 AS VARCHAR)` → DF `'0.00001'`, Rust
+- **float→string for |x| < 1e-4** — `CAST(1e-5 AS VARCHAR)` → DF `'0.00001'`, native
   `'0.00001'`, codegen `'1e-05'`; `1e-6` → DF `'1e-6'`, codegen `'1e-06'`. Realistic
   (small feature values); DF's exact float formatting is a known rabbit hole.
-- **integer arithmetic overflow** — `9223372036854775807 * 2` → DF/Rust wrap to `-2`,
+- **integer arithmetic overflow** — `9223372036854775807 * 2` → DF/native wrap to `-2`,
   codegen (Python bigint) `18446744073709551614`. Rare in feature transforms; fix
   touches all arithmetic ops.
 Also needs codegen-side fixes for the shared bugs #7–#10 above if oracle parity on

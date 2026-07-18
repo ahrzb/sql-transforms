@@ -46,7 +46,7 @@ transformer.fit(data)
 result = transformer.transform(data)
 print(result)
 
-# Low-latency inference through the Rust engine (dict or Pydantic model in,
+# Low-latency inference through the native engine (dict or Pydantic model in,
 # typed model out). infer() for one row, infer_batch() for many.
 one = transformer.infer({"feature1": 2.0, "feature2": 20})
 print(one.feature1_norm)
@@ -92,7 +92,7 @@ SQL over __THIS__
       ├───────────────────────────────┬───────────────────────────────┐
       ▼                               ▼
  transform(batch)                infer(row) / infer_batch(rows)
- DataFusion, vectorized           Rust InferFn interpreter, row-at-a-time,
+ DataFusion, vectorized           native InferFn interpreter, row-at-a-time,
  columnar over the batch          no SQL engine at call time
 ```
 

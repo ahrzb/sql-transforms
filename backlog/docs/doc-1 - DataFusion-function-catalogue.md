@@ -9,7 +9,7 @@ created_date: '2026-07-18 14:01'
 Auto-generated from the installed **DataFusion 54.0.0** (the engine behind the
 `transform` / `fit` path) via its `information_schema.routines`. This is the
 **parity target**: every function here runs in the DataFusion (batch) path, so the
-Rust `InferFn` interpreter must match any of these it claims to support — and it is
+native `InferFn` interpreter must match any of these it claims to support — and it is
 also the menu the authoring SQL surface can draw from. See
 [SQL_SUPPORT.md](../../docs/SQL_SUPPORT.md) for what the *interpreter* implements today.
 

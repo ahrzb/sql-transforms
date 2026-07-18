@@ -3,7 +3,7 @@
 Two layers, two different SQL surfaces. Keep both current as capability lands —
 grep the "Source" column's file when in doubt, this doc drifts.
 
-## Layer 1 — Execution engine (`InferFn`, Rust interpreter, `src/*.rs`)
+## Layer 1 — Execution engine (`InferFn`, native interpreter, `src/*.rs`)
 
 Runs at inference time (`transform()`/`_infer()`), row-at-a-time, no DataFusion.
 
@@ -64,7 +64,7 @@ Out-of-scope constructs raise a clear `ValueError` from `_sql.py`'s
 | Required alias on every SELECT item | ✅ (enforced) | `_rewrite.py` `rewrite_sql` |
 | Explicit `ValueError` naming the unsupported clause (`WHERE`/`JOIN`/`GROUP BY`/`HAVING`/`ORDER BY`/`LIMIT`) instead of a downstream failure | ✅ | `_sql.py` `parse_and_validate` |
 | `MEAN` → `AVG` synonym (preserves pre-sqlglot behavior) | ✅ | `_sql.py` `_FUNCTION_SYNONYMS` |
-| `PARTITION BY` window aggregates (target/categorical encoding) | ✅ | `_state.py` `build_state_tables` (per-partition table) + `_rewrite.py` LEFT JOIN + Rust LEFT lookup join; unseen partition → NULL, transform stays 1-to-1 |
+| `PARTITION BY` window aggregates (target/categorical encoding) | ✅ | `_state.py` `build_state_tables` (per-partition table) + `_rewrite.py` LEFT JOIN + native LEFT lookup join; unseen partition → NULL, transform stays 1-to-1 |
 | Per-partition/global state value types preserved (int/float/str/bool, nullable) | ✅ | `_state.py` `build_state_tables` (no float coercion) |
 | `ORDER BY` window aggregates | ❌ explicitly rejected | `_state.py` `build_state_tables` (via `WindowAgg.has_order`) |
 | Simple equality JOIN in authored SQL (row⋈row, row⋈static) | 🔜 v1 target of the sqlglot rewrite | not started |
