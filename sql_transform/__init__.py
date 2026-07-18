@@ -17,6 +17,7 @@ from sql_transform._rewrite import rewrite_sql
 from sql_transform._schema import synthesize_this_model
 from sql_transform._sql import find_window_aggregates, parse_and_validate
 from sql_transform._state import build_state_tables
+from sql_transform._transformer_ref import resolve_transformer_refs
 
 __all__ = ["InferFn", "SQLTransform"]
 
@@ -54,6 +55,7 @@ class SQLTransform:
         self._state_tables: dict[str, pa.Table] | None = None
         self._rewritten_sql: str | None = None
         self._infer_fn: InferFn | None = None
+        self._udf_specs: dict[str, tuple] = {}
 
     @classmethod
     def from_file(cls, path: str) -> SQLTransform:
@@ -73,7 +75,11 @@ class SQLTransform:
         ctx = datafusion.SessionContext()
         ctx.from_arrow(table, name="__THIS__")
 
-        inline = inline_references(tree, self._refs, ctx, table)
+        sqlt_refs = {n: r for n, r in self._refs.items() if not r.is_transformer}
+        tfm_refs = {n: r.transform for n, r in self._refs.items() if r.is_transformer}
+        self._udf_specs = resolve_transformer_refs(tree, tfm_refs, table)
+
+        inline = inline_references(tree, sqlt_refs, ctx, table)
         windows = find_window_aggregates(tree)
 
         own_state = build_state_tables(
@@ -87,6 +93,7 @@ class SQLTransform:
             self._rewritten_sql,
             row_tables={"__THIS__": this_model},
             static_tables=self._state_tables,
+            transformers={n: (obj, out_s) for n, (obj, in_s, out_s) in self._udf_specs.items()},
         )
         return self
 
@@ -98,7 +105,7 @@ class SQLTransform:
         the Rust engine instead."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before transform")
-        return run_batch(self._rewritten_sql, table, self._state_tables)
+        return run_batch(self._rewritten_sql, table, self._state_tables, self._udf_specs)
 
     def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
         """Single-row inference through the Rust InferFn against the frozen

@@ -22,13 +22,15 @@ from sqlglot import exp
 from sql_transform._rewrite import rewrite_sql
 from sql_transform._sql import find_window_aggregates, parse_and_validate
 from sql_transform._state import build_state_tables
+from sql_transform._transformer_ref import is_transformer
 
 
 @dataclass(frozen=True)
 class Ref:
-    transform: object  # a SQLTransform (imported lazily to avoid a cycle)
+    transform: object  # a SQLTransform, or a fitted transformer if is_transformer
     frozen: bool       # True for {a.transform}; False for bare {a}
     expr_text: str     # interpolation source, for error messages
+    is_transformer: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,8 @@ def desugar_template(template: Template) -> tuple[str, dict[str, Ref]]:
             ref = Ref(v.__self__, frozen=True, expr_text=item.expression)
         elif isinstance(v, SQLTransform):
             ref = Ref(v, frozen=False, expr_text=item.expression)
+        elif is_transformer(v):
+            ref = Ref(v, frozen=False, expr_text=item.expression, is_transformer=True)
         else:
             raise TypeError(
                 f"interpolation {{{item.expression}}} must be a SQLTransform or "
