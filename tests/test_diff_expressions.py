@@ -124,9 +124,7 @@ def test_abs_and_round():
 
 def test_window_aggregate_over_expression_parity():
     train = pa.table({"x": [1.0, 2.0, 3.0, 4.0]})
-    t = SQLTransform(
-        "SELECT x / AVG(x + 1) OVER () AS r FROM __THIS__"
-    ).fit(train)
+    t = SQLTransform("SELECT x / AVG(x + 1) OVER () AS r FROM __THIS__").fit(train)
     batch_out = t.transform(train).to_pylist()
     infer_out = [r.model_dump() for r in t.infer_batch(train.to_pylist())]
     assert _rows_equal(batch_out, infer_out)
@@ -136,9 +134,7 @@ def test_window_aggregate_over_expression_parity():
 
 def test_window_aggregate_quoted_case_sensitive_column_plain_parity():
     train = pa.table({"Age": [10.0, 20.0, 30.0, 40.0]})
-    t = SQLTransform(
-        'SELECT "Age" / AVG("Age") OVER () AS r FROM __THIS__'
-    ).fit(train)
+    t = SQLTransform('SELECT "Age" / AVG("Age") OVER () AS r FROM __THIS__').fit(train)
     batch_out = t.transform(train).to_pylist()
     infer_out = [r.model_dump() for r in t.infer_batch(train.to_pylist())]
     assert _rows_equal(batch_out, infer_out)
@@ -148,9 +144,9 @@ def test_window_aggregate_quoted_case_sensitive_column_plain_parity():
 
 def test_window_aggregate_quoted_case_sensitive_column_expression_parity():
     train = pa.table({"Age": [10.0, 20.0, 30.0, 40.0]})
-    t = SQLTransform(
-        'SELECT "Age" / AVG("Age" + 1) OVER () AS r FROM __THIS__'
-    ).fit(train)
+    t = SQLTransform('SELECT "Age" / AVG("Age" + 1) OVER () AS r FROM __THIS__').fit(
+        train
+    )
     batch_out = t.transform(train).to_pylist()
     infer_out = [r.model_dump() for r in t.infer_batch(train.to_pylist())]
     assert _rows_equal(batch_out, infer_out)
