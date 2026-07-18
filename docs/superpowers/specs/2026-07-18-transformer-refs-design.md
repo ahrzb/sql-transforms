@@ -29,6 +29,14 @@ t.infer({"inp": "some text"})    # row-at-a-time, Rust
   lowering (the engine surgery the prior spec died on).
 - **Mixed leaf + nested arguments** in one call (e.g. `{t}(a, {g}(b))`) — a call's
   argument is *either* input columns *or* a single nested call, not both.
+- **Aggregates over a transformer's output** (e.g. `AVG((tfm(...)).field) OVER ()`) —
+  and therefore the full fit-staging machinery that would build such state. This case
+  requires **inline struct-field access in the DataFusion serve query**, which
+  DataFusion does not support (the derived-table lowering the prior spec died on). The
+  in-scope cases pass whole structs through (single transformer, or nested
+  `f(g(x))` ending in a struct output) and never do field access, so they sidestep the
+  wall entirely. Fit-staging (Section: *Fit direction*) is the eventual home for this;
+  it is not in the first implementation.
 
 ## Authoring surface
 
@@ -51,28 +59,33 @@ transformer ref stays an **opaque callout node** — it is never inlined.
 
 ## Execution model
 
-### Fit = staged state build (the only substantial new work)
+### Fit (first implementation — no aggregate reads a transformer output)
 
-State (window-aggregate scalars / lookup tables) can only be computed once the
-columns it reads exist. When a native aggregate reads a transformer's output, fit
-must materialize that output first — so fit runs in **stages**:
+In-scope queries have no native aggregate over a transformer's output, so no new
+state depends on materialising a transformer first. Fit stays close to today's flow:
 
-1. `desugar_template` → SQL with `__COMPOSE_i__` placeholders + ref map.
-2. Build a dependency DAG: transformer call-sites, and window aggregates whose
-   arguments (transitively) read a transformer's output. Topologically layer it.
-3. Stage loop over training data, against a working DataFusion table seeded from
-   `__THIS__`:
-   - For each transformer call whose inputs are now materialized: derive `in_schema`
-     from the working table, probe `.transform` over the batch to obtain `out_schema`
-     (`get_feature_names_out()` names + observed dtype) and materialize its output
-     columns (named to match any downstream `feature_names_in_`); append them to the
-     working table.
-   - Build and freeze any window-agg state now computable via the existing
-     `build_state_tables`, and rewrite those aggregates to frozen state references.
-4. Emit the rewritten plain-column SQL: `__COMPOSE_i__` → an opaque callout expression
-   carrying `(obj, feature_names_in_, out_schema)`; aggregates → frozen state refs;
-   collect the state tables.
-5. Build `InferFn(rewritten_sql, transformers=<registry>, static_tables=<state>)`.
+1. `desugar_template` → SQL with `__COMPOSE_i__` placeholders + ref map; a transformer
+   ref's placeholder stays a **call** `__COMPOSE_i__(<arg>)`, not inlined. A leaf call's
+   column args are wrapped into a `named_struct`; a nested call's arg is the inner call.
+2. Derive each transformer's schema in dependency order (inner before outer): `in_schema`
+   from the working columns / inner `out_schema`; `out_schema` by probing `.transform`
+   over the training batch (`get_feature_names_out()` names + observed dtype). A nested
+   outer is probed on the inner's materialised output.
+3. `build_state_tables` runs unchanged (any window aggregates present read only
+   `__THIS__` columns, never a transformer output — enforced with a clear error).
+4. Emit the rewritten SQL: the `__COMPOSE_i__(...)` calls are kept verbatim (they become
+   the transformers registry); window aggregates frozen to state refs as today.
+5. Build `InferFn(rewritten_sql, transformers=<registry>, static_tables=<state>)`, where
+   `<registry>` is `{__COMPOSE_i__: (obj, out_schema)}`.
+
+### Fit direction (deferred — aggregates over transformer output)
+
+When a later increment lifts the non-goal, fit becomes staged: build a dependency DAG
+of transformer call-sites and the aggregates that read their outputs, topo-layer it, and
+per layer materialise transformer outputs on the training batch so `build_state_tables`
+can compute the downstream aggregate state, freezing as it goes. Serve then needs the
+derived-table lowering (out of scope here) to do the field access DataFusion won't do
+inline. Recorded so the direction is not re-derived; not built now.
 
 ### Serve = single pass
 
@@ -115,6 +128,6 @@ For each case, assert `transform` (DataFusion) == `infer` (Rust) **and** == the 
 sklearn object:
 - Single transformer callout via `{ref}`.
 - Nested `f(g(x))` (threading).
-- A transformer's output feeding a native window aggregate (the staged-state case —
-  the one path that exercises new fit machinery end to end).
 - Non-float dtypes (e.g. OrdinalEncoder string→int).
+- A window aggregate over `__THIS__` alongside a transformer call (proves the two
+  compose without either engine choking; no aggregate reads the transformer output).
