@@ -249,6 +249,10 @@ fn binary_op_type(op: BinOp, l: FieldType, r: FieldType) -> FieldType {
             base: Base::Bool,
             nullable,
         },
+        BinOp::Concat => FieldType {
+            base: Base::Str,
+            nullable,
+        },
     }
 }
 

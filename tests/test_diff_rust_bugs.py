@@ -30,15 +30,15 @@ def test_nullif_numeric_coercion():
     check("SELECT NULLIF(1, 1.0) AS n FROM __THIS__", {_R: row(z=0)})
 
 
-@pytest.mark.xfail(strict=True, reason="#4 unary minus unsupported by infer")
 def test_unary_minus():
     check("SELECT -a AS m FROM __THIS__", {_R: row(a=5)})
     check("SELECT -a AS m FROM __THIS__", {_R: row(a=2.5)})
 
 
-@pytest.mark.xfail(strict=True, reason="#5 || string concat unsupported by infer")
 def test_string_concat_operator():
     check("SELECT a || '!' AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])})
+    check("SELECT a || NULL AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])})
+    check("SELECT a || 5 AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])})
 
 
 @pytest.mark.xfail(strict=True, reason="#6 COALESCE(int,float) mis-typed, DF is float supertype")

@@ -308,6 +308,7 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
+    Concat,
 }
 
 pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::InterpError> {
@@ -499,7 +500,21 @@ fn eval_binary_op(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::I
             comparison(op, l, r)
         }
         BinOp::And | BinOp::Or => logic(op, l, r),
+        BinOp::Concat => concat_op(l, r),
     }
+}
+
+/// `||` string concatenation. NULL-propagating (SQL/DataFusion semantics: any
+/// NULL operand yields NULL, unlike CONCAT which skips NULLs).
+fn concat_op(l: Value, r: Value) -> Result<Value, crate::plan::InterpError> {
+    if matches!(l, Value::Null) || matches!(r, Value::Null) {
+        return Ok(Value::Null);
+    }
+    Ok(Value::Str(format!(
+        "{}{}",
+        display_value(&l),
+        display_value(&r)
+    )))
 }
 
 fn arithmetic(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::InterpError> {
