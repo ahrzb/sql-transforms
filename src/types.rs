@@ -249,6 +249,10 @@ fn binary_op_type(op: BinOp, l: FieldType, r: FieldType) -> FieldType {
             base: Base::Bool,
             nullable,
         },
+        BinOp::Concat => FieldType {
+            base: Base::Str,
+            nullable,
+        },
     }
 }
 
@@ -290,6 +294,18 @@ pub fn compatible(inferred: &Base, declared: &Base) -> bool {
     }
 }
 
+/// Common result base for variadic same-shape functions (COALESCE/NULLIF):
+/// all-equal keeps that base; a mix of Int/Float widens to Float (DataFusion's
+/// numeric supertype); anything else is left unresolved for Pydantic to judge.
+fn common_base(args: &[FieldType]) -> Base {
+    match args.first() {
+        None => Base::Other,
+        Some(first) if args.iter().all(|a| a.base == first.base) => first.base.clone(),
+        _ if args.iter().all(|a| matches!(a.base, Base::Int | Base::Float)) => Base::Float,
+        _ => Base::Other,
+    }
+}
+
 fn function_type(name: &str, args: &[FieldType]) -> FieldType {
     let any_nullable = args.iter().any(|a| a.nullable);
     match name {
@@ -297,24 +313,29 @@ fn function_type(name: &str, args: &[FieldType]) -> FieldType {
             base: Base::Str,
             nullable: any_nullable,
         },
-        "abs" | "round" => {
+        // ABS preserves its argument's type; ROUND always yields Float (DataFusion
+        // returns Float64 even for an integer argument).
+        "abs" => {
             let base = args.first().map(|a| a.base.clone()).unwrap_or(Base::Other);
             FieldType {
                 base,
                 nullable: any_nullable,
             }
         }
+        "round" => FieldType {
+            base: Base::Float,
+            nullable: any_nullable,
+        },
         "concat" => FieldType {
             base: Base::Str,
             nullable: false,
         },
-        "coalesce" | "nullif" => {
-            let base = args.first().map(|a| a.base.clone()).unwrap_or(Base::Other);
-            FieldType {
-                base,
-                nullable: true,
-            }
-        }
+        // DataFusion types these as the common supertype of the arguments
+        // (COALESCE(int, float) -> float), not args[0]'s type.
+        "coalesce" | "nullif" => FieldType {
+            base: common_base(args),
+            nullable: true,
+        },
         _ => FieldType {
             base: Base::Other,
             nullable: true,

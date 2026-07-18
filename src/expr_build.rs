@@ -40,6 +40,16 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
             op: UnaryOperator::Not,
             expr,
         } => Ok(Expr::Not(Box::new(convert_expr(expr)?))),
+        // Unary minus: lower to `0 - x`, reusing Sub's numeric promotion
+        // (int stays int, float stays float) to match DataFusion.
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => Ok(Expr::BinaryOp {
+            op: BinOp::Sub,
+            left: Box::new(Expr::Literal(Value::Int(0))),
+            right: Box::new(convert_expr(expr)?),
+        }),
         SqlExpr::BinaryOp { left, op, right } => {
             let bin_op = convert_binary_operator(op)?;
             Ok(Expr::BinaryOp {
@@ -217,6 +227,7 @@ fn convert_binary_operator(op: &BinaryOperator) -> Result<BinOp, InterpError> {
         BinaryOperator::GtEq => Ok(BinOp::GtEq),
         BinaryOperator::And => Ok(BinOp::And),
         BinaryOperator::Or => Ok(BinOp::Or),
+        BinaryOperator::StringConcat => Ok(BinOp::Concat),
         other => Err(InterpError::Build(format!("Unsupported operator: {other}"))),
     }
 }
