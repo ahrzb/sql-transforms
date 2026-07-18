@@ -655,6 +655,8 @@ needs; `CASE WHEN` also needs Layer-1 interpreter support, not just a rewrite
 change. **Demand signal (2026-07-18):** a usability test (House Prices) hit this as
 the blocker to ordinal-encoding quality ladders (Ex/Gd/TA → 5/4/3) — currently
 un-expressible, forced model-side. Real authoring need, not hypothetical.
+**Ticketed: TASK-27** (CASE WHEN only; outer joins stay parked here as the separate
+concern).
 
 ### `ORDER BY` / window frames (running, cumulative, moving aggregates)
 `AGG(col) OVER (ORDER BY ...)` and explicit `ROWS`/`RANGE BETWEEN` frames —
