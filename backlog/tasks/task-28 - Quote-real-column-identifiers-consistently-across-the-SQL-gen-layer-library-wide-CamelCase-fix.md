@@ -4,9 +4,10 @@ title: >-
   Quote real-column identifiers consistently across the SQL-gen layer
   (library-wide CamelCase fix)
 status: To Do
-assignee: []
+assignee:
+  - Wren
 created_date: '2026-07-18 19:48'
-updated_date: '2026-07-18 20:45'
+updated_date: '2026-07-19 00:25'
 labels:
   - bug
   - sql-surface
@@ -28,5 +29,15 @@ SEVERITY: high. Wren found (while investigating _compose.py:214) that CamelCase 
 - [ ] #1 authored non-lowercase columns work WITHOUT user double-quoting across: plain passthrough, window-agg OVER, PARTITION BY, composition (frozen + unfit); transformer-ref already fixed (regression-guard)
 - [ ] #2 state-key columns stay unquoted (214 invariant preserved + documented with a comment)
 - [ ] #3 CamelCase test matrix green; transform == infer parity (decision-1)
-- [ ] #4 DESIGN: authored identifiers are case-sensitive-exact vs Arrow schema -- per AmirHossein's ratification (see report)
+- [ ] #4 DESIGN (unresolved): auto-quote/case-sensitive-exact vs match-DataFusion-literally -- AmirHossein + Wren to settle DIRECTLY before AC #1's direction is locked (not PM-ratified)
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-19 00:25
+---
+Handed to Wren (2026-07-19). The embedded design fork (auto-quote 'just works' vs match-DataFusion-literally) is NOT PM-ratified -- AmirHossein wants to decide it with Wren directly. Wren: ping AmirHossein to settle the direction before implementing AC #1. Rest of the ticket stands as scoped.
+---
+<!-- COMMENTS:END -->
