@@ -266,7 +266,11 @@ fn build_projection(items: &[SelectItem]) -> Result<Vec<(String, Expr)>, InterpE
                 out.push((name, crate::expr_build::convert_expr(e)?));
             }
             SelectItem::ExprWithAlias { expr, alias } => {
-                out.push((alias.value.clone(), crate::expr_build::convert_expr(expr)?));
+                // The output alias folds like any identifier (`AS Foo` -> `foo`).
+                out.push((
+                    crate::expr_build::fold_ident(alias),
+                    crate::expr_build::convert_expr(expr)?,
+                ));
             }
             _ => return Err(InterpError::Build("Unsupported SELECT item".to_string())),
         }
@@ -276,10 +280,11 @@ fn build_projection(items: &[SelectItem]) -> Result<Vec<(String, Expr)>, InterpE
 
 fn column_name(e: &SqlExpr) -> Result<String, InterpError> {
     match e {
-        SqlExpr::Identifier(ident) => Ok(ident.value.clone()),
-        SqlExpr::CompoundIdentifier(parts) => {
-            Ok(parts.last().map(|i| i.value.clone()).unwrap_or_default())
-        }
+        SqlExpr::Identifier(ident) => Ok(crate::expr_build::fold_ident(ident)),
+        SqlExpr::CompoundIdentifier(parts) => Ok(parts
+            .last()
+            .map(crate::expr_build::fold_ident)
+            .unwrap_or_default()),
         // `unnest(struct_expr)` expands into per-field columns during
         // validate_columns (once the arg's type is known), which replaces
         // this placeholder name entirely. Only reachable unaliased here

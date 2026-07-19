@@ -282,6 +282,13 @@ _VARIADIC_FUNCS = {
 }
 
 
+def _fold(ident: exp.Identifier) -> str:
+    """DataFusion identifier folding: an unquoted identifier folds to lowercase,
+    a double-quoted one stays case-exact. Matches the oracle so `SELECT Age` on a
+    column named `Age` misses (folds to `age`) exactly as DataFusion does."""
+    return ident.name if ident.args.get("quoted") else ident.name.lower()
+
+
 def _convert_expr(e: exp.Expression) -> Any:
     if isinstance(e, (exp.Paren, exp.Alias)):
         return _convert_expr(e.this)
@@ -298,7 +305,9 @@ def _convert_expr(e: exp.Expression) -> Any:
             raise UnsupportedInCodegen(
                 "struct field access is not supported in codegen yet"
             )
-        return Column(table=e.table or None, name=e.name)
+        # Fold the column part (`.this`); leave the qualifier (`.table`) raw --
+        # it names a relation (`__THIS__`/generated), never a data column.
+        return Column(table=e.table or None, name=_fold(e.this))
     if isinstance(e, exp.Null):
         return Literal(None)
     if isinstance(e, exp.Boolean):
@@ -473,9 +482,10 @@ def _build_projection(items: list) -> list:
     out = []
     for item in items:
         if isinstance(item, exp.Alias):
-            out.append((item.alias, _convert_expr(item.this)))
+            # The output alias folds like any identifier (`AS Foo` -> `foo`).
+            out.append((_fold(item.args["alias"]), _convert_expr(item.this)))
         elif isinstance(item, exp.Column):
-            out.append((item.name, _convert_expr(item)))
+            out.append((_fold(item.this), _convert_expr(item)))
         elif isinstance(item, exp.Star):
             raise ValueError("Unsupported SELECT item: *")
         elif isinstance(item, exp.Unnest):
