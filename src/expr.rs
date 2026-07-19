@@ -184,7 +184,11 @@ impl Value {
                 // a bare scalar) is a genuine type mismatch and must error,
                 // not silently marshal into an all-null struct.
                 let dict = obj.cast::<PyDict>().ok();
-                if dict.is_none() && !obj.hasattr("model_fields").unwrap_or(false) {
+                // Probe `model_fields` on the CLASS, not the instance: instance
+                // access is deprecated in Pydantic 2.11 (PydanticDeprecatedSince211)
+                // and removed in 3.0, where the instance probe would return false
+                // and misclassify a struct value. Class access stays valid.
+                if dict.is_none() && !obj.get_type().hasattr("model_fields").unwrap_or(false) {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
                         "Expected a struct/dict value for a struct-typed field: got {}",
                         obj.get_type().name()?
@@ -428,12 +432,9 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
                         "building transformer input matrix failed: {e}"
                     ))
                 })?;
-                let y = obj
-                    .bind(py)
-                    .call_method1("transform", (x,))
-                    .map_err(|e| {
-                        crate::plan::InterpError::Eval(format!("transformer.transform failed: {e}"))
-                    })?;
+                let y = obj.bind(py).call_method1("transform", (x,)).map_err(|e| {
+                    crate::plan::InterpError::Eval(format!("transformer.transform failed: {e}"))
+                })?;
                 // .tolist() turns numpy scalars into Python builtins so
                 // from_pyobject sees float/int/str, not opaque numpy objects.
                 let y_list = y.call_method0("tolist").map_err(|e| {
@@ -598,7 +599,10 @@ fn comparison(op: BinOp, l: Value, r: Value) -> Result<Value, crate::plan::Inter
     if matches!(op, BinOp::Eq | BinOp::NotEq)
         && matches!(
             (&l, &r),
-            (Value::Struct(_), _) | (Value::List(_), _) | (_, Value::Struct(_)) | (_, Value::List(_))
+            (Value::Struct(_), _)
+                | (Value::List(_), _)
+                | (_, Value::Struct(_))
+                | (_, Value::List(_))
         )
     {
         let eq = l == r;
@@ -627,14 +631,14 @@ fn compare_values(l: &Value, r: &Value) -> Result<std::cmp::Ordering, crate::pla
             // DataFusion float ordering: NaN == NaN and NaN sorts greatest.
             // Keep partial_cmp for the normal path (so 0.0 == -0.0) and only
             // special-case NaN, which partial_cmp reports as incomparable.
-            Ok(af.partial_cmp(&bf).unwrap_or_else(|| {
-                match (af.is_nan(), bf.is_nan()) {
+            Ok(af
+                .partial_cmp(&bf)
+                .unwrap_or_else(|| match (af.is_nan(), bf.is_nan()) {
                     (true, true) => std::cmp::Ordering::Equal,
                     (true, false) => std::cmp::Ordering::Greater,
                     (false, true) => std::cmp::Ordering::Less,
                     (false, false) => unreachable!("partial_cmp only fails on NaN"),
-                }
-            }))
+                }))
         }
     }
 }
