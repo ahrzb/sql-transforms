@@ -27,6 +27,7 @@ import pyarrow as pa
 import pytest
 
 from sql_transform._codegen import CodegenFn, UnsupportedInCodegen
+from sql_transform._codegen_substrait import CodegenSubstraitFn, Context
 from sql_transform._interpreter import InferFn
 from sql_transform._schema import synthesize_this_model
 
@@ -143,7 +144,7 @@ def _run_datafusion(query: str, tables: dict[str, Table]) -> list[dict]:
     return pa.Table.from_batches(batches).to_pylist()
 
 
-def _run_engine(engine: Any, query: str, tables: dict[str, Table]) -> list[dict]:
+def _prep(tables: dict[str, Table]) -> tuple[dict, dict, dict]:
     row_models: dict[str, Any] = {}
     infer_rows: dict[str, list] = {}
     static_tables: dict[str, pa.Table] = {}
@@ -154,6 +155,11 @@ def _run_engine(engine: Any, query: str, tables: dict[str, Table]) -> list[dict]
             infer_rows[name] = [model(**r) for r in tbl.rows]
         else:
             static_tables[name] = pa.Table.from_pylist(tbl.rows, schema=tbl.schema)
+    return row_models, infer_rows, static_tables
+
+
+def _run_engine(engine: Any, query: str, tables: dict[str, Table]) -> list[dict]:
+    row_models, infer_rows, static_tables = _prep(tables)
     fn = engine(query, row_tables=row_models, static_tables=static_tables)
     return [r.model_dump() for r in fn.infer(infer_rows)]
 
@@ -166,7 +172,19 @@ def _run_codegen(query: str, tables: dict[str, Table]) -> list[dict]:
     return _run_engine(CodegenFn, query, tables)
 
 
-BACKENDS = {"native": _run_infer, "codegen": _run_codegen}
+def _run_substrait(query: str, tables: dict[str, Table]) -> list[dict]:
+    row_models, infer_rows, static_tables = _prep(tables)
+    fn = CodegenSubstraitFn.from_sql(
+        query, Context(row_tables=row_models, static_tables=static_tables)
+    )
+    return [r.model_dump() for r in fn.infer(infer_rows)]
+
+
+BACKENDS = {
+    "native": _run_infer,
+    "codegen": _run_codegen,
+    "substrait": _run_substrait,
+}
 _backend = "native"
 
 

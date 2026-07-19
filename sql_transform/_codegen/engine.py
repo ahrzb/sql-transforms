@@ -227,6 +227,19 @@ class CodegenFn:
         output_model: type[BaseModel] | None = None,
     ) -> None:
         plan = cp.build_plan(sql)
+        self._finalize(plan, row_tables, static_tables, output_model)
+
+    def _finalize(
+        self,
+        plan: cp.Plan,
+        row_tables: dict,
+        static_tables: dict,
+        output_model: type[BaseModel] | None,
+    ) -> None:
+        """Shared pipeline from the plan IR onward — optimize, validate, infer
+        types, build the output model + static lookups, compile. Both the SQL
+        front-end (CodegenFn) and the Substrait front-end (CodegenSubstraitFn) join
+        here; everything downstream of the plan IR is backend-agnostic."""
         plan, specs = cp.optimize(plan, set(static_tables))
 
         row_schemas = {n: cp.schema_from_pydantic(m) for n, m in row_tables.items()}

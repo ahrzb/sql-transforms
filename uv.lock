@@ -1146,6 +1146,21 @@ wheels = [
 ]
 
 [[package]]
+name = "protobuf"
+version = "6.33.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/70/e908e9c5e52ef7c3a6c7902c9dfbb34c7e29c25d2f81ade3856445fd5c94/protobuf-6.33.6.tar.gz", hash = "sha256:a6768d25248312c297558af96a9f9c929e8c4cee0659cb07e780731095f38135", size = 444531, upload-time = "2026-03-18T19:05:00.988Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/9f/2f509339e89cfa6f6a4c4ff50438db9ca488dec341f7e454adad60150b00/protobuf-6.33.6-cp310-abi3-win32.whl", hash = "sha256:7d29d9b65f8afef196f8334e80d6bc1d5d4adedb449971fefd3723824e6e77d3", size = 425739, upload-time = "2026-03-18T19:04:48.373Z" },
+    { url = "https://files.pythonhosted.org/packages/76/5d/683efcd4798e0030c1bab27374fd13a89f7c2515fb1f3123efdfaa5eab57/protobuf-6.33.6-cp310-abi3-win_amd64.whl", hash = "sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326", size = 437089, upload-time = "2026-03-18T19:04:50.381Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/01/a3c3ed5cd186f39e7880f8303cc51385a198a81469d53d0fdecf1f64d929/protobuf-6.33.6-cp39-abi3-macosx_10_9_universal2.whl", hash = "sha256:9720e6961b251bde64edfdab7d500725a2af5280f3f4c87e57c0208376aa8c3a", size = 427737, upload-time = "2026-03-18T19:04:51.866Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/90/b3c01fdec7d2f627b3a6884243ba328c1217ed2d978def5c12dc50d328a3/protobuf-6.33.6-cp39-abi3-manylinux2014_aarch64.whl", hash = "sha256:e2afbae9b8e1825e3529f88d514754e094278bb95eadc0e199751cdd9a2e82a2", size = 324610, upload-time = "2026-03-18T19:04:53.096Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/ca/25afc144934014700c52e05103c2421997482d561f3101ff352e1292fb81/protobuf-6.33.6-cp39-abi3-manylinux2014_s390x.whl", hash = "sha256:c96c37eec15086b79762ed265d59ab204dabc53056e3443e702d2681f4b39ce3", size = 339381, upload-time = "2026-03-18T19:04:54.616Z" },
+    { url = "https://files.pythonhosted.org/packages/16/92/d1e32e3e0d894fe00b15ce28ad4944ab692713f2e7f0a99787405e43533a/protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593", size = 323436, upload-time = "2026-03-18T19:04:55.768Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/72/02445137af02769918a93807b2b7890047c32bfb9f90371cbc12688819eb/protobuf-6.33.6-py3-none-any.whl", hash = "sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901", size = 170656, upload-time = "2026-03-18T19:04:59.826Z" },
+]
+
+[[package]]
 name = "psutil"
 version = "7.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1646,6 +1661,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "sqlglot" },
+    { name = "substrait" },
 ]
 
 [package.dev-dependencies]
@@ -1668,6 +1684,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=19.0" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
     { name = "sqlglot", specifier = ">=30.12.0" },
+    { name = "substrait", specifier = ">=0.29.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1705,6 +1722,41 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/28/e3/55dcc2cfbc3ca9c29519eb6884dd1415ecb53b0e934862d3559ddcb7e20b/stack_data-0.6.3.tar.gz", hash = "sha256:836a778de4fec4dcd1dcd89ed8abff8a221f58308462e1c4aa2a3cf30148f0b9", size = 44707, upload-time = "2023-09-30T13:58:05.479Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl", hash = "sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695", size = 24521, upload-time = "2023-09-30T13:58:03.53Z" },
+]
+
+[[package]]
+name = "substrait"
+version = "0.29.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "protobuf" },
+    { name = "substrait-extensions" },
+    { name = "substrait-protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ba/a9/16cd7cfa355b688dd91f84fc31514a955115053e2d8cf91ff4812dcb5642/substrait-0.29.0.tar.gz", hash = "sha256:66a352f8b12aa97a732dd686a36fa4e5faa121cff2eae6d3cb2ceab94b544e69", size = 109531, upload-time = "2026-03-20T07:31:55.967Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/af/c6868f201820a705c0961167c8dc3d9b1a54493ea3c7b3c14d80fb57d6b0/substrait-0.29.0-py3-none-any.whl", hash = "sha256:f74a61ce1daecd76dc8b7bdbc6e7cd9be19a4ef86c1d0e0a65bf56891a5386a4", size = 39826, upload-time = "2026-03-20T07:31:54.552Z" },
+]
+
+[[package]]
+name = "substrait-extensions"
+version = "0.85.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/b2/eb2a7a8143d11ff25261ab1c8525386e4b2cbdcd9d282323fe97aac13165/substrait_extensions-0.85.0.tar.gz", hash = "sha256:6b5403b5e7d9cf5f9dbe86f276c6485c9155bec78fab080310202c99b177ca8a", size = 50866, upload-time = "2026-03-17T19:19:18.102Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/4a/36d734df05faa310b3ef0a492e47b85b6e082471473266bf355852f87bba/substrait_extensions-0.85.0-py3-none-any.whl", hash = "sha256:4ad8b84411020f75c74e987719bbdaa19d1947ffb3c91b3c707418a0a821b424", size = 105287, upload-time = "2026-03-17T19:19:19.042Z" },
+]
+
+[[package]]
+name = "substrait-protobuf"
+version = "0.85.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/df/36/de86485ada792ec97ffb6024efbfd701ddcbe93599dfffc895dd8f21f704/substrait_protobuf-0.85.0.tar.gz", hash = "sha256:e7776181dcb18703a6e27b0291de86c8034a02b5d92e1fc2fc919ced62757570", size = 59062, upload-time = "2026-03-17T19:19:14.018Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/db/20eba8a3cc5a78a53d1439d2067930b998bd842debac5b687a2a27a05dcc/substrait_protobuf-0.85.0-py3-none-any.whl", hash = "sha256:aff4cb74a0dbab35be11d373fc381d53957f2e97d17158c2c3ce68cdf57498e8", size = 64453, upload-time = "2026-03-17T19:19:15.084Z" },
 ]
 
 [[package]]
