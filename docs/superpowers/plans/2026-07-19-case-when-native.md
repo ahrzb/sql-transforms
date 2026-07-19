@@ -6,7 +6,9 @@
 
 **Architecture:** Mirror the already-merged codegen CASE semantics in Rust: a new `Expr::Case` variant, `SqlExpr::Case` conversion (simple form normalized to `operand = value`), short-circuiting evaluation (only the taken arm's result is evaluated), common-supertype result typing via the existing `common_base`, and validation/transformer-resolution recursion. Then drop `codegen_only` from the differential harness so the existing `tests/test_diff_case.py` cases run against the oracle on native too, and add the window-agg-inside-CASE integration test that TASK-30 deferred (now reachable, since `SQLTransform.infer_batch` is native-backed).
 
-**Tech Stack:** Rust (pyo3, sqlparser 0.62), maturin (build), Python 3, pytest, DataFusion (oracle). Build the native extension with `uv run maturin develop`; run Rust unit tests with `cargo test`.
+**Tech Stack:** Rust (pyo3, sqlparser 0.62), maturin (build), Python 3, pytest, DataFusion (oracle). Build the native extension with `uv run maturin develop` — this IS the Rust compile gate.
+
+**Note on `cargo test`:** `cargo test` does NOT run standalone in this environment — the pyo3 test binary fails to load the Python DLL at runtime on Windows (`STATUS_DLL_NOT_FOUND`), an environment/linkage artifact unrelated to code. Do not chase it. The compile gate is `uv run maturin develop` (a clean build means the new `Expr::Case` arms type-check across every match site), and the behavioral acceptance net is the differential Python suite in `tests/`, which drives the Rust CASE path end-to-end far more thoroughly than the two pre-existing (CASE-unrelated) Rust unit tests. Do not add `cargo test` to any step.
 
 ## Global Constraints
 
@@ -240,13 +242,10 @@ In `src/lib.rs` `resolve_transformers`, add an arm BEFORE the `other => Ok(other
         }
 ```
 
-- [ ] **Step 9: Rebuild the native extension and run cargo tests**
+- [ ] **Step 9: Rebuild the native extension (the compile gate)**
 
 Run: `uv run maturin develop`
-Expected: compiles cleanly (no warnings about the new variant — every match now has a `Case` arm).
-
-Run: `cargo test`
-Expected: PASS — existing Rust unit tests still green.
+Expected: compiles cleanly and installs the rebuilt `_interpreter`. A clean build means every `match` over `Expr` now has its `Case` arm (the compiler enforces this for `eval`/`infer_type`/`validate_expr`; `resolve_transformers` was handled explicitly in Step 8). Do NOT run `cargo test` (see the Tech Stack note).
 
 - [ ] **Step 10: Run the CASE differential tests to verify GREEN on both backends**
 
@@ -325,13 +324,10 @@ def test_case_over_window_agg_transform_infer_parity():
 Run: `uv run pytest tests/test_case_window_integration.py -q`
 Expected: PASS — the CASE wraps a frozen `AVG(...) OVER (PARTITION BY g)`; `transform` (DataFusion) and `infer_batch` (native) agree, and the `c` values match the hand-computed expectation. (No Rust change in this task, so no maturin rebuild needed — Task 1 already rebuilt.)
 
-- [ ] **Step 3: Full suite + cargo, then commit**
+- [ ] **Step 3: Full suite, then commit**
 
 Run: `uv run pytest -q`
-Expected: PASS — one more test than after Task 1, no regressions.
-
-Run: `cargo test`
-Expected: PASS.
+Expected: PASS — one more test than after Task 1, no regressions. (No Rust change here, so no rebuild and no `cargo test`.)
 
 ```bash
 git add tests/test_case_window_integration.py
