@@ -5,21 +5,19 @@ status: Done
 assignee:
   - Developer
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-18 15:19'
+updated_date: '2026-07-19 01:15'
 labels:
   - rust
   - parity
 milestone: m-1
 dependencies: []
-references:
-  - docs/BACKLOG.md
 ordinal: 1000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-10 divergences where infer (Rust) disagrees with transform (DataFusion) on the same input. DataFusion is the oracle. Pin each with a strict xfail-on-rust on MASTER first (the codegen branch has its own test_diff_rust_bugs.py, do not wait on it), then flip. Full detail + source sites in docs/BACKLOG.md 'Rust engine (InferFn) parity bugs'. Realism: #7 first; #8/#9/#10 low.
+10 divergences where infer (Rust) disagrees with transform (DataFusion) on the same input. DataFusion is the oracle. Pin each with a strict xfail-on-rust on MASTER first, then flip. All 10 fixed & merged (rust-parity-bugs -> b1a10bf; suite 211, 0 xfailed); residual float [1e-5,1e-4) band is TASK-7. Full detail + source sites: git history.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

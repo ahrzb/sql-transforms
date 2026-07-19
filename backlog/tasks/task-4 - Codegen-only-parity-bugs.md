@@ -5,20 +5,18 @@ status: Done
 assignee:
   - 'Developer: Codegen'
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-18 14:28'
+updated_date: '2026-07-19 01:15'
 labels:
   - codegen
   - parity
 dependencies: []
-references:
-  - docs/BACKLOG.md
 ordinal: 4000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Two divergences on the codegen path only (Rust already matches the oracle here). NOTE: whether codegen is a maintained/default engine is a pending framing call by AmirHossein; these are recorded regardless. Detail in docs/BACKLOG.md 'Codegen / compiled inference path'.
+Two divergences on the codegen path only (Rust already matches the oracle here). NOTE: whether codegen is a maintained/default engine is a pending framing call by AmirHossein -- decision-7 (two-engine framing, OPEN); these are recorded regardless.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -4,21 +4,19 @@ title: Transformer-refs (Part-2 authoring surface) review follow-ups
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-18 23:50'
+updated_date: '2026-07-19 01:15'
 labels:
   - python
   - transformer-refs
 milestone: m-1
 dependencies: []
-references:
-  - docs/BACKLOG.md
 ordinal: 3000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Follow-ups from the whole-branch review (ready-to-merge, no Critical/Important). Detail in docs/BACKLOG.md 'Opaque transform support' Part 2.
+Follow-ups from the whole-branch review (ready-to-merge, no Critical/Important). Split rationale + deferred direction: decision-3 (opaque-transform split, Part 2).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

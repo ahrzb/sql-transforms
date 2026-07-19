@@ -114,8 +114,8 @@ mise tasks        # list all tasks
 ## Project docs
 
 - [docs/ROADMAP.md](docs/ROADMAP.md) — the sequenced milestones (narrative) and progress.
-- [docs/BACKLOG.md](docs/BACKLOG.md) — the reasoning archive: *why* things were
-  deferred, decision context, source citations. Actionable tasks live in Backlog.md.
+- The **reasoning archive** — *why* things were deferred, design briefs, and ADRs — now
+  lives in `backlog/docs`, `backlog/decisions`, and `backlog/drafts` (see Backlog.md below).
 - **Backlog.md** (`backlog/`) — live task board (`backlog board` / `backlog task
   list`) grouped by **milestones** (`backlog milestone list`), architecture
   **decisions** (`backlog/decisions/`), and reference **docs** (`backlog/docs/`):
@@ -129,8 +129,8 @@ mise tasks        # list all tasks
 
 ## Contributing
 
-1. Pick an item from [docs/ROADMAP.md](docs/ROADMAP.md) or
-   [docs/BACKLOG.md](docs/BACKLOG.md).
+1. Pick an item from [docs/ROADMAP.md](docs/ROADMAP.md) or the
+   [Backlog.md board](backlog/) (`backlog task list`).
 2. Open an issue.
 3. Implement with tests.
 4. Submit a PR.

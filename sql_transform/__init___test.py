@@ -239,7 +239,7 @@ def test_transform_and_infer_batch_agree():
 
 
 def test_div_by_zero_raises_on_both_engines_with_different_error_types():
-    # Accepted divergence (docs/BACKLOG.md, "won't do"): matching the error *type*
+    # Accepted divergence (decision-2, "won't do"): matching the error *type*
     # across engines is a non-goal -- only output *values* must match. Integer
     # div/mod by zero errors on BOTH engines, but with different hierarchies: the
     # Rust infer path raises a clean ValueError; DataFusion batch raises its own

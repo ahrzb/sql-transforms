@@ -1,7 +1,7 @@
 """Pinning tests for the Rust InferFn parity bugs (transform != infer).
 
-Each divergence documented in docs/BACKLOG.md ("Rust engine (InferFn) parity
-bugs") is pinned here as a strict xfail-on-rust differential test: DataFusion is
+Each divergence is tracked in TASK-1 (Rust InferFn parity regressions) and pinned
+here as a strict xfail-on-rust differential test: DataFusion is
 the oracle, so `check`/`check_both_raise` currently FAIL because the Rust engine
 disagrees. When a bug is fixed the test passes -> strict xfail turns XPASS into a
 failure -> forces removing the marker. Remove each marker as its fix lands.

@@ -7,8 +7,8 @@ created_date: '2026-07-18 14:01'
 # sklearn transformer implementation plan
 
 The prioritized list of sklearn transformers to implement, and the parity target for
-the [sklearn integration](../../docs/BACKLOG.md#sklearn-transformer-integration--functionality--parity)
-work. Unlike [the DataFusion function catalogue](<doc-1 - DataFusion-function-catalogue.md>) (an auto-generated,
+the sklearn integration work (strategy — fallback-first, then native per transformer —
+canonical: decision-4; scope + parity harness below). Unlike [the DataFusion function catalogue](<doc-1 - DataFusion-function-catalogue.md>) (an auto-generated,
 *exhaustive* engine surface), this is a **curated** list: we deliberately scope to
 **tabular preprocessing** and will never implement most of sklearn. It's a plan, not
 a catalogue of everything.
@@ -83,4 +83,40 @@ dtypes, empty/degenerate columns. This is the oracle behind the native-swap phas
 native swaps (native diffed against the same matrix the fallback passes), and it's
 distinct from — and feeds — the end-to-end **assembly**-parity harness (the ColumnTransformer-glue
 slice, whole `ColumnTransformer` vector). Leaf correctness here; assembly correctness there.
-Tracked in [BACKLOG.md](../../docs/BACKLOG.md#per-transformer-differential-parity-harness).
+
+## Integration strategy & scope
+
+Strategy (native-goal + opaque-fallback, fallback-first) canonical record: **decision-4**.
+In scope as the primary serving goal (supersedes the old README `sklearn.*` surface).
+Correctness/coverage first — the simplest bit-identical implementation wins even if it
+isn't yet the zero-copy path; the optimized serving path (DRAFT-3) is validated against
+the parity harness this work delivers.
+
+- **Two integration directions, compose-first:** (a) *compose* — our transformers are
+  sklearn estimators the user drops into their own `Pipeline`/`ColumnTransformer` (primary;
+  incremental, low-friction adoption, one transformer at a time, coexisting with sklearn);
+  (b) *consume* — accelerate a whole already-fitted sklearn pipeline handed to us
+  (secondary). Estimator-interface compliance is what makes (a) work (DRAFT-1) and is the
+  gating requirement.
+- **Transformer coverage**, ranked by "what a served request touches" (not raw popularity):
+  `SimpleImputer` + `StandardScaler` (numeric) and `OrdinalEncoder` + `OneHotEncoder`
+  (categorical, co-first — target audience is mixed numeric/categorical, incl.
+  recommendation with high-cardinality IDs). Other scalers near-free once one scaler
+  exists; `TargetEncoder` close behind. (Full tier table above.)
+- **The real unlock is the structural glue, not the leaves:** `Pipeline` (sequencing) and
+  `ColumnTransformer` (column routing + output concatenation). Build these alongside the
+  first leaves — bare transformers can't run a realistic pipeline.
+- **Unknown-category handling is a designed-in requirement, not a flag:** cold-start unseen
+  IDs are the common case in serving/recommendation. Match sklearn's `handle_unknown` /
+  `drop` / infrequent-category semantics exactly.
+- **Acceptance test = end-to-end assembly parity:** the full feature vector (width + column
+  order + values) must be bit-identical to `ColumnTransformer.transform()`, because the
+  downstream model consumes it positionally and a mislabeled column is a *silent* wrong
+  prediction. Per-transformer correctness in isolation is not sufficient.
+- **First-class Python fallback per transformer** (run the real sklearn object) so partial
+  coverage ships and the native surface grows incrementally. Fallback is not free at
+  serving time — it drags the DataFrame back onto the request path (see DRAFT-3 serving +
+  DRAFT-4 benchmark).
+- **Open sub-question:** whether/how the SQL authoring surface (`sklearn.standardize(col)`-
+  style, goal 1) maps onto this. Both integration directions work with fitted
+  sklearn-estimator objects; the SQL authoring front-end is a separate question.

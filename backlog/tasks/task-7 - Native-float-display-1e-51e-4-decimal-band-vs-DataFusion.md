@@ -4,14 +4,12 @@ title: 'Native float display: [1e-5,1e-4) decimal band vs DataFusion'
 status: To Do
 assignee: []
 created_date: '2026-07-18 14:28'
-updated_date: '2026-07-18 15:20'
+updated_date: '2026-07-19 01:15'
 labels:
   - rust
   - parity
 milestone: m-1
 dependencies: []
-references:
-  - docs/BACKLOG.md
 ordinal: 7000
 ---
 

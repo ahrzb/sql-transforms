@@ -4,22 +4,20 @@ title: Opaque transform Part-1 review follow-ups
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-18 15:19'
+updated_date: '2026-07-19 01:15'
 labels:
   - rust
   - parity
   - opaque
 milestone: m-1
 dependencies: []
-references:
-  - docs/BACKLOG.md
 ordinal: 2000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Follow-ups from the Part-1 (engine capability) review. Detail in docs/BACKLOG.md 'Opaque transform support'.
+Follow-ups from the Part-1 (engine capability) review. Split rationale + deferred direction: decision-3 (opaque-transform split).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
