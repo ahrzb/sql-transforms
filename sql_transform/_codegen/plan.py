@@ -190,6 +190,13 @@ class Cast:
 
 
 @dataclass
+class Case:
+    arms: list       # list[tuple[cond, result]]
+    default: Any     # result expr; Literal(None) when no ELSE
+    has_else: bool   # whether an explicit ELSE was written
+
+
+@dataclass
 class TableScan:
     table: str
 
@@ -313,6 +320,18 @@ def _convert_expr(e: exp.Expression) -> Any:
         raise UnsupportedInCodegen("the || operator is not supported in codegen yet")
     if isinstance(e, exp.Not):
         return Not(_convert_expr(e.this))
+    if isinstance(e, exp.Case):
+        operand = e.args.get("this")  # simple form: CASE <operand> WHEN ...
+        base = _convert_expr(operand) if operand is not None else None
+        arms = []
+        for if_ in e.args["ifs"]:
+            lhs = _convert_expr(if_.this)
+            cond = lhs if base is None else BinaryOp("eq", base, lhs)
+            arms.append((cond, _convert_expr(if_.args["true"])))
+        default_expr = e.args.get("default")
+        has_else = default_expr is not None
+        default = _convert_expr(default_expr) if has_else else Literal(None)
+        return Case(arms, default, has_else)
     for cls, op in _BINOPS.items():
         if isinstance(e, cls):
             return BinaryOp(op, _convert_expr(e.this), _convert_expr(e.expression))
@@ -683,6 +702,11 @@ def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> None:
         _validate_expr(e.inner, resolved, row_schemas, static_schemas, used)
     elif isinstance(e, Cast):
         _validate_expr(e.expr, resolved, row_schemas, static_schemas, used)
+    elif isinstance(e, Case):
+        for cond, result in e.arms:
+            _validate_expr(cond, resolved, row_schemas, static_schemas, used)
+            _validate_expr(result, resolved, row_schemas, static_schemas, used)
+        _validate_expr(e.default, resolved, row_schemas, static_schemas, used)
     elif isinstance(e, Func):
         for a in e.args:
             _validate_expr(a, resolved, row_schemas, static_schemas, used)
@@ -717,6 +741,14 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
         return FieldType(BOOL, infer_type(e.inner, schemas).nullable)
     if isinstance(e, Cast):
         return FieldType(e.target, infer_type(e.expr, schemas).nullable)
+    if isinstance(e, Case):
+        branch_types = [infer_type(r, schemas) for _, r in e.arms]
+        branch_types.append(infer_type(e.default, schemas))
+        base = _common_base(branch_types)
+        # No explicit ELSE means an unmatched row yields NULL, so the result is
+        # nullable regardless of the branch types.
+        nullable = (not e.has_else) or any(t.nullable for t in branch_types)
+        return FieldType(base, nullable)
     if isinstance(e, Func):
         return _function_type(e.name, [infer_type(a, schemas) for a in e.args])
     raise UnsupportedInCodegen(f"cannot infer the type of {type(e).__name__}")

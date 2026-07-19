@@ -127,7 +127,18 @@ def _run_datafusion(query: str, tables: dict[str, Table]) -> list[dict]:
     for name, tbl in tables.items():
         ctx.from_arrow(pa.Table.from_pylist(tbl.rows, schema=tbl.schema), name=name)
     df = ctx.sql(query)
-    return pa.Table.from_batches(df.collect(), schema=df.schema()).to_pylist()
+    batches = df.collect()
+    if not batches:
+        # No rows -> no data to be wrong about; df.schema() is fine here, and
+        # pa.Table.from_batches requires a schema when there are zero batches.
+        return pa.Table.from_batches(batches, schema=df.schema()).to_pylist()
+    # Measured: for CASE with mixed-numeric branches (e.g. THEN 1 ELSE 2.5),
+    # DataFusion's logical df.schema() reports the first branch's type (int64)
+    # while the actual result batches are correctly coerced to the common
+    # supertype (double) -- a mismatch between DataFusion's own logical and
+    # physical schemas. Building the table from the batches' own (correct)
+    # schema avoids an ArrowInvalid over a discrepancy that isn't ours.
+    return pa.Table.from_batches(batches).to_pylist()
 
 
 def _run_engine(engine: Any, query: str, tables: dict[str, Table]) -> list[dict]:
@@ -217,11 +228,15 @@ def check(
     query: str,
     tables: dict[str, Table],
     expect: list[dict] | None = None,
+    codegen_only: bool = False,
 ) -> None:
     """Run `query` through DataFusion (oracle) AND the active backend engine over
     the same typed tables; assert their output rows match (order-insensitive,
     float-tolerant, NULL-aware). If `expect` is given, also assert
-    output == expect."""
+    output == expect. `codegen_only=True` skips the native backend for surface
+    codegen supports but native does not yet (e.g. CASE, until TASK-27)."""
+    if codegen_only and _backend == "native":
+        pytest.skip("native does not implement this surface yet (codegen_only)")
     oracle = _run_datafusion(query, tables)
     try:
         actual = _run_backend(query, tables)

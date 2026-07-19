@@ -95,6 +95,14 @@ def _emit_expr(e: Any, env: dict) -> str:
         if fn is None:
             raise ValueError(f"Unknown function: {e.name}")
         return f"{fn}({', '.join(_emit_expr(a, env) for a in e.args)})"
+    if isinstance(e, cp.Case):
+        out = _emit_expr(e.default, env)
+        for cond, result in reversed(e.arms):
+            out = (
+                f"({_emit_expr(result, env)} if rt.truthy({_emit_expr(cond, env)}) "
+                f"else {out})"
+            )
+        return out
     raise UnsupportedInCodegen(f"cannot compile {type(e).__name__}")
 
 

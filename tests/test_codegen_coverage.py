@@ -47,6 +47,14 @@ _COMMITTED = [
         {"t": rows({"a": "int?", "b": "float"}, [{"a": 3, "b": 2.5}])},
     ),
     ("SELECT NULLIF(a, 1) AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
+    (
+        "SELECT CASE WHEN a > 0 THEN 1 ELSE 0 END AS x FROM t",
+        {"t": rows({"a": "int"}, [{"a": 1}])},
+    ),
+    (
+        "SELECT CASE a WHEN 1 THEN 'one' ELSE 'other' END AS x FROM t",
+        {"t": rows({"a": "int"}, [{"a": 1}])},
+    ),
     ("SELECT CAST(a AS VARCHAR) AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT CAST(s AS BIGINT) AS x FROM t", {"t": rows({"s": "str"}, [{"s": "1"}])}),
     ("SELECT CAST(a AS DOUBLE) AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
