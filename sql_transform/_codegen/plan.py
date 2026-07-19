@@ -746,11 +746,10 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
         return FieldType(e.target, infer_type(e.expr, schemas).nullable)
     if isinstance(e, Case):
         branch_types = [infer_type(r, schemas) for _, r in e.arms]
-        # No explicit ELSE means an unmatched row yields NULL, so the result is
-        # nullable regardless of the branch types.
-        nullable = (not e.has_else) or any(t.nullable for t in branch_types)
         if e.has_else:
             branch_types.append(infer_type(e.default, schemas))
+        # No explicit ELSE => an unmatched row yields NULL, so nullable regardless.
+        nullable = (not e.has_else) or any(t.nullable for t in branch_types)
         base = _common_base(branch_types)
         return FieldType(base, nullable)
     if isinstance(e, Func):
