@@ -87,3 +87,14 @@ def test_case_nested():
         expect=[{"c": "big"}, {"c": "small"}, {"c": "neg"}],
         codegen_only=True,
     )
+
+
+def test_case_no_else_result_stays_int_in_arithmetic():
+    # A no-ELSE CASE's THEN type must survive into outer arithmetic: the result
+    # is int, not silently widened to float. Guards infer_type's no-ELSE typing.
+    check(
+        "SELECT (CASE WHEN x > 0 THEN 1 END) + 1 AS c FROM t",
+        {"t": rows({"x": "int"}, [{"x": 5}])},
+        expect=[{"c": 2}],
+        codegen_only=True,
+    )

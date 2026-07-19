@@ -326,6 +326,9 @@ def _convert_expr(e: exp.Expression) -> Any:
         arms = []
         for if_ in e.args["ifs"]:
             lhs = _convert_expr(if_.this)
+            # ponytail: simple-form operand re-emitted per arm (re-evaluated at
+            # runtime); fine for pure column/literal operands, bind to a local if a
+            # heavy operand expression ever matters.
             cond = lhs if base is None else BinaryOp("eq", base, lhs)
             arms.append((cond, _convert_expr(if_.args["true"])))
         default_expr = e.args.get("default")
@@ -743,11 +746,12 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
         return FieldType(e.target, infer_type(e.expr, schemas).nullable)
     if isinstance(e, Case):
         branch_types = [infer_type(r, schemas) for _, r in e.arms]
-        branch_types.append(infer_type(e.default, schemas))
-        base = _common_base(branch_types)
         # No explicit ELSE means an unmatched row yields NULL, so the result is
         # nullable regardless of the branch types.
         nullable = (not e.has_else) or any(t.nullable for t in branch_types)
+        if e.has_else:
+            branch_types.append(infer_type(e.default, schemas))
+        base = _common_base(branch_types)
         return FieldType(base, nullable)
     if isinstance(e, Func):
         return _function_type(e.name, [infer_type(a, schemas) for a in e.args])
