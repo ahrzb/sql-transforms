@@ -4,21 +4,19 @@ title: ColumnTransformer assembly surface
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-19 01:15'
+updated_date: '2026-07-19 01:23'
 labels:
   - sklearn
   - fallback
 milestone: m-1
 dependencies: []
-references:
-  - docs/ROADMAP.md
 ordinal: 6000
 ---
 
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Column routing + horizontal concat; the end-to-end assembly-parity oracle: bit-identical width + column order + values vs stock ColumnTransformer.transform(). Must include a multi-output transformer. Detail in docs/ROADMAP.md (ColumnTransformer-glue slice) + doc-2 (sklearn strategy) / doc-10 (feature-output).
+Column routing + horizontal concat; the end-to-end assembly-parity oracle: bit-identical width + column order + values vs stock ColumnTransformer.transform(). Must include a multi-output transformer. Detail in doc-2 (sklearn strategy) / doc-10 (feature-output).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

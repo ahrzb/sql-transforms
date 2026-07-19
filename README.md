@@ -113,7 +113,7 @@ mise tasks        # list all tasks
 
 ## Project docs
 
-- [docs/ROADMAP.md](docs/ROADMAP.md) — the sequenced milestones (narrative) and progress.
+- **Milestones** (`backlog milestone list`) — the sequenced phases; tasks (TASK-N) are the actionable units (see Backlog.md below).
 - The **reasoning archive** — *why* things were deferred, design briefs, and ADRs — now
   lives in `backlog/docs`, `backlog/decisions`, and `backlog/drafts` (see Backlog.md below).
 - **Backlog.md** (`backlog/`) — live task board (`backlog board` / `backlog task
@@ -129,8 +129,7 @@ mise tasks        # list all tasks
 
 ## Contributing
 
-1. Pick an item from [docs/ROADMAP.md](docs/ROADMAP.md) or the
-   [Backlog.md board](backlog/) (`backlog task list`).
+1. Pick an item from the [Backlog.md board](backlog/) (`backlog task list` / `backlog board`).
 2. Open an issue.
 3. Implement with tests.
 4. Submit a PR.

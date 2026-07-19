@@ -169,7 +169,6 @@ See [SQL_SUPPORT.md](../../docs/SQL_SUPPORT.md) for the detailed feature-by-feat
 
 ## Roadmap
 
-The sequenced path toward these goals — milestones and progress — lives in
-[ROADMAP.md](../../docs/ROADMAP.md); the underlying scoped tasks and open questions live in
-**Backlog.md** (`backlog/` — tasks, decisions, docs, drafts). This doc stays focused on what the project is and where
+The sequenced path toward these goals — milestones, scoped tasks, and open questions —
+lives in **Backlog.md** (`backlog/` — milestones, tasks, decisions, docs, drafts). This doc stays focused on what the project is and where
 it's headed, not the step-by-step.
