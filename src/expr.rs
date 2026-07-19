@@ -116,8 +116,18 @@ pub fn display_value(v: &Value) -> String {
     match v {
         Value::Int(i) => i.to_string(),
         // `{:?}` matches Arrow/DataFusion's Float64->Utf8 rendering (1.0 -> "1.0",
-        // 1e300 -> "1e300"), unlike `to_string` (1.0 -> "1", 1e300 -> 300 digits).
-        Value::Float(f) => format!("{f:?}"),
+        // 1e300 -> "1e300"), unlike `to_string` (1.0 -> "1", 1e300 -> 300 digits)
+        // -- EXCEPT |x| in [1e-5, 1e-4): there `{:?}` uses exponential ('1e-5')
+        // but DataFusion stays fixed-decimal ('0.00001'). `{}` is fixed-point
+        // shortest-round-trip and matches the oracle for exactly that band (the
+        // only magnitude where the two disagree -- see TASK-7 probe).
+        Value::Float(f) => {
+            if (1e-5..1e-4).contains(&f.abs()) {
+                format!("{f}")
+            } else {
+                format!("{f:?}")
+            }
+        }
         Value::Str(s) => s.clone(),
         Value::Bool(b) => b.to_string(),
         Value::Null => String::new(),

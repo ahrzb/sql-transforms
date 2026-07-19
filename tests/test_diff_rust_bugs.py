@@ -64,17 +64,20 @@ def test_cast_whitespace_string_to_number():
     check_both_raise("SELECT CAST(' 4.5 ' AS DOUBLE) AS n FROM __THIS__", {_R: row(z=0)})
 
 
-def test_float_display_small_decimal_band(xfail_on_native):
-    # Residual after the rust-parity-bugs float fix (found during the codegen
-    # merge, 2026-07-17): for |x| in [1e-5, 1e-4) the native engine renders
-    # exponential ('1e-5') while DataFusion uses fixed decimal ('0.00001').
-    # Codegen matches the oracle.
-    xfail_on_native(
-        "Rust residual: CAST(<float in [1e-5,1e-4)> AS VARCHAR) uses exponential "
-        "form; DataFusion uses fixed decimal. e.g. 1e-5 -> '1e-5' vs '0.00001'."
-    )
+def test_float_display_small_decimal_band():
+    # For |x| in [1e-5, 1e-4) DataFusion renders fixed decimal ('0.00001'); native
+    # used exponential ('1e-5') via `{:?}` and now uses `{}` for this band to match
+    # the oracle (TASK-7). Codegen already matched.
     check(
         "SELECT CAST(f AS VARCHAR) AS x FROM __THIS__",
         {"__THIS__": rows({"f": "float"}, [{"f": 1e-5}])},
         expect=[{"x": "0.00001"}],
     )
+    # More band values + the boundaries just outside it (9.99e-6 below stays
+    # scientific; 1e-4 above stays fixed) -- parity against the oracle, no
+    # hand-computed digit strings since check() asserts backend == DataFusion.
+    for v in (1.5e-5, 9.99e-5, 9.999e-5, 9.99e-6, 1e-4):
+        check(
+            "SELECT CAST(f AS VARCHAR) AS x FROM __THIS__",
+            {"__THIS__": rows({"f": "float"}, [{"f": v}])},
+        )
