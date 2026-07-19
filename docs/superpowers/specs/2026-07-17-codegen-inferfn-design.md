@@ -200,7 +200,7 @@ is already written as executable tests.
    global?) The plan builds the engine and proves it equivalent; it does **not**
    wire selection or change any default. That's a follow-up gated on (3)/(4).
 3. **Roadmap placement**: foundational parallel track vs sequenced vs folded into
-   M1 — TBD pending the two-engine framing decision; don't assume.
+   the transformer-foundation phase — TBD pending the two-engine framing decision; don't assume.
 4. **Doc reconciliation** (PM-owned): move codegen off BACKLOG "won't do", add the
    engine epic, reflect the two-engine decision in ROADMAP/VISION. Held until the
    framing is ratified.

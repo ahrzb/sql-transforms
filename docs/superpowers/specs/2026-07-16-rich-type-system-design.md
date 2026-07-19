@@ -9,7 +9,7 @@ struct-support" ticket.
 
 **Why now (decided 2026-07-16):** the composition output model needs structs;
 `struct.*` isn't a thing in DataFusion (`UNNEST` is); and more broadly the engine
-should carry real feature-data types (this is also M4 feature-contract groundwork).
+should carry real feature-data types (this is also feature-contract groundwork).
 So we build the type *layer* properly rather than bolt on one type.
 
 **Reference is DataFusion** (differential-harness parity). Confirmed live:
