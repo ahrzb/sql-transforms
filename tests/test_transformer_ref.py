@@ -88,16 +88,16 @@ def test_transformer_and_native_window_agg_coexist():
     assert np.allclose([b["an"] for b in batch], test["age"].to_numpy() / train["age"].mean())
 
 
-def test_camelcase_columns_compose():
-    # Regression for the House Prices (CamelCase) failure: a transformer ref on
-    # non-lowercase columns must survive both engines (same identifier-quoting
-    # class as c056ec3, which the transformer-ref path never carried).
+def test_camelcase_columns_quoted_compose():
+    # A transformer ref on case-sensitive columns works when the user quotes them
+    # (DataFusion keeps a quoted identifier case-exact). The ref carries the
+    # quoting through verbatim, so both engines resolve `"LotArea"` identically.
     train = pd.DataFrame(
         {"LotArea": [1.0, 2.0, 3.0, 4.0], "YearBuilt": [1990.0, 2000.0, 2010.0, 2020.0]}
     )
     sc = StandardScaler().fit(train)
     t = SQLTransform(
-        t"SELECT {sc}(LotArea, YearBuilt) AS out FROM __THIS__"
+        t'SELECT {sc}("LotArea", "YearBuilt") AS out FROM __THIS__'
     ).fit(pa.Table.from_pandas(train))
 
     test = pd.DataFrame({"LotArea": [2.5], "YearBuilt": [2005.0]})
@@ -106,3 +106,18 @@ def test_camelcase_columns_compose():
     expected = sc.transform(test)
     got = np.array([[b["out"]["LotArea"], b["out"]["YearBuilt"]] for b in batch])
     assert np.allclose(got, expected)
+
+
+def test_camelcase_columns_unquoted_folds_and_fails():
+    # Unquoted CamelCase folds to lowercase in DataFusion (the oracle) and misses,
+    # so the transformer-ref path must NOT silently make it work (the reverted
+    # TASK-25 force-quote did). The user quotes instead (see the quoted test).
+    # TASK-28.
+    train = pd.DataFrame(
+        {"LotArea": [1.0, 2.0, 3.0, 4.0], "YearBuilt": [1990.0, 2000.0, 2010.0, 2020.0]}
+    )
+    sc = StandardScaler().fit(train)
+    t = SQLTransform(t"SELECT {sc}(LotArea, YearBuilt) AS out FROM __THIS__")
+    with pytest.raises(Exception, match="(?i)lotarea|no field|schema"):
+        fitted = t.fit(pa.Table.from_pandas(train))
+        fitted.transform(pa.Table.from_pandas(train))

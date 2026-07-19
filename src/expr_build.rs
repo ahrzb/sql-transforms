@@ -1,16 +1,28 @@
 use sqlparser::ast::{
     Array, BinaryOperator, DataType, Expr as SqlExpr, Function, FunctionArg, FunctionArgExpr,
-    FunctionArguments, UnaryOperator, Value as SqlValue,
+    FunctionArguments, Ident, UnaryOperator, Value as SqlValue,
 };
 
 use crate::expr::{BinOp, CastType, Expr, Value};
 use crate::plan::InterpError;
 
+/// DataFusion identifier folding: an unquoted identifier folds to lowercase, a
+/// double-quoted one stays case-exact. sqlparser keeps the unquoted text in
+/// `.value` regardless, and the quoting in `.quote_style` -- so the fold key is
+/// purely whether a quote style was present. Matches the oracle so `SELECT Age`
+/// on a column named `Age` folds to `age` and misses.
+pub fn fold_ident(ident: &Ident) -> String {
+    match ident.quote_style {
+        Some(_) => ident.value.clone(),
+        None => ident.value.to_lowercase(),
+    }
+}
+
 pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
     match e {
         SqlExpr::Identifier(ident) => Ok(Expr::Column {
             table: None,
-            name: ident.value.clone(),
+            name: fold_ident(ident),
         }),
         // `a.b` is ambiguous at parse time -- it's either `table.column` or
         // `struct_col.field`, and we don't know the relation-alias set here
@@ -22,14 +34,20 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
         // rewrites the Column node into a FieldAccess when its `table` part
         // turns out not to be a relation alias -- see plan.rs.
         SqlExpr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+            // Fold the column/field parts (`parts[1..]`); leave the leading
+            // qualifier (`parts[0]`) raw -- it names a relation (`__THIS__`/
+            // generated), never a data column. ponytail: a real CamelCase table
+            // or struct-column qualifier won't fold like DataFusion here; not
+            // reachable today (qualifiers are always library-internal). Widen to
+            // fold parts[0] too if user-named CamelCase relations ever appear.
             let mut expr = Expr::Column {
                 table: Some(parts[0].value.clone()),
-                name: parts[1].value.clone(),
+                name: fold_ident(&parts[1]),
             };
             for part in &parts[2..] {
                 expr = Expr::FieldAccess {
                     base: Box::new(expr),
-                    field: part.value.clone(),
+                    field: fold_ident(part),
                 };
             }
             Ok(expr)
