@@ -1,9 +1,8 @@
 """Differential coverage of SQL CASE (searched + simple forms).
 
-CASE is codegen-only until the native engine gains it (TASK-27), so these run
-against the DataFusion oracle on the codegen backend and skip on native via
-codegen_only=True. Emission must short-circuit (only the taken branch evaluates),
-which the short-circuit test below pins.
+Runs against the DataFusion oracle on BOTH backends (native + codegen). Emission
+must short-circuit (only the taken branch evaluates), which the short-circuit
+test below pins.
 """
 
 from differential import check, rows
@@ -15,7 +14,6 @@ def test_case_searched_with_else():
         "AS c FROM t",
         {"t": rows({"x": "int"}, [{"x": 5}, {"x": -3}, {"x": 0}])},
         expect=[{"c": "pos"}, {"c": "neg"}, {"c": "zero"}],
-        codegen_only=True,
     )
 
 
@@ -24,7 +22,6 @@ def test_case_searched_no_else_unmatched_is_null():
         "SELECT CASE WHEN x > 0 THEN 1 END AS c FROM t",
         {"t": rows({"x": "int"}, [{"x": 5}, {"x": -1}])},
         expect=[{"c": 1}, {"c": None}],
-        codegen_only=True,
     )
 
 
@@ -33,7 +30,6 @@ def test_case_simple_form():
         "SELECT CASE g WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'z' END AS c FROM t",
         {"t": rows({"g": "int"}, [{"g": 1}, {"g": 2}, {"g": 9}])},
         expect=[{"c": "a"}, {"c": "b"}, {"c": "z"}],
-        codegen_only=True,
     )
 
 
@@ -43,7 +39,6 @@ def test_case_simple_null_operand_falls_through():
         "SELECT CASE g WHEN 1 THEN 'a' ELSE 'z' END AS c FROM t",
         {"t": rows({"g": "int?"}, [{"g": None}])},
         expect=[{"c": "z"}],
-        codegen_only=True,
     )
 
 
@@ -53,7 +48,6 @@ def test_case_result_int_float_coerces_to_float():
         "SELECT CASE WHEN x > 0 THEN 1 ELSE 2.5 END AS c FROM t",
         {"t": rows({"x": "int"}, [{"x": 5}, {"x": -1}])},
         expect=[{"c": 1.0}, {"c": 2.5}],
-        codegen_only=True,
     )
 
 
@@ -64,7 +58,6 @@ def test_case_short_circuits_avoiding_error():
         "SELECT CASE WHEN x > 0 THEN 1 / x ELSE 0 END AS c FROM t",
         {"t": rows({"x": "int"}, [{"x": 0}])},
         expect=[{"c": 0}],
-        codegen_only=True,
     )
 
 
@@ -74,7 +67,6 @@ def test_case_null_condition_skips_arm():
         "SELECT CASE WHEN b THEN 'yes' ELSE 'no' END AS c FROM t",
         {"t": rows({"b": "bool?"}, [{"b": None}, {"b": True}])},
         expect=[{"c": "no"}, {"c": "yes"}],
-        codegen_only=True,
     )
 
 
@@ -85,7 +77,6 @@ def test_case_nested():
         "ELSE 'neg' END AS c FROM t",
         {"t": rows({"x": "int"}, [{"x": 20}, {"x": 5}, {"x": -1}])},
         expect=[{"c": "big"}, {"c": "small"}, {"c": "neg"}],
-        codegen_only=True,
     )
 
 
@@ -96,7 +87,6 @@ def test_case_no_else_result_stays_int_in_arithmetic():
         "SELECT (CASE WHEN x > 0 THEN 1 END) + 1 AS c FROM t",
         {"t": rows({"x": "int"}, [{"x": 5}])},
         expect=[{"c": 2}],
-        codegen_only=True,
     )
 
 
@@ -107,5 +97,4 @@ def test_case_else_nullable_column_keeps_result_nullable():
         "SELECT CASE WHEN x > 0 THEN 1 ELSE y END AS c FROM t",
         {"t": rows({"x": "int", "y": "int?"}, [{"x": -1, "y": None}, {"x": 5, "y": 9}])},
         expect=[{"c": None}, {"c": 1}],
-        codegen_only=True,
     )

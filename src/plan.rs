@@ -1209,6 +1209,25 @@ fn validate_expr(
                 ))),
             }
         }
+        Expr::Case { arms, default } => {
+            for (cond, result) in arms {
+                validate_expr(
+                    cond, resolved, row_schemas, static_schemas, effective_schemas,
+                    used_columns,
+                )?;
+                validate_expr(
+                    result, resolved, row_schemas, static_schemas, effective_schemas,
+                    used_columns,
+                )?;
+            }
+            if let Some(d) = default {
+                validate_expr(
+                    d, resolved, row_schemas, static_schemas, effective_schemas,
+                    used_columns,
+                )?;
+            }
+            Ok(())
+        }
     }
 }
 

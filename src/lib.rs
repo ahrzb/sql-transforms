@@ -173,6 +173,20 @@ fn resolve_transformers(
             base: Box::new(resolve_transformers(*base, resolved)?),
             field,
         }),
+        Expr::Case { arms, default } => {
+            let mut new_arms = Vec::with_capacity(arms.len());
+            for (cond, result) in arms {
+                new_arms.push((
+                    resolve_transformers(cond, resolved)?,
+                    resolve_transformers(result, resolved)?,
+                ));
+            }
+            let default = match default {
+                Some(d) => Some(Box::new(resolve_transformers(*d, resolved)?)),
+                None => None,
+            };
+            Ok(Expr::Case { arms: new_arms, default })
+        }
         // Column, Literal, and an already-built Transform pass through.
         other => Ok(other),
     }

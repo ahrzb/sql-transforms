@@ -133,6 +133,23 @@ pub fn infer_type(
                 nullable: false,
             })
         }
+        Expr::Case { arms, default } => {
+            let mut branch_types: Vec<FieldType> = arms
+                .iter()
+                .map(|(_, result)| infer_type(result, schemas))
+                .collect::<Result<_, _>>()?;
+            let has_else = default.is_some();
+            if let Some(d) = default {
+                branch_types.push(infer_type(d, schemas)?);
+            }
+            // No explicit ELSE => an unmatched row yields NULL, so nullable
+            // regardless of the branch types.
+            let nullable = !has_else || branch_types.iter().any(|t| t.nullable);
+            Ok(FieldType {
+                base: common_base(&branch_types),
+                nullable,
+            })
+        }
     }
 }
 

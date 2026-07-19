@@ -228,15 +228,11 @@ def check(
     query: str,
     tables: dict[str, Table],
     expect: list[dict] | None = None,
-    codegen_only: bool = False,
 ) -> None:
     """Run `query` through DataFusion (oracle) AND the active backend engine over
     the same typed tables; assert their output rows match (order-insensitive,
     float-tolerant, NULL-aware). If `expect` is given, also assert
-    output == expect. `codegen_only=True` skips the native backend for surface
-    codegen supports but native does not yet (e.g. CASE, until TASK-27)."""
-    if codegen_only and _backend == "native":
-        pytest.skip("native does not implement this surface yet (codegen_only)")
+    output == expect."""
     oracle = _run_datafusion(query, tables)
     try:
         actual = _run_backend(query, tables)

@@ -285,6 +285,13 @@ pub enum Expr {
         output_fields: Vec<(String, FieldType)>,
         arg: Box<Expr>,
     },
+    /// SQL CASE. `arms` are (condition, result) pairs evaluated left to right;
+    /// the first arm whose condition is `Bool(true)` wins. `default` is the ELSE
+    /// result, or `None` when there is no ELSE (an unmatched row yields NULL).
+    Case {
+        arms: Vec<(Expr, Expr)>,
+        default: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -461,6 +468,21 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
                 }
                 Ok(Value::Struct(out))
             })
+        }
+        Expr::Case { arms, default } => {
+            // Short-circuit: evaluate conditions left to right, stop at the first
+            // Bool(true), and evaluate ONLY that arm's result. A non-matching
+            // arm's result is never touched, so CASE WHEN x>0 THEN 1/x ELSE 0 END
+            // does not divide by zero at x=0 -- matching the oracle.
+            for (cond, result) in arms {
+                if let Some(true) = as_tribool(&eval(cond, row)?)? {
+                    return eval(result, row);
+                }
+            }
+            match default {
+                Some(d) => eval(d, row),
+                None => Ok(Value::Null),
+            }
         }
     }
 }

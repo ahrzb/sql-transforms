@@ -130,6 +130,33 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
             name: "trim".to_string(),
             args: vec![convert_expr(expr)?],
         }),
+        SqlExpr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            let mut arms = Vec::with_capacity(conditions.len());
+            for when in conditions {
+                // Simple form: `CASE <operand> WHEN <v> ...` normalizes each arm's
+                // condition to `operand = v`, matching DataFusion/codegen. A NULL
+                // operand/value makes the `=` NULL, so the arm doesn't match.
+                let cond = match operand {
+                    Some(op) => Expr::BinaryOp {
+                        op: BinOp::Eq,
+                        left: Box::new(convert_expr(op)?),
+                        right: Box::new(convert_expr(&when.condition)?),
+                    },
+                    None => convert_expr(&when.condition)?,
+                };
+                arms.push((cond, convert_expr(&when.result)?));
+            }
+            let default = match else_result {
+                Some(e) => Some(Box::new(convert_expr(e)?)),
+                None => None,
+            };
+            Ok(Expr::Case { arms, default })
+        }
         _ => Err(InterpError::Build(format!("Unsupported expression: {e}"))),
     }
 }
