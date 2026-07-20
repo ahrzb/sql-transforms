@@ -33,11 +33,11 @@ jobs:
       - name: Build extension + install deps
         run: uv sync --locked
 
-      - name: Ruff lint
-        run: uv run ruff check .
-
-      - name: Ruff format
-        run: uv run ruff format --check .
+      # Lint + formatting go through pre-commit so CI enforces exactly what the
+      # local hooks do (config: .pre-commit-config.yaml), rather than a second,
+      # drift-prone copy of the ruff invocations.
+      - name: Lint + format (pre-commit)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
       - name: Tests
         run: uv run pytest -q

@@ -19,6 +19,7 @@ dev = [
     "notebook>=7.6.0",
     "numpy>=2.0",
     "pandas>=2.0",
+    "pre-commit>=4.6.0",
     "pytest>=8.3.5",
     "ruff>=0.11.7",
     "scikit-learn>=1.5",

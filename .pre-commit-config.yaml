@@ -1,0 +1,14 @@
+# Single source of truth for lint + formatting.
+#
+# CI does not run ruff directly — it runs `pre-commit run --all-files`, so what
+# blocks a PR is exactly what runs on your machine. `rev` is pinned to the ruff
+# version locked in uv.lock; bump both together or local and CI will disagree.
+#
+# One-time local setup:  uv run pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
