@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The package is a pyo3/maturin extension, so CI needs a Rust toolchain
+      # to build it during `uv sync`.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # Provisions Python 3.14 (per requires-python), builds the extension, and
+      # installs locked deps.
+      - name: Build extension + install deps
+        run: uv sync --locked
+
+      # Lint + formatting go through pre-commit so CI enforces exactly what the
+      # local hooks do (config: .pre-commit-config.yaml), rather than a second,
+      # drift-prone copy of the ruff invocations.
+      - name: Lint + format (pre-commit)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+      - name: Tests
+        run: uv run pytest -q

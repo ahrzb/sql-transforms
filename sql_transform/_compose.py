@@ -28,8 +28,8 @@ from sql_transform._transformer_ref import is_transformer
 @dataclass(frozen=True)
 class Ref:
     transform: object  # a SQLTransform, or a fitted transformer if is_transformer
-    frozen: bool       # True for {a.transform}; False for bare {a}
-    expr_text: str     # interpolation source, for error messages
+    frozen: bool  # True for {a.transform}; False for bare {a}
+    expr_text: str  # interpolation source, for error messages
     is_transformer: bool = False
 
 
@@ -186,8 +186,10 @@ def fit_into_scope(
     # Remap inner's single __THIS__ column -> input_expr throughout the tree,
     # so its window aggregates are over input_expr (agg-over-expression).
     def remap(n):
-        if isinstance(n, exp.Column) and n.name == inner_col and not (
-            n.table and n.table.startswith("__STATE")
+        if (
+            isinstance(n, exp.Column)
+            and n.name == inner_col
+            and not (n.table and n.table.startswith("__STATE"))
         ):
             return input_expr.copy()
         return n
@@ -211,9 +213,11 @@ def fit_into_scope(
     if isinstance(frozen_expr, exp.Alias):
         frozen_expr = frozen_expr.this
     frozen_expr = frozen_expr.transform(
-        lambda n: exp.column(n.name, table=scope)
-        if isinstance(n, exp.Column) and n.table in rename
-        else n
+        lambda n: (
+            exp.column(n.name, table=scope)
+            if isinstance(n, exp.Column) and n.table in rename
+            else n
+        )
     )
     return frozen_expr, scoped_state
 

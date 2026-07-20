@@ -70,7 +70,9 @@ def _arrow_type(spec: str) -> tuple[pa.DataType, bool]:
     base = spec[:-1] if nullable else spec
     if base.startswith("struct{") and base.endswith("}"):
         inner = base[len("struct{") : -1]
-        fields = [_arrow_field(*part.split(":", 1)) for part in _split_struct_fields(inner)]
+        fields = [
+            _arrow_field(*part.split(":", 1)) for part in _split_struct_fields(inner)
+        ]
         return pa.struct(fields), nullable
     if base.startswith("list[") and base.endswith("]"):
         elem_type, elem_nullable = _arrow_type(base[len("list[") : -1])

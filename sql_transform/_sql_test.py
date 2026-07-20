@@ -99,9 +99,7 @@ def test_find_window_aggregates_accepts_expression_argument():
 
 
 def test_find_window_aggregates_rejects_multi_arg():
-    tree = parse_and_validate(
-        "SELECT MYAGG(age, score) OVER () AS x FROM __THIS__"
-    )
+    tree = parse_and_validate("SELECT MYAGG(age, score) OVER () AS x FROM __THIS__")
     with pytest.raises(ValueError, match="exactly one argument"):
         find_window_aggregates(tree)
 

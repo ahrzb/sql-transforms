@@ -21,7 +21,9 @@ def _find_call(select: exp.Select, name: str) -> exp.Anonymous:
     for n in select.find_all(exp.Anonymous):
         if str(n.this).upper() == name:
             return n
-    raise ValueError(f"transformer ref {name} must be applied to columns, e.g. {{t}}(a, b)")
+    raise ValueError(
+        f"transformer ref {name} must be applied to columns, e.g. {{t}}(a, b)"
+    )
 
 
 def _named_struct(cols: list[exp.Column]) -> exp.Anonymous:
@@ -61,7 +63,9 @@ def _materialize(
     shaped like out_schema, so an outer transformer can probe on real data."""
     x = np.column_stack([src.column(c).to_numpy(zero_copy_only=False) for c in cols])
     y = np.asarray(obj.transform(x))
-    arrays = [pa.array(y[:, i], type=out_schema.field(i).type) for i in range(len(out_schema))]
+    arrays = [
+        pa.array(y[:, i], type=out_schema.field(i).type) for i in range(len(out_schema))
+    ]
     return pa.table(arrays, schema=out_schema)
 
 
@@ -74,11 +78,15 @@ def resolve_transformer_refs(
     output, resolving innermost-first. Returns
     {placeholder_name.lower(): (obj, in_schema, out_schema)}."""
     registry: dict[str, tuple[object, pa.Schema, pa.Schema]] = {}
-    materialized: dict[str, pa.Table] = {}  # name -> this ref's output, for outer probes
+    materialized: dict[
+        str, pa.Table
+    ] = {}  # name -> this ref's output, for outer probes
 
     def call_arg_ref(call: exp.Anonymous) -> str | None:
         """If the call's single arg is another transformer-ref call, its name."""
-        if len(call.expressions) == 1 and isinstance(call.expressions[0], exp.Anonymous):
+        if len(call.expressions) == 1 and isinstance(
+            call.expressions[0], exp.Anonymous
+        ):
             inner = str(call.expressions[0].this).upper()
             if inner in tfm_refs:
                 return inner

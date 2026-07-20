@@ -156,7 +156,9 @@ def test_nested_unfit_refs_with_inner_state_parity():
         "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
     )
     composite = SQLTransform(t"SELECT {a}({b}(age)) AS z FROM __THIS__").fit(train)
-    _parity(composite, train)  # a(b(age)) with both carrying state -> cross-join must work
+    _parity(
+        composite, train
+    )  # a(b(age)) with both carrying state -> cross-join must work
 
 
 def test_unfit_reference_clone_contract_refits_standalone():
@@ -178,7 +180,9 @@ def test_unfit_reference_clone_contract_refits_standalone():
 
 def test_outer_aggregate_over_unfit_cascade_parity():
     train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    scaler = SQLTransform("SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__")
+    scaler = SQLTransform(
+        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
+    )
     composite = SQLTransform(
         t"SELECT {scaler}(age) / MAX({scaler}(age)) OVER () AS z FROM __THIS__"
     ).fit(train)
@@ -187,7 +191,9 @@ def test_outer_aggregate_over_unfit_cascade_parity():
 
 def test_frozen_outer_over_unfit_inner_parity():
     train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    inner = SQLTransform("SELECT v / MAX(v) OVER () AS d FROM __THIS__")  # unfit, has state
+    inner = SQLTransform(
+        "SELECT v / MAX(v) OVER () AS d FROM __THIS__"
+    )  # unfit, has state
     outer = SQLTransform(  # FROZEN outer
         "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
     ).fit(pa.table({"v": [10.0, 20.0, 30.0, 40.0]}))

@@ -59,8 +59,6 @@ def test_transformer_in_nonfirst_case_branch_parity_native():
 def test_transformer_in_case_defers_on_codegen():
     # Codegen has no transformer support and already defers named_struct; the
     # construct must defer loudly (UnsupportedInCodegen), never silently mishandle.
-    model = synthesize_this_model(
-        pa.schema([("g", pa.int64()), ("age", pa.float64())])
-    )
+    model = synthesize_this_model(pa.schema([("g", pa.int64()), ("age", pa.float64())]))
     with pytest.raises(UnsupportedInCodegen):
         CodegenFn(_SQL, row_tables={"__THIS__": model}, static_tables={})

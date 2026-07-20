@@ -88,7 +88,12 @@ def main() -> None:
         ("Window functions", "WINDOW"),
         ("Scalar functions", "SCALAR"),
     ]:
-        lines += [f"## {title} ({len(groups[key])})", "", "| Function | Signature | Description |", "|---|---|---|"]
+        lines += [
+            f"## {title} ({len(groups[key])})",
+            "",
+            "| Function | Signature | Description |",
+            "|---|---|---|",
+        ]
         lines += [
             f"| `{name}` | {clean(syn) or '—'} | {clean(desc) or '—'} |"
             for name, _ftype, syn, desc in groups[key]

@@ -93,7 +93,9 @@ class SQLTransform:
             self._rewritten_sql,
             row_tables={"__THIS__": this_model},
             static_tables=self._state_tables,
-            transformers={n: (obj, out_s) for n, (obj, in_s, out_s) in self._udf_specs.items()},
+            transformers={
+                n: (obj, out_s) for n, (obj, in_s, out_s) in self._udf_specs.items()
+            },
         )
         return self
 
@@ -105,7 +107,9 @@ class SQLTransform:
         the Rust engine instead."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before transform")
-        return run_batch(self._rewritten_sql, table, self._state_tables, self._udf_specs)
+        return run_batch(
+            self._rewritten_sql, table, self._state_tables, self._udf_specs
+        )
 
     def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
         """Single-row inference through the Rust InferFn against the frozen

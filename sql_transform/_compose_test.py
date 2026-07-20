@@ -32,9 +32,7 @@ def test_multi_input_inner_raises_clean_value_error():
         "SELECT age / AVG(age) OVER (PARTITION BY city) AS e FROM __THIS__"
     ).fit(train)
     with pytest.raises(ValueError, match="one input column"):
-        SQLTransform(
-            t"SELECT {grouped.transform}(age) AS e2 FROM __THIS__"
-        ).fit(train)
+        SQLTransform(t"SELECT {grouped.transform}(age) AS e2 FROM __THIS__").fit(train)
 
 
 def test_frozen_reference_on_unfit_errors():
@@ -51,7 +49,9 @@ def test_bare_reference_on_fitted_transform_is_ambiguous_error_via_cascade():
     train_v = pa.table({"v": [10.0, 20.0, 30.0, 40.0]})
     train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
     b = SQLTransform("SELECT v * 2 AS d FROM __THIS__").fit(train_v)
-    a = SQLTransform("SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__")
+    a = SQLTransform(
+        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
+    )
     with pytest.raises(ValueError, match="already fitted"):
         SQLTransform(t"SELECT {a}({b}(age)) AS z FROM __THIS__").fit(train)
 
@@ -62,7 +62,9 @@ def test_frozen_reference_on_unfit_errors_via_cascade():
     # path too.
     train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
     b = SQLTransform("SELECT v * 2 AS d FROM __THIS__")  # unfit
-    a = SQLTransform("SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__")
+    a = SQLTransform(
+        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
+    )
     with pytest.raises(ValueError, match="not fitted"):
         SQLTransform(t"SELECT {a}({b.transform}(age)) AS z FROM __THIS__").fit(train)
 
@@ -94,9 +96,9 @@ def test_reference_not_applied_to_column_errors():
         "SELECT (age - AVG(age) OVER ()) / STDDEV(age) OVER () AS s FROM __THIS__"
     ).fit(train)
     with pytest.raises(ValueError, match="single input column"):
-        SQLTransform(
-            t"SELECT {scaler.transform}(age + 1) AS s FROM __THIS__"
-        ).fit(train)
+        SQLTransform(t"SELECT {scaler.transform}(age + 1) AS s FROM __THIS__").fit(
+            train
+        )
 
 
 def test_non_transform_interpolation_errors():

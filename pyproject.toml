@@ -19,6 +19,7 @@ dev = [
     "notebook>=7.6.0",
     "numpy>=2.0",
     "pandas>=2.0",
+    "pre-commit>=4.6.0",
     "pytest>=8.3.5",
     "ruff>=0.11.7",
     "scikit-learn>=1.5",
@@ -41,6 +42,8 @@ lint.ignore = ["S101"]
 [tool.ruff.lint.per-file-ignores]
 "*test*.py" = ["S608"]
 "_state.py" = ["S608"]
+# Doc generator: emits long markdown lines verbatim; wrapping would corrupt output.
+"scripts/gen_datafusion_catalogue.py" = ["E501"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]

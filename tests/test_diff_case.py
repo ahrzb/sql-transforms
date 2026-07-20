@@ -95,6 +95,10 @@ def test_case_else_nullable_column_keeps_result_nullable():
     # type must stay nullable. Regression guard for infer_type ELSE nullability.
     check(
         "SELECT CASE WHEN x > 0 THEN 1 ELSE y END AS c FROM t",
-        {"t": rows({"x": "int", "y": "int?"}, [{"x": -1, "y": None}, {"x": 5, "y": 9}])},
+        {
+            "t": rows(
+                {"x": "int", "y": "int?"}, [{"x": -1, "y": None}, {"x": 5, "y": 9}]
+            )
+        },
         expect=[{"c": None}, {"c": 1}],
     )

@@ -339,9 +339,7 @@ def test_infer_type_arithmetic_and_nullability():
 
 
 def test_infer_type_functions_and_casts():
-    schemas = {
-        "t": {"s": cp.FieldType(cp.STR, False), "i": cp.FieldType(cp.INT, True)}
-    }
+    schemas = {"t": {"s": cp.FieldType(cp.STR, False), "i": cp.FieldType(cp.INT, True)}}
     upper_s = cp.Func("upper", [cp.Column("t", "s")])
     assert cp.infer_type(upper_s, schemas).base == cp.STR
 
