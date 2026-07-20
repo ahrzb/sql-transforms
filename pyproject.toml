@@ -41,6 +41,8 @@ lint.ignore = ["S101"]
 [tool.ruff.lint.per-file-ignores]
 "*test*.py" = ["S608"]
 "_state.py" = ["S608"]
+# Doc generator: emits long markdown lines verbatim; wrapping would corrupt output.
+"scripts/gen_datafusion_catalogue.py" = ["E501"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]

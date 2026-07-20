@@ -24,7 +24,9 @@ _SQL = "SELECT __tfm_0__(named_struct('age', age, 'income', income)) AS s FROM _
 
 
 def _fitted_scaler():
-    train = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]})
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
     return StandardScaler().fit(train), train
 
 
@@ -62,6 +64,8 @@ def test_non_struct_argument_is_build_error():
 
 def test_field_name_mismatch_is_build_error():
     sc, _ = _fitted_scaler()
-    sql = "SELECT __tfm_0__(named_struct('age', age, 'wrong', income)) AS s FROM __THIS__"
+    sql = (
+        "SELECT __tfm_0__(named_struct('age', age, 'wrong', income)) AS s FROM __THIS__"
+    )
     with pytest.raises(ValueError, match="feature_names_in_"):
         _infer(sql, {"__tfm_0__": (sc, _OUT)}, [{"age": 10.0, "income": 1.0}])

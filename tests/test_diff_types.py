@@ -40,7 +40,9 @@ def test_malformed_struct_input_raises():
     # into an all-null struct. Direct infer() test: the differential check()
     # harness validates rows via model(**r) before they reach the Rust side,
     # so it can't exercise this path.
-    schema = pa.schema([pa.field("s", pa.struct([("x", pa.int64()), ("y", pa.int64())]))])
+    schema = pa.schema(
+        [pa.field("s", pa.struct([("x", pa.int64()), ("y", pa.int64())]))]
+    )
     table = pa.Table.from_pylist([{"s": {"x": 1, "y": 2}}], schema=schema)
     t = SQLTransform("SELECT s FROM __THIS__").fit(table)
     with pytest.raises(ValueError):
@@ -60,9 +62,10 @@ def test_deep_nesting_roundtrip():
 
 
 def test_struct_field_access():
-    check("SELECT s.x AS fx FROM t",
-          {"t": rows({"s": "struct{x:int,y:int}"},
-                     [{"s": {"x": 5, "y": 9}}])})
+    check(
+        "SELECT s.x AS fx FROM t",
+        {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 5, "y": 9}}])},
+    )
 
 
 def test_nested_struct_field_access():
@@ -80,8 +83,14 @@ def test_qualified_struct_field_access():
 
 
 def test_unnest_struct_expands_columns():
-    check("SELECT unnest(named_struct('x', a, 'y', b)) FROM t",
-          {"t": __import__("differential").rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])})
+    check(
+        "SELECT unnest(named_struct('x', a, 'y', b)) FROM t",
+        {
+            "t": __import__("differential").rows(
+                {"a": "int", "b": "int"}, [{"a": 1, "b": 2}]
+            )
+        },
+    )
 
 
 def test_unnest_struct_column_expands_columns():

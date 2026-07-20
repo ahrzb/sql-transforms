@@ -33,7 +33,9 @@ def test_unary_minus():
 
 def test_string_concat_operator():
     check("SELECT a || '!' AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])})
-    check("SELECT a || NULL AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])})
+    check(
+        "SELECT a || NULL AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])}
+    )
     check("SELECT a || 5 AS s FROM __THIS__", {_R: rows({"a": "str"}, [{"a": "hi"}])})
 
 
@@ -42,8 +44,14 @@ def test_coalesce_numeric_supertype():
 
 
 def test_substr_nonpositive_start():
-    check("SELECT SUBSTR(s, 0, 3) AS r FROM __THIS__", {_R: rows({"s": "str"}, [{"s": "hello"}])})
-    check("SELECT SUBSTR(s, -2, 5) AS r FROM __THIS__", {_R: rows({"s": "str"}, [{"s": "hello"}])})
+    check(
+        "SELECT SUBSTR(s, 0, 3) AS r FROM __THIS__",
+        {_R: rows({"s": "str"}, [{"s": "hello"}])},
+    )
+    check(
+        "SELECT SUBSTR(s, -2, 5) AS r FROM __THIS__",
+        {_R: rows({"s": "str"}, [{"s": "hello"}])},
+    )
 
 
 def test_nan_equals_nan():
@@ -61,7 +69,9 @@ def test_cast_string_to_bool():
 
 def test_cast_whitespace_string_to_number():
     check_both_raise("SELECT CAST(' 42 ' AS BIGINT) AS n FROM __THIS__", {_R: row(z=0)})
-    check_both_raise("SELECT CAST(' 4.5 ' AS DOUBLE) AS n FROM __THIS__", {_R: row(z=0)})
+    check_both_raise(
+        "SELECT CAST(' 4.5 ' AS DOUBLE) AS n FROM __THIS__", {_R: row(z=0)}
+    )
 
 
 def test_float_display_small_decimal_band():

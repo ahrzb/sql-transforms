@@ -33,7 +33,10 @@ def test_standard_scaler_udf_matches_sklearn():
     ctx.from_arrow(table, name="__THIS__")
     ctx.register_udf(_transformer_udf(sc, in_schema, out_schema, "__tfm_0__"))
 
-    q = "SELECT __tfm_0__(named_struct('age', age, 'income', income)) AS s FROM __THIS__"
+    q = (
+        "SELECT __tfm_0__(named_struct('age', age, 'income', income)) "
+        "AS s FROM __THIS__"
+    )
     got = _collect(ctx.sql(q))
 
     expected = sc.transform(train_df)

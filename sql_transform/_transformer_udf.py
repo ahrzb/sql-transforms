@@ -53,8 +53,7 @@ def _transformer_udf(
         x = np.column_stack(cols)
         y = np.asarray(obj.transform(x))
         out_cols = [
-            pa.array(y[:, i], type=out_fields[i].type)
-            for i in range(len(out_fields))
+            pa.array(y[:, i], type=out_fields[i].type) for i in range(len(out_fields))
         ]
         return pa.StructArray.from_arrays(out_cols, fields=out_fields)
 

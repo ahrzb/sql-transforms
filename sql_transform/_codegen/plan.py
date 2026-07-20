@@ -191,9 +191,9 @@ class Cast:
 
 @dataclass
 class Case:
-    arms: list       # list[tuple[cond, result]]
-    default: Any     # result expr; Literal(None) when no ELSE
-    has_else: bool   # whether an explicit ELSE was written
+    arms: list  # list[tuple[cond, result]]
+    default: Any  # result expr; Literal(None) when no ELSE
+    has_else: bool  # whether an explicit ELSE was written
 
 
 @dataclass
