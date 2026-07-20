@@ -1,0 +1,6 @@
+# Commits skipped by `git blame` — bulk, mechanical reformats with no logic changes.
+# GitHub applies this file automatically. Enable it locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: apply ruff format + autofix across the repo
+2708018aa86c7f9bb229bf6b422e3c1531564a30
