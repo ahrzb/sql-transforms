@@ -1,0 +1,37 @@
+name: Claude PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# One review per PR — a new push cancels the in-flight run instead of stacking.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # review skill diffs against the merge-base
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: https://github.com/anthropics/claude-plugins-official.git
+          plugins: superpowers@claude-plugins-official
+          claude_args: --model claude-sonnet-5 --max-turns 20
+          prompt: |
+            Review this pull request.
+
+            Use the superpowers:requesting-code-review skill and follow it exactly.
+            Diff the PR branch against ${{ github.event.pull_request.base.ref }}.
+
+            Report only what you verified in the diff. No speculative findings, no
+            style nits. If nothing needs changing, say so in one line.
