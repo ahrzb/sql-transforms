@@ -16,7 +16,7 @@ ordinal: 4000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Two divergences on the codegen path only (Rust already matches the oracle here). NOTE: whether codegen is a maintained/default engine is a pending framing call by AmirHossein -- decision-7 (two-engine framing, OPEN); these are recorded regardless.
+Two divergences on the codegen path only (Rust already matches the oracle here). NOTE: whether codegen is a maintained/default engine is a pending framing call by AmirHossein -- decision-7 (two-engine framing — ruled 2026-07-19: native default, codegen opt-in); these are recorded regardless.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -4,11 +4,12 @@ title: 'Feature output: tfidf / array multi-hot (opaque, needs explode)'
 status: To Do
 assignee: []
 created_date: '2026-07-18 15:52'
-updated_date: '2026-07-18 23:36'
+updated_date: '2026-07-19 15:50'
 labels:
   - feature-output
 milestone: m-1
 dependencies: []
+priority: low
 ordinal: 17000
 ---
 
