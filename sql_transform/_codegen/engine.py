@@ -40,6 +40,7 @@ _OPS = {
     "gte": "rt.gte",
     "and": "rt.and_",
     "or": "rt.or_",
+    "dpipe": "rt.dpipe",
 }
 
 _BUILTINS = {

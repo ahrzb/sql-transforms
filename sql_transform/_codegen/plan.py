@@ -323,9 +323,9 @@ def _convert_expr(e: exp.Expression) -> Any:
         # NULL propagation. infer_type/emit already handle "sub".
         return BinaryOp("sub", Literal(0), inner)
     if isinstance(e, exp.DPipe):
-        # The `||` string-concat operator: supported by DataFusion and native,
-        # deferred by codegen (its NULL-propagating semantics differ from CONCAT).
-        raise UnsupportedInCodegen("the || operator is not supported in codegen yet")
+        # The `||` operator: NULL-propagating string concat (mirrors native
+        # concat_op). Binary -- a||b||c nests as DPipe(DPipe(a,b), c).
+        return BinaryOp("dpipe", _convert_expr(e.this), _convert_expr(e.expression))
     if isinstance(e, exp.Not):
         return Not(_convert_expr(e.this))
     if isinstance(e, exp.Case):
@@ -740,6 +740,8 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
         if e.op in ("add", "sub", "mul", "div", "mod"):
             base = INT if left.base == INT and right.base == INT else FLOAT
             return FieldType(base, nullable)
+        if e.op == "dpipe":
+            return FieldType(STR, nullable)
         if is_container(left.base) or is_container(right.base):
             # Comparing/combining structs or lists needs deep equality, which
             # the runtime doesn't implement -- without this it silently reaches

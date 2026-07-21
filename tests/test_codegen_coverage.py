@@ -17,8 +17,7 @@ _COMMITTED = [
     ("SELECT a AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT a + 1 AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT -a AS x FROM t", {"t": rows({"a": "int"}, [{"a": 5}])}),
-    # NB: the `||` operator is deliberately absent here until Phase A Task 2 lands
-    # it -- see the codegen deferred-surface spec.
+    ("SELECT a || '!' AS x FROM t", {"t": rows({"a": "str"}, [{"a": "hi"}])}),
     (
         "SELECT a / b AS x FROM t",
         {"t": rows({"a": "int", "b": "int"}, [{"a": 7, "b": 2}])},

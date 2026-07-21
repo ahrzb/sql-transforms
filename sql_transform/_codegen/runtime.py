@@ -393,6 +393,15 @@ def concat(*a: Any) -> str:
     return "".join(display(x) for x in a if x is not None)
 
 
+def dpipe(l: Any, r: Any) -> Any:  # noqa: E741
+    """The `||` operator: NULL-propagating string concat -- any NULL operand
+    yields NULL (unlike concat(), which skips NULLs). Mirrors expr.rs concat_op:
+    non-NULL operands are rendered via display() and joined."""
+    if l is None or r is None:
+        return None
+    return display(l) + display(r)
+
+
 def abs_(*a: Any) -> Any:
     v = a[0]
     if v is None:
