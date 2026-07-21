@@ -212,6 +212,14 @@ def fit_into_scope(
     frozen_expr = sqlglot.parse_one(frozen).expressions[0]
     if isinstance(frozen_expr, exp.Alias):
         frozen_expr = frozen_expr.this
+    # Rebuilt UNQUOTED on purpose, unlike real user columns. These are
+    # engine-generated state VALUE-columns, and state_key() builds every one of
+    # them lowercase (f"{fn.lower()}_{col.lower()}", e.g. avg_age) -- so the
+    # unquoted-identifier folding both engines do (TASK-28) is a no-op here and
+    # the ref resolves either way. Do NOT "fix" this by quoting: that would pin a
+    # generated name case-exact and silently desync the day state_key's casing
+    # changes. Real column identifiers keep the user's own quoting; only these
+    # synthesized state keys are safe to rebuild bare.
     frozen_expr = frozen_expr.transform(
         lambda n: (
             exp.column(n.name, table=scope)
