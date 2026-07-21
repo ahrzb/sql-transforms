@@ -16,9 +16,9 @@ from sql_transform._codegen import UnsupportedInCodegen
 _COMMITTED = [
     ("SELECT a AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
     ("SELECT a + 1 AS x FROM t", {"t": rows({"a": "int"}, [{"a": 1}])}),
-    # NB: unary minus (`-a`, `-1`) and `||` are deliberately absent -- measured
-    # 2026-07-17, the Rust engine REJECTS both while DataFusion evaluates them, so
-    # they are not committed surface. See the spec's oracle-vs-Rust section.
+    ("SELECT -a AS x FROM t", {"t": rows({"a": "int"}, [{"a": 5}])}),
+    # NB: the `||` operator is deliberately absent here until Phase A Task 2 lands
+    # it -- see the codegen deferred-surface spec.
     (
         "SELECT a / b AS x FROM t",
         {"t": rows({"a": "int", "b": "int"}, [{"a": 7, "b": 2}])},

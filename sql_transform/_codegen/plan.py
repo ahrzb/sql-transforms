@@ -318,11 +318,10 @@ def _convert_expr(e: exp.Expression) -> Any:
         inner = _convert_expr(e.this)
         if isinstance(inner, Literal) and type(inner.value) in (int, float):
             return Literal(-inner.value)
-        # Unary minus on a non-literal: DataFusion and the native engine support
-        # it; codegen doesn't yet, so defer (skip) rather than error.
-        raise UnsupportedInCodegen(
-            "unary minus on a non-literal is not supported in codegen yet"
-        )
+        # Unary minus on a non-literal: lower to 0 - x, mirroring native
+        # (expr_build.rs), reusing Sub's int->int / float->float promotion and
+        # NULL propagation. infer_type/emit already handle "sub".
+        return BinaryOp("sub", Literal(0), inner)
     if isinstance(e, exp.DPipe):
         # The `||` string-concat operator: supported by DataFusion and native,
         # deferred by codegen (its NULL-propagating semantics differ from CONCAT).
