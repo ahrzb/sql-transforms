@@ -12,12 +12,13 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write # claude-code-action fetches an OIDC token for auth
 
 jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # review skill diffs against the merge-base
 
