@@ -16,8 +16,14 @@ Modules that aren't parametrized have no request.param and fall through.
 
 from __future__ import annotations
 
-import differential
-import pytest
+# Rebuild the native extension if src/*.rs is newer than the built _interpreter,
+# BEFORE `import differential` -> `import sql_transform` loads it (TASK-33).
+from _native_guard import ensure_native_built
+
+ensure_native_built()
+
+import differential  # noqa: E402
+import pytest  # noqa: E402
 
 _HARNESS_MODULES = ("test_diff_", "test_differential", "test_backend_wiring")
 
