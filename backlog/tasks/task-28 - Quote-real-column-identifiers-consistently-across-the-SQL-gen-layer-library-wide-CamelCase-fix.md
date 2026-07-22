@@ -1,13 +1,13 @@
 ---
 id: TASK-28
 title: >-
-  Quote real-column identifiers consistently across the SQL-gen layer
-  (library-wide CamelCase fix)
+  Fold unquoted identifiers to lowercase like DataFusion (library-wide CamelCase
+  handling)
 status: In Progress
 assignee:
   - Wren
 created_date: '2026-07-18 19:48'
-updated_date: '2026-07-21 19:24'
+updated_date: '2026-07-22 17:35'
 labels:
   - bug
   - sql-surface
@@ -26,10 +26,11 @@ SEVERITY: high. Wren found (while investigating _compose.py:214) that CamelCase 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 authored non-lowercase columns work WITHOUT user double-quoting across: plain passthrough, window-agg OVER, PARTITION BY, composition (frozen + unfit); transformer-ref already fixed (regression-guard)
-- [ ] #2 state-key columns stay unquoted (214 invariant preserved + documented with a comment)
-- [ ] #3 CamelCase test matrix green; transform == infer parity (decision-1)
-- [ ] #4 DESIGN (unresolved): auto-quote/case-sensitive-exact vs match-DataFusion-literally -- AmirHossein + Wren to settle DIRECTLY before AC #1's direction is locked (not PM-ratified)
+- [x] #1 Native + codegen FOLD unquoted identifiers to lowercase like the DataFusion oracle (columns, compound col/field parts, SELECT aliases); quoted "Age" stays case-exact everywhere. Root cause was the engines DIDN'T fold — they accepted SQL the oracle rejects. Users quote CamelCase columns themselves (intentional, documented papercut).
+- [x] #2 TASK-25 force-quote reverted: transformer refs carry the user's original quoting — {t}(LotArea) folds-and-fails, {t}("LotArea") works. Old test_camelcase_columns_compose (asserted unquoted 'just works') flipped to quoted-works / unquoted-fails.
+- [ ] #3 state-key columns stay unquoted (_compose.py:214 invariant preserved + documented with a comment).
+- [x] #4 transform == infer parity (decision-1) + CamelCase differential matrix green (tests/test_diff_identifier_folding.py, 14/14).
+- [x] #5 Ceiling (ponytail note, expr_build.rs): a real CamelCase table/struct-column qualifier is NOT folded — unreachable today (tables are always __THIS__/generated); flagged for when qualified tables become reachable.
 <!-- AC:END -->
 
 ## Comments
@@ -42,14 +43,20 @@ Handed to Wren (2026-07-19). The embedded design fork (auto-quote 'just works' v
 ---
 
 author: Iris (PM)
-created: 2026-07-21 19:24
+created: 2026-07-19 14:27
 ---
-Board-accuracy correction, flagged by Wren. AC #3 unchecked and status reopened — the _compose.py:214 documenting comment does not exist on master. I verified rather than take the report at face value this time: 7f21dbe has no _compose.py in its stat, and the comment is not present at HEAD. This one is on me: I checked AC #3 because the merge was reported complete, which is not evidence that a specific AC was satisfied. Going forward I verify file-level ACs against the diff before ticking.\n\nWren's fix (fadd87e, branch task-28-state-key-comment) documents WHY state-key columns are rebuilt unquoted: state_key() generates every state value-column lowercase (f\"{fn.lower()}_{col.lower()}\"), so post-TASK-28 unquoted-identifier folding is a no-op on those names — quoting them would instead pin a generated name case-exact and desync if state_key's casing ever changed. Includes a 'do not fix this by quoting' note. TASK-28 returns to Done only once fadd87e lands.
+Design fork (AC #4) RESOLVED directly by AmirHossein + Wren → match-DataFusion, not auto-quote. This inverts the earlier Wren+PM recommendation, so I re-scoped AC #1 (fold-like-oracle, users quote CamelCase) and retitled the ticket (was 'Quote real-column identifiers consistently' — now describes folding, since we do the opposite of force-quoting). Marked Done per Wren's merge 7f21dbe. Branch/worktree left up for review before Wren cleans up.
+---
+
+author: Iris (PM)
+created: 2026-07-22 17:35
+---
+Reopened: AC #3 (state-key comment at _compose.py:214) was ticked off the merge report but the comment is NOT in the landed diff of 7f21dbe. Wren has the fix ready as fadd87e — Done again once it lands on master.
 ---
 <!-- COMMENTS:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-CORRECTION (2026-07-19): this task was marked Done prematurely. AC #3's documenting comment was NEVER written — verified: `git show --stat 7f21dbe` touches 6 files (_codegen/plan.py, _transformer_ref.py, src/expr_build.rs, src/plan.rs, test_diff_identifier_folding.py, test_transformer_ref.py) and does NOT include sql_transform/_compose.py; the comment is absent from _compose.py on HEAD. The invariant held only by accident of the file not being touched. PM error: AC #3 was ticked off a merge report without verification. Reopened to In Progress. Fix is ready but UNLANDED: commit fadd87e on branch task-28-state-key-comment (comment only, no behaviour change; 490 passed / 15 skipped, ruff clean). Blocked on landing because the main checkout is currently on master, so a ref-push to master is refused (receive.denyCurrentBranch).
+Resolved as MATCH-DATAFUSION (not auto-quote). Direction settled directly between AmirHossein + Wren — the reverse of the original Wren+PM 'case-sensitive-exact so it just works' recommendation. The real bug was that native + codegen did NOT fold unquoted identifiers, so they accepted SQL the DataFusion oracle rejects; the fix makes both engines fold unquoted identifiers to lowercase like the oracle while quoted identifiers stay case-exact. Users quote CamelCase columns themselves — intentional papercut. Also reverted the TASK-25 force-quote so transformer refs carry the user's original quoting. Merged to master (7f21dbe). Verified: folding matrix 14/14, full Python suite 473 passed, cargo test clean. Branch task-28-identifier-folding + worktree under .claude/worktrees/ still up for diff review before cleanup.
 <!-- SECTION:FINAL_SUMMARY:END -->

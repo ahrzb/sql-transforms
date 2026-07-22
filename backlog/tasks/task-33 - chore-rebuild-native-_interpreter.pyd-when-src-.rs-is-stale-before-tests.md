@@ -1,9 +1,11 @@
 ---
 id: TASK-33
 title: 'chore: rebuild native _interpreter.pyd when src/*.rs is stale before tests'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@Wren'
 created_date: '2026-07-19 15:43'
+updated_date: '2026-07-22 17:35'
 labels:
   - dev-ex
   - native
@@ -27,3 +29,13 @@ The native _interpreter.pyd can silently run STALE: if any src/*.rs is newer tha
 - [ ] #1 Running the suite auto-rebuilds native when any src/*.rs is newer than the built _interpreter.pyd; an up-to-date build is a no-op (no forced rebuild cost)
 - [ ] #2 A deliberately-stale .pyd no longer yields phantom failures — the guard rebuilds first
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-22 17:35
+---
+Bumped Low → Medium: stale native .pyd builds cause phantom test failures across every dev lane after a pull — cheap guard, broad payoff.
+---
+<!-- COMMENTS:END -->
