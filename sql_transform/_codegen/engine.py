@@ -173,9 +173,8 @@ def _emit_rel(node: Any, env: dict, ind: int, em: _Emitter, body) -> None:
 
 def _to_native(v: Any) -> Any:
     """Recursively unwrap a row's Pydantic struct/list value into plain
-    dicts/lists. Struct columns can't reach a projected output (rejected as
-    UnsupportedInCodegen below), but a JOIN ON key CAN reference one -- and
-    two structurally-identical struct columns from different row tables are
+    dicts/lists for struct/list passthrough or JOIN key normalization.
+    Two structurally-identical struct columns from different row tables are
     two different synthesized Pydantic classes, so BaseModel.__eq__ (which
     checks type identity) would wrongly call them unequal. Plain dicts
     compare structurally, matching DataFusion/rt.val_eq's semantics."""

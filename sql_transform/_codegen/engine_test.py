@@ -10,7 +10,7 @@ import pyarrow as pa
 import pytest
 from pydantic import BaseModel
 
-from sql_transform._codegen import CodegenFn, UnsupportedInCodegen
+from sql_transform._codegen import CodegenFn
 
 
 class Row(BaseModel):
@@ -127,15 +127,6 @@ def test_container_columns_struct_passthrough():
     result = fn.infer(t=[WithStruct(s=Inner(x=42))])
     assert len(result) == 1
     assert result[0].out.x == 42
-
-
-
-
-
-
-
-
-
 
 
 def test_generated_source_is_available_for_debugging():
