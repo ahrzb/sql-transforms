@@ -820,13 +820,16 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
         return FieldType(StructBase(fields), False)
     if isinstance(e, ListExpr):
         elem_types = [infer_type(x, schemas) for x in e.items]
-        # Native unifies: identical element types collapse to that type; an empty
-        # or mixed list is unresolvable.
-        elem = (
-            elem_types[0]
-            if elem_types and all(t == elem_types[0] for t in elem_types)
-            else FieldType(OTHER, True)
-        )
+        if not elem_types:
+            elem = FieldType(OTHER, True)
+        else:
+            # Unify element bases the same way COALESCE does (numeric int/float
+            # -> float), so e.g. make_array(int_col, float_col) types as
+            # list<float> -- matching DataFusion, which widens the int element
+            # at runtime (measured: make_array(1, 2.5) -> [1.0, 2.5]).
+            elem = FieldType(
+                _common_base(elem_types), any(t.nullable for t in elem_types)
+            )
         return FieldType(ListBase(elem), False)
     if isinstance(e, Func):
         return _function_type(e.name, [infer_type(a, schemas) for a in e.args])
