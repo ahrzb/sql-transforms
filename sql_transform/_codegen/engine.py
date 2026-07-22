@@ -94,7 +94,10 @@ def _emit_expr(e: Any, env: dict) -> str:
     if isinstance(e, cp.Func):
         fn = _BUILTINS.get(e.name)
         if fn is None:
-            raise ValueError(f"Unknown function: {e.name}")
+            # Anything without a codegen builtin -- notably a transformer call
+            # (`__tfm_N__(...)`), which codegen has no support for at all -- is a
+            # deferred surface, not a hard error.
+            raise UnsupportedInCodegen(f"{e.name}() is not supported in codegen yet")
         return f"{fn}({', '.join(_emit_expr(a, env) for a in e.args)})"
     if isinstance(e, cp.Case):
         out = _emit_expr(e.default, env)
@@ -104,6 +107,11 @@ def _emit_expr(e: Any, env: dict) -> str:
                 f"else {out})"
             )
         return out
+    if isinstance(e, cp.StructExpr):
+        items = ", ".join(f"{name!r}: {_emit_expr(v, env)}" for name, v in e.fields)
+        return f"{{{items}}}"
+    if isinstance(e, cp.ListExpr):
+        return f"[{', '.join(_emit_expr(x, env) for x in e.items)}]"
     raise UnsupportedInCodegen(f"cannot compile {type(e).__name__}")
 
 

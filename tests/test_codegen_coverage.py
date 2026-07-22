@@ -87,6 +87,14 @@ _COMMITTED = [
     ),
     ("SELECT s AS x FROM t", {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])}),
     ("SELECT l AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
+    (
+        "SELECT named_struct('a', x, 'b', y) AS s FROM t",
+        {"t": rows({"x": "int", "y": "int"}, [{"x": 1, "y": 2}])},
+    ),
+    (
+        "SELECT array(x, y) AS l FROM t",
+        {"t": rows({"x": "int", "y": "int"}, [{"x": 1, "y": 2}])},
+    ),
 ]
 
 
