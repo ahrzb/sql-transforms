@@ -4,11 +4,12 @@ title: 'Feature output: dense float64 (n,k) numpy mode'
 status: To Do
 assignee: []
 created_date: '2026-07-18 15:52'
-updated_date: '2026-07-19 01:15'
+updated_date: '2026-07-19 15:50'
 labels:
   - feature-output
 milestone: m-1
 dependencies: []
+priority: high
 ordinal: 13000
 ---
 

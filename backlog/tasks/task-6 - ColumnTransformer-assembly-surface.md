@@ -4,12 +4,13 @@ title: ColumnTransformer assembly surface
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-19 01:23'
+updated_date: '2026-07-19 15:50'
 labels:
   - sklearn
   - fallback
 milestone: m-1
 dependencies: []
+priority: high
 ordinal: 6000
 ---
 

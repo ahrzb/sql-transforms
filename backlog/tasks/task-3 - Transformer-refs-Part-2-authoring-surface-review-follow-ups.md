@@ -4,12 +4,13 @@ title: Transformer-refs (Part-2 authoring surface) review follow-ups
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-19 01:15'
+updated_date: '2026-07-19 15:50'
 labels:
   - python
   - transformer-refs
 milestone: m-1
 dependencies: []
+priority: medium
 ordinal: 3000
 ---
 

@@ -1,8 +1,8 @@
 ---
 id: decision-7
-title: 'Two-engine framing: codegen vs native as default — OPEN'
+title: 'Two-engine framing: native default, codegen opt-in (near-term)'
 date: '2026-07-19'
-status: proposed
+status: accepted
 ---
 ## Context
 
@@ -17,15 +17,19 @@ n=1 boundary-bound benchmark) and an engine actually exists.
 
 ## Decision
 
-**OPEN — not yet ratified.** Whether codegen is adopted as a maintained / default path
-vs. the native interpreter is AmirHossein's pending framing call. This record captures
-the artifact + the open question, not a decision.
+**RULED (2026-07-19, AmirHossein): the native `InferFn` is the default / maintained
+serving engine; the codegen engine is OPT-IN for now.** Near-term call — revisitable if a
+benchmark or serving need later pushes codegen toward default — not a permanent close.
 
-This framing is load-bearing downstream:
-- Blocks TASK-29 (codegen deferred SQL surface) and the framing context on TASK-4.
-- The multi-language inference runtimes epic ([[doc-4]]) rests on it — that design treats
-  the native Rust engine as **one-of-N**, which only holds if two-engine is the accepted
-  shape.
+Downstream consequences of "opt-in":
+- TASK-29 (codegen deferred SQL surface) and TASK-34 (codegen transformer support) stay
+  **Low / not actively prioritized**. Their "precondition: framing decided" is now
+  *satisfied* (decided → opt-in → low), no longer an open blocker: codegen completeness is
+  a fast-follow only for someone who opts in, not milestone work.
+- The multi-language inference runtimes design ([[doc-4]]) still holds — two engines exist
+  and native-as-one-of-N is intact; that epic stays parked on its own merits.
+- Native remains the parity baseline (oracle = DataFusion, [[decision-1]]); an opted-in
+  codegen path is still held to that oracle.
 
 ## Consequences / notes
 
@@ -37,4 +41,6 @@ This framing is load-bearing downstream:
 - If oracle parity on the codegen path is wanted, codegen also needs the shared native
   edge-case fixes (the historical `SUBSTR`/`NaN`/`CAST` set); it already fixed `ROUND(int)`
   and `COALESCE(int,float)` typing.
-- Until this is ratified, codegen stays an artifact on its branch, not a default.
+- Ratified **opt-in**: codegen is a maintained-but-opt-in engine, not the default; native
+  is the default serving path. Revisit the default question only with a serving need or
+  benchmark that argues for promoting codegen.
