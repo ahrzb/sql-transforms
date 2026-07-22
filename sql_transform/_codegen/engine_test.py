@@ -115,15 +115,27 @@ def test_int_division_by_zero_raises_value_error():
         fn.infer({"t": [Row(a=1)]})
 
 
-def test_container_columns_are_deferred_not_silently_wrong():
+def test_container_columns_struct_passthrough():
     class Inner(BaseModel):
         x: int
 
     class WithStruct(BaseModel):
         s: Inner
 
-    with pytest.raises(UnsupportedInCodegen):
-        CodegenFn("SELECT s AS out FROM t", {"t": WithStruct}, {})
+    # Struct columns now pass through (no longer deferred)
+    fn = CodegenFn("SELECT s AS out FROM t", {"t": WithStruct}, {})
+    result = fn.infer(t=[WithStruct(s=Inner(x=42))])
+    assert len(result) == 1
+    assert result[0].out.x == 42
+
+
+
+
+
+
+
+
+
 
 
 def test_generated_source_is_available_for_debugging():

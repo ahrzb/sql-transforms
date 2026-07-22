@@ -238,12 +238,6 @@ class CodegenFn:
         schemas = validation.effective_schemas
 
         inferred = [(alias, cp.infer_type(e, schemas)) for alias, e in plan.projection]
-        for alias, ft in inferred:
-            if cp.is_container(ft.base):
-                raise UnsupportedInCodegen(
-                    f"column '{alias}' is a struct/list, which codegen does not "
-                    "support yet"
-                )
 
         if output_model is None:
             self.output_model = create_model(

@@ -85,6 +85,8 @@ _COMMITTED = [
             "s": static({"k": "int", "v": "float"}, [{"k": 1, "v": 1.0}]),
         },
     ),
+    ("SELECT s AS x FROM t", {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])}),
+    ("SELECT l AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
 ]
 
 
@@ -100,8 +102,6 @@ def test_committed_surface_is_never_deferred(query, tables):
 
 _DEFERRED = [
     ("SELECT unnest(l) AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
-    ("SELECT s AS x FROM t", {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])}),
-    ("SELECT l AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
     # A struct in a comparison must defer, not silently mis-evaluate: DataFusion
     # supports it, codegen does not yet, so it must raise (not return a wrong bool).
     (
