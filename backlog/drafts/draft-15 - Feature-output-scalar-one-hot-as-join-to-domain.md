@@ -1,10 +1,10 @@
 ---
-id: TASK-15
+id: DRAFT-15
 title: 'Feature output: scalar one-hot as join-to-domain'
-status: To Do
+status: Draft
 assignee: []
 created_date: '2026-07-18 15:52'
-updated_date: '2026-07-23 14:32'
+updated_date: '2026-07-23 16:28'
 labels:
   - feature-output
 milestone: m-1
@@ -46,3 +46,13 @@ Context: doc-10 (feature-output model — records, dense, sparse).
 <!-- AC:BEGIN -->
 - [ ] #1 scalar one-hot compiles to a join-to-domain, no explode
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-23 16:28
+---
+Moved to Draft (2026-07-23, AmirHossein). This is an OPTIMIZED SKLEARN TRANSFORM implementation — compiling one-hot down to a join-to-domain instead of the opaque callout. That class of work is getting its own milestone, which does NOT exist yet by explicit decision. Parked here until that milestone is created and this is scoped into it. Sibling drafts in the same class: DRAFT-7 (native per-transformer swap).
+---
+<!-- COMMENTS:END -->
