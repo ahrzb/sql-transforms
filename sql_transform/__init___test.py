@@ -317,6 +317,75 @@ def test_partition_by_count_encoding_unseen_key_is_null_both_engines():
     assert out.column("n").to_pylist()[1] is None
 
 
+def test_dense_output_transform_and_infer_batch():
+    import numpy as np
+
+    from sql_transform import SQLTransform
+
+    sql = (
+        "SELECT age / MEAN(age) OVER () AS age_norm, "
+        "score / SUM(score) OVER () AS score_norm FROM __THIS__"
+    )
+    t = SQLTransform(sql, output="dense")
+    train = pa.table({"age": [25.0, 30.0, 35.0], "score": [10.0, 20.0, 30.0]})
+    t.fit(train)
+
+    out = t.transform(train)
+    assert isinstance(out, np.ndarray)
+    assert out.dtype == np.float64
+    assert out.shape == (3, 2)
+    np.testing.assert_allclose(out[:, 0], [25 / 30, 1.0, 35 / 30])
+    np.testing.assert_allclose(out[:, 1], [10 / 60, 20 / 60, 30 / 60])
+
+    batch = t.infer_batch([{"age": 25.0, "score": 10.0}, {"age": 30.0, "score": 20.0}])
+    assert isinstance(batch, np.ndarray)
+    assert batch.shape == (2, 2)
+    np.testing.assert_allclose(batch, out[:2])
+
+    row = t.infer({"age": 25.0, "score": 10.0})
+    np.testing.assert_allclose(row, out[0])
+
+
+def test_dense_output_null_becomes_nan():
+    import numpy as np
+
+    from sql_transform import SQLTransform
+
+    t = SQLTransform(
+        "SELECT MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__",
+        output="dense",
+    )
+    t.fit(pa.table({"city": ["a", "b"], "target": [1.0, 3.0]}))
+    out = t.transform(pa.table({"city": ["a", "zzz"], "target": [0.0, 0.0]}))
+    assert out[0, 0] == 1.0
+    assert np.isnan(out[1, 0])  # unseen partition -> NULL -> NaN
+    batch = t.infer_batch([{"city": "zzz", "target": 0.0}])
+    assert np.isnan(batch[0, 0])
+
+
+def test_dense_output_sklearn_consumable():
+    from sql_transform import SQLTransform
+
+    sklearn = pytest.importorskip("sklearn")  # noqa: F841
+    from sklearn.linear_model import LinearRegression
+
+    t = SQLTransform(
+        "SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__", output="dense"
+    )
+    train = pa.table({"age": [25.0, 30.0, 35.0]})
+    X = t.fit(train).transform(train)
+    LinearRegression().fit(X, [0.0, 1.0, 2.0])  # must not raise
+
+
+def test_records_output_is_default_and_unchanged():
+    from sql_transform import SQLTransform
+
+    t = SQLTransform("SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__")
+    t.fit(pa.table({"age": [25, 30, 35]}))
+    assert isinstance(t.transform(pa.table({"age": [40]})), pa.Table)
+    assert isinstance(t.infer({"age": 40}), BaseModel)
+
+
 def test_partition_by_transform_is_one_to_one_and_matches_infer():
     from sql_transform import SQLTransform
 

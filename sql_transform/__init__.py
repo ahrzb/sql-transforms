@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from string.templatelib import Template
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import datafusion
+import numpy as np
 import pyarrow as pa
 from pydantic import BaseModel
 
@@ -47,7 +48,15 @@ class SQLTransform:
         out_row = t.infer({"age": 42})       # single row
     """
 
-    def __init__(self, sql: str | Template) -> None:
+    def __init__(
+        self,
+        sql: str | Template,
+        *,
+        output: Literal["records", "dense"] = "records",
+    ) -> None:
+        if output not in ("records", "dense"):
+            raise ValueError(f"output must be 'records' or 'dense', got {output!r}")
+        self._output = output
         if isinstance(sql, Template):
             self._sql, self._refs = desugar_template(sql)
         else:
@@ -107,21 +116,49 @@ class SQLTransform:
         the Rust engine instead."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before transform")
-        return run_batch(
+        out = run_batch(
             self._rewritten_sql, table, self._state_tables, self._udf_specs
         )
+        if self._output == "dense":
+            return _table_to_dense(out)
+        return out
 
-    def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
+    def infer(
+        self, row: dict[str, Any] | BaseModel, /
+    ) -> BaseModel | np.ndarray:
         """Single-row inference through the Rust InferFn against the frozen
         state. Accepts a dict or a Pydantic model; returns the typed output
-        model instance."""
+        model instance (records mode) or a float64 (k,) row (dense mode)."""
         return self.infer_batch([row])[0]
 
-    def infer_batch(self, rows: list[dict[str, Any] | BaseModel], /) -> list[BaseModel]:
+    def infer_batch(
+        self, rows: list[dict[str, Any] | BaseModel], /
+    ) -> list[BaseModel] | np.ndarray:
         """Many-rows inference through the Rust InferFn against the frozen
         state. Accepts dicts and/or Pydantic models; returns a list of typed
-        output model instances."""
+        output model instances (records mode) or a float64 (n,k) matrix
+        (dense mode, NULL -> NaN)."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before inference")
         this_rows = [_to_namespace(row) for row in rows]
-        return self._infer_fn.infer({"__THIS__": this_rows})
+        models = self._infer_fn.infer({"__THIS__": this_rows})
+        if self._output == "dense":
+            # ponytail: goes through pydantic records; a direct columnar path
+            # from the Rust engine is the upgrade if this shows up in profiles.
+            nan = float("nan")
+            data = [
+                [nan if v is None else v for v in m.model_dump().values()]
+                for m in models
+            ]
+            k = len(models[0].model_dump()) if models else 0
+            return np.asarray(data, dtype=np.float64).reshape(len(models), k)
+        return models
+
+
+def _table_to_dense(table: pa.Table) -> np.ndarray:
+    """pyarrow Table -> dense float64 (n,k) matrix, NULL -> NaN."""
+    cols = [
+        table.column(i).cast(pa.float64()).to_numpy(zero_copy_only=False)
+        for i in range(table.num_columns)
+    ]
+    return np.column_stack(cols) if cols else np.empty((table.num_rows, 0))
