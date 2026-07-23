@@ -95,6 +95,7 @@ _COMMITTED = [
         "SELECT array(x, y) AS l FROM t",
         {"t": rows({"x": "int", "y": "int"}, [{"x": 1, "y": 2}])},
     ),
+    ("SELECT s.x AS v FROM t", {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])}),
 ]
 
 

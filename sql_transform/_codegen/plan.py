@@ -200,6 +200,12 @@ class ListExpr:
 
 
 @dataclass
+class FieldAccess:
+    base: Any
+    field: str
+
+
+@dataclass
 class Case:
     arms: list  # list[tuple[cond, result]]
     default: Any  # result expr; Literal(None) when no ELSE
@@ -303,21 +309,27 @@ def _convert_expr(e: exp.Expression) -> Any:
     if isinstance(e, (exp.Paren, exp.Alias)):
         return _convert_expr(e.this)
     if isinstance(e, exp.Dot):
-        raise UnsupportedInCodegen(
-            "struct field access is not supported in codegen yet"
-        )
+        return FieldAccess(_convert_expr(e.this), _fold(e.expression))
     if isinstance(e, exp.Column):
-        # `s.a.b` parses as a 3-part Column carrying `db` (NOT exp.Dot). Reading
-        # only .table/.name would silently misread it as Column('a', 'b') and drop
-        # `s` -- a wrong answer rather than an error. It is struct field access,
-        # which is deferred.
-        if e.args.get("db") or e.args.get("catalog"):
-            raise UnsupportedInCodegen(
-                "struct field access is not supported in codegen yet"
-            )
-        # Fold the column part (`.this`); leave the qualifier (`.table`) raw --
-        # it names a relation (`__THIS__`/generated), never a data column.
-        return Column(table=e.table or None, name=_fold(e.this))
+        # Dotted parts, outer->inner: [catalog?, db?, table?] + leaf name. Mirror
+        # native expr_build.rs: Column{table:parts[0], name:parts[1]} for the
+        # first two parts, layer FieldAccess for the rest. `s.a.b` -> parts
+        # [s,a,b] -> FieldAccess(Column(s,a), b); the 2-part `s.x` stays a Column
+        # (table.column vs struct.field is ambiguous until schemas resolve, in
+        # _validate_expr). The qualifier (parts[0]) names a relation and stays
+        # raw; column/field parts fold.
+        quals = [q for q in (e.args.get("catalog"), e.args.get("db")) if q is not None]
+        if e.args.get("table"):
+            quals.append(e.args["table"])
+        if not quals:
+            return Column(table=None, name=_fold(e.this))
+        node: Any = Column(
+            table=quals[0].name, name=_fold(quals[1] if len(quals) > 1 else e.this)
+        )
+        rest = ([*quals[2:], e.this]) if len(quals) > 1 else []
+        for part in rest:
+            node = FieldAccess(node, _fold(part))
+        return node
     if isinstance(e, exp.Null):
         return Literal(None)
     if isinstance(e, exp.Boolean):
@@ -655,8 +667,10 @@ def validate_columns(
         effective_schemas[effective] = schema
 
     used: dict = {}
-    for _, e in plan.projection:
-        _validate_expr(e, resolved, row_schemas, static_schemas, used)
+    plan.projection[:] = [
+        (alias, _validate_expr(e, resolved, row_schemas, static_schemas, used))
+        for alias, e in plan.projection
+    ]
     _validate_rel(plan.input, resolved, row_schemas, static_schemas, used)
     return ColumnValidation({k: sorted(v) for k, v in used.items()}, effective_schemas)
 
@@ -693,43 +707,48 @@ def _resolve_tables(
 
 def _validate_rel(node: Any, resolved, row_schemas, static_schemas, used) -> None:
     if isinstance(node, Filter):
-        _validate_expr(node.predicate, resolved, row_schemas, static_schemas, used)
+        node.predicate = _validate_expr(
+            node.predicate, resolved, row_schemas, static_schemas, used
+        )
         _validate_rel(node.input, resolved, row_schemas, static_schemas, used)
     elif isinstance(node, CrossJoin):
         _validate_rel(node.left, resolved, row_schemas, static_schemas, used)
         _validate_rel(node.right, resolved, row_schemas, static_schemas, used)
     elif isinstance(node, Join):
-        for left, right in node.on:
-            _validate_expr(left, resolved, row_schemas, static_schemas, used)
-            _validate_expr(right, resolved, row_schemas, static_schemas, used)
+        node.on = [
+            (
+                _validate_expr(left, resolved, row_schemas, static_schemas, used),
+                _validate_expr(right, resolved, row_schemas, static_schemas, used),
+            )
+            for left, right in node.on
+        ]
         _validate_rel(node.left, resolved, row_schemas, static_schemas, used)
         _validate_rel(node.right, resolved, row_schemas, static_schemas, used)
     elif isinstance(node, SubqueryAlias):
         _validate_rel(node.input, resolved, row_schemas, static_schemas, used)
     elif isinstance(node, LookupJoin):
-        for k in node.keys:
+        node.keys = [
             _validate_expr(k, resolved, row_schemas, static_schemas, used)
+            for k in node.keys
+        ]
         _validate_rel(node.input, resolved, row_schemas, static_schemas, used)
 
 
-def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> None:
+def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> Any:
+    # Returns the (possibly rewritten) node -- a 2-part Column whose qualifier
+    # is not a relation alias is reinterpreted as struct field access, so
+    # callers must reassign with the return value.
     if isinstance(e, Column):
         if e.table is not None:
             entry = resolved.get(e.table)
             if entry is None:
-                # `s.x` (2-part struct field access, e.g. s is struct{x,y})
-                # parses identically to a table-qualified column -- with no
-                # `db`/`catalog` to flag it, unlike the 3-part `t.s.x` case in
-                # _convert_expr. Without this check it falls to the generic
-                # "unknown table" ValueError instead of the UnsupportedInCodegen
-                # the harness expects for deferred container ops.
-                for schema in (*row_schemas.values(), *static_schemas.values()):
-                    ft = (schema or {}).get(e.table)
-                    if ft is not None and is_container(ft.base):
-                        raise UnsupportedInCodegen(
-                            "struct field access is not supported in codegen yet"
-                        )
-                raise ValueError(f"Unknown table: {e.table}")
+                # `e.table` isn't a relation alias, so the "table.column" parse
+                # was wrong: reinterpret as struct field access `e.table`.`e.name`
+                # and re-validate (mirrors native plan.rs). A relation alias
+                # always wins, so this only runs after the alias lookup fails;
+                # the base column resolves below, erroring if it isn't real.
+                fa = FieldAccess(Column(table=None, name=e.table), e.name)
+                return _validate_expr(fa, resolved, row_schemas, static_schemas, used)
             real, is_row = entry
             schema = (row_schemas if is_row else static_schemas).get(real)
             if schema is None:
@@ -738,7 +757,7 @@ def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> None:
                 raise ValueError(f"Unknown column: {real}.{e.name}")
             if is_row:
                 used.setdefault(real, set()).add(e.name)
-            return
+            return e
         matches = [
             (effective, real, is_row)
             for effective, (real, is_row) in resolved.items()
@@ -752,27 +771,43 @@ def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> None:
         e.table = effective  # codegen emits a direct subscript off this
         if is_row:
             used.setdefault(real, set()).add(e.name)
+        return e
+    elif isinstance(e, FieldAccess):
+        e.base = _validate_expr(e.base, resolved, row_schemas, static_schemas, used)
     elif isinstance(e, BinaryOp):
-        _validate_expr(e.left, resolved, row_schemas, static_schemas, used)
-        _validate_expr(e.right, resolved, row_schemas, static_schemas, used)
+        e.left = _validate_expr(e.left, resolved, row_schemas, static_schemas, used)
+        e.right = _validate_expr(e.right, resolved, row_schemas, static_schemas, used)
     elif isinstance(e, Not):
-        _validate_expr(e.inner, resolved, row_schemas, static_schemas, used)
+        e.inner = _validate_expr(e.inner, resolved, row_schemas, static_schemas, used)
     elif isinstance(e, Cast):
-        _validate_expr(e.expr, resolved, row_schemas, static_schemas, used)
+        e.expr = _validate_expr(e.expr, resolved, row_schemas, static_schemas, used)
     elif isinstance(e, Case):
-        for cond, result in e.arms:
-            _validate_expr(cond, resolved, row_schemas, static_schemas, used)
-            _validate_expr(result, resolved, row_schemas, static_schemas, used)
-        _validate_expr(e.default, resolved, row_schemas, static_schemas, used)
+        e.arms = [
+            (
+                _validate_expr(cond, resolved, row_schemas, static_schemas, used),
+                _validate_expr(result, resolved, row_schemas, static_schemas, used),
+            )
+            for cond, result in e.arms
+        ]
+        e.default = _validate_expr(
+            e.default, resolved, row_schemas, static_schemas, used
+        )
     elif isinstance(e, Func):
-        for a in e.args:
+        e.args = [
             _validate_expr(a, resolved, row_schemas, static_schemas, used)
+            for a in e.args
+        ]
     elif isinstance(e, StructExpr):
-        for _, v in e.fields:
-            _validate_expr(v, resolved, row_schemas, static_schemas, used)
+        e.fields = [
+            (name, _validate_expr(v, resolved, row_schemas, static_schemas, used))
+            for name, v in e.fields
+        ]
     elif isinstance(e, ListExpr):
-        for x in e.items:
+        e.items = [
             _validate_expr(x, resolved, row_schemas, static_schemas, used)
+            for x in e.items
+        ]
+    return e
 
 
 _STR_FUNCS = frozenset({"upper", "lower", "trim", "substr", "substring"})
@@ -830,6 +865,16 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
                 _common_base(elem_types), any(t.nullable for t in elem_types)
             )
         return FieldType(ListBase(elem), False)
+    if isinstance(e, FieldAccess):
+        base_ty = infer_type(e.base, schemas)
+        if not isinstance(base_ty.base, StructBase):
+            raise ValueError(f"cannot access field {e.field!r} on a non-struct")
+        for name, ft in base_ty.base.fields:
+            if name == e.field:
+                # A NULL struct makes the field NULL too, so nullability is the
+                # field's OR the struct's (mirrors native types.rs FieldAccess).
+                return FieldType(ft.base, ft.nullable or base_ty.nullable)
+        raise ValueError(f"unknown struct field: {e.field}")
     if isinstance(e, Func):
         return _function_type(e.name, [infer_type(a, schemas) for a in e.args])
     raise UnsupportedInCodegen(f"cannot infer the type of {type(e).__name__}")

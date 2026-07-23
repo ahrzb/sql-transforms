@@ -37,6 +37,16 @@ def type_name(v: Any) -> str:
     return "object"
 
 
+def getfield(v: Any, name: str) -> Any:
+    """Struct field access: a NULL struct yields NULL; a missing field is an
+    error (mirrors native FieldAccess in expr.rs)."""
+    if v is None:
+        return None
+    if isinstance(v, dict) and name in v:
+        return v[name]
+    raise ValueError(f"cannot access field {name!r} on a {type_name(v)} value")
+
+
 def _fmt_float(f: float) -> str:
     """Render a float the way DataFusion does (measured 2026-07-17).
 

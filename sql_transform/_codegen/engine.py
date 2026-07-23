@@ -115,6 +115,8 @@ def _emit_expr(e: Any, env: dict) -> str:
         return f"{{{items}}}"
     if isinstance(e, cp.ListExpr):
         return f"[{', '.join(_emit_expr(x, env) for x in e.items)}]"
+    if isinstance(e, cp.FieldAccess):
+        return f"rt.getfield({_emit_expr(e.base, env)}, {e.field!r})"
     raise UnsupportedInCodegen(f"cannot compile {type(e).__name__}")
 
 
