@@ -20,7 +20,11 @@ import sqlglot
 from sqlglot import exp
 
 from sql_transform._rewrite import rewrite_sql
-from sql_transform._sql import find_window_aggregates, parse_and_validate
+from sql_transform._sql import (
+    find_window_aggregates,
+    parse_and_validate,
+    require_in_projection,
+)
 from sql_transform._state import build_state_tables
 from sql_transform._transformer_ref import is_transformer
 
@@ -233,6 +237,12 @@ def fit_into_scope(
 def _find_call(select: exp.Select, name: str, ref: Ref) -> exp.Anonymous:
     for n in select.find_all(exp.Anonymous):
         if str(n.this).upper() == name:
+            # Same build-time guard as the transformer-callout path (TASK-2
+            # AC#1): a ref parked in QUALIFY/SORT BY/... inlines into a clause
+            # the native engine never resolves, so the engines would disagree.
+            require_in_projection(
+                select, n, f"referenced transform {{{ref.expr_text}}}"
+            )
             return n
     raise ValueError(
         f"a referenced transform must be applied to a column, "

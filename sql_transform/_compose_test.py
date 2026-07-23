@@ -26,6 +26,31 @@ def test_bare_reference_on_fitted_transform_is_ambiguous_error():
         SQLTransform(t"SELECT {scaler}(age) AS s2 FROM __THIS__").fit(train)
 
 
+@pytest.mark.parametrize(
+    "sql_of",
+    [
+        pytest.param(
+            lambda r: t"SELECT age FROM __THIS__ QUALIFY {r}(age) > 1", id="qualify"
+        ),
+        pytest.param(
+            lambda r: t"SELECT age FROM __THIS__ SORT BY {r}(age)", id="sort_by"
+        ),
+        pytest.param(
+            lambda r: t"SELECT age FROM __THIS__ CLUSTER BY {r}(age)", id="cluster_by"
+        ),
+    ],
+)
+def test_referenced_transform_outside_projection_raises(sql_of):
+    # TASK-2 AC#1, sibling path: a {a.transform} ref inlines into whatever
+    # clause it sits in. The native engine only resolves the projection, so a
+    # ref in QUALIFY/SORT BY/CLUSTER BY meant fit() accepted a query the two
+    # engines then disagreed about. Same guard as the transformer-callout path.
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    inner = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__").fit(train)
+    with pytest.raises(ValueError, match="projection"):
+        SQLTransform(sql_of(inner.transform)).fit(train)
+
+
 def test_multi_input_inner_raises_clean_value_error():
     train = pa.table({"age": [10.0, 20.0, 30.0, 40.0], "city": ["a", "a", "b", "b"]})
     grouped = SQLTransform(
