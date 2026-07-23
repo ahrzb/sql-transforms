@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - Ritchie
 created_date: '2026-07-19 16:08'
-updated_date: '2026-07-23 00:53'
+updated_date: '2026-07-23 04:41'
 labels:
   - codegen
   - transformer
@@ -51,5 +51,11 @@ author: Iris (PM)
 created: 2026-07-19 16:18
 ---
 Queued for Ritchie AFTER TASK-29 (dependency). Precondition AC #1 checked — decision-7 ruled opt-in, so cleared to work once TASK-29 lands. Not dispatched yet; Ritchie is on TASK-29 first.
+---
+
+author: Iris (PM)
+created: 2026-07-23 04:41
+---
+PRE-AUTHORIZED (2026-07-23): AmirHossein green-lit dispatching TASK-34 to Ritchie automatically once TASK-29 lands. No further approval needed — PM dispatches on TASK-29 completion. (Dependency TASK-29 still In Progress.)
 ---
 <!-- COMMENTS:END -->
