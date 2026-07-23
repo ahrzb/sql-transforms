@@ -1,11 +1,10 @@
----
+﻿---
 id: TASK-5
 title: 'Native-swap: native per-transformer (Tier 0)'
-status: In Progress
-assignee:
-  - Wren
+status: To Do
+assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-23 00:36'
+updated_date: '2026-07-23 00:37'
 labels:
   - sklearn
   - native-swap
@@ -35,6 +34,13 @@ Swap each fallback-backed transformer to a native engine impl, diffed against th
 author: Iris (PM)
 created: 2026-07-23 00:36
 ---
-Dispatched to Wren (2026-07-23), next on the m-1 spine after TASK-13. Tier order per doc-2; sklearn fallback is the parity oracle per AC wording, DataFusion for SQL semantics (decision-1). TASK-6 (ColumnTransformer assembly) unblocks once this + TASK-13 are done — TASK-13 already landed.
+Dispatched to Wren (2026-07-23), next on the m-1 spine after TASK-13. Tier order per doc-2; sklearn fallback is the parity oracle per AC wording, DataFusion for SQL semantics (decision-1). TASK-6 (ColumnTransformer assembly) unblocks once this + TASK-13 are done â€” TASK-13 already landed.
+---
+
+author: Iris (PM)
+created: 2026-07-23 00:37
+---
+Dispatch retracted â€” AmirHossein stopped it. New convention: PM proposes assignments, AmirHossein green-lights each dispatch explicitly before any dev is messaged.
 ---
 <!-- COMMENTS:END -->
+
