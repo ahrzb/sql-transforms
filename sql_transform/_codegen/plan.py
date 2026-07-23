@@ -359,8 +359,9 @@ def _convert_expr(e: exp.Expression) -> Any:
     if isinstance(e, exp.Cast):
         return Cast(_convert_expr(e.this), _cast_target(e.to.sql()))
     if isinstance(e, exp.Struct):
-        # sqlglot parses named_struct('k', v, ...) and struct(a, b, ...) authored
-        # via STRUCT(...) into exp.Struct with exp.PropertyEQ / bare exprs.
+        # Authored struct(...) form: positional `struct(a, b)` (bare exprs) or
+        # named `struct(a AS x, ...)` (exp.PropertyEQ). named_struct(...) is a
+        # separate shape -- it parses as exp.Anonymous, handled below.
         return _convert_struct(e.expressions)
     if isinstance(e, exp.Array):
         return ListExpr([_convert_expr(a) for a in e.expressions])

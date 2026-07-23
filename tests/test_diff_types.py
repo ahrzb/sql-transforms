@@ -21,6 +21,42 @@ def test_list_construct():
     )
 
 
+# The three construction shapes below (positional struct, named struct(...),
+# make_array) are supported on codegen and match the DataFusion oracle, but
+# native has no dispatch for them at all -- so they xfail_on_native, the same
+# parity-gap pattern as test_list_construct_mixed_numeric_widens. Codegen
+# correctness is the assertion; the native gaps want their own tickets.
+def test_struct_construct_positional(xfail_on_native):
+    # struct(a, b) names fields positionally c0, c1 (matches DataFusion).
+    xfail_on_native("native has no struct(...) construction dispatch (expr_build.rs)")
+    check(
+        "SELECT struct(a, b) AS s FROM t",
+        {"t": rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])},
+        expect=[{"s": {"c0": 1, "c1": 2}}],
+    )
+
+
+def test_struct_construct_named(xfail_on_native):
+    # struct(a AS x, b AS y) parses as exp.PropertyEQ -> explicit field names.
+    xfail_on_native("native has no struct(...) construction dispatch (expr_build.rs)")
+    check(
+        "SELECT struct(a AS x, b AS y) AS s FROM t",
+        {"t": rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])},
+        expect=[{"s": {"x": 1, "y": 2}}],
+    )
+
+
+def test_make_array_construct(xfail_on_native):
+    # make_array(a, b) is a DataFusion builtin; native doesn't recognize it as a
+    # function (only the bracket literal [a, b] reaches native's list path).
+    xfail_on_native("native has no make_array function dispatch (expr_build.rs)")
+    check(
+        "SELECT make_array(a, b) AS l FROM t",
+        {"t": rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])},
+        expect=[{"l": [1, 2]}],
+    )
+
+
 def test_list_construct_mixed_numeric_widens(xfail_on_native):
     # DataFusion widens the int element to match the float element (list<double>).
     # Locks in infer_type's ListExpr arm unifying element bases via _common_base
