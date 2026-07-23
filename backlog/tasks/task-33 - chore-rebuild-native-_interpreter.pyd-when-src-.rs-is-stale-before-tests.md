@@ -1,11 +1,11 @@
 ---
 id: TASK-33
 title: 'chore: rebuild native _interpreter.pyd when src/*.rs is stale before tests'
-status: In Progress
+status: Done
 assignee:
   - '@Wren'
 created_date: '2026-07-19 15:43'
-updated_date: '2026-07-22 17:35'
+updated_date: '2026-07-23 00:33'
 labels:
   - dev-ex
   - native
@@ -26,8 +26,8 @@ The native _interpreter.pyd can silently run STALE: if any src/*.rs is newer tha
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Running the suite auto-rebuilds native when any src/*.rs is newer than the built _interpreter.pyd; an up-to-date build is a no-op (no forced rebuild cost)
-- [ ] #2 A deliberately-stale .pyd no longer yields phantom failures — the guard rebuilds first
+- [x] #1 Running the suite auto-rebuilds native when any src/*.rs is newer than the built _interpreter.pyd; an up-to-date build is a no-op (no forced rebuild cost)
+- [x] #2 A deliberately-stale .pyd no longer yields phantom failures — the guard rebuilds first
 <!-- AC:END -->
 
 ## Comments
@@ -37,5 +37,11 @@ author: Iris (PM)
 created: 2026-07-22 17:35
 ---
 Bumped Low → Medium: stale native .pyd builds cause phantom test failures across every dev lane after a pull — cheap guard, broad payoff.
+---
+
+author: Iris (PM)
+created: 2026-07-23 00:33
+---
+Landed as 953c726 on master. tests/_native_guard.ensure_native_built() runs at top of conftest.py before the native import; cheap mtime compare (newest src/**/*.rs vs built .pyd, located on disk), shells maturin develop only when stale. Both ACs verified live per commit; tests/test_native_guard.py covers is_stale() (missing/newer/older/tie/nested). Suite 497 passed / 14 skipped. Known ceiling noted in-code: no lock under pytest-xdist.
 ---
 <!-- COMMENTS:END -->

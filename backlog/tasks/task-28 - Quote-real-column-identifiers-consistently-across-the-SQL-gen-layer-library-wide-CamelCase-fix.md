@@ -3,11 +3,11 @@ id: TASK-28
 title: >-
   Fold unquoted identifiers to lowercase like DataFusion (library-wide CamelCase
   handling)
-status: In Progress
+status: Done
 assignee:
   - Wren
 created_date: '2026-07-18 19:48'
-updated_date: '2026-07-22 17:35'
+updated_date: '2026-07-23 00:33'
 labels:
   - bug
   - sql-surface
@@ -28,7 +28,7 @@ SEVERITY: high. Wren found (while investigating _compose.py:214) that CamelCase 
 <!-- AC:BEGIN -->
 - [x] #1 Native + codegen FOLD unquoted identifiers to lowercase like the DataFusion oracle (columns, compound col/field parts, SELECT aliases); quoted "Age" stays case-exact everywhere. Root cause was the engines DIDN'T fold — they accepted SQL the oracle rejects. Users quote CamelCase columns themselves (intentional, documented papercut).
 - [x] #2 TASK-25 force-quote reverted: transformer refs carry the user's original quoting — {t}(LotArea) folds-and-fails, {t}("LotArea") works. Old test_camelcase_columns_compose (asserted unquoted 'just works') flipped to quoted-works / unquoted-fails.
-- [ ] #3 state-key columns stay unquoted (_compose.py:214 invariant preserved + documented with a comment).
+- [x] #3 state-key columns stay unquoted (_compose.py:214 invariant preserved + documented with a comment).
 - [x] #4 transform == infer parity (decision-1) + CamelCase differential matrix green (tests/test_diff_identifier_folding.py, 14/14).
 - [x] #5 Ceiling (ponytail note, expr_build.rs): a real CamelCase table/struct-column qualifier is NOT folded — unreachable today (tables are always __THIS__/generated); flagged for when qualified tables become reachable.
 <!-- AC:END -->
@@ -52,6 +52,12 @@ author: Iris (PM)
 created: 2026-07-22 17:35
 ---
 Reopened: AC #3 (state-key comment at _compose.py:214) was ticked off the merge report but the comment is NOT in the landed diff of 7f21dbe. Wren has the fix ready as fadd87e — Done again once it lands on master.
+---
+
+author: Iris (PM)
+created: 2026-07-23 00:33
+---
+AC#3 closed for real: a83ece0 on master adds the 8-line comment in sql_transform/_compose.py documenting why state-key columns are rebuilt unquoted (state_key() is lowercase by construction, so unquoted folding is a no-op; quoting would pin generated-name casing). Verified against the diff, not the merge report.
 ---
 <!-- COMMENTS:END -->
 
