@@ -9,8 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
-# Claude Code settings
-.claude
+# Claude Code settings (track shared project settings; ignore everything else)
+.claude/*
+!.claude/settings.json
 
 .worktrees/
 
