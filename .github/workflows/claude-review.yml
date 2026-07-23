@@ -28,13 +28,23 @@ jobs:
           allowed_bots: claude-agent-ahrzb # agents push feature branches as this App bot
           plugin_marketplaces: https://github.com/anthropics/claude-plugins-official.git
           plugins: superpowers@claude-plugins-official
-          claude_args: --model claude-sonnet-5 --max-turns 20
-          show_full_output: true
+          # Grant the comment tools — without these the agent has no way to
+          # write anything back to the PR (this was the "nothing gets posted" bug).
+          claude_args: >-
+            --model claude-sonnet-5 --max-turns 30
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+          track_progress: true # tracking comment + PR context
           prompt: |
-            Review this pull request.
+            Review this pull request. Use the superpowers:requesting-code-review
+            skill for the review methodology, diffing the PR branch against
+            ${{ github.event.pull_request.base.ref }}.
 
-            Use the superpowers:requesting-code-review skill and follow it exactly.
-            Diff the PR branch against ${{ github.event.pull_request.base.ref }}.
+            Then POST the review to GitHub — a review that isn't posted is useless:
+            - inline comments (mcp__github_inline_comment__create_inline_comment)
+              for specific, line-level issues
+            - one top-level PR comment (`gh pr comment`) for the overall summary
+              and assessment
 
             Report only what you verified in the diff. No speculative findings, no
-            style nits. If nothing needs changing, say so in one line.
+            style nits. If nothing needs changing, post a one-line top-level
+            comment saying so.
