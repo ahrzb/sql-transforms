@@ -29,6 +29,8 @@ jobs:
           plugin_marketplaces: https://github.com/anthropics/claude-plugins-official.git
           plugins: superpowers@claude-plugins-official
           claude_args: --model claude-sonnet-5 --max-turns 20
+          track_progress: true # post the review to the PR as a comment
+          use_sticky_comment: true # reuse one comment per PR instead of one per push
           prompt: |
             Review this pull request.
 
