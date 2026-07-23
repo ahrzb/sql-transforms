@@ -96,6 +96,10 @@ _COMMITTED = [
         {"t": rows({"x": "int", "y": "int"}, [{"x": 1, "y": 2}])},
     ),
     ("SELECT s.x AS v FROM t", {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])}),
+    (
+        "SELECT (s = s) AS x FROM t",
+        {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])},
+    ),
 ]
 
 
@@ -111,10 +115,11 @@ def test_committed_surface_is_never_deferred(query, tables):
 
 _DEFERRED = [
     ("SELECT unnest(l) AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
-    # A struct in a comparison must defer, not silently mis-evaluate: DataFusion
-    # supports it, codegen does not yet, so it must raise (not return a wrong bool).
+    # Equality is the ONLY op defined on containers; a struct in any other op
+    # (here dpipe) must still defer, not fall through to the scalar STR/arith
+    # path and render "<object>" -- pins the container-operand guard.
     (
-        "SELECT (s = s) AS x FROM t",
+        "SELECT s || 'x' AS r FROM t",
         {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])},
     ),
 ]

@@ -148,6 +148,28 @@ def test_qualified_struct_field_access():
     )
 
 
+def test_struct_equality_true():
+    check(
+        "SELECT (s = s) AS eq FROM t",
+        {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 1, "y": 2}}])},
+    )
+
+
+def test_struct_equality_false():
+    # Deep, type-tagged: differs in one field -> not equal.
+    check(
+        "SELECT (s = named_struct('x', 1, 'y', 99)) AS eq FROM t",
+        {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 1, "y": 2}}])},
+    )
+
+
+def test_list_equality():
+    check(
+        "SELECT (l = l) AS eq FROM t",
+        {"t": rows({"l": "list[int]"}, [{"l": [1, 2, 3]}])},
+    )
+
+
 def test_unnest_struct_expands_columns():
     check(
         "SELECT unnest(named_struct('x', a, 'y', b)) FROM t",

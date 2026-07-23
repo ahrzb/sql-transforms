@@ -218,12 +218,33 @@ def _cmp(l: Any, r: Any) -> int:  # noqa: E741
     return -1 if a < b else (0 if a == b else 1)
 
 
+def _veq(a: Any, b: Any) -> bool:
+    """Type-tagged structural equality mirroring native Value::PartialEq: dicts
+    (structs) by key order + values, lists elementwise, scalars by variant tag +
+    value (Int(1) != Float(1.0), via val_eq)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return list(a.keys()) == list(b.keys()) and all(_veq(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_veq(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return False  # container vs scalar (or struct vs list) never equal
+    return val_eq(a, b)
+
+
 def eq(l: Any, r: Any) -> Any:  # noqa: E741
-    return None if l is None or r is None else _cmp(l, r) == 0
+    if l is None or r is None:
+        return None
+    if isinstance(l, (dict, list)) or isinstance(r, (dict, list)):
+        return _veq(l, r)
+    return _cmp(l, r) == 0
 
 
 def neq(l: Any, r: Any) -> Any:  # noqa: E741
-    return None if l is None or r is None else _cmp(l, r) != 0
+    if l is None or r is None:
+        return None
+    if isinstance(l, (dict, list)) or isinstance(r, (dict, list)):
+        return not _veq(l, r)
+    return _cmp(l, r) != 0
 
 
 def lt(l: Any, r: Any) -> Any:  # noqa: E741
