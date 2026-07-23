@@ -823,19 +823,22 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
     if isinstance(e, BinaryOp):
         left, right = infer_type(e.left, schemas), infer_type(e.right, schemas)
         nullable = left.nullable or right.nullable
+        if is_container(left.base) or is_container(right.base):
+            # Equality is the only op defined on whole containers (rt.eq/neq deep
+            # type-tagged compare). Every other op -- arithmetic, dpipe, ordering
+            # -- has no container semantics; defer rather than fall through to the
+            # scalar arms below (which would mistype struct || x as STR, etc.).
+            # This check must precede those arms.
+            if e.op in ("eq", "neq"):
+                return FieldType(BOOL, nullable)
+            raise UnsupportedInCodegen(
+                "only equality is supported on struct/list values in codegen yet"
+            )
         if e.op in ("add", "sub", "mul", "div", "mod"):
             base = INT if left.base == INT and right.base == INT else FLOAT
             return FieldType(base, nullable)
         if e.op == "dpipe":
             return FieldType(STR, nullable)
-        if is_container(left.base) or is_container(right.base):
-            # Comparing/combining structs or lists needs deep equality, which
-            # the runtime doesn't implement -- without this it silently reaches
-            # the scalar-only arithmetic comparison path and crashes instead of
-            # being reported as a deferred surface.
-            raise UnsupportedInCodegen(
-                "struct/list comparison is not supported in codegen yet"
-            )
         return FieldType(BOOL, nullable)
     if isinstance(e, Not):
         return FieldType(BOOL, infer_type(e.inner, schemas).nullable)
