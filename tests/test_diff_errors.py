@@ -29,3 +29,13 @@ def test_int_mod_by_zero_rejected_by_both():
         "SELECT a % b AS r FROM t",
         {"t": rows({"a": "int", "b": "int"}, [{"a": 5, "b": 0}])},
     )
+
+
+def test_unknown_function_rejected_by_both():
+    # foobar() is invalid SQL -- DataFusion errors -- and is NOT a `__tfm_`
+    # transformer placeholder, so codegen must raise a hard error too (not
+    # UnsupportedInCodegen, which the harness would skip as a deferred surface).
+    check_both_raise(
+        "SELECT foobar(x) AS y FROM t",
+        {"t": rows({"x": "int"}, [{"x": 1}])},
+    )

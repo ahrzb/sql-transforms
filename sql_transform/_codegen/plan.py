@@ -190,6 +190,16 @@ class Cast:
 
 
 @dataclass
+class StructExpr:
+    fields: list  # list[tuple[str, expr]] -- key order significant
+
+
+@dataclass
+class ListExpr:
+    items: list  # list[expr]
+
+
+@dataclass
 class Case:
     arms: list  # list[tuple[cond, result]]
     default: Any  # result expr; Literal(None) when no ELSE
@@ -263,7 +273,7 @@ _SIMPLE_FUNCS = {
     exp.Abs: "abs",
     exp.Round: "round",
 }
-_DEFERRED_FUNCS = ("named_struct", "struct", "unnest", "make_array")
+_DEFERRED_FUNCS = ("unnest",)
 
 # Measured: sqlglot spreads variadic args differently PER FUNCTION, so each needs
 # its own extraction. Concat  -> this=None, args all in .expressions
@@ -348,10 +358,13 @@ def _convert_expr(e: exp.Expression) -> Any:
             return BinaryOp(op, _convert_expr(e.this), _convert_expr(e.expression))
     if isinstance(e, exp.Cast):
         return Cast(_convert_expr(e.this), _cast_target(e.to.sql()))
-    if isinstance(e, (exp.Struct, exp.Array)):
-        raise UnsupportedInCodegen(
-            "struct/list construction is not supported in codegen yet"
-        )
+    if isinstance(e, exp.Struct):
+        # Authored struct(...) form: positional `struct(a, b)` (bare exprs) or
+        # named `struct(a AS x, ...)` (exp.PropertyEQ). named_struct(...) is a
+        # separate shape -- it parses as exp.Anonymous, handled below.
+        return _convert_struct(e.expressions)
+    if isinstance(e, exp.Array):
+        return ListExpr([_convert_expr(a) for a in e.expressions])
     if isinstance(e, exp.Unnest):
         # Measured: UNNEST(...) parses as its own exp.Unnest class, not
         # exp.Anonymous -- the _DEFERRED_FUNCS name-matching branch below never
@@ -379,10 +392,42 @@ def _convert_expr(e: exp.Expression) -> Any:
             return Func(name, [_convert_expr(a) for a in extract(e)])
     if isinstance(e, exp.Anonymous):
         name = e.name.lower()
+        if name == "named_struct":
+            return _named_struct(e.expressions)
+        # struct(...) parses as exp.Struct and array(...) as exp.Array (handled
+        # above); only make_array reaches the Anonymous arm.
+        if name == "make_array":
+            return ListExpr([_convert_expr(a) for a in e.expressions])
         if name in _DEFERRED_FUNCS:
             raise UnsupportedInCodegen(f"{name}() is not supported in codegen yet")
         return Func(name, [_convert_expr(a) for a in e.expressions])
     raise ValueError(f"Unsupported expression: {e.sql()}")
+
+
+def _named_struct(args: list) -> StructExpr:
+    if len(args) % 2 != 0:
+        raise ValueError("named_struct expects (key, value) pairs")
+    fields = []
+    for i in range(0, len(args), 2):
+        key = args[i]
+        if not (isinstance(key, exp.Literal) and key.is_string):
+            raise ValueError("named_struct field names must be string literals")
+        fields.append((key.this, _convert_expr(args[i + 1])))
+    return StructExpr(fields)
+
+
+def _convert_struct(exprs: list) -> StructExpr:
+    # STRUCT(...) authored form: sqlglot wraps each field as exp.PropertyEQ
+    # (aliased 'name := value') or a bare expr (positional c0, c1, ...).
+    fields = []
+    for i, item in enumerate(exprs):
+        if isinstance(item, exp.PropertyEQ):
+            fields.append((item.this.name, _convert_expr(item.expression)))
+        elif isinstance(item, exp.Alias):
+            fields.append((item.alias, _convert_expr(item.this)))
+        else:
+            fields.append((f"c{i}", _convert_expr(item)))
+    return StructExpr(fields)
 
 
 def _convert_literal(e: exp.Literal) -> Any:
@@ -722,6 +767,12 @@ def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> None:
     elif isinstance(e, Func):
         for a in e.args:
             _validate_expr(a, resolved, row_schemas, static_schemas, used)
+    elif isinstance(e, StructExpr):
+        for _, v in e.fields:
+            _validate_expr(v, resolved, row_schemas, static_schemas, used)
+    elif isinstance(e, ListExpr):
+        for x in e.items:
+            _validate_expr(x, resolved, row_schemas, static_schemas, used)
 
 
 _STR_FUNCS = frozenset({"upper", "lower", "trim", "substr", "substring"})
@@ -763,6 +814,22 @@ def infer_type(e: Any, schemas: dict) -> FieldType:
         nullable = (not e.has_else) or any(t.nullable for t in branch_types)
         base = _common_base(branch_types)
         return FieldType(base, nullable)
+    if isinstance(e, StructExpr):
+        fields = tuple((name, infer_type(v, schemas)) for name, v in e.fields)
+        return FieldType(StructBase(fields), False)
+    if isinstance(e, ListExpr):
+        elem_types = [infer_type(x, schemas) for x in e.items]
+        if not elem_types:
+            elem = FieldType(OTHER, True)
+        else:
+            # Unify element bases the same way COALESCE does (numeric int/float
+            # -> float), so e.g. make_array(int_col, float_col) types as
+            # list<float> -- matching DataFusion, which widens the int element
+            # at runtime (measured: make_array(1, 2.5) -> [1.0, 2.5]).
+            elem = FieldType(
+                _common_base(elem_types), any(t.nullable for t in elem_types)
+            )
+        return FieldType(ListBase(elem), False)
     if isinstance(e, Func):
         return _function_type(e.name, [infer_type(a, schemas) for a in e.args])
     raise UnsupportedInCodegen(f"cannot infer the type of {type(e).__name__}")

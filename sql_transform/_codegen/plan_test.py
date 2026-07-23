@@ -236,11 +236,19 @@ def test_build_plan_not_and_logic():
     )
 
 
-def test_build_plan_defers_containers():
+def test_build_plan_defers_unnest():
     with pytest.raises(cp.UnsupportedInCodegen):
         cp.build_plan("SELECT unnest(a) AS x FROM t")
-    with pytest.raises(cp.UnsupportedInCodegen):
-        cp.build_plan("SELECT named_struct('k', a) AS x FROM t")
+
+
+def test_build_plan_constructs_struct_and_list():
+    # TASK-29 Phase B: named_struct/array construction, previously deferred.
+    plan = cp.build_plan("SELECT named_struct('k', a) AS x FROM t")
+    assert plan.projection == [("x", cp.StructExpr([("k", cp.Column(None, "a"))]))]
+    plan = cp.build_plan("SELECT array(a, a) AS x FROM t")
+    assert plan.projection == [
+        ("x", cp.ListExpr([cp.Column(None, "a"), cp.Column(None, "a")]))
+    ]
 
 
 def _schemas():

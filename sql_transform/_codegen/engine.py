@@ -94,6 +94,12 @@ def _emit_expr(e: Any, env: dict) -> str:
     if isinstance(e, cp.Func):
         fn = _BUILTINS.get(e.name)
         if fn is None:
+            if e.name.startswith("__tfm_"):
+                # A transformer placeholder call: codegen has no transformer
+                # support (native-only, TASK-34) -- deferred surface, not an error.
+                raise UnsupportedInCodegen(
+                    f"{e.name}() is not supported in codegen yet"
+                )
             raise ValueError(f"Unknown function: {e.name}")
         return f"{fn}({', '.join(_emit_expr(a, env) for a in e.args)})"
     if isinstance(e, cp.Case):
@@ -104,6 +110,11 @@ def _emit_expr(e: Any, env: dict) -> str:
                 f"else {out})"
             )
         return out
+    if isinstance(e, cp.StructExpr):
+        items = ", ".join(f"{name!r}: {_emit_expr(v, env)}" for name, v in e.fields)
+        return f"{{{items}}}"
+    if isinstance(e, cp.ListExpr):
+        return f"[{', '.join(_emit_expr(x, env) for x in e.items)}]"
     raise UnsupportedInCodegen(f"cannot compile {type(e).__name__}")
 
 
@@ -173,9 +184,8 @@ def _emit_rel(node: Any, env: dict, ind: int, em: _Emitter, body) -> None:
 
 def _to_native(v: Any) -> Any:
     """Recursively unwrap a row's Pydantic struct/list value into plain
-    dicts/lists. Struct columns can't reach a projected output (rejected as
-    UnsupportedInCodegen below), but a JOIN ON key CAN reference one -- and
-    two structurally-identical struct columns from different row tables are
+    dicts/lists for struct/list passthrough or JOIN key normalization.
+    Two structurally-identical struct columns from different row tables are
     two different synthesized Pydantic classes, so BaseModel.__eq__ (which
     checks type identity) would wrongly call them unequal. Plain dicts
     compare structurally, matching DataFusion/rt.val_eq's semantics."""
@@ -238,12 +248,6 @@ class CodegenFn:
         schemas = validation.effective_schemas
 
         inferred = [(alias, cp.infer_type(e, schemas)) for alias, e in plan.projection]
-        for alias, ft in inferred:
-            if cp.is_container(ft.base):
-                raise UnsupportedInCodegen(
-                    f"column '{alias}' is a struct/list, which codegen does not "
-                    "support yet"
-                )
 
         if output_model is None:
             self.output_model = create_model(
