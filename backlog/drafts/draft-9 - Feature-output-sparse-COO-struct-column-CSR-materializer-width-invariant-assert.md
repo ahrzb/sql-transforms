@@ -1,12 +1,12 @@
 ---
-id: TASK-14
+id: DRAFT-9
 title: >-
   Feature output: sparse COO struct column + CSR materializer + width-invariant
   assert
-status: To Do
+status: Draft
 assignee: []
 created_date: '2026-07-18 15:52'
-updated_date: '2026-07-23 00:52'
+updated_date: '2026-07-23 01:01'
 labels:
   - feature-output
 milestone: m-1
@@ -29,3 +29,13 @@ Per-row sparse feature = Arrow struct<indices: list<int32>, values: list<float64
 - [ ] #2 N/unseen-key sourced from the fitted transform; shape pinned (n,N)
 - [ ] #3 width-invariant assert fails on batch-width drift
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-23 01:01
+---
+Moved to Draft (2026-07-23): sparse COO column is super-low priority AND needs design work. Parked as a draft until scoped.
+---
+<!-- COMMENTS:END -->

@@ -1,10 +1,10 @@
 ---
-id: TASK-5
+id: DRAFT-7
 title: 'Native-swap: native per-transformer (Tier 0)'
-status: To Do
+status: Draft
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-23 00:52'
+updated_date: '2026-07-23 01:01'
 labels:
   - sklearn
   - native-swap
@@ -44,5 +44,11 @@ author: Iris (PM)
 created: 2026-07-23 00:37
 ---
 Dispatch retracted â€” AmirHossein stopped it. New convention: PM proposes assignments, AmirHossein green-lights each dispatch explicitly before any dev is messaged.
+---
+
+author: Iris (PM)
+created: 2026-07-23 01:01
+---
+Moved to Draft (2026-07-23): native per-transformer swap needs design work — not a well-scoped task yet. Re-scope + re-promote to a TASK before dispatch. AmirHossein's call.
 ---
 <!-- COMMENTS:END -->
