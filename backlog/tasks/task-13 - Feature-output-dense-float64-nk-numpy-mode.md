@@ -5,11 +5,13 @@ status: Done
 assignee:
   - '@Wren'
 created_date: '2026-07-18 15:52'
-updated_date: '2026-07-23 00:35'
+updated_date: '2026-07-23 00:53'
 labels:
   - feature-output
 milestone: m-1
 dependencies: []
+documentation:
+  - 'doc-10 (Feature-output model — records, dense, sparse)'
 priority: high
 ordinal: 13000
 ---

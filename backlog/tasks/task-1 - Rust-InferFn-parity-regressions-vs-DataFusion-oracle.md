@@ -5,12 +5,14 @@ status: Done
 assignee:
   - Developer
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-19 01:15'
+updated_date: '2026-07-23 00:53'
 labels:
   - rust
   - parity
 milestone: m-1
 dependencies: []
+documentation:
+  - doc-1 (DataFusion function catalogue — parity oracle)
 ordinal: 1000
 ---
 

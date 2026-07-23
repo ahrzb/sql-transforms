@@ -5,13 +5,15 @@ status: Done
 assignee:
   - Wren
 created_date: '2026-07-18 19:01'
-updated_date: '2026-07-18 19:12'
+updated_date: '2026-07-23 00:53'
 labels:
   - bug
   - transformer-refs
   - usability
 milestone: m-1
 dependencies: []
+documentation:
+  - 'doc-8 (Composition — {transform}(col) references)'
 ordinal: 25000
 ---
 

@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - Ritchie
 created_date: '2026-07-19 16:08'
-updated_date: '2026-07-19 16:18'
+updated_date: '2026-07-23 00:53'
 labels:
   - codegen
   - transformer
@@ -17,6 +17,9 @@ references:
   - sql_transform/_codegen/
   - decision-7
   - TASK-29
+documentation:
+  - doc-7 (Transformer execution model)
+  - 'doc-8 (Composition — {transform}(col) references)'
 priority: low
 type: feature
 ordinal: 34000

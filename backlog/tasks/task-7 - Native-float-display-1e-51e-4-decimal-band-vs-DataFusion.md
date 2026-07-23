@@ -5,12 +5,14 @@ status: Done
 assignee:
   - Wren
 created_date: '2026-07-18 14:28'
-updated_date: '2026-07-19 16:03'
+updated_date: '2026-07-23 00:53'
 labels:
   - rust
   - parity
 milestone: m-1
 dependencies: []
+documentation:
+  - doc-1 (DataFusion function catalogue — parity oracle)
 priority: low
 ordinal: 7000
 ---

@@ -1,15 +1,18 @@
-﻿---
+---
 id: TASK-5
 title: 'Native-swap: native per-transformer (Tier 0)'
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-23 00:37'
+updated_date: '2026-07-23 00:52'
 labels:
   - sklearn
   - native-swap
 milestone: m-1
 dependencies: []
+documentation:
+  - doc-2 (sklearn transformer implementation plan)
+  - doc-7 (Transformer execution model)
 priority: high
 ordinal: 5000
 ---
@@ -43,4 +46,3 @@ created: 2026-07-23 00:37
 Dispatch retracted â€” AmirHossein stopped it. New convention: PM proposes assignments, AmirHossein green-lights each dispatch explicitly before any dev is messaged.
 ---
 <!-- COMMENTS:END -->
-

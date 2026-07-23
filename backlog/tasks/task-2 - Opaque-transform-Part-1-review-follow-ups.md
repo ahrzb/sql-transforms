@@ -4,13 +4,15 @@ title: Opaque transform Part-1 review follow-ups
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-19 15:50'
+updated_date: '2026-07-23 00:52'
 labels:
   - rust
   - parity
   - opaque
 milestone: m-1
 dependencies: []
+documentation:
+  - 'doc-7 (Transformer execution model — UDF/UDAF, macros, composition)'
 priority: medium
 ordinal: 2000
 ---

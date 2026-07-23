@@ -4,12 +4,15 @@ title: Transformer-refs (Part-2 authoring surface) review follow-ups
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-19 15:50'
+updated_date: '2026-07-23 00:52'
 labels:
   - python
   - transformer-refs
 milestone: m-1
 dependencies: []
+documentation:
+  - 'doc-8 (Composition — {transform}(col) references)'
+  - doc-7 (Transformer execution model)
 priority: medium
 ordinal: 3000
 ---

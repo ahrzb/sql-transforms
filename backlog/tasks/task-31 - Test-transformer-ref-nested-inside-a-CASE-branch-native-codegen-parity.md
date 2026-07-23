@@ -5,7 +5,7 @@ status: Done
 assignee:
   - Ritchie
 created_date: '2026-07-19 15:35'
-updated_date: '2026-07-19 15:53'
+updated_date: '2026-07-23 00:53'
 labels:
   - test
   - sql-surface
@@ -13,6 +13,8 @@ milestone: m-1
 dependencies: []
 references:
   - src/expr_build.rs
+documentation:
+  - 'doc-8 (Composition — {transform}(col) references)'
 priority: medium
 type: task
 ordinal: 31000

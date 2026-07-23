@@ -5,12 +5,14 @@ status: Done
 assignee:
   - Ritchie
 created_date: '2026-07-18 19:01'
-updated_date: '2026-07-18 19:29'
+updated_date: '2026-07-23 00:53'
 labels:
   - feature
   - usability
 milestone: m-1
 dependencies: []
+documentation:
+  - doc-7 (Transformer execution model — fit-state)
 ordinal: 26000
 ---
 

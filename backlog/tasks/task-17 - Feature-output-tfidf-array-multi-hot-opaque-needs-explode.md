@@ -4,11 +4,14 @@ title: 'Feature output: tfidf / array multi-hot (opaque, needs explode)'
 status: To Do
 assignee: []
 created_date: '2026-07-18 15:52'
-updated_date: '2026-07-19 15:50'
+updated_date: '2026-07-23 00:52'
 labels:
   - feature-output
 milestone: m-1
 dependencies: []
+documentation:
+  - 'doc-10 (Feature-output model — records, dense, sparse)'
+  - doc-9 (Rich type system and UNNEST)
 priority: low
 ordinal: 17000
 ---

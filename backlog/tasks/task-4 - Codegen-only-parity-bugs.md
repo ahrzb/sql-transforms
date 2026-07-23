@@ -5,11 +5,13 @@ status: Done
 assignee:
   - 'Developer: Codegen'
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-19 01:15'
+updated_date: '2026-07-23 00:53'
 labels:
   - codegen
   - parity
 dependencies: []
+documentation:
+  - doc-1 (DataFusion function catalogue — parity oracle)
 ordinal: 4000
 ---
 

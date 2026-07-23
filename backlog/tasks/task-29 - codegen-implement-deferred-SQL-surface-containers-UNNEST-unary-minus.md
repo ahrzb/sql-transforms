@@ -5,11 +5,14 @@ status: In Progress
 assignee:
   - Ritchie
 created_date: '2026-07-18 20:14'
-updated_date: '2026-07-19 16:18'
+updated_date: '2026-07-23 00:53'
 labels:
   - codegen
   - feature
 dependencies: []
+documentation:
+  - doc-9 (Rich type system and UNNEST — status and deferred edges)
+  - doc-8 (Composition — deferred slices)
 priority: low
 ordinal: 29000
 ---

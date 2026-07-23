@@ -5,7 +5,7 @@ status: Done
 assignee:
   - Ritchie
 created_date: '2026-07-18 19:45'
-updated_date: '2026-07-19 15:34'
+updated_date: '2026-07-23 00:53'
 labels:
   - feature
   - sql-surface
@@ -13,6 +13,8 @@ labels:
 milestone: m-1
 dependencies:
   - TASK-30
+documentation:
+  - doc-1 (DataFusion function catalogue — parity oracle)
 priority: high
 ordinal: 27000
 ---
