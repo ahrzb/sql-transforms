@@ -4,11 +4,12 @@ title: 'Feature output: type-directed assembler (dense + sparse in one SELECT)'
 status: To Do
 assignee: []
 created_date: '2026-07-18 15:52'
-updated_date: '2026-07-23 00:52'
+updated_date: '2026-07-23 00:57'
 labels:
   - feature-output
 milestone: m-1
-dependencies: []
+dependencies:
+  - TASK-14
 documentation:
   - 'doc-10 (Feature-output model — records, dense, sparse)'
 priority: medium

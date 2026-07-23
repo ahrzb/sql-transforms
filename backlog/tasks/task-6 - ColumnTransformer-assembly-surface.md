@@ -4,12 +4,13 @@ title: ColumnTransformer assembly surface
 status: To Do
 assignee: []
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-23 00:52'
+updated_date: '2026-07-23 00:57'
 labels:
   - sklearn
   - fallback
 milestone: m-1
-dependencies: []
+dependencies:
+  - TASK-5
 documentation:
   - doc-2 (sklearn transformer implementation plan)
   - 'doc-10 (Feature-output model — records, dense, sparse)'
