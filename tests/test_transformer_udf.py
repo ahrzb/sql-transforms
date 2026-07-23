@@ -1,5 +1,6 @@
 """Standalone oracle test: the DataFusion transformer UDF must match sklearn."""
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
@@ -18,6 +19,44 @@ pytestmark = pytest.mark.filterwarnings(
 
 def _collect(df) -> list[dict]:
     return pa.Table.from_batches(df.collect(), schema=df.schema()).to_pylist()
+
+
+def test_out_schema_mismatching_natural_dtype_raises():
+    # TASK-2 AC#3. The two engines reach the declared out_schema by DIFFERENT
+    # coercion rules -- DataFusion casts via pa.array(..., type=), the native
+    # engine coerces at pydantic model-validate. They only agree when no
+    # coercion happens, i.e. when the declared type already IS the natural
+    # .transform dtype. Declaring int64 over a float64 transform silently
+    # truncates on one side; make it a build-time error instead.
+    train_df = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0]})
+    sc = StandardScaler().fit(train_df)
+    in_schema = pa.schema([("age", pa.float64())])
+    bad_out = pa.schema([("age", pa.int64())])  # natural is float64
+
+    ctx = SessionContext()
+    ctx.from_arrow(pa.Table.from_pandas(train_df), name="__THIS__")
+    ctx.register_udf(_transformer_udf(sc, in_schema, bad_out, "__tfm_0__"))
+
+    with pytest.raises(Exception, match="natural"):
+        _collect(
+            ctx.sql("SELECT __tfm_0__(named_struct('age', age)) AS s FROM __THIS__")
+        )
+
+
+def test_out_schema_matching_natural_dtype_is_accepted():
+    # The guard must not fire on the legitimate case: declared == natural.
+    train_df = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0]})
+    sc = StandardScaler().fit(train_df)
+    schema = pa.schema([("age", pa.float64())])
+
+    ctx = SessionContext()
+    ctx.from_arrow(pa.Table.from_pandas(train_df), name="__THIS__")
+    ctx.register_udf(_transformer_udf(sc, schema, schema, "__tfm_0__"))
+
+    got = _collect(
+        ctx.sql("SELECT __tfm_0__(named_struct('age', age)) AS s FROM __THIS__")
+    )
+    assert np.allclose([r["s"]["age"] for r in got], sc.transform(train_df).ravel())
 
 
 def test_standard_scaler_udf_matches_sklearn():

@@ -40,6 +40,48 @@ def test_single_scaler_ref_parity():
     assert np.allclose(got, expected)
 
 
+@pytest.mark.parametrize(
+    "sql_of",
+    [
+        pytest.param(
+            lambda sc: t"SELECT age FROM __THIS__ QUALIFY {sc}(age) > 1", id="qualify"
+        ),
+        pytest.param(
+            lambda sc: t"SELECT DISTINCT ON ({sc}(age)) age FROM __THIS__",
+            id="distinct_on",
+        ),
+        pytest.param(
+            lambda sc: t"SELECT age FROM __THIS__ CLUSTER BY {sc}(age)", id="cluster_by"
+        ),
+        pytest.param(
+            lambda sc: t"SELECT age FROM __THIS__ SORT BY {sc}(age)", id="sort_by"
+        ),
+        pytest.param(
+            lambda sc: (
+                t"SELECT AVG(age) OVER w AS a FROM __THIS__ "
+                t"WINDOW w AS (PARTITION BY {sc}(age))"
+            ),
+            id="window_clause",
+        ),
+    ],
+)
+def test_transformer_call_outside_projection_raises(sql_of):
+    # TASK-2 AC#1. The native engine resolves transformer calls only over the
+    # projection (src/lib.rs); DataFusion plans the whole statement. These five
+    # clauses survive parse_and_validate, so before this guard fit() ACCEPTED
+    # them and the disagreement surfaced late and asymmetrically: transform()
+    # raised a DataFusion planning error while infer() silently ignored the
+    # clause and returned rows (WINDOW crashed at fit with a bare
+    # AttributeError). Reject at build time with one clear message instead.
+    # ORDER BY/WHERE/GROUP BY/HAVING/LIMIT/JOIN are already rejected upstream
+    # by parse_and_validate, so they cannot reach this guard.
+    train = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0]})
+    sc = StandardScaler().fit(train)
+    t = SQLTransform(sql_of(sc))
+    with pytest.raises(ValueError, match="projection"):
+        t.fit(pa.Table.from_pandas(train))
+
+
 def test_nested_threading_parity():
     train = pd.DataFrame(
         {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}

@@ -86,6 +86,19 @@ def test_whole_pipeline_parity():
     _parity(sql, pa.Table.from_pandas(train), pipe, schema, schema)
 
 
+def test_single_field_one_in_one_out_parity():
+    # TASK-2 AC#2. Every other case here is 2-in/2-out; the marshalling on both
+    # sides indexes y[:, i], which assumes .transform returns 2-D. A 1-in/1-out
+    # transformer is the degenerate width -- (n,1), not (n,) -- and is the case
+    # a positional/squeeze bug in either engine would break first.
+    train = pd.DataFrame({"age": [10.0, 20.0, 30.0, 40.0]})
+    sc = StandardScaler().fit(train)
+    schema = pa.schema([("age", pa.float64())])
+    sql = "SELECT __tfm_0__(named_struct('age', age)) AS s FROM __THIS__"
+    oracle = _parity(sql, pa.Table.from_pandas(train), sc, schema, schema)
+    assert np.allclose([[r["s"]["age"]] for r in oracle], sc.transform(train))
+
+
 def test_ordinal_encoder_non_float_in_and_out_parity():
     train = pd.DataFrame(
         {"color": ["red", "green", "blue", "red"], "size": ["S", "M", "L", "M"]}

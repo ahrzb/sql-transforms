@@ -60,6 +60,25 @@ def parse_and_validate(sql: str) -> exp.Select:
     return tree
 
 
+def require_in_projection(select: exp.Select, node: exp.Expression, label: str) -> None:
+    """Raise unless `node` sits inside `select`'s projection list.
+
+    The native engine resolves calls only over the projection (src/lib.rs);
+    DataFusion plans the whole statement. QUALIFY / DISTINCT ON / CLUSTER BY /
+    SORT BY / WINDOW all survive parse_and_validate, so a call parked in one of
+    them means the engines see different queries: transform() fails in
+    DataFusion planning while infer() silently ignores the clause and returns
+    rows. Fail at build time instead, with one message that names the cause.
+    """
+    if not any(n is node for e in select.expressions for n in e.find_all(type(node))):
+        raise ValueError(
+            f"{label} must appear in the SELECT projection, but was found in "
+            f"another clause (QUALIFY / DISTINCT ON / CLUSTER BY / SORT BY / "
+            f"WINDOW). The native engine only resolves projection expressions, "
+            f"so the two engines would not agree on this query."
+        )
+
+
 @dataclass(frozen=True)
 class WindowAgg:
     """A single window-aggregate reference found in a SELECT list.

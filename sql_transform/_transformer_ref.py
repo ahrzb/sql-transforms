@@ -12,6 +12,8 @@ import numpy as np
 import pyarrow as pa
 from sqlglot import exp
 
+from sql_transform._sql import require_in_projection
+
 
 def is_transformer(obj: object) -> bool:
     return hasattr(obj, "feature_names_in_") and hasattr(obj, "transform")
@@ -20,6 +22,7 @@ def is_transformer(obj: object) -> bool:
 def _find_call(select: exp.Select, name: str) -> exp.Anonymous:
     for n in select.find_all(exp.Anonymous):
         if str(n.this).upper() == name:
+            require_in_projection(select, n, f"transformer ref {name}")
             return n
     raise ValueError(
         f"transformer ref {name} must be applied to columns, e.g. {{t}}(a, b)"

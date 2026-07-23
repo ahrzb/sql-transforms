@@ -17,6 +17,29 @@ import pyarrow as pa
 from datafusion import ScalarUDF, udf
 
 
+def check_out_schema_natural(obj: object, y: np.ndarray, out_fields: list) -> None:
+    """Enforce out_schema == the transform's NATURAL output dtype (TASK-2 AC#3).
+
+    The two engines reach the declared type by different coercion rules --
+    this one via a pyarrow cast (`pa.array(..., type=)`), the native `infer`
+    engine via pydantic coercion at model-validate. Those rules only agree
+    when no coercion happens, i.e. when the declared type already IS what
+    `.transform` produces. A mismatch is therefore a silent cross-engine
+    divergence (declaring int64 over a float64 transform truncates on one
+    side only), so refuse it rather than let the engines drift apart.
+    """
+    natural = pa.from_numpy_dtype(y.dtype)
+    bad = [f.name for f in out_fields if f.type != natural]
+    if bad:
+        declared = [f.type for f in out_fields if f.name in bad]
+        raise ValueError(
+            f"{type(obj).__name__} out_schema declares {declared} for {bad}, but "
+            f"the natural .transform dtype is {natural}. The engines coerce to a "
+            f"declared type differently (pyarrow cast vs pydantic), so they only "
+            f"agree when the declared type IS the natural one."
+        )
+
+
 def _transformer_udf(
     obj: object,
     in_schema: pa.Schema,
@@ -52,6 +75,7 @@ def _transformer_udf(
         ]
         x = np.column_stack(cols)
         y = np.asarray(obj.transform(x))
+        check_out_schema_natural(obj, y, out_fields)
         out_cols = [
             pa.array(y[:, i], type=out_fields[i].type) for i in range(len(out_fields))
         ]
