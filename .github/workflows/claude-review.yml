@@ -29,7 +29,6 @@ jobs:
           plugin_marketplaces: https://github.com/anthropics/claude-plugins-official.git
           plugins: superpowers@claude-plugins-official
           claude_args: --model claude-sonnet-5 --max-turns 20
-          show_full_output: true
           prompt: |
             Review this pull request.
 
