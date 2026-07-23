@@ -317,7 +317,10 @@ def _convert_expr(e: exp.Expression) -> Any:
         # [s,a,b] -> FieldAccess(Column(s,a), b); the 2-part `s.x` stays a Column
         # (table.column vs struct.field is ambiguous until schemas resolve, in
         # _validate_expr). The qualifier (parts[0]) names a relation and stays
-        # raw; column/field parts fold.
+        # raw; column/field parts fold. No `catalog` raise: deliberately dropped
+        # from the plan so `t.s.a.b` (table + nested struct) resolves via layered
+        # FieldAccess rather than erroring -- only a true 4-part catalog.db.tbl.col
+        # (never emitted in __THIS__-scoped SQL) would misparse.
         quals = [q for q in (e.args.get("catalog"), e.args.get("db")) if q is not None]
         if e.args.get("table"):
             quals.append(e.args["table"])
@@ -747,7 +750,12 @@ def _validate_expr(e: Any, resolved, row_schemas, static_schemas, used) -> Any:
                 # and re-validate (mirrors native plan.rs). A relation alias
                 # always wins, so this only runs after the alias lookup fails;
                 # the base column resolves below, erroring if it isn't real.
-                fa = FieldAccess(Column(table=None, name=e.table), e.name)
+                # Fold the qualifier as a column here (the relation lookup above
+                # matched it raw): an unquoted `MyStruct.x` base folds to
+                # `mystruct` like any column, matching DataFusion. (Quotedness is
+                # lost by this point, so a quoted mixed-case struct base is
+                # unsupported -- exotic and untested.)
+                fa = FieldAccess(Column(table=None, name=e.table.lower()), e.name)
                 return _validate_expr(fa, resolved, row_schemas, static_schemas, used)
             real, is_row = entry
             schema = (row_schemas if is_row else static_schemas).get(real)

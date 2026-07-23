@@ -148,6 +148,17 @@ def test_qualified_struct_field_access():
     )
 
 
+def test_uppercase_qualifier_field_access(xfail_on_native):
+    # An unquoted struct-column qualifier folds like any column: `S.x` -> `s.x`,
+    # matching DataFusion. Native doesn't fold the qualifier (raises "Unknown
+    # column: S") -- parity gap, wants its own ticket.
+    xfail_on_native("native does not fold an unquoted struct-column qualifier (S.x)")
+    check(
+        "SELECT S.x AS v FROM t",
+        {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 7}}])},
+    )
+
+
 def test_struct_equality_true():
     check(
         "SELECT (s = s) AS eq FROM t",
@@ -166,6 +177,13 @@ def test_struct_equality_false():
 def test_list_equality():
     check(
         "SELECT (l = l) AS eq FROM t",
+        {"t": rows({"l": "list[int]"}, [{"l": [1, 2, 3]}])},
+    )
+
+
+def test_list_inequality():
+    check(
+        "SELECT (l = [9, 9, 9]) AS eq FROM t",
         {"t": rows({"l": "list[int]"}, [{"l": [1, 2, 3]}])},
     )
 
