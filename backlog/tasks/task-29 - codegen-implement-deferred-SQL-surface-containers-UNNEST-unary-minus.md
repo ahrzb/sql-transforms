@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - Ritchie
 created_date: '2026-07-18 20:14'
-updated_date: '2026-07-23 00:53'
+updated_date: '2026-07-23 14:32'
 labels:
   - codegen
   - feature
@@ -20,7 +20,31 @@ ordinal: 29000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The codegen engine defers SQL surface it doesn't implement yet -- shows as 16 skips on the codegen backend in the differential suite (native + DataFusion oracle cover and pass all of it). NOT bugs: codegen raises UnsupportedInCodegen and skips LOUDLY. Deferred surface (from the 16 skips): containers -- struct/list column projection, struct field access, struct/list construction (named_struct / array), struct/list comparison, UNNEST (~13 of 16); unary minus on a non-literal (-a); || string-concat operator. Enumerated in the codegen spec 'Deferred' section as intended fast-follows. BLOCKED-ON-FRAMING: gated on the codegen-engine framing decision (maintained/default vs opt-in) -- the pluggable-backend design paused mid-brainstorm + the two-engine ratification (decision-7) that's parked / not-short-term. If codegen becomes default -> real feature-completeness, priority rises; if opt-in -> stays low. Not a bug, not blocking anything today; tests/test_codegen_coverage.py asserts codegen skips ONLY this exact set, guarding against silent drift.
+WHAT A USER HITS
+You opted into the codegen engine (native is the default per decision-7, codegen is the opt-in alternative). Your SQL uses container types or a couple of ordinary operators:
+
+    SELECT named_struct('lat', latitude, 'lon', longitude) AS coords FROM __THIS__
+    SELECT first_name || ' ' || last_name AS full_name FROM __THIS__
+    SELECT -balance AS debit FROM __THIS__
+
+On native these all work. On codegen you get UnsupportedInCodegen. So switching engines changes which SQL is legal — the same query that ran yesterday stops running when you flip the flag.
+
+The important part: this FAILS LOUDLY. Codegen raises rather than silently computing something different. These are not bugs and never produced a wrong answer — they are honest "not implemented yet" refusals, and tests/test_codegen_coverage.py pins the exact set so nothing drifts in silently.
+
+WHAT THIS TICKET DOES
+Close the deferred surface so the opt-in engine stops being a downgrade. The gap was 16 skips in the differential suite (native + the DataFusion oracle cover and pass all of it), inventoried by QA on 2026-07-19:
+
+  Container surface (~13 of 16) — struct/list column projection, struct field access, struct/list construction (named_struct / array), struct/list comparison, UNNEST
+  Operators (2)                 — unary minus on a non-literal (-a), and the || string-concat operator
+
+Each item landing shrinks the skip set and updates test_codegen_coverage.py, which currently pins the exact list.
+
+PRIORITY CONTEXT
+Low, and deliberately so. decision-7 ruled native default / codegen opt-in, which settled the precondition (AC#3) — this is a fast-follow for people who opt into codegen, not milestone work. If codegen were ever promoted toward default, this becomes real feature-completeness and the priority rises.
+
+Ordering note from PM: the two operator defers are cheap scalar work and were never truly framing-gated (same category as CASE, which shipped on codegen regardless), so they went first; the container surface is the real body of the ticket.
+
+Context: doc-9 (rich type system and UNNEST), doc-8 (composition — deferred slices).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
