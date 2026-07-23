@@ -393,11 +393,9 @@ def _convert_expr(e: exp.Expression) -> Any:
         name = e.name.lower()
         if name == "named_struct":
             return _named_struct(e.expressions)
-        if name == "struct":
-            return StructExpr(
-                [(f"c{i}", _convert_expr(a)) for i, a in enumerate(e.expressions)]
-            )
-        if name in ("array", "make_array"):
+        # struct(...) parses as exp.Struct and array(...) as exp.Array (handled
+        # above); only make_array reaches the Anonymous arm.
+        if name == "make_array":
             return ListExpr([_convert_expr(a) for a in e.expressions])
         if name in _DEFERRED_FUNCS:
             raise UnsupportedInCodegen(f"{name}() is not supported in codegen yet")
