@@ -22,10 +22,16 @@ permissions:
 
 jobs:
   review:
-    # Only on a PR (not a plain issue), only when someone comments "/review".
+    # Only on a PR (not a plain issue), only when a HUMAN comments "/review".
+    #
+    # The Bot guard is load-bearing: track_progress makes claude[bot] post a
+    # tracking comment, which fires issue_comment again and matches "/review".
+    # cancel-in-progress then kills the real review. Excluding bot-authored
+    # comments breaks that self-cancel loop.
     if: |
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/review')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '/review'))
+      github.event.comment.user.type != 'Bot' &&
+      ((github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/review')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '/review')))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -36,7 +42,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           trigger_phrase: "/review"
-          allowed_bots: claude-agent-ahrzb # allow our agents to /review too, not just humans
           plugin_marketplaces: https://github.com/anthropics/claude-plugins-official.git
           plugins: superpowers@claude-plugins-official
           # Grant the comment tools — without these the agent has no way to
