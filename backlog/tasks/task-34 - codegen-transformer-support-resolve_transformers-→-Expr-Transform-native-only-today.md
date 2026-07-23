@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - Ritchie
 created_date: '2026-07-19 16:08'
-updated_date: '2026-07-23 04:41'
+updated_date: '2026-07-23 14:32'
 labels:
   - codegen
   - transformer
@@ -28,7 +28,26 @@ ordinal: 34000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Codegen has NO transformer support — transformer refs are a native-only feature. SQLTransform.infer/infer_batch runs on the native InferFn, and the resolve_transformers rewrite (SQL call → Expr::Transform) lives only in the native path; codegen raises UnsupportedInCodegen for it (verified by TASK-31: the CASE-branch transformer test asserts codegen DEFERS loudly rather than computing). This is a whole feature class codegen lacks, distinct from TASK-29's deferred expr/container surface (which explicitly excludes transformers). Placeholder ticket so the gap is tracked and this 'do we have a ticket?' question stops recurring — NOT active work. BLOCKED-ON-FRAMING: only worth building if codegen becomes a maintained/default serving path (decision-7, the two-engine framing question, still open/parked). Bigger lift than TASK-29 — it's the transformer-resolution machinery, not a few expr shapes. Until decision-7 lands, native carries transformers and codegen defers them loudly (correct, not a bug).
+WHAT A USER HITS
+You wrote a transform that uses a fitted sklearn transformer — the library's headline feature:
+
+    SELECT {scaler}(age, income) AS scaled FROM __THIS__
+
+It works. Then you opt into the codegen engine for serving and it refuses: UnsupportedInCodegen. Not a subset of the syntax — the ENTIRE transformer-ref feature is unavailable. A user who builds their pipeline around transformer refs simply cannot use codegen at all.
+
+Like TASK-29's gaps, this fails loudly rather than silently miscomputing (verified by TASK-31: the CASE-branch transformer test asserts codegen DEFERS rather than computing a wrong answer). Correct behavior, not a bug — but a whole feature class the opt-in engine lacks.
+
+WHAT THIS TICKET DOES
+Give codegen its own transformer resolution. Today the resolve_transformers rewrite (SQL call -> Expr::Transform) lives only in the native path — SQLTransform.infer/infer_batch runs on the native InferFn, and codegen has no equivalent. This would build that machinery on the codegen side, with transform == infer parity against the DataFusion/native oracle, and flip TASK-31's "defers loudly" assertion into a real parity case.
+
+Distinct from TASK-29, which covers deferred EXPRESSION and CONTAINER surface and explicitly excludes transformers. This is the bigger lift of the two — transformer-resolution machinery, not a handful of expression shapes.
+
+PRIORITY CONTEXT
+Low. decision-7 ruled native default / codegen opt-in, which satisfied the precondition (AC#1) — so this is decided-low rather than blocked-on-an-open-question. It is a tracked placeholder so the recurring "do we have a ticket for this?" question stops. Only becomes real work if codegen is ever promoted toward being a maintained/default serving path.
+
+Depends on TASK-29. Pre-authorized by AmirHossein to dispatch to Ritchie automatically once TASK-29 lands.
+
+Context: doc-7 (transformer execution model), doc-8 (composition — {transform}(col) references).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
