@@ -116,16 +116,12 @@ class SQLTransform:
         the Rust engine instead."""
         if self._infer_fn is None:
             raise RuntimeError("Must call fit() before transform")
-        out = run_batch(
-            self._rewritten_sql, table, self._state_tables, self._udf_specs
-        )
+        out = run_batch(self._rewritten_sql, table, self._state_tables, self._udf_specs)
         if self._output == "dense":
             return _table_to_dense(out)
         return out
 
-    def infer(
-        self, row: dict[str, Any] | BaseModel, /
-    ) -> BaseModel | np.ndarray:
+    def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel | np.ndarray:
         """Single-row inference through the Rust InferFn against the frozen
         state. Accepts a dict or a Pydantic model; returns the typed output
         model instance (records mode) or a float64 (k,) row (dense mode)."""
