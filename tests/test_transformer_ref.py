@@ -302,3 +302,26 @@ def test_leaf_ref_skips_materialization(monkeypatch):
     assert len(calls) == 1, (
         f"expected 1 materialization for the inner, got {len(calls)}"
     )
+
+
+def test_aggregate_over_transformer_output_raises():
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)
+    t = SQLTransform(t"SELECT AVG({sc}(age, income)) OVER () AS m FROM __THIS__")
+    with pytest.raises(ValueError, match="two-stage"):
+        t.fit(pa.Table.from_pandas(train))
+
+
+def test_aggregate_over_sqltransform_ref_still_works():
+    # The guard must NOT overreach. A SQLTransform ref inlines to a scalar, so an
+    # aggregate over it is ordinary flat SQL -- a shipped, documented capability.
+    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
+    inner = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__").fit(
+        pa.table({"age": [1.0, 2.0, 3.0]})
+    )
+    t = SQLTransform(
+        t"SELECT AVG({inner.transform}(age)) OVER () AS m FROM __THIS__"
+    ).fit(train)
+    assert t.transform(train).column("m").to_pylist() == [12.5, 12.5, 12.5, 12.5]
