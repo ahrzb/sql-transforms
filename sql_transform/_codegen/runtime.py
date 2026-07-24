@@ -47,6 +47,17 @@ def getfield(v: Any, name: str) -> Any:
     raise ValueError(f"cannot access field {name!r} on a {type_name(v)} value")
 
 
+def unnest_rows(v: Any, name: str) -> list:
+    """One binding per list element for the Unnest loop. An empty list yields
+    zero rows, and so does a NULL list -- the input row disappears rather than
+    producing a NULL (matches DataFusion / native execute_rel)."""
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise ValueError(f"unnest() expected a list, got a {type_name(v)} value")
+    return [{name: item} for item in v]
+
+
 def _fmt_float(f: float) -> str:
     """Render a float the way DataFusion does (measured 2026-07-17).
 
