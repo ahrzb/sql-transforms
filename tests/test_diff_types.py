@@ -148,13 +148,33 @@ def test_qualified_struct_field_access():
     )
 
 
-def test_uppercase_qualifier_field_access(xfail_on_native):
-    # An unquoted struct-column qualifier folds like any column: `S.x` -> `s.x`,
-    # matching DataFusion. Native doesn't fold the qualifier (raises "Unknown
-    # column: S") -- parity gap, wants its own ticket.
-    xfail_on_native("native does not fold an unquoted struct-column qualifier (S.x)")
+def test_uppercase_qualifier_field_access():
+    # An unquoted struct-column qualifier folds like any identifier: `S.x` ->
+    # `s.x`, matching DataFusion (TASK-38). The fold happens in plan.rs's
+    # struct-column fallback -- the branch reached only after `S` fails to
+    # resolve as a relation alias -- so relation qualifiers are untouched.
     check(
         "SELECT S.x AS v FROM t",
+        {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 7}}])},
+    )
+
+
+def test_quoted_qualifier_stays_case_exact(xfail_on_codegen):
+    # The other half of TASK-28's folding rule, and the guard against
+    # over-folding: a QUOTED qualifier keeps its case, so `"S"` does NOT match
+    # struct column `s` and both engines reject the query. Without this, a fix
+    # that folded unconditionally would still look correct.
+    #
+    # xfail_on_codegen: measured on origin/master BEFORE this branch -- codegen
+    # ACCEPTS `"S".x` where the DataFusion oracle rejects it, i.e. codegen
+    # over-folds a quoted qualifier. Pre-existing parity bug, exposed (not
+    # caused) by this test; own ticket rather than fixed inline.
+    xfail_on_codegen(
+        "codegen accepts a quoted qualifier that the oracle rejects "
+        '(over-folds `"S".x`) -- pre-existing, own ticket'
+    )
+    check_both_raise(
+        'SELECT "S".x AS v FROM t',
         {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 7}}])},
     )
 

@@ -1011,10 +1011,13 @@ fn unnest_display_name(
     effective_schemas: &HashMap<String, Schema>,
 ) -> Result<String, InterpError> {
     match e {
+        // The qualifier is rendered into the OUTPUT COLUMN NAME here, and the
+        // oracle normalises it: `unnest(T.s)` names its columns `t.s.x`, not
+        // `T.s.x`. Same fold as the struct-column branch.
         Expr::Column {
             table: Some(t),
             name,
-        } => Ok(format!("{}.{name}", t.value)),
+        } => Ok(format!("{}.{name}", t.folded())),
         Expr::Column { table: None, name } => {
             let qualifier = effective_schemas
                 .iter()
@@ -1069,12 +1072,13 @@ fn validate_expr(
                 }
                 return Ok(());
             }
-            // `t` isn't a relation alias -- the "table.column" parse was
-            // wrong; reinterpret it as struct field access: `t` an in-scope
-            // column, `name` one of its struct fields. Precedence rule: a
-            // relation alias always wins, so this fallback only runs once
-            // the alias lookup above has failed.
-            let base_name = t.value.clone();
+            // `t` isn't a relation alias -- the "table.column" parse was wrong;
+            // reinterpret it as struct field access. `t` now names DATA, not a
+            // relation, so it folds like any other identifier (TASK-38):
+            // unquoted `S` -> `s`, quoted `"S"` stays exact. Folding earlier
+            // (in expr_build) is what breaks relation qualifiers -- our own
+            // rewrite emits `__THIS__.age`, and folding that misses.
+            let base_name = t.folded();
             let field = name.clone();
             *e = Expr::FieldAccess {
                 base: Box::new(Expr::Column {
