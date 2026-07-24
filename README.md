@@ -102,6 +102,39 @@ query engine once; inference pays only for a lean interpreter walking a plan. Th
 separation of **fit** (compute statistics) and **transform/infer** (apply them)
 is the standard ML pattern — fit on training data, apply to training and serving.
 
+## Referencing a fitted sklearn transformer
+
+Interpolate a fitted transformer into a t-string and apply it to columns:
+
+```python
+sc = StandardScaler().fit(train_df)          # fit on a DataFrame -> records feature_names_in_
+t = SQLTransform(t"SELECT {sc}(age, income) AS scaled FROM __THIS__").fit(table)
+```
+
+**Output is a single Arrow struct column**, not one column per feature:
+
+```python
+t.transform(table).schema            # scaled: struct<age: double, income: double>
+t.transform(table).flatten().schema  # ['scaled.age', 'scaled.income']
+```
+
+Call `.flatten()` to get flat columns for an sklearn handoff.
+
+**Column binding** depends on how the transformer was fitted:
+
+| fitted with | `feature_names_in_` | binding |
+|---|---|---|
+| `fit(DataFrame)` | recorded | by **name** — call order is free, and is validated against the names |
+| `fit(ndarray)` | absent | by **position**, in call order — only the count is checked |
+
+With positional binding, `{sc}(income, age)` against a transformer fitted as
+`[age, income]` silently swaps the features. Fit on a DataFrame when you can.
+
+Aggregating over a transformer's output (`AVG({sc}(age)) OVER ()`) is not
+supported — it is inherently two-stage and needs a subquery. Aggregate over an
+input column, or use a `SQLTransform` reference, which inlines to a scalar and
+composes with aggregates freely.
+
 ## Development
 
 ```bash
