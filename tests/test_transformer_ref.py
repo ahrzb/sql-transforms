@@ -215,3 +215,51 @@ def test_named_fit_column_mismatch_still_raises():
     t = SQLTransform(t"SELECT {sc}(age) AS out FROM __THIS__")
     with pytest.raises(ValueError, match="must match feature_names_in_"):
         t.fit(pa.Table.from_pandas(train))
+
+
+class _SpyTransformer:
+    """Wraps a fitted transformer and counts .transform() calls."""
+
+    def __init__(self, obj):
+        self._obj = obj
+        self.calls = 0
+        self.feature_names_in_ = obj.feature_names_in_
+        self.n_features_in_ = obj.n_features_in_
+
+    def transform(self, x):
+        self.calls += 1
+        return self._obj.transform(x)
+
+    def get_feature_names_out(self):
+        return self._obj.get_feature_names_out()
+
+
+def test_leaf_ref_probes_transform_once():
+    # A leaf ref's materialised output is only ever read by an OUTER ref's probe.
+    # With no outer, materialising it is a discarded .transform() call.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    spy = _SpyTransformer(StandardScaler().fit(train))
+
+    SQLTransform(t"SELECT {spy}(age, income) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    assert spy.calls == 1, f"expected a single probe, got {spy.calls}"
+
+
+def test_nested_refs_probe_once_each():
+    # The inner IS consumed, so it must still be materialised -- but from the
+    # probe's own output, not a second .transform() call.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)
+    scaled = pd.DataFrame(sc.transform(train), columns=sc.get_feature_names_out())
+    inner = _SpyTransformer(sc)
+    outer = _SpyTransformer(PCA(n_components=1).fit(scaled))
+
+    SQLTransform(t"SELECT {outer}({inner}(age, income)) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    assert (inner.calls, outer.calls) == (1, 1), (inner.calls, outer.calls)

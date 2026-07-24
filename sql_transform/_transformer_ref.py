@@ -52,10 +52,12 @@ def _named_struct(cols: list[exp.Column]) -> exp.Anonymous:
     return exp.Anonymous(this="named_struct", expressions=args)
 
 
-def _derive_schemas(
+def _probe(
     obj: object, cols: list[str], table: pa.Table
-) -> tuple[pa.Schema, pa.Schema]:
-    """in_schema from the training columns; out_schema by probing .transform."""
+) -> tuple[pa.Schema, pa.Schema, np.ndarray]:
+    """in_schema from `cols`; out_schema by probing .transform; plus the probe's
+    own output `y`, so a caller that needs the materialised table can build it
+    without running .transform a second time."""
     in_schema = pa.schema([(c, table.schema.field(c).type) for c in cols])
     x = np.column_stack([table.column(c).to_numpy(zero_copy_only=False) for c in cols])
     y = np.asarray(obj.transform(x))
@@ -66,16 +68,12 @@ def _derive_schemas(
             f"{len(names)}, got shape {y.shape}"
         )
     out_schema = pa.schema([(n, pa.from_numpy_dtype(y.dtype)) for n in names])
-    return in_schema, out_schema
+    return in_schema, out_schema, y
 
 
-def _materialize(
-    obj: object, cols: list[str], src: pa.Table, out_schema: pa.Schema
-) -> pa.Table:
-    """Run obj.transform on src's `cols` and return the result as a pa.Table
-    shaped like out_schema, so an outer transformer can probe on real data."""
-    x = np.column_stack([src.column(c).to_numpy(zero_copy_only=False) for c in cols])
-    y = np.asarray(obj.transform(x))
+def _table_from_probe(y: np.ndarray, out_schema: pa.Schema) -> pa.Table:
+    """The probe's output as a pa.Table shaped like out_schema, so an outer
+    transformer can probe on real data. Reuses `y` -- no second .transform."""
     arrays = [
         pa.array(y[:, i], type=out_schema.field(i).type) for i in range(len(out_schema))
     ]
@@ -93,7 +91,8 @@ def resolve_transformer_refs(
     registry: dict[str, tuple[object, pa.Schema, pa.Schema]] = {}
     materialized: dict[
         str, pa.Table
-    ] = {}  # name -> this ref's output, for outer probes
+    ] = {}  # name -> this ref's output; ONLY for refs an outer consumes
+    resolved: set[str] = set()  # every processed ref -- `materialized` is now partial
 
     def call_arg_ref(call: exp.Anonymous) -> str | None:
         """If the call's single arg is another transformer-ref call, its name."""
@@ -105,8 +104,17 @@ def resolve_transformer_refs(
                 return inner
         return None
 
+    # Which refs are consumed as another ref's argument? Must be computed BEFORE
+    # any resolution: resolve() rewrites call args into a named_struct, which
+    # destroys the nested-call signal call_arg_ref() reads.
+    consumed = {
+        inner
+        for n in tfm_refs
+        if (inner := call_arg_ref(_find_call(select, n))) is not None
+    }
+
     def resolve(name: str) -> None:
-        if name in materialized:
+        if name in resolved:
             return
         call = _find_call(select, name)
         obj = tfm_refs[name]
@@ -115,7 +123,7 @@ def resolve_transformer_refs(
             resolve(inner)  # innermost first
             in_tbl = materialized[inner]  # inner's output, real data to probe on
             cols = [str(n) for n in obj.feature_names_in_]
-            in_schema, out_schema = _derive_schemas(obj, cols, in_tbl)
+            in_schema, out_schema, y = _probe(obj, cols, in_tbl)
             # arg is the inner call node; leave it unwrapped.
         else:
             if not all(isinstance(a, exp.Column) for a in call.expressions):
@@ -147,7 +155,7 @@ def resolve_transformer_refs(
                     raise ValueError(
                         f"{name} columns {cols} must match feature_names_in_ {feat}"
                     )
-            in_schema, out_schema = _derive_schemas(obj, cols, table)
+            in_schema, out_schema, y = _probe(obj, cols, table)
             call.set("expressions", [_named_struct(call.expressions)])
         # Both engines fold an unquoted function-call name to lowercase before
         # resolving it (DataFusion's ANSI identifier folding; Rust's
@@ -156,9 +164,11 @@ def resolve_transformer_refs(
         # print regardless of its stored case. Register under the lowercase
         # form so both engines' lookups actually hit it.
         registry[name.lower()] = (obj, in_schema, out_schema)
-        materialized[name] = _materialize(
-            obj, cols, table if inner is None else materialized[inner], out_schema
-        )
+        resolved.add(name)
+        if name in consumed:
+            # Only an outer ref's probe reads this. A leaf has no next stage, so
+            # building it would be a discarded table.
+            materialized[name] = _table_from_probe(y, out_schema)
 
     for name in tfm_refs:
         resolve(name)
