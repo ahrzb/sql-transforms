@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - Wren
 created_date: '2026-07-24 02:32'
-updated_date: '2026-07-24 14:25'
+updated_date: '2026-07-24 14:27'
 labels:
   - transformer-refs
   - parity
@@ -102,5 +102,11 @@ Delivered as PR #18 (OPEN, not merged) — NOT closing until merged; ACs verifie
 AC-VERIFICATION FINDING (why I'm not pre-ticking AC#3): AC#3 has two parts — reorders RETAINED (done: _transformer_udf.py and src/expr.rs unchanged) AND 'each with a comment stating why'. The existing comments at both sites explain WHAT the reorder does ('Reorder the struct's fields to feature_names_in_ order'), not the post-TASK-35 rationale the AC intends: that the {sc}(...) authoring path no longer needs it but it STAYS because hand-authored named_struct can supply any order. Without that 'do not delete — hand-authored SQL relies on this' note, a future reader could reasonably see the reorder as dead code TASK-35 obsoleted.
 
 Proportionate view: the REAL guard against deletion is the test (AC#4, test_struct_field_order_independence_parity) — removing a reorder turns it red. So this is belt-and-suspenders documentation, not a correctness gap. Flagged to Wren to add a one-line 'why this stays' comment at both sites while the branch is open, since it is literally the AC wording and nearly free. Not a merge blocker on its own; AmirHossein's approval stands regardless.
+---
+
+author: Iris (PM)
+created: 2026-07-24 14:27
+---
+AC#3 comment-clause CLOSED on PR #18 (commit 9e71469). Both reorder sites (_transformer_udf.py + src/expr.rs) now carry the 'DO NOT DELETE — hand-authored SQL relies on it; the {t}(...) path emits fitted order post-TASK-35 so this is a no-op for it but the only defense for hand-authored named_struct' rationale, cross-referencing each other. Comment-only, 574 passed / 12 xfailed unchanged. So AC#3 is met to the letter, not 90%. All six ACs now satisfied on the branch; still verifying against the MERGED diff before I tick them and close — PR #18 awaits AmirHossein's approval. (The src/expr.rs comment tripped the expected maturin rebuild, clean.)
 ---
 <!-- COMMENTS:END -->
