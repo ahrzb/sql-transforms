@@ -190,7 +190,14 @@ def resolve_transformer_refs(
                 raise ValueError(
                     f"{name} columns {cols} must match feature_names_in_ {feat}"
                 )
-            in_schema, out_schema, y = _probe(obj, feat, table)
+            # in_schema describes the named_struct built on the next line from
+            # call.expressions, so it MUST be in CALL order. The UDF is
+            # registered with an Exact struct signature and Arrow struct field
+            # order is part of the type, so probing in fitted order silently
+            # desyncs the declared signature from the struct the SQL builds --
+            # DataFusion then refuses the call while the native engine, which
+            # binds by name, keeps working.
+            in_schema, out_schema, y = _probe(obj, cols, table)
             call.set("expressions", [_named_struct(call.expressions)])
         # Both engines fold an unquoted function-call name to lowercase before
         # resolving it (DataFusion's ANSI identifier folding; Rust's
