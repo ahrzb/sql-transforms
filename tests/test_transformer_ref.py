@@ -1,11 +1,10 @@
 """Differential parity for fitted transformers referenced as {ref} in a t-string."""
 
-import math
-
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+from differential import _rows_equal
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
@@ -17,41 +16,23 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
-def _assert_close(a, b, path=""):
-    """Recursively compare two structures (dict/list/scalar), floats within a
-    tolerance, everything else exactly.
+def _both_engines(t, test_df):
+    """transform (DataFusion) and infer (Rust) as plain dicts; assert equal via
+    the shared _rows_equal helper.
 
     transform (DataFusion) and infer_batch (Rust) take different numerical
     paths -- transform stacks the whole batch into one matrix, infer_batch runs
     row-at-a-time -- so their floats can differ in the last bit or two (pure
-    ULP noise, e.g. a non-collinear PCA fixture measured at ~2e-16). That is
-    not the divergence class these tests exist to catch: the bugs this branch
-    fixed were whole-feature swaps and hard planning failures, orders of
-    magnitude above any float tolerance. Exact equality would flake on the
-    next fixture that isn't lucky enough to land on exactly-representable
-    arithmetic.
+    ULP noise, e.g. a non-collinear PCA fixture measured at ~2e-16). _rows_equal
+    is the project's one place that encodes both the tolerance for that ULP
+    noise AND the type-strictness (bool != int, int != float) that cross-engine
+    comparison requires -- exact `==` would flake on the ULP noise, and a naive
+    tolerant comparison would silently let a real type divergence (a genuine
+    bug class here) through as a pass.
     """
-    if isinstance(a, dict) and isinstance(b, dict):
-        assert a.keys() == b.keys(), f"{path}: key mismatch {a.keys()} != {b.keys()}"
-        for k in a:
-            _assert_close(a[k], b[k], f"{path}.{k}")
-    elif isinstance(a, list) and isinstance(b, list):
-        assert len(a) == len(b), f"{path}: length mismatch {a!r} != {b!r}"
-        for i, (x, y) in enumerate(zip(a, b, strict=True)):
-            _assert_close(x, y, f"{path}[{i}]")
-    elif isinstance(a, float) and isinstance(b, float):
-        assert math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12), (
-            f"{path}: {a!r} != {b!r}"
-        )
-    else:
-        assert a == b, f"{path}: {a!r} != {b!r}"
-
-
-def _both_engines(t, test_df):
-    """transform (DataFusion) and infer (Rust) as plain dicts; assert close."""
     batch = t.transform(pa.Table.from_pandas(test_df)).to_pylist()
     infer = [r.model_dump() for r in t.infer_batch(test_df.to_dict("records"))]
-    _assert_close(infer, batch)
+    assert _rows_equal(infer, batch), (infer, batch)
     return batch
 
 
@@ -430,7 +411,7 @@ def test_transformer_alongside_partitioned_window_agg():
     # `o` is StandardScaler output -- same batch-column_stack-vs-row-at-a-time
     # risk class as PCA -- so compare with the tolerance helper, not exact
     # equality, even though this particular fixture happens to land exact.
-    _assert_close(infer, batch)
+    assert _rows_equal(infer, batch), (infer, batch)
     assert [r["m"] for r in batch] == [15.0, 15.0, 35.0, 35.0]
 
 
