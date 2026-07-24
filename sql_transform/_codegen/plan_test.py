@@ -236,9 +236,14 @@ def test_build_plan_not_and_logic():
     )
 
 
-def test_build_plan_defers_unnest():
-    with pytest.raises(cp.UnsupportedInCodegen):
-        cp.build_plan("SELECT unnest(a) AS x FROM t")
+def test_build_plan_keeps_unnest_as_a_func():
+    # TASK-29 Phase C: unnest survives conversion as a plain Func so
+    # validate_columns can expand it once the argument's type is known
+    # (row-multiplying for a list, per-field columns for a struct).
+    plan = cp.build_plan("SELECT unnest(a) AS x FROM t")
+    assert plan.projection == [("x", cp.Func("unnest", [cp.Column(None, "a")]))]
+    # A bare unnest (no AS) still gets the placeholder projection name.
+    assert cp.build_plan("SELECT unnest(a) FROM t").projection[0][0] == "unnest"
 
 
 def test_build_plan_constructs_struct_and_list():

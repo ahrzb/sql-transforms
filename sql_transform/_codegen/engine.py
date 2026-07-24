@@ -164,6 +164,18 @@ def _emit_rel(node: Any, env: dict, ind: int, em: _Emitter, body) -> None:
             _emit_rel(node.right, env_l, i, em, right_done)
 
         _emit_rel(node.left, env, ind, em, left_done)
+    elif isinstance(node, cp.Unnest):
+
+        def unnested(inner: dict, i: int) -> None:
+            v = em.var("_u")
+            em.line(
+                i,
+                f"for {v} in rt.unnest_rows("
+                f"{_emit_expr(node.list_expr, inner)}, {node.output_col!r}):",
+            )
+            body({**inner, cp.UNNEST_KEY: v}, i + 1)
+
+        _emit_rel(node.input, env, ind, em, unnested)
     elif isinstance(node, cp.LookupJoin):
 
         def looked_up(inner: dict, i: int) -> None:

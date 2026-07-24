@@ -100,6 +100,9 @@ _COMMITTED = [
         "SELECT (s = s) AS x FROM t",
         {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])},
     ),
+    # unnest(list) multiplies rows: the projection item becomes a reference to
+    # the column the Unnest rel node binds, one output row per element.
+    ("SELECT unnest(l) AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
 ]
 
 
@@ -114,7 +117,6 @@ def test_committed_surface_is_never_deferred(query, tables):
 
 
 _DEFERRED = [
-    ("SELECT unnest(l) AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
     # Equality is the ONLY op defined on containers; a struct in any other op
     # (here dpipe) must still defer, not fall through to the scalar STR/arith
     # path and render "<object>" -- pins the container-operand guard.

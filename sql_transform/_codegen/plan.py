@@ -252,6 +252,21 @@ class LookupJoin:
 
 
 @dataclass
+class Unnest:
+    """Row-multiplying `unnest(list)`: evaluates `list_expr` per input row and
+    emits one row per element, bound under UNNEST_KEY as `output_col`."""
+
+    input: Any
+    list_expr: Any
+    output_col: str
+
+
+# Synthetic qualifier the Unnest node binds its emitted element column under.
+# NUL keeps it unspellable as a real table alias (mirrors native UNNEST_KEY).
+UNNEST_KEY = "\0unnest"
+
+
+@dataclass
 class Plan:
     projection: list
     input: Any
@@ -279,7 +294,6 @@ _SIMPLE_FUNCS = {
     exp.Abs: "abs",
     exp.Round: "round",
 }
-_DEFERRED_FUNCS = ("unnest",)
 
 # Measured: sqlglot spreads variadic args differently PER FUNCTION, so each needs
 # its own extraction. Concat  -> this=None, args all in .expressions
@@ -381,12 +395,13 @@ def _convert_expr(e: exp.Expression) -> Any:
     if isinstance(e, exp.Array):
         return ListExpr([_convert_expr(a) for a in e.expressions])
     if isinstance(e, exp.Unnest):
-        # Measured: UNNEST(...) parses as its own exp.Unnest class, not
-        # exp.Anonymous -- the _DEFERRED_FUNCS name-matching branch below never
-        # sees it. Without this check it falls through to the generic
-        # ValueError instead of the UnsupportedInCodegen the harness expects
-        # for deferred container ops.
-        raise UnsupportedInCodegen("unnest() is not supported in codegen yet")
+        # Measured: UNNEST(...) parses as its own exp.Unnest class (args in
+        # .expressions), not exp.Anonymous. Converted to a plain Func node so
+        # validate_columns can recognize and REPLACE it -- a surviving
+        # unnest() Func never reaches infer_type or emit.
+        if len(e.expressions) != 1:
+            raise ValueError("unnest() takes exactly one argument")
+        return Func("unnest", [_convert_expr(e.expressions[0])])
     if isinstance(e, exp.Trim):
         if e.args.get("position") or e.expression:
             raise ValueError("Only plain TRIM(expr) is supported")
@@ -413,8 +428,6 @@ def _convert_expr(e: exp.Expression) -> Any:
         # above); only make_array reaches the Anonymous arm.
         if name == "make_array":
             return ListExpr([_convert_expr(a) for a in e.expressions])
-        if name in _DEFERRED_FUNCS:
-            raise UnsupportedInCodegen(f"{name}() is not supported in codegen yet")
         return Func(name, [_convert_expr(a) for a in e.expressions])
     raise ValueError(f"Unsupported expression: {e.sql()}")
 
@@ -549,10 +562,10 @@ def _build_projection(items: list) -> list:
             raise ValueError("Unsupported SELECT item: *")
         elif isinstance(item, exp.Unnest):
             # A bare `unnest(...)` (no AS) never reaches the exp.Alias branch
-            # above, so without this it falls to the generic "needs an alias"
-            # ValueError below instead of the UnsupportedInCodegen the harness
-            # expects for deferred container ops.
-            _convert_expr(item)
+            # above. Placeholder name, mirroring native projection_name: a
+            # struct unnest discards it (its columns are named per field) and a
+            # list unnest only keeps it when the user wrote no alias.
+            out.append(("unnest", _convert_expr(item)))
         else:
             raise ValueError("Expression in SELECT list needs an alias (AS name)")
     return out
@@ -670,12 +683,40 @@ def validate_columns(
         effective_schemas[effective] = schema
 
     used: dict = {}
-    plan.projection[:] = [
-        (alias, _validate_expr(e, resolved, row_schemas, static_schemas, used))
-        for alias, e in plan.projection
-    ]
+    expanded: list = []
+    unnest_seen = False
+    for alias, e in plan.projection:
+        e = _validate_expr(e, resolved, row_schemas, static_schemas, used)
+        arg = _unnest_arg(e)
+        if arg is None:
+            expanded.append((alias, e))
+            continue
+        arg_type = infer_type(arg, effective_schemas)
+        if isinstance(arg_type.base, ListBase):
+            # unnest(list) MULTIPLIES rows: wrap the input rel and leave a plain
+            # reference to the column the Unnest node binds.
+            if unnest_seen:
+                raise ValueError("Only one unnest(list) per query is supported")
+            unnest_seen = True
+            plan.input = Unnest(plan.input, arg, alias)
+            effective_schemas.setdefault(UNNEST_KEY, {})[alias] = arg_type.base.elem
+            expanded.append((alias, Column(table=UNNEST_KEY, name=alias)))
+        elif isinstance(arg_type.base, StructBase):
+            raise UnsupportedInCodegen(
+                "unnest() on a struct is not supported in codegen yet"
+            )
+        else:
+            raise ValueError("unnest() expects a struct or list argument")
+    plan.projection[:] = expanded
     _validate_rel(plan.input, resolved, row_schemas, static_schemas, used)
     return ColumnValidation({k: sorted(v) for k, v in used.items()}, effective_schemas)
+
+
+def _unnest_arg(e: Any) -> Any:
+    """The single argument of an `unnest(...)` projection item, else None."""
+    if isinstance(e, Func) and e.name == "unnest":
+        return e.args[0]
+    return None
 
 
 def _resolve_tables(
@@ -727,7 +768,8 @@ def _validate_rel(node: Any, resolved, row_schemas, static_schemas, used) -> Non
         ]
         _validate_rel(node.left, resolved, row_schemas, static_schemas, used)
         _validate_rel(node.right, resolved, row_schemas, static_schemas, used)
-    elif isinstance(node, SubqueryAlias):
+    elif isinstance(node, (SubqueryAlias, Unnest)):
+        # Unnest.list_expr came from the projection and was validated there.
         _validate_rel(node.input, resolved, row_schemas, static_schemas, used)
     elif isinstance(node, LookupJoin):
         node.keys = [
@@ -963,7 +1005,7 @@ def _common_base(args: list) -> Any:
 def referenced_tables(node: Any) -> list:
     if isinstance(node, TableScan):
         return [node.table]
-    if isinstance(node, (SubqueryAlias, Filter, LookupJoin)):
+    if isinstance(node, (SubqueryAlias, Filter, LookupJoin, Unnest)):
         return referenced_tables(node.input)
     if isinstance(node, (CrossJoin, Join)):
         return referenced_tables(node.left) + referenced_tables(node.right)

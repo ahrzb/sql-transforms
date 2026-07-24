@@ -129,6 +129,24 @@ def test_container_columns_struct_passthrough():
     assert result[0].out.x == 42
 
 
+class TwoLists(BaseModel):
+    a: list[int]
+    b: list[int]
+
+
+def test_multi_unnest_rejected():
+    # Two unnest(list) calls is a cross-product cardinality change we don't
+    # support (mirrors native). The differential harness can't cover this --
+    # its multi-unnest test builds a native InferFn directly on both backends.
+    with pytest.raises(ValueError, match="Only one unnest"):
+        CodegenFn("SELECT unnest(a) AS x, unnest(b) AS y FROM t", {"t": TwoLists}, {})
+
+
+def test_unnest_of_a_scalar_is_rejected():
+    with pytest.raises(ValueError, match="struct or list"):
+        CodegenFn("SELECT unnest(a) AS x FROM t", {"t": Row}, {})
+
+
 def test_generated_source_is_available_for_debugging():
     fn = CodegenFn("SELECT a AS x FROM t", {"t": Row}, {})
     assert "def _run(" in fn.source
