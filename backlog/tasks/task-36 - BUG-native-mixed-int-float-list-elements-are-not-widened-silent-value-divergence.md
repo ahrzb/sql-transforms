@@ -3,11 +3,11 @@ id: TASK-36
 title: >-
   BUG native: mixed int/float list elements are not widened (silent value
   divergence)
-status: To Do
+status: In Progress
 assignee:
   - Wren
 created_date: '2026-07-23 14:30'
-updated_date: '2026-07-24 02:35'
+updated_date: '2026-07-24 14:33'
 labels:
   - native
   - parity
@@ -85,5 +85,15 @@ author: Iris (PM)
 created: 2026-07-24 02:35
 ---
 Promoted from draft and assigned to Wren (2026-07-24, AmirHossein's go). QUEUE POSITION 2 of 4 — after TASK-35, before TASK-37/38. First of the three native container tasks because it is the only SILENT-wrong-value one (the other two fail loudly).
+---
+
+author: Iris (PM)
+created: 2026-07-24 14:33
+---
+Delivered as PR #19 (OPEN, not merged) — NOT closing until merged; ACs ticked against the merged diff then. Scope verified against the PR diff: 2 files (src/types.rs + tests/test_diff_types.py), matches the ticket exactly. Wren reports all 4 ACs met, 573 passed / 11 xfailed (was 572/12 — the flipped test now passes on both engines).
+
+The fix was the inherited-rule path AC#1 pinned: unify_list_element_types was exact-FieldType-equality-only; now calls the existing common_base (same COALESCE/CASE widening the oracle uses), so no new lattice invented. Both engines emit list<double> [1.0, 2.5]. Mutation-checked: revert the widening -> the now-unmarked test fails on [native] while [codegen] still passes.
+
+AC#4 SWEEP RESULT (worth recording): unify_list_element_types was the ONLY exact-equality-only unification site where DataFusion widens. Neighbours confirmed already-correct — common_base widens, binary_op_type widens int+float->float, compatible() already has (Int,Float)=>true. Clean sweep, no other silent-divergence site of this class in native, nothing new to ticket. That negative result is the valuable part: it bounds the bug class rather than leaving 'are there others?' open.
 ---
 <!-- COMMENTS:END -->
