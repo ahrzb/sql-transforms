@@ -34,12 +34,21 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
         // rewrites the Column node into a FieldAccess when its `table` part
         // turns out not to be a relation alias -- see plan.rs.
         SqlExpr::CompoundIdentifier(parts) if parts.len() >= 2 => {
-            // Fold the column/field parts (`parts[1..]`); leave the leading
-            // qualifier (`parts[0]`) raw -- it names a relation (`__THIS__`/
-            // generated), never a data column. ponytail: a real CamelCase table
-            // or struct-column qualifier won't fold like DataFusion here; not
-            // reachable today (qualifiers are always library-internal). Widen to
-            // fold parts[0] too if user-named CamelCase relations ever appear.
+            // Fold the column/field parts (`parts[1..]`) here; carry the leading
+            // qualifier (`parts[0]`) UNFOLDED as a QualifiedName.
+            //
+            // We cannot fold it at this point: a qualifier may name a RELATION
+            // (`__THIS__.age`, which our own rewrite emits) or a STRUCT COLUMN
+            // (`S.x`). Only plan.rs knows which, once the relation-alias lookup
+            // hits or misses. Folding here breaks every internally-qualified
+            // query -- measured at 96 test failures -- so the fold lives on
+            // plan.rs's struct-column branch, reached only after that lookup has
+            // already missed (TASK-38).
+            //
+            // Relation qualifiers themselves still diverge from the oracle,
+            // which registers relations under a FOLDED name: see DRAFT-22. That
+            // also blocks `unnest(T.s)`, whose qualifier resolution needs the
+            // relation branch rather than this one.
             let mut expr = Expr::Column {
                 table: Some(crate::expr::QualifiedName {
                     value: parts[0].value.clone(),
