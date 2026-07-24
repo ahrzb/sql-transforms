@@ -115,7 +115,18 @@ def row(**cols: Any) -> Table:
 
 
 def rows(schema: dict[str, Any], data: list[dict]) -> Table:
-    """A multi-row `row` table with an explicit type-spec schema."""
+    """A multi-row `row` table with an explicit type-spec schema.
+
+    Trap, measured 2026-07-24: a NULL value for a STRUCT column is zero-filled
+    in the child buffers by pyarrow (the parent validity bit is set, the
+    children hold 0/""), and DataFusion's UNNEST reads the child slot without
+    masking on that bit -- so `unnest()` of a NULL struct row yields ZEROS from
+    the oracle while both engines yield NULLs from the pydantic row model.
+    Declaring the child fields nullable (`struct{x:int?}?`) does NOT avoid it;
+    pyarrow zero-fills either way. A differential test combining a nullable
+    struct column, a None row and unnest() will fail for this reason and not
+    because an engine is wrong.
+    """
     return _make("row", schema, data)
 
 

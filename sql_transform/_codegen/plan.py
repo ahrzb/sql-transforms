@@ -758,9 +758,13 @@ def _unnest_display_name(e: Any) -> str:
         # (plan.py, the Column arm of _validate_expr) -- there is no path back
         # out with .table still None. Guarded anyway rather than trusting that
         # invariant silently: formatting None into a column NAME ("None.x")
-        # would be a confident wrong answer, not a loud error. Mirrors
-        # native's explicit `Column { table: None, .. }` arm (src/plan.rs
-        # unnest_display_name), which raises instead of stringifying None.
+        # would be a confident wrong answer, not a loud error. This is where we
+        # DIVERGE from native deliberately: native's unnest_display_name
+        # (src/plan.rs) has a `Column { table: None }` arm that searches
+        # effective_schemas for the qualifier, because its columns can still be
+        # unqualified at that point. Ours cannot be, so the search would be dead
+        # code; if this ever fires, the invariant above broke and the raise is
+        # the right answer.
         if e.table is None:
             raise ValueError(f"unnest() argument column {e.name!r} is unqualified")
         return f"{e.table}.{e.name}"
