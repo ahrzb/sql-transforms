@@ -475,6 +475,58 @@ def test_named_fit_call_order_is_free():
     assert np.allclose(got, sc.transform(train))
 
 
+def _authored_struct_field_order(t) -> list[str]:
+    """The field-name order of the named_struct in a fitted transform's rewritten
+    SQL. _named_struct emits [Literal(name), col, ...], so field names are the
+    even-indexed literals."""
+    import sqlglot
+    from sqlglot import exp
+
+    tree = sqlglot.parse_one(t._rewritten_sql)
+    ns = next(
+        n for n in tree.find_all(exp.Anonymous) if str(n.this).lower() == "named_struct"
+    )
+    return [ns.expressions[i].name for i in range(0, len(ns.expressions), 2)]
+
+
+def test_authored_struct_is_built_in_fitted_order_not_call_order():
+    # TASK-35 AC#1/#2. The authoring path builds the named_struct in
+    # feature_names_in_ order regardless of the SQL call order, and in_schema is
+    # derived from that same order. With one order everywhere -- struct,
+    # in_schema, and what the engines feed sklearn -- the call-order vs
+    # fitted-order desync that cost TASK-3 three review rounds becomes
+    # unrepresentable: there is no second order to disagree with.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)  # feature_names_in_ = [age, income]
+    t = SQLTransform(t"SELECT {sc}(income, age) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )  # CALL order deliberately reversed
+    assert _authored_struct_field_order(t) == ["age", "income"]
+
+
+def test_call_order_does_not_change_the_result():
+    # TASK-35 AC#6. Building the struct in fitted order happens at BUILD time, so
+    # it is not a user-visible semantic change: the two call orders still produce
+    # identical output. (Whether they SHOULD -- sklearn refuses a reordered frame
+    # -- is a separate, deliberately-unresolved question, out of scope here.)
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)
+    fwd = SQLTransform(t"SELECT {sc}(age, income) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    rev = SQLTransform(t"SELECT {sc}(income, age) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    assert _rows_equal(
+        fwd.transform(pa.Table.from_pandas(train)).to_pylist(),
+        rev.transform(pa.Table.from_pandas(train)).to_pylist(),
+    )
+
+
 def test_call_order_free_for_a_validating_transformer():
     # The fit-time probe must feed .transform in feature_names_in_ order, the
     # way both engines feed it at runtime. Probing in call order ran the
