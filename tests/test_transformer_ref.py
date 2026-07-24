@@ -437,3 +437,23 @@ def test_three_level_nesting_parity():
     out_names = [str(n) for n in c.get_feature_names_out()]
     got = np.array([[r["out"][n] for n in out_names] for r in batch])
     assert np.allclose(got, expected)
+
+
+def test_named_fit_call_order_is_free():
+    # A DataFrame-fitted transformer binds BY NAME, so the SQL may list columns
+    # in any order -- a capability the README documents. The regression this
+    # guards: in_schema was probed in FITTED order while the named_struct was
+    # built in CALL order, so the UDF's Exact struct signature stopped matching
+    # what the SQL built. DataFusion then refused the call while the native
+    # engine (which binds by name) still returned rows -- the two engines
+    # disagreeing about one fitted object.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)  # fitted order: [age, income]
+    t = SQLTransform(t"SELECT {sc}(income, age) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )  # CALL order: [income, age]
+    batch = _both_engines(t, train)
+    got = np.array([[b["out"]["age"], b["out"]["income"]] for b in batch])
+    assert np.allclose(got, sc.transform(train))
