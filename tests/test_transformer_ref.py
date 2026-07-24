@@ -1,5 +1,7 @@
 """Differential parity for fitted transformers referenced as {ref} in a t-string."""
 
+import math
+
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -15,11 +17,41 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
+def _assert_close(a, b, path=""):
+    """Recursively compare two structures (dict/list/scalar), floats within a
+    tolerance, everything else exactly.
+
+    transform (DataFusion) and infer_batch (Rust) take different numerical
+    paths -- transform stacks the whole batch into one matrix, infer_batch runs
+    row-at-a-time -- so their floats can differ in the last bit or two (pure
+    ULP noise, e.g. a non-collinear PCA fixture measured at ~2e-16). That is
+    not the divergence class these tests exist to catch: the bugs this branch
+    fixed were whole-feature swaps and hard planning failures, orders of
+    magnitude above any float tolerance. Exact equality would flake on the
+    next fixture that isn't lucky enough to land on exactly-representable
+    arithmetic.
+    """
+    if isinstance(a, dict) and isinstance(b, dict):
+        assert a.keys() == b.keys(), f"{path}: key mismatch {a.keys()} != {b.keys()}"
+        for k in a:
+            _assert_close(a[k], b[k], f"{path}.{k}")
+    elif isinstance(a, list) and isinstance(b, list):
+        assert len(a) == len(b), f"{path}: length mismatch {a!r} != {b!r}"
+        for i, (x, y) in enumerate(zip(a, b, strict=True)):
+            _assert_close(x, y, f"{path}[{i}]")
+    elif isinstance(a, float) and isinstance(b, float):
+        assert math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12), (
+            f"{path}: {a!r} != {b!r}"
+        )
+    else:
+        assert a == b, f"{path}: {a!r} != {b!r}"
+
+
 def _both_engines(t, test_df):
-    """transform (DataFusion) and infer (Rust) as plain dicts; assert equal."""
+    """transform (DataFusion) and infer (Rust) as plain dicts; assert close."""
     batch = t.transform(pa.Table.from_pandas(test_df)).to_pylist()
     infer = [r.model_dump() for r in t.infer_batch(test_df.to_dict("records"))]
-    assert infer == batch, (infer, batch)
+    _assert_close(infer, batch)
     return batch
 
 
@@ -395,7 +427,10 @@ def test_transformer_alongside_partitioned_window_agg():
 
     batch = t.transform(pa.Table.from_pandas(train)).to_pylist()
     infer = [r.model_dump() for r in t.infer_batch(train.to_dict("records"))]
-    assert batch == infer
+    # `o` is StandardScaler output -- same batch-column_stack-vs-row-at-a-time
+    # risk class as PCA -- so compare with the tolerance helper, not exact
+    # equality, even though this particular fixture happens to land exact.
+    _assert_close(infer, batch)
     assert [r["m"] for r in batch] == [15.0, 15.0, 35.0, 35.0]
 
 
@@ -457,6 +492,24 @@ def test_named_fit_call_order_is_free():
     batch = _both_engines(t, train)
     got = np.array([[b["out"]["age"], b["out"]["income"]] for b in batch])
     assert np.allclose(got, sc.transform(train))
+
+
+def test_call_order_free_for_a_validating_transformer():
+    # The fit-time probe must feed .transform in feature_names_in_ order, the
+    # way both engines feed it at runtime. Probing in call order ran the
+    # transform on feature-swapped data, so a transformer that VALIDATES its
+    # input (OrdinalEncoder with handle_unknown="error") rejected the probe and
+    # fit() raised -- for a query both engines execute correctly.
+    df = pd.DataFrame({"cat": ["a", "b", "a", "b"], "grp": ["x", "y", "x", "y"]})
+    oe = OrdinalEncoder(handle_unknown="error").fit(df)  # names: [cat, grp]
+
+    t = SQLTransform(t"SELECT {oe}(grp, cat) AS o FROM __THIS__").fit(
+        pa.Table.from_pandas(df)
+    )  # CALL order reversed
+    batch = _both_engines(t, df)
+    expected = oe.transform(df)
+    got = np.array([[r["o"]["cat"], r["o"]["grp"]] for r in batch])
+    assert np.allclose(got, expected)
 
 
 def test_nested_outer_fitted_in_permuted_order_parity():
