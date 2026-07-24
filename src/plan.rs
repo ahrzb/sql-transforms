@@ -409,7 +409,7 @@ fn scan_table_name(node: &RelNode) -> Option<&str> {
 /// anything else (unqualified column, literal, expression, ...).
 fn column_qualifier(e: &Expr) -> Option<&str> {
     match e {
-        Expr::Column { table: Some(t), .. } => Some(t.as_str()),
+        Expr::Column { table: Some(t), .. } => Some(t.value.as_str()),
         _ => None,
     }
 }
@@ -1014,7 +1014,7 @@ fn unnest_display_name(
         Expr::Column {
             table: Some(t),
             name,
-        } => Ok(format!("{t}.{name}")),
+        } => Ok(format!("{}.{name}", t.value)),
         Expr::Column { table: None, name } => {
             let qualifier = effective_schemas
                 .iter()
@@ -1059,7 +1059,7 @@ fn validate_expr(
             table: Some(t),
             name,
         } => {
-            if let Some((real, is_row)) = resolved.get(t.as_str()) {
+            if let Some((real, is_row)) = resolved.get(t.value.as_str()) {
                 check_column(real, *is_row, name, row_schemas, static_schemas)?;
                 if *is_row {
                     used_columns
@@ -1074,7 +1074,7 @@ fn validate_expr(
             // column, `name` one of its struct fields. Precedence rule: a
             // relation alias always wins, so this fallback only runs once
             // the alias lookup above has failed.
-            let base_name = t.clone();
+            let base_name = t.value.clone();
             let field = name.clone();
             *e = Expr::FieldAccess {
                 base: Box::new(Expr::Column {

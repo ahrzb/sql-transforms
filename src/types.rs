@@ -36,7 +36,9 @@ pub fn infer_type(
     schemas: &HashMap<String, Schema>,
 ) -> Result<FieldType, InterpError> {
     match expr {
-        Expr::Column { table, name } => resolve_column_type(table.as_deref(), name, schemas),
+        Expr::Column { table, name } => {
+            resolve_column_type(table.as_ref().map(|t| t.value.as_str()), name, schemas)
+        }
         Expr::Literal(v) => Ok(literal_type(v)),
         Expr::BinaryOp { op, left, right } => {
             let l = infer_type(left, schemas)?;

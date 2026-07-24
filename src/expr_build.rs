@@ -41,7 +41,10 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
             // reachable today (qualifiers are always library-internal). Widen to
             // fold parts[0] too if user-named CamelCase relations ever appear.
             let mut expr = Expr::Column {
-                table: Some(parts[0].value.clone()),
+                table: Some(crate::expr::QualifiedName {
+                    value: parts[0].value.clone(),
+                    quoted: parts[0].quote_style.is_some(),
+                }),
                 name: fold_ident(&parts[1]),
             };
             for part in &parts[2..] {

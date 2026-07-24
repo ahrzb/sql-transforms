@@ -261,10 +261,37 @@ impl Value {
     }
 }
 
+/// A column's qualifier (`t` in `t.col`) with its SQL quoting preserved.
+///
+/// Carried unfolded on purpose: at parse time we cannot tell whether a
+/// qualifier names a RELATION (`__THIS__.age`) or a STRUCT COLUMN (`s.x`) --
+/// only `plan.rs` knows, once the relation-alias lookup has hit or missed.
+/// Relation consumers take `.value` (our generated SQL qualifies with the raw
+/// `__THIS__`/`__STATE__`); the struct-column branch takes `.folded()`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QualifiedName {
+    /// The identifier as written: `S`, `__THIS__`, `t`.
+    pub value: String,
+    /// Was it double-quoted in the SQL?
+    pub quoted: bool,
+}
+
+impl QualifiedName {
+    /// DataFusion's identifier rule, identical to `expr_build::fold_ident`:
+    /// an unquoted identifier folds to lowercase, a quoted one stays exact.
+    pub fn folded(&self) -> String {
+        if self.quoted {
+            self.value.clone()
+        } else {
+            self.value.to_lowercase()
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Expr {
     Column {
-        table: Option<String>,
+        table: Option<QualifiedName>,
         name: String,
     },
     Literal(Value),
@@ -336,7 +363,9 @@ pub enum BinOp {
 
 pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::InterpError> {
     match expr {
-        Expr::Column { table, name } => resolve_column(row, table.as_deref(), name),
+        Expr::Column { table, name } => {
+            resolve_column(row, table.as_ref().map(|t| t.value.as_str()), name)
+        }
         Expr::Literal(v) => Ok(v.clone()),
         Expr::BinaryOp { op, left, right } => {
             let l = eval(left, row)?;
