@@ -108,9 +108,20 @@ def _probe(
 ) -> tuple[pa.Schema, pa.Schema, np.ndarray]:
     """in_schema from `cols`; out_schema by probing .transform; plus the probe's
     own output `y`, so a caller that needs the materialised table can build it
-    without running .transform a second time."""
+    without running .transform a second time.
+
+    `cols` is the STRUCT order -- it must describe the named_struct the SQL
+    builds, because the UDF is registered with an Exact struct signature and
+    Arrow struct field order is part of that type. But `.transform` is fed in
+    the transformer's OWN feature_names_in_ order, which is how both engines
+    feed it at runtime; probing in struct order would run the transform on
+    feature-swapped data and make a validating transformer reject a query that
+    both engines execute correctly. _bind_names guarantees the two orders hold
+    the same column set, so the reorder always resolves.
+    """
     in_schema = pa.schema([(c, table.schema.field(c).type) for c in cols])
-    x = np.column_stack([table.column(c).to_numpy(zero_copy_only=False) for c in cols])
+    feat = [str(n) for n in obj.feature_names_in_]
+    x = np.column_stack([table.column(c).to_numpy(zero_copy_only=False) for c in feat])
     y = np.asarray(obj.transform(x))
     names = [str(n) for n in obj.get_feature_names_out()]
     if y.ndim != 2 or y.shape[1] != len(names):
