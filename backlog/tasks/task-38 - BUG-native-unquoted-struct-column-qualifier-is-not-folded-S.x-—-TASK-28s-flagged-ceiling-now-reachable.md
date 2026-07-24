@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - Wren
 created_date: '2026-07-24 00:36'
-updated_date: '2026-07-24 21:21'
+updated_date: '2026-07-24 21:25'
 labels:
   - native
   - parity
@@ -61,11 +61,11 @@ RELATED: TASK-37 (native has no struct(...)/make_array(...) dispatch) and TASK-3
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Expr::Column carries the qualifier's quote information end-to-end (change table: Option<String> to a quote-preserving representation, or add a table_quoted flag) through expr_build -> plan, so quote_style is no longer discarded before the struct-column branch can use it
-- [ ] #2 At the struct-column field-access fallback (plan.rs:1077), an UNQUOTED qualifier folds to lowercase (S -> s) while a QUOTED qualifier stays case-exact ("S" stays S) — matching DataFusion and consistent with TASK-28's unquoted-folding rule for ordinary columns. This is the AC to get exactly right: fold unquoted, never fold quoted
-- [ ] #3 Relation qualifiers (__THIS__, __STATE__, generated join relations) are UNAFFECTED — they must NOT fold. Full suite stays green: the naive one-line fold broke 96 tests by folding __THIS__ -> __this__; the fix must fold ONLY on the struct-column branch, never the relation branch
+- [ ] #2 At the struct-column field-access fallback (plan.rs:1077), an UNQUOTED qualifier folds to lowercase (S -> s) while a QUOTED qualifier stays case-exact ("S" stays S) — matching DataFusion and consistent with TASK-28. The AC to get exactly right: fold unquoted, never fold quoted
+- [ ] #3 Relation qualifiers (__THIS__/__STATE__/generated joins) UNAFFECTED BY THIS CHANGE — must NOT fold here, full suite stays green (the naive fold broke 96 tests). This AC is about not BREAKING the relation branch; its OWN separate oracle inversion is out of scope, tracked in DRAFT-22
 - [ ] #4 The xfail_on_native marker on tests/test_diff_types.py::test_uppercase_qualifier_field_access is removed and the test passes on both engines vs the DataFusion oracle, in the same commit as the fix
-- [ ] #5 TASK-28 AC#5's ceiling note in expr_build.rs is updated or removed — the gap it flagged 'unreachable' is now closed, so leaving a stale unreachable comment would misdescribe reality
-- [ ] #6 MEASURE the sibling case: does the same quote-loss affect a CamelCase TABLE/relation alias (a user-supplied qualifier that IS a relation)? If reachable and divergent from the oracle, fix it in scope or file a follow-up with the measurement — do not leave it unmeasured now that quote-carrying is being built
+- [ ] #5 TASK-28 AC#5's ceiling note in expr_build.rs is updated or removed — the gap it flagged 'unreachable' is now closed, so a stale unreachable comment would misdescribe reality
+- [ ] #6 AC#6 (measure the sibling relation-alias case) DISCHARGED: measured during recon, found a separate relation-branch inversion, filed as DRAFT-22. Nothing further required in TASK-38
 <!-- AC:END -->
 
 ## Comments
@@ -100,5 +100,17 @@ WHY the ticket's original framing was wrong (Wren, measured):
 - expr_build CANNOT distinguish a relation qualifier from a struct-column qualifier — that is only known later in plan.rs::validate_expr (resolved.get(t)). Relation -> use as-is (don't fold). Not-a-relation -> struct-field fallback at plan.rs:1077 (should fold). But by then Expr::Column stores table as a bare Option<String> and quote_style is gone. Hence (a): carry the quote info so the struct-column branch can fold unquoted / preserve quoted.
 
 This is why the ticket said 'unreachable' at TASK-28 time and why the honest fix is bigger. AmirHossein chose correctness over the stopgap. Added AC#6: measure whether a CamelCase TABLE alias hits the same quote-loss (Wren flagged it unmeasured) — fix in scope or follow-up, don't leave it hanging. Priority stays Medium (user-facing severity unchanged; scope grew, importance didn't).
+---
+
+author: Iris (PM)
+created: 2026-07-24 21:25
+---
+AC#6 DISCHARGED by measurement (Wren, 2026-07-24, before writing code — exactly the instruction). It found MORE than the CamelCase-alias case: native's relation-qualifier handling is INVERTED vs the oracle on quoted forms (DataFusion registers the relation under a folded name, so quoted-exact \"__THIS__\" MISSES on the oracle while native accepts it; quoted-lower is the reverse). Full measurements in DRAFT-22.
+
+SCOPE CALL (mine, Wren-agreed): the relation-qualifier inversion stays OUT of TASK-38 and is filed as DRAFT-22 (Low). Reasons: (1) it's the RELATION branch, TASK-38 is the STRUCT-COLUMN branch — different code, different fix; (2) fixing it means matching DataFusion's register-time relation folding, a second core change in plan.rs relation resolution on top of TASK-38's Expr::Column shape change; (3) one core change per PR. And it's LOW: measured unreachable through the public API — SQLTransform.fit raises loudly or agrees; only a direct internal InferFn call hits the inversion, and always loudly, never a silent wrong value.
+
+AC#3 REWORDED for honesty (Wren's catch): the old wording implied the relation branch is currently CORRECT. It is not — it's inverted. AC#3 now says relation qualifiers are unaffected BY THIS CHANGE (don't break them, per the 96-test finding) and points to DRAFT-22 for their own divergence. Two different claims that the AC had conflated.
+
+Wren is proceeding with TASK-38's brainstorm+plan for the struct-column branch only — unaffected by this call either way, so no reason to make him wait.
 ---
 <!-- COMMENTS:END -->
