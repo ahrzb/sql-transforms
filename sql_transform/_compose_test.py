@@ -129,3 +129,16 @@ def test_reference_not_applied_to_column_errors():
 def test_non_transform_interpolation_errors():
     with pytest.raises(TypeError, match="SQLTransform"):
         SQLTransform(t"SELECT {42}(age) AS s FROM __THIS__")
+
+
+def test_unfitted_transformer_raises_not_fitted_error():
+    # Before: TypeError blaming the interpolation TYPE ("must be a SQLTransform"),
+    # which hides the real cause. An unfitted transformer has .transform but no
+    # n_features_in_, so we can name the actual problem.
+    from sklearn.preprocessing import StandardScaler
+
+    train = pa.table({"age": [10.0, 20.0], "income": [1.0, 2.0]})
+    with pytest.raises(ValueError, match="not fitted"):
+        SQLTransform(t"SELECT {StandardScaler()}(age, income) AS o FROM __THIS__").fit(
+            train
+        )

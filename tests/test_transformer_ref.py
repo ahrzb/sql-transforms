@@ -173,3 +173,45 @@ def test_camelcase_columns_unquoted_folds_and_fails():
     with pytest.raises(Exception, match="(?i)lotarea|no field|schema"):
         fitted = t.fit(pa.Table.from_pandas(train))
         fitted.transform(pa.Table.from_pandas(train))
+
+
+def test_ndarray_fit_transformer_binds_positionally():
+    # sklearn records feature_names_in_ only for DataFrame fit. An ndarray-fit
+    # transformer has no names, so arguments bind positionally in call order.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train.to_numpy())
+    assert not hasattr(sc, "feature_names_in_")
+
+    t = SQLTransform(t"SELECT {sc}(age, income) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    batch = _both_engines(t, train)
+    expected = sc.transform(train.to_numpy())
+    got = np.array([[b["out"]["age"], b["out"]["income"]] for b in batch])
+    assert np.allclose(got, expected)
+
+    # clone contract: the user's object must be left untouched
+    assert not hasattr(sc, "feature_names_in_")
+
+
+def test_ndarray_fit_arity_mismatch_raises():
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train.to_numpy())  # n_features_in_ == 2
+    t = SQLTransform(t"SELECT {sc}(age) AS out FROM __THIS__")
+    with pytest.raises(ValueError, match="bind positionally"):
+        t.fit(pa.Table.from_pandas(train))
+
+
+def test_named_fit_column_mismatch_still_raises():
+    # The named path is unchanged: names are validated as a set.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)
+    t = SQLTransform(t"SELECT {sc}(age) AS out FROM __THIS__")
+    with pytest.raises(ValueError, match="must match feature_names_in_"):
+        t.fit(pa.Table.from_pandas(train))

@@ -64,6 +64,14 @@ def desugar_template(template: Template) -> tuple[str, dict[str, Ref]]:
             ref = Ref(v, frozen=False, expr_text=item.expression)
         elif is_transformer(v):
             ref = Ref(v, frozen=False, expr_text=item.expression, is_transformer=True)
+        elif hasattr(v, "transform") and not hasattr(v, "n_features_in_"):
+            # Transformer-shaped but unfitted. Without this the generic TypeError
+            # below blames the interpolation's TYPE, which sends users looking in
+            # entirely the wrong place.
+            raise ValueError(
+                f"interpolation {{{item.expression}}}: {type(v).__name__} is not "
+                f"fitted -- call .fit(...) before referencing it"
+            )
         else:
             raise TypeError(
                 f"interpolation {{{item.expression}}} must be a SQLTransform or "
