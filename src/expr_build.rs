@@ -80,6 +80,34 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
         SqlExpr::Array(Array { elem, .. }) => Ok(Expr::List(
             elem.iter().map(convert_expr).collect::<Result<_, _>>()?,
         )),
+        // Authored struct(...) construction. sqlparser parses `struct(...)` into a
+        // first-class SqlExpr::Struct node (NOT a Function), so it never reaches
+        // convert_function -- which is why this must live here. `values` holds the
+        // elements: a bare expr is positional (field name c0, c1, ...), an
+        // `expr AS name` is Expr::Named (explicit field name). `fields` is only
+        // populated by the typed `STRUCT<a INT>(...)` form, which we don't support.
+        // Field naming mirrors codegen's _convert_struct and DataFusion:
+        // positional -> c{i}, named -> the alias as written.
+        SqlExpr::Struct { values, fields } => {
+            if !fields.is_empty() {
+                return Err(InterpError::Build(
+                    "typed STRUCT<...>(...) syntax is not supported; \
+                     use struct(a, b) or struct(a AS x, ...)"
+                        .to_string(),
+                ));
+            }
+            let out_fields = values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| match v {
+                    SqlExpr::Named { expr, name } => {
+                        Ok((name.value.clone(), convert_expr(expr)?))
+                    }
+                    other => Ok((format!("c{i}"), convert_expr(other)?)),
+                })
+                .collect::<Result<Vec<_>, InterpError>>()?;
+            Ok(Expr::Struct(out_fields))
+        }
         SqlExpr::Cast {
             expr, data_type, ..
         } => Ok(Expr::Cast {
@@ -194,14 +222,16 @@ fn convert_function(func: &Function) -> Result<Expr, InterpError> {
         }
         return Ok(Expr::Struct(fields));
     }
-    if name == "struct" {
-        let fields = args
-            .into_iter()
-            .enumerate()
-            .map(|(i, e)| (format!("c{i}"), e))
-            .collect();
-        return Ok(Expr::Struct(fields));
+    // make_array(a, b) is a DataFusion builtin that constructs a list, same as
+    // the bracket literal [a, b] (which parses as SqlExpr::Array). Route it to the
+    // same Expr::List path. The `array(...)` spelling parses as SqlExpr::Array, not
+    // a Function, so it is already handled in convert_expr and not needed here.
+    if name == "make_array" {
+        return Ok(Expr::List(args));
     }
+    // NB: `struct(...)` does NOT reach here -- sqlparser parses it into a
+    // first-class SqlExpr::Struct node, handled in convert_expr. (An earlier
+    // `struct` case here was dead code and was removed.)
     Ok(Expr::Function { name, args })
 }
 

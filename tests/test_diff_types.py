@@ -26,9 +26,10 @@ def test_list_construct():
 # native has no dispatch for them at all -- so they xfail_on_native, the same
 # parity-gap pattern as test_list_construct_mixed_numeric_widens. Codegen
 # correctness is the assertion; the native gaps want their own tickets.
-def test_struct_construct_positional(xfail_on_native):
-    # struct(a, b) names fields positionally c0, c1 (matches DataFusion).
-    xfail_on_native("native has no struct(...) construction dispatch (expr_build.rs)")
+def test_struct_construct_positional():
+    # struct(a, b) names fields positionally c0, c1 (matches DataFusion). Native
+    # handles it via a SqlExpr::Struct arm in convert_expr (TASK-37); struct(...)
+    # parses as a first-class node, not a function.
     check(
         "SELECT struct(a, b) AS s FROM t",
         {"t": rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])},
@@ -36,9 +37,9 @@ def test_struct_construct_positional(xfail_on_native):
     )
 
 
-def test_struct_construct_named(xfail_on_native):
-    # struct(a AS x, b AS y) parses as exp.PropertyEQ -> explicit field names.
-    xfail_on_native("native has no struct(...) construction dispatch (expr_build.rs)")
+def test_struct_construct_named():
+    # struct(a AS x, b AS y) -> explicit field names (sqlparser Expr::Named,
+    # sqlglot exp.PropertyEQ). Native handles it in convert_expr (TASK-37).
     check(
         "SELECT struct(a AS x, b AS y) AS s FROM t",
         {"t": rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])},
@@ -46,10 +47,10 @@ def test_struct_construct_named(xfail_on_native):
     )
 
 
-def test_make_array_construct(xfail_on_native):
-    # make_array(a, b) is a DataFusion builtin; native doesn't recognize it as a
-    # function (only the bracket literal [a, b] reaches native's list path).
-    xfail_on_native("native has no make_array function dispatch (expr_build.rs)")
+def test_make_array_construct():
+    # make_array(a, b) is a DataFusion builtin. Native routes it to Expr::List in
+    # convert_function -- the same construction path the bracket literal [a, b]
+    # already uses (TASK-37).
     check(
         "SELECT make_array(a, b) AS l FROM t",
         {"t": rows({"a": "int", "b": "int"}, [{"a": 1, "b": 2}])},
