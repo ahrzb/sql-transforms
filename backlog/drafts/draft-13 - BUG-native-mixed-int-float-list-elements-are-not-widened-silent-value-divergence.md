@@ -6,7 +6,7 @@ title: >-
 status: Draft
 assignee: []
 created_date: '2026-07-23 14:30'
-updated_date: '2026-07-23 14:30'
+updated_date: '2026-07-24 02:32'
 labels:
   - native
   - parity
@@ -64,3 +64,20 @@ DRAFT pending AmirHossein's review of scope/priority.
 - [ ] #3 The xfail_on_native marker on tests/test_diff_types.py::test_list_construct_mixed_numeric_widens is removed and the test passes on both engines
 - [ ] #4 Root-cause sweep: confirm no other native type-unification site is exact-equality-only where DataFusion widens (the same class of silent divergence elsewhere)
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-24 02:32
+---
+COVERAGE CONFIRMED (2026-07-24): this is Wren's GROUP B — test_list_construct_mixed_numeric_widens. Already captured; no new ticket needed. The xfail's own reason string says 'separate parity bug, own ticket', which is exactly this. Provenance: came in with TASK-29 Phase B (d8e56e9, fb20afe, 8d398bf), NOT from PR #16.
+
+Wren's framing agrees with the split I made: this is a SEMANTICS decision about numeric widening, whereas DRAFT-12 is plain missing dispatch — different files, different root causes, correctly separate tickets.
+
+IMPLEMENTER NOTES (from Wren, 2026-07-24) — read before starting:
+1. REQUIRES RUST CHANGES (src/types.rs). `uv sync` does NOT recompile Rust — you need `uv run maturin develop` to rebuild _interpreter. The TASK-33 guard (953c726) auto-rebuilds when src/*.rs is newer than the .pyd, but only before tests.
+2. Do NOT run `cargo test` in this environment — it fails with an unrelated pyo3 STATUS_DLL_NOT_FOUND. Not your bug; do not chase it.
+3. The test is xfail(strict=True), so it FAILS LOUDLY the moment the gap closes. Flip the xfail off IN THE SAME COMMIT as the fix, or the suite goes red on success.
+---
+<!-- COMMENTS:END -->

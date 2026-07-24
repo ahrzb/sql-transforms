@@ -6,6 +6,7 @@ title: >-
 status: Draft
 assignee: []
 created_date: '2026-07-24 00:36'
+updated_date: '2026-07-24 02:32'
 labels:
   - native
   - parity
@@ -64,3 +65,20 @@ DRAFT pending AmirHossein's review of scope/priority.
 - [ ] #3 The xfail_on_native marker on tests/test_diff_types.py::test_uppercase_qualifier_field_access is removed and the test passes on both engines
 - [ ] #4 TASK-28 AC#5's ceiling note in expr_build.rs is updated or removed, since the gap it flagged is now closed rather than merely unreachable
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-24 02:32
+---
+COVERAGE CONFIRMED (2026-07-24): this is Wren's GROUP C — test_uppercase_qualifier_field_access. Already captured; no new ticket needed. Provenance: came in with TASK-29 Phase B (d8e56e9, fb20afe, 8d398bf), NOT from PR #16.
+
+Wren independently suggested linking this to TASK-28 so whoever takes it starts from that precedent rather than rediscovering it — already done: this ticket records that it is TASK-28's AC#5 ceiling ('a real CamelCase table/struct-column qualifier is NOT folded — unreachable today ... flagged for when qualified tables become reachable'), which Phase B's struct field access made reachable. AC#4 already requires updating that ceiling note in expr_build.rs. Two people arriving at the same linkage independently is a good sign the ticket is pointed the right way.
+
+IMPLEMENTER NOTES (from Wren, 2026-07-24) — read before starting:
+1. REQUIRES RUST CHANGES (src/expr_build.rs). `uv sync` does NOT recompile Rust — you need `uv run maturin develop` to rebuild _interpreter. The TASK-33 guard (953c726) auto-rebuilds when src/*.rs is newer than the .pyd, but only before tests.
+2. Do NOT run `cargo test` in this environment — it fails with an unrelated pyo3 STATUS_DLL_NOT_FOUND. Not your bug; do not chase it.
+3. The test is xfail(strict=True), so it FAILS LOUDLY the moment the gap closes. Flip the xfail off IN THE SAME COMMIT as the fix, or the suite goes red on success.
+---
+<!-- COMMENTS:END -->

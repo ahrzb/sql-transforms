@@ -4,7 +4,7 @@ title: 'native: no dispatch for struct(...) and make_array(...) construction'
 status: Draft
 assignee: []
 created_date: '2026-07-23 14:30'
-updated_date: '2026-07-23 14:31'
+updated_date: '2026-07-24 02:32'
 labels:
   - native
   - parity
@@ -69,3 +69,18 @@ DRAFT pending AmirHossein's review of scope/priority.
 - [ ] #3 native dispatches make_array(...) to the same construction path the bracket literal [a, b] already uses
 - [ ] #4 The 3 xfail_on_native markers in tests/test_diff_types.py (test_struct_construct_positional, test_struct_construct_named, test_make_array_construct) are removed and the tests pass on both engines against the DataFusion oracle
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-24 02:32
+---
+COVERAGE CONFIRMED (2026-07-24): this is Wren's GROUP A — all 3 struct/make_array dispatch xfails (test_struct_construct_positional, test_struct_construct_named, test_make_array_construct). Already fully captured; no new ticket needed. Provenance verified: these came in with TASK-29 Phase B (d8e56e9, fb20afe, 8d398bf), NOT from PR #16.
+
+IMPLEMENTER NOTES (from Wren, 2026-07-24) — read before starting:
+1. REQUIRES RUST CHANGES (src/expr_build.rs). `uv sync` does NOT recompile Rust — you need `uv run maturin develop` to rebuild _interpreter. The TASK-33 guard (953c726) auto-rebuilds when src/*.rs is newer than the .pyd, but only before tests.
+2. Do NOT run `cargo test` in this environment — it fails with an unrelated pyo3 STATUS_DLL_NOT_FOUND. Not your bug; do not chase it.
+3. The tests are xfail(strict=True), so they FAIL LOUDLY the moment the gap closes. Flip each xfail off IN THE SAME COMMIT as the fix, or the suite goes red on success. That is the intended design, not a surprise.
+---
+<!-- COMMENTS:END -->
