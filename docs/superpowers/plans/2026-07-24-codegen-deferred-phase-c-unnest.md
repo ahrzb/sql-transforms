@@ -107,7 +107,20 @@ In the same file, REPLACE the body of `_build_projection`'s `exp.Unnest` branch 
             out.append(("unnest", _convert_expr(item)))
 ```
 
-Leave `_DEFERRED_FUNCS = ("unnest",)` alone — it guards the `exp.Anonymous` path, which per measured fact #1 never fires for unnest. It is dead but harmless; removing it is out of scope for this task.
+`unnest` was `_DEFERRED_FUNCS`'s only member, and per measured fact #1 that branch never fired for it, so the constant is now dead. DELETE both — the definition:
+
+```python
+_DEFERRED_FUNCS = ("unnest",)
+```
+
+and its only use, inside `_convert_expr`'s `exp.Anonymous` arm:
+
+```python
+        if name in _DEFERRED_FUNCS:
+            raise UnsupportedInCodegen(f"{name}() is not supported in codegen yet")
+```
+
+The `exp.Anonymous` arm keeps its `named_struct` and `make_array` branches and its final `return Func(name, [...])`, which is now what an unknown function name reaches. An unknown function is still rejected — `_emit_expr` raises `ValueError(f"Unknown function: {name}")` for any name not in `_BUILTINS` — so nothing silently compiles.
 
 - [ ] **Step 4: Add the `UNNEST_KEY` constant and the `Unnest` rel node**
 
@@ -455,4 +468,4 @@ git commit -m "feat(codegen): unnest(struct) per-field column expansion — TASK
 - **Placeholder scan.** No TBD/TODO, no "add error handling", no "similar to Task N". Every code step carries the literal code to write; the two rel-walker edits are given as explicit before/after rather than a description.
 - **Type consistency.** `Unnest(input, list_expr, output_col)` is defined once (Task 1 Step 4) and constructed with exactly those three positional fields (Step 6), read with `node.input` / `node.list_expr` / `node.output_col` (Steps 7–8). `UNNEST_KEY` is defined in `plan.py` and referenced as `cp.UNNEST_KEY` from `engine.py` — the module is imported as `cp` there. `rt.unnest_rows(value, name)` matches its definition's `(v, name)` arity. `_unnest_arg` is defined in Task 1 and reused unchanged in Task 2. `_unnest_display_name` is defined and used only in Task 2.
 - **Ordering risk flagged.** Task 1 Step 6 must raise `UnsupportedInCodegen` (not `ValueError`) for the struct case. If that is written as a `ValueError`, the two struct differential cases turn from SKIPPED into FAILED between the two commits, and Task 1 cannot be merged independently.
-- **Known ceiling, deliberately not addressed.** `_DEFERRED_FUNCS = ("unnest",)` becomes dead after Task 1 Step 3 (measured fact #1: unnest never reaches the `exp.Anonymous` branch). Left in place rather than removed — deleting it is a separate, unrelated diff.
+- **Dead code removed, not deferred.** `_DEFERRED_FUNCS = ("unnest",)` becomes dead once Task 1 Step 3 converts unnest (measured fact #1: it never reaches the `exp.Anonymous` branch), so Step 3 deletes the constant and its single use. AmirHossein's call, 2026-07-24, overriding this plan's first draft, which left it in place.
