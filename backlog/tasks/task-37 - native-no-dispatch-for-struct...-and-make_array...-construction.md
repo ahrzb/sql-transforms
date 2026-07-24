@@ -1,10 +1,11 @@
 ---
-id: DRAFT-12
+id: TASK-37
 title: 'native: no dispatch for struct(...) and make_array(...) construction'
-status: Draft
-assignee: []
+status: To Do
+assignee:
+  - Wren
 created_date: '2026-07-23 14:30'
-updated_date: '2026-07-24 02:32'
+updated_date: '2026-07-24 02:35'
 labels:
   - native
   - parity
@@ -52,14 +53,13 @@ native's convert_function (src/expr_build.rs) has no case for these container-co
 
 NOT affected: the bracket literal `[a, b]` DOES reach native's list path and passes today (tests/test_diff_types.py::test_list_construct). The gap is specifically the FUNCTION-call spellings, not list/struct construction as a concept.
 
-SEVERITY vs DRAFT-13
-This is a missing capability that fails loudly, not a wrong answer — bad, but self-announcing. DRAFT-13 (mixed-numeric list widening) is the silent-wrong-value one and is rated higher.
+SEVERITY vs TASK-36
+This is a missing capability that fails loudly, not a wrong answer — bad, but self-announcing. TASK-36 (mixed-numeric list widening) is the silent-wrong-value one and is rated higher.
 
 WHY IT MATTERS: native is the DEFAULT serving engine (decision-7), so a surface that works on the opt-in engine but not the default is backwards. Medium rather than High because the bracket literal gives users a working alternative for lists, and struct construction has no demonstrated demand yet.
 
 Surfaced by Ritchie's TASK-29 container work (2026-07-23), pinned by 3 strict xfail_on_native markers in tests/test_diff_types.py. Filed per the standing native-bug process (xfail-strict + ticket, never fix inline).
 
-DRAFT pending AmirHossein's review of scope/priority.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -82,5 +82,11 @@ IMPLEMENTER NOTES (from Wren, 2026-07-24) — read before starting:
 1. REQUIRES RUST CHANGES (src/expr_build.rs). `uv sync` does NOT recompile Rust — you need `uv run maturin develop` to rebuild _interpreter. The TASK-33 guard (953c726) auto-rebuilds when src/*.rs is newer than the .pyd, but only before tests.
 2. Do NOT run `cargo test` in this environment — it fails with an unrelated pyo3 STATUS_DLL_NOT_FOUND. Not your bug; do not chase it.
 3. The tests are xfail(strict=True), so they FAIL LOUDLY the moment the gap closes. Flip each xfail off IN THE SAME COMMIT as the fix, or the suite goes red on success. That is the intended design, not a surprise.
+---
+
+author: Iris (PM)
+created: 2026-07-24 02:35
+---
+Promoted from draft and assigned to Wren (2026-07-24, AmirHossein's go). QUEUE POSITION 3 of 4. Shares src/expr_build.rs with TASK-38 — worth doing back-to-back while the file is in context, though they stay separate tickets with separate xfail flips.
 ---
 <!-- COMMENTS:END -->

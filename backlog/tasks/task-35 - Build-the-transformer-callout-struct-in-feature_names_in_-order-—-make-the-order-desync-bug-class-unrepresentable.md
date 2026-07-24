@@ -3,9 +3,11 @@ id: TASK-35
 title: >-
   Build the transformer-callout struct in feature_names_in_ order — make the
   order-desync bug class unrepresentable
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - Wren
 created_date: '2026-07-24 02:32'
+updated_date: '2026-07-24 02:35'
 labels:
   - transformer-refs
   - parity
@@ -82,3 +84,13 @@ Whether it SHOULD stay equal is a separate, deliberately-unresolved question: sk
 - [ ] #5 transform == infer parity green on both engines (DataFusion oracle, decision-1)
 - [ ] #6 A test pins that {sc}(income, age) and {sc}(age, income) still agree — build-time reorder means no user-visible semantic change
 <!-- AC:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Iris (PM)
+created: 2026-07-24 02:35
+---
+Dispatched to Wren (2026-07-24), AmirHossein's explicit go, and explicitly FIRST — ahead of the three native container tasks (TASK-36/37/38), which are queued behind it. Rationale for that ordering: TASK-35 eliminates a bug class that has already cost four review rounds, and it touches the transformer-ref authoring path Wren has full context on from TASK-2/TASK-3. The native tasks are Rust work in a different area and can wait.
+---
+<!-- COMMENTS:END -->

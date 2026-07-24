@@ -1,12 +1,13 @@
 ---
-id: DRAFT-16
+id: TASK-38
 title: >-
   BUG native: unquoted struct-column qualifier is not folded (S.x) — TASK-28's
   flagged ceiling, now reachable
-status: Draft
-assignee: []
+status: To Do
+assignee:
+  - Wren
 created_date: '2026-07-24 00:36'
-updated_date: '2026-07-24 02:32'
+updated_date: '2026-07-24 02:35'
 labels:
   - native
   - parity
@@ -51,11 +52,10 @@ CURRENT STATE
 Pinned by a strict xfail_on_native at tests/test_diff_types.py::test_uppercase_qualifier_field_access. Codegen matches the oracle; native is the outlier. Filed per the standing native-bug process (xfail-strict + ticket, never fix inline) — Ritchie did the xfail half correctly.
 
 SEVERITY
-Fails LOUDLY (raises "Unknown column: S") rather than silently computing a different value, so it is in the DRAFT-12 category rather than the DRAFT-13 category. Medium: real, but self-announcing, and the workaround (lowercase or quote the qualifier) is available once you know. Native is the DEFAULT serving engine, which is what keeps it from being Low.
+Fails LOUDLY (raises "Unknown column: S") rather than silently computing a different value, so it is in the TASK-37 category rather than the TASK-36 category. Medium: real, but self-announcing, and the workaround (lowercase or quote the qualifier) is available once you know. Native is the DEFAULT serving engine, which is what keeps it from being Low.
 
-RELATED: DRAFT-12 (native has no struct(...)/make_array(...) dispatch) and DRAFT-13 (native does not widen mixed-numeric list elements) are the other native container gaps from the same Phase B work. Possibly worth scoping all three as one "native container parity" push rather than three separate fixes — they are all in expr_build.rs / types.rs and all surfaced together.
+RELATED: TASK-37 (native has no struct(...)/make_array(...) dispatch) and TASK-36 (native does not widen mixed-numeric list elements) are the other native container gaps from the same Phase B work. Possibly worth scoping all three as one "native container parity" push rather than three separate fixes — they are all in expr_build.rs / types.rs and all surfaced together.
 
-DRAFT pending AmirHossein's review of scope/priority.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -80,5 +80,11 @@ IMPLEMENTER NOTES (from Wren, 2026-07-24) — read before starting:
 1. REQUIRES RUST CHANGES (src/expr_build.rs). `uv sync` does NOT recompile Rust — you need `uv run maturin develop` to rebuild _interpreter. The TASK-33 guard (953c726) auto-rebuilds when src/*.rs is newer than the .pyd, but only before tests.
 2. Do NOT run `cargo test` in this environment — it fails with an unrelated pyo3 STATUS_DLL_NOT_FOUND. Not your bug; do not chase it.
 3. The test is xfail(strict=True), so it FAILS LOUDLY the moment the gap closes. Flip the xfail off IN THE SAME COMMIT as the fix, or the suite goes red on success.
+---
+
+author: Iris (PM)
+created: 2026-07-24 02:35
+---
+Promoted from draft and assigned to Wren (2026-07-24, AmirHossein's go). QUEUE POSITION 4 of 4. Shares src/expr_build.rs with TASK-37 — do them back-to-back. Note AC#4: this one also requires updating TASK-28's AC#5 ceiling note in expr_build.rs, since the gap it flagged is being closed rather than staying unreachable.
 ---
 <!-- COMMENTS:END -->

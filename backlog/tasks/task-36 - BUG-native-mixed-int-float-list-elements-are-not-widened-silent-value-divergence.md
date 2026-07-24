@@ -1,12 +1,13 @@
 ---
-id: DRAFT-13
+id: TASK-36
 title: >-
   BUG native: mixed int/float list elements are not widened (silent value
   divergence)
-status: Draft
-assignee: []
+status: To Do
+assignee:
+  - Wren
 created_date: '2026-07-23 14:30'
-updated_date: '2026-07-24 02:32'
+updated_date: '2026-07-24 02:35'
 labels:
   - native
   - parity
@@ -48,13 +49,12 @@ native's unify_list_element_types (src/types.rs) is EXACT-EQUALITY-ONLY, so it r
       native:                         [1, 2.5]     (un-widened)
 
 WHY THIS IS THE SERIOUS ONE
-Unlike the struct/make_array dispatch gap (DRAFT-12), this is NOT a missing capability that errors out — native accepts the query and returns a DIFFERENT VALUE. Silent cross-engine divergence on the DEFAULT serving engine (decision-7). Proposed High on that basis.
+Unlike the struct/make_array dispatch gap (TASK-37), this is NOT a missing capability that errors out — native accepts the query and returns a DIFFERENT VALUE. Silent cross-engine divergence on the DEFAULT serving engine (decision-7). Proposed High on that basis.
 
 SAME BUG CLASS as the one Ritchie just fixed on the codegen side in infer_type's ListExpr arm (unifying element bases via _common_base, like COALESCE). The native fix mirrors it: compute a common numeric base instead of demanding exact equality.
 
 Surfaced by Ritchie's TASK-29 container work (2026-07-23), pinned by a strict xfail_on_native in tests/test_diff_types.py::test_list_construct_mixed_numeric_widens. Filed per the standing native-bug process — Ritchie correctly flagged rather than fixing inline. DataFusion is the oracle (decision-1).
 
-DRAFT pending AmirHossein's review of scope/priority.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -73,11 +73,17 @@ created: 2026-07-24 02:32
 ---
 COVERAGE CONFIRMED (2026-07-24): this is Wren's GROUP B — test_list_construct_mixed_numeric_widens. Already captured; no new ticket needed. The xfail's own reason string says 'separate parity bug, own ticket', which is exactly this. Provenance: came in with TASK-29 Phase B (d8e56e9, fb20afe, 8d398bf), NOT from PR #16.
 
-Wren's framing agrees with the split I made: this is a SEMANTICS decision about numeric widening, whereas DRAFT-12 is plain missing dispatch — different files, different root causes, correctly separate tickets.
+Wren's framing agrees with the split I made: this is a SEMANTICS decision about numeric widening, whereas TASK-37 is plain missing dispatch — different files, different root causes, correctly separate tickets.
 
 IMPLEMENTER NOTES (from Wren, 2026-07-24) — read before starting:
 1. REQUIRES RUST CHANGES (src/types.rs). `uv sync` does NOT recompile Rust — you need `uv run maturin develop` to rebuild _interpreter. The TASK-33 guard (953c726) auto-rebuilds when src/*.rs is newer than the .pyd, but only before tests.
 2. Do NOT run `cargo test` in this environment — it fails with an unrelated pyo3 STATUS_DLL_NOT_FOUND. Not your bug; do not chase it.
 3. The test is xfail(strict=True), so it FAILS LOUDLY the moment the gap closes. Flip the xfail off IN THE SAME COMMIT as the fix, or the suite goes red on success.
+---
+
+author: Iris (PM)
+created: 2026-07-24 02:35
+---
+Promoted from draft and assigned to Wren (2026-07-24, AmirHossein's go). QUEUE POSITION 2 of 4 — after TASK-35, before TASK-37/38. First of the three native container tasks because it is the only SILENT-wrong-value one (the other two fail loudly).
 ---
 <!-- COMMENTS:END -->
