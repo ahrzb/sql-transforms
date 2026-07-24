@@ -7,7 +7,7 @@ import pytest
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 
-from sql_transform import SQLTransform
+from sql_transform import SQLTransform, _transformer_ref
 
 # The nameless-input warning is a known false positive (see test_transformer_udf).
 pytestmark = pytest.mark.filterwarnings(
@@ -263,3 +263,42 @@ def test_nested_refs_probe_once_each():
         pa.Table.from_pandas(train)
     )
     assert (inner.calls, outer.calls) == (1, 1), (inner.calls, outer.calls)
+
+
+def test_leaf_ref_skips_materialization(monkeypatch):
+    # The `consumed` gate saves a _table_from_probe call (a table allocation),
+    # not a .transform() call -- _table_from_probe reuses the probe's `y` and
+    # never calls .transform. So the spy tests above cannot see this gate: they
+    # count .transform(), which is identical whether or not the gate exists.
+    # Count _table_from_probe calls directly instead.
+    calls = []
+    orig = _transformer_ref._table_from_probe
+
+    def counting(y, out_schema):
+        calls.append(1)
+        return orig(y, out_schema)
+
+    monkeypatch.setattr(_transformer_ref, "_table_from_probe", counting)
+
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)
+
+    # Leaf-only: no outer consumer, so the materialised table is never built.
+    SQLTransform(t"SELECT {sc}(age, income) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    assert len(calls) == 0, f"expected 0 materializations for a leaf, got {len(calls)}"
+
+    calls.clear()
+    scaled = pd.DataFrame(sc.transform(train), columns=sc.get_feature_names_out())
+    pca = PCA(n_components=1).fit(scaled)
+
+    # Nested: the inner ref IS consumed by the outer, so it must be built once.
+    SQLTransform(t"SELECT {pca}({sc}(age, income)) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    assert len(calls) == 1, (
+        f"expected 1 materialization for the inner, got {len(calls)}"
+    )
