@@ -175,7 +175,18 @@ def resolve_transformer_refs(
             in_tbl = materialized[inner]  # inner's output, real data to probe on
             # The inner's materialised output order IS the natural positional
             # order, so an ndarray-fit outer binds here for free.
-            obj, cols = _bind_names(obj, in_tbl.schema.names, name)
+            # in_schema must describe the struct the outer ACTUALLY receives -- the
+            # inner's output, left unwrapped in the SQL -- not the outer's fitted
+            # order. The UDF is registered with an Exact struct signature and Arrow
+            # struct field order is part of the type, so declaring the fitted order
+            # desyncs it from what the SQL builds: DataFusion refuses the call while
+            # the native engine, which binds by name, keeps returning rows.
+            cols = list(in_tbl.schema.names)
+            obj, feat = _bind_names(obj, cols, name)
+            if set(cols) != set(feat):
+                raise ValueError(
+                    f"{name} columns {cols} must match feature_names_in_ {feat}"
+                )
             in_schema, out_schema, y = _probe(obj, cols, in_tbl)
             # arg is the inner call node; leave it unwrapped.
         else:
