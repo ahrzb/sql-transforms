@@ -325,3 +325,77 @@ def test_aggregate_over_sqltransform_ref_still_works():
         t"SELECT AVG({inner.transform}(age)) OVER () AS m FROM __THIS__"
     ).fit(train)
     assert t.transform(train).column("m").to_pylist() == [12.5, 12.5, 12.5, 12.5]
+
+
+def test_mixed_leaf_and_nested_args_raises():
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    sc = StandardScaler().fit(train)
+    scaled = pd.DataFrame(sc.transform(train), columns=sc.get_feature_names_out())
+    pca = PCA(n_components=2).fit(scaled)
+    t = SQLTransform(t"SELECT {pca}({sc}(age, income), age) AS o FROM __THIS__")
+    with pytest.raises(ValueError, match="plain columns or another transformer ref"):
+        t.fit(pa.Table.from_pandas(train))
+
+
+def test_transformer_alongside_partitioned_window_agg():
+    # Lock-in: a transformer callout and a PARTITION BY window agg coexist, and
+    # both engines agree. Currently works; nothing must silently break it.
+    train = pd.DataFrame(
+        {
+            "age": [10.0, 20.0, 30.0, 40.0],
+            "income": [1.0, 2.0, 3.0, 4.0],
+            "city": ["a", "a", "b", "b"],
+        }
+    )
+    sc = StandardScaler().fit(train[["age", "income"]])
+    t = SQLTransform(
+        t"SELECT {sc}(age, income) AS o, AVG(age) OVER (PARTITION BY city) AS m "
+        t"FROM __THIS__"
+    ).fit(pa.Table.from_pandas(train))
+
+    batch = t.transform(pa.Table.from_pandas(train)).to_pylist()
+    infer = [r.model_dump() for r in t.infer_batch(train.to_dict("records"))]
+    assert batch == infer
+    assert [r["m"] for r in batch] == [15.0, 15.0, 35.0, 35.0]
+
+
+def test_unfit_ref_is_fitted_once_globally_not_per_partition():
+    # An unfit ref under an outer PARTITION BY is fitted ONCE over all rows; the
+    # partitioning applies to the outer aggregate over its output. Matches
+    # sklearn, where a Pipeline step is fitted once on all training data.
+    # Per-group fitting is a separate feature (DRAFT-14), not this.
+    train = pa.table({"age": [10.0, 20.0, 30.0, 50.0], "city": ["a", "a", "b", "b"]})
+    norm = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__")
+    t = SQLTransform(
+        t"SELECT AVG({norm}(age)) OVER (PARTITION BY city) AS m FROM __THIS__"
+    ).fit(train)
+
+    # global mean 27.5, NOT per-city 15.0 / 40.0
+    assert t._state_tables["__STATE_R0__"].column("avg_age").to_pylist() == [27.5]
+    got = t.transform(train).column("m").to_pylist()
+    assert np.allclose(got, [0.5454545, 0.5454545, 1.4545455, 1.4545455])
+
+
+def test_three_level_nesting_parity():
+    # AC#4. Load-bearing after Task 2: the `consumed` set decides materialisation
+    # by nesting position, and 3 levels is the only shape where a ref is
+    # simultaneously consumed AND a consumer.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    a = StandardScaler().fit(train)
+    a_out = pd.DataFrame(a.transform(train), columns=a.get_feature_names_out())
+    b = StandardScaler().fit(a_out)
+    b_out = pd.DataFrame(b.transform(a_out), columns=b.get_feature_names_out())
+    c = PCA(n_components=1).fit(b_out)
+
+    t = SQLTransform(t"SELECT {c}({b}({a}(age, income))) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    batch = _both_engines(t, train)
+    expected = c.transform(b.transform(a.transform(train)))
+    out_names = [str(n) for n in c.get_feature_names_out()]
+    got = np.array([[r["out"][n] for n in out_names] for r in batch])
+    assert np.allclose(got, expected)
