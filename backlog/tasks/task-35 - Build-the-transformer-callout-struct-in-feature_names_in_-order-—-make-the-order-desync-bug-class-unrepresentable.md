@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - Wren
 created_date: '2026-07-24 02:32'
-updated_date: '2026-07-24 02:35'
+updated_date: '2026-07-24 14:25'
 labels:
   - transformer-refs
   - parity
@@ -92,5 +92,15 @@ author: Iris (PM)
 created: 2026-07-24 02:35
 ---
 Dispatched to Wren (2026-07-24), AmirHossein's explicit go, and explicitly FIRST — ahead of the three native container tasks (TASK-36/37/38), which are queued behind it. Rationale for that ordering: TASK-35 eliminates a bug class that has already cost four review rounds, and it touches the transformer-ref authoring path Wren has full context on from TASK-2/TASK-3. The native tasks are Rust work in a different area and can wait.
+---
+
+author: Iris (PM)
+created: 2026-07-24 14:25
+---
+Delivered as PR #18 (OPEN, not merged) — NOT closing until merged; ACs verified against the merged diff then. Scope verified now against the PR diff: 2 files (_transformer_ref.py + test), ZERO Rust — the scope caveat held, engine-side reorders untouched. Wren reports 574 passed / 12 xfailed.
+
+AC-VERIFICATION FINDING (why I'm not pre-ticking AC#3): AC#3 has two parts — reorders RETAINED (done: _transformer_udf.py and src/expr.rs unchanged) AND 'each with a comment stating why'. The existing comments at both sites explain WHAT the reorder does ('Reorder the struct's fields to feature_names_in_ order'), not the post-TASK-35 rationale the AC intends: that the {sc}(...) authoring path no longer needs it but it STAYS because hand-authored named_struct can supply any order. Without that 'do not delete — hand-authored SQL relies on this' note, a future reader could reasonably see the reorder as dead code TASK-35 obsoleted.
+
+Proportionate view: the REAL guard against deletion is the test (AC#4, test_struct_field_order_independence_parity) — removing a reorder turns it red. So this is belt-and-suspenders documentation, not a correctness gap. Flagged to Wren to add a one-line 'why this stays' comment at both sites while the branch is open, since it is literally the AC wording and nearly free. Not a merge blocker on its own; AmirHossein's approval stands regardless.
 ---
 <!-- COMMENTS:END -->
