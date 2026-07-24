@@ -3,11 +3,11 @@ id: TASK-38
 title: >-
   BUG native: unquoted struct-column qualifier is not folded (S.x) — TASK-28's
   flagged ceiling, now reachable
-status: To Do
+status: In Progress
 assignee:
   - Wren
 created_date: '2026-07-24 00:36'
-updated_date: '2026-07-24 21:25'
+updated_date: '2026-07-24 21:55'
 labels:
   - native
   - parity
@@ -66,6 +66,7 @@ RELATED: TASK-37 (native has no struct(...)/make_array(...) dispatch) and TASK-3
 - [ ] #4 The xfail_on_native marker on tests/test_diff_types.py::test_uppercase_qualifier_field_access is removed and the test passes on both engines vs the DataFusion oracle, in the same commit as the fix
 - [ ] #5 TASK-28 AC#5's ceiling note in expr_build.rs is updated or removed — the gap it flagged 'unreachable' is now closed, so a stale unreachable comment would misdescribe reality
 - [ ] #6 AC#6 (measure the sibling relation-alias case) DISCHARGED: measured during recon, found a separate relation-branch inversion, filed as DRAFT-22. Nothing further required in TASK-38
+- [ ] #7 unnest_display_name (plan.rs:1017) folds the qualifier when rendering it into an output COLUMN NAME — it is a DATA consumer, so unnest(T.s) must emit t.s.x not T.s.x, matching the oracle's normalised output-column names. Ruled IN scope (same branch, same one-line fold, not a second core change); covered by a new differential test on unnest output names
 <!-- AC:END -->
 
 ## Comments
@@ -112,5 +113,20 @@ SCOPE CALL (mine, Wren-agreed): the relation-qualifier inversion stays OUT of TA
 AC#3 REWORDED for honesty (Wren's catch): the old wording implied the relation branch is currently CORRECT. It is not — it's inverted. AC#3 now says relation qualifiers are unaffected BY THIS CHANGE (don't break them, per the 96-test finding) and points to DRAFT-22 for their own divergence. Two different claims that the AC had conflated.
 
 Wren is proceeding with TASK-38's brainstorm+plan for the struct-column branch only — unaffected by this call either way, so no reason to make him wait.
+---
+
+author: Iris (PM)
+created: 2026-07-24 21:55
+---
+BLAST RADIUS enumerated by Wren before editing (spec 8a7c527, plan a501a5e). NARROWER than my 12-site estimate: 15 Expr::Column sites, of which 8 are mechanical (table: None / ..). The load-bearing work is classifying the 5 .table READERS relation-vs-data, because ONE wrong classification reintroduces the 96-failure signature:
+  RELATION -> .value (raw):  expr.rs:339 resolve_column (row.get), types.rs:39 resolve_column_type (schemas.get), plan.rs:412 column_qualifier (vs static_table), plan.rs:1062 validate_expr (resolved.get)
+  DATA -> .folded():         plan.rs:1077 struct-column branch, plan.rs:1017 unnest_display_name
+Wren verified each relation classification by READING the function, not assuming.
+
+SCOPE RULING (mine): unnest_display_name (plan.rs:1017) folds — IN scope, new AC#7. Wren found it: unnest(T.s) currently renders raw and diverges from the oracle on output-column NAMES (oracle normalises to t.s.x). It is a data consumer on the SAME fold branch, the SAME one-line change, and it has a test — NOT a second core change like DRAFT-22's relation branch. Leaving it would ship a known divergence; folding it in is the root-cause-complete fix. This is the 'don't leave a sibling caller broken' principle, and it is my call to include, not a scope expansion needing escalation.
+
+PLAN SHAPE affirmed: Task 1 is a PURE REFACTOR — thread QualifiedName with every consumer taking .value (byte-identical to the old String), suite must stay 572/12 with TASK-38's test STILL xfailing. Behaviour changes only in Task 2. This is exactly right: if the count moves during Task 1, the refactor is wrong and it is attributable to one commit instead of tangled with the fix. Good discipline on a core-enum change.
+
+AC map (Wren): #1 Task1, #2 Task2, #3 Task1.7+Task2.6, #4 Task2, #5 Task3, #6 discharged->TASK-39, #7 (new) Task2 same branch. Executing now; reports at the PR.
 ---
 <!-- COMMENTS:END -->
