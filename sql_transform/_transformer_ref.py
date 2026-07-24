@@ -212,15 +212,19 @@ def resolve_transformer_refs(
                 raise ValueError(
                     f"{name} columns {cols} must match feature_names_in_ {feat}"
                 )
-            # in_schema describes the named_struct built on the next line from
-            # call.expressions, so it MUST be in CALL order. The UDF is
-            # registered with an Exact struct signature and Arrow struct field
-            # order is part of the type, so probing in fitted order silently
-            # desyncs the declared signature from the struct the SQL builds --
-            # DataFusion then refuses the call while the native engine, which
-            # binds by name, keeps working.
-            in_schema, out_schema, y = _probe(obj, cols, table)
-            call.set("expressions", [_named_struct(call.expressions)])
+            # Build the struct AND derive in_schema in feature_names_in_ order,
+            # not the user's call order (TASK-35). The UDF is registered with an
+            # Exact struct signature and Arrow struct field order is part of the
+            # type, so the struct and in_schema must agree -- and the cheapest way
+            # to guarantee that is to use ONE order for both. Choosing the fitted
+            # order (which is also what the engines feed sklearn) makes the
+            # call-order vs fitted-order desync unrepresentable rather than
+            # merely fixed. The engine-side reorders (_transformer_udf.py,
+            # src/expr.rs) are retained on purpose: hand-authored SQL can still
+            # supply a named_struct in any order, and they remain its defense.
+            in_schema, out_schema, y = _probe(obj, feat, table)
+            by_name = {a.name: a for a in call.expressions}
+            call.set("expressions", [_named_struct([by_name[f] for f in feat])])
         # Both engines fold an unquoted function-call name to lowercase before
         # resolving it (DataFusion's ANSI identifier folding; Rust's
         # expr_build::convert_function does `.to_lowercase()` explicitly), and
