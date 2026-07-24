@@ -206,6 +206,45 @@ def test_unnest_struct_column_expands_columns():
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "CONFIRMED bug on BOTH engines (measured 2026-07-24): DataFusion names "
+        "unnest() of a struct-typed FIELD ACCESS using bracket notation for the "
+        "intermediate field, e.g. 't.s[inner].x' -- not the dot-chained "
+        "'t.s.inner.x' that both native's unnest_display_name (src/plan.rs) and "
+        "codegen's _unnest_display_name (sql_transform/_codegen/plan.py) "
+        "produce. codegen's FieldAccess branch was written to mirror native's, "
+        "so it faithfully reproduces the same wrong answer rather than "
+        "matching the oracle. Needs a ticket; not fixed here (tests/-only "
+        "scope for this task, and native bugs are never fixed inline)."
+    ),
+)
+def test_unnest_struct_field_access_expands_columns():
+    # unnest() of a struct-typed FIELD of a struct column -- exercises
+    # _unnest_display_name's recursive FieldAccess branch, not just the bare
+    # Column/StructExpr branches covered above.
+    check(
+        "SELECT unnest(s.inner) FROM t",
+        {
+            "t": rows(
+                {"s": "struct{inner:struct{x:int,y:int}}"},
+                [{"s": {"inner": {"x": 5, "y": 9}}}],
+            )
+        },
+    )
+
+
+def test_unnest_struct_alias_is_discarded():
+    # DataFusion names unnest(struct)'s expanded columns from the argument's
+    # display, ignoring any SELECT-list AS alias -- pin that behavior.
+    check(
+        "SELECT unnest(s) AS renamed FROM t",
+        {"t": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 5, "y": 9}}])},
+        expect=[{"t.s.x": 5, "t.s.y": 9}],
+    )
+
+
 def test_unnest_list_expands_rows():
     check(
         "SELECT id, unnest(vals) AS v FROM t",
