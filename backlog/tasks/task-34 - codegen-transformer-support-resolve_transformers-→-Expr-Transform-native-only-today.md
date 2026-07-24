@@ -3,11 +3,11 @@ id: TASK-34
 title: >-
   codegen: transformer support (resolve_transformers → Expr::Transform,
   native-only today)
-status: To Do
+status: In Progress
 assignee:
   - Ritchie
 created_date: '2026-07-19 16:08'
-updated_date: '2026-07-23 14:32'
+updated_date: '2026-07-24 14:23'
 labels:
   - codegen
   - transformer
@@ -76,5 +76,29 @@ author: Iris (PM)
 created: 2026-07-23 04:41
 ---
 PRE-AUTHORIZED (2026-07-23): AmirHossein green-lit dispatching TASK-34 to Ritchie automatically once TASK-29 lands. No further approval needed — PM dispatches on TASK-29 completion. (Dependency TASK-29 still In Progress.)
+---
+
+author: Iris (PM)
+created: 2026-07-24 14:19
+---
+Auto-dispatched to Ritchie (2026-07-24) on TASK-29 closing, per AmirHossein's standing pre-authorization — no further approval needed. TASK-29 dependency satisfied (PR #17 merged, master a83b742). Ritchie starting with a spec/plan check under docs/superpowers/ before code, which is correct. Precondition AC#1 (decision-7) was already satisfied.
+---
+
+author: Iris (PM)
+created: 2026-07-24 14:23
+---
+SCOPE LINE CONFIRMED (Iris, 2026-07-24), from Ritchie's spec check. This is a boundary affirmation of the existing ACs, not a new decision:
+
+IN SCOPE:
+- Make CodegenFn transformer-capable via the SAME transformers={name:(obj,out_schema)} boundary InferFn already has (AC#2).
+- Prove transform == infer == oracle parity through the existing _parity harness (AC#2, decision-1).
+- Flip TASK-31's codegen 'defers loudly' assertion to a real parity case (AC#3).
+
+OUT OF SCOPE (stays Part 2, per the engine-callout spec 2026-07-17):
+- Wiring codegen into SQLTransform as a user-selectable engine. There is NO engine selector today — fit() hardcodes native InferFn and CodegenFn is only built by the differential harness. An engine-selection API is a PUBLIC API change; no TASK-34 AC mentions it, so building it would be invented scope.
+
+Ritchie's mirror-vs-share analysis, confirmed correct: the Python fit-time desugar (resolve_transformer_refs in _transformer_ref.py — named_struct wrap + schema derive) is ALREADY shared and engine-agnostic. Only the native Rust resolve_transformers expr-walk (Function→Expr::Transform) and the Expr::Transform eval callout are native-only, and codegen can't call Rust — so those two are a genuine but small mirror on the codegen side. No shared-code option exists for them.
+
+If AmirHossein wants codegen user-selectable as part of this, that is a bigger ticket and a public-API change — his explicit call, not folded in here. Flagging to him in parallel.
 ---
 <!-- COMMENTS:END -->
