@@ -457,3 +457,50 @@ def test_named_fit_call_order_is_free():
     batch = _both_engines(t, train)
     got = np.array([[b["out"]["age"], b["out"]["income"]] for b in batch])
     assert np.allclose(got, sc.transform(train))
+
+
+def test_nested_outer_fitted_in_permuted_order_parity():
+    # The outer's fitted order is a PERMUTATION of the inner's output names. The
+    # struct the outer actually receives is the inner's output, so in_schema must
+    # describe THAT, not the outer's fitted order. Declaring the fitted order
+    # desynced the UDF's Exact struct signature from what the SQL builds:
+    # fit() accepted, the DataFusion oracle refused to plan, and the native
+    # engine still returned rows -- the two engines disagreeing about one query.
+    # n_components=1 (not 2, like the fit is otherwise wide enough for): with
+    # this fixture's exactly-collinear age/income, a 2nd component would be a
+    # true zero-variance direction where the two engines' float noise disagrees
+    # in the low digits -- a real but unrelated sensitivity this test must not
+    # trip over. The permutation bug being tested lives in the INPUT struct
+    # order, unaffected by output width.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    inner = StandardScaler().fit(train)  # emits struct<age, income>
+    mid = pd.DataFrame(inner.transform(train), columns=inner.get_feature_names_out())
+    outer = PCA(n_components=1).fit(mid[["income", "age"]])  # fitted [income, age]
+
+    t = SQLTransform(t"SELECT {outer}({inner}(age, income)) AS o FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    batch = _both_engines(t, train)
+    expected = outer.transform(mid[["income", "age"]])
+    out_names = [str(n) for n in outer.get_feature_names_out()]
+    got = np.array([[r["o"][n] for n in out_names] for r in batch])
+    assert np.allclose(got, expected)
+
+
+def test_nested_outer_column_name_mismatch_raises():
+    # Outer fitted on DIFFERENT NAMES than the inner emits. Previously this died
+    # with a raw KeyError from inside _probe, mid-fit(). The nested branch now
+    # validates the name set like the leaf branch does.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    inner = StandardScaler().fit(train)  # emits age, income
+    mid = pd.DataFrame(inner.transform(train), columns=inner.get_feature_names_out())
+    renamed = mid.rename(columns={"age": "c1", "income": "c2"})
+    outer = PCA(n_components=2).fit(renamed)  # feature_names_in_ = [c1, c2]
+
+    t = SQLTransform(t"SELECT {outer}({inner}(age, income)) AS o FROM __THIS__")
+    with pytest.raises(ValueError, match="must match feature_names_in_"):
+        t.fit(pa.Table.from_pandas(train))
