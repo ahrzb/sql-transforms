@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - Ritchie
 created_date: '2026-07-18 20:14'
-updated_date: '2026-07-23 14:32'
+updated_date: '2026-07-24 02:19'
 labels:
   - codegen
   - feature
@@ -73,5 +73,17 @@ author: Iris (PM)
 created: 2026-07-19 16:18
 ---
 Dispatched to Ritchie (2026-07-19). AmirHossein's call: Ritchie takes the codegen lane (TASK-29 then TASK-34), Wren takes the rest (m-1 spine). Precondition AC #3 checked — decision-7 is ruled (opt-in), so this is cleared to work. Goal is codegen feature-completeness for opt-in users; still Low importance vs the native default path, but actively worked now. Suggested order within the ticket: the 2 cheap operator defers (unary-minus-on-non-literal, ||) first, then the container surface (struct/list/named_struct/UNNEST).
+---
+
+author: Iris (PM)
+created: 2026-07-24 02:19
+---
+Phase C (UNNEST) delivered as PR #17 — OPEN, not merged. Skip delta verified as the standing ask: codegen differential skips 5 → 0 for Phase C, 16 → 0 across all of TASK-29 (AC#1/#2's actual bar). Suite 553 passed / 12 xfailed / 0 skipped. What remains in _DEFERRED is the `s || 'x'` container-operand guard, which is a raise-test, not an unimplemented feature. NOT closing until merged; will verify ACs against the merged diff.
+
+MY FRAMING FLAG WAS ANSWERED, AND THE ANSWER WAS 'NO DECISION NEEDED'. I told Ritchie to stop if UNNEST's row-multiplying output needed a semantic call. He checked instead of assuming either way: native already implements it (RelNode::Unnest, NULL/empty list → zero rows, one-unnest-per-query), the differential tests already passed on native + oracle, and infer() was never a 1:1 rows-in/rows-out contract. So codegen mirrored a behavior that was ALREADY RULED — no new semantics invented. He confirmed he would have stopped otherwise. Correct handling of an escalation flag: verify whether the decision actually exists before escalating it.
+
+SPEC CORRECTION (already committed): the spec listed unnest(struct) as NOT in the 5-skip inventory and out of scope. Ritchie verified against the LIVE skip set before planning — it was 2 of the 5. The spec itself asked for that verification, so the note did its job; Phase C covered both mechanisms. Another instance of validate-don't-assume catching a stale planning assumption.
+
+3 findings spun out, all pinned xfail-strict rather than fixed: DRAFT-19 (UNNEST output naming diverges on BOTH engines — bare unnest silently DROPS a column via alias collision, High) and DRAFT-20 (native struct || string silently returns a stringified struct, zero prior coverage). Ritchie correctly did not fix the codegen half of DRAFT-19 — codegen mirrored native, so a codegen-only fix would have SPLIT the engines.
 ---
 <!-- COMMENTS:END -->
