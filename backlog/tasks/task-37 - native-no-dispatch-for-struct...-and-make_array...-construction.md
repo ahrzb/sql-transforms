@@ -5,7 +5,7 @@ status: To Do
 assignee:
   - Wren
 created_date: '2026-07-23 14:30'
-updated_date: '2026-07-24 02:35'
+updated_date: '2026-07-24 14:36'
 labels:
   - native
   - parity
@@ -64,10 +64,10 @@ Surfaced by Ritchie's TASK-29 container work (2026-07-23), pinned by 3 strict xf
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 native convert_function (src/expr_build.rs) dispatches struct(...) positional form, naming fields c0/c1/... exactly as DataFusion does
-- [ ] #2 native dispatches struct(a AS x, ...) named form (exp.PropertyEQ) with explicit field names
-- [ ] #3 native dispatches make_array(...) to the same construction path the bracket literal [a, b] already uses
-- [ ] #4 The 3 xfail_on_native markers in tests/test_diff_types.py (test_struct_construct_positional, test_struct_construct_named, test_make_array_construct) are removed and the tests pass on both engines against the DataFusion oracle
+- [ ] #1 STRUCT construction handled via a SqlExpr::Struct arm in convert_expr (positional -> c0/c1/...; named `a AS x` -> field x), mirroring codegen's _convert_struct at plan.py:390 — NOT via convert_function
+- [ ] #2 The now-identified DEAD `struct` branch in convert_function (expr_build.rs:197-204) is removed, since sqlparser routes struct(...) to SqlExpr::Struct and it never reaches convert_function
+- [ ] #3 make_array(...) dispatched in convert_function -> Expr::List, the same construction path the bracket literal [a, b] already uses (mirrors codegen's exp.Array -> ListExpr at plan.py:395). make_array is the pinned case; include the array(...) alias ONLY if it is the same one-line dispatch AND gets its own parity assertion — otherwise leave it out, do not add untested surface
+- [ ] #4 The 3 xfail_on_native markers (test_struct_construct_positional, test_struct_construct_named, test_make_array_construct) are removed and pass on both engines vs the DataFusion oracle; each flip in the same commit as its fix
 <!-- AC:END -->
 
 ## Comments
@@ -88,5 +88,22 @@ author: Iris (PM)
 created: 2026-07-24 02:35
 ---
 Promoted from draft and assigned to Wren (2026-07-24, AmirHossein's go). QUEUE POSITION 3 of 4. Shares src/expr_build.rs with TASK-38 — worth doing back-to-back while the file is in context, though they stay separate tickets with separate xfail flips.
+---
+
+author: Iris (PM)
+created: 2026-07-24 14:36
+---
+ROOT-CAUSE CORRECTION + AC UPDATE (2026-07-24), from Wren's measured recon before implementing. The ticket's original 'native has no struct(...) construction dispatch (expr_build.rs)' was imprecise — there are TWO distinct gaps, not one:
+
+1. STRUCT is NOT a dispatch gap. sqlparser parses struct(...) into a first-class SqlExpr::Struct AST node, so it never reaches convert_function; it hits convert_expr's catch-all 'Unsupported expression'. convert_function ALREADY has a `struct` case (expr_build.rs:197-204) but it is DEAD CODE — unreachable. Real fix: a SqlExpr::Struct arm in convert_expr (mirrors codegen's _convert_struct), plus removing the dead branch. ACs #1/#2 rewritten to this.
+
+2. MAKE_ARRAY genuinely IS a function-dispatch gap as the ticket said — reaches convert_function, hits the catch-all Ok(Expr::Function{}), fails at eval 'Unknown function'. Fix: a case mapping make_array -> Expr::List. Cross-parser note: sqlparser gives make_array as a Function, sqlglot gives the bracket form as exp.Array, so native's trigger is the function name where codegen's is the AST node.
+
+MY RULINGS on Wren's three questions (within-ticket scope calls, PM's to make):
+(a) REMOVE the dead struct branch in convert_function — yes. Dead code identified is dead code deleted; folded into AC#2.
+(b) array(...) alias: make_array is the pinned/tested case and the AC. Include array() ONLY if it is the identical one-line dispatch and you add a parity assertion for it; otherwise out of scope, not a new ticket unless it turns out non-trivial. Don't add untested surface for completeness' sake.
+(c) all three are error-out (loud) gaps, lower-stakes than TASK-36's silent one — acknowledged, no change; xfail-strict flip still applies per-test.
+
+This is the validate-don't-assume pattern catching an imprecise ticket before code, same as Ritchie's spec corrections. The ticket is better for it.
 ---
 <!-- COMMENTS:END -->
