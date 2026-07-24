@@ -72,6 +72,8 @@ sql = "SELECT target / MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS_
 - **Typed I/O**: Pydantic models for the input row and output, validated when the
   transformer is built and again at call time. Output is a typed model; the input
   schema is auto-synthesized or user-supplied.
+- **Transformer references**: interpolate a fitted sklearn transformer directly
+  into a t-string and apply it to columns (see below).
 
 See [docs/SQL_SUPPORT.md](docs/SQL_SUPPORT.md) for the feature-by-feature tracker.
 
@@ -107,6 +109,16 @@ is the standard ML pattern — fit on training data, apply to training and servi
 Interpolate a fitted transformer into a t-string and apply it to columns:
 
 ```python
+import pandas as pd
+import pyarrow as pa
+from sklearn.preprocessing import StandardScaler
+from sql_transform import SQLTransform
+
+train_df = pd.DataFrame(
+    {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+)
+table = pa.Table.from_pandas(train_df)
+
 sc = StandardScaler().fit(train_df)          # fit on a DataFrame -> records feature_names_in_
 t = SQLTransform(t"SELECT {sc}(age, income) AS scaled FROM __THIS__").fit(table)
 ```
@@ -114,8 +126,8 @@ t = SQLTransform(t"SELECT {sc}(age, income) AS scaled FROM __THIS__").fit(table)
 **Output is a single Arrow struct column**, not one column per feature:
 
 ```python
-t.transform(table).schema            # scaled: struct<age: double, income: double>
-t.transform(table).flatten().schema  # ['scaled.age', 'scaled.income']
+t.transform(table).schema                  # scaled: struct<age: double, income: double>
+t.transform(table).flatten().schema.names  # ['scaled.age', 'scaled.income']
 ```
 
 Call `.flatten()` to get flat columns for an sklearn handoff.
@@ -133,7 +145,15 @@ With positional binding, `{sc}(income, age)` against a transformer fitted as
 Aggregating over a transformer's output (`AVG({sc}(age)) OVER ()`) is not
 supported — it is inherently two-stage and needs a subquery. Aggregate over an
 input column, or use a `SQLTransform` reference, which inlines to a scalar and
-composes with aggregates freely.
+composes with aggregates freely:
+
+```python
+norm = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__").fit(table)
+t2 = SQLTransform(
+    t"SELECT AVG({norm.transform}(age)) OVER () AS m FROM __THIS__"
+).fit(table)
+t2.transform(table).column("m").to_pylist()  # [1.0, 1.0, 1.0, 1.0]
+```
 
 ## Development
 
