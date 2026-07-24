@@ -153,24 +153,25 @@ pub fn infer_type(
     }
 }
 
-/// Unify element types for a list literal: identical types (by FieldType
-/// equality, so nullability must also agree) collapse to that type;
-/// anything else (including an empty list) is unresolvable.
+/// Unify element types for a list literal to their common base (COALESCE/CASE
+/// widening): a mix of Int/Float widens to Float, matching DataFusion's
+/// list<double>. An empty list is unresolvable.
 fn unify_list_element_types(item_types: &[FieldType]) -> FieldType {
-    let mut iter = item_types.iter();
-    let Some(first) = iter.next() else {
+    if item_types.is_empty() {
         return FieldType {
             base: Base::Other,
             nullable: true,
         };
-    };
-    if iter.all(|t| t == first) {
-        first.clone()
-    } else {
-        FieldType {
-            base: Base::Other,
-            nullable: true,
-        }
+    }
+    // Same widening as COALESCE/CASE (common_base): all-equal keeps the base, a
+    // mix of Int/Float widens to Float (DataFusion's numeric supertype). Was
+    // exact-FieldType-equality only, which refused to widen a mixed int/float
+    // list and left the int element un-widened on the serving path while the
+    // DataFusion oracle produced list<double> -- a silent value divergence
+    // (TASK-36). Element is nullable if any element is, mirroring the CASE arm.
+    FieldType {
+        base: common_base(item_types),
+        nullable: item_types.iter().any(|t| t.nullable),
     }
 }
 

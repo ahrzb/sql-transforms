@@ -57,11 +57,13 @@ def test_make_array_construct(xfail_on_native):
     )
 
 
-def test_list_construct_mixed_numeric_widens(xfail_on_native):
+def test_list_construct_mixed_numeric_widens():
     # DataFusion widens the int element to match the float element (list<double>).
-    # Locks in infer_type's ListExpr arm unifying element bases via _common_base
-    # (like COALESCE), so the output model types the list as list[float] and
-    # pydantic coerces the runtime int element to float.
+    # Both engines unify a list literal's element bases via their common-base
+    # widening (like COALESCE): codegen's infer_type ListExpr arm and native's
+    # unify_list_element_types (src/types.rs, fixed in TASK-36). The output model
+    # types the list as list[float] and pydantic coerces the runtime int element
+    # to float, so both engines emit [1.0, 2.5] and match the oracle.
     #
     # Bracket literal `[x, y]` (not make_array(...)): native's function dispatch
     # doesn't recognize "make_array"/"array" as a builtin at all (a separate,
@@ -69,17 +71,6 @@ def test_list_construct_mixed_numeric_widens(xfail_on_native):
     # unlike Python's ANONYMOUS-function branch), so it isn't a usable surface
     # to compare both engines against the oracle. The bracket form reaches the
     # same Expr::List / ListExpr construction path in both engines.
-    #
-    # xfail_on_native: measured -- native's unify_list_element_types
-    # (src/types.rs) is exact-equality-only, the same bug class just fixed here
-    # in codegen's infer_type. Native still emits [1, 2.5] (un-widened) instead
-    # of DataFusion's [1.0, 2.5]. A native-side fix is out of scope here; flag
-    # as a parity bug for its own ticket rather than fixing inline.
-    xfail_on_native(
-        "native does not widen mixed int/float list elements "
-        "(types.rs unify_list_element_types is exact-equality-only) -- "
-        "separate parity bug, own ticket"
-    )
     check(
         "SELECT [x, y] AS l FROM t",
         {"t": rows({"x": "int", "y": "float"}, [{"x": 1, "y": 2.5}])},
