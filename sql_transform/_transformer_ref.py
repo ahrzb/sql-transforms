@@ -29,6 +29,38 @@ def is_transformer(obj: object) -> bool:
     return hasattr(obj, "transform") and hasattr(obj, "n_features_in_")
 
 
+def _bind_names(obj: object, cols: list[str], name: str) -> tuple[object, list[str]]:
+    """Resolve the input column order the transformer expects.
+
+    Names are metadata: they ride the named_struct as Arrow field names and BOTH
+    engines align on them. A transformer fitted on a DataFrame recorded its own;
+    one fitted on an ndarray did not, so we synthesise them from the call site
+    onto a copy (never mutating the user's object -- doc-8's clone contract).
+
+    Some estimators expose feature_names_in_ as a read-only property delegating
+    to an inner step (Pipeline), so the synthesis can fail. Say so, instead of
+    letting a raw AttributeError escape from the middle of fit().
+    """
+    feat = getattr(obj, "feature_names_in_", None)
+    if feat is not None:
+        return obj, [str(n) for n in feat]
+    if len(cols) != obj.n_features_in_:
+        raise ValueError(
+            f"{name} takes {obj.n_features_in_} columns (fitted without names, so "
+            f"arguments bind positionally in call order), got {len(cols)}: {cols}"
+        )
+    obj = copy.copy(obj)
+    try:
+        obj.feature_names_in_ = np.array(cols)
+    except AttributeError:
+        raise ValueError(
+            f"{name}: {type(obj).__name__} was fitted without feature names and does "
+            f"not allow them to be set. Re-fit it on a pandas DataFrame so it records "
+            f"feature_names_in_."
+        ) from None
+    return obj, cols
+
+
 def _in_window_agg(node: exp.Expression) -> bool:
     """Is `node` inside a window aggregate's argument?"""
     p = node.parent
@@ -141,7 +173,9 @@ def resolve_transformer_refs(
         if inner is not None:
             resolve(inner)  # innermost first
             in_tbl = materialized[inner]  # inner's output, real data to probe on
-            cols = [str(n) for n in obj.feature_names_in_]
+            # The inner's materialised output order IS the natural positional
+            # order, so an ndarray-fit outer binds here for free.
+            obj, cols = _bind_names(obj, in_tbl.schema.names, name)
             in_schema, out_schema, y = _probe(obj, cols, in_tbl)
             # arg is the inner call node; leave it unwrapped.
         else:
@@ -151,30 +185,12 @@ def resolve_transformer_refs(
                     f"ref, e.g. {{t}}(a, b) or {{t}}({{u}}(a, b))"
                 )
             cols = [a.name for a in call.expressions]
-            feat = getattr(obj, "feature_names_in_", None)
-            if feat is None:
-                # Fitted without names (ndarray). Names are METADATA -- they ride
-                # the named_struct as Arrow field names and both engines align on
-                # them. sklearn never recorded any, so synthesise them from the
-                # call site. Order is the user's contract, exactly as it is when
-                # calling sklearn directly; only arity is checkable.
-                if len(cols) != obj.n_features_in_:
-                    raise ValueError(
-                        f"{name} takes {obj.n_features_in_} columns (fitted "
-                        f"without names, so arguments bind positionally in "
-                        f"call order), got {len(cols)}: {cols}"
-                    )
-                # copy.copy, never mutate: doc-8's clone contract. Shallow, so
-                # the fitted state is shared rather than duplicated.
-                obj = copy.copy(obj)
-                obj.feature_names_in_ = np.array(cols)
-            else:
-                feat = [str(n) for n in feat]
-                if set(cols) != set(feat):
-                    raise ValueError(
-                        f"{name} columns {cols} must match feature_names_in_ {feat}"
-                    )
-            in_schema, out_schema, y = _probe(obj, cols, table)
+            obj, feat = _bind_names(obj, cols, name)
+            if set(cols) != set(feat):
+                raise ValueError(
+                    f"{name} columns {cols} must match feature_names_in_ {feat}"
+                )
+            in_schema, out_schema, y = _probe(obj, feat, table)
             call.set("expressions", [_named_struct(call.expressions)])
         # Both engines fold an unquoted function-call name to lowercase before
         # resolving it (DataFusion's ANSI identifier folding; Rust's

@@ -70,7 +70,8 @@ def desugar_template(template: Template) -> tuple[str, dict[str, Ref]]:
             # entirely the wrong place.
             raise ValueError(
                 f"interpolation {{{item.expression}}}: {type(v).__name__} is not "
-                f"fitted -- call .fit(...) before referencing it"
+                f"fitted (or does not expose n_features_in_) -- call .fit(...) "
+                f"before referencing it"
             )
         else:
             raise TypeError(

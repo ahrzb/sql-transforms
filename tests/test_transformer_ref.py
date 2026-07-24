@@ -217,6 +217,44 @@ def test_named_fit_column_mismatch_still_raises():
         t.fit(pa.Table.from_pandas(train))
 
 
+def test_ndarray_fit_outer_in_nested_ref_works():
+    # The nested branch used to read feature_names_in_ unconditionally, so an
+    # ndarray-fit OUTER died with a raw AttributeError. The inner's materialised
+    # output order is the natural positional order, so binding it works.
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    a = StandardScaler().fit(train)
+    a_out = pd.DataFrame(a.transform(train), columns=a.get_feature_names_out())
+    b = PCA(n_components=1).fit(a_out.to_numpy())  # ndarray fit: no names
+    assert not hasattr(b, "feature_names_in_")
+
+    t = SQLTransform(t"SELECT {b}({a}(age, income)) AS out FROM __THIS__").fit(
+        pa.Table.from_pandas(train)
+    )
+    batch = _both_engines(t, train)
+    expected = b.transform(a.transform(train))
+    out_names = [str(n) for n in b.get_feature_names_out()]
+    got = np.array([[r["out"][n] for n in out_names] for r in batch])
+    assert np.allclose(got, expected)
+    assert not hasattr(b, "feature_names_in_")  # clone contract
+
+
+def test_unsettable_feature_names_gives_actionable_error():
+    # Pipeline.feature_names_in_ is a read-only property delegating to steps[0].
+    # Synthesising names onto it raises AttributeError; the user must see an
+    # actionable message, not a raw attribute error from inside fit().
+    from sklearn.pipeline import Pipeline
+
+    train = pd.DataFrame(
+        {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
+    )
+    p = Pipeline([("sc", StandardScaler())]).fit(train.to_numpy())
+    t = SQLTransform(t"SELECT {p}(age, income) AS o FROM __THIS__")
+    with pytest.raises(ValueError, match="Re-fit it on a pandas DataFrame"):
+        t.fit(pa.Table.from_pandas(train))
+
+
 class _SpyTransformer:
     """Wraps a fitted transformer and counts .transform() calls."""
 
