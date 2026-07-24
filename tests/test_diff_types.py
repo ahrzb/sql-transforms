@@ -176,6 +176,32 @@ def test_quoted_qualifier_stays_case_exact(xfail_on_codegen):
     check_both_raise(
         'SELECT "S".x AS v FROM t',
         {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 7}}])},
+        match="S",
+    )
+
+
+def test_unnest_qualifier_output_names_are_folded(xfail_on_codegen):
+    # unnest() renders the qualifier into the OUTPUT COLUMN NAMES, and DataFusion
+    # renders the REGISTERED (folded) qualifier there: a relation registered as
+    # `T` yields columns `t.s.x` / `t.s.y`, not `T.s.x`. Native matches this via
+    # unnest_display_name's fold (TASK-38).
+    #
+    # This is a display-name fold, not a resolution fold -- unnest_display_name
+    # runs after validate_expr, so the qualifier here is always an already
+    # resolved relation alias. Related: `unnest(T.s) FROM t` (qualifier case
+    # differing from the relation) needs relation-alias folding instead and
+    # errors on BOTH engines -- that is DRAFT-22's territory, not this one.
+    #
+    # xfail_on_codegen: codegen renders the qualifier raw (`T.s.x`), diverging
+    # from the oracle. Pre-existing in codegen's own Python, untouched by this
+    # branch; own ticket rather than fixed inline (requested from the PM).
+    xfail_on_codegen(
+        "codegen renders the unnest qualifier raw (T.s.x) instead of the "
+        "oracle's folded t.s.x -- pre-existing, own ticket"
+    )
+    check(
+        "SELECT unnest(T.s) FROM T",
+        {"T": rows({"s": "struct{x:int,y:int}"}, [{"s": {"x": 7, "y": 8}}])},
     )
 
 

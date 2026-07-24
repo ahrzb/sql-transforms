@@ -46,9 +46,10 @@ pub fn convert_expr(e: &SqlExpr) -> Result<Expr, InterpError> {
             // already missed (TASK-38).
             //
             // Relation qualifiers themselves still diverge from the oracle,
-            // which registers relations under a FOLDED name: see DRAFT-22. That
-            // also blocks `unnest(T.s)`, whose qualifier resolution needs the
-            // relation branch rather than this one.
+            // which registers relations under a FOLDED name (so `"__THIS__".age`
+            // misses there and hits here). Measured, tracked separately; it is
+            // also what blocks `unnest(T.s) FROM t`, whose qualifier resolution
+            // needs the relation branch rather than this one.
             let mut expr = Expr::Column {
                 table: Some(crate::expr::QualifiedName {
                     value: parts[0].value.clone(),

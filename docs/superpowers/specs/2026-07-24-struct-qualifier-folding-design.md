@@ -148,7 +148,7 @@ branch, so they take `.value`, not `.folded()`.
 | `test_uppercase_qualifier_field_access` | `S.x` folds → 7, both engines | exists, xfail flipped (AC#4) |
 | `test_quoted_qualifier_stays_case_exact` | `"S".x` does **not** fold → raises on both | **new** (AC#2) |
 | `test_qualified_struct_field_access` | `t.s.x` still works | exists, must stay green (AC#3) |
-| `test_unnest_uppercase_qualifier_output_names` | `unnest(T.s)` → cols `t.s.x` | **new** (finding 3) |
+| `test_unnest_qualifier_output_names_are_folded` | `unnest(T.s) FROM T` → cols `t.s.x` | **new** (finding 3) |
 
 The AC#2 test is the load-bearing addition: without it the fix could over-fold —
 folding the quoted form too — and still look correct, because nothing currently
