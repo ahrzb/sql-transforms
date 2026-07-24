@@ -399,8 +399,23 @@ def _convert_expr(e: exp.Expression) -> Any:
         # .expressions), not exp.Anonymous. Converted to a plain Func node so
         # validate_columns can recognize and REPLACE it -- a surviving
         # unnest() Func never reaches infer_type or emit.
-        if len(e.expressions) != 1:
-            raise ValueError("unnest() takes exactly one argument")
+        #
+        # NOT a length guard: under the default parse dialect, sqlglot's own
+        # grammar for UNNEST accepts exactly one argument, so a second
+        # argument is discarded during parsing itself -- `parse_one("SELECT
+        # unnest(a, b) AS x FROM t")` yields Unnest(expressions=[Column(a)])
+        # with `b` gone from the tree entirely (confirmed: `.args` only ever
+        # has the "expressions" key, one element long; there is no other
+        # attribute, comment, or meta field `b` survives in). `len(...) != 1`
+        # can therefore never be true here -- there is nothing left to guard
+        # against by the time this code runs. (The duckdb read dialect keeps
+        # both arguments, as Explode(this=a, expressions=[b]), but switching
+        # the parser dialect is out of scope for this fix.) The oracle and
+        # native both reject `unnest(a, b)` outright; codegen silently drops
+        # `b` and answers using only `a` -- a real, currently-undetectable
+        # divergence, pinned as an xfail-strict differential test
+        # (test_unnest_extra_argument_silently_dropped in
+        # tests/test_diff_types.py) rather than guarded here.
         return Func("unnest", [_convert_expr(e.expressions[0])])
     if isinstance(e, exp.Trim):
         if e.args.get("position") or e.expression:
@@ -736,6 +751,18 @@ def _unnest_display_name(e: Any) -> str:
     apart, and DataFusion names a struct()-built unnest differently. Widen if
     that combination ever needs differential coverage."""
     if isinstance(e, Column):
+        # e.table is always set by the time an unnest() argument reaches here:
+        # _validate_expr (called on every projection item before _unnest_arg
+        # runs) either keeps a qualified column's .table or resolves an
+        # unqualified one and assigns .table = effective before returning
+        # (plan.py, the Column arm of _validate_expr) -- there is no path back
+        # out with .table still None. Guarded anyway rather than trusting that
+        # invariant silently: formatting None into a column NAME ("None.x")
+        # would be a confident wrong answer, not a loud error. Mirrors
+        # native's explicit `Column { table: None, .. }` arm (src/plan.rs
+        # unnest_display_name), which raises instead of stringifying None.
+        if e.table is None:
+            raise ValueError(f"unnest() argument column {e.name!r} is unqualified")
         return f"{e.table}.{e.name}"
     if isinstance(e, FieldAccess):
         return f"{_unnest_display_name(e.base)}.{e.field}"
