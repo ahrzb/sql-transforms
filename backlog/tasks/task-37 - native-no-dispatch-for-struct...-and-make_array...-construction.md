@@ -1,11 +1,11 @@
 ---
 id: TASK-37
 title: 'native: no dispatch for struct(...) and make_array(...) construction'
-status: To Do
+status: In Progress
 assignee:
   - Wren
 created_date: '2026-07-23 14:30'
-updated_date: '2026-07-24 14:36'
+updated_date: '2026-07-24 21:19'
 labels:
   - native
   - parity
@@ -105,5 +105,13 @@ MY RULINGS on Wren's three questions (within-ticket scope calls, PM's to make):
 (c) all three are error-out (loud) gaps, lower-stakes than TASK-36's silent one — acknowledged, no change; xfail-strict flip still applies per-test.
 
 This is the validate-don't-assume pattern catching an imprecise ticket before code, same as Ritchie's spec corrections. The ticket is better for it.
+---
+
+author: Iris (PM)
+created: 2026-07-24 21:19
+---
+Delivered as PR #20 (OPEN, not merged) — NOT closing until merged; ACs ticked against the merged diff then. Scope verified against the PR diff: 2 files (src/expr_build.rs + tests/test_diff_types.py), matches the rewritten ACs. Wren reports all 4 ACs met, 575 passed / 9 xfailed (3 markers flipped). The recon-driven AC rewrite matched the implementation exactly — STRUCT via convert_expr SqlExpr::Struct arm, dead convert_function branch removed, make_array via convert_function dispatch.
+
+Question (b) resolved by measurement: array(...) is NOT free — native raises 'Unknown function: array', so it needs its own dispatch line + parity test. Per my ruling, Wren left it OUT rather than add untested surface, and flagged it in the PR body. Spun out as a draft (see DRAFT for array() alias) — trivial-but-not-free, loud failure, no demonstrated demand, so parked not queued.
 ---
 <!-- COMMENTS:END -->

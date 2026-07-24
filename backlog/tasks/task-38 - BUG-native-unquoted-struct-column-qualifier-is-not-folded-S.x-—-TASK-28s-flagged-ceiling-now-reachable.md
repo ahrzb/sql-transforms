@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - Wren
 created_date: '2026-07-24 00:36'
-updated_date: '2026-07-24 02:35'
+updated_date: '2026-07-24 21:21'
 labels:
   - native
   - parity
@@ -60,10 +60,12 @@ RELATED: TASK-37 (native has no struct(...)/make_array(...) dispatch) and TASK-3
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 native folds an unquoted struct-column qualifier to lowercase, matching DataFusion (SELECT S.x resolves against struct column s)
-- [ ] #2 A quoted qualifier stays case-exact, consistent with the TASK-28 folding rule for ordinary identifiers
-- [ ] #3 The xfail_on_native marker on tests/test_diff_types.py::test_uppercase_qualifier_field_access is removed and the test passes on both engines
-- [ ] #4 TASK-28 AC#5's ceiling note in expr_build.rs is updated or removed, since the gap it flagged is now closed rather than merely unreachable
+- [ ] #1 Expr::Column carries the qualifier's quote information end-to-end (change table: Option<String> to a quote-preserving representation, or add a table_quoted flag) through expr_build -> plan, so quote_style is no longer discarded before the struct-column branch can use it
+- [ ] #2 At the struct-column field-access fallback (plan.rs:1077), an UNQUOTED qualifier folds to lowercase (S -> s) while a QUOTED qualifier stays case-exact ("S" stays S) — matching DataFusion and consistent with TASK-28's unquoted-folding rule for ordinary columns. This is the AC to get exactly right: fold unquoted, never fold quoted
+- [ ] #3 Relation qualifiers (__THIS__, __STATE__, generated join relations) are UNAFFECTED — they must NOT fold. Full suite stays green: the naive one-line fold broke 96 tests by folding __THIS__ -> __this__; the fix must fold ONLY on the struct-column branch, never the relation branch
+- [ ] #4 The xfail_on_native marker on tests/test_diff_types.py::test_uppercase_qualifier_field_access is removed and the test passes on both engines vs the DataFusion oracle, in the same commit as the fix
+- [ ] #5 TASK-28 AC#5's ceiling note in expr_build.rs is updated or removed — the gap it flagged 'unreachable' is now closed, so leaving a stale unreachable comment would misdescribe reality
+- [ ] #6 MEASURE the sibling case: does the same quote-loss affect a CamelCase TABLE/relation alias (a user-supplied qualifier that IS a relation)? If reachable and divergent from the oracle, fix it in scope or file a follow-up with the measurement — do not leave it unmeasured now that quote-carrying is being built
 <!-- AC:END -->
 
 ## Comments
@@ -86,5 +88,17 @@ author: Iris (PM)
 created: 2026-07-24 02:35
 ---
 Promoted from draft and assigned to Wren (2026-07-24, AmirHossein's go). QUEUE POSITION 4 of 4. Shares src/expr_build.rs with TASK-37 — do them back-to-back. Note AC#4: this one also requires updating TASK-28's AC#5 ceiling note in expr_build.rs, since the gap it flagged is being closed rather than staying unreachable.
+---
+
+author: Iris (PM)
+created: 2026-07-24 21:21
+---
+SCOPE DECISION — AmirHossein ruled OPTION (a): the full fix, not the one-line version the ticket implied (2026-07-24). This materially expands TASK-38 from 'fold the qualifier in expr_build.rs' to a core Expr::Column change carrying quote_style through to plan.rs. ACs rewritten to (a).
+
+WHY the ticket's original framing was wrong (Wren, measured):
+- The naive one-line fold (expr_build.rs:44, fold parts[0]) BREAKS 96 TESTS. Our own rewrite emits internally-qualified SQL (SELECT __THIS__.age / __STATE__.avg_age ... FROM __THIS__ LEFT JOIN __STATE__), so folding parts[0] turns __THIS__ -> __this__ and every windowed transform on native dies.
+- expr_build CANNOT distinguish a relation qualifier from a struct-column qualifier — that is only known later in plan.rs::validate_expr (resolved.get(t)). Relation -> use as-is (don't fold). Not-a-relation -> struct-field fallback at plan.rs:1077 (should fold). But by then Expr::Column stores table as a bare Option<String> and quote_style is gone. Hence (a): carry the quote info so the struct-column branch can fold unquoted / preserve quoted.
+
+This is why the ticket said 'unreachable' at TASK-28 time and why the honest fix is bigger. AmirHossein chose correctness over the stopgap. Added AC#6: measure whether a CamelCase TABLE alias hits the same quote-loss (Wren flagged it unmeasured) — fix in scope or follow-up, don't leave it hanging. Priority stays Medium (user-facing severity unchanged; scope grew, importance didn't).
 ---
 <!-- COMMENTS:END -->
