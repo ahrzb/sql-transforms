@@ -29,10 +29,29 @@ def is_transformer(obj: object) -> bool:
     return hasattr(obj, "transform") and hasattr(obj, "n_features_in_")
 
 
+def _in_window_agg(node: exp.Expression) -> bool:
+    """Is `node` inside a window aggregate's argument?"""
+    p = node.parent
+    while p is not None:
+        if isinstance(p, exp.Window):
+            return True
+        p = p.parent
+    return False
+
+
 def _find_call(select: exp.Select, name: str) -> exp.Anonymous:
     for n in select.find_all(exp.Anonymous):
         if str(n.this).upper() == name:
             require_in_projection(select, n, f"transformer ref {name}")
+            if _in_window_agg(n):
+                raise ValueError(
+                    f"{name} output cannot feed a window aggregate: aggregating over "
+                    f"transformer output is inherently two-stage (materialise the "
+                    f"output, then aggregate it), which needs a subquery -- "
+                    f"SQLTransform's single-SELECT surface has none. Aggregate over an "
+                    f"input column instead, or use a SQLTransform reference, which "
+                    f"inlines to a scalar."
+                )
             return n
     raise ValueError(
         f"transformer ref {name} must be applied to columns, e.g. {{t}}(a, b)"
