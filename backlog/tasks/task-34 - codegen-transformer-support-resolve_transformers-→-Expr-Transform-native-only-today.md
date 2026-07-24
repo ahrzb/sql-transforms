@@ -3,11 +3,11 @@ id: TASK-34
 title: >-
   codegen: transformer support (resolve_transformers → Expr::Transform,
   native-only today)
-status: To Do
+status: In Progress
 assignee:
   - Ritchie
 created_date: '2026-07-19 16:08'
-updated_date: '2026-07-23 14:32'
+updated_date: '2026-07-24 14:19'
 labels:
   - codegen
   - transformer
@@ -76,5 +76,11 @@ author: Iris (PM)
 created: 2026-07-23 04:41
 ---
 PRE-AUTHORIZED (2026-07-23): AmirHossein green-lit dispatching TASK-34 to Ritchie automatically once TASK-29 lands. No further approval needed — PM dispatches on TASK-29 completion. (Dependency TASK-29 still In Progress.)
+---
+
+author: Iris (PM)
+created: 2026-07-24 14:19
+---
+Auto-dispatched to Ritchie (2026-07-24) on TASK-29 closing, per AmirHossein's standing pre-authorization — no further approval needed. TASK-29 dependency satisfied (PR #17 merged, master a83b742). Ritchie starting with a spec/plan check under docs/superpowers/ before code, which is correct. Precondition AC#1 (decision-7) was already satisfied.
 ---
 <!-- COMMENTS:END -->
