@@ -1,6 +1,6 @@
 import pyarrow as pa
 import pytest
-from differential import check, rows
+from differential import check, check_both_raise, rows
 from pydantic import BaseModel
 
 from sql_transform import SQLTransform
@@ -346,4 +346,72 @@ def test_unnest_list_preserves_other_columns():
             {"id": 1, "label": "a", "v": 7},
             {"id": 1, "label": "a", "v": 8},
         ],
+    )
+
+
+def test_unnest_extra_argument_silently_dropped(xfail_on_codegen):
+    # CONFIRMED bug on codegen only (measured 2026-07-24): sqlglot's default
+    # parse dialect accepts only one unnest() argument at the grammar level --
+    # `unnest(a, b)` parses to Unnest(expressions=[Column(a)]) with `b` gone
+    # from the tree entirely (no trace in .args, comments, or meta), so
+    # codegen has no way to detect the dropped argument and rejects nothing.
+    # Both the oracle ("unnest() requires exactly one argument") and native
+    # ("Unknown function: unnest") reject the query outright; codegen instead
+    # silently drops `b` and answers using only `a`. See the comment on the
+    # exp.Unnest arm of _convert_expr (sql_transform/_codegen/plan.py) for why
+    # no guard is possible here.
+    xfail_on_codegen(
+        "codegen cannot detect a dropped unnest() argument -- sqlglot's "
+        "default dialect discards it at parse time before codegen ever sees "
+        "it (measured: Unnest(expressions=[Column(a)]), no trace of `b` "
+        "anywhere in the tree); oracle and native both reject unnest(a, b), "
+        "codegen silently answers using only `a`"
+    )
+    check_both_raise(
+        "SELECT unnest(a, b) AS x FROM t",
+        {"t": rows({"a": "list[int]", "b": "int"}, [{"a": [1, 2], "b": 10}])},
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "CONFIRMED bug on BOTH engines (measured 2026-07-24): a bare "
+        "unnest(<list>) with no AS names its output column 'unnest' (the "
+        "placeholder in codegen's _build_projection exp.Unnest arm and "
+        "native's equivalent column_name in src/plan.rs), but the oracle "
+        "names it from the DataFusion logical-plan display of the argument "
+        "-- 'UNNEST(t.l)' here. codegen faithfully mirrors native's naming "
+        "bug (correct per project rules), but nothing pinned the divergence "
+        "against the oracle until now. Needs a ticket; not fixed here "
+        "(tests/-only scope for this task, and native bugs are never fixed "
+        "inline)."
+    ),
+)
+def test_unnest_bare_list_column_name_diverges():
+    check(
+        "SELECT unnest(l) FROM t",
+        {"t": rows({"id": "int", "l": "list[int]"}, [{"id": 9, "l": [1, 2]}])},
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "CONFIRMED bug on BOTH engines (measured 2026-07-24): the same "
+        "'unnest' placeholder name (see test_unnest_bare_list_column_name_"
+        "diverges) collides with a real `AS unnest` alias elsewhere in the "
+        "SELECT list. The oracle keeps both columns distinct ('unnest' from "
+        "the alias, 'UNNEST(t.l)' from the bare unnest); both engines key "
+        "their output row by that placeholder name, so the second entry "
+        "silently overwrites the first and the `id AS unnest` column "
+        "vanishes from the output entirely. Needs a ticket; not fixed here "
+        "(tests/-only scope for this task, and native bugs are never fixed "
+        "inline)."
+    ),
+)
+def test_unnest_bare_list_alias_collision_drops_column():
+    check(
+        "SELECT id AS unnest, unnest(l) FROM t",
+        {"t": rows({"id": "int", "l": "list[int]"}, [{"id": 9, "l": [1, 2]}])},
     )
