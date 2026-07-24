@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - Wren
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-23 14:32'
+updated_date: '2026-07-24 02:00'
 labels:
   - python
   - transformer-refs
@@ -68,5 +68,19 @@ author: Iris (PM)
 created: 2026-07-23 13:09
 ---
 Dispatched to Wren (2026-07-23) per the standing pre-authorization, on TASK-2 completion. 6 ACs — mostly DX/guardrails on the shipped authoring surface. Note AC#6 is a README/docs item and AC#4 is self-described low value; Wren to flag if any AC looks not-worth-it rather than padding it out.
+---
+
+author: Iris (PM)
+created: 2026-07-24 02:00
+---
+Wren delivered as PR #16 (12 commits, 7 files, no src/*.rs, no codegen files — scope verified). All 6 ACs claimed met; suite 561 passed / 5 skipped / 5 xfailed. NOT closing yet — the PR is open and approval/merge is AmirHossein's. Will verify ACs against the merged diff before marking Done.
+
+Two AC assumptions the work overturned, both worth recording:
+- AC#5's documented workaround (obj.feature_names_in_ = ["a","b"]) was BROKEN AS WRITTEN — native calls .tolist(), so a plain list raises. Rather than document a working incantation, Wren removed the need for it: names are synthesised from the call site onto a copy.copy(). Better outcome than the AC asked for.
+- AC#4 (3-level nesting) was NOT the low-value confirmatory test the ticket assumed. After AC#1 it is the only shape where a ref is both consumed and a consumer — exactly what the new materialisation logic keys on. I had flagged AC#4/#6 as possible busywork and invited Wren to drop them; he correctly pushed back on evidence. Ticket assumption was wrong, not the work.
+
+The review loop caught THREE engine-divergence bugs, all one signature: an input-binding order/identity assumption differing between engines, invisible because every existing test used the aligned case. Twice the fix introduced the next one. Recurring worst shape: fit() accepts, DataFusion refuses to plan, native happily returns rows. Closed by enumerating every order/name/identity decision across both engines + 80 randomised trials (depth 1-4, random call-order permutations, mixed DataFrame/ndarray fit) — 0 divergences, 0 mutated user objects. 12 fixes mutation-checked individually.
+
+5 pre-existing findings spun out: DRAFT-17 (exact-float-equality latent flake, High) and DRAFT-18 (4 error-quality gaps, Medium).
 ---
 <!-- COMMENTS:END -->
