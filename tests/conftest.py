@@ -59,3 +59,20 @@ def xfail_on_native(request):
             request.applymarker(pytest.mark.xfail(reason=reason, strict=True))
 
     return _mark
+
+
+@pytest.fixture
+def xfail_on_codegen(request):
+    """Mark the current test xfail on the codegen backend only.
+
+    For a residual case where codegen still disagrees with the DataFusion
+    oracle while native matches it (or both reject, and only codegen fails to).
+    strict=True so that fixing codegen turns the xpass into a failure -- the
+    reminder to remove the marker.
+    """
+
+    def _mark(reason: str) -> None:
+        if differential._backend == "codegen":
+            request.applymarker(pytest.mark.xfail(reason=reason, strict=True))
+
+    return _mark
