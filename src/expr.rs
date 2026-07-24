@@ -414,6 +414,12 @@ pub fn eval(expr: &Expr, row: &crate::plan::Row) -> Result<Value, crate::plan::I
                 // Reorder the struct's fields to feature_names_in_ order, then
                 // build a 1-row Python list-of-lists. sklearn's check_array
                 // coerces it -- no numpy on the Rust side.
+                // DO NOT DELETE this reorder: the {t}(...) authoring path now
+                // emits the struct already in fitted order (TASK-35), so for it
+                // this is a no-op -- but hand-authored SQL can supply a
+                // named_struct in any field order, and this reorder is what keeps
+                // such a call correct. _transformer_udf.py carries the twin
+                // reorder for the DataFusion engine, for the same reason.
                 let mut ordered: Vec<Py<PyAny>> = Vec::with_capacity(input_features.len());
                 for feat in input_features {
                     let value = fields

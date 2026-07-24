@@ -68,7 +68,13 @@ def _transformer_udf(
     out_fields = list(out_schema)
 
     def _apply(struct_array: pa.Array) -> pa.Array:
-        # DataFusion hands the whole batch's StructArray in one call.
+        # DataFusion hands the whole batch's StructArray in one call. Pull fields
+        # BY NAME into feature_names_in_ order. DO NOT DELETE this reorder: the
+        # {t}(...) authoring path now emits the struct already in fitted order
+        # (TASK-35), so for it this is a no-op -- but hand-authored SQL can call
+        # this UDF with a named_struct in any field order, and this is the only
+        # thing that keeps such a call correct. src/expr.rs carries the same
+        # reorder for the native engine, for the same reason.
         cols = [
             struct_array.field(fname).to_numpy(zero_copy_only=False)
             for fname in feature_names
