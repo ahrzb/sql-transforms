@@ -40,7 +40,13 @@ tractable. All three land 16 → 0.
 |---|---|---|
 | **A — scalar operators** | 2 | unary-minus-on-a-non-literal ×1; `\|\|` operator ×1 |
 | **B — container scalars** | 9 | struct field access ×3; struct/list-typed column passthrough ×3; struct/list construction (`named_struct`/`array`) ×1; `named_struct()` ×1; struct/list comparison ×1 |
-| **C — UNNEST** | 5 | `unnest(l)` row-expansion ×5 |
+| **C — UNNEST** | 5 | `unnest(list)` row-expansion ×3; `unnest(struct)` per-field column expansion ×2 |
+
+**Correction (2026-07-24, verified against the live skip set before writing the
+Phase C plan — the verification this spec asked for below):** the Phase C row
+originally read "`unnest(l)` row-expansion ×5". It is 3 list + 2 struct:
+`test_unnest_struct_expands_columns` and `test_unnest_struct_column_expands_columns`
+skip on codegen too. `unnest(struct)` is therefore IN scope for Phase C, not out.
 
 The `UnsupportedInCodegen` raises in `sql_transform/_codegen/plan.py` (and the one
 in `engine.py`'s container-output guard) are the exact map of what to implement.
@@ -123,6 +129,13 @@ dict/list runtime value convention.
 
 ## Phase C — UNNEST (retire 5 skips)
 
+Two mechanisms, not one. `unnest(list)` multiplies ROWS; `unnest(struct)`
+expands into COLUMNS. Both are reached from the same `unnest(...)` projection
+item and are told apart only once the argument's type is known, so both are
+resolved at validation time, where the schemas exist.
+
+### C1 — `unnest(list)`: row multiplication (3 skips)
+
 `unnest(list)` is **relational**, not scalar: it turns one input row into N
 output rows (one per list element). Codegen's engine emits a per-input-row
 projection loop (`_emit_rel`), so this needs a new relational node + emission,
@@ -142,10 +155,21 @@ mirroring native's `RelNode::Unnest` (`plan.rs`):
   plan pins the exact rule against the oracle).
 - `infer_type`: the emitted column types as the list's element type.
 
-**Note:** `unnest(struct)` (per-field expansion) is a separate native path
-(`expand_unnest_struct`) and is **not** in the 5-skip list-unnest inventory; it
-stays deferred unless a skip for it exists (the plan verifies against the actual
-skip set).
+### C2 — `unnest(struct)`: per-field column expansion (2 skips)
+
+A separate native path (`expand_unnest_struct` in `plan.rs`), and — per the
+correction above — in scope. Cardinality is unchanged; the single projection
+item expands into one output column per struct field, each a `FieldAccess` on
+the argument.
+
+**The hard requirement here is the column NAMES.** DataFusion names them
+`"<argument display>.<field>"`, where the display form is its own logical-plan
+rendering of the argument: a struct column `s` on table `t` gives `t.s.x`, and a
+constructed `named_struct('x', a)` gives `named_struct(Utf8("x"),t.a).x`. Any
+`AS` alias on the SELECT item is ignored. Native mirrors this in
+`unnest_display_name`; codegen must reproduce it character-for-character,
+because the differential harness compares column NAMES as well as values —
+a divergence here fails as a mismatched row-key set, not as a wrong value.
 
 **Design note:** Phase C is architecturally distinct and higher-risk. If, during
 its plan, the relational-emission change proves larger than a single tractable
@@ -163,16 +187,16 @@ forcing it under TASK-29 — but the default is to complete it here.
   asserting.
 - **Coverage guard:** each implemented shape moves from `_DEFERRED` to
   `_COMMITTED` in `tests/test_codegen_coverage.py`. When the last shape lands,
-  `_DEFERRED` is empty (or contains only genuinely-still-deferred surface like
-  `unnest(struct)` if it's out of scope), and the codegen skip count in the full
-  suite is zero for this surface.
+  `_DEFERRED` is empty of unnest shapes and the codegen skip count in the full
+  suite is zero for this surface. What remains in `_DEFERRED` after Phase C is
+  the deliberate container-operand guard (`s || 'x'`), which is a raise-test,
+  not an unimplemented feature.
 - **Skip delta reported per phase** at merge (Iris's ask): the differential skip
   count before/after.
 
 ## Out of scope
 
 - Native-engine changes; fit/state/rewrite changes.
-- `unnest(struct)` per-field expansion, unless a current skip covers it.
 - Codegen transformer support — that's TASK-34, queued after TASK-29.
 
 ## Phasing summary
@@ -181,7 +205,7 @@ forcing it under TASK-29 — but the default is to complete it here.
 |---|---|---|---|
 | A — operators | 2 | own plan | own merge, report skip delta |
 | B — container scalars | 9 | own plan (4 sub-tasks) | own merge, report skip delta |
-| C — UNNEST | 5 | own plan | own merge, report skip delta |
+| C — UNNEST | 5 (3 list + 2 struct) | own plan | own merge, report skip delta |
 
 Each phase: worktree, rebase on current master first (natives land frequently),
 rebuild native after rebasing (the `.pyd` goes stale), full suite green + skip
