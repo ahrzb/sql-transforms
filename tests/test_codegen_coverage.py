@@ -103,6 +103,10 @@ _COMMITTED = [
     # unnest(list) multiplies rows: the projection item becomes a reference to
     # the column the Unnest rel node binds, one output row per element.
     ("SELECT unnest(l) AS x FROM t", {"t": rows({"l": "list[int]"}, [{"l": [1]}])}),
+    (
+        "SELECT unnest(s) FROM t",
+        {"t": rows({"s": "struct{x:int}"}, [{"s": {"x": 1}}])},
+    ),
 ]
 
 

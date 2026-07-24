@@ -702,8 +702,12 @@ def validate_columns(
             effective_schemas.setdefault(UNNEST_KEY, {})[alias] = arg_type.base.elem
             expanded.append((alias, Column(table=UNNEST_KEY, name=alias)))
         elif isinstance(arg_type.base, StructBase):
-            raise UnsupportedInCodegen(
-                "unnest() on a struct is not supported in codegen yet"
+            # unnest(struct) expands into ONE COLUMN PER FIELD, named
+            # "<arg display>.<field>" -- DataFusion ignores the SELECT alias here.
+            display = _unnest_display_name(arg)
+            expanded.extend(
+                (f"{display}.{name}", FieldAccess(arg, name))
+                for name, _ in arg_type.base.fields
             )
         else:
             raise ValueError("unnest() expects a struct or list argument")
@@ -717,6 +721,30 @@ def _unnest_arg(e: Any) -> Any:
     if isinstance(e, Func) and e.name == "unnest":
         return e.args[0]
     return None
+
+
+def _unnest_display_name(e: Any) -> str:
+    """Render `unnest()`'s argument the way DataFusion's logical-plan Display
+    does -- that is what it derives the expanded column names from, so matching
+    it exactly is what makes the differential tests agree column-for-column.
+    Mirrors native unnest_display_name; columns are already qualified with their
+    effective table by _validate_expr.
+
+    ponytail: only the node shapes reachable as an unnest() arg today (columns,
+    field access, named_struct/struct construction). Struct construction always
+    renders as named_struct(...) -- StructExpr can't tell the two authored forms
+    apart, and DataFusion names a struct()-built unnest differently. Widen if
+    that combination ever needs differential coverage."""
+    if isinstance(e, Column):
+        return f"{e.table}.{e.name}"
+    if isinstance(e, FieldAccess):
+        return f"{_unnest_display_name(e.base)}.{e.field}"
+    if isinstance(e, StructExpr):
+        inner = ",".join(
+            f'Utf8("{key}"),{_unnest_display_name(value)}' for key, value in e.fields
+        )
+        return f"named_struct({inner})"
+    raise ValueError("unnest() argument is too complex to name")
 
 
 def _resolve_tables(
