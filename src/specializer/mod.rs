@@ -8,4 +8,5 @@
 //! lowering (M-lower), the Cranelift backend (M-cranelift), and the generated
 //! Python-boundary marshaller (M-boundary).
 
+pub mod exec;
 pub mod ir;
