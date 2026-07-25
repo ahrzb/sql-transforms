@@ -7,6 +7,9 @@ edition = "2021"
 name = "_interpreter"
 crate-type = ["cdylib"]
 
+# extension-module is deliberately NOT a default feature: it suppresses the
+# libpython link, which is right for the wheel but breaks `cargo test`.
+# maturin enables it via [tool.maturin] features in pyproject.toml.
 [dependencies]
-pyo3 = { version = "0.29", features = ["extension-module", "abi3-py314"] }
+pyo3 = { version = "0.29", features = ["abi3-py314"] }
 sqlparser = "0.62"

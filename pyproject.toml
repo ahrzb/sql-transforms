@@ -13,6 +13,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "duckdb>=1.5.5",
     "ipdb>=0.13.13",
     "ipython>=9.2.0",
     "maturin>=1.14,<2.0",
@@ -33,6 +34,9 @@ build-backend = "maturin"
 module-name = "sql_transform._interpreter"
 python-source = "."
 exclude = ["**/*_test.py", "tests/**"]
+# See the note in Cargo.toml: extension-module only for the built wheel,
+# so `cargo test` can link libpython.
+features = ["pyo3/extension-module"]
 
 [tool.ruff]
 fix = true
@@ -47,3 +51,6 @@ lint.ignore = ["S101"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]
+# Scope collection: the duckdb/ source clone (reference corpus) carries its own
+# test_*.py scripts that break under our pytest.
+testpaths = ["tests", "sql_transform"]

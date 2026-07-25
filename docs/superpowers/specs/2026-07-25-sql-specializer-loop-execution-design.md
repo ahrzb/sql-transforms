@@ -28,39 +28,40 @@ Everything here is small, and every item removes a way for the loop to stall or
 silently go wrong.
 
 ### 1.1 Decisions locked
-- [ ] Design doc reviewed and amended by AmirHossein (M-restate gate).
-- [ ] Fate of the pending working-tree diff decided: the `src/duckdb/` stub +
-      shared-module refactor (`error.rs`/`value.rs`/`types.rs` split) is
-      currently uncommitted on this branch. Recommendation: land it as the PR
-      for this branch — the refactor is exactly the shared substrate
-      `specializer/` needs, and the stub is the future pyclass shell.
+- [ ] Design doc reviewed and amended by AmirHossein (M-restate gate). Partially
+      done in conversation (row-major ABI amendment, 2026-07-25); final go still
+      pending.
+- [x] Pending diff landed on this branch (2026-07-25): the `src/duckdb/` stub +
+      shared-module refactor (`error.rs`/`value.rs`/`types.rs` split) — the
+      shared substrate `specializer/` sits on; the stub is the future pyclass
+      shell.
 
 ### 1.2 Oracle and frontend availability (validate, don't assume)
-- [ ] `uv add --dev duckdb` — the differential oracle. (Project dep, not a
-      system install.)
-- [ ] **Spike:** substrait extension actually loads and covers the v0 subset:
-      `INSTALL substrait FROM community; LOAD substrait; CALL get_substrait(...)`
-      on ~10 representative v0 queries. Needs network once at setup; result is
-      cached in the extension dir. If coverage fails → flip the frontend flag to
-      the sqlparser fallback *now*, not mid-loop.
-- [ ] **Spike:** `cranelift-jit` compiles and runs a hello-world fn on this
-      machine (Windows ABI quirks are real). Cheap now, expensive at M-cranelift.
+- [x] `uv add --dev duckdb` — the differential oracle. duckdb 1.5.5 installed.
+- [x] **Spike (2026-07-25): substrait is UNAVAILABLE** — HTTP 404 for
+      duckdb 1.5.5 / windows_amd64 from community, core, and nightly repos.
+      Frontend flag flipped to the sqlparser fallback (design doc §4 updated).
+      Bonus finding: `json_serialize_sql` (core, extension-free) exposes
+      DuckDB's own AST as JSON — usable as a differential check on our parser.
+- [x] **Spike (2026-07-25): `cranelift-jit` 0.126 works on
+      x86_64-pc-windows-msvc** — built and called `f(x) = x*2+42` at runtime,
+      correct results. Version pin recorded for M-cranelift.
 
 ### 1.3 The gate command (the loop's definition of done)
 One command, exit-code-honest, that every iteration must leave green:
 
 ```toml
-# mise.toml
+# mise.toml — wired 2026-07-25 and green (cargo test + 574 pytest)
 [tasks.gate-specializer]
-run = [
-  "cargo test --features specializer-tests",   # IR unit + round-trip + verifier
-  "uv run pytest tests/ -q",                   # existing suites + differential
-]
+run = "uv run python scripts/gate.py"   # cargo test + pytest, one exit code
 ```
 
-Plus a per-milestone extension (e.g. M-lower adds the corpus suite). The loop
-never reports progress that `mise gate-specializer` can't confirm — this is the
-"validate, don't assume" rule made mechanical.
+`scripts/gate.py` also handles the Windows wrinkle: tests link libpython
+(extension-module moved to a maturin-only feature), so the runner puts the
+uv-managed CPython's `python3.dll` on PATH. Per-milestone suites get appended
+there (e.g. M-lower adds the corpus replay). The loop never reports progress
+that `mise gate-specializer` can't confirm — "validate, don't assume" made
+mechanical.
 
 ### 1.4 Task ledger
 The loop needs durable, machine-readable state that survives context loss.
@@ -69,18 +70,21 @@ of work, each with acceptance = "gate green + which new tests exist". The loop's
 first act each iteration is `task_list`, its last is `task_edit`. No progress
 lives only in conversation memory.
 
-- [ ] Create milestone `sql-specializer` with the M-ir … M-boundary tasks
-      seeded from the design doc (needs AmirHossein's go — PM dispatch rule).
+- [x] Milestone `sql-specializer` (m-7) seeded 2026-07-25 with TASK-41 (M-ir) →
+      TASK-42 (M-interp) → TASK-43 (M-lower) → TASK-44 (M-cranelift) →
+      TASK-45 (M-boundary), dependency-chained. Working the chain (dispatch)
+      still needs AmirHossein's go — PM dispatch rule.
 
 ### 1.5 Corpus extraction (pre-mined, not mined mid-loop)
-- [ ] `scripts/mine_duckdb_corpus.py`: walk `duckdb/test/sql/{projection,
-      filter,join,case,cast,function/string,function/numeric}`, parse sqllogictest
-      blocks, keep single-statement queries within the v0 subset grammar, emit
-      `tests/corpus/duckdb_mined.jsonl` (sql, input schema, expected via duckdb
-      python at extraction time). Checked in, so loop iterations replay it
-      offline and deterministically.
-- [ ] The `duckdb/` clone stays untracked (it's a reference corpus, not a dep);
-      add to `.gitignore`.
+- [x] `scripts/mine_duckdb_corpus.py` (2026-07-25): 678 cases from 2758 queries
+      across 250 files → `tests/corpus/duckdb_mined.jsonl` (262 KB, checked in;
+      setup statements + sql + duckdb-computed expected rows). Replay contract
+      is three-outcome — match / clean-unsupported / FAIL — so the corpus
+      includes SQL beyond the v0 builtin list on purpose: each case the engine
+      learns flips from clean-unsupported to must-match. See the script
+      docstring.
+- [x] The `duckdb/` clone stays untracked; `.gitignore`d. `testpaths` pinned in
+      pyproject so pytest never collects the clone's own test_*.py scripts.
 
 ### 1.6 Hygiene rails (mechanical, from memory/feedback)
 - [ ] Branch per milestone: `git checkout -b specializer-m2-ir origin/master`

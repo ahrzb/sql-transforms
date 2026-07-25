@@ -124,7 +124,7 @@ with no pipeline breakers left, the query is a straight-line function over a
 |---|---|---|
 | Language | Rust, same crate/workspace as `_interpreter` | existing pyo3 wiring, team velocity, wasm door stays open |
 | Codegen backend | **Interpreter first (oracle), Cranelift second, LLVM ORC only if measured gap matters** | Cranelift is a mature Rust-native dep (`cranelift-jit`); −10–30% vs LLVM is invisible next to the boundary win; no C++ toolchain in the build |
-| Frontend | DuckDB + substrait extension; sqlparser fallback behind the same `plan/` interface | flag 2 |
+| Frontend | **sqlparser (DuckDB dialect)** — the substrait extension does not exist for duckdb 1.5.5 / windows_amd64 (spiked 2026-07-25: HTTP 404 from community, core, and nightly repos). `json_serialize_sql` (core, no extension) exposes DuckDB's own parse as JSON: use it as a differential check on our parser, and as the fallback frontend if sqlparser dialect drift ever bites | flag 2, resolved by spike |
 | v0 SQL subset | projection + WHERE over `__THIS__`, LEFT/INNER equi-join to static tables, CASE, arithmetic/comparison/logic, the current builtin set (upper/lower/trim/substr/abs/round/coalesce/nullif/concat), CAST | this is precisely the surface the differential corpus already covers — the oracle tests exist |
 | Batch layout | row-major packed AoS: per-schema `#[repr(C)]` row structs frozen at prepare; optional fields are `(u8 flag, T)` pairs — the IR's null lane laid flat | requests are born row-major (flag 1); at this n, columnar buys nothing and costs a transpose |
 | Stage 2 ABI | `run(in: *const RowIn, n, out: *mut RowOut, scratch: *mut Arena)` | amends the prompt's columnar `Batch*`; `|out|` still known up front, still zero alloc |
