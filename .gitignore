@@ -21,6 +21,9 @@ wheels/
 # Rust build artifacts
 /target
 
+# DuckDB source clone — reference corpus for the SQL specializer, not a dependency
+/duckdb/
+
 # Compiled PyO3 extension module (built in-place by `maturin develop`)
 sql_transform/_interpreter*.so
 sql_transform/_interpreter*.pyd
