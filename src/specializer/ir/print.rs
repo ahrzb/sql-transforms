@@ -227,8 +227,10 @@ fn col_name(p: &Program, out: bool, idx: u32) -> String {
     }
 }
 
-/// Column and function names print bare when they are identifiers, quoted
-/// otherwise (SQL-derived output names like `COALESCE(a, b)` survive).
+/// Column names print bare when they are identifiers, quoted otherwise
+/// (SQL-derived output names like `COALESCE(a, b)` survive). Function names
+/// are NOT routed through this: the verifier requires them to be
+/// identifiers, so the printer writes them raw.
 fn ident_or_quoted(name: &str) -> String {
     if is_ident(name) {
         name.to_string()
