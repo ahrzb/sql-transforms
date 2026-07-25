@@ -4,7 +4,9 @@
 //!
 //! Rules enforced (numbers referenced from tests):
 //!  1. Structure: at least one block; entry (b0) has no params and is never a
-//!     branch target; batch column names unique per side.
+//!     branch target; batch column names unique per side; the function name
+//!     is an identifier and map statics have >= 1 key and >= 1 value column
+//!     (a verified program must print to parseable canonical text).
 //!  2. SSA: every value defined exactly once function-wide; every use sees a
 //!     definition earlier in the same block or a param of the same block
 //!     (strict block-param form — cross-block uses are illegal, which is what
@@ -16,8 +18,10 @@
 //!     arity, and types.
 //!  5. CFG: all blocks reachable from entry; no cycles (v0); branch args
 //!     match target params in count and type.
-//!  6. Stores: on every path to `emit`, each out column is stored exactly
-//!     once; paths to `skip` store nothing; store states must agree at joins.
+//!  6. Stores: no path stores a column twice, whatever its terminator
+//!     (including `trap` — a double store is always a lowering bug); paths
+//!     to `emit` store every column exactly once; paths to `skip` store
+//!     nothing; store states must agree at joins.
 
 use std::collections::HashMap;
 
@@ -68,6 +72,29 @@ fn err(errs: &mut Vec<VerifyError>, block: Option<usize>, inst: Option<usize>, m
 }
 
 fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
+    // A verified program must print to parseable canonical text, so text-only
+    // constraints (identifier function name, non-empty map signatures — the
+    // grammar cannot express `map() -> ()`) are verifier rules too.
+    if !super::print::is_ident(&p.name) {
+        err(
+            errs,
+            None,
+            None,
+            format!("function name '{}' must be an identifier", p.name),
+        );
+    }
+    for (i, st) in p.statics.iter().enumerate() {
+        if let StaticTy::Map { keys, values } = st {
+            if keys.is_empty() || values.is_empty() {
+                err(
+                    errs,
+                    None,
+                    None,
+                    format!("@{i}: map statics need at least one key and one value column"),
+                );
+            }
+        }
+    }
     if p.blocks.is_empty() {
         err(errs, None, None, "function has no blocks".to_string());
         return;
@@ -422,31 +449,43 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
         return;
     }
 
-    // DFS for reachability + cycle detection (0 white, 1 gray, 2 black).
-    fn dfs(p: &Program, b: usize, color: &mut [u8], cyclic: &mut bool) {
-        color[b] = 1;
-        for (succ, _) in p.blocks[b].term.successors() {
-            let s = succ.0 as usize;
-            if s >= color.len() {
+    // Iterative DFS for reachability + cycle detection (0 white, 1 gray,
+    // 2 black). Explicit stack, NOT recursion: a deep-but-legal CFG (large
+    // CASE/decision-tree lowerings) must not abort the process — recursion
+    // stack-overflowed at ~8k blocks under adversarial fuzzing.
+    let mut color = vec![0u8; n];
+    let mut cyclic = false;
+    let mut stack: Vec<(usize, usize)> = vec![(0, 0)]; // (block, next successor index)
+    color[0] = 1;
+    while let Some(frame) = stack.last_mut() {
+        let (b, si) = *frame;
+        let succs = p.blocks[b].term.successors();
+        if si < succs.len() {
+            frame.1 += 1;
+            let s = succs[si].0 .0 as usize;
+            if s >= n {
                 continue; // reported by check_block
             }
             match color[s] {
-                0 => dfs(p, s, color, cyclic),
-                1 => *cyclic = true,
+                0 => {
+                    color[s] = 1;
+                    stack.push((s, 0));
+                }
+                1 => cyclic = true,
                 _ => {}
             }
+        } else {
+            color[b] = 2;
+            stack.pop();
         }
-        color[b] = 2;
     }
-    let mut color = vec![0u8; n];
-    let mut cyclic = false;
-    dfs(p, 0, &mut color, &mut cyclic);
     if cyclic {
         err(errs, None, None, "control-flow cycle (v0 CFGs must be acyclic)".to_string());
         return; // the store dataflow below needs a DAG
     }
-    for (bi, c) in color.iter().enumerate() {
-        if *c == 0 {
+    let reachable: Vec<bool> = color.iter().map(|c| *c != 0).collect();
+    for (bi, r) in reachable.iter().enumerate() {
+        if !r {
             err(errs, Some(bi), None, "unreachable block".to_string());
         }
     }
@@ -458,7 +497,7 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
     let mut entry_state: Vec<Option<Vec<u8>>> = vec![None; n];
     entry_state[0] = Some(vec![0; ncols]);
 
-    for bi in topo_order(p, n) {
+    for bi in topo_order(p, n, &reachable) {
         let Some(state) = entry_state[bi].clone() else {
             continue; // unreachable; already reported
         };
@@ -529,12 +568,18 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
     }
 }
 
-/// Topological order of the (already acyclicity-checked) CFG via Kahn's
-/// algorithm; unreachable blocks may appear anywhere, which is fine — they
-/// have no entry state and are skipped.
-fn topo_order(p: &Program, n: usize) -> Vec<usize> {
+/// Topological order of the reachable, acyclicity-checked subgraph via
+/// Kahn's algorithm. Indegrees count only edges whose SOURCE is reachable:
+/// an edge out of an unreachable island (which may itself be cyclic and
+/// never drain) must not starve a reachable join of its dataflow visit —
+/// that would mask the join's store errors behind the island's
+/// unreachable-block errors and make them reappear one fix later.
+fn topo_order(p: &Program, n: usize, reachable: &[bool]) -> Vec<usize> {
     let mut indegree = vec![0usize; n];
-    for b in &p.blocks {
+    for (bi, b) in p.blocks.iter().enumerate() {
+        if !reachable[bi] {
+            continue;
+        }
         for (succ, _) in b.term.successors() {
             let s = succ.0 as usize;
             if s < n {
@@ -542,7 +587,7 @@ fn topo_order(p: &Program, n: usize) -> Vec<usize> {
             }
         }
     }
-    let mut stack: Vec<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
+    let mut stack: Vec<usize> = (0..n).filter(|&i| reachable[i] && indegree[i] == 0).collect();
     let mut order = Vec::with_capacity(n);
     while let Some(b) = stack.pop() {
         order.push(b);

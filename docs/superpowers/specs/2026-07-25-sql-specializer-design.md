@@ -209,12 +209,19 @@ the direction of a smaller, more verifiable core):
   so `-0.0` and NaN round-trip).
 
 Verifier rules (each has a rejecting test in `ir/tests.rs`): structure (entry
-has no params, unique column names, no branch to entry), SSA (single def,
-same-block visibility), per-op operand types incl. mandatory/forbidden `.opt`
-pairing against column/static nullability, static resolution + kind/arity/key
-types, CFG reachability + acyclicity + branch-arg typing, and the
-store-completeness dataflow (exactly-once per column at `emit`, zero at
-`skip`, agreement at joins).
+has no params, unique column names, no branch to entry, identifier function
+name, non-empty map signatures — a verified program must print to parseable
+text), SSA (single def, same-block visibility), per-op operand types incl.
+mandatory/forbidden `.opt` pairing against column/static nullability, static
+resolution + kind/arity/key types, CFG reachability + acyclicity + branch-arg
+typing (iterative DFS — deep legal CFGs must not overflow the native stack),
+and the store-completeness dataflow (never twice on any path, exactly-once
+per column at `emit`, zero at `skip`, agreement at joins, computed over the
+reachable subgraph so an unreachable island can't mask a join's errors).
+
+An adversarial pass (4 attack lenses + design-conformance + simplification
+reviews, 2026-07-25) ran against the initial implementation; every confirmed
+finding is pinned by a regression test in `ir/tests.rs`.
 
 Deferred to M-interp, pinned there against the DuckDB oracle: `ftoi.round`
 tie behavior and `fcmp` NaN ordering. `idiv`/`irem` trap on zero/overflow;

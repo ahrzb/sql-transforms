@@ -18,6 +18,10 @@
 //! * `trap "msg"` — abort the whole call with a runtime error (CAST failures,
 //!   division guards — whatever the lowered dialect defines as an error).
 //!
+//! No path may store the same column twice, whatever its terminator — a
+//! double store is always a lowering bug, so the verifier rejects it even on
+//! paths that end in `trap`.
+//!
 //! `|out| == |in|` therefore holds exactly when `skip` is unreachable, which
 //! is statically known — the design doc's "filter is the one allowed
 //! divergence and must declare it".
@@ -66,12 +70,16 @@
 //!
 //! Canonical, round-trippable; `parse(print(p)) == p` for every program whose
 //! value ids are dense and in definition order (the parser and [`gen`] both
-//! produce that form, so the property is closed under round-trip). Names in
-//! the text are presentation only — they are not stored in the IR; printing
-//! uses canonical `%vN` / `bN` names.
+//! produce that form, so the property is closed under round-trip). A program
+//! with sparse or out-of-order ids still verifies and still prints; the
+//! round-trip then performs a bijective renumbering into canonical form, so
+//! structural equality is only meaningful between canonical programs. Names
+//! in the text are presentation only — they are not stored in the IR;
+//! printing uses canonical `%vN` / `bN` names.
 //!
 //! ```text
 //! program   := static* func
+//! comment   := "#" ... end-of-line     // allowed anywhere whitespace is
 //! static    := "static" "@" INT ":" static_ty
 //! static_ty := "scalar" "<" col_ty ">"
 //!            | "map" "(" ty ("," ty)* ")" "->" "(" ty ("," ty)* ")"
@@ -81,12 +89,15 @@
 //! col_ty    := ty ["?"]
 //! ty        := "i1" | "i64" | "f64" | "str"
 //! block     := IDENT ["(" VALUE ":" ty ("," VALUE ":" ty)* ")"] ":" inst* term
-//! inst      := VALUE ("," VALUE)* "=" OPCODE operands
+//! inst      := [VALUE ("," VALUE)* "="] OPCODE operands
+//!              // only store/store.opt omit the dests; everything else
+//!              // defines at least one value
 //! term      := "jump" target
 //!            | "brif" VALUE "," target "," target
 //!            | "emit" | "skip" | "trap" STRING
 //! target    := IDENT ["(" VALUE ("," VALUE)* ")"]
-//! VALUE     := "%" IDENT
+//! VALUE     := "%" NAME               // NAME: any run of [A-Za-z0-9_];
+//!                                     // the printer only emits %vN
 //! ```
 //!
 //! Instruction surface (`%d` result, `%f` an `i1` flag result):
@@ -179,9 +190,11 @@ pub struct Value(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct BlockId(pub u32);
 
-/// Literal for `const.*`. `F64` equality is bitwise so that programs
-/// containing NaN still satisfy `parse(print(p)) == p` (the text form
-/// canonicalizes NaN payloads to the one `nan` token).
+/// Literal for `const.*`. `F64` equality is bitwise — so `-0.0 != 0.0`
+/// survives a round-trip — EXCEPT that all NaNs compare equal: the text form
+/// canonicalizes every NaN payload to the one `nan` token, and equality must
+/// match what the text format can distinguish or `parse(print(p)) == p`
+/// would fail for non-canonical payloads (found by adversarial fuzzing).
 #[derive(Clone, Debug)]
 pub enum Lit {
     I1(bool),
@@ -195,7 +208,9 @@ impl PartialEq for Lit {
         match (self, other) {
             (Lit::I1(a), Lit::I1(b)) => a == b,
             (Lit::I64(a), Lit::I64(b)) => a == b,
-            (Lit::F64(a), Lit::F64(b)) => a.to_bits() == b.to_bits(),
+            (Lit::F64(a), Lit::F64(b)) => {
+                a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+            }
             (Lit::Str(a), Lit::Str(b)) => a == b,
             _ => false,
         }
@@ -463,30 +478,6 @@ impl Inst {
         }
     }
 
-    /// Values this instruction uses.
-    pub fn uses(&self) -> Vec<Value> {
-        match self {
-            Inst::Const { .. }
-            | Inst::Load { .. }
-            | Inst::LoadOpt { .. }
-            | Inst::Sload { .. }
-            | Inst::SloadOpt { .. } => vec![],
-            Inst::Not { a, .. }
-            | Inst::Itof { a, .. }
-            | Inst::Ftoi { a, .. }
-            | Inst::Itos { a, .. }
-            | Inst::Ftos { a, .. }
-            | Inst::StoiOpt { a, .. }
-            | Inst::StofOpt { a, .. } => vec![*a],
-            Inst::Bin { a, b, .. } | Inst::Cmp { a, b, .. } | Inst::Sconcat { a, b, .. } => {
-                vec![*a, *b]
-            }
-            Inst::Select { cond, a, b, .. } => vec![*cond, *a, *b],
-            Inst::Store { val, .. } => vec![*val],
-            Inst::StoreOpt { flag, val, .. } => vec![*flag, *val],
-            Inst::Probe { keys, .. } => keys.clone(),
-        }
-    }
 }
 
 impl Term {
@@ -506,17 +497,6 @@ impl Term {
             ],
             Term::Emit | Term::Skip | Term::Trap { .. } => vec![],
         }
-    }
-
-    pub fn uses(&self) -> Vec<Value> {
-        let mut out = Vec::new();
-        if let Term::Brif { cond, .. } = self {
-            out.push(*cond);
-        }
-        for (_, args) in self.successors() {
-            out.extend_from_slice(args);
-        }
-        out
     }
 }
 
