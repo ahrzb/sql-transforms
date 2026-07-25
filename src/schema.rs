@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::plan::InterpError;
+use crate::error::InterpError;
 use crate::types::{Base, FieldType, Schema};
 
 /// Extract a Schema from a Pydantic v2 model class's `model_fields`.
