@@ -43,6 +43,12 @@ fix = true
 lint.select = ["E", "F", "B", "I", "UP", "C4", "S"]
 lint.ignore = ["S101"]
 
+[tool.ruff.lint.isort]
+# datafusion and duckdb are pip packages, but same-named directories exist
+# in-repo (src/datafusion Rust module; duckdb/ source clone), which makes
+# isort's src-root scan misclassify the imports as first-party.
+known-third-party = ["datafusion", "duckdb"]
+
 [tool.ruff.lint.per-file-ignores]
 "*test*.py" = ["S608"]
 "_state.py" = ["S608"]
