@@ -166,40 +166,60 @@ enum StaticStruct {
 }
 ```
 
-## 6. Imperative IR sketch
+## 6. Imperative IR (as implemented — M-ir, `src/specializer/ir/`)
 
 SSA, typed, no allocation vocabulary, explicit null lane. Text format is the
-diagnostic surface and must round-trip (`parse(print(ir)) == ir`).
+diagnostic surface and round-trips: `parse(print(p)) == p`. The module docs of
+`src/specializer/ir/mod.rs` are the normative spec; highlights:
 
 ```
-;; SELECT age / s.mean_age AS z FROM __THIS__ t LEFT JOIN stats s ON t.seg = s.seg
-;; after BTA: stats collapsed into staticref @0 (perfect hash: seg -> mean_age)
+static @0: map(str) -> (f64)
 
 fn run(in: batch{age: i64?, seg: str}, out: batch{z: f64?}) {
-entry(row: idx):
-  %age.f, %age.v = load.opt in.age, row        ; (i1 flag, i64 payload)
-  %seg        = load     in.seg, row           ; NOT NULL lane: no flag
-  %hit.f, %m  = probe.opt @0, %seg             ; miss -> flag=0 (LEFT JOIN)
-  %num        = cast f64, %age.v
-  %q          = fdiv %num, %m
-  %z.f        = and %age.f, %hit.f             ; null iff either input null
-  store.opt out.z, row, %z.f, %q
-  next row
+entry:
+  %age_f, %age_v = load.opt in.age    # (i1 flag, i64 payload); row cursor implicit
+  %seg = load in.seg                  # NOT NULL lane: no flag
+  %hit, %mean = probe @0, %seg        # miss -> hit=false (LEFT JOIN)
+  %num = itof %age_v
+  %q = fdiv %num, %mean
+  %zf = and %age_f, %hit              # null iff either input null
+  store.opt out.z, %zf, %q
+  emit
 }
 ```
 
-Verifier rules (initial set):
+Decisions made at implementation (deviations from the original sketch, all in
+the direction of a smaller, more verifiable core):
 
-1. SSA: single def, defs dominate uses.
-2. Type check every op; `load.opt`/`probe.opt`/`store.opt` are the only ops that
-   touch flags; a `T?` value cannot flow into an arithmetic op — the verifier
-   rejects it (this is the "3VL mistakes are statically impossible" property).
-3. `StaticRef` ids must resolve against the plan's static-structure table, with
-   matching key/value types.
-4. No op allocates; `scratch` is reachable only from varlen `store` ops.
-5. `out` column set and row count semantics must match the declared plan shape
-   (`|out| = |in|` for pure projection; filter introduces the one allowed
-   divergence and must declare it).
+- **Implicit row cursor** — no `idx` values, no `row` operand; nothing in v0
+  needs random row access, and it removes a whole type from the verifier.
+- **Terminators carry the row protocol**: `emit` (row complete; every out
+  column stored exactly once on the path), `skip` (filter drop; path must
+  store nothing), `trap "msg"` (runtime error — CAST failures, div guards),
+  plus `jump`/`brif`. `|out| == |in|` iff `skip` is unreachable — statically
+  known, per the "filter must declare divergence" requirement.
+- **Strict block-param SSA**: values cross blocks only as branch args to
+  block params, so the verifier needs no dominance analysis. CFG acyclic in
+  v0 (lift when a lowering pattern needs loops, e.g. QuickScorer).
+- **Nullability is structural, not checked**: SSA values are always bare
+  scalars; only `load.opt`/`store.opt`/`probe`/`sload.opt` touch flags. A
+  `T?` cannot reach arithmetic because the type system cannot express it.
+- Names in text are presentation-only; printing canonicalizes to `%vN`/`bN`.
+  NaN payloads canonicalize to one `nan` token (literal equality is bitwise,
+  so `-0.0` and NaN round-trip).
+
+Verifier rules (each has a rejecting test in `ir/tests.rs`): structure (entry
+has no params, unique column names, no branch to entry), SSA (single def,
+same-block visibility), per-op operand types incl. mandatory/forbidden `.opt`
+pairing against column/static nullability, static resolution + kind/arity/key
+types, CFG reachability + acyclicity + branch-arg typing, and the
+store-completeness dataflow (exactly-once per column at `emit`, zero at
+`skip`, agreement at joins).
+
+Deferred to M-interp, pinned there against the DuckDB oracle: `ftoi.round`
+tie behavior and `fcmp` NaN ordering. `idiv`/`irem` trap on zero/overflow;
+SQL-level NULL-on-zero (or error) semantics are a lowering decision built
+from `brif` + `trap`.
 
 ## 7. Backends
 
