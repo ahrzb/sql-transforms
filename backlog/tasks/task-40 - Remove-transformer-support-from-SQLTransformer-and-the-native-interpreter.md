@@ -5,10 +5,12 @@ status: In Progress
 assignee:
   - '@Claude'
 created_date: '2026-07-25 01:09'
-updated_date: '2026-07-25 01:23'
+updated_date: '2026-07-25 01:25'
 labels:
   - epic
 dependencies: []
+references:
+  - 'https://github.com/ahrzb/sql-transforms/pull/22'
 priority: high
 type: task
 ordinal: 35000
@@ -82,3 +84,13 @@ TICKET FALLOUT
 DOCS
 - README: replaced the "Referencing a fitted sklearn transformer" section with "Referencing another SQLTransform" (the surviving composition feature, with a verified runnable example), and noted the sklearn surface is gone for now. Design specs under docs/superpowers/specs and the backlog docs/decisions/drafts are left as history.
 <!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: Claude
+created: 2026-07-25 01:25
+---
+PR open: https://github.com/ahrzb/sql-transforms/pull/22 (+152 -1616 across 24 files). All 5 ACs met and verified; ticket stays In Progress until the PR merges.
+---
+<!-- COMMENTS:END -->
