@@ -341,6 +341,207 @@ fn steady_state_run_allocates_nothing() {
     assert_eq!(delta, 0, "steady-state run heap-allocated {delta} time(s)");
 }
 
+// ----------------------------------------- adversarial-pass regressions --
+// Each pins a fix for a confirmed finding from the 2026-07-26 adversarial
+// workflow against the interpreter.
+
+/// store.opt with a false flag stores the TYPE DEFAULT payload, never the
+/// live register (spec pin in ir/mod.rs).
+#[test]
+fn store_opt_false_flag_stores_type_default() {
+    let p = built(
+        r#"fn f(in: batch{a: i64}, out: batch{o: i64?, s: str?}) {
+entry:
+  %x = load in.a
+  %f = const.i1 false
+  store.opt out.o, %f, %x
+  %t = itos %x
+  store.opt out.s, %f, %t
+  emit
+}"#,
+    );
+    let f = compile(&p, vec![]).unwrap();
+    let mut st = f.new_state();
+    f.run(&batch(1, vec![c_i64(&[Some(42)])]), &mut st).unwrap();
+    match &st.out[0] {
+        OutCol::I64(v) => assert_eq!(v[0], (false, 0), "payload must be the default, not 42"),
+        _ => unreachable!(),
+    }
+    match &st.out[1] {
+        OutCol::Str(v) => {
+            assert!(!v[0].0);
+            assert_eq!(st.arena.get(v[0].1), "", "payload must be the empty default");
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// A nullable column's validity vector is part of the input shape.
+#[test]
+fn short_validity_vector_traps() {
+    let p = built(
+        r#"fn f(in: batch{a: i64?}, out: batch{o: i64}) {
+entry:
+  %f, %v = load.opt in.a
+  %z = select %f, %v, %v
+  store out.o, %z
+  emit
+}"#,
+    );
+    let f = compile(&p, vec![]).unwrap();
+    let mut st = f.new_state();
+    let bad = Batch {
+        rows: 1,
+        cols: vec![ColData::I64 { valid: vec![], data: vec![7] }],
+    };
+    let err = f.run(&bad, &mut st).unwrap_err();
+    assert!(err.0.contains("validity vector"), "wrong trap: {}", err.0);
+}
+
+/// Register slots are dense: sparse value ids must not inflate the frame.
+#[test]
+fn sparse_value_ids_use_dense_register_slots() {
+    use super::super::ir::{Block, Col, ColTy, Inst, Lit, Program, Term, Ty, Value};
+    let p = Program {
+        statics: vec![],
+        name: "sparse".into(),
+        in_cols: vec![],
+        out_cols: vec![Col { name: "o".into(), ty: ColTy { ty: Ty::I64, nullable: false } }],
+        blocks: vec![Block {
+            params: vec![],
+            insts: vec![
+                Inst::Const { dst: Value(9_999_999), lit: Lit::I64(5) },
+                Inst::Store { col: 0, val: Value(9_999_999) },
+            ],
+            term: Term::Emit,
+        }],
+    };
+    let f = compile(&p, vec![]).unwrap();
+    let st = f.new_state();
+    assert!(st.regs.len() <= 4, "frame sized by ids, not defs: {}", st.regs.len());
+}
+
+/// The emitted counter reports the row count even without reading columns.
+#[test]
+fn emitted_counts_rows() {
+    let p = built(fixtures::FILTER);
+    let f = compile(&p, vec![]).unwrap();
+    let mut st = f.new_state();
+    f.run(&batch(3, vec![c_f64(&[Some(1.5), Some(-2.0), Some(0.0)])]), &mut st).unwrap();
+    assert_eq!(st.emitted, 1);
+}
+
+// ------------------------------------------------------- semantics pins --
+// One test per documented pin in interp.rs that the design review found
+// untested. Each tiny program computes one edge through the text form.
+
+/// Run a one-output program over no input rows... rather, over one dummy row.
+fn eval1(body: &str, out_col: &str) -> Result<Vec<Vec<String>>, Trap> {
+    let text = format!(
+        "fn f(in: batch{{d: i64}}, out: batch{{{out_col}}}) {{\nentry:\n{body}\n  emit\n}}"
+    );
+    let p = built(&text);
+    let f = compile(&p, vec![]).unwrap();
+    run_snapshot(&f, &batch(1, vec![c_i64(&[Some(0)])]))
+}
+
+#[test]
+fn pin_integer_overflow_and_division_traps() {
+    for (expr, needle) in [
+        ("  %a = const.i64 9223372036854775807\n  %b = const.i64 1\n  %r = iadd %a, %b", "overflow in iadd"),
+        ("  %a = const.i64 -9223372036854775808\n  %b = const.i64 1\n  %r = isub %a, %b", "overflow in isub"),
+        ("  %a = const.i64 4611686018427387904\n  %b = const.i64 4\n  %r = imul %a, %b", "overflow in imul"),
+        ("  %a = const.i64 1\n  %b = const.i64 0\n  %r = idiv %a, %b", "division by zero in idiv"),
+        ("  %a = const.i64 1\n  %b = const.i64 0\n  %r = irem %a, %b", "division by zero in irem"),
+        ("  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = idiv %a, %b", "overflow in idiv"),
+        ("  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = irem %a, %b", "overflow in irem"),
+    ] {
+        let body = format!("{expr}\n  store out.o, %r");
+        let err = eval1(&body, "o: i64").unwrap_err();
+        assert!(err.0.contains(needle), "expected '{needle}', got '{}'", err.0);
+    }
+}
+
+#[test]
+fn pin_fcmp_nan_ordering() {
+    // Every predicate involving NaN is false except ne.
+    let body = "  %n = const.f64 nan\n  %x = const.f64 1.0\n\
+                \x20 %eq = fcmp.eq %n, %x\n  %ne = fcmp.ne %n, %x\n\
+                \x20 %lt = fcmp.lt %n, %x\n  %le = fcmp.le %n, %x\n\
+                \x20 %gt = fcmp.gt %n, %x\n  %ge = fcmp.ge %n, %x\n\
+                \x20 store out.eq, %eq\n  store out.ne, %ne\n  store out.lt, %lt\n\
+                \x20 store out.le, %le\n  store out.gt, %gt\n  store out.ge, %ge";
+    let got = eval1(body, "eq: i1, ne: i1, lt: i1, le: i1, gt: i1, ge: i1").unwrap();
+    assert_eq!(got, rows(&[&["false", "true", "false", "false", "false", "false"]]));
+}
+
+#[test]
+fn pin_ftoi_rounding_and_traps() {
+    for (lit, mode, expect) in [
+        ("2.5", "round", "3"),
+        ("-2.5", "round", "-3"),
+        ("0.5", "round", "1"),
+        ("-0.5", "round", "-1"),
+        ("2.5", "trunc", "2"),
+        ("-2.5", "trunc", "-2"),
+    ] {
+        let body = format!("  %a = const.f64 {lit}\n  %r = ftoi.{mode} %a\n  store out.o, %r");
+        assert_eq!(
+            eval1(&body, "o: i64").unwrap(),
+            rows(&[&[expect]]),
+            "ftoi.{mode}({lit})"
+        );
+    }
+    for lit in ["nan", "inf", "-inf", "1e19"] {
+        let body = format!("  %a = const.f64 {lit}\n  %r = ftoi.trunc %a\n  store out.o, %r");
+        let err = eval1(&body, "o: i64").unwrap_err();
+        assert!(err.0.contains("out of i64 range"), "ftoi({lit}): {}", err.0);
+    }
+}
+
+#[test]
+fn pin_ieee_flow_and_scmp_and_concat() {
+    let body = "  %z = const.f64 0.0\n  %o = const.f64 1.0\n  %m = const.f64 -1.0\n\
+                \x20 %nan = fdiv %z, %z\n  %pinf = fdiv %o, %z\n  %ninf = fdiv %m, %z\n\
+                \x20 store out.a, %nan\n  store out.b, %pinf\n  store out.c, %ninf\n\
+                \x20 %s1 = const.str \"Z\"\n  %s2 = const.str \"a\"\n  %lt = scmp.lt %s1, %s2\n\
+                \x20 store out.d, %lt\n\
+                \x20 %e1 = const.str \"\"\n  %cc = sconcat %e1, %e1\n  store out.e, %cc";
+    let got = eval1(body, "a: f64, b: f64, c: f64, d: i1, e: str").unwrap();
+    assert_eq!(got, rows(&[&["NaN", "inf", "-inf", "true", ""]]));
+}
+
+#[test]
+fn pin_stoi_exact_parse_no_trim() {
+    for (s, ok) in [(" 5", false), ("5 ", false), ("+5", true), ("0x10", false), ("", false)] {
+        let body = format!(
+            "  %s = const.str \"{s}\"\n  %f, %v = stoi.opt %s\n  store out.f, %f\n  store out.v, %v"
+        );
+        let got = eval1(&body, "f: i1, v: i64").unwrap();
+        assert_eq!(got[0][0], ok.to_string(), "stoi({s:?})");
+    }
+}
+
+#[test]
+fn pin_load_opt_normalizes_garbage_payloads() {
+    // Invalid slot carries 999; the flag is false so downstream must see the
+    // type default, not the garbage.
+    let p = built(
+        r#"fn f(in: batch{a: i64?}, out: batch{o: i64}) {
+entry:
+  %f, %v = load.opt in.a
+  store out.o, %v
+  emit
+}"#,
+    );
+    let f = compile(&p, vec![]).unwrap();
+    let input = Batch {
+        rows: 1,
+        cols: vec![ColData::I64 { valid: vec![false], data: vec![999] }],
+    };
+    assert_eq!(run_snapshot(&f, &input).unwrap(), rows(&[&["0"]]));
+}
+
 // ---------------------------------------------------------------- fuzz --
 
 fn gen_scalar(rng: &mut gen::Rng, ty: Ty) -> ScalarVal {

@@ -1,9 +1,10 @@
 //! Execution substrate shared by the interpreter backend (and, at
 //! M-cranelift, the codegen backend): batches, the bump arena, prepared
 //! static structures, and the run-state buffers. Everything here obeys the
-//! Stage-2 discipline — steady-state execution allocates nothing on the
-//! heap; the only growable memory is the arena and the pre-reserved output
-//! builders, both owned by [`RunState`] and reused across calls.
+//! Stage-2 discipline: the only growable memory is the arena and the
+//! pre-reserved output builders, both owned by [`RunState`] and reused
+//! across calls — see [`RunState`]'s docs for the precise zero-allocation
+//! contract.
 //!
 //! Lives under `exec/` rather than a separate `runtime/` until the Cranelift
 //! backend actually shares it — one home per concept until two consumers
@@ -70,11 +71,13 @@ impl ColData {
 
 /// A span into the run arena. All `str`-typed register values are arena
 /// spans — input/const/static strings are copied in on read, so registers
-/// stay `Copy` and nothing borrows across rows.
+/// stay `Copy` and nothing borrows across rows. Offsets are usize: a single
+/// call can legitimately accumulate more than 4 GiB of varlen data, and a
+/// u32 span silently aliased old data past the wrap (adversarial finding).
 #[derive(Clone, Copy, Debug)]
 pub struct StrRef {
-    pub off: u32,
-    pub len: u32,
+    pub off: usize,
+    pub len: usize,
 }
 
 /// Bump arena for varlen values, reset per call. Byte-backed so
@@ -90,22 +93,22 @@ impl Arena {
     }
 
     pub fn push_str(&mut self, s: &str) -> StrRef {
-        let off = self.0.len() as u32;
+        let off = self.0.len();
         self.0.extend_from_slice(s.as_bytes());
-        StrRef { off, len: s.len() as u32 }
+        StrRef { off, len: s.len() }
     }
 
     pub fn concat(&mut self, a: StrRef, b: StrRef) -> StrRef {
-        let off = self.0.len() as u32;
-        self.0.extend_from_within(a.off as usize..(a.off + a.len) as usize);
-        self.0.extend_from_within(b.off as usize..(b.off + b.len) as usize);
+        let off = self.0.len();
+        self.0.extend_from_within(a.off..a.off + a.len);
+        self.0.extend_from_within(b.off..b.off + b.len);
         StrRef { off, len: a.len + b.len }
     }
 
     pub fn get(&self, r: StrRef) -> &str {
         // Spans only ever come from push_str/concat of whole &strs, so this
         // never fails; checked conversion keeps the module unsafe-free.
-        std::str::from_utf8(&self.0[r.off as usize..(r.off + r.len) as usize])
+        std::str::from_utf8(&self.0[r.off..r.off + r.len])
             .expect("arena spans are always whole UTF-8 strings")
     }
 }
@@ -206,10 +209,20 @@ pub enum RegVal {
 
 /// Reusable per-call buffers: registers, arena, output builders. Create once
 /// with [`interp::InterpFn::new_state`], reuse across calls — `run` clears
-/// (capacity-preserving) and refills them; after the first warm call the
-/// steady state performs zero heap allocations.
+/// (capacity-preserving) and refills them.
+///
+/// Zero-allocation contract, stated precisely (the naive "after one warm
+/// call" claim was refuted by adversarial testing): a run allocates only
+/// when the input's *arena footprint* — branch paths taken, probe hits,
+/// non-NULL varlen values, output row count — exceeds every previous run's
+/// high-water mark. Such growth is one-time and monotone: repeating any
+/// content profile already seen allocates nothing. Traps may allocate
+/// (error path).
 pub struct RunState {
     pub regs: Vec<RegVal>,
     pub arena: Arena,
     pub out: Vec<OutCol>,
+    /// Rows emitted by the last `run` — the row count even when the
+    /// program has zero output columns.
+    pub emitted: usize,
 }
