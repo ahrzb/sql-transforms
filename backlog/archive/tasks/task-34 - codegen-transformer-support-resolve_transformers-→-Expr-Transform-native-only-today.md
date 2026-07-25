@@ -7,7 +7,7 @@ status: To Do
 assignee:
   - Ritchie
 created_date: '2026-07-19 16:08'
-updated_date: '2026-07-23 14:32'
+updated_date: '2026-07-25 01:23'
 labels:
   - codegen
   - transformer
@@ -76,5 +76,15 @@ author: Iris (PM)
 created: 2026-07-23 04:41
 ---
 PRE-AUTHORIZED (2026-07-23): AmirHossein green-lit dispatching TASK-34 to Ritchie automatically once TASK-29 lands. No further approval needed — PM dispatches on TASK-29 completion. (Dependency TASK-29 still In Progress.)
+---
+
+author: Claude (TASK-40)
+created: 2026-07-25 01:23
+---
+OBSOLETED BY TASK-40 (2026-07-25), archiving. This ticket adds codegen support for the transformer-ref feature; TASK-40 removes that feature from both engines, so there is nothing left to port. The `__tfm_` UnsupportedInCodegen branch this ticket was meant to replace is deleted too.
+
+Its standing PRE-AUTHORIZATION to auto-dispatch to Ritchie on TASK-29 completion is retired -- do NOT dispatch when TASK-29 lands.
+
+Recoverable: archived, not deleted. If transformer support returns, write a fresh ticket against the new surface rather than un-archiving this one (its AC#2/#3 reference resolve_transformers and TASK-31's parity test, both of which are gone).
 ---
 <!-- COMMENTS:END -->

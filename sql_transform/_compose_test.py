@@ -44,7 +44,7 @@ def test_referenced_transform_outside_projection_raises(sql_of):
     # TASK-2 AC#1, sibling path: a {a.transform} ref inlines into whatever
     # clause it sits in. The native engine only resolves the projection, so a
     # ref in QUALIFY/SORT BY/CLUSTER BY meant fit() accepted a query the two
-    # engines then disagreed about. Same guard as the transformer-callout path.
+    # engines then disagreed about.
     train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
     inner = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__").fit(train)
     with pytest.raises(ValueError, match="projection"):
@@ -129,16 +129,3 @@ def test_reference_not_applied_to_column_errors():
 def test_non_transform_interpolation_errors():
     with pytest.raises(TypeError, match="SQLTransform"):
         SQLTransform(t"SELECT {42}(age) AS s FROM __THIS__")
-
-
-def test_unfitted_transformer_raises_not_fitted_error():
-    # Before: TypeError blaming the interpolation TYPE ("must be a SQLTransform"),
-    # which hides the real cause. An unfitted transformer has .transform but no
-    # n_features_in_, so we can name the actual problem.
-    from sklearn.preprocessing import StandardScaler
-
-    train = pa.table({"age": [10.0, 20.0], "income": [1.0, 2.0]})
-    with pytest.raises(ValueError, match="not fitted"):
-        SQLTransform(t"SELECT {StandardScaler()}(age, income) AS o FROM __THIS__").fit(
-            train
-        )

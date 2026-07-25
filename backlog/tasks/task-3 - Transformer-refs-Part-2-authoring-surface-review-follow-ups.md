@@ -1,11 +1,11 @@
 ---
 id: TASK-3
 title: Transformer-refs (Part-2 authoring surface) review follow-ups
-status: In Progress
+status: Done
 assignee:
   - Wren
 created_date: '2026-07-18 13:44'
-updated_date: '2026-07-23 14:32'
+updated_date: '2026-07-25 01:23'
 labels:
   - python
   - transformer-refs
@@ -69,4 +69,24 @@ created: 2026-07-23 13:09
 ---
 Dispatched to Wren (2026-07-23) per the standing pre-authorization, on TASK-2 completion. 6 ACs — mostly DX/guardrails on the shipped authoring surface. Note AC#6 is a README/docs item and AC#4 is self-described low value; Wren to flag if any AC looks not-worth-it rather than padding it out.
 ---
+
+author: Claude (TASK-40)
+created: 2026-07-25 01:23
+---
+CLOSED BY TASK-40 (2026-07-25). The five fixes that were completed landed on master (commits d47d2df..a83b742: bind names on both ref paths, probe in CALL order, nested refs declare the struct they receive, probe in fitted order + engine tolerance, shared _rows_equal).
+
+ACs #1-#6 are now VOID, not deferred: TASK-40 removes the {transformer}(col) authoring surface entirely, so the double-.transform() probe, the feature_names_in_ footgun, the aggregate-over-output error, and the struct-output README note all describe code that no longer exists. Re-open a fresh ticket against the new surface if transformer support returns.
+
+Important: this ticket carried a standing PRE-AUTHORIZATION to dispatch to Wren. Closing it retires that authorization -- do not dispatch.
+---
 <!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Partially completed, then superseded by TASK-40 (remove transformer support).
+
+LANDED (on master): probe/binding correctness fixes for the transformer-ref path -- bind names on both ref paths with an actionable error when unsettable; probe in CALL order so the UDF signature matches the named_struct the SQL builds; nested refs declare the struct they actually receive; probe in fitted order and compare engines with a tolerance; test cleanup to the shared _rows_equal helper.
+
+NOT DONE, AND NOW VOID: ACs #1-#6. All six target the {transformer}(col) authoring surface, which TASK-40 deletes from both the Python front-end and the native interpreter. They are not deferred work -- the code they describe is gone.
+<!-- SECTION:FINAL_SUMMARY:END -->

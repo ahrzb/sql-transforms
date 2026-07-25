@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Base {
@@ -100,38 +100,6 @@ pub fn infer_type(
                     "Cannot access field '{field}' on a non-struct column"
                 ))),
             }
-        }
-        Expr::Transform {
-            input_features,
-            output_fields,
-            arg,
-            ..
-        } => {
-            let arg_ty = infer_type(arg, schemas)?;
-            match &arg_ty.base {
-                Base::Struct(fields) => {
-                    let got: HashSet<&String> = fields.iter().map(|(n, _)| n).collect();
-                    let want: HashSet<&String> = input_features.iter().collect();
-                    if got != want {
-                        return Err(InterpError::Build(format!(
-                            "transformer input struct fields {:?} do not match \
-                             feature_names_in_ {:?}",
-                            fields.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-                            input_features
-                        )));
-                    }
-                }
-                _ => {
-                    return Err(InterpError::Build(
-                        "transformer argument must be a struct (e.g. named_struct(...))"
-                            .to_string(),
-                    ))
-                }
-            }
-            Ok(FieldType {
-                base: Base::Struct(output_fields.clone()),
-                nullable: false,
-            })
         }
         Expr::Case { arms, default } => {
             let mut branch_types: Vec<FieldType> = arms

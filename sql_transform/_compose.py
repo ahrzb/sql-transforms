@@ -26,15 +26,13 @@ from sql_transform._sql import (
     require_in_projection,
 )
 from sql_transform._state import build_state_tables
-from sql_transform._transformer_ref import is_transformer
 
 
 @dataclass(frozen=True)
 class Ref:
-    transform: object  # a SQLTransform, or a fitted transformer if is_transformer
+    transform: object  # a SQLTransform
     frozen: bool  # True for {a.transform}; False for bare {a}
     expr_text: str  # interpolation source, for error messages
-    is_transformer: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,17 +60,6 @@ def desugar_template(template: Template) -> tuple[str, dict[str, Ref]]:
             ref = Ref(v.__self__, frozen=True, expr_text=item.expression)
         elif isinstance(v, SQLTransform):
             ref = Ref(v, frozen=False, expr_text=item.expression)
-        elif is_transformer(v):
-            ref = Ref(v, frozen=False, expr_text=item.expression, is_transformer=True)
-        elif hasattr(v, "transform") and not hasattr(v, "n_features_in_"):
-            # Transformer-shaped but unfitted. Without this the generic TypeError
-            # below blames the interpolation's TYPE, which sends users looking in
-            # entirely the wrong place.
-            raise ValueError(
-                f"interpolation {{{item.expression}}}: {type(v).__name__} is not "
-                f"fitted (or does not expose n_features_in_) -- call .fit(...) "
-                f"before referencing it"
-            )
         else:
             raise TypeError(
                 f"interpolation {{{item.expression}}} must be a SQLTransform or "
@@ -246,9 +233,8 @@ def fit_into_scope(
 def _find_call(select: exp.Select, name: str, ref: Ref) -> exp.Anonymous:
     for n in select.find_all(exp.Anonymous):
         if str(n.this).upper() == name:
-            # Same build-time guard as the transformer-callout path (TASK-2
-            # AC#1): a ref parked in QUALIFY/SORT BY/... inlines into a clause
-            # the native engine never resolves, so the engines would disagree.
+            # A ref parked in QUALIFY/SORT BY/... inlines into a clause the
+            # native engine never resolves, so the engines would disagree.
             require_in_projection(
                 select, n, f"referenced transform {{{ref.expr_text}}}"
             )

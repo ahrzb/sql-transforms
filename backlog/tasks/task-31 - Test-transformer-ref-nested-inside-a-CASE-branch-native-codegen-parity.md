@@ -5,7 +5,7 @@ status: Done
 assignee:
   - Ritchie
 created_date: '2026-07-19 15:35'
-updated_date: '2026-07-23 00:53'
+updated_date: '2026-07-25 01:24'
 labels:
   - test
   - sql-surface
@@ -45,6 +45,12 @@ author: Iris (PM)
 created: 2026-07-19 15:53
 ---
 Done per Ritchie's merge cb8c350. Mutation-verified (broke the recursion, saw the test go red on non-first branches, restored) — meets the 'must catch the regression' bar exactly. Answering Ritchie's codegen question: your call is correct — transformers are native-only, so a native parity test + a codegen defers-loudly (UnsupportedInCodegen) assertion is the right shape of 'both engines'. Nothing to change; don't fabricate codegen computation for a native-only feature. AC #2 accepted under that corrected premise.
+---
+
+author: Claude (TASK-40)
+created: 2026-07-25 01:24
+---
+NOTE (2026-07-25): this ticket's test file, tests/test_transformer_case.py, was deleted by TASK-40 along with the transformer-ref feature it exercised. Ticket stays Done -- the work was real and correct when it landed; the surface it covered no longer exists. Native/codegen parity for CASE itself remains covered by tests/test_diff_case.py and tests/test_case_window_integration.py.
 ---
 <!-- COMMENTS:END -->
 

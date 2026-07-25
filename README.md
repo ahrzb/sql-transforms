@@ -72,8 +72,8 @@ sql = "SELECT target / MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS_
 - **Typed I/O**: Pydantic models for the input row and output, validated when the
   transformer is built and again at call time. Output is a typed model; the input
   schema is auto-synthesized or user-supplied.
-- **Transformer references**: interpolate a fitted sklearn transformer directly
-  into a t-string and apply it to columns (see below).
+- **Transform references**: interpolate another `SQLTransform` into a t-string to
+  compose transforms (see below).
 
 See [docs/SQL_SUPPORT.md](docs/SQL_SUPPORT.md) for the feature-by-feature tracker.
 
@@ -104,56 +104,32 @@ query engine once; inference pays only for a lean interpreter walking a plan. Th
 separation of **fit** (compute statistics) and **transform/infer** (apply them)
 is the standard ML pattern — fit on training data, apply to training and serving.
 
-## Referencing a fitted sklearn transformer
+## Referencing another SQLTransform
 
-Interpolate a fitted transformer into a t-string and apply it to columns:
+Interpolate a `SQLTransform` into a t-string to apply it to a column. The
+reference inlines to a scalar expression at `fit`, so it composes with window
+aggregates freely:
 
 ```python
-import pandas as pd
 import pyarrow as pa
-from sklearn.preprocessing import StandardScaler
 from sql_transform import SQLTransform
 
-train_df = pd.DataFrame(
-    {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
-)
-table = pa.Table.from_pandas(train_df)
+table = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
 
-sc = StandardScaler().fit(train_df)          # fit on a DataFrame -> records feature_names_in_
-t = SQLTransform(t"SELECT {sc}(age, income) AS scaled FROM __THIS__").fit(table)
-```
-
-**Output is a single Arrow struct column**, not one column per feature:
-
-```python
-t.transform(table).schema                  # scaled: struct<age: double, income: double>
-t.transform(table).flatten().schema.names  # ['scaled.age', 'scaled.income']
-```
-
-Call `.flatten()` to get flat columns for an sklearn handoff.
-
-**Column binding** depends on how the transformer was fitted:
-
-| fitted with | `feature_names_in_` | binding |
-|---|---|---|
-| `fit(DataFrame)` | recorded | by **name** — call order is free, and is validated against the names |
-| `fit(ndarray)` | absent | by **position**, in call order — only the count is checked |
-
-With positional binding, `{sc}(income, age)` against a transformer fitted as
-`[age, income]` silently swaps the features. Fit on a DataFrame when you can.
-
-Aggregating over a transformer's output (`AVG({sc}(age)) OVER ()`) is not
-supported — it is inherently two-stage and needs a subquery. Aggregate over an
-input column, or use a `SQLTransform` reference, which inlines to a scalar and
-composes with aggregates freely:
-
-```python
 norm = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__").fit(table)
-t2 = SQLTransform(
+t = SQLTransform(
     t"SELECT AVG({norm.transform}(age)) OVER () AS m FROM __THIS__"
 ).fit(table)
-t2.transform(table).column("m").to_pylist()  # [1.0, 1.0, 1.0, 1.0]
+t.transform(table).column("m").to_pylist()  # [1.0, 1.0, 1.0, 1.0]
 ```
+
+`{norm.transform}` reuses the referenced transform's already-frozen state. A bare
+`{norm}` instead re-fits that transform's *definition* into the outer fit, leaving
+the referenced object untouched. References nest — `{a}({b}(age))` — and resolve
+innermost-first.
+
+> **Note:** referencing a fitted **sklearn** transformer is not currently
+> supported. That surface was removed in TASK-40 and may return later.
 
 ## Development
 

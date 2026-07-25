@@ -94,12 +94,6 @@ def _emit_expr(e: Any, env: dict) -> str:
     if isinstance(e, cp.Func):
         fn = _BUILTINS.get(e.name)
         if fn is None:
-            if e.name.startswith("__tfm_"):
-                # A transformer placeholder call: codegen has no transformer
-                # support (native-only, TASK-34) -- deferred surface, not an error.
-                raise UnsupportedInCodegen(
-                    f"{e.name}() is not supported in codegen yet"
-                )
             raise ValueError(f"Unknown function: {e.name}")
         return f"{fn}({', '.join(_emit_expr(a, env) for a in e.args)})"
     if isinstance(e, cp.Case):
