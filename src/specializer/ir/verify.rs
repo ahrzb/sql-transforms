@@ -1,0 +1,560 @@
+//! The verifier — the airtight boundary. Everything upstream (lowering) and
+//! downstream (backends) is allowed to assume a verified program; nothing may
+//! execute or compile an unverified one.
+//!
+//! Rules enforced (numbers referenced from tests):
+//!  1. Structure: at least one block; entry (b0) has no params and is never a
+//!     branch target; batch column names unique per side.
+//!  2. SSA: every value defined exactly once function-wide; every use sees a
+//!     definition earlier in the same block or a param of the same block
+//!     (strict block-param form — cross-block uses are illegal, which is what
+//!     lets the verifier skip dominance analysis entirely).
+//!  3. Types: every operand matches its instruction's signature; `.opt` forms
+//!     are mandatory for nullable columns/statics and illegal on non-nullable
+//!     ones (the null lane can be neither skipped nor invented).
+//!  4. Statics: every `@N` resolves; probe/sload match the static's kind,
+//!     arity, and types.
+//!  5. CFG: all blocks reachable from entry; no cycles (v0); branch args
+//!     match target params in count and type.
+//!  6. Stores: on every path to `emit`, each out column is stored exactly
+//!     once; paths to `skip` store nothing; store states must agree at joins.
+
+use std::collections::HashMap;
+
+use super::{Block, Col, Inst, Program, StaticTy, Term, Ty, Value};
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifyError {
+    /// Block index, when the error is inside a block.
+    pub block: Option<usize>,
+    /// Instruction index within the block; `None` for param/terminator errors.
+    pub inst: Option<usize>,
+    pub msg: String,
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.block, self.inst) {
+            (Some(b), Some(i)) => write!(f, "b{b}[{i}]: {}", self.msg),
+            (Some(b), None) => write!(f, "b{b}: {}", self.msg),
+            _ => write!(f, "{}", self.msg),
+        }
+    }
+}
+
+pub fn verify(p: &Program) -> Result<(), Vec<VerifyError>> {
+    let mut errs = Vec::new();
+
+    check_structure(p, &mut errs);
+    // Function-wide definition table: value -> (type, defining block),
+    // discovered at definition sites. Collected fully before use-checking so
+    // an early error doesn't cascade into spurious "undefined value" noise.
+    let mut def_types: HashMap<u32, (Ty, usize)> = HashMap::new();
+    collect_defs(p, &mut def_types, &mut errs);
+    for (bi, b) in p.blocks.iter().enumerate() {
+        check_block(p, bi, b, &def_types, &mut errs);
+    }
+    check_cfg_and_stores(p, &mut errs);
+
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(errs)
+    }
+}
+
+fn err(errs: &mut Vec<VerifyError>, block: Option<usize>, inst: Option<usize>, msg: String) {
+    errs.push(VerifyError { block, inst, msg });
+}
+
+fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
+    if p.blocks.is_empty() {
+        err(errs, None, None, "function has no blocks".to_string());
+        return;
+    }
+    if !p.blocks[0].params.is_empty() {
+        err(errs, Some(0), None, "entry block cannot have params".to_string());
+    }
+    for (side, cols) in [("in", &p.in_cols), ("out", &p.out_cols)] {
+        let mut seen: HashMap<&str, ()> = HashMap::new();
+        for c in cols.iter() {
+            if seen.insert(c.name.as_str(), ()).is_some() {
+                err(errs, None, None, format!("duplicate {side} column '{}'", c.name));
+            }
+        }
+    }
+}
+
+/// First pass: register every definition (params + inst dsts) with its type,
+/// flagging double definitions. A definition's type is derivable from the
+/// instruction plus the column/static tables alone — except `select`, whose
+/// result type equals its operands'; it is registered per its `a` operand
+/// during the per-block pass (see `check_block`), and as a placeholder here
+/// only to occupy the SSA slot.
+fn collect_defs(
+    p: &Program,
+    def_types: &mut HashMap<u32, (Ty, usize)>,
+    errs: &mut Vec<VerifyError>,
+) {
+    for (bi, b) in p.blocks.iter().enumerate() {
+        for (v, ty) in &b.params {
+            if def_types.insert(v.0, (*ty, bi)).is_some() {
+                err(errs, Some(bi), None, format!("%v{} defined more than once", v.0));
+            }
+        }
+        for (ii, inst) in b.insts.iter().enumerate() {
+            for (dst, ty) in dst_types(p, inst) {
+                if def_types.insert(dst.0, (ty, bi)).is_some() {
+                    err(errs, Some(bi), Some(ii), format!("%v{} defined more than once", dst.0));
+                }
+            }
+        }
+    }
+}
+
+/// Result types of an instruction's definitions, best-effort when the
+/// program is malformed (bad indices fall back so verification continues and
+/// the real error is reported at the site check).
+fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
+    let in_col = |c: u32| p.in_cols.get(c as usize).map(|c| c.ty.ty);
+    let scalar_ty = |id: u32| match p.statics.get(id as usize) {
+        Some(StaticTy::Scalar(ct)) => ct.ty,
+        _ => Ty::I1,
+    };
+    match inst {
+        Inst::Const { dst, lit } => vec![(*dst, lit.ty())],
+        Inst::Bin { op, dst, .. } => vec![(*dst, op.sig().1)],
+        Inst::Cmp { dst, .. } | Inst::Not { dst, .. } => vec![(*dst, Ty::I1)],
+        // Placeholder; corrected per-block (see collect_defs docs).
+        Inst::Select { dst, .. } => vec![(*dst, Ty::I1)],
+        Inst::Itof { dst, .. } => vec![(*dst, Ty::F64)],
+        Inst::Ftoi { dst, .. } => vec![(*dst, Ty::I64)],
+        Inst::Itos { dst, .. } | Inst::Ftos { dst, .. } | Inst::Sconcat { dst, .. } => {
+            vec![(*dst, Ty::Str)]
+        }
+        Inst::StoiOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::I64)],
+        Inst::StofOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::F64)],
+        Inst::Load { dst, col } => vec![(*dst, in_col(*col).unwrap_or(Ty::I1))],
+        Inst::LoadOpt { flag, dst, col } => {
+            vec![(*flag, Ty::I1), (*dst, in_col(*col).unwrap_or(Ty::I1))]
+        }
+        Inst::Store { .. } | Inst::StoreOpt { .. } => vec![],
+        Inst::Probe { static_id, hit, dsts, .. } => {
+            let mut v = vec![(*hit, Ty::I1)];
+            if let Some(StaticTy::Map { values, .. }) = p.statics.get(*static_id as usize) {
+                for (d, ty) in dsts.iter().zip(values.iter()) {
+                    v.push((*d, *ty));
+                }
+            }
+            // Dsts beyond the declared value columns keep no type; the site
+            // check reports the arity mismatch.
+            v
+        }
+        Inst::Sload { static_id, dst } => vec![(*dst, scalar_ty(*static_id))],
+        Inst::SloadOpt { static_id, flag, dst } => {
+            vec![(*flag, Ty::I1), (*dst, scalar_ty(*static_id))]
+        }
+    }
+}
+
+/// Look up a use in the block's scope, reporting scope violations with a
+/// message that distinguishes "defined later in this block" (use before def)
+/// from "defined in another block" (illegal crossing) from "never defined".
+fn scope_ty(
+    in_scope: &HashMap<u32, Ty>,
+    def_types: &HashMap<u32, (Ty, usize)>,
+    v: Value,
+    what: &str,
+    bi: usize,
+    ii: Option<usize>,
+    errs: &mut Vec<VerifyError>,
+) -> Option<Ty> {
+    match in_scope.get(&v.0) {
+        Some(ty) => Some(*ty),
+        None => {
+            let msg = match def_types.get(&v.0) {
+                Some((_, def_bi)) if *def_bi != bi => format!(
+                    "{what} %v{} is not visible here: values cross blocks only as branch \
+                     args to block params",
+                    v.0
+                ),
+                _ => format!("{what} %v{} is used before any definition", v.0),
+            };
+            err(errs, Some(bi), ii, msg);
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn want(
+    in_scope: &HashMap<u32, Ty>,
+    def_types: &HashMap<u32, (Ty, usize)>,
+    v: Value,
+    ty: Ty,
+    what: &str,
+    bi: usize,
+    ii: Option<usize>,
+    errs: &mut Vec<VerifyError>,
+) {
+    if let Some(actual) = scope_ty(in_scope, def_types, v, what, bi, ii, errs) {
+        if actual != ty {
+            err(
+                errs,
+                Some(bi),
+                ii,
+                format!("{what} %v{} must be {}, got {}", v.0, ty.name(), actual.name()),
+            );
+        }
+    }
+}
+
+/// Second pass, per block: scoping (uses see only same-block earlier defs or
+/// own params) and per-instruction operand typing.
+fn check_block(
+    p: &Program,
+    bi: usize,
+    b: &Block,
+    def_types: &HashMap<u32, (Ty, usize)>,
+    errs: &mut Vec<VerifyError>,
+) {
+    // Values visible at the current point of this block.
+    let mut in_scope: HashMap<u32, Ty> = HashMap::new();
+    for (v, ty) in &b.params {
+        in_scope.insert(v.0, *ty);
+    }
+
+    for (ii, inst) in b.insts.iter().enumerate() {
+        let i = Some(ii);
+        match inst {
+            Inst::Const { .. } => {}
+            Inst::Bin { op, a, b: rhs, .. } => {
+                let (operand, _) = op.sig();
+                want(&in_scope, def_types, *a, operand, "operand", bi, i, errs);
+                want(&in_scope, def_types, *rhs, operand, "operand", bi, i, errs);
+            }
+            Inst::Cmp { ty, a, b: rhs, .. } => {
+                if *ty == Ty::I1 {
+                    err(errs, Some(bi), i, "cmp on i1 is not defined; use xor/not".into());
+                }
+                want(&in_scope, def_types, *a, *ty, "operand", bi, i, errs);
+                want(&in_scope, def_types, *rhs, *ty, "operand", bi, i, errs);
+            }
+            Inst::Not { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::I1, "operand", bi, i, errs)
+            }
+            Inst::Select { dst, cond, a, b: rhs } => {
+                want(&in_scope, def_types, *cond, Ty::I1, "condition", bi, i, errs);
+                let ta = scope_ty(&in_scope, def_types, *a, "operand", bi, i, errs);
+                let tb = scope_ty(&in_scope, def_types, *rhs, "operand", bi, i, errs);
+                if let (Some(ta), Some(tb)) = (ta, tb) {
+                    if ta != tb {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!("select arms differ: {} vs {}", ta.name(), tb.name()),
+                        );
+                    }
+                }
+                // Correct the placeholder from collect_defs with the real type.
+                if let Some(ta) = ta {
+                    in_scope.insert(dst.0, ta);
+                }
+            }
+            Inst::Itof { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs)
+            }
+            Inst::Ftoi { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs)
+            }
+            Inst::Itos { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs)
+            }
+            Inst::Ftos { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs)
+            }
+            Inst::StoiOpt { a, .. } | Inst::StofOpt { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
+            }
+            Inst::Sconcat { a, b: rhs, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                want(&in_scope, def_types, *rhs, Ty::Str, "operand", bi, i, errs);
+            }
+            Inst::Load { col, .. } => match p.in_cols.get(*col as usize) {
+                None => err(errs, Some(bi), i, format!("unknown in column {col}")),
+                Some(Col { ty, name }) if ty.nullable => {
+                    err(errs, Some(bi), i, format!("in.{name} is nullable: use load.opt"))
+                }
+                Some(_) => {}
+            },
+            Inst::LoadOpt { col, .. } => match p.in_cols.get(*col as usize) {
+                None => err(errs, Some(bi), i, format!("unknown in column {col}")),
+                Some(Col { ty, name }) if !ty.nullable => {
+                    err(errs, Some(bi), i, format!("in.{name} is not nullable: use load"))
+                }
+                Some(_) => {}
+            },
+            Inst::Store { col, val } => match p.out_cols.get(*col as usize) {
+                None => err(errs, Some(bi), i, format!("unknown out column {col}")),
+                Some(c) if c.ty.nullable => {
+                    err(errs, Some(bi), i, format!("out.{} is nullable: use store.opt", c.name))
+                }
+                Some(c) => {
+                    want(&in_scope, def_types, *val, c.ty.ty, "stored value", bi, i, errs)
+                }
+            },
+            Inst::StoreOpt { col, flag, val } => match p.out_cols.get(*col as usize) {
+                None => err(errs, Some(bi), i, format!("unknown out column {col}")),
+                Some(c) if !c.ty.nullable => {
+                    err(errs, Some(bi), i, format!("out.{} is not nullable: use store", c.name))
+                }
+                Some(c) => {
+                    want(&in_scope, def_types, *flag, Ty::I1, "validity flag", bi, i, errs);
+                    want(&in_scope, def_types, *val, c.ty.ty, "stored value", bi, i, errs);
+                }
+            },
+            Inst::Probe { static_id, dsts, keys, .. } => {
+                match p.statics.get(*static_id as usize) {
+                    None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                    Some(StaticTy::Scalar(_)) => {
+                        err(errs, Some(bi), i, format!("@{static_id} is a scalar: use sload"))
+                    }
+                    Some(StaticTy::Map { keys: kts, values: vts }) => {
+                        if keys.len() != kts.len() {
+                            err(
+                                errs,
+                                Some(bi),
+                                i,
+                                format!(
+                                    "@{static_id} has {} key(s), probe passes {}",
+                                    kts.len(),
+                                    keys.len()
+                                ),
+                            );
+                        } else {
+                            for (k, kt) in keys.iter().zip(kts.iter()) {
+                                want(&in_scope, def_types, *k, *kt, "probe key", bi, i, errs);
+                            }
+                        }
+                        if dsts.len() != vts.len() {
+                            err(
+                                errs,
+                                Some(bi),
+                                i,
+                                format!(
+                                    "@{static_id} has {} value column(s), probe defines {}",
+                                    vts.len(),
+                                    dsts.len()
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            Inst::Sload { static_id, .. } => match p.statics.get(*static_id as usize) {
+                None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                Some(StaticTy::Map { .. }) => {
+                    err(errs, Some(bi), i, format!("@{static_id} is a map: use probe"))
+                }
+                Some(StaticTy::Scalar(ct)) if ct.nullable => {
+                    err(errs, Some(bi), i, format!("@{static_id} is nullable: use sload.opt"))
+                }
+                Some(_) => {}
+            },
+            Inst::SloadOpt { static_id, .. } => match p.statics.get(*static_id as usize) {
+                None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                Some(StaticTy::Map { .. }) => {
+                    err(errs, Some(bi), i, format!("@{static_id} is a map: use probe"))
+                }
+                Some(StaticTy::Scalar(ct)) if !ct.nullable => {
+                    err(errs, Some(bi), i, format!("@{static_id} is not nullable: use sload"))
+                }
+                Some(_) => {}
+            },
+        }
+
+        // Definitions become visible AFTER the instruction (no self-use).
+        for d in inst.dsts() {
+            let ty = def_types.get(&d.0).map(|(t, _)| *t).unwrap_or(Ty::I1);
+            // Select already inserted its corrected type above; keep it.
+            in_scope.entry(d.0).or_insert(ty);
+        }
+    }
+
+    // Terminator: cond and branch args are uses in this block's final scope.
+    if let Term::Brif { cond, .. } = &b.term {
+        want(&in_scope, def_types, *cond, Ty::I1, "branch condition", bi, None, errs);
+    }
+    for (target, args) in b.term.successors() {
+        match p.blocks.get(target.0 as usize) {
+            None => err(errs, Some(bi), None, format!("branch to unknown block b{}", target.0)),
+            Some(tb) => {
+                if args.len() != tb.params.len() {
+                    err(
+                        errs,
+                        Some(bi),
+                        None,
+                        format!(
+                            "b{} expects {} arg(s), got {}",
+                            target.0,
+                            tb.params.len(),
+                            args.len()
+                        ),
+                    );
+                } else {
+                    for (arg, (_, pty)) in args.iter().zip(tb.params.iter()) {
+                        want(&in_scope, def_types, *arg, *pty, "branch arg", bi, None, errs);
+                    }
+                }
+                if target.0 == 0 {
+                    err(errs, Some(bi), None, "branch to entry block".to_string());
+                }
+            }
+        }
+    }
+}
+
+/// CFG shape (reachability, acyclicity) and the store-completeness dataflow.
+fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
+    let n = p.blocks.len();
+    if n == 0 {
+        return;
+    }
+
+    // DFS for reachability + cycle detection (0 white, 1 gray, 2 black).
+    fn dfs(p: &Program, b: usize, color: &mut [u8], cyclic: &mut bool) {
+        color[b] = 1;
+        for (succ, _) in p.blocks[b].term.successors() {
+            let s = succ.0 as usize;
+            if s >= color.len() {
+                continue; // reported by check_block
+            }
+            match color[s] {
+                0 => dfs(p, s, color, cyclic),
+                1 => *cyclic = true,
+                _ => {}
+            }
+        }
+        color[b] = 2;
+    }
+    let mut color = vec![0u8; n];
+    let mut cyclic = false;
+    dfs(p, 0, &mut color, &mut cyclic);
+    if cyclic {
+        err(errs, None, None, "control-flow cycle (v0 CFGs must be acyclic)".to_string());
+        return; // the store dataflow below needs a DAG
+    }
+    for (bi, c) in color.iter().enumerate() {
+        if *c == 0 {
+            err(errs, Some(bi), None, "unreachable block".to_string());
+        }
+    }
+
+    // Store dataflow over the DAG in topological order. State: per out
+    // column, how many times it has been stored on every path reaching this
+    // point; all paths into a join must agree.
+    let ncols = p.out_cols.len();
+    let mut entry_state: Vec<Option<Vec<u8>>> = vec![None; n];
+    entry_state[0] = Some(vec![0; ncols]);
+
+    for bi in topo_order(p, n) {
+        let Some(state) = entry_state[bi].clone() else {
+            continue; // unreachable; already reported
+        };
+        let mut state_out = state;
+        for (ii, inst) in p.blocks[bi].insts.iter().enumerate() {
+            let col = match inst {
+                Inst::Store { col, .. } | Inst::StoreOpt { col, .. } => *col as usize,
+                _ => continue,
+            };
+            if col < ncols {
+                state_out[col] = state_out[col].saturating_add(1);
+                if state_out[col] > 1 {
+                    err(
+                        errs,
+                        Some(bi),
+                        Some(ii),
+                        format!("out.{} stored more than once on this path", p.out_cols[col].name),
+                    );
+                }
+            }
+        }
+        match &p.blocks[bi].term {
+            Term::Emit => {
+                for (ci, count) in state_out.iter().enumerate() {
+                    if *count == 0 {
+                        err(
+                            errs,
+                            Some(bi),
+                            None,
+                            format!("emit without storing out.{}", p.out_cols[ci].name),
+                        );
+                    }
+                }
+            }
+            Term::Skip => {
+                if state_out.iter().any(|c| *c > 0) {
+                    err(
+                        errs,
+                        Some(bi),
+                        None,
+                        "skip after storing (a skipped row must store nothing)".to_string(),
+                    );
+                }
+            }
+            Term::Trap { .. } => {}
+            _ => {
+                for (succ, _) in p.blocks[bi].term.successors() {
+                    let s = succ.0 as usize;
+                    if s >= n {
+                        continue;
+                    }
+                    match &entry_state[s] {
+                        None => entry_state[s] = Some(state_out.clone()),
+                        Some(existing) if *existing != state_out => {
+                            err(
+                                errs,
+                                Some(s),
+                                None,
+                                "paths joining here disagree on which out columns are stored"
+                                    .to_string(),
+                            );
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Topological order of the (already acyclicity-checked) CFG via Kahn's
+/// algorithm; unreachable blocks may appear anywhere, which is fine — they
+/// have no entry state and are skipped.
+fn topo_order(p: &Program, n: usize) -> Vec<usize> {
+    let mut indegree = vec![0usize; n];
+    for b in &p.blocks {
+        for (succ, _) in b.term.successors() {
+            let s = succ.0 as usize;
+            if s < n {
+                indegree[s] += 1;
+            }
+        }
+    }
+    let mut stack: Vec<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
+    let mut order = Vec::with_capacity(n);
+    while let Some(b) = stack.pop() {
+        order.push(b);
+        for (succ, _) in p.blocks[b].term.successors() {
+            let s = succ.0 as usize;
+            if s < n {
+                indegree[s] -= 1;
+                if indegree[s] == 0 {
+                    stack.push(s);
+                }
+            }
+        }
+    }
+    order
+}

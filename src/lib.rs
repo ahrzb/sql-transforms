@@ -17,6 +17,7 @@ mod duckdb;
 mod error;
 mod lookup;
 mod schema;
+pub mod specializer;
 mod types;
 mod value;
 
