@@ -9,6 +9,10 @@ run = ["uv run ruff check .", "uv run ruff format ."]
 description = "Run tests"
 run = "uv run pytest"
 
+[tasks.gate-specializer]
+description = "Specializer loop gate: cargo test + pytest, one exit code"
+run = "uv run python scripts/gate.py"
+
 [tasks.test-watch]
 description = "Run tests in watch mode"
 run = "uv run pytest --no-cov -x -s -vv --ff --lf"
