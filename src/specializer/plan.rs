@@ -171,6 +171,13 @@ pub enum SKind {
         bytes: bool,
         a: Box<SExpr>,
     },
+    /// round/trunc with digits — result type == subject type (I64 or F64);
+    /// total, NULL-propagating.
+    Round2 {
+        trunc: bool,
+        a: Box<SExpr>,
+        n: Box<SExpr>,
+    },
     /// Wave-1 f64 unary math (operand promoted to F64 by the frontend);
     /// NULL-propagating; the trapping ops get safe-masked payloads in
     /// lowering so a NULL row can never fire the domain trap.

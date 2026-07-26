@@ -13,6 +13,7 @@
 pub mod casemap;
 pub mod cranelift;
 pub mod interp;
+mod pow10;
 
 #[cfg(test)]
 mod tests;

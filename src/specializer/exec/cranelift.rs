@@ -239,6 +239,22 @@ extern "C" fn h_slen(p: *mut Cx, bytes: i64, ao: i64, al: i64) -> i64 {
     }
 }
 
+extern "C" fn h_round2f(x: f64, n: i64, trunc: i64) -> f64 {
+    if trunc != 0 {
+        interp::trunc_prec_f64(x, n)
+    } else {
+        interp::round_prec_f64(x, n)
+    }
+}
+
+extern "C" fn h_round2i(x: i64, n: i64, trunc: i64) -> i64 {
+    if trunc != 0 {
+        interp::trunc_prec_i64(x, n)
+    } else {
+        interp::round_prec_i64(x, n)
+    }
+}
+
 extern "C" fn h_fexp(x: f64) -> f64 {
     interp::duck_exp(x).expect("exp is total")
 }
@@ -1065,6 +1081,18 @@ fn translate_inst(
             vals.insert(flag.0, V::S(f));
             vals.insert(dst.0, V::S(v));
         }
+        Inst::Round2f { trunc, dst, a, n } => {
+            let (x, nv) = (vals[&a.0].s(), vals[&n.0].s());
+            let tv = icon(b, *trunc as i64);
+            let v = call_h(b, module, "h_round2f", &[x, nv, tv]).unwrap();
+            vals.insert(dst.0, V::S(v));
+        }
+        Inst::Round2i { trunc, dst, a, n } => {
+            let (x, nv) = (vals[&a.0].s(), vals[&n.0].s());
+            let tv = icon(b, *trunc as i64);
+            let v = call_h(b, module, "h_round2i", &[x, nv, tv]).unwrap();
+            vals.insert(dst.0, V::S(v));
+        }
         Inst::Str2 { op, dst, a, b: rhs } => {
             let (ao, al) = vals[&a.0].str2();
             let (bo, bl) = vals[&rhs.0].str2();
@@ -1454,6 +1482,8 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_sfind", h_sfind as *const u8),
     ("h_spred", h_spred as *const u8),
     ("h_slen", h_slen as *const u8),
+    ("h_round2f", h_round2f as *const u8),
+    ("h_round2i", h_round2i as *const u8),
 ];
 
 fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types::Type) {
@@ -1475,6 +1505,8 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_sfind" => (&[ptr, I64, I64, I64, I64], Some(I64)),
         "h_spred" => (&[ptr, I64, I64, I64, I64, I64], Some(I8)),
         "h_slen" => (&[ptr, I64, I64, I64], Some(I64)),
+        "h_round2f" => (&[F64, I64, I64], Some(F64)),
+        "h_round2i" => (&[I64, I64, I64], Some(I64)),
         "h_iabs" => (&[ptr, I64], Some(I64)),
         "h_fcmp" => (&[F64, F64, I64], Some(I8)),
         "h_scmp" => (&[ptr, I64, I64, I64, I64, I64], Some(I8)),

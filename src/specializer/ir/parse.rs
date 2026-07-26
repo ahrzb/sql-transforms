@@ -990,6 +990,28 @@ impl Parser {
                     b,
                 }
             }
+            "fround2" | "ftrunc2" | "iround2" | "itrunc2" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let n = self.use_value()?;
+                let trunc = opcode.contains("trunc");
+                if opcode.starts_with('f') {
+                    Inst::Round2f {
+                        trunc,
+                        dst: def!(0),
+                        a,
+                        n,
+                    }
+                } else {
+                    Inst::Round2i {
+                        trunc,
+                        dst: def!(0),
+                        a,
+                        n,
+                    }
+                }
+            }
             "slenc" | "slenb" => {
                 want_dsts(1, self)?;
                 let a = self.use_value()?;

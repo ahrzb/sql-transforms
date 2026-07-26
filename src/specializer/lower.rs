@@ -580,6 +580,32 @@ impl<'a> FB<'a> {
                     val: dst,
                 })
             }
+            SKind::Round2 { trunc, a, n } => {
+                let la = self.emit(a, live)?;
+                live.push((la, a.ty));
+                let ln = self.emit(n, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                if a.ty == Ty::F64 {
+                    self.inst(Inst::Round2f {
+                        trunc: *trunc,
+                        dst,
+                        a: la.val,
+                        n: ln.val,
+                    });
+                } else {
+                    self.inst(Inst::Round2i {
+                        trunc: *trunc,
+                        dst,
+                        a: la.val,
+                        n: ln.val,
+                    });
+                }
+                Ok(Lane {
+                    flag: self.combine_flags(la.flag, ln.flag),
+                    val: dst,
+                })
+            }
             SKind::MathF1 { op, a } => {
                 let l = self.emit(a, live)?;
                 // Safe mask per op: the value must be OUTSIDE the trap

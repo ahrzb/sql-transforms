@@ -1285,3 +1285,108 @@ def test_least_greatest_strings_and_bools():
             {"a": "a", "b": None},  # NULL ignored
         ],
     )
+
+
+# --------------------------------------------------------- TASK-47:
+# round/trunc with digits - oracle pow10 table semantics (pins).
+
+
+def test_round_double_with_digits_constant_n():
+    vals = [
+        2.675,
+        0.285,
+        1.005,
+        0.145,
+        1.015,
+        2.665,
+        0.125,
+        0.375,
+        1.255,
+        0.045,
+        1.115,
+        1234.5,
+        -1234.5,
+        1250.0,
+        -1250.0,
+        -44.0,
+        -0.04,
+        1.7e308,
+        9.9e307,
+        5e-324,
+        -0.0,
+        NAN,
+        INF,
+        -INF,
+        None,
+    ]
+    duck_check(
+        "SELECT round(x, 2) AS r2, round(x, 0) AS r0, round(x, -1) AS rn1,"
+        " round(x, -2) AS rn2, round(x, 309) AS rbig, round(x, -308) AS rn308,"
+        " round(x, -400) AS rneg, trunc(x, 2) AS t2, trunc(x, -1) AS tn1,"
+        " trunc(x, -400) AS tneg FROM __THIS__",
+        {"x": "float?"},
+        [{"x": v} for v in vals],
+    )
+
+
+def test_round_double_pow_table_ulp_witnesses():
+    # Only DuckDB's own pow(10,23) modifier (bits 0x44B52D02C7E14AF7) passes these.
+    rows = [
+        {"x": float.fromhex("0x1.9fc4c8ce7ceb8p+8")},  # -> 415.76868906545445
+        {"x": float.fromhex("0x1.bc25ab024d0ffp+8")},  # -> 444.14714064008143
+        {"x": float.fromhex("-0x1.a279f7d13a32ep+8")},
+    ]  # -> -418.4764376418197
+    duck_check("SELECT round(x, 23) AS r FROM __THIS__", {"x": "float"}, rows)
+
+
+def test_round_variable_n_from_column():
+    # engine 'int' columns are BIGINT: round(DOUBLE, BIGINT) does not bind, so CAST.
+    rows = [
+        {"x": 2.675, "n": 2},
+        {"x": 1234.5, "n": -2},
+        {"x": NAN, "n": -2},
+        {"x": INF, "n": -2},
+        {"x": -INF, "n": -2},
+        {"x": 2.5, "n": None},
+        {"x": None, "n": 2},
+        {"x": 1.7e308, "n": -308},
+        {"x": 2.675, "n": 400},
+        {"x": 2.675, "n": -400},
+        {"x": -44.0, "n": -2},
+    ]
+    duck_check(
+        "SELECT round(x, CAST(n AS INTEGER)) AS r,"
+        " trunc(x, CAST(n AS INTEGER)) AS t FROM __THIS__",
+        {"x": "float?", "n": "int?"},
+        rows,
+    )
+
+
+def test_round_family_int64_identity_and_negative_n():
+    vals = [
+        1250,
+        -1250,
+        1249,
+        -1249,
+        25,
+        -25,
+        49,
+        50,
+        -49,
+        -50,
+        0,
+        15,
+        9223372036854775807,
+        -9223372036854775808,
+        9223372036854775757,
+        9223372036854775800,
+        5000000000000000000,
+        None,
+    ]
+    duck_check(
+        "SELECT trunc(i) AS t1, round(i) AS r1, round(i, 2) AS rpos,"
+        " round(i, -2) AS rn2, round(i, -18) AS rn18, round(i, -19) AS rcut,"
+        " trunc(i, -2) AS tn2, trunc(i, -19) AS tcut FROM __THIS__",
+        {"i": "int?"},
+        [{"i": v} for v in vals],
+    )
