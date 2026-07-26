@@ -3,10 +3,10 @@ id: TASK-43
 title: >-
   Specializer M-lower: frontend + BTA + produce/consume lowering for the v0
   subset
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-25 02:31'
-updated_date: '2026-07-26 05:14'
+updated_date: '2026-07-26 06:04'
 labels: []
 milestone: m-7
 dependencies:
@@ -54,6 +54,8 @@ AC #2 (static-only queries fold to a constant emitter) is NOT yet satisfied: nee
 Stretch 4 landed (commit ac3786a): builtin catalogue implemented strictly from measured pins (8-agent workflow fan-out measured DuckDB 1.5.5; spec at docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md). New IR insts across all six files + fuzz gen: supper/slower, strim.{both,lead,trail}, ssubstr (virtual-window codepoint arithmetic), iabs/fabs/fround, BinOp::Frem. Frontend catalogue: upper/lower/ltrim/rtrim/abs/round(1-arg)/concat/coalesce/nullif + TRIM/SUBSTRING dedicated AST forms; || is ALWAYS concat (even 1 || 2) with implicit VARCHAR casts; CONCAT skips NULLs (all-NULL -> ''); COALESCE per-row lazy via CASE desugار; NULLIF compares at promoted type, keeps first arg's type. TWO DIVERGENCES IN PREVIOUSLY-LANDED CODE were found by pinning and FIXED in-branch with pin tests (PM: flagging per the disagreement protocol — these were fixes toward the oracle, not semantics patches to pass tests): (1) integer % by zero returns NULL in DuckDB, we trapped -> lowering now CASE-guards the divisor, MIN % -1 still traps like DuckDB; (2) DOUBLE comparisons: DuckDB order is NaN=NaN / NaN above everything / zeros equal, we had IEEE partial -> shared exec::duck_fcmp used by interp AND fold. Known deliberate divergence (strict-xfail + needs a ticket): Rust std lacks Unicode SIMPLE case maps, so upper('ß') gives 'ß' vs DuckDB 'ẞ' and lower('İ') differs; ASCII exact. Deliberate ceilings: round(x, digits) unsupported; decimal literals stay f64 (stretch-1 ceiling). 114 cargo tests + 21 differential pytest + 1 strict xfail; gate green. Adversarial verify fan-out (6 probe agents vs duckdb) running; findings will be triaged fix-vs-xfail before stretch 5 (differential suite backend id + corpus replay in gate).
 
 Stretch 6 landed (commit 0782bf1): AC #2 satisfied — static-only queries become constant emitters, evaluated once at build time by DuckDB itself (Python boundary; no IR is built, so trivially no probe/filter ops). The fallback fires on Unsupported/Parse prepare errors and self-validates: dynamic queries reference the row table, unknown to DuckDB, so evaluation fails and the original clean error surfaces. Bonus: aggregation/ORDER BY/dialect-beyond-sqlparser all work on the static-only path. Final corpus: 53 match / 625 clean-unsupported / 0 FAIL of 678, wired into the gate via pytest. MILESTONE COMPLETE pending review — hard stop before M-cranelift (TASK-44). Two items for PM: (1) deviation note — AC #3's 'backend id specialized' wording: the DataFusion-oracle differential harness (test_diff_*) can't host the specializer (different oracle, e.g. `/` semantics differ by design), so the specializer has its own duck_check differential suite (32 cases) instead; (2) ticket request per the disagreement protocol — Unicode SIMPLE case mapping (upper('ß')/'İ'/'ᾀ' class): Rust std only exposes full maps; strict-xfail in place; candidate fixes are a small static table of the ~100 divergent codepoints or a unicode-data crate dependency.
+
+Post-review addendum (commit 4f75e3d): both PM items resolved. (1) Case-mapping ticket WITHDRAWN — AmirHossein decided no dependency; implemented as a measured, generated exception table (src/specializer/exec/casemap.rs, 139 entries) from scripts/gen_casemap.py. Two exception classes, both captured by measurement: simple-vs-full mapping divergence, and three-way Unicode version skew (Python/Rust/utf8proc all ship different vintages — 56 entries Python's tables cannot see, caught by the generator's phase-2 census of the actual compiled engine). The full-codepoint census test (every Unicode scalar value through both engines) is the standing authority; generator is idempotent. The strict xfail is now two passing tests: gate 605 pytest + 12 xfail. (2) DataFusion: per review — legacy serving line's oracle only, likely retired later (small chance: a supported dialect); the specializer ignores it entirely.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

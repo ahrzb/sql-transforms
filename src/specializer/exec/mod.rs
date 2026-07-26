@@ -11,6 +11,7 @@
 //! exist.
 
 pub mod casemap;
+pub mod cranelift;
 pub mod interp;
 
 #[cfg(test)]
