@@ -1,6 +1,8 @@
 //! Frontend: SQL text -> bound, typed relational IR. Parsing is sqlparser's
-//! DuckDB dialect; binding and type derivation follow DuckDB semantics as
-//! measured (see plan.rs notes and the pins in exec/interp.rs).
+//! GenericDialect (a measured superset of DuckDbDialect for the forms we
+//! serve — pins-wave5/sqlparser-spike.json); binding and type derivation
+//! follow DuckDB semantics as measured (see plan.rs notes and the pins in
+//! exec/interp.rs).
 //!
 //! Error discipline (the corpus three-outcome contract depends on it):
 //! * [`PrepareError::Unsupported`] — the construct is real SQL we don't do
@@ -24,7 +26,7 @@ use sqlparser::ast::{
     BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator, SelectItem, SetExpr,
     Statement, TableFactor, UnaryOperator, Value as SqlValue,
 };
-use sqlparser::dialect::DuckDbDialect;
+use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use super::fold::fold;
@@ -66,7 +68,10 @@ pub fn frontend(
     in_cols: &[Col],
     statics: &[StaticTable],
 ) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>), PrepareError> {
-    let statements = Parser::parse_sql(&DuckDbDialect {}, sql)
+    // GenericDialect, not DuckDbDialect: measured as a strict superset for
+    // the forms we serve (adds ^@, * ILIKE, * RENAME) and matches the oracle
+    // path in datafusion/plan.rs — see pins-wave5/sqlparser-spike.json.
+    let statements = Parser::parse_sql(&GenericDialect {}, sql)
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     let [statement] = statements.as_slice() else {
         return Err(unsup("multiple SQL statements"));
