@@ -8,6 +8,7 @@ to map probes.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import duckdb
@@ -708,5 +709,433 @@ def test_in_strings_and_bools():
         DuckDBInferFn(
             "SELECT p IN (true) AS r FROM __THIS__",
             row_tables={"__THIS__": _row_model({"p": "bool?"})},
+            static_tables={},
+        )
+
+
+# --------------------------------------------------------- TASK-47:
+# wave-1 math builtins - measured DuckDB 1.5.5 pins as oracle tests.
+
+
+def test_logexp_basic_values():
+    duck_check(
+        "SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d,"
+        " exp(x) AS e FROM __THIS__",
+        {"x": "float"},
+        [
+            {"x": v}
+            for v in [
+                1.0,
+                2.718281828459045,
+                2.0,
+                10.0,
+                0.5,
+                1000.0,
+                1e308,
+                5e-324,
+                709.782712893384,
+            ]
+        ],
+    )
+
+
+def test_logexp_nan_inf_pass_through():
+    # NaN and +inf do NOT trip the domain checks; only <=0 does.
+    duck_check(
+        "SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d,"
+        " exp(x) AS e FROM __THIS__",
+        {"x": "float"},
+        [{"x": float("nan")}, {"x": float("inf")}],
+    )
+
+
+def test_exp_never_errors():
+    # overflow -> inf, underflow -> denormal then +0.0; -inf -> +0.0;
+    # boundary 709.782712893384 -> 1.7976931348622732e+308
+    duck_check(
+        "SELECT exp(x) AS e FROM __THIS__",
+        {"x": "float"},
+        [
+            {"x": v}
+            for v in [
+                float("-inf"),
+                -1000.0,
+                -746.0,
+                -745.0,
+                -744.4400719213812,
+                0.0,
+                -0.0,
+                709.782712893384,
+                709.7827128933841,
+                710.0,
+                1000.0,
+            ]
+        ],
+    )
+
+
+def test_logexp_null_propagation():
+    duck_check(
+        "SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d, exp(x) AS e,"
+        " log(x, 2.0) AS f, log(2.0, x) AS g FROM __THIS__",
+        {"x": "float?"},
+        [{"x": None}, {"x": 4.0}],
+    )
+
+
+def test_log_two_arg_is_log10_ratio():
+    # log(b,x) = log10(x)/log10(b) bit-exact. Discriminators: (10,1000)->3.0 (ln-ratio
+    # gives 2.9999999999999996), (e,10)->2.302585092994046 (log2-ratio differs),
+    # (e,5e-324)->-744.4400719213813 != ln(5e-324). (0.5,1.0)->-0.0 and (inf,0.5)->-0.0
+    # pin sign-of-zero; (inf,inf)->nan.
+    duck_check(
+        "SELECT log(b, x) AS r FROM __THIS__",
+        {"b": "float", "x": "float"},
+        [
+            {"b": b, "x": x}
+            for b, x in [
+                (2.0, 8.0),
+                (10.0, 1000.0),
+                (3.0, 7.0),
+                (0.5, 8.0),
+                (0.5, 1.0),
+                (2.0, 1.0),
+                (2.718281828459045, 5e-324),
+                (2.718281828459045, 10.0),
+                (1.0000000000000002, 4.0),
+                (0.9999999999999999, 4.0),
+                (5e-324, 8.0),
+                (1e308, 8.0),
+                (float("nan"), 8.0),
+                (2.0, float("nan")),
+                (float("nan"), float("nan")),
+                (float("inf"), 8.0),
+                (float("inf"), 0.5),
+                (float("inf"), float("inf")),
+                (float("inf"), 1.0),
+                (2.0, float("inf")),
+                (2.0, 5e-324),
+                (2.0, 1e308),
+            ]
+        ],
+    )
+
+
+def test_log_two_arg_null_preempts_domain_errors():
+    # NULL in either slot wins over every domain error, including base 0 / negative / 1.
+    duck_check(
+        "SELECT log(b, x) AS r FROM __THIS__",
+        {"b": "float?", "x": "float?"},
+        [
+            {"b": None, "x": 8.0},
+            {"b": 2.0, "x": None},
+            {"b": None, "x": None},
+            {"b": None, "x": -4.0},
+            {"b": 0.0, "x": None},
+            {"b": -2.0, "x": None},
+            {"b": 1.0, "x": None},
+        ],
+    )
+
+
+def test_logexp_integer_input_yields_double():
+    duck_check(
+        "SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d, exp(x) AS e,"
+        " log(x, 8) AS f FROM __THIS__",
+        {"x": "int"},
+        [{"x": 2}, {"x": 9223372036854775807}],
+    )
+
+
+def test_logexp_guarded_rows_do_not_trap():
+    # A bad row aborts an unguarded query, but WHERE / CASE genuinely
+    # prevent evaluation.
+    duck_check(
+        "SELECT CASE WHEN x > 0 THEN ln(x) ELSE NULL END AS a FROM __THIS__",
+        {"x": "float"},
+        [{"x": 1.0}, {"x": -1.0}, {"x": 4.0}, {"x": 0.0}],
+    )
+    duck_check(
+        "SELECT ln(x) AS a FROM __THIS__ WHERE x > 0",
+        {"x": "float"},
+        [{"x": 1.0}, {"x": -1.0}, {"x": 4.0}, {"x": 0.0}],
+    )
+
+
+def test_pow_bigint_inputs_yield_double():
+    # ints promote to DOUBLE before compute: i64::MAX rounds to 2^63,
+    # 2^53+1 loses the +1, 3^40 is the rounded double not the exact int.
+    rows = [
+        (0, 0),
+        (2, 10),
+        (0, -1),
+        (-8, 2),
+        (10, 18),
+        (9223372036854775807, 1),
+        (-9223372036854775808, 1),
+        (2, 63),
+        (2, 64),
+        (3, 40),
+        (9007199254740993, 1),
+        (5, 2),
+    ]
+    duck_check(
+        "SELECT pow(x, y) AS p FROM __THIS__",
+        {"x": "int", "y": "int"},
+        [{"x": x, "y": y} for x, y in rows],
+    )
+
+
+def test_sqrt_non_negative_domain():
+    # NOTE: any x < 0 (incl -inf) raises OutOfRange; keep those out of duck_check.
+    xs = [4.0, 2.0, 0.0, -0.0, INF, NAN, None, 5e-324, 1e308]
+    duck_check(
+        "SELECT sqrt(x) AS s FROM __THIS__", {"x": "float?"}, [{"x": x} for x in xs]
+    )
+
+
+def test_sqrt_cbrt_bigint():
+    xs = [4, 0, 27, 9223372036854775807, 9007199254740992, 9007199254740993, None]
+    duck_check(
+        "SELECT sqrt(x) AS s, cbrt(x) AS c FROM __THIS__",
+        {"x": "int?"},
+        [{"x": x} for x in xs],
+    )
+
+
+def test_cbrt_total_function():
+    # cbrt has NO domain restriction: negatives, -inf, -0.0 all flow through.
+    xs = [8.0, -8.0, 27.0, 2.0, 0.0, -0.0, INF, -INF, NAN, None, 5e-324, -1.0]
+    duck_check(
+        "SELECT cbrt(x) AS c FROM __THIS__", {"x": "float?"}, [{"x": x} for x in xs]
+    )
+
+
+def test_sqrt_where_guard_is_lazy():
+    # Filtered-out negative rows must NOT trap.
+    duck_check(
+        "SELECT sqrt(x) AS s FROM __THIS__ WHERE x >= 0",
+        {"x": "float"},
+        [{"x": 4.0}, {"x": -1.0}],
+    )
+    duck_check(
+        "SELECT CASE WHEN x >= 0 THEN sqrt(x) ELSE NULL END AS s FROM __THIS__",
+        {"x": "float"},
+        [{"x": 4.0}, {"x": -1.0}],
+    )
+
+
+def test_sqrt_negative_is_runtime_error():
+    # Not expressible as a duck_check equality: both engines must RAISE.
+    # DuckDB: _duckdb.OutOfRangeException
+    #   'Out of Range Error: cannot take square root of a negative number'
+    with pytest.raises(Exception, match="cannot take square root of a negative number"):
+        duck_check("SELECT sqrt(x) AS s FROM __THIS__", {"x": "float"}, [{"x": -1.0}])
+    with pytest.raises(Exception, match="cannot take square root of a negative number"):
+        duck_check(
+            "SELECT sqrt(x) AS s FROM __THIS__", {"x": "float"}, [{"x": float("-inf")}]
+        )
+
+
+def test_trig_double_column_edges():
+    duck_check(
+        "SELECT sin(x) AS s, cos(x) AS c, tan(x) AS t FROM __THIS__",
+        {"x": "float"},
+        [{"x": v} for v in TRIG_EDGE_FLOATS],
+    )  # repr-compare keeps -0.0 vs 0.0 apart: the sin/tan(-0.0) sign pins hold
+
+
+def test_trig_null_propagation():
+    duck_check(
+        "SELECT sin(x) AS s, cos(x) AS c, tan(x) AS t FROM __THIS__",
+        {"x": "float?"},
+        [{"x": None}, {"x": 1.0}],
+    )
+
+
+def test_trig_integer_input_yields_double():
+    duck_check(
+        "SELECT sin(x) AS s, cos(x) AS c, tan(x) AS t FROM __THIS__",
+        {"x": "int"},
+        [
+            {"x": 0},
+            {"x": 1},
+            {"x": -1},
+            {"x": 9223372036854775807},  # rounds to 2^63 as f64 BEFORE sin
+            {"x": -9223372036854775808},
+        ],
+    )
+
+
+def test_trig_integer_null():
+    duck_check(
+        "SELECT sin(x) AS s FROM __THIS__",
+        {"x": "int?"},
+        [{"x": None}, {"x": 3}],
+    )
+
+
+def test_pi_literal_and_vectorized():
+    duck_check(
+        "SELECT pi() AS p, x + pi() AS xp, sin(pi() / 2) AS one, "
+        "cos(pi()) AS neg_one, tan(pi() / 2) AS big, sin(-pi() / 2) AS neg_one_s "
+        "FROM __THIS__",
+        {"x": "float"},
+        [{"x": 0.0}, {"x": 1.0}],
+    )
+
+
+# NOT expressible via duck_check (it asserts success on both sides) — engine needs
+# dedicated tests for these, asserting against a plain duckdb replay:
+#   1. sin/cos/tan(+-inf) must raise a per-row runtime error whose message mirrors
+#      "Out of Range Error: input value inf is out of range for numeric function"
+#      (and "... value -inf ..."); an inf row excluded by WHERE must NOT raise.
+#   2. NaN *payload* preservation (e.g. input bits 0x7ff0deadbeef0001 out unchanged):
+#      repr collapses every NaN to 'nan', so compare struct.pack bits directly.
+def test_round_family_single_arg_double():
+    vals = [
+        2.5,
+        3.5,
+        -2.5,
+        -3.5,
+        0.5,
+        -0.5,
+        1.5,
+        0.49999999999999994,
+        -0.49999999999999994,
+        2.675,
+        -0.4,
+        -0.04,
+        0.0,
+        -0.0,
+        5e-324,
+        -5e-324,
+        4503599627370495.5,
+        -4503599627370495.5,
+        9.3e18,
+        -9.3e18,
+        1.7976931348623157e308,
+        12345.678901234567,
+        NAN,
+        INF,
+        -INF,
+        None,
+    ]
+    duck_check(
+        "SELECT floor(x) AS f, ceil(x) AS c, ceiling(x) AS c2,"
+        " trunc(x) AS t, round(x) AS r FROM __THIS__",
+        {"x": "float?"},
+        [{"x": v} for v in vals],
+    )
+
+
+def test_floor_ceil_int64_go_through_double():
+    rows = [
+        {"i": v}
+        for v in [7, 9007199254740993, 9223372036854775807, -9223372036854775808, None]
+    ]
+    duck_check(
+        "SELECT floor(i) AS f, ceil(i) AS c, ceiling(i) AS c2 FROM __THIS__",
+        {"i": "int?"},
+        rows,
+    )
+
+
+# Shared constants for the wave-1 math oracle tests.
+
+NAN = float("nan")
+INF = float("inf")
+
+POW_SPECIALS = [
+    (0.0, 0.0),
+    (0.0, -1.0),
+    (-0.0, -1.0),
+    (0.0, -2.0),
+    (-0.0, -2.0),
+    (-0.0, 3.0),
+    (-0.0, 2.0),
+    (-0.0, 0.5),
+    (-8.0, 1.0 / 3.0),
+    (-2.0, 0.5),
+    (-2.0, -0.5),
+    (NAN, 0.0),
+    (NAN, -0.0),
+    (1.0, NAN),
+    (NAN, NAN),
+    (NAN, 1.0),
+    (0.0, NAN),
+    (INF, 0.0),
+    (-INF, 0.0),
+    (-1.0, INF),
+    (-1.0, -INF),
+    (1.0, INF),
+    (INF, -1.0),
+    (-INF, -1.0),
+    (-INF, -2.0),
+    (-INF, 3.0),
+    (-INF, 2.0),
+    (-INF, 0.5),
+    (0.0, INF),
+    (-0.0, INF),
+    (0.0, -INF),
+    (-0.0, -INF),
+    (2.0, INF),
+    (0.5, INF),
+    (2.0, -INF),
+    (0.5, -INF),
+    (-0.5, INF),
+    (-2.0, -INF),
+    (1e308, 2.0),
+    (2.0, 1024.0),
+    (2.0, -1075.0),
+    (-2.0, -1075.0),
+    (2.0, 53.0),
+    (10.0, 18.0),
+    (5e-324, 0.5),
+    (-2.0, 3.0),
+    (None, 2.0),
+    (2.0, None),
+    (None, None),
+]
+
+TRIG_EDGE_FLOATS = [
+    0.0,
+    -0.0,
+    1.0,
+    -1.0,
+    0.5,
+    math.pi / 2,
+    -math.pi / 2,
+    math.pi,
+    2 * math.pi,
+    1e15,
+    float(2**53),
+    1e300,
+    1.7976931348623157e308,
+    5e-324,
+    2.2250738585072014e-308,
+    9.223372036854776e18,
+    float("nan"),
+]
+
+
+def test_pow_double_specials():
+    # pow and power are one function; pin the IEEE specials per row. The ^
+    # operator is deliberately NOT mapped: sqlparser parses it below *
+    # while DuckDB binds it above (measured 2*x^y = 2*(x^y) vs sqlparser's
+    # (2*x)^y) — mapping would silently compute the wrong tree. ** does
+    # not parse at all. Both stay clean errors.
+    duck_check(
+        "SELECT pow(x, y) AS p, power(x, y) AS q FROM __THIS__",
+        {"x": "float?", "y": "float?"},
+        [{"x": x, "y": y} for x, y in POW_SPECIALS],
+    )
+
+
+def test_pow_operator_rejects_cleanly():
+    with pytest.raises(ValueError, match="operator .*precedence differs"):
+        DuckDBInferFn(
+            "SELECT x ^ 2 AS r FROM __THIS__",
+            row_tables={"__THIS__": _row_model({"x": "float"})},
             static_tables={},
         )

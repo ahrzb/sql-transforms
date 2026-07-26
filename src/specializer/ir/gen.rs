@@ -233,13 +233,20 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                     BinOp::Fmul,
                     BinOp::Fdiv,
                     BinOp::Frem,
+                    BinOp::Fpow,
                     BinOp::And,
                     BinOp::Or,
                     BinOp::Xor,
                 ];
                 // idiv/irem excluded: they trap on zero, and generated
                 // programs must stay executable for M-interp fuzzing.
-                let op = ops[rng.below(ops.len() as u64) as usize];
+                // Flogb joins at low weight: it traps on half the domain,
+                // but identical-trap agreement is differential signal too.
+                let op = if rng.chance(5) {
+                    BinOp::Flogb
+                } else {
+                    ops[rng.below(ops.len() as u64) as usize]
+                };
                 let (ot, rt) = op.sig();
                 let a = ensure(rng, b, scope, insts, ot);
                 let rhs = ensure(rng, b, scope, insts, ot);
@@ -367,11 +374,31 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
             }
             11 => {
                 // iabs excluded: it traps on i64::MIN, and generated programs
-                // must stay executable for M-interp fuzzing.
-                let op = if rng.chance(50) {
-                    NumOp1::Fabs
+                // must stay executable for M-interp fuzzing. The wave-1
+                // trapping unaries join at low weight (trap-agreement is
+                // signal, but programs should mostly run to completion).
+                let total = [
+                    NumOp1::Fabs,
+                    NumOp1::Fround,
+                    NumOp1::Ffloor,
+                    NumOp1::Fceil,
+                    NumOp1::Ftrunc,
+                    NumOp1::Fexp,
+                    NumOp1::Fcbrt,
+                ];
+                let trapping = [
+                    NumOp1::Ln,
+                    NumOp1::Log2,
+                    NumOp1::Log10,
+                    NumOp1::Fsqrt,
+                    NumOp1::Fsin,
+                    NumOp1::Fcos,
+                    NumOp1::Ftan,
+                ];
+                let op = if rng.chance(20) {
+                    trapping[rng.below(trapping.len() as u64) as usize]
                 } else {
-                    NumOp1::Fround
+                    total[rng.below(total.len() as u64) as usize]
                 };
                 let a = ensure(rng, b, scope, insts, Ty::F64);
                 let dst = b.fresh();

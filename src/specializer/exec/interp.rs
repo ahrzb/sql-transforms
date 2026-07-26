@@ -632,6 +632,119 @@ impl<const N: usize> std::fmt::Write for StackStr<N> {
     }
 }
 
+// ------------------------------------------------- wave-1 math semantics --
+// One shared fn per op, used verbatim by BOTH backends (pins:
+// docs/superpowers/specs/2026-07-26-wave1-builtin-pins.md). Trap messages
+// are DuckDB 1.5.5's own, measured — including its typo.
+
+fn log_guard(x: f64) -> Result<(), Trap> {
+    // Comparison-based, not is_finite-based: NaN fails both checks and
+    // flows through to libm; +inf passes (measured).
+    if x == 0.0 {
+        return Err(Trap("cannot take logarithm of zero".into()));
+    }
+    if x < 0.0 {
+        return Err(Trap("cannot take logarithm of a negative number".into()));
+    }
+    Ok(())
+}
+
+pub(super) fn duck_ln(x: f64) -> Result<f64, Trap> {
+    log_guard(x)?;
+    Ok(if x.is_nan() { x } else { x.ln() })
+}
+pub(super) fn duck_log2(x: f64) -> Result<f64, Trap> {
+    log_guard(x)?;
+    Ok(if x.is_nan() { x } else { x.log2() })
+}
+pub(super) fn duck_log10(x: f64) -> Result<f64, Trap> {
+    log_guard(x)?;
+    Ok(if x.is_nan() { x } else { x.log10() })
+}
+/// log(base, x): bit-exactly log10(x)/log10(base) — NOT an ln ratio
+/// (refuted on 20k fuzz samples). Base is domain-checked FIRST; base==1
+/// carries DuckDB's message verbatim, typo included.
+pub(super) fn duck_logb(base: f64, x: f64) -> Result<f64, Trap> {
+    log_guard(base)?;
+    if base == 1.0 {
+        return Err(Trap("divison by zero in based logarithm".into()));
+    }
+    log_guard(x)?;
+    Ok(x.log10() / base.log10())
+}
+pub(super) fn duck_exp(x: f64) -> Result<f64, Trap> {
+    // TOTAL: overflow -> inf, underflow -> denormals -> +0.0 (measured).
+    Ok(x.exp())
+}
+pub(super) fn duck_sqrt(x: f64) -> Result<f64, Trap> {
+    if x < 0.0 {
+        return Err(Trap("cannot take square root of a negative number".into()));
+    }
+    Ok(x.sqrt()) // sqrt(-0.0) = -0.0 (not negative, not a trap); NaN passes
+}
+pub(super) fn duck_cbrt(x: f64) -> Result<f64, Trap> {
+    Ok(x.cbrt()) // TOTAL; cbrt(-8) = -2.0 exactly (NOT pow(x, 1/3))
+}
+fn trig_guard(x: f64) -> Result<(), Trap> {
+    if x.is_infinite() {
+        return Err(Trap(format!(
+            "input value {} is out of range for numeric function",
+            if x > 0.0 { "inf" } else { "-inf" }
+        )));
+    }
+    Ok(())
+}
+pub(super) fn duck_sin(x: f64) -> Result<f64, Trap> {
+    trig_guard(x)?;
+    // NaN passes through BIT-EXACTLY (payload + sign) — never hand it to
+    // libm (measured: DuckDB preserves even signaling patterns).
+    Ok(if x.is_nan() { x } else { x.sin() })
+}
+pub(super) fn duck_cos(x: f64) -> Result<f64, Trap> {
+    trig_guard(x)?;
+    Ok(if x.is_nan() { x } else { x.cos() })
+}
+pub(super) fn duck_tan(x: f64) -> Result<f64, Trap> {
+    trig_guard(x)?;
+    Ok(if x.is_nan() { x } else { x.tan() })
+}
+pub(super) fn duck_pow(x: f64, y: f64) -> Result<f64, Trap> {
+    // TOTAL, pure IEEE: pow(NaN,0)=1, pow(1,NaN)=1, pow(0,-1)=inf,
+    // negative^fractional=NaN, overflow=inf (all measured).
+    Ok(x.powf(y))
+}
+pub(super) fn duck_floor(x: f64) -> Result<f64, Trap> {
+    Ok(x.floor())
+}
+pub(super) fn duck_ceil(x: f64) -> Result<f64, Trap> {
+    Ok(x.ceil())
+}
+pub(super) fn duck_trunc(x: f64) -> Result<f64, Trap> {
+    Ok(x.trunc())
+}
+
+/// The wave-1 f64 unaries as shared fn pointers (Iabs/Fabs/Fround keep
+/// their original arms).
+pub(super) fn math1_fn(op: NumOp1) -> fn(f64) -> Result<f64, Trap> {
+    match op {
+        NumOp1::Ln => duck_ln,
+        NumOp1::Log2 => duck_log2,
+        NumOp1::Log10 => duck_log10,
+        NumOp1::Fexp => duck_exp,
+        NumOp1::Fsqrt => duck_sqrt,
+        NumOp1::Fcbrt => duck_cbrt,
+        NumOp1::Fsin => duck_sin,
+        NumOp1::Fcos => duck_cos,
+        NumOp1::Ftan => duck_tan,
+        NumOp1::Ffloor => duck_floor,
+        NumOp1::Fceil => duck_ceil,
+        NumOp1::Ftrunc => duck_trunc,
+        NumOp1::Iabs | NumOp1::Fabs | NumOp1::Fround => {
+            unreachable!("legacy unaries keep dedicated arms")
+        }
+    }
+}
+
 /// Value id -> dense register slot.
 fn sl(slots: &HashMap<u32, u32>, v: Value) -> usize {
     slots[&v.0] as usize
@@ -695,20 +808,30 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                         None => Err(Trap(format!("i64 overflow in {}", op.name()))),
                     }
                 }),
-                BinOp::Fadd | BinOp::Fsub | BinOp::Fmul | BinOp::Fdiv | BinOp::Frem => {
-                    Box::new(move |ctx| {
-                        let (x, y) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
-                        let v = match op {
-                            BinOp::Fadd => x + y,
-                            BinOp::Fsub => x - y,
-                            BinOp::Fmul => x * y,
-                            BinOp::Fdiv => x / y,
-                            _ => x % y,
-                        };
-                        ctx.regs[dst] = RegVal::F64(v);
-                        Ok(())
-                    })
-                }
+                BinOp::Fadd
+                | BinOp::Fsub
+                | BinOp::Fmul
+                | BinOp::Fdiv
+                | BinOp::Frem
+                | BinOp::Fpow => Box::new(move |ctx| {
+                    let (x, y) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
+                    let v = match op {
+                        BinOp::Fadd => x + y,
+                        BinOp::Fsub => x - y,
+                        BinOp::Fmul => x * y,
+                        BinOp::Fdiv => x / y,
+                        BinOp::Fpow => duck_pow(x, y)?,
+                        _ => x % y,
+                    };
+                    ctx.regs[dst] = RegVal::F64(v);
+                    Ok(())
+                }),
+                // log(base, x): a is the base (SQL argument order).
+                BinOp::Flogb => Box::new(move |ctx| {
+                    let (base, x) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
+                    ctx.regs[dst] = RegVal::F64(duck_logb(base, x)?);
+                    Ok(())
+                }),
                 BinOp::And | BinOp::Or | BinOp::Xor => Box::new(move |ctx| {
                     let (x, y) = (as_i1(ctx.regs[a]), as_i1(ctx.regs[b]));
                     let v = match op {
@@ -935,6 +1058,13 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                     ctx.regs[dst] = RegVal::F64(as_f64(ctx.regs[a]).round());
                     Ok(())
                 }),
+                op => {
+                    let f = math1_fn(op);
+                    Box::new(move |ctx| {
+                        ctx.regs[dst] = RegVal::F64(f(as_f64(ctx.regs[a]))?);
+                        Ok(())
+                    })
+                }
             }
         }
         Inst::Load { dst, col } => {

@@ -241,6 +241,12 @@ pub enum BinOp {
     /// f64 `%`, IEEE remainder-of-truncated-division (Rust `%`): sign of the
     /// dividend, `x % 0.0` is NaN. Never traps (measured DuckDB 1.5.5).
     Frem,
+    /// f64 pow — TOTAL, pure IEEE (pow(NaN,0)=1, pow(0,-1)=inf; wave-1 pins).
+    Fpow,
+    /// log(base, x) == log10(x)/log10(base) bit-exactly (wave-1 pins).
+    /// Traps: base checked FIRST (zero / negative / base==1 each with their
+    /// own DuckDB message), then x (zero / negative).
+    Flogb,
     And,
     Or,
     Xor,
@@ -253,9 +259,13 @@ impl BinOp {
             BinOp::Iadd | BinOp::Isub | BinOp::Imul | BinOp::Idiv | BinOp::Irem => {
                 (Ty::I64, Ty::I64)
             }
-            BinOp::Fadd | BinOp::Fsub | BinOp::Fmul | BinOp::Fdiv | BinOp::Frem => {
-                (Ty::F64, Ty::F64)
-            }
+            BinOp::Fadd
+            | BinOp::Fsub
+            | BinOp::Fmul
+            | BinOp::Fdiv
+            | BinOp::Frem
+            | BinOp::Fpow
+            | BinOp::Flogb => (Ty::F64, Ty::F64),
             BinOp::And | BinOp::Or | BinOp::Xor => (Ty::I1, Ty::I1),
         }
     }
@@ -272,6 +282,8 @@ impl BinOp {
             BinOp::Fmul => "fmul",
             BinOp::Fdiv => "fdiv",
             BinOp::Frem => "frem",
+            BinOp::Fpow => "fpow",
+            BinOp::Flogb => "flogb",
             BinOp::And => "and",
             BinOp::Or => "or",
             BinOp::Xor => "xor",
@@ -350,6 +362,22 @@ pub enum NumOp1 {
     Iabs,
     Fabs,
     Fround,
+    // Wave-1 math unaries (pins: docs/superpowers/specs/2026-07-26-wave1-
+    // builtin-pins.md). Ln/Log2/Log10 trap on x <= 0; Fsqrt traps on
+    // negatives; Fsin/Fcos/Ftan trap on +-inf (NaN passes through
+    // bit-exactly); Fexp/Fcbrt/Ffloor/Fceil/Ftrunc are total.
+    Ln,
+    Log2,
+    Log10,
+    Fexp,
+    Fsqrt,
+    Fcbrt,
+    Fsin,
+    Fcos,
+    Ftan,
+    Ffloor,
+    Fceil,
+    Ftrunc,
 }
 
 impl NumOp1 {
@@ -357,7 +385,7 @@ impl NumOp1 {
     pub fn sig(self) -> Ty {
         match self {
             NumOp1::Iabs => Ty::I64,
-            NumOp1::Fabs | NumOp1::Fround => Ty::F64,
+            _ => Ty::F64,
         }
     }
 
@@ -366,6 +394,18 @@ impl NumOp1 {
             NumOp1::Iabs => "iabs",
             NumOp1::Fabs => "fabs",
             NumOp1::Fround => "fround",
+            NumOp1::Ln => "ln",
+            NumOp1::Log2 => "log2",
+            NumOp1::Log10 => "log10",
+            NumOp1::Fexp => "fexp",
+            NumOp1::Fsqrt => "fsqrt",
+            NumOp1::Fcbrt => "fcbrt",
+            NumOp1::Fsin => "fsin",
+            NumOp1::Fcos => "fcos",
+            NumOp1::Ftan => "ftan",
+            NumOp1::Ffloor => "ffloor",
+            NumOp1::Fceil => "fceil",
+            NumOp1::Ftrunc => "ftrunc",
         }
     }
 }
