@@ -3,6 +3,11 @@
 Reproduces the canonical public-kernel feature pipeline at serve time:
 scalar expressions over the passenger row + LEFT JOINs to fitted encoding
 tables (a target-mean encoding IS a join table at serve time).
+
+Wave-1 builtins version: the log1p fare skew transform, round(fare, -1)
+decade bucket, Sehgal ordinal age code (floor + least), fare winsorizing
+(greatest/least), rare-title IN flag, upper-deck IN flag and the
+contains()-based multi-cabin flag are now real SQL — no compromises left.
 """
 
 from __future__ import annotations
@@ -19,11 +24,13 @@ KAGGLE = (
     "FamilySize/IsAlone, FarePerPerson, deck letter from Cabin + HasCabin, "
     "Age-imputation flag + Age*Pclass interaction, age bins, Embarked one-hots, "
     "sex x pclass survival target-mean encoding and title-group mean-fare/survival "
-    "encodings served as fitted join tables (incl. the famous unseen-'Dona' miss)."
+    "encodings served as fitted join tables (incl. the famous unseen-'Dona' miss); "
+    "plus log1p(Fare), Fare decade + IQR winsorizing, the Sehgal 16-year ordinal "
+    "age code, rare-title / upper-deck membership flags and the multi-cabin flag."
 )
 
 N_INPUT_COLS = 10
-N_OUTPUT_COLS = 24
+N_OUTPUT_COLS = 31
 
 ROW_SCHEMA = {
     "passenger_id": "int",
@@ -280,13 +287,50 @@ SELECT
   coalesce(td.group_survival_rate, 0.383838) AS title_rate,
   td.group_mean_fare AS title_fare_mean,
   coalesce(__THIS__.fare, 14.4542) - td.group_mean_fare AS fare_minus_title_mean,
-  coalesce(em.survival_rate, 0.383838) AS embarked_rate
+  coalesce(em.survival_rate, 0.383838) AS embarked_rate,
+  ln(1.0 + coalesce(__THIS__.fare, 14.4542)) AS fare_log1p,
+  round(coalesce(__THIS__.fare, 14.4542), -1) AS fare_decade,
+  least(greatest(coalesce(__THIS__.fare, 14.4542), 7.91), 31.0) AS fare_winsor,
+  least(floor(coalesce(__THIS__.age, 28.0) / 16.0), 4.0) AS age_code,
+  CASE
+    WHEN __THIS__.title IN ('Dr', 'Rev', 'Col', 'Major', 'Capt',
+                            'Sir', 'Lady', 'Don', 'Countess', 'Jonkheer')
+    THEN 1 ELSE 0
+  END AS title_is_rare,
+  CASE
+    WHEN (CASE
+            WHEN __THIS__.cabin IS NULL THEN 'U'
+            ELSE upper(substr(trim(__THIS__.cabin), 1, 1))
+          END) IN ('A', 'B', 'C')
+    THEN 1 ELSE 0
+  END AS is_upper_deck,
+  CASE
+    WHEN __THIS__.cabin IS NULL THEN 0
+    WHEN contains(trim(__THIS__.cabin), ' ') THEN 1
+    ELSE 0
+  END AS multi_cabin
 FROM __THIS__
 LEFT JOIN sex_pclass_enc AS sp
   ON __THIS__.sex = sp.sex AND __THIS__.pclass = sp.pclass
 LEFT JOIN title_dim AS td ON __THIS__.title = td.title
 LEFT JOIN embarked_dim AS em ON __THIS__.embarked = em.embarked
 """
+
+
+# The rare-title training set (title_dim's 'Rare' group). Unseen 'Dona' is
+# NOT here — the flag misses it exactly as a fitted membership list would,
+# while title_group still falls back to 'Rare' via the join-miss coalesce.
+_RARE_TITLES = frozenset(t for t, g in _TITLE_TO_GROUP.items() if g == "Rare")
+
+
+def _round_neg1(x: float) -> float:
+    """DuckDB round(x, -1) for finite x: (x / 10.0) rounded half-away
+    from zero, times 10.0 — bit-identical to the engine's pow-table path."""
+    m = x / 10.0
+    f = math.floor(m)
+    d = m - f
+    r = f + 1.0 if d > 0.5 or (d == 0.5 and m > 0.0) else float(f)
+    return r * 10.0
 
 
 def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
@@ -315,6 +359,7 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
         fare_filled = fare if fare is not None else 14.4542
         age_filled = age if age is not None else 28.0
         t = td.get(row["title"])
+        deck = "U" if cabin is None else cabin.strip(" ")[:1].upper()
 
         if age is None:
             age_bin = "unknown"
@@ -344,7 +389,7 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             "age_x_pclass": age_filled * pclass,
             "age_bin": age_bin,
             "has_cabin": 0 if cabin is None else 1,
-            "deck": "U" if cabin is None else cabin.strip(" ")[:1].upper(),
+            "deck": deck,
             "embarked_s": 1 if emb == "S" else 0,
             "embarked_c": 1 if emb == "C" else 0,
             "embarked_q": 1 if emb == "Q" else 0,
@@ -356,6 +401,18 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
                 fare_filled - t["group_mean_fare"] if t is not None else None
             ),
             "embarked_rate": em.get(emb, 0.383838),
+            # log1p fare skew transform (fare >= 0, so no <= -1 guard).
+            "fare_log1p": math.log(1.0 + fare_filled),
+            "fare_decade": _round_neg1(fare_filled),
+            # Winsorize fare to the famous qcut quartile edges [7.91, 31.0].
+            "fare_winsor": min(max(fare_filled, 7.91), 31.0),
+            # Sehgal ordinal age code: floor(age/16) clamped to 4.
+            "age_code": min(float(math.floor(age_filled / 16.0)), 4.0),
+            "title_is_rare": 1 if row["title"] in _RARE_TITLES else 0,
+            "is_upper_deck": 1 if deck in ("A", "B", "C") else 0,
+            "multi_cabin": (
+                0 if cabin is None else (1 if " " in cabin.strip(" ") else 0)
+            ),
         }
 
     return infer

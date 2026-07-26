@@ -8,10 +8,18 @@ Serving shape reproduced here:
     encodings (what a fitted mean encoding IS at serve time), with partial
     coverage and literal global priors as fallback;
   * day-of-week / month / region seasonal-factor encodings;
-  * competition-open-months and promo2-active-weeks arithmetic with
-    NULL-guarded clamping, promo interactions, day-of-week one-hots,
-    state-holiday CASEs, a store_type x promo cross, ratios vs store means,
-    and Walmart-style econ covariates (fuel/CPI/unemployment/markdowns).
+  * competition-open-months and promo2-active-weeks arithmetic clamped with
+    NULL-ignoring greatest(0, ...), promo interactions, day-of-week one-hots,
+    state-holiday IN-set CASEs, a store_type x promo cross, ratios vs store
+    means, and Walmart-style econ covariates (fuel/CPI/unemployment/markdowns);
+  * the log/cyclical features the famous solutions actually ship (previously
+    compromised away when the SQL surface lacked math builtins, now real):
+    ln(1+CompetitionDistance) and ln(1+markdown)/ln(1+mean_sales) log1p
+    transforms, competition-age-in-years via floor(), Rossmann week-of-month
+    via trunc((day-1)/7), sin/cos week-of-year + day-of-week cyclical
+    seasonality augmenting the seasonal-factor joins, the canonical
+    Jan/Apr/Jul/Oct PromoInterval renewal-month flag and a Nov/Dec peak-season
+    flag via IN lists, and a promo2-weeks saturation cap via least().
 """
 
 from __future__ import annotations
@@ -27,11 +35,12 @@ KAGGLE = (
     "Rossmann Store Sales (+ Walmart Recruiting) serving path: store.csv dim join, "
     "competition-open-months / promo2-weeks arithmetic, per-store mean-target encodings "
     "with global priors, dow/month seasonal factors, store_type x promo cross, "
-    "holiday CASEs, Walmart econ covariates."
+    "holiday CASEs, Walmart econ covariates, log1p distance/markdown/sales "
+    "transforms, week-of-month, sin/cos cyclical seasonality, PromoInterval flag."
 )
 
 N_INPUT_COLS = 21
-N_OUTPUT_COLS = 44
+N_OUTPUT_COLS = 56
 
 ROW_SCHEMA: dict[str, str] = {
     "record_id": "int",  # the Rossmann test.csv `Id`: unique serving-row key
@@ -91,7 +100,8 @@ SELECT
     CASE WHEN __THIS__.state_holiday = 'a' THEN 1 ELSE 0 END AS state_hol_public,
     CASE WHEN __THIS__.state_holiday = 'b' THEN 1 ELSE 0 END AS state_hol_easter,
     CASE WHEN __THIS__.state_holiday = 'c' THEN 1 ELSE 0 END AS state_hol_christmas,
-    CASE WHEN __THIS__.state_holiday = '0' THEN 0 ELSE 1 END AS any_state_holiday,
+    CASE WHEN __THIS__.state_holiday IN ('a', 'b', 'c') THEN 1 ELSE 0 END
+        AS any_state_holiday,
     CASE WHEN __THIS__.state_holiday <> '0' AND __THIS__.school_holiday
          THEN 1 ELSE 0 END AS holiday_x_school,
     CASE WHEN __THIS__.day_of_week = 1 THEN 1 ELSE 0 END AS dow_mon,
@@ -124,13 +134,9 @@ SELECT
     COALESCE(store_dim.competition_distance, {COMP_DIST_FILL}) AS comp_distance,
     1.0 / (1.0 + COALESCE(store_dim.competition_distance, {COMP_DIST_FILL}))
         AS comp_distance_inv,
-    CASE WHEN {_COMP_MONTHS} IS NULL THEN 0
-         WHEN {_COMP_MONTHS} < 0 THEN 0
-         ELSE {_COMP_MONTHS} END AS comp_open_months,
+    greatest(0, {_COMP_MONTHS}) AS comp_open_months,
     CASE WHEN NOT __THIS__.promo2 THEN 0
-         WHEN {_PROMO2_WEEKS} IS NULL THEN 0
-         WHEN {_PROMO2_WEEKS} < 0 THEN 0
-         ELSE {_PROMO2_WEEKS} END AS promo2_active_weeks,
+         ELSE greatest(0, {_PROMO2_WEEKS}) END AS promo2_active_weeks,
     COALESCE(store_stats.mean_sales, {PRIOR_MEAN_SALES}) AS store_mean_sales,
     COALESCE(store_stats.mean_customers, {PRIOR_MEAN_CUSTOMERS})
         AS store_mean_customers,
@@ -161,7 +167,23 @@ SELECT
         AS days_since_promo_filled,
     CASE WHEN __THIS__.promo
               AND COALESCE(__THIS__.days_since_prev_promo, {DAYS_SINCE_PROMO_FILL}) < 7
-         THEN 1 ELSE 0 END AS promo_fatigue
+         THEN 1 ELSE 0 END AS promo_fatigue,
+    ln(1.0 + COALESCE(store_dim.competition_distance, {COMP_DIST_FILL}))
+        AS comp_distance_log,
+    floor(greatest(0, {_COMP_MONTHS}) / 12.0) AS comp_open_years,
+    trunc((__THIS__.day_of_month - 1) / 7.0) + 1.0 AS week_of_month,
+    sin(2.0 * pi() * __THIS__.week_of_year / 52.0) AS woy_sin,
+    cos(2.0 * pi() * __THIS__.week_of_year / 52.0) AS woy_cos,
+    sin(2.0 * pi() * __THIS__.day_of_week / 7.0) AS dow_sin,
+    cos(2.0 * pi() * __THIS__.day_of_week / 7.0) AS dow_cos,
+    CASE WHEN __THIS__.promo2 AND __THIS__.month IN (1, 4, 7, 10)
+         THEN 1 ELSE 0 END AS promo2_interval_month,
+    CASE WHEN __THIS__.month IN (11, 12) THEN 1 ELSE 0 END AS peak_season,
+    ln(1.0 + COALESCE(__THIS__.markdown_total, 0.0)) AS markdown_log,
+    ln(1.0 + COALESCE(store_stats.mean_sales, {PRIOR_MEAN_SALES}))
+        AS store_mean_sales_log,
+    least(CASE WHEN NOT __THIS__.promo2 THEN 0
+               ELSE greatest(0, {_PROMO2_WEEKS}) END, 156) AS promo2_weeks_capped
 FROM __THIS__
 LEFT JOIN store_dim ON __THIS__.store_id = store_dim.store_id
 LEFT JOIN store_stats ON __THIS__.store_id = store_stats.store_id
@@ -377,21 +399,25 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
         sort = d["assortment"] if d is not None else None
         comp_dist = d["competition_distance"] if d is not None else COMP_DIST_FILL
 
+        # greatest(0, x) with NULL-ignoring greatest: join-miss NULL months
+        # collapse to the 0 floor, negatives clamp to 0.
         if d is None:
             comp_open_months = 0
         else:
-            cm = (row["year"] - d["competition_open_since_year"]) * 12 + (
-                row["month"] - d["competition_open_since_month"]
+            comp_open_months = max(
+                0,
+                (row["year"] - d["competition_open_since_year"]) * 12
+                + (row["month"] - d["competition_open_since_month"]),
             )
-            comp_open_months = 0 if cm < 0 else cm
 
         if not row["promo2"] or d is None:
             promo2_active_weeks = 0
         else:
-            pw = (row["year"] - d["promo2_since_year"]) * 52 + (
-                row["week_of_year"] - d["promo2_since_week"]
+            promo2_active_weeks = max(
+                0,
+                (row["year"] - d["promo2_since_year"]) * 52
+                + (row["week_of_year"] - d["promo2_since_week"]),
             )
-            promo2_active_weeks = 0 if pw < 0 else pw
 
         mean_sales = s["mean_sales"] if s is not None else PRIOR_MEAN_SALES
         mean_customers = s["mean_customers"] if s is not None else PRIOR_MEAN_CUSTOMERS
@@ -417,7 +443,7 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             "state_hol_public": 1 if hol == "a" else 0,
             "state_hol_easter": 1 if hol == "b" else 0,
             "state_hol_christmas": 1 if hol == "c" else 0,
-            "any_state_holiday": 0 if hol == "0" else 1,
+            "any_state_holiday": 1 if hol in ("a", "b", "c") else 0,
             "holiday_x_school": 1 if hol != "0" and row["school_holiday"] else 0,
             "dow_mon": 1 if dow == 1 else 0,
             "dow_tue": 1 if dow == 2 else 0,
@@ -491,6 +517,30 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             * (unemp if unemp is not None else PRIOR_UNEMP),
             "days_since_promo_filled": ds_filled,
             "promo_fatigue": 1 if promo and ds_filled < 7 else 0,
+            # -- wave-1 builtin features (the famous-solution versions) --
+            # ln(1 + CompetitionDistance): the classic Rossmann skew fix
+            "comp_distance_log": math.log(1.0 + comp_dist),
+            # competition age bucketed to whole years; floor(double) is a
+            # double in SQL, so the twin must produce a float too
+            "comp_open_years": float(math.floor(comp_open_months / 12.0)),
+            # trunc((day-1)/7) + 1: Rossmann week-of-month, kept as the
+            # double the SQL trunc() yields (1.0 .. 4.0)
+            "week_of_month": math.trunc((row["day_of_month"] - 1) / 7.0) + 1.0,
+            # cyclical year/week encodings; evaluation order mirrors the SQL
+            # left-to-right ((2.0 * pi) * k) / period exactly
+            "woy_sin": math.sin(2.0 * math.pi * row["week_of_year"] / 52.0),
+            "woy_cos": math.cos(2.0 * math.pi * row["week_of_year"] / 52.0),
+            "dow_sin": math.sin(2.0 * math.pi * dow / 7.0),
+            "dow_cos": math.cos(2.0 * math.pi * dow / 7.0),
+            # canonical 'Jan,Apr,Jul,Oct' PromoInterval renewal-month flag
+            "promo2_interval_month": (
+                1 if row["promo2"] and row["month"] in (1, 4, 7, 10) else 0
+            ),
+            "peak_season": 1 if row["month"] in (11, 12) else 0,
+            "markdown_log": math.log(1.0 + md_filled),
+            "store_mean_sales_log": math.log(1.0 + mean_sales),
+            # least(x, 156): promo2 effect saturates after ~3 years
+            "promo2_weeks_capped": min(promo2_active_weeks, 156),
         }
 
     return fn
