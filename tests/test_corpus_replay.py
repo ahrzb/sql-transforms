@@ -1,0 +1,150 @@
+"""Corpus replay: the three-outcome contract over tests/corpus/duckdb_mined.jsonl.
+
+Each case reconstructs its tables in a fresh DuckDB, feeds them to
+DuckDBInferFn (driving table = the FROM'd table, all others static), and
+classifies:
+
+  match             -- engine output equals the mined rows
+  clean-unsupported -- the engine rejects at BUILD time, naming the limit:
+                       an "unsupported: ..." error, a parse error (DuckDB
+                       dialect beyond sqlparser, e.g. `SELECT * LIKE`,
+                       `COLUMNS(...)`), or the documented v0 static-data
+                       contracts (unique join keys, no NULL in a value
+                       column). Cases whose FROM is a table function
+                       (`range(...)`) have no base tables and can never be
+                       v0 -- also clean.
+  FAIL              -- mismatch, wrong error, or crash
+
+The gate requires zero FAILs. The match count is the growth ladder: every
+construct the engine learns flips cases from clean-unsupported to match
+(see scripts/mine_duckdb_corpus.py).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import duckdb
+import pyarrow as pa
+from pydantic import create_model
+
+from sql_transform._interpreter import DuckDBInferFn
+
+CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
+
+# Build-time errors that are documented v0 contract limits, not bugs.
+_CLEAN = ("unsupported:", "parse error:", "duplicate map key", "NULL in value column")
+
+_FROM_RE = re.compile(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+_PY_OF_ARROW = [
+    (pa.types.is_boolean, bool),
+    (pa.types.is_integer, int),
+    (pa.types.is_floating, float),
+    (pa.types.is_string, str),
+    (pa.types.is_large_string, str),
+]
+
+
+def _py_type(t: pa.DataType):
+    for pred, py in _PY_OF_ARROW:
+        if pred(t):
+            return py
+    return None
+
+
+def _norm_row(row) -> tuple[str, ...]:
+    # repr keeps int/float/str/bool/None apart and makes NaN self-equal.
+    return tuple(repr(v) for v in row)
+
+
+def _replay(case: dict) -> tuple[str, str]:
+    """-> (outcome, detail)."""
+    con = duckdb.connect()
+    for stmt in case["setup"]:
+        try:
+            con.execute(stmt)
+        except duckdb.CatalogException as e:
+            # Miner limitation: a file that drops + re-creates a table via a
+            # directive the line-parser skips records both CREATEs. Replaying
+            # the re-create after a drop is exactly what the file did.
+            m = re.match(r'\s*CREATE\s+TABLE\s+"?([A-Za-z_]\w*)"?', stmt, re.IGNORECASE)
+            if m and "already exists" in str(e):
+                con.execute(f'DROP TABLE "{m.group(1)}"')
+                con.execute(stmt)
+            else:
+                return "FAIL", f"setup failed: {stmt[:80]}: {e}"
+    named = con.execute(
+        "SELECT schema_name, table_name FROM duckdb_tables()"
+    ).fetchall()
+    if not named:
+        return "unsupported", "FROM is a table function; no base tables, never v0"
+
+    m = _FROM_RE.search(case["sql"])
+    by_lower = {t.lower(): (s, t) for s, t in named}
+    driving = None
+    if m and m.group(1).lower() in by_lower:
+        driving = by_lower[m.group(1).lower()][1]
+    if driving is None:
+        driving = named[0][1]
+
+    arrow = {
+        t: con.execute(f'SELECT * FROM "{s}"."{t}"').to_arrow_table() for s, t in named
+    }
+
+    # Row model from the driving table's schema; unmappable column types are
+    # the engine's own clean rejection (it sees the same field as unsupported).
+    fields = {}
+    for f in arrow[driving].schema:
+        py = _py_type(f.type)
+        if py is None:
+            fields[f.name] = (object, None)  # forces the engine's clean error
+        else:
+            fields[f.name] = (py | None, None)
+    model = create_model("Row", **fields)
+    statics = {t: a for t, a in arrow.items() if t != driving}
+
+    try:
+        fn = DuckDBInferFn(
+            case["sql"], row_tables={driving: model}, static_tables=statics
+        )
+    except Exception as e:  # noqa: BLE001 -- classification, not control flow
+        msg = str(e)
+        if any(n in msg for n in _CLEAN):
+            return "unsupported", msg
+        return "FAIL", f"build error: {type(e).__name__}: {msg}"
+
+    try:
+        rows_in = [model(**r) for r in arrow[driving].to_pylist()]
+        got = [list(r.model_dump().values()) for r in fn.infer({driving: rows_in})]
+    except Exception as e:  # noqa: BLE001
+        return "FAIL", f"run error: {type(e).__name__}: {e}"
+
+    want = case["rows"]
+    if sorted(map(_norm_row, got)) != sorted(map(_norm_row, want)):
+        return "FAIL", f"mismatch: got {got!r}, want {want!r}"
+    return "match", ""
+
+
+def test_corpus_replay_three_outcomes():
+    cases = [json.loads(line) for line in CORPUS.open(encoding="utf-8")]
+    counts = {"match": 0, "unsupported": 0, "FAIL": 0}
+    fails: list[str] = []
+    for i, case in enumerate(cases):
+        outcome, detail = _replay(case)
+        counts[outcome] += 1
+        if outcome == "FAIL":
+            fails.append(f"[{i}] {case['source']}: {case['sql']}\n    {detail}")
+
+    print(
+        f"\ncorpus replay: {counts['match']} match, "
+        f"{counts['unsupported']} clean-unsupported, {counts['FAIL']} FAIL "
+        f"of {len(cases)}"
+    )
+    assert not fails, (
+        f"{len(fails)} corpus FAILs "
+        f"({counts['match']} match / {counts['unsupported']} unsupported):\n"
+        + "\n".join(fails[:25])
+    )

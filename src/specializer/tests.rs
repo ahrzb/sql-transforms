@@ -432,7 +432,7 @@ fn bind_errors_are_not_unsupported() {
     for (sql, needle) in [
         ("SELECT nope FROM __THIS__", "does not exist"),
         ("SELECT a + s FROM __THIS__", "numeric"),
-        ("SELECT a FROM __THIS__ WHERE a + 1", "BOOLEAN"),
+        ("SELECT a FROM __THIS__ WHERE s", "BOOLEAN"),
         ("SELECT a < s FROM __THIS__", "cannot compare"),
         (
             "SELECT a FROM __THIS__ JOIN t ON a = a",
@@ -734,7 +734,7 @@ fn substr_window_arithmetic_via_sql() {
         batch(1, vec![c_i64(&[Some(0)])]),
     )
     .unwrap();
-    assert_eq!(got, rows(&[&["he", "lo", "hel", "", "el"]]));
+    assert_eq!(got, rows(&[&["he", "lo", "hello", "", "el"]]));
 }
 
 #[test]
@@ -894,4 +894,134 @@ fn builtin_programs_are_canonical_ir() {
         p,
         "builtin program is not canonical:\n{text}"
     );
+}
+
+// ------------------------------------------------- adversarial-fleet fixes:
+// divergences found by the 6-agent differential probe (2026-07-26).
+
+#[test]
+fn null_divisor_rem_is_null_not_trap() {
+    // The `b = 0` guard alone is NULL for a NULL divisor, which fell through
+    // to irem on the garbage zero payload. IS NULL now shields it.
+    let schema = cols(&[("a", Ty::I64, true), ("b", Ty::I64, true)]);
+    let got = run_sql(
+        "SELECT a % b AS r FROM __THIS__",
+        &schema,
+        batch(
+            3,
+            vec![
+                c_i64(&[Some(7), None, Some(7)]),
+                c_i64(&[None, Some(0), Some(3)]),
+            ],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL"], &["NULL"], &["1"]]));
+}
+
+#[test]
+fn traps_never_fire_under_a_null_flag() {
+    // Computed garbage payloads are unbounded: (NULL + MAX) + MAX would
+    // overflow its payload lane. Masking forces the default before any
+    // trapping instruction. A real value still traps like DuckDB.
+    let schema = cols(&[("a", Ty::I64, true)]);
+    let sql = "SELECT a + 9223372036854775807 + 9223372036854775807 AS r FROM __THIS__";
+    let got = run_sql(sql, &schema, batch(1, vec![c_i64(&[None])])).unwrap();
+    assert_eq!(got, rows(&[&["NULL"]]));
+    let err = run_sql(sql, &schema, batch(1, vec![c_i64(&[Some(1)])])).unwrap_err();
+    assert!(err.contains("overflow"), "got: {err}");
+}
+
+#[test]
+fn numeric_conditions_coerce_to_bool() {
+    // DuckDB pins: WHERE/AND/NOT/CASE take numerics — nonzero is true.
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT a FROM __THIS__ WHERE a % 2 AND 1",
+        &schema,
+        batch(4, vec![c_i64(&[Some(1), Some(2), Some(3), Some(4)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["1"], &["3"]]));
+    let got = run_sql(
+        "SELECT CASE WHEN 2 THEN 'a' ELSE 'b' END AS c, NOT 5 AS n FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(0)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["a", "false"]]));
+}
+
+#[test]
+fn trim_default_set_is_unicode_zs() {
+    // Adversarial census: the 1-arg trim set is exactly the Zs category —
+    // NBSP and ideographic space go, tab and newline stay.
+    let schema = cols(&[("s", Ty::Str, false)]);
+    let got = run_sql(
+        "SELECT trim(s) AS t FROM __THIS__",
+        &schema,
+        batch(2, vec![c_str(&[Some("\u{A0}a\u{3000}"), Some("\ta\n")])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["a"], &["\ta\n"]]));
+}
+
+#[test]
+fn substr_negative_length_slices_backwards() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT substr('hello', 3, -2) AS a, substr('hello', 6, -5) AS b, \
+         substr('hello', 1, -1) AS c FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(0)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["he", "hello", ""]]));
+}
+
+#[test]
+fn substr_range_guard_traps_like_duckdb() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let err = run_sql(
+        "SELECT substr('hello', 4294967296) AS x FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(0)])]),
+    )
+    .unwrap_err();
+    assert!(err.contains("offset outside"), "got: {err}");
+}
+
+#[test]
+fn float_to_varchar_matches_duckdb_rendering() {
+    // Pins: explicit exponent sign, two-digit minimum, lowercase nan.
+    let schema = cols(&[("x", Ty::F64, false)]);
+    let got = run_sql(
+        "SELECT x || '' AS s FROM __THIS__",
+        &schema,
+        batch(
+            4,
+            vec![c_f64(&[Some(1e300), Some(1e-5), Some(f64::NAN), Some(2.5)])],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["1e+300"], &["1e-05"], &["nan"], &["2.5"]]));
+}
+
+#[test]
+fn rowid_and_lateral_alias_reject_cleanly() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    for (sql, needle) in [
+        ("SELECT rowid FROM __THIS__", "rowid"),
+        ("SELECT a % 2 AS k FROM __THIS__ WHERE k = 1", "lateral"),
+    ] {
+        match prep(sql, &schema) {
+            Err(PrepareError::Unsupported(msg)) => {
+                assert!(
+                    msg.contains(needle),
+                    "'{sql}': wanted '{needle}' in '{msg}'"
+                )
+            }
+            other => panic!("'{sql}': wrong outcome: {:?}", other.err()),
+        }
+    }
 }

@@ -136,7 +136,7 @@ pub fn fold(e: SExpr) -> SExpr {
         SKind::Substr { a, start, len } => e(SKind::Substr {
             a: Box::new(fold(*a)),
             start: Box::new(fold(*start)),
-            len: Box::new(fold(*len)),
+            len: len.map(|l| Box::new(fold(*l))),
         }),
         SKind::Abs(a) => e(SKind::Abs(Box::new(fold(*a)))),
         SKind::Round(a) => e(SKind::Round(Box::new(fold(*a)))),

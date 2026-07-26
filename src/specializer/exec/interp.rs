@@ -509,14 +509,28 @@ impl std::fmt::Write for ArenaWriter<'_> {
 /// start <= 0 consumes length before character 1, negative len is "". A
 /// missing SQL length arrives as i64::MAX; the saturating add makes that
 /// "rest of the string".
-fn substr_window(s: &str, start: i64, len: i64) -> String {
-    if len < 0 {
-        return String::new();
-    }
+/// DuckDB's substr window arithmetic — the VECTORIZED path, which columns
+/// (and therefore every real query and the mined corpus) take; DuckDB's own
+/// constant-fold path disagrees with it on negative starts (measured
+/// 2026-07-26, see the builtin-pins spec). Codepoints, NOT grapheme
+/// clusters. 1-based positions: a negative start counts from the end and
+/// clamps to 1 (`rs = max(n + start + 1, 1)`) while start 0 stays virtual;
+/// a non-negative length runs forward `[rs, rs+len)`, a NEGATIVE length
+/// slices BACKWARDS `[rs+len, rs)`; `len: None` is the 2-arg rest-of-string
+/// form.
+fn substr_window(s: &str, start: i64, len: Option<i64>) -> String {
     let n = s.chars().count() as i64;
-    let start = if start < 0 { n + start + 1 } else { start };
-    let end = start.saturating_add(len);
-    let (lo, hi) = (start.max(1), end.min(n + 1));
+    let rs = if start < 0 {
+        (n + start + 1).max(1)
+    } else {
+        start
+    };
+    let (lo, hi) = match len {
+        Some(l) if l >= 0 => (rs, rs.saturating_add(l)),
+        Some(l) => (rs.saturating_add(l), rs),
+        None => (rs, n + 1),
+    };
+    let (lo, hi) = (lo.max(1), hi.min(n + 1));
     if hi <= lo {
         return String::new();
     }
@@ -524,6 +538,39 @@ fn substr_window(s: &str, start: i64, len: i64) -> String {
         .skip((lo - 1) as usize)
         .take((hi - lo) as usize)
         .collect()
+}
+
+/// The offset/length guard DuckDB applies before the window: values outside
+/// [-2^32, 2^32-1] raise an Out of Range error (measured boundary-exactly).
+fn substr_range_ok(v: i64) -> bool {
+    (-(1i64 << 32)..(1i64 << 32)).contains(&v)
+}
+
+/// DuckDB's DOUBLE -> VARCHAR text (measured 1.5.5): Rust's shortest
+/// round-trip form, except the exponent carries an explicit sign and at
+/// least two digits (`1e+300`, `1e-05`) and NaN is lowercase `nan`.
+struct DuckF64(f64);
+
+impl std::fmt::Display for DuckF64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_nan() {
+            return f.write_str("nan");
+        }
+        let s = format!("{:?}", self.0);
+        match s.find('e') {
+            None => f.write_str(&s),
+            Some(pos) => {
+                let exp: i64 = s[pos + 1..].parse().expect("float exponent");
+                write!(
+                    f,
+                    "{}e{}{:02}",
+                    &s[..pos],
+                    if exp < 0 { '-' } else { '+' },
+                    exp.abs()
+                )
+            }
+        }
+    }
 }
 
 fn fmt_into_arena(arena: &mut Arena, args: std::fmt::Arguments<'_>) -> StrRef {
@@ -706,7 +753,8 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
                 let v = as_f64(ctx.regs[a]);
-                ctx.regs[dst] = RegVal::Str(fmt_into_arena(ctx.arena, format_args!("{v:?}")));
+                ctx.regs[dst] =
+                    RegVal::Str(fmt_into_arena(ctx.arena, format_args!("{}", DuckF64(v))));
                 Ok(())
             })
         }
@@ -801,9 +849,27 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
         }
         Inst::Ssubstr { dst, a, start, len } => {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
-            let (start, len) = (sl(slots, start), sl(slots, len));
+            let start = sl(slots, start);
+            let len = len.map(|l| sl(slots, l));
             Box::new(move |ctx| {
-                let (st, ln) = (as_i64(ctx.regs[start]), as_i64(ctx.regs[len]));
+                let st = as_i64(ctx.regs[start]);
+                if !substr_range_ok(st) {
+                    return Err(Trap(
+                        "substring offset outside of supported range".to_string(),
+                    ));
+                }
+                let ln = match len {
+                    Some(l) => {
+                        let v = as_i64(ctx.regs[l]);
+                        if !substr_range_ok(v) {
+                            return Err(Trap(
+                                "substring length outside of supported range".to_string(),
+                            ));
+                        }
+                        Some(v)
+                    }
+                    None => None,
+                };
                 let s = ctx.arena.get(as_str(ctx.regs[a]));
                 let out = substr_window(s, st, ln);
                 ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));

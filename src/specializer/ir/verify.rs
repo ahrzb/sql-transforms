@@ -370,7 +370,9 @@ fn check_block(
                     i,
                     errs,
                 );
-                want(&in_scope, def_types, *len, Ty::I64, "operand", bi, i, errs);
+                if let Some(len) = len {
+                    want(&in_scope, def_types, *len, Ty::I64, "operand", bi, i, errs);
+                }
             }
             Inst::Num1 { op, a, .. } => {
                 want(&in_scope, def_types, *a, op.sig(), "operand", bi, i, errs)

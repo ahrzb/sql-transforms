@@ -85,3 +85,41 @@ DuckDB order (divergence #3) — fold and interp MUST stay bit-identical.
 
 round(x, digits); DECIMAL anything (literals stay F64 — known v0 ceiling);
 upper/lower non-simple-map codepoints byte-exactness (xfail + ticket).
+
+## Adversarial-fleet addendum (6 probe agents, ~1,400 probes, 2026-07-26)
+
+Divergences FOUND and FIXED (each now pinned in Rust + differentially):
+
+1. **NULL divisor `%`**: the `b = 0` CASE guard alone is NULL for b NULL —
+   fell through to irem on the garbage zero payload. `b IS NULL OR b = 0`
+   shields it (TRUE OR NULL = TRUE).
+2. **Trap-under-false-flag class bug** (predates stretch 4): computed
+   garbage payloads are unbounded (`(x + MAX) + MAX` with x NULL overflows
+   its payload lane). FIX: `FB::masked` forces nullable payloads to the type
+   default before every trapping instruction (integer arith, iabs, ssubstr
+   positions, ftoi cast input).
+3. **1-arg trim set**: exactly the Unicode Zs space separators (per-codepoint
+   census) — NBSP/ideographic space etc. trim; tab/newline/ZWSP/BOM do not.
+4. **substr**: DuckDB's constant-fold path and vectorized path DISAGREE on
+   negative starts. We implement the VECTORIZED path (what columns, real
+   queries, and the mined corpus use): negative start clamps to 1 after
+   end-resolution (`rs = max(n+start+1, 1)`), start 0 stays virtual, a
+   NEGATIVE length slices BACKWARDS `[rs+len, rs)`, offsets/lengths outside
+   ±2^32 trap ("Out of Range"), the 2-arg form never length-traps (why
+   `len` is `Option`, not a sentinel). Known residual: pure-literal
+   negative-start substr goes through DuckDB's constant path and can differ.
+5. **Float -> VARCHAR**: DuckDB writes an explicit exponent sign with at
+   least two digits (`1e+300`, `1e-05`) and lowercase `nan` (DuckF64 in
+   interp.rs).
+6. **Oracle artifact, harness-fixed, no engine change**: duckdb-python
+   pushes constant filters into REGISTERED-ARROW scans with IEEE NaN
+   semantics, disagreeing with its own native-table order (and violating
+   3VL for `x <= NaN`). duck_check now materializes native tables.
+7. **Simple-case-map divergence extended**: `upper('ᾀ')` (ypogegrammeni
+   titlecase U+1F88) joins ß/İ in the strict xfail.
+
+Also landed with this pass (corpus-driven): implicit numeric->BOOLEAN in
+conditional contexts (WHERE/AND/OR/NOT/CASE WHEN; nonzero -> true incl.
+NaN, NULL -> NULL); `rowid` and DuckDB lateral aliases reject as clean
+unsupported; corpus replay wired into pytest with the three-outcome
+contract at 49 match / 629 clean-unsupported / 0 FAIL of 678.

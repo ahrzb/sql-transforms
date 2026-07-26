@@ -519,28 +519,72 @@ fn pin_iabs_min_traps() {
 
 #[test]
 fn pin_ssubstr_window_arithmetic() {
-    // DuckDB virtual-window semantics (measured 1.5.5): start 0 and negative
-    // starts map through n+start+1; len is consumed from the virtual
-    // position; negative len is ''; i64::MAX len = rest of string.
+    // DuckDB virtual-window semantics (measured 1.5.5 + adversarial census):
+    // start 0 and negative starts map through n+start+1; a non-negative len
+    // runs forward, a negative len slices BACKWARDS from the resolved start;
+    // ssubstr.rest is the 2-arg "rest of the string" form.
     for (start, len, expect) in [
-        (2, 3, "ell"),
-        (0, 3, "he"),
-        (-2, i64::MAX, "lo"),
-        (-6, 3, "he"),
-        (-10, 8, "hel"),
-        (1, 0, ""),
-        (1, -1, ""),
-        (10, i64::MAX, ""),
-        (0, i64::MAX, "hello"),
+        (2i64, Some(3i64), "ell"),
+        (0, Some(3), "he"),
+        (-2, None, "lo"),
+        (-6, Some(3), "hel"),
+        (-10, Some(8), "hello"),
+        (1, Some(0), ""),
+        (1, Some(-1), ""),
+        (3, Some(-2), "he"),
+        (2, Some(-1), "h"),
+        (6, Some(-5), "hello"),
+        (-2, Some(-3), "hel"),
+        (10, None, ""),
+        (0, None, "hello"),
+        (-4294967296, None, "hello"),
     ] {
-        let body = format!(
-            "  %s = const.str \"hello\"\n  %st = const.i64 {start}\n\
-             \x20 %ln = const.i64 {len}\n  %r = ssubstr %s, %st, %ln\n  store out.o, %r"
-        );
+        let op = match len {
+            Some(l) => format!("  %ln = const.i64 {l}\n  %r = ssubstr %s, %st, %ln\n"),
+            None => "  %r = ssubstr.rest %s, %st\n".to_string(),
+        };
+        let body =
+            format!("  %s = const.str \"hello\"\n  %st = const.i64 {start}\n{op}  store out.o, %r");
         assert_eq!(
             eval1(&body, "o: str").unwrap(),
             rows(&[&[expect]]),
-            "substr('hello', {start}, {len})"
+            "substr('hello', {start}, {len:?})"
+        );
+    }
+}
+
+#[test]
+fn pin_ssubstr_range_guards_trap() {
+    // DuckDB errors for offsets/lengths outside [-2^32, 2^32-1]; the 2-arg
+    // form has no length to guard.
+    for (start, len, needle) in [
+        (4294967296i64, Some(2i64), "offset outside"),
+        (-4294967297, Some(2), "offset outside"),
+        (1, Some(4294967296), "length outside"),
+        (1, Some(-4294967297), "length outside"),
+    ] {
+        let op = match len {
+            Some(l) => format!("  %ln = const.i64 {l}\n  %r = ssubstr %s, %st, %ln\n"),
+            None => "  %r = ssubstr.rest %s, %st\n".to_string(),
+        };
+        let body =
+            format!("  %s = const.str \"hello\"\n  %st = const.i64 {start}\n{op}  store out.o, %r");
+        let err = eval1(&body, "o: str").unwrap_err();
+        assert!(
+            err.0.contains(needle),
+            "({start}, {len:?}): got '{}'",
+            err.0
+        );
+    }
+    // Boundary values inside the guard execute.
+    for start in [4294967295i64, -4294967296] {
+        let body = format!(
+            "  %s = const.str \"hello\"\n  %st = const.i64 {start}\n\
+             \x20 %r = ssubstr.rest %s, %st\n  store out.o, %r"
+        );
+        assert!(
+            eval1(&body, "o: str").is_ok(),
+            "start {start} should not trap"
         );
     }
 }

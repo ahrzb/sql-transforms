@@ -265,6 +265,27 @@ impl<'a> FB<'a> {
         self.const_lit(Lit::I1(v))
     }
 
+    /// Trapping instructions must never fire on the garbage payload under a
+    /// false NULL flag — computed garbage is unbounded (`x + MAX + MAX` with
+    /// x NULL overflows its payload). Mask nullable payloads to the type
+    /// default right before any trapping instruction.
+    fn masked(&mut self, l: Lane, ty: Ty) -> Value {
+        match l.flag {
+            None => l.val,
+            Some(f) => {
+                let d = self.default_of(ty);
+                let dst = self.fresh();
+                self.inst(Inst::Select {
+                    dst,
+                    cond: f,
+                    a: l.val,
+                    b: d,
+                });
+                dst
+            }
+        }
+    }
+
     fn default_of(&mut self, ty: Ty) -> Value {
         self.const_lit(match ty {
             Ty::I1 => Lit::I1(false),
@@ -423,7 +444,15 @@ impl<'a> FB<'a> {
                         )))
                     }
                 };
-                let val = self.bin(ir_op, la.val, lb.val);
+                // Integer arithmetic traps (overflow, % edge cases): mask
+                // nullable payloads so garbage under a false flag can never
+                // fire the trap. Float ops are total — no masking needed.
+                let (va, vb) = if e.ty == Ty::I64 {
+                    (self.masked(la, Ty::I64), self.masked(lb, Ty::I64))
+                } else {
+                    (la.val, lb.val)
+                };
+                let val = self.bin(ir_op, va, vb);
                 Ok(Lane {
                     flag: self.combine_flags(la.flag, lb.flag),
                     val,
@@ -502,31 +531,38 @@ impl<'a> FB<'a> {
                 live.push((la, Ty::Str));
                 let ls = self.emit(start, live)?;
                 live.push((ls, Ty::I64));
-                let ll = self.emit(len, live)?;
+                let ll = match len {
+                    Some(l) => Some(self.emit(l, live)?),
+                    None => None,
+                };
                 let (ls, _) = live.pop().expect("pushed above");
                 let (la, _) = live.pop().expect("pushed above");
+                // The range guards trap; mask nullable position payloads.
+                let start_v = self.masked(ls, Ty::I64);
+                let len_v = ll.map(|l| self.masked(l, Ty::I64));
                 let dst = self.fresh();
                 self.inst(Inst::Ssubstr {
                     dst,
                     a: la.val,
-                    start: ls.val,
-                    len: ll.val,
+                    start: start_v,
+                    len: len_v,
                 });
                 let flag = self.combine_flags(la.flag, ls.flag);
                 Ok(Lane {
-                    flag: self.combine_flags(flag, ll.flag),
+                    flag: self.combine_flags(flag, ll.and_then(|l| l.flag)),
                     val: dst,
                 })
             }
             SKind::Abs(a) => {
                 let l = self.emit(a, live)?;
-                let dst = self.fresh();
-                let op = if e.ty == Ty::I64 {
-                    NumOp1::Iabs
+                // iabs traps on i64::MIN; mask the nullable payload.
+                let (op, av) = if e.ty == Ty::I64 {
+                    (NumOp1::Iabs, self.masked(l, Ty::I64))
                 } else {
-                    NumOp1::Fabs
+                    (NumOp1::Fabs, l.val)
                 };
-                self.inst(Inst::Num1 { op, dst, a: l.val });
+                let dst = self.fresh();
+                self.inst(Inst::Num1 { op, dst, a: av });
                 Ok(Lane {
                     flag: l.flag,
                     val: dst,
@@ -770,13 +806,15 @@ impl<'a> FB<'a> {
             }
             (Ty::F64, Ty::I64) if !trying => {
                 // ftoi.round matches DuckDB CAST rounding; its own range trap
-                // stands in for DuckDB's conversion error. NULL payloads are
-                // type-default 0.0 — never trap.
+                // stands in for DuckDB's conversion error. Nullable payloads
+                // are masked: computed garbage under a false flag (x * 1e300
+                // * 1e300 with x NULL) must not fire the range trap.
+                let a = self.masked(l, Ty::F64);
                 let dst = self.fresh();
                 self.inst(Inst::Ftoi {
                     mode: super::ir::RoundMode::Round,
                     dst,
-                    a: l.val,
+                    a,
                 });
                 Some(Lane {
                     flag: l.flag,
