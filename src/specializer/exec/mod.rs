@@ -44,13 +44,95 @@ pub struct Batch {
 }
 
 pub enum ColData {
-    I1 { valid: Vec<bool>, data: Vec<bool> },
-    I64 { valid: Vec<bool>, data: Vec<i64> },
-    F64 { valid: Vec<bool>, data: Vec<f64> },
-    Str { valid: Vec<bool>, data: Vec<String> },
+    I1 {
+        valid: Vec<bool>,
+        data: Vec<bool>,
+    },
+    I64 {
+        valid: Vec<bool>,
+        data: Vec<i64>,
+    },
+    F64 {
+        valid: Vec<bool>,
+        data: Vec<f64>,
+    },
+    /// Strings live flat in one shared buffer with per-row spans — no
+    /// per-cell String, so a reused column refills without allocating once
+    /// capacity is warm (the marshaller's zero-alloc contract).
+    Str {
+        valid: Vec<bool>,
+        buf: String,
+        spans: Vec<StrRef>,
+    },
 }
 
 impl ColData {
+    /// Empty column of type `t`, ready for `push_*` fills.
+    pub fn new(t: Ty) -> ColData {
+        match t {
+            Ty::I1 => ColData::I1 {
+                valid: Vec::new(),
+                data: Vec::new(),
+            },
+            Ty::I64 => ColData::I64 {
+                valid: Vec::new(),
+                data: Vec::new(),
+            },
+            Ty::F64 => ColData::F64 {
+                valid: Vec::new(),
+                data: Vec::new(),
+            },
+            Ty::Str => ColData::Str {
+                valid: Vec::new(),
+                buf: String::new(),
+                spans: Vec::new(),
+            },
+        }
+    }
+
+    /// Capacity-preserving clear, for reuse across calls.
+    pub fn clear(&mut self) {
+        match self {
+            ColData::I1 { valid, data } => {
+                valid.clear();
+                data.clear();
+            }
+            ColData::I64 { valid, data } => {
+                valid.clear();
+                data.clear();
+            }
+            ColData::F64 { valid, data } => {
+                valid.clear();
+                data.clear();
+            }
+            ColData::Str { valid, buf, spans } => {
+                valid.clear();
+                buf.clear();
+                spans.clear();
+            }
+        }
+    }
+
+    /// Append one cell to a Str column (`""` for a NULL payload).
+    pub fn push_str_cell(&mut self, ok: bool, s: &str) {
+        let ColData::Str { valid, buf, spans } = self else {
+            unreachable!("push_str_cell on a non-Str column");
+        };
+        valid.push(ok);
+        let off = buf.len();
+        buf.push_str(s);
+        spans.push(StrRef { off, len: s.len() });
+    }
+
+    /// The string payload of row `row` of a Str column.
+    pub fn str_at(&self, row: usize) -> &str {
+        let ColData::Str { buf, spans, .. } = self else {
+            unreachable!("str_at on a non-Str column");
+        };
+        let StrRef { off, len } = spans[row];
+        &buf[off..off + len]
+    }
+
     pub fn ty(&self) -> Ty {
         match self {
             ColData::I1 { .. } => Ty::I1,
@@ -65,7 +147,7 @@ impl ColData {
             ColData::I1 { data, .. } => data.len(),
             ColData::I64 { data, .. } => data.len(),
             ColData::F64 { data, .. } => data.len(),
-            ColData::Str { data, .. } => data.len(),
+            ColData::Str { spans, .. } => spans.len(),
         }
     }
 

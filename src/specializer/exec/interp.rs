@@ -1065,7 +1065,7 @@ fn load_payload(c: &ColData, row: usize, arena: &mut Arena) -> RegVal {
         ColData::I1 { data, .. } => RegVal::I1(data[row]),
         ColData::I64 { data, .. } => RegVal::I64(data[row]),
         ColData::F64 { data, .. } => RegVal::F64(data[row]),
-        ColData::Str { data, .. } => RegVal::Str(arena.push_str(&data[row])),
+        c @ ColData::Str { .. } => RegVal::Str(arena.push_str(c.str_at(row))),
     }
 }
 

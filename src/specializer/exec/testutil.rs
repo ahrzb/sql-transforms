@@ -26,10 +26,11 @@ pub fn c_f64(vals: &[Option<f64>]) -> ColData {
 }
 
 pub fn c_str(vals: &[Option<&str>]) -> ColData {
-    ColData::Str {
-        valid: vals.iter().map(|v| v.is_some()).collect(),
-        data: vals.iter().map(|v| v.unwrap_or("").to_string()).collect(),
+    let mut col = ColData::new(super::super::ir::Ty::Str);
+    for v in vals {
+        col.push_str_cell(v.is_some(), v.unwrap_or(""));
     }
+    col
 }
 
 pub fn batch(rows: usize, cols: Vec<ColData>) -> Batch {
