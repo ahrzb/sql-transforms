@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
+use pyo3::types::{PyDict, PySet, PyString};
 
 use crate::error::InterpError;
 use crate::schema;
@@ -209,10 +209,21 @@ impl Backend {
 struct Marshaller {
     in_names: Vec<Py<PyString>>,
     out_names: Vec<Py<PyString>>,
-    /// `output_model.model_construct`, resolved at build. Outputs come out
-    /// of the typed engine already conformant; re-validating them per row
-    /// was the single largest boundary cost.
-    construct: Py<PyAny>,
+    /// Output rows are built by filling pydantic v2's instance slots
+    /// directly (`object.__new__` + `object.__setattr__` of `__dict__`,
+    /// `__pydantic_fields_set__`, `__pydantic_extra__`,
+    /// `__pydantic_private__`) — what `model_construct` does, minus its
+    /// pure-Python per-field loop (measured 2026-07-26 on pydantic 2.13:
+    /// construct 1432ns > validate 882ns > slot fill 491ns per row).
+    /// Assumes a plain model: no `extra="allow"`, no private attrs —
+    /// true of synthesized output models; supplied ones are v0-trusted.
+    model: Py<PyAny>,
+    object_new: Py<PyAny>,
+    object_setattr: Py<PyAny>,
+    s_dict: Py<PyString>,
+    s_fields_set: Py<PyString>,
+    s_extra: Py<PyString>,
+    s_private: Py<PyString>,
     cols: Vec<ColData>,
     state: RunState,
 }
@@ -225,6 +236,7 @@ impl Marshaller {
         output_model: &Py<PyAny>,
         fun: &Backend,
     ) -> PyResult<Marshaller> {
+        let object = PyModule::import(py, "builtins")?.getattr("object")?;
         Ok(Marshaller {
             in_names: in_cols
                 .iter()
@@ -234,7 +246,13 @@ impl Marshaller {
                 .iter()
                 .map(|c| PyString::intern(py, &c.name).unbind())
                 .collect(),
-            construct: output_model.bind(py).getattr("model_construct")?.unbind(),
+            model: output_model.clone_ref(py),
+            object_new: object.getattr("__new__")?.unbind(),
+            object_setattr: object.getattr("__setattr__")?.unbind(),
+            s_dict: PyString::intern(py, "__dict__").unbind(),
+            s_fields_set: PyString::intern(py, "__pydantic_fields_set__").unbind(),
+            s_extra: PyString::intern(py, "__pydantic_extra__").unbind(),
+            s_private: PyString::intern(py, "__pydantic_private__").unbind(),
             cols: in_cols.iter().map(|c| ColData::new(c.ty.ty)).collect(),
             state: fun.new_state(),
         })
@@ -314,7 +332,14 @@ impl Marshaller {
         self.cols = batch.cols;
         res.map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
 
-        let construct = self.construct.bind(py);
+        let model = self.model.bind(py);
+        let object_new = self.object_new.bind(py);
+        let object_setattr = self.object_setattr.bind(py);
+        let s_dict = self.s_dict.bind(py);
+        let s_fields_set = self.s_fields_set.bind(py);
+        let s_extra = self.s_extra.bind(py);
+        let s_private = self.s_private.bind(py);
+        let none = py.None();
         let mut out = Vec::with_capacity(self.state.emitted);
         for r in 0..self.state.emitted {
             let d = PyDict::new(py);
@@ -339,7 +364,13 @@ impl Marshaller {
                     }
                 }
             }
-            out.push(construct.call((), Some(&d))?.unbind());
+            let fields_set = PySet::new(py, self.out_names.iter().map(|n| n.bind(py)))?;
+            let inst = object_new.call1((model,))?;
+            object_setattr.call1((&inst, s_dict, &d))?;
+            object_setattr.call1((&inst, s_fields_set, fields_set))?;
+            object_setattr.call1((&inst, s_extra, &none))?;
+            object_setattr.call1((&inst, s_private, &none))?;
+            out.push(inst.unbind());
         }
         Ok(out)
     }

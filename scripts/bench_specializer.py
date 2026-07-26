@@ -1,16 +1,20 @@
 """Specializer ns/call bench — the design doc §10 measurement discipline.
 
 Reports p50/p99 ns per call at n in {1, 8, 64, 1024} for:
-  boundary   — a no-op passthrough (SELECT a FROM __THIS__) through the
-               generic pydantic path: the floor every engine pays today
-  cranelift  — the specializer's JIT backend (default)
+  cranelift  — the specializer's JIT backend through the generated row
+               marshaller (the default production path)
   interp     — the same programs on the interpreter backend (the control;
-               SPECIALIZER_FORCE_INTERP=1 in a subprocess)
+               SPECIALIZER_FORCE_INTERP=1 in a subprocess), also marshalled
+  generic    — the JIT backend behind the PRE-marshaller generic boundary
+               (SPECIALIZER_GENERIC_BOUNDARY=1): per-cell getattr with
+               fresh name strings, per-call buffers, model_validate per
+               output row. generic vs cranelift on the noop case IS the
+               marshaller's win (TASK-45 AC #2).
   native     — the existing DataFusion-semantics InferFn
   codegen    — the existing Python codegen engine
 
 Run: `uv run python scripts/bench_specializer.py [--json out.json]`
-The interp control re-execs this script in a subprocess so the env knob is
+The env-knob engines re-exec this script in a subprocess so the knob is
 set before the module builds its functions.
 """
 
@@ -79,7 +83,11 @@ def main():
     dim = pa.table({"id": list(range(60)), "name": [f"n{i}" for i in range(60)]})
     engine = os.environ.get("BENCH_ENGINE", "cranelift")
 
-    builders = {"cranelift": build_specializer, "interp": build_specializer}
+    builders = {
+        "cranelift": build_specializer,
+        "interp": build_specializer,
+        "generic": build_specializer,
+    }
     if engine in ("native", "codegen"):
         builders = {"native": build_native, "codegen": build_codegen}
 
@@ -90,9 +98,11 @@ def main():
         except Exception as e:  # noqa: BLE001 -- engines differ in coverage
             results[case] = {"error": str(e)[:120]}
             continue
-        if engine in ("cranelift", "interp"):
+        if engine in ("cranelift", "interp", "generic"):
             want = "interpreter" if engine == "interp" else "cranelift"
             assert fn.backend == want, f"{case}: backend is {fn.backend}, wanted {want}"
+            wantb = "generic" if engine == "generic" else "marshaller"
+            assert fn.boundary == wantb, f"{case}: boundary {fn.boundary} != {wantb}"
         per_n = {}
         for n in NS:
             objs = [model(**r) for r in rows_of(n)]
@@ -105,11 +115,13 @@ def main():
 def orchestrate():
     """Run every engine (interp in a subprocess for the env knob), merge."""
     merged = {}
-    for engine in ("cranelift", "interp", "native", "codegen"):
+    for engine in ("cranelift", "interp", "generic", "native", "codegen"):
         env = os.environ.copy()
         env["BENCH_ENGINE"] = engine
         if engine == "interp":
             env["SPECIALIZER_FORCE_INTERP"] = "1"
+        if engine == "generic":
+            env["SPECIALIZER_GENERIC_BOUNDARY"] = "1"
         out = subprocess.run(  # noqa: S603 -- fixed argv
             [sys.executable, __file__, "--engine-run"],
             env=env,
