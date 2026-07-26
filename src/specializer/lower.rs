@@ -28,12 +28,14 @@ use std::collections::HashMap;
 
 use super::frontend::PrepareError;
 use super::ir::{
-    BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, Program, Term, Ty, Value,
+    BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, Program, StaticTy, Term, Ty, Value,
 };
-use super::plan::{ArithOp, Rel, SExpr, SKind};
+use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
 pub fn lower(
     rel: &Rel,
+    joins: &[JoinSpec],
+    catalog: &[StaticTable],
     in_cols: &[Col],
     out_cols: Vec<Col>,
     name: &str,
@@ -49,10 +51,39 @@ pub fn lower(
                 return Err(PrepareError::Internal("nested projection".to_string()))
             }
         },
-        _ => return Err(PrepareError::Internal("plan root is not a projection".to_string())),
+        _ => {
+            return Err(PrepareError::Internal(
+                "plan root is not a projection".to_string(),
+            ))
+        }
     };
 
-    let mut fb = FB::new(in_cols);
+    let mut fb = FB::new(in_cols, joins);
+
+    // Joins run before WHERE (SQL order), each in FROM order: probe, and for
+    // INNER skip the row on a miss. A LEFT join's probe is also forced here
+    // so its key expressions are evaluated (and can trap) for every row that
+    // reaches it, exactly as the join would — even if no value column is
+    // ever referenced. Later references re-probe per block (pure, cached),
+    // same ponytail trade as column re-loads.
+    for (j, spec) in joins.iter().enumerate() {
+        let mut live = Vec::new();
+        let (valid_hit, _) = fb.emit_probe(j as u32, &mut live)?;
+        if spec.kind == JoinKind::Inner {
+            let (keep, _) = fb.create_block(&[]);
+            let (miss, _) = fb.create_block(&[]);
+            fb.term(Term::Brif {
+                cond: valid_hit,
+                then_to: BlockId(keep as u32),
+                then_args: vec![],
+                else_to: BlockId(miss as u32),
+                else_args: vec![],
+            });
+            fb.switch(miss);
+            fb.term(Term::Skip);
+            fb.switch(keep);
+        }
+    }
 
     if let Some(pred) = filter_pred {
         let mut live = Vec::new();
@@ -85,7 +116,11 @@ pub fn lower(
                 // valid — store with a constant true flag.
                 None => fb.const_i1(true),
             };
-            fb.inst(Inst::StoreOpt { col, flag, val: lane.val });
+            fb.inst(Inst::StoreOpt {
+                col,
+                flag,
+                val: lane.val,
+            });
         } else {
             debug_assert!(lane.flag.is_none(), "non-nullable column with a flag lane");
             fb.inst(Inst::Store { col, val: lane.val });
@@ -93,7 +128,21 @@ pub fn lower(
     }
     fb.term(Term::Emit);
 
-    fb.finish(name, in_cols, out_cols)
+    // Map static @j belongs to join j: keyed by the (already promoted) key
+    // expression types, valued by the join's value columns.
+    let statics = joins
+        .iter()
+        .map(|spec| StaticTy::Map {
+            keys: spec.keys.iter().map(|k| k.ty).collect(),
+            values: spec
+                .val_cols
+                .iter()
+                .map(|&c| catalog[spec.table].cols[c as usize].ty.ty)
+                .collect(),
+        })
+        .collect();
+
+    fb.finish(name, statics, in_cols, out_cols)
 }
 
 /// A value in the null-lane representation: payload + optional validity.
@@ -114,6 +163,21 @@ struct PB {
     insts: Vec<Inst>,
     term: Option<Term>,
     cache: HashMap<u32, Lane>,
+    /// Probes already emitted in this block: join index -> (valid hit —
+    /// map hit AND every key flag — and the value-column registers).
+    probes: HashMap<u32, (Value, Vec<Value>)>,
+}
+
+impl PB {
+    fn new(params: Vec<(Value, Ty)>) -> PB {
+        PB {
+            params,
+            insts: vec![],
+            term: None,
+            cache: HashMap::new(),
+            probes: HashMap::new(),
+        }
+    }
 }
 
 /// Env-threading function builder over the strict block-param SSA IR.
@@ -122,20 +186,17 @@ struct FB<'a> {
     blocks: Vec<PB>,
     cur: usize,
     in_cols: &'a [Col],
+    joins: &'a [JoinSpec],
 }
 
 impl<'a> FB<'a> {
-    fn new(in_cols: &'a [Col]) -> FB<'a> {
+    fn new(in_cols: &'a [Col], joins: &'a [JoinSpec]) -> FB<'a> {
         FB {
             b: Builder::new(),
-            blocks: vec![PB {
-                params: vec![],
-                insts: vec![],
-                term: None,
-                cache: HashMap::new(),
-            }],
+            blocks: vec![PB::new(vec![])],
             cur: 0,
             in_cols,
+            joins,
         }
     }
 
@@ -160,25 +221,30 @@ impl<'a> FB<'a> {
     fn create_block(&mut self, param_tys: &[Ty]) -> (usize, Vec<Value>) {
         let params: Vec<(Value, Ty)> = param_tys.iter().map(|t| (self.b.fresh(), *t)).collect();
         let vals = params.iter().map(|(v, _)| *v).collect();
-        self.blocks.push(PB { params, insts: vec![], term: None, cache: HashMap::new() });
+        self.blocks.push(PB::new(params));
         (self.blocks.len() - 1, vals)
     }
 
     fn finish(
         self,
         name: &str,
+        statics: Vec<StaticTy>,
         in_cols: &[Col],
         out_cols: Vec<Col>,
     ) -> Result<Program, PrepareError> {
         let mut blocks = Vec::with_capacity(self.blocks.len());
         for (i, pb) in self.blocks.into_iter().enumerate() {
-            let term = pb.term.ok_or_else(|| {
-                PrepareError::Internal(format!("block b{i} left unterminated"))
-            })?;
-            blocks.push(Block { params: pb.params, insts: pb.insts, term });
+            let term = pb
+                .term
+                .ok_or_else(|| PrepareError::Internal(format!("block b{i} left unterminated")))?;
+            blocks.push(Block {
+                params: pb.params,
+                insts: pb.insts,
+                term,
+            });
         }
         Ok(Program {
-            statics: vec![],
+            statics,
             name: name.to_string(),
             in_cols: in_cols.to_vec(),
             out_cols,
@@ -280,27 +346,59 @@ impl<'a> FB<'a> {
                 let lane = if col.ty.nullable {
                     let flag = self.fresh();
                     let val = self.fresh();
-                    self.inst(Inst::LoadOpt { flag, dst: val, col: *idx });
-                    Lane { flag: Some(flag), val }
+                    self.inst(Inst::LoadOpt {
+                        flag,
+                        dst: val,
+                        col: *idx,
+                    });
+                    Lane {
+                        flag: Some(flag),
+                        val,
+                    }
                 } else {
                     let val = self.fresh();
-                    self.inst(Inst::Load { dst: val, col: *idx });
+                    self.inst(Inst::Load {
+                        dst: val,
+                        col: *idx,
+                    });
                     Lane { flag: None, val }
                 };
                 self.blocks[self.cur].cache.insert(*idx, lane);
                 Ok(lane)
             }
-            SKind::Lit(lit) => Ok(Lane { flag: None, val: self.const_lit(lit.clone()) }),
+            SKind::StaticCol { join, col } => {
+                let (valid_hit, dsts) = self.emit_probe(*join, live)?;
+                let flag = match self.joins[*join as usize].kind {
+                    // INNER: a miss already skipped the row before any
+                    // expression could look — the lane is provably valid.
+                    JoinKind::Inner => None,
+                    JoinKind::Left => Some(valid_hit),
+                };
+                Ok(Lane {
+                    flag,
+                    val: dsts[*col as usize],
+                })
+            }
+            SKind::Lit(lit) => Ok(Lane {
+                flag: None,
+                val: self.const_lit(lit.clone()),
+            }),
             SKind::NullOf => {
                 let flag = self.const_i1(false);
                 let val = self.default_of(e.ty);
-                Ok(Lane { flag: Some(flag), val })
+                Ok(Lane {
+                    flag: Some(flag),
+                    val,
+                })
             }
             SKind::IntToFloat(inner) => {
                 let l = self.emit(inner, live)?;
                 let dst = self.fresh();
                 self.inst(Inst::Itof { dst, a: l.val });
-                Ok(Lane { flag: l.flag, val: dst })
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             SKind::Arith { op, a, b } => {
                 let la = self.emit(a, live)?;
@@ -324,7 +422,10 @@ impl<'a> FB<'a> {
                     }
                 };
                 let val = self.bin(ir_op, la.val, lb.val);
-                Ok(Lane { flag: self.combine_flags(la.flag, lb.flag), val })
+                Ok(Lane {
+                    flag: self.combine_flags(la.flag, lb.flag),
+                    val,
+                })
             }
             SKind::Cmp { pred, a, b } => {
                 let la = self.emit(a, live)?;
@@ -332,8 +433,17 @@ impl<'a> FB<'a> {
                 let lb = self.emit(b, live)?;
                 let (la, _) = live.pop().expect("pushed above");
                 let dst = self.fresh();
-                self.inst(Inst::Cmp { pred: *pred, ty: a.ty, dst, a: la.val, b: lb.val });
-                Ok(Lane { flag: self.combine_flags(la.flag, lb.flag), val: dst })
+                self.inst(Inst::Cmp {
+                    pred: *pred,
+                    ty: a.ty,
+                    dst,
+                    a: la.val,
+                    b: lb.val,
+                });
+                Ok(Lane {
+                    flag: self.combine_flags(la.flag, lb.flag),
+                    val: dst,
+                })
             }
             SKind::Not(inner) => {
                 let l = self.emit(inner, live)?;
@@ -359,6 +469,51 @@ impl<'a> FB<'a> {
             SKind::Case { arms, default } => self.case(e, arms, default.as_deref(), live),
             SKind::Cast { inner, trying } => self.cast(e, inner, *trying, live),
         }
+    }
+
+    /// Emit (or reuse) join `j`'s probe in the current block. The probe is
+    /// pure — same keys, same row, same result — so blocks re-probe rather
+    /// than thread probe lanes through branch args. Returns the valid-hit
+    /// flag (map hit AND every nullable key's validity: a NULL key never
+    /// matches, and a garbage payload under a false flag must not spuriously
+    /// hit) plus the value-column registers.
+    fn emit_probe(&mut self, j: u32, live: &mut Live) -> Result<(Value, Vec<Value>), PrepareError> {
+        if let Some((valid_hit, dsts)) = self.blocks[self.cur].probes.get(&j) {
+            return Ok((*valid_hit, dsts.clone()));
+        }
+        let spec = &self.joins[j as usize];
+        let nkeys = spec.keys.len();
+        for key in &spec.keys {
+            let lane = self.emit(key, live)?;
+            live.push((lane, key.ty));
+        }
+        let mut keys_valid: Option<Value> = None;
+        let mut key_vals = Vec::with_capacity(nkeys);
+        for (lane, _) in &live[live.len() - nkeys..] {
+            key_vals.push(lane.val);
+            if let Some(f) = lane.flag {
+                keys_valid = self.combine_flags(keys_valid, Some(f));
+            }
+        }
+        live.truncate(live.len() - nkeys);
+
+        let spec = &self.joins[j as usize];
+        let hit = self.fresh();
+        let dsts: Vec<Value> = spec.val_cols.iter().map(|_| self.b.fresh()).collect();
+        self.inst(Inst::Probe {
+            static_id: j,
+            hit,
+            dsts: dsts.clone(),
+            keys: key_vals,
+        });
+        let valid_hit = match keys_valid {
+            None => hit,
+            Some(f) => self.bin(BinOp::And, f, hit),
+        };
+        self.blocks[self.cur]
+            .probes
+            .insert(j, (valid_hit, dsts.clone()));
+        Ok((valid_hit, dsts))
     }
 
     /// Branchless Kleene AND/OR from flag algebra. With the lane contract
@@ -425,19 +580,21 @@ impl<'a> FB<'a> {
         let live_width = Self::live_types(live).len();
         let (join, join_params) = self.create_block(&join_tys);
 
-        let finish_branch =
-            |fb: &mut FB<'a>, lane: Lane, live: &Live| -> Term {
-                let mut args = Self::live_args(live);
-                if res_nullable {
-                    let flag = match lane.flag {
-                        Some(f) => f,
-                        None => fb.const_i1(true),
-                    };
-                    args.push(flag);
-                }
-                args.push(lane.val);
-                Term::Jump { to: BlockId(join as u32), args }
-            };
+        let finish_branch = |fb: &mut FB<'a>, lane: Lane, live: &Live| -> Term {
+            let mut args = Self::live_args(live);
+            if res_nullable {
+                let flag = match lane.flag {
+                    Some(f) => f,
+                    None => fb.const_i1(true),
+                };
+                args.push(flag);
+            }
+            args.push(lane.val);
+            Term::Jump {
+                to: BlockId(join as u32),
+                args,
+            }
+        };
 
         for (cond, result) in arms {
             let cl = self.emit(cond, live)?;
@@ -469,7 +626,10 @@ impl<'a> FB<'a> {
             None => {
                 let flag = self.const_i1(false);
                 let val = self.default_of(res_ty);
-                Lane { flag: Some(flag), val }
+                Lane {
+                    flag: Some(flag),
+                    val,
+                }
             }
         };
         let jump = finish_branch(self, dl, live);
@@ -479,9 +639,15 @@ impl<'a> FB<'a> {
         Self::rebind_live(live, &join_params[..live_width]);
         let tail = &join_params[live_width..];
         Ok(if res_nullable {
-            Lane { flag: Some(tail[0]), val: tail[1] }
+            Lane {
+                flag: Some(tail[0]),
+                val: tail[1],
+            }
         } else {
-            Lane { flag: None, val: tail[0] }
+            Lane {
+                flag: None,
+                val: tail[0],
+            }
         })
     }
 
@@ -504,59 +670,117 @@ impl<'a> FB<'a> {
             (Ty::I64, Ty::F64) => {
                 let dst = self.fresh();
                 self.inst(Inst::Itof { dst, a: l.val });
-                Some(Lane { flag: l.flag, val: dst })
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::F64, Ty::I64) if !trying => {
                 // ftoi.round matches DuckDB CAST rounding; its own range trap
                 // stands in for DuckDB's conversion error. NULL payloads are
                 // type-default 0.0 — never trap.
                 let dst = self.fresh();
-                self.inst(Inst::Ftoi { mode: super::ir::RoundMode::Round, dst, a: l.val });
-                Some(Lane { flag: l.flag, val: dst })
+                self.inst(Inst::Ftoi {
+                    mode: super::ir::RoundMode::Round,
+                    dst,
+                    a: l.val,
+                });
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::I64, Ty::Str) => {
                 let dst = self.fresh();
                 self.inst(Inst::Itos { dst, a: l.val });
-                Some(Lane { flag: l.flag, val: dst })
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::F64, Ty::Str) => {
                 let dst = self.fresh();
                 self.inst(Inst::Ftos { dst, a: l.val });
-                Some(Lane { flag: l.flag, val: dst })
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::I1, Ty::Str) => {
                 let t = self.const_lit(Lit::Str("true".to_string()));
                 let f = self.const_lit(Lit::Str("false".to_string()));
                 let dst = self.fresh();
-                self.inst(Inst::Select { dst, cond: l.val, a: t, b: f });
-                Some(Lane { flag: l.flag, val: dst })
+                self.inst(Inst::Select {
+                    dst,
+                    cond: l.val,
+                    a: t,
+                    b: f,
+                });
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::I1, Ty::I64) => {
                 let one = self.const_lit(Lit::I64(1));
                 let zero = self.const_lit(Lit::I64(0));
                 let dst = self.fresh();
-                self.inst(Inst::Select { dst, cond: l.val, a: one, b: zero });
-                Some(Lane { flag: l.flag, val: dst })
+                self.inst(Inst::Select {
+                    dst,
+                    cond: l.val,
+                    a: one,
+                    b: zero,
+                });
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::I1, Ty::F64) => {
                 let one = self.const_lit(Lit::F64(1.0));
                 let zero = self.const_lit(Lit::F64(0.0));
                 let dst = self.fresh();
-                self.inst(Inst::Select { dst, cond: l.val, a: one, b: zero });
-                Some(Lane { flag: l.flag, val: dst })
+                self.inst(Inst::Select {
+                    dst,
+                    cond: l.val,
+                    a: one,
+                    b: zero,
+                });
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::I64, Ty::I1) => {
                 let zero = self.const_lit(Lit::I64(0));
                 let dst = self.fresh();
-                self.inst(Inst::Cmp { pred: CmpPred::Ne, ty: Ty::I64, dst, a: l.val, b: zero });
-                Some(Lane { flag: l.flag, val: dst })
+                self.inst(Inst::Cmp {
+                    pred: CmpPred::Ne,
+                    ty: Ty::I64,
+                    dst,
+                    a: l.val,
+                    b: zero,
+                });
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             (Ty::F64, Ty::I1) => {
                 // DuckDB: nonzero -> true (measured 2.5::BOOLEAN = true).
                 let zero = self.const_lit(Lit::F64(0.0));
                 let dst = self.fresh();
-                self.inst(Inst::Cmp { pred: CmpPred::Ne, ty: Ty::F64, dst, a: l.val, b: zero });
-                Some(Lane { flag: l.flag, val: dst })
+                self.inst(Inst::Cmp {
+                    pred: CmpPred::Ne,
+                    ty: Ty::F64,
+                    dst,
+                    a: l.val,
+                    b: zero,
+                });
+                Some(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
             }
             _ => None,
         };
@@ -565,7 +789,10 @@ impl<'a> FB<'a> {
             // is `true`, so surface a flag even though nothing can fail.
             if trying && lane.flag.is_none() {
                 let t = self.const_i1(true);
-                return Ok(Lane { flag: Some(t), val: lane.val });
+                return Ok(Lane {
+                    flag: Some(t),
+                    val: lane.val,
+                });
             }
             return Ok(lane);
         }
@@ -576,16 +803,27 @@ impl<'a> FB<'a> {
                 let ok = self.fresh();
                 let parsed = self.fresh();
                 if to == Ty::I64 {
-                    self.inst(Inst::StoiOpt { flag: ok, dst: parsed, a: l.val });
+                    self.inst(Inst::StoiOpt {
+                        flag: ok,
+                        dst: parsed,
+                        a: l.val,
+                    });
                 } else {
-                    self.inst(Inst::StofOpt { flag: ok, dst: parsed, a: l.val });
+                    self.inst(Inst::StofOpt {
+                        flag: ok,
+                        dst: parsed,
+                        a: l.val,
+                    });
                 }
                 if trying {
                     let flag = match l.flag {
                         Some(f) => self.bin(BinOp::And, f, ok),
                         None => ok,
                     };
-                    return Ok(Lane { flag: Some(flag), val: parsed });
+                    return Ok(Lane {
+                        flag: Some(flag),
+                        val: parsed,
+                    });
                 }
                 // CAST: trap iff the input is a real (non-NULL) string that
                 // does not parse.
@@ -626,9 +864,15 @@ impl<'a> FB<'a> {
                 Self::rebind_live(live, &cont_p[..live_width]);
                 let tail = &cont_p[live_width..];
                 Ok(if flag_in_shape {
-                    Lane { flag: Some(tail[0]), val: tail[1] }
+                    Lane {
+                        flag: Some(tail[0]),
+                        val: tail[1],
+                    }
                 } else {
-                    Lane { flag: None, val: tail[0] }
+                    Lane {
+                        flag: None,
+                        val: tail[0],
+                    }
                 })
             }
             // TRY_CAST(f64 -> i64): guard the range so ftoi cannot trap; the
@@ -641,9 +885,21 @@ impl<'a> FB<'a> {
                 let min = self.const_lit(Lit::F64(-9223372036854775808.0));
                 let max = self.const_lit(Lit::F64(9223372036854775808.0));
                 let ge = self.fresh();
-                self.inst(Inst::Cmp { pred: CmpPred::Ge, ty: Ty::F64, dst: ge, a: l.val, b: min });
+                self.inst(Inst::Cmp {
+                    pred: CmpPred::Ge,
+                    ty: Ty::F64,
+                    dst: ge,
+                    a: l.val,
+                    b: min,
+                });
                 let lt = self.fresh();
-                self.inst(Inst::Cmp { pred: CmpPred::Lt, ty: Ty::F64, dst: lt, a: l.val, b: max });
+                self.inst(Inst::Cmp {
+                    pred: CmpPred::Lt,
+                    ty: Ty::F64,
+                    dst: lt,
+                    a: l.val,
+                    b: max,
+                });
                 let in_range = self.bin(BinOp::And, ge, lt);
                 let ok = match l.flag {
                     Some(f) => self.bin(BinOp::And, f, in_range),
@@ -672,12 +928,19 @@ impl<'a> FB<'a> {
                 Self::rebind_live(live, &conv_p);
                 let payload = live.last().expect("pushed above").0.val;
                 let r = self.fresh();
-                self.inst(Inst::Ftoi { mode: super::ir::RoundMode::Round, dst: r, a: payload });
+                self.inst(Inst::Ftoi {
+                    mode: super::ir::RoundMode::Round,
+                    dst: r,
+                    a: payload,
+                });
                 let t = self.const_i1(true);
                 let mut args = Self::live_args(live);
                 args.push(t);
                 args.push(r);
-                self.term(Term::Jump { to: BlockId(join as u32), args });
+                self.term(Term::Jump {
+                    to: BlockId(join as u32),
+                    args,
+                });
 
                 self.switch(null_b);
                 Self::rebind_live(live, &null_p);
@@ -686,13 +949,19 @@ impl<'a> FB<'a> {
                 let mut args = Self::live_args(live);
                 args.push(f);
                 args.push(d);
-                self.term(Term::Jump { to: BlockId(join as u32), args });
+                self.term(Term::Jump {
+                    to: BlockId(join as u32),
+                    args,
+                });
 
                 self.switch(join);
                 Self::rebind_live(live, &join_p[..live_width]);
                 live.pop();
                 let tail = &join_p[live_width..];
-                Ok(Lane { flag: Some(tail[0]), val: tail[1] })
+                Ok(Lane {
+                    flag: Some(tail[0]),
+                    val: tail[1],
+                })
             }
             (from, to) => Err(PrepareError::Internal(format!(
                 "cast {} -> {} escaped the frontend",

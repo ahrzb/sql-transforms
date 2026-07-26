@@ -21,14 +21,15 @@
 //! all collapse to i64.
 
 use sqlparser::ast::{
-    BinaryOperator, CastKind, Expr as SqlExpr, SelectItem, SetExpr, Statement, TableFactor,
-    UnaryOperator, Value as SqlValue,
+    BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator, SelectItem, SetExpr,
+    Statement, TableFactor, UnaryOperator, Value as SqlValue,
 };
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 
+use super::fold::fold;
 use super::ir::{CmpPred, Col, Lit, Ty};
-use super::plan::{ArithOp, Rel, SExpr, SKind};
+use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrepareError {
@@ -56,9 +57,15 @@ fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
-/// SQL text + the dynamic table's schema -> bound relational tree plus the
-/// derived output schema.
-pub fn frontend(sql: &str, in_cols: &[Col]) -> Result<(Rel, Vec<Col>), PrepareError> {
+/// SQL text + the dynamic table's name/schema + the static-table catalog ->
+/// bound relational tree, the equi-joins in FROM order, and the derived
+/// output schema.
+pub fn frontend(
+    sql: &str,
+    this_name: &str,
+    in_cols: &[Col],
+    statics: &[StaticTable],
+) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>), PrepareError> {
     let statements = Parser::parse_sql(&DuckDbDialect {}, sql)
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     let [statement] = statements.as_slice() else {
@@ -95,33 +102,35 @@ pub fn frontend(sql: &str, in_cols: &[Col]) -> Result<(Rel, Vec<Col>), PrepareEr
         return Err(unsup("GROUP BY / HAVING / aggregation"));
     }
 
-    check_from(select)?;
+    let (binder, joins) = bind_from(select, this_name, in_cols, statics)?;
 
-    let binder = Binder { in_cols };
     let mut rel = Rel::Scan;
     if let Some(pred) = &select.selection {
-        let pred = binder.expr(pred)?;
+        let pred = fold(binder.expr(pred)?);
         if pred.ty != Ty::I1 {
             return Err(PrepareError::Bind(format!(
                 "WHERE predicate must be BOOLEAN, got {}",
                 pred.ty.name()
             )));
         }
-        rel = Rel::Filter { input: Box::new(rel), pred };
+        rel = Rel::Filter {
+            input: Box::new(rel),
+            pred,
+        };
     }
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
     for item in &select.projection {
         let (name, e) = match item {
-            SelectItem::UnnamedExpr(e) => (default_name(e), binder.expr(e)?),
-            SelectItem::ExprWithAlias { expr, alias } => (alias.value.clone(), binder.expr(expr)?),
+            SelectItem::UnnamedExpr(e) => (default_name(e), fold(binder.expr(e)?)),
+            SelectItem::ExprWithAlias { expr, alias } => {
+                (alias.value.clone(), fold(binder.expr(expr)?))
+            }
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => {
                 return Err(unsup("SELECT * (star expansion)"))
             }
-            SelectItem::ExprWithAliases { .. } => {
-                return Err(unsup("multi-alias SELECT item"))
-            }
+            SelectItem::ExprWithAliases { .. } => return Err(unsup("multi-alias SELECT item")),
         };
         if out_cols.iter().any(|c: &Col| c.name == name) {
             // DuckDB allows duplicate output names; our IR requires unique
@@ -130,7 +139,10 @@ pub fn frontend(sql: &str, in_cols: &[Col]) -> Result<(Rel, Vec<Col>), PrepareEr
         }
         out_cols.push(Col {
             name,
-            ty: super::ir::ColTy { ty: e.ty, nullable: e.nullable },
+            ty: super::ir::ColTy {
+                ty: e.ty,
+                nullable: e.nullable,
+            },
         });
         exprs.push(e);
     }
@@ -143,35 +155,264 @@ pub fn frontend(sql: &str, in_cols: &[Col]) -> Result<(Rel, Vec<Col>), PrepareEr
         .map(|c| c.name.clone())
         .zip(exprs)
         .collect::<Vec<_>>();
-    Ok((Rel::Project { input: Box::new(rel), exprs: named }, out_cols))
+    Ok((
+        Rel::Project {
+            input: Box::new(rel),
+            exprs: named,
+        },
+        joins,
+        out_cols,
+    ))
 }
 
-/// v0: exactly `FROM __THIS__` (case-insensitive), no alias, no joins.
-fn check_from(select: &sqlparser::ast::Select) -> Result<(), PrepareError> {
+/// Parse and bind the FROM clause: the dynamic table, then zero or more
+/// equi-joins to static tables. Returns the fully-scoped binder (every join
+/// visible) and the join specs in FROM order.
+fn bind_from<'a>(
+    select: &sqlparser::ast::Select,
+    this_name: &str,
+    in_cols: &'a [Col],
+    statics: &'a [StaticTable],
+) -> Result<(Binder<'a>, Vec<JoinSpec>), PrepareError> {
     let [table] = select.from.as_slice() else {
         return Err(match select.from.len() {
             0 => unsup("FROM-less SELECT"),
-            _ => unsup("multiple FROM relations"),
+            _ => unsup("multiple FROM relations (comma join)"),
         });
     };
-    if !table.joins.is_empty() {
-        return Err(unsup("JOIN (arrives with binding-time analysis)"));
-    }
-    match &table.relation {
+    let dyn_name = match &table.relation {
         TableFactor::Table { name, alias, .. } => {
             if alias.is_some() {
-                return Err(unsup("FROM alias"));
+                return Err(unsup("alias on the dynamic table"));
             }
             let n = name.to_string();
-            if !n.eq_ignore_ascii_case("__THIS__") {
+            if !n.eq_ignore_ascii_case(this_name) {
                 return Err(unsup(format!(
-                    "table '{n}' (only the dynamic table __THIS__ until static tables land)"
+                    "table '{n}' as the driving relation (must be the dynamic table '{this_name}')"
                 )));
             }
-            Ok(())
+            n
         }
-        other => Err(unsup(format!("FROM {other}"))),
+        other => return Err(unsup(format!("FROM {other}"))),
+    };
+
+    let mut binder = Binder {
+        this_name: dyn_name,
+        in_cols,
+        joins: Vec::new(),
+    };
+    let mut specs: Vec<JoinSpec> = Vec::new();
+
+    for join in &table.joins {
+        let (kind, constraint) = match &join.join_operator {
+            JoinOperator::Join(c) | JoinOperator::Inner(c) => (JoinKind::Inner, c),
+            JoinOperator::Left(c) | JoinOperator::LeftOuter(c) => (JoinKind::Left, c),
+            other => return Err(unsup(format!("join type {other:?}"))),
+        };
+        let on = match constraint {
+            JoinConstraint::On(e) => e,
+            JoinConstraint::Using(_) => return Err(unsup("JOIN USING")),
+            JoinConstraint::Natural => return Err(unsup("NATURAL JOIN")),
+            JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
+        };
+        let (raw_name, scope_name) = match &join.relation {
+            TableFactor::Table { name, alias, .. } => {
+                let n = name.to_string();
+                let s = alias
+                    .as_ref()
+                    .map(|a| a.name.value.clone())
+                    .unwrap_or_else(|| n.clone());
+                (n, s)
+            }
+            other => return Err(unsup(format!("JOIN {other}"))),
+        };
+        if raw_name.eq_ignore_ascii_case(this_name) {
+            return Err(unsup("joining the dynamic table to itself"));
+        }
+        let mut table_idx = None;
+        for (i, st) in statics.iter().enumerate() {
+            if st.name.eq_ignore_ascii_case(&raw_name) {
+                if table_idx.is_some() {
+                    return Err(PrepareError::Bind(format!(
+                        "ambiguous static table '{raw_name}'"
+                    )));
+                }
+                table_idx = Some(i);
+            }
+        }
+        let Some(table_idx) = table_idx else {
+            return Err(PrepareError::Bind(format!(
+                "table '{raw_name}' was not provided as a static table"
+            )));
+        };
+        if binder.this_name.eq_ignore_ascii_case(&scope_name)
+            || binder
+                .joins
+                .iter()
+                .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
+        {
+            return Err(PrepareError::Bind(format!(
+                "duplicate table name '{scope_name}' in FROM"
+            )));
+        }
+
+        let st = &statics[table_idx];
+        let (keys, key_cols) = bind_on(&binder, st, &scope_name, on)?;
+        let val_cols: Vec<u32> = (0..st.cols.len() as u32)
+            .filter(|c| !key_cols.contains(c))
+            .collect();
+        if val_cols.is_empty() {
+            return Err(unsup(format!(
+                "join to '{raw_name}' where every column is a key (no value columns)"
+            )));
+        }
+
+        binder.joins.push(ScopeJoin {
+            name: scope_name,
+            table: st,
+            kind,
+            key_cols: key_cols.clone(),
+            val_cols: val_cols.clone(),
+        });
+        specs.push(JoinSpec {
+            table: table_idx,
+            kind,
+            keys,
+            key_cols,
+            val_cols,
+        });
     }
+    Ok((binder, specs))
+}
+
+/// Bind a JOIN ... ON condition: a conjunction of `<expr> = <static col>`
+/// equalities. Returns the dynamic-side key expressions (promoted to the
+/// map's key types) and the static key columns they match, aligned.
+fn bind_on(
+    binder: &Binder<'_>,
+    st: &StaticTable,
+    scope_name: &str,
+    on: &SqlExpr,
+) -> Result<(Vec<SExpr>, Vec<u32>), PrepareError> {
+    let mut conjuncts = Vec::new();
+    collect_conjuncts(on, &mut conjuncts);
+    let mut keys = Vec::new();
+    let mut key_cols = Vec::new();
+    for c in conjuncts {
+        let SqlExpr::BinaryOp {
+            left,
+            op: BinaryOperator::Eq,
+            right,
+        } = c
+        else {
+            return Err(unsup(format!(
+                "JOIN ON condition '{c}' (only AND-ed equalities are supported)"
+            )));
+        };
+        let l = static_col_of(left, st, scope_name)?;
+        let r = static_col_of(right, st, scope_name)?;
+        let (col, dyn_side, static_side) = match (l, r) {
+            (Some(c), None) => (c, right.as_ref(), left.as_ref()),
+            (None, Some(c)) => (c, left.as_ref(), right.as_ref()),
+            (Some(_), Some(_)) => {
+                return Err(unsup(format!(
+                    "JOIN ON '{c}': both sides are columns of '{scope_name}'"
+                )))
+            }
+            (None, None) => {
+                return Err(unsup(format!(
+                    "JOIN ON '{c}': neither side is a column of '{scope_name}'"
+                )))
+            }
+        };
+        // A bare identifier on the static side that also binds in the outer
+        // scope is ambiguous (DuckDB rejects it too).
+        if let SqlExpr::Identifier(id) = static_side {
+            if binder.column(&id.value).is_ok() {
+                return Err(PrepareError::Bind(format!(
+                    "ambiguous column '{}' in JOIN ON (qualify it)",
+                    id.value
+                )));
+            }
+        }
+        let key = fold(binder.expr(dyn_side)?);
+        let col_ty = st.cols[col as usize].ty.ty;
+        let key = match (key.ty, col_ty) {
+            (a, b) if a == b => key,
+            (Ty::I64, Ty::F64) => promote_f64(key),
+            // Static-side ints promote at materialization: the map key type
+            // (the key expression's type) becomes F64 and the build side is
+            // converted while the probe table is built.
+            (Ty::F64, Ty::I64) => key,
+            (a, b) => {
+                return Err(PrepareError::Bind(format!(
+                    "cannot join {} with {} (ON '{}')",
+                    a.name(),
+                    b.name(),
+                    st.cols[col as usize].name
+                )))
+            }
+        };
+        keys.push(key);
+        key_cols.push(col);
+    }
+    Ok((keys, key_cols))
+}
+
+fn collect_conjuncts<'e>(e: &'e SqlExpr, out: &mut Vec<&'e SqlExpr>) {
+    match e {
+        SqlExpr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => {
+            collect_conjuncts(left, out);
+            collect_conjuncts(right, out);
+        }
+        SqlExpr::Nested(inner) => collect_conjuncts(inner, out),
+        other => out.push(other),
+    }
+}
+
+/// Does `e` name a column of the static table being joined? Qualified form
+/// matches on the join's scope name; a bare identifier matches if the table
+/// has that column.
+fn static_col_of(
+    e: &SqlExpr,
+    st: &StaticTable,
+    scope_name: &str,
+) -> Result<Option<u32>, PrepareError> {
+    let name = match e {
+        SqlExpr::Identifier(id) => &id.value,
+        SqlExpr::CompoundIdentifier(parts) => match parts.as_slice() {
+            [t, c] if t.value.eq_ignore_ascii_case(scope_name) => &c.value,
+            _ => return Ok(None),
+        },
+        SqlExpr::Nested(inner) => return static_col_of(inner, st, scope_name),
+        _ => return Ok(None),
+    };
+    let mut hit = None;
+    for (i, c) in st.cols.iter().enumerate() {
+        if c.name.eq_ignore_ascii_case(name) {
+            if hit.is_some() {
+                return Err(PrepareError::Bind(format!(
+                    "ambiguous column '{name}' in static table '{}'",
+                    st.name
+                )));
+            }
+            hit = Some(i as u32);
+        }
+    }
+    // Qualified misses are errors; bare misses just mean "not the static
+    // side" — the caller will try binding it dynamically.
+    if hit.is_none() {
+        if let SqlExpr::CompoundIdentifier(_) = e {
+            return Err(PrepareError::Bind(format!(
+                "column '{name}' does not exist in '{scope_name}'"
+            )));
+        }
+    }
+    Ok(hit)
 }
 
 /// DuckDB names an unaliased projection after the identifier it selects
@@ -186,8 +427,21 @@ fn default_name(e: &SqlExpr) -> String {
     }
 }
 
+/// One joined static table in scope: how it is named, which of its columns
+/// are probe values (bindable) vs keys (ON-clause only).
+struct ScopeJoin<'a> {
+    name: String,
+    table: &'a StaticTable,
+    kind: JoinKind,
+    key_cols: Vec<u32>,
+    val_cols: Vec<u32>,
+}
+
 struct Binder<'a> {
+    /// The dynamic table's name as spelled in FROM.
+    this_name: String,
     in_cols: &'a [Col],
+    joins: Vec<ScopeJoin<'a>>,
 }
 
 impl Binder<'_> {
@@ -212,22 +466,32 @@ impl Binder<'_> {
         match e {
             SqlExpr::Identifier(ident) => self.column(&ident.value),
             SqlExpr::CompoundIdentifier(parts) => match parts.as_slice() {
-                [table, col] if table.value.eq_ignore_ascii_case("__THIS__") => {
-                    self.column(&col.value)
-                }
-                [table, _] => Err(PrepareError::Bind(format!("unknown table '{}'", table.value))),
+                [table, col] => self.qualified(&table.value, &col.value),
                 _ => Err(unsup("nested field access")),
             },
             SqlExpr::Nested(inner) => self.expr(inner),
             SqlExpr::Value(v) => literal(&v.value),
             SqlExpr::BinaryOp { left, op, right } => self.binary(op, left, right),
-            SqlExpr::UnaryOp { op: UnaryOperator::Minus, expr } => {
+            SqlExpr::UnaryOp {
+                op: UnaryOperator::Minus,
+                expr,
+            } => {
                 // DuckDB `-x`: lower as 0 - x, reusing Sub's promotion.
-                let zero = SExpr { kind: SKind::Lit(Lit::I64(0)), ty: Ty::I64, nullable: false };
+                let zero = SExpr {
+                    kind: SKind::Lit(Lit::I64(0)),
+                    ty: Ty::I64,
+                    nullable: false,
+                };
                 self.arith(ArithOp::Sub, zero, self.expr(expr)?)
             }
-            SqlExpr::UnaryOp { op: UnaryOperator::Plus, expr } => self.expr(expr),
-            SqlExpr::UnaryOp { op: UnaryOperator::Not, expr } => {
+            SqlExpr::UnaryOp {
+                op: UnaryOperator::Plus,
+                expr,
+            } => self.expr(expr),
+            SqlExpr::UnaryOp {
+                op: UnaryOperator::Not,
+                expr,
+            } => {
                 let inner = self.expr(expr)?;
                 if inner.ty != Ty::I1 {
                     return Err(PrepareError::Bind(format!(
@@ -236,15 +500,27 @@ impl Binder<'_> {
                     )));
                 }
                 let nullable = inner.nullable;
-                Ok(SExpr { kind: SKind::Not(Box::new(inner)), ty: Ty::I1, nullable })
+                Ok(SExpr {
+                    kind: SKind::Not(Box::new(inner)),
+                    ty: Ty::I1,
+                    nullable,
+                })
             }
             SqlExpr::UnaryOp { op, .. } => Err(unsup(format!("unary operator {op:?}"))),
             SqlExpr::IsNull(inner) => self.is_null(inner, false),
             SqlExpr::IsNotNull(inner) => self.is_null(inner, true),
-            SqlExpr::Case { operand, conditions, else_result, .. } => {
-                self.case(operand.as_deref(), conditions, else_result.as_deref())
-            }
-            SqlExpr::Cast { kind, expr, data_type, .. } => {
+            SqlExpr::Case {
+                operand,
+                conditions,
+                else_result,
+                ..
+            } => self.case(operand.as_deref(), conditions, else_result.as_deref()),
+            SqlExpr::Cast {
+                kind,
+                expr,
+                data_type,
+                ..
+            } => {
                 let trying = match kind {
                     CastKind::Cast | CastKind::DoubleColon => false,
                     CastKind::TryCast | CastKind::SafeCast => true,
@@ -262,21 +538,118 @@ impl Binder<'_> {
         }
     }
 
-    /// Case-insensitive, spelling-preserving column bind (DuckDB semantics).
+    /// The lane of value column `pos` of join `j`: NULL-able exactly when
+    /// the join is LEFT (a miss makes it NULL); INNER misses never reach an
+    /// expression (the row was skipped).
+    fn static_lane(&self, j: usize, pos: usize) -> SExpr {
+        let sj = &self.joins[j];
+        let col = &sj.table.cols[sj.val_cols[pos] as usize];
+        SExpr {
+            kind: SKind::StaticCol {
+                join: j as u32,
+                col: pos as u32,
+            },
+            ty: col.ty.ty,
+            nullable: sj.kind == JoinKind::Left,
+        }
+    }
+
+    /// Case-insensitive, spelling-preserving bare-column bind over the whole
+    /// scope: the dynamic table plus every joined static table's value
+    /// columns (DuckDB semantics; ambiguity is an error).
     fn column(&self, name: &str) -> Result<SExpr, PrepareError> {
-        let mut hit = None;
+        let mut hits: Vec<SExpr> = Vec::new();
         for (i, c) in self.in_cols.iter().enumerate() {
             if c.name.eq_ignore_ascii_case(name) {
-                if hit.is_some() {
-                    return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
-                }
-                hit = Some((i, c));
+                hits.push(SExpr {
+                    kind: SKind::Col(i as u32),
+                    ty: c.ty.ty,
+                    nullable: c.ty.nullable,
+                });
             }
         }
-        let (i, c) = hit.ok_or_else(|| {
-            PrepareError::Bind(format!("column '{name}' does not exist in __THIS__"))
-        })?;
-        Ok(SExpr { kind: SKind::Col(i as u32), ty: c.ty.ty, nullable: c.ty.nullable })
+        let mut key_only = false;
+        for (j, sj) in self.joins.iter().enumerate() {
+            for pos in 0..sj.val_cols.len() {
+                if sj.table.cols[sj.val_cols[pos] as usize]
+                    .name
+                    .eq_ignore_ascii_case(name)
+                {
+                    hits.push(self.static_lane(j, pos));
+                }
+            }
+            key_only |= sj
+                .key_cols
+                .iter()
+                .any(|&ci| sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name));
+        }
+        match hits.len() {
+            1 => Ok(hits.pop().expect("len checked")),
+            0 if key_only => Err(unsup(format!(
+                "referencing join key column '{name}' outside its ON clause"
+            ))),
+            0 => Err(PrepareError::Bind(format!(
+                "column '{name}' does not exist in scope"
+            ))),
+            _ => Err(PrepareError::Bind(format!("ambiguous column '{name}'"))),
+        }
+    }
+
+    /// `table.col` bind: the dynamic table by its FROM spelling, a joined
+    /// static table by its alias (or name).
+    fn qualified(&self, table: &str, name: &str) -> Result<SExpr, PrepareError> {
+        if table.eq_ignore_ascii_case(&self.this_name) {
+            let mut hit = None;
+            for (i, c) in self.in_cols.iter().enumerate() {
+                if c.name.eq_ignore_ascii_case(name) {
+                    if hit.is_some() {
+                        return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
+                    }
+                    hit = Some((i, c));
+                }
+            }
+            let (i, c) = hit.ok_or_else(|| {
+                PrepareError::Bind(format!("column '{name}' does not exist in '{table}'"))
+            })?;
+            return Ok(SExpr {
+                kind: SKind::Col(i as u32),
+                ty: c.ty.ty,
+                nullable: c.ty.nullable,
+            });
+        }
+        for (j, sj) in self.joins.iter().enumerate() {
+            if !sj.name.eq_ignore_ascii_case(table) {
+                continue;
+            }
+            let mut hit = None;
+            for pos in 0..sj.val_cols.len() {
+                if sj.table.cols[sj.val_cols[pos] as usize]
+                    .name
+                    .eq_ignore_ascii_case(name)
+                {
+                    if hit.is_some() {
+                        return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
+                    }
+                    hit = Some(pos);
+                }
+            }
+            if let Some(pos) = hit {
+                return Ok(self.static_lane(j, pos));
+            }
+            if sj
+                .key_cols
+                .iter()
+                .any(|&ci| sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name))
+            {
+                return Err(unsup(format!(
+                    "referencing join key column '{table}.{name}' outside its ON clause"
+                )));
+            }
+            return Err(PrepareError::Bind(format!(
+                "column '{name}' does not exist in '{table}'"
+            )));
+        }
+        Err(PrepareError::Bind(format!("unknown table '{table}'")))
     }
 
     fn binary(
@@ -329,7 +702,11 @@ impl Binder<'_> {
                 } else {
                     SKind::Or { a, b }
                 };
-                Ok(SExpr { kind, ty: Ty::I1, nullable })
+                Ok(SExpr {
+                    kind,
+                    ty: Ty::I1,
+                    nullable,
+                })
             }
             BinaryOperator::StringConcat => Err(unsup("|| (arrives with the string ops)")),
             other => Err(unsup(format!("operator {other}"))),
@@ -344,7 +721,10 @@ impl Binder<'_> {
             None => null_of(Ty::I64),
         };
         Ok(SExpr {
-            kind: SKind::IsNull { negated, inner: Box::new(inner) },
+            kind: SKind::IsNull {
+                negated,
+                inner: Box::new(inner),
+            },
             ty: Ty::I1,
             nullable: false,
         })
@@ -433,7 +813,10 @@ impl Binder<'_> {
             || default.as_ref().is_some_and(|d| d.nullable);
         let arms = conds.into_iter().zip(results).collect();
         Ok(SExpr {
-            kind: SKind::Case { arms, default: default.map(Box::new) },
+            kind: SKind::Case {
+                arms,
+                default: default.map(Box::new),
+            },
             ty: unified,
             nullable,
         })
@@ -458,14 +841,25 @@ impl Binder<'_> {
             return Err(unsup("CAST VARCHAR -> BOOLEAN"));
         }
         let nullable = trying || inner.nullable;
-        Ok(SExpr { kind: SKind::Cast { inner: Box::new(inner), trying }, ty: to, nullable })
+        Ok(SExpr {
+            kind: SKind::Cast {
+                inner: Box::new(inner),
+                trying,
+            },
+            ty: to,
+            nullable,
+        })
     }
 
     fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
         let (a, b, ty) = numeric_promote(op, a, b)?;
         let nullable = a.nullable || b.nullable;
         Ok(SExpr {
-            kind: SKind::Arith { op, a: Box::new(a), b: Box::new(b) },
+            kind: SKind::Arith {
+                op,
+                a: Box::new(a),
+                b: Box::new(b),
+            },
             ty,
             nullable,
         })
@@ -489,7 +883,11 @@ impl Binder<'_> {
         }
         let nullable = a.nullable || b.nullable;
         Ok(SExpr {
-            kind: SKind::Cmp { pred, a: Box::new(a), b: Box::new(b) },
+            kind: SKind::Cmp {
+                pred,
+                a: Box::new(a),
+                b: Box::new(b),
+            },
             ty: Ty::I1,
             nullable,
         })
@@ -497,7 +895,11 @@ impl Binder<'_> {
 }
 
 fn null_of(ty: Ty) -> SExpr {
-    SExpr { kind: SKind::NullOf, ty, nullable: true }
+    SExpr {
+        kind: SKind::NullOf,
+        ty,
+        nullable: true,
+    }
 }
 
 /// The type a bare NULL adopts next to a typed operand.
@@ -555,7 +957,11 @@ fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
         SqlValue::Null => unreachable!("NULL handled by expr_or_null"),
         other => return Err(unsup(format!("literal {other}"))),
     };
-    Ok(SExpr { kind: SKind::Lit(lit), ty, nullable: false })
+    Ok(SExpr {
+        kind: SKind::Lit(lit),
+        ty,
+        nullable: false,
+    })
 }
 
 /// DuckDB numeric promotion for the v0 type lattice: `/` is always float
@@ -590,8 +996,16 @@ fn promote_f64(e: SExpr) -> SExpr {
     }
     // A typed NULL promotes by retyping — no conversion node needed.
     if matches!(e.kind, SKind::NullOf) {
-        return SExpr { kind: SKind::NullOf, ty: Ty::F64, nullable: true };
+        return SExpr {
+            kind: SKind::NullOf,
+            ty: Ty::F64,
+            nullable: true,
+        };
     }
     let nullable = e.nullable;
-    SExpr { kind: SKind::IntToFloat(Box::new(e)), ty: Ty::F64, nullable }
+    SExpr {
+        kind: SKind::IntToFloat(Box::new(e)),
+        ty: Ty::F64,
+        nullable,
+    }
 }

@@ -26,10 +26,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use super::super::ir::{
-    self, BinOp, CmpPred, Inst, Program, RoundMode, StaticTy, Term, Ty, Value,
-};
 use super::super::ir::verify::{verify, VerifyError};
+use super::super::ir::{self, BinOp, CmpPred, Inst, Program, RoundMode, StaticTy, Term, Ty, Value};
 use super::{
     Arena, Batch, ColData, KeyBits, OutCol, RegVal, RunState, ScalarVal, StaticData, StrRef, Trap,
 };
@@ -72,7 +70,10 @@ struct Ctx<'a> {
 }
 
 enum PreparedStatic {
-    Scalar { valid: bool, val: ScalarVal },
+    Scalar {
+        valid: bool,
+        val: ScalarVal,
+    },
     /// Sorted by key; probed by allocation-free binary search.
     Map {
         entries: Vec<(Vec<KeyBits>, Vec<ScalarVal>)>,
@@ -89,8 +90,17 @@ struct CBlock {
 /// sources and destinations are disjoint by SSA single-definition, so
 /// sequential copies are safe.
 enum CTerm {
-    Jump { to: usize, moves: Vec<(u32, u32)> },
-    Brif { cond: u32, then_to: usize, then_moves: Vec<(u32, u32)>, else_to: usize, else_moves: Vec<(u32, u32)> },
+    Jump {
+        to: usize,
+        moves: Vec<(u32, u32)>,
+    },
+    Brif {
+        cond: u32,
+        then_to: usize,
+        then_moves: Vec<(u32, u32)>,
+        else_to: usize,
+        else_moves: Vec<(u32, u32)>,
+    },
     Emit,
     Skip,
     Trap(String),
@@ -132,7 +142,10 @@ pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, Compil
         for inst in &b.insts {
             insts.push(compile_inst(p, inst, &slots));
         }
-        blocks.push(CBlock { insts, term: compile_term(p, &b.term, &slots) });
+        blocks.push(CBlock {
+            insts,
+            term: compile_term(p, &b.term, &slots),
+        });
     }
 
     Ok(InterpFn {
@@ -196,7 +209,13 @@ impl InterpFn {
                         do_moves(ctx.regs, moves);
                         bi = *to;
                     }
-                    CTerm::Brif { cond, then_to, then_moves, else_to, else_moves } => {
+                    CTerm::Brif {
+                        cond,
+                        then_to,
+                        then_moves,
+                        else_to,
+                        else_moves,
+                    } => {
                         if as_i1(ctx.regs[*cond as usize]) {
                             do_moves(ctx.regs, then_moves);
                             bi = *then_to;
@@ -350,6 +369,15 @@ fn prepare_statics(
                         )));
                     }
                 }
+                // Canonicalize f64 key bits BEFORE sorting, so the stored
+                // order agrees with the canonical bits cmp_key searches by.
+                for (k, _) in entries.iter_mut() {
+                    for kb in k.iter_mut() {
+                        if let KeyBits::F64(bits) = kb {
+                            *bits = super::canon_f64_bits(f64::from_bits(*bits));
+                        }
+                    }
+                }
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 if entries.windows(2).any(|w| w[0].0 == w[1].0) {
                     return Err(CompileError::Static(format!("@{i}: duplicate map key")));
@@ -438,10 +466,22 @@ fn compile_term(p: &Program, t: &Term, slots: &HashMap<u32, u32>) -> CTerm {
             let (to, moves) = mk_moves(*to, args);
             CTerm::Jump { to, moves }
         }
-        Term::Brif { cond, then_to, then_args, else_to, else_args } => {
+        Term::Brif {
+            cond,
+            then_to,
+            then_args,
+            else_to,
+            else_args,
+        } => {
             let (then_to, then_moves) = mk_moves(*then_to, then_args);
             let (else_to, else_moves) = mk_moves(*else_to, else_args);
-            CTerm::Brif { cond: sl(slots, *cond) as u32, then_to, then_moves, else_to, else_moves }
+            CTerm::Brif {
+                cond: sl(slots, *cond) as u32,
+                then_to,
+                then_moves,
+                else_to,
+                else_moves,
+            }
         }
         Term::Emit => CTerm::Emit,
         Term::Skip => CTerm::Skip,
@@ -463,7 +503,10 @@ impl std::fmt::Write for ArenaWriter<'_> {
 fn fmt_into_arena(arena: &mut Arena, args: std::fmt::Arguments<'_>) -> StrRef {
     let off = arena.0.len();
     let _ = ArenaWriter(&mut arena.0).write_fmt(args);
-    StrRef { off, len: arena.0.len() - off }
+    StrRef {
+        off,
+        len: arena.0.len() - off,
+    }
 }
 
 /// Value id -> dense register slot.
@@ -552,7 +595,13 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 }),
             }
         }
-        Inst::Cmp { pred, ty, dst, a, b } => {
+        Inst::Cmp {
+            pred,
+            ty,
+            dst,
+            a,
+            b,
+        } => {
             let (dst, a, b) = (sl(slots, dst), sl(slots, a), sl(slots, b));
             Box::new(move |ctx| {
                 let v = match ty {
@@ -590,7 +639,11 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
         Inst::Select { dst, cond, a, b } => {
             let (dst, cond, a, b) = (sl(slots, dst), sl(slots, cond), sl(slots, a), sl(slots, b));
             Box::new(move |ctx| {
-                ctx.regs[dst] = if as_i1(ctx.regs[cond]) { ctx.regs[a] } else { ctx.regs[b] };
+                ctx.regs[dst] = if as_i1(ctx.regs[cond]) {
+                    ctx.regs[a]
+                } else {
+                    ctx.regs[b]
+                };
                 Ok(())
             })
         }
@@ -718,7 +771,12 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 Ok(())
             })
         }
-        Inst::Probe { static_id, hit, dsts, keys } => {
+        Inst::Probe {
+            static_id,
+            hit,
+            dsts,
+            keys,
+        } => {
             let static_id = static_id as usize;
             let hit = sl(slots, hit);
             let dsts: Vec<usize> = dsts.iter().map(|d| sl(slots, *d)).collect();
@@ -763,7 +821,11 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 Ok(())
             })
         }
-        Inst::SloadOpt { static_id, flag, dst } => {
+        Inst::SloadOpt {
+            static_id,
+            flag,
+            dst,
+        } => {
             let (static_id, flag, dst) = (static_id as usize, sl(slots, flag), sl(slots, dst));
             let ty = match &p.statics[static_id] {
                 StaticTy::Scalar(ct) => ct.ty,
@@ -794,7 +856,7 @@ fn cmp_key(stored: &[KeyBits], key_regs: &[usize], ctx: &Ctx<'_>) -> std::cmp::O
         let ord = match (kb, ctx.regs[*reg]) {
             (KeyBits::I1(s), RegVal::I1(v)) => s.cmp(&v),
             (KeyBits::I64(s), RegVal::I64(v)) => s.cmp(&v),
-            (KeyBits::F64(s), RegVal::F64(v)) => s.cmp(&v.to_bits()),
+            (KeyBits::F64(s), RegVal::F64(v)) => s.cmp(&super::canon_f64_bits(v)),
             (KeyBits::Str(s), RegVal::Str(v)) => s.as_str().cmp(ctx.arena.get(v)),
             _ => unreachable!("probe key types checked at compile"),
         };

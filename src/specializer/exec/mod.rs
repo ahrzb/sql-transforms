@@ -105,7 +105,10 @@ impl Arena {
         let off = self.0.len();
         self.0.extend_from_within(a.off..a.off + a.len);
         self.0.extend_from_within(b.off..b.off + b.len);
-        StrRef { off, len: a.len + b.len }
+        StrRef {
+            off,
+            len: a.len + b.len,
+        }
     }
 
     pub fn get(&self, r: StrRef) -> &str {
@@ -136,9 +139,11 @@ impl ScalarVal {
     }
 }
 
-/// One component of a map-static key. F64 keys compare and match by bit
-/// pattern (total, deterministic; NaN == NaN by bits) — an internal
-/// convention of the prepared structure, not a SQL semantics statement.
+/// One component of a map-static key. F64 keys compare and match by
+/// *canonical* bit pattern: compile rewrites build-side keys and the probe
+/// canonicalizes the searched value with [`canon_f64_bits`], so `-0.0`
+/// matches `0.0` and every NaN is one key class — which is what DuckDB's
+/// `=` does for doubles (NaN equals itself there).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeyBits {
     I1(bool),
@@ -158,10 +163,26 @@ impl KeyBits {
     }
 }
 
+/// The canonical key bits of an f64: all NaNs collapse to the one Rust
+/// `f64::NAN` payload, `-0.0` collapses to `+0.0`. Everything else is
+/// already unique per bit pattern.
+pub fn canon_f64_bits(x: f64) -> u64 {
+    if x.is_nan() {
+        f64::NAN.to_bits()
+    } else if x == 0.0 {
+        0f64.to_bits()
+    } else {
+        x.to_bits()
+    }
+}
+
 /// Runtime payload for a static structure, supplied to `compile` alongside
 /// the program and type-checked against its `StaticTy` declaration.
 pub enum StaticData {
-    Scalar { valid: bool, val: ScalarVal },
+    Scalar {
+        valid: bool,
+        val: ScalarVal,
+    },
     /// Entries are sorted + deduped at compile into a probe table; the
     /// binary-search probe is allocation-free (design doc: how a map is
     /// materialized is a backend decision — the oracle picks the simplest
