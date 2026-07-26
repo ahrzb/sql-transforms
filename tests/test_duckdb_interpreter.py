@@ -1221,3 +1221,67 @@ def test_strsearch_length_family():
             {"s": None},
         ],
     )
+
+
+# --------------------------------------------------------- TASK-47:
+# least/greatest - NULL-ignoring, first-arg ties, duck order (pins).
+
+
+def test_least_greatest_null_ignoring_int():
+    duck_check(
+        "SELECT least(a, b) AS l, greatest(a, b) AS g,"
+        " least(a) AS l1, least(a, b, 3, 0) AS ln FROM __THIS__",
+        {"a": "int?", "b": "int?"},
+        [
+            {"a": 1, "b": None},  # l=1 g=1 — NULL ignored
+            {"a": None, "b": 2},  # l=2 g=2
+            {"a": None, "b": None},  # NULL only when ALL null
+            {"a": 1, "b": 2},
+            {"a": 9223372036854775807, "b": -9223372036854775808},  # exact i64
+        ],
+    )
+
+
+def test_least_greatest_double_nan_and_tie_keeps_first():
+    duck_check(
+        "SELECT least(a, b) AS l, greatest(a, b) AS g FROM __THIS__",
+        {"a": "float?", "b": "float?"},
+        [
+            {"a": nan, "b": 1.0},  # l=1.0 g=nan (nan above everything)
+            {"a": 1.0, "b": nan},
+            {"a": nan, "b": inf},  # l=inf g=nan
+            {"a": nan, "b": None},  # nan / nan — NULL ignored
+            {"a": -inf, "b": inf},
+            {"a": -0.0, "b": 0.0},  # BOTH return first arg: l=-0.0 g=-0.0
+            {"a": 0.0, "b": -0.0},  # l=0.0 g=0.0
+            {"a": nan, "b": nan},
+        ],
+    )
+
+
+def test_least_greatest_mixed_int_double_unifies_to_double():
+    duck_check(
+        "SELECT least(i, d) AS l, greatest(i, d) AS g FROM __THIS__",
+        {"i": "int", "d": "float"},
+        [
+            {"i": 1, "d": 2.5},
+            {"i": 3, "d": 2.5},
+            # DuckDB casts the i64 to double (lossy): l = 9007199254740992.0
+            {"i": 9007199254740993, "d": 9007199254740994.0},
+            {"i": 9223372036854775807, "d": 1.0},  # g = 9.223372036854776e+18
+        ],
+    )
+
+
+def test_least_greatest_strings_and_bools():
+    duck_check(
+        "SELECT least(a, b) AS l, greatest(a, b) AS g FROM __THIS__",
+        {"a": "str?", "b": "str?"},
+        [
+            {"a": "b", "b": "a"},
+            {"a": "B", "b": "a"},  # least='B' — byte order
+            {"a": "é", "b": "z"},  # greatest='é'
+            {"a": "", "b": "a"},
+            {"a": "a", "b": None},  # NULL ignored
+        ],
+    )

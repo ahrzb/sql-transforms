@@ -1584,6 +1584,83 @@ impl Binder<'_> {
                 }
                 Ok(acc)
             }
+            // least/greatest: NULL-IGNORING (result NULL only when every
+            // arg is), ties return the FIRST argument, NaN sorts above
+            // +inf — all of which the CASE + duck-order-cmp composition
+            // reproduces exactly (wave-1 pins), so no IR op exists.
+            "least" | "greatest" => {
+                if args.is_empty() {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} needs at least 1 argument"
+                    )));
+                }
+                let mut bound = Vec::new();
+                for arg in &args {
+                    // Literal NULL args contribute nothing (NULL-ignoring).
+                    if let Some(e) = self.expr_or_null(arg)? {
+                        bound.push(e);
+                    }
+                }
+                if bound.is_empty() {
+                    return Err(unsup(format!("{name} of only NULL literals")));
+                }
+                let mut unified = bound[0].ty;
+                for e in &bound[1..] {
+                    unified = match (unified, e.ty) {
+                        (u, t) if u == t => u,
+                        (Ty::I64, Ty::F64) | (Ty::F64, Ty::I64) => Ty::F64,
+                        (u, t) => {
+                            return Err(PrepareError::Bind(format!(
+                                "{name} arguments disagree: {} vs {}",
+                                u.name(),
+                                t.name()
+                            )))
+                        }
+                    };
+                }
+                let bound: Vec<SExpr> = bound
+                    .into_iter()
+                    .map(|e| {
+                        if e.ty == Ty::I64 && unified == Ty::F64 {
+                            promote_f64(e)
+                        } else {
+                            e
+                        }
+                    })
+                    .collect();
+                let pred = if name == "greatest" {
+                    CmpPred::Ge
+                } else {
+                    CmpPred::Le
+                };
+                let mut it = bound.into_iter();
+                let mut acc = it.next().expect("non-empty");
+                for b in it {
+                    let cmp = self.cmp(pred, acc.clone(), b.clone())?;
+                    let is_null = |e: &SExpr| SExpr {
+                        kind: SKind::IsNull {
+                            negated: false,
+                            inner: Box::new(e.clone()),
+                        },
+                        ty: Ty::I1,
+                        nullable: false,
+                    };
+                    let nullable = acc.nullable && b.nullable;
+                    acc = SExpr {
+                        kind: SKind::Case {
+                            arms: vec![
+                                (is_null(&acc), b.clone()),
+                                (is_null(&b), acc.clone()),
+                                (cmp, acc),
+                            ],
+                            default: Some(Box::new(b)),
+                        },
+                        ty: unified,
+                        nullable,
+                    };
+                }
+                Ok(acc)
+            }
             "nullif" => {
                 let [a, b] = args[..] else {
                     return Err(PrepareError::Bind(
