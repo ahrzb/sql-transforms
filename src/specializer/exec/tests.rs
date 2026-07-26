@@ -8,7 +8,7 @@ use std::cell::Cell;
 
 use super::super::ir::{fixtures, gen, parse::parse, verify::verify, Program, StaticTy, Ty};
 use super::interp::{compile, CompileError};
-use super::testutil::{batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot};
+use super::testutil::{batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot, snapshot};
 use super::{Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData, Trap};
 
 // ------------------------------------------------- counting allocator --
@@ -817,4 +817,36 @@ fn casemap_tables_sorted_and_marquee_pins() {
     assert_eq!(simple_upper('a'), 'A');
     assert_eq!(simple_lower('É'), 'é');
     assert_eq!(simple_upper('ﬁ'), 'ﬁ');
+}
+
+/// THE backend contract (TASK-44): cranelift and the interpreter agree
+/// byte-for-byte on every generated program — outputs, emitted counts, and
+/// traps. Same seeds as the determinism fuzz, both backends fed identical
+/// statics and inputs.
+#[test]
+fn fuzz_cranelift_agrees_with_interpreter() {
+    use super::cranelift;
+    // More seeds than the determinism fuzz: this is the backend contract.
+    for seed in 0..500u64 {
+        let p = gen::gen_program(seed);
+        let mut rng = gen::Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let statics_i = gen_statics(&mut rng, &p);
+        let mut rng2 = gen::Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let statics_c = gen_statics(&mut rng2, &p);
+        let input = gen_input(&mut rng, &p);
+
+        let fi = compile(&p, statics_i).expect("interp compile");
+        let fc = match cranelift::compile(&p, statics_c) {
+            Ok(f) => f,
+            Err(e) => panic!("seed {seed}: cranelift failed to compile: {e}"),
+        };
+        let a = run_snapshot(&fi, &input);
+        let mut st = fc.new_state();
+        let b = fc.run(&input, &mut st).map(|_| snapshot(&st));
+        match (a, b) {
+            (Ok(x), Ok(y)) => assert_eq!(x, y, "seed {seed}: outputs diverge"),
+            (Err(x), Err(y)) => assert_eq!(x, y, "seed {seed}: traps diverge"),
+            (x, y) => panic!("seed {seed}: outcome diverged: interp {x:?} vs cranelift {y:?}"),
+        }
+    }
 }

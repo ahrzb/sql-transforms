@@ -14,8 +14,10 @@ use pyo3::types::PyDict;
 
 use crate::error::InterpError;
 use crate::schema;
+use crate::specializer::exec::cranelift::{self, CraneliftFn};
 use crate::specializer::exec::interp::{compile, InterpFn};
 use crate::specializer::exec::{Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData};
+use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, StaticTy, Ty};
 use crate::specializer::plan::StaticTable;
 use crate::specializer::{prepare, StaticSpec};
@@ -169,9 +171,38 @@ fn eval_static_only(
     Ok((rows, fields))
 }
 
+/// The execution backend: cranelift when it compiles, the interpreter as
+/// the always-available fallback (AC #2 — an uncovered op must not fail
+/// prepare). Both agree byte-for-byte by the 500-seed differential.
+enum Backend {
+    Cranelift(CraneliftFn),
+    Interp(InterpFn),
+}
+
+impl Backend {
+    fn name(&self) -> &'static str {
+        match self {
+            Backend::Cranelift(_) => "cranelift",
+            Backend::Interp(_) => "interpreter",
+        }
+    }
+    fn new_state(&self) -> RunState {
+        match self {
+            Backend::Cranelift(f) => f.new_state(),
+            Backend::Interp(f) => f.new_state(),
+        }
+    }
+    fn run(&self, input: &Batch, st: &mut RunState) -> Result<(), Trap> {
+        match self {
+            Backend::Cranelift(f) => f.run(input, st),
+            Backend::Interp(f) => f.run(input, st),
+        }
+    }
+}
+
 enum Engine {
     Compiled {
-        fun: InterpFn,
+        fun: Backend,
         in_cols: Vec<Col>,
         out_cols: Vec<Col>,
     },
@@ -293,7 +324,26 @@ impl DuckDBInferFn {
             data.push(materialize_map(py, table, spec, keys, values)?);
         }
 
-        let fun = compile(&prepared.program, data).map_err(|e| build_err(e.to_string()))?;
+        let fun = match cranelift::compile(&prepared.program, data) {
+            Ok(f) => Backend::Cranelift(f),
+            // The failed attempt consumed the static data; rematerialize on
+            // this cold path and fall back to the interpreter.
+            Err(_) => {
+                let mut data = Vec::with_capacity(prepared.statics.len());
+                for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
+                    let StaticTy::Map { keys, values } = sty else {
+                        return Err(build_err("internal: v0 lowering emits only map statics"));
+                    };
+                    let table = static_tables
+                        .get(&spec.table)
+                        .expect("spec names come from the catalog");
+                    data.push(materialize_map(py, table, spec, keys, values)?);
+                }
+                Backend::Interp(
+                    compile(&prepared.program, data).map_err(|e| build_err(e.to_string()))?,
+                )
+            }
+        };
         let output_model = match output_model {
             // Supplied models are trusted as-is in v0 (no shape validation).
             Some(m) => m,
@@ -308,6 +358,15 @@ impl DuckDBInferFn {
             row_table,
             output_model,
         })
+    }
+
+    /// Which engine executes: "cranelift", "interpreter", or "constant".
+    #[getter]
+    fn backend(&self) -> &'static str {
+        match &self.engine {
+            Engine::Compiled { fun, .. } => fun.name(),
+            Engine::Constant { .. } => "constant",
+        }
     }
 
     #[pyo3(signature = (tables=None, **kwargs))]

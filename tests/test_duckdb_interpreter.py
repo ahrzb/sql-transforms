@@ -427,3 +427,25 @@ def test_unknown_driving_table_stays_clean_unsupported():
             row_tables={"__THIS__": _row_model({"a": "int"})},
             static_tables={},
         )
+
+
+# --------------------------------------------------------- M-cranelift:
+# the codegen backend runs the same suite; these pin the backend choice.
+
+
+def test_v0_queries_run_on_cranelift():
+    fn = DuckDBInferFn(
+        "SELECT k + 1 AS x, upper(s) AS u FROM __THIS__ JOIN dim ON k = dim.id",
+        row_tables={"__THIS__": _row_model({"k": "int", "s": "str"})},
+        static_tables={"dim": DIM},
+    )
+    assert fn.backend == "cranelift"
+
+
+def test_static_only_backend_is_constant():
+    fn = DuckDBInferFn(
+        "SELECT sum(v) AS s FROM dim",
+        row_tables={"__THIS__": _row_model({"a": "int"})},
+        static_tables={"dim": static({"v": "int"}, [{"v": 1}, {"v": 2}])},
+    )
+    assert fn.backend == "constant"
