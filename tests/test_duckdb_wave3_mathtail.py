@@ -204,9 +204,13 @@ def test_fdiv_fmod_double_edges():
 
 
 def test_computed_nan_bits_match_oracle():
-    # repr collapses every NaN to 'nan', so pin the BITS manually: fmod's
-    # computed NaN is fff8… (negative quiet NaN) while % by zero NULL-path
-    # NaN stays 7ff8… — in BOTH engines.
+    # repr collapses every NaN to 'nan', so pin the BITS manually. fmod's
+    # NaN comes from hardware arithmetic (0*inf under SSE) and is fff8…
+    # on every x86 platform. The %-by-zero NaN comes from LIBM fmod and
+    # its SIGN is platform-dependent (Windows ucrt 7ff8…, Linux glibc
+    # fff8… — CI-discovered, the cbrt situation again): both engines use
+    # the platform libm, so the pin is ENGINE == ORACLE bit agreement,
+    # not a constant.
     def bits(v: float) -> str:
         return format(struct.unpack("<Q", struct.pack("<d", v))[0], "016x")
 
@@ -218,14 +222,13 @@ def test_computed_nan_bits_match_oracle():
     )
     (got,) = fn.infer({"__THIS__": [row(x=7.5, y=0.0)]})
     assert bits(got.f) == "fff8000000000000"
-    assert bits(got.m) == "7ff8000000000000"
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (x DOUBLE, y DOUBLE)")
     con.execute("INSERT INTO __THIS__ VALUES (7.5, 0.0)")
     f, m = con.execute("SELECT fmod(x, y), x % y FROM __THIS__").fetchone()
     assert bits(f) == "fff8000000000000"
-    assert bits(m) == "7ff8000000000000"
+    assert bits(got.m) == bits(m), f"{bits(got.m)} vs oracle {bits(m)}"
 
 
 # ----------------------------------------------------------- nextafter:

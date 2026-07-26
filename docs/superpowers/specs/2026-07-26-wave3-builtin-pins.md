@@ -106,8 +106,12 @@ noted. Nothing here is inferred from documentation.
   INT x%0 → NULL (no trap); DOUBLE x%0.0 → **NaN 7ff8…** (a value, NOT
   NULL — the fleet's decision line over-generalized from the int probes;
   re-measured 2026-07-26, correction appended to pins-wave3/math_tail.json.
-  Note the NaN-sign contrast: %-by-zero is 7ff8, fmod-by-zero is fff8);
-  mod(−7.5,2.5) = **−0.0**.
+  NaN-sign addendum (CI-discovered): the %-by-zero NaN comes from LIBM
+  fmod and its sign is PLATFORM-dependent — 7ff8 on Windows ucrt, fff8 on
+  Linux glibc; both engines use the platform libm so they agree with the
+  oracle per-platform, and the pin is bit AGREEMENT, not a constant.
+  fmod-by-zero is hardware-generated (0·inf under SSE) and stays fff8
+  everywhere); mod(−7.5,2.5) = **−0.0**.
 - `fmod`/`fdiv` are the FLOOR-division pair, always DOUBLE: fdiv =
   floor(x/y) (±inf on zero divisor); fmod takes the **DIVISOR's** sign
   (fmod(−7.5,2.5) = +0.0 where mod gives −0.0) and is computed as
