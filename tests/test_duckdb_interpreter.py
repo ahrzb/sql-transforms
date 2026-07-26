@@ -582,3 +582,131 @@ def test_star_over_joined_table_rejects_by_name():
             row_tables={"__THIS__": _row_model({"k": "int"})},
             static_tables={"dim": DIM},
         )
+
+
+# --------------------------------------------------------- TASK-47:
+# BETWEEN / IN desugars — measured DuckDB 1.5.5 truth tables (wave-1 pins).
+nan, inf = float("nan"), float("inf")
+
+
+def test_between_three_valued_int():
+    duck_check(
+        "SELECT x BETWEEN lo AND hi AS b, x NOT BETWEEN lo AND hi AS nb FROM __THIS__",
+        {"x": "int?", "lo": "int?", "hi": "int?"},
+        [
+            {"x": 5, "lo": 1, "hi": 10},  # True
+            {"x": 5, "lo": 10, "hi": 1},  # empty range -> False
+            {"x": None, "lo": 1, "hi": 10},  # NULL
+            {"x": None, "lo": 10, "hi": 1},  # NULL x + empty range -> still NULL
+            {"x": 5, "lo": None, "hi": 10},  # NULL
+            {"x": 5, "lo": None, "hi": 4},  # False — failing half decides
+            {"x": 5, "lo": 1, "hi": None},  # NULL
+            {"x": 5, "lo": 6, "hi": None},  # False
+            {"x": None, "lo": None, "hi": None},  # NULL
+            {"x": 5, "lo": 5, "hi": 5},  # inclusive -> True
+        ],
+    )
+
+
+def test_between_int_x_double_bounds_unifies_to_double():
+    duck_check(
+        "SELECT x BETWEEN lo AND hi AS b FROM __THIS__",
+        {"x": "int", "lo": "float", "hi": "float"},
+        [
+            {"x": 5, "lo": 0.5, "hi": 5.5},
+            {"x": 5, "lo": 5.1, "hi": 9.9},
+            # int->double is lossy at 2^53 — DuckDB does the same cast: True
+            {"x": 9007199254740993, "lo": 9007199254740992.0, "hi": 9007199254740992.0},
+        ],
+    )
+
+
+def test_between_duck_double_order_specials():
+    duck_check(
+        "SELECT x BETWEEN lo AND hi AS b, x NOT BETWEEN lo AND hi AS nb FROM __THIS__",
+        {"x": "float?", "lo": "float?", "hi": "float?"},
+        [
+            {"x": nan, "lo": 1.0, "hi": 2.0},  # False (nan<=2 False)
+            {"x": 5.0, "lo": 1.0, "hi": nan},  # True (nan above everything)
+            {"x": 5.0, "lo": nan, "hi": 10.0},  # False
+            {"x": nan, "lo": nan, "hi": nan},  # True (nan = nan)
+            {"x": inf, "lo": 1.0, "hi": nan},  # True (nan above inf)
+            {"x": nan, "lo": None, "hi": 1.0},  # False (NULL AND False)
+            {"x": nan, "lo": 1.0, "hi": None},  # NULL (True AND NULL)
+            {"x": 0.0, "lo": -0.0, "hi": -0.0},  # True (zeros equal)
+            {"x": -0.0, "lo": 0.0, "hi": 0.0},  # True
+            {"x": -inf, "lo": -inf, "hi": inf},  # True
+        ],
+    )
+
+
+def test_between_strings_byte_order():
+    duck_check(
+        "SELECT x BETWEEN lo AND hi AS b FROM __THIS__",
+        {"x": "str", "lo": "str", "hi": "str"},
+        [
+            {"x": "b", "lo": "a", "hi": "c"},  # True
+            {"x": "B", "lo": "a", "hi": "c"},  # False (0x42 < 0x61)
+            {"x": "Z", "lo": "a", "hi": "z"},  # False
+            {"x": "é", "lo": "a", "hi": "z"},  # False (0xC3A9 > 'z')
+            {"x": "abc", "lo": "ab", "hi": "abd"},  # True
+            {"x": "", "lo": "", "hi": "a"},  # True
+            {"x": "a", "lo": "c", "hi": "a"},  # False
+        ],
+    )
+
+
+def test_in_null_element_truth_table():
+    duck_check(
+        "SELECT x IN (1, NULL) AS i, x NOT IN (1, NULL) AS ni,"
+        " x IN (1, 2) AS i2, x NOT IN (1, 2) AS ni2, x IN (NULL) AS io FROM __THIS__",
+        {"x": "int?"},
+        [{"x": 1}, {"x": 3}, {"x": None}],
+        # i: T/N/N  ni: F/N/N  i2: T/F/N  ni2: F/T/N  io: N/N/N
+    )
+
+
+def test_in_column_elements_is_the_or_chain():
+    duck_check(
+        "SELECT x IN (y, z) AS r, x NOT IN (y, z) AS nr FROM __THIS__",
+        {"x": "int?", "y": "int?", "z": "int?"},
+        [
+            {"x": 1, "y": 1, "z": None},  # True / False
+            {"x": 3, "y": 1, "z": None},  # NULL / NULL
+            {"x": 3, "y": 1, "z": 2},  # False / True
+            {"x": None, "y": 1, "z": 2},  # NULL / NULL
+        ],
+    )
+
+
+def test_in_int_col_float_literals_small_values():
+    duck_check(
+        "SELECT x IN (1.0) AS a, x IN (0.5, 1.0) AS b, x IN (1.5) AS c FROM __THIS__",
+        {"x": "int?"},
+        [{"x": 1}, {"x": 2}, {"x": 3}, {"x": None}],  # 1.5 never rounds to 2
+    )
+
+
+def test_in_nan_and_signed_zero():
+    duck_check(
+        "SELECT x IN ('NaN'::DOUBLE) AS n, x IN (1.0, 'NaN'::DOUBLE) AS m,"
+        " x IN (0.0) AS z, x NOT IN ('NaN'::DOUBLE) AS nn FROM __THIS__",
+        {"x": "float"},
+        [{"x": nan}, {"x": 1.0}, {"x": -0.0}],  # NaN=NaN True; -0.0 IN (0.0) True
+    )
+
+
+def test_in_strings_and_bools():
+    duck_check(
+        "SELECT s IN ('a', 'b') AS r, s IN ('b', NULL) AS rn FROM __THIS__",
+        {"s": "str?"},
+        [{"s": "a"}, {"s": "A"}, {"s": None}],
+    )
+    # BOOLEAN comparison stays the engine's pre-existing clean limit, so
+    # bool IN/BETWEEN desugar into it and reject by name.
+    with pytest.raises(ValueError, match="comparison on BOOLEAN"):
+        DuckDBInferFn(
+            "SELECT p IN (true) AS r FROM __THIS__",
+            row_tables={"__THIS__": _row_model({"p": "bool?"})},
+            static_tables={},
+        )

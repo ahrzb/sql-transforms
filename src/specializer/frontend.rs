@@ -477,7 +477,70 @@ struct Binder<'a> {
     select_aliases: Vec<String>,
 }
 
+/// AST constructors for the BETWEEN/IN desugars.
+fn ast_bin(op: BinaryOperator, l: SqlExpr, r: SqlExpr) -> SqlExpr {
+    SqlExpr::BinaryOp {
+        left: Box::new(l),
+        op,
+        right: Box::new(r),
+    }
+}
+
+fn ast_not_if(negated: bool, e: SqlExpr) -> SqlExpr {
+    if negated {
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr: Box::new(e),
+        }
+    } else {
+        e
+    }
+}
+
 impl Binder<'_> {
+    /// DuckDB unifies BETWEEN/IN across the WHOLE construct (wave-1 pins):
+    /// one common type for the subject and every bound/element, so a single
+    /// f64 side promotes all sides. Numeric-with-string/bool mixing has
+    /// exec-time cast semantics we don't model — clean-unsupported.
+    fn unify_family(&self, exprs: &[&SqlExpr]) -> Result<Vec<SqlExpr>, PrepareError> {
+        let (mut any_f64, mut any_num, mut any_other) = (false, false, false);
+        for e in exprs {
+            if let Some(b) = self.expr_or_null(e)? {
+                match b.ty {
+                    Ty::F64 => (any_f64, any_num) = (true, true),
+                    Ty::I64 => any_num = true,
+                    Ty::Str | Ty::I1 => any_other = true,
+                }
+            }
+        }
+        if any_num && any_other {
+            return Err(unsup(
+                "BETWEEN/IN mixing strings or booleans with numbers (exec-time cast semantics)",
+            ));
+        }
+        Ok(exprs
+            .iter()
+            .map(|e| {
+                let e = (*e).clone();
+                if any_f64 {
+                    // CAST is a no-op on already-f64 sides and types NULL
+                    // literals from context; exactly DuckDB's unification.
+                    SqlExpr::Cast {
+                        kind: CastKind::Cast,
+                        expr: Box::new(e),
+                        data_type: sqlparser::ast::DataType::Double(
+                            sqlparser::ast::ExactNumberInfo::None,
+                        ),
+                        format: None,
+                        array: false,
+                    }
+                } else {
+                    e
+                }
+            })
+            .collect())
+    }
+
     /// Expand `*` / `tbl.*` per DuckDB's measured semantics (1.5.5): FROM
     /// order, declared column order within a table, EXCLUDE filtered
     /// case-insensitively. A star item covering a joined static table is
@@ -679,8 +742,47 @@ impl Binder<'_> {
                 substring_for,
                 ..
             } => self.substr_node(expr, substring_from.as_deref(), substring_for.as_deref()),
-            SqlExpr::Between { .. } => Err(unsup("BETWEEN")),
-            SqlExpr::InList { .. } => Err(unsup("IN (...)")),
+            // BETWEEN and IN are exact K3 desugars (wave-1 pins): DuckDB's
+            // truth tables over NULL/NaN fall out of Kleene AND/OR of the
+            // duck_fcmp comparisons with zero special cases. DuckDB unifies
+            // types across the WHOLE construct (one common type for the
+            // subject and every bound/element), so any f64 side promotes
+            // all sides before the pairwise desugar.
+            SqlExpr::Between {
+                expr,
+                negated,
+                low,
+                high,
+            } => {
+                let mut u = self.unify_family(&[expr, low, high])?;
+                let (e, lo, hi) = (u.remove(0), u.remove(0), u.remove(0));
+                let both = ast_bin(
+                    BinaryOperator::And,
+                    ast_bin(BinaryOperator::GtEq, e.clone(), lo),
+                    ast_bin(BinaryOperator::LtEq, e, hi),
+                );
+                self.bind(&ast_not_if(*negated, both))
+            }
+            SqlExpr::InList {
+                expr,
+                list,
+                negated,
+            } => {
+                let mut family: Vec<&SqlExpr> = vec![expr];
+                family.extend(list.iter());
+                let mut unified = self.unify_family(&family)?;
+                let subject = unified.remove(0);
+                let mut chain: Option<SqlExpr> = None;
+                for item in unified {
+                    let eq = ast_bin(BinaryOperator::Eq, subject.clone(), item);
+                    chain = Some(match chain {
+                        None => eq,
+                        Some(prev) => ast_bin(BinaryOperator::Or, prev, eq),
+                    });
+                }
+                let chain = chain.ok_or_else(|| unsup("empty IN list"))?;
+                self.bind(&ast_not_if(*negated, chain))
+            }
             SqlExpr::Like { .. } => Err(unsup("LIKE")),
             other => Err(unsup(format!("expression: {other}"))),
         }
