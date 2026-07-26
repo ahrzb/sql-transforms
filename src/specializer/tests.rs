@@ -446,20 +446,41 @@ fn star_expands_in_declared_order_with_exclude() {
 
 #[test]
 fn star_over_joined_table_rejects_by_name() {
+    // Wave-4: joined-table stars expand (key columns reconstruct from the
+    // dynamic side); only DUPLICATE output names still reject — DuckDB
+    // emits them verbatim, the typed output model cannot hold them.
     let schema = cols(&[("a", Ty::I64, false)]);
     let st = stat("dim", &[("id", Ty::I64, false), ("v", Ty::F64, false)]);
-    for sql in [
-        "SELECT * FROM __THIS__ JOIN dim ON a = dim.id",
-        "SELECT dim.* FROM __THIS__ JOIN dim ON a = dim.id",
+    for (sql, want) in [
+        (
+            "SELECT * FROM __THIS__ JOIN dim ON a = dim.id",
+            vec!["a", "id", "v"],
+        ),
+        (
+            "SELECT dim.* FROM __THIS__ JOIN dim ON a = dim.id",
+            vec!["id", "v"],
+        ),
     ] {
-        match prepare(sql, "__THIS__", &schema, std::slice::from_ref(&st)) {
-            Err(PrepareError::Unsupported(m)) => assert!(
-                m.contains("star expansion over joined table") && m.contains("id"),
-                "'{sql}': got '{m}'"
-            ),
-            Err(other) => panic!("'{sql}': wrong error kind: {other}"),
-            Ok(_) => panic!("'{sql}': unexpectedly prepared"),
+        let p = prepare(sql, "__THIS__", &schema, std::slice::from_ref(&st))
+            .unwrap_or_else(|e| panic!("'{sql}': {e}"))
+            .program;
+        let names: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, want, "'{sql}'");
+    }
+    // A star that would produce duplicate names still rejects cleanly.
+    // (The bare `id = dim.id` spelling is an ambiguity error in DuckDB
+    // too — qualify the dynamic side.)
+    let clash = cols(&[("id", Ty::I64, false)]);
+    match prepare(
+        "SELECT * FROM __THIS__ JOIN dim ON __THIS__.id = dim.id",
+        "__THIS__",
+        &clash,
+        std::slice::from_ref(&st),
+    ) {
+        Err(PrepareError::Unsupported(m)) => {
+            assert!(m.contains("duplicate output column"), "got '{m}'")
         }
+        other => panic!("wanted duplicate-name unsup, got {:?}", other.err()),
     }
     // Qualified star over the ROW table under a join is fine.
     let p = prepare(
@@ -476,7 +497,10 @@ fn star_over_joined_table_rejects_by_name() {
 fn unsupported_constructs_are_named_cleanly() {
     let schema = cols(&[("a", Ty::I64, false)]);
     for (sql, needle) in [
-        ("SELECT a FROM __THIS__ JOIN t USING (a)", "USING"),
+        (
+            "SELECT a FROM __THIS__ FULL OUTER JOIN t ON a = t.a",
+            "join type",
+        ),
         // Bare aggregates parse as plain function calls; they reject via the
         // function arm until the catalogue distinguishes aggregation.
         ("SELECT sum(a) FROM __THIS__", "aggregate function sum"),
@@ -712,29 +736,28 @@ fn join_programs_are_canonical_ir() {
 
 #[test]
 fn join_shape_errors() {
+    // Wave-4: both former rejections now prepare — the key column
+    // reconstructs from the dynamic side, and all-key (semi) joins probe
+    // with zero value lanes.
     let schema = cols(&[("k", Ty::I64, false)]);
-    // A join key column referenced outside its ON clause is a clean unsup.
     let dim = stat("dim", &[("id", Ty::I64, false), ("name", Ty::Str, false)]);
-    match prepare(
+    let p = prepare(
         "SELECT dim.id FROM __THIS__ JOIN dim ON k = dim.id",
         "__THIS__",
         &schema,
         &[dim],
-    ) {
-        Err(PrepareError::Unsupported(msg)) => assert!(msg.contains("ON clause"), "got: {msg}"),
-        other => panic!("wrong outcome: {:?}", other.err()),
-    }
-    // A join where every column is a key has no value columns to produce.
+    )
+    .expect("key reconstruction prepares")
+    .program;
+    assert_eq!(p.out_cols[0].name, "id");
     let keys_only = stat("dim", &[("id", Ty::I64, false)]);
-    match prepare(
+    prepare(
         "SELECT k FROM __THIS__ JOIN dim ON k = dim.id",
         "__THIS__",
         &schema,
         &[keys_only],
-    ) {
-        Err(PrepareError::Unsupported(msg)) => assert!(msg.contains("value columns"), "got: {msg}"),
-        other => panic!("wrong outcome: {:?}", other.err()),
-    }
+    )
+    .expect("all-key join prepares");
 }
 
 #[test]

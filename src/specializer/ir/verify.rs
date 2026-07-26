@@ -83,14 +83,18 @@ fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
             format!("function name '{}' must be an identifier", p.name),
         );
     }
+    // Wave-4: maps may have EMPTY keys (cross join to a table whose
+    // single-entry-ness the duplicate-key check enforces at compile) and
+    // EMPTY values (all-key/semi joins — the probe carries only the hit).
+    // A map that is empty on BOTH axes carries no information at all.
     for (i, st) in p.statics.iter().enumerate() {
         if let StaticTy::Map { keys, values } = st {
-            if keys.is_empty() || values.is_empty() {
+            if keys.is_empty() && values.is_empty() {
                 err(
                     errs,
                     None,
                     None,
-                    format!("@{i}: map statics need at least one key and one value column"),
+                    format!("@{i}: map static with neither keys nor values"),
                 );
             }
         }

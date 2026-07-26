@@ -244,12 +244,6 @@ fn bind_from<'a>(
             JoinOperator::Left(c) | JoinOperator::LeftOuter(c) => (JoinKind::Left, c),
             other => return Err(unsup(format!("join type {other:?}"))),
         };
-        let on = match constraint {
-            JoinConstraint::On(e) => e,
-            JoinConstraint::Using(_) => return Err(unsup("JOIN USING")),
-            JoinConstraint::Natural => return Err(unsup("NATURAL JOIN")),
-            JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
-        };
         let (raw_name, scope_name) = match &join.relation {
             TableFactor::Table { name, alias, .. } => {
                 let n = name.to_string();
@@ -264,22 +258,7 @@ fn bind_from<'a>(
         if raw_name.eq_ignore_ascii_case(this_name) {
             return Err(unsup("joining the dynamic table to itself"));
         }
-        let mut table_idx = None;
-        for (i, st) in statics.iter().enumerate() {
-            if st.name.eq_ignore_ascii_case(&raw_name) {
-                if table_idx.is_some() {
-                    return Err(PrepareError::Bind(format!(
-                        "ambiguous static table '{raw_name}'"
-                    )));
-                }
-                table_idx = Some(i);
-            }
-        }
-        let Some(table_idx) = table_idx else {
-            return Err(PrepareError::Bind(format!(
-                "table '{raw_name}' was not provided as a static table"
-            )));
-        };
+        let table_idx = resolve_static(statics, &raw_name)?;
         if binder.this_name.eq_ignore_ascii_case(&scope_name)
             || binder
                 .joins
@@ -292,15 +271,52 @@ fn bind_from<'a>(
         }
 
         let st = &statics[table_idx];
-        let (keys, key_cols) = bind_on(&binder, st, &scope_name, on)?;
+        let (keys, key_cols, residual_raw, using) = match constraint {
+            JoinConstraint::On(e) => {
+                let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, e)?;
+                (keys, key_cols, res, false)
+            }
+            // USING desugar (wave-4 pins): each column pairs the LEFT
+            // scope's binding with this table's column; duplicates in the
+            // list dedupe silently; ambiguity in the left scope (e.g.
+            // after a prior ON join) errors exactly like DuckDB.
+            JoinConstraint::Using(cols) => {
+                let mut keys = Vec::new();
+                let mut key_cols = Vec::new();
+                for obj in cols {
+                    let [part] = obj.0.as_slice() else {
+                        return Err(unsup("qualified name in JOIN USING"));
+                    };
+                    let name = part
+                        .as_ident()
+                        .map(|i| i.value.clone())
+                        .ok_or_else(|| unsup("JOIN USING entry form"))?;
+                    let mut col = None;
+                    for (i, c) in st.cols.iter().enumerate() {
+                        if c.name.eq_ignore_ascii_case(&name) {
+                            col = Some(i as u32);
+                        }
+                    }
+                    let Some(col) = col else {
+                        return Err(PrepareError::Bind(format!(
+                            "column \"{name}\" does not exist on right side of join!"
+                        )));
+                    };
+                    if key_cols.contains(&col) {
+                        continue; // USING (a, a) dedupes silently (measured)
+                    }
+                    let key = fold(binder.column(&name)?);
+                    keys.push(promote_key(key, st, col)?);
+                    key_cols.push(col);
+                }
+                (keys, key_cols, Vec::new(), true)
+            }
+            JoinConstraint::Natural => return Err(unsup("NATURAL JOIN")),
+            JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
+        };
         let val_cols: Vec<u32> = (0..st.cols.len() as u32)
             .filter(|c| !key_cols.contains(c))
             .collect();
-        if val_cols.is_empty() {
-            return Err(unsup(format!(
-                "join to '{raw_name}' where every column is a key (no value columns)"
-            )));
-        }
 
         binder.joins.push(ScopeJoin {
             name: scope_name,
@@ -308,34 +324,98 @@ fn bind_from<'a>(
             kind,
             key_cols: key_cols.clone(),
             val_cols: val_cols.clone(),
+            keys: keys.clone(),
+            using,
         });
+        // Residual conjuncts bind with THIS join in scope.
+        let j = (binder.joins.len() - 1) as u32;
+        let residual = bind_residual(&binder, j, &residual_raw)?;
         specs.push(JoinSpec {
             table: table_idx,
             kind,
             keys,
             key_cols,
             val_cols,
-            // Wave-4 stage A wires non-key ON conjuncts here (bind_on
-            // split); None until that lands.
-            residual: None,
+            residual,
         });
     }
     Ok((binder, specs))
 }
 
-/// Bind a JOIN ... ON condition: a conjunction of `<expr> = <static col>`
-/// equalities. Returns the dynamic-side key expressions (promoted to the
-/// map's key types) and the static key columns they match, aligned.
-fn bind_on(
+fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, PrepareError> {
+    let mut table_idx = None;
+    for (i, st) in statics.iter().enumerate() {
+        if st.name.eq_ignore_ascii_case(raw_name) {
+            if table_idx.is_some() {
+                return Err(PrepareError::Bind(format!(
+                    "ambiguous static table '{raw_name}'"
+                )));
+            }
+            table_idx = Some(i);
+        }
+    }
+    table_idx.ok_or_else(|| {
+        PrepareError::Bind(format!(
+            "table '{raw_name}' was not provided as a static table"
+        ))
+    })
+}
+
+/// Bind the non-key ON conjuncts of join `j` and AND them into the spec's
+/// residual, enforcing the wave-4 evaluation-order rule: single-side
+/// residuals must be conservatively trap-free (DuckDB scan-pushes them —
+/// different error timing); both-sides residuals may trap (DuckDB
+/// evaluates them per candidate pair, exactly our hit-guarded lowering).
+fn bind_residual(
+    binder: &Binder<'_>,
+    j: u32,
+    raw: &[&SqlExpr],
+) -> Result<Option<SExpr>, PrepareError> {
+    let mut acc: Option<SExpr> = None;
+    for c in raw {
+        let bound = bool_context(fold(binder.expr(c)?), "JOIN ON condition")?;
+        let (mut right, mut left, mut total, mut known) = (false, false, true, true);
+        scan_residual(&bound, j, &mut right, &mut left, &mut total, &mut known);
+        if !(total || (left && right && known)) {
+            return Err(unsup(format!(
+                "JOIN ON condition '{c}' (single-side residual with trapping \
+                 ops: DuckDB's scan-pushed evaluation order differs)"
+            )));
+        }
+        acc = Some(match acc {
+            None => bound,
+            Some(p) => {
+                let nullable = p.nullable || bound.nullable;
+                SExpr {
+                    kind: SKind::And {
+                        a: Box::new(p),
+                        b: Box::new(bound),
+                    },
+                    ty: Ty::I1,
+                    nullable,
+                }
+            }
+        });
+    }
+    Ok(acc)
+}
+
+/// Bind a JOIN ... ON condition. Equalities pairing a dynamic-side
+/// expression with a static column become probe keys; every OTHER conjunct
+/// (non-equalities, constant equalities, both-sides-static equalities) is
+/// returned raw for residual binding once the join is in scope (wave-4:
+/// `match = key_hit AND residual`).
+fn bind_on<'e>(
     binder: &Binder<'_>,
     st: &StaticTable,
     scope_name: &str,
-    on: &SqlExpr,
-) -> Result<(Vec<SExpr>, Vec<u32>), PrepareError> {
+    on: &'e SqlExpr,
+) -> Result<(Vec<SExpr>, Vec<u32>, Vec<&'e SqlExpr>), PrepareError> {
     let mut conjuncts = Vec::new();
     collect_conjuncts(on, &mut conjuncts);
     let mut keys = Vec::new();
     let mut key_cols = Vec::new();
+    let mut residual = Vec::new();
     for c in conjuncts {
         let SqlExpr::BinaryOp {
             left,
@@ -343,24 +423,20 @@ fn bind_on(
             right,
         } = c
         else {
-            return Err(unsup(format!(
-                "JOIN ON condition '{c}' (only AND-ed equalities are supported)"
-            )));
+            residual.push(c);
+            continue;
         };
         let l = static_col_of(left, st, scope_name)?;
         let r = static_col_of(right, st, scope_name)?;
         let (col, dyn_side, static_side) = match (l, r) {
             (Some(c), None) => (c, right.as_ref(), left.as_ref()),
             (None, Some(c)) => (c, left.as_ref(), right.as_ref()),
-            (Some(_), Some(_)) => {
-                return Err(unsup(format!(
-                    "JOIN ON '{c}': both sides are columns of '{scope_name}'"
-                )))
-            }
-            (None, None) => {
-                return Err(unsup(format!(
-                    "JOIN ON '{c}': neither side is a column of '{scope_name}'"
-                )))
+            // Both sides this table (r.a = r.b) or neither (test.b = 2,
+            // NULL = 2): a residual match condition, not a key (measured —
+            // DuckDB binds these fine and they filter matches).
+            _ => {
+                residual.push(c);
+                continue;
             }
         };
         // A bare identifier on the static side that also binds in the outer
@@ -374,27 +450,87 @@ fn bind_on(
             }
         }
         let key = fold(binder.expr(dyn_side)?);
-        let col_ty = st.cols[col as usize].ty.ty;
-        let key = match (key.ty, col_ty) {
-            (a, b) if a == b => key,
-            (Ty::I64, Ty::F64) => promote_f64(key),
-            // Static-side ints promote at materialization: the map key type
-            // (the key expression's type) becomes F64 and the build side is
-            // converted while the probe table is built.
-            (Ty::F64, Ty::I64) => key,
-            (a, b) => {
-                return Err(PrepareError::Bind(format!(
-                    "cannot join {} with {} (ON '{}')",
-                    a.name(),
-                    b.name(),
-                    st.cols[col as usize].name
-                )))
-            }
-        };
+        let key = promote_key(key, st, col)?;
         keys.push(key);
         key_cols.push(col);
     }
-    Ok((keys, key_cols))
+    Ok((keys, key_cols, residual))
+}
+
+/// Promote a dynamic-side key expression to the map's key type.
+fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareError> {
+    let col_ty = st.cols[col as usize].ty.ty;
+    match (key.ty, col_ty) {
+        (a, b) if a == b => Ok(key),
+        (Ty::I64, Ty::F64) => Ok(promote_f64(key)),
+        // Static-side ints promote at materialization: the map key type
+        // (the key expression's type) becomes F64 and the build side is
+        // converted while the probe table is built.
+        (Ty::F64, Ty::I64) => Ok(key),
+        (a, b) => Err(PrepareError::Bind(format!(
+            "cannot join {} with {} (ON '{}')",
+            a.name(),
+            b.name(),
+            st.cols[col as usize].name
+        ))),
+    }
+}
+
+/// One traversal answering the wave-4 residual questions about a bound ON
+/// residual: `right`/`left` — does it reference THIS join's columns / any
+/// other scope; `total` — is every node in the conservative trap-free
+/// allowlist (columns, literals, comparisons, IS NULL, logic); `known` —
+/// was every node classifiable at all. Acceptance rule at the call site:
+/// `total || (left && right && known)` — measured: DuckDB scan-pushes
+/// single-side residuals (eager trap timing) but evaluates both-sides
+/// residuals per candidate pair, which our hit-guarded lowering matches.
+fn scan_residual(
+    e: &SExpr,
+    j: u32,
+    right: &mut bool,
+    left: &mut bool,
+    total: &mut bool,
+    known: &mut bool,
+) {
+    match &e.kind {
+        SKind::StaticCol { join, .. } | SKind::JoinHit(join) => {
+            if *join == j {
+                *right = true;
+            } else {
+                *left = true;
+            }
+        }
+        SKind::Col(_) => *left = true,
+        SKind::Lit(_) | SKind::NullOf => {}
+        SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
+            scan_residual(a, j, right, left, total, known);
+            scan_residual(b, j, right, left, total, known);
+        }
+        SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => {
+            scan_residual(a, j, right, left, total, known);
+        }
+        SKind::Arith { a, b, .. } => {
+            *total = false;
+            scan_residual(a, j, right, left, total, known);
+            scan_residual(b, j, right, left, total, known);
+        }
+        SKind::Case { arms, default } => {
+            *total = false;
+            for (c, r) in arms {
+                scan_residual(c, j, right, left, total, known);
+                scan_residual(r, j, right, left, total, known);
+            }
+            if let Some(d) = default {
+                scan_residual(d, j, right, left, total, known);
+            }
+        }
+        // Anything else: not classifiable — the caller must reject rather
+        // than risk the permissive both-sides path on a wrong guess.
+        _ => {
+            *total = false;
+            *known = false;
+        }
+    }
 }
 
 fn collect_conjuncts<'e>(e: &'e SqlExpr, out: &mut Vec<&'e SqlExpr>) {
@@ -466,13 +602,22 @@ fn default_name(e: &SqlExpr) -> String {
 }
 
 /// One joined static table in scope: how it is named, which of its columns
-/// are probe values (bindable) vs keys (ON-clause only).
+/// are probe values (bindable directly) vs keys (reconstructed from the
+/// dynamic side: `r.id` ≡ CASE match THEN dyn-key ELSE NULL — wave-4).
 struct ScopeJoin<'a> {
     name: String,
     table: &'a StaticTable,
     kind: JoinKind,
     key_cols: Vec<u32>,
     val_cols: Vec<u32>,
+    /// Dynamic-side key expressions aligned with `key_cols` — the material
+    /// for key-column reconstruction.
+    keys: Vec<SExpr>,
+    /// USING join: the static side's using (key) columns are merged into
+    /// the left occurrence — hidden from bare-name binds and star
+    /// expansion (measured: merged col sits at the LEFT position with the
+    /// LEFT value; `t2.a` stays addressable and is NULL on a LEFT miss).
+    using: bool,
 }
 
 struct Binder<'a> {
@@ -626,13 +771,31 @@ impl Binder<'_> {
                 ));
             }
         }
-        for sj in &self.joins {
-            if qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&sj.name)) {
-                let key = &sj.table.cols[sj.key_cols[0] as usize].name;
-                return Err(unsup(format!(
-                    "star expansion over joined table '{}' (includes join key column '{key}')",
-                    sj.name
-                )));
+        // Joined tables expand in FROM order, columns in DECLARED order
+        // (measured): value columns as probe lanes, key columns via the
+        // dynamic-side reconstruction, USING keys suppressed (merged into
+        // the left occurrence). Duplicate output names across the star are
+        // caught by the existing duplicate-name check — DuckDB emits them
+        // verbatim, our typed output model cannot (documented constraint).
+        for (j, sj) in self.joins.iter().enumerate() {
+            if !qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&sj.name)) {
+                continue;
+            }
+            matched = true;
+            for (ci, c) in sj.table.cols.iter().enumerate() {
+                let ci = ci as u32;
+                if let Some(pos) = sj.val_cols.iter().position(|&v| v == ci) {
+                    cols.push((c.name.clone(), self.static_lane(j, pos)));
+                } else {
+                    let kp = sj
+                        .key_cols
+                        .iter()
+                        .position(|&k| k == ci)
+                        .expect("column is key or value");
+                    if !sj.using {
+                        cols.push((c.name.clone(), self.key_lane(j, kp)));
+                    }
+                }
             }
         }
         if !matched {
@@ -907,6 +1070,33 @@ impl Binder<'_> {
         }
     }
 
+    /// KEY column `key_pos` of join `j`, reconstructed from the dynamic
+    /// side (measured: on a match the static key equals the probe key;
+    /// on a LEFT miss it is NULL): INNER rows all matched, so the key
+    /// expression itself is exact; LEFT wraps it in CASE match THEN key
+    /// ELSE NULL.
+    fn key_lane(&self, j: usize, key_pos: usize) -> SExpr {
+        let sj = &self.joins[j];
+        let key = sj.keys[key_pos].clone();
+        if sj.kind == JoinKind::Inner {
+            return key;
+        }
+        let ty = key.ty;
+        let hit = SExpr {
+            kind: SKind::JoinHit(j as u32),
+            ty: Ty::I1,
+            nullable: false,
+        };
+        SExpr {
+            kind: SKind::Case {
+                arms: vec![(hit, key)],
+                default: None,
+            },
+            ty,
+            nullable: true,
+        }
+    }
+
     /// Case-insensitive, spelling-preserving bare-column bind over the whole
     /// scope: the dynamic table plus every joined static table's value
     /// columns (DuckDB semantics; ambiguity is an error).
@@ -921,7 +1111,6 @@ impl Binder<'_> {
                 });
             }
         }
-        let mut key_only = false;
         for (j, sj) in self.joins.iter().enumerate() {
             for pos in 0..sj.val_cols.len() {
                 if sj.table.cols[sj.val_cols[pos] as usize]
@@ -931,16 +1120,21 @@ impl Binder<'_> {
                     hits.push(self.static_lane(j, pos));
                 }
             }
-            key_only |= sj
-                .key_cols
-                .iter()
-                .any(|&ci| sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name));
+            // Key columns resolve via reconstruction. A USING join's key
+            // is MERGED into the left occurrence (measured) — the static
+            // side contributes no separate binding; an ON join's key
+            // contributes one, so a bare shared key name is ambiguous,
+            // exactly like DuckDB.
+            if !sj.using {
+                for (kp, &ci) in sj.key_cols.iter().enumerate() {
+                    if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
+                        hits.push(self.key_lane(j, kp));
+                    }
+                }
+            }
         }
         match hits.len() {
             1 => Ok(hits.pop().expect("len checked")),
-            0 if key_only => Err(unsup(format!(
-                "referencing join key column '{name}' outside its ON clause"
-            ))),
             // Real DuckDB features we don't model reject cleanly, not as
             // bind errors: the rowid pseudo-column, and DuckDB's lateral
             // alias extension (a SELECT alias visible inside WHERE).
@@ -1002,14 +1196,13 @@ impl Binder<'_> {
             if let Some(pos) = hit {
                 return Ok(self.static_lane(j, pos));
             }
-            if sj
-                .key_cols
-                .iter()
-                .any(|&ci| sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name))
-            {
-                return Err(unsup(format!(
-                    "referencing join key column '{table}.{name}' outside its ON clause"
-                )));
+            // Qualified key access reconstructs from the dynamic side —
+            // measured to stay addressable even after USING (NULL on a
+            // LEFT miss, never coalesced).
+            for (kp, &ci) in sj.key_cols.iter().enumerate() {
+                if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
+                    return Ok(self.key_lane(j, kp));
+                }
             }
             return Err(PrepareError::Bind(format!(
                 "column '{name}' does not exist in '{table}'"
