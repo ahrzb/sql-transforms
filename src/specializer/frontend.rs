@@ -28,7 +28,7 @@ use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 
 use super::fold::fold;
-use super::ir::{CmpPred, Col, Lit, TrimSide, Ty};
+use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, TrimSide, Ty};
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -477,6 +477,18 @@ struct Binder<'a> {
     select_aliases: Vec<String>,
 }
 
+fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
+    let nullable = inner.nullable;
+    SExpr {
+        kind: SKind::MathF1 {
+            op,
+            a: Box::new(inner),
+        },
+        ty: Ty::F64,
+        nullable,
+    }
+}
+
 /// AST constructors for the BETWEEN/IN desugars.
 fn ast_bin(op: BinaryOperator, l: SqlExpr, r: SqlExpr) -> SqlExpr {
     SqlExpr::BinaryOp {
@@ -742,6 +754,22 @@ impl Binder<'_> {
                 substring_for,
                 ..
             } => self.substr_node(expr, substring_from.as_deref(), substring_for.as_deref()),
+            // sqlparser gives FLOOR/CEIL dedicated AST nodes, not Function
+            // calls; the datetime `CEIL(x TO field)` form rejects by name.
+            SqlExpr::Floor { expr, field } => match field {
+                sqlparser::ast::CeilFloorKind::Scale(_) => Err(unsup("floor with scale argument")),
+                sqlparser::ast::CeilFloorKind::DateTimeField(
+                    sqlparser::ast::DateTimeField::NoDateTime,
+                ) => self.math1("floor", NumOp1::Ffloor, expr),
+                _ => Err(unsup("FLOOR(x TO datetime-field)")),
+            },
+            SqlExpr::Ceil { expr, field } => match field {
+                sqlparser::ast::CeilFloorKind::Scale(_) => Err(unsup("ceil with scale argument")),
+                sqlparser::ast::CeilFloorKind::DateTimeField(
+                    sqlparser::ast::DateTimeField::NoDateTime,
+                ) => self.math1("ceil", NumOp1::Fceil, expr),
+                _ => Err(unsup("CEIL(x TO datetime-field)")),
+            },
             // BETWEEN and IN are exact K3 desugars (wave-1 pins): DuckDB's
             // truth tables over NULL/NaN fall out of Kleene AND/OR of the
             // duck_fcmp comparisons with zero special cases. DuckDB unifies
@@ -980,6 +1008,14 @@ impl Binder<'_> {
                     nullable,
                 })
             }
+            // DuckDB's ^ IS pow — but sqlparser parses ^ BELOW * while
+            // DuckDB binds it above (measured: duck 2*x^y = 2*(x^y),
+            // sqlparser tree = (2*x)^y). Mapping it would silently compute
+            // the wrong tree, so the operator stays cleanly unsupported;
+            // pow()/power() cover the semantics.
+            BinaryOperator::BitwiseXor => Err(unsup(
+                "operator ^ (sqlparser precedence differs from DuckDB pow)",
+            )),
             other => Err(unsup(format!("operator {other}"))),
         }
     }
@@ -1271,6 +1307,72 @@ impl Binder<'_> {
                     _ => Err(PrepareError::Bind(format!("{name} takes 1 or 2 arguments"))),
                 }
             }
+            // Wave-1 f64 unary math (pins: 2026-07-26-wave1-builtin-pins.md).
+            // 1-arg log IS base 10 in DuckDB — handled under "log" below.
+            "ln" | "log2" | "log10" | "exp" | "sqrt" | "cbrt" | "sin" | "cos" | "tan" | "floor"
+            | "ceil" | "ceiling" => {
+                let op = match name.as_str() {
+                    "ln" => NumOp1::Ln,
+                    "log2" => NumOp1::Log2,
+                    "log10" => NumOp1::Log10,
+                    "exp" => NumOp1::Fexp,
+                    "sqrt" => NumOp1::Fsqrt,
+                    "cbrt" => NumOp1::Fcbrt,
+                    "sin" => NumOp1::Fsin,
+                    "cos" => NumOp1::Fcos,
+                    "tan" => NumOp1::Ftan,
+                    "floor" => NumOp1::Ffloor,
+                    _ => NumOp1::Fceil,
+                };
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 1 argument"
+                    )));
+                };
+                self.math1(&name, op, arg)
+            }
+            "log" => match args[..] {
+                [x] => self.math1("log", NumOp1::Log10, x),
+                [b, x] => self.math2("log", BinOp::Flogb, b, x),
+                _ => Err(PrepareError::Bind("log takes 1 or 2 arguments".to_string())),
+            },
+            "pow" | "power" => match args[..] {
+                [x, y] => self.math2(&name, BinOp::Fpow, x, y),
+                _ => Err(PrepareError::Bind(format!(
+                    "{name} takes exactly 2 arguments"
+                ))),
+            },
+            "pi" => {
+                if !args.is_empty() {
+                    return Err(PrepareError::Bind("pi takes no arguments".to_string()));
+                }
+                // Bit-equal to DuckDB's pi() (measured 0x400921FB54442D18).
+                Ok(SExpr {
+                    kind: SKind::Lit(Lit::F64(std::f64::consts::PI)),
+                    ty: Ty::F64,
+                    nullable: false,
+                })
+            }
+            "trunc" => match args[..] {
+                [arg] => {
+                    let Some(inner) = self.expr_or_null(arg)? else {
+                        return Ok(null_of(Ty::I64));
+                    };
+                    match inner.ty {
+                        // Measured: integer trunc is identity, type preserved.
+                        Ty::I64 => Ok(inner),
+                        Ty::F64 => Ok(math1_node(NumOp1::Ftrunc, inner)),
+                        other => Err(PrepareError::Bind(format!(
+                            "no function matches trunc({})",
+                            other.name()
+                        ))),
+                    }
+                }
+                [_, _] => Err(unsup("trunc with digits (scale-then-round algorithm)")),
+                _ => Err(PrepareError::Bind(
+                    "trunc takes 1 or 2 arguments".to_string(),
+                )),
+            },
             "abs" => {
                 let [arg] = args[..] else {
                     return Err(PrepareError::Bind(
@@ -1467,6 +1569,63 @@ impl Binder<'_> {
                 f.name
             ))),
         }
+    }
+
+    /// Wave-1 unary f64 math: numeric args promote to DOUBLE, VARCHAR and
+    /// BOOLEAN columns are binder errors (no implicit cast — measured), a
+    /// literal NULL binds to the DOUBLE overload.
+    fn math1(&self, name: &str, op: NumOp1, arg: &SqlExpr) -> Result<SExpr, PrepareError> {
+        let Some(inner) = self.expr_or_null(arg)? else {
+            return Ok(null_of(Ty::F64));
+        };
+        let inner = match inner.ty {
+            Ty::F64 => inner,
+            Ty::I64 => promote_f64(inner),
+            other => {
+                return Err(PrepareError::Bind(format!(
+                    "no function matches {name}({})",
+                    other.name()
+                )))
+            }
+        };
+        Ok(math1_node(op, inner))
+    }
+
+    /// Wave-1 binary f64 math (pow / log(base, x)); same argument typing
+    /// rules as `math1`. A literal NULL in either slot pre-empts every
+    /// domain check (measured: log(-2.0, NULL) is NULL, not an error).
+    fn math2(
+        &self,
+        name: &str,
+        op: BinOp,
+        a: &SqlExpr,
+        b: &SqlExpr,
+    ) -> Result<SExpr, PrepareError> {
+        let (ba, bb) = (self.expr_or_null(a)?, self.expr_or_null(b)?);
+        let (Some(ba), Some(bb)) = (ba, bb) else {
+            return Ok(null_of(Ty::F64));
+        };
+        let promote = |e: SExpr| -> Result<SExpr, PrepareError> {
+            match e.ty {
+                Ty::F64 => Ok(e),
+                Ty::I64 => Ok(promote_f64(e)),
+                other => Err(PrepareError::Bind(format!(
+                    "no function matches {name}({})",
+                    other.name()
+                ))),
+            }
+        };
+        let (ba, bb) = (promote(ba)?, promote(bb)?);
+        let nullable = ba.nullable || bb.nullable;
+        Ok(SExpr {
+            kind: SKind::MathF2 {
+                op,
+                a: Box::new(ba),
+                b: Box::new(bb),
+            },
+            ty: Ty::F64,
+            nullable,
+        })
     }
 
     /// All TRIM forms plus ltrim/rtrim. `chars` is the optional trim-set

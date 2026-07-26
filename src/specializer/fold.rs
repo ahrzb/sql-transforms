@@ -61,6 +61,22 @@ pub fn fold(e: SExpr) -> SExpr {
                 _ => e(SKind::IntToFloat(Box::new(inner))),
             }
         }
+        // Wave-1 math: fold children only — the ops themselves stay
+        // runtime so constant domain errors trap per row exactly like the
+        // vectorized path we pin against (no fold/vector divergence).
+        SKind::MathF1 { op, a } => {
+            let a = fold(*a);
+            e(SKind::MathF1 { op, a: Box::new(a) })
+        }
+        SKind::MathF2 { op, a, b } => {
+            let a = fold(*a);
+            let b = fold(*b);
+            e(SKind::MathF2 {
+                op,
+                a: Box::new(a),
+                b: Box::new(b),
+            })
+        }
         SKind::Not(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {

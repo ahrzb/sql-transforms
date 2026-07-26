@@ -160,6 +160,19 @@ pub enum SKind {
         a: Box<SExpr>,
         b: Box<SExpr>,
     },
+    /// Wave-1 f64 unary math (operand promoted to F64 by the frontend);
+    /// NULL-propagating; the trapping ops get safe-masked payloads in
+    /// lowering so a NULL row can never fire the domain trap.
+    MathF1 {
+        op: super::ir::NumOp1,
+        a: Box<SExpr>,
+    },
+    /// Wave-1 f64 binary math: Fpow (total) and Flogb(base, x) (trapping).
+    MathF2 {
+        op: super::ir::BinOp,
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+    },
 }
 
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division

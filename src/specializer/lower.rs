@@ -274,16 +274,28 @@ impl<'a> FB<'a> {
             None => l.val,
             Some(f) => {
                 let d = self.default_of(ty);
-                let dst = self.fresh();
-                self.inst(Inst::Select {
-                    dst,
-                    cond: f,
-                    a: l.val,
-                    b: d,
-                });
-                dst
+                self.select_of(f, l.val, d)
             }
         }
+    }
+
+    /// Like `masked`, but to an op-specific SAFE constant: the type default
+    /// (0.0) is itself in the trap domain of ln/logb, so those mask to a
+    /// value the op accepts (the result is discarded under the false flag).
+    fn masked_to(&mut self, l: Lane, safe: Lit) -> Value {
+        match l.flag {
+            None => l.val,
+            Some(f) => {
+                let d = self.const_lit(safe);
+                self.select_of(f, l.val, d)
+            }
+        }
+    }
+
+    fn select_of(&mut self, cond: Value, a: Value, b: Value) -> Value {
+        let dst = self.fresh();
+        self.inst(Inst::Select { dst, cond, a, b });
+        dst
     }
 
     fn default_of(&mut self, ty: Ty) -> Value {
@@ -567,6 +579,53 @@ impl<'a> FB<'a> {
                     flag: l.flag,
                     val: dst,
                 })
+            }
+            SKind::MathF1 { op, a } => {
+                let l = self.emit(a, live)?;
+                // Safe mask per op: the value must be OUTSIDE the trap
+                // domain (1.0 for logs; 0.0 is fine for sqrt/trig; total
+                // ops need no mask at all).
+                let av = match op {
+                    NumOp1::Ln | NumOp1::Log2 | NumOp1::Log10 => self.masked_to(l, Lit::F64(1.0)),
+                    NumOp1::Fsqrt | NumOp1::Fsin | NumOp1::Fcos | NumOp1::Ftan => {
+                        self.masked_to(l, Lit::F64(0.0))
+                    }
+                    _ => l.val,
+                };
+                let dst = self.fresh();
+                self.inst(Inst::Num1 {
+                    op: *op,
+                    dst,
+                    a: av,
+                });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::MathF2 { op, a, b } => {
+                let la = self.emit(a, live)?;
+                live.push((la, a.ty));
+                let lb = self.emit(b, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                // Flogb traps on base<=0 / base==1 / x<=0. NULL pre-empts
+                // EVERY domain check (pinned: log(-2.0, NULL) is NULL, not
+                // an error) — so both payloads mask under the COMBINED
+                // flag: either side NULL makes both sides safe.
+                let flag = self.combine_flags(la.flag, lb.flag);
+                let (av, bv) = match op {
+                    BinOp::Flogb => {
+                        let a = Lane { flag, val: la.val };
+                        let b = Lane { flag, val: lb.val };
+                        (
+                            self.masked_to(a, Lit::F64(10.0)),
+                            self.masked_to(b, Lit::F64(1.0)),
+                        )
+                    }
+                    _ => (la.val, lb.val),
+                };
+                let val = self.bin(*op, av, bv);
+                Ok(Lane { flag, val })
             }
             SKind::Round(a) => {
                 let l = self.emit(a, live)?;

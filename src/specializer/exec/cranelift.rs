@@ -188,6 +188,51 @@ extern "C" fn h_frem(a: f64, b: f64) -> f64 {
     a % b
 }
 
+// Wave-1 math helpers: each delegates to the interpreter's shared semantic
+// fn, so the backends physically cannot drift (pins spec 2026-07-26).
+macro_rules! math1_h {
+    ($name:ident, $f:path) => {
+        extern "C" fn $name(p: *mut Cx, x: f64) -> f64 {
+            match $f(x) {
+                Ok(v) => v,
+                Err(t) => {
+                    unsafe { cx(p) }.set_trap(t.0);
+                    0.0
+                }
+            }
+        }
+    };
+}
+math1_h!(h_ln, interp::duck_ln);
+math1_h!(h_log2, interp::duck_log2);
+math1_h!(h_log10, interp::duck_log10);
+math1_h!(h_fsqrt, interp::duck_sqrt);
+math1_h!(h_fsin, interp::duck_sin);
+math1_h!(h_fcos, interp::duck_cos);
+math1_h!(h_ftan, interp::duck_tan);
+
+extern "C" fn h_fexp(x: f64) -> f64 {
+    interp::duck_exp(x).expect("exp is total")
+}
+
+extern "C" fn h_fcbrt(x: f64) -> f64 {
+    interp::duck_cbrt(x).expect("cbrt is total")
+}
+
+extern "C" fn h_fpow(x: f64, y: f64) -> f64 {
+    interp::duck_pow(x, y).expect("pow is total")
+}
+
+extern "C" fn h_flogb(p: *mut Cx, base: f64, x: f64) -> f64 {
+    match interp::duck_logb(base, x) {
+        Ok(v) => v,
+        Err(t) => {
+            unsafe { cx(p) }.set_trap(t.0);
+            0.0
+        }
+    }
+}
+
 extern "C" fn h_fround(a: f64) -> f64 {
     a.round()
 }
@@ -883,13 +928,15 @@ fn translate_inst(
                 BinOp::Fmul => b.ins().fmul(x, y),
                 BinOp::Fdiv => b.ins().fdiv(x, y),
                 BinOp::Frem => call_h(b, module, "h_frem", &[x, y]).unwrap(),
+                BinOp::Fpow => call_h(b, module, "h_fpow", &[x, y]).unwrap(),
+                BinOp::Flogb => call_h(b, module, "h_flogb", &[cxp, x, y]).unwrap(),
                 BinOp::And => b.ins().band(x, y),
                 BinOp::Or => b.ins().bor(x, y),
                 BinOp::Xor => b.ins().bxor(x, y),
             };
             if matches!(
                 op,
-                BinOp::Iadd | BinOp::Isub | BinOp::Imul | BinOp::Idiv | BinOp::Irem
+                BinOp::Iadd | BinOp::Isub | BinOp::Imul | BinOp::Idiv | BinOp::Irem | BinOp::Flogb
             ) {
                 trap_check(b);
             }
@@ -1050,6 +1097,29 @@ fn translate_inst(
                 }
                 NumOp1::Fabs => b.ins().fabs(x),
                 NumOp1::Fround => call_h(b, module, "h_fround", &[x]).unwrap(),
+                // Wave-1: floor/ceil/trunc are single CLIF instructions;
+                // total transcendentals are plain helpers; trapping ones
+                // get the standard flag check.
+                NumOp1::Ffloor => b.ins().floor(x),
+                NumOp1::Fceil => b.ins().ceil(x),
+                NumOp1::Ftrunc => b.ins().trunc(x),
+                NumOp1::Fexp => call_h(b, module, "h_fexp", &[x]).unwrap(),
+                NumOp1::Fcbrt => call_h(b, module, "h_fcbrt", &[x]).unwrap(),
+                trapping => {
+                    let name = match trapping {
+                        NumOp1::Ln => "h_ln",
+                        NumOp1::Log2 => "h_log2",
+                        NumOp1::Log10 => "h_log10",
+                        NumOp1::Fsqrt => "h_fsqrt",
+                        NumOp1::Fsin => "h_fsin",
+                        NumOp1::Fcos => "h_fcos",
+                        NumOp1::Ftan => "h_ftan",
+                        other => unreachable!("non-trapping op {other:?} handled above"),
+                    };
+                    let v = call_h(b, module, name, &[cxp, x]).unwrap();
+                    trap_check(b);
+                    v
+                }
             };
             vals.insert(dst.0, V::S(v));
         }
@@ -1317,6 +1387,17 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_store_str", h_store_str as *const u8),
     ("h_sload", h_sload as *const u8),
     ("h_probe", h_probe as *const u8),
+    ("h_ln", h_ln as *const u8),
+    ("h_log2", h_log2 as *const u8),
+    ("h_log10", h_log10 as *const u8),
+    ("h_fsqrt", h_fsqrt as *const u8),
+    ("h_fsin", h_fsin as *const u8),
+    ("h_fcos", h_fcos as *const u8),
+    ("h_ftan", h_ftan as *const u8),
+    ("h_fexp", h_fexp as *const u8),
+    ("h_fcbrt", h_fcbrt as *const u8),
+    ("h_fpow", h_fpow as *const u8),
+    ("h_flogb", h_flogb as *const u8),
 ];
 
 fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types::Type) {
@@ -1329,7 +1410,12 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_const_str" => (&[ptr, I64, I64], Some(I64)),
         "h_iadd" | "h_isub" | "h_imul" | "h_idiv" | "h_irem" => (&[ptr, I64, I64], Some(I64)),
         "h_frem" => (&[F64, F64], Some(F64)),
-        "h_fround" => (&[F64], Some(F64)),
+        "h_fround" | "h_fexp" | "h_fcbrt" => (&[F64], Some(F64)),
+        "h_fpow" => (&[F64, F64], Some(F64)),
+        "h_ln" | "h_log2" | "h_log10" | "h_fsqrt" | "h_fsin" | "h_fcos" | "h_ftan" => {
+            (&[ptr, F64], Some(F64))
+        }
+        "h_flogb" => (&[ptr, F64, F64], Some(F64)),
         "h_iabs" => (&[ptr, I64], Some(I64)),
         "h_fcmp" => (&[F64, F64, I64], Some(I8)),
         "h_scmp" => (&[ptr, I64, I64, I64, I64, I64], Some(I8)),

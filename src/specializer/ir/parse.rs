@@ -857,7 +857,7 @@ impl Parser {
                 Inst::Const { dst: def!(0), lit }
             }
             "iadd" | "isub" | "imul" | "idiv" | "irem" | "fadd" | "fsub" | "fmul" | "fdiv"
-            | "frem" | "and" | "or" | "xor" => {
+            | "frem" | "fpow" | "flogb" | "and" | "or" | "xor" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iadd" => BinOp::Iadd,
@@ -870,6 +870,8 @@ impl Parser {
                     "fmul" => BinOp::Fmul,
                     "fdiv" => BinOp::Fdiv,
                     "frem" => BinOp::Frem,
+                    "fpow" => BinOp::Fpow,
+                    "flogb" => BinOp::Flogb,
                     "and" => BinOp::And,
                     "or" => BinOp::Or,
                     _ => BinOp::Xor,
@@ -1026,12 +1028,25 @@ impl Parser {
                     len,
                 }
             }
-            "iabs" | "fabs" | "fround" => {
+            "iabs" | "fabs" | "fround" | "ln" | "log2" | "log10" | "fexp" | "fsqrt" | "fcbrt"
+            | "fsin" | "fcos" | "ftan" | "ffloor" | "fceil" | "ftrunc" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iabs" => NumOp1::Iabs,
                     "fabs" => NumOp1::Fabs,
-                    _ => NumOp1::Fround,
+                    "fround" => NumOp1::Fround,
+                    "ln" => NumOp1::Ln,
+                    "log2" => NumOp1::Log2,
+                    "log10" => NumOp1::Log10,
+                    "fexp" => NumOp1::Fexp,
+                    "fsqrt" => NumOp1::Fsqrt,
+                    "fcbrt" => NumOp1::Fcbrt,
+                    "fsin" => NumOp1::Fsin,
+                    "fcos" => NumOp1::Fcos,
+                    "ftan" => NumOp1::Ftan,
+                    "ffloor" => NumOp1::Ffloor,
+                    "fceil" => NumOp1::Fceil,
+                    _ => NumOp1::Ftrunc,
                 };
                 let a = self.use_value()?;
                 Inst::Num1 {
