@@ -121,6 +121,18 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Sconcat { a, b, .. } => {
             let _ = write!(s, "sconcat {}, {}", val(*a), val(*b));
         }
+        Inst::Str1 { op, a, .. } => {
+            let _ = write!(s, "{} {}", op.name(), val(*a));
+        }
+        Inst::Strim { side, a, chars, .. } => {
+            let _ = write!(s, "strim.{} {}, {}", side.name(), val(*a), val(*chars));
+        }
+        Inst::Ssubstr { a, start, len, .. } => {
+            let _ = write!(s, "ssubstr {}, {}, {}", val(*a), val(*start), val(*len));
+        }
+        Inst::Num1 { op, a, .. } => {
+            let _ = write!(s, "{} {}", op.name(), val(*a));
+        }
         Inst::Load { col, .. } => {
             let _ = write!(s, "load in.{}", col_name(p, false, *col));
         }

@@ -28,7 +28,7 @@ use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 
 use super::fold::fold;
-use super::ir::{CmpPred, Col, Lit, Ty};
+use super::ir::{CmpPred, Col, Lit, TrimSide, Ty};
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -527,10 +527,33 @@ impl Binder<'_> {
                 };
                 self.cast(expr, data_type, trying)
             }
-            SqlExpr::Function(f) => Err(unsup(format!(
-                "function {} (catalogue arrives after the lowering spine)",
-                f.name
-            ))),
+            SqlExpr::Function(f) => self.function(f),
+            SqlExpr::Trim {
+                expr,
+                trim_where,
+                trim_what,
+                trim_characters,
+            } => {
+                let side = match trim_where {
+                    None | Some(sqlparser::ast::TrimWhereField::Both) => TrimSide::Both,
+                    Some(sqlparser::ast::TrimWhereField::Leading) => TrimSide::Lead,
+                    Some(sqlparser::ast::TrimWhereField::Trailing) => TrimSide::Trail,
+                };
+                let chars: Option<&SqlExpr> = match (trim_what, trim_characters) {
+                    (Some(w), _) => Some(w),
+                    (None, Some(cs)) if cs.len() == 1 => Some(&cs[0]),
+                    (None, Some(cs)) if cs.is_empty() => None,
+                    (None, Some(_)) => return Err(unsup("TRIM with multiple character args")),
+                    (None, None) => None,
+                };
+                self.trim_node(side, expr, chars)
+            }
+            SqlExpr::Substring {
+                expr,
+                substring_from,
+                substring_for,
+                ..
+            } => self.substr_node(expr, substring_from.as_deref(), substring_for.as_deref()),
             SqlExpr::Between { .. } => Err(unsup("BETWEEN")),
             SqlExpr::InList { .. } => Err(unsup("IN (...)")),
             SqlExpr::Like { .. } => Err(unsup("LIKE")),
@@ -708,7 +731,21 @@ impl Binder<'_> {
                     nullable,
                 })
             }
-            BinaryOperator::StringConcat => Err(unsup("|| (arrives with the string ops)")),
+            BinaryOperator::StringConcat => {
+                // DuckDB: || is ALWAYS string concat (1 || 2 = '12',
+                // true || true = 'truetrue'), NULL-propagating; operands
+                // implicitly cast to VARCHAR.
+                let (a, b) = (to_varchar(a), to_varchar(b));
+                let nullable = a.nullable || b.nullable;
+                Ok(SExpr {
+                    kind: SKind::Concat {
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    },
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
             other => Err(unsup(format!("operator {other}"))),
         }
     }
@@ -854,6 +891,38 @@ impl Binder<'_> {
     fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
         let (a, b, ty) = numeric_promote(op, a, b)?;
         let nullable = a.nullable || b.nullable;
+        // DuckDB pin (2026-07-26): integer % by zero is NULL, not an error —
+        // guard with a CASE unless the divisor is a provably non-zero
+        // literal. The irem trap stays reachable only for MIN % -1, where
+        // DuckDB traps too. Float % is IEEE (x % 0.0 = NaN), no guard.
+        if op == ArithOp::Rem
+            && ty == Ty::I64
+            && !matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
+        {
+            let zero = SExpr {
+                kind: SKind::Lit(Lit::I64(0)),
+                ty: Ty::I64,
+                nullable: false,
+            };
+            let cond = self.cmp(CmpPred::Eq, b.clone(), zero)?;
+            let rem = SExpr {
+                kind: SKind::Arith {
+                    op,
+                    a: Box::new(a),
+                    b: Box::new(b),
+                },
+                ty,
+                nullable,
+            };
+            return Ok(SExpr {
+                kind: SKind::Case {
+                    arms: vec![(cond, null_of(Ty::I64))],
+                    default: Some(Box::new(rem)),
+                },
+                ty: Ty::I64,
+                nullable: true,
+            });
+        }
         Ok(SExpr {
             kind: SKind::Arith {
                 op,
@@ -891,6 +960,392 @@ impl Binder<'_> {
             ty: Ty::I1,
             nullable,
         })
+    }
+
+    /// The v0 builtin catalogue. Everything here follows the measured pins
+    /// in docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md; names
+    /// not listed reject as clean unsupported.
+    fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        let name = f.name.to_string().to_lowercase();
+        let FunctionArguments::List(list) = &f.args else {
+            return Err(unsup(format!(
+                "function {} without an argument list",
+                f.name
+            )));
+        };
+        if !list.clauses.is_empty() || list.duplicate_treatment.is_some() {
+            return Err(unsup(format!("function {} argument clauses", f.name)));
+        }
+        let mut args: Vec<&SqlExpr> = Vec::with_capacity(list.args.len());
+        for a in &list.args {
+            match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => args.push(e),
+                _ => return Err(unsup(format!("function {} argument form", f.name))),
+            }
+        }
+        match name.as_str() {
+            "upper" | "lower" => {
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 1 argument"
+                    )));
+                };
+                let Some(inner) = self.expr_or_null(arg)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                if inner.ty != Ty::Str {
+                    // DuckDB has no implicit numeric->VARCHAR coercion here.
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches {name}({})",
+                        inner.ty.name()
+                    )));
+                }
+                let nullable = inner.nullable;
+                Ok(SExpr {
+                    kind: SKind::StrCase {
+                        upper: name == "upper",
+                        a: Box::new(inner),
+                    },
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
+            "ltrim" | "rtrim" => {
+                let side = if name == "ltrim" {
+                    TrimSide::Lead
+                } else {
+                    TrimSide::Trail
+                };
+                match args[..] {
+                    [s] => self.trim_node(side, s, None),
+                    [s, c] => self.trim_node(side, s, Some(c)),
+                    _ => Err(PrepareError::Bind(format!("{name} takes 1 or 2 arguments"))),
+                }
+            }
+            "abs" => {
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(
+                        "abs takes exactly 1 argument".to_string(),
+                    ));
+                };
+                // abs(NULL) binds to abs(BIGINT) in DuckDB.
+                let Some(inner) = self.expr_or_null(arg)? else {
+                    return Ok(null_of(Ty::I64));
+                };
+                if !matches!(inner.ty, Ty::I64 | Ty::F64) {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches abs({})",
+                        inner.ty.name()
+                    )));
+                }
+                let (ty, nullable) = (inner.ty, inner.nullable);
+                Ok(SExpr {
+                    kind: SKind::Abs(Box::new(inner)),
+                    ty,
+                    nullable,
+                })
+            }
+            "round" => match args[..] {
+                [arg] => {
+                    let Some(inner) = self.expr_or_null(arg)? else {
+                        return Ok(null_of(Ty::I64));
+                    };
+                    match inner.ty {
+                        // Measured: integer round is identity, type preserved.
+                        Ty::I64 => Ok(inner),
+                        Ty::F64 => {
+                            let nullable = inner.nullable;
+                            Ok(SExpr {
+                                kind: SKind::Round(Box::new(inner)),
+                                ty: Ty::F64,
+                                nullable,
+                            })
+                        }
+                        other => Err(PrepareError::Bind(format!(
+                            "no function matches round({})",
+                            other.name()
+                        ))),
+                    }
+                }
+                [_, _] => Err(unsup("round with digits (scale-then-round algorithm)")),
+                _ => Err(PrepareError::Bind(
+                    "round takes 1 or 2 arguments".to_string(),
+                )),
+            },
+            "concat" => {
+                if args.is_empty() {
+                    return Err(PrepareError::Bind(
+                        "concat needs at least 1 argument".to_string(),
+                    ));
+                }
+                // CONCAT skips NULLs (measured): a literal NULL contributes
+                // nothing, a nullable arg becomes CASE WHEN x IS NULL THEN ''
+                // ELSE x END, and the all-NULL call is ''.
+                let mut acc: Option<SExpr> = None;
+                for arg in &args {
+                    let Some(e) = self.expr_or_null(arg)? else {
+                        continue;
+                    };
+                    let e = to_varchar(e);
+                    let piece = if e.nullable {
+                        let cond = SExpr {
+                            kind: SKind::IsNull {
+                                negated: false,
+                                inner: Box::new(e.clone()),
+                            },
+                            ty: Ty::I1,
+                            nullable: false,
+                        };
+                        SExpr {
+                            kind: SKind::Case {
+                                arms: vec![(cond, lit_str(""))],
+                                default: Some(Box::new(e)),
+                            },
+                            ty: Ty::Str,
+                            // Never NULL: either arm produces a value. The
+                            // default's flag is provably true on its path.
+                            nullable: false,
+                        }
+                    } else {
+                        e
+                    };
+                    acc = Some(match acc {
+                        None => piece,
+                        Some(p) => SExpr {
+                            kind: SKind::Concat {
+                                a: Box::new(p),
+                                b: Box::new(piece),
+                            },
+                            ty: Ty::Str,
+                            nullable: false,
+                        },
+                    });
+                }
+                Ok(acc.unwrap_or_else(|| lit_str("")))
+            }
+            "coalesce" => {
+                // Lazy per-row (measured: untaken erroring arms don't fire) —
+                // guaranteed here because CASE branches run only when taken.
+                let mut bound = Vec::with_capacity(args.len());
+                for arg in &args {
+                    if let Some(e) = self.expr_or_null(arg)? {
+                        bound.push(e);
+                    } // literal NULL args never produce a value: drop them
+                }
+                if bound.is_empty() {
+                    return Err(unsup("COALESCE of only NULL literals"));
+                }
+                let mut unified = bound[0].ty;
+                for e in &bound[1..] {
+                    unified = match (unified, e.ty) {
+                        (u, t) if u == t => u,
+                        (Ty::I64, Ty::F64) | (Ty::F64, Ty::I64) => Ty::F64,
+                        (u, t) => {
+                            return Err(PrepareError::Bind(format!(
+                                "COALESCE arguments disagree: {} vs {}",
+                                u.name(),
+                                t.name()
+                            )))
+                        }
+                    };
+                }
+                let mut bound: Vec<SExpr> = bound
+                    .into_iter()
+                    .map(|e| {
+                        if e.ty == Ty::I64 && unified == Ty::F64 {
+                            promote_f64(e)
+                        } else {
+                            e
+                        }
+                    })
+                    .collect();
+                // Args after the first non-nullable one are unreachable.
+                if let Some(stop) = bound.iter().position(|e| !e.nullable) {
+                    bound.truncate(stop + 1);
+                }
+                let mut it = bound.into_iter().rev();
+                let mut acc = it.next().expect("non-empty");
+                for a in it {
+                    let nullable = a.nullable && acc.nullable;
+                    let cond = SExpr {
+                        kind: SKind::IsNull {
+                            negated: true,
+                            inner: Box::new(a.clone()),
+                        },
+                        ty: Ty::I1,
+                        nullable: false,
+                    };
+                    acc = SExpr {
+                        kind: SKind::Case {
+                            arms: vec![(cond, a)],
+                            default: Some(Box::new(acc)),
+                        },
+                        ty: unified,
+                        nullable,
+                    };
+                }
+                Ok(acc)
+            }
+            "nullif" => {
+                let [a, b] = args[..] else {
+                    return Err(PrepareError::Bind(
+                        "nullif takes exactly 2 arguments".to_string(),
+                    ));
+                };
+                match (self.expr_or_null(a)?, self.expr_or_null(b)?) {
+                    (None, Some(b)) => Ok(null_of(b.ty)),
+                    // a = NULL is never TRUE, so nullif(a, NULL) is a.
+                    (Some(a), None) => Ok(a),
+                    (None, None) => Err(unsup("NULLIF(NULL, NULL)")),
+                    (Some(a), Some(b)) => {
+                        // Comparison at the promoted type; result keeps a's
+                        // ORIGINAL type (measured: nullif(1, 1.0) -> INTEGER).
+                        let cond = self.cmp(CmpPred::Eq, a.clone(), b)?;
+                        let ty = a.ty;
+                        Ok(SExpr {
+                            kind: SKind::Case {
+                                arms: vec![(cond, null_of(ty))],
+                                default: Some(Box::new(a)),
+                            },
+                            ty,
+                            nullable: true,
+                        })
+                    }
+                }
+            }
+            _ => Err(unsup(format!(
+                "function {} (not in the v0 catalogue)",
+                f.name
+            ))),
+        }
+    }
+
+    /// All TRIM forms plus ltrim/rtrim. `chars` is the optional trim-set
+    /// expression; absent means DuckDB's default — the single space (only
+    /// 0x20 is trimmed, never tabs/newlines).
+    fn trim_node(
+        &self,
+        side: TrimSide,
+        s: &SqlExpr,
+        chars: Option<&SqlExpr>,
+    ) -> Result<SExpr, PrepareError> {
+        let Some(s) = self.expr_or_null(s)? else {
+            return Ok(null_of(Ty::Str));
+        };
+        if s.ty != Ty::Str {
+            return Err(PrepareError::Bind(format!(
+                "trim needs VARCHAR, got {}",
+                s.ty.name()
+            )));
+        }
+        let chars = match chars {
+            Some(c) => match self.expr_or_null(c)? {
+                // A NULL trim-set propagates NULL (measured).
+                None => return Ok(null_of(Ty::Str)),
+                Some(c) if c.ty == Ty::Str => c,
+                Some(c) => {
+                    return Err(PrepareError::Bind(format!(
+                        "trim characters must be VARCHAR, got {}",
+                        c.ty.name()
+                    )))
+                }
+            },
+            None => lit_str(" "),
+        };
+        let nullable = s.nullable || chars.nullable;
+        Ok(SExpr {
+            kind: SKind::Trim {
+                side,
+                a: Box::new(s),
+                chars: Box::new(chars),
+            },
+            ty: Ty::Str,
+            nullable,
+        })
+    }
+
+    /// SUBSTR / SUBSTRING (both syntaxes). Missing start means 1; missing
+    /// length means i64::MAX ("rest of the string" under the saturating
+    /// window arithmetic in the interpreter).
+    fn substr_node(
+        &self,
+        s: &SqlExpr,
+        from: Option<&SqlExpr>,
+        for_: Option<&SqlExpr>,
+    ) -> Result<SExpr, PrepareError> {
+        let Some(s) = self.expr_or_null(s)? else {
+            return Ok(null_of(Ty::Str));
+        };
+        if s.ty != Ty::Str {
+            return Err(PrepareError::Bind(format!(
+                "substr needs VARCHAR, got {}",
+                s.ty.name()
+            )));
+        }
+        let mut num = |e: Option<&SqlExpr>, missing: i64| -> Result<Option<SExpr>, PrepareError> {
+            match e {
+                None => Ok(Some(lit_i64(missing))),
+                Some(e) => match self.expr_or_null(e)? {
+                    None => Ok(None),
+                    Some(x) if x.ty == Ty::I64 => Ok(Some(x)),
+                    Some(x) => Err(PrepareError::Bind(format!(
+                        "substr position/length must be INTEGER, got {}",
+                        x.ty.name()
+                    ))),
+                },
+            }
+        };
+        let (Some(start), Some(len)) = (num(from, 1)?, num(for_, i64::MAX)?) else {
+            // A literal NULL position or length propagates NULL.
+            return Ok(null_of(Ty::Str));
+        };
+        let nullable = s.nullable || start.nullable || len.nullable;
+        Ok(SExpr {
+            kind: SKind::Substr {
+                a: Box::new(s),
+                start: Box::new(start),
+                len: Box::new(len),
+            },
+            ty: Ty::Str,
+            nullable,
+        })
+    }
+}
+
+fn lit_str(s: &str) -> SExpr {
+    SExpr {
+        kind: SKind::Lit(Lit::Str(s.to_string())),
+        ty: Ty::Str,
+        nullable: false,
+    }
+}
+
+fn lit_i64(n: i64) -> SExpr {
+    SExpr {
+        kind: SKind::Lit(Lit::I64(n)),
+        ty: Ty::I64,
+        nullable: false,
+    }
+}
+
+/// DuckDB's implicit VARCHAR coercion for concatenation: ints, floats and
+/// bools all render through the same conversion CAST uses.
+fn to_varchar(e: SExpr) -> SExpr {
+    if e.ty == Ty::Str {
+        return e;
+    }
+    if matches!(e.kind, SKind::NullOf) {
+        return null_of(Ty::Str);
+    }
+    let nullable = e.nullable;
+    SExpr {
+        kind: SKind::Cast {
+            inner: Box::new(e),
+            trying: false,
+        },
+        ty: Ty::Str,
+        nullable,
     }
 }
 
@@ -977,9 +1432,6 @@ fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty)
     }
     if op == ArithOp::Div {
         return Ok((promote_f64(a), promote_f64(b), Ty::F64));
-    }
-    if op == ArithOp::Rem && (a.ty == Ty::F64 || b.ty == Ty::F64) {
-        return Err(unsup("% on DOUBLE (needs an frem instruction)"));
     }
     match (a.ty, b.ty) {
         (Ty::I64, Ty::I64) => Ok((a, b, Ty::I64)),

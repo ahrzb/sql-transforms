@@ -163,6 +163,18 @@ impl KeyBits {
     }
 }
 
+/// DuckDB's DOUBLE comparison order (measured 1.5.5): IEEE except that NaN
+/// equals NaN and sorts above everything (`nan > inf` is TRUE); zeros are
+/// equal (`-0.0 = 0.0`). NOT Rust `total_cmp` (which orders -0.0 < 0.0).
+pub fn duck_fcmp(x: f64, y: f64) -> std::cmp::Ordering {
+    match (x.is_nan(), y.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => x.partial_cmp(&y).expect("no NaN on either side"),
+    }
+}
+
 /// The canonical key bits of an f64: all NaNs collapse to the one Rust
 /// `f64::NAN` payload, `-0.0` collapses to `+0.0`. Everything else is
 /// already unique per bit pattern.

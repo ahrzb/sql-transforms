@@ -462,7 +462,8 @@ fn pin_integer_overflow_and_division_traps() {
 
 #[test]
 fn pin_fcmp_nan_ordering() {
-    // Every predicate involving NaN is false except ne.
+    // DuckDB DOUBLE order (measured 1.5.5, stretch-4 pins): NaN sorts ABOVE
+    // everything, so NaN vs 1.0 is gt/ge/ne — not the IEEE all-false.
     let body = "  %n = const.f64 nan\n  %x = const.f64 1.0\n\
                 \x20 %eq = fcmp.eq %n, %x\n  %ne = fcmp.ne %n, %x\n\
                 \x20 %lt = fcmp.lt %n, %x\n  %le = fcmp.le %n, %x\n\
@@ -472,8 +473,76 @@ fn pin_fcmp_nan_ordering() {
     let got = eval1(body, "eq: i1, ne: i1, lt: i1, le: i1, gt: i1, ge: i1").unwrap();
     assert_eq!(
         got,
-        rows(&[&["false", "true", "false", "false", "false", "false"]])
+        rows(&[&["false", "true", "false", "false", "true", "true"]])
     );
+}
+
+#[test]
+fn pin_fcmp_nan_eq_nan_and_zero_order() {
+    // DuckDB DOUBLE order: nan = nan TRUE, nan > inf TRUE, -0.0 = 0.0 TRUE,
+    // -0.0 < 0.0 FALSE (measured 1.5.5).
+    let body = "  %n = const.f64 nan\n  %i = const.f64 inf\n\
+                \x20 %nz = const.f64 -0.0\n  %pz = const.f64 0.0\n\
+                \x20 %a = fcmp.eq %n, %n\n  %b = fcmp.gt %n, %i\n\
+                \x20 %c = fcmp.eq %nz, %pz\n  %d = fcmp.lt %nz, %pz\n\
+                \x20 store out.a, %a\n  store out.b, %b\n\
+                \x20 store out.c, %c\n  store out.d, %d";
+    let got = eval1(body, "a: i1, b: i1, c: i1, d: i1").unwrap();
+    assert_eq!(got, rows(&[&["true", "true", "true", "false"]]));
+}
+
+#[test]
+fn pin_frem_is_ieee_and_new_unaries() {
+    // frem: sign of the dividend, x % 0.0 = NaN, never traps. iabs traps on
+    // MIN (covered below); fabs clears the sign bit; fround is half away
+    // from zero (all measured DuckDB 1.5.5).
+    let body = "  %a = const.f64 -5.5\n  %b = const.f64 2.5\n  %z = const.f64 0.0\n\
+                \x20 %r = frem %a, %b\n  %rz = frem %a, %z\n\
+                \x20 %nz = const.f64 -0.0\n  %ab = fabs %nz\n\
+                \x20 %h = const.f64 -2.5\n  %ro = fround %h\n\
+                \x20 %i = const.i64 -5\n  %ia = iabs %i\n\
+                \x20 %s = const.str \"  hi  \"\n  %sp = const.str \" \"\n\
+                \x20 %t = strim.both %s, %sp\n  %u = supper %t\n\
+                \x20 %one = const.i64 1\n  %sub = ssubstr %u, %one, %one\n\
+                \x20 store out.r, %r\n  store out.rz, %rz\n  store out.ab, %ab\n\
+                \x20 store out.ro, %ro\n  store out.ia, %ia\n  store out.sub, %sub";
+    let got = eval1(body, "r: f64, rz: f64, ab: f64, ro: f64, ia: i64, sub: str").unwrap();
+    assert_eq!(got, rows(&[&["-0.5", "NaN", "0.0", "-3.0", "5", "H"]]));
+}
+
+#[test]
+fn pin_iabs_min_traps() {
+    let body = "  %m = const.i64 -9223372036854775808\n  %a = iabs %m\n  store out.o, %a";
+    let err = eval1(body, "o: i64").unwrap_err();
+    assert!(err.0.contains("overflow"), "got '{}'", err.0);
+}
+
+#[test]
+fn pin_ssubstr_window_arithmetic() {
+    // DuckDB virtual-window semantics (measured 1.5.5): start 0 and negative
+    // starts map through n+start+1; len is consumed from the virtual
+    // position; negative len is ''; i64::MAX len = rest of string.
+    for (start, len, expect) in [
+        (2, 3, "ell"),
+        (0, 3, "he"),
+        (-2, i64::MAX, "lo"),
+        (-6, 3, "he"),
+        (-10, 8, "hel"),
+        (1, 0, ""),
+        (1, -1, ""),
+        (10, i64::MAX, ""),
+        (0, i64::MAX, "hello"),
+    ] {
+        let body = format!(
+            "  %s = const.str \"hello\"\n  %st = const.i64 {start}\n\
+             \x20 %ln = const.i64 {len}\n  %r = ssubstr %s, %st, %ln\n  store out.o, %r"
+        );
+        assert_eq!(
+            eval1(&body, "o: str").unwrap(),
+            rows(&[&[expect]]),
+            "substr('hello', {start}, {len})"
+        );
+    }
 }
 
 #[test]

@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 
 use super::{
-    BinOp, Block, BlockId, CmpPred, Col, ColTy, Inst, Lit, Program, RoundMode, StaticTy, Term, Ty,
-    Value,
+    BinOp, Block, BlockId, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode, StaticTy,
+    StrOp1, Term, TrimSide, Ty, Value,
 };
 
 #[derive(Debug)]
@@ -857,7 +857,7 @@ impl Parser {
                 Inst::Const { dst: def!(0), lit }
             }
             "iadd" | "isub" | "imul" | "idiv" | "irem" | "fadd" | "fsub" | "fmul" | "fdiv"
-            | "and" | "or" | "xor" => {
+            | "frem" | "and" | "or" | "xor" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iadd" => BinOp::Iadd,
@@ -869,6 +869,7 @@ impl Parser {
                     "fsub" => BinOp::Fsub,
                     "fmul" => BinOp::Fmul,
                     "fdiv" => BinOp::Fdiv,
+                    "frem" => BinOp::Frem,
                     "and" => BinOp::And,
                     "or" => BinOp::Or,
                     _ => BinOp::Xor,
@@ -975,6 +976,65 @@ impl Parser {
                 self.expect(Tok::Comma)?;
                 let b = self.use_value()?;
                 Inst::Sconcat { dst: def!(0), a, b }
+            }
+            "supper" | "slower" => {
+                want_dsts(1, self)?;
+                let op = if opcode == "supper" {
+                    StrOp1::Upper
+                } else {
+                    StrOp1::Lower
+                };
+                let a = self.use_value()?;
+                Inst::Str1 {
+                    op,
+                    dst: def!(0),
+                    a,
+                }
+            }
+            "strim.both" | "strim.lead" | "strim.trail" => {
+                want_dsts(1, self)?;
+                let side = match opcode.as_str() {
+                    "strim.both" => TrimSide::Both,
+                    "strim.lead" => TrimSide::Lead,
+                    _ => TrimSide::Trail,
+                };
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let chars = self.use_value()?;
+                Inst::Strim {
+                    side,
+                    dst: def!(0),
+                    a,
+                    chars,
+                }
+            }
+            "ssubstr" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let start = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let len = self.use_value()?;
+                Inst::Ssubstr {
+                    dst: def!(0),
+                    a,
+                    start,
+                    len,
+                }
+            }
+            "iabs" | "fabs" | "fround" => {
+                want_dsts(1, self)?;
+                let op = match opcode.as_str() {
+                    "iabs" => NumOp1::Iabs,
+                    "fabs" => NumOp1::Fabs,
+                    _ => NumOp1::Fround,
+                };
+                let a = self.use_value()?;
+                Inst::Num1 {
+                    op,
+                    dst: def!(0),
+                    a,
+                }
             }
             "load" => {
                 want_dsts(1, self)?;
