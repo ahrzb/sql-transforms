@@ -315,6 +315,9 @@ fn bind_from<'a>(
             keys,
             key_cols,
             val_cols,
+            // Wave-4 stage A wires non-key ON conjuncts here (bind_on
+            // split); None until that lands.
+            residual: None,
         });
     }
     Ok((binder, specs))
