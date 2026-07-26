@@ -12,12 +12,17 @@
 //! spelling — `SELECT AGE` binds a column named `age` and the output column
 //! is spelled `AGE`.
 //!
-//! Known v0 divergence, deliberate: DuckDB types `1.5` as DECIMAL(2,1); we
-//! map decimal literals to f64 (same collapse the existing engines make).
+//! NULL literal: typed by context (the other operand, the CASE unification,
+//! the CAST target). A bare `SELECT NULL` has no context and stays
+//! unsupported.
+//!
+//! Known v0 divergences, deliberate: DuckDB types `1.5` as DECIMAL(2,1); we
+//! map decimal literals to f64. Integer-ish CAST targets (including HUGEINT)
+//! all collapse to i64.
 
 use sqlparser::ast::{
-    BinaryOperator, Expr as SqlExpr, SelectItem, SetExpr, Statement, TableFactor, UnaryOperator,
-    Value as SqlValue,
+    BinaryOperator, CastKind, Expr as SqlExpr, SelectItem, SetExpr, Statement, TableFactor,
+    UnaryOperator, Value as SqlValue,
 };
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
@@ -66,7 +71,7 @@ pub fn frontend(sql: &str, in_cols: &[Col]) -> Result<(Rel, Vec<Col>), PrepareEr
     if query.with.is_some() {
         return Err(unsup("WITH / common table expressions"));
     }
-    if !query.order_by.is_none() {
+    if query.order_by.is_some() {
         return Err(unsup("ORDER BY"));
     }
     if query.limit_clause.is_some() {
@@ -186,7 +191,24 @@ struct Binder<'a> {
 }
 
 impl Binder<'_> {
+    /// Bind an expression that must have a definite type on its own — a bare
+    /// NULL literal here is unsupported (no context to type it).
     fn expr(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {
+        self.expr_or_null(e)?
+            .ok_or_else(|| unsup("bare NULL literal without a typing context"))
+    }
+
+    /// Like `expr`, but a bare NULL literal comes back as `None` for the
+    /// caller to type from context.
+    fn expr_or_null(&self, e: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        match e {
+            SqlExpr::Value(v) if matches!(v.value, SqlValue::Null) => Ok(None),
+            SqlExpr::Nested(inner) => self.expr_or_null(inner),
+            other => self.bind(other).map(Some),
+        }
+    }
+
+    fn bind(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {
         match e {
             SqlExpr::Identifier(ident) => self.column(&ident.value),
             SqlExpr::CompoundIdentifier(parts) => match parts.as_slice() {
@@ -205,16 +227,37 @@ impl Binder<'_> {
                 self.arith(ArithOp::Sub, zero, self.expr(expr)?)
             }
             SqlExpr::UnaryOp { op: UnaryOperator::Plus, expr } => self.expr(expr),
+            SqlExpr::UnaryOp { op: UnaryOperator::Not, expr } => {
+                let inner = self.expr(expr)?;
+                if inner.ty != Ty::I1 {
+                    return Err(PrepareError::Bind(format!(
+                        "NOT requires BOOLEAN, got {}",
+                        inner.ty.name()
+                    )));
+                }
+                let nullable = inner.nullable;
+                Ok(SExpr { kind: SKind::Not(Box::new(inner)), ty: Ty::I1, nullable })
+            }
             SqlExpr::UnaryOp { op, .. } => Err(unsup(format!("unary operator {op:?}"))),
+            SqlExpr::IsNull(inner) => self.is_null(inner, false),
+            SqlExpr::IsNotNull(inner) => self.is_null(inner, true),
+            SqlExpr::Case { operand, conditions, else_result, .. } => {
+                self.case(operand.as_deref(), conditions, else_result.as_deref())
+            }
+            SqlExpr::Cast { kind, expr, data_type, .. } => {
+                let trying = match kind {
+                    CastKind::Cast | CastKind::DoubleColon => false,
+                    CastKind::TryCast | CastKind::SafeCast => true,
+                };
+                self.cast(expr, data_type, trying)
+            }
             SqlExpr::Function(f) => Err(unsup(format!(
                 "function {} (catalogue arrives after the lowering spine)",
                 f.name
             ))),
-            SqlExpr::Case { .. } => Err(unsup("CASE (arrives with 3VL lowering)")),
-            SqlExpr::Cast { .. } => Err(unsup("CAST (arrives with 3VL lowering)")),
-            SqlExpr::IsNull(_) | SqlExpr::IsNotNull(_) => {
-                Err(unsup("IS [NOT] NULL (arrives with 3VL lowering)"))
-            }
+            SqlExpr::Between { .. } => Err(unsup("BETWEEN")),
+            SqlExpr::InList { .. } => Err(unsup("IN (...)")),
+            SqlExpr::Like { .. } => Err(unsup("LIKE")),
             other => Err(unsup(format!("expression: {other}"))),
         }
     }
@@ -242,8 +285,22 @@ impl Binder<'_> {
         left: &SqlExpr,
         right: &SqlExpr,
     ) -> Result<SExpr, PrepareError> {
-        let a = self.expr(left)?;
-        let b = self.expr(right)?;
+        let a = self.expr_or_null(left)?;
+        let b = self.expr_or_null(right)?;
+        // A NULL literal adopts the other side's type; the op itself is not
+        // folded (NULL AND FALSE is FALSE, so folding would be wrong).
+        let (a, b) = match (a, b) {
+            (Some(a), Some(b)) => (a, b),
+            (Some(a), None) => {
+                let n = null_of(null_context_ty(op, a.ty));
+                (a, n)
+            }
+            (None, Some(b)) => {
+                let n = null_of(null_context_ty(op, b.ty));
+                (n, b)
+            }
+            (None, None) => return Err(unsup("NULL <op> NULL without a typing context")),
+        };
         match op {
             BinaryOperator::Plus => self.arith(ArithOp::Add, a, b),
             BinaryOperator::Minus => self.arith(ArithOp::Sub, a, b),
@@ -257,11 +314,151 @@ impl Binder<'_> {
             BinaryOperator::Gt => self.cmp(CmpPred::Gt, a, b),
             BinaryOperator::GtEq => self.cmp(CmpPred::Ge, a, b),
             BinaryOperator::And | BinaryOperator::Or => {
-                Err(unsup("AND/OR (Kleene logic arrives with 3VL lowering)"))
+                for side in [&a, &b] {
+                    if side.ty != Ty::I1 {
+                        return Err(PrepareError::Bind(format!(
+                            "AND/OR requires BOOLEAN, got {}",
+                            side.ty.name()
+                        )));
+                    }
+                }
+                let nullable = a.nullable || b.nullable;
+                let (a, b) = (Box::new(a), Box::new(b));
+                let kind = if matches!(op, BinaryOperator::And) {
+                    SKind::And { a, b }
+                } else {
+                    SKind::Or { a, b }
+                };
+                Ok(SExpr { kind, ty: Ty::I1, nullable })
             }
             BinaryOperator::StringConcat => Err(unsup("|| (arrives with the string ops)")),
             other => Err(unsup(format!("operator {other}"))),
         }
+    }
+
+    fn is_null(&self, inner: &SqlExpr, negated: bool) -> Result<SExpr, PrepareError> {
+        // NULL IS NULL is legal and constant; type the literal as i64
+        // arbitrarily (only its flag matters).
+        let inner = match self.expr_or_null(inner)? {
+            Some(e) => e,
+            None => null_of(Ty::I64),
+        };
+        Ok(SExpr {
+            kind: SKind::IsNull { negated, inner: Box::new(inner) },
+            ty: Ty::I1,
+            nullable: false,
+        })
+    }
+
+    fn case(
+        &self,
+        operand: Option<&SqlExpr>,
+        conditions: &[sqlparser::ast::CaseWhen],
+        else_result: Option<&SqlExpr>,
+    ) -> Result<SExpr, PrepareError> {
+        if conditions.is_empty() {
+            return Err(PrepareError::Bind("CASE with no WHEN arms".to_string()));
+        }
+        // Bind conditions: searched form directly; simple form desugars to
+        // `operand = value` per arm (operand re-bound per arm via clone —
+        // pure re-evaluation, same result).
+        let bound_operand = operand.map(|op| self.expr(op)).transpose()?;
+        let mut conds = Vec::with_capacity(conditions.len());
+        for when in conditions {
+            let c = match &bound_operand {
+                Some(op) => {
+                    let v = match self.expr_or_null(&when.condition)? {
+                        Some(v) => v,
+                        None => null_of(op.ty),
+                    };
+                    self.cmp(CmpPred::Eq, op.clone(), v)?
+                }
+                None => {
+                    let c = match self.expr_or_null(&when.condition)? {
+                        Some(c) => c,
+                        None => null_of(Ty::I1),
+                    };
+                    if c.ty != Ty::I1 {
+                        return Err(PrepareError::Bind(format!(
+                            "CASE WHEN condition must be BOOLEAN, got {}",
+                            c.ty.name()
+                        )));
+                    }
+                    c
+                }
+            };
+            conds.push(c);
+        }
+
+        // Bind results (NULL allowed), then unify their types.
+        let mut results: Vec<Option<SExpr>> = Vec::with_capacity(conditions.len());
+        for when in conditions {
+            results.push(self.expr_or_null(&when.result)?);
+        }
+        let else_bound: Option<Option<SExpr>> =
+            else_result.map(|e| self.expr_or_null(e)).transpose()?;
+
+        let mut unified: Option<Ty> = None;
+        for r in results.iter().chain(else_bound.iter()).flatten() {
+            unified = Some(match unified {
+                None => r.ty,
+                Some(u) if u == r.ty => u,
+                Some(Ty::I64) if r.ty == Ty::F64 => Ty::F64,
+                Some(Ty::F64) if r.ty == Ty::I64 => Ty::F64,
+                Some(u) => {
+                    return Err(PrepareError::Bind(format!(
+                        "CASE branches disagree: {} vs {}",
+                        u.name(),
+                        r.ty.name()
+                    )))
+                }
+            });
+        }
+        let Some(unified) = unified else {
+            return Err(unsup("CASE where every branch is NULL"));
+        };
+
+        let coerce = |r: Option<SExpr>| -> SExpr {
+            match r {
+                None => null_of(unified),
+                Some(e) if e.ty == Ty::I64 && unified == Ty::F64 => promote_f64(e),
+                Some(e) => e,
+            }
+        };
+        let results: Vec<SExpr> = results.into_iter().map(coerce).collect();
+        let default = else_bound.map(coerce);
+
+        let nullable = default.is_none()
+            || results.iter().any(|r| r.nullable)
+            || default.as_ref().is_some_and(|d| d.nullable);
+        let arms = conds.into_iter().zip(results).collect();
+        Ok(SExpr {
+            kind: SKind::Case { arms, default: default.map(Box::new) },
+            ty: unified,
+            nullable,
+        })
+    }
+
+    fn cast(
+        &self,
+        expr: &SqlExpr,
+        data_type: &sqlparser::ast::DataType,
+        trying: bool,
+    ) -> Result<SExpr, PrepareError> {
+        let to = cast_target(data_type)?;
+        let inner = match self.expr_or_null(expr)? {
+            Some(e) => e,
+            // CAST(NULL AS T) is just a typed NULL, both forms.
+            None => return Ok(null_of(to)),
+        };
+        if inner.ty == to && !trying {
+            return Ok(inner);
+        }
+        if inner.ty == Ty::Str && to == Ty::I1 {
+            return Err(unsup("CAST VARCHAR -> BOOLEAN"));
+        }
+        let nullable = trying || inner.nullable;
+        Ok(SExpr { kind: SKind::Cast { inner: Box::new(inner), trying }, ty: to, nullable })
     }
 
     fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
@@ -299,6 +496,44 @@ impl Binder<'_> {
     }
 }
 
+fn null_of(ty: Ty) -> SExpr {
+    SExpr { kind: SKind::NullOf, ty, nullable: true }
+}
+
+/// The type a bare NULL adopts next to a typed operand.
+fn null_context_ty(op: &BinaryOperator, other: Ty) -> Ty {
+    match op {
+        BinaryOperator::And | BinaryOperator::Or => Ty::I1,
+        _ => other,
+    }
+}
+
+fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareError> {
+    let name = dt.to_string().to_uppercase();
+    if name.contains("INT") {
+        // BIGINT/INTEGER/SMALLINT/TINYINT/HUGEINT/U* all collapse to i64
+        // (range divergence for HUGEINT noted in the module docs).
+        Ok(Ty::I64)
+    } else if name.starts_with("DOUBLE")
+        || name.starts_with("FLOAT")
+        || name.starts_with("REAL")
+        || name.starts_with("DECIMAL")
+        || name.starts_with("NUMERIC")
+    {
+        Ok(Ty::F64)
+    } else if name.starts_with("VARCHAR")
+        || name.starts_with("TEXT")
+        || name.starts_with("STRING")
+        || name.starts_with("CHAR")
+    {
+        Ok(Ty::Str)
+    } else if name.starts_with("BOOL") {
+        Ok(Ty::I1)
+    } else {
+        Err(unsup(format!("CAST target type {name}")))
+    }
+}
+
 fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
     let (lit, ty) = match v {
         SqlValue::Number(text, _) => {
@@ -317,7 +552,7 @@ fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
         }
         SqlValue::SingleQuotedString(s) => (Lit::Str(s.clone()), Ty::Str),
         SqlValue::Boolean(b) => (Lit::I1(*b), Ty::I1),
-        SqlValue::Null => return Err(unsup("bare NULL literal (arrives with 3VL lowering)")),
+        SqlValue::Null => unreachable!("NULL handled by expr_or_null"),
         other => return Err(unsup(format!("literal {other}"))),
     };
     Ok(SExpr { kind: SKind::Lit(lit), ty, nullable: false })
@@ -337,6 +572,9 @@ fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty)
     if op == ArithOp::Div {
         return Ok((promote_f64(a), promote_f64(b), Ty::F64));
     }
+    if op == ArithOp::Rem && (a.ty == Ty::F64 || b.ty == Ty::F64) {
+        return Err(unsup("% on DOUBLE (needs an frem instruction)"));
+    }
     match (a.ty, b.ty) {
         (Ty::I64, Ty::I64) => Ok((a, b, Ty::I64)),
         (Ty::F64, Ty::F64) => Ok((a, b, Ty::F64)),
@@ -349,6 +587,10 @@ fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty)
 fn promote_f64(e: SExpr) -> SExpr {
     if e.ty == Ty::F64 {
         return e;
+    }
+    // A typed NULL promotes by retyping — no conversion node needed.
+    if matches!(e.kind, SKind::NullOf) {
+        return SExpr { kind: SKind::NullOf, ty: Ty::F64, nullable: true };
     }
     let nullable = e.nullable;
     SExpr { kind: SKind::IntToFloat(Box::new(e)), ty: Ty::F64, nullable }
