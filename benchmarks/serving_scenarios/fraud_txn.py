@@ -16,13 +16,14 @@ import pyarrow as pa
 NAME = "fraud_txn"
 KAGGLE = (
     "IEEE-CIS Fraud Detection (Kaggle 2019, Deotte/Yakovlev winning-solution "
-    "serving shape): card1/addr1/email-domain frequency+target encodings as "
-    "join tables, amt ratio/delta vs card1 mean, cents feature, D-column NULL "
-    "flags, hour/day-of-week from unix ts, amount buckets, ProductCD one-hots."
+    "serving shape): composite uid (card1 x addr1) + card1/addr1/email-domain "
+    "frequency+target encodings as join tables, amt ratio/delta vs card1 and "
+    "uid means, cents feature, D-column NULL flags, hour/day-of-week from "
+    "unix ts, amount buckets, ProductCD one-hots."
 )
 
 N_INPUT_COLS = 32
-N_OUTPUT_COLS = 38
+N_OUTPUT_COLS = 41
 
 ROW_SCHEMA: dict[str, str] = {
     "txn_id": "int",
@@ -85,6 +86,27 @@ _DOMAINS = [
 _SERVE_DOMAINS = _DOMAINS + ["qq.com", "rocketmail.com", "protonmail.ch"]
 _PRODUCTS = ["W", "C", "R", "H", "S"]
 
+# The fitted uid (card1 x addr1) population is a property of the training
+# data, not of the value-fit seed: fixed here so make_rows can send
+# repeat-customer traffic that hits the uid encoding at a realistic rate.
+_UID_SEED = 990721
+_uid_cache: list[tuple[int, int]] | None = None
+
+
+def _uid_pairs() -> list[tuple[int, int]]:
+    global _uid_cache
+    if _uid_cache is None:
+        rng = random.Random(_UID_SEED)
+        pairs: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        while len(pairs) < 2500:
+            p = (rng.randint(1000, 1599), rng.randint(100, 559))
+            if p not in seen:
+                seen.add(p)
+                pairs.append(p)
+        _uid_cache = pairs
+    return _uid_cache
+
 
 def make_statics(seed: int) -> dict[str, pa.Table]:
     rng = random.Random(seed * 7919 + 1)
@@ -133,20 +155,37 @@ def make_statics(seed: int) -> dict[str, pa.Table]:
         }
     )
 
+    uid_pairs = _uid_pairs()
+    uid_stats = pa.table(
+        {
+            "uid_card1": [c for c, _ in uid_pairs],
+            "uid_addr1": [a for _, a in uid_pairs],
+            "uid_amt_mean": [round(rng.uniform(8.0, 420.0), 2) for _ in uid_pairs],
+            "uid_txn_cnt": [rng.randint(1, 800) for _ in uid_pairs],
+        }
+    )
+
     return {
         "card1_stats": card1_stats,
         "addr1_stats": addr1_stats,
         "p_email_stats": p_email_stats,
         "r_email_stats": r_email_stats,
         "pcd_stats": pcd_stats,
+        "uid_stats": uid_stats,
     }
 
 
 def make_rows(seed: int, n: int) -> list[dict]:
     rng = random.Random(seed * 104729 + 3)
+    uid_pairs = _uid_pairs()
     base_ts = 1_700_000_000
     rows: list[dict[str, Any]] = []
     for i in range(n):
+        if rng.random() < 0.55:  # repeat customer: hits a fitted uid pair
+            card1, addr1 = uid_pairs[rng.randrange(len(uid_pairs))]
+        else:
+            card1 = rng.randint(1000, 1599)  # tail misses the stats table
+            addr1 = None if rng.random() < 0.3 else rng.randint(100, 560)
         if rng.random() < 0.2:  # whole-dollar transactions (the cents trick)
             amt = float(rng.choice([20, 25, 30, 50, 75, 100, 150, 200, 300, 500]))
         else:
@@ -161,7 +200,7 @@ def make_rows(seed: int, n: int) -> list[dict]:
                 "txn_id": 3_000_000 + i,
                 "transaction_amt": amt,
                 "product_cd": rng.choices(_PRODUCTS, weights=[65, 10, 8, 9, 8])[0],
-                "card1": rng.randint(1000, 1599),  # tail misses the stats table
+                "card1": card1,
                 "card2": None if rng.random() < 0.15 else rng.randint(100, 600),
                 "card3": None if rng.random() < 0.1 else rng.choice([150, 185]),
                 "card4": None
@@ -182,7 +221,7 @@ def make_rows(seed: int, n: int) -> list[dict]:
                 else rng.choices(
                     ["debit", "credit", "charge card"], weights=[70, 27, 3]
                 )[0],
-                "addr1": None if rng.random() < 0.3 else rng.randint(100, 560),
+                "addr1": addr1,
                 "addr2": None if rng.random() < 0.3 else rng.choice([87, 60, 96]),
                 "dist1": None if rng.random() < 0.6 else float(rng.randint(0, 3000)),
                 "dist2": None if rng.random() < 0.93 else float(rng.randint(0, 8000)),
@@ -227,6 +266,9 @@ SELECT
   transaction_amt - card1_stats.card1_amt_mean AS amt_minus_card1_mean,
   addr1_stats.addr1_fraud_rate AS addr1_fraud_rate,
   addr1_stats.addr1_txn_cnt AS addr1_txn_cnt,
+  uid_stats.uid_amt_mean AS uid_amt_mean,
+  uid_stats.uid_txn_cnt AS uid_txn_cnt,
+  transaction_amt / uid_stats.uid_amt_mean AS amt_to_uid_mean,
   p_email_stats.p_email_fraud_rate AS p_email_fraud_rate,
   p_email_stats.p_email_freq AS p_email_freq,
   r_email_stats.r_email_fraud_rate AS r_email_fraud_rate,
@@ -265,6 +307,7 @@ SELECT
 FROM __THIS__
 LEFT JOIN card1_stats ON card1 = card1_stats.card1_id
 LEFT JOIN addr1_stats ON addr1 = addr1_stats.addr1_id
+LEFT JOIN uid_stats ON card1 = uid_stats.uid_card1 AND addr1 = uid_stats.uid_addr1
 LEFT JOIN p_email_stats ON p_email_domain = p_email_stats.p_domain
 LEFT JOIN r_email_stats ON r_email_domain = r_email_stats.r_domain
 LEFT JOIN pcd_stats ON product_cd = pcd_stats.pcd
@@ -291,6 +334,10 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
         for r in statics["r_email_stats"].to_pylist()
     }
     pcd_map = {r["pcd"]: r["pcd_fraud_rate"] for r in statics["pcd_stats"].to_pylist()}
+    uid_map = {
+        (r["uid_card1"], r["uid_addr1"]): (r["uid_amt_mean"], r["uid_txn_cnt"])
+        for r in statics["uid_stats"].to_pylist()
+    }
 
     def fn(row: dict) -> dict:
         amt = row["transaction_amt"]
@@ -302,6 +349,9 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
         )
         a1s = addr1_map.get(row["addr1"])
         addr1_fraud_rate, addr1_txn_cnt = a1s if a1s else (None, None)
+        # NULL addr1 can never equal a fitted key, same as the SQL join
+        us = uid_map.get((row["card1"], row["addr1"]))
+        uid_amt_mean, uid_txn_cnt = us if us else (None, None)
         pes = p_email_map.get(row["p_email_domain"])
         p_email_fraud_rate, p_email_freq = pes if pes else (None, None)
         r_email_fraud_rate = r_email_map.get(row["r_email_domain"])
@@ -345,6 +395,9 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             else None,
             "addr1_fraud_rate": addr1_fraud_rate,
             "addr1_txn_cnt": addr1_txn_cnt,
+            "uid_amt_mean": uid_amt_mean,
+            "uid_txn_cnt": uid_txn_cnt,
+            "amt_to_uid_mean": amt / uid_amt_mean if uid_amt_mean is not None else None,
             "p_email_fraud_rate": p_email_fraud_rate,
             "p_email_freq": p_email_freq,
             "r_email_fraud_rate": r_email_fraud_rate,

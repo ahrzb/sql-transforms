@@ -1,293 +1,361 @@
-"""Titanic survival serving scenario for the SQL specializer benchmark.
+"""Titanic survival — THE classic Kaggle problem, as a serving-path scenario.
 
-Reproduces the canonical Kaggle-Titanic public-kernel feature pipeline as it
-looks at SERVE time: scalar expressions over the raw passenger row plus LEFT
-JOINs to prepare-time fitted tables (per-pclass fare medians, per-title age
-medians and group mean fares, sex-x-pclass target-mean encoding, embarked
-target encoding).
+Reproduces the canonical public-kernel feature pipeline at serve time:
+scalar expressions over the passenger row + LEFT JOINs to fitted encoding
+tables (a target-mean encoding IS a join table at serve time).
 """
 
+from __future__ import annotations
+
+import math
 import random
 from collections.abc import Callable
 
 import pyarrow as pa
 
-NAME = "titanic_survival_features"
+NAME = "titanic"
 KAGGLE = (
-    "Kaggle Titanic (survival prediction) — canonical public-kernel tricks: "
-    "family_size/is_alone, fare_per_person with per-pclass median imputation, "
-    "cabin deck letter + has_cabin, title-based age imputation with missing "
-    "flag, age*pclass interaction, age bins, embarked one-hots, sex-x-pclass "
-    "target-mean encoding and title-GROUP mean fare as fitted join tables."
+    "Titanic: Machine Learning from Disaster — the canonical public-kernel recipe: "
+    "FamilySize/IsAlone, FarePerPerson, deck letter from Cabin + HasCabin, "
+    "Age-imputation flag + Age*Pclass interaction, age bins, Embarked one-hots, "
+    "sex x pclass survival target-mean encoding and title-group mean-fare/survival "
+    "encodings served as fitted join tables (incl. the famous unseen-'Dona' miss)."
 )
 
 N_INPUT_COLS = 10
-N_OUTPUT_COLS = 20
+N_OUTPUT_COLS = 24
 
 ROW_SCHEMA = {
     "passenger_id": "int",
     "pclass": "int",
     "sex": "str",
+    "title": "str",
     "age": "float?",
     "sibsp": "int",
     "parch": "int",
     "fare": "float?",
     "cabin": "str?",
     "embarked": "str?",
-    "title": "str",
 }
 
-# Fitted fallback constants a real pipeline bakes into its generated SQL.
-_GLOBAL_MEDIAN_AGE = 29.7
-_GLOBAL_TITLE_FARE = 32.2
-_MODE_PORT_RATE = 0.339
+# Fitted constants a pipeline would bake into the serving query as literals.
+AGE_MEDIAN = 28.0
+FARE_MEDIAN = 14.4542
+GLOBAL_RATE = 0.383838
 
-SQL = """
-SELECT
-  passenger_id,
-  sibsp + parch + 1 AS family_size,
-  CASE WHEN sibsp + parch = 0 THEN 1 ELSE 0 END AS is_alone,
-  coalesce(fare, pclass_dim.median_fare) AS fare_filled,
-  coalesce(fare, pclass_dim.median_fare) / (sibsp + parch + 1) AS fare_per_person,
-  coalesce(upper(substr(trim(cabin), 1, 1)), 'U') AS deck,
-  CASE WHEN cabin IS NULL THEN 0 ELSE 1 END AS has_cabin,
-  CASE WHEN age IS NULL THEN 1 ELSE 0 END AS age_missing,
-  coalesce(age, title_stats.median_age, 29.7) AS age_filled,
-  coalesce(age, title_stats.median_age, 29.7) * pclass AS age_class,
-  CASE
-    WHEN coalesce(age, title_stats.median_age, 29.7) < 13.0 THEN 'child'
-    WHEN coalesce(age, title_stats.median_age, 29.7) < 20.0 THEN 'teen'
-    WHEN coalesce(age, title_stats.median_age, 29.7) < 60.0 THEN 'adult'
-    ELSE 'senior'
-  END AS age_bin,
-  CASE WHEN coalesce(embarked, 'S') = 'C' THEN 1 ELSE 0 END AS embarked_c,
-  CASE WHEN coalesce(embarked, 'S') = 'Q' THEN 1 ELSE 0 END AS embarked_q,
-  CASE WHEN coalesce(embarked, 'S') = 'S' THEN 1 ELSE 0 END AS embarked_s,
-  CASE WHEN sex = 'female' THEN 1 ELSE 0 END AS sex_female,
-  sex || '-' || CAST(pclass AS VARCHAR) AS sex_pclass,
-  sex_pclass_enc.survival_rate AS sex_pclass_rate,
-  coalesce(title_stats.group_mean_fare, 32.2) AS title_fare_mean,
-  pclass_dim.pclass_survival_rate AS pclass_rate,
-  coalesce(embarked_enc.port_survival_rate, 0.339) AS port_rate
-FROM __THIS__
-LEFT JOIN pclass_dim ON pclass = pclass_dim.pc
-LEFT JOIN title_stats ON title = title_stats.t_title
-LEFT JOIN sex_pclass_enc
-  ON sex = sex_pclass_enc.sp_sex AND pclass = sex_pclass_enc.sp_pclass
-LEFT JOIN embarked_enc ON embarked = embarked_enc.port
-"""
-
-# Title -> (group median age, denormalized title-GROUP mean fare).  The
-# grouping {Mr, Mrs, Miss, Master, Rare} happened at fit time; the fitted
-# table is keyed on the raw title.  Capt/Jonkheer/Dona are deliberately NOT
-# here: unseen-at-fit titles cause serve-time LEFT JOIN misses.
-_TITLES = {
-    "Mr": (30.0, 24.4),
-    "Mrs": (35.0, 45.0),
-    "Miss": (21.0, 43.8),
-    "Master": (3.5, 37.0),
-    "Dr": (46.5, 40.9),
-    "Rev": (46.5, 40.9),
-    "Col": (46.5, 40.9),
-    "Major": (46.5, 40.9),
-    "Mlle": (21.0, 43.8),
-    "Ms": (21.0, 43.8),
-    "Mme": (35.0, 45.0),
-    "Lady": (46.5, 40.9),
-    "Sir": (46.5, 40.9),
-    "Countess": (46.5, 40.9),
+# Title -> group, as the canonical kernels collapse rare titles. "Dona" is
+# deliberately NOT here: it appears only in the test set and is the classic
+# unseen-category trap — served as a LEFT JOIN miss + coalesce fallback.
+_TITLE_TO_GROUP = {
+    "Mr": "Mr",
+    "Mrs": "Mrs",
+    "Mme": "Mrs",
+    "Miss": "Miss",
+    "Mlle": "Miss",
+    "Ms": "Miss",
+    "Master": "Master",
+    "Dr": "Rare",
+    "Rev": "Rare",
+    "Col": "Rare",
+    "Major": "Rare",
+    "Capt": "Rare",
+    "Sir": "Rare",
+    "Lady": "Rare",
+    "Don": "Rare",
+    "Countess": "Rare",
+    "Jonkheer": "Rare",
 }
 
 
 def make_statics(seed: int) -> dict[str, pa.Table]:
-    r = random.Random(seed)
+    rnd = random.Random(seed)
 
-    def jit(x: float) -> float:
-        return round(x + r.uniform(-0.015, 0.015), 6)
+    def jit(v: float) -> float:
+        return round(v + rnd.uniform(-0.015, 0.015), 6)
 
-    pclass_dim = pa.table(
-        {
-            "pc": [1, 2, 3],
-            "median_fare": [round(jit(60.2875), 4), 14.25, 8.05],
-            "pclass_survival_rate": [jit(0.6296), jit(0.4728), jit(0.2424)],
-        }
+    # sex x pclass survival target-mean encoding (train-set rates + fit noise).
+    sp_base = [
+        ("female", 1, 0.968, 94),
+        ("female", 2, 0.921, 76),
+        ("female", 3, 0.500, 144),
+        ("male", 1, 0.369, 122),
+        ("male", 2, 0.157, 108),
+        ("male", 3, 0.135, 347),
+    ]
+    sex_pclass_enc = pa.Table.from_pylist(
+        [
+            {"sex": s, "pclass": p, "survival_rate": jit(r), "n": n}
+            for s, p, r, n in sp_base
+        ],
+        schema=pa.schema(
+            [
+                ("sex", pa.string()),
+                ("pclass", pa.int64()),
+                ("survival_rate", pa.float64()),
+                ("n", pa.int64()),
+            ]
+        ),
     )
-    titles = sorted(_TITLES)
-    title_stats = pa.table(
-        {
-            "t_title": titles,
-            "median_age": [_TITLES[t][0] for t in titles],
-            "group_mean_fare": [jit(_TITLES[t][1]) for t in titles],
-        }
+
+    # Title-group encodings: every title carries its GROUP's fitted stats,
+    # exactly as a materialized groupby-join would.
+    group_fare = {
+        k: jit(v)
+        for k, v in [
+            ("Mr", 24.44),
+            ("Mrs", 45.14),
+            ("Miss", 43.80),
+            ("Master", 37.98),
+            ("Rare", 33.50),
+        ]
+    }
+    group_rate = {
+        k: jit(v)
+        for k, v in [
+            ("Mr", 0.157),
+            ("Mrs", 0.792),
+            ("Miss", 0.703),
+            ("Master", 0.575),
+            ("Rare", 0.444),
+        ]
+    }
+    title_dim = pa.Table.from_pylist(
+        [
+            {
+                "title": t,
+                "title_group": g,
+                "group_mean_fare": group_fare[g],
+                "group_survival_rate": group_rate[g],
+            }
+            for t, g in _TITLE_TO_GROUP.items()
+        ],
+        schema=pa.schema(
+            [
+                ("title", pa.string()),
+                ("title_group", pa.string()),
+                ("group_mean_fare", pa.float64()),
+                ("group_survival_rate", pa.float64()),
+            ]
+        ),
     )
-    sex_pclass_enc = pa.table(
-        {
-            "sp_sex": ["female", "female", "female", "male", "male", "male"],
-            "sp_pclass": [1, 2, 3, 1, 2, 3],
-            "survival_rate": [
-                jit(0.9681),
-                jit(0.9211),
-                jit(0.5000),
-                jit(0.3689),
-                jit(0.1574),
-                jit(0.1354),
-            ],
-        }
+
+    embarked_dim = pa.Table.from_pylist(
+        [
+            {"embarked": "S", "survival_rate": jit(0.339)},
+            {"embarked": "C", "survival_rate": jit(0.554)},
+            {"embarked": "Q", "survival_rate": jit(0.390)},
+        ],
+        schema=pa.schema([("embarked", pa.string()), ("survival_rate", pa.float64())]),
     )
-    embarked_enc = pa.table(
-        {
-            "port": ["S", "C", "Q"],
-            "port_survival_rate": [jit(0.3370), jit(0.5539), jit(0.3896)],
-        }
-    )
+
     return {
-        "pclass_dim": pclass_dim,
-        "title_stats": title_stats,
         "sex_pclass_enc": sex_pclass_enc,
-        "embarked_enc": embarked_enc,
+        "title_dim": title_dim,
+        "embarked_dim": embarked_dim,
     }
 
 
+_MALE_TITLES = [
+    "Mr",
+    "Master",
+    "Dr",
+    "Rev",
+    "Col",
+    "Major",
+    "Capt",
+    "Sir",
+    "Don",
+    "Jonkheer",
+]
+_MALE_W = [80, 8, 3, 2, 2, 1, 1, 1, 1, 1]
+# "Dona" (~3% of women) is unseen by title_dim -> the LEFT JOIN miss path.
+_FEMALE_TITLES = ["Miss", "Mrs", "Mlle", "Mme", "Ms", "Lady", "Countess", "Dona"]
+_FEMALE_W = [47, 41, 3, 2, 2, 1, 1, 3]
+_DECKS_BY_CLASS = {1: "ABCDE", 2: "DEF", 3: "EFG"}
+_CABIN_MISS_P = {1: 0.20, 2: 0.75, 3: 0.94}
+
+
 def make_rows(seed: int, n: int) -> list[dict]:
-    r = random.Random(seed)
-    male_titles = ["Mr"] * 90 + ["Master"] * 6 + ["Dr", "Rev", "Capt", "Jonkheer"]
-    female_titles = (
-        ["Miss"] * 44
-        + ["Mrs"] * 44
-        + ["Mlle", "Ms", "Mme", "Lady", "Countess", "Dona"] * 2
-    )
-    decks = {1: "ABCDE", 2: "DEF", 3: "EFG"}
-    fare_base = {1: 84.15, 2: 20.66, 3: 13.68}
-    rows = []
+    rnd = random.Random(seed)
+    rows: list[dict] = []
     for i in range(n):
-        pclass = r.choices([1, 2, 3], weights=[24, 21, 55])[0]
-        sex = "male" if r.random() < 0.65 else "female"
-        title = r.choice(male_titles if sex == "male" else female_titles)
-        if r.random() < 0.20:
+        pclass = rnd.choices([1, 2, 3], [24, 21, 55])[0]
+        sex = "male" if rnd.random() < 0.65 else "female"
+        if sex == "male":
+            title = rnd.choices(_MALE_TITLES, _MALE_W)[0]
+        else:
+            title = rnd.choices(_FEMALE_TITLES, _FEMALE_W)[0]
+
+        if rnd.random() < 0.199:  # 177/891 missing in the train set
             age = None
         elif title == "Master":
-            age = round(r.uniform(0.5, 12.0) * 2) / 2
+            age = round(rnd.uniform(0.42, 12.0) * 2) / 2
         else:
-            age = min(80.0, max(14.0, round(r.gauss(30.0, 13.0) * 2) / 2))
-        sibsp = r.choices([0, 1, 2, 3, 4, 8], weights=[68, 23, 4, 3, 1, 1])[0]
-        parch = r.choices([0, 1, 2, 5], weights=[76, 13, 9, 2])[0]
-        if r.random() < 0.01:
+            mu, sd = {
+                "Miss": (22.0, 10.0),
+                "Mrs": (36.0, 12.0),
+                "Mr": (32.0, 12.0),
+            }.get(title, (45.0, 10.0))
+            age = round(min(80.0, max(0.42, rnd.gauss(mu, sd))) * 2) / 2
+
+        sibsp = rnd.choices([0, 1, 2, 3, 4, 5, 8], [68, 23, 3, 2, 2, 1, 1])[0]
+        parch = rnd.choices([0, 1, 2, 3, 4, 5, 6], [76, 13, 8, 1, 1, 1, 1])[0]
+
+        if rnd.random() < 0.008:  # the lone missing Fare is a test-set classic
             fare = None
-        elif r.random() < 0.015:
-            fare = 0.0
         else:
-            fare = round(fare_base[pclass] * (0.35 + r.random() * 2.2), 4)
-        if r.random() < 0.77:
+            mu, sd = {1: (4.2, 0.7), 2: (2.7, 0.4), 3: (2.1, 0.45)}[pclass]
+            fare = round(math.exp(rnd.gauss(mu, sd)), 4)
+
+        if rnd.random() < _CABIN_MISS_P[pclass]:
             cabin = None
         else:
-            letter = r.choice(decks[pclass])
-            if r.random() < 0.15:
-                letter = letter.lower()
-            cabin = f"{letter}{r.randint(1, 130)}"
-            if r.random() < 0.10:
-                cabin = f" {cabin} "
+            deck = rnd.choice(_DECKS_BY_CLASS[pclass])
+            cabin = f"{deck}{rnd.randint(1, 130)}"
+            if rnd.random() < 0.08:  # multi-cabin families: "C23 C25"
+                cabin = f"{cabin} {deck}{rnd.randint(1, 130)}"
+            if rnd.random() < 0.15:  # messy serving payloads
+                cabin = cabin.lower()
+            if rnd.random() < 0.10:
+                cabin = " " + cabin
+            if rnd.random() < 0.10:
+                cabin = cabin + " "
+
         embarked = (
             None
-            if r.random() < 0.02
-            else r.choices(["S", "C", "Q"], weights=[72, 19, 9])[0]
+            if rnd.random() < 0.012
+            else rnd.choices(["S", "C", "Q"], [72, 19, 9])[0]
         )
+
         rows.append(
             {
-                "passenger_id": 1000 + i,
+                "passenger_id": 892 + i,
                 "pclass": pclass,
                 "sex": sex,
+                "title": title,
                 "age": age,
                 "sibsp": sibsp,
                 "parch": parch,
                 "fare": fare,
                 "cabin": cabin,
                 "embarked": embarked,
-                "title": title,
             }
         )
     return rows
 
 
+SQL = """
+SELECT
+  __THIS__.passenger_id AS passenger_id,
+  __THIS__.pclass AS pclass,
+  CASE WHEN __THIS__.sex = 'male' THEN 1 ELSE 0 END AS sex_male,
+  __THIS__.sex || '_' || CAST(__THIS__.pclass AS VARCHAR) AS sex_pclass_key,
+  __THIS__.sibsp + __THIS__.parch + 1 AS family_size,
+  CASE WHEN __THIS__.sibsp + __THIS__.parch = 0 THEN 1 ELSE 0 END AS is_alone,
+  CASE WHEN __THIS__.fare IS NULL THEN 1 ELSE 0 END AS fare_missing,
+  coalesce(__THIS__.fare, 14.4542) AS fare_filled,
+  coalesce(__THIS__.fare, 14.4542) / (__THIS__.sibsp + __THIS__.parch + 1)
+    AS fare_per_person,
+  CASE WHEN __THIS__.age IS NULL THEN 1 ELSE 0 END AS age_missing,
+  coalesce(__THIS__.age, 28.0) AS age_filled,
+  coalesce(__THIS__.age, 28.0) * __THIS__.pclass AS age_x_pclass,
+  CASE
+    WHEN __THIS__.age IS NULL THEN 'unknown'
+    WHEN __THIS__.age < 13.0 THEN 'child'
+    WHEN __THIS__.age < 20.0 THEN 'teen'
+    WHEN __THIS__.age < 41.0 THEN 'adult'
+    WHEN __THIS__.age < 61.0 THEN 'mid'
+    ELSE 'senior'
+  END AS age_bin,
+  CASE WHEN __THIS__.cabin IS NULL THEN 0 ELSE 1 END AS has_cabin,
+  CASE
+    WHEN __THIS__.cabin IS NULL THEN 'U'
+    ELSE upper(substr(trim(__THIS__.cabin), 1, 1))
+  END AS deck,
+  CASE WHEN __THIS__.embarked = 'S' THEN 1 ELSE 0 END AS embarked_s,
+  CASE WHEN __THIS__.embarked = 'C' THEN 1 ELSE 0 END AS embarked_c,
+  CASE WHEN __THIS__.embarked = 'Q' THEN 1 ELSE 0 END AS embarked_q,
+  sp.survival_rate AS sex_pclass_rate,
+  coalesce(td.title_group, 'Rare') AS title_group,
+  coalesce(td.group_survival_rate, 0.383838) AS title_rate,
+  td.group_mean_fare AS title_fare_mean,
+  coalesce(__THIS__.fare, 14.4542) - td.group_mean_fare AS fare_minus_title_mean,
+  coalesce(em.survival_rate, 0.383838) AS embarked_rate
+FROM __THIS__
+LEFT JOIN sex_pclass_enc AS sp
+  ON __THIS__.sex = sp.sex AND __THIS__.pclass = sp.pclass
+LEFT JOIN title_dim AS td ON __THIS__.title = td.title
+LEFT JOIN embarked_dim AS em ON __THIS__.embarked = em.embarked
+"""
+
+
 def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
-    def cols(t: pa.Table) -> dict[str, list]:
-        return {name: t.column(name).to_pylist() for name in t.column_names}
+    """What a competent engineer hand-writes for a Python microservice:
+    plain-dict lookups prepared once, a per-row closure after that."""
+    sp = {
+        (r["sex"], r["pclass"]): r["survival_rate"]
+        for r in statics["sex_pclass_enc"].to_pylist()
+    }
+    td = {r["title"]: r for r in statics["title_dim"].to_pylist()}
+    em = {
+        r["embarked"]: r["survival_rate"] for r in statics["embarked_dim"].to_pylist()
+    }
 
-    p = cols(statics["pclass_dim"])
-    pclass_lut = {
-        k: (mf, sr)
-        for k, mf, sr in zip(
-            p["pc"], p["median_fare"], p["pclass_survival_rate"], strict=True
-        )
-    }
-    t = cols(statics["title_stats"])
-    title_lut = {
-        k: (ma, gf)
-        for k, ma, gf in zip(
-            t["t_title"], t["median_age"], t["group_mean_fare"], strict=True
-        )
-    }
-    s = cols(statics["sex_pclass_enc"])
-    sp_lut = {
-        (sx, pc): sr
-        for sx, pc, sr in zip(
-            s["sp_sex"], s["sp_pclass"], s["survival_rate"], strict=True
-        )
-    }
-    e = cols(statics["embarked_enc"])
-    port_lut = dict(zip(e["port"], e["port_survival_rate"], strict=True))
-
-    def fn(row: dict) -> dict:
-        sibsp, parch, pclass = row["sibsp"], row["parch"], row["pclass"]
-        family_size = sibsp + parch + 1
-        median_fare, pclass_rate = pclass_lut.get(pclass, (None, None))
-        fare = row["fare"]
-        fare_filled = fare if fare is not None else median_fare
-        fare_per_person = None if fare_filled is None else fare_filled / family_size
-        cabin = row["cabin"]
-        deck = "U" if cabin is None else cabin.strip()[:1].upper()
-        median_age, group_fare = title_lut.get(row["title"], (None, None))
+    def infer(row: dict) -> dict:
+        sex = row["sex"]
+        pclass = row["pclass"]
         age = row["age"]
-        if age is not None:
-            age_filled = age
-        elif median_age is not None:
-            age_filled = median_age
-        else:
-            age_filled = _GLOBAL_MEDIAN_AGE
-        if age_filled < 13.0:
+        fare = row["fare"]
+        cabin = row["cabin"]
+        emb = row["embarked"]
+        sibsp = row["sibsp"]
+        parch = row["parch"]
+
+        family_size = sibsp + parch + 1
+        fare_filled = fare if fare is not None else 14.4542
+        age_filled = age if age is not None else 28.0
+        t = td.get(row["title"])
+
+        if age is None:
+            age_bin = "unknown"
+        elif age < 13.0:
             age_bin = "child"
-        elif age_filled < 20.0:
+        elif age < 20.0:
             age_bin = "teen"
-        elif age_filled < 60.0:
+        elif age < 41.0:
             age_bin = "adult"
+        elif age < 61.0:
+            age_bin = "mid"
         else:
             age_bin = "senior"
-        embarked = row["embarked"]
-        emb = embarked if embarked is not None else "S"
-        port_rate = port_lut.get(embarked) if embarked is not None else None
-        sex = row["sex"]
+
         return {
             "passenger_id": row["passenger_id"],
+            "pclass": pclass,
+            "sex_male": 1 if sex == "male" else 0,
+            "sex_pclass_key": sex + "_" + str(pclass),
             "family_size": family_size,
             "is_alone": 1 if sibsp + parch == 0 else 0,
+            "fare_missing": 1 if fare is None else 0,
             "fare_filled": fare_filled,
-            "fare_per_person": fare_per_person,
-            "deck": deck,
-            "has_cabin": 0 if cabin is None else 1,
+            "fare_per_person": fare_filled / family_size,
             "age_missing": 1 if age is None else 0,
             "age_filled": age_filled,
-            "age_class": age_filled * pclass,
+            "age_x_pclass": age_filled * pclass,
             "age_bin": age_bin,
+            "has_cabin": 0 if cabin is None else 1,
+            "deck": "U" if cabin is None else cabin.strip()[:1].upper(),
+            "embarked_s": 1 if emb == "S" else 0,
             "embarked_c": 1 if emb == "C" else 0,
             "embarked_q": 1 if emb == "Q" else 0,
-            "embarked_s": 1 if emb == "S" else 0,
-            "sex_female": 1 if sex == "female" else 0,
-            "sex_pclass": f"{sex}-{pclass}",
-            "sex_pclass_rate": sp_lut.get((sex, pclass)),
-            "title_fare_mean": group_fare
-            if group_fare is not None
-            else _GLOBAL_TITLE_FARE,
-            "pclass_rate": pclass_rate,
-            "port_rate": port_rate if port_rate is not None else _MODE_PORT_RATE,
+            "sex_pclass_rate": sp[(sex, pclass)],
+            "title_group": t["title_group"] if t is not None else "Rare",
+            "title_rate": t["group_survival_rate"] if t is not None else 0.383838,
+            "title_fare_mean": t["group_mean_fare"] if t is not None else None,
+            "fare_minus_title_mean": (
+                fare_filled - t["group_mean_fare"] if t is not None else None
+            ),
+            "embarked_rate": em.get(emb, 0.383838),
         }
 
-    return fn
+    return infer
