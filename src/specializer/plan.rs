@@ -262,4 +262,10 @@ pub enum ArithOp {
     Div,
     IDiv,
     Rem,
+    // Bitwise (wave-5 pins): BIGINT-only, one flat left-assoc parse tier.
+    Shl,
+    Shr,
+    BitAnd,
+    BitOr,
+    BitXor,
 }

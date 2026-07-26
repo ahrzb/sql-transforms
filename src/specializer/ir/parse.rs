@@ -867,8 +867,8 @@ impl Parser {
                 Inst::Const { dst: def!(0), lit }
             }
             "iadd" | "isub" | "imul" | "idiv" | "irem" | "fadd" | "fsub" | "fmul" | "fdiv"
-            | "frem" | "fpow" | "flogb" | "ffloordiv" | "ffloormod" | "fnextafter" | "and"
-            | "or" | "xor" => {
+            | "frem" | "fpow" | "flogb" | "ffloordiv" | "ffloormod" | "fnextafter" | "ishl"
+            | "ishr" | "iand" | "ior" | "ixor" | "and" | "or" | "xor" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iadd" => BinOp::Iadd,
@@ -886,6 +886,11 @@ impl Parser {
                     "ffloordiv" => BinOp::Ffloordiv,
                     "ffloormod" => BinOp::Ffloormod,
                     "fnextafter" => BinOp::Fnextafter,
+                    "ishl" => BinOp::Ishl,
+                    "ishr" => BinOp::Ishr,
+                    "iand" => BinOp::Iand,
+                    "ior" => BinOp::Ior,
+                    "ixor" => BinOp::Ixor,
                     "and" => BinOp::And,
                     "or" => BinOp::Or,
                     _ => BinOp::Xor,

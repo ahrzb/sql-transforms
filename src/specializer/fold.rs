@@ -303,6 +303,13 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             // the zero row into NULL at runtime, never reaching the fold.
             ArithOp::IDiv => x.checked_div(*y).map(Lit::I64),
             ArithOp::Div => unreachable!("/ is promoted to f64 by the frontend"),
+            // Trapping shifts stay unfolded (None) exactly when the
+            // interpreter would trap — same kernel decides both.
+            ArithOp::Shl => super::exec::interp::duck_shl(*x, *y).ok().map(Lit::I64),
+            ArithOp::Shr => Some(Lit::I64(super::exec::interp::duck_shr(*x, *y))),
+            ArithOp::BitAnd => Some(Lit::I64(x & y)),
+            ArithOp::BitOr => Some(Lit::I64(x | y)),
+            ArithOp::BitXor => Some(Lit::I64(x ^ y)),
         },
         (Lit::F64(x), Lit::F64(y)) => Some(Lit::F64(match op {
             ArithOp::Add => x + y,
@@ -315,6 +322,9 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::IDiv => x / y,
             // IEEE, exactly as exec/interp.rs: x % 0.0 is NaN, never traps.
             ArithOp::Rem => x % y,
+            ArithOp::Shl | ArithOp::Shr | ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor => {
+                unreachable!("bitwise is BIGINT-only at bind")
+            }
         })),
         _ => unreachable!("operands are promoted to a common type at bind"),
     }

@@ -781,6 +781,43 @@ fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
     }
 }
 
+fn is_flat_bitop(op: &BinaryOperator) -> bool {
+    matches!(
+        op,
+        BinaryOperator::PGBitwiseShiftLeft
+            | BinaryOperator::PGBitwiseShiftRight
+            | BinaryOperator::BitwiseAnd
+            | BinaryOperator::BitwiseOr
+    )
+}
+
+fn flat_bitop(op: &BinaryOperator) -> ArithOp {
+    match op {
+        BinaryOperator::PGBitwiseShiftLeft => ArithOp::Shl,
+        BinaryOperator::PGBitwiseShiftRight => ArithOp::Shr,
+        BinaryOperator::BitwiseAnd => ArithOp::BitAnd,
+        _ => ArithOp::BitOr,
+    }
+}
+
+/// In-order collect of a maximal run of flat-tier bit operators: yields the
+/// operands and operators in SOURCE order regardless of how sqlparser
+/// grouped them.
+fn flatten_bitops<'e>(
+    e: &'e SqlExpr,
+    ops: &mut Vec<&'e BinaryOperator>,
+    operands: &mut Vec<&'e SqlExpr>,
+) {
+    match e {
+        SqlExpr::BinaryOp { left, op, right } if is_flat_bitop(op) => {
+            flatten_bitops(left, ops, operands);
+            ops.push(op);
+            flatten_bitops(right, ops, operands);
+        }
+        other => operands.push(other),
+    }
+}
+
 /// AST constructors for the BETWEEN/IN desugars.
 fn ast_bin(op: BinaryOperator, l: SqlExpr, r: SqlExpr) -> SqlExpr {
     SqlExpr::BinaryOp {
@@ -981,6 +1018,36 @@ impl Binder<'_> {
             },
             SqlExpr::Nested(inner) => self.expr(inner),
             SqlExpr::Value(v) => literal(&v.value),
+            // DuckDB puts << >> & | in ONE flat left-associative tier;
+            // sqlparser tiers them (& above << >> above |), so 4|1&1 would
+            // silently parse as 4|(1&1)=5 where DuckDB computes (4|1)&1=1.
+            // Re-associate: in-order traversal of the parsed run recovers
+            // source order, then left-fold. User parens are Nested nodes,
+            // which the flatten treats as leaves.
+            SqlExpr::BinaryOp { op, .. } if is_flat_bitop(op) => {
+                let (mut ops, mut operands) = (Vec::new(), Vec::new());
+                flatten_bitops(e, &mut ops, &mut operands);
+                let mut acc = self.expr_or_null(operands[0])?;
+                for (o, rhs) in ops.iter().zip(&operands[1..]) {
+                    let b = self.expr_or_null(rhs)?;
+                    let (av, bv) = match (acc, b) {
+                        (Some(x), Some(y)) => (x, y),
+                        (Some(x), None) => {
+                            let n = null_of(x.ty);
+                            (x, n)
+                        }
+                        (None, Some(y)) => {
+                            let n = null_of(y.ty);
+                            (n, y)
+                        }
+                        (None, None) => {
+                            return Err(unsup("NULL <op> NULL without a typing context"))
+                        }
+                    };
+                    acc = Some(self.arith(flat_bitop(o), av, bv)?);
+                }
+                Ok(acc.expect("a flat-bitop run has at least one operator"))
+            }
             SqlExpr::BinaryOp { left, op, right } => self.binary(op, left, right),
             SqlExpr::UnaryOp {
                 op: UnaryOperator::Minus,
@@ -1682,6 +1749,34 @@ impl Binder<'_> {
     }
 
     fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
+        if matches!(
+            op,
+            ArithOp::Shl | ArithOp::Shr | ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor
+        ) {
+            // Bitwise is BIGINT-only (wave-5 pins: non-integer operands are
+            // binder errors). Computing in i64 matches DuckDB whenever
+            // either operand is BIGINT — row-model ints always are; narrow
+            // CASTs are already unsupported upstream.
+            for e in [&a, &b] {
+                if e.ty != Ty::I64 {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches bitwise op on ({}, {})",
+                        a.ty.name(),
+                        b.ty.name()
+                    )));
+                }
+            }
+            let nullable = a.nullable || b.nullable;
+            return Ok(SExpr {
+                kind: SKind::Arith {
+                    op,
+                    a: Box::new(a),
+                    b: Box::new(b),
+                },
+                ty: Ty::I64,
+                nullable,
+            });
+        }
         let (a, b, ty) = numeric_promote(op, a, b)?;
         let nullable = a.nullable || b.nullable;
         // DuckDB pins (2026-07-26, waves 1+3): integer % by zero is NULL,
@@ -2609,7 +2704,7 @@ impl Binder<'_> {
             // aliases of + - * // % (measured: same values, types, and
             // error texts); fdiv/fmod are the FLOOR pair (always DOUBLE);
             // nextafter is C nextafter, total.
-            "add" | "subtract" | "multiply" | "divide" | "mod" => {
+            "add" | "subtract" | "multiply" | "divide" | "mod" | "xor" => {
                 let [x, y] = args[..] else {
                     return Err(unsup(format!("{name} with {} arguments", args.len())));
                 };
@@ -2618,6 +2713,9 @@ impl Binder<'_> {
                     "subtract" => ArithOp::Sub,
                     "multiply" => ArithOp::Mul,
                     "divide" => ArithOp::IDiv,
+                    // xor is FUNCTION-only in DuckDB; `#`/`^` are not it
+                    // (wave-5 pins — `^` is pow and stays unsupported).
+                    "xor" => ArithOp::BitXor,
                     _ => ArithOp::Rem,
                 };
                 let (bx, by) = (self.expr_or_null(x)?, self.expr_or_null(y)?);

@@ -1226,3 +1226,64 @@ fn slice_with_step_rejects_cleanly() {
         other => panic!("wrong outcome: {:?}", other.err()),
     }
 }
+
+#[test]
+fn bitwise_flat_precedence_and_values() {
+    // pins-wave5/bitwise-int-ops.json: << >> & | are ONE flat left-assoc
+    // tier (4|1&1 = (4|1)&1 = 1), arithmetic binds tighter (1<<1+1 = 4).
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT 1 << 3 AS s, 8 >> 1 AS r, 5 & 3 AS n, 5 | 3 AS o, xor(5, 3) AS x, \
+         4 | 1 & 1 AS p1, 1 & 3 << 1 AS p2, 8 >> 2 | 1 AS p3, 1 << 1 + 1 AS p4, \
+         (-8) >> 1 AS ar, (-1) >> 64 AS oor, 0 << 100 AS zs FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(0)])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[&["8", "4", "1", "7", "6", "1", "2", "3", "4", "-4", "0", "0"]])
+    );
+}
+
+#[test]
+fn left_shift_trap_ladder() {
+    // Ladder order per pins: negative value (even << 0), negative count,
+    // zero shortcut, count range, overflow — DuckDB texts verbatim.
+    let schema = cols(&[("a", Ty::I64, false), ("b", Ty::I64, false)]);
+    for (x, y, needle) in [
+        (-5, 0, "Cannot left-shift negative number -5"),
+        (1, -1, "Cannot left-shift by negative number -1"),
+        (1, 64, "Left-shift value 64 is out of range"),
+        (1, 63, "Overflow in left shift (1 << 63)"),
+        (4611686018427387904, 1, "Overflow in left shift"),
+    ] {
+        let err = run_sql(
+            "SELECT a << b AS v FROM __THIS__",
+            &schema,
+            batch(1, vec![c_i64(&[Some(x)]), c_i64(&[Some(y)])]),
+        )
+        .unwrap_err();
+        assert!(err.contains(needle), "{x} << {y}: got {err}");
+    }
+    // In-range boundary folds/computes fine; NULL masks the would-trap row.
+    let schema2 = cols(&[("b", Ty::I64, true)]);
+    let got = run_sql(
+        "SELECT 1 << 62 AS big, 1 << b AS masked FROM __THIS__",
+        &schema2,
+        batch(1, vec![c_i64(&[None])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["4611686018427387904", "NULL"]]));
+}
+
+#[test]
+fn power_caret_stays_unsupported() {
+    // DuckDB ^ is pow with a precedence sqlparser can't mirror — clean
+    // unsupported, pow()/power() carry the semantics.
+    let schema = cols(&[("a", Ty::I64, false)]);
+    match prep("SELECT a ^ 2 AS x FROM __THIS__", &schema) {
+        Err(PrepareError::Unsupported(msg)) => assert!(msg.contains('^'), "{msg}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}

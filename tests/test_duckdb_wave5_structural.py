@@ -46,6 +46,24 @@ def test_bracket_subscripts_vs_oracle():
     duck_check("SELECT s[a + 1] AS x FROM __THIS__", T, S_ROWS)
 
 
+def test_bitwise_ops_vs_oracle():
+    # Flat precedence tier + arithmetic-vs-shift interplay + dynamic
+    # operands (negatives only where << can't trap in either engine).
+    duck_check(
+        "SELECT 4 | 1 & 1 AS p1, 1 & 3 << 1 AS p2, 8 >> 2 | 1 AS p3, "
+        "1 << 1 + 1 AS p4, xor(5, 3) AS x FROM __THIS__",
+        T,
+        T_ROWS,
+    )
+    duck_check(
+        "SELECT a << 1 AS s, a >> 1 AS r, a & 3 AS n, a | 8 AS o, "
+        "xor(a, 5) AS x FROM __THIS__ WHERE a >= 0",
+        T,
+        T_ROWS,
+    )
+    duck_check("SELECT a >> 65 AS z, a >> -1 AS zn FROM __THIS__", T, T_ROWS)
+
+
 def test_bracket_slices_vs_oracle():
     # Both-inclusive codepoint slices, open bounds, negatives, clamps,
     # reversed -> '', NULL bound -> NULL (NOT an open bound).

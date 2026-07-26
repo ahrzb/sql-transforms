@@ -590,6 +590,16 @@ extern "C" fn h_srepeat(p: *mut Cx, ao: i64, al: i64, n: i64, len_out: *mut i64)
     }
 }
 
+extern "C" fn h_ishl(p: *mut Cx, x: i64, y: i64) -> i64 {
+    match interp::duck_shl(x, y) {
+        Ok(v) => v,
+        Err(t) => {
+            unsafe { cx(p) }.set_trap(t.0);
+            0
+        }
+    }
+}
+
 extern "C" fn h_sextract(p: *mut Cx, ao: i64, al: i64, i: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
     // Same +-2^32 window and trap as substr (pins-wave5).
@@ -1189,13 +1199,30 @@ fn translate_inst(
                 BinOp::Ffloordiv => call_h(b, module, "h_ffloordiv", &[x, y]).unwrap(),
                 BinOp::Ffloormod => call_h(b, module, "h_ffloormod", &[x, y]).unwrap(),
                 BinOp::Fnextafter => call_h(b, module, "h_fnextafter", &[x, y]).unwrap(),
-                BinOp::And => b.ins().band(x, y),
-                BinOp::Or => b.ins().bor(x, y),
-                BinOp::Xor => b.ins().bxor(x, y),
+                BinOp::Ishl => call_h(b, module, "h_ishl", &[cxp, x, y]).unwrap(),
+                BinOp::Ishr => {
+                    // Total: counts outside 0..64 give 0. cranelift sshr
+                    // masks the count mod 64, so select BEFORE trusting it;
+                    // a negative count as u64 is >= 2^63, so one unsigned
+                    // compare covers both out-of-range directions.
+                    let inrange = b.ins().icmp_imm(IntCC::UnsignedLessThan, y, 64);
+                    let shifted = b.ins().sshr(x, y);
+                    let zero = icon(b, 0);
+                    b.ins().select(inrange, shifted, zero)
+                }
+                BinOp::Iand | BinOp::And => b.ins().band(x, y),
+                BinOp::Ior | BinOp::Or => b.ins().bor(x, y),
+                BinOp::Ixor | BinOp::Xor => b.ins().bxor(x, y),
             };
             if matches!(
                 op,
-                BinOp::Iadd | BinOp::Isub | BinOp::Imul | BinOp::Idiv | BinOp::Irem | BinOp::Flogb
+                BinOp::Iadd
+                    | BinOp::Isub
+                    | BinOp::Imul
+                    | BinOp::Idiv
+                    | BinOp::Irem
+                    | BinOp::Ishl
+                    | BinOp::Flogb
             ) {
                 trap_check(b);
             }
@@ -1821,6 +1848,7 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_sjaccard", h_sjaccard as *const u8),
     ("h_str3", h_str3 as *const u8),
     ("h_srepeat", h_srepeat as *const u8),
+    ("h_ishl", h_ishl as *const u8),
     ("h_sextract", h_sextract as *const u8),
     ("h_spad", h_spad as *const u8),
     ("h_sslice", h_sslice as *const u8),
@@ -1857,6 +1885,7 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_sjaccard" => (&[ptr, I64, I64, I64, I64], Some(F64)),
         "h_str3" => (&[ptr, I64, I64, I64, I64, I64, I64, I64, I64], Some(I64)),
         "h_srepeat" => (&[ptr, I64, I64, I64, I64], Some(I64)),
+        "h_ishl" => (&[ptr, I64, I64], Some(I64)),
         "h_sextract" => (&[ptr, I64, I64, I64, I64], Some(I64)),
         "h_spad" => (&[ptr, I64, I64, I64, I64, I64, I64, I64], Some(I64)),
         "h_sslice" => (&[ptr, I64, I64, I64, I64, I64], Some(I64)),
