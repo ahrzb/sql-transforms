@@ -15,6 +15,9 @@ pub mod interp;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub mod testutil;
+
 use super::ir::Ty;
 
 /// A runtime error that aborts the whole call (division by zero, integer

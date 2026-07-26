@@ -7,8 +7,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use super::super::ir::{fixtures, gen, parse::parse, verify::verify, Program, StaticTy, Ty};
-use super::interp::{compile, CompileError, InterpFn};
-use super::{Batch, ColData, KeyBits, OutCol, RunState, ScalarVal, StaticData, Trap};
+use super::interp::{compile, CompileError};
+use super::testutil::{batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot};
+use super::{Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData, Trap};
 
 // ------------------------------------------------- counting allocator --
 // Thread-local counter so parallel tests don't disturb each other; const-
@@ -51,83 +52,6 @@ unsafe impl GlobalAlloc for CountingAlloc {
 static GA: CountingAlloc = CountingAlloc;
 
 // ------------------------------------------------------------- helpers --
-
-fn c_i1(vals: &[Option<bool>]) -> ColData {
-    ColData::I1 {
-        valid: vals.iter().map(|v| v.is_some()).collect(),
-        data: vals.iter().map(|v| v.unwrap_or(false)).collect(),
-    }
-}
-
-fn c_i64(vals: &[Option<i64>]) -> ColData {
-    ColData::I64 {
-        valid: vals.iter().map(|v| v.is_some()).collect(),
-        data: vals.iter().map(|v| v.unwrap_or(0)).collect(),
-    }
-}
-
-fn c_f64(vals: &[Option<f64>]) -> ColData {
-    ColData::F64 {
-        valid: vals.iter().map(|v| v.is_some()).collect(),
-        data: vals.iter().map(|v| v.unwrap_or(0.0)).collect(),
-    }
-}
-
-fn c_str(vals: &[Option<&str>]) -> ColData {
-    ColData::Str {
-        valid: vals.iter().map(|v| v.is_some()).collect(),
-        data: vals.iter().map(|v| v.unwrap_or("").to_string()).collect(),
-    }
-}
-
-fn batch(rows: usize, cols: Vec<ColData>) -> Batch {
-    Batch { rows, cols }
-}
-
-fn built(text: &str) -> Program {
-    let p = parse(text).expect("fixture parses");
-    verify(&p).expect("fixture verifies");
-    p
-}
-
-/// Snapshot the output as strings, masking NULL payloads (a NULL's payload
-/// is meaningless downstream by contract). Allocates — test side only.
-fn snapshot(st: &RunState) -> Vec<Vec<String>> {
-    let ncols = st.out.len();
-    let nrows = st.out.first().map(|c| c.len()).unwrap_or(0);
-    (0..nrows)
-        .map(|r| {
-            (0..ncols)
-                .map(|c| match &st.out[c] {
-                    OutCol::I1(v) => render(v[r].0, format!("{}", v[r].1)),
-                    OutCol::I64(v) => render(v[r].0, format!("{}", v[r].1)),
-                    OutCol::F64(v) => render(v[r].0, format!("{:?}", v[r].1)),
-                    OutCol::Str(v) => render(v[r].0, st.arena.get(v[r].1).to_string()),
-                })
-                .collect()
-        })
-        .collect()
-}
-
-fn render(valid: bool, s: String) -> String {
-    if valid {
-        s
-    } else {
-        "NULL".to_string()
-    }
-}
-
-fn run_snapshot(f: &InterpFn, input: &Batch) -> Result<Vec<Vec<String>>, Trap> {
-    let mut st = f.new_state();
-    f.run(input, &mut st)?;
-    Ok(snapshot(&st))
-}
-
-fn rows(v: &[&[&str]]) -> Vec<Vec<String>> {
-    v.iter()
-        .map(|r| r.iter().map(|s| s.to_string()).collect())
-        .collect()
-}
 
 // ------------------------------------------------------------ fixtures --
 

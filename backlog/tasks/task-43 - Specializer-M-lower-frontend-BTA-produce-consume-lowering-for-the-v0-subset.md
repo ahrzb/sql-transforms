@@ -3,9 +3,10 @@ id: TASK-43
 title: >-
   Specializer M-lower: frontend + BTA + produce/consume lowering for the v0
   subset
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-07-25 02:31'
+updated_date: '2026-07-25 23:53'
 labels: []
 milestone: m-7
 dependencies:
@@ -31,3 +32,14 @@ The load-bearing milestone (design doc §5): sqlparser(DuckDB dialect) frontend 
 - [ ] #4 Corpus replay reports match / clean-unsupported / FAIL counts; zero FAILs; every unsupported rejection is a clean build-time error naming the construct
 - [ ] #5 mise gate-specializer green (corpus replay wired into it)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Stretch plan (~5-6 stretches estimated, recorded 2026-07-26):
+1. Frontend spine: sqlparser (DuckDB dialect) -> relational IR (scan/project/filter over __THIS__), reusing shape lessons from src/datafusion; end-to-end sql -> imperative IR -> interpreter for arithmetic projections.
+2. 3VL lowering: SQL NULL semantics compiled to flag algebra (comparisons, AND/OR Kleene logic, CASE, IS NULL); type + nullability derivation; the correctness core.
+3. BTA + statics: taint __THIS__, equi-joins to static tables lower to probes, scalar folding; Python materialization through the DuckDBInferFn shell (pa.Table -> StaticData).
+4. IR builtin extensions (workflow fan-out per op): upper/lower/trim/substr/abs/round/concat + :: casts + COALESCE/NULLIF as lowerings; each new instruction lands across verifier/printer/parser/interp with pin tests.
+5.-6. Differential suite vs duckdb-python (pytest backend id "specialized") + corpus replay under the three-outcome contract; grind divergences to zero FAILs; xfail-strict + ticket for genuine oracle disagreements.
+<!-- SECTION:PLAN:END -->
