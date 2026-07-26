@@ -1248,6 +1248,116 @@ pub(super) fn duck_nextafter(x: f64, y: f64) -> f64 {
 /// both the operators and their function aliases). Division covers `//`
 /// AND `%` on i64::MIN op -1 — DuckDB's own % message says "division",
 /// and only add/sub/mul carry the trailing '!'.
+/// One parsed GLOB pattern element (bytes, not codepoints — measured).
+enum GTok {
+    Star,
+    Any,
+    Byte(u8),
+    Class { neg: bool, set: Vec<(u8, u8)> },
+}
+
+/// Parse a GLOB pattern per the wave-5 pins. `None` = dead pattern
+/// (dangling `\`, unclosed class — incl. `[a-]` whose `]` is eaten as the
+/// range endpoint): matches nothing, never errors.
+fn parse_glob(p: &[u8]) -> Option<Vec<GTok>> {
+    let mut toks = Vec::new();
+    let mut i = 0;
+    while i < p.len() {
+        match p[i] {
+            b'*' => {
+                toks.push(GTok::Star);
+                i += 1;
+            }
+            b'?' => {
+                toks.push(GTok::Any);
+                i += 1;
+            }
+            b'\\' => {
+                // Escape OUTSIDE classes only; dangling -> dead.
+                let &b = p.get(i + 1)?;
+                toks.push(GTok::Byte(b));
+                i += 2;
+            }
+            b'[' => {
+                i += 1;
+                let mut neg = false;
+                if p.get(i) == Some(&b'!') {
+                    // Only '!' negates; '^' is a literal member.
+                    neg = true;
+                    i += 1;
+                }
+                let mut set: Vec<(u8, u8)> = Vec::new();
+                let mut first = true;
+                loop {
+                    let &b = p.get(i)?; // unclosed -> dead
+                    if b == b']' && !first {
+                        i += 1;
+                        break;
+                    }
+                    first = false;
+                    // ']' is a literal if first; '-' is literal when not
+                    // followed by a range endpoint (which may be ']').
+                    if p.get(i + 1) == Some(&b'-') && p.get(i + 2).is_some() && b != b'-' {
+                        set.push((b, p[i + 2])); // inverted range = empty
+                        i += 3;
+                    } else {
+                        set.push((b, b));
+                        i += 1;
+                    }
+                }
+                toks.push(GTok::Class { neg, set });
+            }
+            b => {
+                toks.push(GTok::Byte(b));
+                i += 1;
+            }
+        }
+    }
+    Some(toks)
+}
+
+/// GLOB (wave-5 pins): raw-byte matcher, `*` = any run, `?` = ONE byte,
+/// case-sensitive, malformed patterns match nothing. NOT expressible via
+/// LIKE (classes; `?` is byte-based while `_` is codepoint-based).
+pub(super) fn duck_glob(s: &str, p: &str) -> bool {
+    let Some(toks) = parse_glob(p.as_bytes()) else {
+        return false;
+    };
+    let s = s.as_bytes();
+    let (mut ti, mut si) = (0usize, 0usize);
+    let (mut bt_t, mut bt_s) = (usize::MAX, 0usize);
+    while si < s.len() {
+        let stepped = match toks.get(ti) {
+            Some(GTok::Star) => {
+                bt_t = ti;
+                ti += 1;
+                bt_s = si;
+                continue;
+            }
+            Some(GTok::Any) => true,
+            Some(GTok::Byte(b)) => *b == s[si],
+            Some(GTok::Class { neg, set }) => {
+                set.iter().any(|(lo, hi)| (*lo..=*hi).contains(&s[si])) != *neg
+            }
+            None => false,
+        };
+        if stepped {
+            ti += 1;
+            si += 1;
+        } else if bt_t != usize::MAX {
+            bt_s += 1;
+            si = bt_s;
+            ti = bt_t + 1;
+        } else {
+            return false;
+        }
+    }
+    while matches!(toks.get(ti), Some(GTok::Star)) {
+        ti += 1;
+    }
+    ti == toks.len()
+}
+
 /// i64 `<<` per the wave-5 pins ladder: negative value first (even << 0),
 /// then negative count, then the zero-value shortcut, then count range,
 /// then overflow (value >= 2^(63-count), computed in i128 because
@@ -1312,6 +1422,7 @@ pub(super) fn str_pred(op: StrOp2, s: &str, n: &str) -> bool {
         StrOp2::Contains => s.contains(n),
         StrOp2::Starts => s.starts_with(n),
         StrOp2::Ends => s.ends_with(n),
+        StrOp2::Glob => duck_glob(s, n),
         _ => unreachable!("non-predicate str2 ops have dedicated arms"),
     }
 }

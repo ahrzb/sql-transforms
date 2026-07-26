@@ -1287,3 +1287,73 @@ fn power_caret_stays_unsupported() {
         other => panic!("wrong outcome: {:?}", other.err()),
     }
 }
+
+#[test]
+fn caret_at_is_starts_with() {
+    let schema = cols(&[("s", Ty::Str, true)]);
+    let got = run_sql(
+        "SELECT s ^@ 'he' AS p, s ^@ '' AS e FROM __THIS__",
+        &schema,
+        batch(3, vec![c_str(&[Some("hello"), Some("Hello"), None])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[&["true", "true"], &["false", "true"], &["NULL", "NULL"]])
+    );
+}
+
+#[test]
+fn glob_quirks_per_pins() {
+    // pins-wave5/text-operators.json: byte-based ?, '^' literal in classes
+    // (only '!' negates), dead patterns match nothing, \ escapes outside
+    // classes, '%' is a plain literal, case-sensitive.
+    let schema = cols(&[("s", Ty::Str, false)]);
+    let cases: &[(&str, &str, bool)] = &[
+        ("hello", "h*", true),
+        ("Hello", "h*", false),
+        ("", "*", true),
+        ("", "", true),
+        ("a", "", false),
+        ("h\u{e9}llo", "h?llo", false), // é is 2 bytes; ? eats ONE
+        ("h\u{e9}llo", "h??llo", true),
+        ("hello", "[^h]ello", true), // '^' is a literal member
+        ("hello", "[!h]ello", false),
+        ("jello", "[!h]ello", true),
+        ("a", "[a-]", false), // ']' eaten as endpoint -> dead
+        ("-", "[-a]", true),  // '-' literal when first
+        ("a", "[-a]", true),
+        ("b", "[-a]", false),
+        ("]", "[A-]]", true), // ']' as a range endpoint
+        ("B]", "[A-]]", false),
+        ("a*b", "a\\*b", true),
+        ("ab", "a\\b", true),
+        ("a\\", "a\\", false), // dangling escape -> dead
+        ("h", "[", false),     // lone '[' -> dead
+        ("h%llo", "h%llo", true),
+        ("hello", "h[a-f]llo", true),
+    ];
+    for (s, p, want) in cases {
+        // SQL single-quoted strings pass backslashes through verbatim.
+        let sql = format!("SELECT s GLOB '{p}' AS m FROM __THIS__");
+        let got = run_sql(&sql, &schema, batch(1, vec![c_str(&[Some(s)])])).unwrap();
+        assert_eq!(
+            got,
+            rows(&[&[if *want { "true" } else { "false" }]]),
+            "{s:?} GLOB {p:?}"
+        );
+    }
+}
+
+#[test]
+fn not_glob_is_a_parse_error_and_marker_is_reserved() {
+    let schema = cols(&[("s", Ty::Str, false)]);
+    match prep("SELECT s NOT GLOB 'h*' AS m FROM __THIS__", &schema) {
+        Err(PrepareError::Parse(_)) => {}
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+    match prep("SELECT __glob_pat('x') FROM __THIS__", &schema) {
+        Err(PrepareError::Unsupported(msg)) => assert!(msg.contains("__glob_pat"), "{msg}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}

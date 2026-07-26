@@ -403,6 +403,10 @@ pub enum StrOp2 {
     /// hamming == mismatches: byte-wise; traps on byte-length mismatch
     /// and on ANY empty input (('','') is an error, not 0).
     Hamming,
+    /// GLOB: byte-level matcher (wave-5 pins) — `?` is one BYTE, classes
+    /// are byte-sets with `!` negation, `\` escapes outside classes only;
+    /// malformed patterns match nothing, never error.
+    Glob,
 }
 
 impl StrOp2 {
@@ -424,6 +428,7 @@ impl StrOp2 {
             StrOp2::Damerau => "sdamerau",
             StrOp2::Jaccard => "sjaccard",
             StrOp2::Hamming => "shamming",
+            StrOp2::Glob => "sglob",
         }
     }
 }

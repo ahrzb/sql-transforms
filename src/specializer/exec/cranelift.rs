@@ -262,7 +262,8 @@ extern "C" fn h_spred(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64
     let op = match which {
         0 => StrOp2::Contains,
         1 => StrOp2::Starts,
-        _ => StrOp2::Ends,
+        2 => StrOp2::Ends,
+        _ => StrOp2::Glob,
     };
     interp::str_pred(op, arena.get(span(ao, al)), arena.get(span(bo, bl))) as u8
 }
@@ -1390,7 +1391,8 @@ fn translate_inst(
                         match pred {
                             StrOp2::Contains => 0,
                             StrOp2::Starts => 1,
-                            _ => 2,
+                            StrOp2::Ends => 2,
+                            _ => 3,
                         },
                     );
                     call_h(b, module, "h_spred", &[cxp, which, ao, al, bo, bl]).unwrap()

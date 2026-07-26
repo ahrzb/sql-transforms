@@ -46,6 +46,17 @@ def test_bracket_subscripts_vs_oracle():
     duck_check("SELECT s[a + 1] AS x FROM __THIS__", T, S_ROWS)
 
 
+def test_caret_at_and_glob_vs_oracle():
+    duck_check("SELECT s ^@ 'h' AS p, s ^@ '' AS e FROM __THIS__", T, T_ROWS)
+    duck_check(
+        "SELECT s GLOB 'h*' AS g1, s GLOB 'h?llo' AS g2, s GLOB '[hé]*' AS g3, "
+        "s GLOB '[!h]*' AS g4, s GLOB '[^h]ello' AS g5, s GLOB '[a-]' AS dead, "
+        "s GLOB '' AS empty, NOT (s GLOB 'h*') AS neg FROM __THIS__",
+        T,
+        T_ROWS,
+    )
+
+
 def test_bitwise_ops_vs_oracle():
     # Flat precedence tier + arithmetic-vs-shift interplay + dynamic
     # operands (negatives only where << can't trap in either engine).
