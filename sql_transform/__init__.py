@@ -16,11 +16,12 @@ from sql_transform._compose import desugar_template, inline_references
 from sql_transform._interpreter import InferFn
 from sql_transform._rewrite import rewrite_sql
 from sql_transform._schema import synthesize_this_model
+from sql_transform._specialized import SpecializedTransform
 from sql_transform._sql import find_window_aggregates, parse_and_validate
 from sql_transform._state import build_state_tables
 from sql_transform._transformer_ref import resolve_transformer_refs
 
-__all__ = ["InferFn", "SQLTransform"]
+__all__ = ["InferFn", "SQLTransform", "SpecializedTransform"]
 
 
 def _to_namespace(row: dict[str, Any] | BaseModel) -> SimpleNamespace:
