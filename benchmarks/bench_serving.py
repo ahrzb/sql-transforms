@@ -22,6 +22,9 @@ A three-way parity gate (specializer == DuckDB == handcrafted) runs before
 any timing; a scenario that disagrees aborts the bench.
 
 Run: uv run python -m benchmarks.bench_serving [--json out.json]
+IMPORTANT: rebuild the wheel first (uv run --reinstall-package sql-transform
+python -c pass) — a stale wheel inflates ONLY the engine rows and once
+produced a phantom 7x regression (caught by bisection, 2026-07-26).
 """
 
 from __future__ import annotations
