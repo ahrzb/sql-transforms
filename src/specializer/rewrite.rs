@@ -78,8 +78,7 @@ pub fn rewrite_star_filters(tokens: Vec<Token>) -> Vec<Token> {
             }
             if matches!(tokens.get(i), Some(Token::LParen)) {
                 let mut depth = 0i32;
-                loop {
-                    let Some(tok) = tokens.get(i) else { break };
+                while let Some(tok) = tokens.get(i) {
                     match tok {
                         Token::LParen => depth += 1,
                         Token::RParen => depth -= 1,
@@ -198,8 +197,7 @@ pub fn rewrite_glob(tokens: Vec<Token>) -> Vec<Token> {
         // Copy one primary: a balanced group or a single token, then
         // directly-attached `.word` / `(...)` / `[...]` chains.
         let mut depth = 0i32;
-        loop {
-            let Some(tok) = tokens.get(i) else { break };
+        while let Some(tok) = tokens.get(i) {
             match tok {
                 Token::LParen | Token::LBracket => {
                     depth += 1;
