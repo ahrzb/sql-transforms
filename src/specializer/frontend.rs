@@ -73,11 +73,15 @@ pub fn frontend(
     // path in datafusion/plan.rs — see pins-wave5/sqlparser-spike.json.
     // DuckDB-only surface forms sqlparser can't represent are token-rewritten
     // first (rewrite.rs).
+    if sql.to_ascii_lowercase().contains("__glob_pat") {
+        // Reserved for the GLOB rewrite marker — never valid user SQL.
+        return Err(unsup("reserved identifier __glob_pat"));
+    }
     let dialect = GenericDialect {};
     let tokens = sqlparser::tokenizer::Tokenizer::new(&dialect, sql)
         .tokenize()
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
-    let tokens = super::rewrite::rewrite_colon_aliases(tokens);
+    let tokens = super::rewrite::rewrite_glob(super::rewrite::rewrite_colon_aliases(tokens));
     let statements = Parser::new(&dialect)
         .with_tokens(tokens)
         .parse_statements()
@@ -781,6 +785,48 @@ fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
     }
 }
 
+/// Find the `__glob_pat(...)` identity marker (rewrite.rs) in a LIKE
+/// pattern tree and return the tree with the marker unwrapped; None means
+/// "no marker — a plain LIKE".
+fn strip_glob_marker(e: &SqlExpr) -> Option<SqlExpr> {
+    fn marker_arg(e: &SqlExpr) -> Option<&SqlExpr> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        let SqlExpr::Function(f) = e else { return None };
+        if !f.name.to_string().eq_ignore_ascii_case("__glob_pat") {
+            return None;
+        }
+        let FunctionArguments::List(list) = &f.args else {
+            return None;
+        };
+        let [FunctionArg::Unnamed(FunctionArgExpr::Expr(inner))] = &list.args[..] else {
+            return None;
+        };
+        Some(inner)
+    }
+    if let Some(inner) = marker_arg(e) {
+        return Some(inner.clone());
+    }
+    match e {
+        SqlExpr::BinaryOp { left, op, right } => {
+            if let Some(l) = strip_glob_marker(left) {
+                Some(SqlExpr::BinaryOp {
+                    left: Box::new(l),
+                    op: op.clone(),
+                    right: right.clone(),
+                })
+            } else {
+                strip_glob_marker(right).map(|r| SqlExpr::BinaryOp {
+                    left: left.clone(),
+                    op: op.clone(),
+                    right: Box::new(r),
+                })
+            }
+        }
+        SqlExpr::Nested(inner) => strip_glob_marker(inner).map(|i| SqlExpr::Nested(Box::new(i))),
+        _ => None,
+    }
+}
+
 fn is_flat_bitop(op: &BinaryOperator) -> bool {
     matches!(
         op,
@@ -1209,6 +1255,40 @@ impl Binder<'_> {
                 if *any {
                     return Err(unsup("LIKE ANY"));
                 }
+                // GLOB arrives as LIKE with the pattern wrapped in the
+                // __glob_pat identity marker (rewrite.rs); unwrap anywhere
+                // in the pattern tree so `s GLOB 'a' || x` still binds the
+                // full concat as the pattern.
+                if let Some(pat) = strip_glob_marker(pattern) {
+                    if ci || *negated || escape_char.is_some() {
+                        return Err(unsup("GLOB in a LIKE-variant position"));
+                    }
+                    let (ba, bp) = (self.expr_or_null(expr)?, self.expr_or_null(&pat)?);
+                    let (Some(ba), Some(bp)) = (ba, bp) else {
+                        return Ok(null_of(Ty::I1));
+                    };
+                    for side in [&ba, &bp] {
+                        if side.ty != Ty::Str {
+                            // GLOB has NO implicit casts (wave-5 pins;
+                            // DuckDB's scalar name for it is ~~~).
+                            return Err(PrepareError::Bind(format!(
+                                "no function matches ~~~({}, {})",
+                                ba.ty.name(),
+                                bp.ty.name()
+                            )));
+                        }
+                    }
+                    let nullable = ba.nullable || bp.nullable;
+                    return Ok(SExpr {
+                        kind: SKind::Str2 {
+                            op: StrOp2::Glob,
+                            a: Box::new(ba),
+                            b: Box::new(bp),
+                        },
+                        ty: Ty::I1,
+                        nullable,
+                    });
+                }
                 let (ba, bp) = (self.expr_or_null(expr)?, self.expr_or_null(pattern)?);
                 let (Some(ba), Some(bp)) = (ba, bp) else {
                     // NULL on either side is NULL before any validation
@@ -1604,6 +1684,29 @@ impl Binder<'_> {
                         b: Box::new(b),
                     },
                     ty: Ty::Str,
+                    nullable,
+                })
+            }
+            // s ^@ p is exactly starts_with(s, p): byte-prefix compare,
+            // VARCHAR-only with no implicit casts (wave-5 pins).
+            BinaryOperator::PGStartsWith => {
+                for side in [&a, &b] {
+                    if side.ty != Ty::Str {
+                        return Err(PrepareError::Bind(format!(
+                            "no function matches ^@({}, {})",
+                            a.ty.name(),
+                            b.ty.name()
+                        )));
+                    }
+                }
+                let nullable = a.nullable || b.nullable;
+                Ok(SExpr {
+                    kind: SKind::Str2 {
+                        op: StrOp2::Starts,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    },
+                    ty: Ty::I1,
                     nullable,
                 })
             }

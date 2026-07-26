@@ -992,7 +992,7 @@ impl Parser {
                 }
             }
             "sfind" | "scontains" | "sstarts" | "sends" | "slevenshtein" | "sdamerau"
-            | "sjaccard" | "shamming" => {
+            | "sjaccard" | "shamming" | "sglob" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "sfind" => StrOp2::Find,
@@ -1002,6 +1002,7 @@ impl Parser {
                     "sdamerau" => StrOp2::Damerau,
                     "sjaccard" => StrOp2::Jaccard,
                     "shamming" => StrOp2::Hamming,
+                    "sglob" => StrOp2::Glob,
                     _ => StrOp2::Ends,
                 };
                 let a = self.use_value()?;

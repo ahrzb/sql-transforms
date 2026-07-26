@@ -12,6 +12,106 @@
 use sqlparser::keywords::Keyword;
 use sqlparser::tokenizer::{Token, Whitespace, Word};
 
+/// True when `t` can END a value expression — i.e. a following bare word
+/// like GLOB sits in infix position.
+fn ends_value(t: Option<&Token>) -> bool {
+    match t {
+        Some(Token::Word(w)) => {
+            w.quote_style.is_some()
+                || matches!(
+                    w.keyword,
+                    Keyword::NoKeyword
+                        | Keyword::NULL
+                        | Keyword::TRUE
+                        | Keyword::FALSE
+                        | Keyword::END
+                )
+        }
+        Some(Token::Number(..))
+        | Some(Token::SingleQuotedString(_))
+        | Some(Token::RParen)
+        | Some(Token::RBracket) => true,
+        _ => false,
+    }
+}
+
+/// Rewrite infix `expr GLOB pat` into `expr LIKE __glob_pat(pat)` — sqlparser
+/// cannot parse GLOB (it eats it as an implicit alias), and GLOB is NOT
+/// expressible as a LIKE pattern (wave-5 pins), so the marker routes the
+/// binder to the dedicated byte matcher. The wrap covers the next PRIMARY
+/// (literal / identifier chain / parenthesized group); it is an identity
+/// marker, so a pattern continuing past the primary (`'a' || x`) still
+/// computes correctly once the binder unwraps it in place. `NOT GLOB` is a
+/// DuckDB parse error and is deliberately not rewritten (prev token NOT is
+/// not a value end), so it stays a parse error here too.
+pub fn rewrite_glob(tokens: Vec<Token>) -> Vec<Token> {
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let is_glob = matches!(&tokens[i], Token::Word(w)
+            if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("glob"));
+        let prev = out.iter().rev().find(|t| !matches!(t, Token::Whitespace(_)));
+        if !(is_glob && ends_value(prev)) {
+            out.push(tokens[i].clone());
+            i += 1;
+            continue;
+        }
+        out.push(Token::make_keyword("LIKE"));
+        out.push(Token::Whitespace(Whitespace::Space));
+        out.push(Token::make_word("__glob_pat", None));
+        out.push(Token::LParen);
+        i += 1;
+        while matches!(tokens.get(i), Some(Token::Whitespace(_))) {
+            i += 1;
+        }
+        // Copy one primary: a balanced group or a single token, then
+        // directly-attached `.word` / `(...)` / `[...]` chains.
+        let mut depth = 0i32;
+        loop {
+            let Some(tok) = tokens.get(i) else { break };
+            match tok {
+                Token::LParen | Token::LBracket => {
+                    depth += 1;
+                    out.push(tok.clone());
+                    i += 1;
+                }
+                Token::RParen | Token::RBracket => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    out.push(tok.clone());
+                    i += 1;
+                    if depth == 0 && !matches!(tokens.get(i), Some(Token::Period)) {
+                        break;
+                    }
+                }
+                _ if depth > 0 => {
+                    out.push(tok.clone());
+                    i += 1;
+                }
+                Token::Period => {
+                    out.push(tok.clone());
+                    i += 1;
+                }
+                Token::Whitespace(_) => break,
+                _ => {
+                    out.push(tok.clone());
+                    i += 1;
+                    if !matches!(
+                        tokens.get(i),
+                        Some(Token::Period) | Some(Token::LParen) | Some(Token::LBracket)
+                    ) {
+                        break;
+                    }
+                }
+            }
+        }
+        out.push(Token::RParen);
+    }
+    out
+}
+
 /// Rewrite `SELECT k: expr, ...` into `SELECT expr AS k, ...`.
 ///
 /// Trigger: a (possibly quoted) word followed by a single `:` at the START
