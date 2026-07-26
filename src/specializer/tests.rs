@@ -142,7 +142,7 @@ fn integer_overflow_traps_like_duckdb() {
     )
     .unwrap_err();
     assert!(
-        err.contains("overflow"),
+        err.contains("Overflow"),
         "expected an overflow trap, got: {err}"
     );
 }
@@ -862,7 +862,7 @@ fn abs_min_traps_like_duckdb() {
         batch(1, vec![c_i64(&[Some(i64::MIN)])]),
     )
     .unwrap_err();
-    assert!(err.contains("overflow"), "got: {err}");
+    assert!(err.contains("Overflow"), "got: {err}");
 }
 
 #[test]
@@ -1009,7 +1009,7 @@ fn traps_never_fire_under_a_null_flag() {
     let got = run_sql(sql, &schema, batch(1, vec![c_i64(&[None])])).unwrap();
     assert_eq!(got, rows(&[&["NULL"]]));
     let err = run_sql(sql, &schema, batch(1, vec![c_i64(&[Some(1)])])).unwrap_err();
-    assert!(err.contains("overflow"), "got: {err}");
+    assert!(err.contains("Overflow"), "got: {err}");
 }
 
 #[test]
