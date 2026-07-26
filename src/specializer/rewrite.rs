@@ -35,6 +35,137 @@ fn ends_value(t: Option<&Token>) -> bool {
     }
 }
 
+/// Rewrite star name filters — `* [EXCLUDE (...)] {LIKE | NOT LIKE | GLOB |
+/// NOT ILIKE} '<pat>'` — into the one form sqlparser CAN parse, `* ILIKE`,
+/// encoding the real operator as a `\u{1}<code>:` prefix inside the pattern
+/// string (decoded by the binder; a plain `* ILIKE` has no marker). Runs
+/// BEFORE the infix-GLOB rewrite so star-GLOB is consumed here. `* SIMILAR
+/// TO` stays a parse error (regexp semantics — wave B).
+pub fn rewrite_star_filters(tokens: Vec<Token>) -> Vec<Token> {
+    let star_position = |out: &[Token]| {
+        match out.iter().rev().find(|t| !matches!(t, Token::Whitespace(_))) {
+            Some(Token::Word(w)) => w.quote_style.is_none() && w.keyword == Keyword::SELECT,
+            Some(Token::Comma) | Some(Token::Period) => true,
+            _ => false,
+        }
+    };
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if !(matches!(tokens[i], Token::Mul) && star_position(&out)) {
+            out.push(tokens[i].clone());
+            i += 1;
+            continue;
+        }
+        out.push(tokens[i].clone()); // the star
+        i += 1;
+        // Buffer whitespace and an optional EXCLUDE group (parenthesized or
+        // a single bare identifier): DuckDB writes the filter AFTER EXCLUDE
+        // but sqlparser only parses ILIKE BEFORE it, so on a filter match
+        // the synthesized ILIKE is emitted ahead of the buffered group.
+        let mut buf: Vec<Token> = Vec::new();
+        while matches!(tokens.get(i), Some(Token::Whitespace(_))) {
+            buf.push(tokens[i].clone());
+            i += 1;
+        }
+        if matches!(&tokens.get(i), Some(Token::Word(w)) if w.value.eq_ignore_ascii_case("exclude"))
+        {
+            buf.push(tokens[i].clone());
+            i += 1;
+            while matches!(tokens.get(i), Some(Token::Whitespace(_))) {
+                buf.push(tokens[i].clone());
+                i += 1;
+            }
+            if matches!(tokens.get(i), Some(Token::LParen)) {
+                let mut depth = 0i32;
+                loop {
+                    let Some(tok) = tokens.get(i) else { break };
+                    match tok {
+                        Token::LParen => depth += 1,
+                        Token::RParen => depth -= 1,
+                        _ => {}
+                    }
+                    buf.push(tok.clone());
+                    i += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            } else if matches!(tokens.get(i), Some(Token::Word(_))) {
+                buf.push(tokens[i].clone());
+                i += 1;
+            }
+            while matches!(tokens.get(i), Some(Token::Whitespace(_))) {
+                buf.push(tokens[i].clone());
+                i += 1;
+            }
+        }
+        // Match [NOT] LIKE / NOT ILIKE / GLOB followed by a string literal.
+        let mut j = i;
+        let mut negated = false;
+        if matches!(&tokens.get(j), Some(Token::Word(w)) if w.keyword == Keyword::NOT) {
+            negated = true;
+            j += 1;
+            while matches!(tokens.get(j), Some(Token::Whitespace(_))) {
+                j += 1;
+            }
+        }
+        let op = match &tokens.get(j) {
+            Some(Token::Word(w)) if w.keyword == Keyword::LIKE => {
+                Some(if negated { "NL" } else { "L" })
+            }
+            Some(Token::Word(w)) if w.keyword == Keyword::ILIKE && negated => Some("NI"),
+            Some(Token::Word(w)) if w.value.eq_ignore_ascii_case("glob") && !negated => {
+                Some("G")
+            }
+            _ => None,
+        };
+        let Some(code) = op else {
+            out.extend(buf);
+            continue;
+        };
+        j += 1;
+        while matches!(tokens.get(j), Some(Token::Whitespace(_))) {
+            j += 1;
+        }
+        let Some(Token::SingleQuotedString(pat)) = tokens.get(j) else {
+            out.extend(buf);
+            continue;
+        };
+        // sqlparser parses ILIKE and EXCLUDE as mutually exclusive, so the
+        // buffered EXCLUDE entries ride INSIDE the marker (`\u{2}`-split);
+        // quoted identifiers bail to a parse error (clean) rather than a
+        // lossy encoding.
+        let mut exc = String::new();
+        let mut ok = true;
+        for t in &buf {
+            match t {
+                Token::Word(w) if w.value.eq_ignore_ascii_case("exclude") => {}
+                Token::Word(w) if w.quote_style.is_none() => exc.push_str(&w.value),
+                Token::Period => exc.push('.'),
+                Token::Comma => exc.push(','),
+                Token::LParen | Token::RParen | Token::Whitespace(_) => {}
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            out.extend(buf);
+            continue;
+        }
+        out.push(Token::Whitespace(Whitespace::Space));
+        out.push(Token::make_keyword("ILIKE"));
+        out.push(Token::Whitespace(Whitespace::Space));
+        out.push(Token::SingleQuotedString(format!(
+            "\u{1}{code}:{exc}\u{2}{pat}"
+        )));
+        i = j + 1;
+    }
+    out
+}
+
 /// Rewrite infix `expr GLOB pat` into `expr LIKE __glob_pat(pat)` — sqlparser
 /// cannot parse GLOB (it eats it as an implicit alias), and GLOB is NOT
 /// expressible as a LIKE pattern (wave-5 pins), so the marker routes the

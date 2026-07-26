@@ -1319,7 +1319,7 @@ fn parse_glob(p: &[u8]) -> Option<Vec<GTok>> {
 /// GLOB (wave-5 pins): raw-byte matcher, `*` = any run, `?` = ONE byte,
 /// case-sensitive, malformed patterns match nothing. NOT expressible via
 /// LIKE (classes; `?` is byte-based while `_` is codepoint-based).
-pub(super) fn duck_glob(s: &str, p: &str) -> bool {
+pub(in crate::specializer) fn duck_glob(s: &str, p: &str) -> bool {
     let Some(toks) = parse_glob(p.as_bytes()) else {
         return false;
     };

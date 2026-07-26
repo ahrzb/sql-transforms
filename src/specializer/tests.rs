@@ -425,12 +425,10 @@ fn star_expands_in_declared_order_with_exclude() {
     let p = prep("SELECT __THIS__.*, a + 1 AS a2 FROM __THIS__", &schema).unwrap();
     assert_eq!(names(&p), ["a", "b", "s", "a2"]);
 
-    // Star + explicit same column: DuckDB-legal duplicate names stay our
-    // clean unsupported (the output model needs unique fields).
-    match prep("SELECT *, a FROM __THIS__", &schema) {
-        Err(PrepareError::Unsupported(m)) => assert!(m.contains("duplicate output column")),
-        other => panic!("wanted duplicate-name unsupported, got {other:?}"),
-    }
+    // Star + explicit same column: duplicates get DuckDB's boundary rename
+    // (wave-5 pins: own-name _N, smallest free, case-insensitive check).
+    let p = prep("SELECT *, a FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["a", "b", "s", "a_1"]);
     // EXCLUDE of an unknown column is a bind error, mirroring DuckDB's
     // binder message.
     match prep("SELECT * EXCLUDE (nope) FROM __THIS__", &schema) {
@@ -467,21 +465,20 @@ fn star_over_joined_table_rejects_by_name() {
         let names: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, want, "'{sql}'");
     }
-    // A star that would produce duplicate names still rejects cleanly.
-    // (The bare `id = dim.id` spelling is an ambiguity error in DuckDB
-    // too — qualify the dynamic side.)
+    // A star producing duplicate names now renames per the wave-5 dup-name
+    // contract (DuckDB's own boundary rename). (The bare `id = dim.id`
+    // spelling is an ambiguity error in DuckDB too — qualify.)
     let clash = cols(&[("id", Ty::I64, false)]);
-    match prepare(
+    let p = prepare(
         "SELECT * FROM __THIS__ JOIN dim ON __THIS__.id = dim.id",
         "__THIS__",
         &clash,
         std::slice::from_ref(&st),
-    ) {
-        Err(PrepareError::Unsupported(m)) => {
-            assert!(m.contains("duplicate output column"), "got '{m}'")
-        }
-        other => panic!("wanted duplicate-name unsup, got {:?}", other.err()),
-    }
+    )
+    .unwrap()
+    .program;
+    let names: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "id_1", "v"]);
     // Qualified star over the ROW table under a join is fine.
     let p = prepare(
         "SELECT __THIS__.*, dim.v AS v FROM __THIS__ JOIN dim ON a = dim.id",
@@ -509,11 +506,9 @@ fn unsupported_constructs_are_named_cleanly() {
         ("SELECT regexp_matches('x', 'y') FROM __THIS__", "RE2"),
         ("SELECT reverse('abc') FROM __THIS__", "grapheme"),
         ("SELECT jaro_similarity('x', 'y') FROM __THIS__", "function"),
-        // Star now expands; the still-unsupported star forms reject by name.
-        ("SELECT * REPLACE (a + 1 AS a) FROM __THIS__", "REPLACE"),
+        // Star forms now expand; COLUMNS stays wave-B (regexp).
         ("SELECT COLUMNS('a') FROM __THIS__", "function COLUMNS"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
-        ("SELECT a, a FROM __THIS__", "duplicate output column"),
         ("SELECT NULL FROM __THIS__", "NULL literal"),
         ("SELECT a FROM other_table", "must be the dynamic table"),
     ] {
@@ -1356,4 +1351,118 @@ fn not_glob_is_a_parse_error_and_marker_is_reserved() {
         Err(PrepareError::Unsupported(msg)) => assert!(msg.contains("__glob_pat"), "{msg}"),
         other => panic!("wrong outcome: {:?}", other.err()),
     }
+}
+
+#[test]
+fn star_name_filters_replace_rename_qualified_exclude() {
+    let schema = cols(&[
+        ("abc", Ty::I64, false),
+        ("abd", Ty::I64, false),
+        ("xyz", Ty::Str, false),
+    ]);
+    let names = |p: &super::ir::Program| {
+        p.out_cols
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    };
+    // Name filters against declared-case names (pins-wave5/star-forms.json):
+    // LIKE case-sensitive, ILIKE folds, GLOB byte matcher, NOT LIKE negates.
+    let p = prep("SELECT * LIKE 'ab%' FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["abc", "abd"]);
+    let p = prep("SELECT * ILIKE 'AB%' FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["abc", "abd"]);
+    let p = prep("SELECT * NOT LIKE 'ab%' FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["xyz"]);
+    let p = prep("SELECT * GLOB 'ab[cd]' FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["abc", "abd"]);
+    // Filter FOLLOWS exclude (grammar order).
+    let p = prep("SELECT * EXCLUDE (abd) LIKE 'ab%' FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["abc"]);
+    // Zero matches is an error, never an empty star.
+    match prep("SELECT * LIKE 'zz%' FROM __THIS__", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("empty set of columns"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+    // REPLACE keeps position and name, may change type, sees originals.
+    let p = prep(
+        "SELECT * REPLACE (abc + abd AS abc, 'x' AS xyz) FROM __THIS__",
+        &schema,
+    )
+    .unwrap();
+    assert_eq!(names(&p), ["abc", "abd", "xyz"]);
+    match prep("SELECT * REPLACE (1 AS nope) FROM __THIS__", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("REPLACE list not found"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+    // RENAME keeps position; nonexistent target silently ignored.
+    let p = prep(
+        "SELECT * RENAME (abc AS q, nope AS r) FROM __THIS__",
+        &schema,
+    )
+    .unwrap();
+    assert_eq!(names(&p), ["q", "abd", "xyz"]);
+    // Cross-list conflicts are the pinned parse-class errors.
+    match prep(
+        "SELECT * EXCLUDE (abc) REPLACE (1 AS abc) FROM __THIS__",
+        &schema,
+    ) {
+        Err(PrepareError::Parse(m)) => assert!(m.contains("EXCLUDE and REPLACE"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}
+
+#[test]
+fn dup_name_rename_matches_duckdb_boundary_algorithm() {
+    // pins-wave5/dup-names-client-contract.json: case-insensitive collision
+    // check that also covers candidates; a renamed dup can steal a later
+    // literal's name.
+    let schema = cols(&[("id", Ty::I64, false)]);
+    let names = |sql: &str| {
+        prep(sql, &schema)
+            .unwrap()
+            .out_cols
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names("SELECT id, id AS id, id AS id FROM __THIS__"),
+        ["id", "id_1", "id_2"]
+    );
+    assert_eq!(
+        names("SELECT id, id AS \"ID\" FROM __THIS__"),
+        ["id", "ID_1"]
+    );
+    assert_eq!(
+        names("SELECT id, id AS id, id AS id_1 FROM __THIS__"),
+        ["id", "id_1", "id_1_1"]
+    );
+}
+
+#[test]
+fn qualified_exclude_over_join() {
+    let schema = cols(&[("id", Ty::I64, false)]);
+    let st = stat("dim", &[("id", Ty::I64, false), ("v", Ty::F64, false)]);
+    // Qualified EXCLUDE strips ONE table's copy; unqualified strips both.
+    let p = prepare(
+        "SELECT * EXCLUDE (dim.id) FROM __THIS__ JOIN dim ON __THIS__.id = dim.id",
+        "__THIS__",
+        &schema,
+        std::slice::from_ref(&st),
+    )
+    .unwrap()
+    .program;
+    let got: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(got, ["id", "v"]);
+    let p = prepare(
+        "SELECT * EXCLUDE (id) FROM __THIS__ JOIN dim ON __THIS__.id = dim.id",
+        "__THIS__",
+        &schema,
+        std::slice::from_ref(&st),
+    )
+    .unwrap()
+    .program;
+    let got: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(got, ["v"]);
 }

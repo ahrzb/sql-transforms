@@ -8,7 +8,11 @@ grows stage by stage with TASK-52.
 
 from __future__ import annotations
 
-from test_duckdb_interpreter import duck_check
+import duckdb
+from pydantic import create_model
+from test_duckdb_interpreter import duck_check, static
+
+from sql_transform._interpreter import DuckDBInferFn
 
 T = {"a": "int", "s": "str?"}
 T_ROWS = [
@@ -17,6 +21,41 @@ T_ROWS = [
     {"a": 0, "s": ""},
     {"a": 7, "s": "héllo"},
 ]
+
+
+def test_star_filters_replace_rename_vs_oracle():
+    # Name filters / REPLACE / RENAME against the oracle (values + names).
+    duck_check("SELECT * LIKE 'a%' FROM __THIS__", T, T_ROWS)
+    duck_check("SELECT * ILIKE 'A%' FROM __THIS__", T, T_ROWS)
+    duck_check("SELECT * NOT LIKE 's%' FROM __THIS__", T, T_ROWS)
+    duck_check("SELECT * GLOB '[as]*' FROM __THIS__", T, T_ROWS)
+    duck_check("SELECT * REPLACE (a * 2 AS a) FROM __THIS__", T, T_ROWS)
+    duck_check("SELECT * RENAME (a AS q) FROM __THIS__", T, T_ROWS)
+    duck_check("SELECT * EXCLUDE (s) LIKE 'a%' FROM __THIS__", T, T_ROWS)
+
+
+def test_dup_names_match_duckdb_df_contract():
+    # The pinned contract: our field names == DuckDB's own .df() dedup
+    # (which equals its subquery-boundary rename). Values stay positional.
+    con = duckdb.connect()
+    dim = static(
+        {"id": "int", "v": "int"},
+        [{"id": 1, "v": 10}, {"id": 2, "v": 20}],
+    )
+    K = create_model("K", id=(int, ...))
+    fn = DuckDBInferFn(
+        "SELECT * FROM __THIS__ JOIN dim ON __THIS__.id = dim.id",
+        row_tables={"__THIS__": K},
+        static_tables={"dim": dim},
+        output="dict",
+    )
+    got = fn.infer({"__THIS__": [K(id=1)]})
+    con.execute("CREATE TABLE t (id BIGINT); INSERT INTO t VALUES (1)")
+    con.execute("CREATE TABLE dim (id BIGINT, v BIGINT)")
+    con.execute("INSERT INTO dim VALUES (1, 10), (2, 20)")
+    df = con.execute("SELECT * FROM t JOIN dim ON t.id = dim.id").df()
+    assert list(got[0].keys()) == list(df.columns)
+    assert list(got[0].values()) == [x.item() for x in df.iloc[0].values]
 
 
 def test_colon_prefix_alias():
