@@ -1,10 +1,10 @@
 ---
 id: TASK-46
 title: 'Specializer SQL support: SELECT * star expansion'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-26 11:42'
-updated_date: '2026-07-26 11:55'
+updated_date: '2026-07-26 12:20'
 labels: []
 milestone: m-7
 dependencies:
@@ -46,3 +46,9 @@ Measured pins: expansion order is FROM order then declared column order per tabl
 <!-- SECTION:NOTES:BEGIN -->
 Landed in one pass: Binder::expand_star (frontend.rs) expands `*` and `tbl.*` at the single projection site using the existing SKind::Col / static_lane constructors — no IR/backend/boundary changes, exactly as scoped. EXCLUDE handles bare + paren forms case-insensitively (sqlparser 0.62 carries entries as ObjectName; single-part idents only, qualified entries reject by name); unknown-column and duplicate-entry EXCLUDE mirror DuckDB's binder errors; exclude-all falls through to the existing empty-SELECT bind error (same shape as DuckDB's "SELECT list is empty after resolving * expressions"). Star items covering a joined static table reject cleanly naming the join-key column (DuckDB includes the key AND emits duplicate output names there — both unrepresentable; `__THIS__.*` under a join works). ILIKE/EXCEPT/REPLACE/RENAME/COLUMNS() reject by name. CORPUS RESULT (AC #2): 53 -> 172 match of 678 (+119, a 3.2x coverage jump), 0 FAILs, 506 clean-unsupported. New first-blocker head: BETWEEN 31, comma join 30, dynamic-table alias 30, table-function FROM 24, then the builtin catalogue (array_slice 23, contains 18, damerau_levenshtein 17, ...) — the TASK-47 target list confirmed. Gate green: cargo 129 + pytest 627 (13 xfail incl. the pre-existing substr const-fold pin from master).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Merged as PR #30 (2026-07-26). Star expansion at the frontend's single projection site tripled corpus coverage: 53 -> 172 match of 678, zero FAILs. All measured edges pinned (order, EXCLUDE case-folding + binder errors, star-over-join rejection naming the join key, macro forms rejected by name). Gate green cargo 129 / pytest 627. Unblocked TASK-47's target list: post-star first-blocker head is BETWEEN 31, comma join 30, dynamic-table alias 30, then the builtin catalogue.
+<!-- SECTION:FINAL_SUMMARY:END -->
