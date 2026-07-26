@@ -344,7 +344,7 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             "age_x_pclass": age_filled * pclass,
             "age_bin": age_bin,
             "has_cabin": 0 if cabin is None else 1,
-            "deck": "U" if cabin is None else cabin.strip()[:1].upper(),
+            "deck": "U" if cabin is None else cabin.strip(" ")[:1].upper(),
             "embarked_s": 1 if emb == "S" else 0,
             "embarked_c": 1 if emb == "C" else 0,
             "embarked_q": 1 if emb == "Q" else 0,
