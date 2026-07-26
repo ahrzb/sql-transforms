@@ -1,0 +1,1797 @@
+{
+ "family": "join-using-desugar",
+ "duckdb_version": "1.5.5",
+ "decisions": [
+  "ROW SETS: t1 JOIN t2 USING (a) produces exactly the same rows as ON t1.a = t2.a, for both INNER and LEFT. NULL keys never match: INNER drops the NULL-key input row, LEFT emits it with all right columns NULL. [P01,P02,P03,P04,P29,P30]",
+  "STAR SHAPE: ON star emits BOTH key columns with duplicate names (a,x,a,y); USING star emits the key exactly ONCE. Duplicate column names in a result schema are legal in DuckDB (also y,y in P20) - the engine must not assume unique output names. [P01,P02,P20]",
+  "STAR POSITION (refutes PostgreSQL hoisting): the merged USING column stays at the LEFT table's declared position - w1(x,a) JOIN t2 USING(a) yields (x,a,y), NOT (a,x,y). Output order = left table's columns in declared order (using cols in place), then right table's non-using columns in right declared order. USING-list order is irrelevant: USING(a,b) and USING(b,a) give identical star order and rows. [F01,F02,F03,F04,F05,P10,P11]",
+  "MERGED VALUE: the exposed using column is semantically COALESCE(left, right): INNER -> equal on both sides; LEFT -> always the left value (miss rows show the LEFT value, not NULL; the NULL-key left row shows NULL because left is NULL); RIGHT -> right value on left-miss; FULL -> true COALESCE. For an INNER/LEFT-only engine, 'merged col := left value' is bit-exact. [P03,P06,P27,P28,P28b]",
+  "QUALIFIED ACCESS SURVIVES: t1.a and t2.a both remain addressable in SELECT and WHERE after USING. On a LEFT miss, t2.a is NULL (not coalesced) and t2.* expands to all-NULL including a. Unqualified a binds the merged column with no ambiguity, in SELECT and WHERE alike (WHERE a=3 keeps the miss row). [P05,P05b,P06,P07,P08,P26a,P26b]",
+  "CHAINED USING binds the MERGED column of the previous join, not a specific side: in t1 FULL JOIN t2r USING(a) JOIN t3f USING(a), the row with t1.a NULL / t2r.a=9 matches t3f.a=9 (witness z9). Under LEFT chains this is observationally identical to binding t1.a. The chain star still shows a single a column. Unqualified a in a later ON condition also resolves to the merged column. [F06,F06b,F07,F08,P12,P13,P14]",
+  "USING AFTER AN ON JOIN ERRORS: once a prior ON join leaves two visible a columns, a later USING(a) fails with the same ambiguity error as SELECT a: 'Binder Error: Ambiguous reference to column name \"a\" (use: \"t1.a\" or \"t2.a\")'. USING resolves names against the merged visible scope. [P15,P09]",
+  "ERROR PINS: col only on left -> 'Binder Error: Column \"x\" does not exist on right side of join!'; col only on right (and fully nonexistent cols) -> 'Binder Error: Column \"y\" does not exist on left side of join!' (left side is checked first, so a nonexistent name reports the LEFT side); USING () -> ParserException 'syntax error at or near \")\"'. [P16,P17,P19b,P18]",
+  "USING (a, a) duplicate entries are silently deduplicated: no error, output columns and rows identical to USING (a). [P19 vs P01]",
+  "SAME STATIC TWICE: joining one table twice under different aliases with USING works for INNER and LEFT chains; the star contains the non-key column twice under the same name (y,y); alias-qualified u1.y / u2.y disambiguate. [P20,P21,P21b]",
+  "CAPITALIZATION: USING identifiers match columns case-insensitively even when QUOTED (\"a\" matches a column declared \"A\", and unquoted a matches \"A\"). The merged output column keeps the LEFT table's declared spelling regardless of the USING-list spelling or the right side's spelling ('A' when left declares \"A\"; 'a' when left declares a and right declares \"A\"). [P22,P23,P24,P24b,P25]"
+ ],
+ "probes": [
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     "y2"
+    ]
+   ],
+   "error": null,
+   "note": "P01 INNER USING star: 'a' appears once; which side + position"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 ON t1.a = t2.a ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     1,
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     2,
+     "y2"
+    ]
+   ],
+   "error": null,
+   "note": "P02 INNER ON star: both 'a' columns present, duplicate names"
+  },
+  {
+   "sql": "SELECT * FROM t1 LEFT JOIN t2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     "y2"
+    ],
+    [
+     3,
+     "x3",
+     null
+    ],
+    [
+     null,
+     "xN",
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P03 LEFT USING star: THE coalescing pin - using col value on miss rows (a=3, a=NULL)"
+  },
+  {
+   "sql": "SELECT * FROM t1 LEFT JOIN t2 ON t1.a = t2.a ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     1,
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     2,
+     "y2"
+    ],
+    [
+     3,
+     "x3",
+     null,
+     null
+    ],
+    [
+     null,
+     "xN",
+     null,
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P04 LEFT ON star: both a cols, right a NULL on miss"
+  },
+  {
+   "sql": "SELECT t1.a, t2.a FROM t1 JOIN t2 USING (a) ORDER BY t1.a",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "error": null,
+   "note": "P05 qualified t1.a and t2.a both addressable after INNER USING"
+  },
+  {
+   "sql": "SELECT a FROM t1 JOIN t2 USING (a) ORDER BY a",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ]
+   ],
+   "result": [
+    [
+     1
+    ],
+    [
+     2
+    ]
+   ],
+   "error": null,
+   "note": "P05b unqualified a after INNER USING: no ambiguity error"
+  },
+  {
+   "sql": "SELECT a AS ua, t1.a AS l_a, t2.a AS r_a, x, y FROM t1 LEFT JOIN t2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "ua",
+     "INTEGER"
+    ],
+    [
+     "l_a",
+     "INTEGER"
+    ],
+    [
+     "r_a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     1,
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     2,
+     2,
+     "x2",
+     "y2"
+    ],
+    [
+     3,
+     3,
+     null,
+     "x3",
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     "xN",
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P06 LEFT USING: unqualified a vs t1.a vs t2.a per row (miss rows show the coalesce direction)"
+  },
+  {
+   "sql": "SELECT x FROM t1 LEFT JOIN t2 USING (a) WHERE a = 3",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "x",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "x3"
+    ]
+   ],
+   "error": null,
+   "note": "P07 unqualified a in WHERE after LEFT USING: matches miss row a=3 -> binds to left value"
+  },
+  {
+   "sql": "SELECT x FROM t1 LEFT JOIN t2 USING (a) WHERE t2.a IS NULL ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "x",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "x3"
+    ],
+    [
+     "xN"
+    ]
+   ],
+   "error": null,
+   "note": "P08 t2.a IS NULL in WHERE after LEFT USING: anti-join filter on right key works"
+  },
+  {
+   "sql": "SELECT a FROM t1 JOIN t2 ON t1.a = t2.a ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": null,
+   "result": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to column name \"a\" (use: \"t1.a\" or \"t2.a\")\n\nLINE 1: SELECT a FROM t1 JOIN t2 ON t1.a = t2.a ORDER BY x\n               ^",
+   "note": "P09 unqualified a after INNER ON: ambiguity? exact error"
+  },
+  {
+   "sql": "SELECT * FROM m1 JOIN m2 USING (a, b) ORDER BY x",
+   "setup": [
+    "CREATE TABLE m1(a INTEGER, b INTEGER, x VARCHAR)",
+    "INSERT INTO m1 VALUES (1,10,'x1'),(2,20,'x2'),(3,30,'x3')",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "b",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     10,
+     "x1",
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "P10 USING (a,b) star: where do using cols land; right table declares (b,a,y)"
+  },
+  {
+   "sql": "SELECT * FROM m1 JOIN m2 USING (b, a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE m1(a INTEGER, b INTEGER, x VARCHAR)",
+    "INSERT INTO m1 VALUES (1,10,'x1'),(2,20,'x2'),(3,30,'x3')",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "b",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     10,
+     "x1",
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "P11 USING (b,a) reversed list: star order follows USING-list order or table order?"
+  },
+  {
+   "sql": "SELECT * FROM m1 LEFT JOIN m2 USING (b, a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE m1(a INTEGER, b INTEGER, x VARCHAR)",
+    "INSERT INTO m1 VALUES (1,10,'x1'),(2,20,'x2'),(3,30,'x3')",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "b",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     10,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     20,
+     "x2",
+     null
+    ],
+    [
+     3,
+     30,
+     "x3",
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P11b USING (b,a) LEFT: miss row col values"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 USING (a) JOIN t3 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "z",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1",
+     "z1"
+    ]
+   ],
+   "error": null,
+   "note": "P12 chained INNER USING(a) twice: star shape"
+  },
+  {
+   "sql": "SELECT * FROM t1 LEFT JOIN t2 USING (a) JOIN t3 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "z",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1",
+     "z1"
+    ],
+    [
+     3,
+     "x3",
+     null,
+     "z3"
+    ]
+   ],
+   "error": null,
+   "note": "P13 chain witness: t1 LEFT t2 USING(a) then INNER t3 USING(a); a=3 misses t2 - does it still match t3 (binds left/coalesced) or not (binds t2.a=NULL)?"
+  },
+  {
+   "sql": "SELECT a AS ua, t1.a AS a1, t2.a AS a2, t3.a AS a3, x, y, z FROM t1 LEFT JOIN t2 USING (a) LEFT JOIN t3 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "ua",
+     "INTEGER"
+    ],
+    [
+     "a1",
+     "INTEGER"
+    ],
+    [
+     "a2",
+     "INTEGER"
+    ],
+    [
+     "a3",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "z",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     1,
+     1,
+     1,
+     "x1",
+     "y1",
+     "z1"
+    ],
+    [
+     2,
+     2,
+     2,
+     null,
+     "x2",
+     "y2",
+     null
+    ],
+    [
+     3,
+     3,
+     null,
+     3,
+     "x3",
+     null,
+     "z3"
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     "xN",
+     null,
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P14 chained LEFT-LEFT: all three quals + unqualified per row"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 ON t1.a = t2.a JOIN t3 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": null,
+   "result": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to column name \"a\" (use: \"t1.a\" or \"t2.a\")",
+   "note": "P15 USING(a) after an ON join that left both a's visible: ambiguous? exact behavior/error"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 USING (x)",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": null,
+   "result": null,
+   "error": "BinderException: Binder Error: Column \"x\" does not exist on right side of join!",
+   "note": "P16 USING col exists only on LEFT side (x is t1-only): exact error"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 USING (y)",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": null,
+   "result": null,
+   "error": "BinderException: Binder Error: Column \"y\" does not exist on left side of join!",
+   "note": "P17 USING col exists only on RIGHT side (y is t2-only): exact error"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 USING ()",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": null,
+   "result": null,
+   "error": "ParserException: Parser Error: syntax error at or near \")\"\n\nLINE 1: SELECT * FROM t1 JOIN t2 USING ()\n                                        ^",
+   "note": "P18 empty USING (): exact error"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 USING (a, a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     "y2"
+    ]
+   ],
+   "error": null,
+   "note": "P19 duplicate col in USING (a, a): behavior/error"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 USING (nope)",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": null,
+   "result": null,
+   "error": "BinderException: Binder Error: Column \"nope\" does not exist on left side of join!",
+   "note": "P19b nonexistent col USING (nope): exact error"
+  },
+  {
+   "sql": "SELECT * FROM t1 JOIN t2 AS u1 USING (a) JOIN t2 AS u2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1",
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     "y2",
+     "y2"
+    ]
+   ],
+   "error": null,
+   "note": "P20 same table twice via aliases, INNER USING: works? star names (y twice?)"
+  },
+  {
+   "sql": "SELECT * FROM t1 LEFT JOIN t2 AS u1 USING (a) LEFT JOIN t2 AS u2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1",
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     "y2",
+     "y2"
+    ],
+    [
+     3,
+     "x3",
+     null,
+     null
+    ],
+    [
+     null,
+     "xN",
+     null,
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P21 same table twice via aliases, LEFT USING chain"
+  },
+  {
+   "sql": "SELECT u1.y AS y1, u2.y AS y2 FROM t1 JOIN t2 AS u1 USING (a) JOIN t2 AS u2 USING (a) ORDER BY u1.y",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "y1",
+     "VARCHAR"
+    ],
+    [
+     "y2",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "y1",
+     "y1"
+    ],
+    [
+     "y2",
+     "y2"
+    ]
+   ],
+   "error": null,
+   "note": "P21b same table twice: qualified u1.y / u2.y addressable"
+  },
+  {
+   "sql": "SELECT * FROM c1 JOIN c2 USING (a)",
+   "setup": [
+    "CREATE TABLE c1(\"A\" INTEGER, x VARCHAR)",
+    "INSERT INTO c1 VALUES (1,'x1')",
+    "CREATE TABLE c2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO c2 VALUES (1,'y1')"
+   ],
+   "columns": [
+    [
+     "A",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "P22 both sides declared \"A\", unquoted lowercase USING (a): works? output col name/case"
+  },
+  {
+   "sql": "SELECT * FROM c1 JOIN c2 USING (\"A\")",
+   "setup": [
+    "CREATE TABLE c1(\"A\" INTEGER, x VARCHAR)",
+    "INSERT INTO c1 VALUES (1,'x1')",
+    "CREATE TABLE c2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO c2 VALUES (1,'y1')"
+   ],
+   "columns": [
+    [
+     "A",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "P23 both sides \"A\", quoted USING (\"A\")"
+  },
+  {
+   "sql": "SELECT * FROM d1 JOIN d2 USING (a)",
+   "setup": [
+    "CREATE TABLE d1(a INTEGER, x VARCHAR)",
+    "INSERT INTO d1 VALUES (1,'x1')",
+    "CREATE TABLE d2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO d2 VALUES (1,'y1')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "P24 left declares a, right declares \"A\", USING (a): cross-case match? output name"
+  },
+  {
+   "sql": "SELECT * FROM d1 JOIN d2 USING (\"A\")",
+   "setup": [
+    "CREATE TABLE d1(a INTEGER, x VARCHAR)",
+    "INSERT INTO d1 VALUES (1,'x1')",
+    "CREATE TABLE d2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO d2 VALUES (1,'y1')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "P24b same mixed setup, USING (\"A\")"
+  },
+  {
+   "sql": "SELECT * FROM c1 JOIN c2 USING (\"a\")",
+   "setup": [
+    "CREATE TABLE c1(\"A\" INTEGER, x VARCHAR)",
+    "INSERT INTO c1 VALUES (1,'x1')",
+    "CREATE TABLE c2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO c2 VALUES (1,'y1')"
+   ],
+   "columns": [
+    [
+     "A",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "P25 both sides \"A\", quoted lowercase USING (\"a\"): quoted is case-sensitive?"
+  },
+  {
+   "sql": "SELECT t1.* FROM t1 LEFT JOIN t2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1"
+    ],
+    [
+     2,
+     "x2"
+    ],
+    [
+     3,
+     "x3"
+    ],
+    [
+     null,
+     "xN"
+    ]
+   ],
+   "error": null,
+   "note": "P26a SELECT t1.* after LEFT USING: includes t1.a"
+  },
+  {
+   "sql": "SELECT t2.* FROM t1 LEFT JOIN t2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "y1"
+    ],
+    [
+     2,
+     "y2"
+    ],
+    [
+     null,
+     null
+    ],
+    [
+     null,
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P26b SELECT t2.* after LEFT USING: includes t2.a (NULL on miss)?"
+  },
+  {
+   "sql": "SELECT * FROM t1 RIGHT JOIN t2r USING (a) ORDER BY y",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     9,
+     null,
+     "y9"
+    ]
+   ],
+   "error": null,
+   "note": "P27 RIGHT JOIN USING star: exposed a on left-miss row (a=9) - right's value, refutes 'always left'"
+  },
+  {
+   "sql": "SELECT * FROM t1 FULL JOIN t2r USING (a) ORDER BY x NULLS LAST",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     null
+    ],
+    [
+     3,
+     "x3",
+     null
+    ],
+    [
+     null,
+     "xN",
+     null
+    ],
+    [
+     9,
+     null,
+     "y9"
+    ]
+   ],
+   "error": null,
+   "note": "P28 FULL JOIN USING star: exposed a = COALESCE(l,r)?"
+  },
+  {
+   "sql": "SELECT a AS ua, t1.a AS l_a, t2r.a AS r_a, x, y FROM t1 FULL JOIN t2r USING (a) ORDER BY x NULLS LAST",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')"
+   ],
+   "columns": [
+    [
+     "ua",
+     "INTEGER"
+    ],
+    [
+     "l_a",
+     "INTEGER"
+    ],
+    [
+     "r_a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     1,
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     2,
+     null,
+     "x2",
+     null
+    ],
+    [
+     3,
+     3,
+     null,
+     "x3",
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     "xN",
+     null
+    ],
+    [
+     9,
+     null,
+     9,
+     null,
+     "y9"
+    ]
+   ],
+   "error": null,
+   "note": "P28b FULL JOIN USING quals: a vs t1.a vs t2r.a"
+  },
+  {
+   "sql": "SELECT t1.a, x, y FROM t1 LEFT JOIN t2 ON t1.a = t2.a ORDER BY x",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1"
+    ],
+    [
+     2,
+     "x2",
+     "y2"
+    ],
+    [
+     3,
+     "x3",
+     null
+    ],
+    [
+     null,
+     "xN",
+     null
+    ]
+   ],
+   "error": null,
+   "note": "P29 LEFT ON with explicit COALESCE-free projection to compare against P03 row set"
+  },
+  {
+   "sql": "SELECT count(*) FROM t1 JOIN t2 USING (a)",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "count_star()",
+     "BIGINT"
+    ]
+   ],
+   "result": [
+    [
+     2
+    ]
+   ],
+   "error": null,
+   "note": "P30 NULL key never matches: inner USING drops the NULL-key row (see P01), LEFT keeps it (see P03) - explicit count"
+  },
+  {
+   "sql": "SELECT * FROM w1 JOIN t2 USING (a)",
+   "setup": [
+    "CREATE TABLE w1(x VARCHAR, a INTEGER)",
+    "INSERT INTO w1 VALUES ('x1',1),('x3',3)",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE w2(y VARCHAR, a INTEGER)",
+    "INSERT INTO w2 VALUES ('y1',1)"
+   ],
+   "columns": [
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "x1",
+     1,
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "F01 star POSITION pin: left table declares (x,a) - does 'a' stay at its left-table position or get hoisted to front?"
+  },
+  {
+   "sql": "SELECT * FROM w1 LEFT JOIN t2 USING (a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE w1(x VARCHAR, a INTEGER)",
+    "INSERT INTO w1 VALUES ('x1',1),('x3',3)",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE w2(y VARCHAR, a INTEGER)",
+    "INSERT INTO w2 VALUES ('y1',1)"
+   ],
+   "columns": [
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "x1",
+     1,
+     "y1"
+    ],
+    [
+     "x3",
+     3,
+     null
+    ]
+   ],
+   "error": null,
+   "note": "F02 star POSITION pin LEFT + miss: (x,a) left, miss row a=3"
+  },
+  {
+   "sql": "SELECT * FROM w1 JOIN w2 USING (a)",
+   "setup": [
+    "CREATE TABLE w1(x VARCHAR, a INTEGER)",
+    "INSERT INTO w1 VALUES ('x1',1),('x3',3)",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE w2(y VARCHAR, a INTEGER)",
+    "INSERT INTO w2 VALUES ('y1',1)"
+   ],
+   "columns": [
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "x1",
+     1,
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "F03 star position with using col last on BOTH sides (x,a) join (y,a)"
+  },
+  {
+   "sql": "SELECT * FROM m3 JOIN m2 USING (a, b) ORDER BY x",
+   "setup": [
+    "CREATE TABLE m3(x VARCHAR, b INTEGER, a INTEGER)",
+    "INSERT INTO m3 VALUES ('x1',10,1),('x2',20,2)",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ],
+   "columns": [
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "b",
+     "INTEGER"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "x1",
+     10,
+     1,
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "F04 multi-col position: left (x,b,a), right (b,a,y), USING (a,b) - star order?"
+  },
+  {
+   "sql": "SELECT * FROM m3 JOIN m2 USING (b, a) ORDER BY x",
+   "setup": [
+    "CREATE TABLE m3(x VARCHAR, b INTEGER, a INTEGER)",
+    "INSERT INTO m3 VALUES ('x1',10,1),('x2',20,2)",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ],
+   "columns": [
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "b",
+     "INTEGER"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "x1",
+     10,
+     1,
+     "y1"
+    ]
+   ],
+   "error": null,
+   "note": "F05 multi-col position: same, USING (b,a) reversed list - does list order matter now?"
+  },
+  {
+   "sql": "SELECT * FROM t1 FULL JOIN t2r USING (a) JOIN t3f USING (a) ORDER BY z",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "z",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1",
+     "z1"
+    ],
+    [
+     3,
+     "x3",
+     null,
+     "z3"
+    ],
+    [
+     9,
+     null,
+     "y9",
+     "z9"
+    ]
+   ],
+   "error": null,
+   "note": "F06 chained-USING binding witness via FULL: t1 FULL t2r USING(a) then JOIN t3f USING(a); row a=9 has t1.a NULL, t2r.a=9 - matching z9 proves 2nd USING binds the COALESCED col, not t1.a"
+  },
+  {
+   "sql": "SELECT a AS ua, t1.a AS a1, t2r.a AS a2, t3f.a AS a3, x, y, z FROM t1 FULL JOIN t2r USING (a) JOIN t3f USING (a) ORDER BY z",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "ua",
+     "INTEGER"
+    ],
+    [
+     "a1",
+     "INTEGER"
+    ],
+    [
+     "a2",
+     "INTEGER"
+    ],
+    [
+     "a3",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "z",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     1,
+     1,
+     1,
+     "x1",
+     "y1",
+     "z1"
+    ],
+    [
+     3,
+     3,
+     null,
+     3,
+     "x3",
+     null,
+     "z3"
+    ],
+    [
+     9,
+     null,
+     9,
+     9,
+     null,
+     "y9",
+     "z9"
+    ]
+   ],
+   "error": null,
+   "note": "F06b same chain, all quals + unqualified"
+  },
+  {
+   "sql": "SELECT z FROM t1 FULL JOIN t2r USING (a) JOIN t3f USING (a) WHERE a = 9",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "z",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     "z9"
+    ]
+   ],
+   "error": null,
+   "note": "F07 after chained USING, unqualified a in WHERE binds coalesced: filter a=9 keeps the left-miss row"
+  },
+  {
+   "sql": "SELECT * FROM t1 FULL JOIN t2r USING (a) JOIN t3f ON t3f.a = a ORDER BY z",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ],
+   "columns": [
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "x",
+     "VARCHAR"
+    ],
+    [
+     "y",
+     "VARCHAR"
+    ],
+    [
+     "a",
+     "INTEGER"
+    ],
+    [
+     "z",
+     "VARCHAR"
+    ]
+   ],
+   "result": [
+    [
+     1,
+     "x1",
+     "y1",
+     1,
+     "z1"
+    ],
+    [
+     3,
+     "x3",
+     null,
+     3,
+     "z3"
+    ],
+    [
+     9,
+     null,
+     "y9",
+     9,
+     "z9"
+    ]
+   ],
+   "error": null,
+   "note": "F08 USING then explicit ON to third table referencing unqualified a: which a?"
+  }
+ ]
+}

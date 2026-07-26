@@ -1,0 +1,2245 @@
+{
+ "family": "comma_cross_star",
+ "duckdb_version": "1.5.5",
+ "decisions": [
+  "comma-equi-equals-inner-join: FROM t, u WHERE t.k = u.k is bit-identical to FROM t INNER JOIN u ON t.k = u.k -- same row set, same row order, same SELECT * column names and order. Safe to rewrite comma->INNER JOIN.",
+  "comma-residual-equals-on-residual: FROM t, u WHERE t.k = u.k AND t.x > u.y is identical to INNER JOIN ... ON t.k = u.k AND t.x > u.y (equality + residual). The WHERE conjuncts may be split into equi-key + residual freely.",
+  "comma-nonequi-equals-cross-filter: FROM t, u WHERE t.x < u.y is identical (rows AND order) to INNER JOIN ON t.x < u.y; both are cross-product-then-filter. No equi key required for the rewrite.",
+  "star-column-order: SELECT * over any join expands tables in FROM order, each table's columns in declared order. Duplicate column names (join keys, self-joins) are KEPT verbatim -- cursor.description and Arrow schema both show e.g. [id, lv, id, rv]. No _1 suffixing, no dedup.",
+  "star-keeps-both-keys-on-ON-join: SELECT * FROM l JOIN r ON l.id = r.id outputs BOTH id columns (INNER and LEFT). On LEFT miss rows, r.id (and all r columns) are NULL. Only USING coalesces to a single key column.",
+  "cross-product-row-order-is-artifact: measured order for FROM t, u (no WHERE): LEFT table varies FASTEST (blocks of |t| rows per u row) -- but the order FLIPS with projection shape (SELECT * vs SELECT * EXCLUDE over the same tables flipped which side varies fastest, reproducibly). Deterministic per query in-process, NOT contractual. Engine must compare as multisets; do not pin an order.",
+  "left-join-order-artifact: LEFT JOIN emits matched rows first (probe order), unmatched left rows appended last (observed [1,3,2] for l=[1,2,3], r={1,3}). Also an artifact; multiset comparison only.",
+  "cross-join-one-row-multiplicity: comma or CROSS JOIN to a 1-row table yields exactly rowcount == driving rowcount (nulltable shape: 5 t-rows -> 5 output rows), columns of both sides usable in expressions, NULL propagates through arithmetic (n + t.x IS NULL).",
+  "cross-join-empty-static-annihilates: comma/CROSS JOIN to a 0-row table -> 0 output rows (INNER semantics). Empty DRIVING side also -> 0 rows. Contrast pinned: LEFT JOIN ON TRUE to the empty table keeps all driving rows with NULLs.",
+  "cross-join-n-row-multiplicity: 2-row static via comma -> exactly 2x driving rows (beyond v0 0-or-1 contract; pinned for the later stage).",
+  "self-join-binding: FROM a, a a2 -- bare 'a' remains addressable alongside 'a2'; a.rowid and a2.rowid resolve independently per binding (full cross of rowids). FROM a, a with NO alias errors: BinderException: Binder Error: Ambiguous reference to table \"memory.main.a\" (duplicate alias \"memory.main.a\", explicitly alias one of the tables using \"AS my_alias\").",
+  "alias-shadows-base-name: FROM a a2 makes 'a' unaddressable: BinderException: Binder Error: Referenced table \"a\" not found! Candidate tables: \"a2\". So in FROM a, a a2 the bare 'a' binds ONLY to the unaliased occurrence.",
+  "schema-qualified-binding: FROM s1.t1, s2.t1 binds both; columns are addressed as s1.t1.col / s2.t1.col (works in SELECT and WHERE). Bare t1.col errors: BinderException: Binder Error: Ambiguous reference to table \"t1\" (use: s1.t1 or s2.t1).",
+  "exclude-semantics: EXCLUDE (s1.t1.t) removes ONLY that binding's column (remaining: p, t, q). EXCLUDE (bare_name) removes the column from EVERY table that has it (EXCLUDE (t) -> p, q; EXCLUDE (id) on l/r join -> lv, rv). EXCLUDE (t1.t) with two schemas both aliased 't1' removes BOTH (alias matches both bindings). EXCLUDE (r.id) on an ON-join removes only r's key.",
+  "ambiguous-column-error: unqualified column present in both sides of a comma join (SELECT or WHERE) and of an explicit ON-join errors identically: BinderException: Binder Error: Ambiguous reference to column name \"k\" (use: \"t.k\" or \"u.k\") followed by newline-newline LINE <n>: <sql> and a caret line. Only USING legalizes the bare key name.",
+  "three-way-comma: FROM t, u, v WHERE t.k = u.k AND u.k = v.k binds fine and is identical (rows, order, star column order t|u|v) to nested INNER JOINs. Equalities anchored differently (t.k = u.k AND t.k = v.k) give the same result; extra residual conjuncts compose.",
+  "table-star: t.* over a comma join projects only t's columns; SELECT u.*, t.* orders output by the SELECT list, not FROM order."
+ ],
+ "probes": [
+  {
+   "sql": "SELECT * FROM t, u WHERE t.k = u.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "comma join, equality where",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t INNER JOIN u ON t.k = u.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "inner join on, same key",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, u WHERE t.k = u.k AND t.x > u.y",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "comma join, equality + residual conjunct in WHERE",
+   "result": [
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t INNER JOIN u ON t.k = u.k AND t.x > u.y",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "inner join, equality + residual in ON",
+   "result": [
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, u",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "pure cross product via comma, row order + col order",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     1,
+     100
+    ],
+    [
+     3,
+     30,
+     "c",
+     1,
+     100
+    ],
+    [
+     null,
+     40,
+     "d",
+     1,
+     100
+    ],
+    [
+     2,
+     5,
+     "e",
+     1,
+     100
+    ],
+    [
+     1,
+     10,
+     "a",
+     2,
+     15
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ],
+    [
+     3,
+     30,
+     "c",
+     2,
+     15
+    ],
+    [
+     null,
+     40,
+     "d",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ],
+    [
+     1,
+     10,
+     "a",
+     4,
+     400
+    ],
+    [
+     2,
+     20,
+     "b",
+     4,
+     400
+    ],
+    [
+     3,
+     30,
+     "c",
+     4,
+     400
+    ],
+    [
+     null,
+     40,
+     "d",
+     4,
+     400
+    ],
+    [
+     2,
+     5,
+     "e",
+     4,
+     400
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t CROSS JOIN u",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "explicit CROSS JOIN, compare order",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     1,
+     100
+    ],
+    [
+     3,
+     30,
+     "c",
+     1,
+     100
+    ],
+    [
+     null,
+     40,
+     "d",
+     1,
+     100
+    ],
+    [
+     2,
+     5,
+     "e",
+     1,
+     100
+    ],
+    [
+     1,
+     10,
+     "a",
+     2,
+     15
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ],
+    [
+     3,
+     30,
+     "c",
+     2,
+     15
+    ],
+    [
+     null,
+     40,
+     "d",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ],
+    [
+     1,
+     10,
+     "a",
+     4,
+     400
+    ],
+    [
+     2,
+     20,
+     "b",
+     4,
+     400
+    ],
+    [
+     3,
+     30,
+     "c",
+     4,
+     400
+    ],
+    [
+     null,
+     40,
+     "d",
+     4,
+     400
+    ],
+    [
+     2,
+     5,
+     "e",
+     4,
+     400
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, u WHERE t.x < u.y",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "comma join, non-equi only predicate",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     1,
+     100
+    ],
+    [
+     3,
+     30,
+     "c",
+     1,
+     100
+    ],
+    [
+     null,
+     40,
+     "d",
+     1,
+     100
+    ],
+    [
+     2,
+     5,
+     "e",
+     1,
+     100
+    ],
+    [
+     1,
+     10,
+     "a",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ],
+    [
+     1,
+     10,
+     "a",
+     4,
+     400
+    ],
+    [
+     2,
+     20,
+     "b",
+     4,
+     400
+    ],
+    [
+     3,
+     30,
+     "c",
+     4,
+     400
+    ],
+    [
+     null,
+     40,
+     "d",
+     4,
+     400
+    ],
+    [
+     2,
+     5,
+     "e",
+     4,
+     400
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t INNER JOIN u ON t.x < u.y",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "inner join with non-equi ON",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     1,
+     100
+    ],
+    [
+     3,
+     30,
+     "c",
+     1,
+     100
+    ],
+    [
+     null,
+     40,
+     "d",
+     1,
+     100
+    ],
+    [
+     2,
+     5,
+     "e",
+     1,
+     100
+    ],
+    [
+     1,
+     10,
+     "a",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ],
+    [
+     1,
+     10,
+     "a",
+     4,
+     400
+    ],
+    [
+     2,
+     20,
+     "b",
+     4,
+     400
+    ],
+    [
+     3,
+     30,
+     "c",
+     4,
+     400
+    ],
+    [
+     null,
+     40,
+     "d",
+     4,
+     400
+    ],
+    [
+     2,
+     5,
+     "e",
+     4,
+     400
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT t.k, t.x + 1 AS x1, n, n + t.x AS nx FROM t, nulltable",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ],
+   "note": "cross join to 1-row NULL table, mixed expressions; expect rowcount == |t| == 5",
+   "result": [
+    [
+     1,
+     11,
+     null,
+     null
+    ],
+    [
+     2,
+     21,
+     null,
+     null
+    ],
+    [
+     3,
+     31,
+     null,
+     null
+    ],
+    [
+     null,
+     41,
+     null,
+     null
+    ],
+    [
+     2,
+     6,
+     null,
+     null
+    ]
+   ],
+   "columns": [
+    "k",
+    "x1",
+    "n",
+    "nx"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, nulltable",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ],
+   "note": "star over t x nulltable",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     null
+    ],
+    [
+     2,
+     20,
+     "b",
+     null
+    ],
+    [
+     3,
+     30,
+     "c",
+     null
+    ],
+    [
+     null,
+     40,
+     "d",
+     null
+    ],
+    [
+     2,
+     5,
+     "e",
+     null
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "n"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT t.k, n FROM t, nulltable",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)"
+   ],
+   "note": "cross join to EMPTY table; expect 0 rows",
+   "result": [],
+   "columns": [
+    "k",
+    "n"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT t.k, n FROM t LEFT JOIN nulltable ON TRUE",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)"
+   ],
+   "note": "contrast: LEFT JOIN ON TRUE to empty table keeps t rows with NULL n",
+   "result": [
+    [
+     1,
+     null
+    ],
+    [
+     2,
+     null
+    ],
+    [
+     3,
+     null
+    ],
+    [
+     null,
+     null
+    ],
+    [
+     2,
+     null
+    ]
+   ],
+   "columns": [
+    "k",
+    "n"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM a, a a2",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "same table twice, star",
+   "result": [
+    [
+     1,
+     10,
+     1,
+     10
+    ],
+    [
+     2,
+     20,
+     1,
+     10
+    ],
+    [
+     1,
+     10,
+     2,
+     20
+    ],
+    [
+     2,
+     20,
+     2,
+     20
+    ]
+   ],
+   "columns": [
+    "id",
+    "v",
+    "id",
+    "v"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT a.id, a2.id FROM a, a a2",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "bare 'a' still addressable alongside alias a2?",
+   "result": [
+    [
+     1,
+     1
+    ],
+    [
+     2,
+     1
+    ],
+    [
+     1,
+     2
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "columns": [
+    "id",
+    "id"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT a.rowid, a2.rowid FROM a, a a2",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "rowid per binding",
+   "result": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     1
+    ]
+   ],
+   "columns": [
+    "rowid",
+    "rowid"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT a.rowid AS r1, a2.rowid AS r2 FROM a, a a2 WHERE a.rowid = a2.rowid",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "rowid equality across the two bindings",
+   "result": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     1
+    ]
+   ],
+   "columns": [
+    "r1",
+    "r2"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM a, a",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "same table twice with NO alias -> error text?",
+   "result": null,
+   "columns": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to table \"memory.main.a\" (duplicate alias \"memory.main.a\", explicitly alias one of the tables using \"AS my_alias\")"
+  },
+  {
+   "sql": "SELECT id FROM a, a a2",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "unqualified id when both sides have it -> ambiguous?",
+   "result": null,
+   "columns": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to column name \"id\" (use: \"a.id\" or \"a2.id\")\n\nLINE 1: SELECT id FROM a, a a2\n               ^"
+  },
+  {
+   "sql": "SELECT * FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "two same-named tables from different schemas, star",
+   "result": [
+    [
+     1,
+     11,
+     1,
+     21
+    ],
+    [
+     2,
+     12,
+     1,
+     21
+    ],
+    [
+     1,
+     11,
+     3,
+     23
+    ],
+    [
+     2,
+     12,
+     3,
+     23
+    ]
+   ],
+   "columns": [
+    "t",
+    "p",
+    "t",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT s1.t1.t, s2.t1.q FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "schema-qualified column reference works?",
+   "result": [
+    [
+     1,
+     21
+    ],
+    [
+     2,
+     21
+    ],
+    [
+     1,
+     23
+    ],
+    [
+     2,
+     23
+    ]
+   ],
+   "columns": [
+    "t",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT t1.t FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "bare t1.t -> ambiguous between the two bindings?",
+   "result": null,
+   "columns": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to table \"t1\" (use: s1.t1 or s2.t1)"
+  },
+  {
+   "sql": "SELECT * FROM s1.t1, s2.t1 WHERE s1.t1.t = s2.t1.t",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "equality via schema-qualified refs",
+   "result": [
+    [
+     1,
+     11,
+     1,
+     21
+    ]
+   ],
+   "columns": [
+    "t",
+    "p",
+    "t",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * EXCLUDE (s1.t1.t) FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "EXCLUDE with schema-qualified column",
+   "result": [
+    [
+     11,
+     1,
+     21
+    ],
+    [
+     11,
+     3,
+     23
+    ],
+    [
+     12,
+     1,
+     21
+    ],
+    [
+     12,
+     3,
+     23
+    ]
+   ],
+   "columns": [
+    "p",
+    "t",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * EXCLUDE (t) FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "EXCLUDE bare ambiguous name over same-named cols",
+   "result": [
+    [
+     11,
+     21
+    ],
+    [
+     12,
+     21
+    ],
+    [
+     11,
+     23
+    ],
+    [
+     12,
+     23
+    ]
+   ],
+   "columns": [
+    "p",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * EXCLUDE (t1.t) FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "EXCLUDE table-qualified (no schema)",
+   "result": [
+    [
+     11,
+     21
+    ],
+    [
+     12,
+     21
+    ],
+    [
+     11,
+     23
+    ],
+    [
+     12,
+     23
+    ]
+   ],
+   "columns": [
+    "p",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM l INNER JOIN r ON l.id = r.id",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ],
+   "note": "star keeps BOTH id columns on inner join?",
+   "result": [
+    [
+     1,
+     "l1",
+     1,
+     "r1"
+    ],
+    [
+     3,
+     "l3",
+     3,
+     "r3"
+    ]
+   ],
+   "columns": [
+    "id",
+    "lv",
+    "id",
+    "rv"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM l LEFT JOIN r ON l.id = r.id",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ],
+   "note": "star on left join: r.id NULL on miss rows?",
+   "result": [
+    [
+     1,
+     "l1",
+     1,
+     "r1"
+    ],
+    [
+     3,
+     "l3",
+     3,
+     "r3"
+    ],
+    [
+     2,
+     "l2",
+     null,
+     null
+    ]
+   ],
+   "columns": [
+    "id",
+    "lv",
+    "id",
+    "rv"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM l LEFT JOIN r USING (id)",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ],
+   "note": "contrast: USING coalesces the key in star output",
+   "result": [
+    [
+     1,
+     "l1",
+     "r1"
+    ],
+    [
+     3,
+     "l3",
+     "r3"
+    ],
+    [
+     2,
+     "l2",
+     null
+    ]
+   ],
+   "columns": [
+    "id",
+    "lv",
+    "rv"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT k FROM t, u",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, w INTEGER)",
+    "INSERT INTO t VALUES (1, 10)",
+    "CREATE TABLE u(k INTEGER, z INTEGER)",
+    "INSERT INTO u VALUES (1, 100)"
+   ],
+   "note": "ambiguous k in SELECT of comma join -> error text",
+   "result": null,
+   "columns": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to column name \"k\" (use: \"t.k\" or \"u.k\")\n\nLINE 1: SELECT k FROM t, u\n               ^"
+  },
+  {
+   "sql": "SELECT * FROM t, u WHERE k = 1",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, w INTEGER)",
+    "INSERT INTO t VALUES (1, 10)",
+    "CREATE TABLE u(k INTEGER, z INTEGER)",
+    "INSERT INTO u VALUES (1, 100)"
+   ],
+   "note": "ambiguous k in WHERE -> error text",
+   "result": null,
+   "columns": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to column name \"k\" (use: \"t.k\" or \"u.k\")\n\nLINE 1: SELECT * FROM t, u WHERE k = 1\n                                 ^"
+  },
+  {
+   "sql": "SELECT k FROM t INNER JOIN u ON t.k = u.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, w INTEGER)",
+    "INSERT INTO t VALUES (1, 10)",
+    "CREATE TABLE u(k INTEGER, z INTEGER)",
+    "INSERT INTO u VALUES (1, 100)"
+   ],
+   "note": "ambiguous k in SELECT of explicit equi ON join (NOT USING) -> error? (USING would legalize)",
+   "result": null,
+   "columns": null,
+   "error": "BinderException: Binder Error: Ambiguous reference to column name \"k\" (use: \"t.k\" or \"u.k\")\n\nLINE 1: SELECT k FROM t INNER JOIN u ON t.k = u.k\n               ^"
+  },
+  {
+   "sql": "SELECT * FROM t, u, v WHERE t.k = u.k AND u.k = v.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ],
+   "note": "3-way comma, chained equalities",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100,
+     1,
+     1000
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15,
+     2,
+     2000
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15,
+     2,
+     2000
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y",
+    "k",
+    "z"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t INNER JOIN u ON t.k = u.k INNER JOIN v ON u.k = v.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ],
+   "note": "equivalent nested inner joins",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100,
+     1,
+     1000
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15,
+     2,
+     2000
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15,
+     2,
+     2000
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y",
+    "k",
+    "z"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, u, v WHERE t.k = u.k AND t.k = v.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ],
+   "note": "3-way comma, equalities both anchored on t",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100,
+     1,
+     1000
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15,
+     2,
+     2000
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15,
+     2,
+     2000
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y",
+    "k",
+    "z"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, u, v WHERE t.k = u.k AND u.k = v.k AND t.x > u.y",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ],
+   "note": "3-way comma with residual",
+   "result": [
+    [
+     2,
+     20,
+     "b",
+     2,
+     15,
+     2,
+     2000
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y",
+    "k",
+    "z"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, u",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "cross product order, run A (stability check)",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     1,
+     100
+    ],
+    [
+     3,
+     30,
+     "c",
+     1,
+     100
+    ],
+    [
+     null,
+     40,
+     "d",
+     1,
+     100
+    ],
+    [
+     2,
+     5,
+     "e",
+     1,
+     100
+    ],
+    [
+     1,
+     10,
+     "a",
+     2,
+     15
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ],
+    [
+     3,
+     30,
+     "c",
+     2,
+     15
+    ],
+    [
+     null,
+     40,
+     "d",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ],
+    [
+     1,
+     10,
+     "a",
+     4,
+     400
+    ],
+    [
+     2,
+     20,
+     "b",
+     4,
+     400
+    ],
+    [
+     3,
+     30,
+     "c",
+     4,
+     400
+    ],
+    [
+     null,
+     40,
+     "d",
+     4,
+     400
+    ],
+    [
+     2,
+     5,
+     "e",
+     4,
+     400
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM t, u",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "cross product order, run B (stability check)",
+   "result": [
+    [
+     1,
+     10,
+     "a",
+     1,
+     100
+    ],
+    [
+     2,
+     20,
+     "b",
+     1,
+     100
+    ],
+    [
+     3,
+     30,
+     "c",
+     1,
+     100
+    ],
+    [
+     null,
+     40,
+     "d",
+     1,
+     100
+    ],
+    [
+     2,
+     5,
+     "e",
+     1,
+     100
+    ],
+    [
+     1,
+     10,
+     "a",
+     2,
+     15
+    ],
+    [
+     2,
+     20,
+     "b",
+     2,
+     15
+    ],
+    [
+     3,
+     30,
+     "c",
+     2,
+     15
+    ],
+    [
+     null,
+     40,
+     "d",
+     2,
+     15
+    ],
+    [
+     2,
+     5,
+     "e",
+     2,
+     15
+    ],
+    [
+     1,
+     10,
+     "a",
+     4,
+     400
+    ],
+    [
+     2,
+     20,
+     "b",
+     4,
+     400
+    ],
+    [
+     3,
+     30,
+     "c",
+     4,
+     400
+    ],
+    [
+     null,
+     40,
+     "d",
+     4,
+     400
+    ],
+    [
+     2,
+     5,
+     "e",
+     4,
+     400
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name",
+    "k",
+    "y"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT t.* FROM t, u WHERE t.k = u.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "t.* over comma join",
+   "result": [
+    [
+     1,
+     10,
+     "a"
+    ],
+    [
+     2,
+     20,
+     "b"
+    ],
+    [
+     2,
+     5,
+     "e"
+    ]
+   ],
+   "columns": [
+    "k",
+    "x",
+    "name"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT u.*, t.* FROM t, u WHERE t.k = u.k",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ],
+   "note": "projection order follows SELECT list (u.* first), not FROM order",
+   "result": [
+    [
+     1,
+     100,
+     1,
+     10,
+     "a"
+    ],
+    [
+     2,
+     15,
+     2,
+     20,
+     "b"
+    ],
+    [
+     2,
+     15,
+     2,
+     5,
+     "e"
+    ]
+   ],
+   "columns": [
+    "k",
+    "y",
+    "k",
+    "x",
+    "name"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT l.*, r.* FROM l LEFT JOIN r ON l.id = r.id",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ],
+   "note": "l.*, r.* on LEFT join, miss row NULLs",
+   "result": [
+    [
+     1,
+     "l1",
+     1,
+     "r1"
+    ],
+    [
+     3,
+     "l3",
+     3,
+     "r3"
+    ],
+    [
+     2,
+     "l2",
+     null,
+     null
+    ]
+   ],
+   "columns": [
+    "id",
+    "lv",
+    "id",
+    "rv"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * EXCLUDE (r.id) FROM l LEFT JOIN r ON l.id = r.id",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ],
+   "note": "EXCLUDE alias-qualified key col on ON-join: removes only r.id?",
+   "result": [
+    [
+     1,
+     "l1",
+     "r1"
+    ],
+    [
+     3,
+     "l3",
+     "r3"
+    ],
+    [
+     2,
+     "l2",
+     null
+    ]
+   ],
+   "columns": [
+    "id",
+    "lv",
+    "rv"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * EXCLUDE (id) FROM l LEFT JOIN r ON l.id = r.id",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ],
+   "note": "EXCLUDE bare 'id' on ON-join: removes both?",
+   "result": [
+    [
+     "l1",
+     "r1"
+    ],
+    [
+     "l3",
+     "r3"
+    ],
+    [
+     "l2",
+     null
+    ]
+   ],
+   "columns": [
+    "lv",
+    "rv"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM l LEFT JOIN r ON l.id = r.id",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ],
+   "note": "arrow: dup id names kept?",
+   "result": [
+    [
+     1,
+     "l1",
+     1,
+     "r1"
+    ],
+    [
+     3,
+     "l3",
+     3,
+     "r3"
+    ],
+    [
+     2,
+     "l2",
+     null,
+     null
+    ]
+   ],
+   "columns": [
+    "id",
+    "lv",
+    "id",
+    "rv"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM a, a a2 WHERE a.id = a2.id",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "self equi comma join",
+   "result": [
+    [
+     1,
+     10,
+     1,
+     10
+    ],
+    [
+     2,
+     20,
+     2,
+     20
+    ]
+   ],
+   "columns": [
+    "id",
+    "v",
+    "id",
+    "v"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM a, a a2",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "arrow: self comma join dup names",
+   "result": [
+    [
+     1,
+     10,
+     1,
+     10
+    ],
+    [
+     2,
+     20,
+     1,
+     10
+    ],
+    [
+     1,
+     10,
+     2,
+     20
+    ],
+    [
+     2,
+     20,
+     2,
+     20
+    ]
+   ],
+   "columns": [
+    "id",
+    "v",
+    "id",
+    "v"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT t.k, m FROM t, two",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE two(m INTEGER)",
+    "INSERT INTO two VALUES (7), (8)"
+   ],
+   "note": "cross to 2-row table -> 2x multiplicity (beyond v0; pinned)",
+   "result": [
+    [
+     1,
+     7
+    ],
+    [
+     2,
+     7
+    ],
+    [
+     3,
+     7
+    ],
+    [
+     null,
+     7
+    ],
+    [
+     2,
+     7
+    ],
+    [
+     1,
+     8
+    ],
+    [
+     2,
+     8
+    ],
+    [
+     3,
+     8
+    ],
+    [
+     null,
+     8
+    ],
+    [
+     2,
+     8
+    ]
+   ],
+   "columns": [
+    "k",
+    "m"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT k, n FROM e, nulltable",
+   "setup": [
+    "CREATE TABLE e(k INTEGER)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ],
+   "note": "empty driving table x 1-row static -> 0 rows",
+   "result": [],
+   "columns": [
+    "k",
+    "n"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT t.k, n FROM t CROSS JOIN nulltable",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ],
+   "note": "explicit CROSS JOIN keyword to nulltable, same as comma",
+   "result": [
+    [
+     1,
+     null
+    ],
+    [
+     2,
+     null
+    ],
+    [
+     3,
+     null
+    ],
+    [
+     null,
+     null
+    ],
+    [
+     2,
+     null
+    ]
+   ],
+   "columns": [
+    "k",
+    "n"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "star rerun: which side varies fastest?",
+   "result": [
+    [
+     1,
+     11,
+     1,
+     21
+    ],
+    [
+     2,
+     12,
+     1,
+     21
+    ],
+    [
+     1,
+     11,
+     3,
+     23
+    ],
+    [
+     2,
+     12,
+     3,
+     23
+    ]
+   ],
+   "columns": [
+    "t",
+    "p",
+    "t",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT * EXCLUDE (s1.t1.t) FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "EXCLUDE rerun: order flip reproducible?",
+   "result": [
+    [
+     11,
+     1,
+     21
+    ],
+    [
+     11,
+     3,
+     23
+    ],
+    [
+     12,
+     1,
+     21
+    ],
+    [
+     12,
+     3,
+     23
+    ]
+   ],
+   "columns": [
+    "p",
+    "t",
+    "q"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT s2.t1.t FROM s1.t1, s2.t1 WHERE s1.t1.t = 1",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ],
+   "note": "schema-qualified in WHERE too",
+   "result": [
+    [
+     1
+    ],
+    [
+     3
+    ]
+   ],
+   "columns": [
+    "t"
+   ],
+   "error": null
+  },
+  {
+   "sql": "SELECT a.id FROM a a2",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ],
+   "note": "aliased table: original name NOT addressable -> error text",
+   "result": null,
+   "columns": null,
+   "error": "BinderException: Binder Error: Referenced table \"a\" not found!\nCandidate tables: \"a2\"\n\nLINE 1: SELECT a.id FROM a a2\n               ^"
+  }
+ ]
+}
