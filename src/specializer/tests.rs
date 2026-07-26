@@ -1128,3 +1128,39 @@ fn rowid_and_lateral_alias_reject_cleanly() {
         }
     }
 }
+
+#[test]
+fn colon_prefix_alias_desugars_to_as() {
+    // DuckDB `SELECT k: expr` — sqlparser would silently misparse it as a
+    // Snowflake JSON path, so rewrite.rs desugars it on the token stream
+    // (pins-wave5/sqlparser-spike.json).
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let p = prep("SELECT k: a + 1, j: a * 2 FROM __THIS__", &schema).unwrap();
+    let names: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["k", "j"]);
+    let f = compile(&p, vec![]).unwrap();
+    let got = run_snapshot(&f, &batch(1, vec![c_i64(&[Some(4)])])).unwrap();
+    assert_eq!(got, rows(&[&["5", "8"]]));
+}
+
+#[test]
+fn colon_alias_quoted_mixed_and_filtered() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    // Quoted alias keeps its spelling; mixes with AS items; WHERE ends the
+    // projection list correctly (alias flushed before FROM).
+    let p = prep(
+        "SELECT \"K\": a - 1, a AS plain FROM __THIS__ WHERE a > 0",
+        &schema,
+    )
+    .unwrap();
+    let names: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["K", "plain"]);
+}
+
+#[test]
+fn double_colon_cast_is_not_a_colon_alias() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    // `a::BIGINT` tokenizes as DoubleColon — must not trigger the rewrite.
+    let p = prep("SELECT a::BIGINT AS c FROM __THIS__", &schema).unwrap();
+    assert_eq!(p.out_cols[0].name, "c");
+}
