@@ -110,26 +110,80 @@ fn materialize_map(
     Ok(StaticData::Map(entries))
 }
 
-fn synthesize_output_model(py: Python<'_>, out_cols: &[Col]) -> PyResult<Py<PyAny>> {
+fn model_from_fields(py: Python<'_>, fields: Vec<(String, FieldType)>) -> PyResult<Py<PyAny>> {
     let create_model = PyModule::import(py, "pydantic")?.getattr("create_model")?;
     let ellipsis = PyModule::import(py, "builtins")?.getattr("Ellipsis")?;
     let kwargs = PyDict::new(py);
-    for c in out_cols {
-        let ft = FieldType {
-            base: ty_to_base(c.ty.ty),
-            nullable: c.ty.nullable,
-        };
-        kwargs.set_item(&c.name, (schema::field_type_to_python(py, ft)?, &ellipsis))?;
+    for (name, ft) in fields {
+        kwargs.set_item(name, (schema::field_type_to_python(py, ft)?, &ellipsis))?;
     }
     Ok(create_model.call(("OutputRow",), Some(&kwargs))?.unbind())
 }
 
+fn synthesize_output_model(py: Python<'_>, out_cols: &[Col]) -> PyResult<Py<PyAny>> {
+    let fields = out_cols
+        .iter()
+        .map(|c| {
+            (
+                c.name.clone(),
+                FieldType {
+                    base: ty_to_base(c.ty.ty),
+                    nullable: c.ty.nullable,
+                },
+            )
+        })
+        .collect();
+    model_from_fields(py, fields)
+}
+
+/// AC #2's constant emitter: a static-tables-only query is evaluated ONCE,
+/// here at build time, by DuckDB itself — nothing dynamic remains and no IR
+/// is built at all. Statics materialize as native tables (duckdb's
+/// registered-arrow scan path has divergent filter semantics — see the
+/// builtin-pins spec). Returns the fixed row dicts plus the result schema.
+fn eval_static_only(
+    py: Python<'_>,
+    sql: &str,
+    static_tables: &HashMap<String, Py<PyAny>>,
+) -> PyResult<(Vec<Py<PyAny>>, Vec<(String, FieldType)>)> {
+    let duckdb = PyModule::import(py, "duckdb")?;
+    let con = duckdb.call_method0("connect")?;
+    for (name, table) in static_tables {
+        con.call_method1("register", (format!("__arrow_{name}"), table))?;
+        con.call_method1(
+            "execute",
+            (format!(
+                "CREATE TABLE \"{name}\" AS SELECT * FROM \"__arrow_{name}\""
+            ),),
+        )?;
+    }
+    let arrow = con
+        .call_method1("execute", (sql,))?
+        .call_method0("to_arrow_table")?;
+    let schema_obj = arrow.getattr("schema")?.unbind();
+    let fields = schema::arrow_schema_to_ordered_fields(py, &schema_obj)?;
+    let mut rows = Vec::new();
+    for r in arrow.call_method0("to_pylist")?.try_iter()? {
+        rows.push(r?.unbind());
+    }
+    Ok((rows, fields))
+}
+
+enum Engine {
+    Compiled {
+        fun: InterpFn,
+        in_cols: Vec<Col>,
+        out_cols: Vec<Col>,
+    },
+    /// Fixed row dicts from a static-only query, re-validated through the
+    /// output model on every `infer` call.
+    Constant { rows: Vec<Py<PyAny>> },
+}
+
 #[pyclass(unsendable)]
 pub struct DuckDBInferFn {
-    fun: InterpFn,
+    engine: Engine,
     row_table: String,
-    in_cols: Vec<Col>,
-    out_cols: Vec<Col>,
     #[pyo3(get)]
     output_model: Py<PyAny>,
 }
@@ -199,8 +253,33 @@ impl DuckDBInferFn {
             });
         }
 
-        let prepared =
-            prepare(&sql, &row_table, &in_cols, &catalog).map_err(|e| build_err(e.to_string()))?;
+        use super::specializer::PrepareError;
+        let prepared = match prepare(&sql, &row_table, &in_cols, &catalog) {
+            Ok(p) => p,
+            // Unsupported/unparseable SQL might still be a static-tables-only
+            // query (static driving table, aggregation, ORDER BY, DuckDB
+            // dialect beyond sqlparser): try the constant-emitter path. It
+            // self-validates — a dynamic query references the row table,
+            // which DuckDB does not know, so evaluation fails and the
+            // original clean error surfaces unchanged. Bind errors stay hard.
+            Err(e @ (PrepareError::Unsupported(_) | PrepareError::Parse(_))) => {
+                match eval_static_only(py, &sql, &static_tables) {
+                    Ok((rows, fields)) => {
+                        let output_model = match output_model {
+                            Some(m) => m,
+                            None => model_from_fields(py, fields)?,
+                        };
+                        return Ok(DuckDBInferFn {
+                            engine: Engine::Constant { rows },
+                            row_table,
+                            output_model,
+                        });
+                    }
+                    Err(_) => return Err(build_err(e.to_string())),
+                }
+            }
+            Err(e) => return Err(build_err(e.to_string())),
+        };
 
         // Program statics and StaticSpecs are both indexed by join id.
         let mut data = Vec::with_capacity(prepared.statics.len());
@@ -221,10 +300,12 @@ impl DuckDBInferFn {
             None => synthesize_output_model(py, &prepared.program.out_cols)?,
         };
         Ok(DuckDBInferFn {
-            fun,
+            engine: Engine::Compiled {
+                fun,
+                in_cols,
+                out_cols: prepared.program.out_cols.clone(),
+            },
             row_table,
-            in_cols,
-            out_cols: prepared.program.out_cols.clone(),
             output_model,
         })
     }
@@ -250,9 +331,24 @@ impl DuckDBInferFn {
         }
         let rows = merged.remove(&self.row_table).unwrap_or_default();
 
+        let (fun, in_cols, out_cols) = match &self.engine {
+            Engine::Compiled {
+                fun,
+                in_cols,
+                out_cols,
+            } => (fun, in_cols, out_cols),
+            Engine::Constant { rows: fixed } => {
+                let model = self.output_model.bind(py);
+                let mut out = Vec::with_capacity(fixed.len());
+                for r in fixed {
+                    out.push(model.call_method1("model_validate", (r,))?.unbind());
+                }
+                return Ok(out);
+            }
+        };
+
         let n = rows.len();
-        let mut cols: Vec<ColData> = self
-            .in_cols
+        let mut cols: Vec<ColData> = in_cols
             .iter()
             .map(|c| match c.ty.ty {
                 Ty::I1 => ColData::I1 {
@@ -275,7 +371,7 @@ impl DuckDBInferFn {
             .collect();
         for row_obj in &rows {
             let bound = row_obj.bind(py);
-            for (c, col) in self.in_cols.iter().zip(&mut cols) {
+            for (c, col) in in_cols.iter().zip(&mut cols) {
                 let attr = bound.getattr(c.name.as_str()).map_err(|e| {
                     pyo3::exceptions::PyValueError::new_err(format!(
                         "Row for table '{}' is missing attribute '{}': {e}",
@@ -311,16 +407,15 @@ impl DuckDBInferFn {
         }
 
         let batch = Batch { rows: n, cols };
-        let mut st = self.fun.new_state();
-        self.fun
-            .run(&batch, &mut st)
+        let mut st = fun.new_state();
+        fun.run(&batch, &mut st)
             .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
 
         let model = self.output_model.bind(py);
         let mut out = Vec::with_capacity(st.emitted);
         for r in 0..st.emitted {
             let dict = PyDict::new(py);
-            for (c, oc) in self.out_cols.iter().zip(&st.out) {
+            for (c, oc) in out_cols.iter().zip(&st.out) {
                 match oc {
                     OutCol::I1(v) => {
                         let (ok, x) = v[r];
