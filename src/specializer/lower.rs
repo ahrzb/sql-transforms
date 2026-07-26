@@ -1,32 +1,44 @@
-//! Produce/consume lowering: relational IR -> imperative IR. For the
-//! stretch-1 ribbon (scan -> filter? -> project) the pipeline is a straight
-//! line: one entry block computes the predicate, `keep`/`drop` blocks handle
-//! the filter, projections store on the keep path.
+//! Produce/consume lowering: relational IR -> imperative IR.
+//!
+//! The central mechanism is the env-threading function builder [`FB`]:
+//! CASE and guarded CASTs split the CFG, and the IR's strict block-param SSA
+//! (values never cross blocks except as branch args) means every live value
+//! must ride the branch when a split happens. `emit` therefore carries a
+//! live stack: recursive children push their partial lanes before a sibling
+//! is evaluated, and any block transition rewrites the stack in place to the
+//! target block's params. Columns are NOT threaded — loads are pure and each
+//! block re-loads through its own cache.
 //!
 //! Null-lane discipline: an SExpr with `nullable == false` lowers to a bare
-//! payload register (no flag anywhere); a nullable one carries an `i1` flag
-//! alongside, combined with `and` as NULL propagates. WHERE keeps a row iff
-//! the predicate is TRUE — flag && value — which is exactly one `and`.
+//! payload register (no flag anywhere); a nullable one carries an `i1` flag,
+//! combined with `and` where NULL propagates. Kleene AND/OR are lowered
+//! branchless from flag algebra. WHERE keeps a row iff the predicate is
+//! TRUE — flag && value.
 //!
-//! ponytail: the keep block re-loads its input columns instead of receiving
-//! them as branch args — pure loads, identical semantics, simpler lowering.
-//! Switch to branch-arg threading when the Cranelift backend makes the extra
-//! column reads measurable.
+//! CASE lowers to a condition chain with a join block; branch results are
+//! evaluated only on their taken path (a guarded `1/0`-style branch must not
+//! trap eagerly — SQL semantics, verified by test). CAST failure is a
+//! conditional trap block; TRY_CAST folds the failure into the null lane.
+//!
+//! ponytail: blocks re-load columns instead of receiving them as branch args
+//! — pure loads, identical semantics, simpler lowering. Thread them when the
+//! Cranelift backend makes the extra reads measurable.
 
 use std::collections::HashMap;
 
 use super::frontend::PrepareError;
 use super::ir::{
-    BinOp, Block, BlockId, Builder, Inst, Program, Term, Ty, Value,
+    BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, Program, Term, Ty, Value,
 };
 use super::plan::{ArithOp, Rel, SExpr, SKind};
 
-/// Lower a bound relational tree to a complete (unverified) program.
-/// `prepare` in mod.rs runs the verifier on the result — lowering bugs
-/// surface as `PrepareError::Internal`, never as executable programs.
-pub fn lower(rel: &Rel, in_cols: &[super::ir::Col], out_cols: Vec<super::ir::Col>, name: &str) -> Result<Program, PrepareError> {
-    // Peel the fixed v0 shape: Project [Filter?] Scan.
-    let (exprs, filtered) = match rel {
+pub fn lower(
+    rel: &Rel,
+    in_cols: &[Col],
+    out_cols: Vec<Col>,
+    name: &str,
+) -> Result<Program, PrepareError> {
+    let (exprs, filter_pred) = match rel {
         Rel::Project { input, exprs } => match input.as_ref() {
             Rel::Filter { input: scan, pred } => {
                 debug_assert!(matches!(scan.as_ref(), Rel::Scan));
@@ -40,171 +52,662 @@ pub fn lower(rel: &Rel, in_cols: &[super::ir::Col], out_cols: Vec<super::ir::Col
         _ => return Err(PrepareError::Internal("plan root is not a projection".to_string())),
     };
 
-    let mut b = Builder::new();
-    let mut blocks = Vec::new();
+    let mut fb = FB::new(in_cols);
 
-    match filtered {
-        None => {
-            // Single block: compute projections, store, emit.
-            let mut ctx = BlockCtx::new(&mut b, in_cols);
-            store_projections(&mut ctx, exprs, &out_cols);
-            blocks.push(Block { params: vec![], insts: ctx.insts, term: Term::Emit });
-        }
-        Some(pred) => {
-            // entry: predicate -> brif keep, drop
-            let mut entry = BlockCtx::new(&mut b, in_cols);
-            let p = emit_expr(&mut entry, pred);
-            // Keep iff pred IS TRUE: NULL (flag=false) and FALSE both drop.
-            let cond = match p.flag {
-                None => p.val,
-                Some(flag) => {
-                    let c = entry.b.fresh();
-                    entry.insts.push(Inst::Bin { op: BinOp::And, dst: c, a: flag, b: p.val });
-                    c
-                }
-            };
-            blocks.push(Block {
-                params: vec![],
-                insts: entry.insts,
-                term: Term::Brif {
-                    cond,
-                    then_to: BlockId(1),
-                    then_args: vec![],
-                    else_to: BlockId(2),
-                    else_args: vec![],
-                },
-            });
-            // keep: recompute inputs (see module note), store, emit.
-            let mut keep = BlockCtx::new(&mut b, in_cols);
-            store_projections(&mut keep, exprs, &out_cols);
-            blocks.push(Block { params: vec![], insts: keep.insts, term: Term::Emit });
-            blocks.push(Block { params: vec![], insts: vec![], term: Term::Skip });
-        }
+    if let Some(pred) = filter_pred {
+        let mut live = Vec::new();
+        let pl = fb.emit(pred, &mut live)?;
+        let cond = fb.truthy(pl);
+        let (keep, _) = fb.create_block(&[]);
+        let (drop, _) = fb.create_block(&[]);
+        fb.term(Term::Brif {
+            cond,
+            then_to: BlockId(keep as u32),
+            then_args: vec![],
+            else_to: BlockId(drop as u32),
+            else_args: vec![],
+        });
+        fb.switch(drop);
+        fb.term(Term::Skip);
+        fb.switch(keep);
     }
 
-    Ok(Program {
-        statics: vec![],
-        name: name.to_string(),
-        in_cols: in_cols.to_vec(),
-        out_cols,
-        blocks,
-    })
+    let mut live = Vec::new();
+    for (ci, (_, e)) in exprs.iter().enumerate() {
+        debug_assert!(live.is_empty());
+        let lane = fb.emit(e, &mut live)?;
+        let col = ci as u32;
+        if out_cols[ci].ty.nullable {
+            let flag = match lane.flag {
+                Some(f) => f,
+                // Nullability contract slack (e.g. an infallible TRY_CAST):
+                // the column is declared nullable, the lane is provably
+                // valid — store with a constant true flag.
+                None => fb.const_i1(true),
+            };
+            fb.inst(Inst::StoreOpt { col, flag, val: lane.val });
+        } else {
+            debug_assert!(lane.flag.is_none(), "non-nullable column with a flag lane");
+            fb.inst(Inst::Store { col, val: lane.val });
+        }
+    }
+    fb.term(Term::Emit);
+
+    fb.finish(name, in_cols, out_cols)
 }
 
 /// A value in the null-lane representation: payload + optional validity.
+/// `flag: None` means provably non-NULL (no flag register exists).
+#[derive(Clone, Copy)]
 struct Lane {
     flag: Option<Value>,
     val: Value,
 }
 
-/// Per-block emission context. The column cache keeps one load per column
-/// per block (SSA values are block-local, so the cache is too).
-struct BlockCtx<'a> {
-    b: &'a mut Builder,
-    in_cols: &'a [super::ir::Col],
+/// The live stack: lanes (with their payload types) that must survive block
+/// transitions triggered while a sibling expression is being emitted.
+type Live = Vec<(Lane, Ty)>;
+
+/// A block under construction.
+struct PB {
+    params: Vec<(Value, Ty)>,
     insts: Vec<Inst>,
-    col_cache: HashMap<u32, (Option<Value>, Value)>,
+    term: Option<Term>,
+    cache: HashMap<u32, Lane>,
 }
 
-impl<'a> BlockCtx<'a> {
-    fn new(b: &'a mut Builder, in_cols: &'a [super::ir::Col]) -> BlockCtx<'a> {
-        BlockCtx { b, in_cols, insts: Vec::new(), col_cache: HashMap::new() }
-    }
+/// Env-threading function builder over the strict block-param SSA IR.
+struct FB<'a> {
+    b: Builder,
+    blocks: Vec<PB>,
+    cur: usize,
+    in_cols: &'a [Col],
 }
 
-fn store_projections(ctx: &mut BlockCtx<'_>, exprs: &[(String, SExpr)], out_cols: &[super::ir::Col]) {
-    for (ci, (_, e)) in exprs.iter().enumerate() {
-        let lane = emit_expr(ctx, e);
-        let col = ci as u32;
-        if out_cols[ci].ty.nullable {
-            let flag = match lane.flag {
-                Some(f) => f,
-                // Declared nullable but provably non-null cannot happen: the
-                // out column's nullability IS the expression's derivation.
-                None => unreachable!("out column nullable without a flag lane"),
-            };
-            ctx.insts.push(Inst::StoreOpt { col, flag, val: lane.val });
-        } else {
-            debug_assert!(lane.flag.is_none());
-            ctx.insts.push(Inst::Store { col, val: lane.val });
+impl<'a> FB<'a> {
+    fn new(in_cols: &'a [Col]) -> FB<'a> {
+        FB {
+            b: Builder::new(),
+            blocks: vec![PB {
+                params: vec![],
+                insts: vec![],
+                term: None,
+                cache: HashMap::new(),
+            }],
+            cur: 0,
+            in_cols,
         }
     }
-}
 
-fn emit_expr(ctx: &mut BlockCtx<'_>, e: &SExpr) -> Lane {
-    match &e.kind {
-        SKind::Col(idx) => {
-            if let Some((flag, val)) = ctx.col_cache.get(idx) {
-                return Lane { flag: *flag, val: *val };
+    fn fresh(&mut self) -> Value {
+        self.b.fresh()
+    }
+
+    fn inst(&mut self, i: Inst) {
+        self.blocks[self.cur].insts.push(i);
+    }
+
+    fn term(&mut self, t: Term) {
+        let slot = &mut self.blocks[self.cur].term;
+        debug_assert!(slot.is_none(), "block terminated twice");
+        *slot = Some(t);
+    }
+
+    fn switch(&mut self, blk: usize) {
+        self.cur = blk;
+    }
+
+    fn create_block(&mut self, param_tys: &[Ty]) -> (usize, Vec<Value>) {
+        let params: Vec<(Value, Ty)> = param_tys.iter().map(|t| (self.b.fresh(), *t)).collect();
+        let vals = params.iter().map(|(v, _)| *v).collect();
+        self.blocks.push(PB { params, insts: vec![], term: None, cache: HashMap::new() });
+        (self.blocks.len() - 1, vals)
+    }
+
+    fn finish(
+        self,
+        name: &str,
+        in_cols: &[Col],
+        out_cols: Vec<Col>,
+    ) -> Result<Program, PrepareError> {
+        let mut blocks = Vec::with_capacity(self.blocks.len());
+        for (i, pb) in self.blocks.into_iter().enumerate() {
+            let term = pb.term.ok_or_else(|| {
+                PrepareError::Internal(format!("block b{i} left unterminated"))
+            })?;
+            blocks.push(Block { params: pb.params, insts: pb.insts, term });
+        }
+        Ok(Program {
+            statics: vec![],
+            name: name.to_string(),
+            in_cols: in_cols.to_vec(),
+            out_cols,
+            blocks,
+        })
+    }
+
+    // ------------------------------------------------------ conveniences --
+
+    fn const_lit(&mut self, lit: Lit) -> Value {
+        let dst = self.fresh();
+        self.inst(Inst::Const { dst, lit });
+        dst
+    }
+
+    fn const_i1(&mut self, v: bool) -> Value {
+        self.const_lit(Lit::I1(v))
+    }
+
+    fn default_of(&mut self, ty: Ty) -> Value {
+        self.const_lit(match ty {
+            Ty::I1 => Lit::I1(false),
+            Ty::I64 => Lit::I64(0),
+            Ty::F64 => Lit::F64(0.0),
+            Ty::Str => Lit::Str(String::new()),
+        })
+    }
+
+    fn bin(&mut self, op: BinOp, a: Value, b: Value) -> Value {
+        let dst = self.fresh();
+        self.inst(Inst::Bin { op, dst, a, b });
+        dst
+    }
+
+    fn not(&mut self, a: Value) -> Value {
+        let dst = self.fresh();
+        self.inst(Inst::Not { dst, a });
+        dst
+    }
+
+    /// The SQL truth of a boolean lane: TRUE iff valid AND value.
+    fn truthy(&mut self, lane: Lane) -> Value {
+        match lane.flag {
+            None => lane.val,
+            Some(f) => self.bin(BinOp::And, f, lane.val),
+        }
+    }
+
+    // -------------------------------------------------- live threading --
+
+    /// The flattened param type shape of a live stack: per lane, an i1 flag
+    /// (when present) then the payload.
+    fn live_types(live: &Live) -> Vec<Ty> {
+        let mut tys = Vec::new();
+        for (lane, ty) in live {
+            if lane.flag.is_some() {
+                tys.push(Ty::I1);
             }
-            let col = &ctx.in_cols[*idx as usize];
-            let lane = if col.ty.nullable {
-                let flag = ctx.b.fresh();
-                let val = ctx.b.fresh();
-                ctx.insts.push(Inst::LoadOpt { flag, dst: val, col: *idx });
-                Lane { flag: Some(flag), val }
-            } else {
-                let val = ctx.b.fresh();
-                ctx.insts.push(Inst::Load { dst: val, col: *idx });
-                Lane { flag: None, val }
-            };
-            ctx.col_cache.insert(*idx, (lane.flag, lane.val));
-            lane
+            tys.push(*ty);
         }
-        SKind::Lit(lit) => {
-            let dst = ctx.b.fresh();
-            ctx.insts.push(Inst::Const { dst, lit: lit.clone() });
-            Lane { flag: None, val: dst }
+        tys
+    }
+
+    fn live_args(live: &Live) -> Vec<Value> {
+        let mut args = Vec::new();
+        for (lane, _) in live {
+            if let Some(f) = lane.flag {
+                args.push(f);
+            }
+            args.push(lane.val);
         }
-        SKind::IntToFloat(inner) => {
-            let l = emit_expr(ctx, inner);
-            let dst = ctx.b.fresh();
-            ctx.insts.push(Inst::Itof { dst, a: l.val });
-            Lane { flag: l.flag, val: dst }
+        args
+    }
+
+    /// Rebind the live stack to the params of the block just switched to.
+    /// The shape (lane count + flag pattern) is invariant across transitions.
+    fn rebind_live(live: &mut Live, params: &[Value]) {
+        let mut i = 0;
+        for (lane, _) in live.iter_mut() {
+            if lane.flag.is_some() {
+                lane.flag = Some(params[i]);
+                i += 1;
+            }
+            lane.val = params[i];
+            i += 1;
         }
-        SKind::Arith { op, a, b } => {
-            let la = emit_expr(ctx, a);
-            let lb = emit_expr(ctx, b);
-            let ir_op = match (op, e.ty) {
-                (ArithOp::Add, Ty::I64) => BinOp::Iadd,
-                (ArithOp::Sub, Ty::I64) => BinOp::Isub,
-                (ArithOp::Mul, Ty::I64) => BinOp::Imul,
-                (ArithOp::Rem, Ty::I64) => BinOp::Irem,
-                (ArithOp::Add, Ty::F64) => BinOp::Fadd,
-                (ArithOp::Sub, Ty::F64) => BinOp::Fsub,
-                (ArithOp::Mul, Ty::F64) => BinOp::Fmul,
-                (ArithOp::Div, Ty::F64) => BinOp::Fdiv,
-                (ArithOp::Rem, Ty::F64) => {
-                    // DuckDB fmod: defer until pinned against the oracle.
-                    // The frontend currently only produces int Rem; guard it.
-                    unreachable!("float % not produced by the v0 frontend")
+        debug_assert_eq!(i, params.len());
+    }
+
+    // ------------------------------------------------------- expressions --
+
+    fn emit(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
+        match &e.kind {
+            SKind::Col(idx) => {
+                if let Some(lane) = self.blocks[self.cur].cache.get(idx) {
+                    return Ok(*lane);
                 }
-                (ArithOp::Div, _) => unreachable!("/ is always f64 after promotion"),
-                (op, ty) => unreachable!("arith {op:?} on {}", ty.name()),
-            };
-            let dst = ctx.b.fresh();
-            ctx.insts.push(Inst::Bin { op: ir_op, dst, a: la.val, b: lb.val });
-            Lane { flag: combine_flags(ctx, la.flag, lb.flag), val: dst }
-        }
-        SKind::Cmp { pred, a, b } => {
-            let la = emit_expr(ctx, a);
-            let lb = emit_expr(ctx, b);
-            let dst = ctx.b.fresh();
-            ctx.insts.push(Inst::Cmp { pred: *pred, ty: a.ty, dst, a: la.val, b: lb.val });
-            Lane { flag: combine_flags(ctx, la.flag, lb.flag), val: dst }
+                let col = &self.in_cols[*idx as usize];
+                let lane = if col.ty.nullable {
+                    let flag = self.fresh();
+                    let val = self.fresh();
+                    self.inst(Inst::LoadOpt { flag, dst: val, col: *idx });
+                    Lane { flag: Some(flag), val }
+                } else {
+                    let val = self.fresh();
+                    self.inst(Inst::Load { dst: val, col: *idx });
+                    Lane { flag: None, val }
+                };
+                self.blocks[self.cur].cache.insert(*idx, lane);
+                Ok(lane)
+            }
+            SKind::Lit(lit) => Ok(Lane { flag: None, val: self.const_lit(lit.clone()) }),
+            SKind::NullOf => {
+                let flag = self.const_i1(false);
+                let val = self.default_of(e.ty);
+                Ok(Lane { flag: Some(flag), val })
+            }
+            SKind::IntToFloat(inner) => {
+                let l = self.emit(inner, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::Itof { dst, a: l.val });
+                Ok(Lane { flag: l.flag, val: dst })
+            }
+            SKind::Arith { op, a, b } => {
+                let la = self.emit(a, live)?;
+                live.push((la, a.ty));
+                let lb = self.emit(b, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                let ir_op = match (op, e.ty) {
+                    (ArithOp::Add, Ty::I64) => BinOp::Iadd,
+                    (ArithOp::Sub, Ty::I64) => BinOp::Isub,
+                    (ArithOp::Mul, Ty::I64) => BinOp::Imul,
+                    (ArithOp::Rem, Ty::I64) => BinOp::Irem,
+                    (ArithOp::Add, Ty::F64) => BinOp::Fadd,
+                    (ArithOp::Sub, Ty::F64) => BinOp::Fsub,
+                    (ArithOp::Mul, Ty::F64) => BinOp::Fmul,
+                    (ArithOp::Div, Ty::F64) => BinOp::Fdiv,
+                    (op, ty) => {
+                        return Err(PrepareError::Internal(format!(
+                            "arith {op:?} on {} escaped the frontend",
+                            ty.name()
+                        )))
+                    }
+                };
+                let val = self.bin(ir_op, la.val, lb.val);
+                Ok(Lane { flag: self.combine_flags(la.flag, lb.flag), val })
+            }
+            SKind::Cmp { pred, a, b } => {
+                let la = self.emit(a, live)?;
+                live.push((la, a.ty));
+                let lb = self.emit(b, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                self.inst(Inst::Cmp { pred: *pred, ty: a.ty, dst, a: la.val, b: lb.val });
+                Ok(Lane { flag: self.combine_flags(la.flag, lb.flag), val: dst })
+            }
+            SKind::Not(inner) => {
+                let l = self.emit(inner, live)?;
+                let val = self.not(l.val);
+                Ok(Lane { flag: l.flag, val })
+            }
+            SKind::And { a, b } => self.kleene(a, b, live, true),
+            SKind::Or { a, b } => self.kleene(a, b, live, false),
+            SKind::IsNull { negated, inner } => {
+                let l = self.emit(inner, live)?;
+                let val = match l.flag {
+                    None => self.const_i1(*negated),
+                    Some(f) => {
+                        if *negated {
+                            f
+                        } else {
+                            self.not(f)
+                        }
+                    }
+                };
+                Ok(Lane { flag: None, val })
+            }
+            SKind::Case { arms, default } => self.case(e, arms, default.as_deref(), live),
+            SKind::Cast { inner, trying } => self.cast(e, inner, *trying, live),
         }
     }
-}
 
-/// NULL propagation: the result is valid iff every nullable input is.
-fn combine_flags(ctx: &mut BlockCtx<'_>, a: Option<Value>, b: Option<Value>) -> Option<Value> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(f), None) | (None, Some(f)) => Some(f),
-        (Some(fa), Some(fb)) => {
-            let dst = ctx.b.fresh();
-            ctx.insts.push(Inst::Bin { op: BinOp::And, dst, a: fa, b: fb });
-            Some(dst)
+    /// Branchless Kleene AND/OR from flag algebra. With the lane contract
+    /// (payloads under a false flag may be garbage), every value read is
+    /// guarded by its flag.
+    fn kleene(
+        &mut self,
+        a: &SExpr,
+        b: &SExpr,
+        live: &mut Live,
+        is_and: bool,
+    ) -> Result<Lane, PrepareError> {
+        let la = self.emit(a, live)?;
+        live.push((la, Ty::I1));
+        let lb = self.emit(b, live)?;
+        let (la, _) = live.pop().expect("pushed above");
+
+        let op = if is_and { BinOp::And } else { BinOp::Or };
+        let val = self.bin(op, la.val, lb.val);
+        let flag = match (la.flag, lb.flag) {
+            (None, None) => None,
+            // One side definite: the result is known when the definite side
+            // decides (false for AND, true for OR), or when the other side
+            // is valid.
+            (Some(f), None) => {
+                let decides = if is_and { self.not(lb.val) } else { lb.val };
+                Some(self.bin(BinOp::Or, f, decides))
+            }
+            (None, Some(f)) => {
+                let decides = if is_and { self.not(la.val) } else { la.val };
+                Some(self.bin(BinOp::Or, f, decides))
+            }
+            (Some(fa), Some(fb)) => {
+                // Known when: both valid, or either side validly decides.
+                let both = self.bin(BinOp::And, fa, fb);
+                let da = if is_and { self.not(la.val) } else { la.val };
+                let da = self.bin(BinOp::And, fa, da);
+                let db = if is_and { self.not(lb.val) } else { lb.val };
+                let db = self.bin(BinOp::And, fb, db);
+                let t = self.bin(BinOp::Or, both, da);
+                Some(self.bin(BinOp::Or, t, db))
+            }
+        };
+        Ok(Lane { flag, val })
+    }
+
+    /// CASE chain: one condition block per arm, results evaluated only on
+    /// their taken path, all paths joining with the result lane as params.
+    fn case(
+        &mut self,
+        e: &SExpr,
+        arms: &[(SExpr, SExpr)],
+        default: Option<&SExpr>,
+        live: &mut Live,
+    ) -> Result<Lane, PrepareError> {
+        let res_ty = e.ty;
+        let res_nullable = e.nullable;
+
+        let mut join_tys = Self::live_types(live);
+        if res_nullable {
+            join_tys.push(Ty::I1);
+        }
+        join_tys.push(res_ty);
+        let live_width = Self::live_types(live).len();
+        let (join, join_params) = self.create_block(&join_tys);
+
+        let finish_branch =
+            |fb: &mut FB<'a>, lane: Lane, live: &Live| -> Term {
+                let mut args = Self::live_args(live);
+                if res_nullable {
+                    let flag = match lane.flag {
+                        Some(f) => f,
+                        None => fb.const_i1(true),
+                    };
+                    args.push(flag);
+                }
+                args.push(lane.val);
+                Term::Jump { to: BlockId(join as u32), args }
+            };
+
+        for (cond, result) in arms {
+            let cl = self.emit(cond, live)?;
+            let keep = self.truthy(cl);
+            let shape = Self::live_types(live);
+            let (then_b, then_p) = self.create_block(&shape);
+            let (else_b, else_p) = self.create_block(&shape);
+            let args = Self::live_args(live);
+            self.term(Term::Brif {
+                cond: keep,
+                then_to: BlockId(then_b as u32),
+                then_args: args.clone(),
+                else_to: BlockId(else_b as u32),
+                else_args: args,
+            });
+
+            self.switch(then_b);
+            Self::rebind_live(live, &then_p);
+            let rl = self.emit(result, live)?;
+            let jump = finish_branch(self, rl, live);
+            self.term(jump);
+
+            self.switch(else_b);
+            Self::rebind_live(live, &else_p);
+        }
+
+        let dl = match default {
+            Some(d) => self.emit(d, live)?,
+            None => {
+                let flag = self.const_i1(false);
+                let val = self.default_of(res_ty);
+                Lane { flag: Some(flag), val }
+            }
+        };
+        let jump = finish_branch(self, dl, live);
+        self.term(jump);
+
+        self.switch(join);
+        Self::rebind_live(live, &join_params[..live_width]);
+        let tail = &join_params[live_width..];
+        Ok(if res_nullable {
+            Lane { flag: Some(tail[0]), val: tail[1] }
+        } else {
+            Lane { flag: None, val: tail[0] }
+        })
+    }
+
+    /// CAST/TRY_CAST lowering. NULL input never traps; CAST failure traps
+    /// with a conversion message; TRY_CAST failure becomes NULL.
+    fn cast(
+        &mut self,
+        e: &SExpr,
+        inner: &SExpr,
+        trying: bool,
+        live: &mut Live,
+    ) -> Result<Lane, PrepareError> {
+        let from = inner.ty;
+        let to = e.ty;
+        let l = self.emit(inner, live)?;
+
+        // Branchless conversions first.
+        let simple: Option<Lane> = match (from, to) {
+            (a, b) if a == b => Some(l),
+            (Ty::I64, Ty::F64) => {
+                let dst = self.fresh();
+                self.inst(Inst::Itof { dst, a: l.val });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::F64, Ty::I64) if !trying => {
+                // ftoi.round matches DuckDB CAST rounding; its own range trap
+                // stands in for DuckDB's conversion error. NULL payloads are
+                // type-default 0.0 — never trap.
+                let dst = self.fresh();
+                self.inst(Inst::Ftoi { mode: super::ir::RoundMode::Round, dst, a: l.val });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::I64, Ty::Str) => {
+                let dst = self.fresh();
+                self.inst(Inst::Itos { dst, a: l.val });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::F64, Ty::Str) => {
+                let dst = self.fresh();
+                self.inst(Inst::Ftos { dst, a: l.val });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::I1, Ty::Str) => {
+                let t = self.const_lit(Lit::Str("true".to_string()));
+                let f = self.const_lit(Lit::Str("false".to_string()));
+                let dst = self.fresh();
+                self.inst(Inst::Select { dst, cond: l.val, a: t, b: f });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::I1, Ty::I64) => {
+                let one = self.const_lit(Lit::I64(1));
+                let zero = self.const_lit(Lit::I64(0));
+                let dst = self.fresh();
+                self.inst(Inst::Select { dst, cond: l.val, a: one, b: zero });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::I1, Ty::F64) => {
+                let one = self.const_lit(Lit::F64(1.0));
+                let zero = self.const_lit(Lit::F64(0.0));
+                let dst = self.fresh();
+                self.inst(Inst::Select { dst, cond: l.val, a: one, b: zero });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::I64, Ty::I1) => {
+                let zero = self.const_lit(Lit::I64(0));
+                let dst = self.fresh();
+                self.inst(Inst::Cmp { pred: CmpPred::Ne, ty: Ty::I64, dst, a: l.val, b: zero });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            (Ty::F64, Ty::I1) => {
+                // DuckDB: nonzero -> true (measured 2.5::BOOLEAN = true).
+                let zero = self.const_lit(Lit::F64(0.0));
+                let dst = self.fresh();
+                self.inst(Inst::Cmp { pred: CmpPred::Ne, ty: Ty::F64, dst, a: l.val, b: zero });
+                Some(Lane { flag: l.flag, val: dst })
+            }
+            _ => None,
+        };
+        if let Some(lane) = simple {
+            // TRY_CAST of an infallible conversion: the declared nullability
+            // is `true`, so surface a flag even though nothing can fail.
+            if trying && lane.flag.is_none() {
+                let t = self.const_i1(true);
+                return Ok(Lane { flag: Some(t), val: lane.val });
+            }
+            return Ok(lane);
+        }
+
+        match (from, to) {
+            // String parses: shared shape, differing parse op.
+            (Ty::Str, Ty::I64) | (Ty::Str, Ty::F64) => {
+                let ok = self.fresh();
+                let parsed = self.fresh();
+                if to == Ty::I64 {
+                    self.inst(Inst::StoiOpt { flag: ok, dst: parsed, a: l.val });
+                } else {
+                    self.inst(Inst::StofOpt { flag: ok, dst: parsed, a: l.val });
+                }
+                if trying {
+                    let flag = match l.flag {
+                        Some(f) => self.bin(BinOp::And, f, ok),
+                        None => ok,
+                    };
+                    return Ok(Lane { flag: Some(flag), val: parsed });
+                }
+                // CAST: trap iff the input is a real (non-NULL) string that
+                // does not parse.
+                let not_ok = self.not(ok);
+                let bad = match l.flag {
+                    Some(f) => self.bin(BinOp::And, f, not_ok),
+                    None => not_ok,
+                };
+                let (trap_b, _) = self.create_block(&[]);
+                let mut cont_tys = Self::live_types(live);
+                let flag_in_shape = l.flag.is_some();
+                if flag_in_shape {
+                    cont_tys.push(Ty::I1);
+                }
+                cont_tys.push(to);
+                let live_width = Self::live_types(live).len();
+                let (cont_b, cont_p) = self.create_block(&cont_tys);
+                let mut args = Self::live_args(live);
+                if let Some(f) = l.flag {
+                    args.push(f);
+                }
+                args.push(parsed);
+                self.term(Term::Brif {
+                    cond: bad,
+                    then_to: BlockId(trap_b as u32),
+                    then_args: vec![],
+                    else_to: BlockId(cont_b as u32),
+                    else_args: args,
+                });
+                self.switch(trap_b);
+                self.term(Term::Trap {
+                    msg: format!(
+                        "Conversion Error: could not cast VARCHAR to {}",
+                        if to == Ty::I64 { "BIGINT" } else { "DOUBLE" }
+                    ),
+                });
+                self.switch(cont_b);
+                Self::rebind_live(live, &cont_p[..live_width]);
+                let tail = &cont_p[live_width..];
+                Ok(if flag_in_shape {
+                    Lane { flag: Some(tail[0]), val: tail[1] }
+                } else {
+                    Lane { flag: None, val: tail[0] }
+                })
+            }
+            // TRY_CAST(f64 -> i64): guard the range so ftoi cannot trap; the
+            // payload rides the branch on the live stack.
+            (Ty::F64, Ty::I64) => {
+                debug_assert!(trying);
+                // Exactly ±2^63; NaN fails both compares -> NULL. A NULL
+                // input's default payload passes the range check but its
+                // false flag forces the null path anyway.
+                let min = self.const_lit(Lit::F64(-9223372036854775808.0));
+                let max = self.const_lit(Lit::F64(9223372036854775808.0));
+                let ge = self.fresh();
+                self.inst(Inst::Cmp { pred: CmpPred::Ge, ty: Ty::F64, dst: ge, a: l.val, b: min });
+                let lt = self.fresh();
+                self.inst(Inst::Cmp { pred: CmpPred::Lt, ty: Ty::F64, dst: lt, a: l.val, b: max });
+                let in_range = self.bin(BinOp::And, ge, lt);
+                let ok = match l.flag {
+                    Some(f) => self.bin(BinOp::And, f, in_range),
+                    None => in_range,
+                };
+
+                live.push((l, Ty::F64));
+                let live_width = Self::live_types(live).len();
+                let mut join_tys = Self::live_types(live);
+                join_tys.push(Ty::I1);
+                join_tys.push(Ty::I64);
+                let (join, join_p) = self.create_block(&join_tys);
+                let shape = Self::live_types(live);
+                let (conv_b, conv_p) = self.create_block(&shape);
+                let (null_b, null_p) = self.create_block(&shape);
+                let args = Self::live_args(live);
+                self.term(Term::Brif {
+                    cond: ok,
+                    then_to: BlockId(conv_b as u32),
+                    then_args: args.clone(),
+                    else_to: BlockId(null_b as u32),
+                    else_args: args,
+                });
+
+                self.switch(conv_b);
+                Self::rebind_live(live, &conv_p);
+                let payload = live.last().expect("pushed above").0.val;
+                let r = self.fresh();
+                self.inst(Inst::Ftoi { mode: super::ir::RoundMode::Round, dst: r, a: payload });
+                let t = self.const_i1(true);
+                let mut args = Self::live_args(live);
+                args.push(t);
+                args.push(r);
+                self.term(Term::Jump { to: BlockId(join as u32), args });
+
+                self.switch(null_b);
+                Self::rebind_live(live, &null_p);
+                let f = self.const_i1(false);
+                let d = self.const_lit(Lit::I64(0));
+                let mut args = Self::live_args(live);
+                args.push(f);
+                args.push(d);
+                self.term(Term::Jump { to: BlockId(join as u32), args });
+
+                self.switch(join);
+                Self::rebind_live(live, &join_p[..live_width]);
+                live.pop();
+                let tail = &join_p[live_width..];
+                Ok(Lane { flag: Some(tail[0]), val: tail[1] })
+            }
+            (from, to) => Err(PrepareError::Internal(format!(
+                "cast {} -> {} escaped the frontend",
+                from.name(),
+                to.name()
+            ))),
+        }
+    }
+
+    /// NULL propagation: the result is valid iff every nullable input is.
+    fn combine_flags(&mut self, a: Option<Value>, b: Option<Value>) -> Option<Value> {
+        match (a, b) {
+            (None, None) => None,
+            (Some(f), None) | (None, Some(f)) => Some(f),
+            (Some(fa), Some(fb)) => Some(self.bin(BinOp::And, fa, fb)),
         }
     }
 }

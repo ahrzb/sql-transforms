@@ -500,6 +500,120 @@ impl Term {
     }
 }
 
+impl Inst {
+    /// Rewrite every value reference (defs and uses) through `m`.
+    pub fn map_values(&mut self, m: &impl Fn(Value) -> Value) {
+        match self {
+            Inst::Const { dst, .. } | Inst::Load { dst, .. } | Inst::Sload { dst, .. } => {
+                *dst = m(*dst)
+            }
+            Inst::Itos { dst, a }
+            | Inst::Ftos { dst, a }
+            | Inst::Itof { dst, a }
+            | Inst::Ftoi { dst, a, .. }
+            | Inst::Not { dst, a } => {
+                *dst = m(*dst);
+                *a = m(*a);
+            }
+            Inst::Bin { dst, a, b, .. }
+            | Inst::Cmp { dst, a, b, .. }
+            | Inst::Sconcat { dst, a, b } => {
+                *dst = m(*dst);
+                *a = m(*a);
+                *b = m(*b);
+            }
+            Inst::Select { dst, cond, a, b } => {
+                *dst = m(*dst);
+                *cond = m(*cond);
+                *a = m(*a);
+                *b = m(*b);
+            }
+            Inst::StoiOpt { flag, dst, a } | Inst::StofOpt { flag, dst, a } => {
+                *flag = m(*flag);
+                *dst = m(*dst);
+                *a = m(*a);
+            }
+            Inst::LoadOpt { flag, dst, .. } | Inst::SloadOpt { flag, dst, .. } => {
+                *flag = m(*flag);
+                *dst = m(*dst);
+            }
+            Inst::Store { val, .. } => *val = m(*val),
+            Inst::StoreOpt { flag, val, .. } => {
+                *flag = m(*flag);
+                *val = m(*val);
+            }
+            Inst::Probe { hit, dsts, keys, .. } => {
+                *hit = m(*hit);
+                for d in dsts {
+                    *d = m(*d);
+                }
+                for k in keys {
+                    *k = m(*k);
+                }
+            }
+        }
+    }
+}
+
+impl Term {
+    /// Rewrite every value reference through `m`.
+    pub fn map_values(&mut self, m: &impl Fn(Value) -> Value) {
+        match self {
+            Term::Jump { args, .. } => {
+                for a in args {
+                    *a = m(*a);
+                }
+            }
+            Term::Brif { cond, then_args, else_args, .. } => {
+                *cond = m(*cond);
+                for a in then_args.iter_mut().chain(else_args.iter_mut()) {
+                    *a = m(*a);
+                }
+            }
+            Term::Emit | Term::Skip | Term::Trap { .. } => {}
+        }
+    }
+}
+
+/// Renumber value ids into canonical form: dense, in definition order as the
+/// text format reads (block params, then instruction defs, per block in
+/// order). A bijective rename — semantics and verification are unaffected —
+/// after which `parse(print(p)) == p` holds exactly. Lowering runs this so
+/// every prepared program is canonical even when block-splitting minted ids
+/// out of text order.
+pub fn canonicalize(p: &mut Program) {
+    let mut map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut next = 0u32;
+    for b in &p.blocks {
+        for (v, _) in &b.params {
+            map.entry(v.0).or_insert_with(|| {
+                let n = next;
+                next += 1;
+                n
+            });
+        }
+        for inst in &b.insts {
+            for d in inst.dsts() {
+                map.entry(d.0).or_insert_with(|| {
+                    let n = next;
+                    next += 1;
+                    n
+                });
+            }
+        }
+    }
+    let f = |v: Value| Value(map[&v.0]);
+    for b in &mut p.blocks {
+        for (v, _) in &mut b.params {
+            *v = f(*v);
+        }
+        for inst in &mut b.insts {
+            inst.map_values(&f);
+        }
+        b.term.map_values(&f);
+    }
+}
+
 /// Builds programs with dense, definition-ordered value ids — the canonical
 /// form for which `parse(print(p)) == p` holds exactly. Lowering (M-lower)
 /// and the fuzz generator both construct through this.

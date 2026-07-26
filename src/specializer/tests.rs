@@ -134,6 +134,209 @@ fn column_cache_loads_once_per_block() {
     );
 }
 
+// -------------------------------------------------------- 3VL (stretch 2) --
+
+fn c_i1v(vals: &[Option<bool>]) -> super::exec::ColData {
+    super::exec::testutil::c_i1(vals)
+}
+
+/// Kleene truth tables through nullable comparisons: p = (a > 0), q = (b > 0)
+/// with NULLs flowing in from the columns.
+#[test]
+fn kleene_and_or_truth_tables() {
+    let schema = cols(&[("a", Ty::I64, true), ("b", Ty::I64, true)]);
+    // rows: (T,T) (T,F) (T,N) (F,N) (N,N) (F,F)
+    let a = c_i64(&[Some(1), Some(1), Some(1), Some(-1), None, Some(-1)]);
+    let b = c_i64(&[Some(1), Some(-1), None, None, None, Some(-1)]);
+    let got = run_sql(
+        "SELECT (a > 0) AND (b > 0) AS x, (a > 0) OR (b > 0) AS y FROM __THIS__",
+        &schema,
+        batch(6, vec![a, b]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["true", "true"],
+            &["false", "true"],
+            &["NULL", "true"],    // T AND N = N ; T OR N = T
+            &["false", "NULL"],   // F AND N = F ; F OR N = N
+            &["NULL", "NULL"],
+            &["false", "false"],
+        ])
+    );
+}
+
+#[test]
+fn not_and_is_null() {
+    let schema = cols(&[("b", Ty::I64, true)]);
+    let got = run_sql(
+        "SELECT NOT (b > 0) AS n, b IS NULL AS isn, b IS NOT NULL AS notn FROM __THIS__",
+        &schema,
+        batch(3, vec![c_i64(&[Some(1), Some(-1), None])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["false", "false", "true"],
+            &["true", "false", "true"],
+            &["NULL", "true", "false"],
+        ])
+    );
+}
+
+/// The eager-evaluation hazard: an untaken CASE branch containing a trapping
+/// op (`%` by zero) must NOT trap — branches run only on their taken path.
+#[test]
+fn case_guards_trapping_branches() {
+    let schema = cols(&[("a", Ty::I64, false), ("b", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT CASE WHEN b <> 0 THEN a % b ELSE -1 END AS r FROM __THIS__",
+        &schema,
+        batch(2, vec![c_i64(&[Some(7), Some(9)]), c_i64(&[Some(4), Some(0)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["3"], &["-1"]]));
+}
+
+#[test]
+fn case_forms_null_conditions_and_type_unification() {
+    let schema = cols(&[("a", Ty::I64, true)]);
+    // Searched, no ELSE -> NULL; int/float branch unification -> DOUBLE
+    // (measured: CASE WHEN 1=0 THEN 1/0 ELSE -1 END -> -1.0).
+    let got = run_sql(
+        "SELECT CASE WHEN a > 1 THEN 1 WHEN a = 1 THEN 2.5 END AS u, \
+         CASE a WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END AS s \
+         FROM __THIS__",
+        &schema,
+        batch(4, vec![c_i64(&[Some(1), Some(2), Some(9), None])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["2.5", "one"],
+            &["1.0", "two"],
+            &["1.0", "many"],
+            // NULL operand: simple-form conditions are `a = v` -> NULL,
+            // never TRUE -> ELSE; searched arms also never TRUE -> NULL.
+            &["NULL", "many"],
+        ])
+    );
+}
+
+#[test]
+fn cast_matrix() {
+    let schema = cols(&[("s", Ty::Str, false), ("f", Ty::F64, false), ("i", Ty::I64, false)]);
+    let input = || {
+        batch(
+            1,
+            vec![
+                super::exec::testutil::c_str(&[Some(" 5")]),
+                c_f64(&[Some(-2.5)]),
+                c_i64(&[Some(2)]),
+            ],
+        )
+    };
+    let got = run_sql(
+        "SELECT s::BIGINT AS a, f::BIGINT AS b, i::BOOLEAN AS c, \
+         (i - 2)::BOOLEAN AS d, true::VARCHAR AS e, f::VARCHAR AS g, \
+         TRY_CAST('x' AS BIGINT) AS h, TRY_CAST(1e19 AS BIGINT) AS j \
+         FROM __THIS__",
+        &schema,
+        input(),
+    )
+    .unwrap();
+    // ' 5' trims (DuckDB CAST); -2.5 rounds half-away to -3; 2 -> true,
+    // 0 -> false; TRY_CAST failures -> NULL.
+    assert_eq!(
+        got,
+        rows(&[&["5", "-3", "true", "false", "true", "-2.5", "NULL", "NULL"]])
+    );
+}
+
+#[test]
+fn cast_failure_traps_and_null_never_traps() {
+    let schema = cols(&[("s", Ty::Str, true)]);
+    // NULL input: CAST(NULL) is NULL, no trap.
+    let got = run_sql(
+        "SELECT s::BIGINT AS n FROM __THIS__",
+        &schema,
+        batch(1, vec![super::exec::testutil::c_str(&[None])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL"]]));
+    // Real string that does not parse: trap.
+    let err = run_sql(
+        "SELECT s::BIGINT AS n FROM __THIS__",
+        &schema,
+        batch(1, vec![super::exec::testutil::c_str(&[Some("abc")])]),
+    )
+    .unwrap_err();
+    assert!(err.contains("Conversion Error"), "wrong trap: {err}");
+}
+
+#[test]
+fn null_literal_in_context() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT a + NULL AS x, a = NULL AS y, NULL IS NULL AS z, \
+         CAST(NULL AS BIGINT) AS w, CASE WHEN a > 0 THEN NULL ELSE 5 END AS v \
+         FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(3)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL", "NULL", "true", "NULL", "NULL"]]));
+}
+
+#[test]
+fn where_with_kleene_and_case() {
+    let schema = cols(&[("a", Ty::I64, true), ("b", Ty::I64, false)]);
+    // NULL AND true -> NULL -> dropped; CASE inside WHERE.
+    let got = run_sql(
+        "SELECT b FROM __THIS__ WHERE (a > 0) AND (CASE WHEN b > 10 THEN true ELSE b > 2 END)",
+        &schema,
+        batch(
+            4,
+            vec![
+                c_i64(&[Some(1), Some(1), None, Some(1)]),
+                c_i64(&[Some(20), Some(1), Some(20), Some(3)]),
+            ],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["20"], &["3"]]));
+}
+
+#[test]
+fn case_heavy_program_is_canonical() {
+    // CASE lowering mints join-param ids before later blocks' instructions;
+    // prepare() canonicalizes, so exact round-trip equality holds anyway.
+    let schema = cols(&[("a", Ty::I64, true)]);
+    let p = prepare(
+        "SELECT CASE WHEN a > 0 THEN TRY_CAST(a::VARCHAR AS BIGINT) ELSE a % 2 END AS r \
+         FROM __THIS__ WHERE a IS NOT NULL",
+        &schema,
+    )
+    .unwrap();
+    let text = super::ir::print::print(&p);
+    assert_eq!(parse(&text).unwrap(), p, "prepared program is not canonical:\n{text}");
+}
+
+#[test]
+fn bool_column_directly_in_where() {
+    let schema = cols(&[("ok", Ty::I1, true), ("v", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT v FROM __THIS__ WHERE ok",
+        &schema,
+        batch(3, vec![c_i1v(&[Some(true), Some(false), None]), c_i64(&[Some(1), Some(2), Some(3)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["1"]]));
+}
+
 #[test]
 fn unsupported_constructs_are_named_cleanly() {
     let schema = cols(&[("a", Ty::I64, false)]);
@@ -145,8 +348,6 @@ fn unsupported_constructs_are_named_cleanly() {
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
         ("SELECT upper('x') FROM __THIS__", "function"),
         ("SELECT * FROM __THIS__", "star expansion"),
-        ("SELECT a FROM __THIS__ WHERE a > 0 AND a < 9", "AND/OR"),
-        ("SELECT CASE WHEN a > 0 THEN 1 END FROM __THIS__", "CASE"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         ("SELECT a, a FROM __THIS__", "duplicate output column"),
         ("SELECT NULL FROM __THIS__", "NULL literal"),

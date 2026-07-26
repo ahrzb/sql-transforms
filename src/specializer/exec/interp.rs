@@ -15,8 +15,9 @@
 //! * `itof` is `as f64` (may round — same as DuckDB's BIGINT->DOUBLE).
 //! * `ftoi.trunc` rounds toward zero; `ftoi.round` half-away-from-zero
 //!   (matches DuckDB CAST); both trap on non-finite or out-of-i64-range.
-//! * `stoi.opt`/`stof.opt` are exact `str::parse` — no whitespace trimming;
-//!   whether SQL CAST trims is a lowering decision to pin at M-lower.
+//! * `stoi.opt`/`stof.opt` trim ASCII whitespace then `str::parse` — pinned
+//!   at M-lower against DuckDB CAST (measured: `' 5'::BIGINT = 5`); the
+//!   empty/whitespace-only string fails the parse.
 //! * `itos`/`ftos` format into the arena; `ftos` uses Rust's shortest
 //!   round-trip form (provisional; oracle-pinned at M-lower).
 //! * On a false validity flag the payload is the type default; `load.opt`
@@ -638,7 +639,7 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
             let (flag, dst, a) = (sl(slots, flag), sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
                 let s = ctx.arena.get(as_str(ctx.regs[a]));
-                match s.parse::<i64>() {
+                match s.trim_ascii().parse::<i64>() {
                     Ok(v) => {
                         ctx.regs[flag] = RegVal::I1(true);
                         ctx.regs[dst] = RegVal::I64(v);
@@ -655,7 +656,7 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
             let (flag, dst, a) = (sl(slots, flag), sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
                 let s = ctx.arena.get(as_str(ctx.regs[a]));
-                match s.parse::<f64>() {
+                match s.trim_ascii().parse::<f64>() {
                     Ok(v) => {
                         ctx.regs[flag] = RegVal::I1(true);
                         ctx.regs[dst] = RegVal::F64(v);

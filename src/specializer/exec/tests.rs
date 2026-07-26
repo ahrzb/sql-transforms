@@ -436,8 +436,8 @@ fn pin_ieee_flow_and_scmp_and_concat() {
 }
 
 #[test]
-fn pin_stoi_exact_parse_no_trim() {
-    for (s, ok) in [(" 5", false), ("5 ", false), ("+5", true), ("0x10", false), ("", false)] {
+fn pin_stoi_trims_whitespace_like_duckdb_cast() {
+    for (s, ok) in [(" 5", true), ("5 ", true), ("+5", true), ("0x10", false), ("", false), ("  ", false)] {
         let body = format!(
             "  %s = const.str \"{s}\"\n  %f, %v = stoi.opt %s\n  store out.f, %f\n  store out.v, %v"
         );

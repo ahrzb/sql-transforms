@@ -24,7 +24,10 @@ pub use frontend::PrepareError;
 /// a lowering bug becomes [`PrepareError::Internal`], never an executable.
 pub fn prepare(sql: &str, in_cols: &[ir::Col]) -> Result<ir::Program, PrepareError> {
     let (rel, out_cols) = frontend::frontend(sql, in_cols)?;
-    let program = lower::lower(&rel, in_cols, out_cols, "run")?;
+    let mut program = lower::lower(&rel, in_cols, out_cols, "run")?;
+    // Block-splitting lowerings mint ids out of text order; renumber so
+    // every prepared program is exactly canonical (parse(print(p)) == p).
+    ir::canonicalize(&mut program);
     if let Err(errs) = ir::verify::verify(&program) {
         let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
         return Err(PrepareError::Internal(format!(
