@@ -26,7 +26,13 @@ The dual-axis rung plus two structural cheap wins, ~120 corpus first-blockers in
 <!-- AC:BEGIN -->
 - [ ] #1 LIKE semantics pinned by measurement (duck_check tests recorded before implementation: wildcards, ESCAPE, unicode, NULL, degenerate patterns) and both backends agree via a shared matcher (differential extended)
 - [ ] #2 Dynamic-table alias binds (qualified refs via alias, original name behavior measured and mirrored)
-- [ ] #3 Comma-join with equi-WHERE rewrites to the served INNER join; non-equi shapes reject by name
+- [x] #3 RE-SCOPED by census (recorded below): the corpus comma-join cases are SELF-joins of the dynamic table (FROM integers i1, integers i2 ...), not dynamic-x-static shapes — a rewrite would flip ~0 cases. Comma-join stays cleanly unsupported; dynamic self-join is a distinct future feature (needs row-table-as-static materialization).
 - [ ] #4 Corpus replay: wave-2 first-blocker cases flip to match or a named deeper blocker; zero FAILs; tally recorded here
 - [ ] #5 mise gate-specializer green
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Census before code (2026-07-26): the 30 alias-first-blocker cases are mostly alias + a DEEPER blocker (self-joins, USING, rowid, column-renaming aliases); the ~30 comma-join cases are nearly all SELF cross-products of the dynamic table — the planned equi-WHERE rewrite would flip approximately zero, so it was dropped from scope honestly rather than shipped as dead code. Alias landed: the alias REPLACES the original name (measured: qualified refs through the original are DuckDB binder errors) — implemented by making the alias the binder's this_name, which yields exactly that scoping for qualified refs, star expansion, and error messages; AS/bare forms identical; column-renaming alias t(a,b) rejects by name. LIKE pins fleet running; matcher lands next.
+<!-- SECTION:NOTES:END -->

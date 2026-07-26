@@ -204,16 +204,21 @@ fn bind_from<'a>(
     };
     let dyn_name = match &table.relation {
         TableFactor::Table { name, alias, .. } => {
-            if alias.is_some() {
-                return Err(unsup("alias on the dynamic table"));
-            }
             let n = name.to_string();
             if !n.eq_ignore_ascii_case(this_name) {
                 return Err(unsup(format!(
                     "table '{n}' as the driving relation (must be the dynamic table '{this_name}')"
                 )));
             }
-            n
+            match alias {
+                // Measured: an alias REPLACES the original name entirely
+                // (qualified refs through the original are binder errors in
+                // DuckDB) — making the alias the binder's this_name gives
+                // exactly that scoping.
+                Some(a) if a.columns.is_empty() => a.name.value.clone(),
+                Some(_) => return Err(unsup("column-renaming table alias t(a, b, ...)")),
+                None => n,
+            }
         }
         other => return Err(unsup(format!("FROM {other}"))),
     };

@@ -1428,3 +1428,33 @@ def test_round_family_int64_identity_and_negative_n():
         {"i": "int?"},
         [{"i": v} for v in vals],
     )
+
+
+# --------------------------------------------------------- TASK-48:
+# dynamic-table alias — the alias REPLACES the original name (measured).
+
+
+def test_dynamic_table_alias():
+    for sql in [
+        "SELECT t.a AS x, a AS y FROM __THIS__ t",
+        "SELECT t.a AS x FROM __THIS__ AS t",
+        "SELECT t.a AS x, dim.name AS nm FROM __THIS__ t JOIN dim ON t.a = dim.id",
+        "SELECT t.*, upper(t.s) AS u FROM __THIS__ t",
+    ]:
+        duck_check(sql, {"a": "int", "s": "str"}, [{"a": 1, "s": "x"}], {"dim": DIM})
+
+
+def test_alias_shadows_original_name():
+    # Mirrors DuckDB's 'Referenced table not found' as our bind error.
+    with pytest.raises(ValueError, match="unknown table"):
+        DuckDBInferFn(
+            "SELECT __THIS__.a FROM __THIS__ t",
+            row_tables={"__THIS__": _row_model({"a": "int"})},
+            static_tables={},
+        )
+    with pytest.raises(ValueError, match="column-renaming"):
+        DuckDBInferFn(
+            "SELECT y FROM __THIS__ t(y)",
+            row_tables={"__THIS__": _row_model({"a": "int"})},
+            static_tables={},
+        )
