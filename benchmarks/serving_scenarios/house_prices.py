@@ -3,8 +3,16 @@
 The canonical Kaggle House Prices feature set, expressed as the serve-time
 query a fitted pipeline reduces to: scalar expressions over the row plus
 LEFT JOINs to prepare-time encoding tables. This is the wide-arith stress
-case: 43 input columns, 42 output features, almost all of them arithmetic
+case: 43 input columns, 54 output features, almost all of them arithmetic
 and CASE over the row.
+
+Originally authored before the wave-1 math/string builtins landed, so the
+public-kernel log1p skew fixes, sqrt, decade bins, clamps, IN-set flags and
+cyclical month encoding were dropped. They are back now that the engine
+supports ln/sqrt/floor/least/greatest/IN/sin/cos/pi: log1p(TotalSF/LotArea/
+GrLivArea) as ln(1.0 + x), sqrt(GrLivArea), YearBuilt decade via
+floor(x/10)*10, garage-age clamp via greatest, Ex/Gd quality IN-sets, the
+rich-neighborhood and PUD MSSubClass membership flags, and MoSold sin/cos.
 
 Realistic serving gotchas baked into the row distributions:
 - MSSubClass 150 and the GrnHill/Landmrk neighborhoods exist only outside
@@ -17,6 +25,7 @@ Realistic serving gotchas baked into the row distributions:
   per-neighborhood median via the join table (the classic trick).
 """
 
+import math
 import random
 from collections.abc import Callable
 
@@ -28,12 +37,13 @@ KAGGLE = (
     "public-kernel feature set: TotalSF/TotalBath sums, age features, "
     "Ex..Po ordinal quality maps, porch total, has_* flags, nullif-guarded "
     "lot ratios, qual*cond crosses, neighborhood-median LotFrontage "
-    "imputation, and Neighborhood/MSSubClass target+frequency encodings "
-    "served as join tables."
+    "imputation, Neighborhood/MSSubClass target+frequency encodings "
+    "served as join tables, log1p skew fixes, decade bins, quality/"
+    "neighborhood/PUD membership flags, and cyclical MoSold encoding."
 )
 
 N_INPUT_COLS = 43
-N_OUTPUT_COLS = 42
+N_OUTPUT_COLS = 54
 
 ROW_SCHEMA = {
     "id": "int",
@@ -346,7 +356,21 @@ SQL = f"""SELECT
        WHEN mo_sold >= 6 AND mo_sold <= 8 THEN 2
        WHEN mo_sold >= 9 AND mo_sold <= 11 THEN 3
        ELSE 0 END AS season_sold,
-  CASE WHEN mo_sold >= 5 AND mo_sold <= 7 THEN 1 ELSE 0 END AS is_peak_season
+  CASE WHEN mo_sold >= 5 AND mo_sold <= 7 THEN 1 ELSE 0 END AS is_peak_season,
+  ln(1.0 + (coalesce(total_bsmt_sf, 0.0) + first_flr_sf + second_flr_sf))
+    AS log_total_sf,
+  ln(1.0 + lot_area) AS log_lot_area,
+  ln(1.0 + gr_liv_area) AS log_gr_liv_area,
+  sqrt(CAST(gr_liv_area AS DOUBLE)) AS sqrt_gr_liv_area,
+  floor(year_built / 10.0) * 10.0 AS decade_built,
+  greatest(yr_sold - garage_yr_blt, 0.0) AS garage_age_clamped,
+  CASE WHEN exter_qual IN ('Ex', 'Gd') THEN 1 ELSE 0 END AS exter_qual_good,
+  CASE WHEN kitchen_qual IN ('Ex', 'Gd') THEN 1 ELSE 0 END AS kitchen_qual_good,
+  CASE WHEN neighborhood IN ('NoRidge', 'NridgHt', 'StoneBr') THEN 1 ELSE 0 END
+    AS nbhd_rich,
+  CASE WHEN ms_sub_class IN (120, 150, 160, 180) THEN 1 ELSE 0 END AS is_pud,
+  sin(2.0 * pi() * mo_sold / 12.0) AS mo_sold_sin,
+  cos(2.0 * pi() * mo_sold / 12.0) AS mo_sold_cos
 FROM __THIS__
 LEFT JOIN nbhd_price_enc ON neighborhood = nbhd_price_enc.nbhd
 LEFT JOIN subclass_enc ON ms_sub_class = subclass_enc.sub_class"""
@@ -399,11 +423,10 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             lff = nbe[2] if nbe is not None else None
         if lff is None:
             lff = 69.0
+        tsf = (tb if tb is not None else 0.0) + r["first_flr_sf"] + r["second_flr_sf"]
         return {
             "id": r["id"],
-            "total_sf": (tb if tb is not None else 0.0)
-            + r["first_flr_sf"]
-            + r["second_flr_sf"],
+            "total_sf": tsf,
             "total_bath": r["full_bath"]
             + 0.5 * r["half_bath"]
             + (bf if bf is not None else 0)
@@ -465,6 +488,21 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             if 9 <= r["mo_sold"] <= 11
             else 0,
             "is_peak_season": 1 if 5 <= r["mo_sold"] <= 7 else 0,
+            "log_total_sf": math.log(1.0 + tsf),
+            "log_lot_area": math.log(1.0 + la),
+            "log_gr_liv_area": math.log(1.0 + gla),
+            "sqrt_gr_liv_area": math.sqrt(gla),
+            "decade_built": math.floor(r["year_built"] / 10.0) * 10.0,
+            # greatest() is NULL-ignoring: greatest(NULL, 0.0) -> 0.0
+            "garage_age_clamped": 0.0 if gy is None else max(r["yr_sold"] - gy, 0.0),
+            "exter_qual_good": 1 if r["exter_qual"] in ("Ex", "Gd") else 0,
+            "kitchen_qual_good": 1 if kq in ("Ex", "Gd") else 0,
+            "nbhd_rich": 1
+            if r["neighborhood"] in ("NoRidge", "NridgHt", "StoneBr")
+            else 0,
+            "is_pud": 1 if r["ms_sub_class"] in (120, 150, 160, 180) else 0,
+            "mo_sold_sin": math.sin(2.0 * math.pi * r["mo_sold"] / 12.0),
+            "mo_sold_cos": math.cos(2.0 * math.pi * r["mo_sold"] / 12.0),
         }
 
     return fe

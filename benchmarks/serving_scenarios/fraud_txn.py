@@ -3,8 +3,11 @@
 Serving shape of the famous IEEE-CIS Fraud Detection winning solutions:
 uid/frequency/target encodings materialized at prepare time become plain
 LEFT-JOIN lookup tables at serve time; everything else is scalar math over
-the raw transaction row.
-"""
+the raw transaction row — including the wave-1 builtin features the winning
+solutions actually used: log1p amounts via ln(1.0 + x), the Deotte cents
+feature via round(x, 2), amount decade via round(x, -1), cyclical hour/dow
+sin/cos encodings, email-domain group flags via IN / starts_with / ends_with
+/ instr, and C-column outlier clips via least()."""
 
 import math
 import random
@@ -18,12 +21,14 @@ KAGGLE = (
     "IEEE-CIS Fraud Detection (Kaggle 2019, Deotte/Yakovlev winning-solution "
     "serving shape): composite uid (card1 x addr1) + card1/addr1/email-domain "
     "frequency+target encodings as join tables, amt ratio/delta vs card1 and "
-    "uid means, cents feature, D-column NULL flags, hour/day-of-week from "
-    "unix ts, amount buckets, ProductCD one-hots."
+    "uid means, log1p amount, rounded cents feature, amount decade, D-column "
+    "NULL flags, hour/day-of-week from unix ts + cyclical sin/cos encodings, "
+    "amount buckets, ProductCD one-hots, email-domain group/suspicious flags, "
+    "clipped C-columns."
 )
 
 N_INPUT_COLS = 32
-N_OUTPUT_COLS = 41
+N_OUTPUT_COLS = 57
 
 ROW_SCHEMA: dict[str, str] = {
     "txn_id": "int",
@@ -303,7 +308,28 @@ SELECT
   c1 / (c1 + c2 + c3 + c4 + c5 + c6 + 1) AS c1_share,
   coalesce(dist1, 0.0) AS dist1_filled,
   CASE WHEN m1 IS NULL THEN -1 WHEN m1 THEN 1 ELSE 0 END AS m1_flag,
-  CASE WHEN addr1 IS NULL THEN 0 ELSE 1 END AS addr_known
+  CASE WHEN addr1 IS NULL THEN 0 ELSE 1 END AS addr_known,
+  ln(1.0 + transaction_amt) AS amt_log1p,
+  round(transaction_amt, -1) AS amt_decade,
+  round(transaction_amt - floor(transaction_amt), 2) AS amt_cents_r,
+  sin(2.0 * pi() * (((transaction_dt % 86400) - (transaction_dt % 3600)) / 3600) / 24.0) AS hour_sin,
+  cos(2.0 * pi() * (((transaction_dt % 86400) - (transaction_dt % 3600)) / 3600) / 24.0) AS hour_cos,
+  sin(2.0 * pi() * ((CAST((transaction_dt - (transaction_dt % 86400)) / 86400 AS INTEGER) + 4) % 7) / 7.0) AS dow_sin,
+  cos(2.0 * pi() * ((CAST((transaction_dt - (transaction_dt % 86400)) / 86400 AS INTEGER) + 4) % 7) / 7.0) AS dow_cos,
+  CASE WHEN p_email_domain IN ('protonmail.com', 'protonmail.ch', 'anonymous.com', 'mail.com', 'qq.com')
+       THEN 1 ELSE 0 END AS p_dom_suspicious,
+  CASE WHEN p_email_domain IS NULL THEN 0
+       WHEN starts_with(p_email_domain, 'gmail') THEN 1 ELSE 0 END AS p_is_gmail,
+  CASE WHEN p_email_domain IN ('hotmail.com', 'outlook.com', 'live.com', 'msn.com')
+       THEN 1 ELSE 0 END AS p_is_msft,
+  CASE WHEN p_email_domain IS NULL THEN 0
+       WHEN ends_with(p_email_domain, '.net') THEN 1 ELSE 0 END AS p_dom_net,
+  CASE WHEN p_email_domain IS NULL THEN -1
+       ELSE length(p_email_domain) - instr(p_email_domain, '.') END AS p_dom_suffix_len,
+  least(c1, 50) AS c1_clip,
+  least(c2, 40) AS c2_clip,
+  greatest(coalesce(d1, 0), coalesce(d2, 0), coalesce(d3, 0), coalesce(d4, 0)) AS d_max,
+  ln(1.0 + card1_stats.card1_txn_cnt) AS card1_cnt_log
 FROM __THIS__
 LEFT JOIN card1_stats ON card1 = card1_stats.card1_id
 LEFT JOIN addr1_stats ON addr1 = addr1_stats.addr1_id
@@ -312,6 +338,20 @@ LEFT JOIN p_email_stats ON p_email_domain = p_email_stats.p_domain
 LEFT JOIN r_email_stats ON r_email_domain = r_email_stats.r_domain
 LEFT JOIN pcd_stats ON product_cd = pcd_stats.pcd
 """
+
+
+def _round_half_away(x: float, n: int) -> float:
+    """SQL round(x, n): scale by 10**n, round half away from zero, unscale.
+    Bit-identical to the engine/DuckDB for this scenario's inputs (probed)."""
+    s = 10.0**n
+    y = x * s
+    return math.copysign(math.floor(abs(y) + 0.5), y) / s
+
+
+_SUSPICIOUS_DOMAINS = frozenset(
+    {"protonmail.com", "protonmail.ch", "anonymous.com", "mail.com", "qq.com"}
+)
+_MSFT_DOMAINS = frozenset({"hotmail.com", "outlook.com", "live.com", "msn.com"})
 
 
 def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
@@ -342,6 +382,8 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
     def fn(row: dict) -> dict:
         amt = row["transaction_amt"]
         ts = row["transaction_dt"]
+        hour = (ts % 86400) // 3600
+        dow = (ts // 86400 + 4) % 7
 
         c1s = card1_map.get(row["card1"])
         card1_amt_mean, card1_txn_cnt, card1_fraud_rate = (
@@ -405,8 +447,8 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             "amt_x_pcd_rate": amt * pcd_fraud_rate
             if pcd_fraud_rate is not None
             else None,
-            "txn_hour": (ts % 86400) // 3600,
-            "txn_dow": (ts // 86400 + 4) % 7,
+            "txn_hour": hour,
+            "txn_dow": dow,
             "is_night": 1 if ts % 86400 < 21600 else 0,
             "amt_bucket": amt_bucket,
             "amt_cents": amt_cents,
@@ -429,6 +471,30 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             "dist1_filled": row["dist1"] if row["dist1"] is not None else 0.0,
             "m1_flag": -1 if m1 is None else (1 if m1 else 0),
             "addr_known": 0 if row["addr1"] is None else 1,
+            "amt_log1p": math.log(1.0 + amt),
+            "amt_decade": _round_half_away(amt, -1),
+            "amt_cents_r": _round_half_away(amt - math.floor(amt), 2),
+            "hour_sin": math.sin(2.0 * math.pi * hour / 24.0),
+            "hour_cos": math.cos(2.0 * math.pi * hour / 24.0),
+            "dow_sin": math.sin(2.0 * math.pi * dow / 7.0),
+            "dow_cos": math.cos(2.0 * math.pi * dow / 7.0),
+            # NULL IN (...) is NULL -> CASE falls through to 0, same as .get miss
+            "p_dom_suspicious": 1 if p_dom in _SUSPICIOUS_DOMAINS else 0,
+            "p_is_gmail": 1 if p_dom is not None and p_dom.startswith("gmail") else 0,
+            "p_is_msft": 1 if p_dom in _MSFT_DOMAINS else 0,
+            "p_dom_net": 1 if p_dom is not None and p_dom.endswith(".net") else 0,
+            # instr is 1-based codepoints; domains are ASCII with one dot
+            "p_dom_suffix_len": -1
+            if p_dom is None
+            else len(p_dom) - (p_dom.index(".") + 1),
+            "c1_clip": min(row["c1"], 50),
+            "c2_clip": min(row["c2"], 40),
+            "d_max": max(
+                row["d1"] or 0, row["d2"] or 0, row["d3"] or 0, row["d4"] or 0
+            ),
+            "card1_cnt_log": math.log(1.0 + card1_txn_cnt)
+            if card1_txn_cnt is not None
+            else None,
         }
 
     return fn
