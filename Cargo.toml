@@ -11,5 +11,10 @@ crate-type = ["cdylib"]
 # libpython link, which is right for the wheel but breaks `cargo test`.
 # maturin enables it via [tool.maturin] features in pyproject.toml.
 [dependencies]
+cranelift-codegen = "0.126"
+cranelift-frontend = "0.126"
+cranelift-jit = "0.126"
+cranelift-module = "0.126"
 pyo3 = { version = "0.29", features = ["abi3-py314"] }
 sqlparser = "0.62"
+target-lexicon = "0.13.5"
