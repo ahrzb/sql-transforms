@@ -1,9 +1,10 @@
 ---
 id: TASK-45
 title: 'Specializer M-boundary: generated row marshaller + Python API'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-07-25 02:32'
+updated_date: '2026-07-26 08:00'
 labels: []
 milestone: m-7
 dependencies:
@@ -28,3 +29,14 @@ Wire the specializer into the Python surface: SpecializedTransform (SQLTransform
 - [ ] #4 Steady-state hot path allocates nothing per call beyond the output objects; arena reset only
 - [ ] #5 mise gate-specializer green
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Stretch plan (recorded 2026-07-26, design doc §3 flag 1 + §10). Measured targets from the M-cranelift bench: per-cell getattr with a fresh name string, per-call buffer allocs, and model_validate per output row — those three ARE the boundary that dominates end-to-end.
+1. Marshaller core (src/duckdb, the boundary module): prepare-time interned PyString field names for input attrs and output keys; input rows accepted as dict (get_item on interned key) or pydantic model (getattr on interned name), unboxed type-directed straight into the existing Batch columns — SoA stays: both backends read Batch, the batch is L1-resident at this n, and the doc's own flag-1 argument makes layout irrelevant here (deviation from the AoS row-struct line, noted deliberately); output built model_construct-style (cached bound method + interned keys), never model_validate; RunState + input buffers owned by the fn object behind a Mutex, cleared not dropped per call. SPECIALIZER_GENERIC_BOUNDARY env knob keeps the old generic path runnable for the baseline; a .boundary getter mirrors .backend.
+2. SpecializedTransform (sql_transform package): SQLTransform API minus transformer refs — ctor(sql | Template), fit(table, this_model=None) reusing desugar/inline_references/build_state_tables/rewrite_sql then preparing DuckDBInferFn (clear error on transformer refs; records output only, dense raises); infer/infer_batch pass dicts/models straight through, no SimpleNamespace hop. Window aggregates rewrite into static-table equi-joins = v0 subset, so they ride along where the rewrite output parses.
+3. Bench per §10: extend scripts/bench_specializer.py — no-op f through generic vs marshalled boundary (AC #2, the marshaller's win as a measured number), end-to-end p50/p99 at n in {1,8,64,1024} vs native + codegen (AC #3); numbers into this ticket.
+4. Zero-alloc steady state (AC #4): counting-global-allocator Rust test around the reused-state run path asserting no Rust-side allocation on the second call (arena reset only); marshaller buffer reuse asserted the same way. Gate green (AC #5).
+<!-- SECTION:PLAN:END -->
+
