@@ -9,7 +9,6 @@ use crate::datafusion::types::FieldType;
 // keep resolving now that the value representation is shared.
 pub use crate::value::{type_name, Value};
 
-
 /// String form used by CONCAT and CAST(.. AS VARCHAR).
 pub fn display_value(v: &Value) -> String {
     match v {
@@ -49,7 +48,6 @@ pub fn display_value(v: &Value) -> String {
         }
     }
 }
-
 
 #[derive(Clone)]
 pub enum Expr {
@@ -124,7 +122,10 @@ pub enum BinOp {
     Concat,
 }
 
-pub fn eval(expr: &Expr, row: &crate::datafusion::plan::Row) -> Result<Value, crate::datafusion::plan::InterpError> {
+pub fn eval(
+    expr: &Expr,
+    row: &crate::datafusion::plan::Row,
+) -> Result<Value, crate::datafusion::plan::InterpError> {
     match expr {
         Expr::Column { table, name } => resolve_column(row, table.as_deref(), name),
         Expr::Literal(v) => Ok(v.clone()),
@@ -174,7 +175,9 @@ pub fn eval(expr: &Expr, row: &crate::datafusion::plan::Row) -> Result<Value, cr
                     .find(|(name, _)| name == field)
                     .map(|(_, v)| v)
                     .ok_or_else(|| {
-                        crate::datafusion::plan::InterpError::Eval(format!("Unknown struct field: {field}"))
+                        crate::datafusion::plan::InterpError::Eval(format!(
+                            "Unknown struct field: {field}"
+                        ))
                     }),
                 other => Err(crate::datafusion::plan::InterpError::Eval(format!(
                     "Cannot access field '{field}' on a {} value",
@@ -200,75 +203,79 @@ pub fn eval(expr: &Expr, row: &crate::datafusion::plan::Row) -> Result<Value, cr
             };
             // infer() already holds the GIL; attach is cheap and re-entrant, so
             // eval() stays a pure-Rust signature (no py token threaded through).
-            Python::attach(|py| -> Result<Value, crate::datafusion::plan::InterpError> {
-                // Reorder the struct's fields to feature_names_in_ order, then
-                // build a 1-row Python list-of-lists. sklearn's check_array
-                // coerces it -- no numpy on the Rust side.
-                let mut ordered: Vec<Py<PyAny>> = Vec::with_capacity(input_features.len());
-                for feat in input_features {
-                    let value = fields
-                        .iter()
-                        .find(|(n, _)| n == feat)
-                        .map(|(_, v)| v)
-                        .ok_or_else(|| {
+            Python::attach(
+                |py| -> Result<Value, crate::datafusion::plan::InterpError> {
+                    // Reorder the struct's fields to feature_names_in_ order, then
+                    // build a 1-row Python list-of-lists. sklearn's check_array
+                    // coerces it -- no numpy on the Rust side.
+                    let mut ordered: Vec<Py<PyAny>> = Vec::with_capacity(input_features.len());
+                    for feat in input_features {
+                        let value = fields
+                            .iter()
+                            .find(|(n, _)| n == feat)
+                            .map(|(_, v)| v)
+                            .ok_or_else(|| {
+                                crate::datafusion::plan::InterpError::Eval(format!(
+                                    "transformer input struct is missing field '{feat}'"
+                                ))
+                            })?;
+                        let py_val = value.to_pyobject(py).map_err(|e| {
                             crate::datafusion::plan::InterpError::Eval(format!(
-                                "transformer input struct is missing field '{feat}'"
+                                "marshalling transformer input failed: {e}"
                             ))
                         })?;
-                    let py_val = value.to_pyobject(py).map_err(|e| {
+                        ordered.push(py_val);
+                    }
+                    let row_list = PyList::new(py, ordered).map_err(|e| {
                         crate::datafusion::plan::InterpError::Eval(format!(
-                            "marshalling transformer input failed: {e}"
+                            "building transformer input row failed: {e}"
                         ))
                     })?;
-                    ordered.push(py_val);
-                }
-                let row_list = PyList::new(py, ordered).map_err(|e| {
-                    crate::datafusion::plan::InterpError::Eval(format!(
-                        "building transformer input row failed: {e}"
-                    ))
-                })?;
-                let x = PyList::new(py, [row_list]).map_err(|e| {
-                    crate::datafusion::plan::InterpError::Eval(format!(
-                        "building transformer input matrix failed: {e}"
-                    ))
-                })?;
-                let y = obj.bind(py).call_method1("transform", (x,)).map_err(|e| {
-                    crate::datafusion::plan::InterpError::Eval(format!("transformer.transform failed: {e}"))
-                })?;
-                // .tolist() turns numpy scalars into Python builtins so
-                // from_pyobject sees float/int/str, not opaque numpy objects.
-                let y_list = y.call_method0("tolist").map_err(|e| {
-                    crate::datafusion::plan::InterpError::Eval(format!(
-                        "transformer output .tolist() failed: {e}"
-                    ))
-                })?;
-                let y0 = y_list.get_item(0).map_err(|e| {
-                    crate::datafusion::plan::InterpError::Eval(format!(
-                        "transformer produced no output row: {e}"
-                    ))
-                })?;
-                // Marshal each output position through the declared field
-                // type. Parity invariant: the declared output dtype must equal
-                // the transform's natural dtype -- here it drives pydantic
-                // coercion at model-validate time, and the DataFusion oracle
-                // reaches the same type via a pyarrow cast; the two agree only
-                // when no real coercion is needed (see _transformer_udf.py).
-                let mut out = Vec::with_capacity(output_fields.len());
-                for (i, (fname, ft)) in output_fields.iter().enumerate() {
-                    let elem = y0.get_item(i).map_err(|e| {
+                    let x = PyList::new(py, [row_list]).map_err(|e| {
                         crate::datafusion::plan::InterpError::Eval(format!(
-                            "transformer output missing position {i} for field '{fname}': {e}"
+                            "building transformer input matrix failed: {e}"
                         ))
                     })?;
-                    let val = Value::from_pyobject_typed(&elem, &ft.base).map_err(|e| {
+                    let y = obj.bind(py).call_method1("transform", (x,)).map_err(|e| {
                         crate::datafusion::plan::InterpError::Eval(format!(
-                            "marshalling transformer output field '{fname}' failed: {e}"
+                            "transformer.transform failed: {e}"
                         ))
                     })?;
-                    out.push((fname.clone(), val));
-                }
-                Ok(Value::Struct(out))
-            })
+                    // .tolist() turns numpy scalars into Python builtins so
+                    // from_pyobject sees float/int/str, not opaque numpy objects.
+                    let y_list = y.call_method0("tolist").map_err(|e| {
+                        crate::datafusion::plan::InterpError::Eval(format!(
+                            "transformer output .tolist() failed: {e}"
+                        ))
+                    })?;
+                    let y0 = y_list.get_item(0).map_err(|e| {
+                        crate::datafusion::plan::InterpError::Eval(format!(
+                            "transformer produced no output row: {e}"
+                        ))
+                    })?;
+                    // Marshal each output position through the declared field
+                    // type. Parity invariant: the declared output dtype must equal
+                    // the transform's natural dtype -- here it drives pydantic
+                    // coercion at model-validate time, and the DataFusion oracle
+                    // reaches the same type via a pyarrow cast; the two agree only
+                    // when no real coercion is needed (see _transformer_udf.py).
+                    let mut out = Vec::with_capacity(output_fields.len());
+                    for (i, (fname, ft)) in output_fields.iter().enumerate() {
+                        let elem = y0.get_item(i).map_err(|e| {
+                            crate::datafusion::plan::InterpError::Eval(format!(
+                                "transformer output missing position {i} for field '{fname}': {e}"
+                            ))
+                        })?;
+                        let val = Value::from_pyobject_typed(&elem, &ft.base).map_err(|e| {
+                            crate::datafusion::plan::InterpError::Eval(format!(
+                                "marshalling transformer output field '{fname}' failed: {e}"
+                            ))
+                        })?;
+                        out.push((fname.clone(), val));
+                    }
+                    Ok(Value::Struct(out))
+                },
+            )
         }
         Expr::Case { arms, default } => {
             // Short-circuit: evaluate conditions left to right, stop at the first
@@ -318,7 +325,11 @@ fn resolve_column(
         .ok_or_else(|| InterpError::Build(format!("Unknown column: {name}")))
 }
 
-fn eval_binary_op(op: BinOp, l: Value, r: Value) -> Result<Value, crate::datafusion::plan::InterpError> {
+fn eval_binary_op(
+    op: BinOp,
+    l: Value,
+    r: Value,
+) -> Result<Value, crate::datafusion::plan::InterpError> {
     match op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => arithmetic(op, l, r),
         BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
@@ -342,7 +353,11 @@ fn concat_op(l: Value, r: Value) -> Result<Value, crate::datafusion::plan::Inter
     )))
 }
 
-fn arithmetic(op: BinOp, l: Value, r: Value) -> Result<Value, crate::datafusion::plan::InterpError> {
+fn arithmetic(
+    op: BinOp,
+    l: Value,
+    r: Value,
+) -> Result<Value, crate::datafusion::plan::InterpError> {
     if matches!(l, Value::Null) || matches!(r, Value::Null) {
         return Ok(Value::Null);
     }
@@ -388,7 +403,11 @@ fn as_f64(v: &Value) -> Result<f64, crate::datafusion::plan::InterpError> {
     }
 }
 
-fn comparison(op: BinOp, l: Value, r: Value) -> Result<Value, crate::datafusion::plan::InterpError> {
+fn comparison(
+    op: BinOp,
+    l: Value,
+    r: Value,
+) -> Result<Value, crate::datafusion::plan::InterpError> {
     if matches!(l, Value::Null) || matches!(r, Value::Null) {
         return Ok(Value::Null);
     }
@@ -420,7 +439,10 @@ fn comparison(op: BinOp, l: Value, r: Value) -> Result<Value, crate::datafusion:
     }))
 }
 
-fn compare_values(l: &Value, r: &Value) -> Result<std::cmp::Ordering, crate::datafusion::plan::InterpError> {
+fn compare_values(
+    l: &Value,
+    r: &Value,
+) -> Result<std::cmp::Ordering, crate::datafusion::plan::InterpError> {
     match (l, r) {
         (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
         (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
@@ -472,7 +494,10 @@ fn as_tribool(v: &Value) -> Result<Option<bool>, crate::datafusion::plan::Interp
     }
 }
 
-fn eval_builtin(name: &str, args: Vec<Value>) -> Result<Value, crate::datafusion::plan::InterpError> {
+fn eval_builtin(
+    name: &str,
+    args: Vec<Value>,
+) -> Result<Value, crate::datafusion::plan::InterpError> {
     use crate::datafusion::plan::InterpError;
 
     if matches!(name, "upper" | "lower" | "trim" | "substr" | "substring")

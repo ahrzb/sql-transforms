@@ -271,7 +271,12 @@ fn common_base(args: &[FieldType]) -> Base {
     match args.first() {
         None => Base::Other,
         Some(first) if args.iter().all(|a| a.base == first.base) => first.base.clone(),
-        _ if args.iter().all(|a| matches!(a.base, Base::Int | Base::Float)) => Base::Float,
+        _ if args
+            .iter()
+            .all(|a| matches!(a.base, Base::Int | Base::Float)) =>
+        {
+            Base::Float
+        }
         _ => Base::Other,
     }
 }

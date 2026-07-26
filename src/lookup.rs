@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::value::Value;
 use crate::error::InterpError;
+use crate::value::Value;
 
 pub struct LookupIndex {
     pub index: HashMap<Vec<Value>, HashMap<String, Value>>,

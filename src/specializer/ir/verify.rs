@@ -100,13 +100,23 @@ fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
         return;
     }
     if !p.blocks[0].params.is_empty() {
-        err(errs, Some(0), None, "entry block cannot have params".to_string());
+        err(
+            errs,
+            Some(0),
+            None,
+            "entry block cannot have params".to_string(),
+        );
     }
     for (side, cols) in [("in", &p.in_cols), ("out", &p.out_cols)] {
         let mut seen: HashMap<&str, ()> = HashMap::new();
         for c in cols.iter() {
             if seen.insert(c.name.as_str(), ()).is_some() {
-                err(errs, None, None, format!("duplicate {side} column '{}'", c.name));
+                err(
+                    errs,
+                    None,
+                    None,
+                    format!("duplicate {side} column '{}'", c.name),
+                );
             }
         }
     }
@@ -126,13 +136,23 @@ fn collect_defs(
     for (bi, b) in p.blocks.iter().enumerate() {
         for (v, ty) in &b.params {
             if def_types.insert(v.0, (*ty, bi)).is_some() {
-                err(errs, Some(bi), None, format!("%v{} defined more than once", v.0));
+                err(
+                    errs,
+                    Some(bi),
+                    None,
+                    format!("%v{} defined more than once", v.0),
+                );
             }
         }
         for (ii, inst) in b.insts.iter().enumerate() {
             for (dst, ty) in dst_types(p, inst) {
                 if def_types.insert(dst.0, (ty, bi)).is_some() {
-                    err(errs, Some(bi), Some(ii), format!("%v{} defined more than once", dst.0));
+                    err(
+                        errs,
+                        Some(bi),
+                        Some(ii),
+                        format!("%v{} defined more than once", dst.0),
+                    );
                 }
             }
         }
@@ -166,7 +186,12 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
             vec![(*flag, Ty::I1), (*dst, in_col(*col).unwrap_or(Ty::I1))]
         }
         Inst::Store { .. } | Inst::StoreOpt { .. } => vec![],
-        Inst::Probe { static_id, hit, dsts, .. } => {
+        Inst::Probe {
+            static_id,
+            hit,
+            dsts,
+            ..
+        } => {
             let mut v = vec![(*hit, Ty::I1)];
             if let Some(StaticTy::Map { values, .. }) = p.statics.get(*static_id as usize) {
                 for (d, ty) in dsts.iter().zip(values.iter()) {
@@ -178,7 +203,11 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
             v
         }
         Inst::Sload { static_id, dst } => vec![(*dst, scalar_ty(*static_id))],
-        Inst::SloadOpt { static_id, flag, dst } => {
+        Inst::SloadOpt {
+            static_id,
+            flag,
+            dst,
+        } => {
             vec![(*flag, Ty::I1), (*dst, scalar_ty(*static_id))]
         }
     }
@@ -230,7 +259,12 @@ fn want(
                 errs,
                 Some(bi),
                 ii,
-                format!("{what} %v{} must be {}, got {}", v.0, ty.name(), actual.name()),
+                format!(
+                    "{what} %v{} must be {}, got {}",
+                    v.0,
+                    ty.name(),
+                    actual.name()
+                ),
             );
         }
     }
@@ -262,16 +296,33 @@ fn check_block(
             }
             Inst::Cmp { ty, a, b: rhs, .. } => {
                 if *ty == Ty::I1 {
-                    err(errs, Some(bi), i, "cmp on i1 is not defined; use xor/not".into());
+                    err(
+                        errs,
+                        Some(bi),
+                        i,
+                        "cmp on i1 is not defined; use xor/not".into(),
+                    );
                 }
                 want(&in_scope, def_types, *a, *ty, "operand", bi, i, errs);
                 want(&in_scope, def_types, *rhs, *ty, "operand", bi, i, errs);
             }
-            Inst::Not { a, .. } => {
-                want(&in_scope, def_types, *a, Ty::I1, "operand", bi, i, errs)
-            }
-            Inst::Select { dst, cond, a, b: rhs } => {
-                want(&in_scope, def_types, *cond, Ty::I1, "condition", bi, i, errs);
+            Inst::Not { a, .. } => want(&in_scope, def_types, *a, Ty::I1, "operand", bi, i, errs),
+            Inst::Select {
+                dst,
+                cond,
+                a,
+                b: rhs,
+            } => {
+                want(
+                    &in_scope,
+                    def_types,
+                    *cond,
+                    Ty::I1,
+                    "condition",
+                    bi,
+                    i,
+                    errs,
+                );
                 let ta = scope_ty(&in_scope, def_types, *a, "operand", bi, i, errs);
                 let tb = scope_ty(&in_scope, def_types, *rhs, "operand", bi, i, errs);
                 if let (Some(ta), Some(tb)) = (ta, tb) {
@@ -289,18 +340,10 @@ fn check_block(
                     in_scope.insert(dst.0, ta);
                 }
             }
-            Inst::Itof { a, .. } => {
-                want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs)
-            }
-            Inst::Ftoi { a, .. } => {
-                want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs)
-            }
-            Inst::Itos { a, .. } => {
-                want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs)
-            }
-            Inst::Ftos { a, .. } => {
-                want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs)
-            }
+            Inst::Itof { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
+            Inst::Ftoi { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
+            Inst::Itos { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
+            Inst::Ftos { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
             Inst::StoiOpt { a, .. } | Inst::StofOpt { a, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
             }
@@ -310,93 +353,151 @@ fn check_block(
             }
             Inst::Load { col, .. } => match p.in_cols.get(*col as usize) {
                 None => err(errs, Some(bi), i, format!("unknown in column {col}")),
-                Some(Col { ty, name }) if ty.nullable => {
-                    err(errs, Some(bi), i, format!("in.{name} is nullable: use load.opt"))
-                }
+                Some(Col { ty, name }) if ty.nullable => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("in.{name} is nullable: use load.opt"),
+                ),
                 Some(_) => {}
             },
             Inst::LoadOpt { col, .. } => match p.in_cols.get(*col as usize) {
                 None => err(errs, Some(bi), i, format!("unknown in column {col}")),
-                Some(Col { ty, name }) if !ty.nullable => {
-                    err(errs, Some(bi), i, format!("in.{name} is not nullable: use load"))
-                }
+                Some(Col { ty, name }) if !ty.nullable => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("in.{name} is not nullable: use load"),
+                ),
                 Some(_) => {}
             },
             Inst::Store { col, val } => match p.out_cols.get(*col as usize) {
                 None => err(errs, Some(bi), i, format!("unknown out column {col}")),
-                Some(c) if c.ty.nullable => {
-                    err(errs, Some(bi), i, format!("out.{} is nullable: use store.opt", c.name))
-                }
-                Some(c) => {
-                    want(&in_scope, def_types, *val, c.ty.ty, "stored value", bi, i, errs)
-                }
+                Some(c) if c.ty.nullable => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("out.{} is nullable: use store.opt", c.name),
+                ),
+                Some(c) => want(
+                    &in_scope,
+                    def_types,
+                    *val,
+                    c.ty.ty,
+                    "stored value",
+                    bi,
+                    i,
+                    errs,
+                ),
             },
             Inst::StoreOpt { col, flag, val } => match p.out_cols.get(*col as usize) {
                 None => err(errs, Some(bi), i, format!("unknown out column {col}")),
-                Some(c) if !c.ty.nullable => {
-                    err(errs, Some(bi), i, format!("out.{} is not nullable: use store", c.name))
-                }
+                Some(c) if !c.ty.nullable => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("out.{} is not nullable: use store", c.name),
+                ),
                 Some(c) => {
-                    want(&in_scope, def_types, *flag, Ty::I1, "validity flag", bi, i, errs);
-                    want(&in_scope, def_types, *val, c.ty.ty, "stored value", bi, i, errs);
+                    want(
+                        &in_scope,
+                        def_types,
+                        *flag,
+                        Ty::I1,
+                        "validity flag",
+                        bi,
+                        i,
+                        errs,
+                    );
+                    want(
+                        &in_scope,
+                        def_types,
+                        *val,
+                        c.ty.ty,
+                        "stored value",
+                        bi,
+                        i,
+                        errs,
+                    );
                 }
             },
-            Inst::Probe { static_id, dsts, keys, .. } => {
-                match p.statics.get(*static_id as usize) {
-                    None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                    Some(StaticTy::Scalar(_)) => {
-                        err(errs, Some(bi), i, format!("@{static_id} is a scalar: use sload"))
+            Inst::Probe {
+                static_id,
+                dsts,
+                keys,
+                ..
+            } => match p.statics.get(*static_id as usize) {
+                None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                Some(StaticTy::Scalar(_)) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is a scalar: use sload"),
+                ),
+                Some(StaticTy::Map {
+                    keys: kts,
+                    values: vts,
+                }) => {
+                    if keys.len() != kts.len() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!(
+                                "@{static_id} has {} key(s), probe passes {}",
+                                kts.len(),
+                                keys.len()
+                            ),
+                        );
+                    } else {
+                        for (k, kt) in keys.iter().zip(kts.iter()) {
+                            want(&in_scope, def_types, *k, *kt, "probe key", bi, i, errs);
+                        }
                     }
-                    Some(StaticTy::Map { keys: kts, values: vts }) => {
-                        if keys.len() != kts.len() {
-                            err(
-                                errs,
-                                Some(bi),
-                                i,
-                                format!(
-                                    "@{static_id} has {} key(s), probe passes {}",
-                                    kts.len(),
-                                    keys.len()
-                                ),
-                            );
-                        } else {
-                            for (k, kt) in keys.iter().zip(kts.iter()) {
-                                want(&in_scope, def_types, *k, *kt, "probe key", bi, i, errs);
-                            }
-                        }
-                        if dsts.len() != vts.len() {
-                            err(
-                                errs,
-                                Some(bi),
-                                i,
-                                format!(
-                                    "@{static_id} has {} value column(s), probe defines {}",
-                                    vts.len(),
-                                    dsts.len()
-                                ),
-                            );
-                        }
+                    if dsts.len() != vts.len() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!(
+                                "@{static_id} has {} value column(s), probe defines {}",
+                                vts.len(),
+                                dsts.len()
+                            ),
+                        );
                     }
                 }
-            }
+            },
             Inst::Sload { static_id, .. } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                Some(StaticTy::Map { .. }) => {
-                    err(errs, Some(bi), i, format!("@{static_id} is a map: use probe"))
-                }
-                Some(StaticTy::Scalar(ct)) if ct.nullable => {
-                    err(errs, Some(bi), i, format!("@{static_id} is nullable: use sload.opt"))
-                }
+                Some(StaticTy::Map { .. }) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is a map: use probe"),
+                ),
+                Some(StaticTy::Scalar(ct)) if ct.nullable => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is nullable: use sload.opt"),
+                ),
                 Some(_) => {}
             },
             Inst::SloadOpt { static_id, .. } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                Some(StaticTy::Map { .. }) => {
-                    err(errs, Some(bi), i, format!("@{static_id} is a map: use probe"))
-                }
-                Some(StaticTy::Scalar(ct)) if !ct.nullable => {
-                    err(errs, Some(bi), i, format!("@{static_id} is not nullable: use sload"))
-                }
+                Some(StaticTy::Map { .. }) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is a map: use probe"),
+                ),
+                Some(StaticTy::Scalar(ct)) if !ct.nullable => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is not nullable: use sload"),
+                ),
                 Some(_) => {}
             },
         }
@@ -411,11 +512,25 @@ fn check_block(
 
     // Terminator: cond and branch args are uses in this block's final scope.
     if let Term::Brif { cond, .. } = &b.term {
-        want(&in_scope, def_types, *cond, Ty::I1, "branch condition", bi, None, errs);
+        want(
+            &in_scope,
+            def_types,
+            *cond,
+            Ty::I1,
+            "branch condition",
+            bi,
+            None,
+            errs,
+        );
     }
     for (target, args) in b.term.successors() {
         match p.blocks.get(target.0 as usize) {
-            None => err(errs, Some(bi), None, format!("branch to unknown block b{}", target.0)),
+            None => err(
+                errs,
+                Some(bi),
+                None,
+                format!("branch to unknown block b{}", target.0),
+            ),
             Some(tb) => {
                 if args.len() != tb.params.len() {
                     err(
@@ -431,7 +546,16 @@ fn check_block(
                     );
                 } else {
                     for (arg, (_, pty)) in args.iter().zip(tb.params.iter()) {
-                        want(&in_scope, def_types, *arg, *pty, "branch arg", bi, None, errs);
+                        want(
+                            &in_scope,
+                            def_types,
+                            *arg,
+                            *pty,
+                            "branch arg",
+                            bi,
+                            None,
+                            errs,
+                        );
                     }
                 }
                 if target.0 == 0 {
@@ -480,7 +604,12 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
         }
     }
     if cyclic {
-        err(errs, None, None, "control-flow cycle (v0 CFGs must be acyclic)".to_string());
+        err(
+            errs,
+            None,
+            None,
+            "control-flow cycle (v0 CFGs must be acyclic)".to_string(),
+        );
         return; // the store dataflow below needs a DAG
     }
     let reachable: Vec<bool> = color.iter().map(|c| *c != 0).collect();
@@ -514,7 +643,10 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
                         errs,
                         Some(bi),
                         Some(ii),
-                        format!("out.{} stored more than once on this path", p.out_cols[col].name),
+                        format!(
+                            "out.{} stored more than once on this path",
+                            p.out_cols[col].name
+                        ),
                     );
                 }
             }
@@ -587,7 +719,9 @@ fn topo_order(p: &Program, n: usize, reachable: &[bool]) -> Vec<usize> {
             }
         }
     }
-    let mut stack: Vec<usize> = (0..n).filter(|&i| reachable[i] && indegree[i] == 0).collect();
+    let mut stack: Vec<usize> = (0..n)
+        .filter(|&i| reachable[i] && indegree[i] == 0)
+        .collect();
     let mut order = Vec::with_capacity(n);
     while let Some(b) = stack.pop() {
         order.push(b);

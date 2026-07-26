@@ -72,16 +72,29 @@ mod tests {
 
     #[test]
     fn struct_compatibility_is_name_keyed_not_positional() {
-        let xy = Base::Struct(vec![("x".into(), ft(Base::Int)), ("y".into(), ft(Base::Str))]);
-        let yx = Base::Struct(vec![("y".into(), ft(Base::Str)), ("x".into(), ft(Base::Int))]);
-        assert!(compatible(&xy, &yx), "same names+types, reordered, should be compatible");
+        let xy = Base::Struct(vec![
+            ("x".into(), ft(Base::Int)),
+            ("y".into(), ft(Base::Str)),
+        ]);
+        let yx = Base::Struct(vec![
+            ("y".into(), ft(Base::Str)),
+            ("x".into(), ft(Base::Int)),
+        ]);
+        assert!(
+            compatible(&xy, &yx),
+            "same names+types, reordered, should be compatible"
+        );
 
-        let different_names =
-            Base::Struct(vec![("x".into(), ft(Base::Int)), ("z".into(), ft(Base::Str))]);
+        let different_names = Base::Struct(vec![
+            ("x".into(), ft(Base::Int)),
+            ("z".into(), ft(Base::Str)),
+        ]);
         assert!(!compatible(&xy, &different_names));
 
-        let different_types =
-            Base::Struct(vec![("x".into(), ft(Base::Str)), ("y".into(), ft(Base::Str))]);
+        let different_types = Base::Struct(vec![
+            ("x".into(), ft(Base::Str)),
+            ("y".into(), ft(Base::Str)),
+        ]);
         assert!(!compatible(&xy, &different_types));
     }
 }

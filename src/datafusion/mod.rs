@@ -105,7 +105,10 @@ struct ResolvedTransformer {
 
 /// Reads `obj.feature_names_in_.tolist()`. Absence is a clear build error:
 /// the object was fit on bare arrays, so we cannot align inputs by name.
-fn read_feature_names_in(py: Python<'_>, obj: &Py<PyAny>) -> Result<Vec<String>, plan::InterpError> {
+fn read_feature_names_in(
+    py: Python<'_>,
+    obj: &Py<PyAny>,
+) -> Result<Vec<String>, plan::InterpError> {
     let bound = obj.bind(py);
     let attr = bound.getattr("feature_names_in_").map_err(|_| {
         plan::InterpError::Build(
@@ -148,7 +151,10 @@ fn resolve_transformers(
                     arg: Box::new(arg),
                 });
             }
-            Ok(Expr::Function { name, args: new_args })
+            Ok(Expr::Function {
+                name,
+                args: new_args,
+            })
         }
         Expr::BinaryOp { op, left, right } => Ok(Expr::BinaryOp {
             op,
@@ -190,7 +196,10 @@ fn resolve_transformers(
                 Some(d) => Some(Box::new(resolve_transformers(*d, resolved)?)),
                 None => None,
             };
-            Ok(Expr::Case { arms: new_arms, default })
+            Ok(Expr::Case {
+                arms: new_arms,
+                default,
+            })
         }
         // Column, Literal, and an already-built Transform pass through.
         other => Ok(other),

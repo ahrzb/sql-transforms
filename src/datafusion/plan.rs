@@ -565,8 +565,10 @@ fn execute_rel(
                         row.insert(table.clone(), null_row);
                     }
                     None => {
-                        let key_repr: Vec<String> =
-                            key.iter().map(crate::datafusion::expr::display_value).collect();
+                        let key_repr: Vec<String> = key
+                            .iter()
+                            .map(crate::datafusion::expr::display_value)
+                            .collect();
                         return Err(InterpError::MissingKey(format!(
                             "No row in static table '{table}' matches key ({})",
                             key_repr.join(", ")
@@ -661,10 +663,19 @@ fn resolve_tables(
             left, right, outer, ..
         } => {
             resolve_tables(left, row_table_names, nullable, out, nullable_out);
-            resolve_tables(right, row_table_names, nullable || *outer, out, nullable_out);
+            resolve_tables(
+                right,
+                row_table_names,
+                nullable || *outer,
+                out,
+                nullable_out,
+            );
         }
         RelNode::LookupJoin {
-            input, table, outer, ..
+            input,
+            table,
+            outer,
+            ..
         } => {
             resolve_tables(input, row_table_names, nullable, out, nullable_out);
             out.insert(table.clone(), (table.clone(), false));
@@ -745,8 +756,12 @@ pub fn validate_columns(
                 ));
             }
             unnest_seen = true;
-            let old_input =
-                std::mem::replace(&mut plan.input, RelNode::TableScan { table: String::new() });
+            let old_input = std::mem::replace(
+                &mut plan.input,
+                RelNode::TableScan {
+                    table: String::new(),
+                },
+            );
             plan.input = RelNode::Unnest {
                 input: Box::new(old_input),
                 list_expr,
@@ -1198,17 +1213,29 @@ fn validate_expr(
         Expr::Case { arms, default } => {
             for (cond, result) in arms {
                 validate_expr(
-                    cond, resolved, row_schemas, static_schemas, effective_schemas,
+                    cond,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
                     used_columns,
                 )?;
                 validate_expr(
-                    result, resolved, row_schemas, static_schemas, effective_schemas,
+                    result,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
                     used_columns,
                 )?;
             }
             if let Some(d) = default {
                 validate_expr(
-                    d, resolved, row_schemas, static_schemas, effective_schemas,
+                    d,
+                    resolved,
+                    row_schemas,
+                    static_schemas,
+                    effective_schemas,
                     used_columns,
                 )?;
             }
