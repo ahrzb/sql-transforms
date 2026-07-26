@@ -1,0 +1,199 @@
+{
+  "area": "bitwise-int-ops",
+  "duckdb_version": "1.5.5",
+  "note": "Every observed value below is the raw fetchall() repr or the verbatim str(exception) from duckdb 1.5.5, executed in this session. Raw per-query logs: bitwise_raw.json, bitwise_raw2.json, bitwise_raw3.json, bitwise_raw4.json, bitwise_raw5.json in this directory.",
+  "pins": [
+    {
+      "claim": "Left shift on BIGINT: 1 << 3 = 8, result type BIGINT.",
+      "query": "SELECT 1::BIGINT << 3, typeof(1::BIGINT << 3)",
+      "observed": "[(8, 'BIGINT')]"
+    },
+    {
+      "claim": "1::BIGINT << 62 = 4611686018427387904 (largest power of two reachable from 1).",
+      "query": "SELECT 1::BIGINT << 62",
+      "observed": "[(4611686018427387904,)]"
+    },
+    {
+      "claim": "1::BIGINT << 63 ERRORS (does not produce INT64_MIN). Verbatim: 'Out of Range Error: Overflow in left shift (1 << 63)'. DuckDB never lets << produce a negative result.",
+      "query": "SELECT 1::BIGINT << 63",
+      "observed": "ERROR[OutOfRangeException]: Out of Range Error: Overflow in left shift (1 << 63)"
+    },
+    {
+      "claim": "Left shift count >= 64 on nonzero BIGINT errors with a DIFFERENT message than overflow: 'Left-shift value 64 is out of range' / 'Left-shift value 100 is out of range'.",
+      "query": "SELECT 1::BIGINT << 64; SELECT 1::BIGINT << 100",
+      "observed": "ERROR[OutOfRangeException]: Out of Range Error: Left-shift value 64 is out of range | ERROR[OutOfRangeException]: Out of Range Error: Left-shift value 100 is out of range"
+    },
+    {
+      "claim": "Left-shift overflow check is value-dependent, not just count-dependent: 2::BIGINT << 62 errors 'Overflow in left shift (2 << 62)' while 1::BIGINT << 62 succeeds. 4611686018427387903 << 1 = 9223372036854775806 succeeds; 4611686018427387904 << 1 errors 'Overflow in left shift (4611686018427387904 << 1)'. Rule: for BIGINT, error iff value >= 2^(63-shift).",
+      "query": "SELECT 2::BIGINT << 62; SELECT 4611686018427387903::BIGINT << 1; SELECT 4611686018427387904::BIGINT << 1",
+      "observed": "ERROR: Overflow in left shift (2 << 62) | [(9223372036854775806,)] | ERROR: Overflow in left shift (4611686018427387904 << 1)"
+    },
+    {
+      "claim": "Left-shifting ANY negative number errors, even by shift 0: '(-5)::BIGINT << 0' errors 'Cannot left-shift negative number -5'. Same for (-1) << 1, INT64_MIN << 1.",
+      "query": "SELECT (-5)::BIGINT << 0; SELECT (-1)::BIGINT << 1; SELECT (-9223372036854775808)::BIGINT << 1",
+      "observed": "ERROR: Cannot left-shift negative number -5 | ERROR: Cannot left-shift negative number -1 | ERROR: Cannot left-shift negative number -9223372036854775808"
+    },
+    {
+      "claim": "Negative shift count on << errors: 'Cannot left-shift by negative number -1' (note wording: 'by negative number' vs 'negative number' for the value case).",
+      "query": "SELECT 1::BIGINT << -1",
+      "observed": "ERROR[OutOfRangeException]: Out of Range Error: Cannot left-shift by negative number -1"
+    },
+    {
+      "claim": "Left-shift error-check ORDER: negative-value check fires first, then negative-shift, then shift-range. (-5) << -1 and (-5) << 100 both report 'Cannot left-shift negative number -5'; 0 << -1 reports 'Cannot left-shift by negative number -1'.",
+      "query": "SELECT (-5)::BIGINT << -1; SELECT (-5)::BIGINT << 100; SELECT 0::BIGINT << -1",
+      "observed": "ERROR: Cannot left-shift negative number -5 | ERROR: Cannot left-shift negative number -5 | ERROR: Cannot left-shift by negative number -1"
+    },
+    {
+      "claim": "Zero-value shortcut on <<: 0::BIGINT << 64 = 0 and 0::BIGINT << 100 = 0 WITHOUT error, even though the same shift counts error for nonzero values. But 0 << -1 still errors (negative-shift check precedes the zero shortcut).",
+      "query": "SELECT 0::BIGINT << 64; SELECT 0::BIGINT << 100; SELECT 0::BIGINT << -1",
+      "observed": "[(0,)] | [(0,)] | ERROR: Cannot left-shift by negative number -1"
+    },
+    {
+      "claim": "Shift identities: 5 << 0 = 5, 5 >> 0 = 5, 0 << 5 = 0, 0 >> 5 = 0, 0 << 63 = 0.",
+      "query": "SELECT 5::BIGINT << 0, 5::BIGINT >> 0; SELECT 0::BIGINT << 5, 0::BIGINT >> 5; SELECT 0::BIGINT << 63",
+      "observed": "[(5, 5)] | [(0, 0)] | [(0,)]"
+    },
+    {
+      "claim": "Right shift NEVER errors. Negative shift count returns 0 silently (contrast with << which errors): 8 >> -2 = 0, (-8) >> -1 = 0, (-8) >> -100 = 0, 0 >> -1 = 0, 1 >> INT64_MIN = 0.",
+      "query": "SELECT 8::BIGINT >> -2; SELECT (-8)::BIGINT >> -1; SELECT (-8)::BIGINT >> -100; SELECT 0::BIGINT >> -1; SELECT 1::BIGINT >> (-9223372036854775808)::BIGINT",
+      "observed": "[(0,)] | [(0,)] | [(0,)] | [(0,)] | [(0,)]"
+    },
+    {
+      "claim": ">> on negative left operand is ARITHMETIC (sign-extending) for shift counts 0..63: (-8) >> 1 = -4, (-8) >> 2 = -2, (-1) >> 1 = -1, (-1) >> 63 = -1, INT64_MIN >> 63 = -1.",
+      "query": "SELECT (-8)::BIGINT >> 1; SELECT (-8)::BIGINT >> 2; SELECT (-1)::BIGINT >> 1; SELECT (-1)::BIGINT >> 63; SELECT (-9223372036854775808)::BIGINT >> 63",
+      "observed": "[(-4,)] | [(-2,)] | [(-1,)] | [(-1,)] | [(-1,)]"
+    },
+    {
+      "claim": ">> with shift count >= 64 returns 0 for BIGINT — EVEN for negative operands (NOT -1 as pure arithmetic shift semantics would saturate to): (-1) >> 64 = 0, (-1) >> 100 = 0, INT64_MIN >> 64 = 0, 8 >> 100 = 0, 1 >> INT64_MAX = 0, 5 >> 65 = 0. Rule: result = (shift < 0 || shift >= 64) ? 0 : a >> shift (arithmetic).",
+      "query": "SELECT (-1)::BIGINT >> 64; SELECT (-1)::BIGINT >> 100; SELECT (-9223372036854775808)::BIGINT >> 64; SELECT 8::BIGINT >> 100; SELECT 1::BIGINT >> 9223372036854775807::BIGINT; SELECT 5::BIGINT >> 65",
+      "observed": "[(0,)] | [(0,)] | [(0,)] | [(0,)] | [(0,)] | [(0,)]"
+    },
+    {
+      "claim": "Positive >> boundary values: 8 >> 1 = 4, 1 >> 63 = 0, INT64_MAX >> 62 = 1, INT64_MAX >> 63 = 0.",
+      "query": "SELECT 8::BIGINT >> 1; SELECT 1::BIGINT >> 63; SELECT 9223372036854775807::BIGINT >> 62; SELECT 9223372036854775807::BIGINT >> 63",
+      "observed": "[(4,)] | [(0,)] | [(1,)] | [(0,)]"
+    },
+    {
+      "claim": "NULL propagates through every operator: NULL<<1, 1<<NULL, NULL>>1, 1>>NULL, NULL&1, 1&NULL, NULL|1, 1|NULL, NULL<<NULL, xor(NULL,1), xor(1,NULL), ~NULL all return NULL. Result type preserved: typeof(NULL::BIGINT & 3::BIGINT)='BIGINT', typeof(~NULL::BIGINT)='BIGINT', typeof(xor(NULL::BIGINT,1::BIGINT))='BIGINT'.",
+      "query": "SELECT NULL << 1; SELECT 1 << NULL; SELECT NULL >> 1; SELECT 1 >> NULL; SELECT NULL & 1; SELECT 1 & NULL; SELECT NULL | 1; SELECT 1 | NULL; SELECT NULL::BIGINT << NULL::BIGINT; SELECT xor(NULL::BIGINT, 1::BIGINT); SELECT ~NULL::BIGINT; SELECT typeof(NULL::BIGINT & 3::BIGINT)",
+      "observed": "all [(None,)]; typeof [('BIGINT',)]"
+    },
+    {
+      "claim": "NULL MASKS errors — a NULL operand short-circuits before the shift is evaluated, per row: rows (NULL,100), (3,NULL), (NULL,-1) return NULL with no error while (1,2)->4 and (0,100)->0 in the same query. Also constant-folded NULL::BIGINT << 100, NULL::BIGINT << -1, (-5)::BIGINT << NULL, NULL::BIGINT >> -1 all return NULL, no error.",
+      "query": "SELECT a << b FROM (VALUES (1::BIGINT, 2::BIGINT), (NULL, 100::BIGINT), (3::BIGINT, NULL), (NULL, -1::BIGINT), (0::BIGINT, 100::BIGINT)) t(a,b)",
+      "observed": "[(4,), (None,), (None,), (None,), (0,)]"
+    },
+    {
+      "claim": "Vectorized (table-scan) and constant-folded paths raise IDENTICAL error texts: same three messages reproduced via VALUES-sourced columns.",
+      "query": "SELECT a << b FROM (VALUES (1::BIGINT, 100::BIGINT)) t(a,b); SELECT a << b FROM (VALUES ((-5)::BIGINT, 1::BIGINT)) t(a,b); SELECT a << b FROM (VALUES (2::BIGINT, 62::BIGINT)) t(a,b)",
+      "observed": "ERROR: Left-shift value 100 is out of range | ERROR: Cannot left-shift negative number -5 | ERROR: Overflow in left shift (2 << 62)"
+    },
+    {
+      "claim": "& and | are plain two's-complement: (-1)&255=255, (-2)&255=254, (-8)|1=-7, (-1)|0=-1, (-6)&(-4)=-8, (-6)|(-4)=-2, INT64_MIN&(-1)=INT64_MIN, INT64_MIN|INT64_MAX=-1, 6&3=2, 6|3=7, (-1)&(-1)=-1. Never error, no overflow possible.",
+      "query": "SELECT (-1)::BIGINT & 255::BIGINT; SELECT (-2)::BIGINT & 255::BIGINT; SELECT (-8)::BIGINT | 1::BIGINT; SELECT (-6)::BIGINT & (-4)::BIGINT; SELECT (-6)::BIGINT | (-4)::BIGINT; SELECT (-9223372036854775808)::BIGINT & (-1)::BIGINT; SELECT (-9223372036854775808)::BIGINT | 9223372036854775807::BIGINT; SELECT 6::BIGINT & 3::BIGINT, 6::BIGINT | 3::BIGINT",
+      "observed": "[(255,)] | [(254,)] | [(-7,)] | [(-8,)] | [(-2,)] | [(-9223372036854775808,)] | [(-1,)] | [(2, 7)]"
+    },
+    {
+      "claim": "XOR is FUNCTION-ONLY in DuckDB: xor(5,3)=6. There is NO xor operator: '5 # 3' is a Parser Error ('syntax error at or near \"#\"'), '5 XOR 3' is a Parser Error, '5 ^ 3' = 125.0 (POWER, returns DOUBLE — silently different semantics!), '5 ~ 3' binds to regexp_full_match and fails ('No function matches ... regexp_full_match(INTEGER_LITERAL, INTEGER_LITERAL)').",
+      "query": "SELECT xor(5::BIGINT, 3::BIGINT), typeof(xor(5::BIGINT, 3::BIGINT)); SELECT 5 # 3; SELECT 5 ^ 3; SELECT 5 XOR 3; SELECT 5 ~ 3",
+      "observed": "[(6, 'BIGINT')] | ParserException: syntax error at or near \"#\" | [(125.0,)] | ParserException: syntax error at or near \"3\" | BinderException: No function matches ... 'regexp_full_match(INTEGER_LITERAL, INTEGER_LITERAL)'"
+    },
+    {
+      "claim": "xor two's-complement, never errors: xor(-1,0)=-1, xor(-1,-1)=0, xor(-6,3)=-7, xor(INT64_MAX, INT64_MIN)=-1, xor(0,0)=0. Types: xor(TINYINT,TINYINT)->TINYINT (xor(127::TINYINT,(-128)::TINYINT)=-1), xor(INTEGER,BIGINT)->BIGINT.",
+      "query": "SELECT xor((-1)::BIGINT, 0::BIGINT); SELECT xor((-1)::BIGINT, (-1)::BIGINT); SELECT xor((-6)::BIGINT, 3::BIGINT); SELECT xor(9223372036854775807::BIGINT, (-9223372036854775808)::BIGINT); SELECT xor(1::INTEGER, 1::BIGINT), typeof(xor(1::INTEGER, 1::BIGINT))",
+      "observed": "[(-1,)] | [(0,)] | [(-7,)] | [(-1,)] | [(0, 'BIGINT')]"
+    },
+    {
+      "claim": "~ (bitnot) parses as a prefix operator and is plain complement, never errors: ~5=-6, ~0=-1, ~(-1)=0, ~INT64_MAX=INT64_MIN (=-9223372036854775808), ~INT64_MIN=INT64_MAX. Type preserved per input width: typeof(~5)='INTEGER', typeof(~(5::BIGINT))='BIGINT', typeof(~(5::TINYINT))='TINYINT', typeof(~(5::SMALLINT))='SMALLINT'.",
+      "query": "SELECT ~5; SELECT ~0::BIGINT; SELECT ~((-1)::BIGINT); SELECT ~9223372036854775807::BIGINT; SELECT ~(-9223372036854775808)::BIGINT; SELECT ~5::BIGINT, typeof(~5::BIGINT)",
+      "observed": "[(-6,)] | [(-1,)] | [(0,)] | [(-9223372036854775808,)] | [(9223372036854775807,)] | [(-6, 'BIGINT')]"
+    },
+    {
+      "claim": "Result-type rule: all bitwise ops require SAME-width signatures; mixed integer widths promote to the WIDER type before evaluating. typeof(INTEGER<<INTEGER)='INTEGER', typeof(INTEGER<<BIGINT)='BIGINT', typeof(BIGINT<<INTEGER)='BIGINT', typeof(TINYINT<<TINYINT)='TINYINT', typeof(TINYINT&BIGINT)='BIGINT', typeof(TINYINT|SMALLINT)='SMALLINT', typeof(INTEGER>>BIGINT)='BIGINT'. On BIGINT columns every op returns BIGINT.",
+      "query": "SELECT typeof(1::INTEGER << 3::BIGINT); SELECT typeof(1::TINYINT & 3::BIGINT); SELECT typeof(1::TINYINT | 3::SMALLINT); SELECT typeof(a << b), typeof(a & b), typeof(a | b), typeof(xor(a,b)), typeof(~a) FROM (VALUES (1::BIGINT, 2::BIGINT)) t(a,b)",
+      "observed": "[('BIGINT',)] | [('BIGINT',)] | [('SMALLINT',)] | [('BIGINT', 'BIGINT', 'BIGINT', 'BIGINT', 'BIGINT')]"
+    },
+    {
+      "claim": "Untyped integer literals NARROW to match a small operand: typeof(1::TINYINT << 1)='TINYINT' (literal 1 is INTEGER_LITERAL, adapts down), typeof(1 << 3)='INTEGER', typeof(NULL << 1)='INTEGER'. A literal too big to narrow forces widening: typeof(1::TINYINT << 200)='INTEGER'.",
+      "query": "SELECT typeof(1::TINYINT << 1); SELECT typeof(1 << 3); SELECT typeof(NULL << 1); SELECT typeof(1::TINYINT << 200)",
+      "observed": "[('TINYINT',)] | [('INTEGER',)] | [('INTEGER',)] | [('INTEGER',)]"
+    },
+    {
+      "claim": "KEY RISK — width matters for <<: shifts are checked at the COMMON operand width, not i64. 127::TINYINT << 1 -> 'Overflow in left shift (127 << 1)'; 64::TINYINT << 1 -> 'Overflow in left shift (64 << 1)'; 1::TINYINT << 7 -> 'Overflow in left shift (1 << 7)'; 1::TINYINT << 8 -> 'Left-shift value 8 is out of range'; 1::TINYINT << 10 -> 'Left-shift value 10 is out of range'; 1::SMALLINT << 15 -> overflow; 1::INTEGER << 31 -> overflow; 1::INTEGER << 32 -> 'Left-shift value 32 is out of range'; 2::INTEGER << 30 -> overflow; 1073741824::INTEGER << 1 -> overflow. An i64-only engine would compute 254, 128, 128, 256, 1024, 32768, 2147483648, ... instead of erroring.",
+      "query": "SELECT 127::TINYINT << 1; SELECT 64::TINYINT << 1; SELECT 1::TINYINT << 7; SELECT 1::TINYINT << 8; SELECT 1::SMALLINT << 15; SELECT 1::INTEGER << 31; SELECT 1::INTEGER << 32; SELECT 1073741824::INTEGER << 1",
+      "observed": "ERROR: Overflow in left shift (127 << 1) | ERROR: Overflow in left shift (64 << 1) | ERROR: Overflow in left shift (1 << 7) | ERROR: Left-shift value 8 is out of range | ERROR: Overflow in left shift (1 << 15) | ERROR: Overflow in left shift (1 << 31) | ERROR: Left-shift value 32 is out of range | ERROR: Overflow in left shift (1073741824 << 1)"
+    },
+    {
+      "claim": "Width divergence DISAPPEARS when either operand is BIGINT (promotion to i64 first): 127::TINYINT << 1::BIGINT = 254 (BIGINT), 1::TINYINT << 1::BIGINT = 2 (BIGINT). So an i64-only engine EXACTLY matches DuckDB whenever at least one operand is BIGINT.",
+      "query": "SELECT 127::TINYINT << 1::BIGINT; SELECT typeof(1::TINYINT << 1::BIGINT)",
+      "observed": "[(254,)] | [('BIGINT',)]"
+    },
+    {
+      "claim": "KEY RISK — width matters for >> too: the zero-cutoff is at the type width, not 64. (-1)::TINYINT >> 7 = -1 but (-1)::TINYINT >> 8 = 0 (i64 would give -1); (-1)::SMALLINT >> 16 = 0; (-1)::INTEGER >> 31 = -1 but >> 32 = 0; 100::TINYINT >> 8 = 0. With a BIGINT shift count the compute widens and diverges from narrow behavior: (-1)::TINYINT >> 8::BIGINT = -1, (-1)::INTEGER >> 32::BIGINT = -1.",
+      "query": "SELECT (-1)::TINYINT >> 7; SELECT (-1)::TINYINT >> 8; SELECT (-1)::SMALLINT >> 16; SELECT (-1)::INTEGER >> 32; SELECT (-1)::INTEGER >> 31; SELECT (-1)::TINYINT >> 8::BIGINT; SELECT (-1)::INTEGER >> 32::BIGINT",
+      "observed": "[(-1,)] | [(0,)] | [(0,)] | [(0,)] | [(-1,)] | [(-1,)] | [(-1,)]"
+    },
+    {
+      "claim": "Small-width sanity: (-128)::TINYINT >> 1 = -64, (-8)::TINYINT >> 1 = -4 (arithmetic at narrow width too); 1::TINYINT << 6 = 64 OK; 64::SMALLINT << 1 = 128 OK; negative-value << error also fires at narrow width: (-1)::TINYINT << 1 -> 'Cannot left-shift negative number -1'.",
+      "query": "SELECT (-128)::TINYINT >> 1; SELECT 1::TINYINT << 6; SELECT 64::SMALLINT << 1; SELECT (-1)::TINYINT << 1",
+      "observed": "[(-64,)] | [(64,)] | [(128,)] | ERROR: Cannot left-shift negative number -1"
+    },
+    {
+      "claim": "Huge shift count literal: 1::BIGINT << 9223372036854775807 errors 'Left-shift value 9223372036854775807 is out of range' (count is reported verbatim in the message); same count on >> returns 0.",
+      "query": "SELECT 1::BIGINT << 9223372036854775807::BIGINT; SELECT 1::BIGINT >> 9223372036854775807::BIGINT",
+      "observed": "ERROR: Left-shift value 9223372036854775807 is out of range | [(0,)]"
+    },
+    {
+      "claim": "No bitwise ops on non-integer types — binder errors listing all candidates: '&(DECIMAL(2,1), INTEGER_LITERAL)', '<<(DOUBLE, INTEGER_LITERAL)', 'xor(DECIMAL(2,1), INTEGER_LITERAL)', '~(DECIMAL(2,1))' all fail with 'No function matches the given name and argument types ...'. Candidates are the 10 integer widths plus BIT.",
+      "query": "SELECT 1.5 & 1; SELECT 1.5::DOUBLE << 1; SELECT xor(1.5, 2); SELECT ~1.5",
+      "observed": "ERROR[BinderException]: Binder Error: No function matches the given name and argument types '&(DECIMAL(2,1), INTEGER_LITERAL)'. You might need to add explicit type casts. (analogous for <<, xor, ~)"
+    },
+    {
+      "claim": "STRING LITERALS implicitly cast for & (literal-only!): '6' & 3 = 2 with typeof INTEGER; '' & 3 and 'héllo' & 3 and 'a😀b' & 3 fail at runtime with ConversionException \"Could not convert string '' to INT32\" (etc). But a VARCHAR COLUMN does NOT implicitly cast: BinderException \"No function matches ... '&(VARCHAR, INTEGER_LITERAL)'\". And '6' << 1 is ambiguous: 'Could not choose a best candidate function for the function call \"<<(STRING_LITERAL, INTEGER_LITERAL)\"' (because <<(BIT, INTEGER) competes).",
+      "query": "SELECT '6' & 3; SELECT '' & 3; SELECT s & 3 FROM (VALUES ('6')) t(s); SELECT '6' << 1",
+      "observed": "[(2,)] | ERROR[ConversionException]: Conversion Error: Could not convert string '' to INT32 | ERROR[BinderException]: No function matches ... '&(VARCHAR, INTEGER_LITERAL)' | ERROR[BinderException]: Could not choose a best candidate function ... '<<(STRING_LITERAL, INTEGER_LITERAL)'"
+    },
+    {
+      "claim": "Operator precedence is Postgres-style, NOT C-style: <<, >>, &, | are all ONE precedence tier, left-associative. 4 | 1 & 1 = 1 (parsed (4|1)&1, C would give 5); 1 & 3 << 1 = 2 (parsed (1&3)<<1, C would give 0); 8 >> 2 | 1 = 3 (parsed (8>>2)|1).",
+      "query": "SELECT 4 | 1 & 1; SELECT 1 & 3 << 1; SELECT 8 >> 2 | 1",
+      "observed": "[(1,)] | [(2,)] | [(3,)]"
+    },
+    {
+      "claim": "Arithmetic binds TIGHTER than shifts/bitwise: 1 << 1 + 1 = 4 (=1<<2), 1 << 2 * 2 = 16 (=1<<4), 16 >> 2 + 1 = 2 (=16>>3). Comparison binds LOOSER: 1 | 2 = 3 -> True, 2 & 2 = 2 -> True.",
+      "query": "SELECT 1 << 1 + 1; SELECT 1 << 2 * 2; SELECT 16 >> 2 + 1; SELECT 1 | 2 = 3; SELECT 2 & 2 = 2",
+      "observed": "[(4,)] | [(16,)] | [(2,)] | [(True,)] | [(True,)]"
+    },
+    {
+      "claim": "Prefix ~ binds LOOSER than arithmetic but TIGHTER than binary shift: ~1 + 1 = -3 (parsed ~(1+1), C gives -1); 2 * ~2 = -6; ~2 * 2 = -5 (parsed ~(2*2)); BUT ~1 << 1 parses as (~1) << 1 and errors 'Cannot left-shift negative number -2'. Similarly -1 << 1 parses as (-1) << 1 and errors 'Cannot left-shift negative number -1'.",
+      "query": "SELECT ~1 + 1; SELECT ~2 * 2; SELECT 2 * ~2; SELECT ~1 << 1; SELECT -1 << 1",
+      "observed": "[(-3,)] | [(-5,)] | [(-6,)] | ERROR: Cannot left-shift negative number -2 | ERROR: Cannot left-shift negative number -1"
+    },
+    {
+      "claim": "Untyped literal 1 << 31 errors at INTEGER width: 'Overflow in left shift (1 << 31)'; 1 << 30 = 1073741824 (INTEGER); 1 << 62/63/64/100 -> 'Left-shift value N is out of range' (INTEGER width 32 applies, N reported verbatim). Engine users writing bare literals get INT32 semantics from DuckDB, not INT64.",
+      "query": "SELECT 1 << 31; SELECT 1 << 30, typeof(1 << 30); SELECT 1 << 62",
+      "observed": "ERROR: Overflow in left shift (1 << 31) | [(1073741824, 'INTEGER')] | ERROR: Left-shift value 62 is out of range"
+    },
+    {
+      "claim": "HUGEINT escape hatch exists (not for an i64 engine, noted for completeness): typeof(1::HUGEINT << 3)='HUGEINT'; 1::HUGEINT << 100 = 1267650600228229401496703205376.",
+      "query": "SELECT 1::HUGEINT << 100",
+      "observed": "[(1267650600228229401496703205376,)]"
+    },
+    {
+      "claim": "Parenthesization footgun in tests: '-9223372036854775808::BIGINT' (no parens) fails because :: binds tighter than unary minus — 'Conversion Error: Type INT128 with value 9223372036854775808 can't be cast because the value is out of range for the destination type INT64'. With parens, xor(INT64_MAX, INT64_MIN) = -1 fine.",
+      "query": "SELECT xor(9223372036854775807::BIGINT, -9223372036854775808::BIGINT); SELECT xor(9223372036854775807::BIGINT, (-9223372036854775808)::BIGINT)",
+      "observed": "ERROR[ConversionException]: Conversion Error: Type INT128 with value 9223372036854775808 can't be cast because the value is out of range for the destination type INT64 | [(-1,)]"
+    }
+  ],
+  "surprises": [
+    "Left-shifting ANY negative number is an error — even '(-5)::BIGINT << 0' errors ('Cannot left-shift negative number -5'). A naive i64 wrapping/shifting implementation is wrong for every negative left operand of <<.",
+    "1::BIGINT << 63 errors ('Overflow in left shift (1 << 63)') — DuckDB's << can never produce a negative value; overflow check is value >= 2^(63-shift).",
+    "<< and >> are wildly asymmetric on bad shift counts: << errors on negative count ('Cannot left-shift by negative number -1') and on count>=width ('Left-shift value N is out of range'), while >> silently returns 0 for BOTH negative counts and counts >= width — even for negative operands ((-1) >> 64 = 0, not -1).",
+    "0 << 100 = 0 (no error) although 1 << 100 errors — a value==0 shortcut precedes the shift-range check but NOT the negative-shift check (0 << -1 still errors).",
+    "There is NO xor operator at all: '#' does not parse, '^' is POWER (5 ^ 3 = 125.0 DOUBLE — silent wrong semantics if translated blindly), '~' as binary is regex-match. xor(a,b) function only.",
+    "Precedence is Postgres-flavored, not C: <<, >>, &, | share ONE left-associative tier (4 | 1 & 1 = 1; 1 & 3 << 1 = 2), and prefix ~ binds looser than arithmetic (~1 + 1 = -3 = ~(1+1)) but tighter than shifts (~1 << 1 = (~1)<<1 -> error).",
+    "Width matters when BOTH operands are narrow: 127::TINYINT << 1 errors, (-1)::TINYINT >> 8 = 0 — but promoting either operand to BIGINT restores exact i64 semantics (127::TINYINT << 1::BIGINT = 254, (-1)::TINYINT >> 8::BIGINT = -1). Bare integer literals NARROW to the column's small type (typeof(1::TINYINT << 1)='TINYINT'), so 'tiny_col << 1' gets TINYINT checks in DuckDB.",
+    "NULL masks all shift errors per row: (NULL, -1) and (NULL, 100) rows yield NULL where non-NULL rows with the same shift counts would abort the query.",
+    "String LITERALS implicitly cast for & ('6' & 3 = 2) but VARCHAR columns don't (binder error), and '6' << 1 is ambiguous due to the <<(BIT, INTEGER) overload."
+  ],
+  "recommendation": "For a BIGINT(i64)-only engine, implement per-row: (<<): if a NULL or b NULL -> NULL; elif a < 0 -> error 'Out of Range Error: Cannot left-shift negative number {a}'; elif b < 0 -> error 'Out of Range Error: Cannot left-shift by negative number {b}'; elif a == 0 -> 0; elif b >= 64 -> error 'Out of Range Error: Left-shift value {b} is out of range'; elif a >= (1i64 << (63 - b)) -> error 'Out of Range Error: Overflow in left shift ({a} << {b})'; else a << b. (>>): NULL-prop; then (b < 0 || b >= 64) ? 0 : arithmetic a >> b — never errors. (&, |, xor(a,b), ~a): plain two's-complement wrapping, never error, NULL-prop. Expose xor as a FUNCTION only; reject '^' as bitwise-xor (DuckDB's ^ is power). If the engine casts all integer inputs to BIGINT up front, it exactly matches DuckDB for any expression where at least one operand is BIGINT; it will NOT match DuckDB's narrow-width overflow errors (TINYINT/SMALLINT/INTEGER pairs, including bare literals like '1 << 31' which error at INT32 width) — accept and document that divergence, or bind untyped literals as BIGINT deliberately. Parser: put <<, >>, &, | in one left-associative precedence tier below +,-,*,/ and above comparisons; prefix ~ binds looser than arithmetic but tighter than that tier. Error checks must run only on rows where both operands are non-NULL."
+}

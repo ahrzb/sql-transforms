@@ -1,0 +1,222 @@
+{
+  "area": "dup-names-client-contract",
+  "duckdb_version": "1.5.5",
+  "pins": [
+    {
+      "claim": "cursor.description keeps RAW duplicate names at top level -- no rename, both columns named id",
+      "query": "con.execute(\"SELECT 1 AS id, 2 AS id\").description",
+      "observed": "[('id', INTEGER, None, None, None, None, None), ('id', INTEGER, None, None, None, None, None)]"
+    },
+    {
+      "claim": "fetchall/fetchone are purely positional tuples; duplicate names lose nothing",
+      "query": "con.execute(\"SELECT 1 AS id, 2 AS id\").fetchall(); .fetchone()",
+      "observed": "[(1, 2)] ; (1, 2)"
+    },
+    {
+      "claim": ".df() dedups: FIRST occurrence keeps the bare name, each later duplicate gets _N suffix",
+      "query": "list(con.execute(\"SELECT 1 AS id, 2 AS id\").df().columns); .to_dict(orient='records')",
+      "observed": "['id', 'id_1'] ; [{'id': 1, 'id_1': 2}]"
+    },
+    {
+      "claim": "3 duplicates -> id, id_1, id_2 (values 1,2,3 in order)",
+      "query": "con.execute(\"SELECT 1 AS id, 2 AS id, 3 AS id\").df()",
+      "observed": "columns ['id', 'id_1', 'id_2']; records [{'id': 1, 'id_1': 2, 'id_2': 3}]"
+    },
+    {
+      "claim": "interleaved dups keep projection positions; suffix counter per collision, not per position: x,x,y,x -> x, x_1, y, x_2",
+      "query": "con.execute(\"SELECT 'a' AS x, 'b' AS x, 'c' AS y, 'd' AS x\").df()",
+      "observed": "columns ['x', 'x_1', 'y', 'x_2']; records [{'x': 'a', 'x_1': 'b', 'y': 'c', 'x_2': 'd'}]"
+    },
+    {
+      "claim": "rename candidate skips names already taken by a LITERAL column: id, id_1, id -> id, id_1, id_2 (dup id skips taken id_1)",
+      "query": "con.execute(\"SELECT 1 AS id, 2 AS id_1, 3 AS id\").df() and \"SELECT 1 AS id_1, 2 AS id, 3 AS id\"",
+      "observed": "['id', 'id_1', 'id_2'] with {'id':1,'id_1':2,'id_2':3} ; ['id_1', 'id', 'id_2'] with {'id_1':1,'id':2,'id_2':3}"
+    },
+    {
+      "claim": "first-come-first-served: a renamed dup can STEAL a later literal's name; the literal then gets suffix-on-suffix: id, id, id_1 -> id, id_1, id_1_1",
+      "query": "con.execute(\"SELECT 1 AS id, 2 AS id, 3 AS id_1\").df()",
+      "observed": "columns ['id', 'id_1', 'id_1_1']; records [{'id': 1, 'id_1': 2, 'id_1_1': 3}]"
+    },
+    {
+      "claim": "duplicate detection is CASE-INSENSITIVE in .df(); rename keeps the original case and appends _N. description keeps both raw ('id','ID')",
+      "query": "con.execute('SELECT 1 AS id, 2 AS \"ID\"').description ; .df().columns",
+      "observed": "description names ('id', 'ID') ; df columns ['id', 'ID_1']"
+    },
+    {
+      "claim": "three case-variants: id, ID, Id -> id, ID_1, Id_2 (each keeps own case, shared counter)",
+      "query": "con.execute('SELECT 1 AS id, 2 AS \"ID\", 3 AS \"Id\"').df().columns",
+      "observed": "['id', 'ID_1', 'Id_2']"
+    },
+    {
+      "claim": "suffix-candidate availability check is also case-insensitive: id, \"ID_1\", id -> third id skips candidate id_1 (ID_1 taken) -> id_2",
+      "query": "con.execute('SELECT 1 AS id, 2 AS \"ID_1\", 3 AS id').df().columns",
+      "observed": "['id', 'ID_1', 'id_2']"
+    },
+    {
+      "claim": "4 duplicates -> n, n_1, n_2, n_3",
+      "query": "con.execute(\"SELECT 1 AS n, 2 AS n, 3 AS n, 4 AS n\").df().columns",
+      "observed": "['n', 'n_1', 'n_2', 'n_3']"
+    },
+    {
+      "claim": "fetchdf() identical to df(); fetchnumpy() uses the same dedup scheme",
+      "query": "con.execute(\"SELECT 1 AS id, 2 AS id\").fetchdf().columns ; .fetchnumpy()",
+      "observed": "['id', 'id_1'] ; {'id': [1], 'id_1': [2]}"
+    },
+    {
+      "claim": "relation API .columns keeps RAW duplicates (like description); rel.df() dedups like cursor df",
+      "query": "con.sql(\"SELECT 1 AS id, 2 AS id\").columns ; .fetchall() ; .df().columns ; .types",
+      "observed": "['id', 'id'] ; [(1, 2)] ; ['id', 'id_1'] ; [INTEGER, INTEGER]"
+    },
+    {
+      "claim": "arrow schema keeps raw duplicate names, but Table.to_pylist() dict-collapses LAST-wins -- silent data loss",
+      "query": "con.sql(\"SELECT 1 AS id, 2 AS id\").to_arrow_table().schema.names ; .to_pylist()",
+      "observed": "['id', 'id'] ; [{'id': 2}]"
+    },
+    {
+      "claim": "non-ASCII duplicate names dedup identically: hello-with-accent and emoji names get _1",
+      "query": "con.execute('SELECT 1 AS \"h\\u00e9llo\", 2 AS \"h\\u00e9llo\"').df().columns ; same for \"a\\U0001f600b\"",
+      "observed": "['h\\u00e9llo', 'h\\u00e9llo_1'] ; ['a\\U0001f600b', 'a\\U0001f600b_1']"
+    },
+    {
+      "claim": "unicode values flow positionally through dup names",
+      "query": "con.execute(\"SELECT 'h\\u00e9llo' AS h, 'a\\U0001f600b' AS h\").fetchall() ; .df().to_dict(orient='records')",
+      "observed": "[('h\\u00e9llo', 'a\\U0001f600b')] ; [{'h': 'h\\u00e9llo', 'h_1': 'a\\U0001f600b'}]"
+    },
+    {
+      "claim": "NULL and INT32 min flow positionally; df renames without touching values",
+      "query": "con.execute(\"SELECT -2147483648 AS id, NULL AS id\").fetchall() ; .df().to_dict(orient='records')",
+      "observed": "[(-2147483648, None)] ; [{'id': -2147483648, 'id_1': None}]"
+    },
+    {
+      "claim": "empty-string alias is impossible -- parser rejects, so no empty-name dup case exists",
+      "query": "con.execute('SELECT 1 AS \"\", 2 AS \"\"')",
+      "observed": "ParserException: Parser Error: zero-length delimited identifier at or near \"\\\"\\\"\"\\n\\nLINE 1: SELECT 1 AS \"\", 2 AS \"\"\\n                    ^"
+    },
+    {
+      "claim": "ON-join star keeps BOTH id columns in description (raw dups); df renames the right side to id_1",
+      "query": "con.execute(\"SELECT * FROM a JOIN b ON a.id = b.id ORDER BY a.id\").description ; .fetchall() ; .df()",
+      "observed": "names (id, va, id, vb) ; [(1, 'x', 1, 'p'), (2, 'y', 2, 'q')] ; columns ['id', 'va', 'id_1', 'vb'], records [{'id': 1, 'va': 'x', 'id_1': 1, 'vb': 'p'}, ...]"
+    },
+    {
+      "claim": "USING(id) merges to a SINGLE id column -- no duplicate on any surface",
+      "query": "con.execute(\"SELECT * FROM a JOIN b USING (id) ORDER BY id\").description ; .fetchall() ; .df().columns ; con.sql(...).columns",
+      "observed": "names (id, va, vb) ; [(1, 'x', 'p'), (2, 'y', 'q')] ; ['id', 'va', 'vb'] ; ['id', 'va', 'vb']"
+    },
+    {
+      "claim": "NATURAL JOIN merges shared columns like USING",
+      "query": "con.execute(\"SELECT * FROM a NATURAL JOIN b ORDER BY id\").description",
+      "observed": "names (id, va, vb)"
+    },
+    {
+      "claim": "partial USING(a,b): only USING columns merge; the other same-named column c stays duplicated (t1.c then t2.c)",
+      "query": "con.execute(\"SELECT * FROM t1 JOIN t2 USING(a,b)\").description ; .fetchall() ; .df().columns  -- t1=(1,2,3), t2=(1,2,30)",
+      "observed": "names (a, b, c, c) ; [(1, 2, 3, 30)] ; ['a', 'b', 'c', 'c_1']"
+    },
+    {
+      "claim": "SUBQUERY BOUNDARY RENAMES: consuming a dup-name subquery renames with the SAME algorithm as df; top level then shows id, id_1 in description",
+      "query": "con.execute(\"SELECT * FROM (SELECT 1 AS id, 2 AS id) t\").description ; .fetchall()",
+      "observed": "names (id, id_1) ; [(1, 2)]"
+    },
+    {
+      "claim": "the renamed name is REFERENCEABLE in the outer scope; bare dup name resolves to the FIRST occurrence",
+      "query": "con.execute(\"SELECT id FROM (SELECT 1 AS id, 2 AS id) t\").fetchall() ; \"SELECT id_1 FROM (SELECT 1 AS id, 2 AS id) t\"",
+      "observed": "[(1,)] ; [(2,)]"
+    },
+    {
+      "claim": "binder rename == df rename algorithm exactly (skip-taken, steal, case-insensitive all identical through a subquery boundary)",
+      "query": "descriptions of SELECT * FROM (SELECT 1 AS id, 2 AS id_1, 3 AS id) t / (id, id, id_1) / (id, \"ID\") / (id, \"ID\", \"Id\") / (id, \"ID_1\", id)",
+      "observed": "['id','id_1','id_2'] ; ['id','id_1','id_1_1'] ; ['id','ID_1'] ; ['id','ID_1','Id_2'] ; ['id','ID_1','id_2']"
+    },
+    {
+      "claim": "rename is stable across extra nesting levels (already-unique names pass through)",
+      "query": "con.execute(\"SELECT * FROM (SELECT * FROM (SELECT 1 AS id, 2 AS id) t1) t2\").description",
+      "observed": "names (id, id_1)"
+    },
+    {
+      "claim": "CTE consumption renames too; bare name in outer select = first occurrence",
+      "query": "con.execute(\"WITH t AS (SELECT 1 AS id, 2 AS id) SELECT * FROM t\").description ; ... SELECT id FROM t",
+      "observed": "names (id, id_1) ; [(1,)]"
+    },
+    {
+      "claim": "CTAS materializes the renamed schema: table gets columns id, id_1",
+      "query": "CREATE TABLE dup AS SELECT 1 AS id, 2 AS id; DESCRIBE dup",
+      "observed": "[('id', 'INTEGER', 'YES', None, None, None), ('id_1', 'INTEGER', 'YES', None, None, None)]"
+    },
+    {
+      "claim": "nested join star renames at the boundary: (id, va, id_1, vb); outer SELECT id picks the left id",
+      "query": "con.execute(\"SELECT * FROM (SELECT * FROM a JOIN b ON a.id=b.id) t ORDER BY 1\").description ; SELECT id FROM (...)",
+      "observed": "names (id, va, id_1, vb) ; [(1,), (2,)]"
+    },
+    {
+      "claim": "top-level ORDER BY / GROUP BY on a duplicated alias raises NO ambiguity error",
+      "query": "SELECT 1 AS id, 2 AS id ORDER BY id ; SELECT 2 AS id, 1 AS id ORDER BY id ; SELECT 1 AS id, 2 AS id GROUP BY id",
+      "observed": "[(1, 2)] ; [(2, 1)] ; [(1, 2)]"
+    },
+    {
+      "claim": "unnamed duplicate expressions share the generated name '(v + 1)'; df suffixes it: '(v + 1)_1'",
+      "query": "con.execute(\"SELECT v+1, v+1 FROM g\").description ; .df().columns",
+      "observed": "names ('(v + 1)', '(v + 1)') ; ['(v + 1)', '(v + 1)_1']"
+    },
+    {
+      "claim": "SELECT v, v and SELECT *, v both give raw dup 'v','v' in description, 'v','v_1' in df",
+      "query": "con.execute(\"SELECT v, v FROM g\").description ; \"SELECT *, v FROM g\" ; .df().columns",
+      "observed": "names (v, v) both ; df ['v', 'v_1'] both"
+    },
+    {
+      "claim": "UNION ALL keeps raw dup names (no boundary rename -- set ops are not a subquery consumption)",
+      "query": "con.execute(\"SELECT 1 AS id, 2 AS id UNION ALL SELECT 3, 4\").description",
+      "observed": "names (id, id)"
+    },
+    {
+      "claim": "EXCLUDE (id) on an ON-join star removes BOTH sides' id",
+      "query": "con.execute(\"SELECT * EXCLUDE (id) FROM a JOIN b ON a.id=b.id ORDER BY 1\").fetchall() ; .description",
+      "observed": "[('x', 'p'), ('y', 'q')] ; names (va, vb)"
+    },
+    {
+      "claim": "corpus case 10 SQL produces dup names k,k,j at top level; values positional (3,3,2); df would show k, k_1, j",
+      "query": "SELECT integers.* EXCLUDE (i, j), * EXCLUDE (i, j), * EXCLUDE (i, k) FROM integers  -- integers=(1,2,3)",
+      "observed": "description names (k, k, j) ; fetchall [(3, 3, 2)] ; df columns ['k', 'k_1', 'j']"
+    },
+    {
+      "claim": "corpus case 282 SQL produces a,b,c,c; values (1,2,3,30-shape) positional; df a,b,c,c_1",
+      "query": "SELECT * FROM t1 JOIN t2 USING(a,b)  -- t1=(1,2,3), t2=(1,2,30)",
+      "observed": "description names (a, b, c, c) ; fetchall [(1, 2, 3, 30)] ; df ['a', 'b', 'c', 'c_1']"
+    },
+    {
+      "claim": "REPO: _replay compares POSITIONALLY and order-insensitively across rows -- got = [list(r.model_dump().values())], sorted(map(repr-tuple)) vs case['rows']; names never enter the comparison",
+      "query": "tests/test_corpus_replay.py lines 144-151 (read) + executed _replay on 22 corpus cases",
+      "observed": "got built from model_dump().values() (field order = projection order); want = case['rows'] which are JSON positional lists, e.g. [[3, 3, 2]] and [[1, 2, 3, 3]]"
+    },
+    {
+      "claim": "REPO: corpus case 10 currently dies clean-unsupported with our engine's error 'duplicate output column name'",
+      "query": "_replay(cases[10]) via tests/test_corpus_replay.py against sql_transform._interpreter",
+      "observed": "OUTCOME: unsupported | DETAIL: unsupported: duplicate output column name 'k' | expected rows [[3, 3, 2]]"
+    },
+    {
+      "claim": "REPO: corpus case 282 currently dies clean-unsupported with 'duplicate output column name'",
+      "query": "_replay(cases[282])",
+      "observed": "OUTCOME: unsupported | DETAIL: unsupported: duplicate output column name 'c' | expected rows [[1, 2, 3, 3]]"
+    },
+    {
+      "claim": "REPO: corpus cases 11-14, 19 (dup-producing self-join stars) are gated EARLIER by 'joining the dynamic table to itself' -- dup-name support alone does not flip them",
+      "query": "_replay(cases[11..14]), _replay(cases[19])",
+      "observed": "OUTCOME: unsupported | DETAIL: unsupported: joining the dynamic table to itself (all five); expected rows all positional lists, e.g. [[2, 3, 2, 3]]"
+    },
+    {
+      "claim": "REPO: the rejection lives in src/specializer/frontend.rs:126 (push_item: out_cols.iter().any(name==) -> unsup); output models are pydantic create_model kwargs (src/duckdb/mod.rs model_from_fields), where duplicate names would silently collapse dict-style",
+      "query": "read src/specializer/frontend.rs:116-137, src/duckdb/mod.rs:128-151",
+      "observed": "return Err(unsup(format!(\"duplicate output column name '{name}'\"))) ; create_model kwargs keyed by name"
+    }
+  ],
+  "surprises": [
+    "DuckDB renames duplicate columns ITSELF at every subquery/CTE/CTAS consumption boundary (SELECT * FROM (SELECT 1 AS id, 2 AS id) t describes as id, id_1) -- only the TOP-level select surface keeps raw duplicates. The renamed name id_1 is referenceable in the outer query and the bare name resolves to the FIRST occurrence.",
+    "The .df() dedup and the binder boundary-rename are the SAME algorithm, verified on 5 discriminating inputs: left-to-right; collision check is CASE-INSENSITIVE; suffix base is the column's own original-case name; smallest _N whose candidate is free (also case-insensitively). id,id,id_1 -> id, id_1, id_1_1 (a renamed dup can steal a later literal's name); id,id_1,id -> id, id_1, id_2 (skips taken names).",
+    "df dedup is case-insensitive even though SQL-level names are case-preserved: SELECT 1 AS id, 2 AS \"ID\" -> df columns ['id', 'ID_1'] while description keeps ('id', 'ID').",
+    "pyarrow Table.to_pylist() on a dup-name result silently collapses LAST-wins ([{'id': 2}] from values 1,2) -- the exact failure mode our dict/pydantic surfaces would have without renaming.",
+    "Partial USING(a,b) between tables that also share column c merges only a,b; c appears twice (left first, then right).",
+    "UNION ALL is NOT a rename boundary -- dup names pass through raw.",
+    "Duplicate aliases never error anywhere: ORDER BY id / GROUP BY id on SELECT 1 AS id, 2 AS id are accepted without ambiguity complaints.",
+    "Empty-string aliases cannot exist (parser rejects zero-length delimited identifiers), so the empty-name-dup edge case is unreachable."
+  ],
+  "recommendation": "Implement DuckDB's own boundary-rename in the SYNTHESIZED pydantic model, dict mode, and slot-fill: left-to-right over the final projection (after star expansion), keep the first occurrence's name; for any later column whose name collides case-insensitively with an already-assigned name, emit <original-case-name>_N with the smallest N>=1 whose candidate is free case-insensitively. This is not a pandas invention -- it is bit-identical to what DuckDB itself does when a dup-name query is consumed by an outer query, a CTE, or CTAS, so it is the defensible 'DuckDB semantics for any name-keyed surface'. Column ORDER must be untouched (pydantic create_model preserves kwarg order, so model_dump().values() stays positional). With that, corpus cases 10 (k,k,j -> k,k_1,j; expected [[3,3,2]]) and 282 (a,b,c,c -> a,b,c,c_1; expected [[1,2,3,3]]) flip from clean-unsupported to match, because _replay compares sorted repr-tuples of model_dump().values() against stored positional JSON lists -- names never enter the comparison, so renaming cannot create a wrong match there; the only way to corrupt the comparison is dict-collapse (last-wins, row shrinks) or reordering, both avoided by the rename. Cases 11-14/19 remain gated by the self-join limit and do not flip. For a SUPPLIED output_model, apply the SAME rename first and validate the model's fields against the RENAMED names (user must declare id, id_1) -- this keeps all output modes agreeing field-for-field, matches what the same user sees from DuckDB's .df(), and avoids an unexpressible contract (a pydantic model cannot have two fields named id); rejecting supplied models on dup names is the acceptable fallback if validation-message complexity is a concern. Caveat to record in code: v0 renames only at the output surface; if derived-table support lands later, the rename must also apply at each subquery/CTE boundary AND the renamed names must become referenceable there (SELECT id_1 FROM (...) is legal DuckDB and returns the second column), and USING/NATURAL-merged columns must never be treated as duplicates while non-USING shared names must."
+}

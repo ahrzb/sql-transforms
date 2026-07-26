@@ -1,0 +1,129 @@
+{
+  "area": "sqlparser-spike",
+  "sqlparser_version": "0.62.0 (Cargo.lock pin; Cargo.toml says \"0.62\")",
+  "repo_dialect": "DuckDbDialect (src/specializer/frontend.rs:69, Parser::parse_sql(&DuckDbDialect {}, sql)). NOTE: src/datafusion/plan.rs:73 separately parses with GenericDialect for the oracle path, so repo_dialect_result below IS the DuckDbDialect result; generic_dialect_result added as the actionable comparison.",
+  "forms": [
+    {
+      "sql": "SELECT s[2:4] FROM t",
+      "repo_dialect_result": "Ok: UnnamedExpr(CompoundFieldAccess { root: Identifier(s), access_chain: [Subscript(Slice { lower_bound: Some(Number 2), upper_bound: Some(Number 4), stride: None })] })",
+      "duckdb_dialect_result": "same (repo dialect IS DuckDbDialect)",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT s[off] FROM t",
+      "repo_dialect_result": "Ok: CompoundFieldAccess { root: Identifier(s), access_chain: [Subscript(Index { index: Identifier(off) })] }",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT s[-1] FROM t",
+      "repo_dialect_result": "Ok: CompoundFieldAccess { root: Identifier(s), access_chain: [Subscript(Index { index: UnaryOp { op: Minus, expr: Number 1 } })] }",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT s ^@ 'he' FROM t",
+      "repo_dialect_result": "Err: sql parser error: No infix parser for token CaretAt at Line: 1, Column: 10",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: BinaryOp { left: Identifier(s), op: PGStartsWith, right: SingleQuotedString(\"he\") }"
+    },
+    {
+      "sql": "SELECT s GLOB 'h*' FROM t",
+      "repo_dialect_result": "Err: sql parser error: Expected: end of statement, found: 'h*' at Line: 1, Column: 15 (GLOB is swallowed as an implicit alias, then the pattern literal is a leftover token)",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Err: identical error"
+    },
+    {
+      "sql": "SELECT 1 << 3, 8 >> 1, 5 & 3, 5 | 3",
+      "repo_dialect_result": "Ok: BinaryOp ops PGBitwiseShiftLeft, PGBitwiseShiftRight, BitwiseAnd, BitwiseOr",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT * LIKE 'ab%' FROM t",
+      "repo_dialect_result": "Err: sql parser error: Expected: end of statement, found: LIKE at Line: 1, Column: 10",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Err: identical error"
+    },
+    {
+      "sql": "SELECT * ILIKE 'ab%' FROM t",
+      "repo_dialect_result": "Err: sql parser error: Expected: end of statement, found: ILIKE at Line: 1, Column: 10",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: Wildcard(WildcardAdditionalOptions { opt_ilike: Some(IlikeSelectItem { pattern: \"ab%\" }), .. })"
+    },
+    {
+      "sql": "SELECT * NOT LIKE 'ab%' FROM t",
+      "repo_dialect_result": "Err: sql parser error: Expected: end of statement, found: NOT at Line: 1, Column: 10",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Err: identical error"
+    },
+    {
+      "sql": "SELECT * SIMILAR TO 'ab.' FROM t",
+      "repo_dialect_result": "Err: sql parser error: Expected: end of statement, found: SIMILAR at Line: 1, Column: 10",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Err: identical error"
+    },
+    {
+      "sql": "SELECT * REPLACE (abc + 1 AS abc) FROM t",
+      "repo_dialect_result": "Ok: Wildcard(WildcardAdditionalOptions { opt_replace: Some(ReplaceSelectItem { items: [ReplaceSelectElement { expr: BinaryOp(abc + 1), column_name: abc, as_keyword: true }] }), .. })",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT * RENAME (abc AS q) FROM t",
+      "repo_dialect_result": "Err: sql parser error: Expected: end of statement, found: RENAME at Line: 1, Column: 10",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: Wildcard(WildcardAdditionalOptions { opt_rename: Some(Multiple([IdentWithAlias { ident: abc, alias: q }])), .. })"
+    },
+    {
+      "sql": "SELECT * EXCLUDE (t.abc) FROM t",
+      "repo_dialect_result": "Ok: Wildcard(WildcardAdditionalOptions { opt_exclude: Some(Multiple([ObjectName([t, abc])])), .. }) — qualified name preserved as 2-part ObjectName",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT k: a + 1 FROM t",
+      "repo_dialect_result": "Ok BUT WRONG SEMANTICS: parsed as BinaryOp { left: JsonAccess { value: Identifier(k), path: JsonPath [Dot key \"a\"] }, op: Plus, right: Number 1 } — Snowflake-style k:a JSON path, NOT a DuckDB alias prefix. No parse error to catch.",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical (equally wrong) shape"
+    },
+    {
+      "sql": "SELECT a + 1 AS k, k * 2 FROM t",
+      "repo_dialect_result": "Ok: [ExprWithAlias { expr: a + 1, alias: k }, UnnamedExpr(BinaryOp k * 2)] — parses trivially; k in item 2 is a plain Identifier, all lateral-alias resolution is binder work",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT x FROM t AS u(x, y)",
+      "repo_dialect_result": "Ok: Table { name: t, alias: Some(TableAlias { name: u, columns: [TableAliasColumnDef x, TableAliasColumnDef y] }) }",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT * FROM t1 NATURAL JOIN t2",
+      "repo_dialect_result": "Ok: TableWithJoins { relation: t1, joins: [Join { relation: t2, join_operator: Join(Natural) }] }",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT * FROM s1.t1",
+      "repo_dialect_result": "Ok: Table { name: ObjectName([s1, t1]) } — 2-part name",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT COLUMNS('ab.*') FROM t",
+      "repo_dialect_result": "Ok: UnnamedExpr(Function { name: COLUMNS, args: [Unnamed(SingleQuotedString(\"ab.*\"))] }) — plain function call, no special AST node; frontend must intercept by name",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    },
+    {
+      "sql": "SELECT 1 IN ('1', 2)",
+      "repo_dialect_result": "Ok: InList { expr: Number 1, list: [SingleQuotedString(\"1\"), Number 2], negated: false } — mixed-type coercion is semantic work, not parse",
+      "duckdb_dialect_result": "same",
+      "generic_dialect_result": "Ok: identical shape"
+    }
+  ],
+  "recommendation": "Per-form strategy. (a) parses today under DuckDbDialect, frontend binding only: s[2:4] / s[off] / s[-1] (bind CompoundFieldAccess + Subscript::Slice|Index; DuckDB 1-based + negative-index semantics live in the binder), bitwise << >> & | (PGBitwiseShiftLeft/Right, BitwiseAnd, BitwiseOr), * REPLACE (opt_replace), * EXCLUDE with qualified names (opt_exclude carries full ObjectName — binder must match multi-part), lateral alias a+1 AS k, k*2 (binder resolves k against prior projection item), t AS u(x,y) (TableAlias.columns), NATURAL JOIN (Join(Natural) — binder computes shared columns), s1.t1 (multi-part ObjectName), COLUMNS('re') (intercept Function named COLUMNS, expand against input schema, regex arg must be a literal), 1 IN ('1',2) (InList + coercion rules). (b) parses only under GenericDialect: ^@ (PGStartsWith), * ILIKE (opt_ilike), * RENAME (opt_rename). Across all 20 forms GenericDialect accepts a strict superset of DuckDbDialect, and the repo's DataFusion oracle path (src/datafusion/plan.rs) already parses with GenericDialect, so switching frontend.rs to GenericDialect is low-risk for these forms and buys 3 forms for free; residual risk is DuckDb-specific tokenization outside this sample (e.g. quote/escape handling, dialect-gated operators like // and **, struct literals) — re-run the existing Rust frontend test suite after switching, do not assume. If staying on DuckDbDialect, ^@ pre-rewrites to starts_with(lhs, rhs). (c) parses under neither, needs SQL text pre-rewrite: `x GLOB 'pat'` -> `__glob(x, 'pat')` internal function (token-level rewrite of IDENT/expr GLOB literal; note GLOB dies by being eaten as an implicit alias, so the error is misleading); `* LIKE 'p'` / `* NOT LIKE 'p'` / `* SIMILAR TO 'p'` -> rewrite to COLUMNS('<regex>') with the LIKE pattern converted to an anchored regex (NOT LIKE needs negated column-match, which COLUMNS alone cannot express — either expand at rewrite time against the known input schema, or keep unsupported); `* ILIKE 'p'` same COLUMNS rewrite with (?i) prefix if not switching dialect. SPECIAL CASE, highest priority: `k: a + 1` colon alias parses fine under BOTH dialects as Snowflake JsonAccess (k:a path) — silently wrong, undetectable via parse error. MUST be handled before Parser::parse_sql: either pre-rewrite `ident COLON` at projection-item start to `... AS ident` (token-level, only at top level of a select item), or explicitly reject Expr::JsonAccess in the binder so the misparse cannot slip through as a wrong binding.",
+  "raw_output": "full per-form Debug dumps saved by the harness at C:\\Users\\AmirHossein\\.claude\\projects\\C--Users-AmirHossein-repos-github-com-ahrzb-sql-transforms--claude-worktrees-duckdb-native-interpreter-36d016\\34f8b162-fedf-46c0-8b27-4ed3248ab879\\tool-results\\b5my1td8o.txt; spike crate at ...\\scratchpad\\sqlparser-spike (sqlparser =0.62.0, default-features=false features=[\"std\"] to dodge MSVC MAX_PATH on build-script deps)"
+}
