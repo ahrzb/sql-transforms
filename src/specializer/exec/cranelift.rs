@@ -36,8 +36,8 @@ use super::super::ir::{
     BinOp, CmpPred, Inst, Lit, NumOp1, Program, RoundMode, StaticTy, StrOp1, Term, TrimSide, Ty,
 };
 use super::interp::{
-    self, apply_ord, col_valid, substr_range_ok, substr_window, CompileError, DuckF64, InterpFn,
-    PreparedStatic,
+    self, apply_ord, col_valid, substr_range_ok, substr_window, trim_bounds, CompileError, DuckF64,
+    InterpFn, PreparedStatic,
 };
 use super::{casemap, Arena, Batch, ColData, KeyBits, OutCol, RunState, ScalarVal, StrRef, Trap};
 
@@ -71,16 +71,6 @@ impl Cx {
     }
     fn statics(&self) -> &[PreparedStatic] {
         unsafe { std::slice::from_raw_parts(self.statics, self.statics_len) }
-    }
-    fn get(&mut self, off: i64, len: i64) -> String {
-        // Owned copy: several helpers read one span and push another; a
-        // borrow across arena mutation is not expressible here.
-        self.arena()
-            .get(StrRef {
-                off: off as usize,
-                len: len as usize,
-            })
-            .to_string()
     }
     fn set_trap(&mut self, msg: String) {
         self.trap_flag = 1;
@@ -218,8 +208,18 @@ extern "C" fn h_fcmp(a: f64, b: f64, pred: i64) -> u8 {
 
 extern "C" fn h_scmp(p: *mut Cx, ao: i64, al: i64, bo: i64, bl: i64, pred: i64) -> u8 {
     let c = unsafe { cx(p) };
-    let (a, b) = (c.get(ao, al), c.get(bo, bl));
-    apply_ord(decode_pred(pred), a.as_str().cmp(b.as_str())) as u8
+    // Comparison only reads — both spans borrow the arena immutably.
+    let arena = unsafe { &*c.arena };
+    let a = arena.get(span(ao, al));
+    let b = arena.get(span(bo, bl));
+    apply_ord(decode_pred(pred), a.cmp(b)) as u8
+}
+
+fn span(off: i64, len: i64) -> StrRef {
+    StrRef {
+        off: off as usize,
+        len: len as usize,
+    }
 }
 
 fn decode_pred(p: i64) -> CmpPred {
@@ -257,21 +257,21 @@ extern "C" fn h_ftoi(p: *mut Cx, x: f64, round: i64) -> i64 {
 
 extern "C" fn h_itos(p: *mut Cx, v: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
-    let r = c.arena().push_str(&format!("{v}"));
+    let r = c.arena().push_fmt(format_args!("{v}"));
     unsafe { *len_out = r.len as i64 };
     r.off as i64
 }
 
 extern "C" fn h_ftos(p: *mut Cx, v: f64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
-    let r = c.arena().push_str(&format!("{}", DuckF64(v)));
+    let r = c.arena().push_fmt(format_args!("{}", DuckF64(v)));
     unsafe { *len_out = r.len as i64 };
     r.off as i64
 }
 
 extern "C" fn h_stoi(p: *mut Cx, off: i64, len: i64, valid_out: *mut u8) -> i64 {
     let c = unsafe { cx(p) };
-    let s = c.get(off, len);
+    let s = unsafe { &*c.arena }.get(span(off, len));
     match s.trim_ascii().parse::<i64>() {
         Ok(v) => {
             unsafe { *valid_out = 1 };
@@ -286,7 +286,7 @@ extern "C" fn h_stoi(p: *mut Cx, off: i64, len: i64, valid_out: *mut u8) -> i64 
 
 extern "C" fn h_stof(p: *mut Cx, off: i64, len: i64, valid_out: *mut u8) -> f64 {
     let c = unsafe { cx(p) };
-    let s = c.get(off, len);
+    let s = unsafe { &*c.arena }.get(span(off, len));
     match s.trim_ascii().parse::<f64>() {
         Ok(v) => {
             unsafe { *valid_out = 1 };
@@ -317,13 +317,12 @@ extern "C" fn h_sconcat(p: *mut Cx, ao: i64, al: i64, bo: i64, bl: i64, len_out:
 
 extern "C" fn h_scase(p: *mut Cx, off: i64, len: i64, upper: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
-    let s = c.get(off, len);
-    let out: String = if upper != 0 {
-        s.chars().map(casemap::simple_upper).collect()
+    let map: fn(char) -> char = if upper != 0 {
+        casemap::simple_upper
     } else {
-        s.chars().map(casemap::simple_lower).collect()
+        casemap::simple_lower
     };
-    let r = c.arena().push_str(&out);
+    let r = c.arena().case_map(span(off, len), map);
     unsafe { *len_out = r.len as i64 };
     r.off as i64
 }
@@ -338,18 +337,16 @@ extern "C" fn h_strim(
     len_out: *mut i64,
 ) -> i64 {
     let c = unsafe { cx(p) };
-    let (s, set_s) = (c.get(ao, al), c.get(co, cl));
-    let set: Vec<char> = set_s.chars().collect();
-    let hit = |ch: char| set.contains(&ch);
-    let t = match side {
-        0 => s.trim_matches(hit),
-        1 => s.trim_start_matches(hit),
-        _ => s.trim_end_matches(hit),
-    }
-    .to_string();
-    let r = c.arena().push_str(&t);
-    unsafe { *len_out = r.len as i64 };
-    r.off as i64
+    let arena = unsafe { &*c.arena };
+    let side = match side {
+        0 => TrimSide::Both,
+        1 => TrimSide::Lead,
+        _ => TrimSide::Trail,
+    };
+    let rng = trim_bounds(arena.get(span(ao, al)), arena.get(span(co, cl)), side);
+    // The trimmed value is a subview of the input span — no copy.
+    unsafe { *len_out = (rng.end - rng.start) as i64 };
+    (ao as usize + rng.start) as i64
 }
 
 extern "C" fn h_ssubstr(
@@ -372,11 +369,15 @@ extern "C" fn h_ssubstr(
         unsafe { *len_out = 0 };
         return 0;
     }
-    let s = c.get(ao, al);
-    let out = substr_window(&s, start, (has_len != 0).then_some(len));
-    let r = c.arena().push_str(&out);
-    unsafe { *len_out = r.len as i64 };
-    r.off as i64
+    let arena = unsafe { &*c.arena };
+    let rng = substr_window(
+        arena.get(span(ao, al)),
+        start,
+        (has_len != 0).then_some(len),
+    );
+    // The window is a subview of the input span — no copy.
+    unsafe { *len_out = (rng.end - rng.start) as i64 };
+    (ao as usize + rng.start) as i64
 }
 
 macro_rules! store_h {
@@ -449,14 +450,18 @@ extern "C" fn h_probe(
     let c = unsafe { cx(p) };
     let desc = unsafe { &*desc };
     let keys = unsafe { std::slice::from_raw_parts(keys, desc.key_tys.len()) };
-    let PreparedStatic::Map { entries } = &c.statics()[desc.static_id] else {
+    // SAFETY: statics and arena are disjoint allocations behind separate
+    // raw pointers; independent references let str values append to the
+    // arena while the matched entry stays borrowed — no clones, no
+    // per-call Vec (the steady state is allocation-free).
+    let statics = unsafe { std::slice::from_raw_parts(c.statics, c.statics_len) };
+    let arena = unsafe { &mut *c.arena };
+    let PreparedStatic::Map { entries } = &statics[desc.static_id] else {
         unreachable!("static kind checked at compile");
     };
 
     // Mirrors interp::cmp_key: canonical f64 bits, arena strings by byte
-    // order. The arena is only read here, never written, so the borrow is
-    // fine to hold across the search.
-    let arena = unsafe { &*c.arena };
+    // order. The search only reads the arena.
     let cmp = |stored: &[KeyBits]| -> std::cmp::Ordering {
         for (kb, cell) in stored.iter().zip(keys.iter()) {
             let ord = match kb {
@@ -464,10 +469,7 @@ extern "C" fn h_probe(
                 KeyBits::I64(s) => s.cmp(&(cell[0] as i64)),
                 KeyBits::F64(s) => s.cmp(&super::canon_f64_bits(f64::from_bits(cell[0]))),
                 KeyBits::Str(s) => {
-                    let v = arena.get(StrRef {
-                        off: cell[0] as usize,
-                        len: cell[1] as usize,
-                    });
+                    let v = arena.get(span(cell[0] as i64, cell[1] as i64));
                     s.as_str().cmp(v)
                 }
             };
@@ -477,35 +479,39 @@ extern "C" fn h_probe(
         }
         std::cmp::Ordering::Equal
     };
-
     let found = entries.binary_search_by(|(k, _)| cmp(k)).ok();
-    let hit = found.is_some();
-    let values: Vec<ScalarVal> = match found {
-        Some(idx) => entries[idx].1.clone(),
-        None => desc
-            .val_tys
-            .iter()
-            .map(|ty| match ty {
-                Ty::I1 => ScalarVal::I1(false),
-                Ty::I64 => ScalarVal::I64(0),
-                Ty::F64 => ScalarVal::F64(0.0),
-                Ty::Str => ScalarVal::Str(String::new()),
-            })
-            .collect(),
-    };
-    for (i, v) in values.into_iter().enumerate() {
-        let cell = match v {
-            ScalarVal::I1(b) => [b as u64, 0],
-            ScalarVal::I64(x) => [x as u64, 0],
-            ScalarVal::F64(f) => [f.to_bits(), 0],
-            ScalarVal::Str(s) => {
-                let r = c.arena().push_str(&s);
-                [r.off as u64, r.len as u64]
+
+    match found {
+        Some(idx) => {
+            for (i, v) in entries[idx].1.iter().enumerate() {
+                let cell: Cell = match v {
+                    ScalarVal::I1(b) => [*b as u64, 0],
+                    ScalarVal::I64(x) => [*x as u64, 0],
+                    ScalarVal::F64(f) => [f.to_bits(), 0],
+                    ScalarVal::Str(s) => {
+                        let r = arena.push_str(s);
+                        [r.off as u64, r.len as u64]
+                    }
+                };
+                unsafe { *outs.add(i) = cell };
             }
-        };
-        unsafe { *outs.add(i) = cell };
+            1
+        }
+        None => {
+            for (i, ty) in desc.val_tys.iter().enumerate() {
+                let cell: Cell = match ty {
+                    Ty::I1 | Ty::I64 => [0, 0],
+                    Ty::F64 => [0f64.to_bits(), 0],
+                    Ty::Str => {
+                        let r = arena.push_str("");
+                        [r.off as u64, r.len as u64]
+                    }
+                };
+                unsafe { *outs.add(i) = cell };
+            }
+            0
+        }
     }
-    hit as u8
 }
 
 // ------------------------------------------------------------ the JIT'd fn --
