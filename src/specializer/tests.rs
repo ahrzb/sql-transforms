@@ -3,7 +3,7 @@
 //! division, `%` stays integral, overflow traps).
 
 use super::exec::interp::compile;
-use super::exec::testutil::{batch, c_f64, c_i64, rows, run_snapshot};
+use super::exec::testutil::{batch, c_f64, c_i64, c_str, rows, run_snapshot};
 use super::exec::{KeyBits, ScalarVal, StaticData};
 use super::ir::{parse::parse, print::print, Col, ColTy, Ty};
 use super::plan::StaticTable;
@@ -406,7 +406,7 @@ fn unsupported_constructs_are_named_cleanly() {
         // function arm until the catalogue distinguishes aggregation.
         ("SELECT sum(a) FROM __THIS__", "function sum"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
-        ("SELECT upper('x') FROM __THIS__", "function"),
+        ("SELECT length('x') FROM __THIS__", "function"),
         ("SELECT * FROM __THIS__", "star expansion"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         ("SELECT a, a FROM __THIS__", "duplicate output column"),
@@ -682,5 +682,216 @@ fn dominating_constant_keeps_the_dynamic_side() {
     assert!(
         text.contains("irem"),
         "the trapping rem was folded away:\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------- stretch 4:
+// the builtin catalogue, per the measured pins in
+// docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md.
+
+#[test]
+fn string_builtins_end_to_end() {
+    let schema = cols(&[("s", Ty::Str, true)]);
+    let got = run_sql(
+        "SELECT upper(s) AS u, lower('AbC') AS l, trim('  x  ') AS t, \
+         ltrim('xxa', 'x') AS lt, rtrim('a  ') AS rt, \
+         TRIM(LEADING 'x' FROM 'xax') AS tl, substr('hello', 2, 3) AS sub \
+         FROM __THIS__",
+        &schema,
+        batch(2, vec![c_str(&[Some("ab"), None])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["AB", "abc", "x", "a", "a", "ax", "ell"],
+            &["NULL", "abc", "x", "a", "a", "ax", "ell"],
+        ])
+    );
+}
+
+#[test]
+fn one_arg_trim_removes_only_spaces() {
+    // DuckDB pin: 1-arg trim removes ONLY 0x20 — tabs/newlines stay.
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT trim(' \t a \n ') AS t FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(0)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["\t a \n"]]));
+}
+
+#[test]
+fn substr_window_arithmetic_via_sql() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT substr('hello', 0, 3) AS a, substr('hello', -2) AS b, \
+         substr('hello', -10, 8) AS c, substr('hello', 1, -1) AS d, \
+         substring('hello' FROM 2 FOR 2) AS e FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(0)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["he", "lo", "hel", "", "el"]]));
+}
+
+#[test]
+fn concat_operator_always_concats_and_propagates_null() {
+    // DuckDB pins: 1 || 'x' = '1x' (implicit VARCHAR cast), || propagates
+    // NULL; CONCAT skips NULLs and never returns NULL.
+    let schema = cols(&[("n", Ty::I64, true)]);
+    let got = run_sql(
+        "SELECT 1 || 'x' AS a, 'a' || NULL AS b, n || '!' AS c, \
+         CONCAT('a', NULL, 1) AS d, CONCAT(n, '-') AS e FROM __THIS__",
+        &schema,
+        batch(2, vec![c_i64(&[Some(7), None])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["1x", "NULL", "7!", "a1", "7-"],
+            &["1x", "NULL", "NULL", "a1", "-"],
+        ])
+    );
+}
+
+#[test]
+fn abs_and_round_semantics() {
+    // Pins: abs(i64) traps only on MIN; abs(-0.0) = +0.0; round is half
+    // away from zero; integer round is identity (type preserved).
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT abs(-5) AS ai, abs(a) AS av, round(2.5) AS r1, \
+         round(-2.5) AS r2, round(a) AS ri FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(-3)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["5", "3", "3.0", "-3.0", "-3"]]));
+}
+
+#[test]
+fn abs_min_traps_like_duckdb() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let err = run_sql(
+        "SELECT abs(a) AS x FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(i64::MIN)])]),
+    )
+    .unwrap_err();
+    assert!(err.contains("overflow"), "got: {err}");
+}
+
+#[test]
+fn int_rem_by_zero_is_null_not_error() {
+    // DuckDB pin (2026-07-26): 5 % 0 is NULL. MIN % -1 still traps.
+    let schema = cols(&[("a", Ty::I64, false), ("b", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT a % b AS r FROM __THIS__",
+        &schema,
+        batch(
+            3,
+            vec![
+                c_i64(&[Some(5), Some(5), Some(-7)]),
+                c_i64(&[Some(0), Some(3), Some(2)]),
+            ],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL"], &["2"], &["-1"]]));
+}
+
+#[test]
+fn float_rem_is_ieee() {
+    let schema = cols(&[("x", Ty::F64, false), ("y", Ty::F64, false)]);
+    let got = run_sql(
+        "SELECT x % y AS r FROM __THIS__",
+        &schema,
+        batch(
+            2,
+            vec![
+                c_f64(&[Some(-5.5), Some(5.0)]),
+                c_f64(&[Some(2.5), Some(0.0)]),
+            ],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["-0.5"], &["NaN"]]));
+}
+
+#[test]
+fn nan_equals_nan_in_where() {
+    // DuckDB DOUBLE order: nan = nan is TRUE, nan > 1 is TRUE.
+    let schema = cols(&[("x", Ty::F64, false)]);
+    let got = run_sql(
+        "SELECT x FROM __THIS__ WHERE x = x AND x > 1.0",
+        &schema,
+        batch(2, vec![c_f64(&[Some(f64::NAN), Some(0.5)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NaN"]]));
+}
+
+#[test]
+fn coalesce_binds_lazily_and_unifies() {
+    let schema = cols(&[("n", Ty::I64, true)]);
+    // The CAST in the untaken arm must not trap when n is non-NULL.
+    let got = run_sql(
+        "SELECT coalesce(n, CAST('nope' AS BIGINT)) AS a, \
+         coalesce(NULL, 1, 2) AS b, coalesce(n, 2.5) AS c FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(4)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["4", "1", "4.0"]]));
+}
+
+#[test]
+fn coalesce_taken_null_arm_falls_through_and_bad_cast_traps() {
+    let schema = cols(&[("n", Ty::I64, true)]);
+    let err = run_sql(
+        "SELECT coalesce(n, CAST('nope' AS BIGINT)) AS a FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[None])]),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("cast") || err.contains("nope") || err.contains("convert"),
+        "expected a cast trap, got: {err}"
+    );
+}
+
+#[test]
+fn nullif_compares_promoted_keeps_first_type() {
+    let schema = cols(&[("x", Ty::F64, false)]);
+    // nullif(1, 1.0) -> NULL (promoted compare); nullif(nan, nan) -> NULL
+    // (DuckDB float order); nullif(3, 3.5) -> 3 INTEGER.
+    let got = run_sql(
+        "SELECT nullif(1, 1.0) AS a, nullif(x, x) AS b, nullif(3, 3.5) AS c \
+         FROM __THIS__",
+        &schema,
+        batch(1, vec![c_f64(&[Some(f64::NAN)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL", "NULL", "3"]]));
+}
+
+#[test]
+fn builtin_programs_are_canonical_ir() {
+    let schema = cols(&[("s", Ty::Str, true), ("x", Ty::F64, false)]);
+    let p = prep(
+        "SELECT upper(trim(s)) AS u, substr(s, 2) AS m, s || 'x' AS c, \
+         abs(x) AS a, round(x) AS r FROM __THIS__ WHERE x % 2.0 > 0.0",
+        &schema,
+    )
+    .unwrap();
+    let text = print(&p);
+    assert_eq!(
+        parse(&text).unwrap(),
+        p,
+        "builtin program is not canonical:\n{text}"
     );
 }

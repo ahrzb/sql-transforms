@@ -27,7 +27,10 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use super::super::ir::verify::{verify, VerifyError};
-use super::super::ir::{self, BinOp, CmpPred, Inst, Program, RoundMode, StaticTy, Term, Ty, Value};
+use super::super::ir::{
+    self, BinOp, CmpPred, Inst, NumOp1, Program, RoundMode, StaticTy, StrOp1, Term, TrimSide, Ty,
+    Value,
+};
 use super::{
     Arena, Batch, ColData, KeyBits, OutCol, RegVal, RunState, ScalarVal, StaticData, StrRef, Trap,
 };
@@ -500,6 +503,29 @@ impl std::fmt::Write for ArenaWriter<'_> {
     }
 }
 
+/// DuckDB's substr window arithmetic (measured 1.5.5), on codepoints — NOT
+/// grapheme clusters (substr slices inside ZWJ emoji). 1-based virtual
+/// positions: negative start counts from the end (`start = n + start + 1`),
+/// start <= 0 consumes length before character 1, negative len is "". A
+/// missing SQL length arrives as i64::MAX; the saturating add makes that
+/// "rest of the string".
+fn substr_window(s: &str, start: i64, len: i64) -> String {
+    if len < 0 {
+        return String::new();
+    }
+    let n = s.chars().count() as i64;
+    let start = if start < 0 { n + start + 1 } else { start };
+    let end = start.saturating_add(len);
+    let (lo, hi) = (start.max(1), end.min(n + 1));
+    if hi <= lo {
+        return String::new();
+    }
+    s.chars()
+        .skip((lo - 1) as usize)
+        .take((hi - lo) as usize)
+        .collect()
+}
+
 fn fmt_into_arena(arena: &mut Arena, args: std::fmt::Arguments<'_>) -> StrRef {
     let off = arena.0.len();
     let _ = ArenaWriter(&mut arena.0).write_fmt(args);
@@ -572,17 +598,20 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                         None => Err(Trap(format!("i64 overflow in {}", op.name()))),
                     }
                 }),
-                BinOp::Fadd | BinOp::Fsub | BinOp::Fmul | BinOp::Fdiv => Box::new(move |ctx| {
-                    let (x, y) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
-                    let v = match op {
-                        BinOp::Fadd => x + y,
-                        BinOp::Fsub => x - y,
-                        BinOp::Fmul => x * y,
-                        _ => x / y,
-                    };
-                    ctx.regs[dst] = RegVal::F64(v);
-                    Ok(())
-                }),
+                BinOp::Fadd | BinOp::Fsub | BinOp::Fmul | BinOp::Fdiv | BinOp::Frem => {
+                    Box::new(move |ctx| {
+                        let (x, y) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
+                        let v = match op {
+                            BinOp::Fadd => x + y,
+                            BinOp::Fsub => x - y,
+                            BinOp::Fmul => x * y,
+                            BinOp::Fdiv => x / y,
+                            _ => x % y,
+                        };
+                        ctx.regs[dst] = RegVal::F64(v);
+                        Ok(())
+                    })
+                }
                 BinOp::And | BinOp::Or | BinOp::Xor => Box::new(move |ctx| {
                     let (x, y) = (as_i1(ctx.regs[a]), as_i1(ctx.regs[b]));
                     let v = match op {
@@ -607,17 +636,10 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 let v = match ty {
                     Ty::I64 => apply_ord(pred, as_i64(ctx.regs[a]).cmp(&as_i64(ctx.regs[b]))),
                     Ty::F64 => {
-                        // IEEE partial order: NaN makes eq/lt/le/gt/ge false
-                        // and ne true.
+                        // DuckDB DOUBLE order, not IEEE: NaN = NaN, NaN above
+                        // everything, zeros equal (see exec::duck_fcmp).
                         let (x, y) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
-                        match pred {
-                            CmpPred::Eq => x == y,
-                            CmpPred::Ne => x != y,
-                            CmpPred::Lt => x < y,
-                            CmpPred::Le => x <= y,
-                            CmpPred::Gt => x > y,
-                            CmpPred::Ge => x >= y,
-                        }
+                        apply_ord(pred, super::duck_fcmp(x, y))
                     }
                     Ty::Str => {
                         let (x, y) = (as_str(ctx.regs[a]), as_str(ctx.regs[b]));
@@ -729,6 +751,84 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 ctx.regs[dst] = RegVal::Str(ctx.arena.concat(x, y));
                 Ok(())
             })
+        }
+        Inst::Str1 { op, dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let s = ctx.arena.get(as_str(ctx.regs[a]));
+                let mut out = String::with_capacity(s.len());
+                for c in s.chars() {
+                    // DuckDB uses SIMPLE (1:1) case maps; Rust std only has
+                    // full maps. Take the full map iff it is 1:1, else keep
+                    // the char — exact on ASCII, diverges on ß/İ (see the
+                    // 2026-07-26 builtin-pins spec; xfail'd differentially).
+                    let mapped = match op {
+                        StrOp1::Upper => {
+                            let mut it = c.to_uppercase();
+                            (it.next().unwrap(), it.next().is_none())
+                        }
+                        StrOp1::Lower => {
+                            let mut it = c.to_lowercase();
+                            (it.next().unwrap(), it.next().is_none())
+                        }
+                    };
+                    out.push(if mapped.1 { mapped.0 } else { c });
+                }
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                Ok(())
+            })
+        }
+        Inst::Strim {
+            side,
+            dst,
+            a,
+            chars,
+        } => {
+            let (dst, a, chars) = (sl(slots, dst), sl(slots, a), sl(slots, chars));
+            Box::new(move |ctx| {
+                let set: Vec<char> = ctx.arena.get(as_str(ctx.regs[chars])).chars().collect();
+                let s = ctx.arena.get(as_str(ctx.regs[a]));
+                let hit = |c: char| set.contains(&c);
+                let t = match side {
+                    TrimSide::Both => s.trim_matches(hit),
+                    TrimSide::Lead => s.trim_start_matches(hit),
+                    TrimSide::Trail => s.trim_end_matches(hit),
+                }
+                .to_owned();
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&t));
+                Ok(())
+            })
+        }
+        Inst::Ssubstr { dst, a, start, len } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            let (start, len) = (sl(slots, start), sl(slots, len));
+            Box::new(move |ctx| {
+                let (st, ln) = (as_i64(ctx.regs[start]), as_i64(ctx.regs[len]));
+                let s = ctx.arena.get(as_str(ctx.regs[a]));
+                let out = substr_window(s, st, ln);
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                Ok(())
+            })
+        }
+        Inst::Num1 { op, dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            match op {
+                NumOp1::Iabs => Box::new(move |ctx| match as_i64(ctx.regs[a]).checked_abs() {
+                    Some(v) => {
+                        ctx.regs[dst] = RegVal::I64(v);
+                        Ok(())
+                    }
+                    None => Err(Trap("i64 overflow in iabs".to_string())),
+                }),
+                NumOp1::Fabs => Box::new(move |ctx| {
+                    ctx.regs[dst] = RegVal::F64(as_f64(ctx.regs[a]).abs());
+                    Ok(())
+                }),
+                NumOp1::Fround => Box::new(move |ctx| {
+                    ctx.regs[dst] = RegVal::F64(as_f64(ctx.regs[a]).round());
+                    Ok(())
+                }),
+            }
         }
         Inst::Load { dst, col } => {
             let (dst, col) = (sl(slots, dst), col as usize);

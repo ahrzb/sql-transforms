@@ -238,6 +238,9 @@ pub enum BinOp {
     Fsub,
     Fmul,
     Fdiv,
+    /// f64 `%`, IEEE remainder-of-truncated-division (Rust `%`): sign of the
+    /// dividend, `x % 0.0` is NaN. Never traps (measured DuckDB 1.5.5).
+    Frem,
     And,
     Or,
     Xor,
@@ -250,7 +253,9 @@ impl BinOp {
             BinOp::Iadd | BinOp::Isub | BinOp::Imul | BinOp::Idiv | BinOp::Irem => {
                 (Ty::I64, Ty::I64)
             }
-            BinOp::Fadd | BinOp::Fsub | BinOp::Fmul | BinOp::Fdiv => (Ty::F64, Ty::F64),
+            BinOp::Fadd | BinOp::Fsub | BinOp::Fmul | BinOp::Fdiv | BinOp::Frem => {
+                (Ty::F64, Ty::F64)
+            }
             BinOp::And | BinOp::Or | BinOp::Xor => (Ty::I1, Ty::I1),
         }
     }
@@ -266,6 +271,7 @@ impl BinOp {
             BinOp::Fsub => "fsub",
             BinOp::Fmul => "fmul",
             BinOp::Fdiv => "fdiv",
+            BinOp::Frem => "frem",
             BinOp::And => "and",
             BinOp::Or => "or",
             BinOp::Xor => "xor",
@@ -300,6 +306,68 @@ impl CmpPred {
 pub enum RoundMode {
     Trunc,
     Round,
+}
+
+/// One-operand string ops (Str -> Str). Case mapping is SIMPLE (per-codepoint
+/// 1:1) to track DuckDB/utf8proc — see the 2026-07-26 builtin-pins spec.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StrOp1 {
+    Upper,
+    Lower,
+}
+
+impl StrOp1 {
+    pub fn name(self) -> &'static str {
+        match self {
+            StrOp1::Upper => "supper",
+            StrOp1::Lower => "slower",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TrimSide {
+    Both,
+    Lead,
+    Trail,
+}
+
+impl TrimSide {
+    pub fn name(self) -> &'static str {
+        match self {
+            TrimSide::Both => "both",
+            TrimSide::Lead => "lead",
+            TrimSide::Trail => "trail",
+        }
+    }
+}
+
+/// One-operand numeric ops. `Iabs` traps on i64::MIN (DuckDB: Out of Range);
+/// `Fabs` clears the sign bit (abs(-0.0) = +0.0); `Fround` is half away from
+/// zero (Rust `f64::round`), total on NaN/inf/huge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NumOp1 {
+    Iabs,
+    Fabs,
+    Fround,
+}
+
+impl NumOp1 {
+    /// Operand type == result type for all v0 numeric unaries.
+    pub fn sig(self) -> Ty {
+        match self {
+            NumOp1::Iabs => Ty::I64,
+            NumOp1::Fabs | NumOp1::Fround => Ty::F64,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NumOp1::Iabs => "iabs",
+            NumOp1::Fabs => "fabs",
+            NumOp1::Fround => "fround",
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -365,6 +433,35 @@ pub enum Inst {
         dst: Value,
         a: Value,
         b: Value,
+    },
+    /// `supper` / `slower` — Str -> Str, simple case mapping.
+    Str1 {
+        op: StrOp1,
+        dst: Value,
+        a: Value,
+    },
+    /// `strim.side a, chars` — remove characters in the set `chars` from the
+    /// given side(s) of `a`. Both operands Str; the empty set is a no-op.
+    Strim {
+        side: TrimSide,
+        dst: Value,
+        a: Value,
+        chars: Value,
+    },
+    /// `ssubstr a, start, len` — codepoint-window substring with DuckDB's
+    /// virtual-position arithmetic (negative start counts from the end,
+    /// start <= 0 consumes length before character 1, negative len is "").
+    Ssubstr {
+        dst: Value,
+        a: Value,
+        start: Value,
+        len: Value,
+    },
+    /// `iabs` / `fabs` / `fround` — numeric unaries, operand ty == result ty.
+    Num1 {
+        op: NumOp1,
+        dst: Value,
+        a: Value,
     },
     /// Read a NOT NULL input column at the current row.
     Load {
@@ -461,6 +558,10 @@ impl Inst {
             | Inst::Itos { dst, .. }
             | Inst::Ftos { dst, .. }
             | Inst::Sconcat { dst, .. }
+            | Inst::Str1 { dst, .. }
+            | Inst::Strim { dst, .. }
+            | Inst::Ssubstr { dst, .. }
+            | Inst::Num1 { dst, .. }
             | Inst::Load { dst, .. }
             | Inst::Sload { dst, .. } => vec![*dst],
             Inst::StoiOpt { flag, dst, .. }
@@ -508,16 +609,27 @@ impl Inst {
             | Inst::Ftos { dst, a }
             | Inst::Itof { dst, a }
             | Inst::Ftoi { dst, a, .. }
+            | Inst::Str1 { dst, a, .. }
+            | Inst::Num1 { dst, a, .. }
             | Inst::Not { dst, a } => {
                 *dst = m(*dst);
                 *a = m(*a);
             }
             Inst::Bin { dst, a, b, .. }
             | Inst::Cmp { dst, a, b, .. }
+            | Inst::Strim {
+                dst, a, chars: b, ..
+            }
             | Inst::Sconcat { dst, a, b } => {
                 *dst = m(*dst);
                 *a = m(*a);
                 *b = m(*b);
+            }
+            Inst::Ssubstr { dst, a, start, len } => {
+                *dst = m(*dst);
+                *a = m(*a);
+                *start = m(*start);
+                *len = m(*len);
             }
             Inst::Select { dst, cond, a, b } => {
                 *dst = m(*dst);

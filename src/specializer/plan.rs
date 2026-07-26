@@ -3,7 +3,7 @@
 //! scan/filter/project ribbon over the dynamic table; joins and static
 //! subtrees grow here at the BTA stretch.
 
-use super::ir::{CmpPred, Col, Lit, Ty};
+use super::ir::{CmpPred, Col, Lit, TrimSide, Ty};
 
 /// A relational operator tree over the dynamic table. Joins to static
 /// tables are not tree nodes: the v0 shape is rigid
@@ -127,6 +127,38 @@ pub enum SKind {
     Cast {
         inner: Box<SExpr>,
         trying: bool,
+    },
+    /// UPPER / LOWER — Str -> Str, NULL-propagating, simple case mapping.
+    StrCase {
+        upper: bool,
+        a: Box<SExpr>,
+    },
+    /// trim/ltrim/rtrim and all TRIM(...) forms. `chars` is always present:
+    /// the 1-arg SQL form gets a `' '` literal (DuckDB trims ONLY spaces).
+    Trim {
+        side: TrimSide,
+        a: Box<SExpr>,
+        chars: Box<SExpr>,
+    },
+    /// substr/substring. `len` is always present: the 2-arg SQL form gets an
+    /// `i64::MAX` literal ("rest of the string" under saturating window
+    /// arithmetic). All three operands NULL-propagate.
+    Substr {
+        a: Box<SExpr>,
+        start: Box<SExpr>,
+        len: Box<SExpr>,
+    },
+    /// ABS — I64 or F64; result type = operand type. Traps on i64::MIN.
+    Abs(Box<SExpr>),
+    /// ROUND(x) on F64, half away from zero. Integer round is identity and
+    /// never builds a node.
+    Round(Box<SExpr>),
+    /// String concatenation: `||` (always concat in DuckDB, any operands,
+    /// NULL-propagating) and the NULL-skipping CONCAT() after its per-arg
+    /// desugar. Both operands are Str by construction.
+    Concat {
+        a: Box<SExpr>,
+        b: Box<SExpr>,
     },
 }
 

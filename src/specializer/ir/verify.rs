@@ -176,9 +176,15 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         Inst::Select { dst, .. } => vec![(*dst, Ty::I1)],
         Inst::Itof { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::Ftoi { dst, .. } => vec![(*dst, Ty::I64)],
-        Inst::Itos { dst, .. } | Inst::Ftos { dst, .. } | Inst::Sconcat { dst, .. } => {
+        Inst::Itos { dst, .. }
+        | Inst::Ftos { dst, .. }
+        | Inst::Sconcat { dst, .. }
+        | Inst::Str1 { dst, .. }
+        | Inst::Strim { dst, .. }
+        | Inst::Ssubstr { dst, .. } => {
             vec![(*dst, Ty::Str)]
         }
+        Inst::Num1 { op, dst, .. } => vec![(*dst, op.sig())],
         Inst::StoiOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::I64)],
         Inst::StofOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::F64)],
         Inst::Load { dst, col } => vec![(*dst, in_col(*col).unwrap_or(Ty::I1))],
@@ -347,9 +353,27 @@ fn check_block(
             Inst::StoiOpt { a, .. } | Inst::StofOpt { a, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
             }
-            Inst::Sconcat { a, b: rhs, .. } => {
+            Inst::Sconcat { a, b: rhs, .. } | Inst::Strim { a, chars: rhs, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
                 want(&in_scope, def_types, *rhs, Ty::Str, "operand", bi, i, errs);
+            }
+            Inst::Str1 { a, .. } => want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs),
+            Inst::Ssubstr { a, start, len, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                want(
+                    &in_scope,
+                    def_types,
+                    *start,
+                    Ty::I64,
+                    "operand",
+                    bi,
+                    i,
+                    errs,
+                );
+                want(&in_scope, def_types, *len, Ty::I64, "operand", bi, i, errs);
+            }
+            Inst::Num1 { op, a, .. } => {
+                want(&in_scope, def_types, *a, op.sig(), "operand", bi, i, errs)
             }
             Inst::Load { col, .. } => match p.in_cols.get(*col as usize) {
                 None => err(errs, Some(bi), i, format!("unknown in column {col}")),

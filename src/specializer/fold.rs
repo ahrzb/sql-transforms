@@ -122,6 +122,28 @@ pub fn fold(e: SExpr) -> SExpr {
             inner: Box::new(fold(*inner)),
             trying,
         }),
+        // Builtin nodes fold children only (ponytail: constant upper('a')
+        // etc. can fold later if a corpus query ever cares).
+        SKind::StrCase { upper, a } => e(SKind::StrCase {
+            upper,
+            a: Box::new(fold(*a)),
+        }),
+        SKind::Trim { side, a, chars } => e(SKind::Trim {
+            side,
+            a: Box::new(fold(*a)),
+            chars: Box::new(fold(*chars)),
+        }),
+        SKind::Substr { a, start, len } => e(SKind::Substr {
+            a: Box::new(fold(*a)),
+            start: Box::new(fold(*start)),
+            len: Box::new(fold(*len)),
+        }),
+        SKind::Abs(a) => e(SKind::Abs(Box::new(fold(*a)))),
+        SKind::Round(a) => e(SKind::Round(Box::new(fold(*a)))),
+        SKind::Concat { a, b } => e(SKind::Concat {
+            a: Box::new(fold(*a)),
+            b: Box::new(fold(*b)),
+        }),
     }
 }
 
@@ -177,7 +199,8 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Sub => x - y,
             ArithOp::Mul => x * y,
             ArithOp::Div => x / y,
-            ArithOp::Rem => unreachable!("float % is rejected at bind"),
+            // IEEE, exactly as exec/interp.rs: x % 0.0 is NaN, never traps.
+            ArithOp::Rem => x % y,
         })),
         _ => unreachable!("operands are promoted to a common type at bind"),
     }
@@ -196,15 +219,8 @@ fn cmp(pred: CmpPred, a: &Lit, b: &Lit) -> bool {
     match (a, b) {
         (Lit::I64(x), Lit::I64(y)) => ord(x.cmp(y)),
         (Lit::Str(x), Lit::Str(y)) => ord(x.cmp(y)),
-        // IEEE partial order, exactly as exec/interp.rs computes it.
-        (Lit::F64(x), Lit::F64(y)) => match pred {
-            CmpPred::Eq => x == y,
-            CmpPred::Ne => x != y,
-            CmpPred::Lt => x < y,
-            CmpPred::Le => x <= y,
-            CmpPred::Gt => x > y,
-            CmpPred::Ge => x >= y,
-        },
+        // DuckDB DOUBLE order, exactly as exec/interp.rs computes it.
+        (Lit::F64(x), Lit::F64(y)) => ord(super::exec::duck_fcmp(*x, *y)),
         _ => unreachable!("cmp operands share a type; i1 cmp rejected at bind"),
     }
 }

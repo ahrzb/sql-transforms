@@ -63,9 +63,10 @@ def duck_check(
     want = con.execute(sql).to_arrow_table().to_pylist()
 
     # Row order is not part of the contract (a join may reorder); compare as
-    # multisets. NaN-free data only — keep NaN semantics in the Rust tests.
-    key = lambda r: sorted((k, str(v)) for k, v in r.items())  # noqa: E731
-    assert sorted(got, key=key) == sorted(want, key=key), f"{got} != {want}"
+    # multisets of repr'd rows — repr keeps value types apart (1 vs '1' vs
+    # 1.0) and makes NaN compare equal to itself.
+    key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
+    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
 
 
 DIM = static(
@@ -198,3 +199,96 @@ def test_output_model_is_synthesized():
     assert list(fields) == ["x", "y"]
     assert fields["x"].annotation is int
     assert fields["y"].annotation == float | None
+
+
+# ------------------------------------------------------------- stretch 4:
+# builtin catalogue, differential vs duckdb per the measured pins.
+
+
+def test_string_builtins_differential():
+    duck_check(
+        "SELECT upper(s) AS u, lower(s) AS l, trim(s) AS t, ltrim(s, 'a') AS lt, "
+        "rtrim(s) AS rt, substr(s, 2, 3) AS sub FROM __THIS__",
+        {"s": "str?"},
+        [{"s": "  aBc  "}, {"s": "abcdef"}, {"s": ""}, {"s": None}],
+    )
+
+
+def test_substr_edges_differential():
+    duck_check(
+        "SELECT substr(s, 0, 3) AS a, substr(s, -2) AS b, substr(s, -10, 8) AS c, "
+        "substr(s, 1, 0) AS d, substr(s, 9) AS e FROM __THIS__",
+        {"s": "str"},
+        [{"s": "hello"}, {"s": "x"}],
+    )
+
+
+def test_concat_and_pipes_differential():
+    duck_check(
+        "SELECT n || '!' AS a, 'v=' || n AS b, concat(s, n, 'z') AS c, "
+        "concat(s) AS d FROM __THIS__",
+        {"n": "int?", "s": "str?"},
+        [{"n": 1, "s": "a"}, {"n": None, "s": None}, {"n": -3, "s": ""}],
+    )
+
+
+def test_abs_round_differential():
+    duck_check(
+        "SELECT abs(n) AS an, abs(x) AS ax, round(x) AS rx, round(n) AS rn "
+        "FROM __THIS__",
+        {"n": "int?", "x": "float?"},
+        [
+            {"n": -5, "x": -2.5},
+            {"n": 3, "x": 2.5},
+            {"n": None, "x": None},
+            {"n": 0, "x": -0.4},
+        ],
+    )
+
+
+def test_rem_by_zero_differential():
+    duck_check(
+        "SELECT a % b AS r FROM __THIS__",
+        {"a": "int", "b": "int"},
+        [{"a": 5, "b": 0}, {"a": 5, "b": 3}, {"a": -7, "b": 2}],
+    )
+
+
+def test_float_rem_differential():
+    duck_check(
+        "SELECT x % y AS r FROM __THIS__",
+        {"x": "float", "y": "float"},
+        [{"x": -5.5, "y": 2.5}, {"x": 7.0, "y": 4.0}],
+    )
+
+
+def test_coalesce_nullif_differential():
+    duck_check(
+        "SELECT coalesce(n, 9) AS a, coalesce(NULL, n, 9) AS b, "
+        "nullif(n, 3) AS c, nullif(s, 'x') AS d FROM __THIS__",
+        {"n": "int?", "s": "str?"},
+        [{"n": 3, "s": "x"}, {"n": None, "s": "y"}, {"n": 7, "s": None}],
+    )
+
+
+def test_nan_comparison_differential():
+    # DuckDB DOUBLE order: NaN = NaN keeps the row.
+    duck_check(
+        "SELECT x FROM __THIS__ WHERE x = x",
+        {"x": "float"},
+        [{"x": float("nan")}, {"x": 1.5}],
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="DuckDB uses utf8proc SIMPLE case maps (upper('ß')='ẞ', "
+    "lower('İ')='i'); Rust std only exposes full maps — known divergence, "
+    "see docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md",
+)
+def test_simple_case_mapping_divergence():
+    duck_check(
+        "SELECT upper(s) AS u, lower(s) AS l FROM __THIS__",
+        {"s": "str"},
+        [{"s": "ß"}, {"s": "İ"}],
+    )

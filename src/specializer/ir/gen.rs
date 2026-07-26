@@ -9,8 +9,8 @@
 //! the input source for M-interp's interpreter-vs-codegen fuzzing.
 
 use super::{
-    BinOp, Block, BlockId, Builder, CmpPred, Col, ColTy, Inst, Lit, Program, RoundMode, StaticTy,
-    Term, Ty, Value,
+    BinOp, Block, BlockId, Builder, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode,
+    StaticTy, StrOp1, Term, TrimSide, Ty, Value,
 };
 
 pub struct Rng(u64);
@@ -222,7 +222,7 @@ fn load_all(
 fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<Inst>) {
     let n = rng.below(7);
     for _ in 0..n {
-        match rng.below(8) {
+        match rng.below(12) {
             0 => {
                 let ops = [
                     BinOp::Iadd,
@@ -232,6 +232,7 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                     BinOp::Fsub,
                     BinOp::Fmul,
                     BinOp::Fdiv,
+                    BinOp::Frem,
                     BinOp::And,
                     BinOp::Or,
                     BinOp::Xor,
@@ -312,6 +313,52 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 let dst = b.fresh();
                 insts.push(Inst::Sconcat { dst, a, b: rhs });
                 scope.add(dst, Ty::Str);
+            }
+            8 => {
+                let op = if rng.chance(50) {
+                    StrOp1::Upper
+                } else {
+                    StrOp1::Lower
+                };
+                let a = ensure(rng, b, scope, insts, Ty::Str);
+                let dst = b.fresh();
+                insts.push(Inst::Str1 { op, dst, a });
+                scope.add(dst, Ty::Str);
+            }
+            9 => {
+                let sides = [TrimSide::Both, TrimSide::Lead, TrimSide::Trail];
+                let side = sides[rng.below(3) as usize];
+                let a = ensure(rng, b, scope, insts, Ty::Str);
+                let chars = ensure(rng, b, scope, insts, Ty::Str);
+                let dst = b.fresh();
+                insts.push(Inst::Strim {
+                    side,
+                    dst,
+                    a,
+                    chars,
+                });
+                scope.add(dst, Ty::Str);
+            }
+            10 => {
+                let a = ensure(rng, b, scope, insts, Ty::Str);
+                let start = ensure(rng, b, scope, insts, Ty::I64);
+                let len = ensure(rng, b, scope, insts, Ty::I64);
+                let dst = b.fresh();
+                insts.push(Inst::Ssubstr { dst, a, start, len });
+                scope.add(dst, Ty::Str);
+            }
+            11 => {
+                // iabs excluded: it traps on i64::MIN, and generated programs
+                // must stay executable for M-interp fuzzing.
+                let op = if rng.chance(50) {
+                    NumOp1::Fabs
+                } else {
+                    NumOp1::Fround
+                };
+                let a = ensure(rng, b, scope, insts, Ty::F64);
+                let dst = b.fresh();
+                insts.push(Inst::Num1 { op, dst, a });
+                scope.add(dst, Ty::F64);
             }
             _ => {
                 let (from, mk): (Ty, fn(Value, Value) -> Inst) = if rng.chance(50) {

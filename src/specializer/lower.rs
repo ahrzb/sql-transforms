@@ -28,7 +28,8 @@ use std::collections::HashMap;
 
 use super::frontend::PrepareError;
 use super::ir::{
-    BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, Program, StaticTy, Term, Ty, Value,
+    BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
+    Term, Ty, Value,
 };
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
@@ -414,6 +415,7 @@ impl<'a> FB<'a> {
                     (ArithOp::Sub, Ty::F64) => BinOp::Fsub,
                     (ArithOp::Mul, Ty::F64) => BinOp::Fmul,
                     (ArithOp::Div, Ty::F64) => BinOp::Fdiv,
+                    (ArithOp::Rem, Ty::F64) => BinOp::Frem,
                     (op, ty) => {
                         return Err(PrepareError::Internal(format!(
                             "arith {op:?} on {} escaped the frontend",
@@ -468,6 +470,97 @@ impl<'a> FB<'a> {
             }
             SKind::Case { arms, default } => self.case(e, arms, default.as_deref(), live),
             SKind::Cast { inner, trying } => self.cast(e, inner, *trying, live),
+            SKind::StrCase { upper, a } => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                let op = if *upper { StrOp1::Upper } else { StrOp1::Lower };
+                self.inst(Inst::Str1 { op, dst, a: l.val });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::Trim { side, a, chars } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let lc = self.emit(chars, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                self.inst(Inst::Strim {
+                    side: *side,
+                    dst,
+                    a: la.val,
+                    chars: lc.val,
+                });
+                Ok(Lane {
+                    flag: self.combine_flags(la.flag, lc.flag),
+                    val: dst,
+                })
+            }
+            SKind::Substr { a, start, len } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let ls = self.emit(start, live)?;
+                live.push((ls, Ty::I64));
+                let ll = self.emit(len, live)?;
+                let (ls, _) = live.pop().expect("pushed above");
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                self.inst(Inst::Ssubstr {
+                    dst,
+                    a: la.val,
+                    start: ls.val,
+                    len: ll.val,
+                });
+                let flag = self.combine_flags(la.flag, ls.flag);
+                Ok(Lane {
+                    flag: self.combine_flags(flag, ll.flag),
+                    val: dst,
+                })
+            }
+            SKind::Abs(a) => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                let op = if e.ty == Ty::I64 {
+                    NumOp1::Iabs
+                } else {
+                    NumOp1::Fabs
+                };
+                self.inst(Inst::Num1 { op, dst, a: l.val });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::Round(a) => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::Num1 {
+                    op: NumOp1::Fround,
+                    dst,
+                    a: l.val,
+                });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::Concat { a, b } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let lb = self.emit(b, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                self.inst(Inst::Sconcat {
+                    dst,
+                    a: la.val,
+                    b: lb.val,
+                });
+                Ok(Lane {
+                    flag: self.combine_flags(la.flag, lb.flag),
+                    val: dst,
+                })
+            }
         }
     }
 
