@@ -341,6 +341,37 @@ def test_substr_negative_length_differential():
     )
 
 
+def test_substr_negative_start_column_path_differential():
+    # The TASK-45-review "parity bug" triples, through the path real queries
+    # take (column input -> DuckDB's vectorized substr). Both engines agree:
+    # negative start clamps to 1 BEFORE the length window (builtin-pins \u00a74).
+    duck_check(
+        "SELECT substr(s, st, ln) AS r FROM __THIS__",
+        {"s": "str", "st": "int", "ln": "int"},
+        [
+            {"s": "ab", "st": -4, "ln": 2},
+            {"s": "ab", "st": -3, "ln": 2},
+            {"s": "ab", "st": -5, "ln": 3},
+        ],
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="DuckDB's constant-fold substr disagrees with its own vectorized "
+    "path on negative starts (const substr('ab',-4,2)='', vectorized='ab'; "
+    "measured 1.5.5). The engine pins the vectorized path, so pure-literal "
+    "negative-start substr diverges \u2014 known residual, builtin-pins spec \u00a74",
+)
+def test_substr_constant_fold_divergence():
+    duck_check(
+        "SELECT substr('ab', -4, 2) AS a, substr('ab', -3, 2) AS b, "
+        "substr('ab', -5, 3) AS c FROM __THIS__",
+        {"s": "str"},
+        [{"s": "x"}],
+    )
+
+
 def test_float_rendering_differential():
     duck_check(
         "SELECT x || '' AS s FROM __THIS__",
