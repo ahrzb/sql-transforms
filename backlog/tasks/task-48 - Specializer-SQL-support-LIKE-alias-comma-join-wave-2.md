@@ -1,10 +1,12 @@
 ---
 id: TASK-48
-title: 'Specializer SQL support: LIKE, dynamic-table alias, comma-join rewrite (wave 2)'
-status: In Progress
+title: >-
+  Specializer SQL support: LIKE, dynamic-table alias, comma-join rewrite (wave
+  2)
+status: Done
 assignee: []
 created_date: '2026-07-26 15:05'
-updated_date: '2026-07-26 15:05'
+updated_date: '2026-07-26 16:41'
 labels: []
 milestone: m-7
 dependencies:
