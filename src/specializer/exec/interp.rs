@@ -1244,6 +1244,25 @@ pub(super) fn duck_nextafter(x: f64, y: f64) -> f64 {
     f64::from_bits(if up { bits + 1 } else { bits - 1 })
 }
 
+/// DuckDB's int-overflow trap texts, verbatim (wave-3 pins: measured via
+/// both the operators and their function aliases). Division covers `//`
+/// AND `%` on i64::MIN op -1 — DuckDB's own % message says "division",
+/// and only add/sub/mul carry the trailing '!'.
+pub(super) fn overflow_msg(op: BinOp, x: i64, y: i64) -> String {
+    match op {
+        BinOp::Iadd => format!("Overflow in addition of INT64 ({x} + {y})!"),
+        BinOp::Isub => format!("Overflow in subtraction of INT64 ({x} - {y})!"),
+        BinOp::Imul => format!("Overflow in multiplication of INT64 ({x} * {y})!"),
+        _ => format!("Overflow in division of {x} / {y}"),
+    }
+}
+
+/// DuckDB's abs(i64::MIN) trap text, verbatim (measured 2026-07-26 — no
+/// trailing '!', unlike the binary-op overflow family).
+pub(super) fn abs_overflow_msg(x: i64) -> String {
+    format!("Overflow on abs({x})")
+}
+
 /// Wave-1 string search (pins: 1-based CODEPOINT positions, empty needle
 /// matches everything, byte-wise comparison, zero unicode intelligence).
 pub(super) fn str_find(s: &str, n: &str) -> i64 {
@@ -1308,7 +1327,7 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                             ctx.regs[dst] = RegVal::I64(v);
                             Ok(())
                         }
-                        None => Err(Trap(format!("i64 overflow in {}", op.name()))),
+                        None => Err(Trap(overflow_msg(op, x, y))),
                     }
                 }),
                 BinOp::Idiv | BinOp::Irem => Box::new(move |ctx| {
@@ -1325,7 +1344,7 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                             ctx.regs[dst] = RegVal::I64(v);
                             Ok(())
                         }
-                        None => Err(Trap(format!("i64 overflow in {}", op.name()))),
+                        None => Err(Trap(overflow_msg(op, x, y))),
                     }
                 }),
                 BinOp::Fadd
@@ -1780,12 +1799,15 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
         Inst::Num1 { op, dst, a } => {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
             match op {
-                NumOp1::Iabs => Box::new(move |ctx| match as_i64(ctx.regs[a]).checked_abs() {
-                    Some(v) => {
-                        ctx.regs[dst] = RegVal::I64(v);
-                        Ok(())
+                NumOp1::Iabs => Box::new(move |ctx| {
+                    let x = as_i64(ctx.regs[a]);
+                    match x.checked_abs() {
+                        Some(v) => {
+                            ctx.regs[dst] = RegVal::I64(v);
+                            Ok(())
+                        }
+                        None => Err(Trap(abs_overflow_msg(x))),
                     }
-                    None => Err(Trap("i64 overflow in iabs".to_string())),
                 }),
                 NumOp1::Fabs => Box::new(move |ctx| {
                     ctx.regs[dst] = RegVal::F64(as_f64(ctx.regs[a]).abs());

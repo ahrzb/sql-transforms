@@ -514,18 +514,21 @@ fn eval1(body: &str, out_col: &str) -> Result<Vec<Vec<String>>, Trap> {
 
 #[test]
 fn pin_integer_overflow_and_division_traps() {
+    // Overflow texts are DuckDB's own, verbatim with operand values
+    // (wave-3 pins); division-by-zero texts are internal (unreachable
+    // through SQL — the frontend CASE guard yields NULL first).
     for (expr, needle) in [
         (
             "  %a = const.i64 9223372036854775807\n  %b = const.i64 1\n  %r = iadd %a, %b",
-            "overflow in iadd",
+            "Overflow in addition of INT64 (9223372036854775807 + 1)!",
         ),
         (
             "  %a = const.i64 -9223372036854775808\n  %b = const.i64 1\n  %r = isub %a, %b",
-            "overflow in isub",
+            "Overflow in subtraction of INT64 (-9223372036854775808 - 1)!",
         ),
         (
             "  %a = const.i64 4611686018427387904\n  %b = const.i64 4\n  %r = imul %a, %b",
-            "overflow in imul",
+            "Overflow in multiplication of INT64 (4611686018427387904 * 4)!",
         ),
         (
             "  %a = const.i64 1\n  %b = const.i64 0\n  %r = idiv %a, %b",
@@ -537,11 +540,11 @@ fn pin_integer_overflow_and_division_traps() {
         ),
         (
             "  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = idiv %a, %b",
-            "overflow in idiv",
+            "Overflow in division of -9223372036854775808 / -1",
         ),
         (
             "  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = irem %a, %b",
-            "overflow in irem",
+            "Overflow in division of -9223372036854775808 / -1",
         ),
     ] {
         let body = format!("{expr}\n  store out.o, %r");
@@ -608,7 +611,7 @@ fn pin_frem_is_ieee_and_new_unaries() {
 fn pin_iabs_min_traps() {
     let body = "  %m = const.i64 -9223372036854775808\n  %a = iabs %m\n  store out.o, %a";
     let err = eval1(body, "o: i64").unwrap_err();
-    assert!(err.0.contains("overflow"), "got '{}'", err.0);
+    assert!(err.0.contains("Overflow on abs"), "got '{}'", err.0);
 }
 
 #[test]
