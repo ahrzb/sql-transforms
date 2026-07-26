@@ -86,7 +86,13 @@ fn materialize_map(
             }
             keys.push(match ty {
                 Ty::I1 => KeyBits::I1(v.extract()?),
-                Ty::I64 => KeyBits::I64(v.extract()?),
+                Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
+                    build_err(format!(
+                        "unsupported: static table '{}' key column '{name}' value \
+                         outside BIGINT range (UBIGINT/HUGEINT payloads)",
+                        spec.table
+                    ))
+                })?),
                 Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
                 Ty::Str => KeyBits::Str(v.extract()?),
             });
@@ -103,7 +109,13 @@ fn materialize_map(
             }
             vals.push(match ty {
                 Ty::I1 => ScalarVal::I1(v.extract()?),
-                Ty::I64 => ScalarVal::I64(v.extract()?),
+                Ty::I64 => ScalarVal::I64(v.extract().map_err(|_| {
+                    build_err(format!(
+                        "unsupported: static table '{}' value column '{name}' value \
+                         outside BIGINT range (UBIGINT/HUGEINT payloads)",
+                        spec.table
+                    ))
+                })?),
                 Ty::F64 => ScalarVal::F64(v.extract()?),
                 Ty::Str => ScalarVal::Str(v.extract()?),
             });
