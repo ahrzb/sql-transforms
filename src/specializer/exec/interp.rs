@@ -928,6 +928,322 @@ pub(super) fn like_escape_of(esc: &str) -> Result<Option<u8>, Trap> {
     }
 }
 
+// ------------------------------------------ wave-3 builtins (TASK-49) --
+// One shared fn per op, used verbatim by BOTH backends. Pins:
+// docs/superpowers/specs/2026-07-26-wave3-builtin-pins.md — all
+// similarity ops are raw UTF-8 BYTE-based; error texts are DuckDB's own.
+
+/// levenshtein == editdist3: classic two-row DP over bytes.
+pub(super) fn duck_levenshtein(a: &[u8], b: &[u8]) -> i64 {
+    if a.is_empty() || b.is_empty() {
+        return (a.len() + b.len()) as i64;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &ac) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &bc) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ac != bc);
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()] as i64
+}
+
+/// damerau_levenshtein: the UNRESTRICTED DL variant (NOT OSA — witness
+/// ('ca','abc') = 2), transposition cost 1, over bytes. Full matrix plus
+/// a last-occurrence table, as the unrestricted recurrence requires.
+// ponytail: O(n*m) memory; corpus strings are short — stream it if huge
+// inputs ever matter.
+pub(super) fn duck_damerau(a: &[u8], b: &[u8]) -> i64 {
+    let (n, m) = (a.len(), b.len());
+    if n == 0 || m == 0 {
+        return (n + m) as i64;
+    }
+    let w = m + 2;
+    let inf = n + m;
+    let mut d = vec![0usize; (n + 2) * w];
+    d[0] = inf;
+    for i in 0..=n {
+        d[(i + 1) * w] = inf;
+        d[(i + 1) * w + 1] = i;
+    }
+    for j in 0..=m {
+        d[j + 1] = inf;
+        d[w + j + 1] = j;
+    }
+    let mut last_a = [0usize; 256]; // last row where each byte occurred in a
+    for i in 1..=n {
+        let mut last_b = 0usize; // last column where a[i-1] matched in b
+        for j in 1..=m {
+            let (i1, j1) = (last_a[b[j - 1] as usize], last_b);
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            if cost == 0 {
+                last_b = j;
+            }
+            let sub = d[i * w + j] + cost;
+            let ins = d[(i + 1) * w + j] + 1;
+            let del = d[i * w + j + 1] + 1;
+            let trans = d[i1 * w + j1] + (i - i1 - 1) + 1 + (j - j1 - 1);
+            d[(i + 1) * w + j + 1] = sub.min(ins).min(del).min(trans);
+        }
+        last_a[a[i - 1] as usize] = i;
+    }
+    d[(n + 1) * w + m + 1] as i64
+}
+
+/// jaccard: |A∩B|/|A∪B| over single-BYTE sets; empty either side traps.
+pub(super) fn duck_jaccard(a: &[u8], b: &[u8]) -> Result<f64, Trap> {
+    if a.is_empty() || b.is_empty() {
+        return Err(Trap("Jaccard Function: An argument too short!".into()));
+    }
+    let (mut in_a, mut in_b) = ([false; 256], [false; 256]);
+    for &c in a {
+        in_a[c as usize] = true;
+    }
+    for &c in b {
+        in_b[c as usize] = true;
+    }
+    let (mut inter, mut union) = (0i64, 0i64);
+    for i in 0..256 {
+        inter += i64::from(in_a[i] && in_b[i]);
+        union += i64::from(in_a[i] || in_b[i]);
+    }
+    Ok(inter as f64 / union as f64)
+}
+
+/// hamming == mismatches: byte-wise; empty inputs and length mismatch
+/// trap — the messages say "Mismatch Function" even for hamming
+/// (measured; the error text leaks the shared implementation).
+pub(super) fn duck_hamming(a: &[u8], b: &[u8]) -> Result<i64, Trap> {
+    if a.is_empty() || b.is_empty() {
+        return Err(Trap(
+            "Mismatch Function: Strings must be of length > 0!".into(),
+        ));
+    }
+    if a.len() != b.len() {
+        return Err(Trap(
+            "Mismatch Function: Strings must be of equal length!".into(),
+        ));
+    }
+    Ok(a.iter().zip(b).filter(|(x, y)| x != y).count() as i64)
+}
+
+/// Engine guard for string-building ops: DuckDB errors on absurd result
+/// sizes too (exact threshold/message unpinned — huge-n was deliberately
+/// not probed); 1 GiB keeps the engine alive without shadowing any pin.
+const STR_BUILD_CAP: u64 = 1 << 30;
+
+/// repeat(s, n): n <= 0 -> '' silently.
+pub(super) fn duck_repeat(s: &str, n: i64) -> Result<String, Trap> {
+    if n <= 0 {
+        return Ok(String::new());
+    }
+    match (s.len() as u64).checked_mul(n as u64) {
+        Some(sz) if sz <= STR_BUILD_CAP => Ok(s.repeat(n as usize)),
+        _ => Err(Trap("string builder result exceeds 1 GiB".into())),
+    }
+}
+
+/// lpad/rpad(s, l, pad): l counts CODEPOINTS; truncation keeps the FIRST
+/// l codepoints for BOTH sides; the pad cycles cut at codepoint
+/// boundaries; empty pad traps ONLY when growth is needed.
+pub(super) fn duck_pad(left: bool, s: &str, l: i64, pad: &str) -> Result<String, Trap> {
+    if l <= 0 {
+        return Ok(String::new());
+    }
+    let l = l as usize;
+    let n = s.chars().count();
+    if l <= n {
+        return Ok(s.chars().take(l).collect());
+    }
+    if pad.is_empty() {
+        return Err(Trap(format!(
+            "Insufficient padding in {}.",
+            if left { "LPAD" } else { "RPAD" }
+        )));
+    }
+    if l as u64 > STR_BUILD_CAP / 4 {
+        return Err(Trap("string builder result exceeds 1 GiB".into()));
+    }
+    let fill: String = pad.chars().cycle().take(l - n).collect();
+    Ok(if left {
+        fill + s
+    } else {
+        let mut out = s.to_string();
+        out.push_str(&fill);
+        out
+    })
+}
+
+/// replace(s, from, to): empty needle is a strict NO-OP; leftmost
+/// non-overlapping single pass (Rust `str::replace` is exactly that).
+pub(super) fn duck_replace(s: &str, from: &str, to: &str) -> String {
+    if from.is_empty() {
+        return s.to_string();
+    }
+    s.replace(from, to)
+}
+
+/// translate(s, from, to): per-codepoint map, FIRST occurrence in `from`
+/// wins, from-chars beyond |to| are deleted.
+pub(super) fn duck_translate(s: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match from.chars().position(|f| f == c) {
+            None => out.push(c),
+            Some(i) => {
+                if let Some(t) = to.chars().nth(i) {
+                    out.push(t);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// array_extract/list_extract/s[i] on VARCHAR: 1-based codepoint,
+/// negative resolves len+1+i, out-of-range/0 -> '' (NOT NULL). Returns
+/// the byte range so callers can subview instead of copying.
+pub(super) fn extract_window(s: &str, i: i64) -> std::ops::Range<usize> {
+    let n = s.chars().count() as i64;
+    let pos = if i < 0 { (n + 1).saturating_add(i) } else { i };
+    if pos < 1 || pos > n {
+        return 0..0;
+    }
+    let skip = (pos - 1) as usize;
+    let b0 = s
+        .char_indices()
+        .nth(skip)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    let b1 = s[b0..]
+        .chars()
+        .next()
+        .map(|c| b0 + c.len_utf8())
+        .unwrap_or(s.len());
+    b0..b1
+}
+
+/// array_slice/list_slice/s[a:b] on VARCHAR: 1-based, both-ends-INCLUSIVE
+/// codepoints, negative from-end (-1 = last), lo <= 0 clamps to start,
+/// hi > len clamps to end, reversed/out-of-range -> ''. Byte range out.
+pub(super) fn slice_window(s: &str, lo: i64, hi: i64) -> std::ops::Range<usize> {
+    let n = s.chars().count() as i64;
+    let rlo = (if lo < 0 {
+        (n + 1).saturating_add(lo)
+    } else {
+        lo
+    })
+    .max(1);
+    let rhi = (if hi < 0 {
+        (n + 1).saturating_add(hi)
+    } else {
+        hi
+    })
+    .min(n);
+    if rlo > rhi {
+        return 0..0;
+    }
+    let skip = (rlo - 1) as usize;
+    let take = (rhi - rlo + 1) as usize;
+    let b0 = s
+        .char_indices()
+        .nth(skip)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    let b1 = s[b0..]
+        .char_indices()
+        .nth(take)
+        .map(|(i, _)| b0 + i)
+        .unwrap_or(s.len());
+    b0..b1
+}
+
+/// unicode/ord ('' -> -1) and ascii ('' -> 0 — the sole divergence):
+/// first codepoint as i64.
+pub(super) fn duck_ord(s: &str, empty_zero: bool) -> i64 {
+    match s.chars().next() {
+        Some(c) => c as i64,
+        None => {
+            if empty_zero {
+                0
+            } else {
+                -1
+            }
+        }
+    }
+}
+
+/// strip_accents: all-ASCII passes VERBATIM (NULs preserved); otherwise
+/// truncate at the first NUL (the measured context-dependent quirk),
+/// per-codepoint oracle map, then Hangul jamo composition. TOTAL.
+pub(super) fn duck_strip_accents(s: &str) -> Option<String> {
+    if s.is_ascii() {
+        return None; // caller keeps the input span — no copy
+    }
+    let cut = s.find('\0').map(|i| &s[..i]).unwrap_or(s);
+    let mut out = String::with_capacity(cut.len());
+    for c in cut.chars() {
+        let mapped = match super::strip_accents::strip_map(c) {
+            None => Some(c),
+            Some(m) => m,
+        };
+        let Some(mc) = mapped else { continue };
+        // Hangul compose against the last emitted codepoint: L+V -> LV,
+        // LV+T -> LVT (formulaic; wrong-order jamo never compose).
+        if let Some(p) = out.chars().next_back() {
+            let (pu, cu) = (p as u32, mc as u32);
+            if (0x1100..=0x1112).contains(&pu) && (0x1161..=0x1175).contains(&cu) {
+                out.pop();
+                let lv = 0xAC00 + (pu - 0x1100) * 588 + (cu - 0x1161) * 28;
+                out.push(char::from_u32(lv).expect("Hangul LV in range"));
+                continue;
+            }
+            if (0xAC00..0xAC00 + 11172).contains(&pu)
+                && (pu - 0xAC00) % 28 == 0
+                && (0x11A8..=0x11C2).contains(&cu)
+            {
+                out.pop();
+                let lvt = pu + (cu - 0x11A7);
+                out.push(char::from_u32(lvt).expect("Hangul LVT in range"));
+                continue;
+            }
+        }
+        out.push(mc);
+    }
+    Some(out)
+}
+
+/// SQL fdiv(x, y) = floor(x / y) — TOTAL, ±inf on zero divisor.
+pub(super) fn duck_fdiv(x: f64, y: f64) -> f64 {
+    (x / y).floor()
+}
+
+/// SQL fmod(x, y) = x − floor(x/y)·y — FLOORED (divisor's sign), NaN on
+/// zero or infinite divisor. NOT C fmod (that is SQL `%`).
+pub(super) fn duck_fmod(x: f64, y: f64) -> f64 {
+    x - (x / y).floor() * y
+}
+
+/// C nextafter, bit-exact; x == y returns y (incl. signed zeros).
+pub(super) fn duck_nextafter(x: f64, y: f64) -> f64 {
+    if x.is_nan() || y.is_nan() {
+        return f64::NAN;
+    }
+    if x == y {
+        return y;
+    }
+    if x == 0.0 {
+        // toward y from zero: the smallest denormal with y's direction.
+        return f64::from_bits(1).copysign(y - x);
+    }
+    let bits = x.to_bits();
+    let up = (y > x) == (x > 0.0); // move away from zero?
+    f64::from_bits(if up { bits + 1 } else { bits - 1 })
+}
+
 /// Wave-1 string search (pins: 1-based CODEPOINT positions, empty needle
 /// matches everything, byte-wise comparison, zero unicode intelligence).
 pub(super) fn str_find(s: &str, n: &str) -> i64 {
@@ -945,7 +1261,7 @@ pub(super) fn str_pred(op: StrOp2, s: &str, n: &str) -> bool {
         StrOp2::Contains => s.contains(n),
         StrOp2::Starts => s.starts_with(n),
         StrOp2::Ends => s.ends_with(n),
-        StrOp2::Find => unreachable!("find returns i64, handled separately"),
+        _ => unreachable!("non-predicate str2 ops have dedicated arms"),
     }
 }
 
@@ -1017,7 +1333,10 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 | BinOp::Fmul
                 | BinOp::Fdiv
                 | BinOp::Frem
-                | BinOp::Fpow => Box::new(move |ctx| {
+                | BinOp::Fpow
+                | BinOp::Ffloordiv
+                | BinOp::Ffloormod
+                | BinOp::Fnextafter => Box::new(move |ctx| {
                     let (x, y) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
                     let v = match op {
                         BinOp::Fadd => x + y,
@@ -1025,6 +1344,9 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                         BinOp::Fmul => x * y,
                         BinOp::Fdiv => x / y,
                         BinOp::Fpow => duck_pow(x, y)?,
+                        BinOp::Ffloordiv => duck_fdiv(x, y),
+                        BinOp::Ffloormod => duck_fmod(x, y),
+                        BinOp::Fnextafter => duck_nextafter(x, y),
                         _ => x % y,
                     };
                     ctx.regs[dst] = RegVal::F64(v);
@@ -1234,6 +1556,30 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                     ctx.regs[dst] = RegVal::I64(str_find(s, n));
                     Ok(())
                 }),
+                StrOp2::Levenshtein => Box::new(move |ctx| {
+                    let s = ctx.arena.get(as_str(ctx.regs[a])).as_bytes();
+                    let n = ctx.arena.get(as_str(ctx.regs[b])).as_bytes();
+                    ctx.regs[dst] = RegVal::I64(duck_levenshtein(s, n));
+                    Ok(())
+                }),
+                StrOp2::Damerau => Box::new(move |ctx| {
+                    let s = ctx.arena.get(as_str(ctx.regs[a])).as_bytes();
+                    let n = ctx.arena.get(as_str(ctx.regs[b])).as_bytes();
+                    ctx.regs[dst] = RegVal::I64(duck_damerau(s, n));
+                    Ok(())
+                }),
+                StrOp2::Jaccard => Box::new(move |ctx| {
+                    let s = ctx.arena.get(as_str(ctx.regs[a])).as_bytes();
+                    let n = ctx.arena.get(as_str(ctx.regs[b])).as_bytes();
+                    ctx.regs[dst] = RegVal::F64(duck_jaccard(s, n)?);
+                    Ok(())
+                }),
+                StrOp2::Hamming => Box::new(move |ctx| {
+                    let s = ctx.arena.get(as_str(ctx.regs[a])).as_bytes();
+                    let n = ctx.arena.get(as_str(ctx.regs[b])).as_bytes();
+                    ctx.regs[dst] = RegVal::I64(duck_hamming(s, n)?);
+                    Ok(())
+                }),
                 op => Box::new(move |ctx| {
                     let s = ctx.arena.get(as_str(ctx.regs[a]));
                     let n = ctx.arena.get(as_str(ctx.regs[b]));
@@ -1241,6 +1587,93 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                     Ok(())
                 }),
             }
+        }
+        Inst::Str3 { op, dst, a, b, c } => {
+            let (dst, a, b, c) = (sl(slots, dst), sl(slots, a), sl(slots, b), sl(slots, c));
+            Box::new(move |ctx| {
+                let out = {
+                    let s = ctx.arena.get(as_str(ctx.regs[a]));
+                    let x = ctx.arena.get(as_str(ctx.regs[b]));
+                    let y = ctx.arena.get(as_str(ctx.regs[c]));
+                    match op {
+                        ir::StrOp3::Replace => duck_replace(s, x, y),
+                        ir::StrOp3::Translate => duck_translate(s, x, y),
+                    }
+                };
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                Ok(())
+            })
+        }
+        Inst::Str2i { op, dst, a, n } => {
+            let (dst, a, n) = (sl(slots, dst), sl(slots, a), sl(slots, n));
+            match op {
+                ir::StrOp2i::Repeat => Box::new(move |ctx| {
+                    let out = duck_repeat(
+                        ctx.arena.get(as_str(ctx.regs[a])),
+                        as_i64(ctx.regs[n]),
+                    )?;
+                    ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                    Ok(())
+                }),
+                ir::StrOp2i::Extract => Box::new(move |ctx| {
+                    let sref = as_str(ctx.regs[a]);
+                    let rng = extract_window(ctx.arena.get(sref), as_i64(ctx.regs[n]));
+                    // The extracted char is a subview of the input span.
+                    ctx.regs[dst] = RegVal::Str(StrRef {
+                        off: sref.off + rng.start,
+                        len: rng.end - rng.start,
+                    });
+                    Ok(())
+                }),
+            }
+        }
+        Inst::Spad {
+            left,
+            dst,
+            a,
+            len,
+            pad,
+        } => {
+            let (dst, a, len, pad) = (sl(slots, dst), sl(slots, a), sl(slots, len), sl(slots, pad));
+            Box::new(move |ctx| {
+                let out = duck_pad(
+                    left,
+                    ctx.arena.get(as_str(ctx.regs[a])),
+                    as_i64(ctx.regs[len]),
+                    ctx.arena.get(as_str(ctx.regs[pad])),
+                )?;
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                Ok(())
+            })
+        }
+        Inst::Sslice { dst, a, lo, hi } => {
+            let (dst, a, lo, hi) = (sl(slots, dst), sl(slots, a), sl(slots, lo), sl(slots, hi));
+            Box::new(move |ctx| {
+                let sref = as_str(ctx.regs[a]);
+                let rng = slice_window(
+                    ctx.arena.get(sref),
+                    as_i64(ctx.regs[lo]),
+                    as_i64(ctx.regs[hi]),
+                );
+                // The slice is a subview of the input span — no copy.
+                ctx.regs[dst] = RegVal::Str(StrRef {
+                    off: sref.off + rng.start,
+                    len: rng.end - rng.start,
+                });
+                Ok(())
+            })
+        }
+        Inst::Sord {
+            empty_zero,
+            dst,
+            a,
+        } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let s = ctx.arena.get(as_str(ctx.regs[a]));
+                ctx.regs[dst] = RegVal::I64(duck_ord(s, empty_zero));
+                Ok(())
+            })
         }
         Inst::SLen { bytes, dst, a } => {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
@@ -1265,16 +1698,29 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
         }
         Inst::Str1 { op, dst, a } => {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
-            // DuckDB uses SIMPLE (1:1) case maps; casemap.rs carries the
-            // measured exception table over Rust's full maps.
-            let map: fn(char) -> char = match op {
-                StrOp1::Upper => super::casemap::simple_upper,
-                StrOp1::Lower => super::casemap::simple_lower,
-            };
-            Box::new(move |ctx| {
-                ctx.regs[dst] = RegVal::Str(ctx.arena.case_map(as_str(ctx.regs[a]), map));
-                Ok(())
-            })
+            match op {
+                // DuckDB uses SIMPLE (1:1) case maps; casemap.rs carries
+                // the measured exception table over Rust's full maps.
+                StrOp1::Upper | StrOp1::Lower => {
+                    let map: fn(char) -> char = match op {
+                        StrOp1::Upper => super::casemap::simple_upper,
+                        _ => super::casemap::simple_lower,
+                    };
+                    Box::new(move |ctx| {
+                        ctx.regs[dst] = RegVal::Str(ctx.arena.case_map(as_str(ctx.regs[a]), map));
+                        Ok(())
+                    })
+                }
+                StrOp1::StripAccents => Box::new(move |ctx| {
+                    let sref = as_str(ctx.regs[a]);
+                    let out = duck_strip_accents(ctx.arena.get(sref));
+                    ctx.regs[dst] = match out {
+                        None => RegVal::Str(sref), // ASCII fast path: verbatim
+                        Some(s) => RegVal::Str(ctx.arena.push_str(&s)),
+                    };
+                    Ok(())
+                }),
+            }
         }
         Inst::Strim {
             side,

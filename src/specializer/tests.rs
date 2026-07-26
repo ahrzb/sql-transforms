@@ -479,9 +479,12 @@ fn unsupported_constructs_are_named_cleanly() {
         ("SELECT a FROM __THIS__ JOIN t USING (a)", "USING"),
         // Bare aggregates parse as plain function calls; they reject via the
         // function arm until the catalogue distinguishes aggregation.
-        ("SELECT sum(a) FROM __THIS__", "function sum"),
+        ("SELECT sum(a) FROM __THIS__", "aggregate function sum"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
-        ("SELECT levenshtein('x', 'y') FROM __THIS__", "function"),
+        // Wave-3 named rejects: regex family, grapheme-based reverse.
+        ("SELECT regexp_matches('x', 'y') FROM __THIS__", "RE2"),
+        ("SELECT reverse('abc') FROM __THIS__", "grapheme"),
+        ("SELECT jaro_similarity('x', 'y') FROM __THIS__", "function"),
         // Star now expands; the still-unsupported star forms reject by name.
         ("SELECT * REPLACE (a + 1 AS a) FROM __THIS__", "REPLACE"),
         ("SELECT COLUMNS('a') FROM __THIS__", "function COLUMNS"),

@@ -14,6 +14,7 @@ pub mod casemap;
 pub mod cranelift;
 pub mod interp;
 mod pow10;
+mod strip_accents;
 
 #[cfg(test)]
 mod tests;

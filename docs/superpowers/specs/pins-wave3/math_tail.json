@@ -1674,7 +1674,7 @@
   },
   {
    "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
-   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('é', 1)]",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('\u00e9', 1)]",
    "result_repr": null,
    "result_type": null,
    "bits": null,
@@ -1683,7 +1683,7 @@
   },
   {
    "sql": "SELECT add(v, b) AS v, typeof(add(v, b)) AS ty FROM t",
-   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('é', 1)]",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('e\u0301', 1)]",
    "result_repr": null,
    "result_type": null,
    "bits": null,
@@ -1692,7 +1692,7 @@
   },
   {
    "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
-   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('😀', 1)]",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('\ud83d\ude00', 1)]",
    "result_repr": null,
    "result_type": null,
    "bits": null,
@@ -1701,7 +1701,7 @@
   },
   {
    "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
-   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('İ', 1)]",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('\u0130', 1)]",
    "result_repr": null,
    "result_type": null,
    "bits": null,
@@ -1710,7 +1710,7 @@
   },
   {
    "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
-   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('K', 1)]",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('\u212a', 1)]",
    "result_repr": null,
    "result_type": null,
    "bits": null,
@@ -1719,7 +1719,7 @@
   },
   {
    "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
-   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('👨\\u200d👩\\u200d👧\\u200d👦', 1)]",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66', 1)]",
    "result_repr": null,
    "result_type": null,
    "bits": null,
@@ -2055,6 +2055,38 @@
    ],
    "error": null,
    "note": "decimal literals fmod sign"
+  }
+ ],
+ "corrections": [
+  {
+   "date": "2026-07-26",
+   "refutes": "decision/surprise lines claiming DOUBLE % / mod() by zero -> NULL and 7ff8-vs-fff8 attribution to NULL cells",
+   "measured": "DOUBLE columns: x % 0.0 and mod(x, 0.0) -> NaN bits 7ff8000000000000 for x in {7.5, -7.5, 0.0} and y = -0.0 too; NEVER NULL. INT zero-divisor -> NULL stands. fmod-by-zero fff8 stands.",
+   "probes": [
+    {
+     "sql": "SELECT x % y FROM d",
+     "input_repr": "d(x DOUBLE, y DOUBLE); rows=[(7.5,0.0),(-7.5,0.0),(0.0,0.0),(7.5,-0.0)]",
+     "result_repr": "[nan, nan, nan, nan]",
+     "bits": [
+      "7ff8000000000000",
+      "7ff8000000000000",
+      "7ff8000000000000",
+      "7ff8000000000000"
+     ]
+    },
+    {
+     "sql": "SELECT mod(x, y) FROM d",
+     "input_repr": "same",
+     "result_repr": "[nan, nan, nan, nan]",
+     "bits": [
+      "7ff8000000000000",
+      "7ff8000000000000",
+      "7ff8000000000000",
+      "7ff8000000000000"
+     ]
+    }
+   ],
+   "note": "raw probes never covered this cell (only int rows + fmod(1.0,0.0)); the summary over-generalized"
   }
  ]
 }

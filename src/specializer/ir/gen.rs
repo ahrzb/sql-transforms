@@ -10,7 +10,7 @@
 
 use super::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode,
-    StaticTy, StrOp1, StrOp2, Term, TrimSide, Ty, Value,
+    StaticTy, StrOp1, StrOp2, StrOp2i, StrOp3, Term, TrimSide, Ty, Value,
 };
 
 pub struct Rng(u64);
@@ -218,11 +218,22 @@ fn load_all(
     }
 }
 
+/// A small fresh i64 const in [-9, 9] — positions/counts for string ops,
+/// keeping generated programs executable (range guards, alloc caps).
+fn small(rng: &mut Rng, b: &mut Builder, insts: &mut Vec<Inst>) -> Value {
+    let dst = b.fresh();
+    insts.push(Inst::Const {
+        dst,
+        lit: Lit::I64(rng.below(19) as i64 - 9),
+    });
+    dst
+}
+
 /// A few random compute instructions over whatever is in scope.
 fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<Inst>) {
     let n = rng.below(7);
     for _ in 0..n {
-        match rng.below(13) {
+        match rng.below(14) {
             0 => {
                 let ops = [
                     BinOp::Iadd,
@@ -234,6 +245,9 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                     BinOp::Fdiv,
                     BinOp::Frem,
                     BinOp::Fpow,
+                    BinOp::Ffloordiv,
+                    BinOp::Ffloormod,
+                    BinOp::Fnextafter,
                     BinOp::And,
                     BinOp::Or,
                     BinOp::Xor,
@@ -322,10 +336,10 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 scope.add(dst, Ty::Str);
             }
             8 => {
-                let op = if rng.chance(50) {
-                    StrOp1::Upper
-                } else {
-                    StrOp1::Lower
+                let op = match rng.below(3) {
+                    0 => StrOp1::Upper,
+                    1 => StrOp1::Lower,
+                    _ => StrOp1::StripAccents,
                 };
                 let a = ensure(rng, b, scope, insts, Ty::Str);
                 let dst = b.fresh();
@@ -351,14 +365,6 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 // Positions are small fresh consts, not arbitrary scope
                 // values: the ±2^32 range guard traps, and generated
                 // programs must stay executable for M-interp fuzzing.
-                let small = |rng: &mut Rng, b: &mut Builder, insts: &mut Vec<Inst>| {
-                    let dst = b.fresh();
-                    insts.push(Inst::Const {
-                        dst,
-                        lit: Lit::I64(rng.below(19) as i64 - 9),
-                    });
-                    dst
-                };
                 let start = small(rng, b, insts);
                 scope.add(start, Ty::I64);
                 let len = if rng.chance(50) {
@@ -447,11 +453,97 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                     scope.add(dst, Ty::I64);
                 } else {
                     let n = ensure(rng, b, scope, insts, Ty::Str);
-                    let ops = [StrOp2::Find, StrOp2::Contains, StrOp2::Starts, StrOp2::Ends];
-                    let op = ops[rng.below(4) as usize];
+                    // Jaccard/Hamming trap (empty inputs / length mismatch)
+                    // — low weight, same policy as Flogb: trap-agreement is
+                    // differential signal, but programs should mostly run.
+                    let op = if rng.chance(15) {
+                        [StrOp2::Jaccard, StrOp2::Hamming][rng.below(2) as usize]
+                    } else {
+                        let ops = [
+                            StrOp2::Find,
+                            StrOp2::Contains,
+                            StrOp2::Starts,
+                            StrOp2::Ends,
+                            StrOp2::Levenshtein,
+                            StrOp2::Damerau,
+                        ];
+                        ops[rng.below(6) as usize]
+                    };
                     let dst = b.fresh();
                     insts.push(Inst::Str2 { op, dst, a, b: n });
                     scope.add(dst, op.result_ty());
+                }
+            }
+            13 => {
+                let a = ensure(rng, b, scope, insts, Ty::Str);
+                match rng.below(5) {
+                    0 => {
+                        let op = if rng.chance(50) {
+                            StrOp3::Replace
+                        } else {
+                            StrOp3::Translate
+                        };
+                        let x = ensure(rng, b, scope, insts, Ty::Str);
+                        let y = ensure(rng, b, scope, insts, Ty::Str);
+                        let dst = b.fresh();
+                        insts.push(Inst::Str3 {
+                            op,
+                            dst,
+                            a,
+                            b: x,
+                            c: y,
+                        });
+                        scope.add(dst, Ty::Str);
+                    }
+                    1 => {
+                        // Repeat with a SMALL fresh count: an arbitrary
+                        // in-scope i64 would build multi-GiB strings.
+                        let op = if rng.chance(50) {
+                            StrOp2i::Repeat
+                        } else {
+                            StrOp2i::Extract
+                        };
+                        let n = small(rng, b, insts);
+                        scope.add(n, Ty::I64);
+                        let dst = b.fresh();
+                        insts.push(Inst::Str2i { op, dst, a, n });
+                        scope.add(dst, Ty::Str);
+                    }
+                    2 => {
+                        // Spad traps on empty pad + growth — low weight via
+                        // small len keeps most programs running while the
+                        // trap row stays reachable for agreement checks.
+                        let len = small(rng, b, insts);
+                        scope.add(len, Ty::I64);
+                        let pad = ensure(rng, b, scope, insts, Ty::Str);
+                        let dst = b.fresh();
+                        insts.push(Inst::Spad {
+                            left: rng.chance(50),
+                            dst,
+                            a,
+                            len,
+                            pad,
+                        });
+                        scope.add(dst, Ty::Str);
+                    }
+                    3 => {
+                        let lo = small(rng, b, insts);
+                        scope.add(lo, Ty::I64);
+                        let hi = small(rng, b, insts);
+                        scope.add(hi, Ty::I64);
+                        let dst = b.fresh();
+                        insts.push(Inst::Sslice { dst, a, lo, hi });
+                        scope.add(dst, Ty::Str);
+                    }
+                    _ => {
+                        let dst = b.fresh();
+                        insts.push(Inst::Sord {
+                            empty_zero: rng.chance(50),
+                            dst,
+                            a,
+                        });
+                        scope.add(dst, Ty::I64);
+                    }
                 }
             }
             _ => {

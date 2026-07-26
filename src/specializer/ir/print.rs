@@ -127,6 +127,23 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Str2 { op, a, b, .. } => {
             let _ = write!(s, "{} {}, {}", op.name(), val(*a), val(*b));
         }
+        Inst::Str3 { op, a, b, c, .. } => {
+            let _ = write!(s, "{} {}, {}, {}", op.name(), val(*a), val(*b), val(*c));
+        }
+        Inst::Str2i { op, a, n, .. } => {
+            let _ = write!(s, "{} {}, {}", op.name(), val(*a), val(*n));
+        }
+        Inst::Spad { left, a, len, pad, .. } => {
+            let op = if *left { "spad.left" } else { "spad.right" };
+            let _ = write!(s, "{} {}, {}, {}", op, val(*a), val(*len), val(*pad));
+        }
+        Inst::Sslice { a, lo, hi, .. } => {
+            let _ = write!(s, "sslice {}, {}, {}", val(*a), val(*lo), val(*hi));
+        }
+        Inst::Sord { empty_zero, a, .. } => {
+            let op = if *empty_zero { "sord.ascii" } else { "sord" };
+            let _ = write!(s, "{} {}", op, val(*a));
+        }
         Inst::Round2f { trunc, a, n, .. } => {
             let op = if *trunc { "ftrunc2" } else { "fround2" };
             let _ = write!(s, "{} {}, {}", op, val(*a), val(*n));

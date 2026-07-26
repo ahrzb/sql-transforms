@@ -180,13 +180,17 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         | Inst::Ftos { dst, .. }
         | Inst::Sconcat { dst, .. }
         | Inst::Str1 { dst, .. }
+        | Inst::Str3 { dst, .. }
+        | Inst::Str2i { dst, .. }
+        | Inst::Spad { dst, .. }
+        | Inst::Sslice { dst, .. }
         | Inst::Strim { dst, .. }
         | Inst::Ssubstr { dst, .. } => {
             vec![(*dst, Ty::Str)]
         }
         Inst::Num1 { op, dst, .. } => vec![(*dst, op.sig())],
         Inst::Str2 { op, dst, .. } => vec![(*dst, op.result_ty())],
-        Inst::SLen { dst, .. } => vec![(*dst, Ty::I64)],
+        Inst::SLen { dst, .. } | Inst::Sord { dst, .. } => vec![(*dst, Ty::I64)],
         Inst::Slike { dst, .. } => vec![(*dst, Ty::I1)],
         Inst::Round2f { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::Round2i { dst, .. } => vec![(*dst, Ty::I64)],
@@ -364,8 +368,27 @@ fn check_block(
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
                 want(&in_scope, def_types, *rhs, Ty::Str, "operand", bi, i, errs);
             }
-            Inst::Str1 { a, .. } | Inst::SLen { a, .. } => {
+            Inst::Str1 { a, .. } | Inst::SLen { a, .. } | Inst::Sord { a, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
+            }
+            Inst::Str3 { a, b, c, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                want(&in_scope, def_types, *b, Ty::Str, "operand", bi, i, errs);
+                want(&in_scope, def_types, *c, Ty::Str, "operand", bi, i, errs);
+            }
+            Inst::Str2i { a, n, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                want(&in_scope, def_types, *n, Ty::I64, "operand", bi, i, errs);
+            }
+            Inst::Spad { a, len, pad, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                want(&in_scope, def_types, *len, Ty::I64, "operand", bi, i, errs);
+                want(&in_scope, def_types, *pad, Ty::Str, "operand", bi, i, errs);
+            }
+            Inst::Sslice { a, lo, hi, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                want(&in_scope, def_types, *lo, Ty::I64, "operand", bi, i, errs);
+                want(&in_scope, def_types, *hi, Ty::I64, "operand", bi, i, errs);
             }
             Inst::Slike { a, p, esc, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);

@@ -192,22 +192,62 @@ pub enum SKind {
         op: super::ir::NumOp1,
         a: Box<SExpr>,
     },
-    /// Wave-1 f64 binary math: Fpow (total) and Flogb(base, x) (trapping).
+    /// Wave-1 f64 binary math: Fpow (total) and Flogb(base, x) (trapping);
+    /// wave-3 adds Ffloordiv/Ffloormod/Fnextafter (all total).
     MathF2 {
         op: super::ir::BinOp,
         a: Box<SExpr>,
         b: Box<SExpr>,
     },
+    /// replace/translate — Str × Str × Str -> Str, total, NULL-propagating.
+    Str3 {
+        op: super::ir::StrOp3,
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+        c: Box<SExpr>,
+    },
+    /// repeat / VARCHAR array_extract — (Str, I64) -> Str, total.
+    Str2i {
+        op: super::ir::StrOp2i,
+        a: Box<SExpr>,
+        n: Box<SExpr>,
+    },
+    /// lpad/rpad — traps only on empty pad + needed growth, so lowering
+    /// masks ALL operands under a combined flag (NULL pre-empts the trap).
+    Spad {
+        left: bool,
+        a: Box<SExpr>,
+        len: Box<SExpr>,
+        pad: Box<SExpr>,
+    },
+    /// VARCHAR array_slice/list_slice — total, NULL-propagating (a NULL
+    /// bound is NULL, never an open bound).
+    Sslice {
+        a: Box<SExpr>,
+        lo: Box<SExpr>,
+        hi: Box<SExpr>,
+    },
+    /// unicode/ord ('' -> -1) / ascii ('' -> 0) — Str -> I64, total.
+    Sord {
+        empty_zero: bool,
+        a: Box<SExpr>,
+    },
+    /// strip_accents — Str -> Str, total (oracle table + Hangul compose).
+    StripAccents(Box<SExpr>),
 }
 
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division
 /// (measured: `5/2 = 2.5 DOUBLE`); the frontend promotes both sides to f64.
-/// Integer `%` stays integral (measured: `5%2 -> INTEGER`).
+/// Integer `%` stays integral (measured: `5%2 -> INTEGER`). `IDiv` is
+/// DuckDB's `//` / divide(): truncating division on ints, PLAIN division
+/// on doubles (NOT floor — measured -7.5//2.0 = -3.75), zero divisor ->
+/// NULL on both (the frontend wraps the CASE guard).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArithOp {
     Add,
     Sub,
     Mul,
     Div,
+    IDiv,
     Rem,
 }

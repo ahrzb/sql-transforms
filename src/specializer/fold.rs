@@ -113,6 +113,60 @@ pub fn fold(e: SExpr) -> SExpr {
                 b: Box::new(b),
             })
         }
+        // Wave-3 string ops: fold children only, same policy as Str2 —
+        // the ops stay runtime so constant trap rows keep their timing.
+        SKind::Str3 { op, a, b, c } => {
+            let a = fold(*a);
+            let b = fold(*b);
+            let c = fold(*c);
+            e(SKind::Str3 {
+                op,
+                a: Box::new(a),
+                b: Box::new(b),
+                c: Box::new(c),
+            })
+        }
+        SKind::Str2i { op, a, n } => {
+            let a = fold(*a);
+            let n = fold(*n);
+            e(SKind::Str2i {
+                op,
+                a: Box::new(a),
+                n: Box::new(n),
+            })
+        }
+        SKind::Spad { left, a, len, pad } => {
+            let a = fold(*a);
+            let len = fold(*len);
+            let pad = fold(*pad);
+            e(SKind::Spad {
+                left,
+                a: Box::new(a),
+                len: Box::new(len),
+                pad: Box::new(pad),
+            })
+        }
+        SKind::Sslice { a, lo, hi } => {
+            let a = fold(*a);
+            let lo = fold(*lo);
+            let hi = fold(*hi);
+            e(SKind::Sslice {
+                a: Box::new(a),
+                lo: Box::new(lo),
+                hi: Box::new(hi),
+            })
+        }
+        SKind::Sord { empty_zero, a } => {
+            let a = fold(*a);
+            e(SKind::Sord {
+                empty_zero,
+                a: Box::new(a),
+            })
+        }
+        SKind::StripAccents(a) => {
+            let a = fold(*a);
+            e(SKind::StripAccents(Box::new(a)))
+        }
         SKind::Not(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {
@@ -244,6 +298,9 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Sub => x.checked_sub(*y).map(Lit::I64),
             ArithOp::Mul => x.checked_mul(*y).map(Lit::I64),
             ArithOp::Rem => x.checked_rem(*y).map(Lit::I64),
+            // Zero/MIN//-1 stay unfolded; the frontend's CASE guard turns
+            // the zero row into NULL at runtime, never reaching the fold.
+            ArithOp::IDiv => x.checked_div(*y).map(Lit::I64),
             ArithOp::Div => unreachable!("/ is promoted to f64 by the frontend"),
         },
         (Lit::F64(x), Lit::F64(y)) => Some(Lit::F64(match op {
@@ -251,6 +308,10 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Sub => x - y,
             ArithOp::Mul => x * y,
             ArithOp::Div => x / y,
+            // `//` on doubles is plain division (wave-3 pins); the zero-
+            // divisor NULL comes from the frontend's CASE guard, which is
+            // never folded — this arm only sees the guarded default.
+            ArithOp::IDiv => x / y,
             // IEEE, exactly as exec/interp.rs: x % 0.0 is NaN, never traps.
             ArithOp::Rem => x % y,
         })),
