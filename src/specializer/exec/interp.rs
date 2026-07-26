@@ -72,7 +72,7 @@ struct Ctx<'a> {
     row: usize,
 }
 
-enum PreparedStatic {
+pub(super) enum PreparedStatic {
     Scalar {
         valid: bool,
         val: ScalarVal,
@@ -240,9 +240,14 @@ impl InterpFn {
         Ok(())
     }
 
+    /// The prepared statics, shared with the Cranelift backend's helpers.
+    pub(super) fn statics(&self) -> &[PreparedStatic] {
+        &self.statics
+    }
+
     /// A `RunState` is only valid for the `InterpFn` that created it —
     /// reject a foreign one with a trap instead of an index panic.
-    fn check_state(&self, st: &RunState) -> Result<(), Trap> {
+    pub(super) fn check_state(&self, st: &RunState) -> Result<(), Trap> {
         if st.regs.len() < self.nregs {
             return Err(Trap(format!(
                 "RunState has {} register(s), this function needs {} — states are not \
@@ -276,7 +281,7 @@ impl InterpFn {
         Ok(())
     }
 
-    fn check_input(&self, input: &Batch) -> Result<(), Trap> {
+    pub(super) fn check_input(&self, input: &Batch) -> Result<(), Trap> {
         if input.cols.len() != self.in_decl.len() {
             return Err(Trap(format!(
                 "input has {} column(s), the program declares {}",
@@ -321,7 +326,7 @@ fn do_moves(regs: &mut [RegVal], moves: &[(u32, u32)]) {
     }
 }
 
-fn reserve_out(out: &mut [OutCol], rows: usize) {
+pub(super) fn reserve_out(out: &mut [OutCol], rows: usize) {
     for col in out {
         match col {
             OutCol::I1(v) => v.reserve(rows),
@@ -332,7 +337,7 @@ fn reserve_out(out: &mut [OutCol], rows: usize) {
     }
 }
 
-fn prepare_statics(
+pub(super) fn prepare_statics(
     p: &Program,
     statics: Vec<StaticData>,
 ) -> Result<Vec<PreparedStatic>, CompileError> {
@@ -518,7 +523,7 @@ impl std::fmt::Write for ArenaWriter<'_> {
 /// a non-negative length runs forward `[rs, rs+len)`, a NEGATIVE length
 /// slices BACKWARDS `[rs+len, rs)`; `len: None` is the 2-arg rest-of-string
 /// form.
-fn substr_window(s: &str, start: i64, len: Option<i64>) -> String {
+pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> String {
     let n = s.chars().count() as i64;
     let rs = if start < 0 {
         (n + start + 1).max(1)
@@ -542,14 +547,14 @@ fn substr_window(s: &str, start: i64, len: Option<i64>) -> String {
 
 /// The offset/length guard DuckDB applies before the window: values outside
 /// [-2^32, 2^32-1] raise an Out of Range error (measured boundary-exactly).
-fn substr_range_ok(v: i64) -> bool {
+pub(super) fn substr_range_ok(v: i64) -> bool {
     (-(1i64 << 32)..(1i64 << 32)).contains(&v)
 }
 
 /// DuckDB's DOUBLE -> VARCHAR text (measured 1.5.5): Rust's shortest
 /// round-trip form, except the exponent carries an explicit sign and at
 /// least two digits (`1e+300`, `1e-05`) and NaN is lowercase `nan`.
-struct DuckF64(f64);
+pub(super) struct DuckF64(pub(super) f64);
 
 impl std::fmt::Display for DuckF64 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1022,7 +1027,7 @@ fn cmp_key(stored: &[KeyBits], key_regs: &[usize], ctx: &Ctx<'_>) -> std::cmp::O
     Ordering::Equal
 }
 
-fn apply_ord(pred: CmpPred, ord: std::cmp::Ordering) -> bool {
+pub(super) fn apply_ord(pred: CmpPred, ord: std::cmp::Ordering) -> bool {
     use std::cmp::Ordering::*;
     match pred {
         CmpPred::Eq => ord == Equal,
@@ -1034,7 +1039,7 @@ fn apply_ord(pred: CmpPred, ord: std::cmp::Ordering) -> bool {
     }
 }
 
-fn valid_len(c: &ColData) -> usize {
+pub(super) fn valid_len(c: &ColData) -> usize {
     match c {
         ColData::I1 { valid, .. }
         | ColData::I64 { valid, .. }
@@ -1046,7 +1051,7 @@ fn valid_len(c: &ColData) -> usize {
 /// Only called for nullable columns, whose validity length check_input has
 /// already enforced — the unwrap_or is unreachable there and don't-care for
 /// non-nullable columns (which never reach this).
-fn col_valid(c: &ColData, row: usize) -> bool {
+pub(super) fn col_valid(c: &ColData, row: usize) -> bool {
     match c {
         ColData::I1 { valid, .. }
         | ColData::I64 { valid, .. }
