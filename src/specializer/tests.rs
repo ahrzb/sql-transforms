@@ -1164,3 +1164,65 @@ fn double_colon_cast_is_not_a_colon_alias() {
     let p = prep("SELECT a::BIGINT AS c FROM __THIS__", &schema).unwrap();
     assert_eq!(p.out_cols[0].name, "c");
 }
+
+#[test]
+fn bracket_subscripts_extract_codepoints() {
+    // pins-wave5/subscripts-extended.json: 1-based codepoints, negative
+    // from-end, 0/out-of-range -> '' (never NULL).
+    let schema = cols(&[("s", Ty::Str, false), ("off", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT s[2] AS a, s[-1] AS b, s[0] AS z, s[100] AS oor, s[off] AS dy \
+         FROM __THIS__",
+        &schema,
+        batch(
+            1,
+            vec![c_str(&[Some("h\u{e9}llo")]), c_i64(&[Some(3)])],
+        ),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["\u{e9}", "o", "", "", "l"]]));
+}
+
+#[test]
+fn bracket_slices_open_bounds_and_chain() {
+    // pins-wave5/slices.json: both-inclusive, [:b]==[1:b], [a:]==[a:-1],
+    // reversed -> ''; a chained extract applies to the slice result.
+    let schema = cols(&[("s", Ty::Str, false)]);
+    let got = run_sql(
+        "SELECT s[2:4] AS m, s[:2] AS a, s[2:] AS b, s[:] AS w, s[4:2] AS inv, \
+         s[2:4][1] AS chain FROM __THIS__",
+        &schema,
+        batch(1, vec![c_str(&[Some("hello")])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["ell", "he", "ello", "hello", "", "e"]]));
+}
+
+#[test]
+fn subscript_offset_window_traps_past_2_pow_32() {
+    // In-window extremes return ''; one past traps (same window as substr).
+    let schema = cols(&[("s", Ty::Str, false)]);
+    let got = run_sql(
+        "SELECT s[4294967295] AS hi, s[-4294967296] AS lo FROM __THIS__",
+        &schema,
+        batch(1, vec![c_str(&[Some("hello")])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["", ""]]));
+    let err = run_sql(
+        "SELECT s[4294967296] AS boom FROM __THIS__",
+        &schema,
+        batch(1, vec![c_str(&[Some("hello")])]),
+    )
+    .unwrap_err();
+    assert!(err.contains("supported range"), "got: {err}");
+}
+
+#[test]
+fn slice_with_step_rejects_cleanly() {
+    let schema = cols(&[("s", Ty::Str, false)]);
+    match prep("SELECT s[1:3:1] AS x FROM __THIS__", &schema) {
+        Err(PrepareError::Unsupported(msg)) => assert!(msg.contains("step"), "{msg}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}
