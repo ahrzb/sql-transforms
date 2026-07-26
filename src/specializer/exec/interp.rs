@@ -8,9 +8,10 @@
 //! * `iadd`/`isub`/`imul` trap on i64 overflow (SQL overflow is an error,
 //!   not a wrap); `idiv`/`irem` trap on zero and on `i64::MIN / -1`.
 //! * `f*` arithmetic is raw IEEE — inf/nan flow through, no traps.
-//! * `fcmp` is IEEE-ordered: every predicate involving NaN is false, except
-//!   `ne`, which is `!(a == b)` and therefore true. SQL NULL/NaN policy is
-//!   the lowering's job, expressed with flags around these primitives.
+//! * `fcmp` uses DuckDB's DOUBLE order (`exec::duck_fcmp`): IEEE except that
+//!   NaN equals NaN and sorts above everything, and `-0.0 = 0.0`. SQL
+//!   NULL/NaN policy is the lowering's job, expressed with flags around
+//!   these primitives.
 //! * `icmp` is i64 order; `scmp` is byte order (Rust `str` cmp).
 //! * `itof` is `as f64` (may round — same as DuckDB's BIGINT->DOUBLE).
 //! * `ftoi.trunc` rounds toward zero; `ftoi.round` half-away-from-zero
