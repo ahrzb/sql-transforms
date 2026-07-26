@@ -54,9 +54,10 @@ known-third-party = ["datafusion", "duckdb"]
 "_state.py" = ["S608"]
 # Doc generator: emits long markdown lines verbatim; wrapping would corrupt output.
 "scripts/gen_datafusion_catalogue.py" = ["E501"]
-# Bench fixtures: seeded pseudo-random data generators (S311 is about crypto)
-# and dense SQL/data-gen literals where wrapping hurts readability.
-"benchmarks/serving_scenarios/*.py" = ["S311", "E501"]
+# Bench fixtures: seeded pseudo-random data generators (S311 is about
+# crypto), dense SQL/data-gen literals where wrapping hurts readability,
+# and SQL assembled from module-internal constants (S608, no user input).
+"benchmarks/serving_scenarios/*.py" = ["S311", "E501", "S608"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]

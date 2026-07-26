@@ -58,10 +58,15 @@ def bench_call(f, n):
     iters = max(30, min(2000, 2_000_000 // max(n, 1)))
     f()  # warm
     out = []
+    # 3s budget per cell (min 30 samples) — keeps the ms-scale engines
+    # (duckdb per call) from dominating wall time.
+    deadline = time.perf_counter_ns() + 3_000_000_000
     for _ in range(iters):
         t0 = time.perf_counter_ns()
         f()
         out.append(time.perf_counter_ns() - t0)
+        if len(out) >= 30 and time.perf_counter_ns() > deadline:
+            break
     p50, p99 = quantiles(out)
     return {"p50_ns": p50, "p99_ns": p99}
 
