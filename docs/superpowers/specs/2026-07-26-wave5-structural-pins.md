@@ -196,6 +196,35 @@ gated by self-join first.
 - `try_trim_null` does not exist in DuckDB (stays clean-unsupported as an
   unknown function); `COLUMNS` is star-expansion only (wave-B).
 
+## Implementation addendum (2026-07-27, post-landing corrections)
+
+Deviations and corrections discovered while landing — same discipline as
+the wave-3 addendum (the corpus replay is the arbiter):
+
+- **Mixed BETWEEN/IN with non-numeric string literals stays
+  clean-unsupported, not a bind error.** The binder-tail pin's bind-time
+  "Conversion Error" applies to top-level constant comparisons; inside an
+  IN-list against a COLUMN the conversion is EXECUTION-time — corpus case
+  `a IN ('a', ...)` on an EMPTY table succeeds in DuckDB. Caught as a
+  replay FAIL, fixed to conservative unsupported. Numeric/bool literals DO
+  convert at bind (half-away rounding, bool -> 0/1).
+- **sqlparser parses `* ILIKE` and EXCLUDE as mutually exclusive**, so the
+  star-filter rewrite absorbs the EXCLUDE entries into its marker string
+  and the binder re-applies them.
+- Error-class simplifications (all corpus-clean, texts not verbatim):
+  zero-match star filters use a short "empty set of columns" Bind text
+  rather than DuckDB's internal COLUMNS(list_filter(...)) desugaring;
+  `* SIMILAR TO` and REPLACE/RENAME-plus-filter classify at parse (DuckDB
+  parses then bind-errors); EXCLUDE/REPLACE duplicate-entry checks surface
+  at bind with matching wording.
+- `* EXCLUDE (t.key)` on a USING join stays unsupported (DuckDB UNMERGES
+  the column — not modeled); all other qualified EXCLUDE forms serve.
+- `~` (prefix bitnot) and `#` stay unsupported alongside `^` (pow): their
+  sqlparser precedence disagrees with DuckDB's measured one, and mapping
+  them would silently compute the wrong tree. xor() covers the semantics.
+- NULL || NULL types as VARCHAR here (DuckDB's SQLNULL materializes as
+  INTEGER); value-NULL either way, positional corpus compare unaffected.
+
 ## Implementation stages (each lands with tests + corpus replay green)
 
 1. Parser groundwork: GenericDialect switch (full regression net), colon-
