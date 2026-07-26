@@ -850,3 +850,60 @@ fn fuzz_cranelift_agrees_with_interpreter() {
         }
     }
 }
+
+/// Raw compute, no Python boundary: `cargo test --release backend_compute_
+/// bench -- --ignored --nocapture`. Informational, not a gate assertion.
+#[test]
+#[ignore = "bench, run explicitly"]
+fn backend_compute_bench() {
+    use super::cranelift;
+    use std::time::Instant;
+    let p = parse(
+        r#"fn f(in: batch{a: i64, b: f64}, out: batch{x: i64, h: f64, k: i1}) {
+entry:
+  %a = load in.a
+  %b = load in.b
+  %two = const.i64 2
+  %one = const.i64 1
+  %m = imul %a, %two
+  %x = iadd %m, %one
+  %hf = const.f64 0.5
+  %h = fmul %b, %hf
+  %z = const.f64 10.0
+  %k = fcmp.gt %h, %z
+  store out.x, %x
+  store out.h, %h
+  store out.k, %k
+  emit
+}"#,
+    )
+    .unwrap();
+    let n = 100_000usize;
+    let a: Vec<Option<i64>> = (0..n).map(|i| Some(i as i64 % 1000)).collect();
+    let b: Vec<Option<f64>> = (0..n).map(|i| Some(i as f64 / 7.0)).collect();
+    let input = batch(n, vec![c_i64(&a), c_f64(&b)]);
+
+    let fi = compile(&p, vec![]).unwrap();
+    let fc = cranelift::compile(&p, vec![]).unwrap();
+    let mut sti = fi.new_state();
+    let mut stc = fc.new_state();
+    for (name, run) in [
+        (
+            "interp",
+            &mut (|| fi.run(&input, &mut sti).unwrap()) as &mut dyn FnMut(),
+        ),
+        ("cranelift", &mut (|| fc.run(&input, &mut stc).unwrap())),
+    ] {
+        run(); // warm
+        let mut best = u128::MAX;
+        for _ in 0..20 {
+            let t = Instant::now();
+            run();
+            best = best.min(t.elapsed().as_nanos());
+        }
+        println!(
+            "{name:>10}: {:>6.2} ns/row (best of 20, n={n})",
+            best as f64 / n as f64
+        );
+    }
+}
