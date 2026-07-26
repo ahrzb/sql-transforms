@@ -3,10 +3,10 @@ id: TASK-50
 title: >-
   Specializer SQL support: join forms — USING, residual ON, semi joins, comma
   rewrite (wave 4)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-26 18:15'
-updated_date: '2026-07-26 19:24'
+updated_date: '2026-07-26 20:17'
 labels: []
 milestone: m-7
 dependencies:

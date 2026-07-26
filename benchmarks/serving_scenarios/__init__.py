@@ -67,7 +67,7 @@ def rows_table(mod, rows: list[dict]) -> pa.Table:
     return pa.Table.from_pylist(rows, schema=arrow_schema(mod.ROW_SCHEMA))
 
 
-def build_spec_fn(mod, statics: dict[str, pa.Table]):
+def build_spec_fn(mod, statics: dict[str, pa.Table], output: str = "model"):
     """The specializer serving fn (env knobs select backend/boundary)."""
     from sql_transform._interpreter import DuckDBInferFn
 
@@ -75,6 +75,7 @@ def build_spec_fn(mod, statics: dict[str, pa.Table]):
         mod.SQL,
         row_tables={"__THIS__": row_model(mod.ROW_SCHEMA)},
         static_tables=statics,
+        output=output,
     )
 
 
@@ -118,6 +119,12 @@ def verify_parity(mod, n: int = 300) -> list[str]:
     problems: list[str] = []
     if fn.backend != "cranelift":
         problems.append(f"{mod.NAME}: backend is {fn.backend}, not cranelift")
+
+    # The raw-dict mode must agree with the typed mode field-for-field
+    # (positional — same engine, same input order).
+    got_dict = build_spec_fn(mod, statics, output="dict").infer_rows(rows)
+    if got_dict != got_spec:
+        problems.append(f"{mod.NAME}: output='dict' differs from the typed mode")
 
     def norm(row: dict) -> tuple:
         return tuple((k, repr(v)) for k, v in row.items())
