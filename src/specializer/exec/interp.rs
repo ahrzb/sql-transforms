@@ -1635,8 +1635,17 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                     Ok(())
                 }),
                 ir::StrOp2i::Extract => Box::new(move |ctx| {
+                    let i = as_i64(ctx.regs[n]);
+                    // Same +-2^32 window and trap as substr (measured:
+                    // pins-wave5/subscripts-extended.json); NULL rows never
+                    // reach here, matching DuckDB's NULL-skips-the-check.
+                    if !substr_range_ok(i) {
+                        return Err(Trap(
+                            "substring offset outside of supported range".to_string(),
+                        ));
+                    }
                     let sref = as_str(ctx.regs[a]);
-                    let rng = extract_window(ctx.arena.get(sref), as_i64(ctx.regs[n]));
+                    let rng = extract_window(ctx.arena.get(sref), i);
                     // The extracted char is a subview of the input span.
                     ctx.regs[dst] = RegVal::Str(StrRef {
                         off: sref.off + rng.start,

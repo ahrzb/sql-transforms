@@ -23,8 +23,8 @@
 //! all collapse to i64.
 
 use sqlparser::ast::{
-    BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator, SelectItem, SetExpr,
-    Statement, TableFactor, UnaryOperator, Value as SqlValue,
+    AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator,
+    SelectItem, SetExpr, Statement, Subscript, TableFactor, UnaryOperator, Value as SqlValue,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -1189,8 +1189,132 @@ impl Binder<'_> {
             SqlExpr::SimilarTo { .. } => Err(unsup(
                 "SIMILAR TO (DuckDB binds it to regexp_full_match, not SQL wildcards)",
             )),
+            // Bracket syntax s[i] / s[a:b] — exactly array_extract /
+            // array_slice in DuckDB (one shared implementation, measured:
+            // pins-wave5/{subscripts-extended,slices}.json).
+            SqlExpr::CompoundFieldAccess { root, access_chain } => {
+                let mut cur = match self.expr_or_null(root)? {
+                    Some(b) => b,
+                    None => null_of(Ty::Str),
+                };
+                for acc in access_chain {
+                    let AccessExpr::Subscript(sub) = acc else {
+                        return Err(unsup("struct field access in a subscript chain"));
+                    };
+                    cur = match sub {
+                        Subscript::Index { index } => {
+                            self.apply_extract("array_extract", cur, index)?
+                        }
+                        Subscript::Slice {
+                            lower_bound,
+                            upper_bound,
+                            stride,
+                        } => {
+                            if stride.is_some() {
+                                // DuckDB rejects step slicing on VARCHAR for
+                                // EVERY step value, including 1 (measured).
+                                return Err(unsup(
+                                    "slice with step (DuckDB: not implemented for string types)",
+                                ));
+                            }
+                            self.apply_slice(
+                                "array_slice",
+                                cur,
+                                lower_bound.as_ref(),
+                                upper_bound.as_ref(),
+                            )?
+                        }
+                    };
+                }
+                Ok(cur)
+            }
             other => Err(unsup(format!("expression: {other}"))),
         }
+    }
+
+    /// s[i] / array_extract / list_extract on a bound VARCHAR subject:
+    /// exec handles negatives (len+1+i), 0/out-of-range -> '' and the
+    /// runtime +-2^32 offset trap (pins-wave5/subscripts-extended.json).
+    fn apply_extract(
+        &self,
+        name: &str,
+        bs: SExpr,
+        n: &SqlExpr,
+    ) -> Result<SExpr, PrepareError> {
+        if bs.ty != Ty::Str {
+            // The LIST overload has different out-of-range semantics
+            // (NULL, not '') — only the VARCHAR path ships in v0.
+            return Err(unsup(format!(
+                "{name} on {} (only VARCHAR subscripts in v0)",
+                bs.ty.name()
+            )));
+        }
+        let Some(bn) = self.expr_or_null(n)? else {
+            return Ok(null_of(Ty::Str));
+        };
+        if bn.ty != Ty::I64 {
+            return Err(PrepareError::Bind(format!(
+                "no function matches {name}(str, {})",
+                bn.ty.name()
+            )));
+        }
+        let nullable = bs.nullable || bn.nullable;
+        Ok(SExpr {
+            kind: SKind::Str2i {
+                op: StrOp2i::Extract,
+                a: Box::new(bs),
+                n: Box::new(bn),
+            },
+            ty: Ty::Str,
+            nullable,
+        })
+    }
+
+    /// s[a:b] / array_slice / list_slice on a bound VARCHAR subject. Open
+    /// bounds are pure syntax ([:b] == [1:b], [a:] == [a:-1]); a NULL bound
+    /// is NOT open — it nulls the result (pins-wave5/slices.json).
+    fn apply_slice(
+        &self,
+        name: &str,
+        bs: SExpr,
+        lo: Option<&SqlExpr>,
+        hi: Option<&SqlExpr>,
+    ) -> Result<SExpr, PrepareError> {
+        if bs.ty != Ty::Str {
+            return Err(unsup(format!(
+                "{name} on {} (only VARCHAR subscripts in v0)",
+                bs.ty.name()
+            )));
+        }
+        let mut bind_bound = |e: Option<&SqlExpr>, open: i64| -> Result<Option<SExpr>, PrepareError> {
+            match e {
+                None => Ok(Some(lit_i64(open))),
+                Some(e) => self.expr_or_null(e),
+            }
+        };
+        let (blo, bhi) = (bind_bound(lo, 1)?, bind_bound(hi, -1)?);
+        let (Some(blo), Some(bhi)) = (blo, bhi) else {
+            return Ok(null_of(Ty::Str));
+        };
+        for e in [&blo, &bhi] {
+            if e.ty != Ty::I64 {
+                return Err(PrepareError::Bind(format!(
+                    "no function matches {name}(str, {}, {})",
+                    blo.ty.name(),
+                    bhi.ty.name()
+                )));
+            }
+        }
+        let nullable = bs.nullable || blo.nullable || bhi.nullable;
+        Ok(SExpr {
+            kind: SKind::Sslice {
+                a: Box::new(bs),
+                lo: Box::new(blo),
+                hi: Box::new(bhi),
+            },
+            ty: Ty::Str,
+            nullable,
+        })
     }
 
     /// The lane of value column `pos` of join `j`: NULL-able exactly when
@@ -2121,12 +2245,7 @@ impl Binder<'_> {
                 };
                 self.str2(&name, op, a, b)
             }
-            "repeat" | "array_extract" | "list_extract" => {
-                let op = if name == "repeat" {
-                    StrOp2i::Repeat
-                } else {
-                    StrOp2i::Extract
-                };
+            "repeat" => {
                 let [s, n] = args[..] else {
                     return Err(PrepareError::Bind(format!(
                         "{name} takes exactly 2 arguments"
@@ -2137,17 +2256,9 @@ impl Binder<'_> {
                     return Ok(null_of(Ty::Str));
                 };
                 if bs.ty != Ty::Str {
-                    if name == "repeat" {
-                        // No implicit numeric->VARCHAR cast (measured).
-                        return Err(PrepareError::Bind(format!(
-                            "no function matches repeat({})",
-                            bs.ty.name()
-                        )));
-                    }
-                    // The LIST overload has different out-of-range semantics
-                    // (NULL, not '') — only the VARCHAR path ships in v0.
-                    return Err(unsup(format!(
-                        "{name} on {} (only VARCHAR subscripts in v0)",
+                    // No implicit numeric->VARCHAR cast (measured).
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches repeat({})",
                         bs.ty.name()
                     )));
                 }
@@ -2160,13 +2271,24 @@ impl Binder<'_> {
                 let nullable = bs.nullable || bn.nullable;
                 Ok(SExpr {
                     kind: SKind::Str2i {
-                        op,
+                        op: StrOp2i::Repeat,
                         a: Box::new(bs),
                         n: Box::new(bn),
                     },
                     ty: Ty::Str,
                     nullable,
                 })
+            }
+            "array_extract" | "list_extract" => {
+                let [s, n] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 2 arguments"
+                    )));
+                };
+                let Some(bs) = self.expr_or_null(s)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                self.apply_extract(&name, bs, n)
             }
             "array_slice" | "list_slice" => {
                 if args.len() == 4 {
@@ -2181,40 +2303,10 @@ impl Binder<'_> {
                         "{name} takes exactly 3 arguments"
                     )));
                 };
-                let (bs, blo, bhi) = (
-                    self.expr_or_null(s)?,
-                    self.expr_or_null(lo)?,
-                    self.expr_or_null(hi)?,
-                );
-                let (Some(bs), Some(blo), Some(bhi)) = (bs, blo, bhi) else {
-                    // NULL is NOT an open bound (measured): any NULL -> NULL.
+                let Some(bs) = self.expr_or_null(s)? else {
                     return Ok(null_of(Ty::Str));
                 };
-                if bs.ty != Ty::Str {
-                    return Err(unsup(format!(
-                        "{name} on {} (only VARCHAR subscripts in v0)",
-                        bs.ty.name()
-                    )));
-                }
-                for e in [&blo, &bhi] {
-                    if e.ty != Ty::I64 {
-                        return Err(PrepareError::Bind(format!(
-                            "no function matches {name}(str, {}, {})",
-                            blo.ty.name(),
-                            bhi.ty.name()
-                        )));
-                    }
-                }
-                let nullable = bs.nullable || blo.nullable || bhi.nullable;
-                Ok(SExpr {
-                    kind: SKind::Sslice {
-                        a: Box::new(bs),
-                        lo: Box::new(blo),
-                        hi: Box::new(bhi),
-                    },
-                    ty: Ty::Str,
-                    nullable,
-                })
+                self.apply_slice(&name, bs, Some(lo), Some(hi))
             }
             "lpad" | "rpad" => {
                 let [s, l, pad] = args[..] else {

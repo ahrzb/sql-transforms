@@ -592,6 +592,12 @@ extern "C" fn h_srepeat(p: *mut Cx, ao: i64, al: i64, n: i64, len_out: *mut i64)
 
 extern "C" fn h_sextract(p: *mut Cx, ao: i64, al: i64, i: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
+    // Same +-2^32 window and trap as substr (pins-wave5).
+    if !interp::substr_range_ok(i) {
+        c.set_trap("substring offset outside of supported range".to_string());
+        unsafe { *len_out = 0 };
+        return 0;
+    }
     let arena = unsafe { &*c.arena };
     let rng = interp::extract_window(arena.get(span(ao, al)), i);
     // The extracted char is a subview of the input span — no copy.
@@ -1387,7 +1393,7 @@ fn translate_inst(
             let lp = b.ins().stack_addr(types::I64, slot_out, 0);
             let (name, traps) = match op {
                 super::super::ir::StrOp2i::Repeat => ("h_srepeat", true),
-                super::super::ir::StrOp2i::Extract => ("h_sextract", false),
+                super::super::ir::StrOp2i::Extract => ("h_sextract", true),
             };
             let off = call_h(b, module, name, &[cxp, ao, al, nv, lp]).unwrap();
             if traps {
