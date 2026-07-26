@@ -51,9 +51,17 @@ pub struct JoinSpec {
     /// aligned with `keys`.
     pub key_cols: Vec<u32>,
     /// The remaining columns, in table order — the probe's value lanes.
+    /// May be EMPTY (all-key/semi joins — wave-4 pins).
     /// ponytail: all non-key columns become map values even if unreferenced;
     /// prune to referenced columns when codegen makes the width measurable.
     pub val_cols: Vec<u32>,
+    /// Non-key ON conjuncts, ANDed: `match = key_hit AND residual` with
+    /// 3VL collapse (NULL => non-match). Evaluated HIT-GUARDED — exactly
+    /// DuckDB's per-candidate-pair laziness for both-sides residuals;
+    /// single-side residuals are restricted to trap-free shapes at bind
+    /// (wave-4 pins: DuckDB scan-pushes those, different error timing).
+    /// May reference this join's own columns via StaticCol.
+    pub residual: Option<SExpr>,
 }
 
 /// A bound, typed scalar expression. `nullable` is the frontend's
@@ -234,6 +242,10 @@ pub enum SKind {
     },
     /// strip_accents — Str -> Str, total (oracle table + Hangul compose).
     StripAccents(Box<SExpr>),
+    /// TRUE iff join `join` MATCHED this row (key hit AND residual) —
+    /// i1, never NULL. The building block for key-column reconstruction
+    /// (`r.id` ≡ CASE JoinHit THEN dyn-key ELSE NULL) and semi joins.
+    JoinHit(u32),
 }
 
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division

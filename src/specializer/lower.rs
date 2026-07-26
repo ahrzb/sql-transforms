@@ -859,6 +859,13 @@ impl<'a> FB<'a> {
                     val: dst,
                 })
             }
+            SKind::JoinHit(j) => {
+                let (match_v, _) = self.emit_probe(*j, live)?;
+                Ok(Lane {
+                    flag: None,
+                    val: match_v,
+                })
+            }
             SKind::SLen { bytes, a } => {
                 let l = self.emit(a, live)?;
                 let dst = self.fresh();
@@ -930,10 +937,62 @@ impl<'a> FB<'a> {
             None => hit,
             Some(f) => self.bin(BinOp::And, f, hit),
         };
+        // Cache the RAW probe first: the residual below references this
+        // join's own columns, and its StaticCol emissions must find the
+        // lanes instead of recursing.
         self.blocks[self.cur]
             .probes
             .insert(j, (valid_hit, dsts.clone()));
-        Ok((valid_hit, dsts))
+        let residual = self.joins[j as usize].residual.clone();
+        let match_v = match residual {
+            None => valid_hit,
+            Some(res) => {
+                // Hit-guarded lazy evaluation (wave-4 pins: DuckDB
+                // evaluates both-sides residuals per candidate PAIR) —
+                // the mini-case shape: brif raw_hit -> eval, else false.
+                let mut join_tys = Self::live_types(live);
+                join_tys.push(Ty::I1);
+                let live_width = Self::live_types(live).len();
+                let (join, join_params) = self.create_block(&join_tys);
+                let (eval, eval_params) = self.create_block(&Self::live_types(live));
+                let mut miss_args = Self::live_args(live);
+                let f = self.const_i1(false);
+                miss_args.push(f);
+                self.term(Term::Brif {
+                    cond: valid_hit,
+                    then_to: BlockId(eval as u32),
+                    then_args: Self::live_args(live),
+                    else_to: BlockId(join as u32),
+                    else_args: miss_args,
+                });
+                self.switch(eval);
+                Self::rebind_live(live, &eval_params);
+                // Dominance makes the raw lanes visible here; pre-seed the
+                // cache so StaticCol in the residual reuses them.
+                self.blocks[self.cur]
+                    .probes
+                    .insert(j, (valid_hit, dsts.clone()));
+                let rl = self.emit(&res, live)?;
+                // 3VL collapse: NULL residual is a non-match.
+                let rv = match rl.flag {
+                    None => rl.val,
+                    Some(f) => self.bin(BinOp::And, f, rl.val),
+                };
+                let mut hit_args = Self::live_args(live);
+                hit_args.push(rv);
+                self.term(Term::Jump {
+                    to: BlockId(join as u32),
+                    args: hit_args,
+                });
+                self.switch(join);
+                Self::rebind_live(live, &join_params[..live_width]);
+                join_params[live_width]
+            }
+        };
+        // Downstream consumers (INNER skip, LEFT flags, StaticCol, JoinHit)
+        // read the cache: store the final MATCH there.
+        self.blocks[self.cur].probes.insert(j, (match_v, dsts.clone()));
+        Ok((match_v, dsts))
     }
 
     /// Branchless Kleene AND/OR from flag algebra. With the lane contract

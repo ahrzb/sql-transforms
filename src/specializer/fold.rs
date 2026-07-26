@@ -52,7 +52,8 @@ pub fn fold(e: SExpr) -> SExpr {
     let SExpr { kind, ty, nullable } = e;
     let e = |kind| SExpr { kind, ty, nullable };
     match kind {
-        SKind::Col(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf => e(kind),
+        SKind::Col(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf
+        | SKind::JoinHit(_) => e(kind),
         SKind::IntToFloat(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {
