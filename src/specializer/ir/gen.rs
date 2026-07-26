@@ -344,7 +344,7 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 // Positions are small fresh consts, not arbitrary scope
                 // values: the ±2^32 range guard traps, and generated
                 // programs must stay executable for M-interp fuzzing.
-                let mut small = |rng: &mut Rng, b: &mut Builder, insts: &mut Vec<Inst>| {
+                let small = |rng: &mut Rng, b: &mut Builder, insts: &mut Vec<Inst>| {
                     let dst = b.fresh();
                     insts.push(Inst::Const {
                         dst,

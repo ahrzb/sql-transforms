@@ -362,3 +362,52 @@ def test_nan_filter_differential_on_native_tables():
         {"x": "float?"},
         [{"x": float("nan")}, {"x": 1.0}, {"x": None}, {"x": float("inf")}],
     )
+
+
+# ------------------------------------------------- static-only queries:
+# AC #2 — evaluated once at build time by DuckDB, nothing dynamic remains.
+
+
+def test_static_only_query_is_a_constant_emitter():
+    dim = static(
+        {"id": "int", "name": "str"},
+        [
+            {"id": 1, "name": "one"},
+            {"id": 2, "name": "two"},
+            {"id": 3, "name": "three"},
+        ],
+    )
+    model = _row_model({"a": "int"})
+    fn = DuckDBInferFn(
+        "SELECT name, id * 10 AS x FROM dim WHERE id <> 2 ORDER BY id DESC",
+        row_tables={"__THIS__": model},
+        static_tables={"dim": dim},
+    )
+    # Input rows are irrelevant; the result is fixed at build time —
+    # and constructs like ORDER BY work because DuckDB itself evaluated it.
+    for rows_in in ([], [model(a=1)], [model(a=1), model(a=2)]):
+        got = [r.model_dump() for r in fn.infer({"__THIS__": rows_in})]
+        assert got == [
+            {"name": "three", "x": 30},
+            {"name": "one", "x": 10},
+        ]
+
+
+def test_static_only_aggregation_works_via_duckdb():
+    dim = static({"v": "int"}, [{"v": 1}, {"v": 2}, {"v": 3}])
+    fn = DuckDBInferFn(
+        "SELECT sum(v) AS s FROM dim",
+        row_tables={"__THIS__": _row_model({"a": "int"})},
+        static_tables={"dim": dim},
+    )
+    assert [r.model_dump() for r in fn.infer({"__THIS__": []})] == [{"s": 6}]
+
+
+def test_unknown_driving_table_stays_clean_unsupported():
+    # Not a static table either -> the original clean unsupported surfaces.
+    with pytest.raises(ValueError, match="driving relation"):
+        DuckDBInferFn(
+            "SELECT x FROM nope",
+            row_tables={"__THIS__": _row_model({"a": "int"})},
+            static_tables={},
+        )
