@@ -115,17 +115,11 @@ pub fn frontend(
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
-    for item in &select.projection {
-        let (name, e) = match item {
-            SelectItem::UnnamedExpr(e) => (default_name(e), fold(binder.expr(e)?)),
-            SelectItem::ExprWithAlias { expr, alias } => {
-                (alias.value.clone(), fold(binder.expr(expr)?))
-            }
-            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => {
-                return Err(unsup("SELECT * (star expansion)"))
-            }
-            SelectItem::ExprWithAliases { .. } => return Err(unsup("multi-alias SELECT item")),
-        };
+    let push_item = |out_cols: &mut Vec<Col>,
+                     exprs: &mut Vec<SExpr>,
+                     name: String,
+                     e: SExpr|
+     -> Result<(), PrepareError> {
         if out_cols.iter().any(|c: &Col| c.name == name) {
             // DuckDB allows duplicate output names; our IR requires unique
             // columns. Rare in real queries — punt cleanly for now.
@@ -139,6 +133,40 @@ pub fn frontend(
             },
         });
         exprs.push(e);
+        Ok(())
+    };
+    for item in &select.projection {
+        match item {
+            SelectItem::UnnamedExpr(e) => push_item(
+                &mut out_cols,
+                &mut exprs,
+                default_name(e),
+                fold(binder.expr(e)?),
+            )?,
+            SelectItem::ExprWithAlias { expr, alias } => push_item(
+                &mut out_cols,
+                &mut exprs,
+                alias.value.clone(),
+                fold(binder.expr(expr)?),
+            )?,
+            SelectItem::Wildcard(opts) => {
+                for (name, e) in binder.expand_star(None, opts)? {
+                    push_item(&mut out_cols, &mut exprs, name, e)?;
+                }
+            }
+            SelectItem::QualifiedWildcard(kind, opts) => {
+                let table = match kind {
+                    sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(n) => n.to_string(),
+                    sqlparser::ast::SelectItemQualifiedWildcardKind::Expr(_) => {
+                        return Err(unsup("expression.* wildcard"))
+                    }
+                };
+                for (name, e) in binder.expand_star(Some(&table), opts)? {
+                    push_item(&mut out_cols, &mut exprs, name, e)?;
+                }
+            }
+            SelectItem::ExprWithAliases { .. } => return Err(unsup("multi-alias SELECT item")),
+        };
     }
     if exprs.is_empty() {
         return Err(PrepareError::Bind("SELECT list is empty".to_string()));
@@ -450,6 +478,98 @@ struct Binder<'a> {
 }
 
 impl Binder<'_> {
+    /// Expand `*` / `tbl.*` per DuckDB's measured semantics (1.5.5): FROM
+    /// order, declared column order within a table, EXCLUDE filtered
+    /// case-insensitively. A star item covering a joined static table is
+    /// unsupported: DuckDB's expansion includes the join-key column there
+    /// (and emits duplicate output names for the shared key), neither of
+    /// which the engine models — rejected by name, not silently narrowed.
+    fn expand_star(
+        &self,
+        qualifier: Option<&str>,
+        opts: &sqlparser::ast::WildcardAdditionalOptions,
+    ) -> Result<Vec<(String, SExpr)>, PrepareError> {
+        use sqlparser::ast::ExcludeSelectItem;
+        if opts.opt_ilike.is_some() {
+            return Err(unsup("SELECT * ILIKE (COLUMNS filter)"));
+        }
+        if opts.opt_except.is_some() {
+            return Err(unsup("SELECT * EXCEPT"));
+        }
+        if opts.opt_replace.is_some() {
+            return Err(unsup("SELECT * REPLACE"));
+        }
+        if opts.opt_rename.is_some() {
+            return Err(unsup("SELECT * RENAME"));
+        }
+        fn exclude_name(n: &sqlparser::ast::ObjectName) -> Result<&str, PrepareError> {
+            match n.0.as_slice() {
+                [part] => part
+                    .as_ident()
+                    .map(|i| i.value.as_str())
+                    .ok_or_else(|| unsup("EXCLUDE list entry form")),
+                _ => Err(unsup("qualified name in EXCLUDE list")),
+            }
+        }
+        let exclude: Vec<&str> = match &opts.opt_exclude {
+            None => Vec::new(),
+            Some(ExcludeSelectItem::Single(id)) => vec![exclude_name(id)?],
+            Some(ExcludeSelectItem::Multiple(ids)) => ids
+                .iter()
+                .map(exclude_name)
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        for (i, a) in exclude.iter().enumerate() {
+            if exclude[..i].iter().any(|b| b.eq_ignore_ascii_case(a)) {
+                // DuckDB rejects this at parse; ours surfaces at bind.
+                return Err(PrepareError::Bind(format!(
+                    "duplicate entry \"{a}\" in EXCLUDE list"
+                )));
+            }
+        }
+
+        let mut cols: Vec<(String, SExpr)> = Vec::new();
+        let mut matched = false;
+        if qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&self.this_name)) {
+            matched = true;
+            for (i, c) in self.in_cols.iter().enumerate() {
+                cols.push((
+                    c.name.clone(),
+                    SExpr {
+                        kind: SKind::Col(i as u32),
+                        ty: c.ty.ty,
+                        nullable: c.ty.nullable,
+                    },
+                ));
+            }
+        }
+        for sj in &self.joins {
+            if qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&sj.name)) {
+                let key = &sj.table.cols[sj.key_cols[0] as usize].name;
+                return Err(unsup(format!(
+                    "star expansion over joined table '{}' (includes join key column '{key}')",
+                    sj.name
+                )));
+            }
+        }
+        if !matched {
+            return Err(PrepareError::Bind(format!(
+                "table '{}' in wildcard does not exist in FROM",
+                qualifier.unwrap_or("?")
+            )));
+        }
+
+        for ex in &exclude {
+            if !cols.iter().any(|(n, _)| n.eq_ignore_ascii_case(ex)) {
+                return Err(PrepareError::Bind(format!(
+                    "column \"{ex}\" in EXCLUDE list not found in FROM clause"
+                )));
+            }
+        }
+        cols.retain(|(n, _)| !exclude.iter().any(|ex| ex.eq_ignore_ascii_case(n)));
+        Ok(cols)
+    }
+
     /// Bind an expression that must have a definite type on its own — a bare
     /// NULL literal here is unsupported (no context to type it).
     fn expr(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {

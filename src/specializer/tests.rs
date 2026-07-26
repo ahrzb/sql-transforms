@@ -398,6 +398,81 @@ fn bool_column_directly_in_where() {
 }
 
 #[test]
+fn star_expands_in_declared_order_with_exclude() {
+    let schema = cols(&[
+        ("a", Ty::I64, false),
+        ("b", Ty::F64, true),
+        ("s", Ty::Str, false),
+    ]);
+    let names = |p: &super::ir::Program| {
+        p.out_cols
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let p = prep("SELECT * FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["a", "b", "s"]);
+    // Nullability and types ride along from the input schema.
+    assert!(p.out_cols[1].ty.nullable && p.out_cols[1].ty.ty == Ty::F64);
+
+    // EXCLUDE is case-insensitive (measured: DuckDB drops k for EXCLUDE (K)),
+    // both paren and bare forms; qualified star + mixed items compose.
+    let p = prep("SELECT * EXCLUDE (B) FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["a", "s"]);
+    let p = prep("SELECT * EXCLUDE b FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["a", "s"]);
+    let p = prep("SELECT __THIS__.*, a + 1 AS a2 FROM __THIS__", &schema).unwrap();
+    assert_eq!(names(&p), ["a", "b", "s", "a2"]);
+
+    // Star + explicit same column: DuckDB-legal duplicate names stay our
+    // clean unsupported (the output model needs unique fields).
+    match prep("SELECT *, a FROM __THIS__", &schema) {
+        Err(PrepareError::Unsupported(m)) => assert!(m.contains("duplicate output column")),
+        other => panic!("wanted duplicate-name unsupported, got {other:?}"),
+    }
+    // EXCLUDE of an unknown column is a bind error, mirroring DuckDB's
+    // binder message.
+    match prep("SELECT * EXCLUDE (nope) FROM __THIS__", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("EXCLUDE list not found")),
+        other => panic!("wanted EXCLUDE bind error, got {other:?}"),
+    }
+    // Excluding everything leaves an empty SELECT — bind error like DuckDB.
+    match prep("SELECT * EXCLUDE (a, b, s) FROM __THIS__", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("empty")),
+        other => panic!("wanted empty-list bind error, got {other:?}"),
+    }
+}
+
+#[test]
+fn star_over_joined_table_rejects_by_name() {
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let st = stat("dim", &[("id", Ty::I64, false), ("v", Ty::F64, false)]);
+    for sql in [
+        "SELECT * FROM __THIS__ JOIN dim ON a = dim.id",
+        "SELECT dim.* FROM __THIS__ JOIN dim ON a = dim.id",
+    ] {
+        match prepare(sql, "__THIS__", &schema, std::slice::from_ref(&st)) {
+            Err(PrepareError::Unsupported(m)) => assert!(
+                m.contains("star expansion over joined table") && m.contains("id"),
+                "'{sql}': got '{m}'"
+            ),
+            Err(other) => panic!("'{sql}': wrong error kind: {other}"),
+            Ok(_) => panic!("'{sql}': unexpectedly prepared"),
+        }
+    }
+    // Qualified star over the ROW table under a join is fine.
+    let p = prepare(
+        "SELECT __THIS__.*, dim.v AS v FROM __THIS__ JOIN dim ON a = dim.id",
+        "__THIS__",
+        &schema,
+        std::slice::from_ref(&st),
+    )
+    .unwrap();
+    assert_eq!(p.program.out_cols.len(), 2);
+}
+
+#[test]
 fn unsupported_constructs_are_named_cleanly() {
     let schema = cols(&[("a", Ty::I64, false)]);
     for (sql, needle) in [
@@ -407,7 +482,9 @@ fn unsupported_constructs_are_named_cleanly() {
         ("SELECT sum(a) FROM __THIS__", "function sum"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
         ("SELECT length('x') FROM __THIS__", "function"),
-        ("SELECT * FROM __THIS__", "star expansion"),
+        // Star now expands; the still-unsupported star forms reject by name.
+        ("SELECT * REPLACE (a + 1 AS a) FROM __THIS__", "REPLACE"),
+        ("SELECT COLUMNS('a') FROM __THIS__", "function COLUMNS"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         ("SELECT a, a FROM __THIS__", "duplicate output column"),
         ("SELECT NULL FROM __THIS__", "NULL literal"),

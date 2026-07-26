@@ -543,3 +543,42 @@ def test_reentrant_infer_falls_back_instead_of_erroring():
     (m,) = fn.infer_rows([Row()])
     assert m.d == 14
     assert inner == [10]  # the nested call completed via the generic path
+
+
+# --------------------------------------------------------- TASK-46:
+# SELECT * star expansion — measured DuckDB 1.5.5 pins (order, EXCLUDE
+# case-folding, mixed items) verified end-to-end against the oracle.
+
+
+def test_star_expansion_matches_duckdb():
+    rows = [
+        {"a": 1, "b": 2.5, "s": "x"},
+        {"a": 2, "b": None, "s": "y"},
+    ]
+    for sql in [
+        "SELECT * FROM __THIS__",
+        "SELECT __THIS__.* FROM __THIS__",
+        "SELECT * EXCLUDE (b) FROM __THIS__",
+        "SELECT * EXCLUDE B FROM __THIS__",  # case-insensitive, bare form
+        "SELECT *, a * 2 AS a2 FROM __THIS__",
+        "SELECT * EXCLUDE (s), upper(s) AS u FROM __THIS__",
+    ]:
+        duck_check(sql, {"a": "int", "b": "float?", "s": "str"}, rows)
+
+
+def test_star_qualified_over_row_table_under_join():
+    duck_check(
+        "SELECT __THIS__.*, dim.name AS nm FROM __THIS__ JOIN dim ON k = dim.id",
+        {"k": "int"},
+        [{"k": 1}, {"k": 2}, {"k": 99}],
+        statics={"dim": DIM},
+    )
+
+
+def test_star_over_joined_table_rejects_by_name():
+    with pytest.raises(ValueError, match="star expansion over joined table"):
+        DuckDBInferFn(
+            "SELECT * FROM __THIS__ JOIN dim ON k = dim.id",
+            row_tables={"__THIS__": _row_model({"k": "int"})},
+            static_tables={"dim": DIM},
+        )
