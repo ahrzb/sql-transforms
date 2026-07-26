@@ -127,9 +127,14 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Strim { side, a, chars, .. } => {
             let _ = write!(s, "strim.{} {}, {}", side.name(), val(*a), val(*chars));
         }
-        Inst::Ssubstr { a, start, len, .. } => {
-            let _ = write!(s, "ssubstr {}, {}, {}", val(*a), val(*start), val(*len));
-        }
+        Inst::Ssubstr { a, start, len, .. } => match len {
+            Some(len) => {
+                let _ = write!(s, "ssubstr {}, {}, {}", val(*a), val(*start), val(*len));
+            }
+            None => {
+                let _ = write!(s, "ssubstr.rest {}, {}", val(*a), val(*start));
+            }
+        },
         Inst::Num1 { op, a, .. } => {
             let _ = write!(s, "{} {}", op.name(), val(*a));
         }

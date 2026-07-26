@@ -106,13 +106,7 @@ pub fn frontend(
 
     let mut rel = Rel::Scan;
     if let Some(pred) = &select.selection {
-        let pred = fold(binder.expr(pred)?);
-        if pred.ty != Ty::I1 {
-            return Err(PrepareError::Bind(format!(
-                "WHERE predicate must be BOOLEAN, got {}",
-                pred.ty.name()
-            )));
-        }
+        let pred = fold(bool_context(binder.expr(pred)?, "WHERE predicate")?);
         rel = Rel::Filter {
             input: Box::new(rel),
             pred,
@@ -200,6 +194,14 @@ fn bind_from<'a>(
         this_name: dyn_name,
         in_cols,
         joins: Vec::new(),
+        select_aliases: select
+            .projection
+            .iter()
+            .filter_map(|item| match item {
+                SelectItem::ExprWithAlias { alias, .. } => Some(alias.value.clone()),
+                _ => None,
+            })
+            .collect(),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -442,6 +444,9 @@ struct Binder<'a> {
     this_name: String,
     in_cols: &'a [Col],
     joins: Vec<ScopeJoin<'a>>,
+    /// SELECT-list aliases, for cleanly rejecting DuckDB's lateral-alias
+    /// extension (an alias referenced inside WHERE) as unsupported.
+    select_aliases: Vec<String>,
 }
 
 impl Binder<'_> {
@@ -492,7 +497,7 @@ impl Binder<'_> {
                 op: UnaryOperator::Not,
                 expr,
             } => {
-                let inner = self.expr(expr)?;
+                let inner = bool_context(self.expr(expr)?, "NOT operand")?;
                 if inner.ty != Ty::I1 {
                     return Err(PrepareError::Bind(format!(
                         "NOT requires BOOLEAN, got {}",
@@ -611,6 +616,19 @@ impl Binder<'_> {
             0 if key_only => Err(unsup(format!(
                 "referencing join key column '{name}' outside its ON clause"
             ))),
+            // Real DuckDB features we don't model reject cleanly, not as
+            // bind errors: the rowid pseudo-column, and DuckDB's lateral
+            // alias extension (a SELECT alias visible inside WHERE).
+            0 if name.eq_ignore_ascii_case("rowid") => Err(unsup("rowid pseudo-column")),
+            0 if self
+                .select_aliases
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(name)) =>
+            {
+                Err(unsup(format!(
+                    "SELECT alias '{name}' referenced outside the SELECT list (lateral alias)"
+                )))
+            }
             0 => Err(PrepareError::Bind(format!(
                 "column '{name}' does not exist in scope"
             ))),
@@ -710,14 +728,8 @@ impl Binder<'_> {
             BinaryOperator::Gt => self.cmp(CmpPred::Gt, a, b),
             BinaryOperator::GtEq => self.cmp(CmpPred::Ge, a, b),
             BinaryOperator::And | BinaryOperator::Or => {
-                for side in [&a, &b] {
-                    if side.ty != Ty::I1 {
-                        return Err(PrepareError::Bind(format!(
-                            "AND/OR requires BOOLEAN, got {}",
-                            side.ty.name()
-                        )));
-                    }
-                }
+                let a = bool_context(a, "AND/OR operand")?;
+                let b = bool_context(b, "AND/OR operand")?;
                 let nullable = a.nullable || b.nullable;
                 let (a, b) = (Box::new(a), Box::new(b));
                 let kind = if matches!(op, BinaryOperator::And) {
@@ -790,19 +802,10 @@ impl Binder<'_> {
                     };
                     self.cmp(CmpPred::Eq, op.clone(), v)?
                 }
-                None => {
-                    let c = match self.expr_or_null(&when.condition)? {
-                        Some(c) => c,
-                        None => null_of(Ty::I1),
-                    };
-                    if c.ty != Ty::I1 {
-                        return Err(PrepareError::Bind(format!(
-                            "CASE WHEN condition must be BOOLEAN, got {}",
-                            c.ty.name()
-                        )));
-                    }
-                    c
-                }
+                None => match self.expr_or_null(&when.condition)? {
+                    Some(c) => bool_context(c, "CASE WHEN condition")?,
+                    None => null_of(Ty::I1),
+                },
             };
             conds.push(c);
         }
@@ -904,7 +907,30 @@ impl Binder<'_> {
                 ty: Ty::I64,
                 nullable: false,
             };
-            let cond = self.cmp(CmpPred::Eq, b.clone(), zero)?;
+            // The guard must fire for a NULL divisor too: `b = 0` alone is
+            // NULL there (arm not taken) and the irem would run on the
+            // garbage payload. TRUE OR NULL = TRUE makes IS NULL the shield.
+            let is_zero = self.cmp(CmpPred::Eq, b.clone(), zero)?;
+            let cond = if b.nullable {
+                let is_null = SExpr {
+                    kind: SKind::IsNull {
+                        negated: false,
+                        inner: Box::new(b.clone()),
+                    },
+                    ty: Ty::I1,
+                    nullable: false,
+                };
+                SExpr {
+                    kind: SKind::Or {
+                        a: Box::new(is_null),
+                        b: Box::new(is_zero),
+                    },
+                    ty: Ty::I1,
+                    nullable: true,
+                }
+            } else {
+                is_zero
+            };
             let rem = SExpr {
                 kind: SKind::Arith {
                     op,
@@ -1251,7 +1277,7 @@ impl Binder<'_> {
                     )))
                 }
             },
-            None => lit_str(" "),
+            None => lit_str(ZS_SPACES),
         };
         let nullable = s.nullable || chars.nullable;
         Ok(SExpr {
@@ -1283,35 +1309,48 @@ impl Binder<'_> {
                 s.ty.name()
             )));
         }
-        let mut num = |e: Option<&SqlExpr>, missing: i64| -> Result<Option<SExpr>, PrepareError> {
-            match e {
-                None => Ok(Some(lit_i64(missing))),
-                Some(e) => match self.expr_or_null(e)? {
-                    None => Ok(None),
-                    Some(x) if x.ty == Ty::I64 => Ok(Some(x)),
-                    Some(x) => Err(PrepareError::Bind(format!(
-                        "substr position/length must be INTEGER, got {}",
-                        x.ty.name()
-                    ))),
-                },
+        // Ok(None) = a literal NULL argument: the whole call is NULL.
+        let num = |e: &SqlExpr| -> Result<Option<SExpr>, PrepareError> {
+            match self.expr_or_null(e)? {
+                None => Ok(None),
+                Some(x) if x.ty == Ty::I64 => Ok(Some(x)),
+                Some(x) => Err(PrepareError::Bind(format!(
+                    "substr position/length must be INTEGER, got {}",
+                    x.ty.name()
+                ))),
             }
         };
-        let (Some(start), Some(len)) = (num(from, 1)?, num(for_, i64::MAX)?) else {
-            // A literal NULL position or length propagates NULL.
-            return Ok(null_of(Ty::Str));
+        let start = match from {
+            Some(e) => match num(e)? {
+                Some(x) => x,
+                None => return Ok(null_of(Ty::Str)),
+            },
+            None => lit_i64(1),
         };
-        let nullable = s.nullable || start.nullable || len.nullable;
+        let len = match for_ {
+            Some(e) => match num(e)? {
+                Some(x) => Some(Box::new(x)),
+                None => return Ok(null_of(Ty::Str)),
+            },
+            None => None,
+        };
+        let nullable = s.nullable || start.nullable || len.as_ref().is_some_and(|l| l.nullable);
         Ok(SExpr {
             kind: SKind::Substr {
                 a: Box::new(s),
                 start: Box::new(start),
-                len: Box::new(len),
+                len,
             },
             ty: Ty::Str,
             nullable,
         })
     }
 }
+
+/// DuckDB's default trim set (adversarial census, 1.5.5): exactly the
+/// Unicode Zs space separators — NOT tab/newline/ZWSP/BOM/LS/PS/NEL.
+const ZS_SPACES: &str = "\u{20}\u{A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\
+                         \u{2006}\u{2007}\u{2008}\u{2009}\u{200A}\u{202F}\u{205F}\u{3000}";
 
 fn lit_str(s: &str) -> SExpr {
     SExpr {
@@ -1326,6 +1365,35 @@ fn lit_i64(n: i64) -> SExpr {
         kind: SKind::Lit(Lit::I64(n)),
         ty: Ty::I64,
         nullable: false,
+    }
+}
+
+/// DuckDB coerces numeric values to BOOLEAN in conditional contexts —
+/// WHERE, AND/OR/NOT operands, CASE WHEN conditions (measured 1.5.5:
+/// nonzero -> true including NaN, 0 and -0.0 -> false, NULL -> NULL).
+/// Strings stay a bind error (DuckDB errors at runtime; such queries never
+/// mine into the corpus).
+fn bool_context(e: SExpr, what: &str) -> Result<SExpr, PrepareError> {
+    match e.ty {
+        Ty::I1 => Ok(e),
+        Ty::I64 | Ty::F64 => {
+            if matches!(e.kind, SKind::NullOf) {
+                return Ok(null_of(Ty::I1));
+            }
+            let nullable = e.nullable;
+            Ok(SExpr {
+                kind: SKind::Cast {
+                    inner: Box::new(e),
+                    trying: false,
+                },
+                ty: Ty::I1,
+                nullable,
+            })
+        }
+        other => Err(PrepareError::Bind(format!(
+            "{what} must be BOOLEAN, got {}",
+            other.name()
+        ))),
     }
 }
 

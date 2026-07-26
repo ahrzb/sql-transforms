@@ -140,13 +140,13 @@ pub enum SKind {
         a: Box<SExpr>,
         chars: Box<SExpr>,
     },
-    /// substr/substring. `len` is always present: the 2-arg SQL form gets an
-    /// `i64::MAX` literal ("rest of the string" under saturating window
-    /// arithmetic). All three operands NULL-propagate.
+    /// substr/substring. `len: None` is the 2-arg form ("rest of the
+    /// string") — kept distinct because DuckDB range-guards an explicit
+    /// length but never a missing one. All operands NULL-propagate.
     Substr {
         a: Box<SExpr>,
         start: Box<SExpr>,
-        len: Box<SExpr>,
+        len: Option<Box<SExpr>>,
     },
     /// ABS — I64 or F64; result type = operand type. Traps on i64::MIN.
     Abs(Box<SExpr>),

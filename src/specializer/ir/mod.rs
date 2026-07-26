@@ -448,14 +448,18 @@ pub enum Inst {
         a: Value,
         chars: Value,
     },
-    /// `ssubstr a, start, len` — codepoint-window substring with DuckDB's
-    /// virtual-position arithmetic (negative start counts from the end,
-    /// start <= 0 consumes length before character 1, negative len is "").
+    /// `ssubstr a, start, len` / `ssubstr.rest a, start` — codepoint-window
+    /// substring with DuckDB's virtual-position arithmetic: negative start
+    /// counts from the end, start <= 0 consumes length before character 1,
+    /// a negative length slices BACKWARDS from the resolved start, and
+    /// offsets/lengths outside ±2^32 trap. `len: None` is the 2-arg SQL
+    /// form ("rest of the string"), which never length-traps — that is why
+    /// it is not a sentinel value.
     Ssubstr {
         dst: Value,
         a: Value,
         start: Value,
-        len: Value,
+        len: Option<Value>,
     },
     /// `iabs` / `fabs` / `fround` — numeric unaries, operand ty == result ty.
     Num1 {
@@ -629,7 +633,9 @@ impl Inst {
                 *dst = m(*dst);
                 *a = m(*a);
                 *start = m(*start);
-                *len = m(*len);
+                if let Some(len) = len {
+                    *len = m(*len);
+                }
             }
             Inst::Select { dst, cond, a, b } => {
                 *dst = m(*dst);

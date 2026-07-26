@@ -1008,13 +1008,17 @@ impl Parser {
                     chars,
                 }
             }
-            "ssubstr" => {
+            "ssubstr" | "ssubstr.rest" => {
                 want_dsts(1, self)?;
                 let a = self.use_value()?;
                 self.expect(Tok::Comma)?;
                 let start = self.use_value()?;
-                self.expect(Tok::Comma)?;
-                let len = self.use_value()?;
+                let len = if opcode == "ssubstr" {
+                    self.expect(Tok::Comma)?;
+                    Some(self.use_value()?)
+                } else {
+                    None
+                };
                 Inst::Ssubstr {
                     dst: def!(0),
                     a,

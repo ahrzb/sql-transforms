@@ -57,9 +57,15 @@ def duck_check(
     got = [r.model_dump() for r in fn.infer({"__THIS__": inputs})]
 
     con = duckdb.connect()
+    # Materialize NATIVE tables: duckdb pushes constant filters into
+    # registered-arrow scans with IEEE NaN semantics, which disagrees with
+    # its own native-table comparison order (adversarial probe, 2026-07-26).
+    # The engine follows native-table semantics — the corpus's world.
     for name, table in statics.items():
-        con.register(name, table)
-    con.register("__THIS__", static(row_schema, row_rows))
+        con.register(f"__arrow_{name}", table)
+        con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')
+    con.register("__arrow_this", static(row_schema, row_rows))
+    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
     want = con.execute(sql).to_arrow_table().to_pylist()
 
     # Row order is not part of the contract (a join may reorder); compare as
@@ -283,12 +289,76 @@ def test_nan_comparison_differential():
 @pytest.mark.xfail(
     strict=True,
     reason="DuckDB uses utf8proc SIMPLE case maps (upper('ß')='ẞ', "
-    "lower('İ')='i'); Rust std only exposes full maps — known divergence, "
-    "see docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md",
+    "lower('İ')='i', upper('ᾀ')='ᾈ'); Rust std only exposes full maps — "
+    "known divergence, see the 2026-07-26 builtin-pins spec",
 )
 def test_simple_case_mapping_divergence():
     duck_check(
         "SELECT upper(s) AS u, lower(s) AS l FROM __THIS__",
         {"s": "str"},
-        [{"s": "ß"}, {"s": "İ"}],
+        [{"s": "ß"}, {"s": "İ"}, {"s": "ᾀ"}],
+    )
+
+
+# --------------------------------------------- adversarial-fleet fixes:
+# each case below was a measured divergence, now pinned differentially.
+
+
+def test_trim_zs_set_differential():
+    duck_check(
+        "SELECT trim(s) AS t, ltrim(s) AS l, rtrim(s) AS r FROM __THIS__",
+        {"s": "str"},
+        [{"s": "\u00a0a\u3000"}, {"s": "\ta\n"}, {"s": " a "}, {"s": "\u2003a"}],
+    )
+
+
+def test_substr_negative_length_differential():
+    duck_check(
+        "SELECT substr(s, st, ln) AS r FROM __THIS__",
+        {"s": "str", "st": "int", "ln": "int"},
+        [
+            {"s": "hello", "st": 3, "ln": -2},
+            {"s": "hello", "st": 6, "ln": -5},
+            {"s": "h\u00e9llo", "st": 4, "ln": -10},
+            {"s": "hello", "st": 1, "ln": -1},
+        ],
+    )
+
+
+def test_float_rendering_differential():
+    duck_check(
+        "SELECT x || '' AS s FROM __THIS__",
+        {"x": "float"},
+        [
+            {"x": 1e300},
+            {"x": 1e-05},
+            {"x": float("nan")},
+            {"x": 2.5},
+            {"x": 1e16},
+            {"x": -1e300},
+        ],
+    )
+
+
+def test_null_divisor_differential():
+    duck_check(
+        "SELECT a % b AS r FROM __THIS__",
+        {"a": "int?", "b": "int?"},
+        [{"a": 7, "b": None}, {"a": None, "b": 0}, {"a": 7, "b": 3}],
+    )
+
+
+def test_numeric_where_differential():
+    duck_check(
+        "SELECT a FROM __THIS__ WHERE a % 2",
+        {"a": "int"},
+        [{"a": 1}, {"a": 2}, {"a": 3}],
+    )
+
+
+def test_nan_filter_differential_on_native_tables():
+    duck_check(
+        "SELECT x FROM __THIS__ WHERE x > 0",
+        {"x": "float?"},
+        [{"x": float("nan")}, {"x": 1.0}, {"x": None}, {"x": float("inf")}],
     )

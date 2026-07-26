@@ -341,8 +341,26 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
             }
             10 => {
                 let a = ensure(rng, b, scope, insts, Ty::Str);
-                let start = ensure(rng, b, scope, insts, Ty::I64);
-                let len = ensure(rng, b, scope, insts, Ty::I64);
+                // Positions are small fresh consts, not arbitrary scope
+                // values: the ±2^32 range guard traps, and generated
+                // programs must stay executable for M-interp fuzzing.
+                let mut small = |rng: &mut Rng, b: &mut Builder, insts: &mut Vec<Inst>| {
+                    let dst = b.fresh();
+                    insts.push(Inst::Const {
+                        dst,
+                        lit: Lit::I64(rng.below(19) as i64 - 9),
+                    });
+                    dst
+                };
+                let start = small(rng, b, insts);
+                scope.add(start, Ty::I64);
+                let len = if rng.chance(50) {
+                    let l = small(rng, b, insts);
+                    scope.add(l, Ty::I64);
+                    Some(l)
+                } else {
+                    None
+                };
                 let dst = b.fresh();
                 insts.push(Inst::Ssubstr { dst, a, start, len });
                 scope.add(dst, Ty::Str);
