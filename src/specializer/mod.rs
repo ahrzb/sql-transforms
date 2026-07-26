@@ -9,6 +9,7 @@
 //! Cranelift backend and the generated Python-boundary marshaller.
 
 pub mod exec;
+pub mod fold;
 pub mod frontend;
 pub mod ir;
 pub mod lower;
@@ -19,12 +20,36 @@ mod tests;
 
 pub use frontend::PrepareError;
 
-/// STAGE 1 for the v0 ribbon: SQL text + the dynamic table's schema -> a
-/// verified imperative-IR program. The returned program is always verified —
-/// a lowering bug becomes [`PrepareError::Internal`], never an executable.
-pub fn prepare(sql: &str, in_cols: &[ir::Col]) -> Result<ir::Program, PrepareError> {
-    let (rel, out_cols) = frontend::frontend(sql, in_cols)?;
-    let mut program = lower::lower(&rel, in_cols, out_cols, "run")?;
+/// How to materialize map static `@N` from the static table it came from:
+/// build one entry per table row, keyed by `key_cols` (converted to the
+/// declared key types — an int column joined against a float expression
+/// becomes f64 here), valued by `val_cols`. Rows with a NULL key are dropped
+/// (a NULL never equi-matches); a NULL in a value column is an error.
+pub struct StaticSpec {
+    pub table: String,
+    pub key_cols: Vec<String>,
+    pub val_cols: Vec<String>,
+}
+
+/// The output of stage 1: a verified program plus, per map static, the
+/// recipe the caller uses to turn its table data into `StaticData`.
+pub struct Prepared {
+    pub program: ir::Program,
+    pub statics: Vec<StaticSpec>,
+}
+
+/// STAGE 1 for the v0 ribbon: SQL text + the dynamic table's name and schema
+/// + the static-table catalog -> a verified imperative-IR program. The
+/// returned program is always verified — a lowering bug becomes
+/// [`PrepareError::Internal`], never an executable.
+pub fn prepare(
+    sql: &str,
+    this_name: &str,
+    in_cols: &[ir::Col],
+    statics: &[plan::StaticTable],
+) -> Result<Prepared, PrepareError> {
+    let (rel, joins, out_cols) = frontend::frontend(sql, this_name, in_cols, statics)?;
+    let mut program = lower::lower(&rel, &joins, statics, in_cols, out_cols, "run")?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
     ir::canonicalize(&mut program);
@@ -35,5 +60,27 @@ pub fn prepare(sql: &str, in_cols: &[ir::Col]) -> Result<ir::Program, PrepareErr
             msgs.join("; ")
         )));
     }
-    Ok(program)
+    let specs = joins
+        .iter()
+        .map(|j| {
+            let t = &statics[j.table];
+            StaticSpec {
+                table: t.name.clone(),
+                key_cols: j
+                    .key_cols
+                    .iter()
+                    .map(|&c| t.cols[c as usize].name.clone())
+                    .collect(),
+                val_cols: j
+                    .val_cols
+                    .iter()
+                    .map(|&c| t.cols[c as usize].name.clone())
+                    .collect(),
+            }
+        })
+        .collect();
+    Ok(Prepared {
+        program,
+        statics: specs,
+    })
 }

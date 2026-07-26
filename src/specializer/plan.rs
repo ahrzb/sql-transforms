@@ -3,14 +3,57 @@
 //! scan/filter/project ribbon over the dynamic table; joins and static
 //! subtrees grow here at the BTA stretch.
 
-use super::ir::{CmpPred, Lit, Ty};
+use super::ir::{CmpPred, Col, Lit, Ty};
 
-/// A relational operator tree. `Scan` is always the dynamic table for now;
-/// static relations appear with BTA.
+/// A relational operator tree over the dynamic table. Joins to static
+/// tables are not tree nodes: the v0 shape is rigid
+/// (project(filter?(join*(scan)))), so the frontend returns them as an
+/// ordered [`JoinSpec`] list instead — the tree would only restate the
+/// vec's order.
 pub enum Rel {
     Scan,
-    Filter { input: Box<Rel>, pred: SExpr },
-    Project { input: Box<Rel>, exprs: Vec<(String, SExpr)> },
+    Filter {
+        input: Box<Rel>,
+        pred: SExpr,
+    },
+    Project {
+        input: Box<Rel>,
+        exprs: Vec<(String, SExpr)>,
+    },
+}
+
+/// A static (prepare-time-known) table's schema, as given to `prepare`.
+/// Value-column nullability is deliberately ignored here: arrow schemas
+/// default to nullable, so the real check — no NULL in a value column —
+/// happens against the data at materialization.
+pub struct StaticTable {
+    pub name: String,
+    pub cols: Vec<Col>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JoinKind {
+    Inner,
+    Left,
+}
+
+/// One equi-join to a static table, in FROM-clause order. Join `i` probes
+/// map static `@i`; its map layout is `keys[..] -> value columns`, where the
+/// key column split comes from the ON clause.
+pub struct JoinSpec {
+    /// Index into the static-table catalog handed to `prepare`.
+    pub table: usize,
+    pub kind: JoinKind,
+    /// Dynamic-side key expressions, one per key column, already promoted
+    /// to the map's key types.
+    pub keys: Vec<SExpr>,
+    /// Static-table columns acting as map keys (indices into `table.cols`),
+    /// aligned with `keys`.
+    pub key_cols: Vec<u32>,
+    /// The remaining columns, in table order — the probe's value lanes.
+    /// ponytail: all non-key columns become map values even if unreferenced;
+    /// prune to referenced columns when codegen makes the width measurable.
+    pub val_cols: Vec<u32>,
 }
 
 /// A bound, typed scalar expression. `nullable` is the frontend's
@@ -29,32 +72,62 @@ pub struct SExpr {
 pub enum SKind {
     /// Input column, by index into the dynamic table's schema.
     Col(u32),
+    /// Value column `col` (index into the join's `val_cols`) of join `join`.
+    /// Lowered as a lane of that join's probe: non-nullable under INNER
+    /// (misses were already skipped), hit-flagged under LEFT.
+    StaticCol {
+        join: u32,
+        col: u32,
+    },
     Lit(Lit),
     /// Typed NULL constant (`ty` is on the SExpr): flag=false, payload
     /// default. Produced where context gives the bare NULL literal a type.
     NullOf,
     /// Arithmetic after type promotion: both sides already the same `Ty`
     /// (the frontend inserts `IntToFloat` where DuckDB promotes).
-    Arith { op: ArithOp, a: Box<SExpr>, b: Box<SExpr> },
+    Arith {
+        op: ArithOp,
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+    },
     /// Comparison after promotion; result i1, NULL-propagating.
-    Cmp { pred: CmpPred, a: Box<SExpr>, b: Box<SExpr> },
+    Cmp {
+        pred: CmpPred,
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+    },
     /// i64 -> f64 promotion node, inserted by the frontend.
     IntToFloat(Box<SExpr>),
     /// 3VL NOT: value negates, NULL stays NULL.
     Not(Box<SExpr>),
     /// Kleene AND/OR over i1 operands.
-    And { a: Box<SExpr>, b: Box<SExpr> },
-    Or { a: Box<SExpr>, b: Box<SExpr> },
+    And {
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+    },
+    Or {
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+    },
     /// IS NULL / IS NOT NULL — result i1, never NULL.
-    IsNull { negated: bool, inner: Box<SExpr> },
+    IsNull {
+        negated: bool,
+        inner: Box<SExpr>,
+    },
     /// Searched CASE (the simple form is desugared to `operand = value`
     /// conditions at bind). First TRUE condition wins; NULL conditions do
     /// not match; missing ELSE yields NULL.
-    Case { arms: Vec<(SExpr, SExpr)>, default: Option<Box<SExpr>> },
+    Case {
+        arms: Vec<(SExpr, SExpr)>,
+        default: Option<Box<SExpr>>,
+    },
     /// CAST / TRY_CAST; source is `inner.ty`, target is the SExpr's `ty`.
     /// CAST traps on conversion failure (NULL input never traps); TRY_CAST
     /// yields NULL instead.
-    Cast { inner: Box<SExpr>, trying: bool },
+    Cast {
+        inner: Box<SExpr>,
+        trying: bool,
+    },
 }
 
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division
