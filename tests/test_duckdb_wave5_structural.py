@@ -23,6 +23,35 @@ T_ROWS = [
 ]
 
 
+def test_binder_tail_vs_oracle():
+    # NULL <op> NULL typing, lateral aliases (real column wins), main.
+    # qualifier, t AS u(x,y), NATURAL JOIN, mixed-literal IN/BETWEEN.
+    duck_check(
+        "SELECT NULL + NULL AS s, NULL / NULL AS d, NULL = NULL AS e FROM __THIS__",
+        T,
+        T_ROWS,
+    )
+    duck_check("SELECT a % 2 AS k, k * 2 AS d FROM __THIS__ WHERE k = 1", T, T_ROWS)
+    duck_check("SELECT a FROM main.__THIS__", T, T_ROWS)
+    duck_check("SELECT x + 1 AS p FROM __THIS__ AS u(x)", T, T_ROWS)
+    dim = static(
+        {"a": "int", "label": "str"},
+        [{"a": 3, "label": "three"}, {"a": 7, "label": "seven"}],
+    )
+    duck_check(
+        "SELECT * FROM __THIS__ NATURAL JOIN dim",
+        T,
+        T_ROWS,
+        {"dim": dim},
+    )
+    duck_check(
+        "SELECT a IN ('1', 3) AS x, a BETWEEN '0' AND '5' AS r, "
+        "true IN (1, 0) AS b FROM __THIS__",
+        T,
+        T_ROWS,
+    )
+
+
 def test_star_filters_replace_rename_vs_oracle():
     # Name filters / REPLACE / RENAME against the oracle (values + names).
     duck_check("SELECT * LIKE 'a%' FROM __THIS__", T, T_ROWS)

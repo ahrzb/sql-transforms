@@ -128,15 +128,6 @@ pub fn frontend(
 
     let (binder, joins, leftover_where) = bind_from(select, this_name, in_cols, statics)?;
 
-    let mut rel = Rel::Scan;
-    if let Some(pred) = &leftover_where {
-        let pred = fold(bool_context(binder.expr(pred)?, "WHERE predicate")?);
-        rel = Rel::Filter {
-            input: Box::new(rel),
-            pred,
-        };
-    }
-
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
     let push_item = |out_cols: &mut Vec<Col>,
@@ -162,12 +153,16 @@ pub fn frontend(
                 default_name(e),
                 fold(binder.expr(e)?),
             )?,
-            SelectItem::ExprWithAlias { expr, alias } => push_item(
-                &mut out_cols,
-                &mut exprs,
-                alias.value.clone(),
-                fold(binder.expr(expr)?),
-            )?,
+            SelectItem::ExprWithAlias { expr, alias } => {
+                let e = fold(binder.expr(expr)?);
+                // Lateral aliases (wave-5 pins): later items and WHERE may
+                // reference this alias; the real column still wins.
+                binder
+                    .bound_aliases
+                    .borrow_mut()
+                    .push((alias.value.clone(), e.clone()));
+                push_item(&mut out_cols, &mut exprs, alias.value.clone(), e)?
+            }
             SelectItem::Wildcard(opts) => {
                 for (name, e) in binder.expand_star(None, opts)? {
                     push_item(&mut out_cols, &mut exprs, name, e)?;
@@ -191,6 +186,19 @@ pub fn frontend(
         return Err(PrepareError::Bind("SELECT list is empty".to_string()));
     }
     dedup_output_names(&mut out_cols);
+
+    // WHERE binds AFTER the projection so DuckDB's lateral-alias extension
+    // (an alias visible inside WHERE when no real column shares the name)
+    // resolves; the plan shape is unchanged — Filter still sits under
+    // Project on the scan.
+    let mut rel = Rel::Scan;
+    if let Some(pred) = &leftover_where {
+        let pred = fold(bool_context(binder.expr(pred)?, "WHERE predicate")?);
+        rel = Rel::Filter {
+            input: Box::new(rel),
+            pred,
+        };
+    }
 
     let named = out_cols
         .iter()
@@ -222,27 +230,57 @@ fn bind_from<'a>(
     let dyn_name = match &table.relation {
         TableFactor::Table { name, alias, .. } => {
             let n = name.to_string();
-            if !n.eq_ignore_ascii_case(this_name) {
+            // `main.tbl` resolves to bare `tbl` (DuckDB's default schema);
+            // every OTHER qualifier fails in DuckDB itself with a
+            // schema-does-not-exist Catalog Error, so it stays unsupported
+            // here — never a silent bare-name fallback (wave-5 pins).
+            let bare = n
+                .strip_prefix("main.")
+                .or_else(|| n.strip_prefix("MAIN."))
+                .unwrap_or(&n);
+            if !bare.eq_ignore_ascii_case(this_name) {
                 return Err(unsup(format!(
                     "table '{n}' as the driving relation (must be the dynamic table '{this_name}')"
                 )));
             }
+            let n = bare.to_string();
             match alias {
                 // Measured: an alias REPLACES the original name entirely
                 // (qualified refs through the original are binder errors in
                 // DuckDB) — making the alias the binder's this_name gives
                 // exactly that scoping.
-                Some(a) if a.columns.is_empty() => a.name.value.clone(),
-                Some(_) => return Err(unsup("column-renaming table alias t(a, b, ...)")),
-                None => n,
+                Some(a) if a.columns.is_empty() => (a.name.value.clone(), None),
+                // `t AS u(x, y)`: a PARTIAL list is legal (prefix rename,
+                // remaining columns keep their names); too many names is
+                // the pinned bind error; old names are fully shadowed
+                // (wave-5 pins).
+                Some(a) => {
+                    if a.columns.len() > in_cols.len() {
+                        return Err(PrepareError::Bind(format!(
+                            "table \"{n}\" has {} columns available but {} columns specified",
+                            in_cols.len(),
+                            a.columns.len()
+                        )));
+                    }
+                    let mut renamed = in_cols.to_vec();
+                    for (c, def) in renamed.iter_mut().zip(&a.columns) {
+                        c.name = def.name.value.clone();
+                    }
+                    (a.name.value.clone(), Some(renamed))
+                }
+                None => (n, None),
             }
         }
         other => return Err(unsup(format!("FROM {other}"))),
     };
+    let (dyn_name, renamed_cols) = dyn_name;
 
     let mut binder = Binder {
         this_name: dyn_name,
-        in_cols,
+        in_cols: match renamed_cols {
+            Some(v) => std::borrow::Cow::Owned(v),
+            None => std::borrow::Cow::Borrowed(in_cols),
+        },
         joins: Vec::new(),
         select_aliases: select
             .projection
@@ -252,6 +290,7 @@ fn bind_from<'a>(
                 _ => None,
             })
             .collect(),
+        bound_aliases: std::cell::RefCell::new(Vec::new()),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -328,7 +367,28 @@ fn bind_from<'a>(
                 }
                 (keys, key_cols, Vec::new(), true)
             }
-            JoinConstraint::Natural => return Err(unsup("NATURAL JOIN")),
+            // NATURAL = USING(all common column names), case-insensitive,
+            // merged output like USING with the LEFT spelling; NO common
+            // columns is a hard error, never a cross product (wave-5 pins).
+            JoinConstraint::Natural => {
+                let mut keys = Vec::new();
+                let mut key_cols = Vec::new();
+                for (i, c) in st.cols.iter().enumerate() {
+                    let Ok(key) = binder.column(&c.name) else {
+                        continue;
+                    };
+                    keys.push(promote_key(fold(key), st, i as u32)?);
+                    key_cols.push(i as u32);
+                }
+                if key_cols.is_empty() {
+                    return Err(PrepareError::Bind(
+                        "No columns found to join on in NATURAL JOIN.\n\
+                         Use CROSS JOIN if you intended for this to be a cross-product."
+                            .into(),
+                    ));
+                }
+                (keys, key_cols, Vec::new(), true)
+            }
             JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
         };
         let val_cols: Vec<u32> = (0..st.cols.len() as u32)
@@ -768,11 +828,19 @@ struct ScopeJoin<'a> {
 struct Binder<'a> {
     /// The dynamic table's name as spelled in FROM.
     this_name: String,
-    in_cols: &'a [Col],
+    /// The dynamic table's columns AS THE BINDER SEES THEM: borrowed
+    /// normally; an owned renamed copy under `t AS u(x, y)` (wave-5 pins —
+    /// prefix rename, old names fully shadowed). Positions never change,
+    /// so the lowered program still marshals by the ORIGINAL field names.
+    in_cols: std::borrow::Cow<'a, [Col]>,
     joins: Vec<ScopeJoin<'a>>,
-    /// SELECT-list aliases, for cleanly rejecting DuckDB's lateral-alias
-    /// extension (an alias referenced inside WHERE) as unsupported.
+    /// All SELECT-list aliases (wave-5 pins: DuckDB's lateral aliases — a
+    /// later item or WHERE may reference an earlier alias; the REAL column
+    /// wins on a name clash; a forward reference is the pinned bind error).
     select_aliases: Vec<String>,
+    /// Aliases already bound this pass, in SELECT order (frontend() fills
+    /// this as it walks the projection; RefCell keeps `expr(&self)` intact).
+    bound_aliases: std::cell::RefCell<Vec<(String, SExpr)>>,
 }
 
 fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
@@ -1014,15 +1082,64 @@ impl Binder<'_> {
                 }
             }
         }
-        if any_num && any_other {
-            return Err(unsup(
-                "BETWEEN/IN mixing strings or booleans with numbers (exec-time cast semantics)",
-            ));
+        // Wave-5 pins: mixing casts the string/bool side to the NUMERIC
+        // side (strings numerically with half-away-from-zero rounding to
+        // ints; bool -> 0/1; non-numeric strings are DuckDB Conversion
+        // Errors). Only literals convert at bind — a string/bool COLUMN
+        // would need runtime cast traps and stays unsupported.
+        let mut owned: Vec<SqlExpr> = Vec::with_capacity(exprs.len());
+        for e in exprs {
+            let b = self.expr_or_null(e)?;
+            let needs_cast =
+                any_num && b.as_ref().is_some_and(|b| matches!(b.ty, Ty::Str | Ty::I1));
+            if !needs_cast {
+                owned.push((*e).clone());
+                continue;
+            }
+            let lit = match b.map(|b| b.kind) {
+                Some(SKind::Lit(Lit::Str(s))) => {
+                    // Non-numeric strings convert (and fail) at EXECUTION
+                    // time in DuckDB — an empty input succeeds — so a
+                    // bind-time error would be over-eager; stay clean.
+                    let Ok(x) = s.trim().parse::<f64>() else {
+                        return Err(unsup(
+                            "BETWEEN/IN mixing non-numeric string literals with numbers \
+                             (exec-time conversion)",
+                        ));
+                    };
+                    if any_f64 {
+                        s.trim().to_string()
+                    } else {
+                        let r = if x >= 0.0 {
+                            (x + 0.5).floor()
+                        } else {
+                            (x - 0.5).ceil()
+                        };
+                        if r < i64::MIN as f64 || r > i64::MAX as f64 {
+                            return Err(unsup(
+                                "BETWEEN/IN mixing out-of-range string literals with numbers \
+                                 (exec-time conversion)",
+                            ));
+                        }
+                        format!("{}", r as i64)
+                    }
+                }
+                Some(SKind::Lit(Lit::I1(v))) => format!("{}", v as i64),
+                _ => {
+                    return Err(unsup(
+                        "BETWEEN/IN mixing strings or booleans with numbers \
+                         (non-literal side needs exec-time cast semantics)",
+                    ))
+                }
+            };
+            owned.push(SqlExpr::Value(sqlparser::ast::ValueWithSpan {
+                value: SqlValue::Number(lit, false),
+                span: sqlparser::tokenizer::Span::empty(),
+            }));
         }
-        Ok(exprs
-            .iter()
+        Ok(owned
+            .into_iter()
             .map(|e| {
-                let e = (*e).clone();
                 if any_f64 {
                     // CAST is a no-op on already-f64 sides and types NULL
                     // literals from context; exactly DuckDB's unification.
@@ -1796,23 +1913,37 @@ impl Binder<'_> {
             }
         }
         match hits.len() {
+            // The REAL column wins over a same-named select alias (measured
+            // in both SELECT and WHERE — wave-5 pins).
             1 => Ok(hits.pop().expect("len checked")),
-            // Real DuckDB features we don't model reject cleanly, not as
-            // bind errors: the rowid pseudo-column, and DuckDB's lateral
-            // alias extension (a SELECT alias visible inside WHERE).
             0 if name.eq_ignore_ascii_case("rowid") => Err(unsup("rowid pseudo-column")),
-            0 if self
-                .select_aliases
-                .iter()
-                .any(|a| a.eq_ignore_ascii_case(name)) =>
-            {
-                Err(unsup(format!(
-                    "SELECT alias '{name}' referenced outside the SELECT list (lateral alias)"
+            0 => {
+                // Lateral aliases: an already-bound alias resolves to its
+                // expression; a known-but-later alias is the pinned
+                // forward-reference error.
+                if let Some((_, e)) = self
+                    .bound_aliases
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find(|(a, _)| a.eq_ignore_ascii_case(name))
+                {
+                    return Ok(e.clone());
+                }
+                if self
+                    .select_aliases
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(name))
+                {
+                    return Err(PrepareError::Bind(format!(
+                        "column \"{name}\" referenced that exists in the SELECT clause - \
+                         but this column cannot be referenced before it is defined"
+                    )));
+                }
+                Err(PrepareError::Bind(format!(
+                    "column '{name}' does not exist in scope"
                 )))
             }
-            0 => Err(PrepareError::Bind(format!(
-                "column '{name}' does not exist in scope"
-            ))),
             _ => Err(PrepareError::Bind(format!("ambiguous column '{name}'"))),
         }
     }
@@ -1893,7 +2024,18 @@ impl Binder<'_> {
                 let n = null_of(null_context_ty(op, b.ty));
                 (n, b)
             }
-            (None, None) => return Err(unsup("NULL <op> NULL without a typing context")),
+            (None, None) => {
+                // Wave-5 pins: NULL <op> NULL types by the operator —
+                // + - * % -> BIGINT, / -> DOUBLE, comparisons -> BOOLEAN
+                // (via I64 operands), AND/OR -> BOOLEAN.
+                let ty = match op {
+                    BinaryOperator::Divide => Ty::F64,
+                    BinaryOperator::And | BinaryOperator::Or => Ty::I1,
+                    BinaryOperator::PGStartsWith | BinaryOperator::StringConcat => Ty::Str,
+                    _ => Ty::I64,
+                };
+                (null_of(ty), null_of(ty))
+            }
         };
         match op {
             BinaryOperator::Plus => self.arith(ArithOp::Add, a, b),
