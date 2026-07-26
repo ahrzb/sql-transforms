@@ -1248,6 +1248,38 @@ pub(super) fn duck_nextafter(x: f64, y: f64) -> f64 {
 /// both the operators and their function aliases). Division covers `//`
 /// AND `%` on i64::MIN op -1 — DuckDB's own % message says "division",
 /// and only add/sub/mul carry the trailing '!'.
+/// i64 `<<` per the wave-5 pins ladder: negative value first (even << 0),
+/// then negative count, then the zero-value shortcut, then count range,
+/// then overflow (value >= 2^(63-count), computed in i128 because
+/// 1 << 63 doesn't fit i64). Texts DuckDB-verbatim sans the class prefix.
+pub(in crate::specializer) fn duck_shl(x: i64, y: i64) -> Result<i64, Trap> {
+    if x < 0 {
+        return Err(Trap(format!("Cannot left-shift negative number {x}")));
+    }
+    if y < 0 {
+        return Err(Trap(format!("Cannot left-shift by negative number {y}")));
+    }
+    if x == 0 {
+        return Ok(0);
+    }
+    if y >= 64 {
+        return Err(Trap(format!("Left-shift value {y} is out of range")));
+    }
+    if (x as i128) >= (1i128 << (63 - y)) {
+        return Err(Trap(format!("Overflow in left shift ({x} << {y})")));
+    }
+    Ok(x << y)
+}
+
+/// i64 `>>` — total: out-of-range counts (either direction) give 0.
+pub(in crate::specializer) fn duck_shr(x: i64, y: i64) -> i64 {
+    if (0..64).contains(&y) {
+        x >> y
+    } else {
+        0
+    }
+}
+
 pub(super) fn overflow_msg(op: BinOp, x: i64, y: i64) -> String {
     match op {
         BinOp::Iadd => format!("Overflow in addition of INT64 ({x} + {y})!"),
@@ -1375,6 +1407,22 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 BinOp::Flogb => Box::new(move |ctx| {
                     let (base, x) = (as_f64(ctx.regs[a]), as_f64(ctx.regs[b]));
                     ctx.regs[dst] = RegVal::F64(duck_logb(base, x)?);
+                    Ok(())
+                }),
+                BinOp::Ishl => Box::new(move |ctx| {
+                    let (x, y) = (as_i64(ctx.regs[a]), as_i64(ctx.regs[b]));
+                    ctx.regs[dst] = RegVal::I64(duck_shl(x, y)?);
+                    Ok(())
+                }),
+                BinOp::Ishr | BinOp::Iand | BinOp::Ior | BinOp::Ixor => Box::new(move |ctx| {
+                    let (x, y) = (as_i64(ctx.regs[a]), as_i64(ctx.regs[b]));
+                    let v = match op {
+                        BinOp::Ishr => duck_shr(x, y),
+                        BinOp::Iand => x & y,
+                        BinOp::Ior => x | y,
+                        _ => x ^ y,
+                    };
+                    ctx.regs[dst] = RegVal::I64(v);
                     Ok(())
                 }),
                 BinOp::And | BinOp::Or | BinOp::Xor => Box::new(move |ctx| {

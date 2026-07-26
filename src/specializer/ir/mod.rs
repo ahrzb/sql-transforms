@@ -256,6 +256,18 @@ pub enum BinOp {
     Ffloormod,
     /// C nextafter, bit-exact, TOTAL; x == y returns y (wave-3 pins).
     Fnextafter,
+    /// i64 `<<` — DuckDB's guarded shift (wave-5 pins): traps on negative
+    /// value (even << 0), then negative count; value 0 short-circuits to 0
+    /// BEFORE the count-range check; count >= 64 and value >= 2^(63-count)
+    /// each trap with their own DuckDB message.
+    Ishl,
+    /// i64 `>>` — TOTAL (wave-5 pins): count < 0 or >= 64 gives 0
+    /// (silently, even for negative values); else arithmetic shift.
+    Ishr,
+    /// i64 `&` / `|` / xor() — plain two's-complement, total (wave-5 pins).
+    Iand,
+    Ior,
+    Ixor,
     And,
     Or,
     Xor,
@@ -265,9 +277,16 @@ impl BinOp {
     /// (operand type, result type). Uniform for all v0 binary ops.
     pub fn sig(self) -> (Ty, Ty) {
         match self {
-            BinOp::Iadd | BinOp::Isub | BinOp::Imul | BinOp::Idiv | BinOp::Irem => {
-                (Ty::I64, Ty::I64)
-            }
+            BinOp::Iadd
+            | BinOp::Isub
+            | BinOp::Imul
+            | BinOp::Idiv
+            | BinOp::Irem
+            | BinOp::Ishl
+            | BinOp::Ishr
+            | BinOp::Iand
+            | BinOp::Ior
+            | BinOp::Ixor => (Ty::I64, Ty::I64),
             BinOp::Fadd
             | BinOp::Fsub
             | BinOp::Fmul
@@ -299,6 +318,11 @@ impl BinOp {
             BinOp::Ffloordiv => "ffloordiv",
             BinOp::Ffloormod => "ffloormod",
             BinOp::Fnextafter => "fnextafter",
+            BinOp::Ishl => "ishl",
+            BinOp::Ishr => "ishr",
+            BinOp::Iand => "iand",
+            BinOp::Ior => "ior",
+            BinOp::Ixor => "ixor",
             BinOp::And => "and",
             BinOp::Or => "or",
             BinOp::Xor => "xor",

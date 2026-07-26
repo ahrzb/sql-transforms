@@ -459,6 +459,11 @@ impl<'a> FB<'a> {
                     // zero-divisor NULL guard is the frontend's CASE wrap.
                     (ArithOp::IDiv, Ty::F64) => BinOp::Fdiv,
                     (ArithOp::Rem, Ty::F64) => BinOp::Frem,
+                    (ArithOp::Shl, Ty::I64) => BinOp::Ishl,
+                    (ArithOp::Shr, Ty::I64) => BinOp::Ishr,
+                    (ArithOp::BitAnd, Ty::I64) => BinOp::Iand,
+                    (ArithOp::BitOr, Ty::I64) => BinOp::Ior,
+                    (ArithOp::BitXor, Ty::I64) => BinOp::Ixor,
                     (op, ty) => {
                         return Err(PrepareError::Internal(format!(
                             "arith {op:?} on {} escaped the frontend",
