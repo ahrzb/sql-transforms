@@ -102,10 +102,10 @@ pub fn frontend(
         return Err(unsup("GROUP BY / HAVING / aggregation"));
     }
 
-    let (binder, joins) = bind_from(select, this_name, in_cols, statics)?;
+    let (binder, joins, leftover_where) = bind_from(select, this_name, in_cols, statics)?;
 
     let mut rel = Rel::Scan;
-    if let Some(pred) = &select.selection {
+    if let Some(pred) = &leftover_where {
         let pred = fold(bool_context(binder.expr(pred)?, "WHERE predicate")?);
         rel = Rel::Filter {
             input: Box::new(rel),
@@ -195,12 +195,9 @@ fn bind_from<'a>(
     this_name: &str,
     in_cols: &'a [Col],
     statics: &'a [StaticTable],
-) -> Result<(Binder<'a>, Vec<JoinSpec>), PrepareError> {
-    let [table] = select.from.as_slice() else {
-        return Err(match select.from.len() {
-            0 => unsup("FROM-less SELECT"),
-            _ => unsup("multiple FROM relations (comma join)"),
-        });
+) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
+    let Some((table, comma_rels)) = select.from.split_first() else {
+        return Err(unsup("FROM-less SELECT"));
     };
     let dyn_name = match &table.relation {
         TableFactor::Table { name, alias, .. } => {
@@ -339,7 +336,135 @@ fn bind_from<'a>(
             residual,
         });
     }
-    Ok((binder, specs))
+
+    // Comma relations (measured: FROM t, u WHERE t.k = u.k is bit-identical
+    // to the INNER probe, star order included; residual WHERE placement is
+    // free under INNER). Equi conjuncts pairing the current scope with a
+    // comma table's column are consumed as its probe keys; everything else
+    // stays WHERE. A keyless comma table is a cross join — correct for a
+    // 1-row static via the empty-key map (the duplicate-key check enforces
+    // single-entry-ness at compile; a 0-row static annihilates, also
+    // measured).
+    let mut conjuncts: Vec<&SqlExpr> = Vec::new();
+    if let Some(sel) = &select.selection {
+        collect_conjuncts(sel, &mut conjuncts);
+    }
+    let mut consumed = vec![false; conjuncts.len()];
+    for rel in comma_rels {
+        if !rel.joins.is_empty() {
+            return Err(unsup("JOIN attached to a comma-joined relation"));
+        }
+        let (raw_name, scope_name) = match &rel.relation {
+            TableFactor::Table { name, alias, .. } => {
+                let n = name.to_string();
+                let s = alias
+                    .as_ref()
+                    .map(|a| a.name.value.clone())
+                    .unwrap_or_else(|| n.clone());
+                (n, s)
+            }
+            other => return Err(unsup(format!("FROM {other}"))),
+        };
+        if raw_name.eq_ignore_ascii_case(this_name) {
+            return Err(unsup("joining the dynamic table to itself"));
+        }
+        // Unresolvable comma tables (schema-qualified names, table
+        // functions we didn't get as statics) stay CLEAN.
+        let table_idx = resolve_static(statics, &raw_name).map_err(|_| {
+            unsup(format!(
+                "comma-joined table '{raw_name}' is not a provided static table"
+            ))
+        })?;
+        if binder.this_name.eq_ignore_ascii_case(&scope_name)
+            || binder
+                .joins
+                .iter()
+                .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
+        {
+            return Err(PrepareError::Bind(format!(
+                "duplicate table name '{scope_name}' in FROM"
+            )));
+        }
+        let st = &statics[table_idx];
+        let mut keys = Vec::new();
+        let mut key_cols = Vec::new();
+        for (ci, c) in conjuncts.iter().enumerate() {
+            if consumed[ci] {
+                continue;
+            }
+            let SqlExpr::BinaryOp {
+                left,
+                op: BinaryOperator::Eq,
+                right,
+            } = c
+            else {
+                continue;
+            };
+            let l = static_col_of(left, st, &scope_name)?;
+            let r = static_col_of(right, st, &scope_name)?;
+            let (col, dyn_side, static_side) = match (l, r) {
+                (Some(c), None) => (c, right.as_ref(), left.as_ref()),
+                (None, Some(c)) => (c, left.as_ref(), right.as_ref()),
+                _ => continue, // stays WHERE
+            };
+            if let SqlExpr::Identifier(id) = static_side {
+                if binder.column(&id.value).is_ok() {
+                    return Err(PrepareError::Bind(format!(
+                        "ambiguous column '{}' in WHERE (qualify it)",
+                        id.value
+                    )));
+                }
+            }
+            // The dynamic side must bind in the scope BEFORE this table —
+            // if it references this or a later comma table, leave the
+            // conjunct in WHERE (a later table may consume it).
+            let Ok(key) = binder.expr(dyn_side) else {
+                continue;
+            };
+            keys.push(promote_key(fold(key), st, col)?);
+            key_cols.push(col);
+            consumed[ci] = true;
+        }
+        let val_cols: Vec<u32> = (0..st.cols.len() as u32)
+            .filter(|c| !key_cols.contains(c))
+            .collect();
+        binder.joins.push(ScopeJoin {
+            name: scope_name,
+            table: st,
+            kind: JoinKind::Inner,
+            key_cols: key_cols.clone(),
+            val_cols: val_cols.clone(),
+            keys: keys.clone(),
+            using: false,
+        });
+        specs.push(JoinSpec {
+            table: table_idx,
+            kind: JoinKind::Inner,
+            keys,
+            key_cols,
+            val_cols,
+            residual: None,
+        });
+    }
+
+    // Rebuild the WHERE from unconsumed conjuncts (identity when nothing
+    // was consumed — the single-relation path always takes this shape).
+    let leftover = if comma_rels.is_empty() {
+        select.selection.clone()
+    } else {
+        let mut acc: Option<SqlExpr> = None;
+        for (ci, c) in conjuncts.iter().enumerate() {
+            if consumed[ci] {
+                continue;
+            }
+            acc = Some(match acc {
+                None => (*c).clone(),
+                Some(p) => ast_bin(BinaryOperator::And, p, (*c).clone()),
+            });
+        }
+        acc
+    };
+    Ok((binder, specs, leftover))
 }
 
 fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, PrepareError> {

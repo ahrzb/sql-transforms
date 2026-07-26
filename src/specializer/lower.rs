@@ -59,7 +59,7 @@ pub fn lower(
         }
     };
 
-    let mut fb = FB::new(in_cols, joins);
+    let mut fb = FB::new(in_cols, joins, catalog);
 
     // Joins run before WHERE (SQL order), each in FROM order: probe, and for
     // INNER skip the row on a miss. A LEFT join's probe is also forced here
@@ -188,16 +188,22 @@ struct FB<'a> {
     cur: usize,
     in_cols: &'a [Col],
     joins: &'a [JoinSpec],
+    catalog: &'a [StaticTable],
 }
 
 impl<'a> FB<'a> {
-    fn new(in_cols: &'a [Col], joins: &'a [JoinSpec]) -> FB<'a> {
+    fn new(
+        in_cols: &'a [Col],
+        joins: &'a [JoinSpec],
+        catalog: &'a [StaticTable],
+    ) -> FB<'a> {
         FB {
             b: Builder::new(),
             blocks: vec![PB::new(vec![])],
             cur: 0,
             in_cols,
             joins,
+            catalog,
         }
     }
 
@@ -926,7 +932,7 @@ impl<'a> FB<'a> {
 
         let spec = &self.joins[j as usize];
         let hit = self.fresh();
-        let dsts: Vec<Value> = spec.val_cols.iter().map(|_| self.b.fresh()).collect();
+        let mut dsts: Vec<Value> = spec.val_cols.iter().map(|_| self.b.fresh()).collect();
         self.inst(Inst::Probe {
             static_id: j,
             hit,
@@ -950,35 +956,59 @@ impl<'a> FB<'a> {
                 // Hit-guarded lazy evaluation (wave-4 pins: DuckDB
                 // evaluates both-sides residuals per candidate PAIR) —
                 // the mini-case shape: brif raw_hit -> eval, else false.
-                let mut join_tys = Self::live_types(live);
-                join_tys.push(Ty::I1);
+                // The strict block-param SSA means the probe's value lanes
+                // must ride the params (and, during residual emission, the
+                // live stack — nested CASE machinery rebinds them).
+                let spec = &self.joins[j as usize];
+                let dst_tys: Vec<Ty> = spec
+                    .val_cols
+                    .iter()
+                    .map(|&c| self.catalog[spec.table].cols[c as usize].ty.ty)
+                    .collect();
                 let live_width = Self::live_types(live).len();
+                let mut join_tys = Self::live_types(live);
+                join_tys.extend(dst_tys.iter().copied());
+                join_tys.push(Ty::I1);
                 let (join, join_params) = self.create_block(&join_tys);
-                let (eval, eval_params) = self.create_block(&Self::live_types(live));
+                let mut eval_tys = Self::live_types(live);
+                eval_tys.extend(dst_tys.iter().copied());
+                let (eval, eval_params) = self.create_block(&eval_tys);
+                let mut then_args = Self::live_args(live);
+                then_args.extend(dsts.iter().copied());
                 let mut miss_args = Self::live_args(live);
+                miss_args.extend(dsts.iter().copied());
                 let f = self.const_i1(false);
                 miss_args.push(f);
                 self.term(Term::Brif {
                     cond: valid_hit,
                     then_to: BlockId(eval as u32),
-                    then_args: Self::live_args(live),
+                    then_args,
                     else_to: BlockId(join as u32),
                     else_args: miss_args,
                 });
                 self.switch(eval);
-                Self::rebind_live(live, &eval_params);
-                // Dominance makes the raw lanes visible here; pre-seed the
-                // cache so StaticCol in the residual reuses them.
-                self.blocks[self.cur]
-                    .probes
-                    .insert(j, (valid_hit, dsts.clone()));
+                Self::rebind_live(live, &eval_params[..live_width]);
+                // Ride the dsts on the live stack through the residual —
+                // and seed the cache with hit = TRUE (by construction in
+                // the guarded branch) so StaticCol/JoinHit resolve here.
+                let eval_dsts: Vec<Value> = eval_params[live_width..].to_vec();
+                for (&d, &ty) in eval_dsts.iter().zip(dst_tys.iter()) {
+                    live.push((Lane { flag: None, val: d }, ty));
+                }
+                let t = self.const_i1(true);
+                self.blocks[self.cur].probes.insert(j, (t, eval_dsts));
                 let rl = self.emit(&res, live)?;
                 // 3VL collapse: NULL residual is a non-match.
                 let rv = match rl.flag {
                     None => rl.val,
                     Some(f) => self.bin(BinOp::And, f, rl.val),
                 };
+                let cur_dsts: Vec<Value> = live
+                    .drain(live.len() - dst_tys.len()..)
+                    .map(|(l, _)| l.val)
+                    .collect();
                 let mut hit_args = Self::live_args(live);
+                hit_args.extend(cur_dsts.iter().copied());
                 hit_args.push(rv);
                 self.term(Term::Jump {
                     to: BlockId(join as u32),
@@ -986,7 +1016,8 @@ impl<'a> FB<'a> {
                 });
                 self.switch(join);
                 Self::rebind_live(live, &join_params[..live_width]);
-                join_params[live_width]
+                dsts = join_params[live_width..live_width + dst_tys.len()].to_vec();
+                join_params[live_width + dst_tys.len()]
             }
         };
         // Downstream consumers (INNER skip, LEFT flags, StaticCol, JoinHit)

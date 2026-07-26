@@ -576,12 +576,15 @@ def test_star_qualified_over_row_table_under_join():
     )
 
 
-def test_star_over_joined_table_rejects_by_name():
-    with pytest.raises(ValueError, match="star expansion over joined table"):
-        DuckDBInferFn(
-            "SELECT * FROM __THIS__ JOIN dim ON k = dim.id",
-            row_tables={"__THIS__": _row_model({"k": "int"})},
-            static_tables={"dim": DIM},
+def test_star_over_joined_table_expands():
+    # Wave-4: joined-table stars expand, the key column reconstructed from
+    # the dynamic side — oracle-checked end to end (INNER and LEFT).
+    for join in ["JOIN", "LEFT JOIN"]:
+        duck_check(
+            f"SELECT * FROM __THIS__ {join} dim ON k = dim.id",
+            {"k": "int"},
+            [{"k": 1}, {"k": 2}, {"k": 3}],
+            {"dim": DIM},
         )
 
 
