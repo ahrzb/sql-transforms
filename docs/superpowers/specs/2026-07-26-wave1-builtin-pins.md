@@ -45,6 +45,11 @@ are binder errors — no implicit cast):
 - `Sqrt`: TRAP on any negative incl. -inf ("cannot take square root of a
   negative number"); sqrt(-0.0) = -0.0 (not a trap — IEEE).
 - `Cbrt`: TOTAL; cbrt(-8) = -2.0 exactly (NOT pow(x,1/3) which is NaN).
+  CI-discovered addendum: DuckDB's own wheels disagree with each other on
+  cbrt by one ulp across platforms (Windows wheel == Rust/ucrt bit-exact;
+  Linux wheel's bundled std::cbrt returns e.g. 3.0000000000000004 for
+  cbrt(27)). The engine stays deterministic (Rust cbrt); oracle parity for
+  cbrt is pinned to <= 1 ulp, not repr-exact — the only such exception.
 - `SinF64/CosF64/TanF64`: TRAP on ±inf ("Out of Range Error: input value
   inf is out of range for numeric function"); NaN passes through
   BIT-EXACTLY (payload+sign preserved — check is_nan() BEFORE calling
