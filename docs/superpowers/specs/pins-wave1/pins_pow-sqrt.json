@@ -1,0 +1,494 @@
+{
+ "family": "pow-sqrt",
+ "pins": [
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (0.0, 0.0)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "pow(0,0)=1, no error"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (0.0, -1.0)",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "NO div-by-zero error; IEEE pow(+0, neg-odd) = +inf"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-0.0, -1.0)",
+   "result": "-inf",
+   "result_type": "DOUBLE",
+   "note": "sign of zero flows: pow(-0, neg-odd-int) = -inf"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (0.0, -2.0)",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "pow(+0, neg-even) = +inf"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-0.0, -2.0)",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "pow(-0, neg-even-int) = +inf"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-0.0, 3.0)",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "pow(-0, pos-odd-int) = -0.0 \u2014 negative zero result"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-0.0, 2.0)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "pow(-0, pos-even-int) = +0.0"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-0.0, 0.5)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "pow(-0, non-integer pos) = +0.0 (contrast sqrt(-0.0) = -0.0)"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-8.0, 0.3333333333333333)",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "negative base + non-integer exponent = NaN, NOT an error; 1/3 in DuckDB is DOUBLE 0.3333333333333333 (int / is float division)"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-2.0, 0.5)",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "quiet NaN while sqrt(-2.0) would TRAP \u2014 pow(x,0.5) is NOT sqrt(x)"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-2.0, -0.5)",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "negative base, non-integer negative exponent = NaN"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (nan, 0.0) and (nan, -0.0)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "IEEE: pow(NaN, \u00b10) = 1 \u2014 NaN does NOT propagate"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (1.0, nan)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "IEEE: pow(1, NaN) = 1 \u2014 NaN does NOT propagate"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (1.0, inf)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "pow(1, anything) = 1"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (nan, nan) / (nan, 1.0) / (0.0, nan)",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "NaN propagates in every case except y=\u00b10 or x=1"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (inf, 0.0) and (-inf, 0.0)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "pow(\u00b1inf, 0) = 1"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-1.0, inf) and (-1.0, -inf)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "IEEE: pow(-1, \u00b1inf) = 1"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (inf, -1.0)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "+0"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-inf, -1.0)",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "pow(-inf, neg-odd-int) = -0.0 \u2014 negative zero"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-inf, -2.0)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "pow(-inf, neg-even) = +0"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-inf, 3.0)",
+   "result": "-inf",
+   "result_type": "DOUBLE",
+   "note": "odd integer exponent keeps sign"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-inf, 2.0) and (-inf, 0.5)",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "pow(-inf, pos non-odd) = +inf (0.5 too \u2014 no NaN for inf base)"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (0.0, inf) and (-0.0, inf)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "+0"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (0.0, -inf) and (-0.0, -inf)",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "+inf, no error"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (2.0, inf) / (0.5, -inf)",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "|x|>1 with +inf exp, |x|<1 with -inf exp"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (0.5, inf) / (2.0, -inf) / (-0.5, inf) / (-2.0, -inf)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "always +0.0 \u2014 negative base with inf exponent is NOT NaN"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (1e308, 2.0) and (2.0, 1024.0)",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "overflow -> inf, NO error (unlike integer arithmetic overflow elsewhere)"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (2.0, -1075.0)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "underflow -> +0.0"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-2.0, -1075.0)",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "underflow with odd-int exponent -> -0.0"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (2.0, 53.0)",
+   "result": "9007199254740992.0",
+   "result_type": "DOUBLE",
+   "note": "exact 2^53"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (10.0, 18.0)",
+   "result": "1e+18",
+   "result_type": "DOUBLE",
+   "note": "exact"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (5e-324, 0.5)",
+   "result": "2.2227587494850775e-162",
+   "result_type": "DOUBLE",
+   "note": "denormal input handled; equals sqrt(5e-324)"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols (-2.0, 3.0)",
+   "result": "-8.0",
+   "result_type": "DOUBLE",
+   "note": "negative base with exact integer exponent works"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "DOUBLE cols, NULL in x / y / both",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": "plain NULL propagation in every argument position; typeof still DOUBLE"
+  },
+  {
+   "expr": "power(x,y)",
+   "input_desc": "DOUBLE cols (0,0), (-8,1/3), (nan,0)",
+   "result": "1.0 / nan / 1.0",
+   "result_type": "DOUBLE",
+   "note": "power === pow, identical on all spot checks"
+  },
+  {
+   "expr": "x ^ y",
+   "input_desc": "DOUBLE cols (0,0)/(nan,0)/(0,-1)/(1e308,2); NULL either side",
+   "result": "1.0 / 1.0 / inf / inf; None",
+   "result_type": "DOUBLE",
+   "note": "^ operator === pow, identical on all spot checks"
+  },
+  {
+   "expr": "x ** y",
+   "input_desc": "DOUBLE cols (0,0)/(nan,0)/(-8,1/3)",
+   "result": "1.0 / 1.0 / nan",
+   "result_type": "DOUBLE",
+   "note": "** operator === pow"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "BIGINT cols (0,0)/(2,10)/(0,-1)/(-8,2)/(10,18)",
+   "result": "1.0 / 1024.0 / inf / 64.0 / 1e+18",
+   "result_type": "DOUBLE",
+   "note": "integer inputs -> DOUBLE result always; pow(0,-1) on ints is still inf, no error"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "BIGINT cols (9223372036854775807, 1)",
+   "result": "9.223372036854776e+18",
+   "result_type": "DOUBLE",
+   "note": "i64::MAX cast to double (rounds UP to 2^63) before compute"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "BIGINT cols (-9223372036854775808, 1)",
+   "result": "-9.223372036854776e+18",
+   "result_type": "DOUBLE",
+   "note": "i64::MIN -> exact -2^63 as double"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "BIGINT cols (2,63) / (2,64) / (3,40)",
+   "result": "9.223372036854776e+18 / 1.8446744073709552e+19 / 1.2157665459056929e+19",
+   "result_type": "DOUBLE",
+   "note": "no i64 overflow trap ever \u2014 computed entirely in double domain; pow(3,40) != exact 3^40=12157665459056928801, it is the correctly-rounded double. Canary pin for cross-libm ulp drift."
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "BIGINT cols (9007199254740993, 1) i.e. 2^53+1",
+   "result": "9007199254740992.0",
+   "result_type": "DOUBLE",
+   "note": "BIGINT->DOUBLE cast (round-half-even) happens FIRST; the +1 is lost before pow runs"
+  },
+  {
+   "expr": "x ^ y",
+   "input_desc": "BIGINT cols (5, 2)",
+   "result": "25.0",
+   "result_type": "DOUBLE",
+   "note": "^ is POWER not XOR (xor(5,2)=7 BIGINT is the xor); result DOUBLE even for int operands"
+  },
+  {
+   "expr": "pow(x,y)",
+   "input_desc": "INTEGER cols (2,10); mixed BIGINT,DOUBLE and DOUBLE,BIGINT",
+   "result": "1024.0 / nan(-8,1/3) / 6.25(2.5,2)",
+   "result_type": "DOUBLE",
+   "note": "every numeric overload promotes to DOUBLE"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "DOUBLE col 4.0 / 2.0 / 0.0",
+   "result": "2.0 / 1.4142135623730951 / 0.0",
+   "result_type": "DOUBLE",
+   "note": "plain IEEE sqrt"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "DOUBLE col -0.0",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "IEEE: sqrt(-0.0) = -0.0, NO trap \u2014 the negative guard is strictly x < 0"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "DOUBLE col nan",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "NaN passes the guard (NaN < 0 is false), no trap"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "DOUBLE col inf",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "+inf passes"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "DOUBLE col NULL; BIGINT col NULL",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": "NULL propagates, no trap"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "DOUBLE col 5e-324 (denormal) / 1e308",
+   "result": "2.2227587494850775e-162 / 1e+154",
+   "result_type": "DOUBLE",
+   "note": "denormals fine"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "BIGINT col 4 / 9223372036854775807",
+   "result": "2.0 / 3037000499.97605",
+   "result_type": "DOUBLE",
+   "note": "int -> DOUBLE result; i64::MAX goes through double cast first (matches libm sqrt(9.223372036854776e18))"
+  },
+  {
+   "expr": "sqrt(x)",
+   "input_desc": "BIGINT cols 9007199254740992 and 9007199254740993 (2^53, 2^53+1)",
+   "result": "94906265.62425156 (identical for both)",
+   "result_type": "DOUBLE",
+   "note": "proves lossy BIGINT->DOUBLE cast precedes sqrt"
+  },
+  {
+   "expr": "cbrt(x)",
+   "input_desc": "DOUBLE col 8.0 / -8.0 / 27.0 / 2.0",
+   "result": "2.0 / -2.0 / 3.0 / 1.259921049894873",
+   "result_type": "DOUBLE",
+   "note": "cbrt EXISTS; handles negative base exactly (unlike pow(-8,1/3)=nan)"
+  },
+  {
+   "expr": "cbrt(x)",
+   "input_desc": "DOUBLE col 0.0 / -0.0 / inf / -inf / nan / NULL",
+   "result": "0.0 / -0.0 / inf / -inf / nan / None",
+   "result_type": "DOUBLE",
+   "note": "total function, sign-preserving, no traps anywhere"
+  },
+  {
+   "expr": "cbrt(x)",
+   "input_desc": "BIGINT col 27 / 9223372036854775807; DOUBLE 5e-324",
+   "result": "3.0 / 2097152.0 / 1.7031839360032603e-108",
+   "result_type": "DOUBLE",
+   "note": "int -> DOUBLE; cbrt(double(i64::MAX)) = cbrt(2^63) = 2^21 exactly"
+  },
+  {
+   "expr": "-2^2 (literal) and -x^2 (x=2.0 DOUBLE col; also BIGINT col; also -x**2)",
+   "input_desc": "precedence probe",
+   "result": "4.0",
+   "result_type": "DOUBLE",
+   "note": "unary minus binds TIGHTER than ^ and **: parsed (-2)^2. Opposite of Python -2**2=-4. PostgreSQL rule."
+  },
+  {
+   "expr": "2^3^2 (literal), 2**3**2, x^y^z cols (2,3,2)",
+   "input_desc": "associativity probe",
+   "result": "64.0",
+   "result_type": "DOUBLE",
+   "note": "LEFT-associative: (2^3)^2=64, not 2^(3^2)=512. Opposite of Python **."
+  },
+  {
+   "expr": "2*3^2 / 2^3*2 / 2+3^2 (literals), 2*x^2 col x=3.0",
+   "input_desc": "precedence vs * and +",
+   "result": "18.0 / 16.0 / 11.0 / 18.0",
+   "result_type": "DOUBLE",
+   "note": "^ binds tighter than * and +"
+  },
+  {
+   "expr": "2 ^ -2, 2^ -2, 2^(-2), x ^ -y, x^(-y), 2**-2, 2 **- 2, x ** -y",
+   "input_desc": "spaced/parenthesized negative exponent",
+   "result": "0.25",
+   "result_type": "DOUBLE",
+   "note": "all fine \u2014 only '^' IMMEDIATELY followed by '-' fails to lex (see errors)"
+  },
+  {
+   "expr": "sqrt('-0.0'::DOUBLE) literal (constant-fold)",
+   "input_desc": "fold-vs-vectorized divergence check",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "fold agrees with column path; NO fold divergence found anywhere in this family. Beware: bare literal -0.0 is DECIMAL(2,1) and casts to +0.0 \u2014 it never carries the zero sign."
+  },
+  {
+   "expr": "SELECT sqrt(x) FROM t WHERE x >= 0 (rows 4.0, -1.0); CASE WHEN x>=0 THEN sqrt(x) END",
+   "input_desc": "lazy-evaluation probe",
+   "result": "[2.0] / [2.0, None]",
+   "result_type": "DOUBLE",
+   "note": "rows removed by WHERE and untaken CASE branches are never evaluated \u2014 the sqrt trap must be lazy, not eager-columnar"
+  }
+ ],
+ "errors": [
+  {
+   "expr": "SELECT sqrt(x) FROM t  -- any x < 0: -1.0, -1e-300, -inf, BIGINT -1 (column path; one bad row fails the whole query even if other rows are fine)",
+   "error_head": "Out of Range Error: cannot take square root of a negative number",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT sqrt(-1.0)  -- literal form: PREPARE succeeds, error at EXECUTE (constant-fold is execution-time)",
+   "error_head": "Out of Range Error: cannot take square root of a negative number",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT 2^-2  -- also -2^-2, 2 ^- 2, x^-y: '^' immediately followed by '-' lexes as one operator '^-'; raised at PREPARE (duckdb.CatalogException)",
+   "error_head": "Catalog Error: Scalar Function with name ^- does not exist! Did you mean \"^\"?",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT sqrt(x) FROM t  -- x VARCHAR column (no implicit VARCHAR->DOUBLE for columns)",
+   "error_head": "Binder Error: No function matches the given name and argument types 'sqrt(VARCHAR)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT x^y FROM t  -- VARCHAR ^ DOUBLE columns",
+   "error_head": "Binder Error: No function matches the given name and argument types '^(VARCHAR, DOUBLE)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT pow(x,y) FROM t  -- BOOLEAN columns",
+   "error_head": "Binder Error: No function matches the given name and argument types 'pow(BOOLEAN, BOOLEAN)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT pow('a', 2)  -- string LITERAL does implicitly cast (unlike VARCHAR columns); PREPARE succeeds, fails at EXECUTE",
+   "error_head": "Conversion Error: Could not convert string 'a' to DOUBLE",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT pow(2)  -- wrong arity",
+   "error_head": "Binder Error: No function matches the given name and argument types 'pow(INTEGER_LITERAL)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT sqrt(1, 2)  -- wrong arity",
+   "error_head": "Binder Error: No function matches the given name and argument types 'sqrt(INTEGER_LITERAL, INTEGER_LITERAL)'",
+   "kind": "binder"
+  }
+ ],
+ "duck_check_tests": "NAN = float(\"nan\")\nINF = float(\"inf\")\n\nPOW_SPECIALS = [\n    (0.0, 0.0), (0.0, -1.0), (-0.0, -1.0), (0.0, -2.0), (-0.0, -2.0),\n    (-0.0, 3.0), (-0.0, 2.0), (-0.0, 0.5), (-8.0, 1.0 / 3.0), (-2.0, 0.5),\n    (-2.0, -0.5), (NAN, 0.0), (NAN, -0.0), (1.0, NAN), (NAN, NAN),\n    (NAN, 1.0), (0.0, NAN), (INF, 0.0), (-INF, 0.0), (-1.0, INF),\n    (-1.0, -INF), (1.0, INF), (INF, -1.0), (-INF, -1.0), (-INF, -2.0),\n    (-INF, 3.0), (-INF, 2.0), (-INF, 0.5), (0.0, INF), (-0.0, INF),\n    (0.0, -INF), (-0.0, -INF), (2.0, INF), (0.5, INF), (2.0, -INF),\n    (0.5, -INF), (-0.5, INF), (-2.0, -INF), (1e308, 2.0), (2.0, 1024.0),\n    (2.0, -1075.0), (-2.0, -1075.0), (2.0, 53.0), (10.0, 18.0),\n    (5e-324, 0.5), (-2.0, 3.0), (None, 2.0), (2.0, None), (None, None),\n]\n\n\ndef test_pow_double_specials():\n    # pow / power / ^ / ** are one function: pin all four spellings per row.\n    duck_check(\n        \"SELECT pow(x, y) AS p, power(x, y) AS q, x ^ y AS r, x ** y AS s FROM __THIS__\",\n        {\"x\": \"float?\", \"y\": \"float?\"},\n        [{\"x\": x, \"y\": y} for x, y in POW_SPECIALS],\n    )\n\n\ndef test_pow_bigint_inputs_yield_double():\n    # ints promote to DOUBLE before compute: i64::MAX rounds to 2^63,\n    # 2^53+1 loses the +1, 3^40 is the rounded double not the exact int.\n    rows = [(0, 0), (2, 10), (0, -1), (-8, 2), (10, 18),\n            (9223372036854775807, 1), (-9223372036854775808, 1),\n            (2, 63), (2, 64), (3, 40), (9007199254740993, 1), (5, 2)]\n    duck_check(\n        \"SELECT pow(x, y) AS p, x ^ y AS r FROM __THIS__\",  # x^y is pow, never xor\n        {\"x\": \"int\", \"y\": \"int\"},\n        [{\"x\": x, \"y\": y} for x, y in rows],\n    )\n\n\ndef test_sqrt_non_negative_domain():\n    # NOTE: any x < 0 (incl -inf) raises OutOfRange; keep those out of duck_check.\n    xs = [4.0, 2.0, 0.0, -0.0, INF, NAN, None, 5e-324, 1e308]\n    duck_check(\"SELECT sqrt(x) AS s FROM __THIS__\", {\"x\": \"float?\"}, [{\"x\": x} for x in xs])\n\n\ndef test_sqrt_cbrt_bigint():\n    xs = [4, 0, 27, 9223372036854775807, 9007199254740992, 9007199254740993, None]\n    duck_check(\n        \"SELECT sqrt(x) AS s, cbrt(x) AS c FROM __THIS__\",\n        {\"x\": \"int?\"},\n        [{\"x\": x} for x in xs],\n    )\n\n\ndef test_cbrt_total_function():\n    # cbrt has NO domain restriction: negatives, -inf, -0.0 all flow through.\n    xs = [8.0, -8.0, 27.0, 2.0, 0.0, -0.0, INF, -INF, NAN, None, 5e-324, -1.0]\n    duck_check(\"SELECT cbrt(x) AS c FROM __THIS__\", {\"x\": \"float?\"}, [{\"x\": x} for x in xs])\n\n\ndef test_pow_operator_precedence_vectorized():\n    # -x^2 == (-x)^2 (unary minus binds tighter), x^y^z left-assoc, ^ over *.\n    rows = [{\"x\": 2.0, \"y\": 3.0, \"z\": 2.0}, {\"x\": 3.0, \"y\": 2.0, \"z\": 0.5}]\n    duck_check(\n        \"SELECT -x ^ 2 AS neg_first, x ^ y ^ z AS left_assoc, 2 * x ^ y AS pow_over_mul, \"\n        \"-x ** 2 AS neg_first2, x ** y ** z AS left_assoc2, x ^ -y AS spaced_neg_exp \"\n        \"FROM __THIS__\",\n        {\"x\": \"float\", \"y\": \"float\", \"z\": \"float\"},\n        rows,\n    )\n\n\ndef test_sqrt_where_guard_is_lazy():\n    # Filtered-out negative rows must NOT trap.\n    duck_check(\n        \"SELECT sqrt(x) AS s FROM __THIS__ WHERE x >= 0\",\n        {\"x\": \"float\"},\n        [{\"x\": 4.0}, {\"x\": -1.0}],\n    )\n    duck_check(\n        \"SELECT CASE WHEN x >= 0 THEN sqrt(x) ELSE NULL END AS s FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": 4.0}, {\"x\": -1.0}],\n    )\n\n\ndef test_sqrt_negative_is_runtime_error():\n    # Not expressible as a duck_check equality: both engines must RAISE.\n    # DuckDB: _duckdb.OutOfRangeException\n    #   'Out of Range Error: cannot take square root of a negative number'\n    with pytest.raises(Exception, match=\"cannot take square root of a negative number\"):\n        duck_check(\"SELECT sqrt(x) AS s FROM __THIS__\", {\"x\": \"float\"}, [{\"x\": -1.0}])\n    with pytest.raises(Exception, match=\"cannot take square root of a negative number\"):\n        duck_check(\"SELECT sqrt(x) AS s FROM __THIS__\", {\"x\": \"float\"}, [{\"x\": float(\"-inf\")}])",
+ "lowering": "Three IR ops; pow's four spellings are a pure frontend desugar onto one op.\n\nFRONTEND DESUGAR (proven exact by pins): power(x,y), x ^ y, x ** y  ==>  pow(x,y). All four spellings returned bit-identical results and DOUBLE type on every probed special (including NaN/inf/zero-sign cases), and all have plain NULL-propagation (NULL in either arg -> NULL), so three-valued logic is untouched \u2014 it is the standard binary-scalar NULL rule, no CASE rewriting needed. All numeric inputs (BOOLEAN excluded \u2014 binder error) are cast to f64 BEFORE the op: BIGINT->DOUBLE is round-half-even (pins: i64::MAX -> 9.223372036854776e18, 2^53+1 -> 2^53). There is NO integer pow overload, hence NO i64-overflow trap anywhere in this family.\n\nIR OP 1 \u2014 PowF64(a: f64, b: f64) -> f64, total, never traps:\n    fn pow_f64(a: f64, b: f64) -> f64 { a.powf(b) }\nRust f64::powf is IEEE-754 pow and matched all 46 measured pins bit-for-bit semantics: pow(x,\u00b10)=1 for ALL x incl NaN/inf; pow(1,y)=1 incl NaN; pow(\u00b10,neg)=\u00b1inf with odd-integer sign rule (NO div-by-zero trap); neg base + non-integer exp -> NaN (NO trap); overflow -> inf; underflow -> \u00b10 with odd-int sign. Interpreter: f64::powf. Cranelift: no pow instruction \u2014 emit a call to the same extern \"C\" helper wrapping f64::powf so both backends share bits. Caveat: IEEE does not guarantee correct rounding for pow's ordinary values; DuckDB uses its toolchain's std::pow and Rust powf uses platform libm. Measured agreement on this machine for the mantissa canaries (pow(3,40)=1.2157665459056929e+19, sqrt(double(i64::MAX))=3037000499.97605); keep those pins as the cross-libm drift alarm.\n\nIR OP 2 \u2014 SqrtChecked(a: f64) -> f64, TRAPS:\n    fn sqrt_checked(x: f64) -> Result<f64, Trap> {\n        if x < 0.0 {  // false for NaN, false for -0.0 \u2014 exactly DuckDB's guard\n            return Err(Trap::OutOfRange(\"cannot take square root of a negative number\"));\n        }\n        Ok(x.sqrt())  // sqrt(-0.0) = -0.0, sqrt(NaN)=NaN, sqrt(inf)=inf per IEEE\n    }\nEngine must surface it with DuckDB's exact head \"Out of Range Error: cannot take square root of a negative number\" (duckdb.OutOfRangeException, runtime kind \u2014 PREPARE of sqrt(-1.0) succeeds, EXECUTE raises). Cranelift: guard branch to trap, then native fsqrt (IEEE requires sqrt correctly rounded, so hardware fsqrt is bit-exact with libm). TRAP LAZINESS IS OBSERVABLE: WHERE-filtered rows and untaken CASE branches never evaluate (measured) \u2014 an eager columnar sqrt over the unfiltered vector would diverge on [4.0, -1.0] WHERE x>=0.\nDo NOT desugar sqrt(x) to pow(x, 0.5): pow(-4,0.5)=NaN but sqrt(-4) traps; pow(-0.0,0.5)=+0.0 but sqrt(-0.0)=-0.0.\n\nIR OP 3 \u2014 CbrtF64(a: f64) -> f64, total, never traps:\n    fn cbrt_f64(x: f64) -> f64 { x.cbrt() }\nSign-preserving everywhere: cbrt(-8)=-2, cbrt(\u00b10)=\u00b10, cbrt(\u00b1inf)=\u00b1inf, cbrt(NaN)=NaN. Cranelift: helper call (no instruction). Do NOT desugar to pow(x, 1/3): pow(-8, 1/3)=NaN but cbrt(-8)=-2, and 1/3 is inexact anyway.\n\nPARSER CONTRACT the frontend must mirror (validate sqlparser-rs explicitly against these \u2014 PG rules, not Python rules): (1) unary minus binds TIGHTER than ^/**: -2^2 = -x^2|x=2 = +4.0; (2) ^ and ** are LEFT-associative: 2^3^2 = 64; (3) ^ binds tighter than * and +: 2*3^2=18, 2+3^2=11; (4) '^' immediately followed by '-' ('2^-2', 'x^-y', '2 ^- 2') lexes as one unknown operator '^-' -> must be rejected at bind (\"Catalog Error: Scalar Function with name ^- does not exist! ...\"), while '2 ^ -2', '2^(-2)' = 0.25 are fine and '**' is immune ('2**-2' and '2 **- 2' both parse). If sqlparser-rs happily parses '2^-2' or gives ** right-associativity, the frontend must reject/re-associate or the backends diverge from the oracle.",
+ "surprises": [
+  "DuckDB's ^ operator is POWER, not XOR (5^2 = 25.0 DOUBLE); xor is only the xor() function (xor(5,2)=7 BIGINT). Any engine treating ^ as bitwise xor diverges on every query.",
+  "Unary minus binds TIGHTER than ^ and **: -2^2 = +4.0 and -x^2 (col) = +4.0 \u2014 the PostgreSQL rule, opposite of Python where -2**2 = -4. Confirmed on both literal and vectorized paths.",
+  "^ and ** are LEFT-associative: 2^3^2 = 64.0 (Python's ** is right-associative and would give 512).",
+  "'2^-2' is a bind-time CatalogException \u2014 the PG-style lexer greedily consumes '^-' as one operator ('Scalar Function with name ^- does not exist'). '2 ^ -2' = 0.25 works, and '**' is immune ('2**-2' and even '2 **- 2' parse fine). Raised at PREPARE, i.e. binder kind.",
+  "sqrt of ANY negative (including -1e-300, -inf, and BIGINT -1) is a per-row RUNTIME OutOfRangeException 'cannot take square root of a negative number' \u2014 but pow(negative, 0.5) quietly returns NaN. The guard is exactly x < 0.0: sqrt(-0.0) = -0.0 (passes, keeps the sign) and sqrt(NaN) = NaN (passes).",
+  "pow NEVER errors on any input: pow(0,-1)=inf (no div-by-zero), overflow (1e308^2)=inf, underflow=\u00b10, negative base + fractional exponent = NaN. IEEE oddities hold exactly: pow(NaN,0)=1, pow(1,NaN)=1, pow(-1,\u00b1inf)=1, pow(-0.0,-1)=-inf, pow(-inf,-1)=-0.0.",
+  "Every overload returns DOUBLE \u2014 there is no integer pow, so no i64-overflow trap exists; BIGINT operands are cast to DOUBLE FIRST (pow(2^53+1, 1) = 9007199254740992.0 silently loses the +1; sqrt(2^53) == sqrt(2^53+1)).",
+  "cbrt exists and is total: cbrt(-8) = -2.0 exactly (while pow(-8, 1.0/3.0) = NaN), cbrt(-inf) = -inf, cbrt(-0.0) = -0.0 \u2014 cbrt is NOT pow(x, 1/3).",
+  "The bare literal -0.0 is DECIMAL(2,1) and becomes +0.0 as DOUBLE \u2014 it cannot carry the zero sign; only '-0.0'::DOUBLE or a real column value does. Once that red herring is removed, constant-fold and vectorized paths AGREE on every probe in this family (no fold divergence found).",
+  "String LITERALS implicitly cast into pow (pow('a',2) -> ConversionException at EXECUTE, and PREPARE succeeds \u2014 runtime kind), but VARCHAR COLUMNS do not (bind-time 'No function matches sqrt(VARCHAR)' / '^(VARCHAR, DOUBLE)'). Literal-vs-column asymmetry in the type system.",
+  "sqrt's trap is observably LAZY: SELECT sqrt(x) FROM t WHERE x >= 0 over rows [4.0, -1.0] returns [2.0] with no error, and an untaken CASE branch never traps \u2014 an eager columnar evaluation over pre-filter vectors would diverge from the oracle."
+ ]
+}

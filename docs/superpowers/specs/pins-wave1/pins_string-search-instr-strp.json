@@ -1,0 +1,359 @@
+{
+ "family": "string-search: instr, strpos, position(n IN s), contains, starts_with/prefix, ends_with/suffix, length/len/char_length/character_length, strlen, length_grapheme, bit_length (DuckDB 1.5.5, all measured through table columns)",
+ "pins": [
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='abc', n='b' (VARCHAR columns)",
+   "result": "2",
+   "result_type": "BIGINT",
+   "note": "1-based position"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='abc', n='z'",
+   "result": "0",
+   "result_type": "BIGINT",
+   "note": "not found -> 0 (never NULL, never -1)"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='abc', n=''",
+   "result": "1",
+   "result_type": "BIGINT",
+   "note": "empty needle -> 1, not 0"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='', n='a'",
+   "result": "0",
+   "result_type": "BIGINT",
+   "note": "empty haystack -> 0"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='', n=''",
+   "result": "1",
+   "result_type": "BIGINT",
+   "note": "empty-in-empty -> 1"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='abc', n='abcd'",
+   "result": "0",
+   "result_type": "BIGINT",
+   "note": "needle longer than haystack -> 0"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='abcabc', n='bc'",
+   "result": "2",
+   "result_type": "BIGINT",
+   "note": "first occurrence"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='aaa', n='aa'",
+   "result": "1",
+   "result_type": "BIGINT",
+   "note": "overlapping repeats: leftmost"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='abc', n='B'",
+   "result": "0",
+   "result_type": "BIGINT",
+   "note": "case-sensitive, no folding"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='h\u00e9llo', n='l'",
+   "result": "3",
+   "result_type": "BIGINT",
+   "note": "position in CODEPOINTS (byte position would be 4)"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='h\u00e9llo', n='\u00e9'",
+   "result": "2",
+   "result_type": "BIGINT",
+   "note": "multibyte char at codepoint 2"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='h\u00e9llo', n='\u00e9l'",
+   "result": "2",
+   "result_type": "BIGINT",
+   "note": "multibyte needle, codepoint position"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='a\\U0001F44Db', n='b'",
+   "result": "3",
+   "result_type": "BIGINT",
+   "note": "4-byte emoji counts as ONE codepoint (bytes would give 6)"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='\\U0001F468\u200d\\U0001F469\u200d\\U0001F467' (ZWJ family), n='\\U0001F467'",
+   "result": "5",
+   "result_type": "BIGINT",
+   "note": "codepoints, NOT graphemes: ZWJ counts, grapheme answer would be 1"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='\u00e9\u00e9a', n='a'",
+   "result": "3",
+   "result_type": "BIGINT",
+   "note": "codepoint count of multibyte prefix"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='xabc', n='abc'",
+   "result": "2",
+   "result_type": "BIGINT",
+   "note": "match not at start"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "(NULL,'b'), ('abc',NULL), (NULL,NULL), (NULL,'')",
+   "result": "None in all 4 combos",
+   "result_type": "BIGINT",
+   "note": "NULL-strict in EVERY argument; NULL haystack + empty needle is still NULL"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='e\u0301' (decomposed), n='\u00e9' (precomposed)",
+   "result": "0",
+   "result_type": "BIGINT",
+   "note": "NO unicode normalization; byte-exact matching (both directions measured 0)"
+  },
+  {
+   "expr": "instr(s, n)",
+   "input_desc": "s='e\u0301' (decomposed), n='\u0301' (bare combining mark)",
+   "result": "2",
+   "result_type": "BIGINT",
+   "note": "combining mark alone is findable at its codepoint index"
+  },
+  {
+   "expr": "strpos(s, n)",
+   "input_desc": "all 19 corpus pairs above",
+   "result": "bit-identical to instr(s, n) on every pair",
+   "result_type": "BIGINT",
+   "note": "strpos IS instr (0 divergences measured); NOT PostgreSQL arg order \u2014 DuckDB strpos(haystack, needle)"
+  },
+  {
+   "expr": "position(n IN s)",
+   "input_desc": "all 19 corpus pairs above",
+   "result": "bit-identical to instr(s, n) on every pair",
+   "result_type": "BIGINT",
+   "note": "PostgreSQL POSITION syntax works in DuckDB; desugars to position(s, n)"
+  },
+  {
+   "expr": "\"position\"(s, n) two-arg call",
+   "input_desc": "('abc','b') and ('b','abc')",
+   "result": "2 and 0 respectively",
+   "result_type": "BIGINT",
+   "note": "2-arg call form binds (haystack, needle) \u2014 same order as instr, i.e. position('needle','hay') silently searches the wrong way"
+  },
+  {
+   "expr": "contains(s, n)",
+   "input_desc": "('abc','b')/('abc','z')/('abc','B')",
+   "result": "True / False / False",
+   "result_type": "BOOLEAN",
+   "note": "haystack-first arg order; case-sensitive"
+  },
+  {
+   "expr": "contains(s, n)",
+   "input_desc": "('abc','') / ('','') / ('','a')",
+   "result": "True / True / False",
+   "result_type": "BOOLEAN",
+   "note": "empty needle -> TRUE even for empty haystack"
+  },
+  {
+   "expr": "contains(s, n)",
+   "input_desc": "('h\u00e9llo','\u00e9'), (ZWJ family,'\\U0001F467'), ('aaa','aa'), ('xabc','abc')",
+   "result": "True in all",
+   "result_type": "BOOLEAN",
+   "note": "byte-substring semantics"
+  },
+  {
+   "expr": "contains(s, n)",
+   "input_desc": "NULL in either/both args (typed VARCHAR)",
+   "result": "None",
+   "result_type": "BOOLEAN",
+   "note": "NULL-strict; note bare-NULL LITERAL needle is a binder error (see errors)"
+  },
+  {
+   "expr": "starts_with(s, n)",
+   "input_desc": "('abc','') / ('','') / ('aaa','aa') / ('abc','abc') / ('xabc','abc') / ('abc','b') / ('abc','abcd')",
+   "result": "True / True / True / True / False / False / False",
+   "result_type": "BOOLEAN",
+   "note": "empty needle TRUE; exact-match TRUE; interior match FALSE"
+  },
+  {
+   "expr": "starts_with(s, n)",
+   "input_desc": "NULL either/both sides",
+   "result": "None",
+   "result_type": "BOOLEAN",
+   "note": "NULL-strict"
+  },
+  {
+   "expr": "prefix(s, n)",
+   "input_desc": "all 19 corpus pairs",
+   "result": "bit-identical to starts_with on every pair",
+   "result_type": "BOOLEAN",
+   "note": "exact alias"
+  },
+  {
+   "expr": "ends_with(s, n)",
+   "input_desc": "('abc','') / ('abcabc','bc') / ('a\\U0001F44Db','b') / ('xabc','abc') / ('abc','b') / ('e\u0301','\u0301')",
+   "result": "True / True / True / True / False / True",
+   "result_type": "BOOLEAN",
+   "note": "empty needle TRUE; byte-suffix; a bare combining mark is a valid suffix"
+  },
+  {
+   "expr": "ends_with(s, n)",
+   "input_desc": "NULL either/both sides",
+   "result": "None",
+   "result_type": "BOOLEAN",
+   "note": "NULL-strict"
+  },
+  {
+   "expr": "suffix(s, n)",
+   "input_desc": "all 19 corpus pairs",
+   "result": "bit-identical to ends_with on every pair",
+   "result_type": "BOOLEAN",
+   "note": "exact alias"
+  },
+  {
+   "expr": "length(s)",
+   "input_desc": "'abc' / '' / 'h\u00e9llo' / 'a\\U0001F44Db' / ZWJ family / 'e\u0301' / NULL",
+   "result": "3 / 0 / 5 / 3 / 5 / 2 / None",
+   "result_type": "BIGINT",
+   "note": "CODEPOINTS: ZWJ family is 5 (grapheme would be 1); decomposed e-acute is 2"
+  },
+  {
+   "expr": "len(s), char_length(s), character_length(s)",
+   "input_desc": "same 7 inputs",
+   "result": "identical to length(s) on every input",
+   "result_type": "BIGINT",
+   "note": "exact aliases of length"
+  },
+  {
+   "expr": "strlen(s)",
+   "input_desc": "'abc' / '' / 'h\u00e9llo' / 'a\\U0001F44Db' / ZWJ family / 'e\u0301' / NULL",
+   "result": "3 / 0 / 6 / 6 / 18 / 3 / None",
+   "result_type": "BIGINT",
+   "note": "UTF-8 BYTES, not codepoints"
+  },
+  {
+   "expr": "length_grapheme(s)",
+   "input_desc": "ZWJ family / 'e\u0301' / 'a\\U0001F44Db' / NULL",
+   "result": "1 / 1 / 3 / None",
+   "result_type": "BIGINT",
+   "note": "grapheme clusters; only member of the family that sees ZWJ sequences as one unit"
+  },
+  {
+   "expr": "bit_length(s)",
+   "input_desc": "'abc' / 'h\u00e9llo' / ZWJ family / NULL",
+   "result": "24 / 48 / 144 / None",
+   "result_type": "BIGINT",
+   "note": "exactly 8 * strlen(s)"
+  },
+  {
+   "expr": "n IN s (both VARCHAR columns)",
+   "input_desc": "('abc','b')/('abc','z')/('abc','')/('','')/NULL combos",
+   "result": "True / False / True / True / None",
+   "result_type": "BOOLEAN",
+   "note": "string IN string == contains(s, n), NULL-strict; ONLY binds when RHS is a column/expr \u2014 literal RHS is a parse error"
+  },
+  {
+   "expr": "n NOT IN s (both VARCHAR columns)",
+   "input_desc": "same pairs",
+   "result": "False / True / False / False / None",
+   "result_type": "BOOLEAN",
+   "note": "NOT contains, NULL-strict (NULL stays NULL, not flipped)"
+  },
+  {
+   "expr": "s ^@ n",
+   "input_desc": "('abc','ab') literal and column",
+   "result": "True",
+   "result_type": "BOOLEAN",
+   "note": "PostgreSQL starts_with operator exists in DuckDB, same semantics as starts_with"
+  },
+  {
+   "expr": "contains(s, n) with unicode case pairs",
+   "input_desc": "('h\u00e9llo','\u00c9') / ('H\u00c9LLO','\u00e9') / ('Stra\u00dfe','SS')",
+   "result": "False / False / False (instr 0 on all)",
+   "result_type": "BOOLEAN",
+   "note": "no unicode case folding of any kind (no eszett expansion)"
+  },
+  {
+   "expr": "length(repeat('a',1000000)), strlen(repeat(emoji,250000))",
+   "input_desc": "1M-char string",
+   "result": "1000000 / 1000000",
+   "result_type": "BIGINT",
+   "note": "sanity: large strings fine, results i64; string lengths cannot approach i64::MAX (VARCHAR capped far below), so no overflow edge exists"
+  },
+  {
+   "expr": "literal-fold vs vectorized",
+   "input_desc": "all 8 two-arg functions x 19 pairs, literal (NULL::VARCHAR) vs column",
+   "result": "0 divergences",
+   "result_type": "-",
+   "note": "constant-fold path agrees with vectorized path everywhere in this family"
+  }
+ ],
+ "errors": [
+  {
+   "expr": "SELECT contains('abc', NULL)",
+   "error_head": "Binder Error: Could not choose a best candidate function for the function call \"contains(STRING_LITERAL, \"NULL\")\". In order to select one, please add explicit type casts.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT instr(1, '2')  (also INTEGER column: 'instr(INTEGER, STRING_LITERAL)')",
+   "error_head": "Binder Error: No function matches the given name and argument types 'instr(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT length(1)  (same for DOUBLE/BOOLEAN args to any family member)",
+   "error_head": "Binder Error: No function matches the given name and argument types 'length(INTEGER_LITERAL)'. You might need to add explicit type casts.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT strpos('a')",
+   "error_head": "Binder Error: No function matches the given name and argument types 'strpos(STRING_LITERAL)'. You might need to add explicit type casts.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT octet_length(s) FROM t  -- s VARCHAR",
+   "error_head": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts. Candidate functions: octet_length(BLOB) -> BIGINT, octet_length(BIT)",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT 'b' IN 'abc'  -- literal RHS",
+   "error_head": "Parser Error: syntax error at or near \"'abc'\"",
+   "kind": "parse"
+  },
+  {
+   "expr": "SELECT position(s, 'b') FROM t  -- unquoted 2-arg call",
+   "error_head": "Parser Error: syntax error at or near \",\"",
+   "kind": "parse"
+  }
+ ],
+ "duck_check_tests": "\n# string-search family - contract pins measured against DuckDB 1.5.5 (2026-07-26).\n# All values below were probed through the vectorized path (table columns);\n# literal-fold agreed on every pair (0 divergences).\n\nSTRSEARCH_SCHEMA = {\"s\": \"str\", \"n\": \"str\"}\nSTRSEARCH_ROWS = [\n    {\"s\": \"abc\", \"n\": \"b\"},        # simple hit -> 2\n    {\"s\": \"abc\", \"n\": \"z\"},        # miss -> 0\n    {\"s\": \"abc\", \"n\": \"\"},         # empty needle -> 1 / TRUE\n    {\"s\": \"\", \"n\": \"a\"},           # empty haystack -> 0 / FALSE\n    {\"s\": \"\", \"n\": \"\"},            # empty-in-empty -> 1 / TRUE\n    {\"s\": \"abc\", \"n\": \"abcd\"},     # needle longer -> 0 / FALSE\n    {\"s\": \"abcabc\", \"n\": \"bc\"},    # first occurrence -> 2\n    {\"s\": \"aaa\", \"n\": \"aa\"},       # overlapping -> 1\n    {\"s\": \"abc\", \"n\": \"B\"},        # case-sensitive -> 0\n    {\"s\": \"h\u00e9llo\", \"n\": \"l\"},           # CODEPOINT position -> 3 (bytes would be 4)\n    {\"s\": \"h\u00e9llo\", \"n\": \"\u00e9\"},      # -> 2\n    {\"s\": \"h\u00e9llo\", \"n\": \"\u00e9l\"},     # multibyte needle -> 2\n    {\"s\": \"a\\U0001F44Db\", \"n\": \"b\"},         # emoji = 1 codepoint -> 3 (bytes would be 6)\n    {\"s\": \"\\U0001F468\u200d\\U0001F469\u200d\\U0001F467\", \"n\": \"\\U0001F467\"},  # ZWJ -> 5, not 1\n    {\"s\": \"\u00e9\u00e9a\", \"n\": \"a\"},        # -> 3\n    {\"s\": \"xabc\", \"n\": \"abc\"},     # suffix hit -> 2\n    {\"s\": \"abc\", \"n\": \"abc\"},      # exact -> 1\n    {\"s\": \"e\u0301\", \"n\": \"\u00e9\"},         # NO normalization -> 0 / FALSE\n    {\"s\": \"e\u0301\", \"n\": \"\u0301\"},         # bare combining mark -> 2\n    {\"s\": \"abc\", \"n\": None},       # NULL-strict every argument\n    {\"s\": None, \"n\": \"b\"},\n    {\"s\": None, \"n\": None},\n    {\"s\": None, \"n\": \"\"},          # NULL haystack + empty needle is still NULL\n]\n\n\ndef test_strsearch_positions():\n    for fn_expr in [\"instr(s, n)\", \"strpos(s, n)\", \"position(n IN s)\"]:\n        duck_check(\n            f\"SELECT {fn_expr} AS r FROM __THIS__\",\n            STRSEARCH_SCHEMA, STRSEARCH_ROWS,\n        )\n\n\ndef test_strsearch_predicates():\n    for fn in [\"contains\", \"starts_with\", \"prefix\", \"ends_with\", \"suffix\"]:\n        duck_check(\n            f\"SELECT {fn}(s, n) AS r FROM __THIS__\",\n            STRSEARCH_SCHEMA, STRSEARCH_ROWS,\n        )\n\n\ndef test_strsearch_length_family():\n    duck_check(\n        \"SELECT length(s) AS cp, len(s) AS cp2, char_length(s) AS cp3,\"\n        \" character_length(s) AS cp4, strlen(s) AS by, bit_length(s) AS bits\"\n        \" FROM __THIS__\",\n        STRSEARCH_SCHEMA, STRSEARCH_ROWS,\n    )\n\n\ndef test_strsearch_length_grapheme():\n    # Separate: only implement if length_grapheme lands in scope (needs a\n    # grapheme-segmentation table; ZWJ family -> 1, decomposed e-acute -> 1).\n    duck_check(\n        \"SELECT length_grapheme(s) AS gr FROM __THIS__\",\n        STRSEARCH_SCHEMA, STRSEARCH_ROWS,\n    )\n\n\ndef test_strsearch_in_operator_is_contains():\n    # `n IN s` over VARCHAR columns is string-contains in DuckDB (NULL-strict);\n    # the pure-literal form `'b' IN 'abc'` is a DuckDB PARSE error. Gate this\n    # test on the frontend actually parsing string-IN (sqlparser may reject or\n    # mis-parse it as an in-list) - verify before enabling.\n    duck_check(\n        \"SELECT (n IN s) AS r, (n NOT IN s) AS q FROM __THIS__\",\n        STRSEARCH_SCHEMA, STRSEARCH_ROWS,\n    )\n\n\ndef test_strsearch_three_valued_where():\n    # NULL predicate rows must be dropped by WHERE, same as FALSE.\n    duck_check(\n        \"SELECT s FROM __THIS__ WHERE contains(s, n)\",\n        STRSEARCH_SCHEMA, STRSEARCH_ROWS,\n    )\n    duck_check(\n        \"SELECT s FROM __THIS__ WHERE instr(s, n) > 1\",\n        STRSEARCH_SCHEMA, STRSEARCH_ROWS,\n    )\n",
+ "lowering": "Recommend SIX new IR ops plus pure-frontend desugars for the aliases. The whole family is TOTAL over (str|NULL) args: no trap conditions, no runtime errors, and every function is NULL-strict in every argument (all combos measured), so validity = AND of input validities \u2014 the strict-NULL vectorized fast path applies with no three-valued special cases. Rust byte-wise semantics reproduced every measured pin including normalization/combining-mark edges (validated against the probe corpus):\n\n  // all ops NULL-strict; out_valid = s_valid & n_valid\n  fn str_find(s: &str, n: &str) -> i64 {            // instr / strpos / position\n      match s.find(n) {                              // byte index; \"\" -> Some(0)\n          Some(b) => 1 + s[..b].chars().count() as i64,   // 1-based CODEPOINT pos\n          None => 0,\n      }\n  }\n  fn str_contains(s: &str, n: &str) -> bool { s.contains(n) }   // \"\" -> true\n  fn str_starts_with(s: &str, n: &str) -> bool { s.starts_with(n) }\n  fn str_ends_with(s: &str, n: &str) -> bool { s.ends_with(n) }\n  fn str_len_codepoints(s: &str) -> i64 { s.chars().count() as i64 }\n  fn str_len_bytes(s: &str) -> i64 { s.len() as i64 }\n\nByte-prefix/suffix/substring tests are exact because DuckDB does byte-exact matching with NO normalization and NO case folding (measured), and UTF-8 guarantees byte-prefix == codepoint-prefix.\n\nFrontend desugars (all proven exact by 0-divergence corpus runs):\n  strpos(s,n), position(n IN s), \"position\"(s,n)  ->  StrFind(s,n)   [note \"position\" 2-arg order is (haystack, needle)]\n  prefix(s,n)            -> StrStartsWith(s,n)\n  suffix(s,n)            -> StrEndsWith(s,n)\n  len/char_length/character_length(s) -> StrLenCodepoints(s)\n  bit_length(s)          -> 8 * StrLenBytes(s)      [mul propagates NULL; no overflow \u2014 VARCHAR length bounded far below i64::MAX/8]\n  n IN s (VARCHAR,VARCHAR) -> StrContains(s, n)     [args REVERSED; only if sqlparser parses string-IN \u2014 verify first]\n  n NOT IN s             -> NOT StrContains(s, n)   [plain NOT: NULL stays NULL, measured]\n  s ^@ n                 -> StrStartsWith(s, n)\n\nDo NOT desugar contains -> StrFind > 0: it is exact under three-valued logic (NULL>0 is NULL, matching contains' NULL), but StrFind pays an extra codepoint count of the prefix; keep StrContains as its own op. Do NOT lower length_grapheme via desugar \u2014 it needs Unicode grapheme segmentation (unicode-segmentation crate); recommend leaving it unimplemented (clean unsupported-function error) unless the corpus demands it. octet_length must NOT be mapped to StrLenBytes: DuckDB rejects octet_length(VARCHAR) at bind time, so binding it would be a divergence \u2014 mirror the binder error.",
+ "surprises": [
+  "Positions are 1-based CODEPOINT indices, not bytes and not graphemes: instr('a\\U0001F44Db','b')=3 (bytes would say 6); instr(ZWJ-family,'\\U0001F467')=5 (graphemes would say 1); instr('h\u00e9llo','l')=3.",
+  "Empty needle matches EVERYTHING: instr(s,'')=1 and contains/starts_with/ends_with(s,'')=TRUE even when s itself is '' \u2014 but NULL haystack still wins: instr(NULL,'') is NULL.",
+  "contains('abc', NULL) with a bare NULL literal is a BINDER ERROR (ambiguous with contains(MAP,K) and contains(T[],T) overloads) while instr/strpos/position/starts_with/ends_with/prefix/suffix all accept bare NULL and return NULL. A typed NULL (NULL::VARCHAR or a NULL column) works fine in contains. The engine must not 'helpfully' bind string-contains for an untyped NULL.",
+  "`n IN s` where both sides are VARCHAR expressions is string-contains \u2014 contains(s,n), args reversed, NULL-strict, empty-needle TRUE \u2014 but the pure-literal form 'b' IN 'abc' is a DuckDB PARSE error. A syntax-level literal-vs-column divergence; sqlparser support must be verified separately before wiring this.",
+  "The 2-arg call form \"position\"(a,b) binds (haystack, needle) \u2014 identical to instr/strpos \u2014 even though the SQL-standard form position(n IN s) reads needle-first. position('b','abc')=0, position('abc','b')=2. Also the unquoted call position(a,b) does not even parse (POSITION is grammar-reserved).",
+  "length() counts CODEPOINTS, not graphemes: length(ZWJ family emoji)=5 while length_grapheme=1; decomposed 'e\u0301' has length 2, strlen 3, length_grapheme 1. strlen is UTF-8 bytes. bit_length is exactly 8*strlen. octet_length does NOT exist for VARCHAR (binder error; BLOB/BIT only).",
+  "Zero unicode intelligence anywhere: no normalization (precomposed \u00e9 never matches decomposed e+\u0301 in either direction), no case folding ('Stra\u00dfe' does not contain 'SS'), and a bare combining mark \u0301 is independently findable (instr('e\u0301','\u0301')=2). Plain Rust byte search reproduces every pin.",
+  "No implicit numeric-to-VARCHAR casts for any family member: instr(123,'2'), length(123), contains(INTEGER,...) are all binder errors \u2014 DuckDB will not stringify numbers here.",
+  "The family is completely total: no per-row runtime error exists for any input; every function is NULL-strict in every argument (all NULL combos measured), so the strict-validity-mask fast path is exact.",
+  "strpos/instr/position are bit-identical (strpos is NOT PostgreSQL's (needle,haystack) order \u2014 DuckDB flips it to (haystack,needle)); prefix==starts_with and suffix==ends_with exactly; len/char_length/character_length==length exactly (19-pair corpus, 0 divergences).",
+  "Literal-fold vs vectorized: 0 divergences across all 8 two-arg functions x 19 pairs \u2014 this family is safe from the constant-fold trap.",
+  "PostgreSQL's ^@ starts-with operator exists in DuckDB and equals starts_with."
+ ]
+}

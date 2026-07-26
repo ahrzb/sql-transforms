@@ -1,0 +1,336 @@
+{
+ "family": "floor-ceil-trunc-round",
+ "pins": [
+  {
+   "expr": "floor(x)",
+   "input_desc": "DOUBLE column 2.5",
+   "result": "2.0",
+   "result_type": "DOUBLE",
+   "note": "IEEE floor; Rust f64::floor is bit-exact (0 mismatches in 9028-case fuzz incl. specials)"
+  },
+  {
+   "expr": "ceil(x) / ceiling(x)",
+   "input_desc": "DOUBLE column 2.5",
+   "result": "3.0",
+   "result_type": "DOUBLE",
+   "note": "ceiling is a pure alias of ceil; IEEE ceil, f64::ceil bit-exact"
+  },
+  {
+   "expr": "trunc(x)",
+   "input_desc": "DOUBLE column 2.5 / -2.999",
+   "result": "2.0 / -2.0",
+   "result_type": "DOUBLE",
+   "note": "toward zero; f64::trunc bit-exact"
+  },
+  {
+   "expr": "round(x)",
+   "input_desc": "DOUBLE column 2.5, 3.5, -2.5, -3.5",
+   "result": "3.0, 4.0, -3.0, -4.0",
+   "result_type": "DOUBLE",
+   "note": "half AWAY from zero, NOT banker's; identical to Rust f64::round at every magnitude"
+  },
+  {
+   "expr": "round(x)",
+   "input_desc": "DOUBLE column 0.49999999999999994 (largest double < 0.5)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "proves NO naive x+0.5-then-floor (that would give 1.0); exact std::round"
+  },
+  {
+   "expr": "round(x)",
+   "input_desc": "DOUBLE column 4503599627370495.5 (largest double with .5 fraction, 2^52-0.5)",
+   "result": "4503599627370496.0",
+   "result_type": "DOUBLE",
+   "note": "negative twin gives -4503599627370496.0"
+  },
+  {
+   "expr": "floor(x), ceil(x)",
+   "input_desc": "BIGINT column 7",
+   "result": "7.0",
+   "result_type": "DOUBLE",
+   "note": "floor/ceil have NO integer overloads: every int width is implicitly cast to DOUBLE"
+  },
+  {
+   "expr": "floor(x), ceil(x)",
+   "input_desc": "BIGINT column 9223372036854775807 (i64::MAX)",
+   "result": "9.223372036854776e+18",
+   "result_type": "DOUBLE",
+   "note": "LOSSY int->double cast; floor(BIGINT 9007199254740993 = 2^53+1) -> 9007199254740992.0"
+  },
+  {
+   "expr": "trunc(x), round(x)",
+   "input_desc": "BIGINT column 9223372036854775807; INTEGER column 7",
+   "result": "9223372036854775807; 7",
+   "result_type": "BIGINT; INTEGER",
+   "note": "single-arg trunc/round on integer types are exact IDENTITY preserving the input type (asymmetric with floor/ceil)"
+  },
+  {
+   "expr": "round(x, n)",
+   "input_desc": "DOUBLE 2.567, n=2 (INTEGER col)",
+   "result": "2.57",
+   "result_type": "DOUBLE",
+   "note": "round(DOUBLE, INTEGER) -> DOUBLE; n accepts TINYINT/SMALLINT/INTEGER but round(DOUBLE, BIGINT) is a BINDER ERROR"
+  },
+  {
+   "expr": "round(x, n) algorithm",
+   "input_desc": "DOUBLE x, n>=0",
+   "result": "r = round_half_away(x * m) / m where m = std::pow(10.0, n) of the DuckDB binary; if r is inf or NaN return x",
+   "result_type": "DOUBLE",
+   "note": "bit-exact-verified on 9028 fuzz pairs + 6400 targeted cases; the modifier table is the binary's libm pow, NOT correctly-rounded 1e{n} (differs at n=23) and NOT ucrt pow (differs at n=126)"
+  },
+  {
+   "expr": "round(x, n) algorithm",
+   "input_desc": "DOUBLE x, n<0",
+   "result": "m = pow(10.0, -n); r = round_half_away(x / m) * m; if r is inf or NaN return +0.0",
+   "result_type": "DOUBLE",
+   "note": "the n<0 fallback returns 0.0 (positive zero), not the input \u2014 this is why NaN/inf/overflow cases below yield 0.0"
+  },
+  {
+   "expr": "round(x, 2)",
+   "input_desc": "DOUBLE column 2.675 (= 2.67499999999999982...)",
+   "result": "2.68",
+   "result_type": "DOUBLE",
+   "note": "NOT the Python-style 2.67: double(2.675)*100 rounds to exactly 267.5 in the multiply, then half-away -> 268"
+  },
+  {
+   "expr": "round(x, 2)",
+   "input_desc": "DOUBLE column 0.285",
+   "result": "0.28",
+   "result_type": "DOUBLE",
+   "note": "product 28.499999999999996 rounds down; DECIMAL-literal path gives 0.29 \u2014 see surprises"
+  },
+  {
+   "expr": "round(x, 2)",
+   "input_desc": "DOUBLE columns 1.005, 0.145, 1.015, 2.665, 1.255, 1.115, 0.045, 0.125, 0.375",
+   "result": "1.0, 0.14, 1.01, 2.67, 1.25, 1.12, 0.05, 0.13, 0.38",
+   "result_type": "DOUBLE",
+   "note": "each decided solely by the IEEE rounding of x*100 (1.115 and 1.255 both have true value ...4999 yet go opposite ways)"
+  },
+  {
+   "expr": "round(x, 23)",
+   "input_desc": "DOUBLE x = float.fromhex('0x1.9fc4c8ce7ceb8p+8') = 415.7686890654545",
+   "result": "415.76868906545445 (0x1.9fc4c8ce7ceb7p+8)",
+   "result_type": "DOUBLE",
+   "note": "pow-table ulp pin: only m = 0x1.52d02c7e14af7p+76 (bits 0x44B52D02C7E14AF7) explains this; correctly-rounded 1e23 (0x...af6p+76) would give 415.76868906545457"
+  },
+  {
+   "expr": "round(x, 23)",
+   "input_desc": "DOUBLE x = float.fromhex('0x1.bc25ab024d0ffp+8') = 444.14714064008143",
+   "result": "444.14714064008143 (unchanged)",
+   "result_type": "DOUBLE",
+   "note": "second discriminating witness; strtod-1e23 modifier would give 444.1471406400814. DuckDB's pow(10,126) = 0x1.7a2ecc414a03fp+418 (bits 0x5A17A2ECC414A03F) = strtod 1e126, differing from ucrt pow"
+  },
+  {
+   "expr": "round(x, -2)",
+   "input_desc": "DOUBLE 1234.5",
+   "result": "1200.0",
+   "result_type": "DOUBLE",
+   "note": "34.5 < 50 rounds down \u2014 no cascaded rounding of the .5 first"
+  },
+  {
+   "expr": "round(x, -2)",
+   "input_desc": "DOUBLE 1250.0 / -1250.0",
+   "result": "1300.0 / -1300.0",
+   "result_type": "DOUBLE",
+   "note": "half away from zero at negative scales too; round(55.0,-1)=60.0, round(-55.0,-1)=-60.0"
+  },
+  {
+   "expr": "round(x, -2)",
+   "input_desc": "DOUBLE -44.0",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "signed zero preserved through the scale-round-unscale pipeline: round(-0.4)->-0.0, round(-0.04,1)->-0.0, round(-4.0,-1)->-0.0"
+  },
+  {
+   "expr": "round(x, n), n <= -309",
+   "input_desc": "DOUBLE 2.675, n=-400 (also n=-1000, n=-2147483648)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "modifier overflows to inf -> x/inf=0 -> 0*inf=NaN -> fallback 0.0 for EVERY finite x"
+  },
+  {
+   "expr": "round(x, -308)",
+   "input_desc": "DOUBLE 1.7e308",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "rounded value 2*1e308 overflows to inf -> fallback 0.0; but round(9.9e307, -308) = 1e+308 (fits)"
+  },
+  {
+   "expr": "round(x, n), n >= 309",
+   "input_desc": "DOUBLE 2.675, n=309/400/1000/2147483647",
+   "result": "2.675 (input returned)",
+   "result_type": "DOUBLE",
+   "note": "x*inf = inf -> positive-branch fallback returns INPUT; likewise round(1e308, 2) -> 1e+308 and round(5e-324, 324) -> 5e-324"
+  },
+  {
+   "expr": "round(NaN, -2)",
+   "input_desc": "DOUBLE 'nan' column, n=-2 (also -400)",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "SURPRISE: NaN in, +0.0 out. round(NaN, 2)/round(NaN)/floor/ceil/trunc(NaN) all stay NaN; only the n<0 branch converts"
+  },
+  {
+   "expr": "round(inf, -2), round(-inf, -2)",
+   "input_desc": "DOUBLE +/-inf column, n<0",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "both infinities become +0.0; round(inf, 2) = inf, round(inf) = inf, floor/ceil/trunc(+/-inf) = +/-inf"
+  },
+  {
+   "expr": "trunc(x, n)",
+   "input_desc": "DOUBLE 2.675 n=2; 25.67 n=-1; -25.67 n=-1; 1250.0 n=-2",
+   "result": "2.67; 20.0; -20.0; 1200.0",
+   "result_type": "DOUBLE",
+   "note": "2-arg trunc EXISTS (floor/ceil 2-arg do not); same scale algorithm but std::trunc, and BOTH branches' non-finite fallback returns the INPUT"
+  },
+  {
+   "expr": "trunc(NaN, -2) / trunc(inf, -2) / trunc(2.675, -400)",
+   "input_desc": "DOUBLE column, negative n",
+   "result": "nan / inf / 2.675",
+   "result_type": "DOUBLE",
+   "note": "contrast with round's 0.0: trunc returns input on NaN/inf/modifier-overflow in both branches; trunc(1.7e308, -308) = 1e+308 (finite path)"
+  },
+  {
+   "expr": "round(i, n) BIGINT, n>=0",
+   "input_desc": "BIGINT 1234, n=2; BIGINT i64::MAX, n=2",
+   "result": "1234; 9223372036854775807",
+   "result_type": "BIGINT",
+   "note": "positive/zero n on integers is identity, never converts to DOUBLE"
+  },
+  {
+   "expr": "round(i, -2) BIGINT",
+   "input_desc": "BIGINT 1250 / -1250 / 1249 / 49 / 50 / -49",
+   "result": "1300 / -1300 / 1200 / 0 / 100 / 0",
+   "result_type": "BIGINT",
+   "note": "integer-domain half-away: y = x +/- power/2 (sign of x), then trunc-div and re-multiply"
+  },
+  {
+   "expr": "round(i, -2) BIGINT at bounds",
+   "input_desc": "BIGINT 9223372036854775807 (MAX); -9223372036854775808 (MIN)",
+   "result": "-9223372036854775700; 9223372036854775700",
+   "result_type": "BIGINT",
+   "note": "NO TRAP \u2014 the half-power add WRAPS at i64: wrapping_add(MAX,50)=-9223372036854775759 -> /100*100. Verified bit-exact on 7391-pair fuzz; round(MAX,-1)=-9223372036854775800, round(MAX,-18)=-8000000000000000000, round(MIN,-18)=8000000000000000000"
+  },
+  {
+   "expr": "round(i, n) BIGINT, n <= -19",
+   "input_desc": "any BIGINT (incl. 6000000000000000000, MAX, MIN), n=-19/-20/-2147483648",
+   "result": "0",
+   "result_type": "BIGINT",
+   "note": "hard cutoff: 10^19 > i64::MAX so |n|>=19 returns 0 unconditionally (no rounding to 1e19)"
+  },
+  {
+   "expr": "trunc(i, -2) BIGINT",
+   "input_desc": "BIGINT MAX / MIN / 1299 / -1299; n=-19",
+   "result": "9223372036854775800 / -9223372036854775800 / 1200 / -1200; 0",
+   "result_type": "BIGINT",
+   "note": "trunc has no half-add so it never wraps; same >= 19 cutoff to 0; positive n identity"
+  },
+  {
+   "expr": "floor(x)/ceil(x)/round(x)/trunc(x)",
+   "input_desc": "DOUBLE 9.3e18 (> i64::MAX)",
+   "result": "9.3e+18",
+   "result_type": "DOUBLE",
+   "note": "result stays DOUBLE \u2014 no i64 conversion, no trap anywhere in the family"
+  },
+  {
+   "expr": "floor(5e-324), ceil(5e-324), ceil(-5e-324)",
+   "input_desc": "DOUBLE denormal column",
+   "result": "0.0, 1.0, -0.0",
+   "result_type": "DOUBLE",
+   "note": "denormals behave per IEEE; round(5e-324, 2) = 0.0"
+  },
+  {
+   "expr": "floor(-0.5), ceil(-0.5)",
+   "input_desc": "DOUBLE column",
+   "result": "-1.0, -0.0",
+   "result_type": "DOUBLE",
+   "note": "ceil produces negative zero"
+  },
+  {
+   "expr": "all functions, bound -0.0",
+   "input_desc": "DOUBLE column holding true -0.0 (parameter-bound)",
+   "result": "-0.0 from floor, ceil, trunc, round, round(x,2), round(x,-2), trunc(x,2)",
+   "result_type": "DOUBLE",
+   "note": "sign of zero fully preserved (bit-verified). CAUTION: the SQL literal -0.0 is DECIMAL(2,1) and becomes +0.0 when cast to DOUBLE; '-0.0'::DOUBLE and -(0.0::DOUBLE) keep the sign"
+  },
+  {
+   "expr": "every function, NULL in any argument",
+   "input_desc": "NULL x and/or NULL n via columns",
+   "result": "None",
+   "result_type": "input-dependent (DOUBLE for floor/ceil; input type for trunc/round)",
+   "note": "strictly NULL-propagating in every position; round(NULL::INT, -2) -> NULL INTEGER"
+  },
+  {
+   "expr": "round(x, n) FLOAT input",
+   "input_desc": "FLOAT column 2.567, n=2",
+   "result": "2.569999933242798",
+   "result_type": "FLOAT",
+   "note": "computed in f32 (float32 of 2.57); round(FLOAT NaN, -2) -> 0.0f32. Engine never sees f32 ('float' schema = float64) but any FLOAT-typed SQL cast would hit this"
+  },
+  {
+   "expr": "constant-fold vs vectorized",
+   "input_desc": "round(CAST(2.675 AS DOUBLE), 2), round(CAST(0.285 AS DOUBLE), 2), literal round(9223372036854775807, -2), const-n vs column-n on 10 edge cases incl. n=23 ulp witnesses",
+   "result": "identical to the column path in every measured case",
+   "result_type": "DOUBLE/BIGINT",
+   "note": "no fold divergence once types match; ALL divergences come from bare literals being DECIMAL, not from folding"
+  }
+ ],
+ "errors": [
+  {
+   "expr": "SELECT round(d, b) FROM tt -- d DOUBLE, b BIGINT column",
+   "error_head": "Binder Error: No function matches the given name and argument types 'round(DOUBLE, BIGINT)'.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT floor(d, n) FROM tt -- 2-arg floor",
+   "error_head": "Binder Error: No function matches the given name and argument types 'floor(DOUBLE, INTEGER)'.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT ceil(d, n) FROM tt -- 2-arg ceil",
+   "error_head": "Binder Error: No function matches the given name and argument types 'ceil(DOUBLE, INTEGER)'.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT ceiling(d, n) FROM tt -- 2-arg ceiling",
+   "error_head": "Binder Error: No function matches the given name and argument types 'ceiling(DOUBLE, INTEGER)'.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT floor(v) FROM tt -- v VARCHAR (no implicit VARCHAR->DOUBLE; same for round/trunc/ceil and BOOLEAN)",
+   "error_head": "Binder Error: No function matches the given name and argument types 'floor(VARCHAR)'.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT round(dec, n) FROM tt -- DECIMAL x with NON-CONSTANT n (NotImplementedException at bind time)",
+   "error_head": "Not implemented Error: ROUND(DECIMAL, INTEGER) with non-constant precision is not supported",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT truncate(d) FROM tt -- CatalogException; only 'trunc' exists",
+   "error_head": "Catalog Error: Scalar Function with name truncate does not exist!",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT round(d, 1, 2) FROM tt",
+   "error_head": "Binder Error: No function matches the given name and argument types 'round(DOUBLE, INTEGER_LITERAL, INTEGER_LITERAL)'.",
+   "kind": "binder"
+  }
+ ],
+ "duck_check_tests": "NAN = float(\"nan\")\nINF = float(\"inf\")\n\n\ndef test_round_family_single_arg_double():\n    vals = [2.5, 3.5, -2.5, -3.5, 0.5, -0.5, 1.5, 0.49999999999999994,\n            -0.49999999999999994, 2.675, -0.4, -0.04, 0.0, -0.0, 5e-324,\n            -5e-324, 4503599627370495.5, -4503599627370495.5, 9.3e18, -9.3e18,\n            1.7976931348623157e308, 12345.678901234567, NAN, INF, -INF, None]\n    duck_check(\n        \"SELECT floor(x) AS f, ceil(x) AS c, ceiling(x) AS c2,\"\n        \" trunc(x) AS t, round(x) AS r FROM __THIS__\",\n        {\"x\": \"float?\"},\n        [{\"x\": v} for v in vals],\n    )\n\n\ndef test_round_double_with_digits_constant_n():\n    vals = [2.675, 0.285, 1.005, 0.145, 1.015, 2.665, 0.125, 0.375, 1.255,\n            0.045, 1.115, 1234.5, -1234.5, 1250.0, -1250.0, -44.0, -0.04,\n            1.7e308, 9.9e307, 5e-324, -0.0, NAN, INF, -INF, None]\n    duck_check(\n        \"SELECT round(x, 2) AS r2, round(x, 0) AS r0, round(x, -1) AS rn1,\"\n        \" round(x, -2) AS rn2, round(x, 309) AS rbig, round(x, -308) AS rn308,\"\n        \" round(x, -400) AS rneg, trunc(x, 2) AS t2, trunc(x, -1) AS tn1,\"\n        \" trunc(x, -400) AS tneg FROM __THIS__\",\n        {\"x\": \"float?\"},\n        [{\"x\": v} for v in vals],\n    )\n\n\ndef test_round_double_pow_table_ulp_witnesses():\n    # Only DuckDB's own pow(10,23) modifier (bits 0x44B52D02C7E14AF7) passes these.\n    rows = [{\"x\": float.fromhex(\"0x1.9fc4c8ce7ceb8p+8\")},   # -> 415.76868906545445\n            {\"x\": float.fromhex(\"0x1.bc25ab024d0ffp+8\")},   # -> 444.14714064008143\n            {\"x\": float.fromhex(\"-0x1.a279f7d13a32ep+8\")}]  # -> -418.4764376418197\n    duck_check(\"SELECT round(x, 23) AS r FROM __THIS__\", {\"x\": \"float\"}, rows)\n\n\ndef test_round_variable_n_from_column():\n    # engine 'int' columns are BIGINT: round(DOUBLE, BIGINT) does not bind, so CAST.\n    rows = [{\"x\": 2.675, \"n\": 2}, {\"x\": 1234.5, \"n\": -2}, {\"x\": NAN, \"n\": -2},\n            {\"x\": INF, \"n\": -2}, {\"x\": -INF, \"n\": -2}, {\"x\": 2.5, \"n\": None},\n            {\"x\": None, \"n\": 2}, {\"x\": 1.7e308, \"n\": -308}, {\"x\": 2.675, \"n\": 400},\n            {\"x\": 2.675, \"n\": -400}, {\"x\": -44.0, \"n\": -2}]\n    duck_check(\n        \"SELECT round(x, CAST(n AS INTEGER)) AS r,\"\n        \" trunc(x, CAST(n AS INTEGER)) AS t FROM __THIS__\",\n        {\"x\": \"float?\", \"n\": \"int?\"},\n        rows,\n    )\n\n\ndef test_round_family_int64_identity_and_negative_n():\n    vals = [1250, -1250, 1249, -1249, 25, -25, 49, 50, -49, -50, 0, 15,\n            9223372036854775807, -9223372036854775808, 9223372036854775757,\n            9223372036854775800, 5000000000000000000, None]\n    duck_check(\n        \"SELECT trunc(i) AS t1, round(i) AS r1, round(i, 2) AS rpos,\"\n        \" round(i, -2) AS rn2, round(i, -18) AS rn18, round(i, -19) AS rcut,\"\n        \" trunc(i, -2) AS tn2, trunc(i, -19) AS tcut FROM __THIS__\",\n        {\"i\": \"int?\"},\n        [{\"i\": v} for v in vals],\n    )\n\n\ndef test_floor_ceil_int64_go_through_double():\n    rows = [{\"i\": v} for v in [7, 9007199254740993, 9223372036854775807,\n                               -9223372036854775808, None]]\n    duck_check(\n        \"SELECT floor(i) AS f, ceil(i) AS c, ceiling(i) AS c2 FROM __THIS__\",\n        {\"i\": \"int?\"},\n        rows,\n    )\n",
+ "lowering": "New IR ops \u2014 do NOT desugar. NULL handling is ordinary strict propagation (safe for the frontend), but the scalar semantics need dedicated ops because of the non-finite fallback branches, the oracle-extracted pow table, and i64 wrapping.\n\nOps and exact Rust semantics (every line below is fuzz-verified bit-exact against DuckDB 1.5.5):\n\n1. FloorF64 / CeilF64 / TruncF64 / RoundF64 (f64 -> f64):\n   x.floor() / x.ceil() / x.trunc() / x.round()\n   Rust f64::round is round-half-away-from-zero computed exactly \u2014 identical to std::round (verified incl. 0.49999999999999994, 2^52-0.5, NaN/inf/-0.0/denormals). Cranelift note: nearest/trunc/floor/ceil FP instructions exist but `nearest` is half-to-EVEN \u2014 do NOT use it for round; call a helper or emit the away-from-zero sequence.\n   Integer inputs: floor/ceil lower as FloorF64(cast i64->f64) \u2014 frontend inserts the lossy cast, result stays f64 (matches DuckDB's DOUBLE). trunc/round on i64 lower to NOTHING (identity passthrough, result i64).\n\n2. RoundPrecF64(x: f64, n: i32) -> f64:\n   fn round_prec_f64(x: f64, n: i32) -> f64 {\n       if n >= 0 {\n           let m = pow10(n as i64);            // table lookup, inf beyond 308\n           let r = (x * m).round() / m;\n           if r.is_infinite() || r.is_nan() { x } else { r }\n       } else {\n           let m = pow10((n as i64).unsigned_abs() as i64);  // i32::MIN safe via i64\n           let r = (x / m).round() * m;\n           if r.is_infinite() || r.is_nan() { 0.0 } else { r }\n       }\n   }\n   pow10(k): const [f64; 309] table for k=0..=308, else f64::INFINITY. The table MUST be extracted from the oracle (SELECT pow(10.0, k::DOUBLE)) \u2014 it equals float(\"1e{k}\") for all k EXCEPT k=23 = f64::from_bits(0x44B52D02C7E14AF7) (one ulp above 1e23; ucrt agrees) and note k=126 = f64::from_bits(0x5A17A2ECC414A03F) (equals 1e126 strtod; one ulp below ucrt pow). Do not compute with f64::powi/powf at runtime.\n\n3. TruncPrecF64(x: f64, n: i32) -> f64: same shape as RoundPrecF64 with .trunc() instead of .round(), and BOTH branches' fallback returns x (never 0.0). This asymmetry with round is measured, not a bug.\n\n4. RoundPrecI64(x: i64, n: i32) -> i64:\n   fn round_prec_i64(x: i64, n: i32) -> i64 {\n       if n >= 0 { return x; }\n       let p = (n as i64).unsigned_abs();\n       if p >= 19 { return 0; }\n       let power = 10i64.pow(p as u32);\n       let half = power / 2;\n       let y = if x >= 0 { x.wrapping_add(half) } else { x.wrapping_sub(half) };\n       (y / power) * power       // Rust / truncates toward zero, matching C++; no overflow possible after the div\n   }\n   The wrapping_add/sub is REQUIRED: DuckDB wraps at i64 bounds instead of trapping (round(i64::MAX,-2) = -9223372036854775700). Zero trap conditions in this whole family.\n\n5. TruncPrecI64(x: i64, n: i32): same minus the half-add: if n>=0 {x} else if p>=19 {0} else {(x / power) * power} \u2014 never wraps.\n\nFrontend notes: map ceiling->ceil, reject truncate (CatalogException parity). round's n argument must be INTEGER-width: an engine int64 column used as n must be CAST to INTEGER in SQL or it's a binder error (mirror DuckDB's message). n is i32 in the IR; the two ops take n as a value (vectorized n verified identical to constant n). FLOAT(f32) inputs never reach the engine ('float' schema = f64) \u2014 if f32 columns ever land, DuckDB computes these in f32, a separate op family.",
+ "surprises": [
+  "round(x, n) with NEGATIVE n turns NaN, +inf and -inf into +0.0 (the n<0 branch's overflow guard returns 0, the n>=0 branch returns the input). round(NaN, -2) = 0.0 is the single most counterintuitive pin in the family.",
+  "round(x, n<=-309) returns 0.0 for EVERY finite x (modifier overflows to inf), while trunc(x, n<=-309) returns x unchanged \u2014 round and trunc use different non-finite fallbacks (0.0 vs input) in the negative branch.",
+  "Integer round with negative n NEVER raises on overflow \u2014 it WRAPS at i64: round(9223372036854775807, -2) = -9223372036854775700 (wrapping half-power add, then trunc-div/mul). |n| >= 19 collapses every BIGINT to 0, even values that would mathematically round to 1e19. There are no runtime errors anywhere in this family.",
+  "floor/ceil have NO integer overloads (int input -> lossy cast to DOUBLE: floor(2^53+1) = 9007199254740992.0, floor(i64::MAX) = 9.223372036854776e+18 DOUBLE), while trunc/round single-arg on integers are exact identities preserving the integer type.",
+  "The double scale-then-round modifier is the DuckDB binary's own std::pow(10,n), which is neither correctly-rounded (differs from strtod 1e23 by 1 ulp at n=23) nor ucrt pow (differs at n=126); a 1-ulp modifier difference visibly changes round(x, 23) results (witness x=0x1.9fc4c8ce7ceb8p+8). The Rust table must be extracted from the oracle binary, and this is a cross-platform (Linux glibc vs bundled-libm) divergence hazard for CI.",
+  "round(2.675, 2) = 2.68 on a DOUBLE column NOT because of decimal semantics: double(2.675)*100 rounds UP to exactly 267.5 in the multiply. But round(0.285, 2) = 0.28 and round(1.005, 2) = 1.0. Two inputs whose true values both end in ...4999 can go opposite ways (1.115 -> 1.12 but 1.255 -> 1.25) \u2014 only the multiply-then-half-away model predicts all of them; 'round the true decimal value' does not.",
+  "Bare SQL numeric literals are DECIMAL, and DECIMAL round is exact decimal half-away: literal round(0.285, 2) = 0.29 vs DOUBLE column 0.28 for the same digits. Also round(DECIMAL, non-constant n) is a bind-time NotImplementedException. Frontends lowering literals to f64 diverge from DuckDB's literal typing here.",
+  "round(x) is half-AWAY-from-zero (2.5 -> 3, -2.5 -> -3), never banker's; and it is exact std::round semantics: round(0.49999999999999994) = 0.0, round(4503599627370495.5) = 4503599627370496.0 \u2014 any add-0.5 implementation fails these. Cranelift's `nearest` (half-to-even) must NOT be used.",
+  "round(DOUBLE, BIGINT) does not bind \u2014 the engine's int64 columns cannot be passed as the digits argument without CAST(... AS INTEGER); the corpus's constant digits (INTEGER literals) bind fine.",
+  "trunc has a 2-argument form trunc(x, n) (floor/ceil do not); 'truncate' does not exist (CatalogException suggesting trunc).",
+  "The SQL literal -0.0 silently loses its sign (DECIMAL(2,1) -> +0.0 as DOUBLE), but true -0.0 through a bound column is preserved bit-exactly by every function in the family, and the family PRODUCES negative zeros: ceil(-0.5) = -0.0, round(-0.4) = -0.0, round(-44.0, -2) = -0.0, trunc(-0.04, 1) = -0.0.",
+  "Constant-fold and vectorized paths agree bit-exactly in every measured case (including the pow-ulp witnesses at n=23) once the input is genuinely DOUBLE/BIGINT \u2014 all literal-vs-column divergences in this family are typing (DECIMAL literals), not folding."
+ ]
+}
