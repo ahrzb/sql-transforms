@@ -77,11 +77,17 @@ pub fn frontend(
         // Reserved for the GLOB rewrite marker — never valid user SQL.
         return Err(unsup("reserved identifier __glob_pat"));
     }
+    if sql.contains('\u{1}') {
+        // Reserved for the star-filter rewrite marker.
+        return Err(unsup("control character U+0001 in SQL"));
+    }
     let dialect = GenericDialect {};
     let tokens = sqlparser::tokenizer::Tokenizer::new(&dialect, sql)
         .tokenize()
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
-    let tokens = super::rewrite::rewrite_glob(super::rewrite::rewrite_colon_aliases(tokens));
+    let tokens = super::rewrite::rewrite_glob(super::rewrite::rewrite_star_filters(
+        super::rewrite::rewrite_colon_aliases(tokens),
+    ));
     let statements = Parser::new(&dialect)
         .with_tokens(tokens)
         .parse_statements()
@@ -138,11 +144,6 @@ pub fn frontend(
                      name: String,
                      e: SExpr|
      -> Result<(), PrepareError> {
-        if out_cols.iter().any(|c: &Col| c.name == name) {
-            // DuckDB allows duplicate output names; our IR requires unique
-            // columns. Rare in real queries — punt cleanly for now.
-            return Err(unsup(format!("duplicate output column name '{name}'")));
-        }
         out_cols.push(Col {
             name,
             ty: super::ir::ColTy {
@@ -189,6 +190,7 @@ pub fn frontend(
     if exprs.is_empty() {
         return Err(PrepareError::Bind("SELECT list is empty".to_string()));
     }
+    dedup_output_names(&mut out_cols);
 
     let named = out_cols
         .iter()
@@ -785,6 +787,118 @@ fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
     }
 }
 
+/// DuckDB's boundary rename for duplicate output names (wave-5 pins,
+/// pins-wave5/dup-names-client-contract.json): left-to-right after star
+/// expansion, first occurrence keeps its name, later ones get
+/// `<own-original-case-name>_N` with the smallest free N; the collision
+/// check is case-insensitive and covers generated candidates too
+/// (id,ID -> id,ID_1; id,id,id_1 -> id,id_1,id_1_1). Identical to what
+/// DuckDB itself does at every subquery/CTE/CTAS boundary and in .df().
+fn dedup_output_names(cols: &mut [Col]) {
+    let mut seen = std::collections::HashSet::new();
+    for c in cols {
+        if seen.insert(c.name.to_lowercase()) {
+            continue;
+        }
+        let mut n = 1;
+        loop {
+            let cand = format!("{}_{}", c.name, n);
+            if seen.insert(cand.to_lowercase()) {
+                c.name = cand;
+                break;
+            }
+            n += 1;
+        }
+    }
+}
+
+/// Bind-time LIKE over column NAMES for star filters: `%`/`_` over
+/// codepoints, no ESCAPE (an ESCAPE clause after a star filter does not
+/// parse), ci = ILIKE's Unicode case fold.
+fn like_match(s: &str, p: &str, ci: bool) -> bool {
+    let norm = |x: &str| {
+        if ci {
+            x.to_lowercase()
+        } else {
+            x.to_string()
+        }
+    };
+    let s: Vec<char> = norm(s).chars().collect();
+    let p: Vec<char> = norm(p).chars().collect();
+    let (mut si, mut pi) = (0usize, 0usize);
+    let (mut bt_p, mut bt_s) = (usize::MAX, 0usize);
+    while si < s.len() {
+        if pi < p.len() && p[pi] == '%' {
+            bt_p = pi;
+            pi += 1;
+            bt_s = si;
+        } else if pi < p.len() && (p[pi] == '_' || p[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if bt_p != usize::MAX {
+            bt_s += 1;
+            si = bt_s;
+            pi = bt_p + 1;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '%' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// A star name filter, decoded from the ILIKE slot (rewrite.rs encodes
+/// LIKE / NOT LIKE / GLOB / NOT ILIKE there with a \u{1} marker; an
+/// unmarked pattern is a genuine * ILIKE).
+enum StarFilter {
+    Like { ci: bool, neg: bool },
+    Glob,
+}
+
+/// Decoded star filter + any EXCLUDE entries the rewrite absorbed into the
+/// marker (sqlparser parses ILIKE and EXCLUDE as mutually exclusive).
+struct DecodedFilter {
+    op: StarFilter,
+    pat: String,
+    excludes: Vec<(Option<String>, String)>,
+}
+
+fn decode_star_filter(pattern: &str) -> DecodedFilter {
+    if let Some(rest) = pattern.strip_prefix('\u{1}') {
+        for (code, op) in [
+            ("L:", StarFilter::Like { ci: false, neg: false }),
+            ("NL:", StarFilter::Like { ci: false, neg: true }),
+            ("NI:", StarFilter::Like { ci: true, neg: true }),
+            ("G:", StarFilter::Glob),
+        ] {
+            let Some(body) = rest.strip_prefix(code) else {
+                continue;
+            };
+            let (exc, pat) = body.split_once('\u{2}').unwrap_or(("", body));
+            let excludes = exc
+                .split(',')
+                .filter(|e| !e.is_empty())
+                .map(|e| match e.split_once('.') {
+                    Some((t, c)) => (Some(t.to_string()), c.to_string()),
+                    None => (None, e.to_string()),
+                })
+                .collect();
+            return DecodedFilter {
+                op,
+                pat: pat.to_string(),
+                excludes,
+            };
+        }
+    }
+    DecodedFilter {
+        op: StarFilter::Like { ci: true, neg: false },
+        pat: pattern.to_string(),
+        excludes: Vec::new(),
+    }
+}
+
 /// Find the `__glob_pat(...)` identity marker (rewrite.rs) in a LIKE
 /// pattern tree and return the tree with the marker unwrapped; None means
 /// "no marker — a plain LIKE".
@@ -928,62 +1042,96 @@ impl Binder<'_> {
             .collect())
     }
 
-    /// Expand `*` / `tbl.*` per DuckDB's measured semantics (1.5.5): FROM
-    /// order, declared column order within a table, EXCLUDE filtered
-    /// case-insensitively. A star item covering a joined static table is
-    /// unsupported: DuckDB's expansion includes the join-key column there
-    /// (and emits duplicate output names for the shared key), neither of
-    /// which the engine models — rejected by name, not silently narrowed.
+    /// Expand `*` / `tbl.*` per DuckDB's measured semantics (1.5.5, wave-5
+    /// pins): FROM order, declared column order within a table; grammar
+    /// order EXCLUDE -> REPLACE -> RENAME with the name filter applying
+    /// after EXCLUDE only. Duplicate output names across the star survive
+    /// here and are renamed by [`dedup_output_names`] (DuckDB's own
+    /// boundary-rename contract).
     fn expand_star(
         &self,
         qualifier: Option<&str>,
         opts: &sqlparser::ast::WildcardAdditionalOptions,
     ) -> Result<Vec<(String, SExpr)>, PrepareError> {
-        use sqlparser::ast::ExcludeSelectItem;
-        if opts.opt_ilike.is_some() {
-            return Err(unsup("SELECT * ILIKE (COLUMNS filter)"));
-        }
+        use sqlparser::ast::{ExcludeSelectItem, RenameSelectItem};
         if opts.opt_except.is_some() {
             return Err(unsup("SELECT * EXCEPT"));
         }
-        if opts.opt_replace.is_some() {
-            return Err(unsup("SELECT * REPLACE"));
-        }
-        if opts.opt_rename.is_some() {
-            return Err(unsup("SELECT * RENAME"));
-        }
-        fn exclude_name(n: &sqlparser::ast::ObjectName) -> Result<&str, PrepareError> {
+        // EXCLUDE entries: (optional table qualifier, column name).
+        fn exclude_name(
+            n: &sqlparser::ast::ObjectName,
+        ) -> Result<(Option<&str>, &str), PrepareError> {
+            fn ident(p: &sqlparser::ast::ObjectNamePart) -> Option<&str> {
+                p.as_ident().map(|i| i.value.as_str())
+            }
             match n.0.as_slice() {
-                [part] => part
-                    .as_ident()
-                    .map(|i| i.value.as_str())
+                [part] => ident(part)
+                    .map(|c| (None, c))
                     .ok_or_else(|| unsup("EXCLUDE list entry form")),
-                _ => Err(unsup("qualified name in EXCLUDE list")),
+                [t, part] => match (ident(t), ident(part)) {
+                    (Some(t), Some(c)) => Ok((Some(t), c)),
+                    _ => Err(unsup("EXCLUDE list entry form")),
+                },
+                _ => Err(unsup("EXCLUDE list entry form")),
             }
         }
-        let exclude: Vec<&str> = match &opts.opt_exclude {
+        let mut exclude: Vec<(Option<String>, String)> = match &opts.opt_exclude {
             None => Vec::new(),
             Some(ExcludeSelectItem::Single(id)) => vec![exclude_name(id)?],
             Some(ExcludeSelectItem::Multiple(ids)) => ids
                 .iter()
                 .map(exclude_name)
                 .collect::<Result<Vec<_>, _>>()?,
-        };
-        for (i, a) in exclude.iter().enumerate() {
-            if exclude[..i].iter().any(|b| b.eq_ignore_ascii_case(a)) {
+        }
+        .into_iter()
+        .map(|(t, c)| (t.map(str::to_string), c.to_string()))
+        .collect();
+        // Name filter, decoded from the ILIKE slot (rewrite.rs) — it may
+        // carry EXCLUDE entries the rewrite absorbed.
+        let filter = opts
+            .opt_ilike
+            .as_ref()
+            .map(|il| decode_star_filter(&il.pattern));
+        if let Some(f) = &filter {
+            exclude.extend(f.excludes.iter().cloned());
+        }
+        for (i, (_, a)) in exclude.iter().enumerate() {
+            if exclude[..i].iter().any(|(_, b)| b.eq_ignore_ascii_case(a)) {
                 // DuckDB rejects this at parse; ours surfaces at bind.
                 return Err(PrepareError::Bind(format!(
                     "duplicate entry \"{a}\" in EXCLUDE list"
                 )));
             }
         }
+        let excluded_lists_conflict = |list: &str, name: &str| -> Result<(), PrepareError> {
+            if exclude.iter().any(|(_, e)| e.eq_ignore_ascii_case(name)) {
+                // DuckDB: Parser Error — same clean class via Parse.
+                return Err(PrepareError::Parse(format!(
+                    "Column \"{name}\" cannot occur in both EXCLUDE and {list} list"
+                )));
+            }
+            Ok(())
+        };
+        if filter.is_some() && opts.opt_replace.is_some() {
+            return Err(PrepareError::Bind(
+                "Replace list cannot be combined with a filtering operation".into(),
+            ));
+        }
+        if filter.is_some() && opts.opt_rename.is_some() {
+            return Err(PrepareError::Bind(
+                "Rename list cannot be combined with a filtering operation".into(),
+            ));
+        }
 
-        let mut cols: Vec<(String, SExpr)> = Vec::new();
+        // (origin table, output name, lane) — the origin drives qualified
+        // EXCLUDE; it is dropped on return.
+        let mut cols: Vec<(String, String, SExpr)> = Vec::new();
         let mut matched = false;
         if qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&self.this_name)) {
             matched = true;
             for (i, c) in self.in_cols.iter().enumerate() {
                 cols.push((
+                    self.this_name.clone(),
                     c.name.clone(),
                     SExpr {
                         kind: SKind::Col(i as u32),
@@ -996,9 +1144,7 @@ impl Binder<'_> {
         // Joined tables expand in FROM order, columns in DECLARED order
         // (measured): value columns as probe lanes, key columns via the
         // dynamic-side reconstruction, USING keys suppressed (merged into
-        // the left occurrence). Duplicate output names across the star are
-        // caught by the existing duplicate-name check — DuckDB emits them
-        // verbatim, our typed output model cannot (documented constraint).
+        // the left occurrence).
         for (j, sj) in self.joins.iter().enumerate() {
             if !qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&sj.name)) {
                 continue;
@@ -1007,7 +1153,7 @@ impl Binder<'_> {
             for (ci, c) in sj.table.cols.iter().enumerate() {
                 let ci = ci as u32;
                 if let Some(pos) = sj.val_cols.iter().position(|&v| v == ci) {
-                    cols.push((c.name.clone(), self.static_lane(j, pos)));
+                    cols.push((sj.name.clone(), c.name.clone(), self.static_lane(j, pos)));
                 } else {
                     let kp = sj
                         .key_cols
@@ -1015,7 +1161,18 @@ impl Binder<'_> {
                         .position(|&k| k == ci)
                         .expect("column is key or value");
                     if !sj.using {
-                        cols.push((c.name.clone(), self.key_lane(j, kp)));
+                        cols.push((sj.name.clone(), c.name.clone(), self.key_lane(j, kp)));
+                    } else if exclude.iter().any(|(t, e)| {
+                        t.as_deref()
+                            .is_some_and(|t| t.eq_ignore_ascii_case(&sj.name))
+                            && e.eq_ignore_ascii_case(&c.name)
+                    }) {
+                        // Measured: EXCLUDE (right.key) on a USING join
+                        // UNMERGES the column (it reappears at the right
+                        // table's position with right values) — not modeled.
+                        return Err(unsup(
+                            "EXCLUDE of a USING-merged column (DuckDB unmerges it)",
+                        ));
                     }
                 }
             }
@@ -1027,15 +1184,110 @@ impl Binder<'_> {
             )));
         }
 
-        for ex in &exclude {
-            if !cols.iter().any(|(n, _)| n.eq_ignore_ascii_case(ex)) {
+        for (t, ex) in &exclude {
+            let hit = cols.iter().any(|(ct, cn, _)| {
+                cn.eq_ignore_ascii_case(ex)
+                    && t.as_deref().is_none_or(|t| t.eq_ignore_ascii_case(ct))
+            });
+            if !hit {
+                let disp = match t {
+                    Some(t) => format!("{t}.{ex}"),
+                    None => ex.to_string(),
+                };
                 return Err(PrepareError::Bind(format!(
-                    "column \"{ex}\" in EXCLUDE list not found in FROM clause"
+                    "column \"{disp}\" in EXCLUDE list not found in FROM clause"
                 )));
             }
         }
-        cols.retain(|(n, _)| !exclude.iter().any(|ex| ex.eq_ignore_ascii_case(n)));
-        Ok(cols)
+        // Unqualified EXCLUDE strips ALL same-named copies; qualified
+        // strips one table's (measured).
+        cols.retain(|(ct, cn, _)| {
+            !exclude.iter().any(|(t, ex)| {
+                cn.eq_ignore_ascii_case(ex)
+                    && t.as_deref().is_none_or(|t| t.eq_ignore_ascii_case(ct))
+            })
+        });
+
+        // REPLACE (expr AS col): position and name kept, type may change,
+        // expr sees the full original scope (incl. EXCLUDEd columns).
+        if let Some(rep) = &opts.opt_replace {
+            for (i, it) in rep.items.iter().enumerate() {
+                let name = &it.column_name.value;
+                if rep.items[..i]
+                    .iter()
+                    .any(|p| p.column_name.value.eq_ignore_ascii_case(name))
+                {
+                    return Err(PrepareError::Parse(format!(
+                        "Duplicate entry \"{name}\" in REPLACE list"
+                    )));
+                }
+                excluded_lists_conflict("REPLACE", name)?;
+                let hits: Vec<usize> = cols
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, cn, _))| cn.eq_ignore_ascii_case(name))
+                    .map(|(i, _)| i)
+                    .collect();
+                match hits[..] {
+                    [] => {
+                        return Err(PrepareError::Bind(format!(
+                            "column \"{name}\" in REPLACE list not found in FROM clause"
+                        )))
+                    }
+                    [pos] => cols[pos].2 = fold(self.expr(&it.expr)?),
+                    _ => {
+                        return Err(PrepareError::Bind(format!(
+                            "ambiguous reference to column name \"{name}\" in REPLACE list"
+                        )))
+                    }
+                }
+            }
+        }
+
+        // RENAME (a AS b): position kept; a NONEXISTENT target is silently
+        // ignored and an ambiguous name renames ALL copies (measured);
+        // collisions become duplicates for dedup_output_names.
+        if let Some(ren) = &opts.opt_rename {
+            let items: Vec<&sqlparser::ast::IdentWithAlias> = match ren {
+                RenameSelectItem::Single(i) => vec![i],
+                RenameSelectItem::Multiple(v) => v.iter().collect(),
+            };
+            for it in items {
+                let name = &it.ident.value;
+                excluded_lists_conflict("RENAME", name)?;
+                if let Some(rep) = &opts.opt_replace {
+                    if rep
+                        .items
+                        .iter()
+                        .any(|p| p.column_name.value.eq_ignore_ascii_case(name))
+                    {
+                        return Err(PrepareError::Parse(format!(
+                            "Column \"{name}\" cannot occur in both REPLACE and RENAME list"
+                        )));
+                    }
+                }
+                for c in cols.iter_mut() {
+                    if c.1.eq_ignore_ascii_case(name) {
+                        c.1 = it.alias.value.clone();
+                    }
+                }
+            }
+        }
+
+        // Name filter LAST in our pipeline but semantically after EXCLUDE
+        // only (REPLACE/RENAME + filter were rejected above).
+        if let Some(DecodedFilter { op, pat, .. }) = &filter {
+            cols.retain(|(_, cn, _)| match op {
+                StarFilter::Like { ci, neg } => like_match(cn, pat, *ci) != *neg,
+                StarFilter::Glob => super::exec::interp::duck_glob(cn, pat),
+            });
+            if cols.is_empty() {
+                return Err(PrepareError::Bind(format!(
+                    "star expression with name filter '{pat}' resulted in an empty set of columns"
+                )));
+            }
+        }
+        Ok(cols.into_iter().map(|(_, n, e)| (n, e)).collect())
     }
 
     /// Bind an expression that must have a definite type on its own — a bare
