@@ -324,25 +324,33 @@ impl DuckDBInferFn {
             data.push(materialize_map(py, table, spec, keys, values)?);
         }
 
-        let fun = match cranelift::compile(&prepared.program, data) {
-            Ok(f) => Backend::Cranelift(f),
-            // The failed attempt consumed the static data; rematerialize on
-            // this cold path and fall back to the interpreter.
-            Err(_) => {
-                let mut data = Vec::with_capacity(prepared.statics.len());
-                for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
-                    let StaticTy::Map { keys, values } = sty else {
-                        return Err(build_err("internal: v0 lowering emits only map statics"));
-                    };
-                    let table = static_tables
-                        .get(&spec.table)
-                        .expect("spec names come from the catalog");
-                    data.push(materialize_map(py, table, spec, keys, values)?);
+        // SPECIALIZER_FORCE_INTERP pins the interpreter — the bench control
+        // and a debugging escape hatch.
+        let force_interp = std::env::var_os("SPECIALIZER_FORCE_INTERP").is_some();
+        let fun = match (force_interp, data) {
+            (true, data) => Backend::Interp(
+                compile(&prepared.program, data).map_err(|e| build_err(e.to_string()))?,
+            ),
+            (false, data) => match cranelift::compile(&prepared.program, data) {
+                Ok(f) => Backend::Cranelift(f),
+                // The failed attempt consumed the static data; rematerialize
+                // on this cold path and fall back to the interpreter.
+                Err(_) => {
+                    let mut data = Vec::with_capacity(prepared.statics.len());
+                    for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
+                        let StaticTy::Map { keys, values } = sty else {
+                            return Err(build_err("internal: v0 lowering emits only map statics"));
+                        };
+                        let table = static_tables
+                            .get(&spec.table)
+                            .expect("spec names come from the catalog");
+                        data.push(materialize_map(py, table, spec, keys, values)?);
+                    }
+                    Backend::Interp(
+                        compile(&prepared.program, data).map_err(|e| build_err(e.to_string()))?,
+                    )
                 }
-                Backend::Interp(
-                    compile(&prepared.program, data).map_err(|e| build_err(e.to_string()))?,
-                )
-            }
+            },
         };
         let output_model = match output_model {
             // Supplied models are trusted as-is in v0 (no shape validation).
