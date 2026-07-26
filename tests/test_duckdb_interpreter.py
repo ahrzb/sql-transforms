@@ -449,3 +449,66 @@ def test_static_only_backend_is_constant():
         static_tables={"dim": static({"v": "int"}, [{"v": 1}, {"v": 2}])},
     )
     assert fn.backend == "constant"
+
+
+# --------------------------------------------------------- M-boundary:
+# the generated row marshaller. These pin the adversarial-review fixes
+# (2026-07-26): supplied output models keep full pydantic semantics, the
+# generic baseline accepts the same inputs, and reentrancy degrades to the
+# generic path instead of erroring.
+
+
+def test_supplied_output_model_keeps_validate_semantics():
+    from pydantic import BaseModel, field_validator
+
+    class Out(BaseModel):
+        x: float  # engine emits int; validate coerces
+        note: str = "default"  # not in the projection; validate fills
+
+        @field_validator("x")
+        @classmethod
+        def clamp(cls, v):
+            return min(v, 10.0)
+
+    fn = DuckDBInferFn(
+        "SELECT k + 1 AS x FROM __THIS__",
+        row_tables={"__THIS__": _row_model({"k": "int"})},
+        static_tables={},
+        output_model=Out,
+    )
+    assert fn.boundary == "marshaller"
+    (m,) = fn.infer_rows([{"k": 41}])
+    assert m.x == 10.0  # validator ran AND coerced to float
+    assert m.note == "default"  # default applied
+    assert m.model_dump() == {"x": 10.0, "note": "default"}
+
+
+def test_generic_boundary_accepts_dict_rows(monkeypatch):
+    monkeypatch.setenv("SPECIALIZER_GENERIC_BOUNDARY", "1")
+    fn = DuckDBInferFn(
+        "SELECT k * 2 AS d FROM __THIS__",
+        row_tables={"__THIS__": _row_model({"k": "int"})},
+        static_tables={},
+    )
+    assert fn.boundary == "generic"
+    assert fn.infer_rows([{"k": 21}])[0].d == 42
+
+
+def test_reentrant_infer_falls_back_instead_of_erroring():
+    fn = DuckDBInferFn(
+        "SELECT k * 2 AS d FROM __THIS__",
+        row_tables={"__THIS__": _row_model({"k": "int"})},
+        static_tables={},
+    )
+    inner: list = []
+
+    class Row:
+        @property
+        def k(self):
+            if not inner:
+                inner.append(fn.infer_rows([{"k": 5}])[0].d)
+            return 7
+
+    (m,) = fn.infer_rows([Row()])
+    assert m.d == 14
+    assert inner == [10]  # the nested call completed via the generic path

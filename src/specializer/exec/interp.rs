@@ -24,7 +24,6 @@
 //!   normalizes even if the input batch carries garbage in invalid slots.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
 use super::super::ir::verify::{verify, VerifyError};
 use super::super::ir::{

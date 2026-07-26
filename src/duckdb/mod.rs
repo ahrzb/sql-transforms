@@ -7,6 +7,7 @@
 //! is only the Python boundary — schema extraction on the way in, map
 //! materialization for the join probes, output-model rows on the way out.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
@@ -209,15 +210,19 @@ impl Backend {
 struct Marshaller {
     in_names: Vec<Py<PyString>>,
     out_names: Vec<Py<PyString>>,
-    /// Output rows are built by filling pydantic v2's instance slots
-    /// directly (`object.__new__` + `object.__setattr__` of `__dict__`,
-    /// `__pydantic_fields_set__`, `__pydantic_extra__`,
+    /// Output rows for the SYNTHESIZED model are built by filling pydantic
+    /// v2's instance slots directly (`object.__new__` + `object.__setattr__`
+    /// of `__dict__`, `__pydantic_fields_set__`, `__pydantic_extra__`,
     /// `__pydantic_private__`) — what `model_construct` does, minus its
     /// pure-Python per-field loop (measured 2026-07-26 on pydantic 2.13:
-    /// construct 1432ns > validate 882ns > slot fill 491ns per row).
-    /// Assumes a plain model: no `extra="allow"`, no private attrs —
-    /// true of synthesized output models; supplied ones are v0-trusted.
+    /// construct 1432ns > validate 882ns > slot fill 491ns per row). The
+    /// slot fill is sound only for that plain model (required scalar
+    /// fields, no validators/defaults/extra/private) — so a user-SUPPLIED
+    /// output model goes through `validate` below instead and keeps full
+    /// pydantic semantics (adversarial-review finding, 2026-07-26).
     model: Py<PyAny>,
+    /// `output_model.model_validate`, present iff the model was supplied.
+    validate: Option<Py<PyAny>>,
     object_new: Py<PyAny>,
     object_setattr: Py<PyAny>,
     s_dict: Py<PyString>,
@@ -234,6 +239,7 @@ impl Marshaller {
         in_cols: &[Col],
         out_cols: &[Col],
         output_model: &Py<PyAny>,
+        supplied: bool,
         fun: &Backend,
     ) -> PyResult<Marshaller> {
         let object = PyModule::import(py, "builtins")?.getattr("object")?;
@@ -247,6 +253,11 @@ impl Marshaller {
                 .map(|c| PyString::intern(py, &c.name).unbind())
                 .collect(),
             model: output_model.clone_ref(py),
+            validate: if supplied {
+                Some(output_model.bind(py).getattr("model_validate")?.unbind())
+            } else {
+                None
+            },
             object_new: object.getattr("__new__")?.unbind(),
             object_setattr: object.getattr("__setattr__")?.unbind(),
             s_dict: PyString::intern(py, "__dict__").unbind(),
@@ -364,6 +375,12 @@ impl Marshaller {
                     }
                 }
             }
+            if let Some(v) = &self.validate {
+                // Supplied model: full pydantic semantics (validators,
+                // defaults, coercion, extra/private) — master parity.
+                out.push(v.bind(py).call1((&d,))?.unbind());
+                continue;
+            }
             let fields_set = PySet::new(py, self.out_names.iter().map(|n| n.bind(py)))?;
             let inst = object_new.call1((model,))?;
             object_setattr.call1((&inst, s_dict, &d))?;
@@ -382,8 +399,13 @@ enum Engine {
         in_cols: Vec<Col>,
         out_cols: Vec<Col>,
         /// `None` when `SPECIALIZER_GENERIC_BOUNDARY` pinned the generic
-        /// boundary at construction (the bench baseline).
-        marsh: Option<Marshaller>,
+        /// boundary at construction (the bench baseline). RefCell so infer
+        /// stays `&self`: a reentrant call (a row property calling infer on
+        /// the same object mid-marshal) finds the cell borrowed and falls
+        /// through to the per-call generic path instead of erroring —
+        /// master behavior (adversarial-review finding, 2026-07-26). The
+        /// pyclass is unsendable, so single-threaded RefCell suffices.
+        marsh: Option<RefCell<Marshaller>>,
     },
     /// Fixed row dicts from a static-only query, re-validated through the
     /// output model on every `infer` call.
@@ -531,8 +553,10 @@ impl DuckDBInferFn {
                 }
             },
         };
+        let supplied = output_model.is_some();
         let output_model = match output_model {
-            // Supplied models are trusted as-is in v0 (no shape validation).
+            // Supplied models are trusted as-is in v0 (no shape validation)
+            // and keep full model_validate semantics per row.
             Some(m) => m,
             None => synthesize_output_model(py, &prepared.program.out_cols)?,
         };
@@ -541,13 +565,14 @@ impl DuckDBInferFn {
         let marsh = if std::env::var_os("SPECIALIZER_GENERIC_BOUNDARY").is_some() {
             None
         } else {
-            Some(Marshaller::build(
+            Some(RefCell::new(Marshaller::build(
                 py,
                 &in_cols,
                 &prepared.program.out_cols,
                 &output_model,
+                supplied,
                 &fun,
-            )?)
+            )?))
         };
         Ok(DuckDBInferFn {
             engine: Engine::Compiled {
@@ -583,7 +608,7 @@ impl DuckDBInferFn {
 
     #[pyo3(signature = (tables=None, **kwargs))]
     fn infer(
-        &mut self,
+        &self,
         py: Python<'_>,
         tables: Option<HashMap<String, Vec<Py<PyAny>>>>,
         kwargs: Option<Bound<'_, PyDict>>,
@@ -606,31 +631,35 @@ impl DuckDBInferFn {
 
     /// The direct hot entry: the row table's rows, no table-dict plumbing.
     /// `SpecializedTransform.infer_batch` calls this.
-    fn infer_rows(&mut self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
+    fn infer_rows(&self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
         self.run_rows(py, &rows)
     }
 }
 
 impl DuckDBInferFn {
-    fn run_rows(&mut self, py: Python<'_>, rows: &[Py<PyAny>]) -> PyResult<Vec<Py<PyAny>>> {
-        let (fun, in_cols, out_cols, marsh) = match &mut self.engine {
+    fn run_rows(&self, py: Python<'_>, rows: &[Py<PyAny>]) -> PyResult<Vec<Py<PyAny>>> {
+        let (fun, in_cols, out_cols, marsh) = match &self.engine {
             Engine::Compiled {
                 fun,
                 in_cols,
                 out_cols,
                 marsh,
-            } => (&*fun, &*in_cols, &*out_cols, marsh),
+            } => (fun, in_cols, out_cols, marsh),
             Engine::Constant { rows: fixed } => {
                 let model = self.output_model.bind(py);
                 let mut out = Vec::with_capacity(fixed.len());
                 for r in fixed.iter() {
-                    out.push(model.call_method1("model_validate", (&*r,))?.unbind());
+                    out.push(model.call_method1("model_validate", (r,))?.unbind());
                 }
                 return Ok(out);
             }
         };
-        if let Some(m) = marsh {
-            return m.call(py, fun, in_cols, rows, &self.row_table);
+        if let Some(cell) = marsh {
+            // A reentrant call (row property re-entering infer mid-marshal)
+            // finds the cell borrowed and takes the generic path below.
+            if let Ok(mut m) = cell.try_borrow_mut() {
+                return m.call(py, fun, in_cols, rows, &self.row_table);
+            }
         }
 
         let n = rows.len();
@@ -658,13 +687,25 @@ impl DuckDBInferFn {
             .collect();
         for row_obj in rows {
             let bound = row_obj.bind(py);
+            // Dict rows are part of the API surface; the baseline path must
+            // accept the same inputs as the marshaller, differing only in
+            // cost (adversarial-review finding, 2026-07-26).
+            let dict = bound.cast::<PyDict>().ok();
             for (c, col) in in_cols.iter().zip(&mut cols) {
-                let attr = bound.getattr(c.name.as_str()).map_err(|e| {
-                    pyo3::exceptions::PyValueError::new_err(format!(
-                        "Row for table '{}' is missing attribute '{}': {e}",
-                        self.row_table, c.name
-                    ))
-                })?;
+                let attr = match dict {
+                    Some(d) => d.get_item(c.name.as_str())?.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "Row for table '{}' is missing attribute '{}'",
+                            self.row_table, c.name
+                        ))
+                    })?,
+                    None => bound.getattr(c.name.as_str()).map_err(|e| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "Row for table '{}' is missing attribute '{}': {e}",
+                            self.row_table, c.name
+                        ))
+                    })?,
+                };
                 let null = attr.is_none();
                 if null && !c.ty.nullable {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
