@@ -1012,6 +1012,25 @@ impl Parser {
                     }
                 }
             }
+            "slike" | "silike" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let p = self.use_value()?;
+                let esc = if *self.peek() == Tok::Comma {
+                    self.expect(Tok::Comma)?;
+                    Some(self.use_value()?)
+                } else {
+                    None
+                };
+                Inst::Slike {
+                    ci: opcode == "silike",
+                    dst: def!(0),
+                    a,
+                    p,
+                    esc,
+                }
+            }
             "slenc" | "slenb" => {
                 want_dsts(1, self)?;
                 let a = self.use_value()?;

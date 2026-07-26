@@ -421,6 +421,20 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                     scope.add(dst, Ty::I64);
                 }
             }
+            12 if rng.chance(25) => {
+                // LIKE without ESCAPE is total (no trap conditions).
+                let a = ensure(rng, b, scope, insts, Ty::Str);
+                let pat = ensure(rng, b, scope, insts, Ty::Str);
+                let dst = b.fresh();
+                insts.push(Inst::Slike {
+                    ci: rng.chance(30),
+                    dst,
+                    a,
+                    p: pat,
+                    esc: None,
+                });
+                scope.add(dst, Ty::I1);
+            }
             12 => {
                 let a = ensure(rng, b, scope, insts, Ty::Str);
                 if rng.chance(30) {

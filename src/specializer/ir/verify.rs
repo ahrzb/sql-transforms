@@ -187,6 +187,7 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         Inst::Num1 { op, dst, .. } => vec![(*dst, op.sig())],
         Inst::Str2 { op, dst, .. } => vec![(*dst, op.result_ty())],
         Inst::SLen { dst, .. } => vec![(*dst, Ty::I64)],
+        Inst::Slike { dst, .. } => vec![(*dst, Ty::I1)],
         Inst::Round2f { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::Round2i { dst, .. } => vec![(*dst, Ty::I64)],
         Inst::StoiOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::I64)],
@@ -365,6 +366,13 @@ fn check_block(
             }
             Inst::Str1 { a, .. } | Inst::SLen { a, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
+            }
+            Inst::Slike { a, p, esc, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                want(&in_scope, def_types, *p, Ty::Str, "operand", bi, i, errs);
+                if let Some(e) = esc {
+                    want(&in_scope, def_types, *e, Ty::Str, "operand", bi, i, errs);
+                }
             }
             Inst::Round2f { a, n, .. } => {
                 want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs);

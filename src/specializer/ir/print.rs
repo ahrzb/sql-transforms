@@ -135,6 +135,13 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             let op = if *trunc { "itrunc2" } else { "iround2" };
             let _ = write!(s, "{} {}, {}", op, val(*a), val(*n));
         }
+        Inst::Slike { ci, a, p, esc, .. } => {
+            let op = if *ci { "silike" } else { "slike" };
+            let _ = write!(s, "{} {}, {}", op, val(*a), val(*p));
+            if let Some(e) = esc {
+                let _ = write!(s, ", {}", val(*e));
+            }
+        }
         Inst::SLen { bytes, a, .. } => {
             let _ = write!(s, "{} {}", if *bytes { "slenb" } else { "slenc" }, val(*a));
         }

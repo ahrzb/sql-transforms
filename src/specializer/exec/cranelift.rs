@@ -212,6 +212,43 @@ math1_h!(h_fsin, interp::duck_sin);
 math1_h!(h_fcos, interp::duck_cos);
 math1_h!(h_ftan, interp::duck_tan);
 
+extern "C" fn h_slike(
+    cxp: *mut Cx,
+    ci: i64,
+    so: i64,
+    sl_: i64,
+    po: i64,
+    pl: i64,
+    has_esc: i64,
+    eo: i64,
+    el: i64,
+) -> u8 {
+    let c = unsafe { cx(cxp) };
+    let arena = unsafe { &mut *c.arena };
+    let r = (|| -> Result<bool, Trap> {
+        let e = if has_esc != 0 {
+            interp::like_escape_of(arena.get(span(eo, el)))?
+        } else {
+            None
+        };
+        let (mut sr, mut pr) = (span(so, sl_), span(po, pl));
+        if ci != 0 {
+            sr = arena.case_map(sr, casemap::simple_lower);
+            pr = arena.case_map(pr, casemap::simple_lower);
+        }
+        let sv = arena.get(sr).as_bytes();
+        let pv = arena.get(pr).as_bytes();
+        interp::like_match(sv, pv, e)
+    })();
+    match r {
+        Ok(v) => v as u8,
+        Err(t) => {
+            c.set_trap(t.0);
+            0
+        }
+    }
+}
+
 extern "C" fn h_sfind(p: *mut Cx, ao: i64, al: i64, bo: i64, bl: i64) -> i64 {
     let c = unsafe { cx(p) };
     let arena = unsafe { &*c.arena };
@@ -1093,6 +1130,30 @@ fn translate_inst(
             let v = call_h(b, module, "h_round2i", &[x, nv, tv]).unwrap();
             vals.insert(dst.0, V::S(v));
         }
+        Inst::Slike { ci, dst, a, p, esc } => {
+            let (so, sl_) = vals[&a.0].str2();
+            let (po, pl) = vals[&p.0].str2();
+            let civ = icon(b, *ci as i64);
+            let (he, eo, el) = match esc {
+                Some(e) => {
+                    let (eo, el) = vals[&e.0].str2();
+                    (icon(b, 1), eo, el)
+                }
+                None => {
+                    let z = icon(b, 0);
+                    (z, z, z)
+                }
+            };
+            let v = call_h(
+                b,
+                module,
+                "h_slike",
+                &[cxp, civ, so, sl_, po, pl, he, eo, el],
+            )
+            .unwrap();
+            trap_check(b);
+            vals.insert(dst.0, V::S(v));
+        }
         Inst::Str2 { op, dst, a, b: rhs } => {
             let (ao, al) = vals[&a.0].str2();
             let (bo, bl) = vals[&rhs.0].str2();
@@ -1484,6 +1545,7 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_slen", h_slen as *const u8),
     ("h_round2f", h_round2f as *const u8),
     ("h_round2i", h_round2i as *const u8),
+    ("h_slike", h_slike as *const u8),
 ];
 
 fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types::Type) {
@@ -1507,6 +1569,7 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_slen" => (&[ptr, I64, I64, I64], Some(I64)),
         "h_round2f" => (&[F64, I64, I64], Some(F64)),
         "h_round2i" => (&[I64, I64, I64], Some(I64)),
+        "h_slike" => (&[ptr, I64, I64, I64, I64, I64, I64, I64, I64], Some(I8)),
         "h_iabs" => (&[ptr, I64], Some(I64)),
         "h_fcmp" => (&[F64, F64, I64], Some(I8)),
         "h_scmp" => (&[ptr, I64, I64, I64, I64, I64], Some(I8)),

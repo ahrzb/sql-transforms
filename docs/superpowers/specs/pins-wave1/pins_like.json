@@ -1,0 +1,425 @@
+{
+ "pins": [
+  {
+   "expr": "s LIKE '%' / '%%' / '%%%'",
+   "input_desc": "s='abc' from VARCHAR column",
+   "result": "true",
+   "note": "runs of % collapse; any all-% pattern matches any non-NULL string"
+  },
+  {
+   "expr": "s LIKE '%' and s LIKE '%%'",
+   "input_desc": "s='' (empty string)",
+   "result": "true",
+   "note": "% matches empty"
+  },
+  {
+   "expr": "s LIKE 'a%' / '%c' / '%b%'",
+   "input_desc": "s='abc'",
+   "result": "true",
+   "note": "prefix/suffix/contains shapes"
+  },
+  {
+   "expr": "s LIKE 'a%c'",
+   "input_desc": "s='ac'",
+   "result": "true",
+   "note": "% matches zero chars"
+  },
+  {
+   "expr": "s LIKE 'a%b'",
+   "input_desc": "s='abc'",
+   "result": "false",
+   "note": "pattern must consume the whole string (anchored both ends)"
+  },
+  {
+   "expr": "s LIKE '%abcd%'",
+   "input_desc": "s='abc'",
+   "result": "false",
+   "note": "needle longer than string"
+  },
+  {
+   "expr": "s LIKE 'abc'",
+   "input_desc": "s='ab'",
+   "result": "false",
+   "note": "no-wildcard pattern = exact equality; 'abc' LIKE 'ab' also false"
+  },
+  {
+   "expr": "s LIKE 'a%a'",
+   "input_desc": "s='aa'",
+   "result": "true",
+   "note": "s='a' gives false \u2014 the two literal a's cannot overlap"
+  },
+  {
+   "expr": "s LIKE 'a%c%f'",
+   "input_desc": "s='abcdef'",
+   "result": "true",
+   "note": "multiple % segments; '%g%' on same s is false"
+  },
+  {
+   "expr": "s LIKE ''",
+   "input_desc": "s=''",
+   "result": "true",
+   "note": "empty pattern matches only empty string; s='a' -> false"
+  },
+  {
+   "expr": "s LIKE '_'",
+   "input_desc": "s=''",
+   "result": "false",
+   "note": "_ requires exactly one codepoint; s='a' true, s='ab' false"
+  },
+  {
+   "expr": "s LIKE '_%' / '%_' / '%_%'",
+   "input_desc": "s=''",
+   "result": "false",
+   "note": "_ needs >=1 codepoint even adjacent to %; all three true for s='abc'"
+  },
+  {
+   "expr": "s LIKE '_'",
+   "input_desc": "s='\u00e9' (e-acute NFC, 1 codepoint, 2 UTF-8 bytes)",
+   "result": "true",
+   "note": "_ consumes ONE CODEPOINT, not one byte: s LIKE '__' is false"
+  },
+  {
+   "expr": "s LIKE '_'",
+   "input_desc": "s='e\u0301' (NFD, 2 codepoints, 3 bytes)",
+   "result": "false",
+   "note": "'__' true, '___' false: codepoints, NOT graphemes, NOT bytes"
+  },
+  {
+   "expr": "s LIKE '_'",
+   "input_desc": "s='\\U0001F600' (1 codepoint, 4 bytes, 2 UTF-16 units)",
+   "result": "true",
+   "note": "'__' false and '____' false \u2014 rules out UTF-16 units and bytes"
+  },
+  {
+   "expr": "s LIKE '_____'",
+   "input_desc": "s=man-ZWJ-woman-ZWJ-girl family emoji (5 codepoints, 18 bytes, 1 grapheme)",
+   "result": "true",
+   "note": "'_' false, 18x'_' false \u2014 ZWJ sequence counts 5 codepoints"
+  },
+  {
+   "expr": "s LIKE 'a_c' and s LIKE '%\u00e9%'",
+   "input_desc": "s='a\u00e9c'",
+   "result": "true",
+   "note": "multibyte literals in pattern compare byte-wise"
+  },
+  {
+   "expr": "s LIKE 'e\u0301'",
+   "input_desc": "s='\u00e9' (NFC)",
+   "result": "false",
+   "note": "and NFD LIKE NFC false: byte-wise, ZERO unicode normalization"
+  },
+  {
+   "expr": "s LIKE 'a'",
+   "input_desc": "s='A'",
+   "result": "false",
+   "note": "case-sensitive both directions ('a' LIKE 'A' false)"
+  },
+  {
+   "expr": "s LIKE 'a.c'",
+   "input_desc": "s='a.c'",
+   "result": "true",
+   "note": "s='abc' false \u2014 regex specials . [ ] ( ) * + ? ^ $ are plain literals"
+  },
+  {
+   "expr": "s LIKE 'a\\bc' (backslash-b)",
+   "input_desc": "s='abc'",
+   "result": "false",
+   "note": "backslash is a LITERAL char, NOT an implicit escape (unlike Postgres); s='a\\bc'-with-real-backslash would match"
+  },
+  {
+   "expr": "s LIKE 'a\\%b'",
+   "input_desc": "s='a%b'",
+   "result": "false",
+   "note": "'\\' literal + % wildcard: matches 'a\\xb' and 'a\\b' instead"
+  },
+  {
+   "expr": "s LIKE '\\%'",
+   "input_desc": "s='\\\\' (single backslash)",
+   "result": "true",
+   "note": "s='%' false \u2014 no default escape char exists"
+  },
+  {
+   "expr": "s LIKE 'a'||chr(10)||'b'",
+   "input_desc": "s='a\\nb'",
+   "result": "true",
+   "note": "newline is an ordinary byte in both string and pattern"
+  },
+  {
+   "expr": "s LIKE 'a_b'",
+   "input_desc": "s='a\\nb'",
+   "result": "true",
+   "note": "_ matches newline; also matches tab; s LIKE 'a%b' true \u2014 % crosses newlines"
+  },
+  {
+   "expr": "s LIKE 'a#%b' ESCAPE '#'",
+   "input_desc": "s='a%b'",
+   "result": "true",
+   "note": "escaped % is literal; s='axb' false"
+  },
+  {
+   "expr": "s LIKE 'a#_b' ESCAPE '#'",
+   "input_desc": "s='a_b'",
+   "result": "true",
+   "note": "escaped _ is literal; s='axb' false"
+  },
+  {
+   "expr": "s LIKE 'a##b' ESCAPE '#'",
+   "input_desc": "s='a#b'",
+   "result": "true",
+   "note": "doubled escape = literal escape char; 'a##' matches 'a#'"
+  },
+  {
+   "expr": "s LIKE 'a#b' ESCAPE '#'",
+   "input_desc": "s='ab'",
+   "result": "true",
+   "note": "escaping a NON-special char is legal and yields that char (no error)"
+  },
+  {
+   "expr": "s LIKE 'aeb' ESCAPE 'e'",
+   "input_desc": "s='aeb'",
+   "result": "false",
+   "note": "the escape char is ALWAYS an escape intro; it never matches itself unescaped ('aeb' pattern = 'a'+literal'b')"
+  },
+  {
+   "expr": "s LIKE 'aeeb' ESCAPE 'e'",
+   "input_desc": "s='aeb'",
+   "result": "true",
+   "note": "ee = literal e"
+  },
+  {
+   "expr": "s LIKE 'a%%b' ESCAPE '%'",
+   "input_desc": "s='a%b'",
+   "result": "true",
+   "note": "the wildcard itself can be the escape char; then no unescaped % wildcard exists"
+  },
+  {
+   "expr": "s LIKE 'a%b' ESCAPE '%'",
+   "input_desc": "s='ab'",
+   "result": "true",
+   "note": "'%b' = escaped literal b"
+  },
+  {
+   "expr": "s LIKE 'a__b' ESCAPE '_'",
+   "input_desc": "s='a_b'",
+   "result": "true",
+   "note": "same for _ as escape"
+  },
+  {
+   "expr": "s LIKE 'a#%b' ESCAPE ''",
+   "input_desc": "s='a#xb'",
+   "result": "true",
+   "note": "ESCAPE '' means NO escape (# literal, % wildcard); s='a%b' false"
+  },
+  {
+   "expr": "s LIKE 'a#%b' ESCAPE NULL",
+   "input_desc": "s='a%b'",
+   "result": "NULL",
+   "note": "NULL escape -> NULL result, no error"
+  },
+  {
+   "expr": "s LIKE 'ab#' ESCAPE '#'  (dangling escape)",
+   "input_desc": "s='ab'",
+   "result": "false",
+   "note": "DATA-DEPENDENT: string exhausted when the trailing escape is reached -> plain false; s='ab#' or 'abX' -> SyntaxException at runtime"
+  },
+  {
+   "expr": "s LIKE 'a#' ESCAPE '#'",
+   "input_desc": "s='a' or s='' or s='ba'",
+   "result": "false",
+   "note": "s='ax' errors \u2014 error raised only when matcher examines the dangling escape with string chars remaining"
+  },
+  {
+   "expr": "s LIKE 'a%#' ESCAPE '#'",
+   "input_desc": "s='a'",
+   "result": "false",
+   "note": "s='ab' or 'axy' errors: the % branch tries positions with chars left and hits the dangling escape"
+  },
+  {
+   "expr": "s LIKE 'ab#%' ESCAPE '#'",
+   "input_desc": "s='ab'",
+   "result": "false",
+   "note": "#% = escaped literal %, NOT dangling; no error possible"
+  },
+  {
+   "expr": "s LIKE p ESCAPE 'xy'",
+   "input_desc": "row (NULL, 'ab') or empty table",
+   "result": "NULL",
+   "note": "even the escape-length validation is per-row after NULL check: NULL rows and empty tables never raise"
+  },
+  {
+   "expr": "s LIKE p ESCAPE e (e from a column)",
+   "input_desc": "row ('a%b','a#%b','#')",
+   "result": "true",
+   "note": "ESCAPE does NOT need to be constant"
+  },
+  {
+   "expr": "NULL LIKE 'a' / 'a' LIKE NULL / NULL LIKE NULL / NULL LIKE '%'",
+   "input_desc": "NULLs via nullable column",
+   "result": "NULL",
+   "note": "NOT LIKE identical: all NULL (never true/false)"
+  },
+  {
+   "expr": "s NOT LIKE 'a%'",
+   "input_desc": "s='abc'",
+   "result": "false",
+   "note": "plain negation; s='xbc' true; '' NOT LIKE '%' false"
+  },
+  {
+   "expr": "s ILIKE 'a' / s ILIKE 'A'",
+   "input_desc": "s='A' / s='a'",
+   "result": "true",
+   "note": "ASCII case-insensitive both directions; wildcards work: 'ABC' ILIKE 'a%'/'_b_' true"
+  },
+  {
+   "expr": "s ILIKE 'stra\u00dfe'",
+   "input_desc": "s='STRASSE'",
+   "result": "false",
+   "note": "both directions false: SIMPLE per-codepoint fold, never full casefold (ss never equals \u00df)"
+  },
+  {
+   "expr": "s ILIKE '\u00df'",
+   "input_desc": "s='\u1e9e' (capital sharp s)",
+   "result": "true",
+   "note": "singleton simple map \u1e9e->\u00df; reverse direction also true"
+  },
+  {
+   "expr": "s ILIKE 'k'",
+   "input_desc": "s='\u212a' (KELVIN SIGN) in a column",
+   "result": "true",
+   "note": "string-side fold = DuckDB lower(): maps \u212a->k, \u0130->i"
+  },
+  {
+   "expr": "s ILIKE '\u212a'",
+   "input_desc": "s='k', s-column contains ONLY ASCII values",
+   "result": "false",
+   "note": "THE STATS PIN: with pure-ASCII column statistics DuckDB swaps in an ASCII-only ILIKE; pattern codepoints \u212a/\u0130 do not fold. Same for 'i' ILIKE '\u0130' and 'K' ILIKE '\u212a'"
+  },
+  {
+   "expr": "s ILIKE '\u212a'",
+   "input_desc": "s='k', but a SIBLING ROW in the column contains '\u00e9'",
+   "result": "true",
+   "note": "identical row value flips with column contents (table stats); constant-folded literals also give true. Exhaustive sweep: \u0130 and \u212a are the ONLY non-ASCII codepoints with pure-ASCII lower(), so this is the entire divergence surface"
+  },
+  {
+   "expr": "vectorized ILIKE vs lower(s) LIKE lower(p)",
+   "input_desc": "all 1112062 codepoints as 1-char strings/patterns, non-ASCII column stats",
+   "result": "identical (zero exceptions)",
+   "note": "generic ILIKE == fold both sides with DuckDB lower() then LIKE; lower() is per-codepoint and NEVER changes codepoint count (swept); upper('\u00df')='\u1e9e', no SS expansion"
+  },
+  {
+   "expr": "s ILIKE '\u03c2' / '\u03c3' / '\u0131'-vs-'I'",
+   "input_desc": "s='\u03a3' / s='\u03c2' / s='I'",
+   "result": "false",
+   "note": "no transitive folding: lower(\u03a3)=\u03c3 != \u03c2; lower(\u03c2)=\u03c2 != \u03c3; lower('I')='i' != '\u0131'; 23 such lower-vs-upper asymmetric codepoints exist (\u00b5 \u0131 \u017f \u03c2 etc.)"
+  },
+  {
+   "expr": "s ILIKE '_'",
+   "input_desc": "s='\u0130'",
+   "result": "true",
+   "note": "fold is length-preserving so _ counts codepoints of the folded string"
+  },
+  {
+   "expr": "s ILIKE 'a#%b' ESCAPE '#'",
+   "input_desc": "s='A%B'",
+   "result": "true",
+   "note": "ILIKE supports ESCAPE; s='AxB' false; dangling-escape error identical to LIKE"
+  },
+  {
+   "expr": "'abc' SIMILAR TO 'a%' / 'a_c'",
+   "input_desc": "constants and columns (identical)",
+   "result": "false",
+   "note": "DuckDB SIMILAR TO is NOT SQL-standard: %/_ are NOT wildcards"
+  },
+  {
+   "expr": "'abc' SIMILAR TO 'a.c' / 'a.*' / '(a|x)bc' / 'a[bc]c'",
+   "input_desc": "constants and columns",
+   "result": "true",
+   "note": "raw RE2 regex, implicitly anchored full-match ('abc' SIMILAR TO 'a' false); plan shows regexp_full_match(s, pattern)"
+  },
+  {
+   "expr": "like('a','a')",
+   "input_desc": "function-call form",
+   "result": "error",
+   "note": "no like() scalar function; only like_escape/not_like_escape/ilike_escape/not_ilike_escape (exactly 3 args) plus operators ~~ !~~ ~~* !~~*"
+  },
+  {
+   "expr": "ilike_escape(s, p, '')",
+   "input_desc": "row ('k', '\u212a') in ASCII-only columns",
+   "result": "true",
+   "note": "the FUNCTION always uses the full fold \u2014 it diverges from the ILIKE OPERATOR (false here) on ASCII-stats columns"
+  },
+  {
+   "expr": "s LIKE 'abc%' vs prefix(s,'abc') vs starts_with(s,'abc')",
+   "input_desc": "15-value corpus incl NULL, '', unicode, near-misses",
+   "result": "bitwise identical",
+   "note": "same for '%abc'==suffix==ends_with, '%abc%'==contains, 'abc'== equality; NULL propagates identically. DuckDB itself rewrites these constant shapes (EXPLAIN: prefix/contains/suffix/=)"
+  },
+  {
+   "expr": "s LIKE '%'",
+   "input_desc": "s=NULL",
+   "result": "NULL",
+   "note": "NOT equivalent to IS NOT NULL (which is false)"
+  },
+  {
+   "expr": "s LIKE p, p='%a%a%a%a%a' from column",
+   "input_desc": "single row, s='a'*n+'b'",
+   "result": "false; 26ms/0.69s/23.1s at n=64/128/256",
+   "note": "~32x per doubling = O(n^5) for 5 percents: DuckDB's column-pattern matcher is naive-recursive backtracking; DO NOT copy \u2014 engine needs the O(n*m) two-pointer algorithm"
+  },
+  {
+   "expr": "s LIKE '%a%a%a%a%a' (constant pattern)",
+   "input_desc": "single row, s='a'*65536+'b'",
+   "result": "false in 0.2ms, flat across sizes",
+   "note": "bind-time-compiled segment matcher, linear; booleans never diverge from the naive path (verified on 22 adversarial %/_ cases + full pin corpus)"
+  }
+ ],
+ "errors": [
+  {
+   "expr": "s LIKE p ESCAPE '#' with row s='ax', p='a#' (dangling escape reached with string chars left)",
+   "error_head": "Syntax Error: Like pattern must not end with escape character!",
+   "kind": "runtime (SyntaxException), DATA-DEPENDENT per row: raised only when the matcher examines the trailing escape while string chars remain; s='a' same pattern returns false; NULL rows and empty tables never raise; constant folding surfaces it at bind for all-constant expressions"
+  },
+  {
+   "expr": "s LIKE p ESCAPE 'ab' (or ESCAPE '\u00e9' \u2014 one codepoint, two bytes)",
+   "error_head": "Syntax Error: Invalid escape string. Escape string must be empty or one character.",
+   "kind": "runtime (SyntaxException), per-row after NULL checks (NULL operand rows skip it); the limit is ONE BYTE \u2014 a single 2-byte codepoint is rejected"
+  },
+  {
+   "expr": "s SIMILAR TO 'a#.c' ESCAPE '#'",
+   "error_head": "Not implemented Error: Custom escape in SIMILAR TO",
+   "kind": "binder (NotImplementedException, raised even over an empty table)"
+  },
+  {
+   "expr": "s SIMILAR TO 'a(' (constant bad regex)",
+   "error_head": "Invalid Input Error: missing ): a(",
+   "kind": "binder for constant patterns (InvalidInputException, raised even over an empty table)"
+  },
+  {
+   "expr": "SELECT like('a','a')",
+   "error_head": "Catalog Error: Scalar Function with name like does not exist!",
+   "kind": "binder (CatalogException)"
+  },
+  {
+   "expr": "SELECT like_escape('a','a') (2 args)",
+   "error_head": "Binder Error: No function matches the given name and argument types 'like_escape(STRING_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts.",
+   "kind": "binder (BinderException); like_escape is 3-arg only"
+  }
+ ],
+ "duck_check_tests": "\n# LIKE / NOT LIKE / ILIKE pins via duck_check (engine vs live DuckDB 1.5.5).\n# Every SQL below was validated against a native-table DuckDB oracle on 2026-07-26.\n# NOT expressible here: the error pins (dangling escape with chars left, multi-byte\n# ESCAPE string) \u2014 those raise SyntaxException per-row; cover them with pytest.raises.\n\ndef test_like_wildcards_and_empty():\n    duck_check(\n        \"SELECT s LIKE '%' AS c01, s LIKE '%%' AS c02, s LIKE 'a%' AS c03, s LIKE '%c' AS c04, \"\n        \"s LIKE '%b%' AS c05, s LIKE 'a%c' AS c06, s LIKE 'a%b' AS c07, s LIKE '%abc' AS c08, \"\n        \"s LIKE 'abc%' AS c09, s LIKE '%abcd%' AS c10, s LIKE 'abc' AS c11, s LIKE '' AS c12, \"\n        \"s LIKE '_' AS c13, s LIKE '___' AS c14, s LIKE '_%' AS c15, s LIKE '%_' AS c16, \"\n        \"s LIKE '%_%' AS c17, s LIKE 'a%a' AS c18, s LIKE 'a%c%f' AS c19, s LIKE '%%c' AS c20, \"\n        \"s NOT LIKE 'a%' AS n01, s NOT LIKE '_' AS n02 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [\"abc\", \"\", \"a\", \"ab\", \"ac\", \"aa\", \"aaa\", \"abcdef\",\n                            \"a%b\", \"a_b\", \"%\", \"_\", \"xabcx\", \"A\", None]],\n    )\n\ndef test_like_underscore_is_one_codepoint():\n    # NFC 1cp/2B, NFD 2cp/3B, emoji 1cp/4B, ZWJ family 5cp/18B: '_' = one CODEPOINT\n    duck_check(\n        \"SELECT s LIKE '_' AS u1, s LIKE '__' AS u2, s LIKE '___' AS u3, s LIKE '_____' AS u4, \"\n        \"s LIKE 'a_c' AS u5, s LIKE '%\u00e9%' AS u6, s LIKE '\u00e9' AS u7, \"\n        \"s LIKE 'e\u0301' AS u8, s LIKE '_x' AS u9 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [\"\u00e9\", \"e\u0301\", \"\\U0001F600\",\n                            \"\\U0001F468\u200d\\U0001F469\u200d\\U0001F467\",\n                            \"a\u00e9c\", \"\u00e9x\", None]],\n    )\n\ndef test_like_literals_case_and_backslash():\n    # regex specials are literals; backslash is literal (NO implicit escape); case-sensitive\n    duck_check(\n        \"SELECT s LIKE 'a' AS l1, s LIKE 'A' AS l2, s LIKE 'a.c' AS l3, s LIKE 'a[b]c' AS l4, \"\n        \"s LIKE 'a(b)c' AS l5, s LIKE 'a*' AS l6, s LIKE 'a+?' AS l7, s LIKE 'a^$c' AS l8, \"\n        \"s LIKE 'a\\\\c' AS l9, s LIKE 'a\\\\bc' AS l10, s LIKE 'a\\\\%b' AS l11, s LIKE '\\\\' AS l12, \"\n        \"s LIKE '\\\\%' AS l13 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [\"A\", \"a\", \"ABC\", \"a.c\", \"abc\", \"a[b]c\", \"a(b)c\", \"a*\",\n                            \"a+?\", \"a^$c\", \"a\\\\c\", \"a\\\\xb\", \"a\\\\b\", \"\\\\\", \"%\", \"a%b\"]],\n    )\n\ndef test_like_control_chars():\n    duck_check(\n        \"SELECT s LIKE 'a' || chr(10) || 'b' AS t1, s LIKE 'a_b' AS t2, s LIKE 'a%b' AS t3, \"\n        \"s LIKE '%' || chr(10) || 'b' AS t4, s LIKE 'a' || chr(9) || '%' AS t5, \"\n        \"s LIKE '_' || chr(10) || 'b' AS t6 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [\"a\\nb\", \"a\\tb\", \"ab\"]],\n    )\n\ndef test_like_escape_clause():\n    duck_check(\n        \"SELECT s LIKE 'a#%b' ESCAPE '#' AS e1, s LIKE '%#%' ESCAPE '#' AS e2, \"\n        \"s LIKE 'a#_b' ESCAPE '#' AS e3, s LIKE 'a##b' ESCAPE '#' AS e4, \"\n        \"s LIKE 'a##' ESCAPE '#' AS e5, s LIKE 'a#b' ESCAPE '#' AS e6, \"\n        \"s LIKE 'abc' ESCAPE '#' AS e7, s LIKE 'a%%b' ESCAPE '%' AS e8, \"\n        \"s LIKE 'a%b' ESCAPE '%' AS e9, s LIKE 'a__b' ESCAPE '_' AS e10, \"\n        \"s LIKE 'aeb' ESCAPE 'e' AS e11, s LIKE 'aeeb' ESCAPE 'e' AS e12, \"\n        \"s LIKE 'a#%b' ESCAPE '' AS e13, s ILIKE 'A#%B' ESCAPE '#' AS e14, \"\n        \"s LIKE 'a#%b' ESCAPE NULL AS e15 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [\"a%b\", \"axb\", \"a%\", \"a_b\", \"a#b\", \"a#\", \"ab\", \"abc\",\n                            \"aeb\", \"a#xb\", None]],\n    )\n\ndef test_like_dangling_escape_false_rows():\n    # Dangling escape is DATA-dependent: these rows return false (string exhausted\n    # before the trailing escape is consumed). Rows with chars remaining at the\n    # escape raise SyntaxException instead \u2014 engine must reproduce BOTH.\n    duck_check(\n        \"SELECT s LIKE 'ab#' ESCAPE '#' AS d1, s LIKE 'ab#%' ESCAPE '#' AS d2 FROM __THIS__\",\n        {\"s\": \"str?\"}, [{\"s\": v} for v in [\"ab\", \"a\", \"\", None]],\n    )\n    duck_check(\"SELECT s LIKE 'a#' ESCAPE '#' AS d3 FROM __THIS__\",\n               {\"s\": \"str?\"}, [{\"s\": v} for v in [\"a\", \"\", \"ba\", None]])\n    duck_check(\"SELECT s LIKE '#' ESCAPE '#' AS d4 FROM __THIS__\",\n               {\"s\": \"str?\"}, [{\"s\": v} for v in [\"\", None]])\n\ndef test_ilike_ascii_stats_column():\n    # Column stats are pure-ASCII -> DuckDB uses the ASCII-only ILIKE variant:\n    # pattern codepoints U+212A / U+0130 do NOT fold (i7, i8 false for k/K/i).\n    duck_check(\n        \"SELECT s ILIKE 'a' AS i1, s ILIKE 'a%' AS i2, s ILIKE '_b_' AS i3, \"\n        \"s ILIKE 'AbC' AS i4, s ILIKE 'stra\u00dfe' AS i5, s ILIKE '\u0131' AS i6, \"\n        \"s ILIKE '\u212a' AS i7, s ILIKE '\u0130' AS i8, s NOT ILIKE 'a%' AS i9 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [\"A\", \"a\", \"ABC\", \"aBc\", \"STRASSE\", \"I\", \"k\", \"K\", \"i\", None]],\n    )\n\ndef test_ilike_unicode_stats_column():\n    # Non-ASCII values present in the column -> generic ILIKE == lower(s) LIKE lower(p):\n    # now 'k' ILIKE U+212A and 'i' ILIKE U+0130 are TRUE (same rows as above!).\n    duck_check(\n        \"SELECT s ILIKE '\u212a' AS j1, s ILIKE '\u0130' AS j2, s ILIKE 'k' AS j3, \"\n        \"s ILIKE 'i' AS j4, s ILIKE '\u00e9' AS j5, s ILIKE 'STRASSE' AS j6, \"\n        \"s ILIKE '\u00df' AS j7, s ILIKE '\u03c3' AS j8, s ILIKE '\u03c2' AS j9, \"\n        \"s ILIKE 'I' AS j10, s ILIKE '\u00e9_' AS j11 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [\"k\", \"K\", \"i\", \"\u212a\", \"\u0130\", \"\u00c9\", \"\u00e9\",\n                            \"stra\u00dfe\", \"\u1e9e\", \"\u00df\", \"\u03a3\", \"\u03c2\",\n                            \"\u03c3\", \"\u0131\", \"\u00c9X\", None]],\n    )\n\ndef test_like_pattern_from_column():\n    # vec_sp path: pattern (and NULLs) flowing through a column\n    duck_check(\n        \"SELECT s LIKE p AS v1, s NOT LIKE p AS v2, s LIKE p ESCAPE '#' AS v3 FROM __THIS__\",\n        {\"s\": \"str?\", \"p\": \"str?\"},\n        [{\"s\": s, \"p\": p} for s, p in [\n            (\"abc\", \"a%c\"), (\"abc\", \"a_c\"), (\"abc\", \"x%\"), (\"a%b\", \"a#%b\"),\n            (\"axb\", \"a#%b\"), (\"ab\", \"ab#\"), (\"aeb\", \"aeeb\"), (\"\u00e9\", \"_\"),\n            (\"\u00e9\", \"__\"), (None, \"%\"), (\"abc\", None), (None, None)]],\n    )\n\ndef test_like_degenerate_equivalences():\n    # LIKE 'abc%'==prefix==starts_with, '%abc'==suffix==ends_with, '%abc%'==contains,\n    # bitwise incl. NULL propagation (s LIKE '%' is NULL for NULL s, not false)\n    duck_check(\n        \"SELECT s LIKE 'abc%' AS g1, prefix(s,'abc') AS g2, s LIKE '%abc' AS g3, \"\n        \"suffix(s,'abc') AS g4, s LIKE '%abc%' AS g5, contains(s,'abc') AS g6, \"\n        \"s LIKE 'abc' AS g7, starts_with(s,'abc') AS g8, ends_with(s,'abc') AS g9, \"\n        \"s LIKE '%' AS g10 FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": v} for v in [None, \"\", \"a\", \"ab\", \"abc\", \"abcx\", \"xabc\", \"xabcx\",\n                            \"ABC\", \"a%c\", \"\u00e9abc\u00e9\", \"\\U0001F600abc\",\n                            \"a\\nb\", \"abca\", \"aabc\"]],\n    )\n",
+ "matcher_spec": "\n// LIKE matcher \u2014 reproduces every pin bit-exactly against DuckDB 1.5.5 native tables.\n// UNIT: literal chars and '%' operate on BYTES (patterns are valid UTF-8, so multibyte\n//   literals match byte-by-byte and '%' cut points cannot mis-align lead bytes);\n//   '_' consumes exactly ONE UTF-8 CODEPOINT of the string (1-4 bytes by lead byte).\n//   No normalization anywhere (NFC != NFD), no graphemes, no UTF-16 units.\n// NULL: s NULL || p NULL || escape NULL  =>  NULL, BEFORE any validation\n//   (a NULL row never raises, even with a dangling escape or 2-byte ESCAPE string).\n// ESCAPE string: validated per evaluated row: byte_len(esc_str) > 1 => Err(InvalidEscape)\n//   (\"Invalid escape string. Escape string must be empty or one character.\" \u2014 note: one\n//   BYTE; a single 2-byte codepoint is rejected). Empty => no escape. Escape may come\n//   from a column. NOT LIKE = !like(...) with NULL passthrough.\n// ILIKE: fold BOTH sides per-codepoint with DuckDB lower()'s casemap (length-preserving,\n//   includes singletons U+212A->k, U+0130->i, U+1E9E->df) and run the same matcher on the\n//   folded strings ('_' then counts folded codepoints). This is DuckDB's generic path,\n//   exhaustively verified over all codepoints. CAVEAT (measured): when the string\n//   column's stats are pure-ASCII DuckDB silently switches to an ASCII-only fold, whose\n//   ONLY observable difference is patterns containing U+212A or U+0130 \u2014 see ilike_verdict.\n//   (Unmeasured corner: ILIKE with an UPPERCASE-LETTER escape char; restrict or measure.)\n\nenum LikeErr { DanglingEscape, InvalidEscape }   // both map to DuckDB SyntaxException\n\nfn like(s: &[u8], p: &[u8], esc: Option<u8>) -> Result<bool, LikeErr> {\n    like_at(s, 0, p, 0, esc)\n}\n\nfn like_at(s: &[u8], mut si: usize, p: &[u8], mut pi: usize, esc: Option<u8>)\n    -> Result<bool, LikeErr>\n{\n    while pi < p.len() {\n        let pc = p[pi];\n        if Some(pc) == esc {\n            // Escape check FIRST \u2014 it beats '%' and '_' (ESCAPE '%' turns '%%' into a\n            // literal percent; an unescaped escape char NEVER matches itself:\n            // 'aeb' LIKE 'aeb' ESCAPE 'e' == false).\n            if si == s.len() { return Ok(false); }         // exhausted string: plain false\n                                                            // ('ab' LIKE 'ab#' ESC '#')\n            pi += 1;\n            if pi == p.len() { return Err(LikeErr::DanglingEscape); }\n            // ^ raised ONLY here: i.e. only when string chars remain \u2014 data-dependent,\n            //   exactly DuckDB ('ax' LIKE 'a#' ESC '#' errors, 'a' LIKE 'a#' is false).\n            if s[si] != p[pi] { return Ok(false); }         // escaped char (special or\n            si += 1; pi += 1;                               // not) is a literal byte\n        } else if pc == b'%' {\n            while pi < p.len() && p[pi] == b'%' { pi += 1; } // collapse bare-% runs\n            if pi == p.len() { return Ok(true); }\n            // Semantics: try suffix starts left-to-right; errors propagate from the\n            // FIRST tried position (leftmost si), preserving DuckDB's error rows.\n            // Implement with the iterative two-pointer restart (remember last '%' pos\n            // and restart si+1) => worst case O(len(s)*len(p)). DuckDB's own\n            // column-pattern path is naive-recursive O(n^k) (measured 23 s for one\n            // 256-char row vs '%a%a%a%a%a') \u2014 booleans identical, never copy the blowup.\n            for start in si..=s.len() {\n                match like_at(s, start, p, pi, esc)? {\n                    true => return Ok(true),\n                    false => {}\n                }\n            }\n            return Ok(false);\n        } else if pc == b'_' {\n            if si == s.len() { return Ok(false); }\n            si += utf8_len(s[si]);                          // ONE codepoint: 1,2,3,4 by\n            pi += 1;                                        // lead byte (0xxx/110/1110/11110)\n        } else {\n            if si == s.len() || s[si] != pc { return Ok(false); }\n            si += 1; pi += 1;                               // raw byte compare, case-\n        }                                                   // sensitive, no specials\n    }\n    Ok(si == s.len())                                       // '' LIKE '' == true\n}\n",
+ "ilike_verdict": "IMPLEMENT \u2014 it is cheap, with one mandatory carve-out. Vectorized ILIKE over native tables is exactly LIKE(fold(s), fold(p)) where fold = DuckDB lower()'s per-codepoint, length-preserving casemap (the repo's measured simple-casemap can be reused verbatim; exhaustive all-codepoint sweep found ZERO exceptions and lower() never changes codepoint count). BUT the oracle is column-statistics-dependent: when every value in the string column is pure ASCII, DuckDB swaps in an ASCII-only variant, and the SAME row ('k' ILIKE U+212A) returns false in an all-ASCII column but true once any sibling row contains a non-ASCII byte (measured, T1/T2), and true again when constant-folded (literal-fold divergence). The complete divergence surface was measured exhaustively: U+0130 and U+212A are the only non-ASCII codepoints whose lower() is pure ASCII, so the two behaviors differ ONLY for patterns containing those two codepoints. Recommendation: implement fold-both-sides with the measured casemap, and at compile time reject constant patterns containing U+0130 or U+212A (and reject column-valued ILIKE patterns, or per-row-check them for those two codepoints); that yields bit-parity with the DuckDB oracle everywhere else without emulating table statistics. Also note: ilike_escape() the FUNCTION always uses the full fold even where the ILIKE operator uses the ASCII variant \u2014 do not use one to test the other.",
+ "similar_to_verdict": "REJECT BY NAME. DuckDB's SIMILAR TO is not SQL-standard SIMILAR TO at all: it binds to regexp_full_match(s, pattern) with the raw pattern as an anchored RE2 regex \u2014 '%' and '_' have NO wildcard meaning ('abc' SIMILAR TO 'a%' is false, 'a_c' is false) while '.', '.*', '(a|x)', '[bc]', '\\\\.', '[[:alpha:]]' all work. Supporting it means shipping a full regex engine \u2014 a different complexity class from the O(n*m) LIKE matcher \u2014 for an operator whose DuckDB semantics already surprise SQL users. Its ESCAPE clause is unimplemented in DuckDB itself (NotImplementedException 'Custom escape in SIMILAR TO', bind-time), and constant bad regexes fail at bind ('Invalid Input Error: missing ): a('). Frontend rejection is one match arm: sqlparser 0.62 parses it as a distinct Expr::SimilarTo AST variant (Expr::Like / Expr::ILike / Expr::RLike are separate), verified in the vendored crate source.",
+ "surprises": [
+  "ILIKE results depend on COLUMN STATISTICS, not just the two values: 'k' ILIKE U+212A over a native table is false when the string column is all-ASCII, but true when any sibling row contains a non-ASCII byte (DuckDB swaps in an ASCII-only ILIKE variant off table stats). Exhaustively swept: patterns containing U+0130 or U+212A are the ONLY affected inputs. Constant-folded ILIKE always uses the full fold \u2014 a real literal-fold divergence.",
+  "The dangling-escape error is DATA-DEPENDENT per row: 'ab' LIKE 'ab#' ESCAPE '#' returns false (string exhausted first) while 'abX' LIKE 'ab#' ESCAPE '#' raises SyntaxException; NULL rows and empty tables never raise. Error class is SyntaxException even at runtime.",
+  "ESCAPE strings are limited to one BYTE, not one character: ESCAPE 'e-acute' (single codepoint, 2 bytes) is rejected with 'Escape string must be empty or one character.' \u2014 and even that validation runs per-row after NULL checks.",
+  "Column-pattern LIKE is naive-recursive backtracking: ONE 256-char row against '%a%a%a%a%a' took 23.1 s (~O(n^5)); the same query with a constant pattern runs in 0.2 ms at 65536 chars via a bind-time-compiled matcher. Booleans never diverge; the engine must use the O(n*m) two-pointer algorithm.",
+  "DuckDB SIMILAR TO is raw RE2 full-match: '%' and '_' are NOT wildcards there ('abc' SIMILAR TO 'a%' is false). It lowers to regexp_full_match.",
+  "'_' consumes one CODEPOINT (not byte, grapheme, or UTF-16 unit): e-acute NFC matches '_', NFD needs '__', the ZWJ family emoji needs exactly '_____'. Literal comparison is byte-wise with zero normalization \u2014 consistent with the repo's byte-wise-comparison learning while positions/lengths elsewhere are codepoint-based.",
+  "Backslash is a LITERAL in DuckDB LIKE \u2014 no implicit escape (unlike Postgres): 'abc' LIKE 'a\\bc' is false; there is no default escape character.",
+  "The escape char is ALWAYS an escape intro once declared \u2014 an unescaped occurrence never matches itself: 'aeb' LIKE 'aeb' ESCAPE 'e' is FALSE; escaping a non-special char is legal and yields the char ('ab' LIKE 'a#b' ESCAPE '#' is true); ESCAPE '' means no escape; ESCAPE NULL yields NULL; ESCAPE may be a column value.",
+  "ilike_escape() the function and the ILIKE operator are DIFFERENT implementations: over an all-ASCII column ilike_escape('k', kelvin, '') is true while s ILIKE p on the same row is false.",
+  "like() does not exist as a function (like_escape is 3-arg only); operators ~~ / !~~ / ~~* / !~~* exist. prefix/suffix/contains/starts_with/ends_with are bitwise-identical (incl. NULL propagation) to the degenerate LIKE shapes, and DuckDB itself rewrites constant 'abc%'/'%abc'/'%abc%'/'abc' to prefix/suffix/contains/=.",
+  "upper('sharp-s')='capital-sharp-s' and lower() never changes codepoint count (all-codepoint sweep) \u2014 DuckDB casing is strictly per-codepoint simple mappings, so ILIKE can reuse the repo's measured casemap directly."
+ ]
+}

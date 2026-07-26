@@ -819,7 +819,71 @@ impl Binder<'_> {
                 let chain = chain.ok_or_else(|| unsup("empty IN list"))?;
                 self.bind(&ast_not_if(*negated, chain))
             }
-            SqlExpr::Like { .. } => Err(unsup("LIKE")),
+            SqlExpr::Like {
+                negated,
+                any,
+                expr,
+                pattern,
+                escape_char,
+            }
+            | SqlExpr::ILike {
+                negated,
+                any,
+                expr,
+                pattern,
+                escape_char,
+            } => {
+                let ci = matches!(e, SqlExpr::ILike { .. });
+                if *any {
+                    return Err(unsup("LIKE ANY"));
+                }
+                let (ba, bp) = (self.expr_or_null(expr)?, self.expr_or_null(pattern)?);
+                let (Some(ba), Some(bp)) = (ba, bp) else {
+                    // NULL on either side is NULL before any validation
+                    // (even a bad ESCAPE never raises on NULL rows).
+                    return Ok(null_of(Ty::I1));
+                };
+                for side in [&ba, &bp] {
+                    if side.ty != Ty::Str {
+                        return Err(PrepareError::Bind(format!(
+                            "no function matches {}({})",
+                            if ci { "ilike" } else { "like" },
+                            side.ty.name()
+                        )));
+                    }
+                }
+                let esc = match escape_char {
+                    None => None,
+                    Some(v) => match &v.value {
+                        SqlValue::SingleQuotedString(s) => Some(Box::new(lit_str(s))),
+                        SqlValue::Null => return Ok(null_of(Ty::I1)),
+                        other => return Err(unsup(format!("ESCAPE {other} (non-string escape)"))),
+                    },
+                };
+                let nullable = ba.nullable || bp.nullable;
+                let like = SExpr {
+                    kind: SKind::Like {
+                        ci,
+                        a: Box::new(ba),
+                        p: Box::new(bp),
+                        esc,
+                    },
+                    ty: Ty::I1,
+                    nullable,
+                };
+                Ok(if *negated {
+                    SExpr {
+                        kind: SKind::Not(Box::new(like)),
+                        ty: Ty::I1,
+                        nullable,
+                    }
+                } else {
+                    like
+                })
+            }
+            SqlExpr::SimilarTo { .. } => Err(unsup(
+                "SIMILAR TO (DuckDB binds it to regexp_full_match, not SQL wildcards)",
+            )),
             other => Err(unsup(format!("expression: {other}"))),
         }
     }

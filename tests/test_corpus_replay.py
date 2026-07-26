@@ -37,6 +37,19 @@ CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 # Build-time errors that are documented v0 contract limits, not bugs.
 _CLEAN = ("unsupported:", "parse error:", "duplicate map key", "NULL in value column")
 
+# Documented oracle divergences (clean, not FAILs). Each entry must cite a
+# measured reason the divergence is IRREPRODUCIBLE row-locally.
+_KNOWN_DIVERGENT_SOURCES = {
+    # DuckDB's ILIKE result for a NUL-containing row DEPENDS ON SIBLING
+    # ROWS: pure-ASCII column stats select a NUL-safe ASCII kernel (row
+    # matches itself -> TRUE), while any non-ASCII sibling selects the
+    # generic kernel whose fold NUL-truncates (same row -> FALSE); measured
+    # 2026-07-26, pins-wave1/pins_like.json. Statistics-dependent semantics
+    # cannot be reproduced by a row-at-a-time engine even in principle; the
+    # engine is NUL-transparent (the ASCII-kernel behavior).
+    "test/sql/function/string/test_ilike_embedded_null.test",
+}
+
 _FROM_RE = re.compile(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 
 _PY_OF_ARROW = [
@@ -116,6 +129,8 @@ def _replay(case: dict) -> tuple[str, str]:
             return "unsupported", msg
         return "FAIL", f"build error: {type(e).__name__}: {msg}"
 
+    if case.get("source") in _KNOWN_DIVERGENT_SOURCES:
+        return "unsupported", "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
     try:
         rows_in = [model(**r) for r in arrow[driving].to_pylist()]
         got = [list(r.model_dump().values()) for r in fn.infer({driving: rows_in})]

@@ -580,6 +580,49 @@ impl<'a> FB<'a> {
                     val: dst,
                 })
             }
+            SKind::Like { ci, a, p, esc } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let lp = self.emit(p, live)?;
+                live.push((lp, Ty::Str));
+                let le = match esc {
+                    Some(e) => Some(self.emit(e, live)?),
+                    None => None,
+                };
+                let (lp, _) = {
+                    let x = live.pop().expect("pushed above");
+                    let _ = &x;
+                    x
+                };
+                let (la, _) = live.pop().expect("pushed above");
+                // Trapping op: mask every nullable payload to "" — the
+                // empty string/pattern/escape are all outside the trap
+                // domain (like("", "", no-escape) is a clean false/true).
+                let empty = self.const_lit(Lit::Str(String::new()));
+                let mask = |fbb: &mut Self, l: Lane| match l.flag {
+                    None => l.val,
+                    Some(f) => fbb.select_of(f, l.val, empty),
+                };
+                let av = mask(self, la);
+                let pv = mask(self, lp);
+                let (ev, eflag) = match le {
+                    Some(l) => (Some(mask(self, l)), l.flag),
+                    None => (None, None),
+                };
+                let dst = self.fresh();
+                self.inst(Inst::Slike {
+                    ci: *ci,
+                    dst,
+                    a: av,
+                    p: pv,
+                    esc: ev,
+                });
+                let f1 = self.combine_flags(la.flag, lp.flag);
+                Ok(Lane {
+                    flag: self.combine_flags(f1, eflag),
+                    val: dst,
+                })
+            }
             SKind::Round2 { trunc, a, n } => {
                 let la = self.emit(a, live)?;
                 live.push((la, a.ty));

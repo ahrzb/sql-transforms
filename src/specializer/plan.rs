@@ -171,6 +171,13 @@ pub enum SKind {
         bytes: bool,
         a: Box<SExpr>,
     },
+    /// LIKE/ILIKE (negation handled by a Not wrapper at bind).
+    Like {
+        ci: bool,
+        a: Box<SExpr>,
+        p: Box<SExpr>,
+        esc: Option<Box<SExpr>>,
+    },
     /// round/trunc with digits — result type == subject type (I64 or F64);
     /// total, NULL-propagating.
     Round2 {
