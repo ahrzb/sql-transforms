@@ -5,6 +5,7 @@ of famous tabular-ML problems. Engines compared, p50/p99 ns per call at
 n in {1, 8, 64, 1024}:
 
   spec     — the specializer: cranelift + generated marshaller (ours)
+  spec_dict — the same fn built with output="dict" (raw-dict opt-in mode)
   interp   — interpreter backend, same marshaller (backend control;
              SPECIALIZER_FORCE_INTERP=1)
   generic  — cranelift behind the pre-marshaller boundary (previous
@@ -85,6 +86,10 @@ def build_callers(mod, engines):
         for e in ("spec", "interp", "generic"):
             if e in engines:
                 callers[e] = fn.infer_rows
+    if "spec_dict" in engines:
+        # The raw-dict output mode: same engine, marshaller skips model
+        # construction — python_dict's fair opponent.
+        callers["spec_dict"] = sc.build_spec_fn(mod, statics, output="dict").infer_rows
 
     for eng, cls_path in (
         ("native", "sql_transform._interpreter.InferFn"),
@@ -151,7 +156,15 @@ def orchestrate():
             sys.exit(1)
 
     groups = {
-        "main": ["spec", "native", "codegen", "duckdb", "python", "python_dict"],
+        "main": [
+            "spec",
+            "spec_dict",
+            "native",
+            "codegen",
+            "duckdb",
+            "python",
+            "python_dict",
+        ],
         "interp": ["interp"],
         "generic": ["generic"],
     }
@@ -170,7 +183,16 @@ def orchestrate():
         for scenario, per in json.loads(out.stdout.strip().splitlines()[-1]).items():
             merged.setdefault(scenario, {}).update(per)
 
-    order = ["spec", "interp", "generic", "native", "codegen", "duckdb", "python"]
+    order = [
+        "spec",
+        "spec_dict",
+        "interp",
+        "generic",
+        "native",
+        "codegen",
+        "duckdb",
+        "python",
+    ]
     hdr = f"{'scenario':<14} {'engine':<9}" + "".join(f"{f'n={n}':>15}" for n in NS)
     print("\n" + hdr)
     print("-" * len(hdr))

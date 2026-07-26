@@ -235,6 +235,10 @@ struct Marshaller {
     model: Py<PyAny>,
     /// `output_model.model_validate`, present iff the model was supplied.
     validate: Option<Py<PyAny>>,
+    /// output="dict": emit the row dict itself — no model at all. The
+    /// dict is exactly what validate/slot-fill would have consumed, so
+    /// the modes agree field-for-field by construction.
+    emit_dicts: bool,
     object_new: Py<PyAny>,
     object_setattr: Py<PyAny>,
     s_dict: Py<PyString>,
@@ -252,6 +256,7 @@ impl Marshaller {
         out_cols: &[Col],
         output_model: &Py<PyAny>,
         supplied: bool,
+        emit_dicts: bool,
         fun: &Backend,
     ) -> PyResult<Marshaller> {
         let object = PyModule::import(py, "builtins")?.getattr("object")?;
@@ -270,6 +275,7 @@ impl Marshaller {
             } else {
                 None
             },
+            emit_dicts,
             object_new: object.getattr("__new__")?.unbind(),
             object_setattr: object.getattr("__setattr__")?.unbind(),
             s_dict: PyString::intern(py, "__dict__").unbind(),
@@ -387,6 +393,10 @@ impl Marshaller {
                     }
                 }
             }
+            if self.emit_dicts {
+                out.push(d.unbind().into_any());
+                continue;
+            }
             if let Some(v) = &self.validate {
                 // Supplied model: full pydantic semantics (validators,
                 // defaults, coercion, extra/private) — master parity.
@@ -430,19 +440,38 @@ pub struct DuckDBInferFn {
     row_table: String,
     #[pyo3(get)]
     output_model: Py<PyAny>,
+    output_dicts: bool,
 }
 
 #[pymethods]
 impl DuckDBInferFn {
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None))]
+    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None, output=None))]
     fn new(
         py: Python<'_>,
         sql: String,
         row_tables: HashMap<String, Py<PyAny>>,
         static_tables: HashMap<String, Py<PyAny>>,
         output_model: Option<Py<PyAny>>,
+        output: Option<String>,
     ) -> PyResult<Self> {
+        // output="dict" is the opt-in raw-dict mode: same engine, same
+        // lanes, the marshaller just skips model construction. The typed
+        // default is untouched.
+        let output_dicts = match output.as_deref() {
+            None | Some("model") => false,
+            Some("dict") => true,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "output must be 'model' or 'dict', got '{other}'"
+                )))
+            }
+        };
+        if output_dicts && output_model.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "output='dict' and output_model are mutually exclusive",
+            ));
+        }
         let (row_table, model) = match row_tables.len() {
             1 => row_tables.into_iter().next().unwrap(),
             n => {
@@ -517,6 +546,7 @@ impl DuckDBInferFn {
                             engine: Engine::Constant { rows },
                             row_table,
                             output_model,
+                            output_dicts,
                         });
                     }
                     Err(_) => return Err(build_err(e.to_string())),
@@ -583,6 +613,7 @@ impl DuckDBInferFn {
                 &prepared.program.out_cols,
                 &output_model,
                 supplied,
+                output_dicts,
                 &fun,
             )?))
         };
@@ -595,7 +626,18 @@ impl DuckDBInferFn {
             },
             row_table,
             output_model,
+            output_dicts,
         })
+    }
+
+    /// The output mode: "model" (typed, default) or "dict" (opt-in).
+    #[getter]
+    fn output(&self) -> &'static str {
+        if self.output_dicts {
+            "dict"
+        } else {
+            "model"
+        }
     }
 
     /// Which engine executes: "cranelift", "interpreter", or "constant".
@@ -661,7 +703,17 @@ impl DuckDBInferFn {
                 let model = self.output_model.bind(py);
                 let mut out = Vec::with_capacity(fixed.len());
                 for r in fixed.iter() {
-                    out.push(model.call_method1("model_validate", (r,))?.unbind());
+                    if self.output_dicts {
+                        // A fresh copy per call: callers may mutate.
+                        let d = r.bind(py).cast::<PyDict>().map_err(|_| {
+                            pyo3::exceptions::PyValueError::new_err(
+                                "internal: constant rows are dicts",
+                            )
+                        })?;
+                        out.push(d.copy()?.unbind().into_any());
+                    } else {
+                        out.push(model.call_method1("model_validate", (r,))?.unbind());
+                    }
                 }
                 return Ok(out);
             }
@@ -778,7 +830,11 @@ impl DuckDBInferFn {
                     }
                 }
             }
-            out.push(model.call_method1("model_validate", (dict,))?.unbind());
+            if self.output_dicts {
+                out.push(dict.unbind().into_any());
+            } else {
+                out.push(model.call_method1("model_validate", (dict,))?.unbind());
+            }
         }
         Ok(out)
     }
