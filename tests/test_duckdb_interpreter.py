@@ -894,9 +894,46 @@ def test_sqrt_non_negative_domain():
     )
 
 
+def duck_check_ulp(sql, row_schema, row_rows, max_ulp=1):
+    """duck_check with a float ulp tolerance, POSITIONAL compare (no joins).
+
+    Exists for exactly one reason so far: DuckDB's own wheels disagree with
+    each other on cbrt by one ulp across platforms (Windows wheel matches
+    Rust/ucrt bit-exactly; the Linux wheel's bundled std::cbrt is one ulp
+    off on e.g. cbrt(27)) — CI-discovered 2026-07-26. The oracle itself is
+    platform-inconsistent here, so repr-exact parity is unpinnable.
+    """
+    import math
+    import struct
+
+    model = _row_model(row_schema)
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": model}, static_tables={})
+    inputs = [model(**r) for r in row_rows]
+    got = [r.model_dump() for r in fn.infer({"__THIS__": inputs})]
+
+    con = duckdb.connect()
+    con.register("__arrow_this", static(row_schema, row_rows))
+    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
+    want = con.execute(sql).to_arrow_table().to_pylist()
+
+    def close(a, b):
+        if isinstance(a, float) and isinstance(b, float):
+            if math.isnan(a) and math.isnan(b):
+                return True
+            ia = struct.unpack("<q", struct.pack("<d", a))[0]
+            ib = struct.unpack("<q", struct.pack("<d", b))[0]
+            return abs(ia - ib) <= max_ulp
+        return repr(a) == repr(b)
+
+    assert len(got) == len(want)
+    for g, w in zip(got, want, strict=True):
+        for k in g:
+            assert close(g[k], w[k]), f"{k}: {g[k]!r} vs {w[k]!r} (> {max_ulp} ulp)"
+
+
 def test_sqrt_cbrt_bigint():
     xs = [4, 0, 27, 9223372036854775807, 9007199254740992, 9007199254740993, None]
-    duck_check(
+    duck_check_ulp(
         "SELECT sqrt(x) AS s, cbrt(x) AS c FROM __THIS__",
         {"x": "int?"},
         [{"x": x} for x in xs],
@@ -905,8 +942,9 @@ def test_sqrt_cbrt_bigint():
 
 def test_cbrt_total_function():
     # cbrt has NO domain restriction: negatives, -inf, -0.0 all flow through.
+    # ulp-tolerant: the oracle's own wheels disagree cross-platform on cbrt.
     xs = [8.0, -8.0, 27.0, 2.0, 0.0, -0.0, INF, -INF, NAN, None, 5e-324, -1.0]
-    duck_check(
+    duck_check_ulp(
         "SELECT cbrt(x) AS c FROM __THIS__", {"x": "float?"}, [{"x": x} for x in xs]
     )
 
