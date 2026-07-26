@@ -71,7 +71,16 @@ pub fn frontend(
     // GenericDialect, not DuckDbDialect: measured as a strict superset for
     // the forms we serve (adds ^@, * ILIKE, * RENAME) and matches the oracle
     // path in datafusion/plan.rs — see pins-wave5/sqlparser-spike.json.
-    let statements = Parser::parse_sql(&GenericDialect {}, sql)
+    // DuckDB-only surface forms sqlparser can't represent are token-rewritten
+    // first (rewrite.rs).
+    let dialect = GenericDialect {};
+    let tokens = sqlparser::tokenizer::Tokenizer::new(&dialect, sql)
+        .tokenize()
+        .map_err(|e| PrepareError::Parse(e.to_string()))?;
+    let tokens = super::rewrite::rewrite_colon_aliases(tokens);
+    let statements = Parser::new(&dialect)
+        .with_tokens(tokens)
+        .parse_statements()
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     let [statement] = statements.as_slice() else {
         return Err(unsup("multiple SQL statements"));
