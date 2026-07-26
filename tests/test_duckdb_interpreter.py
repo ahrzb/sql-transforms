@@ -286,18 +286,34 @@ def test_nan_comparison_differential():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DuckDB uses utf8proc SIMPLE case maps (upper('ß')='ẞ', "
-    "lower('İ')='i', upper('ᾀ')='ᾈ'); Rust std only exposes full maps — "
-    "known divergence, see the 2026-07-26 builtin-pins spec",
-)
-def test_simple_case_mapping_divergence():
+def test_simple_case_mapping_matches_duckdb():
+    # Formerly a strict xfail: DuckDB uses utf8proc SIMPLE case maps, Rust
+    # std only has full maps. src/specializer/exec/casemap.rs now carries the
+    # measured exception table (see scripts/gen_casemap.py for why it exists
+    # and why it is dependency-free).
     duck_check(
         "SELECT upper(s) AS u, lower(s) AS l FROM __THIS__",
         {"s": "str"},
-        [{"s": "ß"}, {"s": "İ"}, {"s": "ᾀ"}],
+        [{"s": "ß"}, {"s": "İ"}, {"s": "ᾀ"}, {"s": "ƛ"}],
     )
+
+
+def test_simple_case_mapping_full_codepoint_census():
+    # THE authority on casemap.rs: every Unicode scalar value, chunked into
+    # long strings (per-codepoint mapping makes one string test them all),
+    # through both engines. If a duckdb bump shifts utf8proc's tables, this
+    # fails and scripts/gen_casemap.py regenerates the exception table.
+    step = 0x8000
+    rows = []
+    for lo in range(1, 0x110000, step):
+        s = "".join(
+            chr(c)
+            for c in range(lo, min(lo + step, 0x110000))
+            if not (0xD800 <= c <= 0xDFFF)
+        )
+        if s:
+            rows.append({"s": s})
+    duck_check("SELECT upper(s) AS u, lower(s) AS l FROM __THIS__", {"s": "str"}, rows)
 
 
 # --------------------------------------------- adversarial-fleet fixes:

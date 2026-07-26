@@ -10,6 +10,7 @@
 //! backend actually shares it — one home per concept until two consumers
 //! exist.
 
+pub mod casemap;
 pub mod interp;
 
 #[cfg(test)]
