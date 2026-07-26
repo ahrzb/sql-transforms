@@ -3,10 +3,10 @@ id: TASK-49
 title: >-
   Specializer SQL support: builtin long tail + similarity + string subscripts
   (wave 3)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-26 16:45'
-updated_date: '2026-07-26 17:44'
+updated_date: '2026-07-26 18:15'
 labels: []
 milestone: m-7
 dependencies:
