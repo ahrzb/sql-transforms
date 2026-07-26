@@ -24,7 +24,9 @@ any timing; a scenario that disagrees aborts the bench.
 Run: uv run python -m benchmarks.bench_serving [--json out.json]
 IMPORTANT: rebuild the wheel first (uv run --reinstall-package sql-transform
 python -c pass) — a stale wheel inflates ONLY the engine rows and once
-produced a phantom 7x regression (caught by bisection, 2026-07-26).
+produced a phantom 7x regression (caught by bisection, 2026-07-26). Debug
+builds (the native test guard's `maturin develop` shadowing the release
+wheel) are refused automatically before any timing.
 """
 
 from __future__ import annotations
@@ -140,6 +142,24 @@ def engine_run(engines):
     print(json.dumps(results))
 
 
+def refuse_debug_build():
+    """Abort unless the imported native extension is a release build.
+
+    tests/_native_guard.py rebuilds the cwd-local .pyd via plain `maturin
+    develop` (debug) whenever src/*.rs is newer; that shadows the venv's
+    release wheel and silently inflates engine rows ~5x (measured 2026-07-26).
+    """
+    from sql_transform import _interpreter
+
+    profile = getattr(_interpreter, "BUILD_PROFILE", None)
+    if profile != "release":
+        sys.exit(
+            f"bench_serving: refusing to time a non-release native build "
+            f"(BUILD_PROFILE={profile!r}, loaded from {_interpreter.__file__}).\n"
+            f"Rebuild with: uv run maturin develop --release"
+        )
+
+
 def orchestrate():
     print("parity gate:", flush=True)
     for mod in map(sc.load, scenario_names()):
@@ -192,6 +212,7 @@ def orchestrate():
 
 
 if __name__ == "__main__":
+    refuse_debug_build()
     if "--engine-run" in sys.argv:
         engine_run(os.environ["BENCH_ENGINES"].split(","))
     else:
