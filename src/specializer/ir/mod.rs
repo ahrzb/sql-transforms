@@ -517,6 +517,23 @@ pub enum Inst {
         dst: Value,
         a: Value,
     },
+    /// round/trunc with digits on f64 — DuckDB's scale-then-round with the
+    /// oracle-extracted pow10 table; TOTAL (non-finite fallbacks differ
+    /// between round and trunc by measurement). `n` is an i64 register.
+    Round2f {
+        trunc: bool,
+        dst: Value,
+        a: Value,
+        n: Value,
+    },
+    /// Integer round/trunc with digits: identity for n >= 0, WRAPPING
+    /// half-add at i64 for round with n < 0 (measured — never traps).
+    Round2i {
+        trunc: bool,
+        dst: Value,
+        a: Value,
+        n: Value,
+    },
     /// `supper` / `slower` — Str -> Str, simple case mapping.
     Str1 {
         op: StrOp1,
@@ -648,6 +665,8 @@ impl Inst {
             | Inst::Str1 { dst, .. }
             | Inst::Str2 { dst, .. }
             | Inst::SLen { dst, .. }
+            | Inst::Round2f { dst, .. }
+            | Inst::Round2i { dst, .. }
             | Inst::Strim { dst, .. }
             | Inst::Ssubstr { dst, .. }
             | Inst::Num1 { dst, .. }
@@ -711,6 +730,8 @@ impl Inst {
                 dst, a, chars: b, ..
             }
             | Inst::Str2 { dst, a, b, .. }
+            | Inst::Round2f { dst, a, n: b, .. }
+            | Inst::Round2i { dst, a, n: b, .. }
             | Inst::Sconcat { dst, a, b } => {
                 *dst = m(*dst);
                 *a = m(*a);

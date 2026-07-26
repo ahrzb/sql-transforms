@@ -744,6 +744,94 @@ pub(super) fn math1_fn(op: NumOp1) -> fn(f64) -> Result<f64, Trap> {
     }
 }
 
+/// DuckDB's pow(10, k) — the oracle-extracted table; inf beyond 308.
+fn pow10(k: i64) -> f64 {
+    if (0..=308).contains(&k) {
+        super::pow10::POW10[k as usize]
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// round(x, n) on f64 — scale-then-round with the oracle pow table.
+/// Non-finite results fall back to the INPUT for n >= 0 and to +0.0 for
+/// n < 0 (measured asymmetry: round(NaN, -2) = 0.0).
+pub(super) fn round_prec_f64(x: f64, n: i64) -> f64 {
+    if n >= 0 {
+        let m = pow10(n);
+        let r = (x * m).round() / m;
+        if r.is_infinite() || r.is_nan() {
+            x
+        } else {
+            r
+        }
+    } else {
+        let m = pow10(n.unsigned_abs() as i64);
+        let r = (x / m).round() * m;
+        if r.is_infinite() || r.is_nan() {
+            0.0
+        } else {
+            r
+        }
+    }
+}
+
+/// trunc(x, n) on f64: same shape as round, but BOTH branches fall back
+/// to the input — the round/trunc asymmetry is measured, not a bug.
+pub(super) fn trunc_prec_f64(x: f64, n: i64) -> f64 {
+    if n >= 0 {
+        let m = pow10(n);
+        let r = (x * m).trunc() / m;
+        if r.is_infinite() || r.is_nan() {
+            x
+        } else {
+            r
+        }
+    } else {
+        let m = pow10(n.unsigned_abs() as i64);
+        let r = (x / m).trunc() * m;
+        if r.is_infinite() || r.is_nan() {
+            x
+        } else {
+            r
+        }
+    }
+}
+
+/// Integer round with digits: identity for n >= 0; n < 0 WRAPS at i64
+/// (measured: round(i64::MAX, -2) = -9223372036854775700) — never traps.
+pub(super) fn round_prec_i64(x: i64, n: i64) -> i64 {
+    if n >= 0 {
+        return x;
+    }
+    let p = n.unsigned_abs();
+    if p >= 19 {
+        return 0;
+    }
+    let power = 10i64.pow(p as u32);
+    let half = power / 2;
+    let y = if x >= 0 {
+        x.wrapping_add(half)
+    } else {
+        x.wrapping_sub(half)
+    };
+    (y / power) * power
+}
+
+/// Integer trunc with digits: identity for n >= 0, truncating scale for
+/// n < 0 — no half-add, never wraps.
+pub(super) fn trunc_prec_i64(x: i64, n: i64) -> i64 {
+    if n >= 0 {
+        return x;
+    }
+    let p = n.unsigned_abs();
+    if p >= 19 {
+        return 0;
+    }
+    let power = 10i64.pow(p as u32);
+    (x / power) * power
+}
+
 /// Wave-1 string search (pins: 1-based CODEPOINT positions, empty needle
 /// matches everything, byte-wise comparison, zero unicode intelligence).
 pub(super) fn str_find(s: &str, n: &str) -> i64 {
@@ -981,6 +1069,30 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                         ctx.regs[dst] = RegVal::F64(0.0);
                     }
                 }
+                Ok(())
+            })
+        }
+        Inst::Round2f { trunc, dst, a, n } => {
+            let (dst, a, n) = (sl(slots, dst), sl(slots, a), sl(slots, n));
+            let f = if trunc {
+                trunc_prec_f64
+            } else {
+                round_prec_f64
+            };
+            Box::new(move |ctx| {
+                ctx.regs[dst] = RegVal::F64(f(as_f64(ctx.regs[a]), as_i64(ctx.regs[n])));
+                Ok(())
+            })
+        }
+        Inst::Round2i { trunc, dst, a, n } => {
+            let (dst, a, n) = (sl(slots, dst), sl(slots, a), sl(slots, n));
+            let f = if trunc {
+                trunc_prec_i64
+            } else {
+                round_prec_i64
+            };
+            Box::new(move |ctx| {
+                ctx.regs[dst] = RegVal::I64(f(as_i64(ctx.regs[a]), as_i64(ctx.regs[n])));
                 Ok(())
             })
         }

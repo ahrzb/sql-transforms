@@ -1415,7 +1415,7 @@ impl Binder<'_> {
                         ))),
                     }
                 }
-                [_, _] => Err(unsup("trunc with digits (scale-then-round algorithm)")),
+                [x, n] => self.round2(true, x, n),
                 _ => Err(PrepareError::Bind(
                     "trunc takes 1 or 2 arguments".to_string(),
                 )),
@@ -1465,7 +1465,7 @@ impl Binder<'_> {
                         ))),
                     }
                 }
-                [_, _] => Err(unsup("round with digits (scale-then-round algorithm)")),
+                [x, n] => self.round2(false, x, n),
                 _ => Err(PrepareError::Bind(
                     "round takes 1 or 2 arguments".to_string(),
                 )),
@@ -1740,6 +1740,42 @@ impl Binder<'_> {
                 b: Box::new(bn),
             },
             ty: op.result_ty(),
+            nullable,
+        })
+    }
+
+    /// round(x, n) / trunc(x, n): result type == subject type; digits must
+    /// be integer-typed. Total on both types (i64 wraps — pinned).
+    fn round2(&self, trunc: bool, x: &SqlExpr, n: &SqlExpr) -> Result<SExpr, PrepareError> {
+        let name = if trunc { "trunc" } else { "round" };
+        let Some(subject) = self.expr_or_null(x)? else {
+            return Ok(null_of(Ty::I64));
+        };
+        if !matches!(subject.ty, Ty::I64 | Ty::F64) {
+            return Err(PrepareError::Bind(format!(
+                "no function matches {name}({}, digits)",
+                subject.ty.name()
+            )));
+        }
+        let ty = subject.ty;
+        let Some(digits) = self.expr_or_null(n)? else {
+            return Ok(null_of(ty));
+        };
+        if digits.ty != Ty::I64 {
+            return Err(PrepareError::Bind(format!(
+                "no function matches {name}({}, {})",
+                ty.name(),
+                digits.ty.name()
+            )));
+        }
+        let nullable = subject.nullable || digits.nullable;
+        Ok(SExpr {
+            kind: SKind::Round2 {
+                trunc,
+                a: Box::new(subject),
+                n: Box::new(digits),
+            },
+            ty,
             nullable,
         })
     }

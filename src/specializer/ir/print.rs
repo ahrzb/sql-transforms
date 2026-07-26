@@ -127,6 +127,14 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Str2 { op, a, b, .. } => {
             let _ = write!(s, "{} {}, {}", op.name(), val(*a), val(*b));
         }
+        Inst::Round2f { trunc, a, n, .. } => {
+            let op = if *trunc { "ftrunc2" } else { "fround2" };
+            let _ = write!(s, "{} {}, {}", op, val(*a), val(*n));
+        }
+        Inst::Round2i { trunc, a, n, .. } => {
+            let op = if *trunc { "itrunc2" } else { "iround2" };
+            let _ = write!(s, "{} {}, {}", op, val(*a), val(*n));
+        }
         Inst::SLen { bytes, a, .. } => {
             let _ = write!(s, "{} {}", if *bytes { "slenb" } else { "slenc" }, val(*a));
         }

@@ -405,6 +405,22 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 insts.push(Inst::Num1 { op, dst, a });
                 scope.add(dst, Ty::F64);
             }
+            12 if rng.chance(35) => {
+                // round/trunc with digits: total on both int and float.
+                let trunc = rng.chance(50);
+                let n = ensure(rng, b, scope, insts, Ty::I64);
+                if rng.chance(50) {
+                    let a = ensure(rng, b, scope, insts, Ty::F64);
+                    let dst = b.fresh();
+                    insts.push(Inst::Round2f { trunc, dst, a, n });
+                    scope.add(dst, Ty::F64);
+                } else {
+                    let a = ensure(rng, b, scope, insts, Ty::I64);
+                    let dst = b.fresh();
+                    insts.push(Inst::Round2i { trunc, dst, a, n });
+                    scope.add(dst, Ty::I64);
+                }
+            }
             12 => {
                 let a = ensure(rng, b, scope, insts, Ty::Str);
                 if rng.chance(30) {
