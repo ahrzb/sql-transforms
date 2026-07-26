@@ -497,17 +497,6 @@ fn compile_term(p: &Program, t: &Term, slots: &HashMap<u32, u32>) -> CTerm {
     }
 }
 
-/// Byte sink over the arena so `write!` formats without intermediate
-/// allocation.
-struct ArenaWriter<'a>(&'a mut Vec<u8>);
-
-impl std::fmt::Write for ArenaWriter<'_> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.0.extend_from_slice(s.as_bytes());
-        Ok(())
-    }
-}
-
 /// DuckDB's substr window arithmetic (measured 1.5.5), on codepoints — NOT
 /// grapheme clusters (substr slices inside ZWJ emoji). 1-based virtual
 /// positions: negative start counts from the end (`start = n + start + 1`),
@@ -523,7 +512,7 @@ impl std::fmt::Write for ArenaWriter<'_> {
 /// a non-negative length runs forward `[rs, rs+len)`, a NEGATIVE length
 /// slices BACKWARDS `[rs+len, rs)`; `len: None` is the 2-arg rest-of-string
 /// form.
-pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> String {
+pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> std::ops::Range<usize> {
     let n = s.chars().count() as i64;
     let rs = if start < 0 {
         (n + start + 1).max(1)
@@ -537,12 +526,37 @@ pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> String {
     };
     let (lo, hi) = (lo.max(1), hi.min(n + 1));
     if hi <= lo {
-        return String::new();
+        return 0..0;
     }
-    s.chars()
-        .skip((lo - 1) as usize)
-        .take((hi - lo) as usize)
-        .collect()
+    // Byte range of the char window — the output is a subview of `s`, so
+    // callers slice instead of copying.
+    let skip = (lo - 1) as usize;
+    let take = (hi - lo) as usize;
+    let b0 = s
+        .char_indices()
+        .nth(skip)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    let b1 = s[b0..]
+        .char_indices()
+        .nth(take)
+        .map(|(i, _)| b0 + i)
+        .unwrap_or(s.len());
+    b0..b1
+}
+
+/// The byte range of `s` that survives trimming `set` chars from the chosen
+/// ends — pure arithmetic, the output aliases the input. Membership scans
+/// `set` per char (a trim set is a handful of chars; no Vec).
+pub(super) fn trim_bounds(s: &str, set: &str, side: TrimSide) -> std::ops::Range<usize> {
+    let hit = |c: char| set.chars().any(|k| k == c);
+    let t = match side {
+        TrimSide::Both => s.trim_matches(hit),
+        TrimSide::Lead => s.trim_start_matches(hit),
+        TrimSide::Trail => s.trim_end_matches(hit),
+    };
+    let start = t.as_ptr() as usize - s.as_ptr() as usize;
+    start..start + t.len()
 }
 
 /// The offset/length guard DuckDB applies before the window: values outside
@@ -561,9 +575,16 @@ impl std::fmt::Display for DuckF64 {
         if self.0.is_nan() {
             return f.write_str("nan");
         }
-        let s = format!("{:?}", self.0);
+        // Stack-render the shortest round-trip form (≤ 24 bytes for any
+        // f64) so the hot path never builds a temp String.
+        let mut buf = StackStr::<32>::default();
+        {
+            use std::fmt::Write;
+            write!(buf, "{:?}", self.0).expect("f64 debug fits 32 bytes");
+        }
+        let s = buf.as_str();
         match s.find('e') {
-            None => f.write_str(&s),
+            None => f.write_str(s),
             Some(pos) => {
                 let exp: i64 = s[pos + 1..].parse().expect("float exponent");
                 write!(
@@ -578,12 +599,36 @@ impl std::fmt::Display for DuckF64 {
     }
 }
 
-fn fmt_into_arena(arena: &mut Arena, args: std::fmt::Arguments<'_>) -> StrRef {
-    let off = arena.0.len();
-    let _ = ArenaWriter(&mut arena.0).write_fmt(args);
-    StrRef {
-        off,
-        len: arena.0.len() - off,
+/// Fixed-capacity ASCII scratch for `write!` — errors instead of growing.
+struct StackStr<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> Default for StackStr<N> {
+    fn default() -> Self {
+        StackStr {
+            buf: [0; N],
+            len: 0,
+        }
+    }
+}
+
+impl<const N: usize> StackStr<N> {
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).expect("writes were valid UTF-8")
+    }
+}
+
+impl<const N: usize> std::fmt::Write for StackStr<N> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let b = s.as_bytes();
+        if self.len + b.len() > N {
+            return Err(std::fmt::Error);
+        }
+        self.buf[self.len..self.len + b.len()].copy_from_slice(b);
+        self.len += b.len();
+        Ok(())
     }
 }
 
@@ -750,7 +795,7 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
                 let v = as_i64(ctx.regs[a]);
-                ctx.regs[dst] = RegVal::Str(fmt_into_arena(ctx.arena, format_args!("{v}")));
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_fmt(format_args!("{v}")));
                 Ok(())
             })
         }
@@ -758,8 +803,7 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
                 let v = as_f64(ctx.regs[a]);
-                ctx.regs[dst] =
-                    RegVal::Str(fmt_into_arena(ctx.arena, format_args!("{}", DuckF64(v))));
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_fmt(format_args!("{}", DuckF64(v))));
                 Ok(())
             })
         }
@@ -814,9 +858,7 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                 StrOp1::Lower => super::casemap::simple_lower,
             };
             Box::new(move |ctx| {
-                let s = ctx.arena.get(as_str(ctx.regs[a]));
-                let out: String = s.chars().map(map).collect();
-                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                ctx.regs[dst] = RegVal::Str(ctx.arena.case_map(as_str(ctx.regs[a]), map));
                 Ok(())
             })
         }
@@ -828,16 +870,17 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
         } => {
             let (dst, a, chars) = (sl(slots, dst), sl(slots, a), sl(slots, chars));
             Box::new(move |ctx| {
-                let set: Vec<char> = ctx.arena.get(as_str(ctx.regs[chars])).chars().collect();
-                let s = ctx.arena.get(as_str(ctx.regs[a]));
-                let hit = |c: char| set.contains(&c);
-                let t = match side {
-                    TrimSide::Both => s.trim_matches(hit),
-                    TrimSide::Lead => s.trim_start_matches(hit),
-                    TrimSide::Trail => s.trim_end_matches(hit),
-                }
-                .to_owned();
-                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&t));
+                let sref = as_str(ctx.regs[a]);
+                let rng = trim_bounds(
+                    ctx.arena.get(sref),
+                    ctx.arena.get(as_str(ctx.regs[chars])),
+                    side,
+                );
+                // The trimmed value is a subview of the input span — no copy.
+                ctx.regs[dst] = RegVal::Str(StrRef {
+                    off: sref.off + rng.start,
+                    len: rng.end - rng.start,
+                });
                 Ok(())
             })
         }
@@ -864,9 +907,13 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                     }
                     None => None,
                 };
-                let s = ctx.arena.get(as_str(ctx.regs[a]));
-                let out = substr_window(s, st, ln);
-                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                let sref = as_str(ctx.regs[a]);
+                let rng = substr_window(ctx.arena.get(sref), st, ln);
+                // The window is a subview of the input span — no copy.
+                ctx.regs[dst] = RegVal::Str(StrRef {
+                    off: sref.off + rng.start,
+                    len: rng.end - rng.start,
+                });
                 Ok(())
             })
         }

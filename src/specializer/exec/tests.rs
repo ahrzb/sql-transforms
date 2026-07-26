@@ -285,6 +285,100 @@ fn steady_state_run_allocates_nothing() {
     }
     let delta = alloc_count() - before;
     assert_eq!(delta, 0, "steady-state run heap-allocated {delta} time(s)");
+
+    // The cranelift backend honors the same contract — its helpers share
+    // the interpreter's semantic functions, so they must also share the
+    // no-alloc property (TASK-45 AC #4).
+    let statics = vec![StaticData::Map(vec![(
+        vec![KeyBits::Str("a".into())],
+        vec![ScalarVal::F64(10.0)],
+    )])];
+    let cf = super::cranelift::compile(&p, statics).unwrap();
+    let mut cst = cf.new_state();
+    cf.run(&input, &mut cst).unwrap();
+    cf.run(&input, &mut cst).unwrap();
+
+    let before = alloc_count();
+    for _ in 0..5 {
+        cf.run(&input, &mut cst).unwrap();
+    }
+    let delta = alloc_count() - before;
+    assert_eq!(
+        delta, 0,
+        "cranelift steady state heap-allocated {delta} time(s)"
+    );
+}
+
+/// The string surface — case map, trim, substr, concat, int/float text,
+/// parse, compare — is arena-only in steady state on BOTH backends. These
+/// ops all used to build temp Strings per row (TASK-45 AC #4).
+#[test]
+fn steady_state_string_ops_allocate_nothing() {
+    let p = built(
+        r#"
+fn stringy(in: batch{s: str, t: str, n: i64}, out: batch{a: str, b: str}) {
+entry:
+  %s = load in.s
+  %t = load in.t
+  %up = supper %s
+  %lo = slower %up
+  %set = const.str " x"
+  %tr = strim.both %lo, %set
+  %one = const.i64 1
+  %three = const.i64 3
+  %sub = ssubstr %tr, %one, %three
+  %cat = sconcat %sub, %up
+  %n = load in.n
+  %ns = itos %n
+  %cat2 = sconcat %cat, %ns
+  store out.a, %cat2
+  %ok, %iv = stoi.opt %ns
+  %f = itof %iv
+  %fs = ftos %f
+  %eq = scmp.eq %s, %t
+  %sel = select %eq, %fs, %tr
+  %sel2 = select %ok, %sel, %up
+  store out.b, %sel2
+  emit
+}
+"#,
+    );
+    let input = batch(
+        3,
+        vec![
+            c_str(&[Some("  héLLo x"), Some("wörld"), Some("")]),
+            c_str(&[Some("wörld"), Some("wörld"), Some("a")]),
+            c_i64(&[Some(42), Some(-7), Some(0)]),
+        ],
+    );
+
+    let f = compile(&p, vec![]).unwrap();
+    let mut st = f.new_state();
+    f.run(&input, &mut st).unwrap();
+    f.run(&input, &mut st).unwrap();
+    let before = alloc_count();
+    for _ in 0..5 {
+        f.run(&input, &mut st).unwrap();
+    }
+    let delta = alloc_count() - before;
+    assert_eq!(
+        delta, 0,
+        "interp string steady state allocated {delta} time(s)"
+    );
+
+    let cf = super::cranelift::compile(&p, vec![]).unwrap();
+    let mut cst = cf.new_state();
+    cf.run(&input, &mut cst).unwrap();
+    cf.run(&input, &mut cst).unwrap();
+    let before = alloc_count();
+    for _ in 0..5 {
+        cf.run(&input, &mut cst).unwrap();
+    }
+    let delta = alloc_count() - before;
+    assert_eq!(
+        delta, 0,
+        "cranelift string steady state allocated {delta} time(s)"
+    );
 }
 
 // ----------------------------------------- adversarial-pass regressions --

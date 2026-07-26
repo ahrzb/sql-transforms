@@ -201,6 +201,59 @@ impl Arena {
         std::str::from_utf8(&self.0[r.off..r.off + r.len])
             .expect("arena spans are always whole UTF-8 strings")
     }
+
+    /// Format directly into the arena — no intermediate String.
+    pub fn push_fmt(&mut self, args: std::fmt::Arguments<'_>) -> StrRef {
+        use std::fmt::Write;
+        let off = self.0.len();
+        let _ = ArenaWriter(&mut self.0).write_fmt(args);
+        StrRef {
+            off,
+            len: self.0.len() - off,
+        }
+    }
+
+    /// Char-by-char 1:1 case map of `r` into a fresh span. Decodes one char
+    /// at a time (width from the leading byte, O(1) validation) so no temp
+    /// String is needed while the arena grows under the read span — offsets
+    /// stay valid across reallocation where borrows would not.
+    pub fn case_map(&mut self, r: StrRef, map: fn(char) -> char) -> StrRef {
+        let off = self.0.len();
+        let mut pos = r.off;
+        let end = r.off + r.len;
+        let mut buf = [0u8; 4];
+        while pos < end {
+            let w = match self.0[pos] {
+                0x00..=0x7f => 1,
+                0xc0..=0xdf => 2,
+                0xe0..=0xef => 3,
+                _ => 4,
+            };
+            let ch = std::str::from_utf8(&self.0[pos..pos + w])
+                .expect("arena spans are always whole UTF-8 strings")
+                .chars()
+                .next()
+                .expect("non-empty UTF-8 sequence");
+            pos += w;
+            self.0
+                .extend_from_slice(map(ch).encode_utf8(&mut buf).as_bytes());
+        }
+        StrRef {
+            off,
+            len: self.0.len() - off,
+        }
+    }
+}
+
+/// Byte sink over the arena so `write!` formats without intermediate
+/// allocation.
+struct ArenaWriter<'a>(&'a mut Vec<u8>);
+
+impl std::fmt::Write for ArenaWriter<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
 }
 
 /// An owned scalar, used by static structures and test expectations.
