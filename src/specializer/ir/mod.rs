@@ -517,6 +517,17 @@ pub enum Inst {
         dst: Value,
         a: Value,
     },
+    /// LIKE/ILIKE: `a LIKE p [ESCAPE esc]`. Byte-based matcher with
+    /// codepoint `_`; TRAPS on dangling-escape (data-dependent) and on a
+    /// multi-byte ESCAPE operand. `ci` folds both sides with the measured
+    /// simple casemap first (ILIKE's generic path).
+    Slike {
+        ci: bool,
+        dst: Value,
+        a: Value,
+        p: Value,
+        esc: Option<Value>,
+    },
     /// round/trunc with digits on f64 — DuckDB's scale-then-round with the
     /// oracle-extracted pow10 table; TOTAL (non-finite fallbacks differ
     /// between round and trunc by measurement). `n` is an i64 register.
@@ -667,6 +678,7 @@ impl Inst {
             | Inst::SLen { dst, .. }
             | Inst::Round2f { dst, .. }
             | Inst::Round2i { dst, .. }
+            | Inst::Slike { dst, .. }
             | Inst::Strim { dst, .. }
             | Inst::Ssubstr { dst, .. }
             | Inst::Num1 { dst, .. }
@@ -736,6 +748,14 @@ impl Inst {
                 *dst = m(*dst);
                 *a = m(*a);
                 *b = m(*b);
+            }
+            Inst::Slike { dst, a, p, esc, .. } => {
+                *dst = m(*dst);
+                *a = m(*a);
+                *p = m(*p);
+                if let Some(e) = esc {
+                    *e = m(*e);
+                }
             }
             Inst::Ssubstr { dst, a, start, len } => {
                 *dst = m(*dst);

@@ -80,6 +80,17 @@ pub fn fold(e: SExpr) -> SExpr {
                 a: Box::new(a),
             })
         }
+        SKind::Like { ci, a, p, esc } => {
+            let a = fold(*a);
+            let p = fold(*p);
+            let esc = esc.map(|e| Box::new(fold(*e)));
+            e(SKind::Like {
+                ci,
+                a: Box::new(a),
+                p: Box::new(p),
+                esc,
+            })
+        }
         SKind::Round2 { trunc, a, n } => {
             let a = fold(*a);
             let n = fold(*n);

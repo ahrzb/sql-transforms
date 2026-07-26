@@ -1458,3 +1458,245 @@ def test_alias_shadows_original_name():
             row_tables={"__THIS__": _row_model({"a": "int"})},
             static_tables={},
         )
+
+
+# --------------------------------------------------------- TASK-48:
+# LIKE / NOT LIKE / ILIKE - measured DuckDB 1.5.5 pins as oracle tests.
+# LIKE / NOT LIKE / ILIKE pins via duck_check (engine vs live DuckDB 1.5.5).
+# Every SQL below was validated against a native-table DuckDB oracle on 2026-07-26.
+# NOT expressible here: the error pins (dangling escape with chars left, multi-byte
+# ESCAPE string) — those raise SyntaxException per-row; cover them with pytest.raises.
+
+
+def test_like_wildcards_and_empty():
+    duck_check(
+        "SELECT s LIKE '%' AS c01, s LIKE '%%' AS c02, "
+        "s LIKE 'a%' AS c03, s LIKE '%c' AS c04, "
+        "s LIKE '%b%' AS c05, s LIKE 'a%c' AS c06, "
+        "s LIKE 'a%b' AS c07, s LIKE '%abc' AS c08, "
+        "s LIKE 'abc%' AS c09, s LIKE '%abcd%' AS c10, "
+        "s LIKE 'abc' AS c11, s LIKE '' AS c12, "
+        "s LIKE '_' AS c13, s LIKE '___' AS c14, s LIKE '_%' AS c15, "
+        "s LIKE '%_' AS c16, "
+        "s LIKE '%_%' AS c17, s LIKE 'a%a' AS c18, "
+        "s LIKE 'a%c%f' AS c19, s LIKE '%%c' AS c20, "
+        "s NOT LIKE 'a%' AS n01, s NOT LIKE '_' AS n02 FROM __THIS__",
+        {"s": "str?"},
+        [
+            {"s": v}
+            for v in [
+                "abc",
+                "",
+                "a",
+                "ab",
+                "ac",
+                "aa",
+                "aaa",
+                "abcdef",
+                "a%b",
+                "a_b",
+                "%",
+                "_",
+                "xabcx",
+                "A",
+                None,
+            ]
+        ],
+    )
+
+
+def test_like_underscore_is_one_codepoint():
+    # NFC 1cp/2B, NFD 2cp/3B, emoji 1cp/4B, ZWJ family 5cp/18B: '_' = one CODEPOINT
+    duck_check(
+        "SELECT s LIKE '_' AS u1, s LIKE '__' AS u2, "
+        "s LIKE '___' AS u3, s LIKE '_____' AS u4, "
+        "s LIKE 'a_c' AS u5, s LIKE '%é%' AS u6, s LIKE 'é' AS u7, "
+        "s LIKE 'é' AS u8, s LIKE '_x' AS u9 FROM __THIS__",
+        {"s": "str?"},
+        [
+            {"s": v}
+            for v in [
+                "é",
+                "é",
+                "\U0001f600",
+                "\U0001f468‍\U0001f469‍\U0001f467",
+                "aéc",
+                "éx",
+                None,
+            ]
+        ],
+    )
+
+
+def test_like_literals_case_and_backslash():
+    # regex specials are literals; backslash is literal (NO implicit
+    # escape); case-sensitive
+    duck_check(
+        "SELECT s LIKE 'a' AS l1, s LIKE 'A' AS l2, "
+        "s LIKE 'a.c' AS l3, s LIKE 'a[b]c' AS l4, "
+        "s LIKE 'a(b)c' AS l5, s LIKE 'a*' AS l6, "
+        "s LIKE 'a+?' AS l7, s LIKE 'a^$c' AS l8, "
+        "s LIKE 'a\\c' AS l9, s LIKE 'a\\bc' AS l10, "
+        "s LIKE 'a\\%b' AS l11, s LIKE '\\' AS l12, "
+        "s LIKE '\\%' AS l13 FROM __THIS__",
+        {"s": "str?"},
+        [
+            {"s": v}
+            for v in [
+                "A",
+                "a",
+                "ABC",
+                "a.c",
+                "abc",
+                "a[b]c",
+                "a(b)c",
+                "a*",
+                "a+?",
+                "a^$c",
+                "a\\c",
+                "a\\xb",
+                "a\\b",
+                "\\",
+                "%",
+                "a%b",
+            ]
+        ],
+    )
+
+
+def test_like_control_chars():
+    # chr() is not in the catalogue; embed the control chars directly in
+    # the SQL literals (legal in both engines).
+    duck_check(
+        "SELECT s LIKE 'a\nb' AS t1, s LIKE 'a_b' AS t2, s LIKE 'a%b' AS t3, "
+        "s LIKE '%\nb' AS t4, s LIKE 'a\t%' AS t5, "
+        "s LIKE '_\nb' AS t6 FROM __THIS__",
+        {"s": "str?"},
+        [{"s": v} for v in ["a\nb", "a\tb", "ab"]],
+    )
+
+
+def test_like_dangling_escape_false_rows():
+    # Dangling escape is DATA-dependent: these rows return false (string exhausted
+    # before the trailing escape is consumed). Rows with chars remaining at the
+    # escape raise SyntaxException instead — engine must reproduce BOTH.
+    duck_check(
+        "SELECT s LIKE 'ab#' ESCAPE '#' AS d1,"
+        " s LIKE 'ab#%' ESCAPE '#' AS d2 FROM __THIS__",
+        {"s": "str?"},
+        [{"s": v} for v in ["ab", "a", "", None]],
+    )
+    duck_check(
+        "SELECT s LIKE 'a#' ESCAPE '#' AS d3 FROM __THIS__",
+        {"s": "str?"},
+        [{"s": v} for v in ["a", "", "ba", None]],
+    )
+    duck_check(
+        "SELECT s LIKE '#' ESCAPE '#' AS d4 FROM __THIS__",
+        {"s": "str?"},
+        [{"s": v} for v in ["", None]],
+    )
+
+
+def test_like_pattern_from_column():
+    # vec_sp path: pattern (and NULLs) flowing through a column
+    duck_check(
+        "SELECT s LIKE p AS v1, s NOT LIKE p AS v2,"
+        " s LIKE p ESCAPE '#' AS v3 FROM __THIS__",
+        {"s": "str?", "p": "str?"},
+        [
+            {"s": s, "p": p}
+            for s, p in [
+                ("abc", "a%c"),
+                ("abc", "a_c"),
+                ("abc", "x%"),
+                ("a%b", "a#%b"),
+                ("axb", "a#%b"),
+                ("ab", "ab#"),
+                ("aeb", "aeeb"),
+                ("é", "_"),
+                ("é", "__"),
+                (None, "%"),
+                ("abc", None),
+                (None, None),
+            ]
+        ],
+    )
+
+
+def test_like_degenerate_equivalences():
+    # LIKE 'abc%'==prefix==starts_with, '%abc'==suffix==ends_with, '%abc%'==contains,
+    # bitwise incl. NULL propagation (s LIKE '%' is NULL for NULL s, not false)
+    duck_check(
+        "SELECT s LIKE 'abc%' AS g1, prefix(s,'abc') AS g2, s LIKE '%abc' AS g3, "
+        "suffix(s,'abc') AS g4, s LIKE '%abc%' AS g5, contains(s,'abc') AS g6, "
+        "s LIKE 'abc' AS g7, starts_with(s,'abc') AS g8, ends_with(s,'abc') AS g9, "
+        "s LIKE '%' AS g10 FROM __THIS__",
+        {"s": "str?"},
+        [
+            {"s": v}
+            for v in [
+                None,
+                "",
+                "a",
+                "ab",
+                "abc",
+                "abcx",
+                "xabc",
+                "xabcx",
+                "ABC",
+                "a%c",
+                "éabcé",
+                "\U0001f600abc",
+                "a\nb",
+                "abca",
+                "aabc",
+            ]
+        ],
+    )
+
+
+def test_like_escape_clause():
+    duck_check(
+        "SELECT s LIKE 'a#%b' ESCAPE '#' AS e1, s LIKE '%#%' ESCAPE '#' AS e2, "
+        "s LIKE 'a#_b' ESCAPE '#' AS e3, s LIKE 'a##b' ESCAPE '#' AS e4, "
+        "s LIKE 'a##' ESCAPE '#' AS e5, s LIKE 'a#b' ESCAPE '#' AS e6, "
+        "s LIKE 'abc' ESCAPE '#' AS e7, s LIKE 'a%%b' ESCAPE '%' AS e8, "
+        "s LIKE 'a%b' ESCAPE '%' AS e9, s LIKE 'a__b' ESCAPE '_' AS e10, "
+        "s LIKE 'aeb' ESCAPE 'e' AS e11, s LIKE 'aeeb' ESCAPE 'e' AS e12, "
+        "s LIKE 'a#%b' ESCAPE '' AS e13, s ILIKE 'A#%B' ESCAPE '#' AS e14, "
+        "s LIKE 'a#%b' ESCAPE NULL AS e15 FROM __THIS__",
+        {"s": "str?"},
+        [
+            {"s": v}
+            for v in [
+                "a%b",
+                "axb",
+                "a%",
+                "a_b",
+                "a#b",
+                "a#",
+                "ab",
+                "abc",
+                "aeb",
+                "a#xb",
+                None,
+            ]
+        ],
+    )
+
+
+def test_like_dangling_escape_is_data_dependent():
+    # Exhausted string -> plain false; chars remaining -> per-row trap.
+    duck_check(
+        "SELECT s LIKE 'ab#' ESCAPE '#' AS d FROM __THIS__",
+        {"s": "str"},
+        [{"s": "ab"}],
+    )
+    with pytest.raises(ValueError, match="must not end with escape"):
+        fn = DuckDBInferFn(
+            "SELECT s LIKE 'a#' ESCAPE '#' AS d FROM __THIS__",
+            row_tables={"__THIS__": _row_model({"s": "str"})},
+            static_tables={},
+        )
+        fn.infer_rows([{"s": "ax"}])

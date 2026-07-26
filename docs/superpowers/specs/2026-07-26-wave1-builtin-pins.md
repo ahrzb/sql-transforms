@@ -112,3 +112,24 @@ differs.
   DOUBLE column path, as with substr).
 - Repo doc drift found during verification: interp.rs header still says
   fcmp is IEEE-with-NaN-false; it is duck_fcmp. Fix in this wave.
+
+## Wave-2 addendum: LIKE (pins-wave1/pins_like.json)
+
+Byte-based matcher, codepoint `_`, no normalization; backslash is a LITERAL
+(no implicit escape — unlike Postgres); ESCAPE takes any single BYTE (a
+2-byte codepoint errors), doubled = literal, the escape char never matches
+itself unescaped, ESCAPE '' = none, ESCAPE NULL = NULL. The dangling-escape
+error is DATA-DEPENDENT per row (string exhausted -> plain false; bytes
+remaining when the matcher examines it -> SyntaxException) — reproduced by
+leftmost-first backtracking. ILIKE = fold both sides with the measured
+simple casemap then LIKE (exhaustive all-codepoint sweep, zero exceptions);
+DuckDB's oracle-side caveats: (1) a stats-dependent ASCII kernel whose only
+divergence surface is U+212A/U+0130 in patterns, and (2) the generic
+kernel's fold NUL-truncates inconsistently, making a NUL-containing row's
+result depend on SIBLING rows — statistics-dependent semantics are
+irreproducible row-locally, so the engine is NUL-transparent and the one
+corpus case is a documented divergence (test_corpus_replay
+_KNOWN_DIVERGENT_SOURCES). SIMILAR TO rejects by name: DuckDB binds it to
+regexp_full_match (RE2), not SQL wildcards. DuckDB's own column-pattern
+LIKE is naive-recursive (measured 23s on one pathological row); ours is the
+O(n*m) two-pointer restart with identical booleans and error rows.

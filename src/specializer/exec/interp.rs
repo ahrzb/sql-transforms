@@ -833,6 +833,101 @@ pub(super) fn trunc_prec_i64(x: i64, n: i64) -> i64 {
     (x / power) * power
 }
 
+// ------------------------------------------------------ LIKE (wave 2) --
+// Byte-based matcher with codepoint `_`, reproducing every DuckDB 1.5.5
+// pin including the DATA-DEPENDENT dangling-escape error (raised only
+// when the matcher examines a trailing escape while string bytes remain;
+// plain false when the string is exhausted). Iterative two-pointer
+// restart: identical booleans and identical error rows to the leftmost-
+// first recursive semantics, never DuckDB's own O(n^k) blowup (measured
+// 23s/row there on pathological patterns; ours is O(n*m)).
+// Pins: docs/superpowers/specs/pins-wave1/pins_like.json.
+
+fn utf8_width(b: u8) -> usize {
+    match b {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        // Continuation/invalid lead: advance one byte (spans are valid
+        // UTF-8; this arm is reachable only from a % restart landing on a
+        // continuation byte, where the subsequent literal compare fails
+        // anyway — pinned by the multibyte %_ duck_checks).
+        _ => 1,
+    }
+}
+
+pub(super) fn like_match(s: &[u8], p: &[u8], esc: Option<u8>) -> Result<bool, Trap> {
+    let (mut si, mut pi) = (0usize, 0usize);
+    // Backtrack state: pattern index just past the last %, and the string
+    // index its current attempt started at.
+    let (mut star_p, mut star_s): (Option<usize>, usize) = (None, 0);
+    loop {
+        if pi < p.len() {
+            let pc = p[pi];
+            if Some(pc) == esc {
+                // Escape intro beats % and _ (ESCAPE '%' de-wildcards it).
+                if si == s.len() {
+                    return Ok(false); // exhausted string: plain false
+                }
+                if pi + 1 == p.len() {
+                    return Err(Trap(
+                        "Like pattern must not end with escape character!".into(),
+                    ));
+                }
+                if s[si] == p[pi + 1] {
+                    si += 1;
+                    pi += 2;
+                    continue;
+                }
+            } else if pc == b'%' {
+                while pi < p.len() && p[pi] == b'%' && Some(b'%') != esc {
+                    pi += 1;
+                }
+                if pi == p.len() {
+                    return Ok(true);
+                }
+                star_p = Some(pi);
+                star_s = si;
+                continue;
+            } else if pc == b'_' {
+                if si < s.len() {
+                    si += utf8_width(s[si]);
+                    pi += 1;
+                    continue;
+                }
+            } else if si < s.len() && s[si] == pc {
+                si += 1;
+                pi += 1;
+                continue;
+            }
+        } else if si == s.len() {
+            return Ok(true);
+        }
+        // Mismatch: restart at the last % with one more byte consumed.
+        match star_p {
+            Some(sp) if star_s < s.len() => {
+                star_s += 1;
+                si = star_s;
+                pi = sp;
+            }
+            _ => return Ok(false),
+        }
+    }
+}
+
+/// Validate an ESCAPE operand per row (AFTER NULL handling): empty means
+/// no escape; the limit is one BYTE (a single 2-byte codepoint errors).
+pub(super) fn like_escape_of(esc: &str) -> Result<Option<u8>, Trap> {
+    match esc.len() {
+        0 => Ok(None),
+        1 => Ok(Some(esc.as_bytes()[0])),
+        _ => Err(Trap(
+            "Invalid escape string. Escape string must be empty or one character.".into(),
+        )),
+    }
+}
+
 /// Wave-1 string search (pins: 1-based CODEPOINT positions, empty needle
 /// matches everything, byte-wise comparison, zero unicode intelligence).
 pub(super) fn str_find(s: &str, n: &str) -> i64 {
@@ -1094,6 +1189,39 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
             };
             Box::new(move |ctx| {
                 ctx.regs[dst] = RegVal::I64(f(as_i64(ctx.regs[a]), as_i64(ctx.regs[n])));
+                Ok(())
+            })
+        }
+        Inst::Slike { ci, dst, a, p, esc } => {
+            let (dst, a, p) = (sl(slots, dst), sl(slots, a), sl(slots, p));
+            let esc = esc.map(|e| sl(slots, e));
+            Box::new(move |ctx| {
+                let e = match esc {
+                    None => None,
+                    Some(e) => like_escape_of(ctx.arena.get(as_str(ctx.regs[e])))?,
+                };
+                let (sr, pr) = (as_str(ctx.regs[a]), as_str(ctx.regs[p]));
+                let (sr, pr) = if ci {
+                    // ILIKE: fold BOTH sides with the measured simple
+                    // casemap (== DuckDB lower(); generic vectorized path.
+                    // Known divergence, documented in the pins: DuckDB
+                    // swaps an ASCII-only fold when column STATS are pure
+                    // ASCII — K/U+0130 in the pattern are the entire
+                    // observable surface).
+                    (
+                        ctx.arena.case_map(sr, super::casemap::simple_lower),
+                        ctx.arena.case_map(pr, super::casemap::simple_lower),
+                    )
+                } else {
+                    (sr, pr)
+                };
+                // Two immutable reads after any folding appends.
+                let ok = {
+                    let sv = ctx.arena.get(sr).as_bytes();
+                    let pv = ctx.arena.get(pr).as_bytes();
+                    like_match(sv, pv, e)?
+                };
+                ctx.regs[dst] = RegVal::I1(ok);
                 Ok(())
             })
         }
