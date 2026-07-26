@@ -481,7 +481,7 @@ fn unsupported_constructs_are_named_cleanly() {
         // function arm until the catalogue distinguishes aggregation.
         ("SELECT sum(a) FROM __THIS__", "function sum"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
-        ("SELECT length('x') FROM __THIS__", "function"),
+        ("SELECT levenshtein('x', 'y') FROM __THIS__", "function"),
         // Star now expands; the still-unsupported star forms reject by name.
         ("SELECT * REPLACE (a + 1 AS a) FROM __THIS__", "REPLACE"),
         ("SELECT COLUMNS('a') FROM __THIS__", "function COLUMNS"),

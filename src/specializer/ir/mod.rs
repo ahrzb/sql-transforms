@@ -337,6 +337,36 @@ impl StrOp1 {
     }
 }
 
+/// Wave-1 string search: str × str, TOTAL (no traps), NULL-strict via
+/// lanes. Positions are 1-based CODEPOINT indices; an empty needle
+/// matches everything (pins spec 2026-07-26).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StrOp2 {
+    /// instr/strpos/position: 1-based codepoint index, 0 = not found.
+    Find,
+    Contains,
+    Starts,
+    Ends,
+}
+
+impl StrOp2 {
+    pub fn result_ty(self) -> Ty {
+        match self {
+            StrOp2::Find => Ty::I64,
+            _ => Ty::I1,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            StrOp2::Find => "sfind",
+            StrOp2::Contains => "scontains",
+            StrOp2::Starts => "sstarts",
+            StrOp2::Ends => "sends",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TrimSide {
     Both,
@@ -474,6 +504,19 @@ pub enum Inst {
         a: Value,
         b: Value,
     },
+    /// Wave-1 string search — `a` is the haystack, `b` the needle.
+    Str2 {
+        op: StrOp2,
+        dst: Value,
+        a: Value,
+        b: Value,
+    },
+    /// String length: codepoints (`slenc`) or UTF-8 bytes (`slenb`).
+    SLen {
+        bytes: bool,
+        dst: Value,
+        a: Value,
+    },
     /// `supper` / `slower` — Str -> Str, simple case mapping.
     Str1 {
         op: StrOp1,
@@ -603,6 +646,8 @@ impl Inst {
             | Inst::Ftos { dst, .. }
             | Inst::Sconcat { dst, .. }
             | Inst::Str1 { dst, .. }
+            | Inst::Str2 { dst, .. }
+            | Inst::SLen { dst, .. }
             | Inst::Strim { dst, .. }
             | Inst::Ssubstr { dst, .. }
             | Inst::Num1 { dst, .. }
@@ -654,6 +699,7 @@ impl Inst {
             | Inst::Itof { dst, a }
             | Inst::Ftoi { dst, a, .. }
             | Inst::Str1 { dst, a, .. }
+            | Inst::SLen { dst, a, .. }
             | Inst::Num1 { dst, a, .. }
             | Inst::Not { dst, a } => {
                 *dst = m(*dst);
@@ -664,6 +710,7 @@ impl Inst {
             | Inst::Strim {
                 dst, a, chars: b, ..
             }
+            | Inst::Str2 { dst, a, b, .. }
             | Inst::Sconcat { dst, a, b } => {
                 *dst = m(*dst);
                 *a = m(*a);

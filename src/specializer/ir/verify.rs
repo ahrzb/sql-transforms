@@ -185,6 +185,8 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
             vec![(*dst, Ty::Str)]
         }
         Inst::Num1 { op, dst, .. } => vec![(*dst, op.sig())],
+        Inst::Str2 { op, dst, .. } => vec![(*dst, op.result_ty())],
+        Inst::SLen { dst, .. } => vec![(*dst, Ty::I64)],
         Inst::StoiOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::I64)],
         Inst::StofOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::F64)],
         Inst::Load { dst, col } => vec![(*dst, in_col(*col).unwrap_or(Ty::I1))],
@@ -353,11 +355,15 @@ fn check_block(
             Inst::StoiOpt { a, .. } | Inst::StofOpt { a, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
             }
-            Inst::Sconcat { a, b: rhs, .. } | Inst::Strim { a, chars: rhs, .. } => {
+            Inst::Sconcat { a, b: rhs, .. }
+            | Inst::Strim { a, chars: rhs, .. }
+            | Inst::Str2 { a, b: rhs, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
                 want(&in_scope, def_types, *rhs, Ty::Str, "operand", bi, i, errs);
             }
-            Inst::Str1 { a, .. } => want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs),
+            Inst::Str1 { a, .. } | Inst::SLen { a, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
+            }
             Inst::Ssubstr { a, start, len, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
                 want(

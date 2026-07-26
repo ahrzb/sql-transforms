@@ -124,6 +124,12 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Str1 { op, a, .. } => {
             let _ = write!(s, "{} {}", op.name(), val(*a));
         }
+        Inst::Str2 { op, a, b, .. } => {
+            let _ = write!(s, "{} {}, {}", op.name(), val(*a), val(*b));
+        }
+        Inst::SLen { bytes, a, .. } => {
+            let _ = write!(s, "{} {}", if *bytes { "slenb" } else { "slenc" }, val(*a));
+        }
         Inst::Strim { side, a, chars, .. } => {
             let _ = write!(s, "strim.{} {}, {}", side.name(), val(*a), val(*chars));
         }

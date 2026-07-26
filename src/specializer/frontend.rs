@@ -28,7 +28,7 @@ use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 
 use super::fold::fold;
-use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, TrimSide, Ty};
+use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, TrimSide, Ty};
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -754,6 +754,9 @@ impl Binder<'_> {
                 substring_for,
                 ..
             } => self.substr_node(expr, substring_from.as_deref(), substring_for.as_deref()),
+            // SQL-standard position(needle IN haystack) — needle-first,
+            // same op as instr/strpos (measured).
+            SqlExpr::Position { expr, r#in } => self.str2("position", StrOp2::Find, r#in, expr),
             // sqlparser gives FLOOR/CEIL dedicated AST nodes, not Function
             // calls; the datetime `CEIL(x TO field)` form rejects by name.
             SqlExpr::Floor { expr, field } => match field {
@@ -1307,6 +1310,50 @@ impl Binder<'_> {
                     _ => Err(PrepareError::Bind(format!("{name} takes 1 or 2 arguments"))),
                 }
             }
+            // Wave-1 string search (pins): instr/strpos/2-arg position are
+            // one op with (haystack, needle) order; prefix/suffix alias
+            // starts_with/ends_with; positions are 1-based codepoints.
+            "instr" | "strpos" | "position" | "contains" | "starts_with" | "prefix"
+            | "ends_with" | "suffix" => {
+                let op = match name.as_str() {
+                    "instr" | "strpos" | "position" => StrOp2::Find,
+                    "contains" => StrOp2::Contains,
+                    "starts_with" | "prefix" => StrOp2::Starts,
+                    _ => StrOp2::Ends,
+                };
+                let [h, n] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 2 arguments"
+                    )));
+                };
+                self.str2(&name, op, h, n)
+            }
+            "length" | "len" | "char_length" | "character_length" | "strlen" => {
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 1 argument"
+                    )));
+                };
+                let Some(inner) = self.expr_or_null(arg)? else {
+                    return Ok(null_of(Ty::I64));
+                };
+                if inner.ty != Ty::Str {
+                    // No implicit numeric->VARCHAR casts here (measured).
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches {name}({})",
+                        inner.ty.name()
+                    )));
+                }
+                let nullable = inner.nullable;
+                Ok(SExpr {
+                    kind: SKind::SLen {
+                        bytes: name == "strlen",
+                        a: Box::new(inner),
+                    },
+                    ty: Ty::I64,
+                    nullable,
+                })
+            }
             // Wave-1 f64 unary math (pins: 2026-07-26-wave1-builtin-pins.md).
             // 1-arg log IS base 10 in DuckDB — handled under "log" below.
             "ln" | "log2" | "log10" | "exp" | "sqrt" | "cbrt" | "sin" | "cos" | "tan" | "floor"
@@ -1569,6 +1616,55 @@ impl Binder<'_> {
                 f.name
             ))),
         }
+    }
+
+    /// Wave-1 string search: both args must be Str (no implicit numeric
+    /// casts — measured binder errors). A literal NULL binds to the typed
+    /// NULL result for every member EXCEPT contains, where DuckDB's
+    /// overloads (MAP/LIST) make a bare NULL a binder error — mirrored.
+    fn str2(
+        &self,
+        name: &str,
+        op: StrOp2,
+        h: &SqlExpr,
+        n: &SqlExpr,
+    ) -> Result<SExpr, PrepareError> {
+        let (bh, bn) = (self.expr_or_null(h)?, self.expr_or_null(n)?);
+        // contains has MAP/LIST overloads; a NULL literal NEEDLE binds only
+        // when a NON-literal Str haystack anchors resolution (measured:
+        // contains(s, NULL) and contains(NULL, 'o') work, contains('abc',
+        // NULL) and contains(NULL, NULL) are binder errors — the corpus
+        // refuted the fleet's blanket-error pin, so this mirrors exactly).
+        if name == "contains" && bn.is_none() {
+            let anchored = matches!(&bh, Some(e) if !matches!(e.kind, SKind::Lit(_)));
+            if !anchored {
+                return Err(PrepareError::Bind(
+                    "contains with a NULL literal is ambiguous (VARCHAR/MAP/LIST overloads)"
+                        .to_string(),
+                ));
+            }
+        }
+        let (Some(bh), Some(bn)) = (bh, bn) else {
+            return Ok(null_of(op.result_ty()));
+        };
+        for e in [&bh, &bn] {
+            if e.ty != Ty::Str {
+                return Err(PrepareError::Bind(format!(
+                    "no function matches {name}({})",
+                    e.ty.name()
+                )));
+            }
+        }
+        let nullable = bh.nullable || bn.nullable;
+        Ok(SExpr {
+            kind: SKind::Str2 {
+                op,
+                a: Box::new(bh),
+                b: Box::new(bn),
+            },
+            ty: op.result_ty(),
+            nullable,
+        })
     }
 
     /// Wave-1 unary f64 math: numeric args promote to DOUBLE, VARCHAR and

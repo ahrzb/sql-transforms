@@ -160,6 +160,17 @@ pub enum SKind {
         a: Box<SExpr>,
         b: Box<SExpr>,
     },
+    /// Wave-1 string search (haystack, needle) — total, NULL-propagating.
+    Str2 {
+        op: super::ir::StrOp2,
+        a: Box<SExpr>,
+        b: Box<SExpr>,
+    },
+    /// String length: codepoints (length) or UTF-8 bytes (strlen).
+    SLen {
+        bytes: bool,
+        a: Box<SExpr>,
+    },
     /// Wave-1 f64 unary math (operand promoted to F64 by the frontend);
     /// NULL-propagating; the trapping ops get safe-masked payloads in
     /// lowering so a NULL row can never fire the domain trap.

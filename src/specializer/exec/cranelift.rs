@@ -33,7 +33,8 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use super::super::ir::{
-    BinOp, CmpPred, Inst, Lit, NumOp1, Program, RoundMode, StaticTy, StrOp1, Term, TrimSide, Ty,
+    BinOp, CmpPred, Inst, Lit, NumOp1, Program, RoundMode, StaticTy, StrOp1, StrOp2, Term,
+    TrimSide, Ty,
 };
 use super::interp::{
     self, apply_ord, col_valid, substr_range_ok, substr_window, trim_bounds, CompileError, DuckF64,
@@ -210,6 +211,33 @@ math1_h!(h_fsqrt, interp::duck_sqrt);
 math1_h!(h_fsin, interp::duck_sin);
 math1_h!(h_fcos, interp::duck_cos);
 math1_h!(h_ftan, interp::duck_tan);
+
+extern "C" fn h_sfind(p: *mut Cx, ao: i64, al: i64, bo: i64, bl: i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &*c.arena };
+    interp::str_find(arena.get(span(ao, al)), arena.get(span(bo, bl)))
+}
+
+extern "C" fn h_spred(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64) -> u8 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &*c.arena };
+    let op = match which {
+        0 => StrOp2::Contains,
+        1 => StrOp2::Starts,
+        _ => StrOp2::Ends,
+    };
+    interp::str_pred(op, arena.get(span(ao, al)), arena.get(span(bo, bl))) as u8
+}
+
+extern "C" fn h_slen(p: *mut Cx, bytes: i64, ao: i64, al: i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let s = unsafe { &*c.arena }.get(span(ao, al));
+    if bytes != 0 {
+        s.len() as i64
+    } else {
+        s.chars().count() as i64
+    }
+}
 
 extern "C" fn h_fexp(x: f64) -> f64 {
     interp::duck_exp(x).expect("exp is total")
@@ -1037,6 +1065,31 @@ fn translate_inst(
             vals.insert(flag.0, V::S(f));
             vals.insert(dst.0, V::S(v));
         }
+        Inst::Str2 { op, dst, a, b: rhs } => {
+            let (ao, al) = vals[&a.0].str2();
+            let (bo, bl) = vals[&rhs.0].str2();
+            let v = match op {
+                StrOp2::Find => call_h(b, module, "h_sfind", &[cxp, ao, al, bo, bl]).unwrap(),
+                pred => {
+                    let which = icon(
+                        b,
+                        match pred {
+                            StrOp2::Contains => 0,
+                            StrOp2::Starts => 1,
+                            _ => 2,
+                        },
+                    );
+                    call_h(b, module, "h_spred", &[cxp, which, ao, al, bo, bl]).unwrap()
+                }
+            };
+            vals.insert(dst.0, V::S(v));
+        }
+        Inst::SLen { bytes, dst, a } => {
+            let (ao, al) = vals[&a.0].str2();
+            let bv = icon(b, *bytes as i64);
+            let v = call_h(b, module, "h_slen", &[cxp, bv, ao, al]).unwrap();
+            vals.insert(dst.0, V::S(v));
+        }
         Inst::Sconcat { dst, a, b: rhs } => {
             let (ao, al) = vals[&a.0].str2();
             let (bo, bl) = vals[&rhs.0].str2();
@@ -1398,6 +1451,9 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_fcbrt", h_fcbrt as *const u8),
     ("h_fpow", h_fpow as *const u8),
     ("h_flogb", h_flogb as *const u8),
+    ("h_sfind", h_sfind as *const u8),
+    ("h_spred", h_spred as *const u8),
+    ("h_slen", h_slen as *const u8),
 ];
 
 fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types::Type) {
@@ -1416,6 +1472,9 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
             (&[ptr, F64], Some(F64))
         }
         "h_flogb" => (&[ptr, F64, F64], Some(F64)),
+        "h_sfind" => (&[ptr, I64, I64, I64, I64], Some(I64)),
+        "h_spred" => (&[ptr, I64, I64, I64, I64, I64], Some(I8)),
+        "h_slen" => (&[ptr, I64, I64, I64], Some(I64)),
         "h_iabs" => (&[ptr, I64], Some(I64)),
         "h_fcmp" => (&[F64, F64, I64], Some(I8)),
         "h_scmp" => (&[ptr, I64, I64, I64, I64, I64], Some(I8)),

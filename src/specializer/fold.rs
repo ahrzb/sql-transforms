@@ -64,6 +64,22 @@ pub fn fold(e: SExpr) -> SExpr {
         // Wave-1 math: fold children only — the ops themselves stay
         // runtime so constant domain errors trap per row exactly like the
         // vectorized path we pin against (no fold/vector divergence).
+        SKind::Str2 { op, a, b } => {
+            let a = fold(*a);
+            let b = fold(*b);
+            e(SKind::Str2 {
+                op,
+                a: Box::new(a),
+                b: Box::new(b),
+            })
+        }
+        SKind::SLen { bytes, a } => {
+            let a = fold(*a);
+            e(SKind::SLen {
+                bytes,
+                a: Box::new(a),
+            })
+        }
         SKind::MathF1 { op, a } => {
             let a = fold(*a);
             e(SKind::MathF1 { op, a: Box::new(a) })

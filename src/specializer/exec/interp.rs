@@ -27,8 +27,8 @@ use std::collections::HashMap;
 
 use super::super::ir::verify::{verify, VerifyError};
 use super::super::ir::{
-    self, BinOp, CmpPred, Inst, NumOp1, Program, RoundMode, StaticTy, StrOp1, Term, TrimSide, Ty,
-    Value,
+    self, BinOp, CmpPred, Inst, NumOp1, Program, RoundMode, StaticTy, StrOp1, StrOp2, Term,
+    TrimSide, Ty, Value,
 };
 use super::{
     Arena, Batch, ColData, KeyBits, OutCol, RegVal, RunState, ScalarVal, StaticData, StrRef, Trap,
@@ -744,6 +744,27 @@ pub(super) fn math1_fn(op: NumOp1) -> fn(f64) -> Result<f64, Trap> {
     }
 }
 
+/// Wave-1 string search (pins: 1-based CODEPOINT positions, empty needle
+/// matches everything, byte-wise comparison, zero unicode intelligence).
+pub(super) fn str_find(s: &str, n: &str) -> i64 {
+    if n.is_empty() {
+        return 1;
+    }
+    match s.find(n) {
+        None => 0,
+        Some(byte) => s[..byte].chars().count() as i64 + 1,
+    }
+}
+
+pub(super) fn str_pred(op: StrOp2, s: &str, n: &str) -> bool {
+    match op {
+        StrOp2::Contains => s.contains(n),
+        StrOp2::Starts => s.starts_with(n),
+        StrOp2::Ends => s.ends_with(n),
+        StrOp2::Find => unreachable!("find returns i64, handled separately"),
+    }
+}
+
 /// Value id -> dense register slot.
 fn sl(slots: &HashMap<u32, u32>, v: Value) -> usize {
     slots[&v.0] as usize
@@ -960,6 +981,36 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
                         ctx.regs[dst] = RegVal::F64(0.0);
                     }
                 }
+                Ok(())
+            })
+        }
+        Inst::Str2 { op, dst, a, b } => {
+            let (dst, a, b) = (sl(slots, dst), sl(slots, a), sl(slots, b));
+            match op {
+                StrOp2::Find => Box::new(move |ctx| {
+                    let s = ctx.arena.get(as_str(ctx.regs[a]));
+                    let n = ctx.arena.get(as_str(ctx.regs[b]));
+                    ctx.regs[dst] = RegVal::I64(str_find(s, n));
+                    Ok(())
+                }),
+                op => Box::new(move |ctx| {
+                    let s = ctx.arena.get(as_str(ctx.regs[a]));
+                    let n = ctx.arena.get(as_str(ctx.regs[b]));
+                    ctx.regs[dst] = RegVal::I1(str_pred(op, s, n));
+                    Ok(())
+                }),
+            }
+        }
+        Inst::SLen { bytes, dst, a } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let s = ctx.arena.get(as_str(ctx.regs[a]));
+                let v = if bytes {
+                    s.len() as i64
+                } else {
+                    s.chars().count() as i64
+                };
+                ctx.regs[dst] = RegVal::I64(v);
                 Ok(())
             })
         }
