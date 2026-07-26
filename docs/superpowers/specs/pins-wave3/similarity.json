@@ -1,0 +1,770 @@
+{
+ "family": "similarity",
+ "duckdb_version": "1.5.5",
+ "decisions": [
+  "Oracle: duckdb 1.5.5 (duckdb.__version__ probe).",
+  "UNIT: all six functions operate on raw UTF-8 BYTES, never codepoints or graphemes. Witnesses: levenshtein('\\u00e9','e')=2, levenshtein('\\U0001D11Ea','a')=4, levenshtein('e\\u0301','\\u00e9')=3, levenshtein(ZWJ-family,'man')=14, damerau_levenshtein('\\u00e9','e')=2, jaccard('\\u00e9','\\u00e8')=1/3 (shared 0xc3 byte), jaccard(U+1D11E,U+1D121)=0.6, hamming('\\u00e9','e') -> equal-length ERROR (byte lengths 2 vs 1) while hamming('\\u00e9','\\u00e8')=1.",
+  "RETURN TYPES: levenshtein/editdist3/damerau_levenshtein/hamming/mismatches -> BIGINT; jaccard -> DOUBLE (typeof probes).",
+  "NULL: any NULL argument (either or both positions) -> NULL for all six functions; typeof still resolves to BIGINT/DOUBLE.",
+  "CASE: all case-sensitive. levenshtein('A','a')=1, editdist3=1, damerau=1, hamming=1, jaccard('A','a')=0.0.",
+  "editdist3 IS levenshtein: 200-random-pair sweep 0 diffs; both equal plain-Levenshtein python reference on all 200; identical results on unicode witnesses ('\\u00e9','e')=2 and astral=4.",
+  "damerau_levenshtein is the UNRESTRICTED Damerau-Levenshtein (NOT OSA/restricted), transposition cost 1: ('ca','abc')=2 (OSA would be 3), ('ab','ba')=1, ('a cat','an act')=2; 300-pair sweep: 0 diffs vs unrestricted-DL reference, 3 diffs vs OSA, 5 vs plain lev; OSA-refuting pairs pinned individually: ('aca','aabbc')=3, ('cbbac','abcb')=3, ('ab','bcca')=3 (OSA says 4 for each).",
+  "jaccard: SET of single BYTES (not bigrams, not codepoints), duplicates ignored, |A&B|/|A|B|: ('ab','ba')=1.0, ('aab','ab')=1.0, ('abc','abd')=0.5 (bits 3fe0000000000000; bigram model would give 1/3).",
+  "jaccard EMPTY-STRING on either or both sides is an ERROR, not a value: 'Invalid Input Error: Jaccard Function: An argument too short!'",
+  "hamming IS mismatches (200 equal-length-pair sweep 0 diffs; identical error texts; error prefix is 'Mismatch Function' even when invoked as hamming).",
+  "hamming/mismatches: unequal BYTE length -> 'Invalid Input Error: Mismatch Function: Strings must be of equal length!'; ANY empty input including ('','') -> 'Invalid Input Error: Mismatch Function: Strings must be of length > 0!' (hamming('','') is an error, NOT 0).",
+  "levenshtein/editdist3/damerau_levenshtein accept empty strings: ('','')=0, ('','abc')=3, ('abc','')=3.",
+  "Embedded NUL (\\x00): insertable via parameter binding, fully preserved (length('a\\x00b')=3, strlen=3), treated as an ordinary byte: levenshtein('a\\x00b','ab')=1, hamming('a\\x00b','axb')=1, jaccard('a\\x00b','\\x00')=1/3.",
+  "Literal (constant-fold) path matched the column (vectorized) path on every spot-check, including error text: levenshtein('\\u00e9','e'), damerau('ca','abc'), jaccard('\\u00e9','\\u00e8'), jaccard('abc','abd'), hamming errors. No divergence found.",
+  "Incidental: octet_length(VARCHAR) does not exist in DuckDB 1.5.5 (Binder Error; only BLOB/BIT); use strlen() for byte length."
+ ],
+ "probes": [
+  {
+   "sql": "duckdb.__version__",
+   "input_repr": null,
+   "result_repr": "'1.5.5'",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "oracle version"
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('A', 'a')",
+   "note": "case sensitivity",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('', '')",
+   "note": "both empty",
+   "result_repr": "0",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('', 'abc')",
+   "note": "left empty",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('abc', '')",
+   "note": "right empty",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('\u00e9', 'e')",
+   "note": "unit witness: codepoints=1, bytes=2",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('\ud834\udd1ea', 'a')",
+   "note": "astral unit witness: codepoints=1, bytes=4",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('e\u0301', '\u00e9')",
+   "note": "combining witness: codepoints=2, bytes=3, graphemes=1",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67', '\ud83d\udc68')",
+   "note": "ZWJ family vs man: codepoints=4, bytes=14, graphemes=1",
+   "result_repr": "14",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('\ud83d\ude00', '')",
+   "note": "emoji vs empty: codepoints=1, bytes=4",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('\u0130', 'I')",
+   "note": "U+0130 vs I: codepoints=1, bytes=2",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('\u212a', 'K')",
+   "note": "U+212A Kelvin vs K: codepoints=1, bytes=3",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "(None, 'abc')",
+   "note": "NULL left",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('abc', None)",
+   "note": "NULL right",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "(None, None)",
+   "note": "NULL both",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein(a,b), typeof(levenshtein(a,b)) FROM t",
+   "input_repr": "('a\\x00b', 'ab')",
+   "note": "embedded NUL: codepoint distance 1",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "INSERT 'a\\x00b'",
+   "input_repr": "'a\\x00b'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.\n\tCandidate functions:\n\toctet_length(BLOB) -> BIGINT\n\toctet_length(BIT) -> BIGINT\n\n\nLINE 1: SELECT length(a), octet_length(a) FROM t\n                          ^",
+   "note": "embedded NUL insert failed"
+  },
+  {
+   "sql": "SELECT levenshtein('\u00e9','e'), typeof(levenshtein('\u00e9','e'))",
+   "input_repr": null,
+   "note": "literal path spot-check vs column path",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT levenshtein('A','a'), typeof(levenshtein('A','a'))",
+   "input_repr": null,
+   "note": "literal path spot-check",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT editdist3(a,b), typeof(editdist3(a,b)) FROM t",
+   "input_repr": "('A', 'a')",
+   "note": "editdist3 case",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT editdist3(a,b), typeof(editdist3(a,b)) FROM t",
+   "input_repr": "('\u00e9', 'e')",
+   "note": "editdist3 unit witness",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT editdist3(a,b), typeof(editdist3(a,b)) FROM t",
+   "input_repr": "(None, 'abc')",
+   "note": "NULL left",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT editdist3(a,b), typeof(editdist3(a,b)) FROM t",
+   "input_repr": "('abc', None)",
+   "note": "NULL right",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT editdist3(a,b), typeof(editdist3(a,b)) FROM t",
+   "input_repr": "('', '')",
+   "note": "both empty",
+   "result_repr": "0",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT a,b,levenshtein(a,b),editdist3(a,b) FROM sweep -- 200 random pairs alpha=abcd len 0..6 seed=42",
+   "input_repr": "200 pairs",
+   "result_repr": "editdist3!=levenshtein count=0; levenshtein!=python_ref count=0; examples=([], [])",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "alias-identity sweep + reference check"
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('ca', 'abc')",
+   "note": "THE variant witness: OSA(restricted)=3, unrestricted=2",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('ab', 'ba')",
+   "note": "transposition cost witness: 1 if transpositions cost 1, 2 if plain lev",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('A', 'a')",
+   "note": "case",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('', '')",
+   "note": "both empty",
+   "result_repr": "0",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('', 'abc')",
+   "note": "left empty",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('\u00e9', 'e')",
+   "note": "unit witness: codepoints=1, bytes=2",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('\ud834\udd1ea', 'a\ud834\udd1e')",
+   "note": "astral transposition: codepoints OSA=1, bytes OSA=2",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "(None, 'abc')",
+   "note": "NULL left",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('abc', None)",
+   "note": "NULL right",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein('ca','abc'), typeof(damerau_levenshtein('ca','abc'))",
+   "input_repr": null,
+   "note": "literal path spot-check",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT a,b,damerau_levenshtein(a,b) FROM sweep2 -- 300 random pairs alpha=abc len 0..6 seed cont.",
+   "input_repr": "300 pairs",
+   "result_repr": "diff_vs_OSA=3 diff_vs_unrestrictedDL=0 diff_vs_plain_lev=5; osa_ex=[('aca', 'aabbc', 3, 4), ('cbbac', 'abcb', 3, 4), ('ab', 'bcca', 3, 4)] dl_ex=[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "variant decision sweep"
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('ab', 'ba')",
+   "note": "char-set witness: 1.0 iff char-set element, 0.0 if bigram",
+   "result_repr": "1.0",
+   "result_type": "DOUBLE",
+   "bits": "3ff0000000000000",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('aab', 'ab')",
+   "note": "duplicate handling: 1.0 iff set semantics",
+   "result_repr": "1.0",
+   "result_type": "DOUBLE",
+   "bits": "3ff0000000000000",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('abc', 'abd')",
+   "note": "exact value: char-set=0.5, bigram=1/3",
+   "result_repr": "0.5",
+   "result_type": "DOUBLE",
+   "bits": "3fe0000000000000",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('A', 'a')",
+   "note": "case: 0.0 iff case-sensitive",
+   "result_repr": "0.0",
+   "result_type": "DOUBLE",
+   "bits": "0000000000000000",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('\u00e9', '\u00e8')",
+   "note": "byte-vs-codepoint: codepoint-sets disjoint=0.0, byte-sets share 0xc3 -> 1/3",
+   "result_repr": "0.3333333333333333",
+   "result_type": "DOUBLE",
+   "bits": "3fd5555555555555",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('\ud834\udd1e', '\ud834\udd21')",
+   "note": "astral byte-overlap: codepoint=0.0, bytes share f0 9d 84 -> 0.6",
+   "result_repr": "0.6",
+   "result_type": "DOUBLE",
+   "bits": "3fe3333333333333",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('a', 'a')",
+   "note": "identical singleton -> 1.0",
+   "result_repr": "1.0",
+   "result_type": "DOUBLE",
+   "bits": "3ff0000000000000",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('', '')",
+   "note": "both empty: div-by-zero shape?",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Jaccard Function: An argument too short!"
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('a', '')",
+   "note": "right empty",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Jaccard Function: An argument too short!"
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('', 'abc')",
+   "note": "left empty",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Jaccard Function: An argument too short!"
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "(None, 'abc')",
+   "note": "NULL left",
+   "result_repr": "None",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('abc', None)",
+   "note": "NULL right",
+   "result_repr": "None",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "(None, None)",
+   "note": "NULL both",
+   "result_repr": "None",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard(a,b), typeof(jaccard(a,b)) FROM t",
+   "input_repr": "('a\\x00b', '\\x00')",
+   "note": "embedded NUL as set element",
+   "result_repr": "0.3333333333333333",
+   "result_type": "DOUBLE",
+   "bits": "3fd5555555555555",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard('\u00e9','\u00e8'), typeof(jaccard('\u00e9','\u00e8'))",
+   "input_repr": null,
+   "note": "literal path spot-check",
+   "result_repr": "0.3333333333333333",
+   "result_type": "DOUBLE",
+   "bits": "3fd5555555555555",
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard('abc','abd'), typeof(jaccard('abc','abd'))",
+   "input_repr": null,
+   "note": "literal path spot-check exact bits",
+   "result_repr": "0.5",
+   "result_type": "DOUBLE",
+   "bits": "3fe0000000000000",
+   "error": null
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('abc', 'abd')",
+   "note": "basic: 1",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('abc', 'ab')",
+   "note": "unequal length: exact error text",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('', '')",
+   "note": "both empty",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of length > 0!"
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('A', 'a')",
+   "note": "case",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('\u00e9', 'e')",
+   "note": "unit: codepoint-len equal (works->1), byte-len unequal (error)",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('\u0130', 'I')",
+   "note": "unit: U+0130 (2 bytes) vs I (1 byte)",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('e\u0301', '\u00e9')",
+   "note": "grapheme witness: grapheme-len 1v1, codepoint 2v1, bytes 3v2",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('\ud83d\ude00', 'a')",
+   "note": "emoji vs ascii: codepoint 1v1, bytes 4v1",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('a\\x00b', 'axb')",
+   "note": "embedded NUL equal length",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "(None, 'abc')",
+   "note": "NULL left",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('abc', None)",
+   "note": "NULL right",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT mismatches(a,b), typeof(mismatches(a,b)) FROM t",
+   "input_repr": "('abc', 'abd')",
+   "note": "basic",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT mismatches(a,b), typeof(mismatches(a,b)) FROM t",
+   "input_repr": "('abc', 'ab')",
+   "note": "unequal length: exact error text (same as hamming?)",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT mismatches(a,b), typeof(mismatches(a,b)) FROM t",
+   "input_repr": "('\u00e9', 'e')",
+   "note": "unit witness",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT mismatches(a,b), typeof(mismatches(a,b)) FROM t",
+   "input_repr": "(None, 'abc')",
+   "note": "NULL left",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT hamming('\u00e9','e')",
+   "input_repr": null,
+   "note": "literal path spot-check (error or 1?)",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT a,b,hamming(a,b),mismatches(a,b) FROM sweep3 -- 200 random equal-length pairs",
+   "input_repr": "200 pairs",
+   "result_repr": "hamming!=mismatches count=0; hamming!=python_ref count=0",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "alias-identity sweep"
+  },
+  {
+   "sql": "python-side jaccard references",
+   "input_repr": null,
+   "result_repr": "{\"char('ab','ba')\": 1.0, \"char('aab','ab')\": 1.0, \"char('abc','abd')\": 0.5, \"bigram('abc','abd')\": 0.3333333333333333, \"bytes('\\\\xe9','\\\\xe8')\": 0.3333333333333333, 'bytes(gclef,gclef2)': 0.6}",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "reference values used in decisions"
+  },
+  {
+   "sql": "SELECT length(a), strlen(a) FROM t -- a='a\\x00b'",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "(3, 3)",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "NUL preserved? length=codepoints, strlen=bytes"
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('\u00e9', '\u00e8')",
+   "note": "both 2 bytes (c3a9 vs c3a8): byte-compare -> 1",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT hamming(a,b), typeof(hamming(a,b)) FROM t",
+   "input_repr": "('\u00e9\u00e9', '\u00e9\u00e9')",
+   "note": "identical multibyte -> 0",
+   "result_repr": "0",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT mismatches(a,b), typeof(mismatches(a,b)) FROM t",
+   "input_repr": "('', '')",
+   "note": "empty-empty error text for mismatches",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of length > 0!"
+  },
+  {
+   "sql": "SELECT mismatches(a,b), typeof(mismatches(a,b)) FROM t",
+   "input_repr": "('\u00e9', '\u00e8')",
+   "note": "byte-compare -> 1",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT jaccard('','')",
+   "input_repr": null,
+   "note": "literal path: empty jaccard error text",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Jaccard Function: An argument too short!"
+  },
+  {
+   "sql": "SELECT hamming('','')",
+   "input_repr": null,
+   "note": "literal path: empty hamming error text",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of length > 0!"
+  },
+  {
+   "sql": "SELECT hamming('abc','ab')",
+   "input_repr": null,
+   "note": "literal path: unequal length error text",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('aca', 'aabbc')",
+   "note": "OSA=4, unrestricted DL=3 -> refutes restricted variant",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('cbbac', 'abcb')",
+   "note": "OSA=4, unrestricted DL=3",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('ab', 'bcca')",
+   "note": "OSA=4, unrestricted DL=3",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT damerau_levenshtein(a,b), typeof(damerau_levenshtein(a,b)) FROM t",
+   "input_repr": "('a cat', 'an act')",
+   "note": "classic witness: OSA=3, unrestricted=2",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  },
+  {
+   "sql": "SELECT editdist3(a,b), typeof(editdist3(a,b)) FROM t",
+   "input_repr": "('\ud834\udd1ea', 'a')",
+   "note": "editdist3 astral: expect 4 like levenshtein",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null
+  }
+ ]
+}

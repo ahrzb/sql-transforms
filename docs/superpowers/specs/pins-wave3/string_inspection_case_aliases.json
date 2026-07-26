@@ -1,0 +1,2239 @@
+{
+ "family": "string_inspection_case_aliases",
+ "duckdb_version": "1.5.5",
+ "decisions": [
+  "unicode(s)/ord(s)/ascii(s) return the FIRST codepoint of s as INTEGER; multi-char input is NOT an error ('abc'->97, astral-first '\\U0001F600abc' handled in random sweep).",
+  "unicode('') = -1 and ord('') = -1, but ascii('') = 0 \u2014 ascii differs from unicode ONLY on the empty string (confirmed as the sole mismatch shape across 210 random strings and the full single-codepoint sweep).",
+  "ascii() does NOT error on non-ASCII and does not clamp: ascii('\\xe9')=233, ascii(U+10FFFF)=1114111 \u2014 it is unicode() except for the empty-string case.",
+  "ord is alias-identical to unicode: 0 mismatches on exhaustive 1,112,063-codepoint sweep plus 210 random strings (incl '', NUL-only, NUL-leading, astral-first, combining-first, ZWJ).",
+  "NULL in -> NULL out for unicode/ord/ascii/bit_length/strlen/length/ucase/lcase/upper/lower; typeof unchanged.",
+  "No normalization anywhere: unicode('e'+U+0301)=101 (base char, first codepoint); lone U+0301 -> 769.",
+  "Embedded NUL (chr(0)) is insertable via parameter binding and treated as ordinary codepoint 0: unicode('\\x00abc')=0, strlen('a\\x00b')=3, ucase('a\\x00b')='A\\x00B'.",
+  "bit_length(s) = 8 * strlen(s) exactly \u2014 BYTES not codepoints: '\\xe9'->16, U+1F600->32, ''->0; 0 mismatches on full codepoint sweep + 210 random strings. Type BIGINT.",
+  "octet_length does NOT exist in DuckDB 1.5.5 \u2014 Binder Error; byte length is strlen (BIGINT).",
+  "strlen counts BYTES; length counts CODEPOINTS not graphemes (ZWJ family emoji: length=7, strlen=25, bit_length=200).",
+  "ucase/lcase are alias-identical to upper/lower: exhaustive sweep of ALL 1,112,063 valid non-surrogate codepoints 1..0x10FFFF -> zero mismatches for both; plus zero mismatches on 210 random multi-char strings. Type VARCHAR.",
+  "upper/lower use SIMPLE (one-to-one) case mapping: upper('\\xdf' sharp-s)='\\u1e9e' (NOT 'SS'); lower(U+0130)='i' (single codepoint, NOT 'i'+combining-dot like Python); length(upper(chr(c)))==1 for every single codepoint (0 exceptions, both directions).",
+  "upper changes exactly 1451 codepoints, lower changes exactly 1433 (of 1,112,063).",
+  "Casing can change BYTE length (sharp-s 2B->3B, U+212A 3B->1B; 28/210 random strings changed byte length) \u2014 no same-size buffer assumption.",
+  "Result types: unicode/ord/ascii -> INTEGER; bit_length/strlen/length -> BIGINT; ucase/lcase/upper/lower -> VARCHAR.",
+  "Literal (constant-fold) path spot-checks all matched the column path: unicode('')/-1, unicode('abc'), unicode(e-acute), ord('abc'), ascii('abc'), bit_length(e-acute), ucase(sharp-s), lcase(U+0130), unicode(NULL).",
+  "chr() domain context: chr(0) OK (NUL string); chr(55296) and chr(1114112) error 'Invalid Input Error: Invalid UTF8 Codepoint <n>'; DuckDB's optimizer may reorder WHERE conjuncts so chr() can be evaluated on rows a preceding predicate was meant to exclude."
+ ],
+ "probes": [
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "-1",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "233",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "101",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "769",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "304",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "8490",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "128512",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "128104",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "119070",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "1114111",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "0",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "0",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "55",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "32",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT unicode(s), typeof(unicode(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "223",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "-1",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "233",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "101",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "769",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "304",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "8490",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "128512",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "128104",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "119070",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "1114111",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "0",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "0",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "55",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "32",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT ord(s), typeof(ord(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "223",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "0",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "233",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "101",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "769",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "304",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "8490",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "128512",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "128104",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "119070",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "1114111",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "0",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "0",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "55",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "32",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT ascii(s), typeof(ascii(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "223",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "8",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "24",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "0",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "16",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "24",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "16",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "16",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "24",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "32",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "200",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "32",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "32",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "32",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "24",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "8",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "8",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "8",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT bit_length(s), typeof(bit_length(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "16",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "space"
+  },
+  {
+   "sql": "SELECT octet_length(s), typeof(octet_length(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'octet_length(VARCHAR)'. You might need to add explicit type casts.",
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "0",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "25",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT strlen(s), typeof(strlen(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "0",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "2",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "7",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "4",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "1",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "'A'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "'ABC'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "'\u00c9'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "'E\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "'\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "'\u0130'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "'\u212a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "'\ud83d\ude00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "'\ud834\udd1e'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "'\\U0010ffff'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "'\\x00ABC'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "'A\\x00B'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "'\\x00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "'7'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "' '",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT ucase(s), typeof(ucase(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "'\u1e9e'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "'a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "'\u00e9'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "'e\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "'\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "'i'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "'k'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "'\ud83d\ude00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "'\ud834\udd1e'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "'\\U0010ffff'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "'\\x00abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "'a\\x00b'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "'\\x00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "'7'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "' '",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT lcase(s), typeof(lcase(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "'\u00df'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "'A'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "'ABC'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "'\u00c9'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "'E\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "'\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "'\u0130'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "'\u212a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "'\ud83d\ude00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "'\ud834\udd1e'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "'\\U0010ffff'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "'\\x00ABC'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "'A\\x00B'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "'\\x00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "'7'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "' '",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT upper(s), typeof(upper(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "'\u1e9e'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'a'",
+   "result_repr": "'a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ascii a"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'abc'",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "multi-char"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "''",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "empty"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "None",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NULL"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\u00e9'",
+   "result_repr": "'\u00e9'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "e-acute U+00E9"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'e\u0301'",
+   "result_repr": "'e\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining e + U+0301"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\u0301'",
+   "result_repr": "'\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "combining leading U+0301 alone"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\u0130'",
+   "result_repr": "'i'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+0130 dotted I"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\u212a'",
+   "result_repr": "'k'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\ud83d\ude00'",
+   "result_repr": "'\ud83d\ude00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "emoji U+1F600"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_repr": "'\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\ud834\udd1e'",
+   "result_repr": "'\ud834\udd1e'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "astral U+1D11E"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\\U0010ffff'",
+   "result_repr": "'\\U0010ffff'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "max cp U+10FFFF"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\\x00abc'",
+   "result_repr": "'\\x00abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL leading"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'a\\x00b'",
+   "result_repr": "'a\\x00b'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL middle"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\\x00'",
+   "result_repr": "'\\x00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "NUL only"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'7'",
+   "result_repr": "'7'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "digit"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "' '",
+   "result_repr": "' '",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "space"
+  },
+  {
+   "sql": "SELECT lower(s), typeof(lower(s)) FROM t",
+   "input_repr": "'\u00df'",
+   "result_repr": "'\u00df'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ss sharp"
+  },
+  {
+   "sql": "SELECT unicode(''), typeof(unicode(''))",
+   "input_repr": "'' literal",
+   "result_repr": "-1",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH '' literal"
+  },
+  {
+   "sql": "SELECT unicode('abc'), typeof(unicode('abc'))",
+   "input_repr": "'abc' literal",
+   "result_repr": "97",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH 'abc' literal"
+  },
+  {
+   "sql": "SELECT unicode('\u00e9'), typeof(unicode('\u00e9'))",
+   "input_repr": "e-acute literal",
+   "result_repr": "233",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH e-acute literal"
+  },
+  {
+   "sql": "SELECT ord('abc')",
+   "input_repr": "'abc' literal",
+   "result_repr": "97",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH 'abc' literal"
+  },
+  {
+   "sql": "SELECT ascii('abc')",
+   "input_repr": "'abc' literal",
+   "result_repr": "97",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH 'abc' literal"
+  },
+  {
+   "sql": "SELECT bit_length('\u00e9')",
+   "input_repr": "e-acute literal",
+   "result_repr": "16",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH e-acute literal"
+  },
+  {
+   "sql": "SELECT ucase('\u00df')",
+   "input_repr": "sharp-s literal",
+   "result_repr": "'\u1e9e'",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH sharp-s literal"
+  },
+  {
+   "sql": "SELECT lcase('\u0130')",
+   "input_repr": "U+0130 literal",
+   "result_repr": "'i'",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH U+0130 literal"
+  },
+  {
+   "sql": "SELECT unicode(NULL), typeof(unicode(NULL))",
+   "input_repr": "NULL literal",
+   "result_repr": "None",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "LITERAL PATH NULL literal"
+  },
+  {
+   "sql": "SELECT count(*) FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343)",
+   "input_repr": "codepoints 1..0x10FFFF minus surrogates",
+   "result_repr": "[(1112063,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "sweep domain size (expect 1114111-2048=1112063)"
+  },
+  {
+   "sql": "SELECT c FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE ucase(chr(c)) IS DISTINCT FROM upper(chr(c)) LIMIT 50",
+   "input_repr": "full sweep",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "ucase vs upper mismatch codepoints (expect none)"
+  },
+  {
+   "sql": "SELECT c FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE lcase(chr(c)) IS DISTINCT FROM lower(chr(c)) LIMIT 50",
+   "input_repr": "full sweep",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "lcase vs lower mismatch codepoints (expect none)"
+  },
+  {
+   "sql": "SELECT c FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE ord(chr(c)) IS DISTINCT FROM unicode(chr(c)) LIMIT 50",
+   "input_repr": "full sweep",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "ord vs unicode mismatch codepoints (expect none)"
+  },
+  {
+   "sql": "SELECT c FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE ascii(chr(c)) IS DISTINCT FROM unicode(chr(c)) LIMIT 50",
+   "input_repr": "full sweep",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "ascii vs unicode mismatch codepoints, single-char (expect none)"
+  },
+  {
+   "sql": "SELECT c FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE unicode(chr(c)) != c LIMIT 50",
+   "input_repr": "full sweep",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "unicode(chr(c)) round-trip mismatches (expect none)"
+  },
+  {
+   "sql": "SELECT count(*) FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE upper(chr(c)) != chr(c)",
+   "input_repr": "full sweep",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "how many codepoints upper() actually changes"
+  },
+  {
+   "sql": "SELECT count(*) FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE lower(chr(c)) != chr(c)",
+   "input_repr": "full sweep",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "how many codepoints lower() actually changes"
+  },
+  {
+   "sql": "SELECT count(*) FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE length(upper(chr(c))) != 1",
+   "input_repr": "full sweep",
+   "result_repr": "[(0,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "codepoints where upper() output is not exactly 1 codepoint (full-fold witnesses)"
+  },
+  {
+   "sql": "SELECT count(*) FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE length(lower(chr(c))) != 1",
+   "input_repr": "full sweep",
+   "result_repr": "[(0,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "codepoints where lower() output is not exactly 1 codepoint"
+  },
+  {
+   "sql": "SELECT count(*) FROM (SELECT range::INTEGER AS c FROM range(1, 1114112) WHERE range < 55296 OR range > 57343) WHERE bit_length(chr(c)) != 8*strlen(chr(c))",
+   "input_repr": "full sweep",
+   "result_repr": "[(0,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "bit_length vs 8*strlen mismatches (expect 0)"
+  },
+  {
+   "sql": "SELECT chr(c) FROM (SELECT 0 AS c) t2",
+   "input_repr": "chr(0) via column",
+   "result_repr": "[('\\x00',)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "chr(0) column path"
+  },
+  {
+   "sql": "SELECT chr(c) FROM (SELECT 55296 AS c) t2",
+   "input_repr": "chr(0xD800) via column",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 55296",
+   "note": "chr on surrogate"
+  },
+  {
+   "sql": "SELECT chr(c) FROM (SELECT 1114112 AS c) t2",
+   "input_repr": "chr(0x110000) via column",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Invalid UTF8 Codepoint 1114112",
+   "note": "chr beyond max"
+  },
+  {
+   "sql": "SELECT count(*) FROM r",
+   "input_repr": "210 random strings",
+   "result_repr": "[(210,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "sweep table size"
+  },
+  {
+   "sql": "SELECT s FROM r WHERE ord(s) IS DISTINCT FROM unicode(s) LIMIT 20",
+   "input_repr": "210 random strings incl edge shapes",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "ord vs unicode mismatches on arbitrary strings (expect none)"
+  },
+  {
+   "sql": "SELECT s, ascii(s), unicode(s) FROM r WHERE ascii(s) IS DISTINCT FROM unicode(s) LIMIT 20",
+   "input_repr": "210 random strings",
+   "result_repr": "[('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1), ('', 0, -1)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "ascii vs unicode mismatches on arbitrary strings (expect only empty string: 0 vs -1)"
+  },
+  {
+   "sql": "SELECT s FROM r WHERE bit_length(s) IS DISTINCT FROM 8*strlen(s) LIMIT 20",
+   "input_repr": "210 random strings",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "bit_length == 8*strlen on arbitrary strings (expect none)"
+  },
+  {
+   "sql": "SELECT s FROM r WHERE ucase(s) IS DISTINCT FROM upper(s) OR lcase(s) IS DISTINCT FROM lower(s) LIMIT 20",
+   "input_repr": "210 random strings",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "ucase/lcase alias check on multi-char strings (expect none)"
+  },
+  {
+   "sql": "SELECT count(*) FROM r WHERE strlen(upper(s)) != strlen(s) OR strlen(lower(s)) != strlen(s)",
+   "input_repr": "210 random strings",
+   "result_repr": "[(28,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "strings where casing changes byte length"
+  },
+  {
+   "sql": "SELECT count(*) FROM cp",
+   "input_repr": "materialized codepoint table",
+   "result_repr": "[(1112063,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "domain: 1..0x10FFFF minus surrogates = 1112063"
+  },
+  {
+   "sql": "SELECT c FROM cp WHERE ucase(chr(c)) IS DISTINCT FROM upper(chr(c)) LIMIT 50",
+   "input_repr": "exhaustive sweep 1112063 cps",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "ucase vs upper mismatches (expect [])"
+  },
+  {
+   "sql": "SELECT c FROM cp WHERE lcase(chr(c)) IS DISTINCT FROM lower(chr(c)) LIMIT 50",
+   "input_repr": "exhaustive sweep 1112063 cps",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "lcase vs lower mismatches (expect [])"
+  },
+  {
+   "sql": "SELECT c FROM cp WHERE ord(chr(c)) IS DISTINCT FROM unicode(chr(c)) LIMIT 50",
+   "input_repr": "exhaustive sweep 1112063 cps",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "ord vs unicode mismatches (expect [])"
+  },
+  {
+   "sql": "SELECT c FROM cp WHERE ascii(chr(c)) IS DISTINCT FROM unicode(chr(c)) LIMIT 50",
+   "input_repr": "exhaustive sweep 1112063 cps",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "ascii vs unicode mismatches single-char (expect [])"
+  },
+  {
+   "sql": "SELECT c FROM cp WHERE unicode(chr(c)) != c LIMIT 50",
+   "input_repr": "exhaustive sweep 1112063 cps",
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "unicode(chr(c)) round-trip (expect [])"
+  },
+  {
+   "sql": "SELECT count(*) FROM cp WHERE upper(chr(c)) != chr(c)",
+   "input_repr": "exhaustive sweep",
+   "result_repr": "[(1451,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "codepoints changed by upper()"
+  },
+  {
+   "sql": "SELECT count(*) FROM cp WHERE lower(chr(c)) != chr(c)",
+   "input_repr": "exhaustive sweep",
+   "result_repr": "[(1433,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "codepoints changed by lower()"
+  }
+ ]
+}

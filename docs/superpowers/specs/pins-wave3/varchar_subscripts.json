@@ -1,0 +1,310 @@
+{
+ "family": "varchar_subscripts",
+ "duckdb_version": "1.5.5",
+ "decisions": [
+  "duckdb 1.5.5; all pins via vectorized column path (CREATE TABLE + SELECT fn(col) FROM t); literal path spot-checked identical on every spot check.",
+  "UNIT = Unicode CODEPOINTS for both array_extract and array_slice on VARCHAR. Witnesses: '\u00e9a' extract(1)='\u00e9' (not a byte); 'e'+U+0301 splits: extract(1)='e', extract(2)=U+0301 alone (NOT graphemes); '\ud83d\ude00a' extract(1)='\ud83d\ude00', extract(2)='a' (not UTF-16); ZWJ family emoji has length()=7 and extract(1)='\ud83d\udc68', extract(2)=ZWJ, extract(7)='\ud83d\udc66', extract(8)=''.",
+  "array_extract(str,i): 1-based. i=0 -> '' (empty string). Negative i = from end: -1 last char, -len first char ('hello': -5->'h', -6->''). Out-of-range in EITHER direction -> '' (empty string, NOT NULL). NULL str or NULL i -> NULL. Empty-string input -> '' for every i. Result type VARCHAR.",
+  "CONTRAST: array_extract on LIST out-of-range returns NULL (l=[10,20,30]: l[5] is NULL, l[0] is NULL); on VARCHAR out-of-range returns ''. Do not copy list semantics to strings.",
+  "s[i] bracket on a VARCHAR column IS NOT DISTINCT FROM array_extract(s,i) on all 18 edge rows and a 220-row random sweep (count of mismatches = 0). list_extract(s,2) also works on VARCHAR and returned 'e'.",
+  "array_slice(str,a,b): 1-based, INCLUSIVE on BOTH ends: (2,4)->'ell', (2,2)->'e', (5,5)->'o'. Negative = from end with -1 = last char: (-3,-1)->'llo', (1,-1)->'hello', (2,-2)->'ell'. begin<=0 clamps to start: (0,3)->'hel', (-10,10)->'hello', (-5,2)->'he'. end>len clamps to len: (4,100)->'lo'. Entirely out of range either side -> '': (100,200)->'', (-100,-50)->'', (6,6)->''. a>b after resolution -> '': (3,2)->'', (1,0)->''. Result type VARCHAR.",
+  "NULL is NOT an open bound: array_slice with NULL a, NULL b, or both -> NULL; NULL string -> NULL. (Refutes Python-style None-as-open assumption.)",
+  "list_slice(s,a,b) IS NOT DISTINCT FROM array_slice(s,a,b) on all 24 edge rows AND 220 random (s,a,b) incl NULL bounds and unicode: 0 mismatches. Same for bracket s[a:b] with column bounds: 0 mismatches. All three are one function.",
+  "Open bracket forms (column path): s[:3]='hel' == array_slice(s,1,3); s[2:]='ello' == array_slice(s,2,-1); s[:]='hello' == array_slice(s,1,-1) (IS NOT DISTINCT FROM probes all true); s[:-2]='hell'; s[-2:]='lo'; s[0:3]='hel'; s[0:0]=''.",
+  "Step slicing is NOT supported on VARCHAR: s[1:5:2], s[1:5:1], s[5:1:-1], list_slice(s,1,5,2), array_slice(s,1,5,2) ALL raise the same Not implemented Error (first line: 'Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:'). Even step=1 errors.",
+  "Embedded NUL: 'ab\\x00cd' inserts fine via parameter; length()=5 counts it; array_extract(s,3)='\\x00'; array_slice(s,2,4)='b\\x00c'; bracket forms identical.",
+  "substr differs: substr(s,2,3)='ell' (start,LENGTH) vs array_slice(s,2,3)='el' (begin,end inclusive) on 'hello'.",
+  "Unicode slices confirm codepoint-inclusive bounds: ('\u00e9ab',1,2)->'\u00e9a'; ('e'+U+0301+'ab',1,1)->'e' (strips combining mark); (2,3)->U+0301+'a'; (family,1,3)->'\ud83d\udc68'+ZWJ+'\ud83d\udc69'; ('\ud83d\ude00ab',1,2)->'\ud83d\ude00a'; ('\u00e9ab',-2,-1)->'ab'.",
+  "List overload exists and is a different function surface: array_extract(INTEGER[] col, 2) -> 20 with typeof INTEGER (VARCHAR path always returns VARCHAR)."
+ ],
+ "probes": [
+  {
+   "sql": "SELECT i, array_extract(s, i) FROM hi ORDER BY id",
+   "input_repr": "[(1, 'hello', -7), (2, 'hello', -6), (3, 'hello', -5), (4, 'hello', -3), (5, 'hello', -1), (6, 'hello', 0), (7, 'hello', 1), (8, 'hello', 2), (9, 'hello', 3), (10, 'hello', 5), (11, 'hello', 6), (12, 'hello', 7), (13, 'hello', None), (14, None, 2), (15, None, None), (16, '', 1), (17, '', -1), (18, '', 0)]",
+   "result_repr": "[(-7, ''), (-6, ''), (-5, 'h'), (-3, 'l'), (-1, 'o'), (0, ''), (1, 'h'), (2, 'e'), (3, 'l'), (5, 'o'), (6, ''), (7, ''), (None, None), (2, None), (None, None), (1, ''), (-1, ''), (0, '')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "rows: s='hello' ids1-13, NULL s ids14-15, '' ids16-18"
+  },
+  {
+   "sql": "SELECT typeof(array_extract(s, 2)), typeof(s[2]) FROM strs",
+   "input_repr": null,
+   "result_repr": "[('VARCHAR', 'VARCHAR')]",
+   "result_type": "[('VARCHAR', 'VARCHAR')]",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "sql": "SELECT i, s[i], s[i] IS NOT DISTINCT FROM array_extract(s, i) FROM hi ORDER BY id",
+   "input_repr": null,
+   "result_repr": "[(-7, '', True), (-6, '', True), (-5, 'h', True), (-3, 'l', True), (-1, 'o', True), (0, '', True), (1, 'h', True), (2, 'e', True), (3, 'l', True), (5, 'o', True), (6, '', True), (7, '', True), (None, None, True), (2, None, True), (None, None, True), (1, '', True), (-1, '', True), (0, '', True)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "bracket single with column index vs array_extract"
+  },
+  {
+   "sql": "SELECT s[2], s[-1], s[0], s[9] FROM strs",
+   "input_repr": null,
+   "result_repr": "[('e', 'o', '', '')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "bracket single, literal indexes, column string"
+  },
+  {
+   "sql": "SELECT list_extract(s, 2) FROM strs",
+   "input_repr": null,
+   "result_repr": "[('e',)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "list_extract alias on VARCHAR?"
+  },
+  {
+   "sql": "SELECT id, length(s), i, array_extract(s, i) FROM uni ORDER BY id",
+   "input_repr": "[(1, '\u00e9a', 1), (2, '\u00e9a', 2), (3, '\u00e9a', 3), (4, 'e\u0301a', 1), (5, 'e\u0301a', 2), (6, 'e\u0301a', 3), (7, '\ud83d\ude00a', 1), (8, '\ud83d\ude00a', 2), (9, '\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66', 1), (10, '\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66', 2), (11, '\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66', 7), (12, '\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66', 8), (13, '\u0130\u212aa', 1), (14, '\u0130\u212aa', 2)]",
+   "result_repr": "[(1, 2, 1, '\u00e9'), (2, 2, 2, 'a'), (3, 2, 3, ''), (4, 3, 1, 'e'), (5, 3, 2, '\u0301'), (6, 3, 3, 'a'), (7, 2, 1, '\ud83d\ude00'), (8, 2, 2, 'a'), (9, 7, 1, '\ud83d\udc68'), (10, 7, 2, '\\u200d'), (11, 7, 7, '\ud83d\udc66'), (12, 7, 8, ''), (13, 3, 1, '\u0130'), (14, 3, 2, '\u212a')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "witnesses: e-acute(U+00E9), e+combining U+0301, U+1F600 astral, ZWJ family(7cp), U+0130, U+212A"
+  },
+  {
+   "sql": "SELECT id, array_extract(s, i) IS NOT DISTINCT FROM s[i] FROM uni ORDER BY id",
+   "input_repr": null,
+   "result_repr": "[(1, True), (2, True), (3, True), (4, True), (5, True), (6, True), (7, True), (8, True), (9, True), (10, True), (11, True), (12, True), (13, True), (14, True)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "sql": "INSERT INTO nul VALUES (1, ?) -- param 'ab\\x00cd'",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL insert via param: succeeded"
+  },
+  {
+   "sql": "SELECT length(s), array_extract(s, 3), array_slice(s, 2, 4), s[3], s[2:4] FROM nul",
+   "input_repr": "'ab\\x00cd'",
+   "result_repr": "[(5, '\\x00', 'b\\x00c', '\\x00', 'b\\x00c')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "embedded NUL subscripts"
+  },
+  {
+   "sql": "SELECT id, a, b, array_slice(s, a, b) FROM sl ORDER BY id",
+   "input_repr": "[(1, 'hello', 2, 4), (2, 'hello', 1, 5), (3, 'hello', 0, 3), (4, 'hello', 2, 2), (5, 'hello', 3, 2), (6, 'hello', -3, -1), (7, 'hello', -1, -1), (8, 'hello', 1, -1), (9, 'hello', -10, 10), (10, 'hello', 4, 100), (11, 'hello', 100, 200), (12, 'hello', -100, -50), (13, 'hello', None, 3), (14, 'hello', 2, None), (15, 'hello', None, None), (16, None, 2, 4), (17, 'hello', 0, 0), (18, 'hello', 1, 0), (19, 'hello', -5, 2), (20, '', 1, 3), (21, 'hello', 2, -2), (22, 'hello', -2, 5), (23, 'hello', 5, 5), (24, 'hello', 6, 6)]",
+   "result_repr": "[(1, 2, 4, 'ell'), (2, 1, 5, 'hello'), (3, 0, 3, 'hel'), (4, 2, 2, 'e'), (5, 3, 2, ''), (6, -3, -1, 'llo'), (7, -1, -1, 'o'), (8, 1, -1, 'hello'), (9, -10, 10, 'hello'), (10, 4, 100, 'lo'), (11, 100, 200, ''), (12, -100, -50, ''), (13, None, 3, None), (14, 2, None, None), (15, None, None, None), (16, 2, 4, None), (17, 0, 0, ''), (18, 1, 0, ''), (19, -5, 2, 'he'), (20, 1, 3, ''), (21, 2, -2, 'ell'), (22, -2, 5, 'lo'), (23, 5, 5, 'o'), (24, 6, 6, '')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "sql": "SELECT typeof(array_slice(s, a, b)) FROM sl WHERE id=1",
+   "input_repr": null,
+   "result_repr": "[('VARCHAR',)]",
+   "result_type": "[('VARCHAR',)]",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "sql": "SELECT id, array_slice(s, a, b) IS NOT DISTINCT FROM list_slice(s, a, b) FROM sl ORDER BY id",
+   "input_repr": null,
+   "result_repr": "[(1, True), (2, True), (3, True), (4, True), (5, True), (6, True), (7, True), (8, True), (9, True), (10, True), (11, True), (12, True), (13, True), (14, True), (15, True), (16, True), (17, True), (18, True), (19, True), (20, True), (21, True), (22, True), (23, True), (24, True)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "list_slice alias on all edge rows"
+  },
+  {
+   "sql": "SELECT id, array_slice(s, a, b) IS NOT DISTINCT FROM s[a:b] FROM sl ORDER BY id",
+   "input_repr": null,
+   "result_repr": "[(1, True), (2, True), (3, True), (4, True), (5, True), (6, True), (7, True), (8, True), (9, True), (10, True), (11, True), (12, True), (13, True), (14, True), (15, True), (16, True), (17, True), (18, True), (19, True), (20, True), (21, True), (22, True), (23, True), (24, True)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "bracket slice with column bounds vs array_slice"
+  },
+  {
+   "sql": "SELECT s[2:4], s[:3], s[2:], s[:], s[-3:-1], s[:-2], s[-2:], s[0:3], s[0:0] FROM strs",
+   "input_repr": null,
+   "result_repr": "[('ell', 'hel', 'ello', 'hello', 'llo', 'hell', 'lo', 'hel', '')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "open bracket forms on 'hello' column"
+  },
+  {
+   "sql": "SELECT s[:3] IS NOT DISTINCT FROM array_slice(s, 1, 3), s[2:] IS NOT DISTINCT FROM array_slice(s, 2, -1), s[:] IS NOT DISTINCT FROM array_slice(s, 1, -1) FROM strs",
+   "input_repr": null,
+   "result_repr": "[(True, True, True)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "candidate desugar equivalences"
+  },
+  {
+   "sql": "SELECT s[1:5:2] FROM strs",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:\n SELECT array_to_string((str_split(string, '')[begin:end:step], '');",
+   "note": "step bracket on VARCHAR"
+  },
+  {
+   "sql": "SELECT s[1:5:1] FROM strs",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:\n SELECT array_to_string((str_split(string, '')[begin:end:step], '');",
+   "note": "step=1 bracket on VARCHAR"
+  },
+  {
+   "sql": "SELECT s[5:1:-1] FROM strs",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:\n SELECT array_to_string((str_split(string, '')[begin:end:step], '');",
+   "note": "negative step bracket on VARCHAR"
+  },
+  {
+   "sql": "SELECT s[:':2'] FROM strs",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Conversion Error: Could not convert string ':2' to INT64\n\nLINE 1: SELECT s[:':2'] FROM strs\n                  ^",
+   "note": "nonsense guard, ignore"
+  },
+  {
+   "sql": "SELECT list_slice(s, 1, 5, 2) FROM strs",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:\n SELECT array_to_string((str_split(string, '')[begin:end:step], '');",
+   "note": "4-arg list_slice on VARCHAR"
+  },
+  {
+   "sql": "SELECT array_slice(s, 1, 5, 2) FROM strs",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:\n SELECT array_to_string((str_split(string, '')[begin:end:step], '');",
+   "note": "4-arg array_slice on VARCHAR"
+  },
+  {
+   "sql": "SELECT id, array_slice(s, a, b) FROM usl ORDER BY id",
+   "input_repr": "[(1, '\u00e9ab', 1, 2), (2, 'e\u0301ab', 1, 1), (3, 'e\u0301ab', 2, 3), (4, '\ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67\\u200d\ud83d\udc66', 1, 3), (5, '\ud83d\ude00ab', 1, 2), (6, '\u00e9ab', -2, -1)]",
+   "result_repr": "[(1, '\u00e9a'), (2, 'e'), (3, '\u0301a'), (4, '\ud83d\udc68\\u200d\ud83d\udc69'), (5, '\ud83d\ude00a'), (6, 'ab')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "unicode slice witnesses"
+  },
+  {
+   "sql": "SELECT count(*) FROM rnd WHERE array_slice(s,a,b) IS DISTINCT FROM list_slice(s,a,b)",
+   "input_repr": null,
+   "result_repr": "[(0,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "220-row random sweep incl NULL bounds + unicode; expect 0"
+  },
+  {
+   "sql": "SELECT count(*) FROM rnd WHERE array_slice(s,a,b) IS DISTINCT FROM s[a:b]",
+   "input_repr": null,
+   "result_repr": "[(0,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "bracket sweep; expect 0"
+  },
+  {
+   "sql": "SELECT count(*) FROM rnd WHERE array_extract(s,a) IS DISTINCT FROM s[a]",
+   "input_repr": null,
+   "result_repr": "[(0,)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "extract bracket sweep; expect 0"
+  },
+  {
+   "sql": "SELECT id, s, a, b, array_slice(s,a,b), list_slice(s,a,b) FROM rnd WHERE array_slice(s,a,b) IS DISTINCT FROM list_slice(s,a,b) LIMIT 5",
+   "input_repr": null,
+   "result_repr": "[]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "mismatch examples if any"
+  },
+  {
+   "sql": "SELECT substr(s, 2, 3), array_slice(s, 2, 3) FROM strs",
+   "input_repr": null,
+   "result_repr": "[('ell', 'el')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "substr(start,LENGTH) vs array_slice(begin,end)"
+  },
+  {
+   "sql": "SELECT array_extract(l, 2), typeof(array_extract(l, 2)), typeof(l) FROM lt",
+   "input_repr": null,
+   "result_repr": "[(20, 'INTEGER', 'INTEGER[]')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "list-typed overload exists; out of scope otherwise"
+  },
+  {
+   "sql": "SELECT array_extract('hello', 2), 'hello'[2], array_slice('hello', 2, 4), 'hello'[2:4]",
+   "input_repr": null,
+   "result_repr": "[('e', 'e', 'ell', 'ell')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "literal path spot check"
+  },
+  {
+   "sql": "SELECT '\u00e9a'[1], array_extract('\u00e9a', 1)",
+   "input_repr": null,
+   "result_repr": "[('\u00e9', '\u00e9')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "literal unicode"
+  },
+  {
+   "sql": "SELECT 'hello'[-1], array_extract('hello', 0), array_slice('hello', 3, 2)",
+   "input_repr": null,
+   "result_repr": "[('o', '', '')]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "literal path edge spot check"
+  },
+  {
+   "sql": "SELECT array_extract(l, 5), array_extract(l, 0), array_extract(l, -1) FROM lt",
+   "input_repr": "l=[10,20,30]",
+   "result_repr": "[(None, None, 30)]",
+   "result_type": null,
+   "bits": null,
+   "error": null,
+   "note": "LIST overload contrast: out-of-range on list -> NULL? (string gives '')"
+  }
+ ]
+}
