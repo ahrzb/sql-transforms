@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use super::{
     BinOp, Block, BlockId, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode, StaticTy,
-    StrOp1, StrOp2, Term, TrimSide, Ty, Value,
+    StrOp1, StrOp2, StrOp2i, StrOp3, Term, TrimSide, Ty, Value,
 };
 
 #[derive(Debug)]
@@ -857,7 +857,8 @@ impl Parser {
                 Inst::Const { dst: def!(0), lit }
             }
             "iadd" | "isub" | "imul" | "idiv" | "irem" | "fadd" | "fsub" | "fmul" | "fdiv"
-            | "frem" | "fpow" | "flogb" | "and" | "or" | "xor" => {
+            | "frem" | "fpow" | "flogb" | "ffloordiv" | "ffloormod" | "fnextafter" | "and"
+            | "or" | "xor" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iadd" => BinOp::Iadd,
@@ -872,6 +873,9 @@ impl Parser {
                     "frem" => BinOp::Frem,
                     "fpow" => BinOp::Fpow,
                     "flogb" => BinOp::Flogb,
+                    "ffloordiv" => BinOp::Ffloordiv,
+                    "ffloormod" => BinOp::Ffloormod,
+                    "fnextafter" => BinOp::Fnextafter,
                     "and" => BinOp::And,
                     "or" => BinOp::Or,
                     _ => BinOp::Xor,
@@ -972,12 +976,17 @@ impl Parser {
                     Inst::StofOpt { flag, dst, a }
                 }
             }
-            "sfind" | "scontains" | "sstarts" | "sends" => {
+            "sfind" | "scontains" | "sstarts" | "sends" | "slevenshtein" | "sdamerau"
+            | "sjaccard" | "shamming" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "sfind" => StrOp2::Find,
                     "scontains" => StrOp2::Contains,
                     "sstarts" => StrOp2::Starts,
+                    "slevenshtein" => StrOp2::Levenshtein,
+                    "sdamerau" => StrOp2::Damerau,
+                    "sjaccard" => StrOp2::Jaccard,
+                    "shamming" => StrOp2::Hamming,
                     _ => StrOp2::Ends,
                 };
                 let a = self.use_value()?;
@@ -1047,16 +1056,91 @@ impl Parser {
                 let b = self.use_value()?;
                 Inst::Sconcat { dst: def!(0), a, b }
             }
-            "supper" | "slower" => {
+            "supper" | "slower" | "sstrip" => {
                 want_dsts(1, self)?;
-                let op = if opcode == "supper" {
-                    StrOp1::Upper
-                } else {
-                    StrOp1::Lower
+                let op = match opcode.as_str() {
+                    "supper" => StrOp1::Upper,
+                    "slower" => StrOp1::Lower,
+                    _ => StrOp1::StripAccents,
                 };
                 let a = self.use_value()?;
                 Inst::Str1 {
                     op,
+                    dst: def!(0),
+                    a,
+                }
+            }
+            "sreplace" | "stranslate" => {
+                want_dsts(1, self)?;
+                let op = if opcode == "sreplace" {
+                    StrOp3::Replace
+                } else {
+                    StrOp3::Translate
+                };
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let b = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let c = self.use_value()?;
+                Inst::Str3 {
+                    op,
+                    dst: def!(0),
+                    a,
+                    b,
+                    c,
+                }
+            }
+            "srepeat" | "sextract" => {
+                want_dsts(1, self)?;
+                let op = if opcode == "srepeat" {
+                    StrOp2i::Repeat
+                } else {
+                    StrOp2i::Extract
+                };
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let n = self.use_value()?;
+                Inst::Str2i {
+                    op,
+                    dst: def!(0),
+                    a,
+                    n,
+                }
+            }
+            "spad.left" | "spad.right" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let len = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let pad = self.use_value()?;
+                Inst::Spad {
+                    left: opcode == "spad.left",
+                    dst: def!(0),
+                    a,
+                    len,
+                    pad,
+                }
+            }
+            "sslice" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let lo = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let hi = self.use_value()?;
+                Inst::Sslice {
+                    dst: def!(0),
+                    a,
+                    lo,
+                    hi,
+                }
+            }
+            "sord" | "sord.ascii" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                Inst::Sord {
+                    empty_zero: opcode == "sord.ascii",
                     dst: def!(0),
                     a,
                 }

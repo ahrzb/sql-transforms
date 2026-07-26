@@ -28,7 +28,7 @@ use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 
 use super::fold::fold;
-use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, TrimSide, Ty};
+use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1042,6 +1042,7 @@ impl Binder<'_> {
             BinaryOperator::Minus => self.arith(ArithOp::Sub, a, b),
             BinaryOperator::Multiply => self.arith(ArithOp::Mul, a, b),
             BinaryOperator::Divide => self.arith(ArithOp::Div, a, b),
+            BinaryOperator::DuckIntegerDivide => self.arith(ArithOp::IDiv, a, b),
             BinaryOperator::Modulo => self.arith(ArithOp::Rem, a, b),
             BinaryOperator::Eq => self.cmp(CmpPred::Eq, a, b),
             BinaryOperator::NotEq => self.cmp(CmpPred::Ne, a, b),
@@ -1224,17 +1225,26 @@ impl Binder<'_> {
     fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
         let (a, b, ty) = numeric_promote(op, a, b)?;
         let nullable = a.nullable || b.nullable;
-        // DuckDB pin (2026-07-26): integer % by zero is NULL, not an error —
+        // DuckDB pins (2026-07-26, waves 1+3): integer % by zero is NULL,
+        // and `//`/divide() by zero is NULL on BOTH ints and doubles —
         // guard with a CASE unless the divisor is a provably non-zero
-        // literal. The irem trap stays reachable only for MIN % -1, where
-        // DuckDB traps too. Float % is IEEE (x % 0.0 = NaN), no guard.
-        if op == ArithOp::Rem
-            && ty == Ty::I64
-            && !matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
-        {
+        // literal. The idiv/irem traps stay reachable only for MIN op -1,
+        // where DuckDB traps too. Float % is IEEE (x % 0.0 = NaN), no guard.
+        let needs_guard = match (op, ty) {
+            (ArithOp::Rem, Ty::I64) => true,
+            (ArithOp::IDiv, _) => true,
+            _ => false,
+        };
+        let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
+            || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
+        if needs_guard && !nonzero_lit {
             let zero = SExpr {
-                kind: SKind::Lit(Lit::I64(0)),
-                ty: Ty::I64,
+                kind: SKind::Lit(if ty == Ty::F64 {
+                    Lit::F64(0.0)
+                } else {
+                    Lit::I64(0)
+                }),
+                ty,
                 nullable: false,
             };
             // The guard must fire for a NULL divisor too: `b = 0` alone is
@@ -1272,10 +1282,10 @@ impl Binder<'_> {
             };
             return Ok(SExpr {
                 kind: SKind::Case {
-                    arms: vec![(cond, null_of(Ty::I64))],
+                    arms: vec![(cond, null_of(ty))],
                     default: Some(Box::new(rem)),
                 },
-                ty: Ty::I64,
+                ty,
                 nullable: true,
             });
         }
@@ -1341,7 +1351,9 @@ impl Binder<'_> {
             }
         }
         match name.as_str() {
-            "upper" | "lower" => {
+            // ucase/lcase are alias-identical to upper/lower (wave-3 pins:
+            // exhaustive all-codepoint sweep, zero mismatches).
+            "upper" | "lower" | "ucase" | "lcase" => {
                 let [arg] = args[..] else {
                     return Err(PrepareError::Bind(format!(
                         "{name} takes exactly 1 argument"
@@ -1360,7 +1372,7 @@ impl Binder<'_> {
                 let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::StrCase {
-                        upper: name == "upper",
+                        upper: matches!(name.as_str(), "upper" | "ucase"),
                         a: Box::new(inner),
                     },
                     ty: Ty::Str,
@@ -1757,6 +1769,476 @@ impl Binder<'_> {
                     }
                 }
             }
+            // Wave-3 similarity: all raw UTF-8 BYTE-based (measured);
+            // editdist3 == levenshtein and mismatches == hamming exactly.
+            "levenshtein" | "editdist3" | "damerau_levenshtein" | "jaccard" | "hamming"
+            | "mismatches" => {
+                let op = match name.as_str() {
+                    "levenshtein" | "editdist3" => StrOp2::Levenshtein,
+                    "damerau_levenshtein" => StrOp2::Damerau,
+                    "jaccard" => StrOp2::Jaccard,
+                    _ => StrOp2::Hamming,
+                };
+                let [a, b] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 2 arguments"
+                    )));
+                };
+                self.str2(&name, op, a, b)
+            }
+            "repeat" | "array_extract" | "list_extract" => {
+                let op = if name == "repeat" {
+                    StrOp2i::Repeat
+                } else {
+                    StrOp2i::Extract
+                };
+                let [s, n] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 2 arguments"
+                    )));
+                };
+                let (bs, bn) = (self.expr_or_null(s)?, self.expr_or_null(n)?);
+                let (Some(bs), Some(bn)) = (bs, bn) else {
+                    return Ok(null_of(Ty::Str));
+                };
+                if bs.ty != Ty::Str {
+                    if name == "repeat" {
+                        // No implicit numeric->VARCHAR cast (measured).
+                        return Err(PrepareError::Bind(format!(
+                            "no function matches repeat({})",
+                            bs.ty.name()
+                        )));
+                    }
+                    // The LIST overload has different out-of-range semantics
+                    // (NULL, not '') — only the VARCHAR path ships in v0.
+                    return Err(unsup(format!(
+                        "{name} on {} (only VARCHAR subscripts in v0)",
+                        bs.ty.name()
+                    )));
+                }
+                if bn.ty != Ty::I64 {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches {name}(str, {})",
+                        bn.ty.name()
+                    )));
+                }
+                let nullable = bs.nullable || bn.nullable;
+                Ok(SExpr {
+                    kind: SKind::Str2i {
+                        op,
+                        a: Box::new(bs),
+                        n: Box::new(bn),
+                    },
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
+            "array_slice" | "list_slice" => {
+                if args.len() == 4 {
+                    // DuckDB rejects step slicing on VARCHAR for EVERY step
+                    // value, including 1 (measured).
+                    return Err(unsup(
+                        "slice with step (DuckDB: not implemented for string types)",
+                    ));
+                }
+                let [s, lo, hi] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 3 arguments"
+                    )));
+                };
+                let (bs, blo, bhi) = (
+                    self.expr_or_null(s)?,
+                    self.expr_or_null(lo)?,
+                    self.expr_or_null(hi)?,
+                );
+                let (Some(bs), Some(blo), Some(bhi)) = (bs, blo, bhi) else {
+                    // NULL is NOT an open bound (measured): any NULL -> NULL.
+                    return Ok(null_of(Ty::Str));
+                };
+                if bs.ty != Ty::Str {
+                    return Err(unsup(format!(
+                        "{name} on {} (only VARCHAR subscripts in v0)",
+                        bs.ty.name()
+                    )));
+                }
+                for e in [&blo, &bhi] {
+                    if e.ty != Ty::I64 {
+                        return Err(PrepareError::Bind(format!(
+                            "no function matches {name}(str, {}, {})",
+                            blo.ty.name(),
+                            bhi.ty.name()
+                        )));
+                    }
+                }
+                let nullable = bs.nullable || blo.nullable || bhi.nullable;
+                Ok(SExpr {
+                    kind: SKind::Sslice {
+                        a: Box::new(bs),
+                        lo: Box::new(blo),
+                        hi: Box::new(bhi),
+                    },
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
+            "lpad" | "rpad" => {
+                let [s, l, pad] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 3 arguments"
+                    )));
+                };
+                let (bs, bl, bp) = (
+                    self.expr_or_null(s)?,
+                    self.expr_or_null(l)?,
+                    self.expr_or_null(pad)?,
+                );
+                let (Some(bs), Some(bl), Some(bp)) = (bs, bl, bp) else {
+                    return Ok(null_of(Ty::Str));
+                };
+                if bs.ty != Ty::Str || bp.ty != Ty::Str || bl.ty != Ty::I64 {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches {name}({}, {}, {})",
+                        bs.ty.name(),
+                        bl.ty.name(),
+                        bp.ty.name()
+                    )));
+                }
+                let nullable = bs.nullable || bl.nullable || bp.nullable;
+                Ok(SExpr {
+                    kind: SKind::Spad {
+                        left: name == "lpad",
+                        a: Box::new(bs),
+                        len: Box::new(bl),
+                        pad: Box::new(bp),
+                    },
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
+            "replace" | "translate" => {
+                let op = if name == "replace" {
+                    StrOp3::Replace
+                } else {
+                    StrOp3::Translate
+                };
+                let [s, x, y] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 3 arguments"
+                    )));
+                };
+                let (bs, bx, by) = (
+                    self.expr_or_null(s)?,
+                    self.expr_or_null(x)?,
+                    self.expr_or_null(y)?,
+                );
+                let (Some(bs), Some(bx), Some(by)) = (bs, bx, by) else {
+                    return Ok(null_of(Ty::Str));
+                };
+                for e in [&bs, &bx, &by] {
+                    if e.ty != Ty::Str {
+                        return Err(PrepareError::Bind(format!(
+                            "no function matches {name}({})",
+                            e.ty.name()
+                        )));
+                    }
+                }
+                let nullable = bs.nullable || bx.nullable || by.nullable;
+                Ok(SExpr {
+                    kind: SKind::Str3 {
+                        op,
+                        a: Box::new(bs),
+                        b: Box::new(bx),
+                        c: Box::new(by),
+                    },
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
+            // unicode('') = ord('') = -1, but ascii('') = 0 — the measured
+            // sole divergence; all return the FIRST codepoint otherwise.
+            "unicode" | "ord" | "ascii" => {
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(format!(
+                        "{name} takes exactly 1 argument"
+                    )));
+                };
+                let Some(inner) = self.expr_or_null(arg)? else {
+                    return Ok(null_of(Ty::I64));
+                };
+                if inner.ty != Ty::Str {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches {name}({})",
+                        inner.ty.name()
+                    )));
+                }
+                let nullable = inner.nullable;
+                Ok(SExpr {
+                    kind: SKind::Sord {
+                        empty_zero: name == "ascii",
+                        a: Box::new(inner),
+                    },
+                    ty: Ty::I64,
+                    nullable,
+                })
+            }
+            // bit_length = 8 * strlen exactly (measured) — pure desugar.
+            "bit_length" => {
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(
+                        "bit_length takes exactly 1 argument".to_string(),
+                    ));
+                };
+                let Some(inner) = self.expr_or_null(arg)? else {
+                    return Ok(null_of(Ty::I64));
+                };
+                if inner.ty != Ty::Str {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches bit_length({})",
+                        inner.ty.name()
+                    )));
+                }
+                let nullable = inner.nullable;
+                let slen = SExpr {
+                    kind: SKind::SLen {
+                        bytes: true,
+                        a: Box::new(inner),
+                    },
+                    ty: Ty::I64,
+                    nullable,
+                };
+                let eight = SExpr {
+                    kind: SKind::Lit(Lit::I64(8)),
+                    ty: Ty::I64,
+                    nullable: false,
+                };
+                self.arith(ArithOp::Mul, eight, slen)
+            }
+            "strip_accents" => {
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(
+                        "strip_accents takes exactly 1 argument".to_string(),
+                    ));
+                };
+                let Some(inner) = self.expr_or_null(arg)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                if inner.ty != Ty::Str {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches strip_accents({})",
+                        inner.ty.name()
+                    )));
+                }
+                let nullable = inner.nullable;
+                Ok(SExpr {
+                    kind: SKind::StripAccents(Box::new(inner)),
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
+            // concat_ws: NULL args are SKIPPED with their separator; NULL
+            // sep -> NULL; all-args-NULL -> '' (measured). Desugars onto
+            // Case/Or/Concat — the separator appears before arg i iff some
+            // earlier arg was non-NULL.
+            "concat_ws" => {
+                if args.len() < 2 {
+                    return Err(PrepareError::Bind(
+                        "concat_ws needs a separator and at least 1 argument".to_string(),
+                    ));
+                }
+                let sep = match self.expr_or_null(args[0])? {
+                    // NULL separator -> NULL result, regardless of args.
+                    None => return Ok(null_of(Ty::Str)),
+                    Some(e) => e,
+                };
+                if sep.ty != Ty::Str {
+                    // The separator does NOT implicitly cast (measured —
+                    // unlike the value args).
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches concat_ws({}, ...)",
+                        sep.ty.name()
+                    )));
+                }
+                let is_null = |e: &SExpr| SExpr {
+                    kind: SKind::IsNull {
+                        negated: false,
+                        inner: Box::new(e.clone()),
+                    },
+                    ty: Ty::I1,
+                    nullable: false,
+                };
+                let sconcat = |a: SExpr, b: SExpr| SExpr {
+                    kind: SKind::Concat {
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    },
+                    ty: Ty::Str,
+                    nullable: false,
+                };
+                // The body only evaluates when sep is non-NULL (the outer
+                // CASE guards it), so pieces use a provably-non-null view
+                // of the separator — the concat() precedent shape.
+                let sep_body = if sep.nullable {
+                    SExpr {
+                        kind: SKind::Case {
+                            arms: vec![(is_null(&sep), lit_str(""))],
+                            default: Some(Box::new(sep.clone())),
+                        },
+                        ty: Ty::Str,
+                        nullable: false,
+                    }
+                } else {
+                    sep.clone()
+                };
+                // prior_nullable: IS-NOT-NULL exprs of earlier nullable
+                // args; prior_sure: an earlier arg is provably non-NULL.
+                let mut prior_nullable: Vec<SExpr> = Vec::new();
+                let mut prior_sure = false;
+                let mut acc: Option<SExpr> = None;
+                for arg in &args[1..] {
+                    let Some(e) = self.expr_or_null(arg)? else {
+                        continue; // literal NULL: skipped entirely
+                    };
+                    let e = to_varchar(e);
+                    let joined = sconcat(sep_body.clone(), e.clone());
+                    let with_sep = if prior_sure {
+                        joined
+                    } else if prior_nullable.is_empty() {
+                        e.clone()
+                    } else {
+                        let mut it = prior_nullable.iter();
+                        let mut some_prior = SExpr {
+                            kind: SKind::IsNull {
+                                negated: true,
+                                inner: Box::new(it.next().expect("non-empty").clone()),
+                            },
+                            ty: Ty::I1,
+                            nullable: false,
+                        };
+                        for p in it {
+                            let not_null = SExpr {
+                                kind: SKind::IsNull {
+                                    negated: true,
+                                    inner: Box::new(p.clone()),
+                                },
+                                ty: Ty::I1,
+                                nullable: false,
+                            };
+                            some_prior = SExpr {
+                                kind: SKind::Or {
+                                    a: Box::new(some_prior),
+                                    b: Box::new(not_null),
+                                },
+                                ty: Ty::I1,
+                                nullable: false,
+                            };
+                        }
+                        SExpr {
+                            kind: SKind::Case {
+                                arms: vec![(some_prior, joined)],
+                                default: Some(Box::new(e.clone())),
+                            },
+                            ty: Ty::Str,
+                            nullable: false,
+                        }
+                    };
+                    let piece = if e.nullable {
+                        SExpr {
+                            kind: SKind::Case {
+                                arms: vec![(is_null(&e), lit_str(""))],
+                                default: Some(Box::new(with_sep)),
+                            },
+                            ty: Ty::Str,
+                            nullable: false,
+                        }
+                    } else {
+                        with_sep
+                    };
+                    acc = Some(match acc {
+                        None => piece,
+                        Some(p) => sconcat(p, piece),
+                    });
+                    if e.nullable {
+                        prior_nullable.push(e);
+                    } else {
+                        prior_sure = true;
+                    }
+                }
+                let body = acc.unwrap_or_else(|| lit_str(""));
+                if !sep.nullable {
+                    return Ok(body);
+                }
+                // NULL separator -> NULL result (measured), even though
+                // every piece is individually total.
+                Ok(SExpr {
+                    kind: SKind::Case {
+                        arms: vec![(is_null(&sep), null_of(Ty::Str))],
+                        default: Some(Box::new(body)),
+                    },
+                    ty: Ty::Str,
+                    nullable: true,
+                })
+            }
+            // Wave-3 math tail: add/subtract/multiply/divide/mod are EXACT
+            // aliases of + - * // % (measured: same values, types, and
+            // error texts); fdiv/fmod are the FLOOR pair (always DOUBLE);
+            // nextafter is C nextafter, total.
+            "add" | "subtract" | "multiply" | "divide" | "mod" => {
+                let [x, y] = args[..] else {
+                    return Err(unsup(format!("{name} with {} arguments", args.len())));
+                };
+                let op = match name.as_str() {
+                    "add" => ArithOp::Add,
+                    "subtract" => ArithOp::Sub,
+                    "multiply" => ArithOp::Mul,
+                    "divide" => ArithOp::IDiv,
+                    _ => ArithOp::Rem,
+                };
+                let (bx, by) = (self.expr_or_null(x)?, self.expr_or_null(y)?);
+                let (bx, by) = match (bx, by) {
+                    (Some(a), Some(b)) => (a, b),
+                    (Some(a), None) => {
+                        let n = null_of(a.ty);
+                        (a, n)
+                    }
+                    (None, Some(b)) => {
+                        let n = null_of(b.ty);
+                        (n, b)
+                    }
+                    (None, None) => (null_of(Ty::I64), null_of(Ty::I64)),
+                };
+                self.arith(op, bx, by)
+            }
+            "fdiv" => match args[..] {
+                [x, y] => self.math2("fdiv", BinOp::Ffloordiv, x, y),
+                _ => Err(PrepareError::Bind(
+                    "fdiv takes exactly 2 arguments".to_string(),
+                )),
+            },
+            "fmod" => match args[..] {
+                [x, y] => self.math2("fmod", BinOp::Ffloormod, x, y),
+                _ => Err(PrepareError::Bind(
+                    "fmod takes exactly 2 arguments".to_string(),
+                )),
+            },
+            "nextafter" => match args[..] {
+                [x, y] => self.math2("nextafter", BinOp::Fnextafter, x, y),
+                _ => Err(PrepareError::Bind(
+                    "nextafter takes exactly 2 arguments".to_string(),
+                )),
+            },
+            // Named rejects (wave-3 AC #3): each states WHY, not just what.
+            "sum" | "count" | "avg" | "min" | "max" | "geomean" | "product" | "string_agg"
+            | "first" | "last" | "any_value" => Err(unsup(format!(
+                "aggregate function {name} (no aggregation in v0)"
+            ))),
+            "regexp_matches" | "regexp_extract" | "regexp_full_match" | "regexp_replace"
+            | "regexp_split_to_array" => Err(unsup(format!(
+                "function {name} (RE2 regex semantics, not in v0)"
+            ))),
+            "reverse" => Err(unsup(
+                "function reverse (grapheme-cluster semantics — measured UAX-29 \
+                 incl. regional-indicator pairing — not modeled in v0)",
+            )),
             _ => Err(unsup(format!(
                 "function {} (not in the v0 catalogue)",
                 f.name

@@ -247,6 +247,15 @@ pub enum BinOp {
     /// Traps: base checked FIRST (zero / negative / base==1 each with their
     /// own DuckDB message), then x (zero / negative).
     Flogb,
+    /// SQL fdiv(x, y) = floor(x / y) — TOTAL, ±inf on zero divisor
+    /// (wave-3 pins). NOT the `//` operator, which is plain division.
+    Ffloordiv,
+    /// SQL fmod(x, y) = x − floor(x/y)·y — FLOORED mod, divisor's sign;
+    /// NaN on zero or infinite divisor (wave-3 pins). NOT C fmod — that
+    /// is `Frem` (SQL `%`/mod on doubles).
+    Ffloormod,
+    /// C nextafter, bit-exact, TOTAL; x == y returns y (wave-3 pins).
+    Fnextafter,
     And,
     Or,
     Xor,
@@ -265,7 +274,10 @@ impl BinOp {
             | BinOp::Fdiv
             | BinOp::Frem
             | BinOp::Fpow
-            | BinOp::Flogb => (Ty::F64, Ty::F64),
+            | BinOp::Flogb
+            | BinOp::Ffloordiv
+            | BinOp::Ffloormod
+            | BinOp::Fnextafter => (Ty::F64, Ty::F64),
             BinOp::And | BinOp::Or | BinOp::Xor => (Ty::I1, Ty::I1),
         }
     }
@@ -284,6 +296,9 @@ impl BinOp {
             BinOp::Frem => "frem",
             BinOp::Fpow => "fpow",
             BinOp::Flogb => "flogb",
+            BinOp::Ffloordiv => "ffloordiv",
+            BinOp::Ffloormod => "ffloormod",
+            BinOp::Fnextafter => "fnextafter",
             BinOp::And => "and",
             BinOp::Or => "or",
             BinOp::Xor => "xor",
@@ -326,6 +341,9 @@ pub enum RoundMode {
 pub enum StrOp1 {
     Upper,
     Lower,
+    /// strip_accents: oracle-extracted per-codepoint map + Hangul jamo
+    /// composition + the measured NUL quirk (wave-3 pins). TOTAL.
+    StripAccents,
 }
 
 impl StrOp1 {
@@ -333,13 +351,16 @@ impl StrOp1 {
         match self {
             StrOp1::Upper => "supper",
             StrOp1::Lower => "slower",
+            StrOp1::StripAccents => "sstrip",
         }
     }
 }
 
-/// Wave-1 string search: str × str, TOTAL (no traps), NULL-strict via
-/// lanes. Positions are 1-based CODEPOINT indices; an empty needle
-/// matches everything (pins spec 2026-07-26).
+/// Two-string ops, NULL-strict via lanes. The wave-1 search ops are TOTAL
+/// with 1-based CODEPOINT positions and empty-needle-matches-everything;
+/// the wave-3 similarity ops are raw UTF-8 BYTE-based (all of them —
+/// measured), and `Jaccard`/`Hamming` TRAP (empty inputs / byte-length
+/// mismatch, DuckDB messages verbatim).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StrOp2 {
     /// instr/strpos/position: 1-based codepoint index, 0 = not found.
@@ -347,12 +368,24 @@ pub enum StrOp2 {
     Contains,
     Starts,
     Ends,
+    /// levenshtein == editdist3: plain byte-level edit distance.
+    Levenshtein,
+    /// damerau_levenshtein: the UNRESTRICTED DL variant (NOT OSA —
+    /// witness ('ca','abc') = 2), transposition cost 1, bytes.
+    Damerau,
+    /// jaccard: |A∩B|/|A∪B| over single-BYTE sets, duplicates ignored;
+    /// traps on an empty string either side.
+    Jaccard,
+    /// hamming == mismatches: byte-wise; traps on byte-length mismatch
+    /// and on ANY empty input (('','') is an error, not 0).
+    Hamming,
 }
 
 impl StrOp2 {
     pub fn result_ty(self) -> Ty {
         match self {
-            StrOp2::Find => Ty::I64,
+            StrOp2::Find | StrOp2::Levenshtein | StrOp2::Damerau | StrOp2::Hamming => Ty::I64,
+            StrOp2::Jaccard => Ty::F64,
             _ => Ty::I1,
         }
     }
@@ -363,6 +396,50 @@ impl StrOp2 {
             StrOp2::Contains => "scontains",
             StrOp2::Starts => "sstarts",
             StrOp2::Ends => "sends",
+            StrOp2::Levenshtein => "slevenshtein",
+            StrOp2::Damerau => "sdamerau",
+            StrOp2::Jaccard => "sjaccard",
+            StrOp2::Hamming => "shamming",
+        }
+    }
+}
+
+/// Three-string ops (Str × Str × Str -> Str), TOTAL, NULL-strict via lanes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StrOp3 {
+    /// replace(s, from, to): leftmost non-overlapping single pass, output
+    /// never rescanned; empty needle is a strict no-op (wave-3 pins).
+    Replace,
+    /// translate(s, from, to): per-CODEPOINT map; from-chars beyond |to|
+    /// are deleted; duplicate in `from` -> FIRST wins (wave-3 pins).
+    Translate,
+}
+
+impl StrOp3 {
+    pub fn name(self) -> &'static str {
+        match self {
+            StrOp3::Replace => "sreplace",
+            StrOp3::Translate => "stranslate",
+        }
+    }
+}
+
+/// (Str × I64 -> Str) ops, TOTAL, NULL-strict via lanes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StrOp2i {
+    /// repeat(s, n): n <= 0 -> '' silently (wave-3 pins).
+    Repeat,
+    /// array_extract/list_extract/s[i] on VARCHAR: 1-based CODEPOINT,
+    /// negative from the end (len+1+i), out-of-range/0 -> '' — NOT NULL
+    /// (the LIST overload differs; wave-3 pins).
+    Extract,
+}
+
+impl StrOp2i {
+    pub fn name(self) -> &'static str {
+        match self {
+            StrOp2i::Repeat => "srepeat",
+            StrOp2i::Extract => "sextract",
         }
     }
 }
@@ -504,12 +581,55 @@ pub enum Inst {
         a: Value,
         b: Value,
     },
-    /// Wave-1 string search — `a` is the haystack, `b` the needle.
+    /// Wave-1 string search / wave-3 similarity — `a` is the haystack
+    /// (resp. first argument), `b` the needle (second argument).
     Str2 {
         op: StrOp2,
         dst: Value,
         a: Value,
         b: Value,
+    },
+    /// `sreplace` / `stranslate` — replace(a, b, c) / translate(a, b, c).
+    Str3 {
+        op: StrOp3,
+        dst: Value,
+        a: Value,
+        b: Value,
+        c: Value,
+    },
+    /// `srepeat` / `sextract` — (a: Str, n: I64) -> Str.
+    Str2i {
+        op: StrOp2i,
+        dst: Value,
+        a: Value,
+        n: Value,
+    },
+    /// `spad.left` / `spad.right` — lpad/rpad(a, len, pad): len counts
+    /// CODEPOINTS; truncation keeps the FIRST len codepoints for BOTH
+    /// sides; TRAPS ("Insufficient padding in LPAD/RPAD.") only when
+    /// pad is empty AND growth is needed (data-dependent; wave-3 pins).
+    Spad {
+        left: bool,
+        dst: Value,
+        a: Value,
+        len: Value,
+        pad: Value,
+    },
+    /// `sslice` — array_slice/list_slice/s[a:b] on VARCHAR: 1-based,
+    /// both-ends-INCLUSIVE codepoint slice, negative from-end, clamping,
+    /// out-of-range/reversed -> ''. TOTAL (wave-3 pins).
+    Sslice {
+        dst: Value,
+        a: Value,
+        lo: Value,
+        hi: Value,
+    },
+    /// `sord` / `sord.ascii` — first codepoint as i64; '' -> -1 (unicode/
+    /// ord) or 0 (ascii — the measured sole divergence). TOTAL.
+    Sord {
+        empty_zero: bool,
+        dst: Value,
+        a: Value,
     },
     /// String length: codepoints (`slenc`) or UTF-8 bytes (`slenb`).
     SLen {
@@ -675,6 +795,11 @@ impl Inst {
             | Inst::Sconcat { dst, .. }
             | Inst::Str1 { dst, .. }
             | Inst::Str2 { dst, .. }
+            | Inst::Str3 { dst, .. }
+            | Inst::Str2i { dst, .. }
+            | Inst::Spad { dst, .. }
+            | Inst::Sslice { dst, .. }
+            | Inst::Sord { dst, .. }
             | Inst::SLen { dst, .. }
             | Inst::Round2f { dst, .. }
             | Inst::Round2i { dst, .. }
@@ -731,6 +856,7 @@ impl Inst {
             | Inst::Ftoi { dst, a, .. }
             | Inst::Str1 { dst, a, .. }
             | Inst::SLen { dst, a, .. }
+            | Inst::Sord { dst, a, .. }
             | Inst::Num1 { dst, a, .. }
             | Inst::Not { dst, a } => {
                 *dst = m(*dst);
@@ -742,12 +868,32 @@ impl Inst {
                 dst, a, chars: b, ..
             }
             | Inst::Str2 { dst, a, b, .. }
+            | Inst::Str2i { dst, a, n: b, .. }
             | Inst::Round2f { dst, a, n: b, .. }
             | Inst::Round2i { dst, a, n: b, .. }
             | Inst::Sconcat { dst, a, b } => {
                 *dst = m(*dst);
                 *a = m(*a);
                 *b = m(*b);
+            }
+            Inst::Str3 { dst, a, b, c, .. }
+            | Inst::Spad {
+                dst,
+                a,
+                len: b,
+                pad: c,
+                ..
+            }
+            | Inst::Sslice {
+                dst,
+                a,
+                lo: b,
+                hi: c,
+            } => {
+                *dst = m(*dst);
+                *a = m(*a);
+                *b = m(*b);
+                *c = m(*c);
             }
             Inst::Slike { dst, a, p, esc, .. } => {
                 *dst = m(*dst);

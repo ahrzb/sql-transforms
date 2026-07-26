@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use super::frontend::PrepareError;
 use super::ir::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
-    Term, Ty, Value,
+    StrOp2, Term, Ty, Value,
 };
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
@@ -444,10 +444,14 @@ impl<'a> FB<'a> {
                     (ArithOp::Sub, Ty::I64) => BinOp::Isub,
                     (ArithOp::Mul, Ty::I64) => BinOp::Imul,
                     (ArithOp::Rem, Ty::I64) => BinOp::Irem,
+                    (ArithOp::IDiv, Ty::I64) => BinOp::Idiv,
                     (ArithOp::Add, Ty::F64) => BinOp::Fadd,
                     (ArithOp::Sub, Ty::F64) => BinOp::Fsub,
                     (ArithOp::Mul, Ty::F64) => BinOp::Fmul,
                     (ArithOp::Div, Ty::F64) => BinOp::Fdiv,
+                    // `//` on doubles is PLAIN division (wave-3 pins); the
+                    // zero-divisor NULL guard is the frontend's CASE wrap.
+                    (ArithOp::IDiv, Ty::F64) => BinOp::Fdiv,
                     (ArithOp::Rem, Ty::F64) => BinOp::Frem,
                     (op, ty) => {
                         return Err(PrepareError::Internal(format!(
@@ -714,15 +718,144 @@ impl<'a> FB<'a> {
                 live.push((la, Ty::Str));
                 let lb = self.emit(b, live)?;
                 let (la, _) = live.pop().expect("pushed above");
+                let flag = self.combine_flags(la.flag, lb.flag);
+                // Jaccard/Hamming trap on empty inputs / length mismatch —
+                // and the "" mask default IS in the trap domain. NULL
+                // pre-empts the checks (jaccard(NULL, '') is NULL, not an
+                // error), so BOTH payloads mask to "a" under the COMBINED
+                // flag, the Flogb pattern.
+                let (av, bv) = match op {
+                    StrOp2::Jaccard | StrOp2::Hamming => {
+                        let a = Lane { flag, val: la.val };
+                        let b = Lane { flag, val: lb.val };
+                        (
+                            self.masked_to(a, Lit::Str("a".into())),
+                            self.masked_to(b, Lit::Str("a".into())),
+                        )
+                    }
+                    _ => (la.val, lb.val),
+                };
                 let dst = self.fresh();
                 self.inst(Inst::Str2 {
                     op: *op,
                     dst,
+                    a: av,
+                    b: bv,
+                });
+                Ok(Lane { flag, val: dst })
+            }
+            SKind::Str3 { op, a, b, c } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let lb = self.emit(b, live)?;
+                live.push((lb, Ty::Str));
+                let lc = self.emit(c, live)?;
+                let (lb, _) = live.pop().expect("pushed above");
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                self.inst(Inst::Str3 {
+                    op: *op,
+                    dst,
                     a: la.val,
                     b: lb.val,
+                    c: lc.val,
+                });
+                let f = self.combine_flags(la.flag, lb.flag);
+                Ok(Lane {
+                    flag: self.combine_flags(f, lc.flag),
+                    val: dst,
+                })
+            }
+            SKind::Str2i { op, a, n } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let ln = self.emit(n, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                // Total under masked defaults: repeat("", any n) allocates
+                // nothing (the cap guard sees 0 bytes) and extract is total.
+                let dst = self.fresh();
+                self.inst(Inst::Str2i {
+                    op: *op,
+                    dst,
+                    a: la.val,
+                    n: ln.val,
                 });
                 Ok(Lane {
-                    flag: self.combine_flags(la.flag, lb.flag),
+                    flag: self.combine_flags(la.flag, ln.flag),
+                    val: dst,
+                })
+            }
+            SKind::Spad { left, a, len, pad } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let ll = self.emit(len, live)?;
+                live.push((ll, Ty::I64));
+                let lp = self.emit(pad, live)?;
+                let (ll, _) = live.pop().expect("pushed above");
+                let (la, _) = live.pop().expect("pushed above");
+                // The empty-pad trap fires only when growth is needed; a
+                // VALID len with a NULL pad must not trap (NULL pre-empts).
+                // Mask len to 0 under the COMBINED flag — len 0 returns ''
+                // before the pad is ever examined.
+                let flag = {
+                    let f = self.combine_flags(la.flag, ll.flag);
+                    self.combine_flags(f, lp.flag)
+                };
+                let len_v = self.masked_to(Lane { flag, val: ll.val }, Lit::I64(0));
+                let dst = self.fresh();
+                self.inst(Inst::Spad {
+                    left: *left,
+                    dst,
+                    a: la.val,
+                    len: len_v,
+                    pad: lp.val,
+                });
+                Ok(Lane { flag, val: dst })
+            }
+            SKind::Sslice { a, lo, hi } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let llo = self.emit(lo, live)?;
+                live.push((llo, Ty::I64));
+                let lhi = self.emit(hi, live)?;
+                let (llo, _) = live.pop().expect("pushed above");
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                self.inst(Inst::Sslice {
+                    dst,
+                    a: la.val,
+                    lo: llo.val,
+                    hi: lhi.val,
+                });
+                let f = self.combine_flags(la.flag, llo.flag);
+                Ok(Lane {
+                    flag: self.combine_flags(f, lhi.flag),
+                    val: dst,
+                })
+            }
+            SKind::Sord { empty_zero, a } => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::Sord {
+                    empty_zero: *empty_zero,
+                    dst,
+                    a: l.val,
+                });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::StripAccents(a) => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::Str1 {
+                    op: StrOp1::StripAccents,
+                    dst,
+                    a: l.val,
+                });
+                Ok(Lane {
+                    flag: l.flag,
                     val: dst,
                 })
             }

@@ -506,6 +506,174 @@ extern "C" fn h_ssubstr(
     (ao as usize + rng.start) as i64
 }
 
+// Wave-3 helpers: every one delegates to the interpreter's shared
+// semantic fn (pins spec 2026-07-26 wave 3) — the backends cannot drift.
+
+extern "C" fn h_ssim(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &*c.arena };
+    let a = arena.get(span(ao, al)).as_bytes();
+    let b = arena.get(span(bo, bl)).as_bytes();
+    match which {
+        0 => interp::duck_levenshtein(a, b),
+        1 => interp::duck_damerau(a, b),
+        _ => match interp::duck_hamming(a, b) {
+            Ok(v) => v,
+            Err(t) => {
+                c.set_trap(t.0);
+                0
+            }
+        },
+    }
+}
+
+extern "C" fn h_sjaccard(p: *mut Cx, ao: i64, al: i64, bo: i64, bl: i64) -> f64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &*c.arena };
+    let a = arena.get(span(ao, al)).as_bytes();
+    let b = arena.get(span(bo, bl)).as_bytes();
+    match interp::duck_jaccard(a, b) {
+        Ok(v) => v,
+        Err(t) => {
+            c.set_trap(t.0);
+            0.0
+        }
+    }
+}
+
+extern "C" fn h_str3(
+    p: *mut Cx,
+    which: i64,
+    ao: i64,
+    al: i64,
+    bo: i64,
+    bl: i64,
+    co: i64,
+    cl: i64,
+    len_out: *mut i64,
+) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &mut *c.arena };
+    let out = {
+        let s = arena.get(span(ao, al));
+        let x = arena.get(span(bo, bl));
+        let y = arena.get(span(co, cl));
+        match which {
+            0 => interp::duck_replace(s, x, y),
+            _ => interp::duck_translate(s, x, y),
+        }
+    };
+    let r = arena.push_str(&out);
+    unsafe { *len_out = r.len as i64 };
+    r.off as i64
+}
+
+extern "C" fn h_srepeat(p: *mut Cx, ao: i64, al: i64, n: i64, len_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &mut *c.arena };
+    let out = {
+        let s = arena.get(span(ao, al));
+        interp::duck_repeat(s, n)
+    };
+    match out {
+        Ok(s) => {
+            let r = arena.push_str(&s);
+            unsafe { *len_out = r.len as i64 };
+            r.off as i64
+        }
+        Err(t) => {
+            c.set_trap(t.0);
+            unsafe { *len_out = 0 };
+            0
+        }
+    }
+}
+
+extern "C" fn h_sextract(p: *mut Cx, ao: i64, al: i64, i: i64, len_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &*c.arena };
+    let rng = interp::extract_window(arena.get(span(ao, al)), i);
+    // The extracted char is a subview of the input span — no copy.
+    unsafe { *len_out = (rng.end - rng.start) as i64 };
+    (ao as usize + rng.start) as i64
+}
+
+extern "C" fn h_spad(
+    p: *mut Cx,
+    left: i64,
+    ao: i64,
+    al: i64,
+    l: i64,
+    po: i64,
+    pl: i64,
+    len_out: *mut i64,
+) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &mut *c.arena };
+    let out = {
+        let s = arena.get(span(ao, al));
+        let pad = arena.get(span(po, pl));
+        interp::duck_pad(left != 0, s, l, pad)
+    };
+    match out {
+        Ok(s) => {
+            let r = arena.push_str(&s);
+            unsafe { *len_out = r.len as i64 };
+            r.off as i64
+        }
+        Err(t) => {
+            c.set_trap(t.0);
+            unsafe { *len_out = 0 };
+            0
+        }
+    }
+}
+
+extern "C" fn h_sslice(p: *mut Cx, ao: i64, al: i64, lo: i64, hi: i64, len_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &*c.arena };
+    let rng = interp::slice_window(arena.get(span(ao, al)), lo, hi);
+    // The slice is a subview of the input span — no copy.
+    unsafe { *len_out = (rng.end - rng.start) as i64 };
+    (ao as usize + rng.start) as i64
+}
+
+extern "C" fn h_sord(p: *mut Cx, empty_zero: i64, ao: i64, al: i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &*c.arena };
+    interp::duck_ord(arena.get(span(ao, al)), empty_zero != 0)
+}
+
+extern "C" fn h_sstrip(p: *mut Cx, ao: i64, al: i64, len_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &mut *c.arena };
+    let out = interp::duck_strip_accents(arena.get(span(ao, al)));
+    match out {
+        None => {
+            // ASCII fast path: the input span verbatim.
+            unsafe { *len_out = al };
+            ao
+        }
+        Some(s) => {
+            let r = arena.push_str(&s);
+            unsafe { *len_out = r.len as i64 };
+            r.off as i64
+        }
+    }
+}
+
+extern "C" fn h_ffloordiv(x: f64, y: f64) -> f64 {
+    interp::duck_fdiv(x, y)
+}
+
+extern "C" fn h_ffloormod(x: f64, y: f64) -> f64 {
+    interp::duck_fmod(x, y)
+}
+
+extern "C" fn h_fnextafter(x: f64, y: f64) -> f64 {
+    interp::duck_nextafter(x, y)
+}
+
 macro_rules! store_h {
     ($name:ident, $variant:ident, $ty:ty, $conv:expr) => {
         extern "C" fn $name(p: *mut Cx, col: i64, valid: u8, val: $ty) {
@@ -1011,6 +1179,9 @@ fn translate_inst(
                 BinOp::Frem => call_h(b, module, "h_frem", &[x, y]).unwrap(),
                 BinOp::Fpow => call_h(b, module, "h_fpow", &[x, y]).unwrap(),
                 BinOp::Flogb => call_h(b, module, "h_flogb", &[cxp, x, y]).unwrap(),
+                BinOp::Ffloordiv => call_h(b, module, "h_ffloordiv", &[x, y]).unwrap(),
+                BinOp::Ffloormod => call_h(b, module, "h_ffloormod", &[x, y]).unwrap(),
+                BinOp::Fnextafter => call_h(b, module, "h_fnextafter", &[x, y]).unwrap(),
                 BinOp::And => b.ins().band(x, y),
                 BinOp::Or => b.ins().bor(x, y),
                 BinOp::Xor => b.ins().bxor(x, y),
@@ -1159,6 +1330,26 @@ fn translate_inst(
             let (bo, bl) = vals[&rhs.0].str2();
             let v = match op {
                 StrOp2::Find => call_h(b, module, "h_sfind", &[cxp, ao, al, bo, bl]).unwrap(),
+                StrOp2::Levenshtein | StrOp2::Damerau | StrOp2::Hamming => {
+                    let which = icon(
+                        b,
+                        match op {
+                            StrOp2::Levenshtein => 0,
+                            StrOp2::Damerau => 1,
+                            _ => 2,
+                        },
+                    );
+                    let v = call_h(b, module, "h_ssim", &[cxp, which, ao, al, bo, bl]).unwrap();
+                    if matches!(op, StrOp2::Hamming) {
+                        trap_check(b);
+                    }
+                    v
+                }
+                StrOp2::Jaccard => {
+                    let v = call_h(b, module, "h_sjaccard", &[cxp, ao, al, bo, bl]).unwrap();
+                    trap_check(b);
+                    v
+                }
                 pred => {
                     let which = icon(
                         b,
@@ -1171,6 +1362,72 @@ fn translate_inst(
                     call_h(b, module, "h_spred", &[cxp, which, ao, al, bo, bl]).unwrap()
                 }
             };
+            vals.insert(dst.0, V::S(v));
+        }
+        Inst::Str3 { op, dst, a, b: x, c: y } => {
+            let (ao, al) = vals[&a.0].str2();
+            let (bo, bl) = vals[&x.0].str2();
+            let (co, cl) = vals[&y.0].str2();
+            let which = icon(b, matches!(op, super::super::ir::StrOp3::Translate) as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let off = call_h(
+                b,
+                module,
+                "h_str3",
+                &[cxp, which, ao, al, bo, bl, co, cl, lp],
+            )
+            .unwrap();
+            let len = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, len));
+        }
+        Inst::Str2i { op, dst, a, n } => {
+            let (ao, al) = vals[&a.0].str2();
+            let nv = vals[&n.0].s();
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let (name, traps) = match op {
+                super::super::ir::StrOp2i::Repeat => ("h_srepeat", true),
+                super::super::ir::StrOp2i::Extract => ("h_sextract", false),
+            };
+            let off = call_h(b, module, name, &[cxp, ao, al, nv, lp]).unwrap();
+            if traps {
+                trap_check(b);
+            }
+            let len = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, len));
+        }
+        Inst::Spad {
+            left,
+            dst,
+            a,
+            len,
+            pad,
+        } => {
+            let (ao, al) = vals[&a.0].str2();
+            let lv = vals[&len.0].s();
+            let (po, pl) = vals[&pad.0].str2();
+            let leftv = icon(b, *left as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let off = call_h(b, module, "h_spad", &[cxp, leftv, ao, al, lv, po, pl, lp]).unwrap();
+            trap_check(b);
+            let lnew = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, lnew));
+        }
+        Inst::Sslice { dst, a, lo, hi } => {
+            let (ao, al) = vals[&a.0].str2();
+            let (lov, hiv) = (vals[&lo.0].s(), vals[&hi.0].s());
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let off = call_h(b, module, "h_sslice", &[cxp, ao, al, lov, hiv, lp]).unwrap();
+            let len = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, len));
+        }
+        Inst::Sord {
+            empty_zero,
+            dst,
+            a,
+        } => {
+            let (ao, al) = vals[&a.0].str2();
+            let ez = icon(b, *empty_zero as i64);
+            let v = call_h(b, module, "h_sord", &[cxp, ez, ao, al]).unwrap();
             vals.insert(dst.0, V::S(v));
         }
         Inst::SLen { bytes, dst, a } => {
@@ -1189,9 +1446,16 @@ fn translate_inst(
         }
         Inst::Str1 { op, dst, a } => {
             let (o, l) = vals[&a.0].str2();
-            let up = icon(b, matches!(op, StrOp1::Upper) as i64);
             let lp = b.ins().stack_addr(types::I64, slot_out, 0);
-            let off = call_h(b, module, "h_scase", &[cxp, o, l, up, lp]).unwrap();
+            let off = match op {
+                StrOp1::StripAccents => {
+                    call_h(b, module, "h_sstrip", &[cxp, o, l, lp]).unwrap()
+                }
+                _ => {
+                    let up = icon(b, matches!(op, StrOp1::Upper) as i64);
+                    call_h(b, module, "h_scase", &[cxp, o, l, up, lp]).unwrap()
+                }
+            };
             let len = b.ins().stack_load(types::I64, slot_out, 0);
             vals.insert(dst.0, V::Str(off, len));
         }
@@ -1546,6 +1810,18 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_round2f", h_round2f as *const u8),
     ("h_round2i", h_round2i as *const u8),
     ("h_slike", h_slike as *const u8),
+    ("h_ssim", h_ssim as *const u8),
+    ("h_sjaccard", h_sjaccard as *const u8),
+    ("h_str3", h_str3 as *const u8),
+    ("h_srepeat", h_srepeat as *const u8),
+    ("h_sextract", h_sextract as *const u8),
+    ("h_spad", h_spad as *const u8),
+    ("h_sslice", h_sslice as *const u8),
+    ("h_sord", h_sord as *const u8),
+    ("h_sstrip", h_sstrip as *const u8),
+    ("h_ffloordiv", h_ffloordiv as *const u8),
+    ("h_ffloormod", h_ffloormod as *const u8),
+    ("h_fnextafter", h_fnextafter as *const u8),
 ];
 
 fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types::Type) {
@@ -1570,6 +1846,16 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_round2f" => (&[F64, I64, I64], Some(F64)),
         "h_round2i" => (&[I64, I64, I64], Some(I64)),
         "h_slike" => (&[ptr, I64, I64, I64, I64, I64, I64, I64, I64], Some(I8)),
+        "h_ssim" => (&[ptr, I64, I64, I64, I64, I64], Some(I64)),
+        "h_sjaccard" => (&[ptr, I64, I64, I64, I64], Some(F64)),
+        "h_str3" => (&[ptr, I64, I64, I64, I64, I64, I64, I64, I64], Some(I64)),
+        "h_srepeat" => (&[ptr, I64, I64, I64, I64], Some(I64)),
+        "h_sextract" => (&[ptr, I64, I64, I64, I64], Some(I64)),
+        "h_spad" => (&[ptr, I64, I64, I64, I64, I64, I64, I64], Some(I64)),
+        "h_sslice" => (&[ptr, I64, I64, I64, I64, I64], Some(I64)),
+        "h_sord" => (&[ptr, I64, I64, I64], Some(I64)),
+        "h_sstrip" => (&[ptr, I64, I64, I64], Some(I64)),
+        "h_ffloordiv" | "h_ffloormod" | "h_fnextafter" => (&[F64, F64], Some(F64)),
         "h_iabs" => (&[ptr, I64], Some(I64)),
         "h_fcmp" => (&[F64, F64, I64], Some(I8)),
         "h_scmp" => (&[ptr, I64, I64, I64, I64, I64], Some(I8)),

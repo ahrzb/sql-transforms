@@ -103,7 +103,11 @@ noted. Nothing here is inferred from documentation.
   and divide() are **plain division** (−7.5//2.0 = −3.75, NOT floor) with
   divisor==0 → NULL.
 - `mod`/`%` = truncated C-fmod (dividend's sign) on ints AND doubles;
-  x%0 → NULL (ints and doubles both — no trap); mod(−7.5,2.5) = **−0.0**.
+  INT x%0 → NULL (no trap); DOUBLE x%0.0 → **NaN 7ff8…** (a value, NOT
+  NULL — the fleet's decision line over-generalized from the int probes;
+  re-measured 2026-07-26, correction appended to pins-wave3/math_tail.json.
+  Note the NaN-sign contrast: %-by-zero is 7ff8, fmod-by-zero is fff8);
+  mod(−7.5,2.5) = **−0.0**.
 - `fmod`/`fdiv` are the FLOOR-division pair, always DOUBLE: fdiv =
   floor(x/y) (±inf on zero divisor); fmod takes the **DIVISOR's** sign
   (fmod(−7.5,2.5) = +0.0 where mod gives −0.0) and is computed as

@@ -107,6 +107,15 @@ def _replay(case: dict) -> tuple[str, str]:
         t: con.execute(f'SELECT * FROM "{s}"."{t}"').to_arrow_table() for s, t in named
     }
 
+    # f32 base tables cannot be emulated by the f64-only engine: widening
+    # is value-exact, but every f32-GRID-sensitive op (nextafter's ulp
+    # steps, FLOAT->VARCHAR shortest-round-trip, FLOAT rounding) computes
+    # on the wrong grid. Comparisons happen to survive; the blanket rule
+    # is the defensible one (wave-3: 3 sources, 5 cases).
+    for t in arrow.values():
+        if any(pa.types.is_float32(f.type) for f in t.schema):
+            return "unsupported", "f32 base-table column (engine is f64-only)"
+
     # Row model from the driving table's schema; unmappable column types are
     # the engine's own clean rejection (it sees the same field as unsupported).
     fields = {}
