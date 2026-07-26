@@ -4,7 +4,7 @@ title: 'Specializer M-boundary: generated row marshaller + Python API'
 status: In Progress
 assignee: []
 created_date: '2026-07-25 02:32'
-updated_date: '2026-07-26 08:00'
+updated_date: '2026-07-26 09:10'
 labels: []
 milestone: m-7
 dependencies:
@@ -23,11 +23,11 @@ Wire the specializer into the Python surface: SpecializedTransform (SQLTransform
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 SpecializedTransform fit/infer/infer_batch works end-to-end on the v0 subset with dict and pydantic-model rows
-- [ ] #2 No-op-f boundary baseline reported: generic pydantic path vs generated marshaller, p50/p99 at n in {1, 8, 64, 1024}
-- [ ] #3 End-to-end p50/p99 vs the current native and codegen engines reported
-- [ ] #4 Steady-state hot path allocates nothing per call beyond the output objects; arena reset only
-- [ ] #5 mise gate-specializer green
+- [x] #1 SpecializedTransform fit/infer/infer_batch works end-to-end on the v0 subset with dict and pydantic-model rows
+- [x] #2 No-op-f boundary baseline reported: generic pydantic path vs generated marshaller, p50/p99 at n in {1, 8, 64, 1024}
+- [x] #3 End-to-end p50/p99 vs the current native and codegen engines reported
+- [x] #4 Steady-state hot path allocates nothing per call beyond the output objects; arena reset only
+- [x] #5 mise gate-specializer green
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -39,4 +39,10 @@ Stretch plan (recorded 2026-07-26, design doc §3 flag 1 + §10). Measured targe
 3. Bench per §10: extend scripts/bench_specializer.py — no-op f through generic vs marshalled boundary (AC #2, the marshaller's win as a measured number), end-to-end p50/p99 at n in {1,8,64,1024} vs native + codegen (AC #3); numbers into this ticket.
 4. Zero-alloc steady state (AC #4): counting-global-allocator Rust test around the reused-state run path asserting no Rust-side allocation on the second call (arena reset only); marshaller buffer reuse asserted the same way. Gate green (AC #5).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+All four stretches landed on claude/specializer-m-boundary. The marshaller (src/duckdb/mod.rs) does at prepare time everything knowable at prepare time: interned attribute-name PyStrings in fixed field order, input buffers + RunState owned and cleared-not-dropped per call, dict rows via get_item and model rows via getattr on the interned names, output rows by direct pydantic-v2 slot fill. Two assumptions died by measurement: (1) pydantic's literal model_construct API is pure-Python and SLOWER than model_validate (1432 vs 882 ns/row on 2.13) — the shipped path is object.__new__ + object.__setattr__ of __dict__/__pydantic_fields_set__/__pydantic_extra__/__pydantic_private__ at 491 ns, semantically equal (eq, fields_set, assignment all verified); (2) the design doc's AoS row structs buy nothing at L1-resident n — the marshaller fills the existing SoA Batch directly (deliberate deviation, noted in the plan). AC #4 forced real work: ColData::Str became one flat buffer + spans (killing per-cell Strings AND a hidden per-load clone in the JIT's h_load_str), substr/trim became pure sub-span arithmetic, case mapping streams into the arena (Arena::case_map), number→text formats via Arena::push_fmt with DuckF64 on a stack buffer, and h_probe emits without its per-call Vec + ScalarVal clones — all shared between backends, pinned by counting-allocator tests over a probe/arith fixture and a string-heavy program on BOTH backends (the remaining per-call allocs are the output objects themselves plus pyo3's input-list Vec, i.e. the AC's "beyond the output objects"). SpecializedTransform (sql_transform/_specialized.py) reuses the whole fit pipeline minus transformer refs (ValueError at ctor), so window aggregates ride the equi-join rewrite onto cranelift — parity with SQLTransform asserted row-for-row; WHERE stays rejected at the authoring surface (parse_and_validate), while raw DuckDBInferFn keeps it. Bench (scripts/bench_specializer.py, +generic engine via SPECIALIZER_GENERIC_BOUNDARY): noop p50 marshaller vs generic = 1.1/2.1µs at n=1, 468/1192µs at n=1024 (1.9-2.5x, AC #2); vs shipping engines at n=1024 the specializer is 3.7-4.2x faster than native and 2.4-3.8x than codegen (AC #3); cranelift-vs-interp is now visible end-to-end (arith 339 vs 391µs at n=1024). SPECIALIZER_GENERIC_BOUNDARY + .boundary getter mirror the FORCE_INTERP pattern; infer_rows() is the direct hot entry SpecializedTransform uses.
+<!-- SECTION:NOTES:END -->
 
