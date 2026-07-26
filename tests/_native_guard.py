@@ -73,7 +73,8 @@ def ensure_native_built() -> None:
         return
     print(
         "native guard: src/*.rs newer than _interpreter -- rebuilding "
-        "(maturin develop)...",
+        "(maturin develop, DEBUG profile; benchmarks will refuse this build "
+        "-- rerun with --release before timing)...",
         file=sys.stderr,
     )
     # noqa justification: maturin is the venv's own executable and _REPO derives

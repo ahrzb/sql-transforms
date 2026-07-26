@@ -25,5 +25,15 @@ mod value;
 fn _interpreter(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<datafusion::InferFn>()?;
     m.add_class::<duckdb::DuckDBInferFn>()?;
+    // Lets benchmarks refuse an unoptimized build (a `maturin develop` debug
+    // .pyd shadowing the release wheel once inflated engine rows ~5x).
+    m.add(
+        "BUILD_PROFILE",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    )?;
     Ok(())
 }
