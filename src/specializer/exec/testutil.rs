@@ -40,15 +40,20 @@ pub fn batch(rows: usize, cols: Vec<ColData>) -> Batch {
 pub fn built(text: &str) -> Program {
     let p = match super::super::ir::parse::parse(text) {
         Ok(p) => p,
-        Err(e) => panic!("parse failed: {e}
+        Err(e) => panic!(
+            "parse failed: {e}
 ---
-{text}"),
+{text}"
+        ),
     };
     if let Err(errs) = super::super::ir::verify::verify(&p) {
         let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
-        panic!("verify failed: {}
+        panic!(
+            "verify failed: {}
 ---
-{text}", msgs.join("; "));
+{text}",
+            msgs.join("; ")
+        );
     }
     p
 }

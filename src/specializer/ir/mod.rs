@@ -208,9 +208,7 @@ impl PartialEq for Lit {
         match (self, other) {
             (Lit::I1(a), Lit::I1(b)) => a == b,
             (Lit::I64(a), Lit::I64(b)) => a == b,
-            (Lit::F64(a), Lit::F64(b)) => {
-                a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
-            }
+            (Lit::F64(a), Lit::F64(b)) => a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
             (Lit::Str(a), Lit::Str(b)) => a == b,
             _ => false,
         }
@@ -477,7 +475,6 @@ impl Inst {
             Inst::Store { .. } | Inst::StoreOpt { .. } => vec![],
         }
     }
-
 }
 
 impl Term {
@@ -542,7 +539,9 @@ impl Inst {
                 *flag = m(*flag);
                 *val = m(*val);
             }
-            Inst::Probe { hit, dsts, keys, .. } => {
+            Inst::Probe {
+                hit, dsts, keys, ..
+            } => {
                 *hit = m(*hit);
                 for d in dsts {
                     *d = m(*d);
@@ -564,7 +563,12 @@ impl Term {
                     *a = m(*a);
                 }
             }
-            Term::Brif { cond, then_args, else_args, .. } => {
+            Term::Brif {
+                cond,
+                then_args,
+                else_args,
+                ..
+            } => {
                 *cond = m(*cond);
                 for a in then_args.iter_mut().chain(else_args.iter_mut()) {
                     *a = m(*a);

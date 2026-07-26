@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 
 use super::{
-    Block, BlockId, BinOp, Col, ColTy, CmpPred, Inst, Lit, Program, RoundMode, StaticTy, Term,
-    Ty, Value,
+    BinOp, Block, BlockId, CmpPred, Col, ColTy, Inst, Lit, Program, RoundMode, StaticTy, Term, Ty,
+    Value,
 };
 
 #[derive(Debug)]
@@ -42,16 +42,16 @@ pub fn parse(text: &str) -> Result<Program, ParseError> {
 #[derive(Clone, PartialEq, Debug)]
 enum Tok {
     Ident(String),
-    Val(String),    // %name
-    Num(String),    // integer or float text, optional leading '-'
-    Str(String),    // unescaped content
-    At,             // @
+    Val(String), // %name
+    Num(String), // integer or float text, optional leading '-'
+    Str(String), // unescaped content
+    At,          // @
     Comma,
     Colon,
     Dot,
     Eq,
     Question,
-    Arrow,          // ->
+    Arrow, // ->
     LParen,
     RParen,
     LBrace,
@@ -413,7 +413,11 @@ impl Parser {
             self.bump();
             Ok(())
         } else {
-            Err(self.err(format!("expected {}, found {}", tok.show(), self.peek().show())))
+            Err(self.err(format!(
+                "expected {}, found {}",
+                tok.show(),
+                self.peek().show()
+            )))
         }
     }
 
@@ -501,7 +505,10 @@ impl Parser {
         // Resolve labels.
         let mut label_ids: HashMap<String, BlockId> = HashMap::new();
         for (i, rb) in raw_blocks.iter().enumerate() {
-            if label_ids.insert(rb.label.clone(), BlockId(i as u32)).is_some() {
+            if label_ids
+                .insert(rb.label.clone(), BlockId(i as u32))
+                .is_some()
+            {
                 return Err(ParseError {
                     line: rb.line,
                     msg: format!("block label '{}' defined twice", rb.label),
@@ -658,9 +665,7 @@ impl Parser {
                 let name = match self.bump() {
                     Tok::Val(n) => n,
                     other => {
-                        return Err(
-                            self.err(format!("expected a %param, found {}", other.show()))
-                        )
+                        return Err(self.err(format!("expected a %param, found {}", other.show())))
                     }
                 };
                 self.expect(Tok::Colon)?;
@@ -871,7 +876,12 @@ impl Parser {
                 let a = self.use_value()?;
                 self.expect(Tok::Comma)?;
                 let b = self.use_value()?;
-                Inst::Bin { op, dst: def!(0), a, b }
+                Inst::Bin {
+                    op,
+                    dst: def!(0),
+                    a,
+                    b,
+                }
             }
             _ if head == "icmp" || head == "fcmp" || head == "scmp" => {
                 want_dsts(1, self)?;
@@ -892,7 +902,13 @@ impl Parser {
                 let a = self.use_value()?;
                 self.expect(Tok::Comma)?;
                 let b = self.use_value()?;
-                Inst::Cmp { pred, ty, dst: def!(0), a, b }
+                Inst::Cmp {
+                    pred,
+                    ty,
+                    dst: def!(0),
+                    a,
+                    b,
+                }
             }
             "not" => {
                 want_dsts(1, self)?;
@@ -906,7 +922,12 @@ impl Parser {
                 let a = self.use_value()?;
                 self.expect(Tok::Comma)?;
                 let b = self.use_value()?;
-                Inst::Select { dst: def!(0), cond, a, b }
+                Inst::Select {
+                    dst: def!(0),
+                    cond,
+                    a,
+                    b,
+                }
             }
             "itof" => {
                 want_dsts(1, self)?;
@@ -921,7 +942,11 @@ impl Parser {
                     RoundMode::Round
                 };
                 let a = self.use_value()?;
-                Inst::Ftoi { mode, dst: def!(0), a }
+                Inst::Ftoi {
+                    mode,
+                    dst: def!(0),
+                    a,
+                }
             }
             "itos" => {
                 want_dsts(1, self)?;
@@ -959,7 +984,11 @@ impl Parser {
             "load.opt" => {
                 want_dsts(2, self)?;
                 let col = self.col_ref("in", in_cols)?;
-                Inst::LoadOpt { flag: def!(0), dst: def!(1), col }
+                Inst::LoadOpt {
+                    flag: def!(0),
+                    dst: def!(1),
+                    col,
+                }
             }
             "probe" => {
                 if dst_names.is_empty() {
@@ -976,17 +1005,29 @@ impl Parser {
                 for i in 1..dst_names.len() {
                     dsts.push(def!(i));
                 }
-                Inst::Probe { static_id, hit, dsts, keys }
+                Inst::Probe {
+                    static_id,
+                    hit,
+                    dsts,
+                    keys,
+                }
             }
             "sload" => {
                 want_dsts(1, self)?;
                 let static_id = self.static_ref(statics)?;
-                Inst::Sload { static_id, dst: def!(0) }
+                Inst::Sload {
+                    static_id,
+                    dst: def!(0),
+                }
             }
             "sload.opt" => {
                 want_dsts(2, self)?;
                 let static_id = self.static_ref(statics)?;
-                Inst::SloadOpt { static_id, flag: def!(0), dst: def!(1) }
+                Inst::SloadOpt {
+                    static_id,
+                    flag: def!(0),
+                    dst: def!(1),
+                }
             }
             other => return Err(self.err(format!("unknown opcode '{other}'"))),
         };

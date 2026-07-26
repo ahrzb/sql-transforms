@@ -9,7 +9,7 @@
 //! the input source for M-interp's interpreter-vs-codegen fuzzing.
 
 use super::{
-    BinOp, Block, BlockId, Builder, Col, ColTy, CmpPred, Inst, Lit, Program, RoundMode, StaticTy,
+    BinOp, Block, BlockId, Builder, CmpPred, Col, ColTy, Inst, Lit, Program, RoundMode, StaticTy,
     Term, Ty, Value,
 };
 
@@ -122,14 +122,23 @@ impl Scope {
 
 /// Get a value of `ty`, minting a const when none is in scope (or sometimes
 /// just because — consts are where the literal edge cases enter).
-fn ensure(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<Inst>, ty: Ty) -> Value {
+fn ensure(
+    rng: &mut Rng,
+    b: &mut Builder,
+    scope: &mut Scope,
+    insts: &mut Vec<Inst>,
+    ty: Ty,
+) -> Value {
     if rng.chance(70) {
         if let Some(v) = scope.pick(rng, ty) {
             return v;
         }
     }
     let dst = b.fresh();
-    insts.push(Inst::Const { dst, lit: rand_lit(rng, ty) });
+    insts.push(Inst::Const {
+        dst,
+        lit: rand_lit(rng, ty),
+    });
     scope.add(dst, ty);
     dst
 }
@@ -148,12 +157,19 @@ fn load_all(
         if c.ty.nullable {
             let flag = b.fresh();
             let dst = b.fresh();
-            insts.push(Inst::LoadOpt { flag, dst, col: ci as u32 });
+            insts.push(Inst::LoadOpt {
+                flag,
+                dst,
+                col: ci as u32,
+            });
             scope.add(flag, Ty::I1);
             scope.add(dst, c.ty.ty);
         } else {
             let dst = b.fresh();
-            insts.push(Inst::Load { dst, col: ci as u32 });
+            insts.push(Inst::Load {
+                dst,
+                col: ci as u32,
+            });
             scope.add(dst, c.ty.ty);
         }
     }
@@ -162,13 +178,20 @@ fn load_all(
             StaticTy::Scalar(ct) if ct.nullable => {
                 let flag = b.fresh();
                 let dst = b.fresh();
-                insts.push(Inst::SloadOpt { static_id: si as u32, flag, dst });
+                insts.push(Inst::SloadOpt {
+                    static_id: si as u32,
+                    flag,
+                    dst,
+                });
                 scope.add(flag, Ty::I1);
                 scope.add(dst, ct.ty);
             }
             StaticTy::Scalar(ct) => {
                 let dst = b.fresh();
-                insts.push(Inst::Sload { static_id: si as u32, dst });
+                insts.push(Inst::Sload {
+                    static_id: si as u32,
+                    dst,
+                });
                 scope.add(dst, ct.ty);
             }
             StaticTy::Map { keys, values } => {
@@ -184,7 +207,12 @@ fn load_all(
                     scope.add(d, *vt);
                     dsts.push(d);
                 }
-                insts.push(Inst::Probe { static_id: si as u32, hit, dsts, keys: key_vals });
+                insts.push(Inst::Probe {
+                    static_id: si as u32,
+                    hit,
+                    dsts,
+                    keys: key_vals,
+                });
             }
         }
     }
@@ -232,7 +260,13 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 let a = ensure(rng, b, scope, insts, ty);
                 let rhs = ensure(rng, b, scope, insts, ty);
                 let dst = b.fresh();
-                insts.push(Inst::Cmp { pred, ty, dst, a, b: rhs });
+                insts.push(Inst::Cmp {
+                    pred,
+                    ty,
+                    dst,
+                    a,
+                    b: rhs,
+                });
                 scope.add(dst, Ty::I1);
             }
             2 => {
@@ -247,7 +281,12 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 let a = ensure(rng, b, scope, insts, ty);
                 let rhs = ensure(rng, b, scope, insts, ty);
                 let dst = b.fresh();
-                insts.push(Inst::Select { dst, cond, a, b: rhs });
+                insts.push(Inst::Select {
+                    dst,
+                    cond,
+                    a,
+                    b: rhs,
+                });
                 scope.add(dst, ty);
             }
             4 => {
@@ -257,7 +296,11 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 scope.add(dst, Ty::F64);
             }
             5 => {
-                let mode = if rng.chance(50) { RoundMode::Trunc } else { RoundMode::Round };
+                let mode = if rng.chance(50) {
+                    RoundMode::Trunc
+                } else {
+                    RoundMode::Round
+                };
                 let a = ensure(rng, b, scope, insts, Ty::F64);
                 let dst = b.fresh();
                 insts.push(Inst::Ftoi { mode, dst, a });
@@ -297,9 +340,16 @@ fn stores(
         let val = ensure(rng, b, scope, insts, c.ty.ty);
         if c.ty.nullable {
             let flag = ensure(rng, b, scope, insts, Ty::I1);
-            insts.push(Inst::StoreOpt { col: ci as u32, flag, val });
+            insts.push(Inst::StoreOpt {
+                col: ci as u32,
+                flag,
+                val,
+            });
         } else {
-            insts.push(Inst::Store { col: ci as u32, val });
+            insts.push(Inst::Store {
+                col: ci as u32,
+                val,
+            });
         }
     }
 }
@@ -329,10 +379,16 @@ pub fn gen_program(seed: u64) -> Program {
         }
     };
     let in_cols: Vec<Col> = (0..1 + rng.below(3) as usize)
-        .map(|i| Col { name: name_of(i, "c", &mut rng), ty: rand_col_ty(&mut rng) })
+        .map(|i| Col {
+            name: name_of(i, "c", &mut rng),
+            ty: rand_col_ty(&mut rng),
+        })
         .collect();
     let out_cols: Vec<Col> = (0..1 + rng.below(2) as usize)
-        .map(|i| Col { name: name_of(i, "o", &mut rng), ty: rand_col_ty(&mut rng) })
+        .map(|i| Col {
+            name: name_of(i, "o", &mut rng),
+            ty: rand_col_ty(&mut rng),
+        })
         .collect();
 
     let shape = rng.below(3);
@@ -345,7 +401,11 @@ pub fn gen_program(seed: u64) -> Program {
             load_all(&mut rng, &mut b, &mut scope, &mut insts, &in_cols, &statics);
             compute(&mut rng, &mut b, &mut scope, &mut insts);
             stores(&mut rng, &mut b, &mut scope, &mut insts, &out_cols);
-            blocks.push(Block { params: vec![], insts, term: Term::Emit });
+            blocks.push(Block {
+                params: vec![],
+                insts,
+                term: Term::Emit,
+            });
         }
         // Filter: entry branches to a storing block or a skip/trap block.
         1 => {
@@ -367,15 +427,38 @@ pub fn gen_program(seed: u64) -> Program {
             });
             let mut keep_scope = Scope::new();
             let mut keep_insts = Vec::new();
-            load_all(&mut rng, &mut b, &mut keep_scope, &mut keep_insts, &in_cols, &statics);
-            stores(&mut rng, &mut b, &mut keep_scope, &mut keep_insts, &out_cols);
-            blocks.push(Block { params: vec![], insts: keep_insts, term: Term::Emit });
+            load_all(
+                &mut rng,
+                &mut b,
+                &mut keep_scope,
+                &mut keep_insts,
+                &in_cols,
+                &statics,
+            );
+            stores(
+                &mut rng,
+                &mut b,
+                &mut keep_scope,
+                &mut keep_insts,
+                &out_cols,
+            );
+            blocks.push(Block {
+                params: vec![],
+                insts: keep_insts,
+                term: Term::Emit,
+            });
             let drop_term = if rng.chance(80) {
                 Term::Skip
             } else {
-                Term::Trap { msg: "generated trap".to_string() }
+                Term::Trap {
+                    msg: "generated trap".to_string(),
+                }
             };
-            blocks.push(Block { params: vec![], insts: vec![], term: drop_term });
+            blocks.push(Block {
+                params: vec![],
+                insts: vec![],
+                term: drop_term,
+            });
         }
         // Diamond: both arms feed a join param that lands in a store.
         _ => {
@@ -402,16 +485,32 @@ pub fn gen_program(seed: u64) -> Program {
                 blocks.push(Block {
                     params: vec![],
                     insts: arm_insts,
-                    term: Term::Jump { to: BlockId(3), args: vec![v] },
+                    term: Term::Jump {
+                        to: BlockId(3),
+                        args: vec![v],
+                    },
                 });
             }
             let param = b.fresh();
             let mut join_scope = Scope::new();
             join_scope.add(param, join_ty);
             let mut join_insts = Vec::new();
-            load_all(&mut rng, &mut b, &mut join_scope, &mut join_insts, &in_cols, &statics);
+            load_all(
+                &mut rng,
+                &mut b,
+                &mut join_scope,
+                &mut join_insts,
+                &in_cols,
+                &statics,
+            );
             compute(&mut rng, &mut b, &mut join_scope, &mut join_insts);
-            stores(&mut rng, &mut b, &mut join_scope, &mut join_insts, &out_cols);
+            stores(
+                &mut rng,
+                &mut b,
+                &mut join_scope,
+                &mut join_insts,
+                &out_cols,
+            );
             blocks.push(Block {
                 params: vec![(param, join_ty)],
                 insts: join_insts,

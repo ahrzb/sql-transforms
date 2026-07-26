@@ -92,11 +92,7 @@ fn case_diamond_fixture_executes() {
     let input = batch(3, vec![c_i64(&[Some(31), Some(30), Some(5)])]);
     assert_eq!(
         run_snapshot(&f, &input).unwrap(),
-        rows(&[
-            &["old", "false"],
-            &["old", "false"],
-            &["young", "false"],
-        ])
+        rows(&[&["old", "false"], &["old", "false"], &["young", "false"],])
     );
 }
 
@@ -105,7 +101,10 @@ fn casts_fixture_executes_and_traps() {
     let p = built(fixtures::CASTS);
     let statics = |snd: StaticData| {
         vec![
-            StaticData::Scalar { valid: true, val: ScalarVal::F64(2.5) },
+            StaticData::Scalar {
+                valid: true,
+                val: ScalarVal::F64(2.5),
+            },
             snd,
         ]
     };
@@ -113,7 +112,10 @@ fn casts_fixture_executes_and_traps() {
     // scmp.eq("2.5:", ":") = false -> ":".
     let f = compile(
         &p,
-        statics(StaticData::Scalar { valid: false, val: ScalarVal::I64(0) }),
+        statics(StaticData::Scalar {
+            valid: false,
+            val: ScalarVal::I64(0),
+        }),
     )
     .unwrap();
     let input = batch(1, vec![c_str(&[Some("12")])]);
@@ -122,7 +124,10 @@ fn casts_fixture_executes_and_traps() {
     // @1 = 7: the select picks the static instead.
     let f7 = compile(
         &p,
-        statics(StaticData::Scalar { valid: true, val: ScalarVal::I64(7) }),
+        statics(StaticData::Scalar {
+            valid: true,
+            val: ScalarVal::I64(7),
+        }),
     )
     .unwrap();
     assert_eq!(run_snapshot(&f7, &input).unwrap(), rows(&[&["7", ":"]]));
@@ -177,7 +182,10 @@ entry:
 }"#,
     )
     .unwrap();
-    assert!(verify(&p).is_err(), "precondition: program must be unverifiable");
+    assert!(
+        verify(&p).is_err(),
+        "precondition: program must be unverifiable"
+    );
     match compile(&p, vec![]) {
         Err(CompileError::Verify(errs)) => assert!(!errs.is_empty()),
         Err(CompileError::Static(m)) => panic!("wrong error kind: {m}"),
@@ -191,7 +199,10 @@ fn rejects_mismatched_statics() {
     for (data, needle) in [
         (vec![], "declares 1 static(s), 0 provided"),
         (
-            vec![StaticData::Scalar { valid: true, val: ScalarVal::F64(1.0) }],
+            vec![StaticData::Scalar {
+                valid: true,
+                val: ScalarVal::F64(1.0),
+            }],
             "declared map, got scalar",
         ),
         (
@@ -227,9 +238,20 @@ fn rejects_input_shape_mismatch() {
     let wrong_ty = batch(1, vec![c_i64(&[Some(1)])]);
     assert!(f.run(&wrong_ty, &mut st).unwrap_err().0.contains("is i64"));
     let wrong_count = batch(1, vec![]);
-    assert!(f.run(&wrong_count, &mut st).unwrap_err().0.contains("0 column(s)"));
-    let wrong_len = Batch { rows: 2, cols: vec![c_f64(&[Some(1.0)])] };
-    assert!(f.run(&wrong_len, &mut st).unwrap_err().0.contains("1 row(s)"));
+    assert!(f
+        .run(&wrong_count, &mut st)
+        .unwrap_err()
+        .0
+        .contains("0 column(s)"));
+    let wrong_len = Batch {
+        rows: 2,
+        cols: vec![c_f64(&[Some(1.0)])],
+    };
+    assert!(f
+        .run(&wrong_len, &mut st)
+        .unwrap_err()
+        .0
+        .contains("1 row(s)"));
 }
 
 // ---------------------------------------------------------- allocation --
@@ -294,7 +316,11 @@ entry:
     match &st.out[1] {
         OutCol::Str(v) => {
             assert!(!v[0].0);
-            assert_eq!(st.arena.get(v[0].1), "", "payload must be the empty default");
+            assert_eq!(
+                st.arena.get(v[0].1),
+                "",
+                "payload must be the empty default"
+            );
         }
         _ => unreachable!(),
     }
@@ -316,7 +342,10 @@ entry:
     let mut st = f.new_state();
     let bad = Batch {
         rows: 1,
-        cols: vec![ColData::I64 { valid: vec![], data: vec![7] }],
+        cols: vec![ColData::I64 {
+            valid: vec![],
+            data: vec![7],
+        }],
     };
     let err = f.run(&bad, &mut st).unwrap_err();
     assert!(err.0.contains("validity vector"), "wrong trap: {}", err.0);
@@ -330,19 +359,35 @@ fn sparse_value_ids_use_dense_register_slots() {
         statics: vec![],
         name: "sparse".into(),
         in_cols: vec![],
-        out_cols: vec![Col { name: "o".into(), ty: ColTy { ty: Ty::I64, nullable: false } }],
+        out_cols: vec![Col {
+            name: "o".into(),
+            ty: ColTy {
+                ty: Ty::I64,
+                nullable: false,
+            },
+        }],
         blocks: vec![Block {
             params: vec![],
             insts: vec![
-                Inst::Const { dst: Value(9_999_999), lit: Lit::I64(5) },
-                Inst::Store { col: 0, val: Value(9_999_999) },
+                Inst::Const {
+                    dst: Value(9_999_999),
+                    lit: Lit::I64(5),
+                },
+                Inst::Store {
+                    col: 0,
+                    val: Value(9_999_999),
+                },
             ],
             term: Term::Emit,
         }],
     };
     let f = compile(&p, vec![]).unwrap();
     let st = f.new_state();
-    assert!(st.regs.len() <= 4, "frame sized by ids, not defs: {}", st.regs.len());
+    assert!(
+        st.regs.len() <= 4,
+        "frame sized by ids, not defs: {}",
+        st.regs.len()
+    );
 }
 
 /// The emitted counter reports the row count even without reading columns.
@@ -351,7 +396,11 @@ fn emitted_counts_rows() {
     let p = built(fixtures::FILTER);
     let f = compile(&p, vec![]).unwrap();
     let mut st = f.new_state();
-    f.run(&batch(3, vec![c_f64(&[Some(1.5), Some(-2.0), Some(0.0)])]), &mut st).unwrap();
+    f.run(
+        &batch(3, vec![c_f64(&[Some(1.5), Some(-2.0), Some(0.0)])]),
+        &mut st,
+    )
+    .unwrap();
     assert_eq!(st.emitted, 1);
 }
 
@@ -372,17 +421,42 @@ fn eval1(body: &str, out_col: &str) -> Result<Vec<Vec<String>>, Trap> {
 #[test]
 fn pin_integer_overflow_and_division_traps() {
     for (expr, needle) in [
-        ("  %a = const.i64 9223372036854775807\n  %b = const.i64 1\n  %r = iadd %a, %b", "overflow in iadd"),
-        ("  %a = const.i64 -9223372036854775808\n  %b = const.i64 1\n  %r = isub %a, %b", "overflow in isub"),
-        ("  %a = const.i64 4611686018427387904\n  %b = const.i64 4\n  %r = imul %a, %b", "overflow in imul"),
-        ("  %a = const.i64 1\n  %b = const.i64 0\n  %r = idiv %a, %b", "division by zero in idiv"),
-        ("  %a = const.i64 1\n  %b = const.i64 0\n  %r = irem %a, %b", "division by zero in irem"),
-        ("  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = idiv %a, %b", "overflow in idiv"),
-        ("  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = irem %a, %b", "overflow in irem"),
+        (
+            "  %a = const.i64 9223372036854775807\n  %b = const.i64 1\n  %r = iadd %a, %b",
+            "overflow in iadd",
+        ),
+        (
+            "  %a = const.i64 -9223372036854775808\n  %b = const.i64 1\n  %r = isub %a, %b",
+            "overflow in isub",
+        ),
+        (
+            "  %a = const.i64 4611686018427387904\n  %b = const.i64 4\n  %r = imul %a, %b",
+            "overflow in imul",
+        ),
+        (
+            "  %a = const.i64 1\n  %b = const.i64 0\n  %r = idiv %a, %b",
+            "division by zero in idiv",
+        ),
+        (
+            "  %a = const.i64 1\n  %b = const.i64 0\n  %r = irem %a, %b",
+            "division by zero in irem",
+        ),
+        (
+            "  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = idiv %a, %b",
+            "overflow in idiv",
+        ),
+        (
+            "  %a = const.i64 -9223372036854775808\n  %b = const.i64 -1\n  %r = irem %a, %b",
+            "overflow in irem",
+        ),
     ] {
         let body = format!("{expr}\n  store out.o, %r");
         let err = eval1(&body, "o: i64").unwrap_err();
-        assert!(err.0.contains(needle), "expected '{needle}', got '{}'", err.0);
+        assert!(
+            err.0.contains(needle),
+            "expected '{needle}', got '{}'",
+            err.0
+        );
     }
 }
 
@@ -396,7 +470,10 @@ fn pin_fcmp_nan_ordering() {
                 \x20 store out.eq, %eq\n  store out.ne, %ne\n  store out.lt, %lt\n\
                 \x20 store out.le, %le\n  store out.gt, %gt\n  store out.ge, %ge";
     let got = eval1(body, "eq: i1, ne: i1, lt: i1, le: i1, gt: i1, ge: i1").unwrap();
-    assert_eq!(got, rows(&[&["false", "true", "false", "false", "false", "false"]]));
+    assert_eq!(
+        got,
+        rows(&[&["false", "true", "false", "false", "false", "false"]])
+    );
 }
 
 #[test]
@@ -437,7 +514,14 @@ fn pin_ieee_flow_and_scmp_and_concat() {
 
 #[test]
 fn pin_stoi_trims_whitespace_like_duckdb_cast() {
-    for (s, ok) in [(" 5", true), ("5 ", true), ("+5", true), ("0x10", false), ("", false), ("  ", false)] {
+    for (s, ok) in [
+        (" 5", true),
+        ("5 ", true),
+        ("+5", true),
+        ("0x10", false),
+        ("", false),
+        ("  ", false),
+    ] {
         let body = format!(
             "  %s = const.str \"{s}\"\n  %f, %v = stoi.opt %s\n  store out.f, %f\n  store out.v, %v"
         );
@@ -461,7 +545,10 @@ entry:
     let f = compile(&p, vec![]).unwrap();
     let input = Batch {
         rows: 1,
-        cols: vec![ColData::I64 { valid: vec![false], data: vec![999] }],
+        cols: vec![ColData::I64 {
+            valid: vec![false],
+            data: vec![999],
+        }],
     };
     assert_eq!(run_snapshot(&f, &input).unwrap(), rows(&[&["0"]]));
 }
@@ -488,7 +575,11 @@ fn gen_statics(rng: &mut gen::Rng, p: &Program) -> Vec<StaticData> {
                 val: gen_scalar(rng, ct.ty),
             },
             StaticTy::Map { keys, values } => {
-                let n = if keys[0] == Ty::I1 { 2 } else { 1 + rng.below(3) as usize };
+                let n = if keys[0] == Ty::I1 {
+                    2
+                } else {
+                    1 + rng.below(3) as usize
+                };
                 let entries = (0..n)
                     .map(|j| {
                         let key: Vec<KeyBits> = keys

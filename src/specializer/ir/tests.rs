@@ -30,7 +30,11 @@ fn fixtures_verify_and_round_trip() {
         let printed = print(&p);
         let p2 = parsed(&printed);
         assert_eq!(p2, p, "round-trip changed '{name}':\n{printed}");
-        assert_eq!(print(&p2), printed, "printing is not a fixpoint for '{name}'");
+        assert_eq!(
+            print(&p2),
+            printed,
+            "printing is not a fixpoint for '{name}'"
+        );
         verify(&p2).unwrap_or_else(|_| panic!("canonical form of '{name}' fails verify"));
     }
 }
@@ -42,13 +46,53 @@ fn fixtures_verify_and_round_trip() {
 fn fixtures_cover_every_opcode() {
     let all: String = fixtures::all().iter().map(|(_, t)| *t).collect();
     let opcodes = [
-        "const.i1", "const.i64", "const.f64", "const.str", "iadd", "isub", "imul", "idiv",
-        "irem", "fadd", "fsub", "fmul", "fdiv", "and", "or", "xor", "not", "icmp.", "fcmp.",
-        "scmp.", "select", "itof", "ftoi.trunc", "ftoi.round", "itos", "ftos", "stoi.opt",
-        "stof.opt", "sconcat", "load in.", "load.opt in.", "store out.", "store.opt out.",
-        "probe @", "sload @", "sload.opt @", "jump", "brif", "emit", "skip", "trap",
+        "const.i1",
+        "const.i64",
+        "const.f64",
+        "const.str",
+        "iadd",
+        "isub",
+        "imul",
+        "idiv",
+        "irem",
+        "fadd",
+        "fsub",
+        "fmul",
+        "fdiv",
+        "and",
+        "or",
+        "xor",
+        "not",
+        "icmp.",
+        "fcmp.",
+        "scmp.",
+        "select",
+        "itof",
+        "ftoi.trunc",
+        "ftoi.round",
+        "itos",
+        "ftos",
+        "stoi.opt",
+        "stof.opt",
+        "sconcat",
+        "load in.",
+        "load.opt in.",
+        "store out.",
+        "store.opt out.",
+        "probe @",
+        "sload @",
+        "sload.opt @",
+        "jump",
+        "brif",
+        "emit",
+        "skip",
+        "trap",
     ];
-    let missing: Vec<&str> = opcodes.iter().filter(|op| !all.contains(**op)).copied().collect();
+    let missing: Vec<&str> = opcodes
+        .iter()
+        .filter(|op| !all.contains(**op))
+        .copied()
+        .collect();
     assert!(missing.is_empty(), "no fixture covers: {missing:?}");
 }
 
@@ -103,25 +147,49 @@ entry:
     );
     // ...and the verifier independently rejects the same shape when the
     // program is constructed through the API (the path lowering will use).
-    use super::{Block, Col, ColTy, Inst, Program, Term, Ty, Value, BinOp};
+    use super::{BinOp, Block, Col, ColTy, Inst, Program, Term, Ty, Value};
     let p = Program {
         statics: vec![],
         name: "f".into(),
-        in_cols: vec![Col { name: "a".into(), ty: ColTy { ty: Ty::I64, nullable: false } }],
-        out_cols: vec![Col { name: "o".into(), ty: ColTy { ty: Ty::I64, nullable: false } }],
+        in_cols: vec![Col {
+            name: "a".into(),
+            ty: ColTy {
+                ty: Ty::I64,
+                nullable: false,
+            },
+        }],
+        out_cols: vec![Col {
+            name: "o".into(),
+            ty: ColTy {
+                ty: Ty::I64,
+                nullable: false,
+            },
+        }],
         blocks: vec![Block {
             params: vec![],
             insts: vec![
-                Inst::Bin { op: BinOp::Iadd, dst: Value(0), a: Value(1), b: Value(1) },
-                Inst::Load { dst: Value(1), col: 0 },
-                Inst::Store { col: 0, val: Value(0) },
+                Inst::Bin {
+                    op: BinOp::Iadd,
+                    dst: Value(0),
+                    a: Value(1),
+                    b: Value(1),
+                },
+                Inst::Load {
+                    dst: Value(1),
+                    col: 0,
+                },
+                Inst::Store {
+                    col: 0,
+                    val: Value(0),
+                },
             ],
             term: Term::Emit,
         }],
     };
     let errs = verify(&p).expect_err("use-before-def must not verify");
     assert!(
-        errs.iter().any(|e| e.to_string().contains("used before any definition")),
+        errs.iter()
+            .any(|e| e.to_string().contains("used before any definition")),
         "wrong errors: {:?}",
         errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
     );
@@ -438,7 +506,10 @@ fn parser_rejects_bad_escape_and_unterminated_string() {
         "fn f(in: batch{a: i64}, out: batch{o: str}) {\nentry:\n  %x = const.str \"\\q\"\n  emit\n}",
         "unknown escape",
     );
-    assert_parse_rejects("fn f(in: batch{a: i64}, out: batch{o: str}) { \"", "unterminated");
+    assert_parse_rejects(
+        "fn f(in: batch{a: i64}, out: batch{o: str}) { \"",
+        "unterminated",
+    );
 }
 
 #[test]
@@ -462,17 +533,19 @@ fn parser_rejects_wrong_dst_count() {
 // adversarial workflow (4 attack lenses + 2 reviews).
 
 /// Build the smallest valid API program shell around custom parts.
-fn api_program(
-    statics: Vec<super::StaticTy>,
-    name: &str,
-    blocks: Vec<super::Block>,
-) -> Program {
+fn api_program(statics: Vec<super::StaticTy>, name: &str, blocks: Vec<super::Block>) -> Program {
     use super::{Col, ColTy, Ty};
     Program {
         statics,
         name: name.into(),
         in_cols: vec![],
-        out_cols: vec![Col { name: "o".into(), ty: ColTy { ty: Ty::I64, nullable: false } }],
+        out_cols: vec![Col {
+            name: "o".into(),
+            ty: ColTy {
+                ty: Ty::I64,
+                nullable: false,
+            },
+        }],
         blocks,
     }
 }
@@ -482,8 +555,14 @@ fn store_emit_block() -> super::Block {
     Block {
         params: vec![],
         insts: vec![
-            Inst::Const { dst: Value(0), lit: Lit::I64(1) },
-            Inst::Store { col: 0, val: Value(0) },
+            Inst::Const {
+                dst: Value(0),
+                lit: Lit::I64(1),
+            },
+            Inst::Store {
+                col: 0,
+                val: Value(0),
+            },
         ],
         term: Term::Emit,
     }
@@ -499,7 +578,10 @@ fn deep_cfg_verifies_without_crashing() {
         .map(|i| Block {
             params: vec![],
             insts: vec![],
-            term: Term::Jump { to: BlockId(i + 1), args: vec![] },
+            term: Term::Jump {
+                to: BlockId(i + 1),
+                args: vec![],
+            },
         })
         .collect();
     blocks.push(store_emit_block());
@@ -513,13 +595,20 @@ fn deep_cfg_verifies_without_crashing() {
 fn rejects_empty_map_static_signatures() {
     use super::{StaticTy, Ty};
     for st in [
-        StaticTy::Map { keys: vec![], values: vec![Ty::I64] },
-        StaticTy::Map { keys: vec![Ty::I64], values: vec![] },
+        StaticTy::Map {
+            keys: vec![],
+            values: vec![Ty::I64],
+        },
+        StaticTy::Map {
+            keys: vec![Ty::I64],
+            values: vec![],
+        },
     ] {
         let p = api_program(vec![st], "f", vec![store_emit_block()]);
         let errs = verify(&p).expect_err("empty map signature must not verify");
         assert!(
-            errs.iter().any(|e| e.to_string().contains("at least one key and one value")),
+            errs.iter()
+                .any(|e| e.to_string().contains("at least one key and one value")),
             "wrong errors: {:?}",
             errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
         );
@@ -533,7 +622,8 @@ fn rejects_non_identifier_function_name() {
         let p = api_program(vec![], bad, vec![store_emit_block()]);
         let errs = verify(&p).expect_err("non-identifier fn name must not verify");
         assert!(
-            errs.iter().any(|e| e.to_string().contains("must be an identifier")),
+            errs.iter()
+                .any(|e| e.to_string().contains("must be an identifier")),
             "'{bad}': wrong errors: {:?}",
             errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
         );
@@ -544,24 +634,40 @@ fn rejects_non_identifier_function_name() {
 /// treat NaNs as one class or non-canonical payloads break the round-trip.
 #[test]
 fn non_canonical_nan_payload_round_trips() {
-    use super::{Block, Inst, Lit, Term, Value, Col, ColTy, Ty};
+    use super::{Block, Col, ColTy, Inst, Lit, Term, Ty, Value};
     let neg_quiet_nan = f64::from_bits(0xFFF8_0000_0000_0000);
     let p = Program {
         statics: vec![],
         name: "f".into(),
         in_cols: vec![],
-        out_cols: vec![Col { name: "o".into(), ty: ColTy { ty: Ty::F64, nullable: false } }],
+        out_cols: vec![Col {
+            name: "o".into(),
+            ty: ColTy {
+                ty: Ty::F64,
+                nullable: false,
+            },
+        }],
         blocks: vec![Block {
             params: vec![],
             insts: vec![
-                Inst::Const { dst: Value(0), lit: Lit::F64(neg_quiet_nan) },
-                Inst::Store { col: 0, val: Value(0) },
+                Inst::Const {
+                    dst: Value(0),
+                    lit: Lit::F64(neg_quiet_nan),
+                },
+                Inst::Store {
+                    col: 0,
+                    val: Value(0),
+                },
             ],
             term: Term::Emit,
         }],
     };
     verify(&p).expect("NaN const is legal");
-    assert_eq!(parsed(&print(&p)), p, "non-canonical NaN payload broke the round-trip");
+    assert_eq!(
+        parsed(&print(&p)),
+        p,
+        "non-canonical NaN payload broke the round-trip"
+    );
 }
 
 /// Double stores are a lowering bug on ANY path, including trap-terminated
@@ -600,7 +706,10 @@ join:
     );
     let errs = verify(&p).expect_err("island + missing store must not verify");
     let all: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
-    assert!(all.iter().any(|m| m.contains("unreachable block")), "missing island error: {all:?}");
+    assert!(
+        all.iter().any(|m| m.contains("unreachable block")),
+        "missing island error: {all:?}"
+    );
     assert!(
         all.iter().any(|m| m.contains("emit without storing out.o")),
         "store error masked by the island: {all:?}"
@@ -626,13 +735,26 @@ fn rejects_duplicate_columns() {
     use super::{Col, ColTy, Ty};
     let mut p = api_program(vec![], "f", vec![store_emit_block()]);
     p.out_cols = vec![
-        Col { name: "o".into(), ty: ColTy { ty: Ty::I64, nullable: false } },
-        Col { name: "o".into(), ty: ColTy { ty: Ty::I64, nullable: false } },
+        Col {
+            name: "o".into(),
+            ty: ColTy {
+                ty: Ty::I64,
+                nullable: false,
+            },
+        },
+        Col {
+            name: "o".into(),
+            ty: ColTy {
+                ty: Ty::I64,
+                nullable: false,
+            },
+        },
     ];
     // Second column now unstored; the duplicate-name error is what matters.
     let errs = verify(&p).expect_err("duplicate columns must not verify");
     assert!(
-        errs.iter().any(|e| e.to_string().contains("duplicate out column 'o'")),
+        errs.iter()
+            .any(|e| e.to_string().contains("duplicate out column 'o'")),
         "wrong errors: {:?}",
         errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
     );
@@ -736,14 +858,20 @@ fn fuzz_round_trip() {
         let p = gen::gen_program(seed);
         if let Err(errs) = verify(&p) {
             let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
-            panic!("generator produced an invalid program (seed {seed}): {msgs:?}\n{}", print(&p));
+            panic!(
+                "generator produced an invalid program (seed {seed}): {msgs:?}\n{}",
+                print(&p)
+            );
         }
         let text = print(&p);
         let p2 = match parse(&text) {
             Ok(p2) => p2,
             Err(e) => panic!("canonical text failed to parse (seed {seed}): {e}\n{text}"),
         };
-        assert_eq!(p2, p, "round-trip changed the program (seed {seed}):\n{text}");
+        assert_eq!(
+            p2, p,
+            "round-trip changed the program (seed {seed}):\n{text}"
+        );
         assert_eq!(print(&p2), text, "printing is not a fixpoint (seed {seed})");
     }
 }

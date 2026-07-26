@@ -196,10 +196,7 @@ fn val(v: Value) -> String {
 }
 
 fn tys(list: &[Ty]) -> String {
-    list.iter()
-        .map(|t| t.name())
-        .collect::<Vec<_>>()
-        .join(", ")
+    list.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
 }
 
 fn col_ty(ct: ColTy) -> String {
