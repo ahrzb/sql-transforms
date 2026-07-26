@@ -143,6 +143,27 @@ noted. Nothing here is inferred from documentation.
   char like an emoji triggers the truncating path), apply the map, compose
   Hangul. Idempotent; total; NULL-strict.
 
+## Implementation addenda (found while building/testing)
+
+- Overflow trap texts are now DuckDB's verbatim, operand values included:
+  "Overflow in addition of INT64 (x + y)!" (sub/mul likewise), "Overflow
+  in division of x / y" for BOTH `//` and `%` on i64::MIN op −1 (no
+  trailing '!'), and "Overflow on abs(x)" (measured this wave). One
+  shared `overflow_msg`/`abs_overflow_msg` feeds both backends.
+- hamming's two traps check EQUAL LENGTH first: hamming('', 'a') raises
+  the equal-length message; only ('','') reaches "length > 0".
+- Documented laxity (same stance as wave-1 round digits): the engine
+  binds lpad/rpad with an i64 length column where DuckDB wants INTEGER;
+  constant integer lengths — the corpus shape — bind in both.
+- concat/concat_ws literal -0.0 renders '0.0' in DuckDB (DECIMAL literal
+  path); the pinned '-0.0' is the DOUBLE column path, which we follow.
+- Corpus replay: f32 base tables classify clean-unsupported — widening
+  to f64 is value-exact but every f32-GRID-sensitive op (nextafter ulp
+  steps, FLOAT→VARCHAR rendering) computes on the wrong grid (2 nextafter
+  cases were the wave's only FAILs before this rule; 3 sources, 5 cases).
+- Unary add(x)=x / subtract(x)=-x exist in DuckDB but are unpinned —
+  they reject by arity until measured.
+
 ## Catalogue rejections (do NOT ship)
 
 - Aggregates (`sum`, `count`, `geomean`) reject as aggregate-by-name.

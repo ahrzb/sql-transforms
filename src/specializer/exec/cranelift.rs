@@ -149,24 +149,25 @@ extern "C" fn h_const_str(p: *mut Cx, ptr: i64, len: i64) -> i64 {
 }
 
 macro_rules! checked_bin {
-    ($name:ident, $method:ident, $msg:literal) => {
+    ($name:ident, $method:ident, $op:expr) => {
         extern "C" fn $name(p: *mut Cx, a: i64, b: i64) -> i64 {
             match a.$method(b) {
                 Some(v) => v,
                 None => {
-                    unsafe { cx(p) }.set_trap(format!($msg));
+                    // Same DuckDB-verbatim text as the interpreter arm.
+                    unsafe { cx(p) }.set_trap(interp::overflow_msg($op, a, b));
                     0
                 }
             }
         }
     };
 }
-checked_bin!(h_iadd, checked_add, "i64 overflow in iadd");
-checked_bin!(h_isub, checked_sub, "i64 overflow in isub");
-checked_bin!(h_imul, checked_mul, "i64 overflow in imul");
+checked_bin!(h_iadd, checked_add, BinOp::Iadd);
+checked_bin!(h_isub, checked_sub, BinOp::Isub);
+checked_bin!(h_imul, checked_mul, BinOp::Imul);
 
 macro_rules! checked_div {
-    ($name:ident, $method:ident, $opname:literal) => {
+    ($name:ident, $method:ident, $op:expr, $opname:literal) => {
         extern "C" fn $name(p: *mut Cx, a: i64, b: i64) -> i64 {
             if b == 0 {
                 unsafe { cx(p) }.set_trap(format!("division by zero in {}", $opname));
@@ -175,15 +176,15 @@ macro_rules! checked_div {
             match a.$method(b) {
                 Some(v) => v,
                 None => {
-                    unsafe { cx(p) }.set_trap(format!("i64 overflow in {}", $opname));
+                    unsafe { cx(p) }.set_trap(interp::overflow_msg($op, a, b));
                     0
                 }
             }
         }
     };
 }
-checked_div!(h_idiv, checked_div, "idiv");
-checked_div!(h_irem, checked_rem, "irem");
+checked_div!(h_idiv, checked_div, BinOp::Idiv, "idiv");
+checked_div!(h_irem, checked_rem, BinOp::Irem, "irem");
 
 extern "C" fn h_frem(a: f64, b: f64) -> f64 {
     a % b
@@ -322,7 +323,7 @@ extern "C" fn h_iabs(p: *mut Cx, a: i64) -> i64 {
     match a.checked_abs() {
         Some(v) => v,
         None => {
-            unsafe { cx(p) }.set_trap("i64 overflow in iabs".to_string());
+            unsafe { cx(p) }.set_trap(interp::abs_overflow_msg(a));
             0
         }
     }
