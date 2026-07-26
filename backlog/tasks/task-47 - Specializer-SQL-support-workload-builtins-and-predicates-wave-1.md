@@ -1,10 +1,10 @@
 ---
 id: TASK-47
 title: 'Specializer SQL support: workload builtins & predicates wave 1'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-26 11:42'
-updated_date: '2026-07-26 12:20'
+updated_date: '2026-07-26 15:05'
 labels: []
 milestone: m-7
 dependencies:
