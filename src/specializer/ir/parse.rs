@@ -574,12 +574,22 @@ impl Parser {
                 Ok(StaticTy::Scalar(ct))
             }
             "map" => {
+                // Either side may be empty (wave-4): `map() -> (i64)` is a
+                // cross-join single-entry map, `map(i64) -> ()` a semi join.
                 self.expect(Tok::LParen)?;
-                let keys = self.ty_list()?;
+                let keys = if *self.peek() == Tok::RParen {
+                    Vec::new()
+                } else {
+                    self.ty_list()?
+                };
                 self.expect(Tok::RParen)?;
                 self.expect(Tok::Arrow)?;
                 self.expect(Tok::LParen)?;
-                let values = self.ty_list()?;
+                let values = if *self.peek() == Tok::RParen {
+                    Vec::new()
+                } else {
+                    self.ty_list()?
+                };
                 self.expect(Tok::RParen)?;
                 Ok(StaticTy::Map { keys, values })
             }

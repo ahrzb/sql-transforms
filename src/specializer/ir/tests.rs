@@ -589,11 +589,12 @@ fn deep_cfg_verifies_without_crashing() {
     verify(&p).expect("a deep linear CFG is legal");
 }
 
-/// `map() -> (..)` / `map(..) -> ()` cannot be expressed by the grammar, so
-/// a verified program containing one could not be reloaded.
+/// Wave-4: one-sided empty map signatures are legal (cross-join and
+/// semi-join shapes) and round-trip through the text format; only the
+/// BOTH-empty map — which carries no information — is rejected.
 #[test]
 fn rejects_empty_map_static_signatures() {
-    use super::{StaticTy, Ty};
+    use super::{parse::parse, print::print, StaticTy, Ty};
     for st in [
         StaticTy::Map {
             keys: vec![],
@@ -605,14 +606,25 @@ fn rejects_empty_map_static_signatures() {
         },
     ] {
         let p = api_program(vec![st], "f", vec![store_emit_block()]);
-        let errs = verify(&p).expect_err("empty map signature must not verify");
-        assert!(
-            errs.iter()
-                .any(|e| e.to_string().contains("at least one key and one value")),
-            "wrong errors: {:?}",
-            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
-        );
+        verify(&p).expect("one-sided empty map signatures verify");
+        let text = print(&p);
+        assert_eq!(parse(&text).unwrap(), p, "round-trip failed:\n{text}");
     }
+    let p = api_program(
+        vec![StaticTy::Map {
+            keys: vec![],
+            values: vec![],
+        }],
+        "f",
+        vec![store_emit_block()],
+    );
+    let errs = verify(&p).expect_err("both-empty map must not verify");
+    assert!(
+        errs.iter()
+            .any(|e| e.to_string().contains("neither keys nor values")),
+        "wrong errors: {:?}",
+        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+    );
 }
 
 /// A non-identifier (or empty) function name prints as unparseable text.
