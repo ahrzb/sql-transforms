@@ -1455,9 +1455,12 @@ def test_alias_shadows_original_name():
             row_tables={"__THIS__": _row_model({"a": "int"})},
             static_tables={},
         )
-    with pytest.raises(ValueError, match="column-renaming"):
+    # t(y) column renaming serves since wave 5 (prefix rename, old name
+    # shadowed).
+    duck_check("SELECT y + 1 AS p FROM __THIS__ t(y)", {"a": "int"}, [{"a": 4}])
+    with pytest.raises(ValueError, match="does not exist"):
         DuckDBInferFn(
-            "SELECT y FROM __THIS__ t(y)",
+            "SELECT a FROM __THIS__ t(y)",
             row_tables={"__THIS__": _row_model({"a": "int"})},
             static_tables={},
         )

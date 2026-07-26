@@ -1106,21 +1106,43 @@ fn float_to_varchar_matches_duckdb_rendering() {
 }
 
 #[test]
-fn rowid_and_lateral_alias_reject_cleanly() {
+fn rowid_rejects_and_lateral_aliases_serve() {
     let schema = cols(&[("a", Ty::I64, false)]);
-    for (sql, needle) in [
-        ("SELECT rowid FROM __THIS__", "rowid"),
-        ("SELECT a % 2 AS k FROM __THIS__ WHERE k = 1", "lateral"),
-    ] {
-        match prep(sql, &schema) {
-            Err(PrepareError::Unsupported(msg)) => {
-                assert!(
-                    msg.contains(needle),
-                    "'{sql}': wanted '{needle}' in '{msg}'"
-                )
-            }
-            other => panic!("'{sql}': wrong outcome: {:?}", other.err()),
+    match prep("SELECT rowid FROM __THIS__", &schema) {
+        Err(PrepareError::Unsupported(msg)) => assert!(msg.contains("rowid"), "{msg}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+    // Wave-5 pins: lateral aliases — later items and WHERE see the alias;
+    // chains fold left-to-right.
+    let got = run_sql(
+        "SELECT a % 2 AS k, k * 2 AS d FROM __THIS__ WHERE k = 1",
+        &schema,
+        batch(3, vec![c_i64(&[Some(3), Some(4), Some(7)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["1", "2"], &["1", "2"]]));
+    let got = run_sql(
+        "SELECT a + 1 AS b, b + 1 AS c, c + 1 AS d FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(1)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["2", "3", "4"]]));
+    // The REAL column beats the alias (measured), and a forward reference
+    // is the pinned bind error.
+    let schema2 = cols(&[("a", Ty::I64, false), ("k", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT a + 1 AS k, k * 2 AS d FROM __THIS__",
+        &schema2,
+        batch(1, vec![c_i64(&[Some(10)]), c_i64(&[Some(100)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["11", "200"]]));
+    match prep("SELECT b + 1 AS c, a + 1 AS b FROM __THIS__", &schema) {
+        Err(PrepareError::Bind(msg)) => {
+            assert!(msg.contains("before it is defined"), "{msg}")
         }
+        other => panic!("wrong outcome: {:?}", other.err()),
     }
 }
 
@@ -1465,4 +1487,106 @@ fn qualified_exclude_over_join() {
     .program;
     let got: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(got, ["v"]);
+}
+
+#[test]
+fn binder_tail_null_ops_natural_join_main_qualifier() {
+    // NULL <op> NULL types by operator (wave-5 pins): + -> BIGINT NULL,
+    // / -> DOUBLE NULL, = -> BOOLEAN NULL.
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT NULL + NULL AS s, NULL / NULL AS d, NULL = NULL AS e FROM __THIS__",
+        &schema,
+        batch(1, vec![c_i64(&[Some(1)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL", "NULL", "NULL"]]));
+    // main.tbl resolves to the bare dynamic table; other schemas reject.
+    let p = prep("SELECT a FROM main.__THIS__", &schema).unwrap();
+    assert_eq!(p.out_cols[0].name, "a");
+    match prep("SELECT a FROM test.__THIS__", &schema) {
+        Err(PrepareError::Unsupported(m)) => assert!(m.contains("driving relation"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+    // NATURAL JOIN = USING(common cols): merged key, left spelling; no
+    // common columns is a hard error.
+    let st = stat("dim", &[("a", Ty::I64, false), ("v", Ty::F64, false)]);
+    let p = prepare(
+        "SELECT * FROM __THIS__ NATURAL JOIN dim",
+        "__THIS__",
+        &schema,
+        std::slice::from_ref(&st),
+    )
+    .unwrap()
+    .program;
+    let names: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["a", "v"]);
+    let st2 = stat("dim", &[("z", Ty::I64, false), ("v", Ty::F64, false)]);
+    match prepare(
+        "SELECT * FROM __THIS__ NATURAL JOIN dim",
+        "__THIS__",
+        &schema,
+        std::slice::from_ref(&st2),
+    ) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("No columns found"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}
+
+#[test]
+fn between_in_mixed_literals_cast_to_the_numeric_side() {
+    // Wave-5 pins: 1 IN ('1', 2) TRUE; 2 = '1.5' rounds half-away (via IN);
+    // TRUE IN (1, 0) casts bool -> int; non-numeric strings are conversion
+    // bind errors.
+    let schema = cols(&[("a", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT a IN ('1', 2) AS x, a IN ('1.5') AS h, true IN (1, 0) AS b, \
+         a BETWEEN '0' AND '5' AS r FROM __THIS__",
+        &schema,
+        batch(2, vec![c_i64(&[Some(1), Some(2)])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["true", "false", "true", "true"],
+            &["true", "true", "true", "true"]
+        ])
+    );
+    // Non-numeric strings convert at EXECUTION time in DuckDB (an empty
+    // input succeeds), so this stays clean-unsupported, not a bind error.
+    match prep("SELECT a IN ('abc') AS x FROM __THIS__", &schema) {
+        Err(PrepareError::Unsupported(m)) => assert!(m.contains("non-numeric"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}
+
+#[test]
+fn column_renaming_table_alias() {
+    // t AS u(x, y): prefix rename is legal, old names and the original
+    // table name die as qualifiers; too many names errors (wave-5 pins).
+    let schema = cols(&[("a", Ty::I64, false), ("b", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT x + u.y AS s FROM __THIS__ AS u(x, y)",
+        &schema,
+        batch(1, vec![c_i64(&[Some(1)]), c_i64(&[Some(2)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["3"]]));
+    // Partial list: only the prefix renames.
+    let got = run_sql(
+        "SELECT x + b AS s FROM __THIS__ AS u(x)",
+        &schema,
+        batch(1, vec![c_i64(&[Some(1)]), c_i64(&[Some(2)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["3"]]));
+    match prep("SELECT a FROM __THIS__ AS u(x, y)", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("does not exist"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+    match prep("SELECT x FROM __THIS__ AS u(x, y, z)", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("columns specified"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
 }

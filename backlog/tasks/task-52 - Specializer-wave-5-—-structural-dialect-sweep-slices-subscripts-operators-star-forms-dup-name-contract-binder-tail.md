@@ -6,7 +6,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-07-26 21:46'
-updated_date: '2026-07-26 22:02'
+updated_date: '2026-07-26 22:52'
 labels: []
 milestone: m-7
 dependencies:
@@ -33,10 +33,10 @@ Out of wave: regexp family (wave B), lists/structs (wave C), stage-B multiplicit
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Pins-first: wave-5 pins spec (md + JSON) committed before implementation, incl. a sqlparser-capability spike deciding parse strategy per dialect form
-- [ ] #2 VARCHAR slices s[a:b] serve with DuckDB semantics (bounds, negatives, NULL/dynamic bounds, out-of-range, non-ASCII)
-- [ ] #3 Extended subscripts serve: dynamic, negative, out-of-range indices per pins
-- [ ] #4 Operator/star dialect forms serve or reclassify cleanly: ^@, GLOB, << >>, * LIKE/ILIKE/SIMILAR, * REPLACE, * RENAME, qualified EXCLUDE, alias-prefix colon
-- [ ] #5 Duplicate output column names: contract pinned to DuckDB Python-client behavior, implemented across output modes
+- [x] #2 VARCHAR slices s[a:b] serve with DuckDB semantics (bounds, negatives, NULL/dynamic bounds, out-of-range, non-ASCII)
+- [x] #3 Extended subscripts serve: dynamic, negative, out-of-range indices per pins
+- [x] #4 Operator/star dialect forms serve or reclassify cleanly: ^@, GLOB, << >>, * LIKE/ILIKE/SIMILAR, * REPLACE, * RENAME, qualified EXCLUDE, alias-prefix colon
+- [x] #5 Duplicate output column names: contract pinned to DuckDB Python-client behavior, implemented across output modes
 - [ ] #6 Binder tail per pins: NULL <op> NULL typing, lateral aliases, t(a,b), NATURAL JOIN, schema-qualified driving relation, BETWEEN/IN mixed-type semantics
 - [ ] #7 Corpus replay: three-outcome contract holds, zero FAILs, match count reported (ceiling ~130 over 395)
 - [ ] #8 Gate green both backends, clippy clean, serving-bench parity gate passes
