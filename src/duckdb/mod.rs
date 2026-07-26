@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyString};
 
 use crate::error::InterpError;
 use crate::schema;
@@ -200,11 +200,159 @@ impl Backend {
     }
 }
 
+/// The generated row marshaller (design doc §3 flag 1): everything about the
+/// boundary that is knowable at prepare time is done at prepare time —
+/// interned attribute-name objects in fixed field order, `model_construct`
+/// resolved once, input buffers and run state owned and reused (cleared, not
+/// dropped, per call). The generic path stays available behind
+/// `SPECIALIZER_GENERIC_BOUNDARY` as the measured baseline.
+struct Marshaller {
+    in_names: Vec<Py<PyString>>,
+    out_names: Vec<Py<PyString>>,
+    /// `output_model.model_construct`, resolved at build. Outputs come out
+    /// of the typed engine already conformant; re-validating them per row
+    /// was the single largest boundary cost.
+    construct: Py<PyAny>,
+    cols: Vec<ColData>,
+    state: RunState,
+}
+
+impl Marshaller {
+    fn build(
+        py: Python<'_>,
+        in_cols: &[Col],
+        out_cols: &[Col],
+        output_model: &Py<PyAny>,
+        fun: &Backend,
+    ) -> PyResult<Marshaller> {
+        Ok(Marshaller {
+            in_names: in_cols
+                .iter()
+                .map(|c| PyString::intern(py, &c.name).unbind())
+                .collect(),
+            out_names: out_cols
+                .iter()
+                .map(|c| PyString::intern(py, &c.name).unbind())
+                .collect(),
+            construct: output_model.bind(py).getattr("model_construct")?.unbind(),
+            cols: in_cols.iter().map(|c| ColData::new(c.ty.ty)).collect(),
+            state: fun.new_state(),
+        })
+    }
+
+    /// The hot path: fill reused columns from row objects (dict or model),
+    /// run, emit via `model_construct`. Steady-state this allocates only the
+    /// output objects — buffers and arena reset, never drop.
+    fn call(
+        &mut self,
+        py: Python<'_>,
+        fun: &Backend,
+        in_cols: &[Col],
+        rows: &[Py<PyAny>],
+        row_table: &str,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        for col in &mut self.cols {
+            col.clear();
+        }
+        for row_obj in rows {
+            let bound = row_obj.bind(py);
+            let dict = bound.cast::<PyDict>().ok();
+            for ((c, name), col) in in_cols.iter().zip(&self.in_names).zip(&mut self.cols) {
+                let attr = match dict {
+                    Some(d) => d.get_item(name.bind(py))?.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "Row for table '{row_table}' is missing attribute '{}'",
+                            c.name
+                        ))
+                    })?,
+                    None => bound.getattr(name.bind(py)).map_err(|e| {
+                        pyo3::exceptions::PyValueError::new_err(format!(
+                            "Row for table '{row_table}' is missing attribute '{}': {e}",
+                            c.name
+                        ))
+                    })?,
+                };
+                let null = attr.is_none();
+                if null && !c.ty.nullable {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "column '{}' is not nullable but a row has None",
+                        c.name
+                    )));
+                }
+                match col {
+                    ColData::I1 { valid, data } => {
+                        valid.push(!null);
+                        data.push(if null { false } else { attr.extract()? });
+                    }
+                    ColData::I64 { valid, data } => {
+                        valid.push(!null);
+                        data.push(if null { 0 } else { attr.extract()? });
+                    }
+                    ColData::F64 { valid, data } => {
+                        valid.push(!null);
+                        data.push(if null { 0.0 } else { attr.extract()? });
+                    }
+                    s @ ColData::Str { .. } => {
+                        if null {
+                            s.push_str_cell(false, "");
+                        } else {
+                            s.push_str_cell(true, attr.extract()?);
+                        }
+                    }
+                }
+            }
+        }
+
+        // The batch borrows the reused columns for the duration of the run;
+        // mem::take + restore keeps `Batch` an owning type (an empty Vec
+        // does not allocate).
+        let batch = Batch {
+            rows: rows.len(),
+            cols: std::mem::take(&mut self.cols),
+        };
+        let res = fun.run(&batch, &mut self.state);
+        self.cols = batch.cols;
+        res.map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
+
+        let construct = self.construct.bind(py);
+        let mut out = Vec::with_capacity(self.state.emitted);
+        for r in 0..self.state.emitted {
+            let d = PyDict::new(py);
+            for (name, oc) in self.out_names.iter().zip(&self.state.out) {
+                let k = name.bind(py);
+                match oc {
+                    OutCol::I1(v) => {
+                        let (ok, x) = v[r];
+                        d.set_item(k, ok.then_some(x))?;
+                    }
+                    OutCol::I64(v) => {
+                        let (ok, x) = v[r];
+                        d.set_item(k, ok.then_some(x))?;
+                    }
+                    OutCol::F64(v) => {
+                        let (ok, x) = v[r];
+                        d.set_item(k, ok.then_some(x))?;
+                    }
+                    OutCol::Str(v) => {
+                        let (ok, s) = v[r];
+                        d.set_item(k, ok.then(|| self.state.arena.get(s)))?;
+                    }
+                }
+            }
+            out.push(construct.call((), Some(&d))?.unbind());
+        }
+        Ok(out)
+    }
+}
+
 enum Engine {
     Compiled {
         fun: Backend,
         in_cols: Vec<Col>,
         out_cols: Vec<Col>,
+        /// `None` when `SPECIALIZER_GENERIC_BOUNDARY` pinned the generic
+        /// boundary at construction (the bench baseline).
+        marsh: Option<Marshaller>,
     },
     /// Fixed row dicts from a static-only query, re-validated through the
     /// output model on every `infer` call.
@@ -357,11 +505,25 @@ impl DuckDBInferFn {
             Some(m) => m,
             None => synthesize_output_model(py, &prepared.program.out_cols)?,
         };
+        // SPECIALIZER_GENERIC_BOUNDARY pins the pre-marshaller boundary —
+        // the bench baseline, mirroring SPECIALIZER_FORCE_INTERP.
+        let marsh = if std::env::var_os("SPECIALIZER_GENERIC_BOUNDARY").is_some() {
+            None
+        } else {
+            Some(Marshaller::build(
+                py,
+                &in_cols,
+                &prepared.program.out_cols,
+                &output_model,
+                &fun,
+            )?)
+        };
         Ok(DuckDBInferFn {
             engine: Engine::Compiled {
                 fun,
                 in_cols,
                 out_cols: prepared.program.out_cols.clone(),
+                marsh,
             },
             row_table,
             output_model,
@@ -377,9 +539,20 @@ impl DuckDBInferFn {
         }
     }
 
+    /// How rows cross the Python boundary: "marshaller" (generated at
+    /// prepare), "generic" (env-pinned baseline), or "constant".
+    #[getter]
+    fn boundary(&self) -> &'static str {
+        match &self.engine {
+            Engine::Compiled { marsh: Some(_), .. } => "marshaller",
+            Engine::Compiled { marsh: None, .. } => "generic",
+            Engine::Constant { .. } => "constant",
+        }
+    }
+
     #[pyo3(signature = (tables=None, **kwargs))]
     fn infer(
-        &self,
+        &mut self,
         py: Python<'_>,
         tables: Option<HashMap<String, Vec<Py<PyAny>>>>,
         kwargs: Option<Bound<'_, PyDict>>,
@@ -397,22 +570,37 @@ impl DuckDBInferFn {
             )));
         }
         let rows = merged.remove(&self.row_table).unwrap_or_default();
+        self.run_rows(py, &rows)
+    }
 
-        let (fun, in_cols, out_cols) = match &self.engine {
+    /// The direct hot entry: the row table's rows, no table-dict plumbing.
+    /// `SpecializedTransform.infer_batch` calls this.
+    fn infer_rows(&mut self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
+        self.run_rows(py, &rows)
+    }
+}
+
+impl DuckDBInferFn {
+    fn run_rows(&mut self, py: Python<'_>, rows: &[Py<PyAny>]) -> PyResult<Vec<Py<PyAny>>> {
+        let (fun, in_cols, out_cols, marsh) = match &mut self.engine {
             Engine::Compiled {
                 fun,
                 in_cols,
                 out_cols,
-            } => (fun, in_cols, out_cols),
+                marsh,
+            } => (&*fun, &*in_cols, &*out_cols, marsh),
             Engine::Constant { rows: fixed } => {
                 let model = self.output_model.bind(py);
                 let mut out = Vec::with_capacity(fixed.len());
-                for r in fixed {
-                    out.push(model.call_method1("model_validate", (r,))?.unbind());
+                for r in fixed.iter() {
+                    out.push(model.call_method1("model_validate", (&*r,))?.unbind());
                 }
                 return Ok(out);
             }
         };
+        if let Some(m) = marsh {
+            return m.call(py, fun, in_cols, rows, &self.row_table);
+        }
 
         let n = rows.len();
         let mut cols: Vec<ColData> = in_cols
@@ -432,11 +620,12 @@ impl DuckDBInferFn {
                 },
                 Ty::Str => ColData::Str {
                     valid: Vec::with_capacity(n),
-                    data: Vec::with_capacity(n),
+                    buf: String::new(),
+                    spans: Vec::with_capacity(n),
                 },
             })
             .collect();
-        for row_obj in &rows {
+        for row_obj in rows {
             let bound = row_obj.bind(py);
             for (c, col) in in_cols.iter().zip(&mut cols) {
                 let attr = bound.getattr(c.name.as_str()).map_err(|e| {
@@ -465,9 +654,12 @@ impl DuckDBInferFn {
                         valid.push(!null);
                         data.push(if null { 0.0 } else { attr.extract()? });
                     }
-                    ColData::Str { valid, data } => {
-                        valid.push(!null);
-                        data.push(if null { String::new() } else { attr.extract()? });
+                    s @ ColData::Str { .. } => {
+                        if null {
+                            s.push_str_cell(false, "");
+                        } else {
+                            s.push_str_cell(true, attr.extract()?);
+                        }
                     }
                 }
             }

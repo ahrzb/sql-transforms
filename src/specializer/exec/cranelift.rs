@@ -134,11 +134,12 @@ extern "C" fn h_load_f64(p: *mut Cx, col: i64) -> f64 {
 
 extern "C" fn h_load_str(p: *mut Cx, col: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
-    let s = match &c.input().cols[col as usize] {
-        ColData::Str { data, .. } => data[c.row].clone(),
-        _ => unreachable!("load type checked by the verifier"),
-    };
-    let r = c.arena().push_str(&s);
+    // SAFETY: input and arena are disjoint allocations behind separate raw
+    // pointers; materializing both references keeps the borrow checker out
+    // of a copy that never aliases (and skips the old per-load String clone).
+    let input = unsafe { &*c.input };
+    let arena = unsafe { &mut *c.arena };
+    let r = arena.push_str(input.cols[col as usize].str_at(c.row));
     unsafe { *len_out = r.len as i64 };
     r.off as i64
 }
