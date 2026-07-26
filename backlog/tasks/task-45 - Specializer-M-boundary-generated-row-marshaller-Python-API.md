@@ -1,10 +1,10 @@
 ---
 id: TASK-45
 title: 'Specializer M-boundary: generated row marshaller + Python API'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-25 02:32'
-updated_date: '2026-07-26 09:10'
+updated_date: '2026-07-26 11:40'
 labels: []
 milestone: m-7
 dependencies:
@@ -46,3 +46,9 @@ Stretch plan (recorded 2026-07-26, design doc §3 flag 1 + §10). Measured targe
 All four stretches landed on claude/specializer-m-boundary. The marshaller (src/duckdb/mod.rs) does at prepare time everything knowable at prepare time: interned attribute-name PyStrings in fixed field order, input buffers + RunState owned and cleared-not-dropped per call, dict rows via get_item and model rows via getattr on the interned names, output rows by direct pydantic-v2 slot fill. Two assumptions died by measurement: (1) pydantic's literal model_construct API is pure-Python and SLOWER than model_validate (1432 vs 882 ns/row on 2.13) — the shipped path is object.__new__ + object.__setattr__ of __dict__/__pydantic_fields_set__/__pydantic_extra__/__pydantic_private__ at 491 ns, semantically equal (eq, fields_set, assignment all verified); (2) the design doc's AoS row structs buy nothing at L1-resident n — the marshaller fills the existing SoA Batch directly (deliberate deviation, noted in the plan). AC #4 forced real work: ColData::Str became one flat buffer + spans (killing per-cell Strings AND a hidden per-load clone in the JIT's h_load_str), substr/trim became pure sub-span arithmetic, case mapping streams into the arena (Arena::case_map), number→text formats via Arena::push_fmt with DuckF64 on a stack buffer, and h_probe emits without its per-call Vec + ScalarVal clones — all shared between backends, pinned by counting-allocator tests over a probe/arith fixture and a string-heavy program on BOTH backends (the remaining per-call allocs are the output objects themselves plus pyo3's input-list Vec, i.e. the AC's "beyond the output objects"). SpecializedTransform (sql_transform/_specialized.py) reuses the whole fit pipeline minus transformer refs (ValueError at ctor), so window aggregates ride the equi-join rewrite onto cranelift — parity with SQLTransform asserted row-for-row; WHERE stays rejected at the authoring surface (parse_and_validate), while raw DuckDBInferFn keeps it. Bench (scripts/bench_specializer.py, +generic engine via SPECIALIZER_GENERIC_BOUNDARY): noop p50 marshaller vs generic = 1.1/2.1µs at n=1, 468/1192µs at n=1024 (1.9-2.5x, AC #2); vs shipping engines at n=1024 the specializer is 3.7-4.2x faster than native and 2.4-3.8x than codegen (AC #3); cranelift-vs-interp is now visible end-to-end (arith 339 vs 391µs at n=1024). SPECIALIZER_GENERIC_BOUNDARY + .boundary getter mirror the FORCE_INTERP pattern; infer_rows() is the direct hot entry SpecializedTransform uses.
 <!-- SECTION:NOTES:END -->
 
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+M-boundary delivered and merged (PR #29, rebase-merged 2026-07-26). Generated row marshaller + SpecializedTransform + allocation-free steady state on both backends, with a 17-agent adversarial fleet's 9 confirmed findings (3 root causes) fixed pre-merge: supplied output models keep model_validate semantics, the generic baseline accepts dict rows, reentrant infer falls back instead of erroring. Post-merge the milestone also grew the realistic serving bench (benchmarks/, PR #29): four famous-problem inference paths (titanic 10->24, ames 43->42, ieee-cis fraud 32->41, rossmann 21->44) under an exact three-way parity gate (specializer == DuckDB == handcrafted twin, pytest-enforced). Measured: the specializer beats the handcrafted-Python typed-model server in 16/16 cells (1.1-2.4x), DuckDB-per-call by 1,200-2,700x at n=1, and the previous native/codegen engines build 0/4 scenarios (IS NULL projections, row-x-dim arithmetic unsupported there). Known remaining gap, deliberately reported: a plain-dict handcrafted server is still 1.3-2x faster — typed-output construction is the next perf lever (parked; SQL support prioritized by AmirHossein 2026-07-26).
+<!-- SECTION:FINAL_SUMMARY:END -->
