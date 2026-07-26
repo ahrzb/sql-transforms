@@ -795,3 +795,26 @@ fn fuzz_generated_programs_execute_deterministically() {
         }
     }
 }
+
+#[test]
+fn casemap_tables_sorted_and_marquee_pins() {
+    use super::casemap::{simple_lower, simple_upper, LOWER_EXCEPTIONS, UPPER_EXCEPTIONS};
+    // binary_search precondition: strictly sorted by codepoint.
+    for table in [UPPER_EXCEPTIONS, LOWER_EXCEPTIONS] {
+        assert!(
+            table.windows(2).all(|w| w[0].0 < w[1].0),
+            "table not sorted"
+        );
+    }
+    // The two exception classes (see scripts/gen_casemap.py): simple-vs-full
+    // divergence, and Unicode version skew where duckdb's utf8proc predates
+    // the case pair (identity there).
+    assert_eq!(simple_upper('ß'), 'ẞ');
+    assert_eq!(simple_lower('İ'), 'i');
+    assert_eq!(simple_upper('ᾀ'), 'ᾈ');
+    assert_eq!(simple_upper('ƛ'), 'ƛ');
+    // The fallback path stays exact where full mapping is 1:1.
+    assert_eq!(simple_upper('a'), 'A');
+    assert_eq!(simple_lower('É'), 'é');
+    assert_eq!(simple_upper('ﬁ'), 'ﬁ');
+}

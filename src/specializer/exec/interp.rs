@@ -802,26 +802,15 @@ fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
         }
         Inst::Str1 { op, dst, a } => {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
+            // DuckDB uses SIMPLE (1:1) case maps; casemap.rs carries the
+            // measured exception table over Rust's full maps.
+            let map: fn(char) -> char = match op {
+                StrOp1::Upper => super::casemap::simple_upper,
+                StrOp1::Lower => super::casemap::simple_lower,
+            };
             Box::new(move |ctx| {
                 let s = ctx.arena.get(as_str(ctx.regs[a]));
-                let mut out = String::with_capacity(s.len());
-                for c in s.chars() {
-                    // DuckDB uses SIMPLE (1:1) case maps; Rust std only has
-                    // full maps. Take the full map iff it is 1:1, else keep
-                    // the char — exact on ASCII, diverges on ß/İ (see the
-                    // 2026-07-26 builtin-pins spec; xfail'd differentially).
-                    let mapped = match op {
-                        StrOp1::Upper => {
-                            let mut it = c.to_uppercase();
-                            (it.next().unwrap(), it.next().is_none())
-                        }
-                        StrOp1::Lower => {
-                            let mut it = c.to_lowercase();
-                            (it.next().unwrap(), it.next().is_none())
-                        }
-                    };
-                    out.push(if mapped.1 { mapped.0 } else { c });
-                }
+                let out: String = s.chars().map(map).collect();
                 ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
                 Ok(())
             })
