@@ -1,0 +1,586 @@
+{
+ "family": "log-exp",
+ "pins": [
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=1.0",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "positive zero (repr shows no sign)"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=2.718281828459045 (e)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "exact 1.0"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=2.0",
+   "result": "0.6931471805599453",
+   "result_type": "DOUBLE",
+   "note": "== Python math.log(2.0) bit-exact"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=NaN",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "NaN does NOT error \u2014 fails both ==0 and <0 checks, passes through libm"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=-NaN (bits 0xFFF8000000000000)",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "negative NaN also passes the checks (IEEE compares false)"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=+inf",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "no error"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=NULL",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": "strict NULL propagation"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=1e308",
+   "result": "709.1962086421661",
+   "result_type": "DOUBLE",
+   "note": "matches platform libm"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "DOUBLE col x=5e-324 (min denormal)",
+   "result": "-744.4400719213812",
+   "result_type": "DOUBLE",
+   "note": "note: differs in last ulp from log(e,5e-324)=-744.4400719213813"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "INTEGER col x=2",
+   "result": "0.6931471805599453",
+   "result_type": "DOUBLE",
+   "note": "all int widths (TINYINT..HUGEINT), FLOAT, DECIMAL -> DOUBLE result"
+  },
+  {
+   "expr": "ln(x)",
+   "input_desc": "BIGINT col x=9223372036854775807",
+   "result": "43.66827237527655",
+   "result_type": "DOUBLE",
+   "note": "i64::MAX converts to f64 then ln"
+  },
+  {
+   "expr": "log(x)",
+   "input_desc": "DOUBLE col x=10.0",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "1-arg log IS BASE 10 in DuckDB 1.5.5 (alias of log10), NOT natural log"
+  },
+  {
+   "expr": "log(x)",
+   "input_desc": "DOUBLE col x=2.0",
+   "result": "0.3010299956639812",
+   "result_type": "DOUBLE",
+   "note": "== log10(2.0)"
+  },
+  {
+   "expr": "log(x)",
+   "input_desc": "DOUBLE col x=1e308",
+   "result": "308.0",
+   "result_type": "DOUBLE",
+   "note": "exactly 308.0 \u2014 base-10 proof"
+  },
+  {
+   "expr": "log(x)",
+   "input_desc": "DOUBLE col x=5e-324",
+   "result": "-323.3062153431158",
+   "result_type": "DOUBLE",
+   "note": "== log10"
+  },
+  {
+   "expr": "log(x)",
+   "input_desc": "DOUBLE col x=2.718281828459045 (e)",
+   "result": "0.4342944819032518",
+   "result_type": "DOUBLE",
+   "note": "log10(e), NOT 1.0 \u2014 base-10 proof"
+  },
+  {
+   "expr": "log(x)",
+   "input_desc": "DOUBLE col, 20000 fuzzed positive values",
+   "result": "bit-identical to log10(x) on every sample",
+   "result_type": "DOUBLE",
+   "note": "log(x) == log10(x) == Python math.log10 bit-exact, 0/20000 mismatches"
+  },
+  {
+   "expr": "log(x)",
+   "input_desc": "DOUBLE col x=NaN / +inf / NULL",
+   "result": "nan / inf / None",
+   "result_type": "DOUBLE",
+   "note": "same special handling as ln"
+  },
+  {
+   "expr": "log2(x)",
+   "input_desc": "DOUBLE col x=2.0",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log2(x)",
+   "input_desc": "DOUBLE col x=1.0",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log2(x)",
+   "input_desc": "DOUBLE col x=2.718281828459045",
+   "result": "1.4426950408889634",
+   "result_type": "DOUBLE",
+   "note": "matches math.log2 bit-exact"
+  },
+  {
+   "expr": "log2(x)",
+   "input_desc": "DOUBLE col x=1e308",
+   "result": "1023.1538532253076",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log2(x)",
+   "input_desc": "DOUBLE col x=5e-324",
+   "result": "-1074.0",
+   "result_type": "DOUBLE",
+   "note": "exactly -1074.0 (min denormal exponent)"
+  },
+  {
+   "expr": "log2(x)",
+   "input_desc": "BIGINT col x=9223372036854775807",
+   "result": "63.0",
+   "result_type": "DOUBLE",
+   "note": "exactly 63.0 because i64::MAX rounds to 2^63 as f64"
+  },
+  {
+   "expr": "log2(x)",
+   "input_desc": "DOUBLE col x=NaN / +inf / NULL",
+   "result": "nan / inf / None",
+   "result_type": "DOUBLE",
+   "note": "same special handling as ln"
+  },
+  {
+   "expr": "log10(x)",
+   "input_desc": "DOUBLE col x=10.0 / 1.0 / e / 1e308 / 5e-324",
+   "result": "1.0 / 0.0 / 0.4342944819032518 / 308.0 / -323.3062153431158",
+   "result_type": "DOUBLE",
+   "note": "bit-identical to 1-arg log(x) on all 20000 fuzz samples"
+  },
+  {
+   "expr": "log10(x)",
+   "input_desc": "DOUBLE col x=NaN / +inf / NULL",
+   "result": "nan / inf / None",
+   "result_type": "DOUBLE",
+   "note": "same special handling as ln"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=0.0",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=-0.0",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=1.0",
+   "result": "2.718281828459045",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=-1.0",
+   "result": "0.36787944117144233",
+   "result_type": "DOUBLE",
+   "note": "negative input fine \u2014 exp has NO domain errors at all"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=NaN / -NaN",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=+inf",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=-inf",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "POSITIVE zero (copysign(1,r)=+1.0)"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=NULL",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=1000.0",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": "overflow -> inf, NOT an error"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=1e308",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=709.782712893384",
+   "result": "1.7976931348622732e+308",
+   "result_type": "DOUBLE",
+   "note": "largest finite probe, just below f64::MAX; x=709.7827128933841 -> inf"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=-745.0",
+   "result": "5e-324",
+   "result_type": "DOUBLE",
+   "note": "underflows into denormals, not zero; also exp(-744.4400719213812)=5e-324"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=-746.0 / -1000.0",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "full underflow -> +0.0"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col x=5e-324",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "INTEGER col x=0 / BIGINT i64::MAX / BIGINT i64::MIN",
+   "result": "1.0 / inf / 0.0",
+   "result_type": "DOUBLE",
+   "note": "int input -> DOUBLE"
+  },
+  {
+   "expr": "exp(x)",
+   "input_desc": "DOUBLE col, 20000 fuzzed values in [-1e6,1e6]",
+   "result": "bit-identical to Python math.exp (OverflowError treated as inf)",
+   "result_type": "DOUBLE",
+   "note": "0/20000 mismatches vs platform libm"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=2.0 x=8.0",
+   "result": "3.0",
+   "result_type": "DOUBLE",
+   "note": "arg order is log(base, x)"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=10.0 x=1000.0",
+   "result": "3.0",
+   "result_type": "DOUBLE",
+   "note": "PROOF of log10-ratio lowering: ln(x)/ln(b) would give 2.9999999999999996"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=e x=10.0",
+   "result": "2.302585092994046",
+   "result_type": "DOUBLE",
+   "note": "log2-ratio would give 2.3025850929940455 \u2014 rules out log2 lowering"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=e x=5e-324",
+   "result": "-744.4400719213813",
+   "result_type": "DOUBLE",
+   "note": "log(e,x) is NOT ln(x): ln(5e-324)=-744.4400719213812 (last-ulp difference)"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols, 20000 fuzzed (b,x) pairs",
+   "result": "bit-identical to log10(x)/log10(b) on every sample",
+   "result_type": "DOUBLE",
+   "note": "vs ln-ratio 6989/20000 mismatch, vs log2-ratio 9142/20000 \u2014 lowering is log10(x)/log10(b), settled"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=3.0 x=7.0",
+   "result": "1.7712437491614221",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=0.5 x=8.0",
+   "result": "-3.0",
+   "result_type": "DOUBLE",
+   "note": "base in (0,1) valid"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=0.5 x=1.0",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "NEGATIVE zero: +0.0/log10(0.5)= -0.0; b=2.0 x=1.0 gives +0.0"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=2.0 x=0.5",
+   "result": "-1.0",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=2.0 x=1e308 / x=5e-324",
+   "result": "1023.1538532253076 / -1074.0",
+   "result_type": "DOUBLE",
+   "note": "== log2 values here"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=NaN, x in {1.0,8.0,0.5,NaN,+inf,1e308,5e-324}",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "NaN base passes domain checks; but x==0 or x<0 STILL errors even with NaN base"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=2.0 x=NaN",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=+inf, x=8.0 / 1.0 / 1e308",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "finite/inf = +0.0"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=+inf, x=0.5 / 5e-324",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "negative-numerator/inf = -0.0"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=+inf x=+inf",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "inf/inf"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=0.5 x=+inf",
+   "result": "-inf",
+   "result_type": "DOUBLE",
+   "note": "inf/negative"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=2.0 x=+inf",
+   "result": "inf",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=1.0000000000000002 x=4.0",
+   "result": "6243314768165360.0",
+   "result_type": "DOUBLE",
+   "note": "base near 1 is NOT the base==1 error; b=0.9999999999999999 x=4.0 -> -1.2486629536330718e+16"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=5e-324 x=8.0",
+   "result": "-0.0027932960893854745",
+   "result_type": "DOUBLE",
+   "note": "denormal base valid"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=1e308 x=8.0",
+   "result": "0.00293211034737644",
+   "result_type": "DOUBLE",
+   "note": ""
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols b=NULL, x anything incl 0.0/-4.0/-inf/NULL",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": "NULL propagation pre-empts ALL domain errors"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "DOUBLE cols x=NULL, b in {0.0,-0.0,-2.0,1.0,-inf}",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": "even error-triggering bases yield NULL when x is NULL"
+  },
+  {
+   "expr": "log(b, x)",
+   "input_desc": "INTEGER cols b=2 x=8",
+   "result": "3.0",
+   "result_type": "DOUBLE",
+   "note": "int/int -> DOUBLE"
+  },
+  {
+   "expr": "CASE WHEN x > 0 THEN ln(x) ELSE NULL END",
+   "input_desc": "DOUBLE col rows [1.0,-1.0,4.0,0.0]",
+   "result": "[0.0, None, 1.3862943611198906, None]",
+   "result_type": "DOUBLE",
+   "note": "guarded rows do NOT trap \u2014 ln is only evaluated on taken branch"
+  },
+  {
+   "expr": "SELECT ln(x) FROM t WHERE x > 0",
+   "input_desc": "DOUBLE col rows [1.0,2.0,-1.0,4.0]",
+   "result": "[0.0, 0.6931471805599453, 1.3862943611198906]",
+   "result_type": "DOUBLE",
+   "note": "filtered-out bad rows do NOT trap; unfiltered query with same data aborts entirely"
+  },
+  {
+   "expr": "SELECT ln(0.0) etc. as pure literals",
+   "input_desc": "constant-fold path, all error and special cases re-probed as literals",
+   "result": "identical values and identical exceptions to the vectorized path",
+   "result_type": "DOUBLE",
+   "note": "no literal-vs-vectorized divergence found anywhere in this family"
+  }
+ ],
+ "errors": [
+  {
+   "expr": "ln(x) / log(x) / log2(x) / log10(x), x=0.0 column",
+   "error_head": "Out of Range Error: cannot take logarithm of zero",
+   "kind": "runtime"
+  },
+  {
+   "expr": "ln(x) / log(x) / log2(x) / log10(x), x=-0.0 column",
+   "error_head": "Out of Range Error: cannot take logarithm of zero",
+   "kind": "runtime"
+  },
+  {
+   "expr": "ln(x) / log(x) / log2(x) / log10(x), x=-1.0 or -1000.0 column",
+   "error_head": "Out of Range Error: cannot take logarithm of a negative number",
+   "kind": "runtime"
+  },
+  {
+   "expr": "ln(x) / log(x) / log2(x) / log10(x), x=-inf column",
+   "error_head": "Out of Range Error: cannot take logarithm of a negative number",
+   "kind": "runtime"
+  },
+  {
+   "expr": "ln(x), INTEGER col x=0",
+   "error_head": "Out of Range Error: cannot take logarithm of zero",
+   "kind": "runtime"
+  },
+  {
+   "expr": "ln(x), INTEGER col x=-1 / BIGINT col x=i64::MIN",
+   "error_head": "Out of Range Error: cannot take logarithm of a negative number",
+   "kind": "runtime"
+  },
+  {
+   "expr": "log(b,x), b=0.0 or -0.0 column, ANY non-NULL x (incl NaN, +inf, -4.0)",
+   "error_head": "Out of Range Error: cannot take logarithm of zero",
+   "kind": "runtime"
+  },
+  {
+   "expr": "log(b,x), b<0 (-2.0, -inf) column, ANY non-NULL x (incl 0.0)",
+   "error_head": "Out of Range Error: cannot take logarithm of a negative number",
+   "kind": "runtime"
+  },
+  {
+   "expr": "log(b,x), b=1.0 column, ANY non-NULL x (incl 0.0, -4.0, NaN, inf)",
+   "error_head": "Out of Range Error: divison by zero in based logarithm",
+   "kind": "runtime"
+  },
+  {
+   "expr": "log(b,x), valid b (incl NaN, +inf), x=0.0 or -0.0 column",
+   "error_head": "Out of Range Error: cannot take logarithm of zero",
+   "kind": "runtime"
+  },
+  {
+   "expr": "log(b,x), valid b (incl NaN, +inf), x<0 or -inf column",
+   "error_head": "Out of Range Error: cannot take logarithm of a negative number",
+   "kind": "runtime"
+  },
+  {
+   "expr": "log1p(1.0)",
+   "error_head": "Catalog Error: Scalar Function with name log1p does not exist!",
+   "kind": "binder"
+  },
+  {
+   "expr": "expm1(1.0)",
+   "error_head": "Catalog Error: Scalar Function with name expm1 does not exist!",
+   "kind": "binder"
+  },
+  {
+   "expr": "ln(x) with VARCHAR column",
+   "error_head": "Binder Error: No function matches the given name and argument types 'ln(VARCHAR)'. You might need to add explicit type casts.",
+   "kind": "binder"
+  },
+  {
+   "expr": "ln(x) / exp(x) with BOOLEAN column",
+   "error_head": "Binder Error: No function matches the given name and argument types 'ln(BOOLEAN)'. You might need to add explicit type casts.",
+   "kind": "binder"
+  },
+  {
+   "expr": "exp(x) \u2014 any input",
+   "error_head": "(exp NEVER raises: overflow->inf, underflow->0.0/denormal, negative/NaN/inf all fine)",
+   "kind": "runtime"
+  }
+ ],
+ "duck_check_tests": "import math\n\n\ndef test_logexp_basic_values():\n    duck_check(\n        \"SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d, exp(x) AS e FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": v} for v in [1.0, 2.718281828459045, 2.0, 10.0, 0.5, 1000.0,\n                            1e308, 5e-324, 709.782712893384]],\n    )\n\n\ndef test_logexp_nan_inf_pass_through():\n    # NaN and +inf do NOT trip the domain checks; only <=0 does.\n    duck_check(\n        \"SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d, exp(x) AS e FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": float(\"nan\")}, {\"x\": float(\"inf\")}],\n    )\n\n\ndef test_exp_never_errors():\n    # overflow -> inf, underflow -> denormal then +0.0; -inf -> +0.0; boundary 709.782712893384 -> 1.7976931348622732e+308\n    duck_check(\n        \"SELECT exp(x) AS e FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": v} for v in [float(\"-inf\"), -1000.0, -746.0, -745.0, -744.4400719213812,\n                            0.0, -0.0, 709.782712893384, 709.7827128933841, 710.0, 1000.0]],\n    )\n\n\ndef test_logexp_null_propagation():\n    duck_check(\n        \"SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d, exp(x) AS e,\"\n        \" log(x, 2.0) AS f, log(2.0, x) AS g FROM __THIS__\",\n        {\"x\": \"float?\"},\n        [{\"x\": None}, {\"x\": 4.0}],\n    )\n\n\ndef test_log_two_arg_is_log10_ratio():\n    # log(b,x) = log10(x)/log10(b) bit-exact. Discriminators: (10,1000)->3.0 (ln-ratio\n    # gives 2.9999999999999996), (e,10)->2.302585092994046 (log2-ratio differs),\n    # (e,5e-324)->-744.4400719213813 != ln(5e-324). (0.5,1.0)->-0.0 and (inf,0.5)->-0.0\n    # pin sign-of-zero; (inf,inf)->nan.\n    duck_check(\n        \"SELECT log(b, x) AS r FROM __THIS__\",\n        {\"b\": \"float\", \"x\": \"float\"},\n        [{\"b\": b, \"x\": x} for b, x in [\n            (2.0, 8.0), (10.0, 1000.0), (3.0, 7.0), (0.5, 8.0), (0.5, 1.0), (2.0, 1.0),\n            (2.718281828459045, 5e-324), (2.718281828459045, 10.0),\n            (1.0000000000000002, 4.0), (0.9999999999999999, 4.0), (5e-324, 8.0), (1e308, 8.0),\n            (float(\"nan\"), 8.0), (2.0, float(\"nan\")), (float(\"nan\"), float(\"nan\")),\n            (float(\"inf\"), 8.0), (float(\"inf\"), 0.5), (float(\"inf\"), float(\"inf\")),\n            (float(\"inf\"), 1.0), (2.0, float(\"inf\")), (2.0, 5e-324), (2.0, 1e308),\n        ]],\n    )\n\n\ndef test_log_two_arg_null_preempts_domain_errors():\n    # NULL in either slot wins over every domain error, including base 0 / negative / 1.\n    duck_check(\n        \"SELECT log(b, x) AS r FROM __THIS__\",\n        {\"b\": \"float?\", \"x\": \"float?\"},\n        [{\"b\": None, \"x\": 8.0}, {\"b\": 2.0, \"x\": None}, {\"b\": None, \"x\": None},\n         {\"b\": None, \"x\": -4.0}, {\"b\": 0.0, \"x\": None}, {\"b\": -2.0, \"x\": None},\n         {\"b\": 1.0, \"x\": None}],\n    )\n\n\ndef test_logexp_integer_input_yields_double():\n    duck_check(\n        \"SELECT ln(x) AS a, log(x) AS b, log2(x) AS c, log10(x) AS d, exp(x) AS e,\"\n        \" log(x, 8) AS f FROM __THIS__\",\n        {\"x\": \"int\"},\n        [{\"x\": 2}, {\"x\": 9223372036854775807}],\n    )\n\n\ndef test_logexp_guarded_rows_do_not_trap():\n    # A bad row aborts an unguarded query, but WHERE / CASE genuinely prevent evaluation.\n    duck_check(\n        \"SELECT CASE WHEN x > 0 THEN ln(x) ELSE NULL END AS a FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": 1.0}, {\"x\": -1.0}, {\"x\": 4.0}, {\"x\": 0.0}],\n    )\n    duck_check(\n        \"SELECT ln(x) AS a FROM __THIS__ WHERE x > 0\",\n        {\"x\": \"float\"},\n        [{\"x\": 1.0}, {\"x\": -1.0}, {\"x\": 4.0}, {\"x\": 0.0}],\n    )",
+ "lowering": "NEW IR OPS \u2014 not a pure desugar. Five ops: Ln, Log2, Log10, Exp (unary), LogBase (binary). All take f64 (frontend inserts int->f64 cast for INTEGER/BIGINT/etc. inputs; VARCHAR/BOOLEAN are binder errors, no implicit cast), all return DOUBLE, all strict-NULL (any NULL arg -> NULL BEFORE any domain check \u2014 pinned by log(0.0, NULL) = NULL). Frontend name mapping: ln(x)->Ln(x); log(x)->Log10(x) [1-arg log IS base 10]; log10(x)->Log10(x); log2(x)->Log2(x); exp(x)->Exp(x); log(b,x)->LogBase(b,x). log1p/expm1 do not exist -> catalog/binder error.\n\nWhy ops, not desugar: (1) the log family traps per-row with DuckDB's exact messages; (2) LogBase cannot be Div(Log10(x), Log10(b)) \u2014 the base is checked FIRST (log(-2.0, 0.0) must say \"negative number\", but left-to-right arg evaluation would raise the \"zero\" error from x first), and base==1 must raise a dedicated error where float division would just produce +/-inf.\n\nRust semantics (matches every pin):\n\n    #[inline]\n    fn log_domain_check(v: f64) -> Result<(), Error> {\n        if v == 0.0 { return Err(oor(\"cannot take logarithm of zero\")); }              // catches -0.0 too\n        if v < 0.0  { return Err(oor(\"cannot take logarithm of a negative number\")); } // catches -inf; NaN passes both\n        Ok(())\n    }\n    fn op_ln(x: f64)    -> Result<f64> { log_domain_check(x)?; Ok(x.ln()) }    // NaN->NaN, +inf->inf\n    fn op_log2(x: f64)  -> Result<f64> { log_domain_check(x)?; Ok(x.log2()) }\n    fn op_log10(x: f64) -> Result<f64> { log_domain_check(x)?; Ok(x.log10()) }\n    fn op_exp(x: f64)   -> f64 { x.exp() }   // NEVER traps: exp(1000)=inf, exp(-inf)=+0.0, exp(-745)=5e-324\n    fn op_log_base(b: f64, x: f64) -> Result<f64> {\n        log_domain_check(b)?;                                        // base checked FIRST\n        if b == 1.0 { return Err(oor(\"divison by zero in based logarithm\")); } // sic \u2014 DuckDB's typo, mirror it\n        log_domain_check(x)?;\n        Ok(x.log10() / b.log10())   // bit-exact log10 ratio (NOT ln ratio, NOT log2 ratio) \u2014 20k fuzz, 0 mismatches\n    }\n\nError type mirrors duckdb.OutOfRangeException, full message = \"Out of Range Error: \" + head. Traps are per-row and LAZY: rows removed by WHERE or not taken by a CASE branch must not be evaluated (pinned). Constant-fold path is identical to vectorized \u2014 no special literal handling needed.\n\nTranscendental source: DuckDB calls the platform C++ std::log/log2/log10/exp. On this Windows box Rust's f64::ln/log2/log10/exp hit the same ucrt libm \u2014 Python's math matched DuckDB bit-exactly on 40k+ fuzz samples (0 mismatches), so plain f64 method calls are the right primitive. Cranelift has no transcendental instructions: emit calls from JIT code to the SAME extern \"C\" wrappers around these f64 methods that the interpreter uses, so both backends are bit-identical by construction. Cross-platform bit-exactness of libm is NOT guaranteed by IEEE \u2014 the differential oracle must run per-platform.",
+ "surprises": [
+  "1-arg log(x) in DuckDB 1.5.5 is BASE 10 (bit-identical to log10, log(1e308)=308.0 exactly), not natural log \u2014 anyone assuming C/Python/numpy semantics ships a wrong transform.",
+  "The log family ERRORS on x<=0 (OutOfRangeException) instead of returning -inf/NaN like libm: x==0 and x==-0.0 both give 'cannot take logarithm of zero' (the zero check catches -0.0 first), any x<0 including -inf gives 'cannot take logarithm of a negative number'.",
+  "NaN input does NOT error \u2014 it fails both the ==0 and <0 checks and flows through libm to NaN; negative NaN too. So the domain guard is comparison-based, not is_finite-based.",
+  "Two-arg log(b,x) is bit-exactly log10(x)/log10(b) \u2014 NOT ln(x)/ln(b): log(10,1000)=3.0 while the ln ratio is 2.9999999999999996, and log(e,x) differs from ln(x) in the last ulp (log(e,5e-324)=-744.4400719213813 vs ln=-744.4400719213812). Fuzz: ln-ratio wrong on 35% of pairs, log2-ratio on 46%.",
+  "In two-arg log the BASE is domain-checked before x: log(-2.0, 0.0) raises the 'negative number' error, not 'zero'. And base==1.0 raises a dedicated error whose message contains DuckDB's typo verbatim: 'divison by zero in based logarithm' \u2014 the mirror must reproduce the typo.",
+  "NULL propagation pre-empts every domain check: log(0.0, NULL), log(-2.0, NULL), log(1.0, NULL) are all NULL, not errors.",
+  "exp NEVER raises: exp(1000)=inf (no overflow error), exp(-inf)=+0.0, exp(-745)=5e-324 (underflow passes through denormals), exp(709.782712893384)=1.7976931348622732e+308 just under f64::MAX.",
+  "log(0.5, 1.0) = -0.0 (negative zero) while log(2.0, 1.0) = +0.0, and log(inf, 0.5) = -0.0 \u2014 the division lowering leaks sign-of-zero, so the engine must preserve it (repr-level compare catches this).",
+  "log1p and expm1 do not exist in DuckDB 1.5.5 (CatalogException).",
+  "A single domain-violating row aborts the whole vectorized query, but WHERE filters and untaken CASE branches genuinely prevent evaluation (no trap) \u2014 the engine must evaluate lazily/masked, never eagerly over the full column.",
+  "No literal-vs-vectorized divergence exists in this family: constant folding produces the same values and the same OutOfRangeException messages.",
+  "All numeric input types (TINYINT..HUGEINT, FLOAT, DECIMAL) produce DOUBLE; VARCHAR and BOOLEAN are binder errors (no implicit cast), so the frontend must reject them at build time."
+ ]
+}

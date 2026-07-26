@@ -1,0 +1,358 @@
+{
+ "family": "predicates: BETWEEN / NOT BETWEEN, IN / NOT IN, least(), greatest()",
+ "pins": [
+  {
+   "expr": "x BETWEEN lo AND hi",
+   "input_desc": "BIGINT cols (x,lo,hi)=(5,1,10)",
+   "result": "True",
+   "result_type": "BOOLEAN",
+   "note": "plain in-range; result type BOOLEAN in all BETWEEN/IN pins"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi",
+   "input_desc": "(5,10,1) \u2014 lo > hi",
+   "result": "False",
+   "result_type": "BOOLEAN",
+   "note": "empty range is FALSE, not NULL (falls out of K3 AND: 5>=10 FALSE)"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi",
+   "input_desc": "(NULL,1,10) and (NULL,10,1)",
+   "result": "None (both)",
+   "result_type": "BOOLEAN",
+   "note": "NULL x -> NULL even when the range is empty; NO empty-range shortcut to FALSE"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi",
+   "input_desc": "(5,NULL,10)",
+   "result": "None",
+   "result_type": "BOOLEAN",
+   "note": "NULL lo with satisfiable hi -> NULL (NULL AND TRUE)"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi",
+   "input_desc": "(5,NULL,4)",
+   "result": "False",
+   "result_type": "BOOLEAN",
+   "note": "NULL lo but hi fails -> FALSE (NULL AND FALSE = FALSE); the failing half decides"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi",
+   "input_desc": "(5,1,NULL) / (5,6,NULL)",
+   "result": "None / False",
+   "result_type": "BOOLEAN",
+   "note": "symmetric on the hi side; (NULL,NULL,NULL) -> None"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi",
+   "input_desc": "(5,5,5)",
+   "result": "True",
+   "result_type": "BOOLEAN",
+   "note": "both endpoints inclusive"
+  },
+  {
+   "expr": "x NOT BETWEEN lo AND hi",
+   "input_desc": "same 12-row BIGINT table",
+   "result": "exact K3 NOT of BETWEEN: True<->False, None stays None",
+   "result_type": "BOOLEAN",
+   "note": "verified row-for-row; e.g. (5,NULL,4) -> True, (NULL,10,1) -> None"
+  },
+  {
+   "expr": "xi BETWEEN lod AND hid",
+   "input_desc": "BIGINT x=9007199254740993 (2^53+1), DOUBLE bounds both 9007199254740992.0",
+   "result": "True",
+   "result_type": "BOOLEAN",
+   "note": "BIGINT-vs-DOUBLE comparison casts the int to double (lossy at 2^53): xi = lod is True, xi > lod is False"
+  },
+  {
+   "expr": "x = 9007199254740992.0 (decimal literal)",
+   "input_desc": "BIGINT col x=9007199254740993",
+   "result": "False (and x > lit is True)",
+   "result_type": "BOOLEAN",
+   "note": "bare float-looking literal is DECIMAL(17,1); BIGINT-vs-DECIMAL compares EXACTLY. Same expr with ::DOUBLE cast gives True. v0 collapses decimal literals to f64 -> known divergence beyond 2^53"
+  },
+  {
+   "expr": "x BETWEEN 1e0 AND 9007199254740992.0",
+   "input_desc": "BIGINT col x=9007199254740993 (1e0 is DOUBLE, other bound DECIMAL)",
+   "result": "True",
+   "result_type": "BOOLEAN",
+   "note": "WHOLE-TRIPLE unification: one common type across x,lo,hi (DOUBLE wins), NOT pairwise \u2014 pairwise exact-decimal on hi would give False"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi, NaN edges",
+   "input_desc": "DOUBLE cols, native table: (NaN,1,2) / (5,1,NaN) / (5,NaN,10) / (NaN,NaN,NaN) / (inf,1,NaN)",
+   "result": "False / True / False / True / True",
+   "result_type": "BOOLEAN",
+   "note": "DuckDB DOUBLE order: NaN = NaN and NaN sorts above +inf; literal (fold) path measured identical"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi, NaN x NULL bound",
+   "input_desc": "(NaN, NULL, 1.0) / (NaN, 1.0, NULL) / (-inf, NULL, 1.0)",
+   "result": "False / None / None",
+   "result_type": "BOOLEAN",
+   "note": "proves the desugar's K3 AND: NaN<=1.0 is FALSE so NULL AND FALSE = FALSE; NaN>=1.0 TRUE so TRUE AND NULL = NULL"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi, signed zeros",
+   "input_desc": "(0.0,-0.0,-0.0) and (-0.0,0.0,0.0) via '-0.0'::DOUBLE",
+   "result": "True / True",
+   "result_type": "BOOLEAN",
+   "note": "-0.0 = 0.0 in comparisons; (-inf,-inf,inf) and (inf,-inf,inf) both True"
+  },
+  {
+   "expr": "x BETWEEN lo AND hi on VARCHAR",
+   "input_desc": "('b','a','c') / ('B','a','c') / ('Z','a','z') / ('\u00e9','a','z') / ('','','a') / ('a','c','a')",
+   "result": "True / False / False / False / True / False",
+   "result_type": "BOOLEAN",
+   "note": "raw byte order (memcmp): 'B'(0x42)<'a'(0x61), '\u00e9'(0xC3A9)>'z'; empty string sorts lowest"
+  },
+  {
+   "expr": "x BETWEEN '1' AND '2'",
+   "input_desc": "BIGINT col x in {1,2}",
+   "result": "True / True",
+   "result_type": "BOOLEAN",
+   "note": "numeric-string LITERAL bounds cast to INT64; non-numeric literal 'a' is a runtime ConversionException; VARCHAR COLUMN bounds are a binder error instead"
+  },
+  {
+   "expr": "x IN (1, NULL)",
+   "input_desc": "BIGINT col x in {1, 3, NULL}",
+   "result": "True / None / None",
+   "result_type": "BOOLEAN",
+   "note": "match wins over NULL element; miss + NULL element -> NULL; NULL x -> NULL"
+  },
+  {
+   "expr": "x NOT IN (1, NULL)",
+   "input_desc": "same rows",
+   "result": "False / None / None",
+   "result_type": "BOOLEAN",
+   "note": "the classic footgun: NOT IN with any NULL element can never be True"
+  },
+  {
+   "expr": "x IN (1, 2) / x NOT IN (1, 2)",
+   "input_desc": "x in {1,3,NULL}",
+   "result": "True,False,None / False,True,None",
+   "result_type": "BOOLEAN",
+   "note": "no NULL element: plain three-valued equality chain"
+  },
+  {
+   "expr": "x IN (NULL)",
+   "input_desc": "x in {1,3,NULL}",
+   "result": "None for every row",
+   "result_type": "BOOLEAN",
+   "note": "single NULL element -> always NULL"
+  },
+  {
+   "expr": "x IN (y, z)",
+   "input_desc": "elements from BIGINT COLUMNS: (1,1,NULL)/(3,1,NULL)/(3,1,2)/(NULL,1,2); also NOT IN",
+   "result": "True/None/False/None; NOT IN exact K3 NOT",
+   "result_type": "BOOLEAN",
+   "note": "measured identical to NOT(x=y OR x=z) row-for-row \u2014 IN is exactly the OR-chain"
+  },
+  {
+   "expr": "x IN (1.0) / x IN (0.5, 1.0) / x IN (1.5)",
+   "input_desc": "BIGINT col x in {1,2,3,NULL}",
+   "result": "x=1: True/True/False; x=2: False/False/False; x=3: all False; NULL: None",
+   "result_type": "BOOLEAN",
+   "note": "decimal element compared exactly (1.5 does NOT round to 2); small values agree with f64 semantics"
+  },
+  {
+   "expr": "x IN (9007199254740992.0) vs x IN (9007199254740992.0::DOUBLE)",
+   "input_desc": "BIGINT col x=9007199254740993",
+   "result": "False vs True",
+   "result_type": "BOOLEAN",
+   "note": "all-DECIMAL list compares exactly; a DOUBLE element flips to lossy int->double. v0-f64 gives True for both (divergence only in the all-decimal >2^53 case)"
+  },
+  {
+   "expr": "x IN (9007199254740992.0, 1e0)",
+   "input_desc": "BIGINT col x=9007199254740993",
+   "result": "True",
+   "result_type": "BOOLEAN",
+   "note": "WHOLE-LIST unification: one DOUBLE element drags the whole list (and x) to DOUBLE"
+  },
+  {
+   "expr": "x IN ('1')",
+   "input_desc": "BIGINT col x in {1,2}",
+   "result": "True / False",
+   "result_type": "BOOLEAN",
+   "note": "numeric-string literal element casts to INT64 (the column's side wins over VARCHAR)"
+  },
+  {
+   "expr": "s IN (1)",
+   "input_desc": "VARCHAR col, rows '1' and 'a'",
+   "result": "row '1' alone: True; any 'a' row: ConversionException",
+   "result_type": "BOOLEAN",
+   "note": "VARCHAR loses unification to INTEGER: the COLUMN is cast to INT32, per-row runtime error on non-numeric strings; s IN ('a', 1) behaves the same (whole list goes INT32)"
+  },
+  {
+   "expr": "s IN ('a','b') / s IN ('b', NULL)",
+   "input_desc": "VARCHAR col s in {'a','A',NULL}",
+   "result": "True,False,None / None,None,None",
+   "result_type": "BOOLEAN",
+   "note": "byte-exact string equality; case-sensitive"
+  },
+  {
+   "expr": "x IN ('NaN'::DOUBLE) / x IN (1.0,'NaN'::DOUBLE) / x IN (0.0)",
+   "input_desc": "DOUBLE col x in {NaN, 1.0, -0.0}",
+   "result": "NaN IN (NaN)=True; both rows True for the 2-elem list; -0.0 IN (0.0)=True",
+   "result_type": "BOOLEAN",
+   "note": "IN inherits duck = semantics: NaN equals NaN, zeros equal; matches canon_f64_bits key classes"
+  },
+  {
+   "expr": "x NOT IN (a, b)",
+   "input_desc": "DOUBLE cols x=NaN, a=NULL, b=1.0",
+   "result": "None",
+   "result_type": "BOOLEAN",
+   "note": "NOT(NULL OR FALSE) = NULL \u2014 NaN-vs-number miss plus NULL element"
+  },
+  {
+   "expr": "p IN (true) / p BETWEEN false AND true",
+   "input_desc": "BOOLEAN col p in {true,false,NULL}",
+   "result": "True,False,None / True,True,None",
+   "result_type": "BOOLEAN",
+   "note": "bools compare with false < true; three-valued as usual"
+  },
+  {
+   "expr": "x IN (9223372036854775807) / x IN (9223372036854775808)",
+   "input_desc": "BIGINT col {i64::MAX, i64::MIN}",
+   "result": "MAX row: True / False; MIN row: False / False",
+   "result_type": "BOOLEAN",
+   "note": "beyond-i64 literal types HUGEINT, comparison exact (never equal to any BIGINT); typeof(9223372036854775807)=BIGINT, typeof(...808)=HUGEINT"
+  },
+  {
+   "expr": "least(a, b) / greatest(a, b)",
+   "input_desc": "BIGINT cols: (1,NULL)/(NULL,2)/(NULL,NULL)/(1,2)",
+   "result": "least: 1/2/None/1; greatest: 1/2/None/2",
+   "result_type": "BIGINT",
+   "note": "NULLs are IGNORED (Postgres-style); NULL only when ALL args NULL. least(a, NULL) literal-NULL arg same: 5"
+  },
+  {
+   "expr": "least(a) / least(a, b, 3, 0)",
+   "input_desc": "BIGINT col a=1 or NULL; n-ary with literals",
+   "result": "least(a)=a (None passes through); n-ary -> 0 on every row",
+   "result_type": "BIGINT",
+   "note": "1-arg is identity; genuinely n-ary; left-fold with NULL-ignore reproduces it"
+  },
+  {
+   "expr": "least(a,b) / greatest(a,b) at i64 bounds",
+   "input_desc": "BIGINT (i64::MAX, i64::MIN)",
+   "result": "-9223372036854775808 / 9223372036854775807",
+   "result_type": "BIGINT",
+   "note": "all-int stays exact i64, no double round-trip"
+  },
+  {
+   "expr": "least(i, d) / greatest(i, d)",
+   "input_desc": "BIGINT i + DOUBLE d cols: (1,2.5)/(3,2.5)/(9007199254740993, 9007199254740994.0)/(i64::MAX,1.0)",
+   "result": "least: 1.0/2.5/9007199254740992.0/1.0; greatest: 2.5/3.0/9007199254740994.0/9.223372036854776e+18",
+   "result_type": "DOUBLE",
+   "note": "mixed int/double unifies to DOUBLE; DuckDB itself does the lossy i64->f64 cast (2^53+1 became 9007199254740992.0) \u2014 v0 f64 matches exactly"
+  },
+  {
+   "expr": "least/greatest NaN ordering",
+   "input_desc": "DOUBLE cols: (NaN,1.0)/(1.0,NaN)/(NaN,inf)/(NaN,NaN)/(-inf,inf)/(NaN,NULL)",
+   "result": "least: 1.0/1.0/inf/nan/-inf/nan; greatest: nan/nan/nan/nan/inf/nan",
+   "result_type": "DOUBLE",
+   "note": "NaN sorts above +inf: always loses least, always wins greatest; NULL ignored so (NaN,NULL) -> NaN for both. greatest(NULL,NaN,1.0)=nan, least=1.0"
+  },
+  {
+   "expr": "least/greatest signed-zero ties",
+   "input_desc": "DOUBLE cols via '-0.0'::DOUBLE: (-0.0, 0.0) and (0.0, -0.0)",
+   "result": "(-0.0,0.0): least=-0.0 AND greatest=-0.0; (0.0,-0.0): least=0.0 AND greatest=0.0",
+   "result_type": "DOUBLE",
+   "note": "-0.0 = 0.0 so it's a tie, and BOTH functions return the FIRST argument on ties (strict-compare fold). Literal fold path identical. -0.0 survives native INSERT and the arrow->CTAS path duck_check uses"
+  },
+  {
+   "expr": "least/greatest on VARCHAR",
+   "input_desc": "('b','a')/('B','a')/('abc','ab')/('a',NULL)/('\u00e9','z')/('','a')",
+   "result": "least: a/B/ab/a/z/''; greatest: b/a/abc/a/\u00e9/a",
+   "result_type": "VARCHAR",
+   "note": "byte order again; NULL ignored"
+  },
+  {
+   "expr": "least(p, true) / greatest(p, false) on BOOLEAN",
+   "input_desc": "p in {true,false,NULL}",
+   "result": "least: True/False/True; greatest: True/False/False",
+   "result_type": "BOOLEAN",
+   "note": "false < true; NULL ignored (NOT K3 AND/OR: least(NULL,true)=true but NULL AND true is NULL)"
+  },
+  {
+   "expr": "least(a, 1) with a BOOLEAN",
+   "input_desc": "a=true",
+   "result": "1",
+   "result_type": "INTEGER",
+   "note": "bool+int unifies to int (true -> 1)"
+  },
+  {
+   "expr": "least(i, 2.5)",
+   "input_desc": "BIGINT col i=1, bare decimal literal",
+   "result": "Decimal('1.0')",
+   "result_type": "DECIMAL(20,1)",
+   "note": "decimal literal contaminates the RESULT type \u2014 Python fetch yields decimal.Decimal, repr-distinct from 1.0; v0-f64 diverges on repr. least(i, 2.5, 1e0) -> DOUBLE 1.0 (a DOUBLE arg wins). least(x, 9223372036854775808) -> HUGEINT"
+  },
+  {
+   "expr": "typeof literals",
+   "input_desc": "literal typing probe",
+   "result": "1.5 -> DECIMAL(2,1); 9007199254740992.0 -> DECIMAL(17,1); 1e0 -> DOUBLE; -0.0 -> DECIMAL(2,1) (sign lost); least(1,2) -> INTEGER; least(int32col,int64col) -> BIGINT",
+   "result_type": "(see result)",
+   "note": "scientific notation is the only bare-literal spelling of DOUBLE; bare -0.0 comes out +0.0"
+  }
+ ],
+ "errors": [
+  {
+   "expr": "SELECT x IN () FROM t",
+   "error_head": "Parser Error: syntax error at or near \")\"",
+   "kind": "parse"
+  },
+  {
+   "expr": "SELECT least()",
+   "error_head": "Binder Error: No function matches the given name and argument types 'least()'.",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT least(int_col, varchar_col) FROM ...",
+   "error_head": "Binder Error: Cannot combine types of BIGINT and VARCHAR - an explicit cast is required",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT int_col BETWEEN varchar_col AND varchar_col FROM ...",
+   "error_head": "Binder Error: Cannot mix values of type BIGINT and VARCHAR in BETWEEN clause - an explicit",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT varchar_col IN (1) FROM ... (row 'a')",
+   "error_head": "Conversion Error: Could not convert string 'a' to INT32 when casting from source column s",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT int_col IN ('abc') FROM ...",
+   "error_head": "Conversion Error: Could not convert string 'abc' to INT64",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT least(int_col, 'abc') FROM ...",
+   "error_head": "Conversion Error: Could not convert string 'abc' to INT64",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT int_col BETWEEN 'a' AND 'z' FROM ...",
+   "error_head": "Conversion Error: Could not convert string 'a' to INT64",
+   "kind": "runtime"
+  }
+ ],
+ "duck_check_tests": "# Predicates family: BETWEEN / IN / least / greatest \u2014 DuckDB 1.5.5 pins, measured 2026-07-26.\n# Float literals in SQL avoid big-magnitude bare decimals (DuckDB types them DECIMAL and\n# compares exactly; v0 collapses to f64 \u2014 divergence only beyond 2^53, kept out of these).\nnan, inf = float(\"nan\"), float(\"inf\")\n\ndef test_between_three_valued_int():\n    duck_check(\n        \"SELECT x BETWEEN lo AND hi AS b, x NOT BETWEEN lo AND hi AS nb FROM __THIS__\",\n        {\"x\": \"int?\", \"lo\": \"int?\", \"hi\": \"int?\"},\n        [\n            {\"x\": 5, \"lo\": 1, \"hi\": 10},          # True\n            {\"x\": 5, \"lo\": 10, \"hi\": 1},          # empty range -> False\n            {\"x\": None, \"lo\": 1, \"hi\": 10},       # NULL\n            {\"x\": None, \"lo\": 10, \"hi\": 1},       # NULL x + empty range -> still NULL\n            {\"x\": 5, \"lo\": None, \"hi\": 10},       # NULL\n            {\"x\": 5, \"lo\": None, \"hi\": 4},        # False \u2014 failing half decides\n            {\"x\": 5, \"lo\": 1, \"hi\": None},        # NULL\n            {\"x\": 5, \"lo\": 6, \"hi\": None},        # False\n            {\"x\": None, \"lo\": None, \"hi\": None},  # NULL\n            {\"x\": 5, \"lo\": 5, \"hi\": 5},           # inclusive -> True\n        ],\n    )\n\ndef test_between_int_x_double_bounds_unifies_to_double():\n    duck_check(\n        \"SELECT x BETWEEN lo AND hi AS b FROM __THIS__\",\n        {\"x\": \"int\", \"lo\": \"float\", \"hi\": \"float\"},\n        [\n            {\"x\": 5, \"lo\": 0.5, \"hi\": 5.5},\n            {\"x\": 5, \"lo\": 5.1, \"hi\": 9.9},\n            # int->double is lossy at 2^53 \u2014 DuckDB does the same cast: True\n            {\"x\": 9007199254740993, \"lo\": 9007199254740992.0, \"hi\": 9007199254740992.0},\n        ],\n    )\n\ndef test_between_duck_double_order_specials():\n    duck_check(\n        \"SELECT x BETWEEN lo AND hi AS b, x NOT BETWEEN lo AND hi AS nb FROM __THIS__\",\n        {\"x\": \"float?\", \"lo\": \"float?\", \"hi\": \"float?\"},\n        [\n            {\"x\": nan, \"lo\": 1.0, \"hi\": 2.0},   # False (nan<=2 False)\n            {\"x\": 5.0, \"lo\": 1.0, \"hi\": nan},   # True (nan above everything)\n            {\"x\": 5.0, \"lo\": nan, \"hi\": 10.0},  # False\n            {\"x\": nan, \"lo\": nan, \"hi\": nan},   # True (nan = nan)\n            {\"x\": inf, \"lo\": 1.0, \"hi\": nan},   # True (nan above inf)\n            {\"x\": nan, \"lo\": None, \"hi\": 1.0},  # False (NULL AND False)\n            {\"x\": nan, \"lo\": 1.0, \"hi\": None},  # NULL (True AND NULL)\n            {\"x\": 0.0, \"lo\": -0.0, \"hi\": -0.0}, # True (zeros equal)\n            {\"x\": -0.0, \"lo\": 0.0, \"hi\": 0.0},  # True\n            {\"x\": -inf, \"lo\": -inf, \"hi\": inf}, # True\n        ],\n    )\n\ndef test_between_strings_byte_order():\n    duck_check(\n        \"SELECT x BETWEEN lo AND hi AS b FROM __THIS__\",\n        {\"x\": \"str\", \"lo\": \"str\", \"hi\": \"str\"},\n        [\n            {\"x\": \"b\", \"lo\": \"a\", \"hi\": \"c\"},      # True\n            {\"x\": \"B\", \"lo\": \"a\", \"hi\": \"c\"},      # False (0x42 < 0x61)\n            {\"x\": \"Z\", \"lo\": \"a\", \"hi\": \"z\"},      # False\n            {\"x\": \"\u00e9\", \"lo\": \"a\", \"hi\": \"z\"}, # False (0xC3A9 > 'z')\n            {\"x\": \"abc\", \"lo\": \"ab\", \"hi\": \"abd\"}, # True\n            {\"x\": \"\", \"lo\": \"\", \"hi\": \"a\"},        # True\n            {\"x\": \"a\", \"lo\": \"c\", \"hi\": \"a\"},      # False\n        ],\n    )\n\ndef test_in_null_element_truth_table():\n    duck_check(\n        \"SELECT x IN (1, NULL) AS i, x NOT IN (1, NULL) AS ni,\"\n        \" x IN (1, 2) AS i2, x NOT IN (1, 2) AS ni2, x IN (NULL) AS io FROM __THIS__\",\n        {\"x\": \"int?\"},\n        [{\"x\": 1}, {\"x\": 3}, {\"x\": None}],\n        # i: T/N/N  ni: F/N/N  i2: T/F/N  ni2: F/T/N  io: N/N/N\n    )\n\ndef test_in_column_elements_is_the_or_chain():\n    duck_check(\n        \"SELECT x IN (y, z) AS r, x NOT IN (y, z) AS nr FROM __THIS__\",\n        {\"x\": \"int?\", \"y\": \"int?\", \"z\": \"int?\"},\n        [\n            {\"x\": 1, \"y\": 1, \"z\": None},  # True / False\n            {\"x\": 3, \"y\": 1, \"z\": None},  # NULL / NULL\n            {\"x\": 3, \"y\": 1, \"z\": 2},     # False / True\n            {\"x\": None, \"y\": 1, \"z\": 2},  # NULL / NULL\n        ],\n    )\n\ndef test_in_int_col_float_literals_small_values():\n    duck_check(\n        \"SELECT x IN (1.0) AS a, x IN (0.5, 1.0) AS b, x IN (1.5) AS c FROM __THIS__\",\n        {\"x\": \"int?\"},\n        [{\"x\": 1}, {\"x\": 2}, {\"x\": 3}, {\"x\": None}],  # 1.5 never rounds to 2\n    )\n\ndef test_in_nan_and_signed_zero():\n    duck_check(\n        \"SELECT x IN ('NaN'::DOUBLE) AS n, x IN (1.0, 'NaN'::DOUBLE) AS m,\"\n        \" x IN (0.0) AS z, x NOT IN ('NaN'::DOUBLE) AS nn FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": nan}, {\"x\": 1.0}, {\"x\": -0.0}],  # NaN=NaN True; -0.0 IN (0.0) True\n    )\n\ndef test_in_strings_and_bools():\n    duck_check(\n        \"SELECT s IN ('a', 'b') AS r, s IN ('b', NULL) AS rn FROM __THIS__\",\n        {\"s\": \"str?\"},\n        [{\"s\": \"a\"}, {\"s\": \"A\"}, {\"s\": None}],\n    )\n    duck_check(\n        \"SELECT p IN (true) AS r, p NOT IN (true) AS nr,\"\n        \" p BETWEEN false AND true AS bt FROM __THIS__\",\n        {\"p\": \"bool?\"},\n        [{\"p\": True}, {\"p\": False}, {\"p\": None}],\n    )\n\ndef test_least_greatest_null_ignoring_int():\n    duck_check(\n        \"SELECT least(a, b) AS l, greatest(a, b) AS g,\"\n        \" least(a) AS l1, least(a, b, 3, 0) AS ln FROM __THIS__\",\n        {\"a\": \"int?\", \"b\": \"int?\"},\n        [\n            {\"a\": 1, \"b\": None},   # l=1 g=1 \u2014 NULL ignored\n            {\"a\": None, \"b\": 2},   # l=2 g=2\n            {\"a\": None, \"b\": None},# NULL only when ALL null\n            {\"a\": 1, \"b\": 2},\n            {\"a\": 9223372036854775807, \"b\": -9223372036854775808},  # exact i64\n        ],\n    )\n\ndef test_least_greatest_double_nan_and_tie_keeps_first():\n    duck_check(\n        \"SELECT least(a, b) AS l, greatest(a, b) AS g FROM __THIS__\",\n        {\"a\": \"float?\", \"b\": \"float?\"},\n        [\n            {\"a\": nan, \"b\": 1.0},   # l=1.0 g=nan (nan above everything)\n            {\"a\": 1.0, \"b\": nan},\n            {\"a\": nan, \"b\": inf},   # l=inf g=nan\n            {\"a\": nan, \"b\": None},  # nan / nan \u2014 NULL ignored\n            {\"a\": -inf, \"b\": inf},\n            {\"a\": -0.0, \"b\": 0.0},  # BOTH return first arg: l=-0.0 g=-0.0\n            {\"a\": 0.0, \"b\": -0.0},  # l=0.0 g=0.0\n            {\"a\": nan, \"b\": nan},\n        ],\n    )\n\ndef test_least_greatest_mixed_int_double_unifies_to_double():\n    duck_check(\n        \"SELECT least(i, d) AS l, greatest(i, d) AS g FROM __THIS__\",\n        {\"i\": \"int\", \"d\": \"float\"},\n        [\n            {\"i\": 1, \"d\": 2.5},\n            {\"i\": 3, \"d\": 2.5},\n            # DuckDB casts the i64 to double (lossy): l = 9007199254740992.0\n            {\"i\": 9007199254740993, \"d\": 9007199254740994.0},\n            {\"i\": 9223372036854775807, \"d\": 1.0},  # g = 9.223372036854776e+18\n        ],\n    )\n\ndef test_least_greatest_strings_and_bools():\n    duck_check(\n        \"SELECT least(a, b) AS l, greatest(a, b) AS g FROM __THIS__\",\n        {\"a\": \"str?\", \"b\": \"str?\"},\n        [\n            {\"a\": \"b\", \"b\": \"a\"},\n            {\"a\": \"B\", \"b\": \"a\"},        # least='B' \u2014 byte order\n            {\"a\": \"\u00e9\", \"b\": \"z\"},   # greatest='\u00e9'\n            {\"a\": \"\", \"b\": \"a\"},\n            {\"a\": \"a\", \"b\": None},       # NULL ignored\n        ],\n    )\n    duck_check(\n        \"SELECT least(p, true) AS l, greatest(p, false) AS g FROM __THIS__\",\n        {\"p\": \"bool?\"},\n        [{\"p\": True}, {\"p\": False}, {\"p\": None}],  # NULL row: l=True g=False\n    )",
+ "lowering": "Three constructs, three answers \u2014 BETWEEN and IN are pure frontend desugars, least/greatest wants new IR ops.\n\nBETWEEN \u2014 pure desugar, proven exact. `x BETWEEN lo AND hi` => `(x >= lo) AND (x <= hi)`; `x NOT BETWEEN lo AND hi` => `NOT ((x >= lo) AND (x <= hi))`. All 12 int rows plus the NaN/NULL interplay rows match the K3 AND of the two comparisons with zero special cases: empty range FALSE falls out of `5 >= 10` being FALSE; `(5, NULL, 4) -> FALSE` is `NULL AND FALSE`; `(NaN, 1.0, NULL) -> NULL` is `TRUE AND NULL` (given fcmp = exec::duck_fcmp, which Inst::Cmp already implements \u2014 NaN=NaN/highest, -0.0=0.0). CRITICAL binding rule: unify ALL THREE operands to ONE type BEFORE emitting the two comparisons (measured: `x BETWEEN 1e0 AND 9007199254740992.0` is True because the DECIMAL bound rides along to DOUBLE). In v0's type lattice: any F64 among {x,lo,hi} -> compare all as F64 (itof the i64s); else all-I64; Str only with Str; I1 only with I1; mixed Str/number columns must be PrepareError::Bind mirroring \"Cannot mix values of type BIGINT and VARCHAR in BETWEEN clause\". Bind x to a temp so it evaluates once (cost only; x is pure so semantics are unchanged).\n\nIN \u2014 pure desugar, proven exact. `x IN (e1..en)` => `(x = e1) OR ... OR (x = en)` left-assoc; NOT IN => `NOT (chain)`. Verified row-for-row identical to the OR-chain including NULL elements, NULL x, NaN elements, and column elements (the desugar-check probes ran both forms side by side). n=0 is unreachable (DuckDB parse error). Same WHOLE-LIST unification rule first: x plus every element to one common type (measured discriminator: `x IN (9007199254740992.0, 1e0)` True vs all-decimal list False). In v0: any F64 in {x, e1..en} -> all F64; else I64; Str lists with Str x; I1 with I1. Backends may later strength-reduce long literal lists onto the existing canon_f64_bits/KeyBits hash machinery \u2014 semantics-preserving because those key classes (NaN one class, -0.0=+0.0) are exactly duck `=`.\n\nleast/greatest \u2014 new IR ops, binary, folded n-ary by the frontend. The NULL policy (IGNORE nulls, result NULL only if all args NULL) is the opposite of every existing op's propagate-NULL contract, so a desugar needs IS-NULL-guarded CASE with duplicated args; a dedicated op over (validity, payload) pairs is cleaner and allocation-free. Ops: `least2.{i64,f64,str,i1}` / `greatest2.{...}`. Exact Rust semantics (reproduces every pin):\n\n    fn least2<T>(a: Option<T>, b: Option<T>, cmp: impl Fn(&T, &T) -> Ordering) -> Option<T> {\n        match (a, b) {\n            (None, b) => b,                    // NULL ignored\n            (Some(a), None) => Some(a),\n            (Some(a), Some(b)) =>\n                Some(if cmp(&b, &a) == Ordering::Less { b } else { a }), // tie keeps a (FIRST arg)\n        }\n    }\n    // greatest2: Ordering::Greater. No traps.\n    // cmp: f64 -> exec::duck_fcmp (NaN=NaN, NaN highest, -0.0==0.0);\n    //      i64/bool -> Ord; str -> byte order (&str cmp).\n\nFrontend folds left: `least(a,b,c)` => `least2(least2(a,b), c)` \u2014 the left fold provably preserves both NULL-ignoring (least2(NULL, c) = c) and first-arg-wins ties (the -0.0 pins: least AND greatest of (-0.0, 0.0) both return -0.0). Type unification: any F64 arg -> all F64 (DuckDB itself does the lossy i64->f64 cast here \u2014 least(2^53+1, 9007199254740994.0) = 9007199254740992.0 \u2014 so v0-f64 matches exactly); all-int -> I64 (exact at i64 bounds); Str only with Str; I1-only -> I1 result; I1 mixed with int -> int (measured least(true,1)=1); Str/number mix -> PrepareError::Bind (\"Cannot combine types of BIGINT and VARCHAR\"). Note the verifier currently rejects Cmp on I1 \u2014 least2.i1/greatest2.i1 sidestep that (they are NOT K3 AND/OR: least(NULL,true)=true but NULL AND true is NULL); for bool IN/BETWEEN the frontend can widen I1 to I64 around the comparisons since the BOOLEAN result values are unaffected.\n\nTrap conditions: none anywhere in this family. The only runtime errors are cast errors from literal strings in numeric positions, which belong to the cast machinery, not these ops.",
+ "surprises": [
+  "Bare float-looking literals (1.5, -0.0, 9007199254740992.0) are DECIMAL, not DOUBLE \u2014 only scientific notation (1e0) is DOUBLE. BIGINT-vs-DECIMAL comparisons are EXACT (9007199254740993 = 9007199254740992.0 is FALSE) while BIGINT-vs-DOUBLE casts the int to double (same compare is TRUE). v0's decimal->f64 collapse therefore diverges in comparisons/IN/BETWEEN only for all-decimal operand sets beyond 2^53 \u2014 same known divergence class as arithmetic, now proven to reach predicates.",
+  "Type unification for BETWEEN and IN is WHOLE-EXPRESSION, not pairwise: one common type across x and all bounds/list elements. A single DOUBLE element drags the entire list to DOUBLE \u2014 x IN (9007199254740992.0, 1e0) is TRUE for x=2^53+1 while x IN (9007199254740992.0, 1.0) is FALSE.",
+  "least/greatest IGNORE NULLs (Postgres-style): least(1, NULL) = 1, NULL only when every arg is NULL. Anyone assuming propagate-NULL ships a divergence on every row with one NULL arg.",
+  "On ties BOTH least AND greatest return the FIRST argument: least(-0.0, 0.0) = -0.0 and greatest(-0.0, 0.0) = -0.0 (observable because -0.0 == 0.0 under duck order and -0.0 survives storage). A max-style 'keep b on >=' implementation diverges on signed zeros.",
+  "NaN sorts ABOVE +inf and equals itself in every predicate context: 5.0 BETWEEN 1.0 AND NaN is TRUE, NaN IN (NaN) is TRUE, NaN BETWEEN NaN AND NaN is TRUE, greatest(anything, NaN) = NaN.",
+  "BETWEEN needs no empty-range special case, but also must not add one: (x=5, lo=NULL, hi=4) is FALSE (K3 AND with a failing half) while (x=NULL, lo=10, hi=1) is NULL \u2014 an implementation that short-circuits lo>hi to FALSE diverges on NULL x.",
+  "VARCHAR loses type unification to every numeric type, and the CAST DIRECTION is column-vs-literal asymmetric: s_varchar IN (1) casts the COLUMN to INT32 giving PER-ROW ConversionException on non-numeric rows ('1' rows return TRUE); int_col IN ('1') casts the literal and works; VARCHAR COLUMNS (not literals) against ints in least/BETWEEN are binder errors.",
+  "Constant-cast conversion errors (int_col IN ('abc'), least(x,'abc'), x BETWEEN 'a' AND 'z') are EXECUTION-time, not bind-time: WHERE false suppresses them entirely \u2014 the corpus three-outcome contract must classify them runtime.",
+  "x IN () is a ParserException, not binder \u2014 no IR concern.",
+  "A bare -0.0 SQL literal loses its sign (DECIMAL has no negative zero); '-0.0'::DOUBLE keeps it, and -0.0 survives both native INSERT and the arrow->CTAS ingestion duck_check uses.",
+  "Beyond-i64 integer literals (9223372036854775808) type HUGEINT and compare exactly (never equal to any BIGINT); least(bigint_col, 2^63) returns HUGEINT \u2014 outside v0's scalar set, keep rejecting at the literal per existing policy.",
+  "Repo doc drift found while verifying: src/specializer/exec/interp.rs header (lines 11-13) still claims fcmp is IEEE-ordered with NaN-false predicates, but Inst::Cmp uses exec::duck_fcmp and exec/tests.rs pins NaN-gt \u2014 flagged as a background task chip; spec text must not copy the stale line.",
+  "least(int_col, 2.5) has RESULT type DECIMAL(20,1) (Python fetch: decimal.Decimal) \u2014 a duck_check written with bare decimal literals in least/greatest repr-mismatches the engine's f64 even when values agree; contract tests use ::DOUBLE casts or float columns instead."
+ ]
+}

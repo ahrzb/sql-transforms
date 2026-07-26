@@ -1,0 +1,465 @@
+{
+ "family": "trig \u2014 sin(x), cos(x), tan(x), pi() [DuckDB 1.5.5, win-amd64, measured via native-table column path]",
+ "pins": [
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 0.0",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "bits 0x0000000000000000"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = -0.0 (0x8000000000000000)",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "sign of zero PRESERVED through the vectorized path; bits 0x8000000000000000"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 1.0",
+   "result": "0.8414709848078965",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3feaed548f090cee; bitwise == platform libm"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = -1.0",
+   "result": "-0.8414709848078965",
+   "result_type": "DOUBLE",
+   "note": "odd symmetry exact (sign-flip of sin(1.0) bits)"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 0.5",
+   "result": "0.479425538604203",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3fdeaee8744b05f0"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 1.5707963267948966 (nearest double to pi/2, == pi()/2 bits)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "EXACTLY 1.0 (0x3ff0000000000000); sin(pi()/2)=1.0 both literal and column path"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = -1.5707963267948966",
+   "result": "-1.0",
+   "result_type": "DOUBLE",
+   "note": "exactly -1.0"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 3.141592653589793 (nearest double to pi)",
+   "result": "1.2246467991473532e-16",
+   "result_type": "DOUBLE",
+   "note": "NOT zero; bits 0x3ca1a62633145c07"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 6.283185307179586 (2*pi)",
+   "result": "-2.4492935982947064e-16",
+   "result_type": "DOUBLE",
+   "note": "negative; bits 0xbcb1a62633145c07"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 1e15",
+   "result": "0.8582727931702359",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3feb76f88136ceba \u2014 full argument reduction, bitwise == platform libm (UCRT here)"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 9007199254740992.0 (2^53)",
+   "result": "-0.848925964814655",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbfeb2a66c8f35586"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 1e300",
+   "result": "-0.8178819121159085",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbfea2c16b010e385 \u2014 Payne-Hanek-class reduction fidelity, bitwise == platform libm"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 1.7976931348623157e+308 (DBL_MAX)",
+   "result": "0.004961954789184062",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3f7452fc98b34e97"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 5e-324 (min denormal)",
+   "result": "5e-324",
+   "result_type": "DOUBLE",
+   "note": "returns input bits 0x0000000000000001 (sin x ~ x, no denormal flush)"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 2.2250738585072014e-308 (min normal)",
+   "result": "2.2250738585072014e-308",
+   "result_type": "DOUBLE",
+   "note": "identity at tiny magnitude"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = 9.223372036854776e+18 (i64::MAX rounded to f64 = 2^63)",
+   "result": "0.9999303766734422",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3fefff6dfd42dc54"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = NaN (quiet 0x7ff8000000000000)",
+   "result": "nan",
+   "result_type": "DOUBLE",
+   "note": "output bits 0x7ff8000000000000 \u2014 IDENTICAL to input"
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = NaN with payload 0x7ff0deadbeef0001 (signaling pattern) and 0xfff8000000000000 (negative NaN)",
+   "result": "nan (input bits unchanged)",
+   "result_type": "DOUBLE",
+   "note": "DuckDB passes the EXACT NaN bits through (does not call libm on NaN); UCRT libm would quiet it to 0x7ff8deadbeef0001. Same for cos and tan."
+  },
+  {
+   "expr": "sin(x)",
+   "input_desc": "DOUBLE column x = NULL",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": "NULL in -> NULL out; no error even mixed with valid rows"
+  },
+  {
+   "expr": "sin(i)",
+   "input_desc": "INTEGER column i = 1",
+   "result": "0.8414709848078965",
+   "result_type": "DOUBLE",
+   "note": "implicit int->double cast then sin; result type DOUBLE for ALL integer widths"
+  },
+  {
+   "expr": "sin(b)",
+   "input_desc": "BIGINT column b = 9223372036854775807 (i64::MAX)",
+   "result": "0.9999303766734422",
+   "result_type": "DOUBLE",
+   "note": "cast rounds i64::MAX to 9.223372036854776e18 (2^63) FIRST, then sin; == math.sin(float(2**63)) bitwise"
+  },
+  {
+   "expr": "sin(b)",
+   "input_desc": "BIGINT column b = -9223372036854775808 (i64::MIN)",
+   "result": "-0.9999303766734422",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbfefff6dfd42dc54"
+  },
+  {
+   "expr": "sin(b)",
+   "input_desc": "BIGINT column b = NULL / INTEGER NULL",
+   "result": "None",
+   "result_type": "DOUBLE",
+   "note": "NULL propagates through the cast+fn"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 0.0 and x = -0.0",
+   "result": "1.0 (both)",
+   "result_type": "DOUBLE",
+   "note": "cos(-0.0) = +1.0, no sign artifact"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 1.0",
+   "result": "0.5403023058681398",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3fe14a280fb5068c; cos(-1.0) identical (even symmetry)"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 0.5",
+   "result": "0.8775825618903728",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3fec1528065b7d50"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 1.5707963267948966 (pi()/2)",
+   "result": "6.123233995736766e-17",
+   "result_type": "DOUBLE",
+   "note": "POSITIVE, not zero; bits 0x3c91a62633145c07; cos(-pi/2) gives the same positive value"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 3.141592653589793 (pi())",
+   "result": "-1.0",
+   "result_type": "DOUBLE",
+   "note": "exactly -1.0 (0xbff0000000000000)"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 6.283185307179586 (2*pi)",
+   "result": "1.0",
+   "result_type": "DOUBLE",
+   "note": "exactly 1.0"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 1e15",
+   "result": "-0.5131937377869702",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbfe06c154609d33e"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 9007199254740992.0 (2^53)",
+   "result": "-0.5285117844130887",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbfe0e9918bb35aac"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 1e300",
+   "result": "-0.5753861119575491",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbfe2699022adc4c1"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 1.7976931348623157e+308 (DBL_MAX)",
+   "result": "-0.9999876894265599",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbfefffe62ecfab75"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 5e-324 / 2.2250738585072014e-308",
+   "result": "1.0 (both)",
+   "result_type": "DOUBLE",
+   "note": "exactly 1.0"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = 9.223372036854776e+18",
+   "result": "0.011800076512800236",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3f882aa375b3c33e"
+  },
+  {
+   "expr": "cos(x)",
+   "input_desc": "DOUBLE column x = NaN / NULL",
+   "result": "nan (input bits preserved) / None",
+   "result_type": "DOUBLE",
+   "note": "same NaN-bit passthrough and NULL propagation as sin"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 0.0",
+   "result": "0.0",
+   "result_type": "DOUBLE",
+   "note": "+0.0"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = -0.0",
+   "result": "-0.0",
+   "result_type": "DOUBLE",
+   "note": "sign preserved, bits 0x8000000000000000"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 1.0",
+   "result": "1.5574077246549023",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3ff8eb245cbee3a6; tan(-1.0) = exact negation"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 0.5",
+   "result": "0.5463024898437905",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3fe17b4f5bf3474a"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 1.5707963267948966 (pi()/2)",
+   "result": "1.633123935319537e+16",
+   "result_type": "DOUBLE",
+   "note": "LARGE FINITE value, not inf, not an error; bits 0x434d02967c31cdb5; tan(-pi/2) = -1.633123935319537e+16"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 3.141592653589793 (pi())",
+   "result": "-1.2246467991473532e-16",
+   "result_type": "DOUBLE",
+   "note": "negative; bits 0xbca1a62633145c07"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 6.283185307179586 (2*pi)",
+   "result": "-2.4492935982947064e-16",
+   "result_type": "DOUBLE",
+   "note": "same bits as sin(2*pi) here"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 1e15",
+   "result": "-1.672414782127583",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbffac23600a95be4"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 9007199254740992.0 (2^53)",
+   "result": "1.6062574002155612",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3ff9b33af5ae241f"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 1e300",
+   "result": "1.4214488238747245",
+   "result_type": "DOUBLE",
+   "note": "bits 0x3ff6be411f37ac77"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 1.7976931348623157e+308 (DBL_MAX)",
+   "result": "-0.004962015874444895",
+   "result_type": "DOUBLE",
+   "note": "bits 0xbf74530cfe729484"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 5e-324 (min denormal)",
+   "result": "5e-324",
+   "result_type": "DOUBLE",
+   "note": "input bits returned (0x0000000000000001)"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = 9.223372036854776e+18",
+   "result": "84.73931296875567",
+   "result_type": "DOUBLE",
+   "note": "bits 0x40552f50e757941d"
+  },
+  {
+   "expr": "tan(x)",
+   "input_desc": "DOUBLE column x = NaN / NULL",
+   "result": "nan (input bits preserved) / None",
+   "result_type": "DOUBLE",
+   "note": "same NaN-bit passthrough and NULL propagation as sin/cos"
+  },
+  {
+   "expr": "pi()",
+   "input_desc": "niladic, any context (literal and inside vectorized x + pi())",
+   "result": "3.141592653589793",
+   "result_type": "DOUBLE",
+   "note": "bits 0x400921fb54442d18 == Python math.pi EXACTLY; pi()/2 == math.pi/2 bitwise (0x3ff921fb54442d18)"
+  },
+  {
+   "expr": "sin(f)",
+   "input_desc": "FLOAT (REAL) column f = 1.5",
+   "result": "0.9974949866040544",
+   "result_type": "DOUBLE",
+   "note": "f32 widened to f64 first, then sin; == math.sin(1.5) bitwise; FLOAT -0.0 -> sin gives 0.0 for +0.0 input as expected"
+  },
+  {
+   "expr": "sin(CAST(3 AS SMALLINT)) / sin(CAST(18446744073709551615 AS UBIGINT)) / sin(HUGEINT i128::MAX)",
+   "input_desc": "other integer widths",
+   "result": "0.1411200080598672 / 0.023598509904439558 / 0.6233855129558702",
+   "result_type": "DOUBLE",
+   "note": "every integer width implicitly casts to DOUBLE (round-nearest) then sin; result type always DOUBLE"
+  },
+  {
+   "expr": "sin(1.5) / sin(CAST(1.5 AS DECIMAL(10,2)))",
+   "input_desc": "DECIMAL literal and typed DECIMAL",
+   "result": "0.9974949866040544",
+   "result_type": "DOUBLE",
+   "note": "DECIMAL implicitly casts to DOUBLE"
+  },
+  {
+   "expr": "sin('1.5')",
+   "input_desc": "VARCHAR string LITERAL (not a column)",
+   "result": "0.9974949866040544",
+   "result_type": "DOUBLE",
+   "note": "string literals ARE implicitly castable to DOUBLE at bind time; a VARCHAR COLUMN is a binder error (see errors)"
+  },
+  {
+   "expr": "CAST(-0.0 AS DOUBLE) vs -0.0::DOUBLE",
+   "input_desc": "SQL literal parsing of negative zero",
+   "result": "0.0 vs -0.0",
+   "result_type": "DOUBLE",
+   "note": "CAST(-0.0 AS DOUBLE) = +0.0 because unary minus applies to a DECIMAL (no signed zero); '::' binds tighter than unary minus so -0.0::DOUBLE = -(0.0::DOUBLE) = -0.0. Column-fed -0.0 is real -0.0. Aside from this parsing artifact, the constant-fold path and the vectorized path agreed BITWISE on every edge probed (incl. the inf error)."
+  },
+  {
+   "expr": "sin/cos/tan differential vs platform libm",
+   "input_desc": "10000 random doubles: uniform +-1e3, +-1e9, +-1e16, and ldexp exponents -1020..1020",
+   "result": "0 bitwise mismatches for all three functions",
+   "result_type": "DOUBLE",
+   "note": "DuckDB's finite-input trig is bit-identical to the platform C runtime libm (UCRT on this win-amd64 box), including huge-argument reduction. Rust f64::sin/cos/tan lower to the same platform libm call, so bit-parity is expected per platform; cross-OS bit-identity is NOT guaranteed by this measurement."
+  }
+ ],
+ "errors": [
+  {
+   "expr": "SELECT sin(x) FROM t  -- row with x = +inf (same for cos, tan)",
+   "error_head": "Out of Range Error: input value inf is out of range for numeric function",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT sin(x) FROM t  -- row with x = -inf (same for cos, tan)",
+   "error_head": "Out of Range Error: input value -inf is out of range for numeric function",
+   "kind": "runtime"
+  },
+  {
+   "expr": "SELECT sin(v) FROM s  -- v VARCHAR column (even holding '1.5')",
+   "error_head": "Binder Error: No function matches the given name and argument types 'sin(VARCHAR)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT sin('abc')  -- string literal, implicit cast attempted then fails",
+   "error_head": "Conversion Error: Could not convert string 'abc' to DOUBLE",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT sin(TRUE)",
+   "error_head": "Binder Error: No function matches the given name and argument types 'sin(BOOLEAN)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT sin(DATE '2020-01-01')",
+   "error_head": "Binder Error: No function matches the given name and argument types 'sin(DATE)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT sin()",
+   "error_head": "Binder Error: No function matches the given name and argument types 'sin()'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT sin(1, 2)",
+   "error_head": "Binder Error: No function matches the given name and argument types 'sin(INTEGER_LITERAL, INTEGER_LITERAL)'",
+   "kind": "binder"
+  },
+  {
+   "expr": "SELECT pi(1)",
+   "error_head": "Binder Error: No function matches the given name and argument types 'pi(INTEGER_LITERAL)'",
+   "kind": "binder"
+  }
+ ],
+ "duck_check_tests": "import math\n\n# doubles that exercise every value pin reachable through a column\nTRIG_EDGE_FLOATS = [\n    0.0, -0.0, 1.0, -1.0, 0.5,\n    math.pi / 2, -math.pi / 2, math.pi, 2 * math.pi,   # pi()-derived bit patterns\n    1e15, float(2**53), 1e300, 1.7976931348623157e308,  # huge args: reduction fidelity\n    5e-324, 2.2250738585072014e-308,                    # denormal / min normal\n    9.223372036854776e18,                               # i64::MAX rounded to f64\n    float(\"nan\"),                                       # quiet NaN passthrough (repr 'nan' compares equal)\n]\n\n\ndef test_trig_double_column_edges():\n    duck_check(\n        \"SELECT sin(x) AS s, cos(x) AS c, tan(x) AS t FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": v} for v in TRIG_EDGE_FLOATS],\n    )  # repr-compare distinguishes -0.0 from 0.0, so the sin/tan(-0.0) sign pins are covered\n\n\ndef test_trig_null_propagation():\n    duck_check(\n        \"SELECT sin(x) AS s, cos(x) AS c, tan(x) AS t FROM __THIS__\",\n        {\"x\": \"float?\"},\n        [{\"x\": None}, {\"x\": 1.0}],\n    )\n\n\ndef test_trig_integer_input_yields_double():\n    duck_check(\n        \"SELECT sin(x) AS s, cos(x) AS c, tan(x) AS t FROM __THIS__\",\n        {\"x\": \"int\"},\n        [\n            {\"x\": 0},\n            {\"x\": 1},\n            {\"x\": -1},\n            {\"x\": 9223372036854775807},    # rounds to 2^63 as f64 BEFORE sin\n            {\"x\": -9223372036854775808},\n        ],\n    )\n\n\ndef test_trig_integer_null():\n    duck_check(\n        \"SELECT sin(x) AS s FROM __THIS__\",\n        {\"x\": \"int?\"},\n        [{\"x\": None}, {\"x\": 3}],\n    )\n\n\ndef test_pi_literal_and_vectorized():\n    duck_check(\n        \"SELECT pi() AS p, x + pi() AS xp, sin(pi() / 2) AS one, \"\n        \"cos(pi()) AS neg_one, tan(pi() / 2) AS big, sin(-pi() / 2) AS neg_one_s \"\n        \"FROM __THIS__\",\n        {\"x\": \"float\"},\n        [{\"x\": 0.0}, {\"x\": 1.0}],\n    )\n\n\n# NOT expressible via duck_check (it asserts success on both sides) \u2014 engine needs\n# dedicated tests for these, asserting against a plain duckdb replay:\n#   1. sin/cos/tan(+-inf) must raise a per-row runtime error whose message mirrors\n#      \"Out of Range Error: input value inf is out of range for numeric function\"\n#      (and \"... value -inf ...\"); an inf row excluded by WHERE must NOT raise.\n#   2. NaN *payload* preservation (e.g. input bits 0x7ff0deadbeef0001 out unchanged):\n#      repr collapses every NaN to 'nan', so compare struct.pack bits directly.",
+ "lowering": "New IR ops \u2014 there is nothing to desugar to (no existing IR primitive computes a transcendental). Add three unary f64->f64 ops: SinF64, CosF64, TanF64. pi() is the only pure-frontend piece: fold it to the f64 literal with bits 0x400921FB54442D18 (== Rust std::f64::consts::PI == Python math.pi, measured bit-equal to DuckDB). Integer/FLOAT/DECIMAL arguments reuse the existing cast-to-f64 op in front (round-nearest; i64::MAX -> 9.223372036854776e18, measured).\n\nRust semantics (identical shape for all three; only the libm call differs):\n\n    #[inline]\n    fn duck_sin(x: f64) -> Result<f64, EngineError> {\n        if x.is_nan() {\n            return Ok(x); // MUST return the input bits untouched \u2014 DuckDB preserves\n                          // NaN payload+sign exactly (even sNaN 0x7ff0deadbeef0001);\n                          // calling libm here would quiet the payload and diverge.\n        }\n        if x.is_infinite() {\n            return Err(EngineError::out_of_range(format!(\n                \"input value {} is out of range for numeric function\",\n                if x > 0.0 { \"inf\" } else { \"-inf\" },\n            ))); // per-row runtime trap, mirrors DuckDB OutOfRangeException\n        }\n        Ok(x.sin()) // platform libm; 10k-sample differential vs DuckDB: 0 bit mismatches\n    }\n\nTrap condition: ONLY +-inf. NaN is a non-trap passthrough; every finite double (incl. denormals, DBL_MAX, 1e300) is a plain libm call. NULL propagation is the generic unary null mask \u2014 and note rows removed by WHERE must never evaluate the op (measured: an inf row filtered out does not trap), so the JIT must not speculatively execute trig over inactive lanes.\n\nCranelift backend: there is no native sin/cos/tan instruction \u2014 emit a call to the same extern \"C\" wrapper functions the interpreter uses (nan-check + inf-trap + libm), NOT a bare libm call, so both backends share one symbol and NaN-payload/trap behavior is identical by construction.\n\nBinder-level rules the frontend must enforce: sin/cos/tan accept all numeric types (any int width, FLOAT, DOUBLE, DECIMAL) -> DOUBLE; VARCHAR columns and BOOLEAN are binder errors (no implicit cast), while string LITERALS are cast at bind time ('1.5' works, 'abc' is a bind-time conversion error); arity is fixed (sin(), sin(1,2), pi(1) are binder errors).",
+ "surprises": [
+  "sin/cos/tan(+-inf) is a per-row RUNTIME ERROR in DuckDB (OutOfRangeException: 'Out of Range Error: input value inf is out of range for numeric function'), not NaN \u2014 contradicts IEEE-754/libm behavior (libm returns NaN). Message spells 'inf' / '-inf'.",
+  "NaN input passes through BIT-EXACTLY: payload and sign preserved, even a signaling-NaN pattern (0x7ff0deadbeef0001 in -> 0x7ff0deadbeef0001 out) \u2014 DuckDB never hands NaN to libm; libm (and a naive Rust x.sin()) would quiet it to 0x7ff8deadbeef0001. An is_nan()-first passthrough branch is mandatory for bit parity.",
+  "For every finite input, DuckDB trig is bitwise identical to the platform C-runtime libm: 0/10000 mismatches on random doubles spanning exponents up to ~2^1020, including 1e300 and DBL_MAX \u2014 full argument-reduction fidelity. Rust f64::sin/cos/tan call the same platform libm, so same-platform bit parity should be free; but the oracle is platform-libm-dependent, so cross-OS bit-identity of pins (e.g. sin(1e300) = -0.8178819121159085) must be re-verified on the CI/serving platform.",
+  "SQL literal -0.0 is +0.0: unary minus binds to a DECIMAL literal which has no signed zero, so CAST(-0.0 AS DOUBLE) = +0.0; but -0.0::DOUBLE = -0.0 because '::' binds tighter than unary minus. Column-fed -0.0 is genuine: sin(-0.0) = -0.0, tan(-0.0) = -0.0, cos(-0.0) = +1.0.",
+  "tan(pi()/2) is a large finite 1.633123935319537e+16 \u2014 not inf, not an error (nearest-double pi/2 is not the exact pole).",
+  "sin(pi()/2) is exactly 1.0 and cos(pi()) exactly -1.0, but sin(pi()) = 1.2246467991473532e-16 (not 0) and cos(pi()/2) = +6.123233995736766e-17 (positive, not 0).",
+  "pi() is bit-equal to Python math.pi / Rust f64 PI (0x400921fb54442d18); fold it in the frontend, no IR op needed.",
+  "VARCHAR COLUMNS are a binder error for trig (no implicit varchar->double cast from columns), yet string LITERALS are implicitly cast at bind time: sin('1.5') works, sin('abc') fails with a Conversion Error (not a Binder Error). BOOLEAN input is a binder error.",
+  "Aside from the -0.0 literal-parsing artifact, the constant-fold path and the vectorized column path agreed bitwise on every probed edge \u2014 no fold/vector divergence in this family.",
+  "Integer inputs of EVERY width (SMALLINT/INTEGER/BIGINT/UBIGINT/HUGEINT) and DECIMAL implicitly cast to DOUBLE; result type is always DOUBLE. i64::MAX rounds to 9.223372036854776e18 (2^63) before the trig call, so sin(i64::MAX) == sin(9.223372036854776e18)."
+ ]
+}
