@@ -640,6 +640,36 @@ impl<'a> FB<'a> {
                     val: dst,
                 })
             }
+            SKind::Str2 { op, a, b } => {
+                let la = self.emit(a, live)?;
+                live.push((la, Ty::Str));
+                let lb = self.emit(b, live)?;
+                let (la, _) = live.pop().expect("pushed above");
+                let dst = self.fresh();
+                self.inst(Inst::Str2 {
+                    op: *op,
+                    dst,
+                    a: la.val,
+                    b: lb.val,
+                });
+                Ok(Lane {
+                    flag: self.combine_flags(la.flag, lb.flag),
+                    val: dst,
+                })
+            }
+            SKind::SLen { bytes, a } => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::SLen {
+                    bytes: *bytes,
+                    dst,
+                    a: l.val,
+                });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
             SKind::Concat { a, b } => {
                 let la = self.emit(a, live)?;
                 live.push((la, Ty::Str));

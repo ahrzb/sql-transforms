@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use super::{
     BinOp, Block, BlockId, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode, StaticTy,
-    StrOp1, Term, TrimSide, Ty, Value,
+    StrOp1, StrOp2, Term, TrimSide, Ty, Value,
 };
 
 #[derive(Debug)]
@@ -970,6 +970,33 @@ impl Parser {
                     Inst::StoiOpt { flag, dst, a }
                 } else {
                     Inst::StofOpt { flag, dst, a }
+                }
+            }
+            "sfind" | "scontains" | "sstarts" | "sends" => {
+                want_dsts(1, self)?;
+                let op = match opcode.as_str() {
+                    "sfind" => StrOp2::Find,
+                    "scontains" => StrOp2::Contains,
+                    "sstarts" => StrOp2::Starts,
+                    _ => StrOp2::Ends,
+                };
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let b = self.use_value()?;
+                Inst::Str2 {
+                    op,
+                    dst: def!(0),
+                    a,
+                    b,
+                }
+            }
+            "slenc" | "slenb" => {
+                want_dsts(1, self)?;
+                let a = self.use_value()?;
+                Inst::SLen {
+                    bytes: opcode == "slenb",
+                    dst: def!(0),
+                    a,
                 }
             }
             "sconcat" => {

@@ -10,7 +10,7 @@
 
 use super::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, ColTy, Inst, Lit, NumOp1, Program, RoundMode,
-    StaticTy, StrOp1, Term, TrimSide, Ty, Value,
+    StaticTy, StrOp1, StrOp2, Term, TrimSide, Ty, Value,
 };
 
 pub struct Rng(u64);
@@ -222,7 +222,7 @@ fn load_all(
 fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<Inst>) {
     let n = rng.below(7);
     for _ in 0..n {
-        match rng.below(12) {
+        match rng.below(13) {
             0 => {
                 let ops = [
                     BinOp::Iadd,
@@ -404,6 +404,25 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 let dst = b.fresh();
                 insts.push(Inst::Num1 { op, dst, a });
                 scope.add(dst, Ty::F64);
+            }
+            12 => {
+                let a = ensure(rng, b, scope, insts, Ty::Str);
+                if rng.chance(30) {
+                    let dst = b.fresh();
+                    insts.push(Inst::SLen {
+                        bytes: rng.chance(50),
+                        dst,
+                        a,
+                    });
+                    scope.add(dst, Ty::I64);
+                } else {
+                    let n = ensure(rng, b, scope, insts, Ty::Str);
+                    let ops = [StrOp2::Find, StrOp2::Contains, StrOp2::Starts, StrOp2::Ends];
+                    let op = ops[rng.below(4) as usize];
+                    let dst = b.fresh();
+                    insts.push(Inst::Str2 { op, dst, a, b: n });
+                    scope.add(dst, op.result_ty());
+                }
             }
             _ => {
                 let (from, mk): (Ty, fn(Value, Value) -> Inst) = if rng.chance(50) {

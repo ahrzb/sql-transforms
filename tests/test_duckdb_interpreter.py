@@ -1139,3 +1139,85 @@ def test_pow_operator_rejects_cleanly():
             row_tables={"__THIS__": _row_model({"x": "float"})},
             static_tables={},
         )
+
+
+# --------------------------------------------------------- TASK-47:
+# wave-1 string search - measured DuckDB 1.5.5 pins as oracle tests.
+# string-search family - contract pins measured against DuckDB 1.5.5 (2026-07-26).
+# All values below were probed through the vectorized path (table columns);
+# literal-fold agreed on every pair (0 divergences).
+
+STRSEARCH_SCHEMA = {"s": "str?", "n": "str?"}
+STRSEARCH_ROWS = [
+    {"s": "abc", "n": "b"},  # simple hit -> 2
+    {"s": "abc", "n": "z"},  # miss -> 0
+    {"s": "abc", "n": ""},  # empty needle -> 1 / TRUE
+    {"s": "", "n": "a"},  # empty haystack -> 0 / FALSE
+    {"s": "", "n": ""},  # empty-in-empty -> 1 / TRUE
+    {"s": "abc", "n": "abcd"},  # needle longer -> 0 / FALSE
+    {"s": "abcabc", "n": "bc"},  # first occurrence -> 2
+    {"s": "aaa", "n": "aa"},  # overlapping -> 1
+    {"s": "abc", "n": "B"},  # case-sensitive -> 0
+    {"s": "héllo", "n": "l"},  # CODEPOINT position -> 3 (bytes would be 4)
+    {"s": "héllo", "n": "é"},  # -> 2
+    {"s": "héllo", "n": "él"},  # multibyte needle -> 2
+    {"s": "a\U0001f44db", "n": "b"},  # emoji = 1 codepoint -> 3 (bytes would be 6)
+    {"s": "\U0001f468‍\U0001f469‍\U0001f467", "n": "\U0001f467"},  # ZWJ -> 5, not 1
+    {"s": "ééa", "n": "a"},  # -> 3
+    {"s": "xabc", "n": "abc"},  # suffix hit -> 2
+    {"s": "abc", "n": "abc"},  # exact -> 1
+    {"s": "é", "n": "é"},  # NO normalization -> 0 / FALSE
+    {"s": "é", "n": "́"},  # bare combining mark -> 2
+    {"s": "abc", "n": None},  # NULL-strict every argument
+    {"s": None, "n": "b"},
+    {"s": None, "n": None},
+    {"s": None, "n": ""},  # NULL haystack + empty needle is still NULL
+]
+
+
+def test_strsearch_predicates():
+    for fn in ["contains", "starts_with", "prefix", "ends_with", "suffix"]:
+        duck_check(
+            f"SELECT {fn}(s, n) AS r FROM __THIS__",
+            STRSEARCH_SCHEMA,
+            STRSEARCH_ROWS,
+        )
+
+
+def test_strsearch_three_valued_where():
+    # NULL predicate rows must be dropped by WHERE, same as FALSE.
+    duck_check(
+        "SELECT s FROM __THIS__ WHERE contains(s, n)",
+        STRSEARCH_SCHEMA,
+        STRSEARCH_ROWS,
+    )
+    duck_check(
+        "SELECT s FROM __THIS__ WHERE instr(s, n) > 1",
+        STRSEARCH_SCHEMA,
+        STRSEARCH_ROWS,
+    )
+
+
+def test_strsearch_positions():
+    for fn_expr in ["instr(s, n)", "strpos(s, n)", "position(n IN s)"]:
+        duck_check(
+            f"SELECT {fn_expr} AS r FROM __THIS__",
+            STRSEARCH_SCHEMA,
+            STRSEARCH_ROWS,
+        )
+
+
+def test_strsearch_length_family():
+    duck_check(
+        "SELECT length(s) AS lc, char_length(s) AS cc, strlen(s) AS lb FROM __THIS__",
+        {"s": "str?"},
+        [
+            {"s": "abc"},
+            {"s": ""},
+            {"s": "héllo"},
+            {"s": "a\U0001f44db"},
+            {"s": "\U0001f468‍\U0001f469‍\U0001f467"},
+            {"s": "é"},
+            {"s": None},
+        ],
+    )
