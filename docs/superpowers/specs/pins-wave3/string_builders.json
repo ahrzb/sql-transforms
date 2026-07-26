@@ -1,0 +1,1152 @@
+{
+ "family": "string_builders",
+ "duckdb_version": "1.5.5",
+ "decisions": [
+  "All family functions return VARCHAR (typeof pinned per probe); every literal spot-check (repeat, lpad, rpad, replace, translate, reverse, concat, concat_ws, lpad-empty-pad error) matched the column path.",
+  "repeat(s,n): n<=0 (probed 0 and -3) -> ''; NULL-strict in both args; unit is the whole string (multi-byte string repeated intact); embedded NUL repeats fine; huge n NOT probed (only n<=10 pinned).",
+  "lpad/rpad count CODEPOINTS, not bytes and not graphemes: lpad(e-acute,3,'x')='xx'+e-acute; combining seq e+U+0301 counts as 2 (lpad(seq,3,'x')='x'+seq).",
+  "lpad/rpad truncation (l < length(s)): BOTH keep the FIRST l codepoints (prefix) -- rpad('abcdef',3,'x')='abc', same as lpad; truncation slices through grapheme clusters at codepoint boundary (rpad(e+U+0301+'x',1,'p')='e').",
+  "lpad/rpad: negative l -> '' (silent, no error); l=0 -> ''; l=length(s) -> identity; NULL-strict in all three args.",
+  "pad='': raises 'Invalid Input Error: Insufficient padding in LPAD.' (resp. RPAD) ONLY when growth is needed (l > length(s)); l <= length(s) returns the truncated/identity prefix without error.",
+  "pad cycling: pad repeated left-to-right, truncated to (l - length(s)) codepoints, then prepended (lpad) or appended (rpad): lpad('a',6,'xyz')='xyzxya', rpad='axyzxy'; cut is at codepoint boundaries, multi-byte pad chars never split (lpad('a',4,e-acute+emoji)=e-acute+emoji+e-acute+'a').",
+  "replace: empty needle is a NO-OP (returns s unchanged, '' stays ''); leftmost non-overlapping single pass, output NOT rescanned ('aaa','aa','b'->'ba'; 'abab','ab','ba'->'baba'); case-sensitive; plain codepoint-sequence substring match (replacing base 'e' of a combining seq leaves the orphan mark); NULL-strict in all three args; NUL and ZWJ are ordinary needle chars.",
+  "reverse: GRAPHEME CLUSTERS (engine needs UAX-29 segmentation): combining seq stays attached, ZWJ family emoji stays one unit, flag RI-pair stays intact, and two adjacent flags swap as two units (US+FR -> FR+US) proving real RI pairing rather than an RI blob; NULL-strict; embedded NUL is its own cluster ('a\\x00b'->'b\\x00a').",
+  "translate: per-CODEPOINT map (astral chars and combining marks are single map units); from longer than to -> unmapped from-chars are DELETED; duplicate char in from -> FIRST occurrence wins ('aa' from='aa' to='xy' -> 'xx'); to longer than from -> extras ignored; from='' -> identity; to='' -> every from-char deleted; NULL-strict in all three args; NUL translatable.",
+  "concat_ws: NULL value-args are SKIPPED with their separator (',','x',NULL,'y' -> 'x,y'); NULL separator -> NULL; all value-args NULL (or a single NULL arg) -> '' (empty string, not NULL); zero value-args -> Binder Error (no concat_ws(VARCHAR) overload).",
+  "concat_ws value-args implicitly cast to VARCHAR: INTEGER 1->'1', BIGINT -7->'-7', DOUBLE 1.5->'1.5', 0.5->'0.5', 1e20->'1e+20', -0.0->'-0.0', BOOLEAN true->'true', FLOAT 1.5->'1.5', FLOAT 0.1->'0.1'; the SEPARATOR does NOT implicitly cast (INTEGER sep -> Binder Error).",
+  "concat: skips NULL args like concat_ws; all-NULL or single-NULL -> '' (never NULL); same implicit-cast rendering as concat_ws; variadic (1..n args). Contrast: the || operator IS NULL-strict ('x'||NULL -> NULL).",
+  "chr(0) works; VARCHAR stores embedded NUL; length('a\\x00b')=3 (NUL counts as a codepoint); repeat/lpad/replace/translate/reverse/concat/concat_ws all treat NUL as an ordinary character."
+ ],
+ "probes": [
+  {
+   "name": "repeat basic",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': 'ab', 'n': 5}",
+   "result_repr": "'ababababab'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "repeat n=0",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': 'ab', 'n': 0}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "repeat n<0",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': 'ab', 'n': -3}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "repeat n NULL",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': 'ab', 'n': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "repeat s NULL",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': None, 'n': 2}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "repeat both NULL",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': None, 'n': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "repeat unicode unit",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': '\\xe9\\U0001f600', 'n': 3}",
+   "result_repr": "'\\xe9\\U0001f600\\xe9\\U0001f600\\xe9\\U0001f600'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "unit should be whole string"
+  },
+  {
+   "name": "repeat n=10",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': 'abc', 'n': 10}",
+   "result_repr": "'abcabcabcabcabcabcabcabcabcabc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "huge n NOT probed (OOM risk); only sane n pinned"
+  },
+  {
+   "name": "repeat embedded NUL",
+   "sql": "SELECT repeat(s, n), typeof(repeat(s, n)) FROM t",
+   "input_repr": "{'s': 'a\\x00b', 'n': 2}",
+   "result_repr": "'a\\x00ba\\x00b'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "repeat literal spotcheck",
+   "sql": "SELECT repeat('ab', 3), typeof(repeat('ab', 3))",
+   "input_repr": null,
+   "result_repr": "'ababab'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad basic",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 5, 'p': 'x'}",
+   "result_repr": "'xxabc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad basic",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 5, 'p': 'x'}",
+   "result_repr": "'abcxx'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad len unit: s multibyte",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': '\\xe9', 'l': 3, 'p': 'x'}",
+   "result_repr": "'xx\\xe9'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "'xx'+e-acute => codepoints; 'x'+e-acute => bytes"
+  },
+  {
+   "name": "lpad pad multibyte",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'a', 'l': 3, 'p': '\\xe9'}",
+   "result_repr": "'\\xe9\\xe9a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "e-acute*2+'a' => codepoint counting"
+  },
+  {
+   "name": "lpad combining len unit",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'e\\u0301', 'l': 3, 'p': 'x'}",
+   "result_repr": "'xe\\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "'x'+COMB => codepoints(2); 'xx'+COMB => graphemes(1)"
+  },
+  {
+   "name": "lpad truncate side",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abcdef', 'l': 3, 'p': 'x'}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad truncate side",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abcdef', 'l': 3, 'p': 'x'}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad truncate combining",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'e\\u0301x', 'l': 1, 'p': 'p'}",
+   "result_repr": "'e'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "'e' => cuts inside cluster (codepoint); COMB => grapheme"
+  },
+  {
+   "name": "lpad truncate unicode",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': '\\xe9abc', 'l': 2, 'p': 'x'}",
+   "result_repr": "'\\xe9a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad negative len",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': -1, 'p': 'x'}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad negative len",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': -1, 'p': 'x'}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad len=0",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 0, 'p': 'x'}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad len=len(s) identity",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 3, 'p': 'x'}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad empty pad grow",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 5, 'p': ''}",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Insufficient padding in LPAD.",
+   "note": null
+  },
+  {
+   "name": "rpad empty pad grow",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 5, 'p': ''}",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Insufficient padding in RPAD.",
+   "note": null
+  },
+  {
+   "name": "lpad empty pad shrink",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abcdef', 'l': 3, 'p': ''}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad pad cycle order",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'a', 'l': 6, 'p': 'xyz'}",
+   "result_repr": "'xyzxya'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad pad cycle order",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'a', 'l': 6, 'p': 'xyz'}",
+   "result_repr": "'axyzxy'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad multibyte pad cut",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'a', 'l': 4, 'p': '\\xe9\\U0001f600'}",
+   "result_repr": "'\\xe9\\U0001f600\\xe9a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "cut mid-cycle: codepoint boundary?"
+  },
+  {
+   "name": "rpad multibyte pad cut",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'a', 'l': 4, 'p': '\\U0001f600\\xe9'}",
+   "result_repr": "'a\\U0001f600\\xe9\\U0001f600'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad s NULL",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': None, 'l': 5, 'p': 'x'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad len NULL",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': None, 'p': 'x'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad pad NULL",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 5, 'p': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad s NULL",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': None, 'l': 5, 'p': 'x'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad len NULL",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': None, 'p': 'x'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad pad NULL",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 5, 'p': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad NUL pad",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'ab', 'l': 4, 'p': '\\x00'}",
+   "result_repr": "'\\x00\\x00ab'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad literal empty pad spotcheck",
+   "sql": "SELECT lpad('abc', 5, ''), typeof(lpad('abc', 5, ''))",
+   "input_repr": null,
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Insufficient padding in LPAD.",
+   "note": null
+  },
+  {
+   "name": "replace basic",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'hello', 'f': 'l', 't2': 'L'}",
+   "result_repr": "'heLLo'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace empty needle",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': '', 't2': 'X'}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace empty needle empty s",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': '', 'f': '', 't2': 'X'}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace overlap",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'aaa', 'f': 'aa', 't2': 'b'}",
+   "result_repr": "'ba'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace overlap2",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'aaaa', 'f': 'aa', 't2': 'b'}",
+   "result_repr": "'bb'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace case sens",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'AAA', 'f': 'a', 't2': 'b'}",
+   "result_repr": "'AAA'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace to empty",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abcabc', 'f': 'b', 't2': ''}",
+   "result_repr": "'acac'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace unicode needle",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': '\\xe9\\xe9', 'f': '\\xe9', 't2': 'e'}",
+   "result_repr": "'ee'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace combining base",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'e\\u0301x', 'f': 'e', 't2': 'y'}",
+   "result_repr": "'y\\u0301x'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "codepoint-level? y+U+0301 expected if so"
+  },
+  {
+   "name": "replace rescan?",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abab', 'f': 'ab', 't2': 'ba'}",
+   "result_repr": "'baba'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "does output get rescanned?"
+  },
+  {
+   "name": "replace s NULL",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': None, 'f': 'a', 't2': 'b'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace from NULL",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': None, 't2': 'b'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace to NULL",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': 'a', 't2': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace NUL needle",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'a\\x00b', 'f': '\\x00', 't2': 'X'}",
+   "result_repr": "'aXb'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace ZWJ needle",
+   "sql": "SELECT replace(s, f, t2), typeof(replace(s, f, t2)) FROM t",
+   "input_repr": "{'s': '\\U0001f468\\u200d\\U0001f469\\u200d\\U0001f467', 'f': '\\u200d', 't2': '-'}",
+   "result_repr": "'\\U0001f468-\\U0001f469-\\U0001f467'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "ZWJ replace inside family emoji"
+  },
+  {
+   "name": "reverse ascii",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': 'ab'}",
+   "result_repr": "'ba'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "reverse multibyte",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': '\\xe9a'}",
+   "result_repr": "'a\\xe9'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "reverse combining",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': 'e\\u0301x'}",
+   "result_repr": "'xe\\u0301'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "grapheme keeps e+U+0301 together"
+  },
+  {
+   "name": "reverse ZWJ family",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': '\\U0001f468\\u200d\\U0001f469\\u200d\\U0001f467'}",
+   "result_repr": "'\\U0001f468\\u200d\\U0001f469\\u200d\\U0001f467'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "grapheme keeps whole family emoji intact"
+  },
+  {
+   "name": "reverse flag",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': '\\U0001f1fa\\U0001f1f8a'}",
+   "result_repr": "'a\\U0001f1fa\\U0001f1f8'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "grapheme keeps both regional indicators together"
+  },
+  {
+   "name": "reverse astral",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': '\\U00010348a'}",
+   "result_repr": "'a\\U00010348'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "reverse specials",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': '\\u0130\\u212az'}",
+   "result_repr": "'z\\u212a\\u0130'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "reverse NULL",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "reverse embedded NUL",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': 'a\\x00b'}",
+   "result_repr": "'b\\x00a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "reverse literal spotcheck",
+   "sql": "SELECT reverse('\u00e9a'), typeof(reverse('\u00e9a'))",
+   "input_repr": null,
+   "result_repr": "'a\\xe9'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate basic",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': 'ab', 't2': 'xy'}",
+   "result_repr": "'xyc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate delete extras",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abcb', 'f': 'abc', 't2': 'x'}",
+   "result_repr": "'x'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "from longer than to => delete?"
+  },
+  {
+   "name": "translate dup in from",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'aa', 'f': 'aa', 't2': 'xy'}",
+   "result_repr": "'xx'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "first or last mapping wins?"
+  },
+  {
+   "name": "translate to longer",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'ab', 'f': 'a', 't2': 'xy'}",
+   "result_repr": "'xb'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "extras in to ignored?"
+  },
+  {
+   "name": "translate unicode",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': '\\xe9\\U0001f600z', 'f': '\\xe9\\U0001f600', 't2': 'ab'}",
+   "result_repr": "'abz'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate combining mark",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'e\\u0301', 'f': '\\u0301', 't2': 'x'}",
+   "result_repr": "'ex'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "per-codepoint => 'ex'"
+  },
+  {
+   "name": "translate empty from",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': '', 't2': 'xyz'}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate empty to",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': 'ab', 't2': ''}",
+   "result_repr": "'c'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "delete all mapped chars?"
+  },
+  {
+   "name": "translate s NULL",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': None, 'f': 'a', 't2': 'b'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate from NULL",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': None, 't2': 'b'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate to NULL",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'abc', 'f': 'a', 't2': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate NUL",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': 'a\\x00b', 'f': '\\x00', 't2': 'X'}",
+   "result_repr": "'aXb'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate astral map",
+   "sql": "SELECT translate(s, f, t2), typeof(translate(s, f, t2)) FROM t",
+   "input_repr": "{'s': '\\U00010348a', 'f': '\\U00010348', 't2': '\\U0001f600'}",
+   "result_repr": "'\\U0001f600a'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws basic",
+   "sql": "SELECT concat_ws(sep, a, b), typeof(concat_ws(sep, a, b)) FROM t",
+   "input_repr": "{'sep': ',', 'a': 'x', 'b': 'y'}",
+   "result_repr": "'x,y'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws NULL arg mid",
+   "sql": "SELECT concat_ws(sep, a, b, c), typeof(concat_ws(sep, a, b, c)) FROM t",
+   "input_repr": "{'sep': ',', 'a': 'x', 'b': None, 'c': 'y'}",
+   "result_repr": "'x,y'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "skipped or strict?"
+  },
+  {
+   "name": "concat_ws NULL first arg",
+   "sql": "SELECT concat_ws(sep, a, b), typeof(concat_ws(sep, a, b)) FROM t",
+   "input_repr": "{'sep': ',', 'a': None, 'b': 'y'}",
+   "result_repr": "'y'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws sep NULL",
+   "sql": "SELECT concat_ws(sep, a, b), typeof(concat_ws(sep, a, b)) FROM t",
+   "input_repr": "{'sep': None, 'a': 'x', 'b': 'y'}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws all args NULL",
+   "sql": "SELECT concat_ws(sep, a, b), typeof(concat_ws(sep, a, b)) FROM t",
+   "input_repr": "{'sep': ',', 'a': None, 'b': None}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws one arg",
+   "sql": "SELECT concat_ws(sep, a), typeof(concat_ws(sep, a)) FROM t",
+   "input_repr": "{'sep': ',', 'a': 'x'}",
+   "result_repr": "'x'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws one NULL arg",
+   "sql": "SELECT concat_ws(sep, a), typeof(concat_ws(sep, a)) FROM t",
+   "input_repr": "{'sep': ',', 'a': None}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws zero args",
+   "sql": "SELECT concat_ws(sep), typeof(concat_ws(sep)) FROM t",
+   "input_repr": "{'sep': ','}",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'concat_ws(VARCHAR)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tconcat_ws(VARCHAR, ANY, [ANY...]) -> VARCHAR\n\n\nLINE 1: SELECT concat_ws(sep), typeof(concat_ws(sep)) FROM t\n               ^",
+   "note": null
+  },
+  {
+   "name": "concat_ws unicode sep",
+   "sql": "SELECT concat_ws(sep, a, b), typeof(concat_ws(sep, a, b)) FROM t",
+   "input_repr": "{'sep': '\\xe9', 'a': 'x', 'b': 'y'}",
+   "result_repr": "'x\\xe9y'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws NUL sep",
+   "sql": "SELECT concat_ws(sep, a, b), typeof(concat_ws(sep, a, b)) FROM t",
+   "input_repr": "{'sep': '\\x00', 'a': 'x', 'b': 'y'}",
+   "result_repr": "'x\\x00y'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws implicit casts",
+   "sql": "SELECT concat_ws(',', i, bg, d1, d2, d3, d4, bo), typeof(concat_ws(',', i, bg, d1, d2, d3, d4, bo)) FROM t",
+   "input_repr": "{'i': 1, 'bg': -7, 'd1': 1.5, 'd2': 0.5, 'd3': 1e+20, 'd4': -0.0, 'bo': True}",
+   "result_repr": "'1,-7,1.5,0.5,1e+20,-0.0,true'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "exact rendering of ints/doubles/bools"
+  },
+  {
+   "name": "concat_ws float col",
+   "sql": "SELECT concat_ws(',', f1, f2), typeof(concat_ws(',', f1, f2)) FROM t",
+   "input_repr": "{'f1': 1.5, 'f2': 0.1}",
+   "result_repr": "'1.5,0.1'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat_ws literal spotcheck",
+   "sql": "SELECT concat_ws(',', 'x', NULL, 'y'), typeof(concat_ws(',', 'x', NULL, 'y'))",
+   "input_repr": null,
+   "result_repr": "'x,y'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat basic",
+   "sql": "SELECT concat(a, b), typeof(concat(a, b)) FROM t",
+   "input_repr": "{'a': 'x', 'b': 'y'}",
+   "result_repr": "'xy'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat NULL arg",
+   "sql": "SELECT concat(a, b), typeof(concat(a, b)) FROM t",
+   "input_repr": "{'a': 'x', 'b': None}",
+   "result_repr": "'x'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "skip or strict?"
+  },
+  {
+   "name": "concat both NULL",
+   "sql": "SELECT concat(a, b), typeof(concat(a, b)) FROM t",
+   "input_repr": "{'a': None, 'b': None}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat 3 args",
+   "sql": "SELECT concat(a, b, c), typeof(concat(a, b, c)) FROM t",
+   "input_repr": "{'a': 'x', 'b': 'y', 'c': 'z'}",
+   "result_repr": "'xyz'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat implicit casts",
+   "sql": "SELECT concat(i, d1, bo), typeof(concat(i, d1, bo)) FROM t",
+   "input_repr": "{'i': 1, 'd1': 1.5, 'bo': True}",
+   "result_repr": "'11.5true'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat double 1e20/-0.0",
+   "sql": "SELECT concat(d3, ':', d4), typeof(concat(d3, ':', d4)) FROM t",
+   "input_repr": "{'d3': 1e+20, 'd4': -0.0}",
+   "result_repr": "'1e+20:-0.0'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat NUL",
+   "sql": "SELECT concat(a, b), typeof(concat(a, b)) FROM t",
+   "input_repr": "{'a': 'a\\x00', 'b': 'b'}",
+   "result_repr": "'a\\x00b'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "|| NULL strictness",
+   "sql": "SELECT a || b, typeof(a || b) FROM t",
+   "input_repr": "{'a': 'x', 'b': None}",
+   "result_repr": "None",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "contrast with concat"
+  },
+  {
+   "name": "|| basic",
+   "sql": "SELECT a || b, typeof(a || b) FROM t",
+   "input_repr": "{'a': 'x', 'b': 'y'}",
+   "result_repr": "'xy'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat literal spotcheck",
+   "sql": "SELECT concat('x', NULL, 'y'), typeof(concat('x', NULL, 'y'))",
+   "input_repr": null,
+   "result_repr": "'xy'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "chr(0) literal",
+   "sql": "SELECT chr(0), typeof(chr(0))",
+   "input_repr": null,
+   "result_repr": "'\\x00'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "NUL roundtrip",
+   "sql": "SELECT s, typeof(s) FROM t",
+   "input_repr": "{'s': 'a\\x00b'}",
+   "result_repr": "'a\\x00b'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "can VARCHAR hold NUL at all?"
+  },
+  {
+   "name": "length of NUL string",
+   "sql": "SELECT length(s), typeof(length(s)) FROM t",
+   "input_repr": "{'s': 'a\\x00b'}",
+   "result_repr": "3",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad empty pad exact len",
+   "sql": "SELECT lpad(s, l, p), typeof(lpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 3, 'p': ''}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad empty pad exact len",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 3, 'p': ''}",
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad empty pad grow by 1",
+   "sql": "SELECT rpad(s, l, p), typeof(rpad(s, l, p)) FROM t",
+   "input_repr": "{'s': 'abc', 'l': 4, 'p': ''}",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Invalid Input Error: Insufficient padding in RPAD.",
+   "note": null
+  },
+  {
+   "name": "reverse two flags",
+   "sql": "SELECT reverse(s), typeof(reverse(s)) FROM t",
+   "input_repr": "{'s': '\\U0001f1fa\\U0001f1f8\\U0001f1eb\\U0001f1f7'}",
+   "result_repr": "'\\U0001f1eb\\U0001f1f7\\U0001f1fa\\U0001f1f8'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": "grapheme: FR then US; naive RI-blob: unchanged"
+  },
+  {
+   "name": "concat_ws int sep",
+   "sql": "SELECT concat_ws(sepi, a, b), typeof(concat_ws(sepi, a, b)) FROM t",
+   "input_repr": "{'sepi': 7, 'a': 'x', 'b': 'y'}",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "Binder Error: No function matches the given name and argument types 'concat_ws(INTEGER, VARCHAR, VARCHAR)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tconcat_ws(VARCHAR, ANY, [ANY...]) -> VARCHAR\n\n\nLINE 1: SELECT concat_ws(sepi, a, b), typeof(concat_ws(sepi, a, b)) FROM t\n               ^",
+   "note": null
+  },
+  {
+   "name": "concat single arg",
+   "sql": "SELECT concat(a), typeof(concat(a)) FROM t",
+   "input_repr": "{'a': 'x'}",
+   "result_repr": "'x'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "concat single NULL",
+   "sql": "SELECT concat(a), typeof(concat(a)) FROM t",
+   "input_repr": "{'a': None}",
+   "result_repr": "''",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "lpad literal spotcheck",
+   "sql": "SELECT lpad('abc', 5, 'xy'), typeof(lpad('abc', 5, 'xy'))",
+   "input_repr": null,
+   "result_repr": "'xyabc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "rpad literal spotcheck",
+   "sql": "SELECT rpad('abc', 5, 'xy'), typeof(rpad('abc', 5, 'xy'))",
+   "input_repr": null,
+   "result_repr": "'abcxy'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "replace literal empty needle",
+   "sql": "SELECT replace('abc', '', 'X'), typeof(replace('abc', '', 'X'))",
+   "input_repr": null,
+   "result_repr": "'abc'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  },
+  {
+   "name": "translate literal spotcheck",
+   "sql": "SELECT translate('abcb', 'abc', 'x'), typeof(translate('abcb', 'abc', 'x'))",
+   "input_repr": null,
+   "result_repr": "'x'",
+   "result_type": "VARCHAR",
+   "bits": null,
+   "error": null,
+   "note": null
+  }
+ ]
+}

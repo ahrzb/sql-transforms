@@ -1,0 +1,2060 @@
+{
+ "family": "math_tail",
+ "duckdb_version": "1.5.5",
+ "decisions": [
+  "add/subtract/multiply/divide/mod are exact aliases of + - * // % on the column path: same values, same result types, byte-identical error texts on every witness (basics, signs, overflow, zero divisor).",
+  "fdiv/fmod are NOT the function forms of / and %: they are a separate FLOOR-division pair. fdiv(x,y)=floor(x/y) as DOUBLE (fdiv(-7,2)=-4.0, fdiv(7,-3)=-3.0, fdiv(-7.5,2.0)=-4.0); fmod is floored mod taking the DIVISOR's sign (fmod(-7.5,2.0)=0.5, fmod(7.5,-2.0)=-0.5, fmod(-7,3)=2.0, fmod(7,-3)=-2.0).",
+  "mod/% on DOUBLE is C-fmod (truncated, dividend's sign): mod(-7.5,2.0)=-1.5, mod(7.5,-2.0)=1.5, mod(-7.5,2.5)=-0.0 (bits 8000000000000000), mod(-0.0,1.0)=-0.0. DuckDB's 'fmod' is NOT C fmod; DuckDB's 'mod' IS.",
+  "divide(int,int) = truncating integer division, result type = arg type (divide(7,2)=3 BIGINT, divide(-7,2)=-3, INTEGER cols stay INTEGER). divide(double,double) and // on DOUBLE = PLAIN division (NOT floor: -7.5//2.0=-3.75) except divisor==0 -> NULL.",
+  "Zero-divisor matrix (both int and double columns, no errors anywhere): / -> IEEE +-inf (7/0=inf, -7/0=-inf, 0.0/0.0=nan fff8000000000000); // and divide() and % and mod() -> NULL; fdiv -> +-inf; fmod -> nan fff8000000000000. NULL dividend with zero divisor -> NULL (no trap).",
+  "Result types: int op int -> same int width for + - * // divide % mod (typeof INTEGER stays INTEGER, incl. INT32-specific overflow error); / on ints -> DOUBLE always; fdiv/fmod/nextafter/pow/power/**/^ -> DOUBLE even for integer args; any mixed int/double -> DOUBLE and takes the double semantics (divide(7,2.0)=3.5 NOT 3).",
+  "Int overflow traps (vectorized and literal path identical text): 'Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!' / 'Overflow in subtraction of INT64 (-9223372036854775808 - 1)!' / 'Overflow in multiplication of INT64 (9223372036854775807 * 2)!' / INT32 variant for INTEGER cols. INT64_MIN//-1, divide, %, mod all trap 'Out of Range Error: Overflow in division of -9223372036854775808 / -1' (no trailing '!', and % says 'division'). INT64_MIN / -1 via / is fine -> 9.223372036854776e+18 DOUBLE.",
+  "DOUBLE arithmetic is raw IEEE: 0.1+0.2 -> 3fd3333333333334; 1e308+1e308 -> inf (never errors); inf+1 -> inf; nan propagates as 7ff8000000000000; add(-0.0,0.0)=+0.0, add(-0.0,-0.0)=-0.0.",
+  "NaN bit patterns are part of the contract at the Python boundary: computed NaNs from fmod and 0.0/0.0 come out NEGATIVE quiet NaN fff8000000000000; mod/% by zero and propagated NaN inputs come out 7ff8000000000000. fmod(inf,1)=nan, fmod(1,inf)=nan, fmod(0,inf)=nan (all fff8...) -- NOT the C fmod results (C gives 1.0/0.0 for the latter two); consistent with x-floor(x/y)*y evaluated in IEEE.",
+  "nextafter matches C nextafter bit-exactly: 1.0->2.0 = 3ff0000000000001; 1.0->0.0 = 3fefffffffffffff; 0.0->-1 = 8000000000000001 (-5e-324); -0.0->1 = 0000000000000001; x==y returns y (0.0,-0.0 -> -0.0; -0.0,0.0 -> +0.0); max->inf = inf; -max->-inf = -inf; inf->0 = 7fefffffffffffff; inf->inf = inf; nan either arg -> nan 7ff8000000000000. No errors/traps at all. Int args promote to DOUBLE; FLOAT,FLOAT overload returns FLOAT (nextafterf: 1.0000001192092896).",
+  "NULL propagation is strict NULL-in->NULL-out for every function and operator in the family, each arg position and both; typeof is preserved (BIGINT ops stay BIGINT, fdiv/fmod/nextafter stay DOUBLE).",
+  "VARCHAR does NOT implicitly cast into +/add: bind-time BinderException 'No function matches the given name and argument types '+(VARCHAR, BIGINT)'' with full candidate list; string content (unicode, NUL) is irrelevant because binding fails before execution. '3'+1 errors too.",
+  "Identities: pow == power == ** == ^ (7^2=49.0 DOUBLE; ^ is POWER not xor; xor(7,2)=5 BIGINT is the bitwise fn). Unary add(x)=x and subtract(x)=-x exist.",
+  "Literal-path divergences to note: integer literals are INTEGER so divide(7,2) literal -> INTEGER 3 (BIGINT col path -> BIGINT); decimal literals are DECIMAL (typeof(1.0)=DECIMAL(2,1)) so 7.5 % 2.5 literal -> DECIMAL(2,1) Decimal('0.0') via the DECIMAL mod overload (DOUBLE col path -> DOUBLE 0.0), while 7.5//2.5, fdiv, fmod, nextafter on decimal literals cast to DOUBLE. Values/errors otherwise identical between fold and vectorized paths on all witnesses."
+ ],
+ "probes": [
+  {
+   "sql": "SELECT a + b AS v, typeof(a + b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[9]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT add(a, b) AS v, typeof(add(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[9]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a - b AS v, typeof(a - b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[5]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT subtract(a, b) AS v, typeof(subtract(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[5]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a * b AS v, typeof(a * b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[14]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT multiply(a, b) AS v, typeof(multiply(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[14]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a / b AS v, typeof(a / b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[3]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[3]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a % b AS v, typeof(a % b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[1]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT mod(a, b) AS v, typeof(mod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[1]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT fdiv(a, b) AS v, typeof(fdiv(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4008000000000000"
+   ],
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT fmod(a, b) AS v, typeof(fmod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[1.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000000"
+   ],
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT pow(a, b) AS v, typeof(pow(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[49.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4048800000000000"
+   ],
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT power(a, b) AS v, typeof(power(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[49.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4048800000000000"
+   ],
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a ** b AS v, typeof(a ** b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[49.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4048800000000000"
+   ],
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a ^ b AS v, typeof(a ^ b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[49.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4048800000000000"
+   ],
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT xor(a, b) AS v, typeof(xor(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[5]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT add(a) AS v, typeof(add(a)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[7]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT subtract(a) AS v, typeof(subtract(a)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 2)]",
+   "result_repr": "[-7]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "bigint basics"
+  },
+  {
+   "sql": "SELECT a + b AS v, typeof(a + b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(9223372036854775807, 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!",
+   "note": "int64 add overflow, operator"
+  },
+  {
+   "sql": "SELECT add(a, b) AS v, typeof(add(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(9223372036854775807, 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!",
+   "note": "int64 add overflow, function"
+  },
+  {
+   "sql": "SELECT a - b AS v, typeof(a - b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-9223372036854775808, 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in subtraction of INT64 (-9223372036854775808 - 1)!",
+   "note": "int64 sub overflow, operator"
+  },
+  {
+   "sql": "SELECT subtract(a, b) AS v, typeof(subtract(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-9223372036854775808, 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in subtraction of INT64 (-9223372036854775808 - 1)!",
+   "note": "int64 sub overflow, function"
+  },
+  {
+   "sql": "SELECT a * b AS v, typeof(a * b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(9223372036854775807, 2)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in multiplication of INT64 (9223372036854775807 * 2)!",
+   "note": "int64 mul overflow, operator"
+  },
+  {
+   "sql": "SELECT multiply(a, b) AS v, typeof(multiply(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(9223372036854775807, 2)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in multiplication of INT64 (9223372036854775807 * 2)!",
+   "note": "int64 mul overflow, function"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-9223372036854775808, -1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1",
+   "note": "INT64_MIN / -1 edge"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-9223372036854775808, -1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1",
+   "note": "INT64_MIN / -1 edge"
+  },
+  {
+   "sql": "SELECT a / b AS v, typeof(a / b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-9223372036854775808, -1)]",
+   "result_repr": "[9.223372036854776e+18]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "43e0000000000000"
+   ],
+   "error": null,
+   "note": "INT64_MIN / -1 edge"
+  },
+  {
+   "sql": "SELECT a % b AS v, typeof(a % b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-9223372036854775808, -1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1",
+   "note": "INT64_MIN / -1 edge"
+  },
+  {
+   "sql": "SELECT mod(a, b) AS v, typeof(mod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-9223372036854775808, -1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1",
+   "note": "INT64_MIN / -1 edge"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 3)]",
+   "result_repr": "[-2]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative dividend"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 3)]",
+   "result_repr": "[-2]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative dividend"
+  },
+  {
+   "sql": "SELECT a % b AS v, typeof(a % b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 3)]",
+   "result_repr": "[-1]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative dividend"
+  },
+  {
+   "sql": "SELECT mod(a, b) AS v, typeof(mod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 3)]",
+   "result_repr": "[-1]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative dividend"
+  },
+  {
+   "sql": "SELECT fdiv(a, b) AS v, typeof(fdiv(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 3)]",
+   "result_repr": "[-3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c008000000000000"
+   ],
+   "error": null,
+   "note": "negative dividend"
+  },
+  {
+   "sql": "SELECT fmod(a, b) AS v, typeof(fmod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 3)]",
+   "result_repr": "[2.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4000000000000000"
+   ],
+   "error": null,
+   "note": "negative dividend"
+  },
+  {
+   "sql": "SELECT a / b AS v, typeof(a / b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 3)]",
+   "result_repr": "[-2.3333333333333335]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c002aaaaaaaaaaab"
+   ],
+   "error": null,
+   "note": "negative dividend"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, -3)]",
+   "result_repr": "[-2]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative divisor"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, -3)]",
+   "result_repr": "[-2]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative divisor"
+  },
+  {
+   "sql": "SELECT a % b AS v, typeof(a % b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, -3)]",
+   "result_repr": "[1]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative divisor"
+  },
+  {
+   "sql": "SELECT mod(a, b) AS v, typeof(mod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, -3)]",
+   "result_repr": "[1]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "negative divisor"
+  },
+  {
+   "sql": "SELECT fdiv(a, b) AS v, typeof(fdiv(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, -3)]",
+   "result_repr": "[-3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c008000000000000"
+   ],
+   "error": null,
+   "note": "negative divisor"
+  },
+  {
+   "sql": "SELECT fmod(a, b) AS v, typeof(fmod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, -3)]",
+   "result_repr": "[-2.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c000000000000000"
+   ],
+   "error": null,
+   "note": "negative divisor"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 2)]",
+   "result_repr": "[-3]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "trunc vs floor witness"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 2)]",
+   "result_repr": "[-3]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "trunc vs floor witness"
+  },
+  {
+   "sql": "SELECT fdiv(a, b) AS v, typeof(fdiv(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 2)]",
+   "result_repr": "[-4.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c010000000000000"
+   ],
+   "error": null,
+   "note": "trunc vs floor witness"
+  },
+  {
+   "sql": "SELECT a / b AS v, typeof(a / b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 0)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "int zero divisor"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "int zero divisor"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "int zero divisor"
+  },
+  {
+   "sql": "SELECT a % b AS v, typeof(a % b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "int zero divisor"
+  },
+  {
+   "sql": "SELECT mod(a, b) AS v, typeof(mod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "int zero divisor"
+  },
+  {
+   "sql": "SELECT fdiv(a, b) AS v, typeof(fdiv(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 0)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "int zero divisor"
+  },
+  {
+   "sql": "SELECT fmod(a, b) AS v, typeof(fmod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(7, 0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "int zero divisor"
+  },
+  {
+   "sql": "SELECT add(a, b) AS v, typeof(add(a, b)) AS ty FROM t",
+   "input_repr": "t(a INTEGER, b INTEGER); rows=[(7, 2)]",
+   "result_repr": "[9]",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "int32 result type"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a INTEGER, b INTEGER); rows=[(7, 2)]",
+   "result_repr": "[3]",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "int32 divide type"
+  },
+  {
+   "sql": "SELECT a / b AS v, typeof(a / b) AS ty FROM t",
+   "input_repr": "t(a INTEGER, b INTEGER); rows=[(7, 2)]",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "int32 / operator"
+  },
+  {
+   "sql": "SELECT a + b AS v, typeof(a + b) AS ty FROM t",
+   "input_repr": "t(a INTEGER, b INTEGER); rows=[(2147483647, 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!",
+   "note": "int32 add overflow, operator"
+  },
+  {
+   "sql": "SELECT add(a, b) AS v, typeof(add(a, b)) AS ty FROM t",
+   "input_repr": "t(a INTEGER, b INTEGER); rows=[(2147483647, 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!",
+   "note": "int32 add overflow, function"
+  },
+  {
+   "sql": "SELECT x + y AS v, typeof(x + y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[9.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4022000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT add(x, y) AS v, typeof(add(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[9.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4022000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT x - y AS v, typeof(x - y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[5.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4014000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT subtract(x, y) AS v, typeof(subtract(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[5.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4014000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT x * y AS v, typeof(x * y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[14.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "402c000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT multiply(x, y) AS v, typeof(multiply(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[14.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "402c000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT x / y AS v, typeof(x / y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT x // y AS v, typeof(x // y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT divide(x, y) AS v, typeof(divide(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT x % y AS v, typeof(x % y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[1.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT mod(x, y) AS v, typeof(mod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[1.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT fdiv(x, y) AS v, typeof(fdiv(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4008000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.0, 2.0)]",
+   "result_repr": "[1.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000000"
+   ],
+   "error": null,
+   "note": "double basics"
+  },
+  {
+   "sql": "SELECT fdiv(x, y) AS v, typeof(fdiv(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, 2.5)]",
+   "result_repr": "[3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4008000000000000"
+   ],
+   "error": null,
+   "note": "double fractional"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, 2.5)]",
+   "result_repr": "[0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000000"
+   ],
+   "error": null,
+   "note": "double fractional"
+  },
+  {
+   "sql": "SELECT mod(x, y) AS v, typeof(mod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, 2.5)]",
+   "result_repr": "[0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000000"
+   ],
+   "error": null,
+   "note": "double fractional"
+  },
+  {
+   "sql": "SELECT x // y AS v, typeof(x // y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, 2.5)]",
+   "result_repr": "[3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4008000000000000"
+   ],
+   "error": null,
+   "note": "double fractional"
+  },
+  {
+   "sql": "SELECT divide(x, y) AS v, typeof(divide(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, 2.5)]",
+   "result_repr": "[3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4008000000000000"
+   ],
+   "error": null,
+   "note": "double fractional"
+  },
+  {
+   "sql": "SELECT fdiv(x, y) AS v, typeof(fdiv(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.0)]",
+   "result_repr": "[-4.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c010000000000000"
+   ],
+   "error": null,
+   "note": "double negative dividend"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.0)]",
+   "result_repr": "[0.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3fe0000000000000"
+   ],
+   "error": null,
+   "note": "double negative dividend"
+  },
+  {
+   "sql": "SELECT mod(x, y) AS v, typeof(mod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.0)]",
+   "result_repr": "[-1.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "bff8000000000000"
+   ],
+   "error": null,
+   "note": "double negative dividend"
+  },
+  {
+   "sql": "SELECT x % y AS v, typeof(x % y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.0)]",
+   "result_repr": "[-1.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "bff8000000000000"
+   ],
+   "error": null,
+   "note": "double negative dividend"
+  },
+  {
+   "sql": "SELECT x // y AS v, typeof(x // y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.0)]",
+   "result_repr": "[-3.75]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c00e000000000000"
+   ],
+   "error": null,
+   "note": "double negative dividend"
+  },
+  {
+   "sql": "SELECT divide(x, y) AS v, typeof(divide(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.0)]",
+   "result_repr": "[-3.75]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c00e000000000000"
+   ],
+   "error": null,
+   "note": "double negative dividend"
+  },
+  {
+   "sql": "SELECT fdiv(x, y) AS v, typeof(fdiv(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, -2.0)]",
+   "result_repr": "[-4.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c010000000000000"
+   ],
+   "error": null,
+   "note": "double negative divisor"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, -2.0)]",
+   "result_repr": "[-0.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "bfe0000000000000"
+   ],
+   "error": null,
+   "note": "double negative divisor"
+  },
+  {
+   "sql": "SELECT mod(x, y) AS v, typeof(mod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, -2.0)]",
+   "result_repr": "[1.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff8000000000000"
+   ],
+   "error": null,
+   "note": "double negative divisor"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.5)]",
+   "result_repr": "[0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000000"
+   ],
+   "error": null,
+   "note": "exact multiple, expect -0.0?"
+  },
+  {
+   "sql": "SELECT mod(x, y) AS v, typeof(mod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-7.5, 2.5)]",
+   "result_repr": "[-0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "8000000000000000"
+   ],
+   "error": null,
+   "note": "exact multiple, expect -0.0?"
+  },
+  {
+   "sql": "SELECT x / y AS v, typeof(x / y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "double zero divisor"
+  },
+  {
+   "sql": "SELECT divide(x, y) AS v, typeof(divide(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "double zero divisor"
+  },
+  {
+   "sql": "SELECT x // y AS v, typeof(x // y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "double zero divisor"
+  },
+  {
+   "sql": "SELECT fdiv(x, y) AS v, typeof(fdiv(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "double zero divisor"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "double zero divisor"
+  },
+  {
+   "sql": "SELECT mod(x, y) AS v, typeof(mod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "double zero divisor"
+  },
+  {
+   "sql": "SELECT x % y AS v, typeof(x % y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "double zero divisor"
+  },
+  {
+   "sql": "SELECT x / y AS v, typeof(x / y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-1.0, 0.0)]",
+   "result_repr": "[-inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff0000000000000"
+   ],
+   "error": null,
+   "note": "double -1/0"
+  },
+  {
+   "sql": "SELECT x / y AS v, typeof(x / y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.0, 0.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "double 0/0"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.0, 0.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "fmod(0,0)"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(inf, 1.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "fmod(inf,1)"
+  },
+  {
+   "sql": "SELECT x + y AS v, typeof(x + y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(inf, 1.0)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "inf + 1"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, inf)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "fmod(1,inf)"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(nan, 1.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "fmod(nan,1)"
+  },
+  {
+   "sql": "SELECT x + y AS v, typeof(x + y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(nan, 1.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "nan + 1"
+  },
+  {
+   "sql": "SELECT add(x, y) AS v, typeof(add(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(nan, 1.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "add(nan,1)"
+  },
+  {
+   "sql": "SELECT x + y AS v, typeof(x + y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1e+308, 1e+308)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "double overflow -> inf or error?"
+  },
+  {
+   "sql": "SELECT add(x, y) AS v, typeof(add(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1e+308, 1e+308)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "double overflow -> inf or error?"
+  },
+  {
+   "sql": "SELECT x * y AS v, typeof(x * y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1e+308, 1e+308)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "double overflow -> inf or error?"
+  },
+  {
+   "sql": "SELECT multiply(x, y) AS v, typeof(multiply(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1e+308, 1e+308)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "double overflow -> inf or error?"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, 1.0)]",
+   "result_repr": "[0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000000"
+   ],
+   "error": null,
+   "note": "-0.0 handling"
+  },
+  {
+   "sql": "SELECT mod(x, y) AS v, typeof(mod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, 1.0)]",
+   "result_repr": "[-0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "8000000000000000"
+   ],
+   "error": null,
+   "note": "-0.0 handling"
+  },
+  {
+   "sql": "SELECT x % y AS v, typeof(x % y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, 1.0)]",
+   "result_repr": "[-0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "8000000000000000"
+   ],
+   "error": null,
+   "note": "-0.0 handling"
+  },
+  {
+   "sql": "SELECT add(x, y) AS v, typeof(add(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, 1.0)]",
+   "result_repr": "[1.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000000"
+   ],
+   "error": null,
+   "note": "-0.0 handling"
+  },
+  {
+   "sql": "SELECT add(x, y) AS v, typeof(add(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, 0.0)]",
+   "result_repr": "[0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000000"
+   ],
+   "error": null,
+   "note": "-0 + 0"
+  },
+  {
+   "sql": "SELECT add(x, y) AS v, typeof(add(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, -0.0)]",
+   "result_repr": "[-0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "8000000000000000"
+   ],
+   "error": null,
+   "note": "-0 + -0"
+  },
+  {
+   "sql": "SELECT x + y AS v, typeof(x + y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.1, 0.2)]",
+   "result_repr": "[0.30000000000000004]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3fd3333333333334"
+   ],
+   "error": null,
+   "note": "raw IEEE check"
+  },
+  {
+   "sql": "SELECT add(x, y) AS v, typeof(add(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.1, 0.2)]",
+   "result_repr": "[0.30000000000000004]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3fd3333333333334"
+   ],
+   "error": null,
+   "note": "raw IEEE check fn"
+  },
+  {
+   "sql": "SELECT a + x AS v, typeof(a + x) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[9.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4023000000000000"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT add(a, x) AS v, typeof(add(a, x)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[9.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4023000000000000"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT divide(a, x) AS v, typeof(divide(a, x)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[2.8]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4006666666666666"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT mod(a, x) AS v, typeof(mod(a, x)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[2.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4000000000000000"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT a % x AS v, typeof(a % x) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[2.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4000000000000000"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT a // x AS v, typeof(a // x) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[2.8]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4006666666666666"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT fdiv(a, x) AS v, typeof(fdiv(a, x)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[2.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4000000000000000"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT fmod(a, x) AS v, typeof(fmod(a, x)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.5)]",
+   "result_repr": "[2.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4000000000000000"
+   ],
+   "error": null,
+   "note": "mixed bigint/double"
+  },
+  {
+   "sql": "SELECT divide(a, x) AS v, typeof(divide(a, x)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.0)]",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "mixed divide: int or double semantics?"
+  },
+  {
+   "sql": "SELECT a // x AS v, typeof(a // x) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 2.0)]",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "mixed // : int or double semantics?"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 2.0)]",
+   "result_repr": "[1.0000000000000002]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000001"
+   ],
+   "error": null,
+   "note": "up from 1.0"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 0.0)]",
+   "result_repr": "[0.9999999999999999]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3fefffffffffffff"
+   ],
+   "error": null,
+   "note": "down from 1.0"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.0, -1.0)]",
+   "result_repr": "[-5e-324]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "8000000000000001"
+   ],
+   "error": null,
+   "note": "0 toward -1: smallest neg denormal?"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, 1.0)]",
+   "result_repr": "[5e-324]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000001"
+   ],
+   "error": null,
+   "note": "-0 toward 1: smallest pos denormal?"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.0, 0.0)]",
+   "result_repr": "[0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000000"
+   ],
+   "error": null,
+   "note": "x==y"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, 1.0)]",
+   "result_repr": "[1.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000000"
+   ],
+   "error": null,
+   "note": "x==y at 1"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.7976931348623157e+308, inf)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "max toward inf"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(inf, 0.0)]",
+   "result_repr": "[1.7976931348623157e+308]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7fefffffffffffff"
+   ],
+   "error": null,
+   "note": "inf toward 0"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(inf, inf)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "inf,inf"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(nan, 1.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "nan first arg"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(1.0, nan)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "nan second arg"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-0.0, 0.0)]",
+   "result_repr": "[0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "0000000000000000"
+   ],
+   "error": null,
+   "note": "-0 toward +0"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.0, -0.0)]",
+   "result_repr": "[-0.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "8000000000000000"
+   ],
+   "error": null,
+   "note": "+0 toward -0"
+  },
+  {
+   "sql": "SELECT nextafter(a, b) AS v, typeof(nextafter(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(1, 2)]",
+   "result_repr": "[1.0000000000000002]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000001"
+   ],
+   "error": null,
+   "note": "nextafter int args"
+  },
+  {
+   "sql": "SELECT nextafter(f, g) AS v, typeof(nextafter(f, g)) AS ty FROM t",
+   "input_repr": "t(f FLOAT, g FLOAT); rows=[(1.0, 2.0)]",
+   "result_repr": "[1.0000001192092896]",
+   "result_type": "FLOAT",
+   "bits": [
+    "3ff0000020000000"
+   ],
+   "error": null,
+   "note": "nextafter float32 args"
+  },
+  {
+   "sql": "SELECT add(a, b) AS v, typeof(add(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT subtract(a, b) AS v, typeof(subtract(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT multiply(a, b) AS v, typeof(multiply(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT mod(a, b) AS v, typeof(mod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT fdiv(a, b) AS v, typeof(fdiv(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT fmod(a, b) AS v, typeof(fmod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT nextafter(a, b) AS v, typeof(nextafter(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT a + b AS v, typeof(a + b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT a / b AS v, typeof(a / b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT a % b AS v, typeof(a % b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 1), (1, None), (None, None)]",
+   "result_repr": "[None, None, None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL each arg + both"
+  },
+  {
+   "sql": "SELECT divide(a, b) AS v, typeof(divide(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL dividend with zero divisor: NULL or trap?"
+  },
+  {
+   "sql": "SELECT mod(a, b) AS v, typeof(mod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL dividend with zero divisor: NULL or trap?"
+  },
+  {
+   "sql": "SELECT a // b AS v, typeof(a // b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL dividend with zero divisor: NULL or trap?"
+  },
+  {
+   "sql": "SELECT a % b AS v, typeof(a % b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(None, 0)]",
+   "result_repr": "[None]",
+   "result_type": "BIGINT",
+   "bits": null,
+   "error": null,
+   "note": "NULL dividend with zero divisor: NULL or trap?"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(None, 0.0)]",
+   "result_repr": "[None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "NULL dividend double zero divisor"
+  },
+  {
+   "sql": "SELECT x / y AS v, typeof(x / y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(None, 0.0)]",
+   "result_repr": "[None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "NULL dividend double zero divisor"
+  },
+  {
+   "sql": "SELECT fdiv(x, y) AS v, typeof(fdiv(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(None, 0.0)]",
+   "result_repr": "[None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "NULL dividend double zero divisor"
+  },
+  {
+   "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('3', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t+(TINYINT) -> TINYINT\n\t+(TINYINT, TINYINT) -> TINYINT\n\t+(SMALLINT) -> SMALLINT\n\t+(SMALLINT, SMALLINT) -> SMALLINT\n\t+(INTEGER) -> INTEGER\n\t+(INTEGER, INTEGER) -> INTEGER\n\t+(BIGINT) -> BIGINT\n\t+(BIGINT, BIGINT) -> BIGINT\n\t+(HUGEINT) -> HUGEINT\n\t+(HUGEINT, HUGEINT) -> HUGEINT\n\t+(FLOAT) -> FLOAT\n\t+(FLOAT, FLOAT) -> FLOAT\n\t+(DOUBLE) -> DOUBLE\n\t+(DOUBLE, DOUBLE) -> DOUBLE\n\t+(DECIMAL) -> DECIMAL\n\t+(DECIMAL, DECIMAL) -> DECIMAL\n\t+(UTINYINT) -> UTINYINT\n\t+(UTINYINT, UTINYINT) -> UTINYINT\n\t+(USMALLINT) -> USMALLINT\n\t+(USMALLINT, USMALLINT) -> USMALLINT\n\t+(UINTEGER) -> UINTEGER\n\t+(UINTEGER, UINTEGER) -> UINTEGER\n\t+(UBIGINT) -> UBIGINT\n\t+(UBIGINT, UBIGINT) -> UBIGINT\n\t+(UHUGEINT) -> UHUGEINT\n\t+(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t+(DATE, INTEGER) -> DATE\n\t+(INTEGER, DATE) -> DATE\n\t+(INTERVAL, INTERVAL) -> INTERVAL\n\t+(DATE, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, DATE) -> TIMESTAMP\n\t+(TIME, INTERVAL) -> TIME\n\t+(INTERVAL, TIME) -> TIME\n\t+(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t+(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\t+(TIME, DATE) -> TIMESTAMP\n\t+(DATE, TIME) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\t+(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\t+([ANY[]...]) -> ANY[]\n\t+(BIGNUM, BIGNUM) -> BIGNUM\n\t+(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t+(INTERVAL, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 1: SELECT v + b AS v, typeof(v + b) AS ty FROM t\n                 ^",
+   "note": "varchar numeric implicit cast, operator"
+  },
+  {
+   "sql": "SELECT add(v, b) AS v, typeof(add(v, b)) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('3', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types 'add(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tadd(TINYINT) -> TINYINT\n\tadd(TINYINT, TINYINT) -> TINYINT\n\tadd(SMALLINT) -> SMALLINT\n\tadd(SMALLINT, SMALLINT) -> SMALLINT\n\tadd(INTEGER) -> INTEGER\n\tadd(INTEGER, INTEGER) -> INTEGER\n\tadd(BIGINT) -> BIGINT\n\tadd(BIGINT, BIGINT) -> BIGINT\n\tadd(HUGEINT) -> HUGEINT\n\tadd(HUGEINT, HUGEINT) -> HUGEINT\n\tadd(FLOAT) -> FLOAT\n\tadd(FLOAT, FLOAT) -> FLOAT\n\tadd(DOUBLE) -> DOUBLE\n\tadd(DOUBLE, DOUBLE) -> DOUBLE\n\tadd(DECIMAL) -> DECIMAL\n\tadd(DECIMAL, DECIMAL) -> DECIMAL\n\tadd(UTINYINT) -> UTINYINT\n\tadd(UTINYINT, UTINYINT) -> UTINYINT\n\tadd(USMALLINT) -> USMALLINT\n\tadd(USMALLINT, USMALLINT) -> USMALLINT\n\tadd(UINTEGER) -> UINTEGER\n\tadd(UINTEGER, UINTEGER) -> UINTEGER\n\tadd(UBIGINT) -> UBIGINT\n\tadd(UBIGINT, UBIGINT) -> UBIGINT\n\tadd(UHUGEINT) -> UHUGEINT\n\tadd(UHUGEINT, UHUGEINT) -> UHUGEINT\n\tadd(DATE, INTEGER) -> DATE\n\tadd(INTEGER, DATE) -> DATE\n\tadd(INTERVAL, INTERVAL) -> INTERVAL\n\tadd(DATE, INTERVAL) -> TIMESTAMP\n\tadd(INTERVAL, DATE) -> TIMESTAMP\n\tadd(TIME, INTERVAL) -> TIME\n\tadd(INTERVAL, TIME) -> TIME\n\tadd(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\tadd(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\tadd(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\tadd(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\tadd(TIME, DATE) -> TIMESTAMP\n\tadd(DATE, TIME) -> TIMESTAMP\n\tadd(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\tadd(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\tadd([ANY[]...]) -> ANY[]\n\tadd(BIGNUM, BIGNUM) -> BIGNUM\n\n\nLINE 1: SELECT add(v, b) AS v, typeof(add(v, b)) AS ty FROM t\n               ^",
+   "note": "varchar numeric implicit cast, function"
+  },
+  {
+   "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('é', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t+(TINYINT) -> TINYINT\n\t+(TINYINT, TINYINT) -> TINYINT\n\t+(SMALLINT) -> SMALLINT\n\t+(SMALLINT, SMALLINT) -> SMALLINT\n\t+(INTEGER) -> INTEGER\n\t+(INTEGER, INTEGER) -> INTEGER\n\t+(BIGINT) -> BIGINT\n\t+(BIGINT, BIGINT) -> BIGINT\n\t+(HUGEINT) -> HUGEINT\n\t+(HUGEINT, HUGEINT) -> HUGEINT\n\t+(FLOAT) -> FLOAT\n\t+(FLOAT, FLOAT) -> FLOAT\n\t+(DOUBLE) -> DOUBLE\n\t+(DOUBLE, DOUBLE) -> DOUBLE\n\t+(DECIMAL) -> DECIMAL\n\t+(DECIMAL, DECIMAL) -> DECIMAL\n\t+(UTINYINT) -> UTINYINT\n\t+(UTINYINT, UTINYINT) -> UTINYINT\n\t+(USMALLINT) -> USMALLINT\n\t+(USMALLINT, USMALLINT) -> USMALLINT\n\t+(UINTEGER) -> UINTEGER\n\t+(UINTEGER, UINTEGER) -> UINTEGER\n\t+(UBIGINT) -> UBIGINT\n\t+(UBIGINT, UBIGINT) -> UBIGINT\n\t+(UHUGEINT) -> UHUGEINT\n\t+(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t+(DATE, INTEGER) -> DATE\n\t+(INTEGER, DATE) -> DATE\n\t+(INTERVAL, INTERVAL) -> INTERVAL\n\t+(DATE, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, DATE) -> TIMESTAMP\n\t+(TIME, INTERVAL) -> TIME\n\t+(INTERVAL, TIME) -> TIME\n\t+(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t+(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\t+(TIME, DATE) -> TIMESTAMP\n\t+(DATE, TIME) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\t+(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\t+([ANY[]...]) -> ANY[]\n\t+(BIGNUM, BIGNUM) -> BIGNUM\n\t+(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t+(INTERVAL, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 1: SELECT v + b AS v, typeof(v + b) AS ty FROM t\n                 ^",
+   "note": "e-acute"
+  },
+  {
+   "sql": "SELECT add(v, b) AS v, typeof(add(v, b)) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('é', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types 'add(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tadd(TINYINT) -> TINYINT\n\tadd(TINYINT, TINYINT) -> TINYINT\n\tadd(SMALLINT) -> SMALLINT\n\tadd(SMALLINT, SMALLINT) -> SMALLINT\n\tadd(INTEGER) -> INTEGER\n\tadd(INTEGER, INTEGER) -> INTEGER\n\tadd(BIGINT) -> BIGINT\n\tadd(BIGINT, BIGINT) -> BIGINT\n\tadd(HUGEINT) -> HUGEINT\n\tadd(HUGEINT, HUGEINT) -> HUGEINT\n\tadd(FLOAT) -> FLOAT\n\tadd(FLOAT, FLOAT) -> FLOAT\n\tadd(DOUBLE) -> DOUBLE\n\tadd(DOUBLE, DOUBLE) -> DOUBLE\n\tadd(DECIMAL) -> DECIMAL\n\tadd(DECIMAL, DECIMAL) -> DECIMAL\n\tadd(UTINYINT) -> UTINYINT\n\tadd(UTINYINT, UTINYINT) -> UTINYINT\n\tadd(USMALLINT) -> USMALLINT\n\tadd(USMALLINT, USMALLINT) -> USMALLINT\n\tadd(UINTEGER) -> UINTEGER\n\tadd(UINTEGER, UINTEGER) -> UINTEGER\n\tadd(UBIGINT) -> UBIGINT\n\tadd(UBIGINT, UBIGINT) -> UBIGINT\n\tadd(UHUGEINT) -> UHUGEINT\n\tadd(UHUGEINT, UHUGEINT) -> UHUGEINT\n\tadd(DATE, INTEGER) -> DATE\n\tadd(INTEGER, DATE) -> DATE\n\tadd(INTERVAL, INTERVAL) -> INTERVAL\n\tadd(DATE, INTERVAL) -> TIMESTAMP\n\tadd(INTERVAL, DATE) -> TIMESTAMP\n\tadd(TIME, INTERVAL) -> TIME\n\tadd(INTERVAL, TIME) -> TIME\n\tadd(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\tadd(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\tadd(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\tadd(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\tadd(TIME, DATE) -> TIMESTAMP\n\tadd(DATE, TIME) -> TIMESTAMP\n\tadd(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\tadd(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\tadd([ANY[]...]) -> ANY[]\n\tadd(BIGNUM, BIGNUM) -> BIGNUM\n\n\nLINE 1: SELECT add(v, b) AS v, typeof(add(v, b)) AS ty FROM t\n               ^",
+   "note": "combining sequence"
+  },
+  {
+   "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('😀', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t+(TINYINT) -> TINYINT\n\t+(TINYINT, TINYINT) -> TINYINT\n\t+(SMALLINT) -> SMALLINT\n\t+(SMALLINT, SMALLINT) -> SMALLINT\n\t+(INTEGER) -> INTEGER\n\t+(INTEGER, INTEGER) -> INTEGER\n\t+(BIGINT) -> BIGINT\n\t+(BIGINT, BIGINT) -> BIGINT\n\t+(HUGEINT) -> HUGEINT\n\t+(HUGEINT, HUGEINT) -> HUGEINT\n\t+(FLOAT) -> FLOAT\n\t+(FLOAT, FLOAT) -> FLOAT\n\t+(DOUBLE) -> DOUBLE\n\t+(DOUBLE, DOUBLE) -> DOUBLE\n\t+(DECIMAL) -> DECIMAL\n\t+(DECIMAL, DECIMAL) -> DECIMAL\n\t+(UTINYINT) -> UTINYINT\n\t+(UTINYINT, UTINYINT) -> UTINYINT\n\t+(USMALLINT) -> USMALLINT\n\t+(USMALLINT, USMALLINT) -> USMALLINT\n\t+(UINTEGER) -> UINTEGER\n\t+(UINTEGER, UINTEGER) -> UINTEGER\n\t+(UBIGINT) -> UBIGINT\n\t+(UBIGINT, UBIGINT) -> UBIGINT\n\t+(UHUGEINT) -> UHUGEINT\n\t+(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t+(DATE, INTEGER) -> DATE\n\t+(INTEGER, DATE) -> DATE\n\t+(INTERVAL, INTERVAL) -> INTERVAL\n\t+(DATE, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, DATE) -> TIMESTAMP\n\t+(TIME, INTERVAL) -> TIME\n\t+(INTERVAL, TIME) -> TIME\n\t+(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t+(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\t+(TIME, DATE) -> TIMESTAMP\n\t+(DATE, TIME) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\t+(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\t+([ANY[]...]) -> ANY[]\n\t+(BIGNUM, BIGNUM) -> BIGNUM\n\t+(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t+(INTERVAL, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 1: SELECT v + b AS v, typeof(v + b) AS ty FROM t\n                 ^",
+   "note": "emoji"
+  },
+  {
+   "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('İ', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t+(TINYINT) -> TINYINT\n\t+(TINYINT, TINYINT) -> TINYINT\n\t+(SMALLINT) -> SMALLINT\n\t+(SMALLINT, SMALLINT) -> SMALLINT\n\t+(INTEGER) -> INTEGER\n\t+(INTEGER, INTEGER) -> INTEGER\n\t+(BIGINT) -> BIGINT\n\t+(BIGINT, BIGINT) -> BIGINT\n\t+(HUGEINT) -> HUGEINT\n\t+(HUGEINT, HUGEINT) -> HUGEINT\n\t+(FLOAT) -> FLOAT\n\t+(FLOAT, FLOAT) -> FLOAT\n\t+(DOUBLE) -> DOUBLE\n\t+(DOUBLE, DOUBLE) -> DOUBLE\n\t+(DECIMAL) -> DECIMAL\n\t+(DECIMAL, DECIMAL) -> DECIMAL\n\t+(UTINYINT) -> UTINYINT\n\t+(UTINYINT, UTINYINT) -> UTINYINT\n\t+(USMALLINT) -> USMALLINT\n\t+(USMALLINT, USMALLINT) -> USMALLINT\n\t+(UINTEGER) -> UINTEGER\n\t+(UINTEGER, UINTEGER) -> UINTEGER\n\t+(UBIGINT) -> UBIGINT\n\t+(UBIGINT, UBIGINT) -> UBIGINT\n\t+(UHUGEINT) -> UHUGEINT\n\t+(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t+(DATE, INTEGER) -> DATE\n\t+(INTEGER, DATE) -> DATE\n\t+(INTERVAL, INTERVAL) -> INTERVAL\n\t+(DATE, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, DATE) -> TIMESTAMP\n\t+(TIME, INTERVAL) -> TIME\n\t+(INTERVAL, TIME) -> TIME\n\t+(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t+(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\t+(TIME, DATE) -> TIMESTAMP\n\t+(DATE, TIME) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\t+(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\t+([ANY[]...]) -> ANY[]\n\t+(BIGNUM, BIGNUM) -> BIGNUM\n\t+(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t+(INTERVAL, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 1: SELECT v + b AS v, typeof(v + b) AS ty FROM t\n                 ^",
+   "note": "U+0130"
+  },
+  {
+   "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('K', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t+(TINYINT) -> TINYINT\n\t+(TINYINT, TINYINT) -> TINYINT\n\t+(SMALLINT) -> SMALLINT\n\t+(SMALLINT, SMALLINT) -> SMALLINT\n\t+(INTEGER) -> INTEGER\n\t+(INTEGER, INTEGER) -> INTEGER\n\t+(BIGINT) -> BIGINT\n\t+(BIGINT, BIGINT) -> BIGINT\n\t+(HUGEINT) -> HUGEINT\n\t+(HUGEINT, HUGEINT) -> HUGEINT\n\t+(FLOAT) -> FLOAT\n\t+(FLOAT, FLOAT) -> FLOAT\n\t+(DOUBLE) -> DOUBLE\n\t+(DOUBLE, DOUBLE) -> DOUBLE\n\t+(DECIMAL) -> DECIMAL\n\t+(DECIMAL, DECIMAL) -> DECIMAL\n\t+(UTINYINT) -> UTINYINT\n\t+(UTINYINT, UTINYINT) -> UTINYINT\n\t+(USMALLINT) -> USMALLINT\n\t+(USMALLINT, USMALLINT) -> USMALLINT\n\t+(UINTEGER) -> UINTEGER\n\t+(UINTEGER, UINTEGER) -> UINTEGER\n\t+(UBIGINT) -> UBIGINT\n\t+(UBIGINT, UBIGINT) -> UBIGINT\n\t+(UHUGEINT) -> UHUGEINT\n\t+(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t+(DATE, INTEGER) -> DATE\n\t+(INTEGER, DATE) -> DATE\n\t+(INTERVAL, INTERVAL) -> INTERVAL\n\t+(DATE, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, DATE) -> TIMESTAMP\n\t+(TIME, INTERVAL) -> TIME\n\t+(INTERVAL, TIME) -> TIME\n\t+(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t+(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\t+(TIME, DATE) -> TIMESTAMP\n\t+(DATE, TIME) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\t+(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\t+([ANY[]...]) -> ANY[]\n\t+(BIGNUM, BIGNUM) -> BIGNUM\n\t+(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t+(INTERVAL, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 1: SELECT v + b AS v, typeof(v + b) AS ty FROM t\n                 ^",
+   "note": "U+212A kelvin"
+  },
+  {
+   "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('👨\\u200d👩\\u200d👧\\u200d👦', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t+(TINYINT) -> TINYINT\n\t+(TINYINT, TINYINT) -> TINYINT\n\t+(SMALLINT) -> SMALLINT\n\t+(SMALLINT, SMALLINT) -> SMALLINT\n\t+(INTEGER) -> INTEGER\n\t+(INTEGER, INTEGER) -> INTEGER\n\t+(BIGINT) -> BIGINT\n\t+(BIGINT, BIGINT) -> BIGINT\n\t+(HUGEINT) -> HUGEINT\n\t+(HUGEINT, HUGEINT) -> HUGEINT\n\t+(FLOAT) -> FLOAT\n\t+(FLOAT, FLOAT) -> FLOAT\n\t+(DOUBLE) -> DOUBLE\n\t+(DOUBLE, DOUBLE) -> DOUBLE\n\t+(DECIMAL) -> DECIMAL\n\t+(DECIMAL, DECIMAL) -> DECIMAL\n\t+(UTINYINT) -> UTINYINT\n\t+(UTINYINT, UTINYINT) -> UTINYINT\n\t+(USMALLINT) -> USMALLINT\n\t+(USMALLINT, USMALLINT) -> USMALLINT\n\t+(UINTEGER) -> UINTEGER\n\t+(UINTEGER, UINTEGER) -> UINTEGER\n\t+(UBIGINT) -> UBIGINT\n\t+(UBIGINT, UBIGINT) -> UBIGINT\n\t+(UHUGEINT) -> UHUGEINT\n\t+(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t+(DATE, INTEGER) -> DATE\n\t+(INTEGER, DATE) -> DATE\n\t+(INTERVAL, INTERVAL) -> INTERVAL\n\t+(DATE, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, DATE) -> TIMESTAMP\n\t+(TIME, INTERVAL) -> TIME\n\t+(INTERVAL, TIME) -> TIME\n\t+(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t+(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\t+(TIME, DATE) -> TIMESTAMP\n\t+(DATE, TIME) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\t+(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\t+([ANY[]...]) -> ANY[]\n\t+(BIGNUM, BIGNUM) -> BIGNUM\n\t+(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t+(INTERVAL, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 1: SELECT v + b AS v, typeof(v + b) AS ty FROM t\n                 ^",
+   "note": "ZWJ family emoji"
+  },
+  {
+   "sql": "SELECT v + b AS v, typeof(v + b) AS ty FROM t",
+   "input_repr": "t(v VARCHAR, b BIGINT); rows=[('a\\x00b', 1)]",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t+(TINYINT) -> TINYINT\n\t+(TINYINT, TINYINT) -> TINYINT\n\t+(SMALLINT) -> SMALLINT\n\t+(SMALLINT, SMALLINT) -> SMALLINT\n\t+(INTEGER) -> INTEGER\n\t+(INTEGER, INTEGER) -> INTEGER\n\t+(BIGINT) -> BIGINT\n\t+(BIGINT, BIGINT) -> BIGINT\n\t+(HUGEINT) -> HUGEINT\n\t+(HUGEINT, HUGEINT) -> HUGEINT\n\t+(FLOAT) -> FLOAT\n\t+(FLOAT, FLOAT) -> FLOAT\n\t+(DOUBLE) -> DOUBLE\n\t+(DOUBLE, DOUBLE) -> DOUBLE\n\t+(DECIMAL) -> DECIMAL\n\t+(DECIMAL, DECIMAL) -> DECIMAL\n\t+(UTINYINT) -> UTINYINT\n\t+(UTINYINT, UTINYINT) -> UTINYINT\n\t+(USMALLINT) -> USMALLINT\n\t+(USMALLINT, USMALLINT) -> USMALLINT\n\t+(UINTEGER) -> UINTEGER\n\t+(UINTEGER, UINTEGER) -> UINTEGER\n\t+(UBIGINT) -> UBIGINT\n\t+(UBIGINT, UBIGINT) -> UBIGINT\n\t+(UHUGEINT) -> UHUGEINT\n\t+(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t+(DATE, INTEGER) -> DATE\n\t+(INTEGER, DATE) -> DATE\n\t+(INTERVAL, INTERVAL) -> INTERVAL\n\t+(DATE, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, DATE) -> TIMESTAMP\n\t+(TIME, INTERVAL) -> TIME\n\t+(INTERVAL, TIME) -> TIME\n\t+(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t+(INTERVAL, TIMESTAMP) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t+(INTERVAL, TIME WITH TIME ZONE) -> TIME WITH TIME ZONE\n\t+(TIME, DATE) -> TIMESTAMP\n\t+(DATE, TIME) -> TIMESTAMP\n\t+(TIME WITH TIME ZONE, DATE) -> TIMESTAMP WITH TIME ZONE\n\t+(DATE, TIME WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\t+([ANY[]...]) -> ANY[]\n\t+(BIGNUM, BIGNUM) -> BIGNUM\n\t+(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t+(INTERVAL, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 1: SELECT v + b AS v, typeof(v + b) AS ty FROM t\n                 ^",
+   "note": "embedded NUL"
+  },
+  {
+   "sql": "SELECT 7 / 2 AS v, typeof(7 / 2) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[3.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "400c000000000000"
+   ],
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT 7 // 2 AS v, typeof(7 // 2) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[3]",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT divide(7, 2) AS v, typeof(divide(7, 2)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[3]",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT mod(-7, 3) AS v, typeof(mod(-7, 3)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[-1]",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT fdiv(-7, 2) AS v, typeof(fdiv(-7, 2)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[-4.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "c010000000000000"
+   ],
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT 9223372036854775807 + 1 AS v, typeof(9223372036854775807 + 1) AS ty",
+   "input_repr": "literal path",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!",
+   "note": "literal overflow: fold-time error text?"
+  },
+  {
+   "sql": "SELECT add(9223372036854775807, 1) AS v, typeof(add(9223372036854775807, 1)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": null,
+   "result_type": null,
+   "bits": null,
+   "error": "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!",
+   "note": "literal overflow via function"
+  },
+  {
+   "sql": "SELECT 1.0 AS v, typeof(1.0) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[Decimal('1.0')]",
+   "result_type": "DECIMAL(2,1)",
+   "bits": null,
+   "error": null,
+   "note": "decimal literal type"
+  },
+  {
+   "sql": "SELECT fmod(1.0, 0.0) AS v, typeof(fmod(1.0, 0.0)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "literal fmod by zero (decimal literals!)"
+  },
+  {
+   "sql": "SELECT fmod(1.0::DOUBLE, 0.0::DOUBLE) AS v, typeof(fmod(1.0::DOUBLE, 0.0::DOUBLE)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT 1.0 / 0.0 AS v, typeof(1.0 / 0.0) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "decimal literal division by zero"
+  },
+  {
+   "sql": "SELECT 1.0::DOUBLE / 0.0::DOUBLE AS v, typeof(1.0::DOUBLE / 0.0::DOUBLE) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT 1 / 0 AS v, typeof(1 / 0) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT 1 % 0 AS v, typeof(1 % 0) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[None]",
+   "result_type": "INTEGER",
+   "bits": null,
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT nextafter(1.0, 2.0) AS v, typeof(nextafter(1.0, 2.0)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[1.0000000000000002]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000001"
+   ],
+   "error": null,
+   "note": "decimal literals into nextafter"
+  },
+  {
+   "sql": "SELECT nextafter(1.0::DOUBLE, 2.0::DOUBLE) AS v, typeof(nextafter(1.0::DOUBLE, 2.0::DOUBLE)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[1.0000000000000002]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff0000000000001"
+   ],
+   "error": null,
+   "note": "literal/constant-fold path"
+  },
+  {
+   "sql": "SELECT fdiv(a, b) AS v, typeof(fdiv(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 0)]",
+   "result_repr": "[-inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff0000000000000"
+   ],
+   "error": null,
+   "note": "fdiv negative by int zero: -inf?"
+  },
+  {
+   "sql": "SELECT fmod(a, b) AS v, typeof(fmod(a, b)) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "fmod negative by int zero: nan bits?"
+  },
+  {
+   "sql": "SELECT a / b AS v, typeof(a / b) AS ty FROM t",
+   "input_repr": "t(a BIGINT, b BIGINT); rows=[(-7, 0)]",
+   "result_repr": "[-inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff0000000000000"
+   ],
+   "error": null,
+   "note": "int / operator negative by zero"
+  },
+  {
+   "sql": "SELECT divide(x, y) AS v, typeof(divide(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.0, 0.0)]",
+   "result_repr": "[None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "divide double 0/0: NULL guard on divisor?"
+  },
+  {
+   "sql": "SELECT fmod(x, y) AS v, typeof(fmod(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(0.0, inf)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff8000000000000"
+   ],
+   "error": null,
+   "note": "fmod(0, inf)"
+  },
+  {
+   "sql": "SELECT x % y AS v, typeof(x % y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(7.5, -2.0)]",
+   "result_repr": "[1.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "3ff8000000000000"
+   ],
+   "error": null,
+   "note": "% parity with mod, negative divisor"
+  },
+  {
+   "sql": "SELECT a % x AS v, typeof(a % x) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 0.0)]",
+   "result_repr": "[nan]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff8000000000000"
+   ],
+   "error": null,
+   "note": "mixed % by double zero: nan or NULL?"
+  },
+  {
+   "sql": "SELECT a / x AS v, typeof(a / x) AS ty FROM t",
+   "input_repr": "t(a BIGINT, x DOUBLE); rows=[(7, 0.0)]",
+   "result_repr": "[inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "7ff0000000000000"
+   ],
+   "error": null,
+   "note": "mixed / by double zero"
+  },
+  {
+   "sql": "SELECT x // y AS v, typeof(x // y) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-1.0, 0.0)]",
+   "result_repr": "[None]",
+   "result_type": "DOUBLE",
+   "bits": null,
+   "error": null,
+   "note": "double // negative by zero: NULL?"
+  },
+  {
+   "sql": "SELECT fdiv(x, y) AS v, typeof(fdiv(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-1.0, 0.0)]",
+   "result_repr": "[-inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff0000000000000"
+   ],
+   "error": null,
+   "note": "fdiv double negative by zero: -inf?"
+  },
+  {
+   "sql": "SELECT nextafter(x, y) AS v, typeof(nextafter(x, y)) AS ty FROM t",
+   "input_repr": "t(x DOUBLE, y DOUBLE); rows=[(-1.7976931348623157e+308, -inf)]",
+   "result_repr": "[-inf]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "fff0000000000000"
+   ],
+   "error": null,
+   "note": "-max toward -inf"
+  },
+  {
+   "sql": "SELECT 7.5 // 2.5 AS v, typeof(7.5 // 2.5) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4008000000000000"
+   ],
+   "error": null,
+   "note": "decimal literals //: what overload?"
+  },
+  {
+   "sql": "SELECT 7.5 % 2.5 AS v, typeof(7.5 % 2.5) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[Decimal('0.0')]",
+   "result_type": "DECIMAL(2,1)",
+   "bits": null,
+   "error": null,
+   "note": "decimal literals %"
+  },
+  {
+   "sql": "SELECT fdiv(7.5, 2.5) AS v, typeof(fdiv(7.5, 2.5)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[3.0]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "4008000000000000"
+   ],
+   "error": null,
+   "note": "decimal literals fdiv"
+  },
+  {
+   "sql": "SELECT fmod(7.5, -2.0) AS v, typeof(fmod(7.5, -2.0)) AS ty",
+   "input_repr": "literal path",
+   "result_repr": "[-0.5]",
+   "result_type": "DOUBLE",
+   "bits": [
+    "bfe0000000000000"
+   ],
+   "error": null,
+   "note": "decimal literals fmod sign"
+  }
+ ]
+}
