@@ -1,0 +1,191 @@
+{
+  "area": "slices",
+  "duckdb_version": "1.5.5",
+  "pins": [
+    {
+      "claim": "s[a:b] on VARCHAR is 1-based and BOTH-ends-INCLUSIVE: 'hello'[2:4] keeps codepoints 2,3,4",
+      "query": "SELECT 'hello'[2:4]",
+      "observed": "[('ell',)]"
+    },
+    {
+      "claim": "UNIT is CODEPOINTS, not bytes: 'héllo'[2:3] = 'él' (é is 2 UTF-8 bytes but counts as one position)",
+      "query": "SELECT 'héllo'[2:3]",
+      "observed": "[('él',)]"
+    },
+    {
+      "claim": "Codepoint unit confirmed on 4-byte emoji + 3-byte euro: 'a😀b€c'[2:2]='😀', [2:4]='😀b€', [4:4]='€', [5:5]='c' (length()=5, strlen()=10 for this string)",
+      "query": "SELECT 'a😀b€c'[2:2], 'a😀b€c'[2:4], 'a😀b€c'[4:4], 'a😀b€c'[5:5]; SELECT length('a😀b€c'), strlen('a😀b€c')",
+      "observed": "[('😀',)] / [('😀b€',)] / [('€',)] / [('c',)] ; length=5, strlen=10"
+    },
+    {
+      "claim": "Codepoints, NOT graphemes: slicing 'e'+U+0301(combining acute)+'x' splits the cluster — [1:1]='e', [2:2]=bare combining mark",
+      "query": "SELECT ('e' || chr(769) || 'x')[1:1], ('e' || chr(769) || 'x')[2:2]",
+      "observed": "[('e', '\\u0301')]"
+    },
+    {
+      "claim": "Result type is always VARCHAR (never a list), for closed, open, empty and NULL-bound slices alike",
+      "query": "SELECT typeof('hello'[2:4]), typeof('hello'[:3]), typeof('hello'[2:]), typeof('hello'[:]), typeof(''[1:5]), typeof('hello'[NULL:2])",
+      "observed": "all six: 'VARCHAR'"
+    },
+    {
+      "claim": "Open end s[:b] == s[1:b]: 'hello'[:3]='hel'",
+      "query": "SELECT 'hello'[:3], 'hello'[:3] = 'hello'[1:3]",
+      "observed": "[('hel',)] ; equality True"
+    },
+    {
+      "claim": "Open start s[a:] == s[a:-1]: 'hello'[2:]='ello'",
+      "query": "SELECT 'hello'[2:], 'hello'[2:] = 'hello'[2:-1]",
+      "observed": "[('ello',)] ; equality True"
+    },
+    {
+      "claim": "Both open s[:] == s[1:-1] == whole string",
+      "query": "SELECT 'hello'[:], 'hello'[:] = 'hello'[1:-1]",
+      "observed": "[('hello',)] ; equality True"
+    },
+    {
+      "claim": "Negative index = from-end, -1 is LAST codepoint (inclusive): 'hello'[-3:-1]='llo'; works per-codepoint on non-ASCII: 'a😀b€c'[-3:-1]='b€c'",
+      "query": "SELECT 'hello'[-3:-1], 'a😀b€c'[-3:-1]",
+      "observed": "[('llo',)] / [('b€c',)]"
+    },
+    {
+      "claim": "Mixed signs fine: 'hello'[2:-1]='ello'; 'hello'[-3:5]='llo'; 'a😀b€c'[2:-2]='😀b€'",
+      "query": "SELECT 'hello'[2:-1], 'hello'[-3:5], 'a😀b€c'[2:-2]",
+      "observed": "[('ello',)] / [('llo',)] / [('😀b€',)]"
+    },
+    {
+      "claim": "Start below range clamps to 1: 'hello'[-99:2]='he', 'hello'[-60:3]='hel', [0:2]='he', [0:-1]='hello', [0:]='hello'",
+      "query": "SELECT 'hello'[-99:2], 'hello'[-60:3], 'hello'[0:2], 'hello'[0:-1], 'hello'[0:]",
+      "observed": "[('he',)] / [('hel',)] / [('he',)] / [('hello',)] / [('hello',)]"
+    },
+    {
+      "claim": "End beyond range clamps to len: 'hello'[3:60]='llo'",
+      "query": "SELECT 'hello'[3:60]",
+      "observed": "[('llo',)]"
+    },
+    {
+      "claim": "start > end (after negative resolution) yields '' (empty string, NOT NULL): [4:2], [2:0], [-1:-3], and [-1:2] (-1 resolves to 5 > 2) all ''",
+      "query": "SELECT 'hello'[4:2], 'hello'[2:0], 'hello'[-1:-3], 'hello'[-1:2]",
+      "observed": "[('',)] each"
+    },
+    {
+      "claim": "a = b returns that single codepoint: 'hello'[3:3]='l', 'hello'[-1:-1]='o'",
+      "query": "SELECT 'hello'[3:3], 'hello'[-1:-1]",
+      "observed": "[('l',)] / [('o',)]"
+    },
+    {
+      "claim": "Fully out-of-range either direction yields '' not NULL: [50:60], [-60:-50], [50:], [0:0], ''[1:5]",
+      "query": "SELECT 'hello'[50:60], 'hello'[-60:-50], 'hello'[50:], 'hello'[0:0], ''[1:5]",
+      "observed": "[('',)] each"
+    },
+    {
+      "claim": "Empty-string input always returns '' (never NULL): ''[2:4]='', ''[:3]='', ''[2:]='', ''[:]='', ''[-3:-1]=''",
+      "query": "SELECT s, s[2:4], s[:3], s[2:], s[:], s[-3:-1] FROM t WHERE s = ''",
+      "observed": "('', '', '', '', '', '')"
+    },
+    {
+      "claim": "NULL string input returns NULL for every slice form including fully-open s[:]",
+      "query": "SELECT (NULL::VARCHAR)[1:2], (NULL::VARCHAR)[:]",
+      "observed": "[(None,)] / [(None,)]"
+    },
+    {
+      "claim": "NULL bound => NULL result (NULL-strict; NULL is NOT an open bound): s[NULL:2], s[2:NULL], s[NULL:NULL] all NULL on 'hello'",
+      "query": "SELECT 'hello'[NULL:2], 'hello'[2:NULL], 'hello'[NULL:NULL]",
+      "observed": "[(None,)] each"
+    },
+    {
+      "claim": "NULL bound combined with an open other side is still NULL: 'hello'[NULL:] and 'hello'[:NULL] are NULL",
+      "query": "SELECT 'hello'[NULL:], 'hello'[:NULL]",
+      "observed": "[(None,)] / [(None,)]"
+    },
+    {
+      "claim": "Typed NULL bound behaves the same: 'hello'[NULL::INTEGER:3] is NULL",
+      "query": "SELECT 'hello'[NULL::INTEGER:3]",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "Dynamic bounds from columns work row-wise with identical semantics; a NULL bound cell yields NULL for that row only",
+      "query": "SELECT s, lo, hi, s[lo:hi] FROM b -- rows ('hello',2,4),('héllo',2,4),('a😀b€c',-3,-1),('hello',NULL,3),(NULL,1,2)",
+      "observed": "[('hello', 2, 4, 'ell'), ('héllo', 2, 4, 'éll'), ('a😀b€c', -3, -1, 'b€c'), ('hello', None, 3, None), (None, 1, 2, None)]"
+    },
+    {
+      "claim": "Expression bounds work: s[2:2+2] == s[2:4]; 'hello'[1+1:6-2]='ell'; prepared-statement params as bounds work too",
+      "query": "SELECT s, s[2:2+2] FROM t; SELECT 'hello'[1+1:6-2]; SELECT 'hello'[$1:$2] with params [2,4]",
+      "observed": "[('hello','ell'),('','') ,(None,None),('héllo','éll'),('a😀b€c','😀b€')] / [('ell',)] / [('ell',)]"
+    },
+    {
+      "claim": "Huge in-range bounds just clamp, no error: end of 2147483647, 2147483648, or 9223372036854775807 all give 'ello' for 'hello'[2:...]; start -9223372036854775808 clamps to 1; [9223372036854775807:9223372036854775807]=''",
+      "query": "SELECT 'hello'[2:2147483647], 'hello'[2:2147483648], 'hello'[2:9223372036854775807], 'hello'[-9223372036854775808:3], 'hello'[9223372036854775807:9223372036854775807], 'hello'[-9223372036854775807:-1]",
+      "observed": "[('ello',)] / [('ello',)] / [('ello',)] / [('hel',)] / [('',)] / [('hello',)]"
+    },
+    {
+      "claim": "Extreme BIGINT bounds from a COLUMN (not literal) also clamp without error: s[lo:hi] with lo=INT64_MIN, hi=INT64_MAX gives whole string",
+      "query": "SELECT s[lo:hi] FROM big -- ('hello', -9223372036854775808, 9223372036854775807)",
+      "observed": "[('hello',)]"
+    },
+    {
+      "claim": "One past INT64_MAX as a literal bound is a bind-time Conversion Error (INT128->INT64 cast), verbatim text pinned",
+      "query": "SELECT 'hello'[2:9223372036854775808]",
+      "observed": "ERROR: Conversion Error: Type INT128 with value 9223372036854775808 can't be cast because the value is out of range for the destination type INT64\n\nLINE 1: SELECT 'hello'[2:9223372036854775808]\n                         ^"
+    },
+    {
+      "claim": "One below INT64_MIN as a literal start bound errors the same way",
+      "query": "SELECT 'hello'[-9223372036854775809:3]",
+      "observed": "ERROR: Conversion Error: Type INT128 with value -9223372036854775809 can't be cast because the value is out of range for the destination type INT64\n\nLINE 1: SELECT 'hello'[-9223372036854775809:3]\n                       ^"
+    },
+    {
+      "claim": "Bounds are implicitly cast to INT64: DOUBLE bounds round half-away-from-zero (2.5->3, 3.5->4, 0.5->1), numeric-VARCHAR bounds parse ('2':'4' works), BOOLEAN true casts to 1",
+      "query": "SELECT 'hello'[1.5:3.5], 'hello'[1.4:3.6], 'abcdef'[2.5:4], 'abcdef'[3.5:5], 'abcdef'[0.5:3], 'hello'['2':'4'], 'hello'[true:4]; SELECT CAST(2.5 AS BIGINT), CAST(3.5 AS BIGINT), CAST(0.5 AS BIGINT), CAST(-2.5 AS BIGINT)",
+      "observed": "[('ell',)] / [('hell',)] / [('cd',)] / [('de',)] / [('abc',)] / [('ell',)] / [('hell',)] ; casts: (3, 4, 1, -3)"
+    },
+    {
+      "claim": "Non-numeric VARCHAR bound is a Conversion Error, verbatim text pinned",
+      "query": "SELECT 'hello'['a':'b']",
+      "observed": "ERROR: Conversion Error: Could not convert string 'a' to INT64\n\nLINE 1: SELECT 'hello'['a':'b']\n                       ^"
+    },
+    {
+      "claim": "HUGEINT bounds within INT64 range work: 'hello'[CAST(2 AS HUGEINT):CAST(4 AS HUGEINT)]='ell'",
+      "query": "SELECT 'hello'[CAST(2 AS HUGEINT):CAST(4 AS HUGEINT)]",
+      "observed": "[('ell',)]"
+    },
+    {
+      "claim": "s[a:b] == array_slice(s,a,b) == list_slice(s,a,b) on VARCHAR, including NULL-bound => NULL, zero-clamp, a>b => '', out-of-range => '', open-start via -1, and codepoint unit",
+      "query": "SELECT array_slice('hello',2,4), list_slice('hello',2,4), array_slice('hello',NULL,3), array_slice('hello',2,NULL), array_slice('a😀b€c',2,4), array_slice('hello',2,-1), array_slice('hello',0,2), array_slice('hello',4,2), array_slice('hello',50,60)",
+      "observed": "[('ell',)] / [('ell',)] / [(None,)] / [(None,)] / [('😀b€',)] / [('ello',)] / [('he',)] / [('',)] / [('',)]"
+    },
+    {
+      "claim": "Step form s[a:b:step] on VARCHAR is a Not implemented Error for EVERY step including 1; verbatim text pinned (note DuckDB's own suggested rewrite has unbalanced parens); array_slice(s,a,b,step) 4-arg form gives the identical error",
+      "query": "SELECT 'hello'[1:5:1]; SELECT 'hello'[1:5:2]; SELECT array_slice('hello',1,5,2)",
+      "observed": "ERROR: Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:\n SELECT array_to_string((str_split(string, '')[begin:end:step], ''); -- identical for all three"
+    },
+    {
+      "claim": "String slicing PARALLELS list slicing in shape (unlike single-subscript extract, which diverges): list out-of-range [5:6]->[] as string->''; list [3:2]->[]; list [0:2] clamps; list [-2:-1] from-end inclusive; list NULL bound->NULL; and lists DO support steps ([1,2,3,4][1:4:2]=[1,3]) while strings trap",
+      "query": "SELECT [1,2,3][5:6], [1,2,3][3:2], [1,2,3][0:2], [1,2,3][-2:-1], [1,2,3][NULL:2], [1,2,3,4][1:4:2], typeof([1,2,3][1:2])",
+      "observed": "[([],)] / [([],)] / [([1, 2],)] / [([2, 3],)] / [(None,)] / [([1, 3],)] / [('INTEGER[]',)]"
+    },
+    {
+      "claim": "Same [a:b] operator on BLOB slices by BYTES, not codepoints — do not share the VARCHAR path: ('\\xC3\\xA9'::BLOB)[1:1]=b'\\xc3', [2:2]=b'\\xa9'; result typeof is BLOB",
+      "query": "SELECT ('\\xC3\\xA9'::BLOB)[1:1], ('\\xC3\\xA9'::BLOB)[2:2]; SELECT typeof(('hello'::BLOB)[2:4])",
+      "observed": "[(b'\\xc3', b'\\xa9')] ; [('BLOB',)]"
+    },
+    {
+      "claim": "Contrast with substr: substr(s,start,LENGTH) vs slice(begin,end) — substr('hello',2,3)='ell' but 'hello'[2:3]='el'",
+      "query": "SELECT substr('hello',2,3), 'hello'[2:3]",
+      "observed": "[('ell', 'el')]"
+    },
+    {
+      "claim": "Full 5-row table sweep of the canonical forms over ('hello','',NULL,'héllo','a😀b€c') — the reference matrix",
+      "query": "SELECT s, s[2:4] FROM t; SELECT s, s[:3], s[2:], s[:] FROM t; SELECT s, s[-3:-1] FROM t; SELECT s, s[1:2], s[1:2] IS NULL FROM t",
+      "observed": "[2:4]: [('hello','ell'),('',''),(None,None),('héllo','éll'),('a😀b€c','😀b€')] | opens: [('hello','hel','ello','hello'),('','','',''),(None,None,None,None),('héllo','hél','éllo','héllo'),('a😀b€c','a😀b','😀b€c','a😀b€c')] | [-3:-1]: [('hello','llo'),('',''),(None,None),('héllo','llo'),('a😀b€c','b€c')] | IS NULL only for NULL row"
+    }
+  ],
+  "surprises": [
+    "DOUBLE/DECIMAL bounds are accepted and ROUND half-away-from-zero via the normal DOUBLE->BIGINT cast ('hello'[1.5:3.5]='ell', 'abcdef'[2.5:4]='cd' i.e. 2.5->3) — a naive engine that truncates or rejects non-integer bounds diverges.",
+    "Numeric VARCHAR and BOOLEAN bounds are accepted too ('hello'['2':'4']='ell', 'hello'[true:4]='hell'); non-numeric strings raise \"Conversion Error: Could not convert string 'a' to INT64\".",
+    "NULL bound is NOT an open bound: s[NULL:2] is NULL, while s[:2] is 'he' — open bounds exist only syntactically.",
+    "Huge bounds never overflow at evaluation time — INT64_MIN/MAX clamp fine even from columns; the only error is a bind-time INT128->INT64 Conversion Error for literals past the INT64 range.",
+    "Out-of-range and inverted slices return '' (empty string), never NULL — '' input and out-of-range output are indistinguishable, and the NULL/'' distinction is carried solely by the input string and bounds being NULL.",
+    "Step slicing on strings traps for step=1 as well ('Not implemented Error'), and DuckDB's suggested rewrite in the error text itself contains unbalanced parentheses.",
+    "The same [a:b] operator on BLOB is byte-addressed (('\\xC3\\xA9'::BLOB)[1:1]=b'\\xc3') — VARCHAR codepoint semantics must not leak into BLOB."
+  ],
+  "recommendation": "Implement VARCHAR slice as: resolve each bound (NULL-strict -> NULL result; NULL string -> NULL); cast bound expressions through the standard to-INT64 cast (round-half-away for floats, parse for strings, bind-error past INT64 range with the pinned INT128 message); negative bound resolves to len+1+bound; clamp start to >=1 and end to <=len (codepoint length); if start > end after resolution return ''. Open bounds are pure syntax sugar: [:b]->[1:b], [a:]->[a:-1], [:]->[1:-1]. Unit is codepoints (never bytes, never graphemes). Route s[a:b], array_slice, and list_slice through one implementation; keep BLOB slicing on a separate byte path; reject any step with the verbatim Not-implemented error. Result type is always VARCHAR."
+}

@@ -1,0 +1,405 @@
+{
+ "area": "star-forms",
+ "duckdb_version": "1.5.5",
+ "schema_note": "t(abc INT, abd INT, xyz VARCHAR) rows (1,2,'hello'),(-3,NULL,'héllo'),(NULL,2147483647,'a😀b'); t1(id,abc,name); t2(id,abd,name); mc(\"ABc\",\"abd\",\"héllo\",\"a😀b\"); u(\"a_b\",\"axb\")",
+ "pins": [
+  {
+   "claim": "SELECT * LIKE 'pat' filters the star by matching the LIKE pattern against COLUMN NAMES; surviving columns keep table declaration order and their values/types (abc, abd kept; xyz dropped).",
+   "query": "SELECT * LIKE 'ab%' FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "* LIKE is CASE-SENSITIVE against column names: 'AB%' matches nothing on lowercase-named t, and zero matches is a BinderException whose text embeds the internal desugaring COLUMNS(list_filter([...names...], lambda ... ~~ 'AB%')) -- not an empty result.",
+   "query": "SELECT * LIKE 'AB%' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Star expression \"COLUMNS(list_filter(['abc', 'abd', 'xyz'], (lambda __lambda_col: (__lambda_col ~~ 'AB%'))))\" resulted in an empty set of columns"
+  },
+  {
+   "claim": "Names are matched as DECLARED (quoted identifiers keep case): on mc(\"ABc\", abd, ...), * LIKE 'AB%' matches only \"ABc\".",
+   "query": "SELECT * LIKE 'AB%' FROM mc",
+   "observed": "cols=[\"ABc\"] types=[\"INTEGER\"] rows=[[\"1\"]]"
+  },
+  {
+   "claim": "* NOT LIKE 'ab%' keeps the complement of * LIKE: only xyz survives.",
+   "query": "SELECT * NOT LIKE 'ab%' FROM t",
+   "observed": "cols=[\"xyz\"] types=[\"VARCHAR\"] rows=[[\"'hello'\"], [\"'héllo'\"], [\"'a😀b'\"]]"
+  },
+  {
+   "claim": "The star filter pattern must be a constant: * LIKE <column> is a BinderException 'Pattern applied to a star expression must be a constant'.",
+   "query": "SELECT * LIKE xyz FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Pattern applied to a star expression must be a constant\n\nLINE 1: SELECT * LIKE xyz FROM t\n                 ^"
+  },
+  {
+   "claim": "POSITIVE * SIMILAR TO is an UNANCHORED regex SEARCH over names (NOT SQL SIMILAR TO full-match semantics): pattern 'c' matches column abc.",
+   "query": "SELECT * SIMILAR TO 'c' FROM t",
+   "observed": "cols=[\"abc\"] types=[\"INTEGER\"] rows=[[\"1\"], [\"-3\"], [\"None\"]]"
+  },
+  {
+   "claim": "* NOT SIMILAR TO uses ANCHORED full-match semantics (NOT regexp_full_match): 'c' full-matches no name, so ALL THREE columns survive -- positive and negative SIMILAR TO are NOT complements ('c' selects {abc} but NOT 'c' selects {abc,abd,xyz}).",
+   "query": "SELECT * NOT SIMILAR TO 'c' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"2\", \"'hello'\"], [\"-3\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "Zero-match * SIMILAR TO uses a DIFFERENT error shape than LIKE: 'No matching columns found that match regex ...' plus a Did-you-mean suggestion list.",
+   "query": "SELECT * SIMILAR TO 'zz.*' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: No matching columns found that match regex \"zz.*\"\n\nDid you mean: \"xyz\""
+  },
+  {
+   "claim": "Zero-match * NOT SIMILAR TO reveals the desugaring: empty-set BinderException embedding NOT regexp_full_match(__lambda_col, '.*').",
+   "query": "SELECT * NOT SIMILAR TO '.*' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Star expression \"COLUMNS(list_filter(['abc', 'abd', 'xyz'], (lambda __lambda_col: (NOT regexp_full_match(__lambda_col, '.*')))))\" resulted in an empty set of columns"
+  },
+  {
+   "claim": "* EXCLUDE (abc) removes the column, remaining columns keep order (abd, xyz).",
+   "query": "SELECT * EXCLUDE (abc) FROM t",
+   "observed": "cols=[\"abd\", \"xyz\"] types=[\"INTEGER\", \"VARCHAR\"] rows=[[\"2\", \"'hello'\"], [\"None\", \"'héllo'\"], [\"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "EXCLUDE accepts a table-qualified name: * EXCLUDE (t.abc) FROM t behaves identically to unqualified.",
+   "query": "SELECT * EXCLUDE (t.abc) FROM t",
+   "observed": "cols=[\"abd\", \"xyz\"] types=[\"INTEGER\", \"VARCHAR\"] rows=[[\"2\", \"'hello'\"], [\"None\", \"'héllo'\"], [\"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "EXCLUDE identifier matching is case-INSENSITIVE: EXCLUDE (ABC) removes abc (and on mc, EXCLUDE (abc) removes quoted \"ABc\").",
+   "query": "SELECT * EXCLUDE (ABC) FROM t",
+   "observed": "cols=[\"abd\", \"xyz\"] types=[\"INTEGER\", \"VARCHAR\"] rows=[[\"2\", \"'hello'\"], [\"None\", \"'héllo'\"], [\"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "EXCLUDE of an unknown column errors: 'Column \"nope\" in EXCLUDE list not found in FROM clause'.",
+   "query": "SELECT * EXCLUDE (nope) FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Column \"nope\" in EXCLUDE list not found in FROM clause"
+  },
+  {
+   "claim": "EXCLUDE with a wrong qualifier errors with the qualified name verbatim: 'Column \"t2.abc\" in EXCLUDE list not found in FROM clause'.",
+   "query": "SELECT * EXCLUDE (t2.abc) FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Column \"t2.abc\" in EXCLUDE list not found in FROM clause"
+  },
+  {
+   "claim": "Excluding every column errors: 'SELECT list is empty after resolving * expressions!'.",
+   "query": "SELECT * EXCLUDE (abc, abd, xyz) FROM t",
+   "observed": "ERROR (BinderException): Binder Error: SELECT list is empty after resolving * expressions!"
+  },
+  {
+   "claim": "Duplicate EXCLUDE entry is a PARSER error (not binder): 'Duplicate entry \"abc\" in EXCLUDE list'.",
+   "query": "SELECT * EXCLUDE (abc, abc) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: Duplicate entry \"abc\" in EXCLUDE list"
+  },
+  {
+   "claim": "On t1 JOIN t2 ON, plain * lists t1 columns then t2 columns and duplicate names (id, name) appear twice as-is.",
+   "query": "SELECT * FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "cols=[\"id\", \"abc\", \"name\", \"id\", \"abd\", \"name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"10\", \"'x'\", \"1\", \"100\", \"'xx'\"], [\"2\", \"20\", \"'y'\", \"2\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "Qualified EXCLUDE on a join removes only that table's copy: * EXCLUDE (t1.id) keeps t2's id.",
+   "query": "SELECT * EXCLUDE (t1.id) FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "cols=[\"abc\", \"name\", \"id\", \"abd\", \"name\"] types=[\"INTEGER\", \"VARCHAR\", \"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"10\", \"'x'\", \"1\", \"100\", \"'xx'\"], [\"20\", \"'y'\", \"2\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "UNQUALIFIED EXCLUDE (id) on a join removes the column from BOTH tables (also true for EXCLUDE (name)).",
+   "query": "SELECT * EXCLUDE (id) FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "cols=[\"abc\", \"name\", \"abd\", \"name\"] types=[\"INTEGER\", \"VARCHAR\", \"INTEGER\", \"VARCHAR\"] rows=[[\"10\", \"'x'\", \"100\", \"'xx'\"], [\"20\", \"'y'\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "* REPLACE (abc + 1 AS abc) keeps the column's POSITION and NAME, replacing only the expression (first column now abc+1; NULL stays NULL).",
+   "query": "SELECT * REPLACE (abc + 1 AS abc) FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"2\", \"2\", \"'hello'\"], [\"-2\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "A REPLACE expression may reference OTHER columns; it is evaluated against original row values (abc+abd).",
+   "query": "SELECT * REPLACE (abc + abd AS abc) FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"3\", \"2\", \"'hello'\"], [\"None\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "REPLACE naming a column not in the star errors: 'Column \"nope\" in REPLACE list not found in FROM clause'.",
+   "query": "SELECT * REPLACE (1 AS nope) FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Column \"nope\" in REPLACE list not found in FROM clause"
+  },
+  {
+   "claim": "Same column in both EXCLUDE and REPLACE is a PARSER error: 'Column \"abc\" cannot occur in both EXCLUDE and REPLACE list'.",
+   "query": "SELECT * EXCLUDE (abc) REPLACE (abc + 1 AS abc) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: Column \"abc\" cannot occur in both EXCLUDE and REPLACE list"
+  },
+  {
+   "claim": "A REPLACE expression MAY reference an EXCLUDEd column (EXCLUDE (abd) REPLACE (abd + 1 AS abc) evaluates abd; proven by the INT32 overflow on abd=2147483647).",
+   "query": "SELECT * EXCLUDE (abd) REPLACE (abd + 1 AS abc) FROM t",
+   "observed": "ERROR (OutOfRangeException): Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!"
+  },
+  {
+   "claim": "Clause order is FIXED: EXCLUDE must precede REPLACE; '* REPLACE (...) EXCLUDE (...)' is a syntax error at or near \"EXCLUDE\".",
+   "query": "SELECT * REPLACE (abc + 1 AS abc) EXCLUDE (abd) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: syntax error at or near \"EXCLUDE\"\n\nLINE 1: SELECT * REPLACE (abc + 1 AS abc) EXCLUDE (abd) FROM t\n                                          ^"
+  },
+  {
+   "claim": "RENAME must come LAST: '* RENAME (...) REPLACE (...)' is a syntax error at or near \"REPLACE\" (valid order: * EXCLUDE ... REPLACE ... RENAME ...).",
+   "query": "SELECT * RENAME (abc AS q) REPLACE (abc + 1 AS abc) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: syntax error at or near \"REPLACE\"\n\nLINE 1: SELECT * RENAME (abc AS q) REPLACE (abc + 1 AS abc) FROM t\n                                   ^"
+  },
+  {
+   "claim": "* RENAME (abc AS q) keeps position and values, changing only the output name (q, abd, xyz).",
+   "query": "SELECT * RENAME (abc AS q) FROM t",
+   "observed": "cols=[\"q\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"2\", \"'hello'\"], [\"-3\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "RENAME of a NONEXISTENT column is SILENTLY IGNORED -- no error, output unchanged (unlike EXCLUDE/REPLACE which raise).",
+   "query": "SELECT * RENAME (nope AS q) FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"2\", \"'hello'\"], [\"-3\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "RENAME may collide with an existing name producing DUPLICATE output names (abd, abd, xyz) with no error.",
+   "query": "SELECT * RENAME (abc AS abd) FROM t",
+   "observed": "cols=[\"abd\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"2\", \"'hello'\"], [\"-3\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "Same column in EXCLUDE and RENAME is a Parser Error: 'Column \"abc\" cannot occur in both EXCLUDE and RENAME list'.",
+   "query": "SELECT * EXCLUDE (abc) RENAME (abc AS q) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: Column \"abc\" cannot occur in both EXCLUDE and RENAME list"
+  },
+  {
+   "claim": "On a join, REPLACE of an ambiguous unqualified name is a Binder Error: 'Ambiguous reference to column name \"name\" (use: \"t1.name\" or \"t2.name\")'.",
+   "query": "SELECT * REPLACE (name || '!' AS name) FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "ERROR (BinderException): Binder Error: Ambiguous reference to column name \"name\" (use: \"t1.name\" or \"t2.name\")\n\nLINE 1: SELECT * REPLACE (name || '!' AS name) FROM t1 JOIN t2 ON t1.id = t2.id\n                          ^"
+  },
+  {
+   "claim": "But RENAME of the same ambiguous name renames BOTH copies (nm appears twice) -- asymmetric with REPLACE.",
+   "query": "SELECT * RENAME (name AS nm) FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "cols=[\"id\", \"abc\", \"nm\", \"id\", \"abd\", \"nm\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"10\", \"'x'\", \"1\", \"100\", \"'xx'\"], [\"2\", \"20\", \"'y'\", \"2\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "A LIKE filter may FOLLOW EXCLUDE: * EXCLUDE (abc) LIKE 'ab%' parses and yields just abd (EXCLUDE applied first, then name filter).",
+   "query": "SELECT * EXCLUDE (abc) LIKE 'ab%' FROM t",
+   "observed": "cols=[\"abd\"] types=[\"INTEGER\"] rows=[[\"2\"], [\"None\"], [\"2147483647\"]]"
+  },
+  {
+   "claim": "REPLACE cannot combine with a star filter even in grammar-legal order: Binder Error 'Replace list cannot be combined with a filtering operation'.",
+   "query": "SELECT * REPLACE (abc + 1 AS abc) LIKE 'ab%' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Replace list cannot be combined with a filtering operation\n\nLINE 1: SELECT * REPLACE (abc + 1 AS abc) LIKE 'ab%' FROM t\n                                          ^"
+  },
+  {
+   "claim": "The COLUMNS regex is an UNANCHORED SEARCH: pattern 'b' matches abc and abd (middle-of-name hit); '^ab$' matches nothing while '^abc$' matches abc -- anchors are respected when written.",
+   "query": "SELECT COLUMNS('b') FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "The regex dialect is RE2: inline flags like (?i) work ('(?i)AB.*' matches abc, abd) while bare 'AB.*' is case-sensitive and matches nothing.",
+   "query": "SELECT COLUMNS('(?i)AB.*') FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "COLUMNS zero-match is a BinderException with Did-you-mean suggestions and LINE context: 'No matching columns found that match regex \"zz.*\"'.",
+   "query": "SELECT COLUMNS('zz.*') FROM t",
+   "observed": "ERROR (BinderException): Binder Error: No matching columns found that match regex \"zz.*\"\n\nDid you mean: \"xyz\"\n\nLINE 1: SELECT COLUMNS('zz.*') FROM t\n               ^"
+  },
+  {
+   "claim": "min(COLUMNS(*)) expands to one aggregate per column; OUTPUT NAMES ARE THE BARE COLUMN NAMES (abc, abd, xyz -- not 'min(abc)'); min ignores NULLs; VARCHAR min picks 'a😀b'. (Aggregation territory: expansion is per-column aggregate.)",
+   "query": "SELECT min(COLUMNS(*)) FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"-3\", \"2\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "COLUMNS(* LIKE 'pat') is NOT supported in 1.5.5: it fails with a function-matching Binder Error on '~~(VARCHAR[], STRING_LITERAL)' -- even though * LIKE and COLUMNS(* EXCLUDE ...) each work.",
+   "query": "SELECT COLUMNS(* LIKE 'ab%') FROM t",
+   "observed": "ERROR (BinderException): Binder Error: No function matches the given name and argument types '~~(VARCHAR[], STRING_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t~~(VARCHAR, VARCHAR) -> BOOLEAN\n\n\nLINE 1: SELECT COLUMNS(* LIKE 'ab%') FROM t\n                         ^"
+  },
+  {
+   "claim": "* EXCLUDE (t1.id) over a USING join UNMERGES the pair: the front merged id disappears and a plain id column reappears at t2's position with t2's values.",
+   "query": "SELECT * EXCLUDE (t1.id) FROM t1 JOIN t2 USING (id)",
+   "observed": "cols=[\"abc\", \"name\", \"id\", \"abd\", \"name\"] types=[\"INTEGER\", \"VARCHAR\", \"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"10\", \"'x'\", \"1\", \"100\", \"'xx'\"], [\"20\", \"'y'\", \"2\", \"200\", \"'yy'\"]]"
+  }
+ ],
+ "extra_pins_note": "extra_pins are additional measured pins beyond the core 40, same shape and same discipline (every one executed this session).",
+ "extra_pins": [
+  {
+   "claim": "* ILIKE 'AB%' matches case-insensitively against names: keeps abc, abd.",
+   "query": "SELECT * ILIKE 'AB%' FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "On the same mc table * LIKE 'ab%' matches only abd -- the quoted \"ABc\" is NOT lowercased for name matching.",
+   "query": "SELECT * LIKE 'ab%' FROM mc",
+   "observed": "cols=[\"abd\"] types=[\"INTEGER\"] rows=[[\"2\"]]"
+  },
+  {
+   "claim": "* ILIKE case-folds non-ASCII: 'HÉ%' matches column \"héllo\".",
+   "query": "SELECT * ILIKE 'HÉ%' FROM mc",
+   "observed": "cols=[\"héllo\"] types=[\"INTEGER\"] rows=[[\"3\"]]"
+  },
+  {
+   "claim": "LIKE wildcards apply to names: '_' matches a single character including an emoji codepoint -- 'a_b' matches column \"a😀b\".",
+   "query": "SELECT * LIKE 'a_b' FROM mc",
+   "observed": "cols=[\"a😀b\"] types=[\"INTEGER\"] rows=[[\"4\"]]"
+  },
+  {
+   "claim": "* LIKE ... ESCAPE 'c' is supported on the star: on u(\"a_b\", \"axb\"), 'a\\_b' ESCAPE '\\' keeps only \"a_b\" (without ESCAPE, 'a_b' keeps both).",
+   "query": "SELECT * LIKE 'a\\_b' ESCAPE '\\' FROM u",
+   "observed": "cols=[\"a_b\"] types=[\"INTEGER\"] rows=[[\"7\"]]"
+  },
+  {
+   "claim": "When NOT LIKE eliminates every column the error embeds the negated operator !~~ in the same empty-set BinderException text.",
+   "query": "SELECT * NOT LIKE '%' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Star expression \"COLUMNS(list_filter(['abc', 'abd', 'xyz'], (lambda __lambda_col: (__lambda_col !~~ '%'))))\" resulted in an empty set of columns"
+  },
+  {
+   "claim": "Zero-match ILIKE error embeds operator ~~* in the empty-set BinderException text.",
+   "query": "SELECT * ILIKE 'zz%' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Star expression \"COLUMNS(list_filter(['abc', 'abd', 'xyz'], (lambda __lambda_col: (__lambda_col ~~* 'zz%'))))\" resulted in an empty set of columns"
+  },
+  {
+   "claim": "* GLOB 'ab*' is also supported as a star name-filter (keeps abc, abd).",
+   "query": "SELECT * GLOB 'ab*' FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "Zero-match GLOB error embeds operator ~~~ in the empty-set BinderException text.",
+   "query": "SELECT * GLOB 'zz*' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Star expression \"COLUMNS(list_filter(['abc', 'abd', 'xyz'], (lambda __lambda_col: (__lambda_col ~~~ 'zz*'))))\" resulted in an empty set of columns"
+  },
+  {
+   "claim": "* LIKE NULL does not yield NULL semantics; it binds to zero columns and raises the empty-set BinderException (lambda ... ~~ NULL).",
+   "query": "SELECT * LIKE NULL FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Star expression \"COLUMNS(list_filter(['abc', 'abd', 'xyz'], (lambda __lambda_col: (__lambda_col ~~ NULL))))\" resulted in an empty set of columns"
+  },
+  {
+   "claim": "* SIMILAR TO 'ab.' keeps abc, abd -- regex applied to column names.",
+   "query": "SELECT * SIMILAR TO 'ab.' FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "* NOT SIMILAR TO 'ab.' keeps only xyz (abc/abd are full matches of 'ab.').",
+   "query": "SELECT * NOT SIMILAR TO 'ab.' FROM t",
+   "observed": "cols=[\"xyz\"] types=[\"VARCHAR\"] rows=[[\"'hello'\"], [\"'héllo'\"], [\"'a😀b'\"]]"
+  },
+  {
+   "claim": "Invalid regex in * SIMILAR TO is a BinderException 'Failed to compile regex \"[\": missing ]: ['.",
+   "query": "SELECT * SIMILAR TO '[' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Failed to compile regex \"[\": missing ]: ["
+  },
+  {
+   "claim": "REPLACE may change the column's TYPE (abc becomes VARCHAR).",
+   "query": "SELECT * REPLACE (CAST(abc AS VARCHAR) AS abc) FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"VARCHAR\", \"INTEGER\", \"VARCHAR\"] rows=[[\"'1'\", \"2\", \"'hello'\"], [\"'-3'\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "REPLACE target name cannot be qualified: 'AS t.abc' is a Parser Error (syntax error at or near \".\").",
+   "query": "SELECT * REPLACE (abc + 1 AS t.abc) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: syntax error at or near \".\"\n\nLINE 1: SELECT * REPLACE (abc + 1 AS t.abc) FROM t\n                                      ^"
+  },
+  {
+   "claim": "Duplicate REPLACE entry is a Parser Error: 'Duplicate entry \"abc\" in REPLACE list'.",
+   "query": "SELECT * REPLACE (abc + 1 AS abc, abc + 2 AS abc) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: Duplicate entry \"abc\" in REPLACE list"
+  },
+  {
+   "claim": "Swapping two names via RENAME (abc AS abd, abd AS abc) works; values stay in original positions, only labels swap.",
+   "query": "SELECT * RENAME (abc AS abd, abd AS abc) FROM t",
+   "observed": "cols=[\"abd\", \"abc\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"2\", \"'hello'\"], [\"-3\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "Same column in REPLACE and RENAME is a Parser Error: 'Column \"abc\" cannot occur in both REPLACE and RENAME list'.",
+   "query": "SELECT * REPLACE (abc + 1 AS abc) RENAME (abc AS q) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: Column \"abc\" cannot occur in both REPLACE and RENAME list"
+  },
+  {
+   "claim": "Qualified star supports the filter forms: t.* LIKE 'ab%' works like * LIKE.",
+   "query": "SELECT t.* LIKE 'ab%' FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "t.* EXCLUDE / REPLACE / RENAME all work on a qualified star.",
+   "query": "SELECT t.* EXCLUDE (abc) FROM t",
+   "observed": "cols=[\"abd\", \"xyz\"] types=[\"INTEGER\", \"VARCHAR\"] rows=[[\"2\", \"'hello'\"], [\"None\", \"'héllo'\"], [\"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "On a join, t1.* LIKE filters only t1's columns (abc, name).",
+   "query": "SELECT t1.* LIKE '%a%' FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "cols=[\"abc\", \"name\"] types=[\"INTEGER\", \"VARCHAR\"] rows=[[\"10\", \"'x'\"], [\"20\", \"'y'\"]]"
+  },
+  {
+   "claim": "t1.* EXCLUDE (t2.id) errors with a table-scoped message: 'Column \"t2.id\" in EXCLUDE list not found in t1'.",
+   "query": "SELECT t1.* EXCLUDE (t2.id) FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "ERROR (BinderException): Binder Error: Column \"t2.id\" in EXCLUDE list not found in t1"
+  },
+  {
+   "claim": "The reverse order * LIKE 'ab%' EXCLUDE (abc) is a Parser syntax error at or near \"EXCLUDE\" (same for REPLACE/RENAME after LIKE).",
+   "query": "SELECT * LIKE 'ab%' EXCLUDE (abc) FROM t",
+   "observed": "ERROR (ParserException): Parser Error: syntax error at or near \"EXCLUDE\"\n\nLINE 1: SELECT * LIKE 'ab%' EXCLUDE (abc) FROM t\n                            ^"
+  },
+  {
+   "claim": "RENAME likewise: 'Rename list cannot be combined with a filtering operation' (only EXCLUDE composes with LIKE/ILIKE/SIMILAR TO/GLOB).",
+   "query": "SELECT * RENAME (abc AS qqq) LIKE 'q%' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Rename list cannot be combined with a filtering operation\n\nLINE 1: SELECT * RENAME (abc AS qqq) LIKE 'q%' FROM t\n                                     ^"
+  },
+  {
+   "claim": "COLUMNS(*) in a plain SELECT expands to all columns with their bare names, same as *.",
+   "query": "SELECT COLUMNS(*) FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"2\", \"'hello'\"], [\"-3\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "COLUMNS('regex') keeps columns whose NAME matches the regex: 'ab.*' keeps abc, abd.",
+   "query": "SELECT COLUMNS('ab.*') FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "Invalid COLUMNS regex: 'Failed to compile regex \"[\": missing ]: [' (RE2 error text).",
+   "query": "SELECT COLUMNS('[') FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Failed to compile regex \"[\": missing ]: [\n\nLINE 1: SELECT COLUMNS('[') FROM t\n               ^"
+  },
+  {
+   "claim": "An AS alias on a COLUMNS expression is applied to EVERY expansion, yielding duplicate output names ('plus', 'plus').",
+   "query": "SELECT COLUMNS('ab.*') + 1 AS plus FROM t WHERE abc = 1",
+   "observed": "cols=[\"plus\", \"plus\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"2\", \"3\"]]"
+  },
+  {
+   "claim": "COLUMNS(* EXCLUDE (abc)) is valid and equals * EXCLUDE (abc).",
+   "query": "SELECT COLUMNS(* EXCLUDE (abc)) FROM t",
+   "observed": "cols=[\"abd\", \"xyz\"] types=[\"INTEGER\", \"VARCHAR\"] rows=[[\"2\", \"'hello'\"], [\"None\", \"'héllo'\"], [\"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "The lambda form works instead: COLUMNS(c -> c LIKE 'ab%') keeps abc, abd.",
+   "query": "SELECT COLUMNS(c -> c LIKE 'ab%') FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "USING join: * shows the merged USING column ONCE (leftmost), then remaining t1 columns, then remaining t2 columns; non-USING duplicate names (name) still appear twice.",
+   "query": "SELECT * FROM t1 JOIN t2 USING (id)",
+   "observed": "cols=[\"id\", \"abc\", \"name\", \"abd\", \"name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"10\", \"'x'\", \"100\", \"'xx'\"], [\"2\", \"20\", \"'y'\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "* LIKE 'id' over a USING join matches the single merged id column.",
+   "query": "SELECT * LIKE 'id' FROM t1 JOIN t2 USING (id)",
+   "observed": "cols=[\"id\"] types=[\"INTEGER\"] rows=[[\"1\"], [\"2\"]]"
+  },
+  {
+   "claim": "* EXCLUDE (id) over a USING join removes the merged column entirely.",
+   "query": "SELECT * EXCLUDE (id) FROM t1 JOIN t2 USING (id)",
+   "observed": "cols=[\"abc\", \"name\", \"abd\", \"name\"] types=[\"INTEGER\", \"VARCHAR\", \"INTEGER\", \"VARCHAR\"] rows=[[\"10\", \"'x'\", \"100\", \"'xx'\"], [\"20\", \"'y'\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "* RENAME (id AS key) over a USING join renames the single merged column.",
+   "query": "SELECT * RENAME (id AS key) FROM t1 JOIN t2 USING (id)",
+   "observed": "cols=[\"key\", \"abc\", \"name\", \"abd\", \"name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"10\", \"'x'\", \"100\", \"'xx'\"], [\"2\", \"20\", \"'y'\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "COLUMNS(*) over a USING join expands like * (merged id once).",
+   "query": "SELECT COLUMNS(*) FROM t1 JOIN t2 USING (id)",
+   "observed": "cols=[\"id\", \"abc\", \"name\", \"abd\", \"name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"10\", \"'x'\", \"100\", \"'xx'\"], [\"2\", \"20\", \"'y'\", \"200\", \"'yy'\"]]"
+  },
+  {
+   "claim": "* LIKE also works over derived-table aliases: (SELECT 1 AS abq, 2 AS zz) with 'ab%' keeps abq.",
+   "query": "SELECT * LIKE 'ab%' FROM (SELECT 1 AS abq, 2 AS zz) s",
+   "observed": "cols=[\"abq\"] types=[\"INTEGER\"] rows=[[\"1\"]]"
+  }
+ ],
+ "surprises": [
+  "* SIMILAR TO and * NOT SIMILAR TO are NOT complements: positive form is an unanchored regex SEARCH ('c' selects abc) while the negated form is NOT regexp_full_match ('c' keeps ALL columns including abc).",
+  "RENAME of a nonexistent column is silently ignored (no error), while EXCLUDE and REPLACE of a nonexistent column raise Binder errors.",
+  "* EXCLUDE (abc) LIKE 'ab%' is legal (filter after modifier) but * LIKE 'ab%' EXCLUDE (abc) is a parser syntax error; REPLACE/RENAME + any filter is rejected later at bind time with 'Replace/Rename list cannot be combined with a filtering operation'.",
+  "On a join with an ambiguous unqualified column, REPLACE errors ('Ambiguous reference') but RENAME silently renames BOTH copies.",
+  "An AS alias on a COLUMNS(...) expression is copied to every expanded column, producing duplicate output names; min(COLUMNS(*)) names outputs by the bare column name, not min(...).",
+  "Zero-match * LIKE/ILIKE/NOT LIKE/GLOB errors leak the internal desugaring -- COLUMNS(list_filter(['abc','abd','xyz'], lambda __lambda_col: (__lambda_col ~~ 'pat'))) with operator ~~/~~*/!~~/~~~ -- while SIMILAR TO zero-match uses a different 'No matching columns found that match regex' error with Did-you-mean suggestions.",
+  "* EXCLUDE (t1.id) on a USING join unmerges the coalesced column: id vanishes from the leftmost merged slot and reappears at t2's ordinal position.",
+  "RENAME collisions (abc AS abd) produce duplicate output column names with no error.",
+  "GLOB works as a star name-filter alongside LIKE/ILIKE/SIMILAR TO.",
+  "COLUMNS(* LIKE 'pat') is invalid ('~~(VARCHAR[], STRING_LITERAL)' binder error) even though * LIKE and COLUMNS(* EXCLUDE ...) both work; the lambda form COLUMNS(c -> c LIKE 'pat') is the supported spelling.",
+  "* LIKE NULL is not NULL-propagating: it binds to zero columns and raises the empty-set binder error.",
+  "EXCLUDE identifier matching is case-insensitive (EXCLUDE (ABC) removes abc; EXCLUDE (abc) removes quoted \"ABc\"), but LIKE/COLUMNS regex matching is case-sensitive against the declared-case name."
+ ],
+ "recommendation": "Implement star-forms as a bind-time column-name selection pass with these exact rules: (1) name filters LIKE/ILIKE/GLOB use the corresponding string-match op against declared-case names, SIMILAR TO uses unanchored RE2 search, and each NOT-variant negates the underlying scalar op (NOT SIMILAR TO = NOT regexp_full_match, so it is anchored and asymmetric with the positive form); (2) grammar order is * [EXCLUDE] [REPLACE] [RENAME] | * [EXCLUDE] <filter>, with REPLACE/RENAME+filter rejected at bind time; (3) EXCLUDE/REPLACE unknown names error with the exact 'in EXCLUDE/REPLACE list not found in FROM clause' texts, RENAME unknown names are silently ignored; (4) REPLACE preserves position/name and may reference any original column including excluded ones; (5) reproduce the two distinct zero-match error shapes verbatim (empty-set COLUMNS(list_filter(...)) text for LIKE-family, 'No matching columns found that match regex' + Did-you-mean for SIMILAR TO/COLUMNS); (6) joins: unqualified EXCLUDE strips every table's copy, qualified strips one; USING joins place the merged column first and qualified EXCLUDE unmerges it. Test the SIMILAR TO asymmetry, the alias-duplication on COLUMNS, and the USING-join unmerge explicitly -- all three contradict naive expectations."
+}

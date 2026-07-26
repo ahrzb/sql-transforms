@@ -1,0 +1,367 @@
+{
+  "area": "text-operators",
+  "duckdb_version": "1.5.5",
+  "pins": [
+    {
+      "claim": "s ^@ 'he': true only for 'hello', 'h%llo', 'h_llo' are false ('he' prefix), case-sensitive; NULL row -> NULL",
+      "query": "SELECT s, s ^@ 'he' FROM t",
+      "observed": "[('hello', True), ('Hello', False), ('', False), (None, None), ('héllo', False), ('a😀b', False), ('h%llo', False), ('h_llo', False)]"
+    },
+    {
+      "claim": "s ^@ '' (empty prefix) is true for every non-NULL string including ''; NULL row -> NULL",
+      "query": "SELECT s, s ^@ '' FROM t",
+      "observed": "[('hello', True), ('Hello', True), ('', True), (None, None), ('héllo', True), ('a😀b', True), ('h%llo', True), ('h_llo', True)]"
+    },
+    {
+      "claim": "s ^@ NULL -> NULL for every row",
+      "query": "SELECT s, s ^@ NULL FROM t",
+      "observed": "[('hello', None), ('Hello', None), ('', None), (None, None), ('héllo', None), ('a😀b', None), ('h%llo', None), ('h_llo', None)]"
+    },
+    {
+      "claim": "NULL ^@ 'x' -> NULL",
+      "query": "SELECT NULL ^@ 'x'",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "^@ is case-sensitive: 'Hello' ^@ 'he' false, 'hello' ^@ 'He' false, 'Hello' ^@ 'H' true",
+      "query": "SELECT 'Hello' ^@ 'he', 'hello' ^@ 'He', 'Hello' ^@ 'H'",
+      "observed": "[(False, False, True)]"
+    },
+    {
+      "claim": "non-ASCII prefixes: 'héllo' ^@ 'hé' true, 'héllo' ^@ 'h' true, 'a😀b' ^@ 'a😀' true, 'a😀b' ^@ 'a' true",
+      "query": "SELECT 'héllo' ^@ 'hé', 'héllo' ^@ 'h', 'a😀b' ^@ 'a😀', 'a😀b' ^@ 'a'",
+      "observed": "[(True, True, True, True)]"
+    },
+    {
+      "claim": "prefix longer than string false; exact-equal true; '' ^@ '' true; '' ^@ 'x' false",
+      "query": "SELECT 'hello' ^@ 'hello world', 'hello' ^@ 'hello', '' ^@ '', '' ^@ 'x'",
+      "observed": "[(False, True, True, False)]"
+    },
+    {
+      "claim": "^@ is not grapheme-aware: decomposed 'e'+U+0301 starts with plain 'e' (byte/codepoint prefix, same thing on valid UTF-8)",
+      "query": "SELECT ('e' || chr(769) || 'llo') ^@ 'e', ('e' || chr(769) || 'llo') ^@ 'é'",
+      "observed": "[(True, False)]"
+    },
+    {
+      "claim": "^@ has NO BLOB overload — binder error (only ^@(VARCHAR, VARCHAR) -> BOOLEAN); byte-vs-codepoint is unobservable on VARCHAR: valid-UTF-8 byte-prefix == codepoint-prefix",
+      "query": "SELECT 'héllo'::BLOB ^@ 'h\\xC3'::BLOB",
+      "observed": "ERROR [BinderException]: Binder Error: No function matches the given name and argument types '^@(BLOB, BLOB)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t^@(VARCHAR, VARCHAR) -> BOOLEAN\n\n\nLINE 1: SELECT 'héllo'::BLOB ^@ 'h\\xC3'::BLOB\n                             ^"
+    },
+    {
+      "claim": "typeof(s ^@ p) is BOOLEAN",
+      "query": "SELECT typeof('hello' ^@ 'he')",
+      "observed": "[('BOOLEAN',)]"
+    },
+    {
+      "claim": "^@ does NOT implicitly cast: 123 ^@ '12' is a binder error (no '^@(INTEGER_LITERAL, STRING_LITERAL)')",
+      "query": "SELECT 123 ^@ '12'",
+      "observed": "ERROR [BinderException]: Binder Error: No function matches the given name and argument types '^@(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t^@(VARCHAR, VARCHAR) -> BOOLEAN\n\n\nLINE 1: SELECT 123 ^@ '12'\n                   ^"
+    },
+    {
+      "claim": "s ^@ p ≡ starts_with(s, p) for all rows x patterns incl NULL/''/'hé'/'a😀'/'H' (IS NOT DISTINCT FROM everywhere true)",
+      "query": "SELECT s, p, s ^@ p AS op, starts_with(s, p) AS fn, (s ^@ p) IS NOT DISTINCT FROM starts_with(s, p) AS same FROM t, (VALUES ('he'), (''), (NULL), ('hé'), ('a😀'), ('H')) pats(p)",
+      "observed": "[('hello', 'he', True, True, True), ('Hello', 'he', False, False, True), ('', 'he', False, False, True), (None, 'he', None, None, True), ('héllo', 'he', False, False, True), ('a😀b', 'he', False, False, True), ('h%llo', 'he', False, False, True), ('h_llo', 'he', False, False, True), ('hello', '', True, True, True), ('Hello', '', True, True, True), ('', '', True, True, True), (None, '', None, None, True), ('héllo', '', True, True, True), ('a😀b', '', True, True, True), ('h%llo', '', True, True, True), ('h_llo', '', True, True, True), ('hello', None, None, None, True), ('Hello', None, None, None, True), ('', None, None, None, True), (None, None, None, None, True), ('héllo', None, None, None, True), ('a😀b', None, None, None, True), ('h%llo', None, None, None, True), ('h_llo', None, None, None, True), ('hello', 'hé', False, False, True), ('Hello', 'hé', False, False, True), ('', 'hé', False, False, True), (None, 'hé', None, None, True), ('héllo', 'hé', True, True, True), ('a😀b', 'hé', False, False, True), ('h%llo', 'hé', False, False, True), ('h_llo', 'hé', False, False, True), ('hello', 'a😀', False, False, True), ('Hello', 'a😀', False, False, True), ('', 'a😀', False, False, True), (None, 'a😀', None, None, True), ('héllo', 'a😀', False, False, True), ('a😀b', 'a😀', True, True, True), ('h%llo', 'a😀', False, False, True), ('h_llo', 'a😀', False, False, True), ('hello', 'H', False, False, True), ('Hello', 'H', True, True, True), ('', 'H', False, False, True), (None, 'H', None, None, True), ('héllo', 'H', False, False, True), ('a😀b', 'H', False, False, True), ('h%llo', 'H', False, False, True), ('h_llo', 'H', False, False, True)]"
+    },
+    {
+      "claim": "count of disagreements between ^@ and starts_with over the cross product: 0",
+      "query": "SELECT count(*) FROM t, (VALUES ('he'), (''), (NULL), ('hé'), ('a😀'), ('H')) pats(p) WHERE (s ^@ p) IS DISTINCT FROM starts_with(s, p)",
+      "observed": "[(0,)]"
+    },
+    {
+      "claim": "s GLOB 'h*': true for 'hello', 'héllo', 'h%llo', 'h_llo'; false 'Hello' (case-sensitive), '' false, NULL -> NULL",
+      "query": "SELECT s, s GLOB 'h*' FROM t",
+      "observed": "[('hello', True), ('Hello', False), ('', False), (None, None), ('héllo', True), ('a😀b', False), ('h%llo', True), ('h_llo', True)]"
+    },
+    {
+      "claim": "s GLOB 'h?llo': ? matches exactly one BYTE -> 'hello', 'h%llo', 'h_llo' true; 'héllo' FALSE (é is 2 UTF-8 bytes); NULL -> NULL",
+      "query": "SELECT s, s GLOB 'h?llo' FROM t",
+      "observed": "[('hello', True), ('Hello', False), ('', False), (None, None), ('héllo', False), ('a😀b', False), ('h%llo', True), ('h_llo', True)]"
+    },
+    {
+      "claim": "s GLOB '[hH]ello': bracket class matches one char from set -> 'hello' and 'Hello' true",
+      "query": "SELECT s, s GLOB '[hH]ello' FROM t",
+      "observed": "[('hello', True), ('Hello', True), ('', False), (None, None), ('héllo', False), ('a😀b', False), ('h%llo', False), ('h_llo', False)]"
+    },
+    {
+      "claim": "s GLOB '[!h]*': negated class needs at least one char not 'h' -> 'Hello', 'a😀b' true; '' false; 'hello' false",
+      "query": "SELECT s, s GLOB '[!h]*' FROM t",
+      "observed": "[('hello', False), ('Hello', True), ('', False), (None, None), ('héllo', False), ('a😀b', True), ('h%llo', False), ('h_llo', False)]"
+    },
+    {
+      "claim": "s GLOB '[a-c]*': range class -> only 'a😀b' true",
+      "query": "SELECT s, s GLOB '[a-c]*' FROM t",
+      "observed": "[('hello', False), ('Hello', False), ('', False), (None, None), ('héllo', False), ('a😀b', True), ('h%llo', False), ('h_llo', False)]"
+    },
+    {
+      "claim": "lone '[' pattern (unterminated bracket) matches NOTHING, no error: 'h' GLOB '[' false, '[' GLOB '[' false",
+      "query": "SELECT 'h' GLOB '[', '[' GLOB '['",
+      "observed": "[(False, False)]"
+    },
+    {
+      "claim": "unterminated bracket '[h' matches NOTHING, no error: 'h' GLOB '[h' false, 'hello' GLOB '[h' false",
+      "query": "SELECT 'h' GLOB '[h', 'hello' GLOB '[h'",
+      "observed": "[(False, False)]"
+    },
+    {
+      "claim": "literal '[' via class: '[' GLOB '[[]' and '[abc' GLOB '[[]abc'",
+      "query": "SELECT '[' GLOB '[[]', '[abc' GLOB '[[]abc'",
+      "observed": "[(True, True)]"
+    },
+    {
+      "claim": "']' outside a class is a literal: ']' GLOB ']' true, 'a]b' GLOB 'a]b' true",
+      "query": "SELECT ']' GLOB ']', 'a]b' GLOB 'a]b'",
+      "observed": "[(True, True)]"
+    },
+    {
+      "claim": "']' immediately after '[' is a literal class member (SQLite rule): ']' GLOB '[]]' true",
+      "query": "SELECT ']' GLOB '[]]'",
+      "observed": "[(True,)]"
+    },
+    {
+      "claim": "'[!]]' means class = not ']': 'x' GLOB '[!]]' true, ']' GLOB '[!]]' false",
+      "query": "SELECT 'x' GLOB '[!]]', ']' GLOB '[!]]'",
+      "observed": "[(True, False)]"
+    },
+    {
+      "claim": "GLOB is case-sensitive: 'Hello' GLOB 'h*' false, 'Hello' GLOB 'H*' true",
+      "query": "SELECT 'Hello' GLOB 'h*', 'Hello' GLOB 'H*'",
+      "observed": "[(False, True)]"
+    },
+    {
+      "claim": "empty pattern '' matches only the empty string; NULL row -> NULL",
+      "query": "SELECT s, s GLOB '' FROM t",
+      "observed": "[('hello', False), ('Hello', False), ('', True), (None, None), ('héllo', False), ('a😀b', False), ('h%llo', False), ('h_llo', False)]"
+    },
+    {
+      "claim": "s GLOB NULL -> NULL for all rows; NULL GLOB 'x' -> NULL",
+      "query": "SELECT s, s GLOB NULL FROM t",
+      "observed": "[('hello', None), ('Hello', None), ('', None), (None, None), ('héllo', None), ('a😀b', None), ('h%llo', None), ('h_llo', None)]"
+    },
+    {
+      "claim": "'NOT GLOB' keyword form is a PARSER ERROR (not in DuckDB grammar); verbatim error recorded — bare NULL GLOB 'x' pinned separately (-> NULL)",
+      "query": "SELECT NULL GLOB 'x', NULL NOT GLOB 'x'",
+      "observed": "ERROR [ParserException]: Parser Error: syntax error at or near \"GLOB\"\n\nLINE 1: SELECT NULL GLOB 'x', NULL NOT GLOB 'x'\n                                       ^"
+    },
+    {
+      "claim": "literal '*' matched via class: 'a*b' GLOB 'a[*]b' true; 'ab'/'axb' GLOB 'a[*]b' false",
+      "query": "SELECT 'a*b' GLOB 'a[*]b', 'ab' GLOB 'a[*]b', 'axb' GLOB 'a[*]b'",
+      "observed": "[(True, False, False)]"
+    },
+    {
+      "claim": "literal '?' matched via class: 'a?b' GLOB 'a[?]b' true; 'axb' GLOB 'a[?]b' false",
+      "query": "SELECT 'a?b' GLOB 'a[?]b', 'axb' GLOB 'a[?]b'",
+      "observed": "[(True, False)]"
+    },
+    {
+      "claim": "backslash IS an escape outside classes: 'a*b' GLOB 'a\\*b' true (\\* = literal *), 'a\\*b' GLOB 'a\\*b' false, 'a?b' GLOB 'a\\?b' true, 'a\\xb' GLOB 'a\\?b' false",
+      "query": "SELECT 'a*b' GLOB 'a\\*b', 'a\\*b' GLOB 'a\\*b', 'a\\xb' GLOB 'a\\?b', 'a?b' GLOB 'a\\?b'",
+      "observed": "[(True, False, False, True)]"
+    },
+    {
+      "claim": "? is BYTE-based: a single ? never matches a multi-byte char — 'a😀b' GLOB 'a?b' false, '😀' GLOB '?' false, '😀' GLOB '??' false (needs 4), 'héllo' GLOB 'h?llo' false",
+      "query": "SELECT 'a😀b' GLOB 'a?b', '😀' GLOB '?', '😀' GLOB '??', 'héllo' GLOB 'h?llo'",
+      "observed": "[(False, False, False, False)]"
+    },
+    {
+      "claim": "classes are BYTE-based: 'héllo' GLOB 'h[é]llo' FALSE (a class consumes one byte; é is 2 bytes), 'h[a-z]llo' false, 'h[à-ÿ]llo' false",
+      "query": "SELECT 'héllo' GLOB 'h[é]llo', 'héllo' GLOB 'h[a-z]llo', 'héllo' GLOB 'h[à-ÿ]llo'",
+      "observed": "[(False, False, False)]"
+    },
+    {
+      "claim": "emoji in class/range: 'a😀b' GLOB 'a[😀]b' FALSE and '😀' GLOB '[a-😀]' FALSE — multi-byte class members never match as a unit",
+      "query": "SELECT 'a😀b' GLOB 'a[😀]b', '😀' GLOB '[a-😀]'",
+      "observed": "[(False, False)]"
+    },
+    {
+      "claim": "s NOT GLOB 'h*' is a PARSER ERROR — GLOB has no NOT keyword form (unlike NOT LIKE); negate with NOT (s GLOB p)",
+      "query": "SELECT s, s NOT GLOB 'h*' FROM t",
+      "observed": "ERROR [ParserException]: Parser Error: syntax error at or near \"GLOB\"\n\nLINE 1: SELECT s, s NOT GLOB 'h*' FROM t\n                        ^"
+    },
+    {
+      "claim": "'%' and '_' are NOT wildcards in GLOB (literals): 'h%llo' GLOB 'h%llo' true, 'hxllo' GLOB 'h%llo' false, 'h_llo' GLOB 'h_llo' true, 'hxllo' GLOB 'h_llo' false",
+      "query": "SELECT 'h%llo' GLOB 'h%llo', 'hxllo' GLOB 'h%llo', 'h_llo' GLOB 'h_llo', 'hxllo' GLOB 'h_llo'",
+      "observed": "[(True, False, True, False)]"
+    },
+    {
+      "claim": "'*' matches empty: '' GLOB '*' true, 'anything' GLOB '*' true; consecutive '**' same as '*': 'ho' GLOB 'h**o'",
+      "query": "SELECT '' GLOB '*', 'anything' GLOB '*', 'ho' GLOB 'h**o', 'hello' GLOB '**'",
+      "observed": "[(True, True, True, True)]"
+    },
+    {
+      "claim": "'^' in a class is a LITERAL member, not negation: [^h] = set {'^','h'} — '^ello' true, 'hello' TRUE, 'xello' false; only '!' negates",
+      "query": "SELECT '^ello' GLOB '[^h]ello', 'xello' GLOB '[^h]ello', 'hello' GLOB '[^h]ello'",
+      "observed": "[(True, False, True)]"
+    },
+    {
+      "claim": "inverted range '[c-a]' matches nothing, no error: 'a','b','c' all false",
+      "query": "SELECT 'b' GLOB '[c-a]', 'a' GLOB '[c-a]', 'c' GLOB '[c-a]'",
+      "observed": "[(False, False, False)]"
+    },
+    {
+      "claim": "'[a-]' matches NOTHING (no error): trailing '-' is NOT a literal — the ']' is consumed as the range endpoint (a-] is an inverted range) leaving the class unclosed",
+      "query": "SELECT '-' GLOB '[a-]', 'a' GLOB '[a-]', 'b' GLOB '[a-]'",
+      "observed": "[(False, False, False)]"
+    },
+    {
+      "claim": "there is NO scalar glob() function — binder error: glob is a table function (file lister) only",
+      "query": "SELECT glob('hello', 'h*')",
+      "observed": "ERROR [BinderException]: Binder Error: Function \"glob\" is a table function but it was used as a scalar function. This function has to be called in a FROM clause (similar to a table).\n\nLINE 1: SELECT glob('hello', 'h*')\n               ^"
+    },
+    {
+      "claim": "table function glob(pattern) exists but is a FILE lister, not a string matcher",
+      "query": "SELECT count(*) FROM glob('definitely_no_such_file_*.xyz')",
+      "observed": "[(0,)]"
+    },
+    {
+      "claim": "'!~~~' does NOT exist — Catalog Error suggesting '!~~' (working '~~~' pinned separately)",
+      "query": "SELECT 'hello' ~~~ 'h*', 'Hello' ~~~ 'h*', 'hello' !~~~ 'h*'",
+      "observed": "ERROR [CatalogException]: Catalog Error: Scalar Function with name !~~~ does not exist!\nDid you mean \"!~~\"?\n\nLINE 1: SELECT 'hello' ~~~ 'h*', 'Hello' ~~~ 'h*', 'hello' !~~~ 'h*'\n                                                           ^"
+    },
+    {
+      "claim": "typeof(s GLOB p) is BOOLEAN",
+      "query": "SELECT typeof('h' GLOB 'h')",
+      "observed": "[('BOOLEAN',)]"
+    },
+    {
+      "claim": "GLOB does NOT implicitly cast: 123 GLOB '1*' is a binder error naming '~~~(INTEGER_LITERAL, STRING_LITERAL)' — GLOB is the '~~~' function",
+      "query": "SELECT 123 GLOB '1*'",
+      "observed": "ERROR [BinderException]: Binder Error: No function matches the given name and argument types '~~~(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t~~~(VARCHAR, VARCHAR) -> BOOLEAN\n\n\nLINE 1: SELECT 123 GLOB '1*'\n                   ^"
+    },
+    {
+      "claim": "GLOB '*x*' contains-style works: 'hello' GLOB '*ll*' true; class between stars '*[l]*'",
+      "query": "SELECT 'hello' GLOB '*ll*', 'hello' GLOB '*[l]*', 'hebbo' GLOB '*[l]*'",
+      "observed": "[(True, True, False)]"
+    },
+    {
+      "claim": "GLOB ? matches exactly one BYTE: '😀' (4 UTF-8 bytes) GLOB '????' true, '???' false; 'é' (2 bytes) GLOB '??' true, '?' false",
+      "query": "SELECT '😀' GLOB '????', '😀' GLOB '???', 'é' GLOB '??', 'é' GLOB '?'",
+      "observed": "[(True, False, True, False)]"
+    },
+    {
+      "claim": "byte-based ?: 'héllo' GLOB 'h??llo' true (é = 2 bytes); 'a😀b' GLOB 'a????b' true",
+      "query": "SELECT 'héllo' GLOB 'h??llo', 'a😀b' GLOB 'a????b'",
+      "observed": "[(True, True)]"
+    },
+    {
+      "claim": "GLOB * is byte-transparent (works across multibyte): '😀' GLOB '*' true, 'a😀b' GLOB 'a*b' true, 'a😀b' GLOB '*😀*' true",
+      "query": "SELECT '😀' GLOB '*', 'a😀b' GLOB 'a*b', 'a😀b' GLOB '*😀*'",
+      "observed": "[(True, True, True)]"
+    },
+    {
+      "claim": "bracket class matches ONE BYTE: 'é' GLOB '[é]' false but 'é' GLOB '[é][é]' true (each class instance consumes one of é's two bytes)",
+      "query": "SELECT 'é' GLOB '[é]', 'é' GLOB '[é][é]', 'héllo' GLOB 'h[é][é]llo'",
+      "observed": "[(False, True, True)]"
+    },
+    {
+      "claim": "emoji byte-class: '😀' GLOB '[😀][😀][😀][😀]' (4 class matches for 4 bytes)",
+      "query": "SELECT '😀' GLOB '[😀][😀][😀][😀]', '😀' GLOB '[😀]'",
+      "observed": "[(True, False)]"
+    },
+    {
+      "claim": "NOT (s GLOB p) works and keeps NULL as NULL (the only way to negate; 'NOT GLOB' keyword form is a parser error)",
+      "query": "SELECT s, NOT (s GLOB 'h*') FROM t",
+      "observed": "[('hello', False), ('Hello', True), ('', True), (None, None), ('héllo', False), ('a😀b', True), ('h%llo', False), ('h_llo', False)]"
+    },
+    {
+      "claim": "'~~~' is GLOB's operator alias: 'hello' ~~~ 'h*' true, 'Hello' ~~~ 'h*' false",
+      "query": "SELECT 'hello' ~~~ 'h*', 'Hello' ~~~ 'h*'",
+      "observed": "[(True, False)]"
+    },
+    {
+      "claim": "GLOB is implemented by scalar function named '~~~' (duckdb_functions)",
+      "query": "SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_name IN ('~~~','!~~~','^@','starts_with','prefix') ORDER BY 1",
+      "observed": "[('^@',), ('prefix',), ('starts_with',), ('~~~',)]"
+    },
+    {
+      "claim": "prefix('hello','he') -> true: prefix() is a third alias of starts_with/^@",
+      "query": "SELECT prefix('hello', 'he')",
+      "observed": "[(True,)]"
+    },
+    {
+      "claim": "backslash escapes any next char incl ordinary: 'ab' GLOB 'a\\b' true ('\\b' = literal b); literal backslash needs '\\\\'",
+      "query": "SELECT 'ab' GLOB 'a\\b', 'a\\b' GLOB 'a\\b', 'a\\b' GLOB 'a\\\\b'",
+      "observed": "[(True, False, True)]"
+    },
+    {
+      "claim": "dangling trailing backslash matches NOTHING, no error: 'a' GLOB 'a\\' false and even 'a\\' GLOB 'a\\' false",
+      "query": "SELECT 'a' GLOB 'a\\', 'a\\' GLOB 'a\\'",
+      "observed": "[(False, False)]"
+    },
+    {
+      "claim": "inside a class backslash is a LITERAL member, not an escape: [\\x] = {'\\','x'} — 'x' GLOB '[\\x]' true AND '\\' GLOB '[\\x]' true",
+      "query": "SELECT 'x' GLOB '[\\x]', '\\' GLOB '[\\x]'",
+      "observed": "[(True, True)]"
+    },
+    {
+      "claim": "leading hyphen is a LITERAL: [-a] = {'-','a'} — '-' true, 'a' true, 'b' false (contrast: '[a-]' is dead)",
+      "query": "SELECT '-' GLOB '[-a]', 'a' GLOB '[-a]', 'b' GLOB '[-a]'",
+      "observed": "[(True, True, False)]"
+    },
+    {
+      "claim": "'[]' is an unterminated class (']' first is literal member): matches nothing for 'a', '', ']'",
+      "query": "SELECT 'a' GLOB '[]', '' GLOB '[]', ']' GLOB '[]'",
+      "observed": "[(False, False, False)]"
+    },
+    {
+      "claim": "'[!]' matches NOTHING: ']' right after '!' is a literal member so the class is unclosed — '!' false, 'x' false",
+      "query": "SELECT '!' GLOB '[!]', 'x' GLOB '[!]'",
+      "observed": "[(False, False)]"
+    },
+    {
+      "claim": "'[a-]' matches nothing at all — hyphen-at-end is NOT a literal, the class is dead",
+      "query": "SELECT '-' GLOB '[a-]', 'a' GLOB '[a-]', 'a-' GLOB 'a[a-]'",
+      "observed": "[(False, False, False)]"
+    },
+    {
+      "claim": "LIKE '_' is CODEPOINT-based (unlike GLOB '?'): 'é' LIKE '_' true, '😀' LIKE '_' true, 'héllo' LIKE 'h_llo' true",
+      "query": "SELECT 'é' LIKE '_', '😀' LIKE '_', 'héllo' LIKE 'h_llo'",
+      "observed": "[(True, True, True)]"
+    },
+    {
+      "claim": "contrast on same inputs: GLOB '?' vs LIKE '_' on 'é' — GLOB false, LIKE true",
+      "query": "SELECT 'é' GLOB '?', 'é' LIKE '_'",
+      "observed": "[(False, True)]"
+    },
+    {
+      "claim": "bare NULL GLOB 'x' -> NULL",
+      "query": "SELECT NULL GLOB 'x'",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "non-constant (column) pattern takes the same matcher: s GLOB p with p from a table matches the constant-pattern results",
+      "query": "SELECT s, s GLOB p FROM t, (VALUES ('h*')) pp(p)",
+      "observed": "[('hello', True), ('Hello', False), ('', False), (None, None), ('héllo', True), ('a😀b', False), ('h%llo', True), ('h_llo', True)]"
+    },
+    {
+      "claim": "byte semantics also hold for column patterns: 'é' GLOB '?' false and 'é' LIKE '_' true when patterns come from columns",
+      "query": "SELECT 'é' GLOB p, 'é' LIKE q FROM (VALUES ('?', '_')) pp(p, q)",
+      "observed": "[(False, True)]"
+    },
+    {
+      "claim": "']' CAN be a range endpoint: '[A-]]' parses as range A-] (0x41-0x5D) with nothing after -> 'B' true, ']' true, '^' false, 'B]' false (class eats the first ']')",
+      "query": "SELECT 'B' GLOB '[A-]]', ']' GLOB '[A-]]', '^' GLOB '[A-]]', 'B]' GLOB '[A-]]'",
+      "observed": "[(True, True, False, False)]"
+    },
+    {
+      "claim": "range endpoints are inclusive: 'a'/'c' in [a-c], 'd' not",
+      "query": "SELECT 'a' GLOB '[a-c]', 'c' GLOB '[a-c]', 'd' GLOB '[a-c]'",
+      "observed": "[(True, True, False)]"
+    }
+  ],
+  "surprises": [
+    "GLOB '?' matches exactly one BYTE, not one codepoint: 'é' GLOB '?' is false, 'é' GLOB '??' is true, '😀' needs '????'. LIKE '_' is codepoint-based ('é' LIKE '_' true) — the two wildcards are NOT interchangeable.",
+    "Bracket classes are also byte-based: 'héllo' GLOB 'h[é]llo' is false but 'h[é][é]llo' is true; a multi-byte character in a class can never match as a unit ('a😀b' GLOB 'a[😀]b' false).",
+    "'NOT GLOB' is a parser error — DuckDB's grammar has no NOT GLOB (unlike NOT LIKE); negation only via NOT (s GLOB p).",
+    "Backslash IS an escape in GLOB patterns outside classes (SQLite glob has none): 'ab' GLOB 'a\\b' true, 'a*b' GLOB 'a\\*b' true; a dangling trailing backslash silently matches nothing ('a\\' GLOB 'a\\' false).",
+    "Inside a class backslash is a literal member, not an escape: both 'x' and '\\' match '[\\x]'.",
+    "'^' inside a class is a literal, only '!' negates: 'hello' GLOB '[^h]ello' is TRUE ([^h] = {'^','h'}).",
+    "Hyphen handling is asymmetric: '[-a]' = literal set {'-','a'} but '[a-]' matches NOTHING — the ']' is consumed as the range endpoint, leaving the class unclosed.",
+    "']' can be a range endpoint: '[A-]]' means one char in A..] — ']' GLOB '[A-]]' true, 'B]' GLOB '[A-]]' false.",
+    "Malformed patterns never raise errors — lone '[', '[h', '[]', '[!]', inverted ranges '[c-a]', dangling '\\' all simply match nothing.",
+    "glob() exists only as a table function (a FILE lister); there is no scalar glob(string, pattern).",
+    "'~~~' is GLOB's scalar-function name and works as an operator, but '!~~~' does not exist (Catalog Error suggests '!~~').",
+    "Neither ^@ nor GLOB implicitly casts: 123 ^@ '12' and 123 GLOB '1*' are binder errors; ^@ also has no BLOB overload.",
+    "prefix() is a third alias of starts_with/^@; ^@ IS DISTINCT FROM never disagreed with starts_with over an 8-string x 6-pattern cross product including NULLs."
+  ],
+  "recommendation": "GLOB cannot be lowered onto the LIKE family the engine already has: (1) LIKE has no bracket classes; (2) GLOB '?' consumes one BYTE while LIKE '_' consumes one CODEPOINT, so even the single-char wildcard does not translate; (3) GLOB's backslash-escape and dead-class rules have no LIKE analog. Only '*'->'%' maps safely, and only when the pattern contains no '[', '?', or '\\'. Implement a dedicated byte-level matcher over raw UTF-8: '*' = any byte run; '?' = exactly one byte; '\\c' = literal next byte outside classes (dangling '\\' => whole pattern matches nothing); class = one byte from a set parsed as: optional leading '!' negation; ']' is a literal member if it is the first member (incl. right after '!'); '-' is a literal if first, otherwise a range operator whose endpoint may itself be ']' (ranges are inclusive, byte-inverted ranges are empty); backslash is a literal inside classes; any unclosed class makes the whole pattern match nothing; malformed patterns NEVER error. Case-sensitive, standard NULL propagation (either side NULL -> NULL), BOOLEAN result, VARCHAR-only (no implicit casts — reproduce the binder errors). 'NOT GLOB' must be rejected at parse time like DuckDB does; expose negation only through NOT (expr). ^@ is exactly starts_with(s, p) (also aliased prefix()): a plain byte-prefix memcmp, empty prefix matches everything non-NULL, case-sensitive, NULL-propagating — one implementation serves ^@, starts_with, prefix, and the '~~~' name serves GLOB."
+}

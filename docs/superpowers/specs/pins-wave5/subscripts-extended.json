@@ -1,0 +1,258 @@
+{
+  "area": "subscripts-extended",
+  "duckdb_version": "1.5.5",
+  "setup_sql": [
+    "CREATE TABLE strs(s VARCHAR)",
+    "INSERT INTO strs VALUES ('hello'), (''), (NULL), (chr(104)||chr(233)||'llo'), ('a'||chr(128512)||'b')",
+    "CREATE TABLE offs(off INTEGER)",
+    "INSERT INTO offs VALUES (1), (3), (0), (-1), (-5), (100), (NULL)",
+    "CREATE TABLE t AS SELECT s, off FROM strs, offs"
+  ],
+  "pins": [
+    {
+      "claim": "typeof(s[1]) is VARCHAR",
+      "query": "SELECT typeof(s[1]) FROM strs LIMIT 1",
+      "observed": "[('VARCHAR',)]"
+    },
+    {
+      "claim": "typeof is VARCHAR for dynamic index s[off] too",
+      "query": "SELECT typeof(s[off]) FROM t LIMIT 1",
+      "observed": "[('VARCHAR',)]"
+    },
+    {
+      "claim": "DESCRIBE: s[1] result column is nullable VARCHAR",
+      "query": "DESCRIBE SELECT s[1] AS c FROM strs",
+      "observed": "[('c', 'VARCHAR', 'YES', None, None, None)]"
+    },
+    {
+      "claim": "s[i] is 1-based codepoint indexing: 'hello'[1]='h', 'hello'[3]='l'",
+      "query": "SELECT 'hello'[1], 'hello'[3]",
+      "observed": "[('h', 'l')]"
+    },
+    {
+      "claim": "Full dynamic matrix s[off], off in {1,3,0,-1,-5,100,NULL} x strings {'hello','',NULL,'h\\xe9llo','a\\U0001f600b'}: 0/out-of-range give '', negatives count from end, NULL string or NULL index gives NULL",
+      "query": "SELECT s, off, s[off] FROM t ORDER BY (s IS NULL), s, (off IS NULL), off",
+      "observed": "[('', -5, ''), ('', -1, ''), ('', 0, ''), ('', 1, ''), ('', 3, ''), ('', 100, ''), ('', None, None), ('a\ud83d\ude00b', -5, ''), ('a\ud83d\ude00b', -1, 'b'), ('a\ud83d\ude00b', 0, ''), ('a\ud83d\ude00b', 1, 'a'), ('a\ud83d\ude00b', 3, 'b'), ('a\ud83d\ude00b', 100, ''), ('a\ud83d\ude00b', None, None), ('hello', -5, 'h'), ('hello', -1, 'o'), ('hello', 0, ''), ('hello', 1, 'h'), ('hello', 3, 'l'), ('hello', 100, ''), ('hello', None, None), ('h\u00e9llo', -5, 'h'), ('h\u00e9llo', -1, 'o'), ('h\u00e9llo', 0, ''), ('h\u00e9llo', 1, 'h'), ('h\u00e9llo', 3, 'l'), ('h\u00e9llo', 100, ''), ('h\u00e9llo', None, None), (None, -5, None), (None, -1, None), (None, 0, None), (None, 1, None), (None, 3, None), (None, 100, None), (None, None, None)]"
+    },
+    {
+      "claim": "s[0] returns empty string '' (NOT NULL) for every non-NULL string incl. empty string; NULL only when s IS NULL",
+      "query": "SELECT s, s[0], s[0] IS NULL, s[0] = '' FROM strs",
+      "observed": "[('hello', '', False, True), ('', '', False, True), (None, None, True, None), ('h\u00e9llo', '', False, True), ('a\ud83d\ude00b', '', False, True)]"
+    },
+    {
+      "claim": "out-of-range positive s[100] returns '' (NOT NULL) for non-NULL strings",
+      "query": "SELECT s, s[100], s[100] IS NULL, s[100] = '' FROM strs",
+      "observed": "[('hello', '', False, True), ('', '', False, True), (None, None, True, None), ('h\u00e9llo', '', False, True), ('a\ud83d\ude00b', '', False, True)]"
+    },
+    {
+      "claim": "one-past-end 'hello'[6] returns ''",
+      "query": "SELECT 'hello'[6]",
+      "observed": "[('',)]"
+    },
+    {
+      "claim": "negative index counts from end: s[-1] is last character ('hello'->'o', 'a\\U0001f600b'->'b'); ''[-1] is ''",
+      "query": "SELECT s, s[-1] FROM strs",
+      "observed": "[('hello', 'o'), ('', ''), (None, None), ('h\u00e9llo', 'o'), ('a\ud83d\ude00b', 'b')]"
+    },
+    {
+      "claim": "s[-5]: 'hello'->'h' (position length+idx+1=1); 'a\\U0001f600b' (len 3) -> '' (out of range)",
+      "query": "SELECT s, s[-5] FROM strs",
+      "observed": "[('hello', 'h'), ('', ''), (None, None), ('h\u00e9llo', 'h'), ('a\ud83d\ude00b', '')]"
+    },
+    {
+      "claim": "negative out-of-range s[-99] returns '' (NOT NULL) for all non-NULL strings",
+      "query": "SELECT s, s[-99], s[-99] IS NULL, s[-99] = '' FROM strs",
+      "observed": "[('hello', '', False, True), ('', '', False, True), (None, None, True, None), ('h\u00e9llo', '', False, True), ('a\ud83d\ude00b', '', False, True)]"
+    },
+    {
+      "claim": "NULL index: s[NULL] returns NULL for every string, empty string included",
+      "query": "SELECT s, s[NULL], s[NULL] IS NULL FROM strs",
+      "observed": "[('hello', None, True), ('', None, True), (None, None, True), ('h\u00e9llo', None, True), ('a\ud83d\ude00b', None, True)]"
+    },
+    {
+      "claim": "'hello'[NULL] is NULL",
+      "query": "SELECT 'hello'[NULL]",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "'hello'[NULL::BIGINT] is NULL",
+      "query": "SELECT 'hello'[NULL::BIGINT]",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "boundary: s[2147483646], s[2147483647] (i32 max), s[2147483648] all fine, return '' out-of-range",
+      "query": "SELECT 'hello'[2147483646], 'hello'[2147483647], 'hello'[2147483648]",
+      "observed": "[('', '', '')]"
+    },
+    {
+      "claim": "supported max index is 4294967295 (uint32 max): s[4294967295] fine, returns ''",
+      "query": "SELECT s, s[4294967295] FROM strs",
+      "observed": "[('hello', ''), ('', ''), (None, None), ('h\u00e9llo', ''), ('a\ud83d\ude00b', '')]"
+    },
+    {
+      "claim": "s[4294967296] raises Out of Range Error even for empty and short strings (verbatim text pinned)",
+      "query": "SELECT s, s[4294967296] FROM strs",
+      "observed": "OutOfRangeException: Out of Range Error: Substring offset outside of supported range (> 4294967295)"
+    },
+    {
+      "claim": "s[9223372036854775807] (i64 max) raises the same '> 4294967295' Out of Range Error",
+      "query": "SELECT s, s[9223372036854775807] FROM strs",
+      "observed": "OutOfRangeException: Out of Range Error: Substring offset outside of supported range (> 4294967295)"
+    },
+    {
+      "claim": "supported min index is -4294967296: s[-4294967296] fine, returns ''",
+      "query": "SELECT s, s[-4294967296] FROM strs",
+      "observed": "[('hello', ''), ('', ''), (None, None), ('h\u00e9llo', ''), ('a\ud83d\ude00b', '')]"
+    },
+    {
+      "claim": "s[-4294967297] raises Out of Range Error '< -4294967296' (verbatim text pinned)",
+      "query": "SELECT s, s[-4294967297] FROM strs",
+      "observed": "OutOfRangeException: Out of Range Error: Substring offset outside of supported range (< -4294967296)"
+    },
+    {
+      "claim": "s[-9223372036854775807] raises the same '< -4294967296' error",
+      "query": "SELECT s, s[-9223372036854775807] FROM strs",
+      "observed": "OutOfRangeException: Out of Range Error: Substring offset outside of supported range (< -4294967296)"
+    },
+    {
+      "claim": "s[-9223372036854775808] (i64 min) raises the same '< -4294967296' error",
+      "query": "SELECT s, s[-9223372036854775808] FROM strs",
+      "observed": "OutOfRangeException: Out of Range Error: Substring offset outside of supported range (< -4294967296)"
+    },
+    {
+      "claim": "literal one past i64 max is a BIND-time error: array_extract(VARCHAR, INTEGER_LITERAL) has no match (verbatim)",
+      "query": "SELECT s, s[9223372036854775808] FROM strs",
+      "observed": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(VARCHAR, INTEGER_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tarray_extract(T[], BIGINT) -> T\n\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\n\tarray_extract(STRUCT, VARCHAR) -> ANY\n\tarray_extract(STRUCT, BIGINT) -> ANY\n"
+    },
+    {
+      "claim": "literal one below i64 min: same binder error",
+      "query": "SELECT s, s[-9223372036854775809] FROM strs",
+      "observed": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(VARCHAR, INTEGER_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tarray_extract(T[], BIGINT) -> T\n\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\n\tarray_extract(STRUCT, VARCHAR) -> ANY\n\tarray_extract(STRUCT, BIGINT) -> ANY\n"
+    },
+    {
+      "claim": "range check is execution-time, not bind-time: WHERE false suppresses the huge-literal error",
+      "query": "SELECT s[9223372036854775807] FROM strs WHERE false",
+      "observed": "[]"
+    },
+    {
+      "claim": "unselected CASE branch with huge index does not error",
+      "query": "SELECT CASE WHEN false THEN 'hello'[9223372036854775807] ELSE 'x' END",
+      "observed": "[('x',)]"
+    },
+    {
+      "claim": "NULL string skips the range check: (NULL::VARCHAR)[9223372036854775807] returns NULL, no error",
+      "query": "SELECT (NULL::VARCHAR)[9223372036854775807]",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "NULL string with huge index from a column also returns NULL, no error",
+      "query": "SELECT s2[o2] FROM (VALUES (NULL::VARCHAR, 9223372036854775807)) t2(s2, o2)",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "empty (non-NULL) string does NOT skip the range check: ''[9223372036854775807] errors",
+      "query": "SELECT ''[9223372036854775807]",
+      "observed": "OutOfRangeException: Out of Range Error: Substring offset outside of supported range (> 4294967295)"
+    },
+    {
+      "claim": "expression index s[off+1] evaluates the expression then applies identical index semantics",
+      "query": "SELECT s, off, s[off+1] FROM t ORDER BY (s IS NULL), s, (off IS NULL), off",
+      "observed": "[('', -5, ''), ('', -1, ''), ('', 0, ''), ('', 1, ''), ('', 3, ''), ('', 100, ''), ('', None, None), ('a\ud83d\ude00b', -5, ''), ('a\ud83d\ude00b', -1, ''), ('a\ud83d\ude00b', 0, 'a'), ('a\ud83d\ude00b', 1, '\ud83d\ude00'), ('a\ud83d\ude00b', 3, ''), ('a\ud83d\ude00b', 100, ''), ('a\ud83d\ude00b', None, None), ('hello', -5, 'e'), ('hello', -1, ''), ('hello', 0, 'h'), ('hello', 1, 'e'), ('hello', 3, 'l'), ('hello', 100, ''), ('hello', None, None), ('h\u00e9llo', -5, '\u00e9'), ('h\u00e9llo', -1, ''), ('h\u00e9llo', 0, 'h'), ('h\u00e9llo', 1, '\u00e9'), ('h\u00e9llo', 3, 'l'), ('h\u00e9llo', 100, ''), ('h\u00e9llo', None, None), (None, -5, None), (None, -1, None), (None, 0, None), (None, 1, None), (None, 3, None), (None, 100, None), (None, None, None)]"
+    },
+    {
+      "claim": "constant expression index s[1+1] works: second codepoint",
+      "query": "SELECT s, s[1+1] FROM strs",
+      "observed": "[('hello', 'e'), ('', ''), (None, None), ('h\u00e9llo', '\u00e9'), ('a\ud83d\ude00b', '\ud83d\ude00')]"
+    },
+    {
+      "claim": "index expression overflowing BIGINT raises INT64 addition overflow (verbatim), not the substring range error",
+      "query": "SELECT s2[o2+1] FROM (VALUES ('hello', 9223372036854775807)) t2(s2, o2)",
+      "observed": "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!"
+    },
+    {
+      "claim": "codepoint (not byte) indexing: 'h\\xe9llo'[2]='\\xe9', [3]='l' (strlen 6, length 5)",
+      "query": "SELECT (chr(104)||chr(233)||'llo')[2], (chr(104)||chr(233)||'llo')[3], strlen(chr(104)||chr(233)||'llo'), length(chr(104)||chr(233)||'llo')",
+      "observed": "[('\u00e9', 'l', 6, 5)]"
+    },
+    {
+      "claim": "codepoint indexing on astral plane: 'a\\U0001f600b'[2]='\\U0001f600', [3]='b', [-2]='\\U0001f600' (strlen 6, length 3)",
+      "query": "SELECT ('a'||chr(128512)||'b')[2], ('a'||chr(128512)||'b')[3], ('a'||chr(128512)||'b')[-2], strlen('a'||chr(128512)||'b'), length('a'||chr(128512)||'b')",
+      "observed": "[('\ud83d\ude00', 'b', '\ud83d\ude00', 6, 3)]"
+    },
+    {
+      "claim": "codepoints, NOT grapheme clusters: NFD 'he'+U+0301+'llo' has length 6 and [3] returns the combining mark alone",
+      "query": "SELECT length('he' || chr(769) || 'llo'), ('he' || chr(769) || 'llo')[2], ('he' || chr(769) || 'llo')[3], ('he' || chr(769) || 'llo')[-1]",
+      "observed": "[(6, 'e', '\u0301', 'o')]"
+    },
+    {
+      "claim": "index type binding: SMALLINT/TINYINT/UTINYINT implicitly cast to BIGINT and work",
+      "query": "SELECT 'hello'[CAST(2 AS SMALLINT)], 'hello'[CAST(2 AS TINYINT)], 'hello'[CAST(2 AS UTINYINT)]",
+      "observed": "[('e', 'e', 'e')]"
+    },
+    {
+      "claim": "HUGEINT index does NOT bind (verbatim binder error)",
+      "query": "SELECT 'hello'[CAST(2 AS HUGEINT)]",
+      "observed": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, HUGEINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tarray_extract(T[], BIGINT) -> T\n\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\n\tarray_extract(STRUCT, VARCHAR) -> ANY\n\tarray_extract(STRUCT, BIGINT) -> ANY\n"
+    },
+    {
+      "claim": "UBIGINT index does NOT bind (verbatim binder error)",
+      "query": "SELECT 'hello'[CAST(2 AS UBIGINT)]",
+      "observed": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, UBIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tarray_extract(T[], BIGINT) -> T\n\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\n\tarray_extract(STRUCT, VARCHAR) -> ANY\n\tarray_extract(STRUCT, BIGINT) -> ANY\n"
+    },
+    {
+      "claim": "DOUBLE index does NOT bind (verbatim binder error)",
+      "query": "SELECT 'hello'[CAST(2 AS DOUBLE)]",
+      "observed": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, DOUBLE)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tarray_extract(T[], BIGINT) -> T\n\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\n\tarray_extract(STRUCT, VARCHAR) -> ANY\n\tarray_extract(STRUCT, BIGINT) -> ANY\n"
+    },
+    {
+      "claim": "DECIMAL literal index 1.5 does NOT bind (verbatim binder error)",
+      "query": "SELECT 'hello'[1.5]",
+      "observed": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, DECIMAL(2,1))'. You might need to add explicit type casts.\n\tCandidate functions:\n\tarray_extract(T[], BIGINT) -> T\n\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\n\tarray_extract(STRUCT, VARCHAR) -> ANY\n\tarray_extract(STRUCT, BIGINT) -> ANY\n"
+    },
+    {
+      "claim": "BOOLEAN index does NOT bind (verbatim binder error)",
+      "query": "SELECT 'hello'[true]",
+      "observed": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, BOOLEAN)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tarray_extract(T[], BIGINT) -> T\n\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\n\tarray_extract(STRUCT, VARCHAR) -> ANY\n\tarray_extract(STRUCT, BIGINT) -> ANY\n"
+    },
+    {
+      "claim": "VARCHAR index binds via implicit cast: 'hello'['2']='e'",
+      "query": "SELECT 'hello'['2']",
+      "observed": "[('e',)]"
+    },
+    {
+      "claim": "non-numeric VARCHAR index is a Conversion Error at bind of the literal (verbatim)",
+      "query": "SELECT 'hello'['a']",
+      "observed": "ConversionException: Conversion Error: Could not convert string 'a' to INT64\n\nLINE 1: SELECT 'hello'['a']\n                       ^"
+    },
+    {
+      "claim": "s[i] binds to array_extract(VARCHAR, BIGINT); array_extract has identical semantics incl. negatives and zero",
+      "query": "SELECT array_extract('hello', 2), array_extract('hello', -1), array_extract('hello', 0)",
+      "observed": "[('e', 'o', '')]"
+    },
+    {
+      "claim": "substring(s, i, 1) matches subscript semantics for negative and zero start",
+      "query": "SELECT substring('hello', -1, 1), substring('hello', 0, 1)",
+      "observed": "[('o', '')]"
+    },
+    {
+      "claim": "subscript applies to any VARCHAR expression: (s || 'x')[1]",
+      "query": "SELECT s, (s || 'x')[1] FROM strs",
+      "observed": "[('hello', 'h'), ('', 'x'), (None, None), ('h\u00e9llo', 'h'), ('a\ud83d\ude00b', 'a')]"
+    },
+    {
+      "claim": "chained subscript 'hello'[2][1] = 'e'",
+      "query": "SELECT 'hello'[2][1]",
+      "observed": "[('e',)]"
+    }
+  ],
+  "surprises": [
+    "Out-of-range, zero, and negative-out-of-range single subscripts ALL return empty string '' -- never NULL. NULL comes only from a NULL string or a NULL index.",
+    "Negative index means 'count from the end' (s[-1] = last character, resolved position = length + i + 1), not empty and not an error.",
+    "The index has a hard supported range of [-4294967296, 4294967295] (asymmetric: -2^32 .. 2^32-1). Outside it, execution raises 'Out of Range Error: Substring offset outside of supported range (> 4294967295)' / '(< -4294967296)'.",
+    "That range check is execution-time and NULL-string rows skip it entirely: (NULL::VARCHAR)[9223372036854775807] is NULL with no error, but ''[9223372036854775807] (empty, non-NULL) errors. WHERE false / unselected CASE branch also suppress it.",
+    "A literal index one past the i64 range is a completely different error class: bind-time Binder Error 'No function matches ... array_extract(VARCHAR, INTEGER_LITERAL)'.",
+    "Indexing is by Unicode codepoint, not bytes and not grapheme clusters: NFD 'he'+U+0301+'llo' has length 6 and [3] returns the bare combining mark U+0301.",
+    "HUGEINT and UBIGINT indexes do not bind at all (binder error), even in-range, while SMALLINT/TINYINT/UTINYINT/INTEGER do; a VARCHAR index binds via implicit cast ('hello'['2'] = 'e') and a non-numeric one raises 'Conversion Error: Could not convert string 'a' to INT64'."
+  ],
+  "recommendation": "Implement single VARCHAR subscript s[i] exactly as DuckDB's array_extract(VARCHAR, BIGINT): (1) if s IS NULL or i IS NULL, return NULL and perform no range check; (2) else if i > 4294967295 raise verbatim 'Out of Range Error: Substring offset outside of supported range (> 4294967295)', if i < -4294967296 raise '... (< -4294967296)'; (3) else resolve pos = i if i > 0 else length(s) + i + 1 when i < 0, and 0 for i = 0, over CODEPOINTS; (4) return the single codepoint at pos if 1 <= pos <= length(s), else '' (empty string, never NULL). The check must be per-row at execution time (dead branches and NULL strings never error). At bind time accept TINYINT/SMALLINT/INTEGER/BIGINT/UTINYINT/USMALLINT-class integers and VARCHAR (cast to INT64, with the verbatim Conversion Error on failure); reject HUGEINT/UBIGINT/DOUBLE/DECIMAL/BOOLEAN and beyond-i64 integer literals with the verbatim 'No function matches ... array_extract' Binder Error. Result type is always nullable VARCHAR."
+}
