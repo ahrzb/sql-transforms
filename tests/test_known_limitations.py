@@ -133,6 +133,17 @@ def test_ubigint_static_payloads_reject():
             "duplicate regex capture group",
         ),
         ("SELECT regexp_matches(s, 'a{1001}') FROM __THIS__", "repetition bound"),
+        # TASK-54 fuzzer-found classes (pins-waveB/fuzzer-task54.json):
+        # each was a measured silent-wrong-answer risk in rust-regex.
+        ("SELECT regexp_matches(s, '(a)x\\1') FROM __THIS__", "backref"),
+        ("SELECT regexp_matches(s, 'a?*') FROM __THIS__", "quantifi"),
+        ("SELECT regexp_matches(s, 'a{2}*') FROM __THIS__", "quantifi"),
+        ("SELECT regexp_matches(s, '(a{100}){20}') FROM __THIS__", "repetition"),
+        ("SELECT regexp_matches(s, 'a{1, 3}') FROM __THIS__", "unsupported|parse"),
+        ("SELECT regexp_matches(s, '[a--b]') FROM __THIS__", "unsupported"),
+        ("SELECT regexp_matches(s, '[a-\\d]') FROM __THIS__", "Perl class endpoint"),
+        ("SELECT regexp_matches(s, '(x){0}') FROM __THIS__", "unsupported"),
+        ("SELECT regexp_matches(s, '^$') FROM __THIS__", "anchor-only"),
         # Not implemented in DuckDB itself.
         ("SELECT s SIMILAR TO 'a' ESCAPE 'x' FROM __THIS__", "escape"),
         # Exec-time conversion order (an empty input succeeds in DuckDB).
