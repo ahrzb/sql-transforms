@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "task": "TASK-54 standing differential regexp fuzzer",
+    "measured": "2026-07-27, DuckDB 1.5.5 vs the engine (rust regex 1.13 behind retrans.rs), tests/test_duckdb_regexp_fuzz.py grammar",
+    "method": "random grammar-biased patterns run through regexp_matches/full_match/extract/replace on both engines over the divergence-prone subject rows; every class below reproduced from a concrete generated case, then re-swept to zero divergences (40k cases, 8 seeds) after the fix",
+    "contract": "identical rows OR engine build-time reject OR both error; duck-errors-engine-serves and value mismatches are failures"
+  },
+  "findings": [
+    {
+      "construct": "\\1-\\9 outside a character class",
+      "witness": "regexp_full_match(s, '\\1((?m)\\W\u06639|...)a?')",
+      "duckdb": "Invalid Input Error: invalid escape sequence: \\1 (RE2 has no backrefs)",
+      "rust_regex": "octal(true) — pinned for in-class octal parity — reads \\1 as an octal escape and SERVES",
+      "decision": "reject at bind ('backreference-style \\N escape'); in-class \\1 stays served (octal in both)"
+    },
+    {
+      "construct": "stacked quantifiers, full grammar (not just */+ pairs)",
+      "witness": "'z{3,}+' 'a.{2}*' 'h??*' 'X?*' 'a{1}+' '(?:..)*{2}' '\\pL{0,}+'",
+      "duckdb": "Invalid Input Error: bad repetition operator (one lazy '?' is the only legal follower of a quantifier)",
+      "rust_regex": "silently reinterprets and serves",
+      "decision": "reject: after a quantifier and optional single lazy '?', any further * + ? or strict {bounds} is an error"
+    },
+    {
+      "construct": "nested counted repetition, bound product over 1000",
+      "witness": "regexp_matches(s, '(?:^(c{3,}\\dz0){1,999}\\p{L}+?\\D)|..')",
+      "duckdb": "Invalid Input Error: invalid repetition size: {1,999}",
+      "rust_regex": "no product cap at these sizes — serves",
+      "decision": "reject when nested {m,n} bound products exceed 1000; unbounded inner {n,} counts as over-cap (conservative: '(a{2,}){3}' rejects)"
+    },
+    {
+      "construct": "whitespace inside repetition bounds",
+      "witness": "regexp_replace(s, '.*a{1, 3}\\D*', '') on 'abc123def'",
+      "duckdb": "'{1, 3}' is LITERAL (no match, input unchanged)",
+      "rust_regex": "parses it as the 1..3 repetition and replaces ('123def') — silent wrong answer",
+      "decision": "reject '{...}' bodies that are strict bounds after whitespace stripping but contain whitespace"
+    },
+    {
+      "construct": "'--' / '&&' / '~~' inside a character class",
+      "witness": "regexp_replace(s, '[a-fz\\x41][--\u0660-\u0669]{0,}', '\\\\') ; regexp_matches(s, '[c\\s&&][^\u0660-\u0669~~\\052]')",
+      "duckdb": "literals / ranges ('[--\u0660]' = range '-'..'\u0660'; backwards ones error 'invalid character class range: h--')",
+      "rust_regex": "class set operations (difference/intersection/symmetric difference) — silent wrong answers measured both directions",
+      "decision": "reject any doubled '-' '&' '~' inside a class"
+    },
+    {
+      "construct": "non-POSIX '[' inside a character class",
+      "witness": "regexp_replace(s, '..|[]a-f[b]]\\S\\A{0,}', '$1')",
+      "duckdb": "'[' is a literal class member",
+      "rust_regex": "opens a NESTED class — silent wrong answers",
+      "decision": "reject '[' inside a class unless it starts a '[:name:]' POSIX element"
+    },
+    {
+      "construct": "POSIX element desyncing the class tracker",
+      "witness": "translate_pattern('[[:alpha:]\\d]') pre-fix emitted '[[:alpha:](?-u:\\d)]'",
+      "duckdb": "'[[:alpha:]\\d]' = alpha \u222a digits",
+      "rust_regex": "same semantics once the element is consumed atomically",
+      "decision": "FIX (not reject): consume '[:...:]' atomically; '[[:alpha:]\\d]' now translates to '[[:alpha:]0-9]'"
+    },
+    {
+      "construct": "Perl class as a range endpoint inside a class",
+      "witness": "regexp_extract(s, '..[--\\s[:^digit:]]..', 3, 'i') ; shapes '[a-\\d]' '[\\d-a]' '[\\x08-\\s]'",
+      "duckdb": "Invalid Input Error: invalid escape sequence / invalid character class range",
+      "rust_regex": "the in-class expansion can COMPILE (e.g. '[\\x08-\\t\\n..]') and serve",
+      "decision": "reject a Perl class escape adjacent to an unescaped range '-' on either side; trailing literal '-' ('[\\d-]') stays fine"
+    },
+    {
+      "construct": "range starting at the class-leading literal ']'",
+      "witness": "regexp_full_match(s, '[]-Z]\\w^h{999}') ; '[^]-0-7]'",
+      "duckdb": "']-Z' parses as a RANGE (backwards ones error: 'invalid character class range: ]-Z')",
+      "rust_regex": "treats the '-' as literal and serves; forward ranges ('[]-a]') would silently disagree on membership",
+      "decision": "reject '-' directly after the class-leading ']' unless immediately before ']' ('[]-]' stays fine)"
+    },
+    {
+      "construct": "anchor-only pattern with 2+ text anchors",
+      "witness": "regexp_matches(s, '$\\z(?i)') over __THIS__ vs as a constant",
+      "duckdb": "SELF-INCONSISTENT (measured): row path FALSE for 'hello world' / TRUE only for '' (literal-comparison optimization); constant fold TRUE everywhere. 'd$\\z', '($\\z)', 'x|$\\z', '^()^' are all rescued and consistent",
+      "rust_regex": "matches the empty string at the anchors (agrees with duckdb's constant fold only)",
+      "decision": "reject patterns consisting only of ^ $ \\A \\z, \\b, flag groups, and empty '(?:)' when they contain 2+ text anchors — unservable either way"
+    },
+    {
+      "construct": "capture group under an exactly-zero repetition",
+      "witness": "regexp_replace(s, '\\P{L}(\u00e9{1,999}\\x41+|\u212a*9?\u0663){0}', '$1-\\1')",
+      "duckdb": "keeps the group in the count: \\1 in range, non-participating -> '' ; replaces (' ' -> '$1-')",
+      "rust_regex": "erases the group from the compiled regex — the rewrite's MaxSubmatch pre-check sees 0 groups and no-ops; later group numbers would shift too",
+      "decision": "reject a capturing group followed by {0}/{0,0}; '(?:a){0}' and 'a{0}' stay fine"
+    },
+    {
+      "construct": "rewrite template: out-of-range backref AFTER a bad escape",
+      "witness": "regexp_replace(s, '..|.', '\\x\\x\\2', 'ccg') with 0 groups",
+      "duckdb": "input UNCHANGED — RE2's MaxSubmatch pre-check scans the whole template first, out-of-range wins over the global bad-escape consume quirk",
+      "rust_regex": "n/a (bind-time template translation ordered the checks left-to-right)",
+      "decision": "FIX: translate_rewrite pre-scans the whole template for out-of-range \\N before the bad-escape scan"
+    },
+    {
+      "construct": "\\C (any byte)",
+      "witness": "regexp_replace over 'h\u00e9llo \u0663\u0664' produced invalid UTF-8 (pyarrow decode failure on the ORACLE side)",
+      "duckdb": "serves raw bytes that can split multibyte chars",
+      "rust_regex": "does not support \\C — engine build-rejects via the compile error",
+      "decision": "no change (already an identical-reject); fuzzer harness treats undecodable duckdb output as a duckdb error"
+    }
+  ]
+}

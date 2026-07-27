@@ -113,6 +113,44 @@ EXCLUDE-then-filter only. COLUMNS('re') in scope: SELECT-list expansion
 (incl. inside an expression, zipped per-column); COLUMNS in WHERE
 (AND-conjunction) and multi-set expressions stay unsupported.
 
+## Standing fuzzer addendum (TASK-54, pins-waveB/fuzzer-task54.json)
+
+The one-time 98-entry battery left the pass-through path unguarded; the
+standing differential fuzzer (tests/test_duckdb_regexp_fuzz.py, in the normal
+gate) found 12 further divergence classes in its first deep run — each now on
+the reject list or fixed, re-swept to ZERO divergences over 40k cases / 8
+seeds. Headlines (witnesses + measured outputs in the JSON):
+
+- `\1`-`\9` outside a class: RE2 backref-reject vs rust octal-mode serve —
+  the pinned `octal(true)` cuts both ways. Reject outside; in-class stays
+  (octal in both).
+- Stacked quantifiers are a GRAMMAR, not a pair list: one lazy `?` is the
+  only legal follower; `{2}*`, `?*`, `*{2}`, `a???` all serve wrongly in
+  rust. Rejected via a quantifier-state machine.
+- RE2 caps NESTED counted-repetition bound products at 1000
+  ("invalid repetition size"); reject past the product, unbounded inner
+  counts as over-cap.
+- `{1, 3}` with whitespace: literal to RE2, a repetition to rust — silent
+  wrong answers. Reject.
+- Character classes are the minefield: `--`/`&&`/`~~` (rust set operations),
+  non-POSIX `[` (rust nested classes), Perl-class range endpoints, and
+  ranges starting at the class-leading `]` all reject; POSIX `[:...:]`
+  elements now consume atomically (the tracker used to desync and
+  mis-rewrite `[[:alpha:]\d]`).
+- Anchor-only patterns (2+ text anchors, only flag/`(?:)` noise): DuckDB is
+  SELF-inconsistent — row path literal-optimizes `'$\z'` to string equality
+  (FALSE for 'hello') while its constant fold says TRUE. Unservable; reject.
+- `(x){0}`: rust erases the capture group, shifting the group model the
+  rewrite quirks key off. Reject capturing-{0}.
+- Rewrite templates: RE2's MaxSubmatch pre-check outranks the bad-escape
+  consume quirk even when the bad escape comes FIRST — translate_rewrite now
+  pre-scans the whole template.
+
+Fuzzer contract per case: identical rows, or engine build-time reject, or
+both error; duck-errors-engine-serves and mismatches fail with seed + case
+index + SQL in the message. `REGEXP_FUZZ_SEED` / `REGEXP_FUZZ_N` override the
+fixed defaults for deep runs.
+
 ## Implementation stages (each lands with tests + corpus replay green)
 
 1. Regex infrastructure: `regex = "1"` dependency; translation module
