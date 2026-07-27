@@ -1504,10 +1504,13 @@ fn binder_tail_null_ops_natural_join_main_qualifier() {
     )
     .unwrap();
     assert_eq!(got, rows(&[&["NULL", "NULL", "NULL"]]));
-    // main.tbl resolves to the bare dynamic table; other schemas reject.
+    // Schema qualifiers are registry-noise (TASK-55): any single qualifier
+    // resolves when the table part matches; 3-part column refs bind too.
     let p = prep("SELECT a FROM main.__THIS__", &schema).unwrap();
     assert_eq!(p.out_cols[0].name, "a");
-    match prep("SELECT a FROM test.__THIS__", &schema) {
+    let p = prep("SELECT test.__THIS__.a FROM test.__THIS__", &schema).unwrap();
+    assert_eq!(p.out_cols[0].name, "a");
+    match prep("SELECT a FROM test.other", &schema) {
         Err(PrepareError::Unsupported(m)) => assert!(m.contains("driving relation"), "{m}"),
         other => panic!("wrong outcome: {:?}", other.err()),
     }

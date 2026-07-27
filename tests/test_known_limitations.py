@@ -47,10 +47,13 @@ def test_static_tables_are_frozen_unique_key_maps():
         "duplicate map key",
         {"d": dup},
     )
+    # NULL VALUES serve since TASK-55 (they ride as validity+payload pairs);
+    # only NULL keys keep the drop rule (a NULL never equi-matches).
     withnull = static({"id": "int", "v": "int?"}, [{"id": 1, "v": None}])
-    rejects(
+    duck_check(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
-        "NULL in value column",
+        {"a": "int", "s": "str?"},
+        [{"a": 1, "s": None}],
         {"d": withnull},
     )
 

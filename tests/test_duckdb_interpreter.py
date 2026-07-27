@@ -145,14 +145,16 @@ def test_duplicate_build_keys_error():
         )
 
 
-def test_null_in_value_column_errors():
+def test_null_in_value_column_serves():
+    # TASK-55: NULL VALUES flow through joins as NULL (validity+payload
+    # pairs in the map); only NULL KEYS keep the drop rule.
     holed = static({"id": "int", "v": "int?"}, [{"id": 1, "v": None}])
-    with pytest.raises(ValueError, match="NULL in value column"):
-        DuckDBInferFn(
-            "SELECT v FROM __THIS__ JOIN dim ON k = dim.id",
-            row_tables={"__THIS__": _row_model({"k": "int"})},
-            static_tables={"dim": holed},
-        )
+    duck_check(
+        "SELECT v FROM __THIS__ JOIN dim ON k = dim.id",
+        {"k": "int"},
+        [{"k": 1}, {"k": 2}],
+        {"dim": holed},
+    )
 
 
 def test_null_key_build_rows_are_dropped():

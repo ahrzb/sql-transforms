@@ -31,6 +31,10 @@ pub struct StaticSpec {
     pub table: String,
     pub key_cols: Vec<String>,
     pub val_cols: Vec<String>,
+    /// Per val_col: a declared-nullable column's map value is a
+    /// (validity i1, payload) PAIR in the flattened StaticTy::Map values
+    /// (TASK-55 — NULL join values flow through as NULL, not errors).
+    pub val_nullable: Vec<bool>,
 }
 
 /// The output of stage 1: a verified program plus, per map static, the
@@ -77,6 +81,11 @@ pub fn prepare(
                     .val_cols
                     .iter()
                     .map(|&c| t.cols[c as usize].name.clone())
+                    .collect(),
+                val_nullable: j
+                    .val_cols
+                    .iter()
+                    .map(|&c| t.cols[c as usize].ty.nullable)
                     .collect(),
             }
         })

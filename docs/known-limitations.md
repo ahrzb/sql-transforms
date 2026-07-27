@@ -30,7 +30,7 @@ rejected, permanently by design:
 |---|---|---|
 | Regex patterns must be constants (`regexp_matches(s, pattern_col)` rejects) | `unsupported: non-constant regex pattern (compiled at prepare in v0)` | Regexes compile at prepare; DuckDB compiles per row. Per-row compilation is the opposite of specialization. |
 | Replacement strings / regex options / extract group indexes must be constants | `non-constant regexp_replace replacement` etc. | Same. |
-| Static (join) tables must be provided at build time, with unique keys and no NULL values | `duplicate map key`, `has a NULL in value column` | Joins are frozen hash maps baked into the function. Duplicate keys mean 1:N join multiplicity — a designed extension (stage B, TASK-50 notes) that is deliberately not built yet. |
+| Static (join) tables must be provided at build time, with unique keys | `duplicate map key` | Joins are frozen hash maps baked into the function. Duplicate keys mean 1:N join multiplicity — a designed extension (stage B, TASK-50 notes) that is deliberately not built yet. NULL *values* serve since TASK-55 (they flow through as NULL); NULL *keys* drop the row, matching equi-join semantics. |
 | The dynamic table cannot be joined to itself | `joining the dynamic table to itself` | The batch is the probe side; using it as a build side too needs stage-B machinery. |
 | Exactly one row table drives the query | `the specializer takes exactly one row table`, `must be the dynamic table` | The serving contract is rows-in → rows-out for one entity stream. |
 
@@ -116,6 +116,12 @@ These are served, but with a consciously chosen surface — know them:
   principle; the engine is NUL-transparent (the ASCII-kernel behavior).
 - **`%`-by-zero NaN bit pattern is platform-libm** — pinned as
   engine==oracle bit agreement per platform, not a constant.
+- **Schema qualifiers are registry-noise** (TASK-55): the engine's table
+  registry is schema-less, so `s1.t1` (and 3-part `s1.t1.col` refs)
+  resolve when the table part matches a registered bare name. DuckDB's
+  schema-existence errors (`schema "x" does not exist`) are not
+  reproduced — a schema-less registry cannot know which schemas would
+  exist. Ambiguous matches still error.
 
 ## 6. How to read a rejection
 
