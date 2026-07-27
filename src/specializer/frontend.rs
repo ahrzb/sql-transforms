@@ -249,14 +249,15 @@ fn bind_from<'a>(
     let dyn_name = match &table.relation {
         TableFactor::Table { name, alias, .. } => {
             let n = name.to_string();
-            // `main.tbl` resolves to bare `tbl` (DuckDB's default schema);
-            // every OTHER qualifier fails in DuckDB itself with a
-            // schema-does-not-exist Catalog Error, so it stays unsupported
-            // here — never a silent bare-name fallback (wave-5 pins).
-            let bare = n
-                .strip_prefix("main.")
-                .or_else(|| n.strip_prefix("MAIN."))
-                .unwrap_or(&n);
+            // The engine's registry is SCHEMA-LESS: a single schema
+            // qualifier is accepted when the table part matches the
+            // registered bare name (TASK-55, amends the wave-5 main.-only
+            // rule — DuckDB's schema-existence errors are unknowable to a
+            // schema-less registry; documented in known-limitations.md §5).
+            let bare = match n.rsplit_once('.') {
+                Some((_, t)) => t,
+                None => &n,
+            };
             if !bare.eq_ignore_ascii_case(this_name) {
                 return Err(unsup(format!(
                     "table '{n}' as the driving relation (must be the dynamic table '{this_name}')"
@@ -568,9 +569,15 @@ fn bind_from<'a>(
 }
 
 fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, PrepareError> {
+    // Schema-less registry (TASK-55): an exact registered-name match wins;
+    // otherwise a single-qualifier SQL name (`s1.t1`) matches a registered
+    // bare `t1`. Ambiguity stays an error.
+    let bare = raw_name.rsplit_once('.').map(|(_, t)| t);
     let mut table_idx = None;
     for (i, st) in statics.iter().enumerate() {
-        if st.name.eq_ignore_ascii_case(raw_name) {
+        let hit = st.name.eq_ignore_ascii_case(raw_name)
+            || bare.is_some_and(|b| st.name.eq_ignore_ascii_case(b));
+        if hit {
             if table_idx.is_some() {
                 return Err(PrepareError::Bind(format!(
                     "ambiguous static table '{raw_name}'"
@@ -1502,6 +1509,9 @@ impl Binder<'_> {
             SqlExpr::Identifier(ident) => self.column(&ident.value),
             SqlExpr::CompoundIdentifier(parts) => match parts.as_slice() {
                 [table, col] => self.qualified(&table.value, &col.value),
+                // `schema.table.col` — the schema part is registry-noise
+                // (TASK-55; structs would be a 4th meaning, not modeled).
+                [_, table, col] => self.qualified(&table.value, &col.value),
                 _ => Err(unsup("nested field access")),
             },
             SqlExpr::Nested(inner) => self.expr(inner),
@@ -2153,7 +2163,10 @@ impl Binder<'_> {
                 col: pos as u32,
             },
             ty: col.ty.ty,
-            nullable: sj.kind == JoinKind::Left,
+            // NULL-able on a LEFT miss OR when the static column itself is
+            // declared nullable (TASK-55: NULL values ride as validity+
+            // payload pairs through the probe).
+            nullable: sj.kind == JoinKind::Left || col.ty.nullable,
         }
     }
 

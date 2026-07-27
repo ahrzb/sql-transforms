@@ -98,27 +98,53 @@ fn materialize_map(
             });
         }
         let mut vals = Vec::with_capacity(val_tys.len());
-        for (name, ty) in spec.val_cols.iter().zip(val_tys) {
+        let mut vt = val_tys.iter();
+        for (name, &nullable) in spec.val_cols.iter().zip(&spec.val_nullable) {
             let v = get(name)?;
-            if v.is_none() {
-                return Err(build_err(format!(
-                    "static table '{}' has a NULL in value column '{name}' — joins to NULL \
-                     values are not supported",
-                    spec.table
-                )));
-            }
-            vals.push(match ty {
-                Ty::I1 => ScalarVal::I1(v.extract()?),
-                Ty::I64 => ScalarVal::I64(v.extract().map_err(|_| {
-                    build_err(format!(
-                        "unsupported: static table '{}' value column '{name}' value \
-                         outside BIGINT range (UBIGINT/HUGEINT payloads)",
+            let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<ScalarVal> {
+                Ok(match ty {
+                    Ty::I1 => ScalarVal::I1(v.extract()?),
+                    Ty::I64 => ScalarVal::I64(v.extract().map_err(|_| {
+                        build_err(format!(
+                            "unsupported: static table '{}' value column '{name}' value \
+                             outside BIGINT range (UBIGINT/HUGEINT payloads)",
+                            spec.table
+                        ))
+                    })?),
+                    Ty::F64 => ScalarVal::F64(v.extract()?),
+                    Ty::Str => ScalarVal::Str(v.extract()?),
+                })
+            };
+            if nullable {
+                // (validity, payload) pair per the flattened map layout
+                // (TASK-55): NULL -> (false, typed default).
+                let _validity_ty = vt.next();
+                let ty = *vt.next().expect("payload type follows validity");
+                if v.is_none() {
+                    vals.push(ScalarVal::I1(false));
+                    vals.push(match ty {
+                        Ty::I1 => ScalarVal::I1(false),
+                        Ty::I64 => ScalarVal::I64(0),
+                        Ty::F64 => ScalarVal::F64(0.0),
+                        Ty::Str => ScalarVal::Str(String::new()),
+                    });
+                } else {
+                    vals.push(ScalarVal::I1(true));
+                    vals.push(convert(&v, ty)?);
+                }
+            } else {
+                let ty = *vt.next().expect("one type per non-nullable column");
+                if v.is_none() {
+                    // Declared non-nullable yet NULL in the data — the
+                    // original guard stays as a safety net.
+                    return Err(build_err(format!(
+                        "static table '{}' has a NULL in value column '{name}' — declared \
+                         non-nullable",
                         spec.table
-                    ))
-                })?),
-                Ty::F64 => ScalarVal::F64(v.extract()?),
-                Ty::Str => ScalarVal::Str(v.extract()?),
-            });
+                    )));
+                }
+                vals.push(convert(&v, ty)?);
+            }
         }
         entries.push((keys, vals));
     }

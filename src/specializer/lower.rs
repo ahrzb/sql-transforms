@@ -136,10 +136,19 @@ pub fn lower(
         .iter()
         .map(|spec| StaticTy::Map {
             keys: spec.keys.iter().map(|k| k.ty).collect(),
+            // A NULLABLE value column flattens to (validity i1, payload) —
+            // TASK-55; the probe dst layout mirrors this (val_slots).
             values: spec
                 .val_cols
                 .iter()
-                .map(|&c| catalog[spec.table].cols[c as usize].ty.ty)
+                .flat_map(|&c| {
+                    let ct = catalog[spec.table].cols[c as usize].ty;
+                    if ct.nullable {
+                        vec![Ty::I1, ct.ty]
+                    } else {
+                        vec![ct.ty]
+                    }
+                })
                 .collect(),
         })
         .collect();
@@ -411,15 +420,22 @@ impl<'a> FB<'a> {
             }
             SKind::StaticCol { join, col } => {
                 let (valid_hit, dsts) = self.emit_probe(*join, live)?;
-                let flag = match self.joins[*join as usize].kind {
+                let slots = self.val_slots(*join);
+                let (validity, payload) = slots[*col as usize];
+                let hit_flag = match self.joins[*join as usize].kind {
                     // INNER: a miss already skipped the row before any
                     // expression could look — the lane is provably valid.
                     JoinKind::Inner => None,
                     JoinKind::Left => Some(valid_hit),
                 };
+                // A nullable static column carries its own validity dst
+                // (TASK-55); on a LEFT miss the probe defaults it to false,
+                // so the AND is correct without extra guards.
+                let vflag = validity.map(|vi| dsts[vi]);
+                let flag = self.combine_flags(hit_flag, vflag);
                 Ok(Lane {
                     flag,
-                    val: dsts[*col as usize],
+                    val: dsts[payload],
                 })
             }
             SKind::Lit(lit) => Ok(Lane {
@@ -959,6 +975,42 @@ impl<'a> FB<'a> {
     /// flag (map hit AND every nullable key's validity: a NULL key never
     /// matches, and a garbage payload under a false flag must not spuriously
     /// hit) plus the value-column registers.
+    /// Flattened probe-dst layout for join `j`: per value column either
+    /// `(None, payload_idx)` or `(Some(validity_idx), payload_idx)` —
+    /// nullable static value columns ride as validity+payload pairs
+    /// (TASK-55), mirroring the StaticTy::Map flattening.
+    fn val_slots(&self, j: u32) -> Vec<(Option<usize>, usize)> {
+        let spec = &self.joins[j as usize];
+        let mut out = Vec::with_capacity(spec.val_cols.len());
+        let mut i = 0usize;
+        for &c in &spec.val_cols {
+            if self.catalog[spec.table].cols[c as usize].ty.nullable {
+                out.push((Some(i), i + 1));
+                i += 2;
+            } else {
+                out.push((None, i));
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Flattened probe-dst TYPES for join `j` (same order as val_slots).
+    fn val_flat_tys(&self, j: u32) -> Vec<Ty> {
+        let spec = &self.joins[j as usize];
+        spec.val_cols
+            .iter()
+            .flat_map(|&c| {
+                let ct = self.catalog[spec.table].cols[c as usize].ty;
+                if ct.nullable {
+                    vec![Ty::I1, ct.ty]
+                } else {
+                    vec![ct.ty]
+                }
+            })
+            .collect()
+    }
+
     fn emit_probe(&mut self, j: u32, live: &mut Live) -> Result<(Value, Vec<Value>), PrepareError> {
         if let Some((valid_hit, dsts)) = self.blocks[self.cur].probes.get(&j) {
             return Ok((*valid_hit, dsts.clone()));
@@ -979,9 +1031,9 @@ impl<'a> FB<'a> {
         }
         live.truncate(live.len() - nkeys);
 
-        let spec = &self.joins[j as usize];
+        let flat_len = self.val_flat_tys(j).len();
         let hit = self.fresh();
-        let mut dsts: Vec<Value> = spec.val_cols.iter().map(|_| self.b.fresh()).collect();
+        let mut dsts: Vec<Value> = (0..flat_len).map(|_| self.b.fresh()).collect();
         self.inst(Inst::Probe {
             static_id: j,
             hit,
@@ -1008,12 +1060,7 @@ impl<'a> FB<'a> {
                 // The strict block-param SSA means the probe's value lanes
                 // must ride the params (and, during residual emission, the
                 // live stack — nested CASE machinery rebinds them).
-                let spec = &self.joins[j as usize];
-                let dst_tys: Vec<Ty> = spec
-                    .val_cols
-                    .iter()
-                    .map(|&c| self.catalog[spec.table].cols[c as usize].ty.ty)
-                    .collect();
+                let dst_tys: Vec<Ty> = self.val_flat_tys(j);
                 let live_width = Self::live_types(live).len();
                 let mut join_tys = Self::live_types(live);
                 join_tys.extend(dst_tys.iter().copied());

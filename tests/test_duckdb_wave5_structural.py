@@ -23,6 +23,47 @@ T_ROWS = [
 ]
 
 
+def test_null_value_statics_vs_oracle():
+    # TASK-55: NULL values in static tables flow through joins as NULL
+    # (INNER and LEFT, incl. under residual predicates); NULL keys drop.
+    dim = static(
+        {"id": "int", "v": "int?", "w": "str?"},
+        [
+            {"id": 3, "v": None, "w": "x"},
+            {"id": 7, "v": 70, "w": None},
+        ],
+    )
+    duck_check(
+        "SELECT a, v, w FROM __THIS__ JOIN dim ON a = dim.id",
+        T,
+        T_ROWS,
+        {"dim": dim},
+    )
+    duck_check(
+        "SELECT a, v, w, v + 1 AS v1 FROM __THIS__ LEFT JOIN dim ON a = dim.id",
+        T,
+        T_ROWS,
+        {"dim": dim},
+    )
+    duck_check(
+        "SELECT a, v FROM __THIS__ LEFT JOIN dim ON a = dim.id AND a > 2",
+        T,
+        T_ROWS,
+        {"dim": dim},
+    )
+    duck_check(
+        "SELECT * FROM __THIS__ LEFT JOIN dim ON a = dim.id",
+        T,
+        T_ROWS,
+        {"dim": dim},
+    )
+
+
+def test_schema_qualified_relations_vs_oracle():
+    # TASK-55: schema qualifiers are registry-noise; suffix match binds.
+    duck_check("SELECT main.__THIS__.a FROM main.__THIS__", T, T_ROWS)
+
+
 def test_binder_tail_vs_oracle():
     # NULL <op> NULL typing, lateral aliases (real column wins), main.
     # qualifier, t AS u(x,y), NATURAL JOIN, mixed-literal IN/BETWEEN.
