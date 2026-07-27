@@ -1,0 +1,197 @@
+{
+  "area": "extract",
+  "duckdb_version": "v1.5.5",
+  "setup": "CREATE TABLE t(s VARCHAR); INSERT INTO t VALUES ('hello world'), ('abc123def'), (''), (NULL), ('héllo')  -- multi-statement pins: query lines map 1:1 to ' | '-separated observed segments",
+  "pins": [
+    {
+      "claim": "Default (no group arg) returns the WHOLE match (group 0 semantics), even when capture groups exist",
+      "query": "SELECT regexp_extract('hello world', 'l+')\nSELECT regexp_extract('hello world', '(\\w+) (\\w+)')",
+      "observed": "[('ll',)] | [('hello world',)]"
+    },
+    {
+      "claim": "Explicit group 0 = whole match and is identical to the 2-arg form",
+      "query": "SELECT regexp_extract('hello world', '(\\w+) (\\w+)', 0)\nSELECT regexp_extract('abc123','[0-9]+') = regexp_extract('abc123','[0-9]+',0)",
+      "observed": "[('hello world',)] | [(True,)]"
+    },
+    {
+      "claim": "Explicit groups 1 and 2 return the capture texts",
+      "query": "SELECT regexp_extract('hello world', '(\\w+) (\\w+)', 1), regexp_extract('hello world', '(\\w+) (\\w+)', 2)",
+      "observed": "[('hello', 'world')]"
+    },
+    {
+      "claim": "Group index beyond the pattern's group count but <= 9 is NOT an error — returns '' (group 3 of 2-group pattern; group 1 of 0-group pattern; group 9 of 2-group pattern)",
+      "query": "SELECT regexp_extract('hello world', '(\\w+) (\\w+)', 3), regexp_extract('hello world', 'l+', 1), regexp_extract('ab', '(a)(b)', 9)",
+      "observed": "[('', '', '')]"
+    },
+    {
+      "claim": "Group index is hard-capped at 0..9: group 10 errors EVEN with a 10-group pattern; group 9 of that pattern works",
+      "query": "SELECT regexp_extract('abcdefghij', '(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)', 10)\nSELECT regexp_extract('abcdefghij', '(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)', 9)",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Group index must be between 0 and 9! | [('i',)]"
+    },
+    {
+      "claim": "Negative group index -> same range error; the error fires regardless of whether the subject would match",
+      "query": "SELECT regexp_extract('abc', '(a)', -1)\nSELECT regexp_extract('zzz', '(a)', 100)",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Group index must be between 0 and 9! | ERROR InvalidInputException: Invalid Input Error: Group index must be between 0 and 9!"
+    },
+    {
+      "claim": "NO MATCH returns empty string '', NOT NULL — with or without an explicit group",
+      "query": "SELECT regexp_extract('abc', 'x'), regexp_extract('abc', 'x') IS NULL, regexp_extract('abc', 'x') = ''\nSELECT regexp_extract('abc', '(x)', 1), regexp_extract('abc', '(x)', 1) IS NULL",
+      "observed": "[('', False, True)] | [('', False)]"
+    },
+    {
+      "claim": "Matching is an unanchored SEARCH (pattern found anywhere), not a full-string match",
+      "query": "SELECT regexp_extract('abc123def', '[0-9]+'), regexp_extract('hello world', 'lo wo')",
+      "observed": "[('123', 'lo wo')]"
+    },
+    {
+      "claim": "Explicit anchors are honored within the search: ^world fails, ^hello and world$ succeed",
+      "query": "SELECT regexp_extract('hello world', '^world'), regexp_extract('hello world', '^hello'), regexp_extract('hello world', 'world$')",
+      "observed": "[('', 'hello', 'world')]"
+    },
+    {
+      "claim": "Only the FIRST (leftmost) match is returned; alternation is leftmost-FIRST not longest ('a|aa' on 'aaa' -> 'a')",
+      "query": "SELECT regexp_extract('a1b22c333', '[0-9]+'), regexp_extract('aaa', 'a|aa')",
+      "observed": "[('1', 'a')]"
+    },
+    {
+      "claim": "NULL subject -> NULL; NULL pattern -> NULL",
+      "query": "SELECT regexp_extract(NULL, 'a'), regexp_extract(NULL, 'a') IS NULL, regexp_extract('a', NULL), regexp_extract('a', NULL) IS NULL",
+      "observed": "[(None, True, None, True)]"
+    },
+    {
+      "claim": "SURPRISE: NULL group index does NOT return NULL — it returns '' (both literal NULL and CAST(NULL AS INTEGER))",
+      "query": "SELECT regexp_extract('abc', '(a)', NULL), regexp_extract('abc', '(a)', NULL) IS NULL, regexp_extract('abc', '(a)', CAST(NULL AS INTEGER)) = ''",
+      "observed": "[('', False, True)]"
+    },
+    {
+      "claim": "Empty pattern / empty subject / zero-length matches all return '' (never NULL): empty pattern on 'abc' and ''; group 1 of empty pattern; 'a' and '.*' on ''; 'x*','b*' on 'abc'",
+      "query": "SELECT regexp_extract('abc', ''), regexp_extract('abc', '') IS NULL, regexp_extract('', ''), regexp_extract('abc', '', 1)\nSELECT regexp_extract('', 'a'), regexp_extract('', 'a') = '', regexp_extract('', '.*'), regexp_extract('', '.*') = ''\nSELECT regexp_extract('abc', 'x*'), regexp_extract('abc', 'b*')",
+      "observed": "[('', False, '', '')] | [('', True, '', True)] | [('', '')]"
+    },
+    {
+      "claim": "Result type is VARCHAR for both the 2-arg and 3-arg integer forms",
+      "query": "SELECT typeof(regexp_extract('abc', 'b')), typeof(regexp_extract('abc', '(b)', 1))",
+      "observed": "[('VARCHAR', 'VARCHAR')]"
+    },
+    {
+      "claim": "Nested groups number left-to-right by open paren: '(a(b)c)' on 'abc' -> g0='abc', g1='abc', g2='b', g3=''",
+      "query": "SELECT regexp_extract('abc', '(a(b)c)', 0), regexp_extract('abc', '(a(b)c)', 1), regexp_extract('abc', '(a(b)c)', 2), regexp_extract('abc', '(a(b)c)', 3)",
+      "observed": "[('abc', 'abc', 'b', '')]"
+    },
+    {
+      "claim": "Non-participating groups return '' NOT NULL: alternation '(a)|(b)' on 'b' g1='' (IS NULL False) g2='b'; optional 'a(b)?c' on 'ac' g1=''",
+      "query": "SELECT regexp_extract('b', '(a)|(b)', 1), regexp_extract('b', '(a)|(b)', 1) IS NULL, regexp_extract('b', '(a)|(b)', 2)\nSELECT regexp_extract('ac', 'a(b)?c', 1), regexp_extract('ac', 'a(b)?c', 1) = ''",
+      "observed": "[('', False, 'b')] | [('', True)]"
+    },
+    {
+      "claim": "Name-list 3rd arg returns a STRUCT (non-scalar; out of scalar-engine scope): one field per name, values = groups 1..N positionally, field order = list order",
+      "query": "SELECT regexp_extract('2023-04-15', '(\\d+)-(\\d+)-(\\d+)', ['y','m','d'])\nSELECT typeof(regexp_extract('2023-04-15', '(\\d+)-(\\d+)-(\\d+)', ['y','m','d']))\nSELECT regexp_extract('2023-04', '(\\d+)-(\\d+)', ['second_named_first','other'])",
+      "observed": "[({'y': '2023', 'm': '04', 'd': '15'},)] | [('STRUCT(y VARCHAR, m VARCHAR, d VARCHAR)',)] | [({'second_named_first': '2023', 'other': '04'},)]"
+    },
+    {
+      "claim": "Name-list form: NO MATCH -> struct of all '' fields; NULL subject -> NULL (whole struct)",
+      "query": "SELECT regexp_extract('abc', '(\\d+)-(\\d+)', ['a','b'])\nSELECT regexp_extract(NULL, '(\\d+)', ['a']), regexp_extract(NULL, '(\\d+)', ['a']) IS NULL",
+      "observed": "[({'a': '', 'b': ''},)] | [(None, True)]"
+    },
+    {
+      "claim": "Name-list may name FEWER groups than the pattern has — takes the first N",
+      "query": "SELECT regexp_extract('2023-04', '(\\d+)-(\\d+)', ['a'])",
+      "observed": "[({'a': '2023'},)]"
+    },
+    {
+      "claim": "Name-list bind errors (verbatim): more names than groups; empty list; duplicate name; NULL name",
+      "query": "SELECT regexp_extract('2023-04', '(\\d+)-(\\d+)', ['a','b','c'])\nSELECT regexp_extract('abc', '(a)', [])\nSELECT regexp_extract('ab', '(a)(b)', ['x','x'])\nSELECT regexp_extract('ab', '(a)(b)', ['x', NULL])",
+      "observed": "ERROR BinderException: Binder Error: Not enough capturing groups (2) for provided names (3) | ERROR BinderException: Binder Error: Group name list must be non-empty | ERROR BinderException: Binder Error: Duplicate group name 'x' in regexp_extract | ERROR BinderException: Binder Error: NULL group name in regexp_extract"
+    },
+    {
+      "claim": "Empty-string name is ALLOWED and yields an unnamed struct field: typeof STRUCT(VARCHAR, VARCHAR)",
+      "query": "SELECT regexp_extract('ab', '(a)(b)', ['', 'y'])\nSELECT typeof(regexp_extract('ab', '(a)(b)', ['', 'y']))",
+      "observed": "[(('a', 'b'),)] | [('STRUCT(VARCHAR, VARCHAR)',)]"
+    },
+    {
+      "claim": "Name-list requires a CONSTANT pattern (NULL pattern is a bind error here — unlike scalar form) and a CONSTANT list (column list is a runtime error)",
+      "query": "SELECT regexp_extract('ab', NULL, ['x'])\nSELECT regexp_extract('ab', '(a)(b)', l) FROM (VALUES (['x','y'])) tl(l)",
+      "observed": "ERROR BinderException: Binder Error: regexp_extract with LIST of group names requires a constant pattern | ERROR InvalidInputException: Invalid Input Error: Group specification field must be a constant!"
+    },
+    {
+      "claim": "4th options arg: 'i' = case-insensitive; extracted text preserves ORIGINAL case; works for int-group and name-list forms",
+      "query": "SELECT regexp_extract('ABC123', '([a-z]+)', 1, 'i'), regexp_extract('ABC', 'abc', 0, 'i')\nSELECT regexp_extract('ABC-12', '([a-z]+)-(\\d+)', ['w','n'], 'i')",
+      "observed": "[('ABC', 'ABC')] | [({'w': 'ABC', 'n': '12'},)]"
+    },
+    {
+      "claim": "No (VARCHAR,VARCHAR,VARCHAR) overload — options as 3rd arg is an ambiguity bind error; BIGINT group index is not implicitly cast (error lists the full 5-overload set)",
+      "query": "SELECT regexp_extract('ABC', 'abc', 'i')\nSELECT regexp_extract('abc123', '([a-z]+)([0-9]+)', CAST(2 AS BIGINT))",
+      "observed": "ERROR BinderException: Binder Error: Could not choose a best candidate function for the function call \"regexp_extract(STRING_LITERAL, STRING_LITERAL, STRING_LITERAL)\". In order to select one, please add explicit type casts.\n\tCandidate functions:\n\tregexp_extract(VARCHAR, VARCHAR, VARCHAR[]) -> VARCHAR\n\tregexp_extract(VARCHAR, VARCHAR, INTEGER) -> VARCHAR\n\n\nLINE 1: SELECT regexp_extract('ABC', 'abc', 'i')\n               ^ | ERROR BinderException: Binder Error: No function matches the given name and argument types 'regexp_extract(STRING_LITERAL, STRING_LITERAL, BIGINT)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tregexp_extract(VARCHAR, VARCHAR) -> VARCHAR\n\tregexp_extract(VARCHAR, VARCHAR, INTEGER) -> VARCHAR\n\tregexp_extract(VARCHAR, VARCHAR, INTEGER, VARCHAR) -> VARCHAR\n\tregexp_extract(VARCHAR, VARCHAR, VARCHAR[]) -> VARCHAR\n\tregexp_extract(VARCHAR, VARCHAR, VARCHAR[], VARCHAR) -> VARCHAR\n\n\nLINE 1: SELECT regexp_extract('abc123', '([a-z]+)([0-9]+)', CAST(2 AS BIGINT...\n               ^"
+    },
+    {
+      "claim": "Options errors (verbatim): unrecognized 'q'; 'g' only valid for regexp_replace; NULL options is an ERROR not NULL; options must be a constant",
+      "query": "SELECT regexp_extract('a', 'a', 0, 'q')\nSELECT regexp_extract('aaa', 'a', 0, 'g')\nSELECT regexp_extract('ABC', 'abc', 0, NULL)\nSELECT regexp_extract('ABC', 'abc', 0, o) FROM (VALUES ('i')) to_(o)",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option q | ERROR InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace | ERROR InvalidInputException: Invalid Input Error: Regex options field must not be NULL | ERROR InvalidInputException: Invalid Input Error: Regex options field must be a constant"
+    },
+    {
+      "claim": "Option 'c' = case-sensitive (the default); empty options string = default; with conflicting flags the LAST wins ('ci' matches, 'ic' does not); 'l' = literal matching",
+      "query": "SELECT regexp_extract('ABC', 'abc', 0, 'c'), regexp_extract('ABC', 'abc', 0, ''), regexp_extract('ABC', 'abc', 0, 'ci'), regexp_extract('ABC', 'abc', 0, 'ic')\nSELECT regexp_extract('a.c', 'a.c', 0, 'l'), regexp_extract('axc', 'a.c', 0, 'l')",
+      "observed": "[('', '', 'ABC', '')] | [('a.c', '')]"
+    },
+    {
+      "claim": "Dot does NOT match newline by default; option 's' makes it match; 'n' keeps it non-matching",
+      "query": "SELECT regexp_extract('a' || chr(10) || 'b', 'a.b'), regexp_extract('a' || chr(10) || 'b', 'a.b', 0, 's'), regexp_extract('a' || chr(10) || 'b', 'a.b', 0, 'n')",
+      "observed": "[('', 'a\\nb', '')]"
+    },
+    {
+      "claim": "SURPRISE: options 'm'/'n'/'p' do NOT enable multiline ^/$ anchors ('' for all); inline (?m) DOES; inline (?s) and (?i) also work",
+      "query": "SELECT regexp_extract('a' || chr(10) || 'b', '^b', 0, 'm'), regexp_extract('a' || chr(10) || 'b', 'a$', 0, 'm'), regexp_extract('a' || chr(10) || 'b', '^b', 0, 'p'), regexp_extract('a' || chr(10) || 'b', '^b', 0, 'n')\nSELECT regexp_extract('a' || chr(10) || 'b', '(?m)^b'), regexp_extract('a' || chr(10) || 'b', '(?s)a.b'), regexp_extract('ABC', '(?i)abc')",
+      "observed": "[('', '', '', '')] | [('b', 'a\\nb', 'ABC')]"
+    },
+    {
+      "claim": "UTF-8 aware: '.' matches one CODEPOINT — 'é', a full emoji, one Arabic-Indic digit; non-ASCII capture works",
+      "query": "SELECT regexp_extract('héllo', 'h.llo'), regexp_extract('héllo', 'h(é)llo', 1)\nSELECT regexp_extract('a😀b', 'a(.)b', 1), regexp_extract('a😀b', '.'), regexp_extract('٣٤', '.')",
+      "observed": "[('héllo', 'é')] | [('😀', 'a', '٣')]"
+    },
+    {
+      "claim": "ASCII-only classes (RE2): [0-9] and \\d do NOT match Arabic-Indic '٣٤' (-> ''); \\w does not match 'é' so (\\w+) on 'héllo' captures only 'h'",
+      "query": "SELECT regexp_extract('٣٤', '[0-9]+'), regexp_extract('٣٤', '\\d+'), regexp_extract('٣٤', '[0-9]+') = ''\nSELECT regexp_extract('héllo', '(\\w+)', 1)",
+      "observed": "[('', '', True)] | [('h',)]"
+    },
+    {
+      "claim": "Case-insensitive 'i' uses simple folding: 'i' does NOT match 'İ' (U+0130) in 'İstanbul'; '.' still matches 'İ' as one codepoint",
+      "query": "SELECT regexp_extract('İstanbul', 'i', 0, 'i'), regexp_extract('İstanbul', 'i', 0, 'i') = ''\nSELECT regexp_extract('İstanbul', '^.')",
+      "observed": "[('', True)] | [('İ',)]"
+    },
+    {
+      "claim": "Invalid regex patterns: verbatim RE2 errors for '(' and '['",
+      "query": "SELECT regexp_extract('a', '(')\nSELECT regexp_extract('a', '[')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: missing ): ( | ERROR InvalidInputException: Invalid Input Error: missing ]: ["
+    },
+    {
+      "claim": "Per-row over t('hello world','abc123def','',NULL,'héllo'): NULL row -> NULL, others follow scalar rules (note 'héllo' -> 'h' via ASCII \\w)",
+      "query": "SELECT s, regexp_extract(s, '(\\w+)', 1) FROM t\nSELECT s, regexp_extract(s, 'l+') FROM t",
+      "observed": "[('hello world', 'hello'), ('abc123def', 'abc123def'), ('', ''), (None, None), ('héllo', 'h')] | [('hello world', 'll'), ('abc123def', ''), ('', ''), (None, None), ('héllo', 'll')]"
+    },
+    {
+      "claim": "Pattern MAY be a non-constant column (per-row compile; NULL pattern row -> NULL); group index must be a constant (verbatim runtime error), though constant-foldable exprs like 1+1 are fine",
+      "query": "SELECT regexp_extract('abc123', p) FROM (VALUES ('[0-9]+'), ('x'), (NULL)) tp(p)\nSELECT regexp_extract('abc123def', '([a-z]+)([0-9]+)', g) FROM (VALUES (1),(2)) tg(g)\nSELECT regexp_extract('abc123', '([a-z]+)([0-9]+)', 1+1)",
+      "observed": "[('123',), ('',), (None,)] | ERROR InvalidInputException: Invalid Input Error: Group specification field must be a constant! | [('123',)]"
+    },
+    {
+      "claim": "RE2 named groups (?P<name>...) allowed; integer indexing ignores the name; name-list maps positionally",
+      "query": "SELECT regexp_extract('abc123', '(?P<letters>[a-z]+)', 1)\nSELECT regexp_extract('abc123', '(?P<letters>[a-z]+)([0-9]+)', ['l','n'])",
+      "observed": "[('abc',)] | [({'l': 'abc', 'n': '123'},)]"
+    }
+  ],
+  "surprises": [
+    "NULL group index returns '' (empty string), NOT NULL — unlike NULL subject/pattern which return NULL.",
+    "NULL options string is an InvalidInputException ('Regex options field must not be NULL'), not a NULL result.",
+    "Group index is hard-capped at 0..9 ('Group index must be between 0 and 9!'): group 10 errors even when the pattern HAS 10 capturing groups, and the error fires even when the subject wouldn't match; but any index in 0..9 beyond the actual group count silently returns ''.",
+    "No-match, non-participating groups, and over-count in-range groups all return '' (never NULL) — '' from regexp_extract is ambiguous between no-match and empty capture.",
+    "Options 'm'/'n'/'p' (newline-sensitive) do NOT enable multiline ^/$ anchors in 1.5.5; inline (?m) does. Option 's' does enable dot-matches-newline.",
+    "In the options string the LAST of conflicting flags wins: 'ci' is case-insensitive, 'ic' is case-sensitive.",
+    "Alternation is leftmost-FIRST, not leftmost-longest: 'a|aa' on 'aaa' extracts 'a'.",
+    "\\d, \\w, [0-9] are ASCII-only (RE2): no match on Arabic-Indic '٣٤'; (\\w+) on 'héllo' captures just 'h'. But '.' is codepoint-aware (matches a full emoji as one char).",
+    "Case-insensitive 'i' does not fold 'İ' (U+0130) to 'i'.",
+    "Name-list form: fewer names than groups is allowed (takes first N); more names, empty list, duplicate names, NULL names are bind errors; empty-string name yields an unnamed STRUCT field (typeof STRUCT(VARCHAR, VARCHAR)); NULL pattern is a bind error here (vs NULL result in scalar form).",
+    "Pattern may be a per-row column, but group index and options must be constants (runtime InvalidInputException otherwise); BIGINT group index is NOT implicitly cast to INTEGER (binder error).",
+    "DuckDB 1.5.5 does not support U&'...' literals ('Parser Error: unicode_to_utf8 NOT IMPLEMENTED') — use direct UTF-8 literals."
+  ],
+  "recommendation": "Engine scope: implement the scalar forms (2-arg, 3-arg INTEGER group, 4-arg options) returning VARCHAR; classify the name-list STRUCT forms (VARCHAR[] 3rd arg, +options) as clean out-of-scope non-scalar. Semantics: unanchored leftmost-first RE2 search; '' for no-match, non-participating groups, and any in-range (0..9) group index above the pattern's group count; NULL only for NULL subject or NULL pattern; NULL group index -> '' and NULL options -> error; constant group index required, range-checked 0..9 with verbatim 'Group index must be between 0 and 9!'; constant options required; options c/i/l/m/n/p/s with last-flag-wins conflicts, 'g' rejected — and m/n/p must NOT enable multiline anchors while inline (?m) does. Match RE2 exactly: ASCII-only \\d/\\w classes, codepoint-aware '.', simple case folding (no İ->i)."
+}

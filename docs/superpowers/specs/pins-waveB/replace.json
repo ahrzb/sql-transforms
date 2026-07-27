@@ -1,0 +1,286 @@
+{
+  "area": "replace",
+  "duckdb_version": "v1.5.5 (python pkg 1.5.5)",
+  "pins": [
+    {
+      "claim": "Default (no options) replaces FIRST match only: 'aaa' with a->X gives 'Xaa'",
+      "query": "SELECT regexp_replace('aaa', 'a', 'X')",
+      "observed": "[('Xaa',)]"
+    },
+    {
+      "claim": "Default first-match-only over table t rows (hello world, aaa, '', NULL, a1b2c3) with a->X",
+      "query": "SELECT s, regexp_replace(s, 'a', 'X') FROM t",
+      "observed": "[('hello world', 'hello world'), ('aaa', 'Xaa'), ('', ''), (None, None), ('a1b2c3', 'X1b2c3')]"
+    },
+    {
+      "claim": "Return type of regexp_replace is VARCHAR",
+      "query": "SELECT typeof(regexp_replace('aaa', 'a', 'X'))",
+      "observed": "[('VARCHAR',)]"
+    },
+    {
+      "claim": "'g' option (4th arg) replaces ALL matches: 'aaa' -> 'XXX'",
+      "query": "SELECT regexp_replace('aaa', 'a', 'X', 'g')",
+      "observed": "[('XXX',)]"
+    },
+    {
+      "claim": "Options combine: 'gi' on 'AAA' with pattern 'a' -> 'XXX'",
+      "query": "SELECT regexp_replace('AAA', 'a', 'X', 'gi')",
+      "observed": "[('XXX',)]"
+    },
+    {
+      "claim": "Option order irrelevant: 'ig' same as 'gi'",
+      "query": "SELECT regexp_replace('AAA', 'a', 'X', 'ig')",
+      "observed": "[('XXX',)]"
+    },
+    {
+      "claim": "Empty options string '' behaves like no options (first match only)",
+      "query": "SELECT regexp_replace('aaa', 'a', 'X', '')",
+      "observed": "[('Xaa',)]"
+    },
+    {
+      "claim": "NULL options argument -> NULL result (not treated as no-options)",
+      "query": "SELECT regexp_replace('aaa', 'a', 'X', NULL)",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "Global replace over table t with a->X and 'g'",
+      "query": "SELECT s, regexp_replace(s, 'a', 'X', 'g') FROM t",
+      "observed": "[('hello world', 'hello world'), ('aaa', 'XXX'), ('', ''), (None, None), ('a1b2c3', 'X1b2c3')]"
+    },
+    {
+      "claim": "Backslash style backref \\1 in replacement works (SQL literal '[\\1]')",
+      "query": "SELECT regexp_replace('hello world', '(hello)', '[\\1]')",
+      "observed": "[('[hello] world',)]"
+    },
+    {
+      "claim": "Dollar style $1 is LITERAL text in the replacement (no $-backrefs): produces '[$1] world'",
+      "query": "SELECT regexp_replace('hello world', '(hello)', '[$1]')",
+      "observed": "[('[$1] world',)]"
+    },
+    {
+      "claim": "\\0 in replacement = the WHOLE match",
+      "query": "SELECT regexp_replace('hello world', 'l+', '[\\0]')",
+      "observed": "[('he[ll]o world',)]"
+    },
+    {
+      "claim": "$0 in replacement is LITERAL '$0', not the match",
+      "query": "SELECT regexp_replace('hello world', 'l+', '[$0]')",
+      "observed": "[('he[$0]o world',)]"
+    },
+    {
+      "claim": "& in replacement is LITERAL '&', not the match (no sed-style ampersand)",
+      "query": "SELECT regexp_replace('hello world', 'l+', '[&]')",
+      "observed": "[('he[&]o world',)]"
+    },
+    {
+      "claim": "Two backrefs swap: (h)(e) -> \\2\\1 on 'hello'",
+      "query": "SELECT regexp_replace('hello', '(h)(e)', '\\2\\1')",
+      "observed": "[('ehllo',)]"
+    },
+    {
+      "claim": "Out-of-range backref \\2 (pattern has 1 group): replacement is SILENTLY SKIPPED entirely — original string returned, no error",
+      "query": "SELECT regexp_replace('hello', '(h)', '\\2')",
+      "observed": "[('hello',)]"
+    },
+    {
+      "claim": "Disambiguation: out-of-range backref '[\\2]' with '(h)' — result is unchanged 'hello' (silent no-op), NOT '[]ello' (empty-substitution)",
+      "query": "SELECT regexp_replace('hello', '(h)', '[\\2]')",
+      "observed": "[('hello',)]"
+    },
+    {
+      "claim": "Out-of-range backref with 'g': still silent no-op, original returned",
+      "query": "SELECT regexp_replace('aaa', '(a)', '\\2', 'g')",
+      "observed": "[('aaa',)]"
+    },
+    {
+      "claim": "Literal backslash in replacement: SQL '\\\\' (two backslash chars) as rewrite",
+      "query": "SELECT regexp_replace('hello', 'h', '\\\\')",
+      "observed": "[('\\\\ello',)]"
+    },
+    {
+      "claim": "Single trailing backslash alone as entire replacement: invalid rewrite -> silent no-op, original returned",
+      "query": "SELECT regexp_replace('hello', 'h', '\\')",
+      "observed": "[('hello',)]"
+    },
+    {
+      "claim": "Backslash before non-digit in replacement ('\\x'): INVALID rewrite -> silent no-op, original returned (not literal 'x', not error)",
+      "query": "SELECT regexp_replace('hello', 'h', '\\x')",
+      "observed": "[('hello',)]"
+    },
+    {
+      "claim": "DIVERGENCE with 'g': bad escape '\\x' rewrite under 'g' does NOT no-op — the match is consumed and the (failed) rewrite emits nothing: 'hello' -> 'ello'",
+      "query": "SELECT regexp_replace('hello', 'h', '\\x', 'g')",
+      "observed": "[('ello',)]"
+    },
+    {
+      "claim": "Partial emission under 'g': rewrite 'A\\xB' emits text up to the bad escape then stops ('A'), match consumed, trailing 'B' dropped",
+      "query": "SELECT regexp_replace('hello', 'h', 'A\\xB', 'g')",
+      "observed": "[('Aello',)]"
+    },
+    {
+      "claim": "Same partial emission WITHOUT 'g'? rewrite 'A\\xB' non-global",
+      "query": "SELECT regexp_replace('hello', 'h', 'A\\xB')",
+      "observed": "[('hello',)]"
+    },
+    {
+      "claim": "Bad escape rewrite '\\x' with 'g' on 'aaa': every match deleted -> ''",
+      "query": "SELECT regexp_replace('aaa', 'a', '\\x', 'g')",
+      "observed": "[('',)]"
+    },
+    {
+      "claim": "Trailing lone backslash rewrite 'Q\\' with 'g': emits 'Q' then stops at bad trailing backslash",
+      "query": "SELECT regexp_replace('hello', 'h', 'Q\\', 'g')",
+      "observed": "[('Qello',)]"
+    },
+    {
+      "claim": "Out-of-range backref mixed with literal under 'g': 'A\\2B' with '(a)' -> pre-check no-op (contrast with bad-escape partial emission)",
+      "query": "SELECT regexp_replace('aaa', '(a)', 'A\\2B', 'g')",
+      "observed": "[('aaa',)]"
+    },
+    {
+      "claim": "Backref followed by digit: '\\10' parses as \\1 then literal '0' (single-digit backrefs only)",
+      "query": "SELECT regexp_replace('ab', '(a)', '\\10')",
+      "observed": "[('a0b',)]"
+    },
+    {
+      "claim": "Literal dollar sign in replacement",
+      "query": "SELECT regexp_replace('hello', 'h', '$')",
+      "observed": "[('$ello',)]"
+    },
+    {
+      "claim": "Wrapping with 'g': a1b2c3 with (\\d) -> [\\1] globally",
+      "query": "SELECT regexp_replace('a1b2c3', '(\\d)', '[\\1]', 'g')",
+      "observed": "[('a[1]b[2]c[3]',)]"
+    },
+    {
+      "claim": "Empty pattern '' with 'g' on 'abc': where do empty matches insert; terminates",
+      "query": "SELECT regexp_replace('abc', '', 'X', 'g')",
+      "observed": "[('XaXbXcX',)]"
+    },
+    {
+      "claim": "Empty pattern '' without 'g' on 'abc'",
+      "query": "SELECT regexp_replace('abc', '', 'X')",
+      "observed": "[('Xabc',)]"
+    },
+    {
+      "claim": "Pattern 'a*' with 'g' on 'bab': empty + nonempty match interleaving",
+      "query": "SELECT regexp_replace('bab', 'a*', 'X', 'g')",
+      "observed": "[('XbXbX',)]"
+    },
+    {
+      "claim": "Pattern 'a*' with 'g' on empty string ''",
+      "query": "SELECT regexp_replace('', 'a*', 'X', 'g')",
+      "observed": "[('X',)]"
+    },
+    {
+      "claim": "Empty pattern on empty string, no options",
+      "query": "SELECT regexp_replace('', '', 'X')",
+      "observed": "[('X',)]"
+    },
+    {
+      "claim": "Empty pattern '' with 'g' on 'a😀b' inserts at CODEPOINT boundaries (never inside the emoji's UTF-8 bytes): 'XaX😀XbX'",
+      "query": "SELECT regexp_replace('a😀b', '', 'X', 'g')",
+      "observed": "[('XaX😀XbX',)]"
+    },
+    {
+      "claim": "No match returns original string unchanged",
+      "query": "SELECT regexp_replace('hello world', 'z', 'X')",
+      "observed": "[('hello world',)]"
+    },
+    {
+      "claim": "NULL subject string -> NULL",
+      "query": "SELECT regexp_replace(NULL, 'a', 'X')",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "NULL pattern -> NULL",
+      "query": "SELECT regexp_replace('aaa', NULL, 'X')",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "NULL replacement -> NULL",
+      "query": "SELECT regexp_replace('aaa', 'a', NULL)",
+      "observed": "[(None,)]"
+    },
+    {
+      "claim": "Non-participating group backref: '(a)|(b)' on 'a', replacement '[\\2]'",
+      "query": "SELECT regexp_replace('a', '(a)|(b)', '[\\2]')",
+      "observed": "[('[]',)]"
+    },
+    {
+      "claim": "Optional group that did not match: '(a)(x)?(b)' on 'ab', replacement '\\1\\2\\3' -> 'ab' (a genuine rewrite that happens to equal input; \\2 -> empty)",
+      "query": "SELECT regexp_replace('ab', '(a)(x)?(b)', '\\1\\2\\3')",
+      "observed": "[('ab',)]"
+    },
+    {
+      "claim": "Disambiguation: '(a)(x)?(b)' on 'ab' with '[\\1][\\2][\\3]' -> '[a][][b]' proves in-range non-participating group substitutes EMPTY (contrast with out-of-range no-op)",
+      "query": "SELECT regexp_replace('ab', '(a)(x)?(b)', '[\\1][\\2][\\3]')",
+      "observed": "[('[a][][b]',)]"
+    },
+    {
+      "claim": "'i' option: case-insensitive match 'hello' on 'HELLO'",
+      "query": "SELECT regexp_replace('HELLO', 'hello', 'X', 'i')",
+      "observed": "[('X',)]"
+    },
+    {
+      "claim": "'i' option does NOT fold 'İ' (U+0130) to 'i': 'İstanbul' unchanged (RE2 simple case folding)",
+      "query": "SELECT regexp_replace('İstanbul', 'i', 'X', 'i')",
+      "observed": "[('İstanbul',)]"
+    },
+    {
+      "claim": "'i' option simple-folds ASCII in Unicode text: 'S' matches 's' in 'İstanbul'",
+      "query": "SELECT regexp_replace('İstanbul', 'S', 'X', 'i')",
+      "observed": "[('İXtanbul',)]"
+    },
+    {
+      "claim": "Invalid option letter 'z' -> verbatim error",
+      "query": "SELECT regexp_replace('aaa', 'a', 'X', 'z')",
+      "observed": "ERROR [InvalidInputException]: Invalid Input Error: Unrecognized Regex option z"
+    },
+    {
+      "claim": "Invalid regex pattern '(' -> verbatim error",
+      "query": "SELECT regexp_replace('a', '(', 'X')",
+      "observed": "ERROR [InvalidInputException]: Invalid Input Error: missing ): ("
+    },
+    {
+      "claim": "Accented char replace: 'héllo' é->E",
+      "query": "SELECT regexp_replace('héllo', 'é', 'E')",
+      "observed": "[('hEllo',)]"
+    },
+    {
+      "claim": "Dot '.' with 'g' on 'a😀b': emoji is ONE match (UTF-8 aware) -> 'XXX'",
+      "query": "SELECT regexp_replace('a😀b', '.', 'X', 'g')",
+      "observed": "[('XXX',)]"
+    },
+    {
+      "claim": "Whole-match backref with emoji: '😀' -> '[\\0]'",
+      "query": "SELECT regexp_replace('a😀b', '😀', '[\\0]')",
+      "observed": "[('a[😀]b',)]"
+    },
+    {
+      "claim": "\\d does NOT match Arabic-Indic digits '٣٤' (RE2 \\d is ASCII)",
+      "query": "SELECT regexp_replace('٣٤', '\\d', 'X', 'g')",
+      "observed": "[('٣٤',)]"
+    },
+    {
+      "claim": "[0-9] does not match Arabic-Indic digits either",
+      "query": "SELECT regexp_replace('٣٤', '[0-9]', 'X', 'g')",
+      "observed": "[('٣٤',)]"
+    },
+    {
+      "claim": "Direct replace of 'İ' (U+0130) with 'I'",
+      "query": "SELECT regexp_replace('İstanbul', 'İ', 'I')",
+      "observed": "[('Istanbul',)]"
+    }
+  ],
+  "surprises": [
+    "Invalid rewrite strings NEVER error, but non-global and global handle them DIFFERENTLY. Non-global: ANY invalid rewrite (out-of-range backref \\2, bad escape \\x, trailing lone backslash) silently skips the whole replacement — original returned. Global 'g': out-of-range backref is still a full no-op (RE2 GlobalReplace pre-checks MaxSubmatch), BUT a bad escape (backslash before non-digit, or trailing lone backslash) still CONSUMES each match and emits the rewrite only up to the bad escape — regexp_replace('hello','h','\\x','g') = 'ello', ('hello','h','A\\xB','g') = 'Aello', ('aaa','a','\\x','g') = ''.",
+    "In-range non-participating groups behave differently from out-of-range ones: '(a)|(b)' \\2 and '(a)(x)?(b)' \\2 substitute EMPTY string (replacement still happens), while out-of-range \\2 aborts the whole replacement.",
+    "NULL options argument makes the result NULL (any NULL argument -> NULL), it is not treated as 'no options'.",
+    "Backrefs are backslash-style ONLY: \\1-\\9 plus \\0 for the whole match; $1/$0/& are literal text. \\10 parses as \\1 followed by literal '0'.",
+    "Empty pattern with 'g' inserts the replacement at every codepoint boundary INCLUDING both ends ('abc' -> 'XaXbXcX') and terminates; on 'a😀b' boundaries are codepoints, never inside the emoji's UTF-8 bytes.",
+    "'a*' with 'g' on 'bab' gives 'XbXbX' — no extra empty-match insertion immediately after a nonempty match.",
+    "'i' does not fold 'İ' (U+0130) to 'i' (RE2 simple folding); \\d and [0-9] do not match Arabic-Indic digits '٣٤'."
+  ],
+  "recommendation": "Implement as a thin wrapper matching RE2 Replace (non-global) and GlobalReplace ('g') semantics exactly. Order of behavior: any NULL argument (incl. options) -> NULL; validate option letters ('Invalid Input Error: Unrecognized Regex option <c>'); compile pattern ('Invalid Input Error: missing ): (' style); then run. Rewrite grammar: \\0 = whole match, \\1-\\9 = groups (single digit only, \\10 = \\1 + '0'), \\\\ = literal backslash; $1/$0/& are plain literals. Invalid-rewrite handling must copy RE2's asymmetry, never error: non-global -> return input unchanged for ANY invalid rewrite; global -> out-of-range backref returns input unchanged (MaxSubmatch pre-check), bad escape (\\ before non-digit/non-backslash, incl. trailing \\) consumes each match and emits the rewrite prefix up to the bad escape. In-range non-participating groups substitute empty. Empty-match semantics per RE2 GlobalReplace: replacement inserted at every codepoint boundary including string start and end; no empty match immediately after a nonempty match; codepoint boundaries, never UTF-8 byte interiors. Matching is RE2: \\d and [0-9] are ASCII-only, 'i' is simple case folding (no İ->i). If the engine can't reproduce the global bad-escape partial-emission quirk cheaply, raising a compile-time error on invalid rewrites is a DELIBERATE divergence to flag, not silently differ."
+}

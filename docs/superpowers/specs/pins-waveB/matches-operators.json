@@ -1,0 +1,178 @@
+{
+  "area": "matches-operators",
+  "duckdb_version": "v1.5.5",
+  "setup": "CREATE TABLE t(id INT, s VARCHAR); INSERT INTO t VALUES (1,'hello'),(2,'hello world'),(3,''),(4,NULL),(5,'h\u00e9llo'),(6,'HELLO')",
+  "pins": [
+    {
+      "claim": "regexp_matches(s, p) is a SEARCH (unanchored, contains-style): regexp_matches('hello','ell') is true; regexp_full_match('hello','ell') is false; the ~ operator agrees with regexp_full_match (FULL), not regexp_matches",
+      "query": "SELECT id, s, regexp_matches(s, 'ell'), regexp_full_match(s, 'ell'), s ~ 'ell', s !~ 'ell' FROM t ORDER BY id",
+      "observed": "[(1, 'hello', True, False, False, True), (2, 'hello world', True, False, False, True), (3, '', False, False, False, True), (4, None, None, None, None, None), (5, 'h\\xe9llo', False, False, False, True), (6, 'HELLO', False, False, False, True)]"
+    },
+    {
+      "claim": "With pattern 'hello': regexp_matches true for 'hello' AND 'hello world' (search); regexp_full_match and ~ true ONLY for exactly 'hello'; case-sensitive by default ('HELLO' false); accent-sensitive ('h\u00e9llo' false)",
+      "query": "SELECT id, s, regexp_matches(s, 'hello'), regexp_full_match(s, 'hello'), s ~ 'hello', s !~ 'hello' FROM t ORDER BY id",
+      "observed": "[(1, 'hello', True, True, True, False), (2, 'hello world', True, False, False, True), (3, '', False, False, False, True), (4, None, None, None, None, None), (5, 'h\\xe9llo', False, False, False, True), (6, 'HELLO', False, False, False, True)]"
+    },
+    {
+      "claim": "Empty pattern '': regexp_matches(s,'') is TRUE for every non-NULL string (including '' itself); regexp_full_match(s,'') and s ~ '' are true ONLY for the empty string",
+      "query": "SELECT id, s, regexp_matches(s, ''), regexp_full_match(s, ''), s ~ '' FROM t ORDER BY id",
+      "observed": "[(1, 'hello', True, False, False), (2, 'hello world', True, False, False), (3, '', True, True, True), (4, None, None, None, None), (5, 'h\\xe9llo', True, False, False), (6, 'HELLO', True, False, False)]"
+    },
+    {
+      "claim": "The ~ operator is FULL match: on 'hello', ~ 'ell' is false (regexp_matches says true, regexp_full_match says false; ~ sides with full match); on exact 'ell' all three are true",
+      "query": "SELECT v ~ 'ell' AS op, regexp_matches(v, 'ell') AS srch, regexp_full_match(v, 'ell') AS fullm FROM (VALUES ('hello'), ('ell')) AS x(v)",
+      "observed": "[(False, True, False), (True, True, True)]"
+    },
+    {
+      "claim": "!~ is exactly NOT(~): elementwise identical to NOT (s ~ p) on every row, and NULL input yields NULL (not true/false)",
+      "query": "SELECT id, s, s !~ 'ell', NOT (s ~ 'ell') FROM t ORDER BY id",
+      "observed": "[(1, 'hello', True, True), (2, 'hello world', True, True), (3, '', True, True), (4, None, None, None), (5, 'h\\xe9llo', True, True), (6, 'HELLO', True, True)]"
+    },
+    {
+      "claim": "Three-valued logic on the operators: NULL ~ 'x', 'x' ~ NULL, NULL !~ 'x', 'x' !~ NULL are all NULL",
+      "query": "SELECT NULL ~ 'x', 'x' ~ NULL, NULL !~ 'x', 'x' !~ NULL",
+      "observed": "[(None, None, None, None)]"
+    },
+    {
+      "claim": "NULL string or NULL pattern makes regexp_matches and regexp_full_match return NULL (no error)",
+      "query": "SELECT regexp_matches(NULL, 'x'), regexp_matches('x', NULL), regexp_full_match(NULL, 'x'), regexp_full_match('x', NULL)",
+      "observed": "[(None, None, None, None)]"
+    },
+    {
+      "claim": "SIMILAR TO with NULL on either side is NULL; NOT SIMILAR TO likewise",
+      "query": "SELECT NULL SIMILAR TO 'x', 'x' SIMILAR TO NULL, NULL NOT SIMILAR TO 'x'",
+      "observed": "[(None, None, None)]"
+    },
+    {
+      "claim": "Result type of regexp_matches, regexp_full_match, ~, and SIMILAR TO is BOOLEAN",
+      "query": "SELECT typeof(regexp_matches('hello','ell')), typeof(regexp_full_match('hello','ell')), typeof('a' ~ 'b'), typeof('a' SIMILAR TO 'b')",
+      "observed": "[('BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN')]"
+    },
+    {
+      "claim": "DESCRIBE confirms BOOLEAN (nullable) for all three forms",
+      "query": "DESCRIBE SELECT regexp_matches('hello','ell') AS m, 'a' ~ 'b' AS o, 'a' SIMILAR TO 'b' AS st",
+      "observed": "[('m', 'BOOLEAN', 'YES', None, None, None), ('o', 'BOOLEAN', 'YES', None, None, None), ('st', 'BOOLEAN', 'YES', None, None, None)]"
+    },
+    {
+      "claim": "SIMILAR TO does NOT translate SQL wildcards: 'hello' SIMILAR TO 'h%o' is FALSE ('%' is passed to RE2 as a literal percent, not .*); '%ell%' and bare 'ell' also false; only the raw-regex-equal pattern 'hello' matches",
+      "query": "SELECT id, s, s SIMILAR TO 'h%o', s SIMILAR TO 'ell', s SIMILAR TO '%ell%', s SIMILAR TO 'hello', s NOT SIMILAR TO 'h%o' FROM t ORDER BY id",
+      "observed": "[(1, 'hello', False, False, False, True, True), (2, 'hello world', False, False, False, False, True), (3, '', False, False, False, False, True), (4, None, None, None, None, None, None), (5, 'h\\xe9llo', False, False, False, False, True), (6, 'HELLO', False, False, False, False, True)]"
+    },
+    {
+      "claim": "SIMILAR TO does not translate '_' either: 'hello' SIMILAR TO 'h_llo' is false for every row",
+      "query": "SELECT id, s, s SIMILAR TO 'h_llo' FROM t ORDER BY id",
+      "observed": "[(1, 'hello', False), (2, 'hello world', False), (3, '', False), (4, None, None), (5, 'h\\xe9llo', False), (6, 'HELLO', False)]"
+    },
+    {
+      "claim": "SIMILAR TO treats the pattern as a raw RE2 regex, full-match anchored: 'h.llo' matches 'hello' AND 'h\u00e9llo' (regex dot), not 'hello world' (anchored); identical column of results to regexp_full_match and ~",
+      "query": "SELECT id, s, regexp_matches(s, 'h.llo'), regexp_full_match(s, 'h.llo'), s ~ 'h.llo', s SIMILAR TO 'h.llo' FROM t ORDER BY id",
+      "observed": "[(1, 'hello', True, True, True, True), (2, 'hello world', True, False, False, False), (3, '', False, False, False, False), (4, None, None, None, None, None), (5, 'h\\xe9llo', True, True, True, True), (6, 'HELLO', False, False, False, False)]"
+    },
+    {
+      "claim": "A '%' in SIMILAR TO is a literal percent: 'h%o' SIMILAR TO 'h%o' is true",
+      "query": "SELECT 'h%o' SIMILAR TO 'h%o'",
+      "observed": "[(True,)]"
+    },
+    {
+      "claim": "SIMILAR TO ... ESCAPE is NOT implemented: raises Not implemented Error: Custom escape in SIMILAR TO",
+      "query": "SELECT '100%' SIMILAR TO '100\\%' ESCAPE '\\'",
+      "observed": "ERROR NotImplementedException; str(e) verbatim: Not implemented Error: Custom escape in SIMILAR TO"
+    },
+    {
+      "claim": "'' SIMILAR TO '' is true; 'x' SIMILAR TO '' is false (full-match semantics on empty pattern)",
+      "query": "SELECT '' SIMILAR TO '', 'x' SIMILAR TO ''",
+      "observed": "[(True, False)]"
+    },
+    {
+      "claim": "regexp_matches third options arg 'i' = case-insensitive: matches 'HELLO' against 'hello'; regexp_full_match accepts the same options arg",
+      "query": "SELECT regexp_matches('HELLO', 'hello', 'i'), regexp_full_match('HELLO', 'hello', 'i')",
+      "observed": "[(True, True)]"
+    },
+    {
+      "claim": "Option 'i' case-folds non-ASCII Latin-1: 'H\u00c9LLO' ~i~ 'h\u00e9llo' true in both directions",
+      "query": "SELECT regexp_matches('H\u00c9LLO', 'h\u00e9llo', 'i'), regexp_matches('h\u00e9llo', 'H\u00c9LLO', 'i')",
+      "observed": "[(True, True)]"
+    },
+    {
+      "claim": "Option 'i' does NOT fold Turkish dotted capital I (U+0130): regexp_matches('\u0130stanbul','istanbul','i') is FALSE, and 'istanbul' vs '\u0130STANBUL' with 'i' is also FALSE (RE2 simple folding, no special Unicode mappings)",
+      "query": "SELECT regexp_matches('\u0130stanbul', 'istanbul', 'i'), regexp_matches('istanbul', '\u0130STANBUL', 'i')",
+      "observed": "[(False, False)]"
+    },
+    {
+      "claim": "Option 'c' = case-sensitive (the default): 'Hello' vs 'hello' with 'c' is false, exact case true",
+      "query": "SELECT regexp_matches('Hello', 'hello', 'c'), regexp_matches('hello', 'hello', 'c')",
+      "observed": "[(False, True)]"
+    },
+    {
+      "claim": "Unknown option letter is an execution error, verbatim: Invalid Input Error: Unrecognized Regex option z",
+      "query": "SELECT regexp_matches('HELLO', 'hello', 'z')",
+      "observed": "ERROR InvalidInputException; str(e) verbatim: Invalid Input Error: Unrecognized Regex option z"
+    },
+    {
+      "claim": "NULL options argument is an ERROR, not NULL: Invalid Input Error: Regex options field must not be NULL",
+      "query": "SELECT regexp_matches('HELLO', 'hello', NULL)",
+      "observed": "ERROR InvalidInputException; str(e) verbatim: Invalid Input Error: Regex options field must not be NULL"
+    },
+    {
+      "claim": "Binder error for regexp_matches(123, 'x') verbatim, listing the two overloads (VARCHAR,VARCHAR) and (VARCHAR,VARCHAR,VARCHAR)",
+      "query": "SELECT regexp_matches(123, 'x')",
+      "observed": "ERROR BinderException; str(e) verbatim: Binder Error: No function matches the given name and argument types 'regexp_matches(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tregexp_matches(VARCHAR, VARCHAR) -> BOOLEAN\n\tregexp_matches(VARCHAR, VARCHAR, VARCHAR) -> BOOLEAN\n\n\nLINE 1: SELECT regexp_matches(123, 'x')\n               ^"
+    },
+    {
+      "claim": "Binder error for s ~ 123 names regexp_full_match (proof the ~ operator is bound to regexp_full_match), verbatim",
+      "query": "SELECT s ~ 123 FROM t",
+      "observed": "ERROR BinderException; str(e) verbatim: Binder Error: No function matches the given name and argument types 'regexp_full_match(VARCHAR, INTEGER_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tregexp_full_match(VARCHAR, VARCHAR) -> BOOLEAN\n\tregexp_full_match(VARCHAR, VARCHAR, VARCHAR) -> BOOLEAN\n\n\nLINE 1: SELECT s ~ 123 FROM t\n                 ^"
+    },
+    {
+      "claim": "Binder error for 123 SIMILAR TO '1%' ALSO names regexp_full_match (SIMILAR TO desugars to regexp_full_match too; no implicit INTEGER->VARCHAR cast)",
+      "query": "SELECT 123 SIMILAR TO '1%'",
+      "observed": "ERROR BinderException; str(e) verbatim: Binder Error: No function matches the given name and argument types 'regexp_full_match(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tregexp_full_match(VARCHAR, VARCHAR) -> BOOLEAN\n\tregexp_full_match(VARCHAR, VARCHAR, VARCHAR) -> BOOLEAN\n\n\nLINE 1: SELECT 123 SIMILAR TO '1%'\n                   ^"
+    },
+    {
+      "claim": "Invalid regex '(' gives the same RE2 error through regexp_matches: Invalid Input Error: missing ): (",
+      "query": "SELECT regexp_matches('x', '(')",
+      "observed": "ERROR InvalidInputException; str(e) verbatim: Invalid Input Error: missing ): ("
+    },
+    {
+      "claim": "Invalid regex '(' through the ~ operator: same verbatim error",
+      "query": "SELECT 'x' ~ '('",
+      "observed": "ERROR InvalidInputException; str(e) verbatim: Invalid Input Error: missing ): ("
+    },
+    {
+      "claim": "Invalid regex '(' through SIMILAR TO: same verbatim error",
+      "query": "SELECT 'x' SIMILAR TO '('",
+      "observed": "ERROR InvalidInputException; str(e) verbatim: Invalid Input Error: missing ): ("
+    },
+    {
+      "claim": "Invalid constant regex errors even when the row is filtered out (WHERE 1=0) => pattern compiled at bind/prepare time, not lazily per row",
+      "query": "SELECT 'x' ~ '(' WHERE 1=0",
+      "observed": "ERROR InvalidInputException; str(e) verbatim: Invalid Input Error: missing ): ("
+    },
+    {
+      "claim": "Regex '.' matches ONE full Unicode codepoint, not a byte: 'a\\U0001F600b' (emoji) full-matches 'a.b' via regexp_full_match, regexp_matches and ~",
+      "query": "SELECT regexp_matches('a\ud83d\ude00b', 'a.b'), regexp_full_match('a\ud83d\ude00b', 'a.b'), 'a\ud83d\ude00b' ~ 'a.b'",
+      "observed": "[(True, True, True)]"
+    },
+    {
+      "claim": "Arabic-Indic digits '\u0663\u0664': [0-9] false, \\d false (RE2 \\d is ASCII-only), \\p{Nd} true (Unicode property classes work)",
+      "query": "SELECT regexp_matches('\u0663\u0664', '[0-9]'), regexp_matches('\u0663\u0664', '\\d'), regexp_matches('\u0663\u0664', '\\p{Nd}')",
+      "observed": "[(False, False, True)]"
+    },
+    {
+      "claim": "Explicit anchors work inside regexp_matches patterns: '^hello$' does not search-match 'hello world', '^hello' does; regexp_full_match('hello world','hello.*') is true",
+      "query": "SELECT regexp_matches('hello world', '^hello$'), regexp_matches('hello world', '^hello'), regexp_full_match('hello world', 'hello.*')",
+      "observed": "[(False, True, True)]"
+    }
+  ],
+  "surprises": [
+    "The ~ operator is FULL match, not search: DuckDB binds s ~ p to regexp_full_match (binder error for s ~ 123 names regexp_full_match). This DIVERGES from PostgreSQL, where ~ is an unanchored search.",
+    "SIMILAR TO does NOT translate SQL wildcards % and _: the pattern goes to RE2 raw ('hello' SIMILAR TO 'h%o' is false, 'h%o' SIMILAR TO 'h%o' is true) and regex metachars like '.' are live. It is exactly regexp_full_match(s, pattern).",
+    "SIMILAR TO ... ESCAPE raises NotImplementedException 'Not implemented Error: Custom escape in SIMILAR TO'.",
+    "A NULL third options argument to regexp_matches is an execution ERROR ('Regex options field must not be NULL'), not a NULL result \u2014 unlike NULL string/pattern which propagate NULL.",
+    "Empty pattern asymmetry: regexp_matches(s,'') is true for every non-NULL string, while regexp_full_match(s,'')/s ~ '' are true only for ''.",
+    "Option 'i' folds \u00c9<->\u00e9 but NOT the Turkish dotted capital \u0130 (U+0130) \u2014 RE2 simple case folding only.",
+    "\\d is ASCII-only in RE2: Arabic-Indic '\u0663\u0664' does not match \\d or [0-9], but does match \\p{Nd}.",
+    "Invalid constant patterns error even under WHERE 1=0 \u2014 compiled at bind time."
+  ],
+  "recommendation": "Implement ~, !~, and SIMILAR TO all as regexp_full_match(s, raw_pattern) with RE2 semantics (no %/_ translation, full-string anchoring); implement regexp_matches as unanchored RE2 search. !~ and NOT SIMILAR TO are plain NOT with NULL propagation. NULL in string or pattern -> NULL; NULL in the options arg -> error. Support options 'i'/'c' (RE2 simple case folding, ASCII-only \\d, \\p{...} classes available, '.' = one codepoint). Reject SIMILAR TO ... ESCAPE as not-implemented. Reproduce binder errors mentioning regexp_full_match for the operator forms."
+}

@@ -1,0 +1,218 @@
+{
+  "area": "options-errors",
+  "duckdb_version": "v1.5.5",
+  "pins": [
+    {
+      "claim": "Accepted option letters are c i l m n p s (all regexp functions) plus g (regexp_replace only); any other character is rejected. Bogus 'q' errors identically in regexp_matches/regexp_extract/regexp_replace.",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'q')\nSELECT regexp_extract('a', 'a', 0, 'q')\nSELECT regexp_replace('a', 'a', 'x', 'q')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option q\nERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option q\nERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option q"
+    },
+    {
+      "claim": "'x' (extended/free-spacing) is NOT a valid option letter, and option letters are case-sensitive (uppercase 'I' rejected) — same 'Unrecognized Regex option' error shape for each.",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'x')\nSELECT regexp_matches('ABC', 'abc', 'I')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option x\nERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option I"
+    },
+    {
+      "claim": "'c' = case-sensitive matching (the default): 'ABC' vs 'abc' with 'c' is false.",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'c')",
+      "observed": "OK [(False,)]"
+    },
+    {
+      "claim": "'i' = case-insensitive matching: 'ABC' vs 'abc' with 'i' is true; works in extract (returns 'ABC') and replace (replaces first 'A').",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'i')\nSELECT regexp_extract('ABC', '(abc)', 1, 'i')\nSELECT regexp_replace('AaAa', 'a', 'x', 'i')",
+      "observed": "OK [(True,)]\nOK [('ABC',)]\nOK [('xaAa',)]"
+    },
+    {
+      "claim": "'l' = literal matching: metacharacters lose meaning. 'a.c' with 'l' matches only the literal string 'a.c', not 'abc' (which the same pattern matches without 'l').",
+      "query": "SELECT regexp_matches('a.c', 'a.c', 'l'), regexp_matches('abc', 'a.c', 'l'), regexp_matches('abc', 'a.c')",
+      "observed": "OK [(True, False, True)]"
+    },
+    {
+      "claim": "'l' composes with 'i' ('il' = literal case-insensitive: 'A.C' vs pattern 'a.c' is true), and under 'l' inline-flag syntax is literal text (pattern '(?i)abc' with 'l' matches the literal string '(?i)abc').",
+      "query": "SELECT regexp_matches('A.C', 'a.c', 'il')\nSELECT regexp_matches('(?i)abc', '(?i)abc', 'l')",
+      "observed": "OK [(True,)]\nOK [(True,)]"
+    },
+    {
+      "claim": "'s' = dot matches newline (dotall): 'a'||chr(10)||'b' vs 'a.b' is false by default and true with 's'.",
+      "query": "SELECT regexp_matches('a' || chr(10) || 'b', 'a.b')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a.b', 's')",
+      "observed": "OK [(False,)]\nOK [(True,)]"
+    },
+    {
+      "claim": "'m', 'n', 'p' are all accepted and all mean newline-sensitive matching, which is already the default: dot still does not match chr(10) under any of them.",
+      "query": "SELECT regexp_matches('a' || chr(10) || 'b', 'a.b', 'm')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a.b', 'n')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a.b', 'p')",
+      "observed": "OK [(False,)]\nOK [(False,)]\nOK [(False,)]"
+    },
+    {
+      "claim": "SURPRISE: 'm'/'n'/'p' do NOT turn ^/$ into per-line anchors. '^b$' (and even '^a$') against 'a'||chr(10)||'b' is false with 'm', 'n', and 'p'.",
+      "query": "SELECT regexp_matches('a' || chr(10) || 'b', '^b$', 'm')\nSELECT regexp_matches('a' || chr(10) || 'b', '^b$', 'n')\nSELECT regexp_matches('a' || chr(10) || 'b', '^b$', 'p')\nSELECT regexp_matches('a' || chr(10) || 'b', '^a$', 'm')",
+      "observed": "OK [(False,)]\nOK [(False,)]\nOK [(False,)]\nOK [(False,)]"
+    },
+    {
+      "claim": "Multiline anchors come ONLY from the inline flag: '(?m)^b$' matches 'a'||chr(10)||'b' (true), including when options 'n' or 's' are also passed.",
+      "query": "SELECT regexp_matches('a' || chr(10) || 'b', '(?m)^b$')\nSELECT regexp_matches('a' || chr(10) || 'b', '(?m)^b$', 'n')\nSELECT regexp_matches('a' || chr(10) || 'b', '(?m)^b$', 's')",
+      "observed": "OK [(True,)]\nOK [(True,)]\nOK [(True,)]"
+    },
+    {
+      "claim": "'n' is NOT RE2 never_nl: a pattern containing a literal newline, the escape \\n, or [\\s\\S] still matches across chr(10) with 'n'.",
+      "query": "SELECT regexp_matches('a' || chr(10) || 'b', 'a' || chr(10) || 'b', 'n')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a\\nb', 'n')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a[\\s\\S]b', 'n')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a[\\s\\S]b')",
+      "observed": "OK [(True,)]\nOK [(True,)]\nOK [(True,)]\nOK [(True,)]"
+    },
+    {
+      "claim": "'g' is only valid in regexp_replace; in regexp_matches, regexp_extract, and regexp_extract_all it raises the same verbatim error.",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'g')\nSELECT regexp_extract('ABC', '(abc)', 1, 'g')\nSELECT regexp_extract_all('aAbA', 'a', 0, 'g')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace\nERROR InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace\nERROR InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace"
+    },
+    {
+      "claim": "regexp_replace replaces only the FIRST match by default; 'g' makes it global. Combined 'gi'/'ig' both give global case-insensitive.",
+      "query": "SELECT regexp_replace('AaAa', 'a', 'x')\nSELECT regexp_replace('AaAa', 'a', 'x', 'g')\nSELECT regexp_replace('AaAa', 'a', 'x', 'gi')\nSELECT regexp_replace('AaAa', 'a', 'x', 'ig')",
+      "observed": "OK [('AxAa',)]\nOK [('AxAx',)]\nOK [('xxxx',)]\nOK [('xxxx',)]"
+    },
+    {
+      "claim": "Empty options string '' is identical to omitting the argument: no error, default (case-sensitive, non-dotall) behavior.",
+      "query": "SELECT regexp_matches('ABC', 'abc', '')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a.b', '')\nSELECT regexp_extract('ABC', '(abc)', 1, '')\nSELECT regexp_replace('AaAa', 'a', 'x', '')",
+      "observed": "OK [(False,)]\nOK [(False,)]\nOK [('',)]\nOK [('AxAa',)]"
+    },
+    {
+      "claim": "Whitespace inside the options string is silently ignored (space, tab, newline all fine, including an options string that is only a space); any other separator such as ',' is an unrecognized option.",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'i s')\nSELECT regexp_matches('ABC', 'abc', 'i' || chr(9) || 's')\nSELECT regexp_matches('ABC', 'abc', 'i' || chr(10) || 's')\nSELECT regexp_matches('ABC', 'abc', ' ')\nSELECT regexp_matches('ABC', 'abc', 'i,s')",
+      "observed": "OK [(True,)]\nOK [(True,)]\nOK [(True,)]\nOK [(False,)]\nERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option ,"
+    },
+    {
+      "claim": "SURPRISE: conflicting options do NOT error — the options string is processed left-to-right and the LAST occurrence wins: 'ci' is case-insensitive (true), 'ic' is case-sensitive (false), 'ici' insensitive again.",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'ci')\nSELECT regexp_matches('ABC', 'abc', 'ic')\nSELECT regexp_matches('ABC', 'abc', 'ici')",
+      "observed": "OK [(True,)]\nOK [(False,)]\nOK [(True,)]"
+    },
+    {
+      "claim": "Same last-wins rule for newline options: 'sn' behaves like 'n' (dot does not cross newline, false), 'ns' behaves like 's' (true).",
+      "query": "SELECT regexp_matches('a' || chr(10) || 'b', 'a.b', 'sn')\nSELECT regexp_matches('a' || chr(10) || 'b', 'a.b', 'ns')",
+      "observed": "OK [(False,)]\nOK [(True,)]"
+    },
+    {
+      "claim": "Duplicate option letters are harmless: 'ii' and 'gg' work.",
+      "query": "SELECT regexp_matches('ABC', 'abc', 'ii')\nSELECT regexp_replace('aaa', 'a', 'x', 'gg')",
+      "observed": "OK [(True,)]\nOK [('xxx',)]"
+    },
+    {
+      "claim": "NULL options is an ERROR (not a NULL result): 'Regex options field must not be NULL'.",
+      "query": "SELECT regexp_matches('ABC', 'abc', NULL)",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Regex options field must not be NULL"
+    },
+    {
+      "claim": "NULL pattern or NULL subject returns NULL (no error).",
+      "query": "SELECT regexp_matches('ABC', NULL)\nSELECT regexp_matches(NULL, 'abc')",
+      "observed": "OK [(None,)]\nOK [(None,)]"
+    },
+    {
+      "claim": "The options argument must be a CONSTANT: sourcing it from a column errors 'Regex options field must be a constant' even when the value is a valid letter and even under WHERE 1=0 (bind-time check).",
+      "query": "SELECT regexp_matches('ABC', 'abc', o) FROM (SELECT 'i' AS o) t\nSELECT regexp_matches('a', 'a', o) FROM (SELECT 'q' AS o) WHERE 1=0",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Regex options field must be a constant\nERROR InvalidInputException: Invalid Input Error: Regex options field must be a constant"
+    },
+    {
+      "claim": "Empty pattern matches everything including the empty string; regexp_matches is a contains-style search, not a full match.",
+      "query": "SELECT regexp_matches('abc', ''), regexp_matches('', '')\nSELECT regexp_matches('xabcx', 'abc')",
+      "observed": "OK [(True, True)]\nOK [(True,)]"
+    },
+    {
+      "claim": "Inline flags (?i), (?s), (?m) are all accepted by RE2 inside DuckDB patterns.",
+      "query": "SELECT regexp_matches('ABC', '(?i)abc')\nSELECT regexp_matches('a' || chr(10) || 'b', '(?s)a.b')\nSELECT regexp_matches('a' || chr(10) || 'b', '(?m)^b$')",
+      "observed": "OK [(True,)]\nOK [(True,)]\nOK [(True,)]"
+    },
+    {
+      "claim": "(?U) (ungreedy) is accepted: '(?U)a+' extracts the shortest match 'a' from 'aaa'.",
+      "query": "SELECT regexp_extract('aaa', '(?U)a+')",
+      "observed": "OK [('a',)]"
+    },
+    {
+      "claim": "(?x) (free-spacing) is NOT supported: 'invalid perl operator: (?x'.",
+      "query": "SELECT regexp_matches('abc', '(?x)a b c')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: invalid perl operator: (?x"
+    },
+    {
+      "claim": "Inline flags compose with and OVERRIDE the options argument: '(?i)abc' with options 'c' still matches 'ABC' (true); '(?-i)abc' with options 'i' does not (false); '(?s)a.b' with options 'n' still crosses the newline (true).",
+      "query": "SELECT regexp_matches('ABC', '(?i)abc', 'c')\nSELECT regexp_matches('ABC', '(?-i)abc', 'i')\nSELECT regexp_matches('a' || chr(10) || 'b', '(?s)a.b', 'n')\nSELECT regexp_replace('AaAa', '(?i)a', 'x', 'g')",
+      "observed": "OK [(True,)]\nOK [(False,)]\nOK [(True,)]\nOK [('xxxx',)]"
+    },
+    {
+      "claim": "Pattern '[' (unclosed class): verbatim error 'Invalid Input Error: missing ]: ['. All pattern-compile and option errors are duckdb.InvalidInputException whose message is 'Invalid Input Error: ' + RE2's own error text.",
+      "query": "SELECT regexp_matches('aab', '[')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: missing ]: ["
+    },
+    {
+      "claim": "Pattern '(' (unclosed group): verbatim error 'Invalid Input Error: missing ): ('.",
+      "query": "SELECT regexp_matches('aab', '(')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: missing ): ("
+    },
+    {
+      "claim": "Pattern 'a{2,1}' (max<min): 'invalid repetition size: {2,1}'.",
+      "query": "SELECT regexp_matches('aab', 'a{2,1}')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: invalid repetition size: {2,1}"
+    },
+    {
+      "claim": "Pattern '(?P<n' (unterminated named group): 'invalid named capture group: (?P<n'.",
+      "query": "SELECT regexp_matches('aab', '(?P<n')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: invalid named capture group: (?P<n"
+    },
+    {
+      "claim": "Pattern 'a**': 'bad repetition operator: **'.",
+      "query": "SELECT regexp_matches('aab', 'a**')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: bad repetition operator: **"
+    },
+    {
+      "claim": "Pattern that is a single backslash: 'trailing \\'.",
+      "query": "SELECT regexp_matches('aab', '\\')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: trailing \\"
+    },
+    {
+      "claim": "Backreference '(a)\\1' is rejected (RE2 has no backrefs) as 'invalid escape sequence: \\1'.",
+      "query": "SELECT regexp_matches('aab', '(a)\\1')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: invalid escape sequence: \\1"
+    },
+    {
+      "claim": "Lookahead 'a(?=b)' and lookbehind '(?<=a)b' are rejected as 'invalid perl operator: (?=' / 'invalid perl operator: (?<'.",
+      "query": "SELECT regexp_matches('aab', 'a(?=b)')\nSELECT regexp_matches('aab', '(?<=a)b')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: invalid perl operator: (?=\nERROR InvalidInputException: Invalid Input Error: invalid perl operator: (?<"
+    },
+    {
+      "claim": "Counted repetition is capped at 1000: 'a{1000}' compiles, 'a{1001}' errors 'invalid repetition size: {1001}'.",
+      "query": "SELECT regexp_matches('a', 'a{1000}')\nSELECT regexp_matches('a', 'a{1001}')",
+      "observed": "OK [(False,)]\nERROR InvalidInputException: Invalid Input Error: invalid repetition size: {1001}"
+    },
+    {
+      "claim": "Constant-pattern compile errors are BIND-time: they fire even with WHERE 1=0, under EXPLAIN, and at PREPARE (no rows ever executed).",
+      "query": "SELECT regexp_matches(s, '[') FROM (SELECT 'a' AS s) WHERE 1=0\nEXPLAIN SELECT regexp_matches('a', '[')\nPREPARE q1 AS SELECT regexp_matches('a', '[')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: missing ]: [\nERROR InvalidInputException: Invalid Input Error: missing ]: [\nERROR InvalidInputException: Invalid Input Error: missing ]: ["
+    },
+    {
+      "claim": "Column-sourced (non-constant) patterns compile at EXECUTION time: with WHERE 1=0 the bad pattern is never compiled and the query succeeds returning zero rows; when actually executed it raises the same 'missing ]: [' text.",
+      "query": "SELECT regexp_matches('a', p) FROM (SELECT '[' AS p) WHERE 1=0\nSELECT regexp_matches('a', p) FROM (SELECT '[' AS p) t",
+      "observed": "OK []\nERROR InvalidInputException: Invalid Input Error: missing ]: ["
+    },
+    {
+      "claim": "Constant bogus OPTIONS letters are also bind-time errors (fire under WHERE 1=0 and EXPLAIN).",
+      "query": "SELECT regexp_matches(s, 'a', 'q') FROM (SELECT 'a' AS s) WHERE 1=0\nEXPLAIN SELECT regexp_matches('a', 'a', 'q')",
+      "observed": "ERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option q\nERROR InvalidInputException: Invalid Input Error: Unrecognized Regex option q"
+    },
+    {
+      "claim": "'i' uses RE2 simple Unicode folding: 'HÉLLO' matches 'héllo' (true) and ASCII 'ISTANBUL' matches 'istanbul' (true), but dotless-I folding is absent: 'İstanbul' does NOT match 'istanbul' with 'i' (false).",
+      "query": "SELECT regexp_matches('héllo', 'HÉLLO', 'i')\nSELECT regexp_matches('istanbul', 'ISTANBUL', 'i')\nSELECT regexp_matches('İstanbul', 'istanbul', 'i')",
+      "observed": "OK [(True,)]\nOK [(True,)]\nOK [(False,)]"
+    },
+    {
+      "claim": "Patterns are UTF-8 aware: '.' matches one code point (emoji), literal option works on emoji, and global replace of an emoji works; but \\d and [0-9] do NOT match Arabic-Indic digits '٣٤'.",
+      "query": "SELECT regexp_matches('a😀b', '^a.b$')\nSELECT regexp_matches('a😀b', 'a😀b', 'l')\nSELECT regexp_replace('a😀b😀c', '😀', '-', 'g')\nSELECT regexp_matches('٣٤', '\\d'), regexp_matches('٣٤', '[0-9]')",
+      "observed": "OK [(True,)]\nOK [(True,)]\nOK [('a-b-c',)]\nOK [(False, False)]"
+    }
+  ],
+  "surprises": [
+    "'m'/'n'/'p' are accepted but do NOT enable multiline ^/$ anchors — they are the (default) newline-sensitive mode; only inline (?m) gives per-line anchors.",
+    "Conflicting options never error: the options string is applied left-to-right, LAST letter wins ('ci' insensitive, 'ic' sensitive; 'sn' non-dotall, 'ns' dotall).",
+    "Whitespace (space/tab/newline) inside the options string is silently ignored; ',' errors 'Unrecognized Regex option ,'.",
+    "NULL options is an error ('Regex options field must not be NULL'), unlike NULL pattern/subject which return NULL.",
+    "Options must be a compile-time constant: any column-sourced options value errors 'Regex options field must be a constant' at bind time, even under WHERE 1=0.",
+    "'n' is not RE2 never_nl: literal newlines, \\n, and [\\s\\S] in the pattern still match across chr(10) under 'n'.",
+    "Constant-pattern compile errors are bind-time (fire under EXPLAIN/PREPARE/WHERE 1=0); column-pattern compile errors are execution-time with the same message.",
+    "Counted repetition cap is exactly 1000: a{1000} ok, a{1001} 'invalid repetition size: {1001}'.",
+    "'i' folding is RE2 simple folding: accents fold but 'İstanbul' does not match 'istanbul'."
+  ],
+  "recommendation": "Implement the options parser as: iterate chars left-to-right; skip whitespace; map c->case_sensitive, i->case_insensitive, l->literal, s->dot_nl(true), m/n/p->dot_nl(false), g->global (regexp_replace only, else error \"Option 'g' (global replace) is only valid for regexp_replace\"); any other char -> \"Unrecognized Regex option <ch>\". No conflict detection, last write wins. Options arg must be constant and non-NULL (distinct bind-time error texts). Do NOT map m/n/p to multiline anchors or never_nl. Compile constant patterns at bind (errors surface in EXPLAIN/PREPARE/WHERE false), non-constant patterns per-row at execution, both with error text 'Invalid Input Error: ' + RE2 message verbatim, as InvalidInputException."
+}
