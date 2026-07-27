@@ -1,0 +1,243 @@
+{
+ "area": "star-similar-columns",
+ "duckdb_version": "1.5.5 (SELECT version() -> 'v1.5.5', executed this session)",
+ "schema_note": "t(abc INT, abd INT, xyz VARCHAR, \"Weird Name\" INT) rows (1,2,'hello',10),(-3,NULL,'héllo',20),(NULL,2147483647,'a😀b',30); nx(\"héllo\" INT, \"a😀b\" INT, \"٣٤\" INT, \"İstanbul\" INT) row (1,2,3,4); t1(id,abc,name) rows (1,10,'x'),(2,20,'y'); t2(id,abd,name) rows (1,100,'xx'),(2,200,'yy'). All queries run via python duckdb con.sql() unless noted; error-text LINE-context nuance pinned separately.",
+ "pins": [
+  {
+   "claim": "RE-VERIFIED: positive * SIMILAR TO is an UNANCHORED regex SEARCH over column names: pattern 'c' keeps only abc (substring hit).",
+   "query": "SELECT * SIMILAR TO 'c' FROM t",
+   "observed": "cols=[\"abc\"] types=[\"INTEGER\"] rows=[[\"1\"], [\"-3\"], [\"None\"]]"
+  },
+  {
+   "claim": "Written anchors are respected by the positive form: '^a' keeps abc, abd only ('Weird Name' contains 'a' in 'Name' but not at start; the ^ anchor excludes it).",
+   "query": "SELECT * SIMILAR TO '^a' FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "Unanchored search means mid-name hits count: 'a.*' keeps abc, abd AND \"Weird Name\" (the 'a' inside 'Name' matches).",
+   "query": "SELECT * SIMILAR TO 'a.*' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\", \"10\"], [\"-3\", \"None\", \"20\"], [\"None\", \"2147483647\", \"30\"]]"
+  },
+  {
+   "claim": "* SIMILAR TO '.*' keeps all four columns in declaration order.",
+   "query": "SELECT * SIMILAR TO '.*' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"], [\"-3\", \"None\", \"'héllo'\", \"20\"], [\"None\", \"2147483647\", \"'a😀b'\", \"30\"]]"
+  },
+  {
+   "claim": "RE-VERIFIED asymmetry: * NOT SIMILAR TO 'c' keeps ALL FOUR columns (NOT form is NOT-regexp_full_match; 'c' full-matches no name), even though positive 'c' selected abc — the two forms are NOT complements.",
+   "query": "SELECT * NOT SIMILAR TO 'c' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"], [\"-3\", \"None\", \"'héllo'\", \"20\"], [\"None\", \"2147483647\", \"'a😀b'\", \"30\"]]"
+  },
+  {
+   "claim": "* NOT SIMILAR TO '^a' also keeps ALL FOUR columns: '^a' full-matches no whole name (full match of 'abc' against '^a' fails), so nothing is removed — positive '^a' selected {abc,abd} yet NOT '^a' removes nothing.",
+   "query": "SELECT * NOT SIMILAR TO '^a' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"], [\"-3\", \"None\", \"'héllo'\", \"20\"], [\"None\", \"2147483647\", \"'a😀b'\", \"30\"]]"
+  },
+  {
+   "claim": "* NOT SIMILAR TO 'a.*' keeps xyz and \"Weird Name\": abc/abd are FULL matches of 'a.*' and are removed; 'Weird Name' is not a full match (doesn't start with a) and survives. NOTE 'Weird Name' appears in BOTH the positive 'a.*' result and the NOT 'a.*' result — proof positive=unanchored-search, negative=NOT-full-match.",
+   "query": "SELECT * NOT SIMILAR TO 'a.*' FROM t",
+   "observed": "cols=[\"xyz\", \"Weird Name\"] types=[\"VARCHAR\", \"INTEGER\"] rows=[[\"'hello'\", \"10\"], [\"'héllo'\", \"20\"], [\"'a😀b'\", \"30\"]]"
+  },
+  {
+   "claim": "* NOT SIMILAR TO '.*' removes everything -> empty-set BinderException whose text embeds the desugaring COLUMNS(list_filter([...4 names incl 'Weird Name'...], lambda: NOT regexp_full_match(...))); identical text from both con.execute and con.sql.",
+   "query": "SELECT * NOT SIMILAR TO '.*' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Star expression \"COLUMNS(list_filter(['abc', 'abd', 'xyz', 'Weird Name'], (lambda __lambda_col: (NOT regexp_full_match(__lambda_col, '.*')))))\" resulted in an empty set of columns"
+  },
+  {
+   "claim": "Empty pattern: * SIMILAR TO '' keeps ALL columns (empty regex search matches every name).",
+   "query": "SELECT * SIMILAR TO '' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"], [\"-3\", \"None\", \"'héllo'\", \"20\"], [\"None\", \"2147483647\", \"'a😀b'\", \"30\"]]"
+  },
+  {
+   "claim": "* NOT SIMILAR TO '' ALSO keeps all columns ('' full-matches only the empty name, which doesn't exist) — both empty-pattern forms are total, another non-complement pair.",
+   "query": "SELECT * NOT SIMILAR TO '' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"], [\"-3\", \"None\", \"'héllo'\", \"20\"], [\"None\", \"2147483647\", \"'a😀b'\", \"30\"]]"
+  },
+  {
+   "claim": "Zero-match * SIMILAR TO error verbatim: 'No matching columns found that match regex' + Did-you-mean listing ALL columns quoted, comma-separated (\"abc\", \"abd\", \"Weird Name\", \"xyz\"); NO LINE-context in either python API (con.execute or con.sql).",
+   "query": "SELECT * SIMILAR TO 'zz' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: No matching columns found that match regex \"zz\"\n\nDid you mean: \"abc\", \"abd\", \"Weird Name\", \"xyz\""
+  },
+  {
+   "claim": "* NOT SIMILAR TO 'zz' raises NO error — all four columns survive (the NOT form only errors when the pattern full-matches EVERY name; a nowhere-matching pattern keeps everything).",
+   "query": "SELECT * NOT SIMILAR TO 'zz' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"], [\"-3\", \"None\", \"'héllo'\", \"20\"], [\"None\", \"2147483647\", \"'a😀b'\", \"30\"]]"
+  },
+  {
+   "claim": "Invalid regex in POSITIVE * SIMILAR TO is a BinderException 'Failed to compile regex \"[\": missing ]: [' (no LINE context via either API).",
+   "query": "SELECT * SIMILAR TO '[' FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Failed to compile regex \"[\": missing ]: ["
+  },
+  {
+   "claim": "Invalid regex in NEGATIVE * NOT SIMILAR TO is a DIFFERENT exception class AND text: InvalidInputException 'Invalid Input Error: missing ]: [' (comes from regexp_full_match, not the star binder).",
+   "query": "SELECT * NOT SIMILAR TO '[' FROM t",
+   "observed": "ERROR (InvalidInputException): Invalid Input Error: missing ]: ["
+  },
+  {
+   "claim": "Non-constant pattern (column ref) rejected: 'Pattern applied to a star expression must be a constant'; same text for the NOT form.",
+   "query": "SELECT * SIMILAR TO xyz FROM t  -- and: SELECT * NOT SIMILAR TO xyz FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Pattern applied to a star expression must be a constant  (both forms identical)"
+  },
+  {
+   "claim": "Even a constant-FOLDABLE expression is rejected — the pattern must be a bare literal, no folding: ('ab' || 'c') gives the same 'must be a constant' error.",
+   "query": "SELECT * SIMILAR TO ('ab' || 'c') FROM t",
+   "observed": "ERROR (BinderException): Binder Error: Pattern applied to a star expression must be a constant"
+  },
+  {
+   "claim": "A prepared-statement parameter is also rejected as non-constant, with LINE context pointing at the star.",
+   "query": "python: con.execute(\"SELECT * SIMILAR TO ? FROM t\", ['ab.'])",
+   "observed": "ERROR (BinderException): Binder Error: Pattern applied to a star expression must be a constant\n\nLINE 1: SELECT * SIMILAR TO ? FROM t\n                 ^"
+  },
+  {
+   "claim": "* SIMILAR TO NULL is NOT the LIKE-family empty-set error: it raises the COLUMNS argument-type error 'COLUMNS expects either a VARCHAR argument (regex) or a LIST of VARCHAR (list of columns)'.",
+   "query": "SELECT * SIMILAR TO NULL FROM t",
+   "observed": "ERROR (BinderException): Binder Error: COLUMNS expects either a VARCHAR argument (regex) or a LIST of VARCHAR (list of columns)"
+  },
+  {
+   "claim": "RE2 inline flags work in * SIMILAR TO: '(?i)AB.' keeps abc, abd (bare 'AB.' would match nothing — matching is case-sensitive by default).",
+   "query": "SELECT * SIMILAR TO '(?i)AB.' FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "Names with spaces participate normally: 'Weird' (substring) selects \"Weird Name\"; * NOT SIMILAR TO 'Weird Name' (exact full match) removes ONLY that column.",
+   "query": "SELECT * SIMILAR TO 'Weird' FROM t  -- and: SELECT * NOT SIMILAR TO 'Weird Name' FROM t",
+   "observed": "positive: cols=[\"Weird Name\"] rows=[[\"10\"],[\"20\"],[\"30\"]]; negative: cols=[\"abc\", \"abd\", \"xyz\"] rows=[[\"1\",\"2\",\"'hello'\"],[\"-3\",\"None\",\"'héllo'\"],[\"None\",\"2147483647\",\"'a😀b'\"]]"
+  },
+  {
+   "claim": "ESCAPE clause on a star SIMILAR TO parses but raises NotImplementedException: 'Not implemented Error: Custom escape in SIMILAR TO'.",
+   "query": "SELECT * SIMILAR TO 'a' ESCAPE '\\' FROM t",
+   "observed": "ERROR (NotImplementedException): Not implemented Error: Custom escape in SIMILAR TO"
+  },
+  {
+   "claim": "EXCLUDE composes BEFORE the filter, same as LIKE-family: * EXCLUDE (abc) SIMILAR TO 'ab.' yields just abd; the reverse order is a parser error at or near \"EXCLUDE\".",
+   "query": "SELECT * EXCLUDE (abc) SIMILAR TO 'ab.' FROM t  -- and: SELECT * SIMILAR TO 'ab.' EXCLUDE (abc) FROM t",
+   "observed": "ok form: cols=[\"abd\"] rows=[[\"2\"],[\"None\"],[\"2147483647\"]]; reverse: ERROR (ParserException): Parser Error: syntax error at or near \"EXCLUDE\"\n\nLINE 1: SELECT * SIMILAR TO 'ab.' EXCLUDE (abc) FROM t\n                                  ^"
+  },
+  {
+   "claim": "EXCLUDE of the quoted spacey name composes with the filter: * EXCLUDE (\"Weird Name\") SIMILAR TO '.*' keeps abc, abd, xyz.",
+   "query": "SELECT * EXCLUDE (\"Weird Name\") SIMILAR TO '.*' FROM t",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\"] rows=[[\"1\", \"2\", \"'hello'\"], [\"-3\", \"None\", \"'héllo'\"], [\"None\", \"2147483647\", \"'a😀b'\"]]"
+  },
+  {
+   "claim": "An AS alias on a star SIMILAR TO is LEGAL and is copied to EVERY surviving column, producing duplicate output names (x, x).",
+   "query": "SELECT * SIMILAR TO 'ab.' AS x FROM t WHERE abc = 1",
+   "observed": "cols=[\"x\", \"x\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"]]"
+  },
+  {
+   "claim": "Qualified stars support both forms: t.* SIMILAR TO 'ab.' -> {abc,abd}; t.* NOT SIMILAR TO 'ab.' -> {xyz, Weird Name}; on a join, t1.* SIMILAR TO 'a' filters only t1's columns (abc, name).",
+   "query": "SELECT t.* SIMILAR TO 'ab.' FROM t  -- and t.* NOT SIMILAR TO 'ab.'; and SELECT t1.* SIMILAR TO 'a' FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "t.* SIMILAR: cols=[\"abc\",\"abd\"]; t.* NOT SIMILAR: cols=[\"xyz\",\"Weird Name\"]; join: cols=[\"abc\",\"name\"] rows=[[\"10\",\"'x'\"],[\"20\",\"'y'\"]]"
+  },
+  {
+   "claim": "COLUMNS('ab.') keeps name-matching columns in TABLE DECLARATION order (abc, abd), values/types untouched.",
+   "query": "SELECT COLUMNS('ab.') FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "Expansion order is DECLARATION order, not regex/alternation order: COLUMNS('(xyz|abc)') yields abc THEN xyz; COLUMNS('d|c') yields abc, abd, \"Weird Name\" (the 'd' in 'Weird' matches).",
+   "query": "SELECT COLUMNS('(xyz|abc)') FROM t  -- and: SELECT COLUMNS('d|c') FROM t",
+   "observed": "'(xyz|abc)': cols=[\"abc\", \"xyz\"]; 'd|c': cols=[\"abc\", \"abd\", \"Weird Name\"]"
+  },
+  {
+   "claim": "An alias on a COLUMNS expression is applied to EVERY expansion producing duplicate output names: COLUMNS('ab.') + 1 AS x -> cols [x, x] with per-column values (abc+1, abd+1).",
+   "query": "SELECT COLUMNS('ab.') + 1 AS x FROM t WHERE abc = 1",
+   "observed": "cols=[\"x\", \"x\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"2\", \"3\"]]"
+  },
+  {
+   "claim": "WITHOUT an alias, a COLUMNS expression names outputs by the BARE column name — not the expression text: COLUMNS('ab.') * 2 -> cols [abc, abd] holding the DOUBLED values.",
+   "query": "SELECT COLUMNS('ab.') * 2 FROM t WHERE abc = 1",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"2\", \"4\"]]"
+  },
+  {
+   "claim": "An alias may collide with a real column name (AS abc) — duplicates allowed, no error; COLUMNS(*) AS x aliases all four expansions to x.",
+   "query": "SELECT COLUMNS('ab.') AS abc FROM t  -- and: SELECT COLUMNS(*) AS x FROM t WHERE abc = 1",
+   "observed": "AS abc: cols=[\"abc\", \"abc\"]; COLUMNS(*) AS x: cols=[\"x\", \"x\", \"x\", \"x\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"]]"
+  },
+  {
+   "claim": "COLUMNS('(?i)AB.') matches case-insensitively (abc, abd); bare COLUMNS regex is case-sensitive.",
+   "query": "SELECT COLUMNS('(?i)AB.') FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  },
+  {
+   "claim": "COLUMNS matches quoted/spacey names as plain strings: 'Weird' and 'rd Na' (regex containing a space) both select \"Weird Name\".",
+   "query": "SELECT COLUMNS('Weird') FROM t  -- and: SELECT COLUMNS('rd Na') FROM t",
+   "observed": "both: cols=[\"Weird Name\"] types=[\"INTEGER\"] rows=[[\"10\"], [\"20\"], [\"30\"]]"
+  },
+  {
+   "claim": "COLUMNS(*) == plain * == COLUMNS('.*') == COLUMNS('') — all four expand to every column in declaration order with bare names.",
+   "query": "SELECT COLUMNS(*) FROM t  -- vs SELECT * FROM t, SELECT COLUMNS('.*') FROM t, SELECT COLUMNS('') FROM t",
+   "observed": "all four queries: cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] types=[\"INTEGER\", \"INTEGER\", \"VARCHAR\", \"INTEGER\"], identical rows"
+  },
+  {
+   "claim": "COLUMNS zero-match error verbatim — same 'No matching columns' + Did-you-mean text as * SIMILAR TO, but WITH LINE context when run via con.execute (con.sql omits the LINE block; * SIMILAR TO never includes it in either API).",
+   "query": "SELECT COLUMNS('zz') FROM t  (via con.execute)",
+   "observed": "ERROR (BinderException): Binder Error: No matching columns found that match regex \"zz\"\n\nDid you mean: \"abc\", \"abd\", \"Weird Name\", \"xyz\"\n\nLINE 1: SELECT COLUMNS('zz') FROM t\n               ^"
+  },
+  {
+   "claim": "COLUMNS('[') invalid-regex error verbatim (con.execute includes LINE context; con.sql gives the same first line without it).",
+   "query": "SELECT COLUMNS('[') FROM t  (via con.execute)",
+   "observed": "ERROR (BinderException): Binder Error: Failed to compile regex \"[\": missing ]: [\n\nLINE 1: SELECT COLUMNS('[') FROM t\n               ^"
+  },
+  {
+   "claim": "COLUMNS(<column ref>) is not a constant-pattern error but a lambda-binding error: 'Failed to bind \"xyz\" - COLUMNS expression can only contain lambda parameters'; COLUMNS(123) and COLUMNS(NULL) both give 'COLUMNS expects either a VARCHAR argument (regex) or a LIST of VARCHAR (list of columns)'.",
+   "query": "SELECT COLUMNS(xyz) FROM t  -- and COLUMNS(123), COLUMNS(NULL)",
+   "observed": "COLUMNS(xyz): ERROR (BinderException): Binder Error: Failed to bind \"xyz\" - COLUMNS expression can only contain lambda parameters; COLUMNS(123)/COLUMNS(NULL): ERROR (BinderException): Binder Error: COLUMNS expects either a VARCHAR argument (regex) or a LIST of VARCHAR (list of columns)"
+  },
+  {
+   "claim": "There is NO qualified COLUMNS form: t.COLUMNS('ab.') binds as a scalar function lookup and fails with CatalogException 'Scalar Function with name columns does not exist!' + Did-you-mean \"main.count\".",
+   "query": "SELECT t.COLUMNS('ab.') FROM t",
+   "observed": "ERROR (CatalogException): Catalog Error: Scalar Function with name columns does not exist!\nDid you mean \"main.count\"?"
+  },
+  {
+   "claim": "COLUMNS list-form: COLUMNS(['abc','xyz']) and COLUMNS(['xyz','abc']) BOTH output in declaration order (abc, xyz) — list order is ignored; duplicate list entries dedupe silently; unknown name errors 'Column \"nope\" was selected but was not found in the FROM clause'; empty list [] gives the VARCHAR/LIST argument error.",
+   "query": "SELECT COLUMNS(['xyz','abc']) FROM t  -- and ['abc','abc'], ['nope'], []",
+   "observed": "['xyz','abc']: cols=[\"abc\", \"xyz\"]; ['abc','abc']: cols=[\"abc\"]; ['nope']: ERROR (BinderException): Binder Error: Column \"nope\" was selected but was not found in the FROM clause; []: ERROR (BinderException): Binder Error: COLUMNS expects either a VARCHAR argument (regex) or a LIST of VARCHAR (list of columns)"
+  },
+  {
+   "claim": "The same COLUMNS may appear multiple times in one expression and zips per-column (abc+abc, abd+abd), still named by bare column name; two DIFFERENT star/COLUMNS sets in one expression error: 'Multiple different STAR/COLUMNS in the same expression are not supported'. min(COLUMNS('ab.')) is one aggregate per column, named abc/abd.",
+   "query": "SELECT COLUMNS('ab.') + COLUMNS('ab.') FROM t WHERE abc = 1  -- and + COLUMNS('xy.'); and SELECT min(COLUMNS('ab.')) FROM t",
+   "observed": "same-regex: cols=[\"abc\", \"abd\"] rows=[[\"2\", \"4\"]]; different: ERROR (BinderException): Binder Error: Multiple different STAR/COLUMNS in the same expression are not supported; min: cols=[\"abc\", \"abd\"] rows=[[\"-3\", \"2\"]]"
+  },
+  {
+   "claim": "COLUMNS coexists with ordinary select-list items (SELECT abc, COLUMNS('x.z')) and works across a join's combined column set (COLUMNS('ab.') over t1 JOIN t2 picks abc from t1 and abd from t2).",
+   "query": "SELECT abc, COLUMNS('x.z') FROM t  -- and: SELECT COLUMNS('ab.') FROM t1 JOIN t2 ON t1.id = t2.id",
+   "observed": "mix: cols=[\"abc\", \"xyz\"]; join: cols=[\"abc\", \"abd\"] rows=[[\"10\", \"100\"], [\"20\", \"200\"]]"
+  },
+  {
+   "claim": "Non-ASCII names match by codepoint: COLUMNS('é') -> \"héllo\"; COLUMNS('😀') -> \"a😀b\"; COLUMNS('٣') -> \"٣٤\"; * SIMILAR TO 'é' and '٣٤' behave identically; * NOT SIMILAR TO '٣٤' removes only the full-matching \"٣٤\".",
+   "query": "SELECT COLUMNS('é') FROM nx  -- plus '😀', '٣'; SELECT * SIMILAR TO '٣٤' FROM nx; SELECT * NOT SIMILAR TO '٣٤' FROM nx",
+   "observed": "COLUMNS('é'): cols=[\"héllo\"]; COLUMNS('😀'): cols=[\"a😀b\"]; COLUMNS('٣'): cols=[\"٣٤\"]; * SIMILAR TO '٣٤': cols=[\"٣٤\"]; NOT: cols=[\"héllo\", \"a😀b\", \"İstanbul\"] rows=[[\"1\", \"2\", \"4\"]]"
+  },
+  {
+   "claim": "(?i) uses RE2 simple case folding, NOT Turkish/locale folding: COLUMNS('(?i)istanbul') does NOT match \"İstanbul\" (zero-match error, Did-you-mean \"İstanbul\"), while COLUMNS('(?i)İSTANBUL') DOES match it (ASCII letters fold; İ only matches İ).",
+   "query": "SELECT COLUMNS('(?i)istanbul') FROM nx  -- and: SELECT COLUMNS('(?i)İSTANBUL') FROM nx",
+   "observed": "'(?i)istanbul': ERROR (BinderException): Binder Error: No matching columns found that match regex \"(?i)istanbul\"\n\nDid you mean: \"İstanbul\"; '(?i)İSTANBUL': cols=[\"İstanbul\"] rows=[[\"4\"]]"
+  },
+  {
+   "claim": "COLUMNS in a WHERE clause expands to an AND-conjunction across matched columns: WHERE COLUMNS('ab.') IS NOT NULL keeps only the row where abc AND abd are both non-NULL.",
+   "query": "SELECT * FROM t WHERE COLUMNS('ab.') IS NOT NULL",
+   "observed": "cols=[\"abc\", \"abd\", \"xyz\", \"Weird Name\"] rows=[[\"1\", \"2\", \"'hello'\", \"10\"]] (rows 2 and 3 eliminated: each has one NULL among abc/abd)"
+  },
+  {
+   "claim": "Lambda form: COLUMNS(c -> c SIMILAR TO 'ab.') uses SCALAR SIMILAR TO semantics (anchored full match) on names and keeps abc, abd — consistent with the star NOT-form being full-match-based.",
+   "query": "SELECT COLUMNS(c -> c SIMILAR TO 'ab.') FROM t",
+   "observed": "cols=[\"abc\", \"abd\"] types=[\"INTEGER\", \"INTEGER\"] rows=[[\"1\", \"2\"], [\"-3\", \"None\"], [\"None\", \"2147483647\"]]"
+  }
+ ],
+ "surprises": [
+  "* NOT SIMILAR TO '^a' keeps ALL columns including abc/abd: because the NOT form is NOT-regexp_full_match, a '^'-anchored prefix pattern that full-matches nothing removes nothing — positive and negative forms disagree on the SAME anchored pattern.",
+  "\"Weird Name\" appears in BOTH * SIMILAR TO 'a.*' (unanchored search finds 'a' in 'Name') and * NOT SIMILAR TO 'a.*' (not a full match) — the crispest single-table proof of the search-vs-full-match asymmetry.",
+  "Invalid regex errors differ BY EXCEPTION CLASS between the forms: positive -> BinderException 'Failed to compile regex \"[\": missing ]: ['; negative -> InvalidInputException 'Invalid Input Error: missing ]: [' (bubbles out of regexp_full_match).",
+  "* SIMILAR TO NULL raises the COLUMNS argument-type error ('COLUMNS expects either a VARCHAR argument (regex) or a LIST of VARCHAR'), unlike * LIKE NULL which raises the empty-set desugaring error — NULL takes the COLUMNS path only for SIMILAR TO.",
+  "The star pattern must be a BARE literal: even constant-foldable ('ab' || 'c') and prepared-statement parameters raise 'Pattern applied to a star expression must be a constant'.",
+  "* SIMILAR TO 'x' ESCAPE 'y' parses but hits NotImplementedException 'Custom escape in SIMILAR TO'.",
+  "An alias is legal on a star filter (* SIMILAR TO 'ab.' AS x) and on COLUMNS, and is copied to EVERY expansion producing duplicate output names; without an alias, COLUMNS('ab.') * 2 still names outputs by the BARE column name (abc, abd), not the expression text.",
+  "COLUMNS list-form ignores the list order — COLUMNS(['xyz','abc']) outputs abc,xyz in table declaration order — and silently dedupes duplicate entries; unknown entries error with 'was selected but was not found in the FROM clause' (a different text from EXCLUDE/REPLACE errors).",
+  "LINE-context in error text depends on the python API for COLUMNS errors (con.execute includes 'LINE 1: ...', con.sql drops it) but * SIMILAR TO zero-match/compile errors NEVER carry LINE context in either API.",
+  "Zero-match Did-you-mean lists EVERY column of the table quoted and comma-separated (\"abc\", \"abd\", \"Weird Name\", \"xyz\"), not just the closest name.",
+  "The NOT form cannot produce the zero-match 'No matching columns' error: * NOT SIMILAR TO 'zz' succeeds with all columns; the only NOT-form error is the empty-set desugaring error when the pattern full-matches every name.",
+  "(?i) case folding is RE2 simple folding: ASCII letters fold, but 'İ' (U+0130) does not fold to 'i' — '(?i)istanbul' misses \"İstanbul\" while '(?i)İSTANBUL' hits it.",
+  "COLUMNS in WHERE expands as an AND-conjunction over the matched columns (documented DuckDB behavior, confirmed)."
+ ],
+ "recommendation": "Implement both forms over one bind-time name-selection pass with two distinct predicates: positive * SIMILAR TO p / COLUMNS(p) = RE2 partial (unanchored) search of p over declared-case names; * NOT SIMILAR TO p = NOT regexp_full_match(name, p). Never derive one from the other — they are not complements (pin the '^a' and 'a.*' cases as regression tests). Pattern must be a bare string literal (reject column refs, foldable exprs, and parameters with 'Pattern applied to a star expression must be a constant'; NULL routes to the COLUMNS VARCHAR/LIST argument error). Selection preserves table declaration order everywhere, including COLUMNS(list) which also dedupes. Error surface to reproduce: (1) positive zero-match -> 'No matching columns found that match regex \"p\"' + Did-you-mean listing ALL candidate columns; (2) NOT-form all-eliminated -> empty-set error embedding COLUMNS(list_filter([names...], (lambda __lambda_col: (NOT regexp_full_match(__lambda_col, 'p'))))); (3) positive bad regex -> BinderException 'Failed to compile regex ...'; NOT-form bad regex -> InvalidInputException with the raw RE2 message — different class, keep them distinct; (4) ESCAPE -> NotImplementedException 'Custom escape in SIMILAR TO'. Grammar: * [EXCLUDE (...)] SIMILAR TO 'p' only (filter last; reverse order is a parse error); alias after the filter is legal and stamps every expansion (duplicate output names allowed). Aliases on COLUMNS likewise stamp every expansion; un-aliased COLUMNS expressions name outputs by the bare column name. Support qualified t.* SIMILAR TO with per-table candidate sets; there is no qualified COLUMNS. Use RE2 semantics exactly (byte/codepoint matching, (?i) simple folding — no locale folding)."
+}

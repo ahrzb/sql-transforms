@@ -1,0 +1,131 @@
+{
+  "area": "re2-vs-rust-regex",
+  "regex_crate_version": "1.13.1",
+  "duckdb_version": "1.5.5",
+  "method": "98-entry battery run on identical (pattern, input) pairs: DuckDB 1.5.5 regexp_matches / regexp_extract(0..3) / regexp_replace (first + 'g') vs rust regex 1.13.1 is_match / find / captures / replace / replace_all with marker '<>'. Probes additionally ran rust with rewritten patterns or RegexBuilder settings against the original DuckDB construct to verify which divergences a bind-time rewrite/config eliminates. Runners + raw outputs: scratchpad/run_duckdb.py, scratchpad/re2diff/, scratchpad/{battery,duckdb_out,rust_out}.json, scratchpad/compare.py.",
+  "agreements": [
+    "(?i) case folding identical WITH NO CONFIG: both do Unicode simple folding. (?i)k matches K and KELVIN SIGN U+212A (and (?i)U+212A matches k); (?i)\u00df matches \u1e9e but NOT 'SS'; (?i)ss does not match \u00df; (?i)i does not match \u0130; (?i)\u03c3 matches final sigma \u03c2; (?i)stra\u00dfe does not match STRASSE. No full case folding on either side.",
+    "\\p{L}, \\p{Greek}+, \\pN, \\p{Lu}+, \\P{L} all identical — Unicode property classes are Unicode-aware in BOTH engines (\\pN matches U+0663). The unicode gap is ONLY in the Perl classes \\d \\w \\s \\b.",
+    "POSIX classes ASCII in both: [[:alpha:]]+ on 'a\u00e9b' finds 'a' in both.",
+    "Leftmost-first (NOT leftmost-longest) alternation in both: 'a|ab' on 'ab' finds 'a', replace_all '<>b'; 'samwise|sam' finds 'samwise'; 'sam|samwise' finds 'sam'. DuckDB does not enable RE2 longest_match.",
+    "Greedy/lazy identical: 'a.*b' on 'aXbXb' -> 'aXbXb'; 'a.*?b' -> 'aXb'. (?U) swap-greed supported and identical. (?s) supported; '.' excludes \\n by default in both; '.' consumes a full astral codepoint (U+1F600) in both (rune/char, never bytes... on valid UTF-8).",
+    "Empty-match iteration identical: replace_all 'a*' on 'bab' -> '<>b<>b<>' both; empty pattern '' on 'abc' -> '<>a<>b<>c<>' both (same skip-after-empty-match rule); '(|a)' on 'ab' -> '<>a<>b<>' both.",
+    "(a*)* on 'aaaa': matches 'aaaa', group1 'aaaa', both; both engines are linear-time automata, no catastrophic backtracking risk on either side.",
+    "Character-class edge cases identical (surprise: BOTH accept POSIX-style ']' first): '[]a]' matches 'a' in both (no error!); '[^]]' matches 'a'; '[a-]' matches '-'; '[\\]a]' matches ']'.",
+    "Inline flags identical including mid-pattern: '(?i)abc', 'a(?i)bc' on 'aBC', '(?i:x)y' on 'Xy', '(?i)a(?-i)b' on 'Ab' — all same.",
+    "(?P<name>...) named groups work in both (captures identical).",
+    "Anchors: \\A and \\z identical; 'abc$' does NOT match 'abc\\n' in either (no PCRE before-trailing-newline rule); (?m)^ identical. \\Z is a compile ERROR in both (duckdb: 'Invalid Input Error: invalid escape sequence: \\\\Z'; rust: 'unrecognized escape sequence').",
+    "Both reject backrefs and all lookaround, different texts, same outcome: '(a)\\1' duckdb 'Invalid Input Error: invalid escape sequence: \\\\1' / rust 'backreferences are not supported'; '(?=a)b' and '(?!a)b' duckdb 'invalid perl operator: (?=' resp '(?!' / rust 'look-around, including look-ahead and look-behind, is not supported'; '(?<=a)b' duckdb 'invalid perl operator: (?<' / rust same look-around error.",
+    "'a{2,1}' rejected by both (duckdb 'invalid repetition size: {2,1}', rust 'invalid repetition count range'); 'a{1000}' compiles and matches in both (1000 is exactly RE2's limit).",
+    "Hex escapes '\\x41' and '\\x{263A}' identical.",
+    "'\\bh\u00e9llo\\b' on exactly 'h\u00e9llo' agrees (string start/end are boundaries in both) — but interior \\b positions around non-ASCII diverge, see divergences.",
+    "Word-boundary probe: rust '(?-u:\\b)' reproduced DuckDB '\\b' replace_all on 'h\u00e9llo w\u00f6rld' byte-for-byte ('<>h<>\u00e9<>llo<> <>w<>\u00f6<>rld<>')."
+  ],
+  "divergences": [
+    {
+      "construct": "\\d / \\D (Perl digit class, Unicode-ness)",
+      "pattern": "\\d and \\d+ and \\D",
+      "input": "'\u0663' (U+0663), 'a\u06635b'",
+      "duckdb": "\\d is ASCII [0-9]: no match on U+0663; '\\d+' on 'a\u06635b' finds '5'; \\D matches U+0663",
+      "rust_regex": "\\d is Unicode \\p{Nd}: matches U+0663; '\\d+' finds '\u06635'; \\D does not match U+0663",
+      "guardable_at_bind": "yes, ELIMINATED by rewrite (verified identical): \\d -> (?-u:\\d) (== [0-9]), \\D -> [^0-9] (unicode negated class; NOT (?-u:\\D)). Detect via regex-syntax AST ClassPerl{kind:Digit}, including occurrences inside bracket classes ([\\d] and [^\\d] diverge identically)."
+    },
+    {
+      "construct": "\\w / \\W (Perl word class, Unicode-ness)",
+      "pattern": "\\w, \\w+, \\W",
+      "input": "'\u00e9', '\u00df', '\u6f22', 'h\u00e9llo', 'w\u00f6rld'",
+      "duckdb": "\\w is ASCII [0-9A-Za-z_]: no match on \u00e9/\u00df/\u6f22; '\\w+' on 'h\u00e9llo' finds 'h' (replace_all '<>\u00e9<>'); \\W matches \u00e9",
+      "rust_regex": "\\w is Unicode: matches all of them; '\\w+' finds 'h\u00e9llo'; \\W does not match \u00e9",
+      "guardable_at_bind": "yes, ELIMINATED by rewrite (verified identical): \\w -> [0-9A-Za-z_] (or (?-u:\\w)), \\W -> [^0-9A-Za-z_]. WARNING: (?-u:\\W) itself does NOT compile for str regexes ('error: pattern can match invalid UTF-8') — negated forms must become unicode-mode negated classes."
+    },
+    {
+      "construct": "\\s / \\S (Perl space class: Unicode-ness AND vertical-tab membership)",
+      "pattern": "\\s, \\S",
+      "input": "NBSP U+00A0, VT U+000B",
+      "duckdb": "RE2 \\s is exactly [\\t\\n\\f\\r ]: matches NEITHER NBSP nor U+000B; \\S matches both",
+      "rust_regex": "\\s is Unicode White_Space: matches BOTH NBSP and U+000B; \\S matches neither",
+      "guardable_at_bind": "yes, ELIMINATED by rewrite (verified identical): \\s -> [\\t\\n\\f\\r ], \\S -> [^\\t\\n\\f\\r ]. NOTE: (?-u:\\s) is the WRONG rewrite — rust ASCII \\s is [\\t\\n\\v\\f\\r ] which still includes VT that RE2 excludes; spell the class out."
+    },
+    {
+      "construct": "\\b interior word boundaries around non-ASCII letters",
+      "pattern": "\\b (replace_all marker)",
+      "input": "'h\u00e9llo w\u00f6rld'",
+      "duckdb": "ASCII boundaries — \u00e9 is a non-word char, so boundaries on both sides of it: '<>h<>\u00e9<>llo<> <>w<>\u00f6<>rld<>'",
+      "rust_regex": "Unicode boundaries: '<>h\u00e9llo<> <>w\u00f6rld<>'",
+      "guardable_at_bind": "yes, ELIMINATED by rewrite (verified byte-for-byte identical): \\b -> (?-u:\\b). ASCII \\b cannot split UTF-8 so str regexes allow it."
+    },
+    {
+      "construct": "\\B non-word-boundary on non-ASCII text (DuckDB itself is broken here)",
+      "pattern": "\\B",
+      "input": "'h\u00e9llo'",
+      "duckdb": "is_match true, but regexp_replace(..., '<>'[, 'g']) throws RUNTIME 'Invalid Input Error: Invalid unicode (byte sequence mismatch) detected in value construction' — RE2's ASCII \\B matches at byte offsets INSIDE the 2-byte \u00e9 and DuckDB builds invalid UTF-8",
+      "rust_regex": "Unicode \\B: replace_all 'h<>\u00e9<>l<>l<>o'; the ASCII rewrite (?-u:\\B) compiles but only matches at char boundaries: 'h\u00e9l<>l<>o' — neither reproduces DuckDB's byte-level positions (which DuckDB can't serve anyway)",
+      "guardable_at_bind": "yes — REJECT patterns containing \\B at bind (regex-syntax AST WordBoundary::AsciiNegate after (?-u) rewrite / Assertion NotWordBoundary). No rewrite can match DuckDB because DuckDB's own behavior is a data-dependent runtime error on non-ASCII input; on guaranteed-ASCII columns (?-u:\\B) agrees, but rejecting is the safe default."
+    },
+    {
+      "construct": "(?<name>...) angle-bracket named group",
+      "pattern": "(?<n>a)",
+      "input": "'a'",
+      "duckdb": "compile ERROR 'Invalid Input Error: invalid perl operator: (?<' (DuckDB's bundled RE2 only accepts (?P<name>...))",
+      "rust_regex": "accepted, matches 'a' with named group",
+      "guardable_at_bind": "yes — reject (?<name>...) so the engine is not a superset of DuckDB (pattern DuckDB rejects must not silently serve). Detect: regex-syntax ast Group CaptureName with starts_with_p == false."
+    },
+    {
+      "construct": "duplicate capture group names",
+      "pattern": "(?P<n>a)(?P<n>b)",
+      "input": "'ab'",
+      "duckdb": "ACCEPTED (modern RE2 allows duplicate names); positional captures work: group0 'ab', group1 'a', group2 'b'",
+      "rust_regex": "compile ERROR 'regex parse error: ... error: duplicate capture group name'",
+      "guardable_at_bind": "yes — detect duplicate names while walking the AST capture groups and reject as unsupported (or auto-rename n -> n_1, n_2 and use positional capture indices, since DuckDB group semantics here are positional anyway)."
+    },
+    {
+      "construct": "counted repetition above RE2's 1000 limit",
+      "pattern": "a{1001}, a{100000}",
+      "input": "any",
+      "duckdb": "compile ERROR 'Invalid Input Error: invalid repetition size: {1001}' (limit is exactly 1000: a{1000} works)",
+      "rust_regex": "compiles and matches fine (only bounded by size_limit)",
+      "guardable_at_bind": "yes — reject any {n}/{n,}/{n,m} with a bound > 1000 (AST Repetition Range). Keeps the engine from accepting patterns the DuckDB oracle rejects."
+    },
+    {
+      "construct": "possessive-looking / stacked quantifiers",
+      "pattern": "a*+",
+      "input": "'aa'",
+      "duckdb": "compile ERROR 'Invalid Input Error: bad repetition operator: *+'",
+      "rust_regex": "accepted — parsed as nested repetition (a*)+, matches 'aa'",
+      "guardable_at_bind": "yes — reject a repetition whose operand is itself a bare repetition (AST Repetition directly wrapping Repetition without an explicit group)."
+    },
+    {
+      "construct": "octal escapes",
+      "pattern": "\\101",
+      "input": "'A'",
+      "duckdb": "matches 'A' (RE2 supports octal escapes)",
+      "rust_regex": "default compile ERROR 'regex parse error: ... error: backreferences are not supported' (\\1 read as backref)",
+      "guardable_at_bind": "yes, ELIMINATED by config (verified identical): regex::RegexBuilder::octal(true). Also improves error parity: with octal(false) a real backref '(a)\\1' reports 'backreferences are not supported' matching intent anyway, so octal(true) costs nothing."
+    },
+    {
+      "construct": "\\Q...\\E literal quoting",
+      "pattern": "\\Qa.b\\E",
+      "input": "'a.b'",
+      "duckdb": "supported: matches literal 'a.b' (the '.' is literal)",
+      "rust_regex": "compile ERROR 'regex parse error: ... error: unrecognized escape sequence'",
+      "guardable_at_bind": "yes — lexical pre-pass: either reject \\Q, or expand \\Q...\\E by escaping the enclosed span (regex::escape) before handing to the crate; expansion is exact and trivial since \\Q..\\E does not nest."
+    },
+    {
+      "construct": "\\uXXXX / \\UXXXXXXXX codepoint escapes",
+      "pattern": "\\u0041",
+      "input": "'A'",
+      "duckdb": "compile ERROR 'Invalid Input Error: invalid escape sequence: \\\\u' (RE2 only has \\x{...} and \\xNN)",
+      "rust_regex": "accepted, matches 'A'",
+      "guardable_at_bind": "yes — reject \\u and \\U escapes (lexical scan for backslash-u/backslash-U outside classes and inside; RE2-portable spelling \\x{...} works in both)."
+    },
+    {
+      "construct": "replacement-string syntax (API-level, not a pattern construct)",
+      "pattern": "(a)(b) replacing in 'ab'",
+      "input": "replacement '\\2\\1' vs '$2$1'",
+      "duckdb": "RE2 rewrite syntax: '\\2\\1' -> 'ba'; '$2$1' is LITERAL '$2$1'",
+      "rust_regex": "rust syntax: '$2$1' -> 'ba'; '\\2\\1' is LITERAL '\\2\\1'",
+      "guardable_at_bind": "yes — translate the replacement template at bind: \\N -> ${N}, \\\\ -> \\, escape every '$' as '$$', and reject \\N with N>9 semantics differences (RE2 rewrite only supports \\0-\\9). Never pass user replacement strings through untranslated."
+    }
+  ],
+  "recommendation": "VERDICT: regex 1.13.1 can serve DuckDB(RE2) semantics exactly, but only with a bind-time translation layer; raw pattern pass-through is wrong on any pattern containing a Perl class. CONFIG (eliminates divergences, no guards needed): (1) regex::RegexBuilder::octal(true) — fixes \\101-style octal escapes, verified identical; (2) do NOT set unicode(false): default Unicode mode is what makes (?i) folding (incl. KELVIN U+212A), \\p classes, and '.' agree — unicode(false) was measured to BREAK (?i)k vs U+212A parity. REWRITE at bind (AST walk with regex-syntax; each verified identical incl. inside bracket classes): \\d->(?-u:\\d), \\D->[^0-9], \\w->[0-9A-Za-z_], \\W->[^0-9A-Za-z_] ((?-u:\\W) does not compile for str), \\s->[\\t\\n\\f\\r ] (NOT (?-u:\\s): rust ASCII \\s wrongly includes VT U+000B), \\S->[^\\t\\n\\f\\r ], \\b->(?-u:\\b); optionally expand \\Q...\\E via regex::escape. REJECT at bind (engine must not accept what DuckDB rejects, and vice versa): \\B (DuckDB itself throws a runtime invalid-UTF8 error on non-ASCII input — unservable), (?<name>...) angle-form named groups (DuckDB rejects), duplicate group names (rust rejects; or auto-rename + positional captures), repetition bounds > 1000 (DuckDB rejects; a{1000} is the max), stacked quantifiers like a*+ (DuckDB rejects, rust silently reinterprets as (a*)+ — the one construct where pass-through would serve WRONG ANSWERS instead of an error), and \\u/\\U escapes (DuckDB rejects). REPLACEMENT templates must be translated: RE2 \\N rewrite -> rust ${N}, '$' -> '$$'. Everything else — leftmost-first alternation, greedy/lazy, (?U)/(?s)/(?m)/inline (?i) placement, empty-match iteration and replace_all adjacency-skip, \\A/\\z/$ semantics, char-class edge parsing ('[]a]' legal in both), \\p classes, POSIX classes, \\x escapes, backref/lookaround rejection, a{2,1} rejection, \\Z rejection — agreed byte-for-byte with zero configuration."
+}
