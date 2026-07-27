@@ -83,6 +83,7 @@ wrong answer or require semantics we can't reproduce exactly:
 | `^` operator | It IS pow in DuckDB, but sqlparser's precedence differs from DuckDB's (`2*x^y` would parse as `(2*x)^y`). Mapping it computes the wrong tree silently. Use `pow()`. |
 | prefix `~`, `#`, `NOT GLOB` | Same class: precedence/parse divergences that would silently mis-associate. `xor()` covers bit-xor; `NOT (x GLOB p)` works. |
 | Regex reject list: `\B`, `\Q…\E`, `(?<name>…)`, duplicate group names, bounds > 1000, stacked quantifiers (`a*+`), `\u` escapes, negated Perl classes inside `[...]` | The RE2↔rust-regex differential battery (98 entries) proved these are the constructs where the engines disagree or DuckDB itself is broken (`\B` crashes DuckDB at runtime on non-ASCII). Everything else is byte-identical. |
+| Fuzzer-found regex rejects (TASK-54): `\1`–`\9` backrefs outside classes, the full stacked-quantifier grammar (`{2}*`, `?*`, `a???` — one lazy `?` is the only legal follower), nested repetition products > 1000, whitespace inside `{m, n}` bounds, class set-op lookalikes (`--`/`&&`/`~~`), non-POSIX `[` inside classes, Perl-class range endpoints (`[a-\d]`), capturing `(x){0}`, anchor-only multi-anchor patterns (DuckDB is SELF-inconsistent on these — its row path disagrees with its own constant fold) | The standing differential fuzzer (`tests/test_duckdb_regexp_fuzz.py`, in the normal gate) found these 12 classes in its first 3k-case deep run — each one a silent-wrong-answer risk in rust-regex — then re-swept to ZERO divergences over 40k cases across 8 seeds. Pins: `pins-waveB/fuzzer-task54.json`. |
 | `SIMILAR TO ... ESCAPE` | Not implemented in DuckDB itself. |
 | `* EXCLUDE (t.key)` on a USING join | DuckDB UNMERGES the coalesced column (it reappears at the right table's position) — measured, not modeled. Unqualified EXCLUDE works. |
 | `BETWEEN`/`IN` mixing non-numeric string literals with numbers | DuckDB converts at EXECUTION time (an empty input succeeds!); a bind-time conversion was measured to be over-eager. Numeric literals convert fine. |
@@ -128,3 +129,18 @@ whose message starts with a classification:
 
 If a message you hit isn't in this document or the tests, that's a bug in
 our bookkeeping — file it.
+
+## 7. How this document stays honest
+
+Three mechanisms, all in the normal test gate:
+
+1. **The corpus replay** (678 statements mined from DuckDB's test suite):
+   every statement must match bit-for-bit, reject cleanly, or be a named
+   divergence — a wrong answer anywhere fails the gate.
+2. **The executable twin** (`tests/test_known_limitations.py`): every
+   limitation in this document is asserted; lifting one breaks a test.
+3. **The standing differential fuzzer** (`tests/test_duckdb_regexp_fuzz.py`):
+   randomized DuckDB-vs-engine sweeps of the regex surface on every run
+   (seed/size overridable for deep runs) — new divergences fail with the
+   reproducing seed and SQL, and their fix lands as a reject-list entry
+   plus a row in this document.
