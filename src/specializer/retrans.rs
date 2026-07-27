@@ -51,13 +51,102 @@ pub fn parse_options(opts: &str, allow_g: bool) -> Result<ReOptions, PrepareErro
     Ok(o)
 }
 
+/// Strict RE2 repetition bounds at `p[i..]` (`p.as_bytes()[i] == b'{'`):
+/// `{m}` / `{m,}` / `{m,n}`, ASCII digits only, no whitespace. Returns
+/// (index after `}`, largest bound named, product bound — `u64::MAX` for an
+/// unbounded `{m,}`).
+fn strict_bounds(p: &str, i: usize) -> Option<(usize, u64, u64)> {
+    let rest = p.get(i + 1..)?;
+    let body = &rest[..rest.find('}')?];
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    let mut parts = body.splitn(2, ',');
+    let lo: u64 = parts.next().filter(|s| digits(s))?.parse().ok()?;
+    let (max, prod) = match parts.next() {
+        None => (lo, lo),
+        Some("") => (lo, u64::MAX),
+        Some(hi) if digits(hi) => {
+            let hi: u64 = hi.parse().ok()?;
+            (lo.max(hi), hi)
+        }
+        Some(_) => return None,
+    };
+    Some((i + 1 + body.len() + 1, max, prod))
+}
+
+/// True if the pattern is nothing but text anchors (`^ $ \A \z`), `\b`, and
+/// flag-group / empty `(?:)` noise, with at least two anchors. DuckDB's ROW
+/// path literal-optimizes these into string equality ('' only) while its own
+/// CONSTANT fold matches normally (fuzzer-measured: '$\z' over a table is
+/// FALSE for 'hello' but TRUE as a constant) — unservable either way.
+fn anchors_only_multi(p: &str) -> bool {
+    let b = p.as_bytes();
+    let mut i = 0;
+    let mut anchors = 0;
+    while i < b.len() {
+        match b[i] {
+            b'^' | b'$' => {
+                anchors += 1;
+                i += 1;
+            }
+            b'\\' => match b.get(i + 1) {
+                Some(b'A') | Some(b'z') => {
+                    anchors += 1;
+                    i += 2;
+                }
+                Some(b'b') => i += 2,
+                _ => return false,
+            },
+            b'(' if b.get(i + 1) == Some(&b'?') => {
+                i += 2;
+                if b.get(i) == Some(&b':') {
+                    i += 1; // only the EMPTY (?:) counts as noise
+                } else {
+                    while matches!(
+                        b.get(i),
+                        Some(b'i' | b'm' | b's' | b'u' | b'U' | b'x' | b'-')
+                    ) {
+                        i += 1;
+                    }
+                }
+                if b.get(i) != Some(&b')') {
+                    return false;
+                }
+                i += 1;
+            }
+            _ => return false,
+        }
+    }
+    anchors >= 2
+}
+
 /// Rewrite a DuckDB/RE2 pattern into a rust-regex pattern with identical
-/// semantics, or reject constructs on the measured divergence list.
+/// semantics, or reject constructs on the measured divergence list (wave-B
+/// pins + the TASK-54 standing fuzzer's findings).
 pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
+    if anchors_only_multi(p) {
+        return Err(unsup(
+            "anchor-only regex pattern (DuckDB's row path diverges from its own \
+             constant fold)",
+        ));
+    }
     let b = p.as_bytes();
     let mut out = String::with_capacity(p.len() + 8);
     let mut i = 0;
     let mut in_class = false;
+    // Quantifier state (outside classes): 0 = none, 1 = after a quantifier,
+    // 2 = after quantifier + lazy '?'. RE2 rejects ALL further stacking
+    // ('a?*', 'a{2}+', 'a*{2}', 'a???') while rust silently reinterprets —
+    // wrong-answer risk, reject (fuzzer-measured, not just '*'/'+' pairs).
+    let mut quant: u8 = 0;
+    // Nested counted repetition: RE2 caps the PRODUCT of nested {m,n} bounds
+    // at 1000 ("invalid repetition size") while rust serves — track the max
+    // counted bound per open group (plus whether the group captures) and
+    // reject past the cap.
+    let mut groups: Vec<(u64, bool)> = Vec::new();
+    let mut counted: u64 = 0;
+    // Character-class member tracking for range-endpoint rejects.
+    let mut class_members = 0usize;
+    let mut rangey_dash = false; // last member was a bare '-' with a left operand
     while i < b.len() {
         let c = b[i];
         match c {
@@ -69,6 +158,21 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                     i += 1;
                     continue;
                 };
+                let perl = matches!(n, b'd' | b'w' | b's');
+                if in_class && perl {
+                    // '[a-\d]': RE2 rejects a Perl-class range endpoint; the
+                    // expansion could compile in rust — reject both sides.
+                    if rangey_dash {
+                        return Err(unsup(
+                            "character class range with a Perl class endpoint",
+                        ));
+                    }
+                    if b.get(i + 2) == Some(&b'-') && b.get(i + 3) != Some(&b']') {
+                        return Err(unsup(
+                            "character class range with a Perl class endpoint",
+                        ));
+                    }
+                }
                 match n {
                     // Perl classes: RE2 is ASCII, rust is Unicode (measured
                     // rewrites; negated forms must be Unicode-mode classes,
@@ -97,6 +201,14 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                     // \B: DuckDB itself traps at runtime on non-ASCII (RE2's
                     // ASCII \B matches inside multibyte chars) — unservable.
                     b'B' => return Err(unsup("\\B in a regex (unservable RE2 byte semantics)")),
+                    // \1-\9 outside a class: RE2 rejects them as backrefs,
+                    // but octal mode makes rust read octal escapes — serve
+                    // nothing (fuzzer-measured). In-class both are octal.
+                    b'1'..=b'9' if !in_class => {
+                        return Err(unsup(
+                            "backreference-style \\N escape in a regex (RE2 rejects)",
+                        ))
+                    }
                     // \uXXXX: rust-only extension, DuckDB rejects.
                     b'u' | b'U' => {
                         return Err(unsup("\\u escape in a regex (not RE2 syntax)"))
@@ -109,6 +221,9 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                     }
                 }
                 i += 2;
+                quant = 0;
+                class_members += 1;
+                rangey_dash = false;
             }
             b'[' if !in_class => {
                 in_class = true;
@@ -120,14 +235,58 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                     out.push('^');
                     i += 1;
                 }
+                class_members = 0;
                 if b.get(i) == Some(&b']') {
                     out.push(']');
                     i += 1;
+                    class_members = 1;
+                    // '[]-X]': a range with the literal ']' endpoint to RE2
+                    // (backwards ones error), a literal '-' to rust — reject
+                    // unless the '-' is the trailing literal ('[]-]').
+                    if b.get(i) == Some(&b'-') && b.get(i + 1) != Some(&b']') {
+                        return Err(unsup(
+                            "character class range starting at a literal ']'",
+                        ));
+                    }
                 }
+                rangey_dash = false;
+            }
+            b'[' if in_class => {
+                // POSIX element ('[:alpha:]', '[:^digit:]'): same ASCII
+                // semantics in both engines — consume atomically so the
+                // class tracker stays in sync. Any other '[' in a class is
+                // literal to RE2 but a NESTED CLASS to rust — reject.
+                if p[i..].starts_with("[:") {
+                    if let Some(end) = p[i..].find(":]") {
+                        out.push_str(&p[i..i + end + 2]);
+                        i += end + 2;
+                        class_members += 1;
+                        rangey_dash = false;
+                        continue;
+                    }
+                }
+                return Err(unsup(
+                    "'[' inside a character class (rust-regex nested-class semantics)",
+                ));
             }
             b']' if in_class => {
                 in_class = false;
                 out.push(']');
+                i += 1;
+                quant = 0;
+            }
+            b'&' | b'~' | b'-' if in_class && b.get(i + 1) == Some(&c) => {
+                // '--' / '&&' / '~~' in a class: literals-or-ranges to RE2,
+                // set operations to rust — silent wrong answers (measured).
+                return Err(unsup(format!(
+                    "'{0}{0}' inside a character class (rust-regex set-operation syntax)",
+                    c as char
+                )));
+            }
+            b'-' if in_class => {
+                rangey_dash = class_members >= 1;
+                class_members += 1;
+                out.push('-');
                 i += 1;
             }
             b'(' if !in_class => {
@@ -135,36 +294,95 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                 if p[i..].starts_with("(?<") && !p[i..].starts_with("(?<=") {
                     return Err(unsup("(?<name>...) capture group (not RE2 syntax)"));
                 }
+                let capturing =
+                    b.get(i + 1) != Some(&b'?') || p[i..].starts_with("(?P<");
+                groups.push((counted, capturing));
+                counted = 0;
                 out.push('(');
                 i += 1;
+                quant = 0;
+            }
+            b')' if !in_class => {
+                let inner = counted;
+                let capturing;
+                (counted, capturing) = groups.pop().unwrap_or((0, false));
+                if let Some((_, max, prod)) = strict_bounds(p, i + 1)
+                    .filter(|_| b.get(i + 1) == Some(&b'{'))
+                {
+                    // '(x){0}': RE2 keeps the group in its count while rust
+                    // ERASES it, shifting every later group number and the
+                    // rewrite's MaxSubmatch pre-check (fuzzer-measured).
+                    if capturing && max == 0 {
+                        return Err(unsup(
+                            "capture group under a {0} repetition (rust-regex \
+                             erases the group)",
+                        ));
+                    }
+                    if inner > 0 {
+                        if inner.saturating_mul(prod) > 1000 {
+                            return Err(unsup(
+                                "nested counted repetition over RE2's size cap of 1000",
+                            ));
+                        }
+                        counted = counted.max(inner.saturating_mul(prod));
+                    }
+                } else {
+                    counted = counted.max(inner);
+                }
+                out.push(')');
+                i += 1;
+                quant = 0;
             }
             b'{' if !in_class => {
-                // Repetition bound > 1000 is a DuckDB error; rust allows
-                // larger — reject past the pinned cap.
-                let close = b[i..].iter().position(|&x| x == b'}');
-                if let Some(off) = close {
-                    let body = &p[i + 1..i + off];
-                    let too_big = body
-                        .split(',')
-                        .filter_map(|s| s.trim().parse::<u64>().ok())
-                        .any(|n| n > 1000);
-                    if too_big {
+                if let Some((end, max, prod)) = strict_bounds(p, i) {
+                    if quant > 0 {
+                        return Err(unsup("stacked regex quantifiers (RE2 rejects them)"));
+                    }
+                    // Repetition bound > 1000 is a DuckDB error; rust allows
+                    // larger — reject past the pinned cap.
+                    if max > 1000 {
                         return Err(unsup(format!(
-                            "regex repetition bound over 1000 ({{{body}}})"
+                            "regex repetition bound over 1000 ({})",
+                            &p[i..end]
                         )));
                     }
+                    counted = counted.max(prod.min(1001));
+                    out.push_str(&p[i..end]);
+                    i = end;
+                    quant = 1;
+                } else {
+                    // Not strict bounds. Whitespace-padded digits ('{1, 3}')
+                    // are LITERAL to RE2 but a repetition to rust — reject;
+                    // anything else is literal '{' in both.
+                    let body = match p[i + 1..].find('}') {
+                        Some(e) => &p[i + 1..i + 1 + e],
+                        None => "",
+                    };
+                    let stripped: String =
+                        body.chars().filter(|c| !c.is_whitespace()).collect();
+                    if stripped != body
+                        && strict_bounds(&format!("{{{stripped}}}"), 0).is_some()
+                    {
+                        return Err(unsup(format!(
+                            "whitespace inside repetition bounds ({{{body}}}) \
+                             (literal to RE2, a repetition to rust-regex)"
+                        )));
+                    }
+                    out.push('{');
+                    i += 1;
+                    quant = 0;
                 }
-                out.push('{');
-                i += 1;
             }
-            b'*' | b'+' if !in_class => {
+            b'*' | b'+' | b'?' if !in_class => {
+                if c == b'?' && quant == 1 {
+                    quant = 2; // lazy modifier — the one legal follower
+                } else if quant > 0 {
+                    return Err(unsup("stacked regex quantifiers (RE2 rejects them)"));
+                } else {
+                    quant = 1;
+                }
                 out.push(c as char);
                 i += 1;
-                // Stacked quantifiers (a*+, a++): DuckDB errors while rust
-                // silently reinterprets — a wrong-answer risk, reject.
-                if matches!(b.get(i), Some(b'*') | Some(b'+')) {
-                    return Err(unsup("stacked regex quantifiers (RE2 rejects them)"));
-                }
             }
             _ => {
                 // Preserve the raw byte run (UTF-8 safe: we only split at
@@ -175,6 +393,9 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                     i += 1;
                 }
                 out.push_str(&p[start..i]);
+                quant = 0;
+                class_members += 1;
+                rangey_dash = false;
             }
         }
     }
@@ -216,6 +437,21 @@ pub enum Rewrite {
 
 pub fn translate_rewrite(r: &str, group_count: usize, global: bool) -> Rewrite {
     let b = r.as_bytes();
+    // RE2's MaxSubmatch pre-check scans the WHOLE template before any
+    // per-match work (fuzzer-measured): an out-of-range \N anywhere is a
+    // full no-op even when a bad escape precedes it in the template.
+    let mut j = 0;
+    while j + 1 < b.len() {
+        if b[j] == b'\\' {
+            let d = b[j + 1];
+            if d.is_ascii_digit() && (d - b'0') as usize > group_count {
+                return Rewrite::Identity;
+            }
+            j += 2;
+        } else {
+            j += 1;
+        }
+    }
     let mut out = String::with_capacity(r.len() + 4);
     let mut i = 0;
     while i < b.len() {
@@ -290,6 +526,61 @@ mod tests {
     }
 
     #[test]
+    fn fuzzer_reject_list() {
+        // TASK-54 standing-fuzzer findings (spec addendum pins).
+        for p in [
+            r"a\1",         // RE2 backref reject vs rust octal-mode escape
+            "a?*",          // stacked quantifiers beyond the */+ pairs
+            "a{2}+",
+            "a*{2}",
+            "a???",
+            "a{1, 3}",      // spaced bounds: literal to RE2, repetition to rust
+            "(a{600}b){2}", // nested counted product over RE2's 1000 cap
+            "(a{2,}){3}",   // unbounded inner counts as over-cap
+            "[a--b]",       // rust class set operations vs RE2 literals/ranges
+            "[--0]",
+            "[a&&b]",
+            "[a~~b]",
+            "[a[b]]",       // nested class in rust, literal '[' in RE2
+            r"[a-\d]",      // Perl-class range endpoint (RE2 rejects)
+            r"[\d-a]",
+        ] {
+            assert!(translate_pattern(p).is_err(), "{p} should reject");
+        }
+        // Still-fine neighbors of the rejects.
+        assert_eq!(translate_pattern("a{2}?b").unwrap(), "a{2}?b");
+        assert_eq!(translate_pattern("(a{2})b{3}").unwrap(), "(a{2})b{3}");
+        assert_eq!(translate_pattern("(a{20}){50}").unwrap(), "(a{20}){50}");
+        assert_eq!(translate_pattern("a{abc}").unwrap(), "a{abc}");
+        assert_eq!(translate_pattern("[a-f-]").unwrap(), "[a-f-]");
+        assert_eq!(translate_pattern(r"[-\d]").unwrap(), "[-0-9]");
+        assert_eq!(translate_pattern(r"[\d-]").unwrap(), "[0-9-]");
+        assert_eq!(translate_pattern(r"[\1]").unwrap(), r"[\1]"); // in-class octal
+        // POSIX elements pass through atomically — the tracker no longer
+        // desyncs, so a following Perl class still rewrites in-class.
+        assert_eq!(translate_pattern(r"[[:alpha:]\d]").unwrap(), "[[:alpha:]0-9]");
+        assert_eq!(translate_pattern("[[:^digit:]x]").unwrap(), "[[:^digit:]x]");
+        // Leading-']' ranges; the trailing-'-' literal form stays fine.
+        assert!(translate_pattern("[]-Z]").is_err());
+        assert!(translate_pattern("[^]-0-7]").is_err());
+        assert_eq!(translate_pattern("[]-]").unwrap(), "[]-]");
+        // Anchor-only multi-anchor patterns (DuckDB row/const divergence);
+        // a consuming atom or a capture group rescues them.
+        for p in [r"$\z", "^^", r"\A\A", r"(?i)$\z", "^(?:)^", r"^\b$"] {
+            assert!(translate_pattern(p).is_err(), "{p} should reject");
+        }
+        for p in [r"d$\z", "^", r"\z", r"($\z)", r"x|$\z", "^()^"] {
+            assert!(translate_pattern(p).is_ok(), "{p} should serve");
+        }
+        // '(x){0}' erases the capture group in rust, shifting group numbers.
+        assert!(translate_pattern("(a){0}").is_err());
+        assert!(translate_pattern("(?P<n>a){0,0}").is_err());
+        assert!(translate_pattern("(?:a){0}").is_ok());
+        assert!(translate_pattern("(a){0,1}").is_ok());
+        assert!(translate_pattern("a{0}").is_ok());
+    }
+
+    #[test]
     fn options_alphabet() {
         let o = parse_options("gi", true).unwrap();
         assert!(o.global && o.case_insensitive);
@@ -312,8 +603,14 @@ mod tests {
             translate_rewrite("a$b", 0, false),
             Rewrite::Template(t) if t == "a$$b"
         ));
-        // Out-of-range backref: full no-op both modes.
+        // Out-of-range backref: full no-op both modes — even AFTER a bad
+        // escape (MaxSubmatch pre-scans the whole template).
         assert!(matches!(translate_rewrite(r"\2", 1, true), Rewrite::Identity));
+        assert!(matches!(translate_rewrite(r"\x\2", 0, true), Rewrite::Identity));
+        assert!(matches!(
+            translate_rewrite(r"\\2", 0, true),
+            Rewrite::Template(t) if t == r"\2"
+        ));
         // Bad escape: no-op non-global, consume-with-prefix global.
         assert!(matches!(translate_rewrite(r"A\xB", 0, false), Rewrite::Identity));
         assert!(matches!(
