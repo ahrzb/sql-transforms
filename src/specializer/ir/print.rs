@@ -21,7 +21,20 @@ pub fn print(p: &Program) -> String {
             }
         }
     }
-    if !p.statics.is_empty() {
+    for (i, re) in p.regexes.iter().enumerate() {
+        let _ = write!(s, "regex @{i}: {}", quote(&re.pattern));
+        if re.ci {
+            s.push_str(" ci");
+        }
+        if re.dotall {
+            s.push_str(" dotall");
+        }
+        if let Some(rw) = &re.rewrite {
+            let _ = write!(s, " rewrite {}", quote(rw));
+        }
+        s.push('\n');
+    }
+    if !p.statics.is_empty() || !p.regexes.is_empty() {
         s.push('\n');
     }
     let _ = writeln!(
@@ -205,6 +218,16 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         }
         Inst::SloadOpt { static_id, .. } => {
             let _ = write!(s, "sload.opt @{static_id}");
+        }
+        Inst::ReMatch { re, a, .. } => {
+            let _ = write!(s, "rematch @{re}, {}", val(*a));
+        }
+        Inst::ReExtract { re, group, a, .. } => {
+            let _ = write!(s, "reextract @{re}, {group}, {}", val(*a));
+        }
+        Inst::ReReplace { re, global, a, .. } => {
+            let opcode = if *global { "rereplace.g" } else { "rereplace" };
+            let _ = write!(s, "{opcode} @{re}, {}", val(*a));
         }
     }
 }

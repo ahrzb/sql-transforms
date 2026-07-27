@@ -67,7 +67,7 @@ pub fn frontend(
     this_name: &str,
     in_cols: &[Col],
     statics: &[StaticTable],
-) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>), PrepareError> {
+) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>, Vec<super::ir::ReSpec>), PrepareError> {
     // GenericDialect, not DuckDbDialect: measured as a strict superset for
     // the forms we serve (adds ^@, * ILIKE, * RENAME) and matches the oracle
     // path in datafusion/plan.rs — see pins-wave5/sqlparser-spike.json.
@@ -147,13 +147,31 @@ pub fn frontend(
     };
     for item in &select.projection {
         match item {
-            SelectItem::UnnamedExpr(e) => push_item(
-                &mut out_cols,
-                &mut exprs,
-                default_name(e),
-                fold(binder.expr(e)?),
-            )?,
+            SelectItem::UnnamedExpr(e) => {
+                // COLUMNS('re') expands like a filtered star, keeping the
+                // bare column names (wave-B pins).
+                if let Some(cols) = binder.expand_columns_item(e)? {
+                    for (name, ex) in cols {
+                        push_item(&mut out_cols, &mut exprs, name, ex)?;
+                    }
+                } else {
+                    push_item(
+                        &mut out_cols,
+                        &mut exprs,
+                        default_name(e),
+                        fold(binder.expr(e)?),
+                    )?
+                }
+            }
             SelectItem::ExprWithAlias { expr, alias } => {
+                // An alias on COLUMNS stamps EVERY expansion (duplicates
+                // feed the dedup rename — measured).
+                if let Some(cols) = binder.expand_columns_item(expr)? {
+                    for (_, ex) in cols {
+                        push_item(&mut out_cols, &mut exprs, alias.value.clone(), ex)?;
+                    }
+                    continue;
+                }
                 let e = fold(binder.expr(expr)?);
                 // Lateral aliases (wave-5 pins): later items and WHERE may
                 // reference this alias; the real column still wins.
@@ -212,6 +230,7 @@ pub fn frontend(
         },
         joins,
         out_cols,
+        binder.regexes.into_inner(),
     ))
 }
 
@@ -291,6 +310,7 @@ fn bind_from<'a>(
             })
             .collect(),
         bound_aliases: std::cell::RefCell::new(Vec::new()),
+        regexes: std::cell::RefCell::new(Vec::new()),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -841,6 +861,45 @@ struct Binder<'a> {
     /// Aliases already bound this pass, in SELECT order (frontend() fills
     /// this as it walks the projection; RefCell keeps `expr(&self)` intact).
     bound_aliases: std::cell::RefCell<Vec<(String, SExpr)>>,
+    /// Program regex table under construction (wave-B); indices are baked
+    /// into ReMatch/ReExtract/ReReplace nodes.
+    regexes: std::cell::RefCell<Vec<super::ir::ReSpec>>,
+}
+
+/// The bound subject of a regex op must be VARCHAR (no implicit casts —
+/// wave-B pins; DuckDB binder errors name the function).
+fn str_only(name: &str, e: SExpr) -> Result<SExpr, PrepareError> {
+    if e.ty != Ty::Str {
+        return Err(PrepareError::Bind(format!(
+            "no function matches {name}({})",
+            e.ty.name()
+        )));
+    }
+    Ok(e)
+}
+
+/// `''` for non-NULL subjects, NULL for NULL ones (the pinned NULL-group
+/// result of regexp_extract).
+fn empty_for_nonnull(subject: SExpr) -> SExpr {
+    if !subject.nullable {
+        return lit_str("");
+    }
+    let is_null = SExpr {
+        kind: SKind::IsNull {
+            negated: false,
+            inner: Box::new(subject),
+        },
+        ty: Ty::I1,
+        nullable: false,
+    };
+    SExpr {
+        kind: SKind::Case {
+            arms: vec![(is_null, null_of(Ty::Str))],
+            default: Some(Box::new(lit_str(""))),
+        },
+        ty: Ty::Str,
+        nullable: true,
+    }
 }
 
 fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
@@ -923,6 +982,9 @@ fn like_match(s: &str, p: &str, ci: bool) -> bool {
 enum StarFilter {
     Like { ci: bool, neg: bool },
     Glob,
+    /// Wave-B pins: positive = unanchored RE2 SEARCH over names; NOT =
+    /// NOT full-match — independent predicates, never complements.
+    Similar { neg: bool },
 }
 
 /// Decoded star filter + any EXCLUDE entries the rewrite absorbed into the
@@ -940,6 +1002,8 @@ fn decode_star_filter(pattern: &str) -> DecodedFilter {
             ("NL:", StarFilter::Like { ci: false, neg: true }),
             ("NI:", StarFilter::Like { ci: true, neg: true }),
             ("G:", StarFilter::Glob),
+            ("S:", StarFilter::Similar { neg: false }),
+            ("NS:", StarFilter::Similar { neg: true }),
         ] {
             let Some(body) = rest.strip_prefix(code) else {
                 continue;
@@ -1072,13 +1136,13 @@ impl Binder<'_> {
     /// f64 side promotes all sides. Numeric-with-string/bool mixing has
     /// exec-time cast semantics we don't model — clean-unsupported.
     fn unify_family(&self, exprs: &[&SqlExpr]) -> Result<Vec<SqlExpr>, PrepareError> {
-        let (mut any_f64, mut any_num, mut any_other) = (false, false, false);
+        let (mut any_f64, mut any_num) = (false, false);
         for e in exprs {
             if let Some(b) = self.expr_or_null(e)? {
                 match b.ty {
                     Ty::F64 => (any_f64, any_num) = (true, true),
                     Ty::I64 => any_num = true,
-                    Ty::Str | Ty::I1 => any_other = true,
+                    Ty::Str | Ty::I1 => {}
                 }
             }
         }
@@ -1394,9 +1458,18 @@ impl Binder<'_> {
         // Name filter LAST in our pipeline but semantically after EXCLUDE
         // only (REPLACE/RENAME + filter were rejected above).
         if let Some(DecodedFilter { op, pat, .. }) = &filter {
-            cols.retain(|(_, cn, _)| match op {
-                StarFilter::Like { ci, neg } => like_match(cn, pat, *ci) != *neg,
-                StarFilter::Glob => super::exec::interp::duck_glob(cn, pat),
+            let similar = match op {
+                // Positive SIMILAR TO searches names UNANCHORED; the NOT
+                // form negates a FULL match — measured to not be
+                // complements ('a.*': "Weird Name" is in BOTH results).
+                StarFilter::Similar { neg } => Some(self.name_regex(pat, *neg)?),
+                _ => None,
+            };
+            cols.retain(|(_, cn, _)| match (op, &similar) {
+                (StarFilter::Like { ci, neg }, _) => like_match(cn, pat, *ci) != *neg,
+                (StarFilter::Glob, _) => super::exec::interp::duck_glob(cn, pat),
+                (StarFilter::Similar { neg }, Some(rx)) => rx.is_match(cn) != *neg,
+                (StarFilter::Similar { .. }, None) => unreachable!(),
             });
             if cols.is_empty() {
                 return Err(PrepareError::Bind(format!(
@@ -1439,6 +1512,18 @@ impl Binder<'_> {
             // Re-associate: in-order traversal of the parsed run recovers
             // source order, then left-fold. User parens are Nested nodes,
             // which the flatten treats as leaves.
+            // ~ / !~ are FULL regex match in DuckDB (measured: the binder
+            // error names regexp_full_match — NOT the Postgres search).
+            SqlExpr::BinaryOp {
+                left,
+                op: BinaryOperator::PGRegexMatch,
+                right,
+            } => self.regex_full_predicate("~", left, right, false),
+            SqlExpr::BinaryOp {
+                left,
+                op: BinaryOperator::PGRegexNotMatch,
+                right,
+            } => self.regex_full_predicate("!~", left, right, true),
             SqlExpr::BinaryOp { op, .. } if is_flat_bitop(op) => {
                 let (mut ops, mut operands) = (Vec::new(), Vec::new());
                 flatten_bitops(e, &mut ops, &mut operands);
@@ -1702,9 +1787,20 @@ impl Binder<'_> {
                     like
                 })
             }
-            SqlExpr::SimilarTo { .. } => Err(unsup(
-                "SIMILAR TO (DuckDB binds it to regexp_full_match, not SQL wildcards)",
-            )),
+            // SIMILAR TO on VALUES is exactly regexp_full_match on the RAW
+            // pattern — DuckDB translates NO wildcards ('h%o' is literal %,
+            // 'h.llo' is a live regex dot). Wave-B pins.
+            SqlExpr::SimilarTo {
+                negated,
+                expr,
+                pattern,
+                escape_char,
+            } => {
+                if escape_char.is_some() {
+                    return Err(unsup("Custom escape in SIMILAR TO (DuckDB: not implemented)"));
+                }
+                self.regex_full_predicate("SIMILAR TO", expr, pattern, *negated)
+            }
             // Bracket syntax s[i] / s[a:b] — exactly array_extract /
             // array_slice in DuckDB (one shared implementation, measured:
             // pins-wave5/{subscripts-extended,slices}.json).
@@ -1746,6 +1842,218 @@ impl Binder<'_> {
             }
             other => Err(unsup(format!("expression: {other}"))),
         }
+    }
+
+    /// Compile a column-NAME regex for star filters / COLUMNS: unanchored
+    /// for the positive search, `\A..\z`-wrapped for the NOT-full-match
+    /// form. Bind-time only — never reaches the exec regex table.
+    fn name_regex(&self, pat: &str, full: bool) -> Result<regex::Regex, PrepareError> {
+        let translated = super::retrans::translate_pattern(pat)?;
+        let pattern = if full {
+            format!("\\A(?:{translated})\\z")
+        } else {
+            translated
+        };
+        regex::RegexBuilder::new(&pattern)
+            .octal(true)
+            .build()
+            .map_err(|e| {
+                PrepareError::Bind(format!("Failed to compile regex \"{pat}\": {e}"))
+            })
+    }
+
+    /// Expand a `COLUMNS('re')` / `COLUMNS(*)` SELECT item (wave-B):
+    /// unanchored RE2 search over declared-case names, table-declaration
+    /// order. Returns None when `e` is not a COLUMNS call; expression
+    /// forms (COLUMNS(..) + 1) stay unsupported upstream.
+    fn expand_columns_item(
+        &self,
+        e: &SqlExpr,
+    ) -> Result<Option<Vec<(String, SExpr)>>, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        let SqlExpr::Function(f) = e else {
+            return Ok(None);
+        };
+        if !f.name.to_string().eq_ignore_ascii_case("columns") {
+            return Ok(None);
+        }
+        let FunctionArguments::List(list) = &f.args else {
+            return Ok(None);
+        };
+        let all = self.expand_star(None, &sqlparser::ast::WildcardAdditionalOptions::default())?;
+        match &list.args[..] {
+            [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)] => Ok(Some(all)),
+            [FunctionArg::Unnamed(FunctionArgExpr::Expr(p))] => {
+                let Some(bp) = self.expr_or_null(p)? else {
+                    return Err(PrepareError::Bind(
+                        "COLUMNS requires a constant pattern".into(),
+                    ));
+                };
+                let SKind::Lit(Lit::Str(pat)) = bp.kind else {
+                    return Err(unsup("COLUMNS with a non-constant or list argument"));
+                };
+                let rx = self.name_regex(&pat, false)?;
+                let cols: Vec<(String, SExpr)> =
+                    all.into_iter().filter(|(n, _)| rx.is_match(n)).collect();
+                if cols.is_empty() {
+                    return Err(PrepareError::Bind(format!(
+                        "No matching columns found that match regex \"{pat}\""
+                    )));
+                }
+                Ok(Some(cols))
+            }
+            _ => Err(unsup("COLUMNS argument form")),
+        }
+    }
+
+    /// `~` / `!~` / SIMILAR TO: FULL match on the raw pattern (measured —
+    /// `~` is regexp_full_match in DuckDB, NOT the Postgres search).
+    fn regex_full_predicate(
+        &self,
+        name: &str,
+        subject: &SqlExpr,
+        pattern: &SqlExpr,
+        negated: bool,
+    ) -> Result<SExpr, PrepareError> {
+        let Some(bs) = self.expr_or_null(subject)? else {
+            return Ok(null_of(Ty::I1));
+        };
+        let bs = str_only(name, bs)?;
+        let Some(re) = self.regex_pattern(pattern, super::retrans::ReOptions::default(), true)?
+        else {
+            return Ok(null_of(Ty::I1));
+        };
+        let nullable = bs.nullable;
+        let m = SExpr {
+            kind: SKind::ReMatch {
+                re,
+                a: Box::new(bs),
+            },
+            ty: Ty::I1,
+            nullable,
+        };
+        Ok(if negated {
+            SExpr {
+                kind: SKind::Not(Box::new(m)),
+                ty: Ty::I1,
+                nullable,
+            }
+        } else {
+            m
+        })
+    }
+
+    /// Bind a regex options argument: absent -> defaults; otherwise a
+    /// non-NULL constant string ("must not be NULL" / "must be a constant"
+    /// are the pinned texts).
+    fn regex_options(
+        &self,
+        opts: Option<&SqlExpr>,
+        allow_g: bool,
+    ) -> Result<super::retrans::ReOptions, PrepareError> {
+        match self.regex_options_raw(opts, allow_g)? {
+            Some(o) => Ok(o),
+            None => Err(PrepareError::Bind(
+                "Regex options field must not be NULL".into(),
+            )),
+        }
+    }
+
+    /// regexp_replace's variant: a NULL options argument makes the whole
+    /// RESULT NULL (pinned asymmetry) — None here means "return NULL".
+    fn regex_options_nullable(
+        &self,
+        opts: Option<&SqlExpr>,
+    ) -> Result<Option<super::retrans::ReOptions>, PrepareError> {
+        self.regex_options_raw(opts, true)
+    }
+
+    fn regex_options_raw(
+        &self,
+        opts: Option<&SqlExpr>,
+        allow_g: bool,
+    ) -> Result<Option<super::retrans::ReOptions>, PrepareError> {
+        let Some(o) = opts else {
+            return Ok(Some(super::retrans::ReOptions::default()));
+        };
+        match self.expr_or_null(o)? {
+            None => Ok(None),
+            Some(b) => match b.kind {
+                SKind::Lit(Lit::Str(s)) => {
+                    super::retrans::parse_options(&s, allow_g).map(Some)
+                }
+                _ => Err(PrepareError::Bind(
+                    "Regex options field must be a constant".into(),
+                )),
+            },
+        }
+    }
+
+    /// Bind a constant regex pattern into the program regex table:
+    /// translate (retrans), optionally full-match anchor, and COMPILE NOW
+    /// so invalid patterns error at prepare (pinned bind-time eagerness).
+    /// `Ok(None)` = the pattern was a NULL literal (result is NULL).
+    fn regex_pattern(
+        &self,
+        p: &SqlExpr,
+        o: super::retrans::ReOptions,
+        full: bool,
+    ) -> Result<Option<u32>, PrepareError> {
+        Ok(self.regex_pattern_counted(p, o, full)?.map(|(re, _)| re))
+    }
+
+    fn regex_pattern_counted(
+        &self,
+        p: &SqlExpr,
+        o: super::retrans::ReOptions,
+        full: bool,
+    ) -> Result<Option<(u32, usize)>, PrepareError> {
+        let Some(bp) = self.expr_or_null(p)? else {
+            return Ok(None);
+        };
+        let SKind::Lit(Lit::Str(raw)) = bp.kind else {
+            if bp.ty != Ty::Str {
+                return Err(PrepareError::Bind(format!(
+                    "no function matches a regex with a {} pattern",
+                    bp.ty.name()
+                )));
+            }
+            // Column patterns compile per row in DuckDB; the engine model
+            // is prepare-time compilation only.
+            return Err(unsup("non-constant regex pattern (compiled at prepare in v0)"));
+        };
+        let translated = if o.literal {
+            regex::escape(&raw)
+        } else {
+            super::retrans::translate_pattern(&raw)?
+        };
+        let pattern = if full {
+            format!("\\A(?:{translated})\\z")
+        } else {
+            translated
+        };
+        let rx = regex::RegexBuilder::new(&pattern)
+            .case_insensitive(o.case_insensitive)
+            .dot_matches_new_line(o.dotall)
+            .octal(true)
+            .build()
+            .map_err(|e| PrepareError::Bind(format!("Invalid Input Error: {e}")))?;
+        let group_count = rx.captures_len() - 1;
+        let spec = super::ir::ReSpec {
+            pattern,
+            ci: o.case_insensitive,
+            dotall: o.dotall,
+            rewrite: None,
+        };
+        let mut v = self.regexes.borrow_mut();
+        // Reuse identical rewrite-less entries (star filters + repeated
+        // predicates); replace ops mutate `rewrite` after, so only share
+        // entries that still have none.
+        if let Some(i) = v.iter().position(|r| *r == spec) {
+            return Ok(Some((i as u32, group_count)));
+        }
+        v.push(spec);
+        Ok(Some(((v.len() - 1) as u32, group_count)))
     }
 
     /// s[i] / array_extract / list_extract on a bound VARCHAR subject:
@@ -1802,7 +2110,7 @@ impl Binder<'_> {
                 bs.ty.name()
             )));
         }
-        let mut bind_bound = |e: Option<&SqlExpr>, open: i64| -> Result<Option<SExpr>, PrepareError> {
+        let bind_bound = |e: Option<&SqlExpr>, open: i64| -> Result<Option<SExpr>, PrepareError> {
             match e {
                 None => Ok(Some(lit_i64(open))),
                 Some(e) => self.expr_or_null(e),
@@ -2281,11 +2589,7 @@ impl Binder<'_> {
         // guard with a CASE unless the divisor is a provably non-zero
         // literal. The idiv/irem traps stay reachable only for MIN op -1,
         // where DuckDB traps too. Float % is IEEE (x % 0.0 = NaN), no guard.
-        let needs_guard = match (op, ty) {
-            (ArithOp::Rem, Ty::I64) => true,
-            (ArithOp::IDiv, _) => true,
-            _ => false,
-        };
+        let needs_guard = matches!((op, ty), (ArithOp::Rem, Ty::I64) | (ArithOp::IDiv, _));
         let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
             || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
         if needs_guard && !nonzero_lit {
@@ -3253,9 +3557,133 @@ impl Binder<'_> {
             | "first" | "last" | "any_value" => Err(unsup(format!(
                 "aggregate function {name} (no aggregation in v0)"
             ))),
-            "regexp_matches" | "regexp_extract" | "regexp_full_match" | "regexp_replace"
-            | "regexp_split_to_array" => Err(unsup(format!(
-                "function {name} (RE2 regex semantics, not in v0)"
+            // Wave-B regexp family (pins: 2026-07-27-waveB-regexp-pins.md).
+            "regexp_matches" | "regexp_full_match" => {
+                let (s, p, opts) = match args[..] {
+                    [s, p] => (s, p, None),
+                    [s, p, o] => (s, p, Some(o)),
+                    _ => {
+                        return Err(PrepareError::Bind(format!(
+                            "{name} takes 2 or 3 arguments"
+                        )))
+                    }
+                };
+                let o = self.regex_options(opts, false)?;
+                let Some(bs) = self.expr_or_null(s)? else {
+                    return Ok(null_of(Ty::I1));
+                };
+                let full = name == "regexp_full_match";
+                let bs = str_only(&name, bs)?;
+                match self.regex_pattern(p, o, full)? {
+                    None => Ok(null_of(Ty::I1)),
+                    Some(re) => Ok(SExpr {
+                        nullable: bs.nullable,
+                        kind: SKind::ReMatch {
+                            re,
+                            a: Box::new(bs),
+                        },
+                        ty: Ty::I1,
+                    }),
+                }
+            }
+            "regexp_extract" => {
+                let (s, p, group, opts) = match args[..] {
+                    [s, p] => (s, p, None, None),
+                    [s, p, g] => (s, p, Some(g), None),
+                    [s, p, g, o] => (s, p, Some(g), Some(o)),
+                    _ => {
+                        return Err(PrepareError::Bind(format!(
+                            "{name} takes 2 to 4 arguments"
+                        )))
+                    }
+                };
+                let o = self.regex_options(opts, false)?;
+                let Some(bs) = self.expr_or_null(s)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                let bs = str_only(&name, bs)?;
+                // Group index: constant, flat 0..9 range check unrelated to
+                // the pattern; NULL group -> '' for non-NULL subjects.
+                let group = match group {
+                    None => 0u32,
+                    Some(g) => match self.expr_or_null(g)? {
+                        None => return Ok(empty_for_nonnull(bs)),
+                        Some(bg) => match bg.kind {
+                            SKind::Lit(Lit::I64(n)) if (0..=9).contains(&n) => n as u32,
+                            SKind::Lit(Lit::I64(_)) => {
+                                return Err(PrepareError::Bind(
+                                    "Group index must be between 0 and 9!".into(),
+                                ))
+                            }
+                            _ => {
+                                return Err(unsup(
+                                    "non-constant regexp_extract group index",
+                                ))
+                            }
+                        },
+                    },
+                };
+                match self.regex_pattern(p, o, false)? {
+                    None => Ok(null_of(Ty::Str)),
+                    Some(re) => Ok(SExpr {
+                        nullable: bs.nullable,
+                        kind: SKind::ReExtract {
+                            re,
+                            group,
+                            a: Box::new(bs),
+                        },
+                        ty: Ty::Str,
+                    }),
+                }
+            }
+            "regexp_replace" => {
+                let (s, p, r, opts) = match args[..] {
+                    [s, p, r] => (s, p, r, None),
+                    [s, p, r, o] => (s, p, r, Some(o)),
+                    _ => {
+                        return Err(PrepareError::Bind(format!(
+                            "{name} takes 3 or 4 arguments"
+                        )))
+                    }
+                };
+                // Pinned asymmetry: for regexp_replace ANY NULL argument
+                // (including the options string) -> NULL result.
+                let Some(o) = self.regex_options_nullable(opts)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                let Some(bs) = self.expr_or_null(s)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                let bs = str_only(&name, bs)?;
+                let Some(br) = self.expr_or_null(r)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                let SKind::Lit(Lit::Str(rw)) = br.kind else {
+                    return Err(unsup("non-constant regexp_replace replacement"));
+                };
+                let Some((re, group_count)) = self.regex_pattern_counted(p, o, false)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                match super::retrans::translate_rewrite(&rw, group_count, o.global) {
+                    // Invalid rewrites never error (measured RE2 quirks).
+                    super::retrans::Rewrite::Identity => Ok(bs),
+                    super::retrans::Rewrite::Template(t)
+                    | super::retrans::Rewrite::ConsumeWithPrefix(t) => {
+                        self.regexes.borrow_mut()[re as usize].rewrite = Some(t);
+                        Ok(SExpr {
+                            nullable: bs.nullable,
+                            kind: SKind::ReReplace {
+                                re,
+                                global: o.global,
+                                a: Box::new(bs),
+                            },
+                            ty: Ty::Str,
+                        })
+                    }
+                }
+            }
+            "regexp_split_to_array" | "regexp_extract_all" => Err(unsup(format!(
+                "function {name} (list-valued — non-scalar in v0)"
             ))),
             "reverse" => Err(unsup(
                 "function reverse (grapheme-cluster semantics — measured UAX-29 \

@@ -41,6 +41,9 @@ pub enum CompileError {
     Verify(Vec<VerifyError>),
     /// The static data does not match the program's static declarations.
     Static(String),
+    /// A ReSpec pattern failed to compile — the frontend validates patterns
+    /// at bind, so this only fires on hand-written IR.
+    Regex(String),
 }
 
 impl std::fmt::Display for CompileError {
@@ -54,8 +57,26 @@ impl std::fmt::Display for CompileError {
                 Ok(())
             }
             CompileError::Static(msg) => write!(f, "static data mismatch: {msg}"),
+            CompileError::Regex(msg) => write!(f, "regex table entry failed to compile: {msg}"),
         }
     }
+}
+
+/// Compile every [`ir::ReSpec`] in the program with the wave-B builder
+/// settings (octal(true), default Unicode — see retrans.rs).
+pub(super) fn compile_regexes(p: &Program) -> Result<Vec<std::rc::Rc<regex::Regex>>, String> {
+    p.regexes
+        .iter()
+        .map(|r| {
+            regex::RegexBuilder::new(&r.pattern)
+                .case_insensitive(r.ci)
+                .dot_matches_new_line(r.dotall)
+                .octal(true)
+                .build()
+                .map(std::rc::Rc::new)
+                .map_err(|e| e.to_string())
+        })
+        .collect()
 }
 
 /// One compiled instruction: reads registers/input/statics, writes registers
@@ -120,6 +141,7 @@ pub struct InterpFn {
 pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, CompileError> {
     verify(p).map_err(CompileError::Verify)?;
     let prepared = prepare_statics(p, statics)?;
+    let regexes = compile_regexes(p).map_err(CompileError::Regex)?;
 
     // Register slots are assigned densely in definition order, decoupling
     // the frame size from raw value ids — a verified program with sparse ids
@@ -143,7 +165,7 @@ pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, Compil
     for b in &p.blocks {
         let mut insts: Vec<InstFn> = Vec::with_capacity(b.insts.len());
         for inst in &b.insts {
-            insts.push(compile_inst(p, inst, &slots));
+            insts.push(compile_inst(p, inst, &slots, &regexes));
         }
         blocks.push(CBlock {
             insts,
@@ -1432,8 +1454,59 @@ fn sl(slots: &HashMap<u32, u32>, v: Value) -> usize {
     slots[&v.0] as usize
 }
 
-fn compile_inst(p: &Program, inst: &Inst, slots: &HashMap<u32, u32>) -> InstFn {
+fn compile_inst(
+    p: &Program,
+    inst: &Inst,
+    slots: &HashMap<u32, u32>,
+    regexes: &[std::rc::Rc<regex::Regex>],
+) -> InstFn {
     match inst.clone() {
+        Inst::ReMatch { re, dst, a } => {
+            let rx = regexes[re as usize].clone();
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let s = ctx.arena.get(as_str(ctx.regs[a]));
+                let m = rx.is_match(s);
+                ctx.regs[dst] = RegVal::I1(m);
+                Ok(())
+            })
+        }
+        Inst::ReExtract { re, group, dst, a } => {
+            let rx = regexes[re as usize].clone();
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                // No match / non-participating group -> '' (wave-B pins).
+                let out = {
+                    let s = ctx.arena.get(as_str(ctx.regs[a]));
+                    rx.captures(s)
+                        .and_then(|c| c.get(group as usize))
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default()
+                };
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                Ok(())
+            })
+        }
+        Inst::ReReplace { re, global, dst, a } => {
+            let rx = regexes[re as usize].clone();
+            let template = p.regexes[re as usize]
+                .rewrite
+                .clone()
+                .expect("verified: rereplace has a template");
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                let out = {
+                    let s = ctx.arena.get(as_str(ctx.regs[a]));
+                    if global {
+                        rx.replace_all(s, template.as_str()).into_owned()
+                    } else {
+                        rx.replace(s, template.as_str()).into_owned()
+                    }
+                };
+                ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
+                Ok(())
+            })
+        }
         Inst::Const { dst, lit } => {
             let dst = sl(slots, dst);
             match lit {

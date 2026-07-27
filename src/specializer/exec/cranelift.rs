@@ -57,7 +57,16 @@ struct Cx {
     input: *const Batch,
     statics: *const PreparedStatic,
     statics_len: usize,
+    regexes: *const CompiledRe,
+    regexes_len: usize,
     trap: Option<Trap>,
+}
+
+/// One program regex, compiled, with its replace template (if any) — owned
+/// by the [`CraneliftFn`], read by the h_re* helpers through [`Cx`].
+pub(super) struct CompiledRe {
+    rx: std::rc::Rc<regex::Regex>,
+    template: Option<String>,
 }
 
 impl Cx {
@@ -591,6 +600,63 @@ extern "C" fn h_srepeat(p: *mut Cx, ao: i64, al: i64, n: i64, len_out: *mut i64)
     }
 }
 
+extern "C" fn h_rematch(p: *mut Cx, re: i64, ao: i64, al: i64) -> u8 {
+    let c = unsafe { cx(p) };
+    let rx = &unsafe { std::slice::from_raw_parts(c.regexes, c.regexes_len) }[re as usize];
+    let arena = unsafe { &*c.arena };
+    rx.rx.is_match(arena.get(span(ao, al))) as u8
+}
+
+extern "C" fn h_reextract(
+    p: *mut Cx,
+    re: i64,
+    group: i64,
+    ao: i64,
+    al: i64,
+    len_out: *mut i64,
+) -> i64 {
+    let c = unsafe { cx(p) };
+    let rx = &unsafe { std::slice::from_raw_parts(c.regexes, c.regexes_len) }[re as usize];
+    let arena = unsafe { &mut *c.arena };
+    // No match / non-participating group -> '' (wave-B pins).
+    let out = {
+        let s = arena.get(span(ao, al));
+        rx.rx
+            .captures(s)
+            .and_then(|caps| caps.get(group as usize))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default()
+    };
+    let r = arena.push_str(&out);
+    unsafe { *len_out = r.len as i64 };
+    r.off as i64
+}
+
+extern "C" fn h_rereplace(
+    p: *mut Cx,
+    re: i64,
+    global: i64,
+    ao: i64,
+    al: i64,
+    len_out: *mut i64,
+) -> i64 {
+    let c = unsafe { cx(p) };
+    let rx = &unsafe { std::slice::from_raw_parts(c.regexes, c.regexes_len) }[re as usize];
+    let arena = unsafe { &mut *c.arena };
+    let template = rx.template.as_deref().unwrap_or_default();
+    let out = {
+        let s = arena.get(span(ao, al));
+        if global != 0 {
+            rx.rx.replace_all(s, template).into_owned()
+        } else {
+            rx.rx.replace(s, template).into_owned()
+        }
+    };
+    let r = arena.push_str(&out);
+    unsafe { *len_out = r.len as i64 };
+    r.off as i64
+}
+
 extern "C" fn h_ishl(p: *mut Cx, x: i64, y: i64) -> i64 {
     match interp::duck_shl(x, y) {
         Ok(v) => v,
@@ -836,6 +902,8 @@ pub struct CraneliftFn {
     row_fn: RowFn,
     interp: InterpFn,
     trap_msgs: Vec<String>,
+    /// Program regexes compiled once, read by helpers through Cx.
+    regexes: Vec<CompiledRe>,
     /// Owned backing for absolute addresses baked into the code.
     _const_strs: Vec<Box<str>>,
     _probe_descs: Vec<Box<ProbeDesc>>,
@@ -1084,11 +1152,21 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
     let code = module.get_finalized_function(fid);
     let row_fn: RowFn = unsafe { std::mem::transmute(code) };
 
+    let regexes = interp::compile_regexes(p)
+        .map_err(CompileError::Regex)?
+        .into_iter()
+        .zip(&p.regexes)
+        .map(|(rx, spec)| CompiledRe {
+            rx,
+            template: spec.rewrite.clone(),
+        })
+        .collect();
     Ok(CraneliftFn {
         _module: module,
         row_fn,
         interp,
         trap_msgs,
+        regexes,
         _const_strs: const_strs,
         _probe_descs: probe_descs,
     })
@@ -1122,6 +1200,8 @@ impl CraneliftFn {
                 input,
                 statics: statics.as_ptr(),
                 statics_len: statics.len(),
+                regexes: self.regexes.as_ptr(),
+                regexes_len: self.regexes.len(),
                 trap: None,
             };
             match (self.row_fn)(&mut cx) {
@@ -1453,6 +1533,30 @@ fn translate_inst(
             let (lov, hiv) = (vals[&lo.0].s(), vals[&hi.0].s());
             let lp = b.ins().stack_addr(types::I64, slot_out, 0);
             let off = call_h(b, module, "h_sslice", &[cxp, ao, al, lov, hiv, lp]).unwrap();
+            let len = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, len));
+        }
+        Inst::ReMatch { re, dst, a } => {
+            let (ao, al) = vals[&a.0].str2();
+            let rev = icon(b, *re as i64);
+            let v = call_h(b, module, "h_rematch", &[cxp, rev, ao, al]).unwrap();
+            vals.insert(dst.0, V::S(v));
+        }
+        Inst::ReExtract { re, group, dst, a } => {
+            let (ao, al) = vals[&a.0].str2();
+            let rev = icon(b, *re as i64);
+            let gv = icon(b, *group as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let off = call_h(b, module, "h_reextract", &[cxp, rev, gv, ao, al, lp]).unwrap();
+            let len = b.ins().stack_load(types::I64, slot_out, 0);
+            vals.insert(dst.0, V::Str(off, len));
+        }
+        Inst::ReReplace { re, global, dst, a } => {
+            let (ao, al) = vals[&a.0].str2();
+            let rev = icon(b, *re as i64);
+            let gv = icon(b, *global as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            let off = call_h(b, module, "h_rereplace", &[cxp, rev, gv, ao, al, lp]).unwrap();
             let len = b.ins().stack_load(types::I64, slot_out, 0);
             vals.insert(dst.0, V::Str(off, len));
         }
@@ -1850,6 +1954,9 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_sjaccard", h_sjaccard as *const u8),
     ("h_str3", h_str3 as *const u8),
     ("h_srepeat", h_srepeat as *const u8),
+    ("h_rematch", h_rematch as *const u8),
+    ("h_reextract", h_reextract as *const u8),
+    ("h_rereplace", h_rereplace as *const u8),
     ("h_ishl", h_ishl as *const u8),
     ("h_sextract", h_sextract as *const u8),
     ("h_spad", h_spad as *const u8),
@@ -1887,6 +1994,9 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_sjaccard" => (&[ptr, I64, I64, I64, I64], Some(F64)),
         "h_str3" => (&[ptr, I64, I64, I64, I64, I64, I64, I64, I64], Some(I64)),
         "h_srepeat" => (&[ptr, I64, I64, I64, I64], Some(I64)),
+        "h_rematch" => (&[ptr, I64, I64, I64], Some(I8)),
+        "h_reextract" => (&[ptr, I64, I64, I64, I64, I64], Some(I64)),
+        "h_rereplace" => (&[ptr, I64, I64, I64, I64, I64], Some(I64)),
         "h_ishl" => (&[ptr, I64, I64], Some(I64)),
         "h_sextract" => (&[ptr, I64, I64, I64, I64], Some(I64)),
         "h_spad" => (&[ptr, I64, I64, I64, I64, I64, I64, I64], Some(I64)),

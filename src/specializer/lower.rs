@@ -39,6 +39,7 @@ pub fn lower(
     catalog: &[StaticTable],
     in_cols: &[Col],
     out_cols: Vec<Col>,
+    regexes: Vec<super::ir::ReSpec>,
     name: &str,
 ) -> Result<Program, PrepareError> {
     let (exprs, filter_pred) = match rel {
@@ -143,7 +144,7 @@ pub fn lower(
         })
         .collect();
 
-    fb.finish(name, statics, in_cols, out_cols)
+    fb.finish(name, statics, in_cols, out_cols, regexes)
 }
 
 /// A value in the null-lane representation: payload + optional validity.
@@ -238,6 +239,7 @@ impl<'a> FB<'a> {
         statics: Vec<StaticTy>,
         in_cols: &[Col],
         out_cols: Vec<Col>,
+        regexes: Vec<super::ir::ReSpec>,
     ) -> Result<Program, PrepareError> {
         let mut blocks = Vec::with_capacity(self.blocks.len());
         for (i, pb) in self.blocks.into_iter().enumerate() {
@@ -252,6 +254,7 @@ impl<'a> FB<'a> {
         }
         Ok(Program {
             statics,
+            regexes,
             name: name.to_string(),
             in_cols: in_cols.to_vec(),
             out_cols,
@@ -882,6 +885,47 @@ impl<'a> FB<'a> {
                 let dst = self.fresh();
                 self.inst(Inst::SLen {
                     bytes: *bytes,
+                    dst,
+                    a: l.val,
+                });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::ReMatch { re, a } => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::ReMatch {
+                    re: *re,
+                    dst,
+                    a: l.val,
+                });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::ReExtract { re, group, a } => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::ReExtract {
+                    re: *re,
+                    group: *group,
+                    dst,
+                    a: l.val,
+                });
+                Ok(Lane {
+                    flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::ReReplace { re, global, a } => {
+                let l = self.emit(a, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::ReReplace {
+                    re: *re,
+                    global: *global,
                     dst,
                     a: l.val,
                 });

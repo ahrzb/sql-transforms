@@ -767,6 +767,29 @@ pub enum Inst {
         flag: Value,
         dst: Value,
     },
+    /// Match `a` against program regex `re` (full-match forms are
+    /// pre-anchored in the ReSpec pattern at bind) -> I1. TOTAL.
+    ReMatch {
+        re: u32,
+        dst: Value,
+        a: Value,
+    },
+    /// Leftmost-search extract of capture `group` (0 = whole match); no
+    /// match / non-participating group -> '' (never NULL; wave-B pins).
+    ReExtract {
+        re: u32,
+        group: u32,
+        dst: Value,
+        a: Value,
+    },
+    /// First-match (or `global`) replace using the ReSpec's rewrite
+    /// template. TOTAL — invalid-rewrite quirks were resolved at bind.
+    ReReplace {
+        re: u32,
+        global: bool,
+        dst: Value,
+        a: Value,
+    },
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -802,10 +825,23 @@ pub struct Block {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Program {
     pub statics: Vec<StaticTy>,
+    /// Prepare-time-compiled regexes (wave-B): patterns already translated
+    /// to rust-regex syntax (retrans.rs), full-match forms pre-anchored.
+    pub regexes: Vec<ReSpec>,
     pub name: String,
     pub in_cols: Vec<Col>,
     pub out_cols: Vec<Col>,
     pub blocks: Vec<Block>,
+}
+
+/// One entry of [`Program::regexes`]; `rewrite` is a rust replacement
+/// template, present only for replace ops.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ReSpec {
+    pub pattern: String,
+    pub ci: bool,
+    pub dotall: bool,
+    pub rewrite: Option<String>,
 }
 
 impl Inst {
@@ -837,6 +873,9 @@ impl Inst {
             | Inst::Ssubstr { dst, .. }
             | Inst::Num1 { dst, .. }
             | Inst::Load { dst, .. }
+            | Inst::ReMatch { dst, .. }
+            | Inst::ReExtract { dst, .. }
+            | Inst::ReReplace { dst, .. }
             | Inst::Sload { dst, .. } => vec![*dst],
             Inst::StoiOpt { flag, dst, .. }
             | Inst::StofOpt { flag, dst, .. }
@@ -887,6 +926,9 @@ impl Inst {
             | Inst::SLen { dst, a, .. }
             | Inst::Sord { dst, a, .. }
             | Inst::Num1 { dst, a, .. }
+            | Inst::ReMatch { dst, a, .. }
+            | Inst::ReExtract { dst, a, .. }
+            | Inst::ReReplace { dst, a, .. }
             | Inst::Not { dst, a } => {
                 *dst = m(*dst);
                 *a = m(*a);

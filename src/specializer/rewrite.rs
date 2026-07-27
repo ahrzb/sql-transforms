@@ -117,6 +117,19 @@ pub fn rewrite_star_filters(tokens: Vec<Token>) -> Vec<Token> {
             Some(Token::Word(w)) if w.value.eq_ignore_ascii_case("glob") && !negated => {
                 Some("G")
             }
+            // `* [NOT] SIMILAR TO 're'` (wave-B): consume the TO here.
+            Some(Token::Word(w)) if w.keyword == Keyword::SIMILAR => {
+                j += 1;
+                while matches!(tokens.get(j), Some(Token::Whitespace(_))) {
+                    j += 1;
+                }
+                match tokens.get(j) {
+                    Some(Token::Word(w2)) if w2.keyword == Keyword::TO => {
+                        Some(if negated { "NS" } else { "S" })
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         };
         let Some(code) = op else {
