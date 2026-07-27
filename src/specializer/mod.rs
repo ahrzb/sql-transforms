@@ -14,6 +14,7 @@ pub mod frontend;
 pub mod ir;
 pub mod lower;
 pub mod plan;
+mod retrans;
 mod rewrite;
 
 #[cfg(test)]
@@ -49,8 +50,8 @@ pub fn prepare(
     in_cols: &[ir::Col],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
-    let (rel, joins, out_cols) = frontend::frontend(sql, this_name, in_cols, statics)?;
-    let mut program = lower::lower(&rel, &joins, statics, in_cols, out_cols, "run")?;
+    let (rel, joins, out_cols, regexes) = frontend::frontend(sql, this_name, in_cols, statics)?;
+    let mut program = lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run")?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
     ir::canonicalize(&mut program);

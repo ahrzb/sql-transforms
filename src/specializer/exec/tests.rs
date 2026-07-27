@@ -188,7 +188,9 @@ entry:
     );
     match compile(&p, vec![]) {
         Err(CompileError::Verify(errs)) => assert!(!errs.is_empty()),
-        Err(CompileError::Static(m)) => panic!("wrong error kind: {m}"),
+        Err(CompileError::Static(m)) | Err(CompileError::Regex(m)) => {
+            panic!("wrong error kind: {m}")
+        }
         Ok(_) => panic!("compile accepted an unverified program"),
     }
 }
@@ -224,7 +226,9 @@ fn rejects_mismatched_statics() {
             Err(CompileError::Static(msg)) => {
                 assert!(msg.contains(needle), "expected '{needle}' in '{msg}'")
             }
-            Err(CompileError::Verify(_)) => panic!("fixture failed verify?"),
+            Err(CompileError::Verify(_)) | Err(CompileError::Regex(_)) => {
+                panic!("fixture failed verify?")
+            }
             Ok(_) => panic!("compile accepted bad statics (wanted '{needle}')"),
         }
     }
@@ -451,6 +455,7 @@ fn sparse_value_ids_use_dense_register_slots() {
     use super::super::ir::{Block, Col, ColTy, Inst, Lit, Program, Term, Ty, Value};
     let p = Program {
         statics: vec![],
+        regexes: vec![],
         name: "sparse".into(),
         in_cols: vec![],
         out_cols: vec![Col {

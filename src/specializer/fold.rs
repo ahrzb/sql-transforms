@@ -81,6 +81,20 @@ pub fn fold(e: SExpr) -> SExpr {
                 a: Box::new(a),
             })
         }
+        SKind::ReMatch { re, a } => e(SKind::ReMatch {
+            re,
+            a: Box::new(fold(*a)),
+        }),
+        SKind::ReExtract { re, group, a } => e(SKind::ReExtract {
+            re,
+            group,
+            a: Box::new(fold(*a)),
+        }),
+        SKind::ReReplace { re, global, a } => e(SKind::ReReplace {
+            re,
+            global,
+            a: Box::new(fold(*a)),
+        }),
         SKind::Like { ci, a, p, esc } => {
             let a = fold(*a);
             let p = fold(*p);

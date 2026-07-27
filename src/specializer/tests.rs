@@ -502,12 +502,15 @@ fn unsupported_constructs_are_named_cleanly() {
         // function arm until the catalogue distinguishes aggregation.
         ("SELECT sum(a) FROM __THIS__", "aggregate function sum"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
-        // Wave-3 named rejects: regex family, grapheme-based reverse.
-        ("SELECT regexp_matches('x', 'y') FROM __THIS__", "RE2"),
+        // Scalar regexp serves since wave B; list-valued forms stay named.
+        (
+            "SELECT regexp_extract_all('x', 'y') FROM __THIS__",
+            "list-valued",
+        ),
         ("SELECT reverse('abc') FROM __THIS__", "grapheme"),
         ("SELECT jaro_similarity('x', 'y') FROM __THIS__", "function"),
-        // Star forms now expand; COLUMNS stays wave-B (regexp).
-        ("SELECT COLUMNS('a') FROM __THIS__", "function COLUMNS"),
+        // Bare COLUMNS expands since wave B; expression forms stay named.
+        ("SELECT COLUMNS('a') + 1 FROM __THIS__", "COLUMNS"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         ("SELECT NULL FROM __THIS__", "NULL literal"),
         ("SELECT a FROM other_table", "must be the dynamic table"),
@@ -1587,6 +1590,126 @@ fn column_renaming_table_alias() {
     }
     match prep("SELECT x FROM __THIS__ AS u(x, y, z)", &schema) {
         Err(PrepareError::Bind(m)) => assert!(m.contains("columns specified"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}
+
+#[test]
+fn regexp_family_end_to_end() {
+    // Wave-B pins: regexp_matches is a SEARCH, ~ / SIMILAR TO are FULL
+    // match on the raw pattern (no % translation), extract returns '' on
+    // no match, replace is first-match-only without 'g'.
+    let schema = cols(&[("s", Ty::Str, true)]);
+    let input = || {
+        batch(
+            3,
+            vec![c_str(&[Some("hello world"), Some("abc123def"), None])],
+        )
+    };
+    let got = run_sql(
+        "SELECT regexp_matches(s, 'ell') AS m, s ~ 'ell' AS f, \
+         s ~ 'h.*d' AS w, s SIMILAR TO 'h%o' AS pct, \
+         regexp_extract(s, '[0-9]+') AS num, \
+         regexp_extract(s, '(\\w+) (\\w+)', 2) AS g2, \
+         regexp_replace(s, 'l', 'L') AS r1, \
+         regexp_replace(s, 'l', 'L', 'g') AS rg FROM __THIS__",
+        &schema,
+        input(),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &[
+                "true", "false", "true", "false", "", "world", "heLlo world",
+                "heLLo worLd"
+            ],
+            &[
+                "false", "false", "false", "false", "123", "", "abc123def",
+                "abc123def"
+            ],
+            &["NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL"],
+        ])
+    );
+    // ASCII \d semantics survive the translation (the differential pin):
+    // Arabic-Indic digits do NOT match \d but DO match \p{Nd}.
+    let got = run_sql(
+        "SELECT regexp_matches(s, '\\d') AS a, regexp_matches(s, '\\p{Nd}') AS u \
+         FROM __THIS__",
+        &schema,
+        batch(1, vec![c_str(&[Some("\u{0663}\u{0664}")])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["false", "true"]]));
+    // Backrefs are backslash-style; $1 is a literal. Options 'i' folds.
+    let got = run_sql(
+        "SELECT regexp_replace(s, '(h)ello', '[\\1]') AS b, \
+         regexp_replace(s, '(h)ello', '[$1]') AS lit, \
+         regexp_matches(s, 'HELLO', 'i') AS ci FROM __THIS__",
+        &schema,
+        batch(1, vec![c_str(&[Some("hello world")])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["[h] world", "[$1] world", "true"]]));
+    // Invalid-rewrite quirks: out-of-range backref = silent no-op.
+    let got = run_sql(
+        "SELECT regexp_replace(s, '(h)', '\\2') AS noop FROM __THIS__",
+        &schema,
+        batch(1, vec![c_str(&[Some("hello")])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["hello"]]));
+    // Bad constant pattern errors at PREPARE (pinned eagerness).
+    match prep("SELECT regexp_matches(s, '(') AS x FROM __THIS__", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("Invalid Input Error"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+    // Divergence guard: \B rejects cleanly.
+    match prep("SELECT regexp_matches(s, 'a\\B') AS x FROM __THIS__", &schema) {
+        Err(PrepareError::Unsupported(m)) => assert!(m.contains("\\B"), "{m}"),
+        other => panic!("wrong outcome: {:?}", other.err()),
+    }
+}
+
+#[test]
+fn star_similar_to_and_columns() {
+    // Wave-B pins: positive * SIMILAR TO = unanchored search over names,
+    // NOT form = NOT full-match — NOT complements ('a.*' on a col set
+    // where a name merely CONTAINS 'a' lands in both results).
+    let schema = cols(&[
+        ("abc", Ty::I64, false),
+        ("abd", Ty::I64, false),
+        ("xyz", Ty::Str, false),
+    ]);
+    let names = |sql: &str| {
+        prep(sql, &schema)
+            .unwrap()
+            .out_cols
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names("SELECT * SIMILAR TO 'c' FROM __THIS__"), ["abc"]);
+    assert_eq!(
+        names("SELECT * NOT SIMILAR TO 'c' FROM __THIS__"),
+        ["abc", "abd", "xyz"] // NOT full-match: 'c' full-matches no name
+    );
+    assert_eq!(
+        names("SELECT * NOT SIMILAR TO 'ab.' FROM __THIS__"),
+        ["xyz"]
+    );
+    assert_eq!(names("SELECT COLUMNS('ab.') FROM __THIS__"), ["abc", "abd"]);
+    assert_eq!(
+        names("SELECT COLUMNS(*) FROM __THIS__"),
+        ["abc", "abd", "xyz"]
+    );
+    // Alias stamps every expansion; duplicates feed the dedup rename.
+    assert_eq!(
+        names("SELECT COLUMNS('ab.') AS x FROM __THIS__"),
+        ["x", "x_1"]
+    );
+    match prep("SELECT COLUMNS('zz.*') FROM __THIS__", &schema) {
+        Err(PrepareError::Bind(m)) => assert!(m.contains("No matching columns"), "{m}"),
         other => panic!("wrong outcome: {:?}", other.err()),
     }
 }

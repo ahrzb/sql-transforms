@@ -150,6 +150,7 @@ entry:
     use super::{BinOp, Block, Col, ColTy, Inst, Program, Term, Ty, Value};
     let p = Program {
         statics: vec![],
+        regexes: vec![],
         name: "f".into(),
         in_cols: vec![Col {
             name: "a".into(),
@@ -537,6 +538,7 @@ fn api_program(statics: Vec<super::StaticTy>, name: &str, blocks: Vec<super::Blo
     use super::{Col, ColTy, Ty};
     Program {
         statics,
+        regexes: vec![],
         name: name.into(),
         in_cols: vec![],
         out_cols: vec![Col {
@@ -650,6 +652,7 @@ fn non_canonical_nan_payload_round_trips() {
     let neg_quiet_nan = f64::from_bits(0xFFF8_0000_0000_0000);
     let p = Program {
         statics: vec![],
+        regexes: vec![],
         name: "f".into(),
         in_cols: vec![],
         out_cols: vec![Col {

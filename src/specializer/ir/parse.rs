@@ -475,6 +475,57 @@ impl Parser {
             self.expect(Tok::Colon)?;
             statics.push(self.static_ty()?);
         }
+        let mut regexes = Vec::new();
+        while matches!(self.peek(), Tok::Ident(s) if s == "regex") {
+            self.bump();
+            self.expect(Tok::At)?;
+            let idx = self.int_literal("regex index")?;
+            if idx != regexes.len() as i64 {
+                return Err(self.err(format!(
+                    "regex ids must be dense and in order: expected @{}, found @{idx}",
+                    regexes.len()
+                )));
+            }
+            self.expect(Tok::Colon)?;
+            let pattern = match self.bump() {
+                Tok::Str(s) => s,
+                other => {
+                    return Err(self.err(format!(
+                        "expected a regex pattern string, found {}",
+                        other.show()
+                    )))
+                }
+            };
+            let (mut ci, mut dotall, mut rewrite) = (false, false, None);
+            loop {
+                if matches!(self.peek(), Tok::Ident(s) if s == "ci") {
+                    self.bump();
+                    ci = true;
+                } else if matches!(self.peek(), Tok::Ident(s) if s == "dotall") {
+                    self.bump();
+                    dotall = true;
+                } else if matches!(self.peek(), Tok::Ident(s) if s == "rewrite") {
+                    self.bump();
+                    rewrite = Some(match self.bump() {
+                        Tok::Str(s) => s,
+                        other => {
+                            return Err(self.err(format!(
+                                "expected a rewrite template string, found {}",
+                                other.show()
+                            )))
+                        }
+                    });
+                } else {
+                    break;
+                }
+            }
+            regexes.push(super::ReSpec {
+                pattern,
+                ci,
+                dotall,
+                rewrite,
+            });
+        }
 
         self.keyword("fn")?;
         let name = self.ident("function name")?;
@@ -548,6 +599,7 @@ impl Parser {
 
         Ok(Program {
             statics,
+            regexes,
             name,
             in_cols,
             out_cols,
@@ -1274,6 +1326,46 @@ impl Parser {
                     static_id,
                     flag: def!(0),
                     dst: def!(1),
+                }
+            }
+            "rematch" => {
+                want_dsts(1, self)?;
+                self.expect(Tok::At)?;
+                let re = self.int_literal("regex index")? as u32;
+                self.expect(Tok::Comma)?;
+                let a = self.use_value()?;
+                Inst::ReMatch {
+                    re,
+                    dst: def!(0),
+                    a,
+                }
+            }
+            "reextract" => {
+                want_dsts(1, self)?;
+                self.expect(Tok::At)?;
+                let re = self.int_literal("regex index")? as u32;
+                self.expect(Tok::Comma)?;
+                let group = self.int_literal("group index")? as u32;
+                self.expect(Tok::Comma)?;
+                let a = self.use_value()?;
+                Inst::ReExtract {
+                    re,
+                    group,
+                    dst: def!(0),
+                    a,
+                }
+            }
+            "rereplace" | "rereplace.g" => {
+                want_dsts(1, self)?;
+                self.expect(Tok::At)?;
+                let re = self.int_literal("regex index")? as u32;
+                self.expect(Tok::Comma)?;
+                let a = self.use_value()?;
+                Inst::ReReplace {
+                    re,
+                    global: opcode == "rereplace.g",
+                    dst: def!(0),
+                    a,
                 }
             }
             other => return Err(self.err(format!("unknown opcode '{other}'"))),

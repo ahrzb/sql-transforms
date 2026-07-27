@@ -195,7 +195,8 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         Inst::Num1 { op, dst, .. } => vec![(*dst, op.sig())],
         Inst::Str2 { op, dst, .. } => vec![(*dst, op.result_ty())],
         Inst::SLen { dst, .. } | Inst::Sord { dst, .. } => vec![(*dst, Ty::I64)],
-        Inst::Slike { dst, .. } => vec![(*dst, Ty::I1)],
+        Inst::Slike { dst, .. } | Inst::ReMatch { dst, .. } => vec![(*dst, Ty::I1)],
+        Inst::ReExtract { dst, .. } | Inst::ReReplace { dst, .. } => vec![(*dst, Ty::Str)],
         Inst::Round2f { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::Round2i { dst, .. } => vec![(*dst, Ty::I64)],
         Inst::StoiOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::I64)],
@@ -365,6 +366,26 @@ fn check_block(
             Inst::Ftos { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
             Inst::StoiOpt { a, .. } | Inst::StofOpt { a, .. } => {
                 want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs)
+            }
+            Inst::ReMatch { re, a, .. }
+            | Inst::ReExtract { re, a, .. }
+            | Inst::ReReplace { re, a, .. } => {
+                want(&in_scope, def_types, *a, Ty::Str, "operand", bi, i, errs);
+                if *re as usize >= p.regexes.len() {
+                    err(errs, Some(bi), i, format!("regex @{re} out of range"));
+                }
+                if matches!(inst, Inst::ReReplace { .. })
+                    && p.regexes
+                        .get(*re as usize)
+                        .is_some_and(|r| r.rewrite.is_none())
+                {
+                    err(
+                        errs,
+                        Some(bi),
+                        i,
+                        format!("rereplace on regex @{re} without a rewrite template"),
+                    );
+                }
             }
             Inst::Sconcat { a, b: rhs, .. }
             | Inst::Strim { a, chars: rhs, .. }

@@ -179,6 +179,24 @@ pub enum SKind {
         bytes: bool,
         a: Box<SExpr>,
     },
+    /// Regex match against program regex `re` (wave-B; full-match forms
+    /// pre-anchored in the ReSpec pattern at bind) -> I1.
+    ReMatch {
+        re: u32,
+        a: Box<SExpr>,
+    },
+    /// Leftmost-search capture extract; no match -> '' (wave-B pins).
+    ReExtract {
+        re: u32,
+        group: u32,
+        a: Box<SExpr>,
+    },
+    /// Regex replace using the ReSpec's rewrite template.
+    ReReplace {
+        re: u32,
+        global: bool,
+        a: Box<SExpr>,
+    },
     /// LIKE/ILIKE (negation handled by a Not wrapper at bind).
     Like {
         ci: bool,
