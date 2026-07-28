@@ -1,4 +1,4 @@
-"""SpecializedTransform — the SQLTransform surface served by the specializer."""
+"""SQLTransform — SQL feature transforms, fitted once and served by Confit."""
 
 from __future__ import annotations
 
@@ -17,17 +17,20 @@ from sql_transform._sql import find_window_aggregates, parse_and_validate
 from sql_transform._state import build_state_tables
 
 
-class SpecializedTransform:
-    """SQLTransform minus transformer refs, served by the SQL specializer.
+class SQLTransform:
+    """SQL feature transforms: fit once, then serve row-at-a-time.
 
-    fit() runs the same state-extraction pipeline as SQLTransform (window
-    aggregates freeze into per-partition static tables, template refs
-    inline), then hands the rewritten SQL to the specializer: frontend ->
-    binding-time analysis -> lowering -> native code, with the static
-    tables baked in as prepare-time probe structures.
+    fit() extracts the training-time state (window aggregates freeze into
+    per-partition static tables, template refs inline) and hands the
+    rewritten SQL plus those frozen tables to Confit, which partially
+    evaluates the pair into a native function: frontend -> binding-time
+    analysis -> lowering -> native code.
 
     infer()/infer_batch() take dicts or pydantic models directly and cross
     the boundary through the prepare-time-generated row marshaller.
+
+    Confit's contract applies: the fitted SQL either serves bit-exact with
+    DuckDB or refuses at fit() time, naming the construct.
     """
 
     def __init__(self, sql: str | Template) -> None:
@@ -37,13 +40,13 @@ class SpecializedTransform:
             self._sql, self._refs = sql, {}
         if any(r.is_transformer for r in self._refs.values()):
             raise ValueError(
-                "SpecializedTransform does not support transformer refs; "
-                "use SQLTransform"
+                "SQLTransform does not support transformer refs: fitted "
+                "transformers cannot be referenced from the SQL yet."
             )
         self._fn: DuckDBInferFn | None = None
 
     @classmethod
-    def from_file(cls, path: str) -> SpecializedTransform:
+    def from_file(cls, path: str) -> SQLTransform:
         with open(path) as f:
             return cls(f.read())
 
@@ -52,7 +55,7 @@ class SpecializedTransform:
         table: pa.Table,
         /,
         this_model: type[BaseModel] | None = None,
-    ) -> SpecializedTransform:
+    ) -> SQLTransform:
         this_model = this_model or synthesize_this_model(table.schema)
         tree = parse_and_validate(self._sql)
 

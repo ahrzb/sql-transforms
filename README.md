@@ -1,7 +1,7 @@
 # SQL Transforms
 
-Define ML feature transforms as SQL, fit once, then run them at batch or
-low-latency single-row speed.
+Define ML feature transforms as SQL, fit once, then serve them row-at-a-time
+with sub-microsecond latency.
 
 ## Packages
 
@@ -10,7 +10,11 @@ This repository is a workspace of two packages:
 | package | what it is |
 |---|---|
 | [`packages/confit`](packages/confit) | **Confit** — the serving engine. SQL plus static tables frozen at fit time are partially evaluated, once, into a native function. Serves bit-exact with DuckDB or refuses at build time. Usable on its own. |
-| [`packages/sql-transform`](packages/sql-transform) | The authoring layer: `SQLTransform`, the DataFusion-differentiated engine, and the codegen backend. Depends on Confit for specialized serving. |
+| [`packages/sql-transform`](packages/sql-transform) | The authoring layer: `SQLTransform` — fit window-aggregate state from training data, then serve through Confit. |
+
+> **sql-transform was reset.** The DataFusion-differentiated native engine, the
+> Python codegen backend, and the batch `transform()` path were removed; the
+> package is being rebuilt on Confit. Confit itself is unaffected.
 
 ## Installation
 
@@ -24,14 +28,14 @@ pip install confit             # the serving engine alone
 ```bash
 git clone https://github.com/ahrzb/sql-transforms.git
 cd sql-transforms
-mise run install        # uv sync — installs both packages and builds their Rust extensions
+mise run install        # uv sync — installs both packages, builds Confit's extension
 ```
 
-Each package ships a Rust/PyO3 extension built by
-[maturin](https://www.maturin.rs/) — `confit._engine` and
-`sql_transform._interpreter`. After changing Rust code, rebuild with
-`uv run maturin develop` from inside that package's directory; the test suite
-also rebuilds automatically when a `.rs` file is newer than the built module.
+Confit ships a Rust/PyO3 extension (`confit._engine`) built by
+[maturin](https://www.maturin.rs/); sql-transform is pure Python. After changing
+Rust code, rebuild with `uv run maturin develop` from `packages/confit`; the test
+suite also rebuilds automatically when a `.rs` file is newer than the built
+module.
 
 Run the whole gate from the repository root:
 
@@ -42,8 +46,8 @@ uv run pytest -q && cargo test --release
 ## Quick Start
 
 ```python
-from sql_transform import SQLTransform
 import pyarrow as pa
+from sql_transform import SQLTransform
 
 data = pa.table({
     "feature1": [1.0, 2.0, 3.0, 4.0, 5.0],
@@ -58,121 +62,69 @@ SELECT
 FROM __THIS__
 """
 
-transformer = SQLTransform(sql)
-transformer.fit(data)
+t = SQLTransform(sql)
+t.fit(data)
 
-# Batch transform through DataFusion (pyarrow in / pyarrow out).
-result = transformer.transform(data)
-print(result)
-
-# Low-latency inference through the native engine (dict or Pydantic model in,
-# typed model out). infer() for one row, infer_batch() for many.
-one = transformer.infer({"feature1": 2.0, "feature2": 20})
+# Serving: dict or Pydantic model in, typed model out.
+one = t.infer({"feature1": 2.0, "feature2": 20})
 print(one.feature1_norm)
-many = transformer.infer_batch([{"feature1": 2.0, "feature2": 20}])
+many = t.infer_batch([{"feature1": 2.0, "feature2": 20}])
 ```
 
-Per-group statistics use `OVER (PARTITION BY ...)` — the group means/counts/etc.
-are frozen at `fit` and looked up per row at inference:
+Per-group statistics use `OVER (PARTITION BY ...)` — the group means/counts are
+frozen at `fit` and looked up per row at inference:
 
 ```python
 sql = "SELECT target / MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__"
 ```
 
-## What it supports
-
-- **Window aggregates**, computed once at `fit` and frozen: whole-table `OVER ()`
-  and per-group `OVER (PARTITION BY ...)` (e.g. `MEAN`, `SUM`, `COUNT`, `STDDEV`).
-- **Expressions** (batch and inference): arithmetic, comparisons, `CAST`,
-  `UPPER`/`LOWER`/`TRIM`/`SUBSTR`/`CONCAT`, `ABS`, `ROUND`, `COALESCE`, `NULLIF`,
-  with SQL NULL-propagation semantics.
-- **Joins**: `INNER`/`CROSS`, plus a static-table lookup join (a row joined to a
-  preloaded `pyarrow.Table` by key — no per-row Python callback).
-- **Typed I/O**: Pydantic models for the input row and output, validated when the
-  transformer is built and again at call time. Output is a typed model; the input
-  schema is auto-synthesized or user-supplied.
-- **Transformer references**: interpolate a fitted sklearn transformer directly
-  into a t-string and apply it to columns (see below).
-
-See [docs/SQL_SUPPORT.md](docs/SQL_SUPPORT.md) for the feature-by-feature tracker.
-
 ## Architecture
 
-Two phases, two engines, one rewritten query:
+Two phases, one rewritten query:
 
 ```
 SQL over __THIS__
       │
       ▼
-   fit(train) ── DataFusion runs the SQL, freezes each window-aggregate (e.g.
-      │          MEAN(age)) into a typed __STATE__, and rewrites the SQL to
-      │          reference __STATE__ + the raw row __THIS__ instead of
+   fit(train) ── DataFusion runs the SQL, freezes each window aggregate (e.g.
+      │          MEAN(age)) into a typed __STATE__ table, and rewrites the SQL
+      │          to reference __STATE__ + the raw row __THIS__ instead of
       │          recomputing aggregates.
       │
       │  rewritten SQL + frozen state
-      ├───────────────────────────────┬───────────────────────────────┐
-      ▼                               ▼
- transform(batch)                infer(row) / infer_batch(rows)
- DataFusion, vectorized           native InferFn interpreter, row-at-a-time,
- columnar over the batch          no SQL engine at call time
+      ▼
+   Confit ── partially evaluates the pair into a native function:
+      │      binding-time analysis collapses every static lookup into a
+      │      prepare-time probe, so nothing general remains at call time.
+      ▼
+ infer(row) / infer_batch(rows)
 ```
 
-Both paths run the **same** rewritten SQL against the **same** frozen state, so
-they return identical values on the normal numeric path. `fit` pays for a real
-query engine once; inference pays only for a lean interpreter walking a plan. This
-separation of **fit** (compute statistics) and **transform/infer** (apply them)
-is the standard ML pattern — fit on training data, apply to training and serving.
+`fit` pays for a real query engine once; serving pays only for straight-line
+native code over the frozen state. Confit's contract carries through: the fitted
+SQL either serves bit-exact with DuckDB, or `fit()` raises and names the
+construct it will not serve — see
+[Confit's known limitations](docs/known-limitations.md).
 
-## Referencing a fitted sklearn transformer
+## What it supports
 
-Interpolate a fitted transformer into a t-string and apply it to columns:
+- **Window aggregates**, computed once at `fit` and frozen: whole-table `OVER ()`
+  and per-group `OVER (PARTITION BY ...)` (`MEAN`, `SUM`, `COUNT`, `STDDEV`, …).
+- **Everything Confit serves** at inference — the expression surface, joins to
+  static tables, and the row-shape contract are documented in
+  [`packages/confit`](packages/confit) and
+  [docs/known-limitations.md](docs/known-limitations.md).
+- **Typed I/O**: Pydantic models for the input row and output, validated when the
+  transform is fitted and again at call time.
 
-```python
-import pandas as pd
-import pyarrow as pa
-from sklearn.preprocessing import StandardScaler
-from sql_transform import SQLTransform
+Not currently supported, pending the rebuild: batch `transform()`, sklearn
+transformer references, and composing one `SQLTransform` into another.
 
-train_df = pd.DataFrame(
-    {"age": [10.0, 20.0, 30.0, 40.0], "income": [1.0, 2.0, 3.0, 4.0]}
-)
-table = pa.Table.from_pandas(train_df)
+## Reports
 
-sc = StandardScaler().fit(train_df)          # fit on a DataFrame -> records feature_names_in_
-t = SQLTransform(t"SELECT {sc}(age, income) AS scaled FROM __THIS__").fit(table)
-```
-
-**Output is a single Arrow struct column**, not one column per feature:
-
-```python
-t.transform(table).schema                  # scaled: struct<age: double, income: double>
-t.transform(table).flatten().schema.names  # ['scaled.age', 'scaled.income']
-```
-
-Call `.flatten()` to get flat columns for an sklearn handoff.
-
-**Column binding** depends on how the transformer was fitted:
-
-| fitted with | `feature_names_in_` | binding |
-|---|---|---|
-| `fit(DataFrame)` | recorded | by **name** — call order is free, and is validated against the names |
-| `fit(ndarray)` | absent | by **position**, in call order — only the count is checked |
-
-With positional binding, `{sc}(income, age)` against a transformer fitted as
-`[age, income]` silently swaps the features. Fit on a DataFrame when you can.
-
-Aggregating over a transformer's output (`AVG({sc}(age)) OVER ()`) is not
-supported — it is inherently two-stage and needs a subquery. Aggregate over an
-input column, or use a `SQLTransform` reference, which inlines to a scalar and
-composes with aggregates freely:
-
-```python
-norm = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__").fit(table)
-t2 = SQLTransform(
-    t"SELECT AVG({norm.transform}(age)) OVER () AS m FROM __THIS__"
-).fit(table)
-t2.transform(table).column("m").to_pylist()  # [1.0, 1.0, 1.0, 1.0]
-```
+- [The architecture of Confit](docs/reports/confit-architecture.md)
+- [Pins-first: building a bit-exact engine twin](docs/reports/pins-first-methodology.md)
+- [Performance: the serving regime, measured](docs/reports/performance-report.md)
 
 ## Development
 
@@ -182,30 +134,3 @@ mise run fmt      # ruff check + format
 mise run check    # fmt + test
 mise tasks        # list all tasks
 ```
-
-## Project docs
-
-- **Milestones** (`backlog milestone list`) — the sequenced phases; tasks (TASK-N) are the actionable units (see Backlog.md below).
-- The **reasoning archive** — *why* things were deferred, design briefs, and ADRs — now
-  lives in `backlog/docs`, `backlog/decisions`, and `backlog/drafts` (see Backlog.md below).
-- **Backlog.md** (`backlog/`) — live task board (`backlog board` / `backlog task
-  list`) grouped by **milestones** (`backlog milestone list`), architecture
-  **decisions** (`backlog/decisions/`), and reference **docs** (`backlog/docs/`):
-  [Vision](<backlog/docs/doc-3 - Vision.md>) (what the project is and where it's
-  headed), the [DataFusion function catalogue](<backlog/docs/doc-1 - DataFusion-function-catalogue.md>)
-  (interpreter parity target, auto-generated), and the
-  [sklearn transformer plan](<backlog/docs/doc-2 - sklearn-transformer-implementation-plan.md>)
-  (tiers + native-machinery status), and the
-  [Multi-language inference runtimes design brief](<backlog/docs/doc-4 - multi-language-inference-runtimes-design-brief.md>)
-  (multi-language serving — out of scope / parked).
-
-## Contributing
-
-1. Pick an item from the [Backlog.md board](backlog/) (`backlog task list` / `backlog board`).
-2. Open an issue.
-3. Implement with tests.
-4. Submit a PR.
-
-## License
-
-MIT

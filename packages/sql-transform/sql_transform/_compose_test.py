@@ -4,7 +4,7 @@ import pyarrow as pa
 import pytest
 
 from sql_transform import SQLTransform
-from sql_transform._compose import desugar_template
+from sql_transform._compose import Ref, desugar_template, inline_references
 
 
 def test_desugar_static_template_has_no_refs():
@@ -14,131 +14,36 @@ def test_desugar_static_template_has_no_refs():
     assert refs == {}
 
 
-def test_bare_reference_on_fitted_transform_is_ambiguous_error():
-    # A bare {a} on an already-FITTED transform is ambiguous (reuse its frozen
-    # state, or re-fit?) and must error. Use {a.transform} to reuse the frozen
-    # state, or pass a fresh unfit instance to {a} to fit it into scope.
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    scaler = SQLTransform(
-        "SELECT (age - AVG(age) OVER ()) / STDDEV(age) OVER () AS s FROM __THIS__"
-    ).fit(train)
-    with pytest.raises(ValueError, match="already fitted"):
-        SQLTransform(t"SELECT {scaler}(age) AS s2 FROM __THIS__").fit(train)
-
-
-@pytest.mark.parametrize(
-    "sql_of",
-    [
-        pytest.param(
-            lambda r: t"SELECT age FROM __THIS__ QUALIFY {r}(age) > 1", id="qualify"
-        ),
-        pytest.param(
-            lambda r: t"SELECT age FROM __THIS__ SORT BY {r}(age)", id="sort_by"
-        ),
-        pytest.param(
-            lambda r: t"SELECT age FROM __THIS__ CLUSTER BY {r}(age)", id="cluster_by"
-        ),
-    ],
-)
-def test_referenced_transform_outside_projection_raises(sql_of):
-    # TASK-2 AC#1, sibling path: a {a.transform} ref inlines into whatever
-    # clause it sits in. The native engine only resolves the projection, so a
-    # ref in QUALIFY/SORT BY/CLUSTER BY meant fit() accepted a query the two
-    # engines then disagreed about. Same guard as the transformer-callout path.
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    inner = SQLTransform("SELECT age / MEAN(age) OVER () AS a FROM __THIS__").fit(train)
-    with pytest.raises(ValueError, match="projection"):
-        SQLTransform(sql_of(inner.transform)).fit(train)
-
-
-def test_multi_input_inner_raises_clean_value_error():
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0], "city": ["a", "a", "b", "b"]})
-    grouped = SQLTransform(
-        "SELECT age / AVG(age) OVER (PARTITION BY city) AS e FROM __THIS__"
-    ).fit(train)
-    with pytest.raises(ValueError, match="one input column"):
-        SQLTransform(t"SELECT {grouped.transform}(age) AS e2 FROM __THIS__").fit(train)
-
-
-def test_frozen_reference_on_unfit_errors():
-    unfit = SQLTransform("SELECT age * 2 AS d FROM __THIS__")
-    train = pa.table({"age": [1.0, 2.0, 3.0]})
-    with pytest.raises(ValueError, match="not fitted"):
-        SQLTransform(t"SELECT {unfit.transform}(age) AS d FROM __THIS__").fit(train)
-
-
-def test_bare_reference_on_fitted_transform_is_ambiguous_error_via_cascade():
-    # Same ambiguity guard as above, but `b` is nested as another ref's input
-    # ({a}({b}(col))) -- confirms the guard fires on the recursive fit-cascade
-    # path (process_ref/resolve_arg), not just at the top level.
-    train_v = pa.table({"v": [10.0, 20.0, 30.0, 40.0]})
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    b = SQLTransform("SELECT v * 2 AS d FROM __THIS__").fit(train_v)
-    a = SQLTransform(
-        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
-    )
-    with pytest.raises(ValueError, match="already fitted"):
-        SQLTransform(t"SELECT {a}({b}(age)) AS z FROM __THIS__").fit(train)
-
-
-def test_frozen_reference_on_unfit_errors_via_cascade():
-    # Same "not fitted" guard as above, but the unfit frozen ref ({b.transform})
-    # is nested inside another ref's input -- confirms it fires on the cascade
-    # path too.
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    b = SQLTransform("SELECT v * 2 AS d FROM __THIS__")  # unfit
-    a = SQLTransform(
-        "SELECT (v - AVG(v) OVER ()) / STDDEV(v) OVER () AS s FROM __THIS__"
-    )
-    with pytest.raises(ValueError, match="not fitted"):
-        SQLTransform(t"SELECT {a}({b.transform}(age)) AS z FROM __THIS__").fit(train)
-
-
-def test_multi_input_unfit_reference_raises():
-    # Bare {a} on an unfit multi-input transform hits fit_into_scope's own
-    # arity guard (distinct from the frozen-path guard in _frozen_expr
-    # exercised by test_multi_input_inner_raises_clean_value_error).
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0], "city": ["a", "a", "b", "b"]})
-    grouped = SQLTransform(
-        "SELECT age / AVG(age) OVER (PARTITION BY city) AS e FROM __THIS__"
-    )  # unfit
-    with pytest.raises(ValueError, match="one input column"):
-        SQLTransform(t"SELECT {grouped}(age) AS e2 FROM __THIS__").fit(train)
-
-
-def test_multi_output_unfit_reference_raises():
-    # Bare {a} on an unfit multi-output transform hits fit_into_scope's
-    # single-output guard. Multi-output fan-out is not supported this slice.
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    multi_out = SQLTransform("SELECT age * 2 AS d, age * 3 AS e FROM __THIS__")  # unfit
-    with pytest.raises(ValueError, match="single-output"):
-        SQLTransform(t"SELECT {multi_out}(age) AS z FROM __THIS__").fit(train)
-
-
-def test_reference_not_applied_to_column_errors():
-    train = pa.table({"age": [10.0, 20.0, 30.0, 40.0]})
-    scaler = SQLTransform(
-        "SELECT (age - AVG(age) OVER ()) / STDDEV(age) OVER () AS s FROM __THIS__"
-    ).fit(train)
-    with pytest.raises(ValueError, match="single input column"):
-        SQLTransform(t"SELECT {scaler.transform}(age + 1) AS s FROM __THIS__").fit(
-            train
-        )
-
-
 def test_non_transform_interpolation_errors():
-    with pytest.raises(TypeError, match="SQLTransform"):
+    with pytest.raises(TypeError, match="fitted transformer"):
         SQLTransform(t"SELECT {42}(age) AS s FROM __THIS__")
 
 
 def test_unfitted_transformer_raises_not_fitted_error():
-    # Before: TypeError blaming the interpolation TYPE ("must be a SQLTransform"),
-    # which hides the real cause. An unfitted transformer has .transform but no
-    # n_features_in_, so we can name the actual problem.
+    # Before: TypeError blaming the interpolation TYPE, which hides the real
+    # cause. An unfitted transformer has .transform but no n_features_in_, so we
+    # can name the actual problem.
     from sklearn.preprocessing import StandardScaler
 
     train = pa.table({"age": [10.0, 20.0], "income": [1.0, 2.0]})
     with pytest.raises(ValueError, match="not fitted"):
         SQLTransform(t"SELECT {StandardScaler()}(age, income) AS o FROM __THIS__").fit(
             train
+        )
+
+
+# --- composition is reset: the surface refuses by name rather than half-working
+
+
+def test_composing_one_transform_into_another_is_refused():
+    other = SQLTransform("SELECT age AS a FROM __THIS__")
+    with pytest.raises(NotImplementedError, match="not supported yet"):
+        SQLTransform(t"SELECT {other}(age) AS s FROM __THIS__")
+
+
+def test_inline_references_refuses_a_hand_built_ref_map():
+    # The only route to a non-empty map now is a caller building Refs directly.
+    with pytest.raises(NotImplementedError, match="not supported yet"):
+        inline_references(
+            None, {"__COMPOSE_0__": Ref(object(), frozen=False)}, None, None
         )

@@ -10,8 +10,6 @@ n in {1, 8, 64, 1024}:
              SPECIALIZER_FORCE_INTERP=1)
   generic  — cranelift behind the pre-marshaller boundary (previous
              boundary architecture; SPECIALIZER_GENERIC_BOUNDARY=1)
-  native   — the previous DataFusion-semantics InferFn
-  codegen  — the previous Python-codegen engine
   duckdb   — DuckDB itself per call (statics pre-materialized as native
              tables; per call: Arrow batch from row dicts -> register ->
              execute -> fetch)
@@ -23,7 +21,7 @@ A three-way parity gate (specializer == DuckDB == handcrafted) runs before
 any timing; a scenario that disagrees aborts the bench.
 
 Run: uv run python -m benchmarks.bench_serving [--json out.json]
-IMPORTANT: rebuild the wheel first (uv run --reinstall-package sql-transform
+IMPORTANT: rebuild the wheel first (uv run --reinstall-package confit
 python -c pass) — a stale wheel inflates ONLY the engine rows and once
 produced a phantom 7x regression (caught by bisection, 2026-07-26). Debug
 builds (the native test guard's `maturin develop` shadowing the release
@@ -80,7 +78,6 @@ def bench_call(f, n):
 def build_callers(mod, engines):
     """-> {engine: callable(rows) or None if the engine can't serve it}."""
     statics = mod.make_statics(sc.SEED)
-    model = sc.row_model(mod.ROW_SCHEMA)
     callers = {}
 
     if any(e in engines for e in ("spec", "interp", "generic")):
@@ -92,20 +89,6 @@ def build_callers(mod, engines):
         # The raw-dict output mode: same engine, marshaller skips model
         # construction — python_dict's fair opponent.
         callers["spec_dict"] = sc.build_spec_fn(mod, statics, output="dict").infer_rows
-
-    for eng, cls_path in (
-        ("native", "sql_transform._interpreter.InferFn"),
-        ("codegen", "sql_transform._codegen.CodegenFn"),
-    ):
-        if eng not in engines:
-            continue
-        mod_path, cls_name = cls_path.rsplit(".", 1)
-        cls = getattr(__import__(mod_path, fromlist=[cls_name]), cls_name)
-        try:
-            f = cls(mod.SQL, row_tables={"__THIS__": model}, static_tables=statics)
-            callers[eng] = lambda rows, f=f: f.infer({"__THIS__": rows})
-        except Exception as e:  # noqa: BLE001 -- engines differ in coverage
-            callers[eng] = str(e)[:140]
 
     if "duckdb" in engines:
         duck = sc.duckdb_server(mod, statics)
@@ -134,14 +117,6 @@ def engine_run(engines):
             per[eng] = {}
             for n in NS:
                 rows = mod.make_rows(sc.SEED + 2, n)
-                # Engines take model objects on their classic surface;
-                # spec-family and duckdb/python take dicts natively. Feed
-                # each what its real caller would: dict rows for
-                # spec/duckdb/python, model objects for native/codegen
-                # (their only supported input shape).
-                if eng in ("native", "codegen"):
-                    model = sc.row_model(mod.ROW_SCHEMA)
-                    rows = [model(**r) for r in rows]
                 per[eng][n] = bench_call(lambda c=call, r=rows: c(r), n)
         results[mod.NAME] = per
     print(json.dumps(results))
@@ -150,19 +125,19 @@ def engine_run(engines):
 def refuse_debug_build():
     """Abort unless the imported native extension is a release build.
 
-    packages/sql-transform/tests/_native_guard.py rebuilds the cwd-local .pyd
-    via plain `maturin
-    develop` (debug) whenever src/*.rs is newer; that shadows the venv's
-    release wheel and silently inflates engine rows ~5x (measured 2026-07-26).
+    packages/confit/tests/_native_guard.py rebuilds the cwd-local .pyd via
+    plain `maturin develop` (debug) whenever src/*.rs is newer; that shadows
+    the venv's release wheel and silently inflates engine rows ~5x (measured
+    2026-07-26).
     """
-    from sql_transform import _interpreter
+    import confit
 
-    profile = getattr(_interpreter, "BUILD_PROFILE", None)
+    profile = getattr(confit, "BUILD_PROFILE", None)
     if profile != "release":
         sys.exit(
             f"bench_serving: refusing to time a non-release native build "
-            f"(BUILD_PROFILE={profile!r}, loaded from {_interpreter.__file__}).\n"
-            f"Rebuild with: uv run maturin develop --release"
+            f"(BUILD_PROFILE={profile!r}, loaded from {confit.__file__}).\n"
+            f"Rebuild with: uv run maturin develop --release  (in packages/confit)"
         )
 
 
@@ -180,8 +155,6 @@ def orchestrate():
         "main": [
             "spec",
             "spec_dict",
-            "native",
-            "codegen",
             "duckdb",
             "python",
             "python_dict",
@@ -209,8 +182,6 @@ def orchestrate():
         "spec_dict",
         "interp",
         "generic",
-        "native",
-        "codegen",
         "duckdb",
         "python",
     ]

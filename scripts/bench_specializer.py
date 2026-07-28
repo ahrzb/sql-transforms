@@ -10,8 +10,6 @@ Reports p50/p99 ns per call at n in {1, 8, 64, 1024} for:
                fresh name strings, per-call buffers, model_validate per
                output row. generic vs cranelift on the noop case IS the
                marshaller's win (TASK-45 AC #2).
-  native     — the existing DataFusion-semantics InferFn
-  codegen    — the existing Python codegen engine
 
 Run: `uv run python scripts/bench_specializer.py [--json out.json]`
 The env-knob engines re-exec this script in a subprocess so the knob is
@@ -66,18 +64,6 @@ def build_specializer(sql, model, dim):
     )
 
 
-def build_native(sql, model, dim):
-    from sql_transform._interpreter import InferFn
-
-    return InferFn(sql, row_tables={"__THIS__": model}, static_tables={"dim": dim})
-
-
-def build_codegen(sql, model, dim):
-    from sql_transform._codegen import CodegenFn
-
-    return CodegenFn(sql, row_tables={"__THIS__": model}, static_tables={"dim": dim})
-
-
 def main():
     model = create_model("Row", a=(int, ...), b=(float, ...), s=(str, ...))
     dim = pa.table({"id": list(range(60)), "name": [f"n{i}" for i in range(60)]})
@@ -88,9 +74,6 @@ def main():
         "interp": build_specializer,
         "generic": build_specializer,
     }
-    if engine in ("native", "codegen"):
-        builders = {"native": build_native, "codegen": build_codegen}
-
     results = {}
     for case, sql in CASES.items():
         try:
@@ -115,7 +98,7 @@ def main():
 def orchestrate():
     """Run every engine (interp in a subprocess for the env knob), merge."""
     merged = {}
-    for engine in ("cranelift", "interp", "generic", "native", "codegen"):
+    for engine in ("cranelift", "interp", "generic"):
         env = os.environ.copy()
         env["BENCH_ENGINE"] = engine
         if engine == "interp":

@@ -6,7 +6,7 @@ value column per distinct (fn, col)) whose value columns keep their natural
 Arrow type -- no float coercion. The global OVER () group (empty key-set) gets a
 one-row table plus a constant __state_marker__ column so the rewrite can LEFT
 JOIN it uniformly. State tables are consumed as static tables by both engines
-(InferFn static_tables and DataFusion registration) -- there is no Pydantic
+(confit static_tables and DataFusion registration) -- there is no Pydantic
 state model anymore.
 """
 

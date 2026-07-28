@@ -2,7 +2,7 @@
 
 The guard must run at conftest import time -- `import confit` eagerly loads the
 native module, so a stale build would already be in the process by the time a
-test body runs (TASK-33).
+test body runs.
 """
 
 from __future__ import annotations
