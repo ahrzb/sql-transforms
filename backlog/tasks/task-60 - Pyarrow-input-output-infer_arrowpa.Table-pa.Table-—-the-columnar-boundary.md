@@ -3,9 +3,10 @@ id: TASK-60
 title: >-
   Pyarrow input/output: infer_arrow(pa.Table) -> pa.Table — the columnar
   boundary
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-28 03:14'
+updated_date: '2026-07-28 03:22'
 labels:
   - specializer
   - columnar
@@ -25,9 +26,15 @@ Scope (v1, per the proposal's copy-first recommendation): fn.infer_arrow(batch) 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 infer_arrow serves arrow-in/arrow-out for all-scalar models with values byte-identical to infer() (differential test: infer_rows == infer_arrow converted, every serving scenario)
-- [ ] #2 Validity round-trips: NULLs in, NULLs out, incl. LEFT-join null-extensions under shape='many'
-- [ ] #3 Named rejections: multi-chunk, missing column, wrong dtype, struct/opaque model, constant path
-- [ ] #4 Measured: infer_arrow vs spec_dict vs python_dict on the serving scenarios (numbers in the PR)
-- [ ] #5 Full gates green on release build; PR opened
+- [x] #1 infer_arrow serves arrow-in/arrow-out for all-scalar models with values byte-identical to infer() (differential test: infer_rows == infer_arrow converted, every serving scenario)
+- [x] #2 Validity round-trips: NULLs in, NULLs out, incl. LEFT-join null-extensions under shape='many'
+- [x] #3 Named rejections: multi-chunk, missing column, wrong dtype, struct/opaque model, constant path
+- [x] #4 Measured: infer_arrow vs spec_dict vs python_dict on the serving scenarios (numbers in the PR)
+- [x] #5 Full gates green on release build; PR opened
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Shipped as PR #47 (merged, master 1d1bb73). infer_arrow(pa.Table|RecordBatch) -> pa.Table: ingest walks pyarrow buffers raw (address+size via the Python buffer API — no arrow-rs; validity/bool bitmaps LSB, utf8+large_utf8 offsets, non-zero slice offsets honored) into ColData; emit builds one pa.Array.from_buffers per output column from rust-built buffers (strings as large_string). Strict by-name matching; named rejections (multi-chunk, missing column, wrong dtype, struct models, constant path). Test suite = the differential contract: infer_rows == infer_arrow on every serving scenario + NULLs + shape='many' LEFT null-extensions — parity by construction. Measured: n>=1024 beats the row path everywhere (house_prices 5.31ms -> 2.80ms) and beats the handcrafted python twin on most scenarios (house 0.55x — first twin wins); n=64 pyarrow fixed API cost (~150us) favors the row path, documented. Full gate 621 + 13 xfail.
+<!-- SECTION:FINAL_SUMMARY:END -->
