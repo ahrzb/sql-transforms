@@ -495,7 +495,8 @@ pub struct DuckDBInferFn {
     #[pyo3(get)]
     output_model: Py<PyAny>,
     output_dicts: bool,
-    shape_map: bool,
+    /// 0 = filter, 1 = map, 2 = many (the declared row-shape contract).
+    shape_kind: u8,
 }
 
 #[pymethods]
@@ -517,6 +518,12 @@ impl DuckDBInferFn {
         // join multiplicity (stage B) and is the only shape under which
         // those constructs will ever build.
         let many = shape.as_deref() == Some("many");
+        let shape_kind: u8 = match shape.as_deref() {
+            None | Some("filter") => 0,
+            Some("map") => 1,
+            Some("many") => 2,
+            Some(_) => 0, // rejected below
+        };
         let strict_map = match shape.as_deref() {
             None | Some("filter") => false,
             Some("map") => true,
@@ -689,7 +696,7 @@ impl DuckDBInferFn {
                             row_table,
                             output_model,
                             output_dicts,
-                            shape_map: false,
+                            shape_kind,
                         });
                     }
                     Err(_) => return Err(build_err(e.to_string())),
@@ -781,17 +788,17 @@ impl DuckDBInferFn {
             row_table,
             output_model,
             output_dicts,
-            shape_map: strict_map,
+            shape_kind,
         })
     }
 
-    /// The row-shape contract: "map" (proven exactly-1) or "filter" (0..1).
+    /// The declared row-shape contract: "map", "filter", or "many".
     #[getter]
     fn shape(&self) -> &'static str {
-        if self.shape_map {
-            "map"
-        } else {
-            "filter"
+        match self.shape_kind {
+            1 => "map",
+            2 => "many",
+            _ => "filter",
         }
     }
 
