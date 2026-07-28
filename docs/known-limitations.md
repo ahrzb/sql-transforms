@@ -1,6 +1,6 @@
 # Known limitations — deliberate, named, and loud
 
-This is the user-facing contract of the SQL specializer (`DuckDBInferFn`):
+This is the user-facing contract of Confit (`DuckDBInferFn`):
 what it refuses to serve, **why**, and what you see when you hit a limit.
 Its executable twin is [`packages/confit/tests/test_known_limitations.py`](../tests/test_known_limitations.py) —
 every limitation below is asserted there, so lifting one breaks a test and
@@ -21,7 +21,7 @@ recorded in a pins spec (`docs/superpowers/specs/`), not an accident.
 
 ## 1. The specialization bargain (inherent to the engine model)
 
-The specializer's speed comes from doing ALL general work at build time:
+Confit's speed comes from doing ALL general work at build time:
 parse once, bind once, compile once, freeze the static tables into the
 code. Anything that would require re-doing general work per row is
 rejected, permanently by design:
