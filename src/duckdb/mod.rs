@@ -17,6 +17,7 @@ use pyo3::types::{PyDict, PySet, PyString};
 
 use crate::error::InterpError;
 use crate::schema;
+use crate::specializer::exec::columnar::{self, ColumnarFn};
 use crate::specializer::exec::cranelift::{self, CraneliftFn};
 use crate::specializer::exec::interp::{compile, InterpFn};
 use crate::specializer::exec::{Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData};
@@ -474,6 +475,10 @@ impl Marshaller {
 enum Engine {
     Compiled {
         fun: Backend,
+        /// The batch-at-a-time core (TASK-61), used by infer_arrow when
+        /// the program compiles for it (stage-B multiplicity stays on the
+        /// row path). None = fall back to `fun`.
+        columnar: Option<ColumnarFn>,
         in_cols: Vec<Col>,
         out_cols: Vec<Col>,
         /// `None` when `SPECIALIZER_GENERIC_BOUNDARY` pinned the generic
@@ -768,6 +773,34 @@ impl DuckDBInferFn {
                 }
             },
         };
+        // The columnar core (TASK-61): compiled from the same program with
+        // freshly materialized statics; a rejection (multiplicity, cycles)
+        // just means infer_arrow uses the row fn.
+        let columnar_fn = {
+            let mut data = Vec::with_capacity(prepared.statics.len());
+            let mut ok = true;
+            for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
+                if spec.batch {
+                    ok = false; // batch maps are row-path-only anyway
+                    break;
+                }
+                let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) =
+                    sty
+                else {
+                    ok = false;
+                    break;
+                };
+                let table = static_tables
+                    .get(&spec.table)
+                    .expect("spec names come from the catalog");
+                data.push(materialize_map(py, table, spec, keys, values)?);
+            }
+            if ok {
+                columnar::compile(&prepared.program, data).ok()
+            } else {
+                None
+            }
+        };
         let supplied = output_model.is_some();
         let output_model = match output_model {
             // Supplied models are trusted as-is in v0 (no shape validation)
@@ -793,6 +826,7 @@ impl DuckDBInferFn {
         Ok(DuckDBInferFn {
             engine: Engine::Compiled {
                 fun,
+                columnar: columnar_fn,
                 in_cols,
                 out_cols: prepared.program.out_cols.clone(),
                 marsh,
@@ -821,6 +855,19 @@ impl DuckDBInferFn {
             "dict"
         } else {
             "model"
+        }
+    }
+
+    /// Which engine executes infer_arrow: "columnar" when the batch core
+    /// compiled, else the row backend it falls back to.
+    #[getter]
+    fn arrow_backend(&self) -> &'static str {
+        match &self.engine {
+            Engine::Compiled {
+                columnar: Some(_), ..
+            } => "columnar",
+            Engine::Compiled { fun, .. } => fun.name(),
+            Engine::Constant { .. } => "constant",
         }
     }
 
@@ -880,13 +927,14 @@ impl DuckDBInferFn {
     /// Values are byte-identical to infer(); under shape='map' the output
     /// aligns positionally with the input.
     fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        let (fun, in_cols, out_cols) = match &self.engine {
+        let (fun, columnar_fn, in_cols, out_cols) = match &self.engine {
             Engine::Compiled {
                 fun,
+                columnar,
                 in_cols,
                 out_cols,
                 ..
-            } => (fun, in_cols, out_cols),
+            } => (fun, columnar, in_cols, out_cols),
             Engine::Constant { .. } => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "infer_arrow: a static-tables-only query emits fixed rows — use infer()",
@@ -894,10 +942,20 @@ impl DuckDBInferFn {
             }
         };
         let input = arrow::ingest(py, &batch, in_cols)?;
-        let mut st = fun.new_state();
-        fun.run(&input, &mut st)
-            .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
-        arrow::emit(py, out_cols, &st)
+        match columnar_fn {
+            Some(c) => {
+                let mut st = c.new_state();
+                c.run(&input, &mut st)
+                    .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
+                arrow::emit(py, out_cols, &st)
+            }
+            None => {
+                let mut st = fun.new_state();
+                fun.run(&input, &mut st)
+                    .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
+                arrow::emit(py, out_cols, &st)
+            }
+        }
     }
 }
 
@@ -909,6 +967,7 @@ impl DuckDBInferFn {
                 in_cols,
                 out_cols,
                 marsh,
+                ..
             } => (fun, in_cols, out_cols, marsh),
             Engine::Constant { rows: fixed } => {
                 let model = self.output_model.bind(py);
