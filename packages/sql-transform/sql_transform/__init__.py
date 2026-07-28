@@ -1,17 +1,11 @@
-"""SQLTransform — SQL feature transforms, fitted once and served by Confit.
+"""SQLTransform — the authoring surface, awaiting reimplementation.
 
-Author the transform as SQL, `fit()` it against training data to freeze the
-window-aggregate state into static tables, then serve it row-at-a-time:
+Every method raises `NotImplementedError`. The signatures are the contract a
+rebuild has to satisfy; the previous implementation (a DataFusion batch engine,
+a codegen backend, and transform composition) was deleted deliberately.
 
-    t = SQLTransform("SELECT (age - avg(age) OVER ()) AS age_c FROM __THIS__")
-    t.fit(train_table)
-    t.infer({"age": 40})
-
-`fit()` hands the rewritten SQL and the frozen tables to Confit
-(`packages/confit`), which partially evaluates the pair into a native
-function. Confit's contract carries through: the fitted SQL either serves
-bit-exact with DuckDB, or `fit()` raises and names the construct it will not
-serve.
+The serving half already exists and is unaffected: confit takes SQL plus static
+tables frozen at fit time and partially evaluates them into a native function.
 """
 
 from __future__ import annotations

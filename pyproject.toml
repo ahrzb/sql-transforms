@@ -31,16 +31,14 @@ lint.select = ["E", "F", "B", "I", "UP", "C4", "S"]
 lint.ignore = ["S101"]
 
 [tool.ruff.lint.isort]
-# datafusion and duckdb are pip packages, but same-named directories exist
-# in-repo (the datafusion Rust module; duckdb/ source clone), which makes
-# isort's src-root scan misclassify the imports as first-party.
-known-third-party = ["datafusion", "duckdb"]
+# duckdb is a pip package, but a same-named directory exists in-repo (the
+# duckdb/ source clone), which makes isort's src-root scan misclassify the
+# imports as first-party.
+known-third-party = ["duckdb"]
 
 [tool.ruff.lint.per-file-ignores]
 "*test*.py" = ["S608"]
 "_state.py" = ["S608"]
-# Doc generator: emits long markdown lines verbatim; wrapping would corrupt output.
-"scripts/gen_datafusion_catalogue.py" = ["E501"]
 # Bench fixtures: seeded pseudo-random data generators (S311 is about
 # crypto), dense SQL/data-gen literals where wrapping hurts readability,
 # and SQL assembled from module-internal constants (S608, no user input).
@@ -58,6 +56,5 @@ pythonpath = ["."]
 # listed so `pytest` from the repo root is the whole gate.
 testpaths = [
     "packages/confit/tests",
-    "packages/sql-transform/tests",
     "packages/sql-transform/sql_transform",
 ]
