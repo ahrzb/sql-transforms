@@ -1050,16 +1050,19 @@ impl<'a> FB<'a> {
     ///   entry:  key exprs (trap per input row), ProbeRange -> [lo, hi)
     ///           (NULL keys force an EMPTY range — a NULL never matches),
     ///           jump header(lo, hi, any=false)
-    ///   header(i, end, any): i < end ? body(i, end, any) : after(any)
-    ///   body:   ProbeRead lanes; residual AND WHERE (3VL) gate BEFORE any
-    ///           store (the continue path must be store-free); pass ->
-    ///           store_blk(lanes.., i+1, end) -> stores -> emit.to header
-    ///           (any=true); fail -> header(i+1, end, any)
+    ///   header(i, end, any): i < end ? body : after(any)
+    ///   body:   ProbeRead lanes; the RESIDUAL gates match-ness (and the
+    ///           `any` flag); WHERE only gates emission (DuckDB joins
+    ///           first, filters second); pass -> stores -> emit.to header
+    ///           (any=true); fail -> continue.
     ///   after:  INNER -> skip. LEFT -> any ? skip : null-extension row
     ///           (default lanes, hit=false) gated by WHERE, then emit.
     ///
-    /// The engine's documented emission order falls out: probe rows in
-    /// input order, matches contiguous in build INSERTION order.
+    /// Predicate/expression emission may SPLIT blocks (CASE machinery), so
+    /// the loop state and probe lanes ride the LIVE stack (auto-rebound
+    /// across splits) with the invariant: the probe lanes are always the
+    /// LAST `nd` live entries; the per-block probe cache is re-seeded from
+    /// them before every emission that can reference join columns.
     fn lower_many_loop(
         &mut self,
         exprs: &[(String, SExpr)],
@@ -1071,9 +1074,10 @@ impl<'a> FB<'a> {
         let residual = self.joins[0].residual.clone();
         let keys_expr = self.joins[0].keys.clone();
         let dst_tys: Vec<Ty> = self.val_flat_tys(j);
+        let nd = dst_tys.len();
 
         // entry: keys + range.
-        let mut live = Vec::new();
+        let mut live: Live = Vec::new();
         let mut keys_valid: Option<Value> = None;
         let mut key_vals = Vec::with_capacity(keys_expr.len());
         for key in &keys_expr {
@@ -1140,93 +1144,99 @@ impl<'a> FB<'a> {
             else_args: vec![h_any],
         });
 
-        // body: lanes + gate.
+        // body: lanes + the two gates, everything riding live as
+        // [inext, end, any, dsts...].
         self.switch(body);
         let (b_i, b_end, b_any) = (bp[0], bp[1], bp[2]);
-        let dsts: Vec<Value> = (0..dst_tys.len()).map(|_| self.fresh()).collect();
+        let dsts: Vec<Value> = (0..nd).map(|_| self.fresh()).collect();
         self.inst(Inst::ProbeRead {
             static_id: j,
             idx: b_i,
             dsts: dsts.clone(),
         });
-        let t1 = self.const_i1(true);
-        self.blocks[self.cur].probes.insert(j, (t1, dsts.clone()));
         let one = self.const_lit(Lit::I64(1));
         let inext = self.bin(BinOp::Iadd, b_i, one);
-        // Gate 1 — the RESIDUAL decides match-ness (and therefore `any`);
-        // a residual-failed candidate continues with `any` UNCHANGED.
-        let mut match_tys = dst_tys.clone();
-        match_tys.push(Ty::I64); // inext
-        match_tys.push(Ty::I64); // end
+        let mut live: Live = Vec::new();
+        live.push((Lane { flag: None, val: inext }, Ty::I64));
+        live.push((Lane { flag: None, val: b_end }, Ty::I64));
+        live.push((Lane { flag: None, val: b_any }, Ty::I1));
+        for (&d, &ty) in dsts.iter().zip(dst_tys.iter()) {
+            live.push((Lane { flag: None, val: d }, ty));
+        }
+        let rv = match &residual {
+            None => None,
+            Some(res) => {
+                self.reseed_many(j, true, &live, nd);
+                let rl = self.emit(res, &mut live)?;
+                Some(self.truthy(rl))
+            }
+        };
+        let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
+        let (r_inext, r_end, r_any) = (vals[0], vals[1], vals[2]);
+        let r_dsts: Vec<Value> = vals[3..].to_vec();
+        live.clear();
+        let mut match_tys = vec![Ty::I64, Ty::I64];
+        match_tys.extend(dst_tys.iter().copied());
         let (matched_blk, mp) = self.create_block(&match_tys);
-        let mut match_args: Vec<Value> = dsts.clone();
-        match_args.push(inext);
-        match_args.push(b_end);
-        match &residual {
+        let mut match_args = vec![r_inext, r_end];
+        match_args.extend(r_dsts.iter().copied());
+        match rv {
             None => self.term(Term::Jump {
                 to: BlockId(matched_blk as u32),
                 args: match_args,
             }),
-            Some(res) => {
-                let mut live = Vec::new();
-                let rl = self.emit(res, &mut live)?;
-                let rv = self.truthy(rl);
-                self.term(Term::Brif {
-                    cond: rv,
-                    then_to: BlockId(matched_blk as u32),
-                    then_args: match_args,
-                    else_to: BlockId(header as u32),
-                    else_args: vec![inext, b_end, b_any],
-                });
-            }
-        }
-
-        // matched_blk: `any` is TRUE from here on, WHERE only gates the
-        // emission (DuckDB joins first, filters second — a match killed by
-        // WHERE still suppresses the LEFT null-extension).
-        self.switch(matched_blk);
-        let m_dsts: Vec<Value> = mp[..dst_tys.len()].to_vec();
-        let (m_inext, m_end) = (mp[dst_tys.len()], mp[dst_tys.len() + 1]);
-        let tm = self.const_i1(true);
-        self.blocks[self.cur].probes.insert(j, (tm, m_dsts.clone()));
-        let mut store_tys = dst_tys.clone();
-        store_tys.push(Ty::I64); // inext
-        store_tys.push(Ty::I64); // end
-        let (store_blk, sp) = self.create_block(&store_tys);
-        let mut store_args: Vec<Value> = m_dsts.clone();
-        store_args.push(m_inext);
-        store_args.push(m_end);
-        match filter_pred {
-            None => self.term(Term::Jump {
-                to: BlockId(store_blk as u32),
-                args: store_args,
+            Some(cond) => self.term(Term::Brif {
+                cond,
+                then_to: BlockId(matched_blk as u32),
+                then_args: match_args,
+                else_to: BlockId(header as u32),
+                else_args: vec![r_inext, r_end, r_any],
             }),
-            Some(pred) => {
-                let mut live = Vec::new();
-                let pl = self.emit(pred, &mut live)?;
-                let pv = self.truthy(pl);
-                let tt = self.const_i1(true);
-                self.term(Term::Brif {
-                    cond: pv,
-                    then_to: BlockId(store_blk as u32),
-                    then_args: store_args,
-                    else_to: BlockId(header as u32),
-                    else_args: vec![m_inext, m_end, tt],
-                });
-            }
         }
 
-        // store_blk: seeded lanes -> stores -> emit.to header(any=true).
-        self.switch(store_blk);
-        let s_dsts: Vec<Value> = sp[..dst_tys.len()].to_vec();
-        let (s_inext, s_end) = (sp[dst_tys.len()], sp[dst_tys.len() + 1]);
-        let t2 = self.const_i1(true);
-        self.blocks[self.cur].probes.insert(j, (t2, s_dsts));
-        self.store_out_row(exprs, out_cols)?;
+        // matched_blk: `any` is TRUE from here on; WHERE gates emission
+        // only. live = [inext, end, dsts...].
+        self.switch(matched_blk);
+        let mut live: Live = Vec::new();
+        live.push((Lane { flag: None, val: mp[0] }, Ty::I64));
+        live.push((Lane { flag: None, val: mp[1] }, Ty::I64));
+        for (&d, &ty) in mp[2..].iter().zip(dst_tys.iter()) {
+            live.push((Lane { flag: None, val: d }, ty));
+        }
+        if let Some(pred) = filter_pred {
+            self.reseed_many(j, true, &live, nd);
+            let pl = self.emit(pred, &mut live)?;
+            let pv = self.truthy(pl);
+            let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
+            let (keep, kp) = {
+                let mut tys = vec![Ty::I64, Ty::I64];
+                tys.extend(dst_tys.iter().copied());
+                self.create_block(&tys)
+            };
+            let mut keep_args = vec![vals[0], vals[1]];
+            keep_args.extend(vals[2..].iter().copied());
+            let tt = self.const_i1(true);
+            self.term(Term::Brif {
+                cond: pv,
+                then_to: BlockId(keep as u32),
+                then_args: keep_args,
+                else_to: BlockId(header as u32),
+                else_args: vec![vals[0], vals[1], tt],
+            });
+            self.switch(keep);
+            live.clear();
+            live.push((Lane { flag: None, val: kp[0] }, Ty::I64));
+            live.push((Lane { flag: None, val: kp[1] }, Ty::I64));
+            for (&d, &ty) in kp[2..].iter().zip(dst_tys.iter()) {
+                live.push((Lane { flag: None, val: d }, ty));
+            }
+        }
+        self.store_out_row(exprs, out_cols, Some((j, true)), &mut live, nd)?;
+        let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
         let t3 = self.const_i1(true);
         self.term(Term::EmitTo {
             to: BlockId(header as u32),
-            args: vec![s_inext, s_end, t3],
+            args: vec![vals[0], vals[1], t3],
         });
 
         // after: LEFT null-extension or skip.
@@ -1243,32 +1253,36 @@ impl<'a> FB<'a> {
                 else_args: vec![],
             });
             self.switch(miss);
+            // live = [dsts(defaults)...] only.
+            let mut live: Live = Vec::new();
+            for &ty in dst_tys.iter() {
+                let d = self.default_of(ty);
+                live.push((Lane { flag: None, val: d }, ty));
+            }
             if let Some(pred) = filter_pred {
                 // WHERE sees the null-extended row too (measured).
-                let fmiss = self.const_i1(false);
-                let defaults: Vec<Value> =
-                    dst_tys.iter().map(|&ty| self.default_of(ty)).collect();
-                self.blocks[self.cur].probes.insert(j, (fmiss, defaults));
-                let mut live = Vec::new();
+                self.reseed_many(j, false, &live, nd);
                 let pl = self.emit(pred, &mut live)?;
                 let pv = self.truthy(pl);
-                let (keep, _) = self.create_block(&[]);
+                let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
+                let (keep, kp) = self.create_block(&dst_tys);
                 let (drop, _) = self.create_block(&[]);
                 self.term(Term::Brif {
                     cond: pv,
                     then_to: BlockId(keep as u32),
-                    then_args: vec![],
+                    then_args: vals,
                     else_to: BlockId(drop as u32),
                     else_args: vec![],
                 });
                 self.switch(drop);
                 self.term(Term::Skip);
                 self.switch(keep);
+                live.clear();
+                for (&d, &ty) in kp.iter().zip(dst_tys.iter()) {
+                    live.push((Lane { flag: None, val: d }, ty));
+                }
             }
-            let fmiss2 = self.const_i1(false);
-            let defaults2: Vec<Value> = dst_tys.iter().map(|&ty| self.default_of(ty)).collect();
-            self.blocks[self.cur].probes.insert(j, (fmiss2, defaults2));
-            self.store_out_row(exprs, out_cols)?;
+            self.store_out_row(exprs, out_cols, Some((j, false)), &mut live, nd)?;
             self.term(Term::Emit);
             self.switch(done);
             self.term(Term::Skip);
@@ -1278,17 +1292,32 @@ impl<'a> FB<'a> {
         Ok(())
     }
 
-    /// Emit every output expression and store it (the shared tail of both
-    /// lowerings) — the current block's caches must already be seeded.
+    /// Re-seed the CURRENT block's probe cache for many-join `j` from the
+    /// live stack's trailing `nd` lanes (the invariant of the loop
+    /// lowering) with a fresh hit constant.
+    fn reseed_many(&mut self, j: u32, hit: bool, live: &Live, nd: usize) {
+        let h = self.const_i1(hit);
+        let ds: Vec<Value> = live[live.len() - nd..].iter().map(|(l, _)| l.val).collect();
+        self.blocks[self.cur].probes.insert(j, (h, ds));
+    }
+
+    /// Emit every output expression and store it. Under a many-join
+    /// (`seed` present) the probe cache is re-seeded from `live`'s
+    /// trailing `nd` lanes before EVERY expression — emission may split
+    /// blocks, and each new block starts with an empty cache.
     fn store_out_row(
         &mut self,
         exprs: &[(String, SExpr)],
         out_cols: &[Col],
+        seed: Option<(u32, bool)>,
+        live: &mut Live,
+        nd: usize,
     ) -> Result<(), PrepareError> {
-        let mut live = Vec::new();
         for (ci, (_, e)) in exprs.iter().enumerate() {
-            debug_assert!(live.is_empty());
-            let lane = self.emit(e, &mut live)?;
+            if let Some((j, hit)) = seed {
+                self.reseed_many(j, hit, live, nd);
+            }
+            let lane = self.emit(e, live)?;
             let col = ci as u32;
             if out_cols[ci].ty.nullable {
                 let flag = match lane.flag {

@@ -2273,3 +2273,67 @@ fn many_shape_dup_key_joins_fan_out() {
     };
     assert!(e.contains("one join per query"), "{e}");
 }
+
+#[test]
+fn many_shape_keyless_and_inequality_joins() {
+    // pins-stageB/cross-inequality.json: keyless joins are cross-product-
+    // then-filter; LEFT null-extends zero-match rows; ON NULL = 2 matches
+    // nothing. All ride the empty-key multimap (whole-table range).
+    let schema = cols(&[("pid", Ty::I64, false)]);
+    let dim = stat("d", &[("id", Ty::I64, false)]);
+    let prep_many = |sql: &str| {
+        super::prepare_opaque(
+            sql,
+            "__THIS__",
+            &schema,
+            &[],
+            &[],
+            std::slice::from_ref(&dim),
+            true,
+        )
+    };
+    let data = || {
+        StaticData::Map(vec![
+            (vec![], vec![ScalarVal::I64(2)]),
+            (vec![], vec![ScalarVal::I64(3)]),
+            (vec![], vec![ScalarVal::I64(4)]),
+        ])
+    };
+    let input = || batch(3, vec![c_i64(&[Some(1), Some(2), Some(3)])]);
+    let run_many = |sql: &str| -> Result<Vec<Vec<String>>, String> {
+        let p = prep_many(sql).map_err(|e| e.to_string())?;
+        let f = compile(&p.program, vec![data()]).map_err(|e| e.to_string())?;
+        run_snapshot(&f, &input()).map_err(|e| e.to_string())
+    };
+
+    // Plain comma cross join: 3x3.
+    assert_eq!(
+        run_many("SELECT pid, id FROM __THIS__, d").unwrap(),
+        rows(&[
+            &["1", "2"],
+            &["1", "3"],
+            &["1", "4"],
+            &["2", "2"],
+            &["2", "3"],
+            &["2", "4"],
+            &["3", "2"],
+            &["3", "3"],
+            &["3", "4"],
+        ])
+    );
+    // Inequality INNER: cross + filter.
+    assert_eq!(
+        run_many("SELECT pid, id FROM __THIS__ JOIN d ON pid > d.id").unwrap(),
+        rows(&[&["3", "2"]])
+    );
+    // Inequality LEFT: null-extension for rows with no match.
+    assert_eq!(
+        run_many("SELECT pid, id FROM __THIS__ LEFT JOIN d ON pid > d.id").unwrap(),
+        rows(&[&["1", "NULL"], &["2", "NULL"], &["3", "2"]])
+    );
+    // Constant-NULL ON: matches nothing; LEFT null-extends everything.
+    assert_eq!(
+        run_many("SELECT pid, id FROM __THIS__ LEFT JOIN d ON NULL = 2").unwrap(),
+        rows(&[&["1", "NULL"], &["2", "NULL"], &["3", "NULL"]])
+    );
+}

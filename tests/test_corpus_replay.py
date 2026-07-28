@@ -158,9 +158,28 @@ def _replay(case: dict) -> tuple[str, str]:
         )
     except Exception as e:  # noqa: BLE001 -- classification, not control flow
         msg = str(e)
-        if any(n in msg for n in _CLEAN):
+        # Stage-B (TASK-59): multiplicity constructs build only under the
+        # opt-in shape='many'. The retry keeps proving the DEFAULT rejects
+        # while letting the corpus exercise the multiplicity path; rows
+        # compare as a sorted multiset below, which is exactly the pinned
+        # parity contract (DuckDB's join order is a hash-join accident).
+        if "duplicate map key" in msg:
+            try:
+                fn = DuckDBInferFn(
+                    case["sql"],
+                    row_tables={driving: model},
+                    static_tables=statics,
+                    shape="many",
+                )
+            except Exception as e2:  # noqa: BLE001
+                msg2 = str(e2)
+                if any(n in msg2 for n in _CLEAN):
+                    return "unsupported", msg2
+                return "FAIL", f"build error under shape='many': {msg2}"
+        elif any(n in msg for n in _CLEAN):
             return "unsupported", msg
-        return "FAIL", f"build error: {type(e).__name__}: {msg}"
+        else:
+            return "FAIL", f"build error: {type(e).__name__}: {msg}"
 
     if case.get("source") in _KNOWN_DIVERGENT_SOURCES:
         return "unsupported", "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
