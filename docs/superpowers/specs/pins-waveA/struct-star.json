@@ -1,0 +1,131 @@
+{
+ "topic": "struct-star expansion (a.*) semantics",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT a.* FROM test;",
+   "result": "DESC: [('i', INTEGER, ...), ('j', INTEGER, ...)] ROWS: [(1, 2), (None, None), (3, None)]",
+   "note": "Bare field names, struct declaration order, unqualified. NULL struct row expands to NULL in every field."
+  },
+  {
+   "q": "SELECT a.* EXCLUDE(j) FROM test;",
+   "result": "DESC: [('i', INTEGER, ...)] ROWS: [(1,), (None,), (3,)]",
+   "note": "Corpus case verbatim."
+  },
+  {
+   "q": "SELECT a.* EXCLUDE(i) FROM test;",
+   "result": "DESC: [('j', INTEGER, ...)] ROWS: [(2,), (None,), (None,)]",
+   "note": "Corpus case verbatim."
+  },
+  {
+   "q": "SELECT a.* REPLACE(a.i + 3 AS i) FROM test;",
+   "result": "DESC: [('i', INTEGER, ...), ('j', INTEGER, ...)] ROWS: [(4, 2), (None, None), (6, None)]",
+   "note": "Corpus case verbatim. Field position preserved; NULL struct row gives NULL (a.i is NULL, +3 stays NULL)."
+  },
+  {
+   "q": "SELECT 99 AS x, a.*, 100 AS y FROM test;",
+   "result": "DESC: [('x',...), ('i',...), ('j',...), ('y',...)] ROWS: [(99, 1, 2, 100), (99, None, None, 100), (99, 3, None, 100)]",
+   "note": "Expansion is positional in-place among other select items."
+  },
+  {
+   "q": "SELECT a.* EXCLUDE(J) FROM test;",
+   "result": "DESC: [('i', INTEGER, ...)] ROWS: [(1,), (None,), (3,)]",
+   "note": "EXCLUDE is case-insensitive."
+  },
+  {
+   "q": "SELECT a.* EXCLUDE(\"J\") FROM test;",
+   "result": "DESC: [('i', INTEGER, ...)] ROWS: [(1,), (None,), (3,)]",
+   "note": "Case-insensitive EVEN when double-quoted. Also EXCLUDE(\"weird name\") matched field \"Weird Name\"."
+  },
+  {
+   "q": "SELECT a.* EXCLUDE(zzz) FROM test;",
+   "result": "BinderException | Binder Error: Column \"zzz\" in EXCLUDE list not found in a",
+   "note": "Error names the struct column, not the table."
+  },
+  {
+   "q": "SELECT a.* EXCLUDE(i, j) FROM test;",
+   "result": "BinderException | Binder Error: SELECT list is empty after resolving * expressions!",
+   "note": "Errors only because the whole select list became empty — see next pin."
+  },
+  {
+   "q": "SELECT 1 AS x, a.* EXCLUDE(i, j) FROM test;",
+   "result": "DESC: [('x', INTEGER, ...)] ROWS: [(1,), (1,), (1,)]",
+   "note": "EXCLUDE-all is legal when other select items exist; the star contributes zero columns."
+  },
+  {
+   "q": "SELECT a.* REPLACE(1 AS zzz) FROM test;",
+   "result": "BinderException | Binder Error: Column \"zzz\" in REPLACE list not found in a",
+   "note": ""
+  },
+  {
+   "q": "SELECT a.* REPLACE(a.i + 3 AS I) FROM test;",
+   "result": "DESC: [('I', INTEGER, ...), ('j', INTEGER, ...)] ROWS: [(4, 2), (None, None), (6, None)]",
+   "note": "REPLACE alias matches field case-insensitively but the OUTPUT column takes the alias's exact case ('I', codepoint 0x49)."
+  },
+  {
+   "q": "SELECT a.* REPLACE(k + a.i AS i) FROM test2;",
+   "result": "DESC: [('i', INTEGER, ...), ('j', INTEGER, ...)] ROWS: [(11, 2), (None, None), (None, None)]",
+   "note": "test2(a STRUCT(i INT, j INT), k INT) rows ({i:1,j:2},10),(NULL,20),({i:3,j:NULL},NULL). REPLACE expr may reference other table columns."
+  },
+  {
+   "q": "SELECT a.* FROM test3;",
+   "result": "BinderException | Binder Error: Cannot extract field from expression \"a.*\" because it is not a struct",
+   "note": "test3(a INT). Exact error for struct-star on a scalar column."
+  },
+  {
+   "q": "SELECT a.* FROM test4 AS a;",
+   "result": "DESC: [('a', STRUCT(i INTEGER, j INTEGER), ...), ('b', INTEGER, ...)] ROWS: [({'i': 7, 'j': 8}, 9)]",
+   "note": "test4(a STRUCT(i INT,j INT), b INT). TABLE ALIAS WINS: identical output to SELECT t.* FROM test4 AS t — table-star expansion, struct column a is NOT field-expanded."
+  },
+  {
+   "q": "SELECT a.* FROM test5;",
+   "result": "DESC: [('solo', INTEGER, ...)] ROWS: [(42,), (None,)]",
+   "note": "Single-field struct expands to one column. Side pin: STRUCT(only INT) is a ParserException — 'only' is reserved in the STRUCT type syntax."
+  },
+  {
+   "q": "SELECT a.* FROM test6;",
+   "result": "DESC: [('Weird Name', INTEGER, ...), ('UPPER', INTEGER, ...)] ROWS: [(1, 2)]",
+   "note": "test6(a STRUCT(\"Weird Name\" INT, \"UPPER\" INT)). Field names expand verbatim, case and space preserved (codepoints 0x57 0x65 0x69 0x72 0x64 0x20 0x4e 0x61 0x6d 0x65)."
+  },
+  {
+   "q": "SELECT 1 FROM test WHERE a.*;",
+   "result": "ParserException | Parser Error: STAR expression is not allowed in the WHERE clause. Use COLUMNS(*) instead.",
+   "note": "Parse-time rejection, not bind-time."
+  },
+  {
+   "q": "SELECT COUNT(a.*) FROM test;",
+   "result": "DESC: [('count_star()', BIGINT, ...)] ROWS: [(3,)]",
+   "note": "Silently rewritten to count_star(): counts the NULL-struct row too. NOT count of non-null structs."
+  },
+  {
+   "q": "SELECT * FROM test ORDER BY a.*;",
+   "result": "DESC: [('a', STRUCT(i INTEGER, j INTEGER), ...)] ROWS: [({'i': 1, 'j': 2},), ({'i': 3, 'j': None},), (None,)]",
+   "note": "Legal in ORDER BY; order consistent with expansion to (i, j) ASC NULLS LAST."
+  },
+  {
+   "q": "SELECT a.* FROM test GROUP BY a.*;",
+   "result": "DESC: [('i',...), ('j',...)] ROWS: [(None, None), (1, 2), (3, None)]",
+   "note": "Legal in GROUP BY; expands to the fields."
+  },
+  {
+   "q": "SELECT (a).* FROM test;",
+   "result": "ParserException | Parser Error: syntax error at or near \"*\" (caret at the *)",
+   "note": "Only the two-part a.* form parses; SELECT test.a.* FROM test fails identically."
+  },
+  {
+   "q": "SELECT a FROM test;",
+   "result": "fetchall: [({'i': 1, 'j': 2},), (None,), ({'i': 3, 'j': None},)] | .df(): dtype object, values [{'i': 1, 'j': 2}, None, {'i': 3, 'j': None}] | to_arrow_table() field a: StructType(struct<i: int32, j: int32>)",
+   "note": "Python receives structs as dicts (None for NULL struct); pandas dtype object; arrow struct<i: int32, j: int32>."
+  }
+ ],
+ "surprises": [
+  "Table alias shadows the struct column: SELECT a.* FROM test4 AS a does TABLE-star expansion (columns a, b), not struct-field expansion — the alias wins, silently.",
+  "COUNT(a.*) is silently rewritten to count_star() and returns 3, counting the NULL-struct row; it is not a struct-aware count.",
+  "EXCLUDE/REPLACE name matching is case-insensitive even for double-quoted identifiers: EXCLUDE(\"J\") removes j, EXCLUDE(\"weird name\") removes \"Weird Name\".",
+  "REPLACE(expr AS I) renames the output column to the alias's exact case 'I' while still matching field i — output name comes from the alias, not the struct.",
+  "Only the bare two-part form parses: test.a.* and (a).* are both parser errors.",
+  "EXCLUDE of all fields errors ONLY if the whole select list ends up empty; with another select item present the star contributes zero columns with no error.",
+  "a.* is accepted in GROUP BY and ORDER BY (expanding to fields), while WHERE rejects it at parse time with a hint to use COLUMNS(*)."
+ ],
+ "summary": "a.* on a STRUCT(i,j) column expands in-place to bare, unqualified field names in declaration order, with types from the struct; a NULL struct row yields NULL in every expanded field (identical output to SELECT a.i, a.j). EXCLUDE/REPLACE match field names case-insensitively — even double-quoted — but a REPLACE alias's exact case becomes the output column name, and REPLACE expressions may reference other columns of the table. Resolution order matters: if a table alias with the same name exists, the alias wins and a.* becomes a table star; struct-star only applies when no such table binding exists, and only the two-part form a.* parses (test.a.* and (a).* are syntax errors). Error pins: non-struct column gives 'Cannot extract field from expression \\\"a.*\\\" because it is not a struct'; unknown EXCLUDE/REPLACE names give 'Column \\\"x\\\" in EXCLUDE/REPLACE list not found in a'; a fully-emptied select list gives 'SELECT list is empty after resolving * expressions!' (but excluding all fields is fine if other select items remain). a.* is parse-rejected in WHERE ('STAR expression is not allowed in the WHERE clause. Use COLUMNS(*) instead.') yet accepted in GROUP BY/ORDER BY, and COUNT(a.*) silently becomes count_star(). Python-side: fetchall returns dicts/None, pandas dtype object, arrow type struct<i: int32, j: int32>."
+}

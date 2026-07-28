@@ -21,7 +21,7 @@ use crate::specializer::exec::{Batch, ColData, KeyBits, OutCol, ScalarVal, Stati
 use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, StaticTy, Ty};
 use crate::specializer::plan::StaticTable;
-use crate::specializer::{prepare, StaticSpec};
+use crate::specializer::{prepare_opaque, StaticSpec};
 use crate::types::{Base, FieldType};
 
 /// The scalar slice of the type lattice the specializer handles. `None`
@@ -506,20 +506,25 @@ impl DuckDBInferFn {
                 )))
             }
         };
+        // Unmappable row-column types reject only when REFERENCED (the
+        // binder knows them as opaque, star expansion included) — an
+        // unreferenced timestamp field must not block a scalar query.
         let mut in_cols = Vec::new();
-        for (name, ft) in schema::pydantic_model_fields_ordered(py, &model)? {
-            let ty = base_to_ty(&ft.base).ok_or_else(|| {
-                build_err(format!(
-                    "unsupported: row column '{name}' has a non-scalar type"
-                ))
-            })?;
-            in_cols.push(Col {
-                name,
-                ty: ColTy {
-                    ty,
-                    nullable: ft.nullable,
-                },
-            });
+        let mut opaque: Vec<(usize, String)> = Vec::new();
+        for (pos, (name, ft)) in schema::pydantic_model_fields_ordered(py, &model)?
+            .into_iter()
+            .enumerate()
+        {
+            match base_to_ty(&ft.base) {
+                Some(ty) => in_cols.push(Col {
+                    name,
+                    ty: ColTy {
+                        ty,
+                        nullable: ft.nullable,
+                    },
+                }),
+                None => opaque.push((pos, name)),
+            }
         }
 
         // Non-scalar static columns are omitted from the catalog rather than
@@ -553,7 +558,7 @@ impl DuckDBInferFn {
         }
 
         use super::specializer::PrepareError;
-        let prepared = match prepare(&sql, &row_table, &in_cols, &catalog) {
+        let prepared = match prepare_opaque(&sql, &row_table, &in_cols, &opaque, &catalog) {
             Ok(p) => p,
             // Unsupported/unparseable SQL might still be a static-tables-only
             // query (static driving table, aggregation, ORDER BY, DuckDB

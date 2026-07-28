@@ -1,0 +1,107 @@
+{
+ "topic": "reverse() grapheme-cluster semantics — exhaustive adversarial pin set",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "select REVERSE(a) FROM strings",
+   "result": "cols=['reverse(a)']; [('olleH',), ('DlLuH',), ('daeHr\\xf6toM',)] — MotörHead row cps: [0x64,0x61,0x65,0x48,0x72,0xf6,0x74,0x6f,0x4d]",
+   "note": "Corpus verbatim. Setup: CREATE TABLE strings(a VARCHAR, b VARCHAR); INSERT INTO strings VALUES ('Hello','World'),('HuLlD',NULL),('MotörHead','RÄcks'). ö stays precomposed 0xf6 — no normalization."
+  },
+  {
+   "q": "select REVERSE(b) FROM strings",
+   "result": "cols=['reverse(b)']; [('dlroW',), (None,), ('skc\\xc4R',)] — NULL row passes through as None; Ä stays 0xc4",
+   "note": "Corpus verbatim. NULL in, NULL out per row."
+  },
+  {
+   "q": "select REVERSE(a) FROM strings WHERE b IS NOT NULL",
+   "result": "cols=['reverse(a)']; [('olleH',), ('daeHr\\xf6toM',)]",
+   "note": "Corpus verbatim."
+  },
+  {
+   "q": "SELECT reverse(?) -- param ''",
+   "result": "[('',)]",
+   "note": "Empty string -> empty string. 'a'->'a', 'abc'->'cba' (cps [0x63,0x62,0x61])."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0x65,0x301] (e + combining acute)",
+   "result": "[0x65,0x301] UNCHANGED",
+   "note": "Single cluster kept intact, byte-preserved (no NFC). Same for [0x61,0x301,0x327] stacked marks: unchanged."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0x301,0x61] (leading combining mark + a)",
+   "result": "[0x61,0x301]",
+   "note": "Degenerate leading mark is its own cluster (UAX-29); cluster order reversed -> mark now attaches to 'a'. Roundtrip reverse(reverse(x))=x is FALSE here (re-clustering), output of double-reverse = [0x61,0x301]."
+  },
+  {
+   "q": "SELECT reverse(?) -- regional indicators, params RI prefixes of [0x1f1fa,0x1f1f8,0x1f1eb,0x1f1f7,0x1f1e9]",
+   "result": "2 RIs: UNCHANGED (one flag cluster). 3 RIs U,S,F -> [0x1f1eb,0x1f1fa,0x1f1f8] (F,US). 4 RIs U,S,F,R -> [0x1f1eb,0x1f1f7,0x1f1fa,0x1f1f8] (FR,US). 5 RIs U,S,F,R,D -> [0x1f1e9,0x1f1eb,0x1f1f7,0x1f1fa,0x1f1f8] (D,FR,US)",
+   "note": "RIs pair greedily from the LEFT (UAX-29 GB12/13), then cluster order reverses with pairs intact. Roundtrip FALSE for odd counts (3 RIs double-reversed -> S,F,U; 5 RIs -> S,R,U,D,F), TRUE for even counts. Matches UAX-29 extended exactly."
+  },
+  {
+   "q": "SELECT reverse(?) -- param family ZWJ emoji [0x1f468,0x200d,0x1f469,0x200d,0x1f467]",
+   "result": "UNCHANGED",
+   "note": "GB11 ZWJ emoji sequence = one cluster. Also unchanged: skin tone [0x1f44b,0x1f3fb], keycap [0x31,0xfe0f,0x20e3], heart+VS [0x2764,0xfe0f]."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0xd55c,0xad6d] 한국 precomposed; and [0x1112,0x1161,0x11ab] decomposed jamo",
+   "result": "precomposed -> [0xad6d,0xd55c] (syllables swapped, codepoints preserved); jamo L+V+T -> UNCHANGED [0x1112,0x1161,0x11ab]",
+   "note": "Jamo LVT sequence is one cluster; output NOT composed to 0xd55c — byte-preserving, no NFC/NFD anywhere."
+  },
+  {
+   "q": "SELECT reverse(?) -- param 'a\\r\\nb' [0x61,0xd,0xa,0x62]",
+   "result": "[0x62,0xa,0xd,0x61] = 'b\\n\\ra' — CRLF SPLIT and byte-reversed",
+   "note": "VIOLATES UAX-29 GB3 — because of an all-ASCII fast path. Also '\\r\\n' alone -> '\\n\\r'; 'a\\t\\r\\nb' -> 'b\\n\\r\\ta'; 'ab\\rcd\\nef' -> 'fe\\ndc\\rba'. Pure byte reversal whenever every char is ASCII."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0xf6,0xd,0xa,0x62] 'ö\\r\\nb'",
+   "result": "[0x62,0xd,0xa,0xf6] = 'b\\r\\nö' — CRLF KEPT TOGETHER",
+   "note": "One non-ASCII char anywhere switches to the grapheme path: CRLF is one cluster (GB3 honored). Also 'a\\r\\nö' -> 'ö\\r\\na'; 'é\\t\\r\\nb' -> 'b\\r\\n\\té' (cps [0x62,0xd,0xa,0x9,0xe9]); 'ö\\r\\n\\r\\n' -> '\\r\\n\\r\\nö'."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0xa,0x301] LF + combining mark",
+   "result": "[0x301,0xa]",
+   "note": "Mark does NOT attach to control chars (GB4/5 break after CR/LF/Control): mark is its own cluster. Also [0xf6,0xa,0x301] -> [0x301,0xa,0xf6] and [0xf6,0xd,0x301] -> [0x301,0xd,0xf6]."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0x61,0x200d,0x62] a ZWJ b",
+   "result": "[0x62,0x61,0x200d]",
+   "note": "GB9: no break before ZWJ, so 'a'+ZWJ is one cluster; break before 'b' (not Extended_Pictographic). ZWJ travels with the PRECEDING char."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0x600,0x31] Arabic number sign + digit",
+   "result": "UNCHANGED [0x600,0x31]",
+   "note": "Prepend binds (GB9b): one cluster. Proves DuckDB uses EXTENDED grapheme clusters, not legacy (legacy would split and give '1'+0x600)."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0x61,0x0,0x62] a NUL b",
+   "result": "[0x62,0x0,0x61]",
+   "note": "Embedded NUL accepted via parameter, preserved, treated as its own unit; roundtrip TRUE."
+  },
+  {
+   "q": "SELECT reverse(?) -- param [0x78,0x1f1fa,0x1f1f8,0x65,0x301,0x79] x+flag+é(decomposed)+y",
+   "result": "[0x79,0x65,0x301,0x1f1fa,0x1f1f8,0x78]",
+   "note": "Cluster order reversed, each cluster's codepoint order intact and byte-identical. Roundtrip TRUE."
+  },
+  {
+   "q": "SELECT reverse(NULL)",
+   "result": "cols=['reverse(NULL)']; [(None,)]",
+   "note": "NULL -> NULL."
+  },
+  {
+   "q": "SELECT reverse(123)",
+   "result": "duckdb.BinderException: Binder Error: No function matches the given name and argument types 'reverse(INTEGER_LITERAL)'. You might need to add explicit type casts.\\n\\tCandidate functions:\\n\\treverse(VARCHAR) -> VARCHAR\\n\\n\\nLINE 1: SELECT reverse(123)\\n               ^",
+   "note": "NO implicit cast to VARCHAR. reverse(1.5) fails identically with 'reverse(DECIMAL(2,1))', reverse(true) with 'reverse(BOOLEAN)'. Only overload: reverse(VARCHAR)->VARCHAR."
+  },
+  {
+   "q": "SELECT reverse(reverse(?)) = ? -- all inputs",
+   "result": "TRUE for every input EXCEPT: leading_mark [0x301,0x61] (False), ri_3 (False, -> S,F,U), ri_5 (False, -> S,R,U,D,F)",
+   "note": "Non-involution comes purely from UAX-29 re-clustering of the output, not from normalization; every individual cluster is byte-preserved."
+  }
+ ],
+ "surprises": [
+  "ASCII FAST PATH: all-ASCII strings are reversed byte-by-byte, so CRLF is SPLIT ('a\\r\\nb' -> 'b\\n\\ra', '\\r\\n' -> '\\n\\r'), violating UAX-29 GB3. One non-ASCII char anywhere in the string switches to grapheme-cluster reversal where CRLF stays together ('ö\\r\\nb' -> 'b\\r\\nö'). A pure unicode-segmentation implementation would get all-ASCII CRLF strings WRONG vs DuckDB — must branch: if s.is_ascii() reverse bytes, else reverse extended grapheme clusters.",
+  "reverse(123)/reverse(1.5)/reverse(true) are BinderExceptions (no implicit cast to VARCHAR; sole overload reverse(VARCHAR)->VARCHAR) — the specializer must reject or explicitly cast, not assume stringification.",
+  "reverse is NOT an involution: leading combining marks and odd regional-indicator counts re-cluster on the second pass (reverse(reverse(x)) != x)."
+ ],
+ "summary": "DuckDB 1.5.5 reverse() has two code paths. (1) If every character is ASCII, it byte-reverses — which splits CRLF ('a\\r\\nb' -> 'b\\n\\ra'), the only place it deviates from UAX-29 since ASCII has no other multi-char clusters. (2) Otherwise it reverses UAX-29 EXTENDED grapheme clusters exactly, byte-preserving each cluster with zero normalization: combining marks stay attached, degenerate leading marks are their own cluster, RIs pair greedily from the left (odd counts leave a trailing singleton), ZWJ emoji/keycap/VS sequences hold together, ZWJ after non-emoji travels with the preceding char, Hangul LVT jamo stay one cluster and are not composed, CRLF is one cluster, marks after CR/LF/controls stand alone, and U+0600 Prepend binds to the following char (proving extended, not legacy, clusters). Rust rule: `if s.is_ascii() { reverse bytes } else { unicode_segmentation::graphemes(s, true).rev().collect() }` reproduces every pin. NULL -> NULL; non-VARCHAR arguments are binder errors (no implicit cast), and reverse(reverse(x)) != x for leading-mark and odd-RI inputs."
+}

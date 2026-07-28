@@ -1716,3 +1716,65 @@ fn star_similar_to_and_columns() {
         other => panic!("wrong outcome: {:?}", other.err()),
     }
 }
+
+#[test]
+fn opaque_row_columns_reject_only_on_reference() {
+    // Model order: a (i64), d (opaque — e.g. a timestamp), s (str). The
+    // engine sees d as a positioned name with no lane: referencing it (star
+    // expansion included) is the named error; removing it serves.
+    let schema = cols(&[("a", Ty::I64, false), ("s", Ty::Str, true)]);
+    let opaque = vec![(1usize, "d".to_string())];
+    let prep_o = |sql: &str| {
+        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[]).map(|p| p.program)
+    };
+
+    // Untouched -> serves end to end.
+    let p = prep_o("SELECT a + 1 AS x FROM __THIS__").unwrap();
+    let f = compile(&p, vec![]).unwrap();
+    let got = run_snapshot(
+        &f,
+        &batch(1, vec![c_i64(&[Some(4)]), c_str(&[Some("k")])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["5"]]));
+
+    // Any reference path rejects with the same named error as before.
+    for sql in [
+        "SELECT d FROM __THIS__",
+        "SELECT __THIS__.d FROM __THIS__",
+        "SELECT a FROM __THIS__ WHERE d IS NULL",
+        "SELECT * FROM __THIS__",
+        "SELECT COLUMNS(*) FROM __THIS__",
+        "SELECT COLUMNS('d') FROM __THIS__",
+    ] {
+        let e = prep_o(sql).unwrap_err().to_string();
+        assert!(e.contains("non-scalar type"), "{sql}: {e}");
+    }
+
+    // Removed before the output -> serves, in model order.
+    let names = |sql: &str| {
+        prep_o(sql)
+            .unwrap()
+            .out_cols
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names("SELECT * EXCLUDE (d) FROM __THIS__"), ["a", "s"]);
+    assert_eq!(names("SELECT * LIKE 'a%' FROM __THIS__"), ["a"]);
+    assert_eq!(names("SELECT COLUMNS('a|s') FROM __THIS__"), ["a", "s"]);
+    // REPLACE keeps d's position but gives it a real lane.
+    assert_eq!(names("SELECT * REPLACE (7 AS d) FROM __THIS__"), ["a", "d", "s"]);
+
+    // Column-list alias is positional over the FULL model: stopping before
+    // d serves, reaching d rejects, and the count error includes d.
+    prep_o("SELECT x FROM __THIS__ AS u(x)").unwrap();
+    let e = prep_o("SELECT x FROM __THIS__ AS u(x, y)")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("non-scalar type"), "{e}");
+    let e = prep_o("SELECT x FROM __THIS__ AS u(w, x, y, z)")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("3 columns available but 4"), "{e}");
+}
