@@ -1,6 +1,6 @@
-# The architecture of the SQL specializer: partial evaluation for row serving
+# The architecture of Confit: partial evaluation for row serving
 
-**Abstract.** The SQL specializer (`DuckDBInferFn`) is a partial evaluator: it takes fixed SQL and frozen static tables at build time and emits a specialized native function whose only remaining input is the request batch. Its contract is deliberately narrow — for any SQL it either serves bit-for-bit identical to DuckDB 1.5.5 or refuses loudly at build time with a named error; there is no third mode (docs/known-limitations.md). This report describes the pipeline from token stream to native code, the IR design decisions that make whole bug classes unrepresentable rather than merely tested for, the shape contract that turns row-multiplicity into a static proof, and the boundary work that the measurements say is where serving time actually goes. It also records what was deliberately not built, and why the engine model justifies each omission. All numbers are measured (release builds, p50) on this project; the corpus arc ran 53 → 395 → 505 → 511 → 529 → 546 → 550 of 678 DuckDB-mined statements bit-exact, with zero FAILs at every point.
+**Abstract.** Confit (`DuckDBInferFn`) is a partial evaluator: it takes fixed SQL and frozen static tables at build time and emits a specialized native function whose only remaining input is the request batch. Its contract is deliberately narrow — for any SQL it either serves bit-for-bit identical to DuckDB 1.5.5 or refuses loudly at build time with a named error; there is no third mode (docs/known-limitations.md). This report describes the pipeline from token stream to native code, the IR design decisions that make whole bug classes unrepresentable rather than merely tested for, the shape contract that turns row-multiplicity into a static proof, and the boundary work that the measurements say is where serving time actually goes. It also records what was deliberately not built, and why the engine model justifies each omission. All numbers are measured (release builds, p50) on this project; the corpus arc ran 53 → 395 → 505 → 511 → 529 → 546 → 550 of 678 DuckDB-mined statements bit-exact, with zero FAILs at every point.
 
 ## 1. The problem shape
 
@@ -15,7 +15,7 @@ Measured concretely (docs/proposals/2026-07-28-columnar-path.md, titanic scenari
 | 1024 | 7.75 ms | 3.42 ms | 2.3× |
 | 16384–262144 | — | — | DuckDB wins 3–5× |
 
-DuckDB pays roughly 5.5–7 ms of per-query cost on every call regardless of batch size; the specializer pays it once at build. The crossover sits around 2–3k rows/call. Below it — the serving regime — the specializer wins by one to three orders of magnitude; above it, DuckDB's parallel columnar execution wins, and that is fine, because that is not serving (§8).
+DuckDB pays roughly 5.5–7 ms of per-query cost on every call regardless of batch size; Confit pays it once at build. The crossover sits around 2–3k rows/call. Below it — the serving regime — Confit wins by one to three orders of magnitude; above it, DuckDB's parallel columnar execution wins, and that is fine, because that is not serving (§8).
 
 The design (docs/superpowers/specs/2026-07-25-sql-specializer-design.md) frames this as the first Futamura projection: `prepare(sql, static_tables) -> f`, where binding-time analysis collapses everything static — a hash join against a frozen table becomes a probe of a prepare-time map; with no pipeline breakers left, the query is a straight-line function over baked-in data.
 
