@@ -878,7 +878,7 @@ fn gen_input(rng: &mut gen::Rng, p: &Program) -> Batch {
 /// meeting iadd, ftoi on inf, ...).
 #[test]
 fn fuzz_generated_programs_execute_deterministically() {
-    for seed in 0..150u64 {
+    for seed in 0..gen::fuzz_seeds(150) {
         let p = gen::gen_program(seed);
         let mut rng = gen::Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
         let statics = gen_statics(&mut rng, &p);
@@ -931,7 +931,7 @@ fn casemap_tables_sorted_and_marquee_pins() {
 fn fuzz_cranelift_agrees_with_interpreter() {
     use super::cranelift;
     // More seeds than the determinism fuzz: this is the backend contract.
-    for seed in 0..500u64 {
+    for seed in 0..gen::fuzz_seeds(500) {
         let p = gen::gen_program(seed);
         let mut rng = gen::Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
         let statics_i = gen_statics(&mut rng, &p);

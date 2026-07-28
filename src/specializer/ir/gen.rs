@@ -13,6 +13,18 @@ use super::{
     StaticTy, StrOp1, StrOp2, StrOp2i, StrOp3, Term, TrimSide, Ty, Value,
 };
 
+/// Seed count for a fuzz loop: `default` in the gate, overridden by
+/// `SPECIALIZER_FUZZ_SEEDS` for exploratory deep runs. Mirrors the regexp
+/// fuzzer's `REGEXP_FUZZ_N` knob so a deep audit never needs a source edit.
+/// Each seed keys a distinct xorshift stream, so raising this raises coverage
+/// rather than repeating programs.
+pub fn fuzz_seeds(default: u64) -> u64 {
+    match std::env::var("SPECIALIZER_FUZZ_SEEDS") {
+        Ok(s) => s.trim().parse().unwrap_or(default),
+        Err(_) => default,
+    }
+}
+
 pub struct Rng(u64);
 
 impl Rng {

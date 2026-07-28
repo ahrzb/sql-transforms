@@ -869,7 +869,7 @@ entry:
 
 #[test]
 fn fuzz_round_trip() {
-    for seed in 0..300u64 {
+    for seed in 0..gen::fuzz_seeds(300) {
         let p = gen::gen_program(seed);
         if let Err(errs) = verify(&p) {
             let msgs: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
