@@ -9,7 +9,7 @@ forces this document to change with it.
 **The contract.** For any SQL you hand it, the engine does exactly one of:
 
 1. **Serve it bit-for-bit identical to DuckDB** (verified continuously
-   against DuckDB's own test corpus: 505 of 678 statements as of wave B), or
+   against DuckDB's own test corpus: 546 of 678 statements as of stage B), or
 2. **Refuse loudly at BUILD time** — `DuckDBInferFn(...)` raises a
    `ValueError` naming the construct. Nothing is ever silently wrong or
    silently dropped at inference time.
@@ -30,8 +30,8 @@ rejected, permanently by design:
 |---|---|---|
 | Regex patterns must be constants (`regexp_matches(s, pattern_col)` rejects) | `unsupported: non-constant regex pattern (compiled at prepare in v0)` | Regexes compile at prepare; DuckDB compiles per row. Per-row compilation is the opposite of specialization. |
 | Replacement strings / regex options / extract group indexes must be constants | `non-constant regexp_replace replacement` etc. | Same. |
-| Static (join) tables must be provided at build time, with unique keys | `duplicate map key` | Joins are frozen hash maps baked into the function. Duplicate keys mean 1:N join multiplicity — a designed extension (stage B, TASK-50 notes) that is deliberately not built yet. NULL *values* serve since TASK-55 (they flow through as NULL); NULL *keys* drop the row, matching equi-join semantics. |
-| The dynamic table cannot be joined to itself | `joining the dynamic table to itself` | The batch is the probe side; using it as a build side too needs stage-B machinery. |
+| Static (join) tables must be provided at build time; under the DEFAULT shapes their keys must be unique | `duplicate map key` | Joins are frozen hash maps baked into the function. Duplicate keys mean 1:N join multiplicity, which SERVES under the opt-in `shape='many'` (TASK-59) — along with cross joins, inequality `ON` predicates, and constant `ON` clauses — with multiset parity vs DuckDB (its join output order is a measured hash-join accident; the engine emits probe order outer, build insertion order inner). Under `filter`/`map` the 1:1 contract is unchanged. NULL *values* serve since TASK-55; NULL *keys* never match. |
+| The dynamic table cannot be joined to itself | `joining the dynamic table to itself` | The batch is the probe side; using it as a build side too is the one stage-B piece still in progress (it will also require `shape='many'`). |
 | Exactly one row table drives the query | `the specializer takes exactly one row table`, `must be the dynamic table` | The serving contract is rows-in → rows-out for one entity stream. |
 
 ## 2. Out of scope for row-serving (by decision, not difficulty)
@@ -42,10 +42,11 @@ build time. `"filter"` (the default) is the engine's native 0..1;
 `"map"` statically PROVES exactly-one (`out[i] ↔ in[i]`, the strict
 serving guarantee) by rejecting anything that can drop a row — a WHERE
 clause, an INNER join (key misses drop), a static-tables-only constant
-query; `"many"` (0..N) is reserved for join multiplicity (stage B) and
-will be the only shape under which duplicate-key joins, cross/inequality
-joins, and self-joins ever build — multiplicity can never sneak into a
-serving path by default.
+query; `"many"` (0..N) is the multiplicity opt-in (stage B): duplicate-key
+joins, cross joins, and inequality/constant `ON` joins build ONLY under
+it (one join per query for now, named restriction) — multiplicity can
+never sneak into a serving path by default. Self-joins are still
+rejected under every shape (in progress).
 
 The engine serves **row-at-a-time feature transforms**. Whole-relation
 constructs are out of scope because their output shape is not

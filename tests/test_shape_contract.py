@@ -65,8 +65,18 @@ def test_filter_default_unchanged():
         assert [r["a"] for r in got] == [2]
 
 
-def test_many_is_reserved_and_bad_values_are_named():
-    with pytest.raises(ValueError, match="stage B"):
-        build("SELECT a FROM __THIS__", shape="many")
+def test_many_enables_multiplicity_and_bad_values_are_named():
+    # 'many' is the stage-B opt-in: dup-key joins build ONLY under it.
+    dup = pa.table({"id": [1, 1], "v": [10, 11]})
+    with pytest.raises(ValueError, match="duplicate map key"):
+        build("SELECT a, v FROM __THIS__ JOIN d ON a = d.id", statics={"d": dup})
+    fn = build(
+        "SELECT a, v FROM __THIS__ JOIN d ON a = d.id",
+        shape="many",
+        statics={"d": dup},
+    )
+    assert fn.shape == "many"
+    got = fn.infer({"__THIS__": [T(a=1), T(a=2)]})
+    assert sorted(r["v"] for r in got) == [10, 11]
     with pytest.raises(ValueError, match="must be 'map', 'filter', or 'many'"):
         build("SELECT a FROM __THIS__", shape="projection")
