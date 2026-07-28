@@ -41,12 +41,22 @@ def test_non_constant_regex_pattern_rejects():
 
 def test_static_tables_are_frozen_unique_key_maps():
     dup = static({"id": "int", "v": "int"}, [{"id": 1, "v": 1}, {"id": 1, "v": 2}])
-    # Duplicate keys = 1:N multiplicity — designed (stage B), not built.
+    # Duplicate keys = 1:N multiplicity: rejected under the DEFAULT shapes,
+    # served under the opt-in shape='many' (stage B, TASK-59).
     rejects(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
         "duplicate map key",
         {"d": dup},
     )
+    fn = DuckDBInferFn(
+        "SELECT v FROM __THIS__ JOIN d ON a = d.id",
+        row_tables={"__THIS__": T},
+        static_tables={"d": dup},
+        output="dict",
+        shape="many",
+    )
+    got = sorted(r["v"] for r in fn.infer({"__THIS__": [T(a=1)]}))
+    assert got == [1, 2]
     # NULL VALUES serve since TASK-55 (they ride as validity+payload pairs);
     # only NULL keys keep the drop rule (a NULL never equi-matches).
     withnull = static({"id": "int", "v": "int?"}, [{"id": 1, "v": None}])
