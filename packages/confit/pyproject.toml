@@ -23,4 +23,7 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]
+# The repo-root `benchmarks` package carries the shared serving-scenario
+# parity fixtures used by these tests.
+pythonpath = ["../.."]
 testpaths = ["tests"]

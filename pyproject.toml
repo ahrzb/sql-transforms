@@ -48,6 +48,11 @@ known-third-party = ["datafusion", "duckdb"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]
+# `benchmarks/` lives at the repo root and is imported by both packages' test
+# suites (the serving scenarios are the shared parity fixtures). `python -m
+# pytest` would put the cwd on sys.path and hide this; the `pytest` console
+# script does not, so state it.
+pythonpath = ["."]
 # Scope collection: the duckdb/ source clone (reference corpus) carries its own
 # test_*.py scripts that break under our pytest. Every package's tests are
 # listed so `pytest` from the repo root is the whole gate.
