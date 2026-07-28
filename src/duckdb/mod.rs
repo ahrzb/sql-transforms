@@ -7,6 +7,8 @@
 //! is only the Python boundary — schema extraction on the way in, map
 //! materialization for the join probes, output-model rows on the way out.
 
+mod arrow;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -869,6 +871,33 @@ impl DuckDBInferFn {
     /// `SpecializedTransform.infer_batch` calls this.
     fn infer_rows(&self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
         self.run_rows(py, &rows)
+    }
+
+    /// The columnar boundary (TASK-60): a single-chunk pa.Table or
+    /// RecordBatch in, a pa.Table out — zero per-value Python objects on
+    /// either side. Columns match the row model by NAME with strict
+    /// dtypes (int64 / double / string / bool; cast first otherwise).
+    /// Values are byte-identical to infer(); under shape='map' the output
+    /// aligns positionally with the input.
+    fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let (fun, in_cols, out_cols) = match &self.engine {
+            Engine::Compiled {
+                fun,
+                in_cols,
+                out_cols,
+                ..
+            } => (fun, in_cols, out_cols),
+            Engine::Constant { .. } => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "infer_arrow: a static-tables-only query emits fixed rows — use infer()",
+                ))
+            }
+        };
+        let input = arrow::ingest(py, &batch, in_cols)?;
+        let mut st = fun.new_state();
+        fun.run(&input, &mut st)
+            .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
+        arrow::emit(py, out_cols, &st)
     }
 }
 
