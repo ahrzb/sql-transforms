@@ -2337,3 +2337,86 @@ fn many_shape_keyless_and_inequality_joins() {
         rows(&[&["1", "NULL"], &["2", "NULL"], &["3", "NULL"]])
     );
 }
+
+#[test]
+fn many_shape_self_joins() {
+    // Stage-B self-joins: the batch is BOTH sides — a keyless batchmap
+    // built per call, the whole ON as residual (cross-then-filter is
+    // bit-identical under multiplicity; pins-stageB).
+    let schema = cols(&[("i", Ty::I64, false), ("j", Ty::I64, false)]);
+    let prep_many = |sql: &str| {
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &[], &[], true)
+    };
+    let input = || {
+        batch(
+            2,
+            vec![c_i64(&[Some(1), Some(2)]), c_i64(&[Some(10), Some(20)])],
+        )
+    };
+    let run_many = |sql: &str| -> Result<Vec<Vec<String>>, String> {
+        let p = prep_many(sql).map_err(|e| e.to_string())?;
+        let f = compile(&p.program, vec![StaticData::Map(Vec::new())])
+            .map_err(|e| e.to_string())?;
+        run_snapshot(&f, &input()).map_err(|e| e.to_string())
+    };
+
+    // Comma cross self-join: 2x2 in probe-outer/batch-insertion order.
+    assert_eq!(
+        run_many("SELECT i1.i, i2.j FROM __THIS__ i1, __THIS__ i2").unwrap(),
+        rows(&[&["1", "10"], &["1", "20"], &["2", "10"], &["2", "20"]])
+    );
+    // Equi conjuncts stay WHERE (cross-then-filter).
+    assert_eq!(
+        run_many("SELECT i1.i, i2.j FROM __THIS__ i1, __THIS__ i2 WHERE i1.i = i2.i")
+            .unwrap(),
+        rows(&[&["1", "10"], &["2", "20"]])
+    );
+    // ON self-join, inequality + LEFT null-extension.
+    assert_eq!(
+        run_many("SELECT i1.i, i2.i FROM __THIS__ i1 JOIN __THIS__ i2 ON i1.i > i2.i")
+            .unwrap(),
+        rows(&[&["2", "1"]])
+    );
+    assert_eq!(
+        run_many(
+            "SELECT i1.i, i2.i FROM __THIS__ i1 LEFT JOIN __THIS__ i2 ON i1.i > i2.i"
+        )
+        .unwrap(),
+        rows(&[&["1", "NULL"], &["2", "1"]])
+    );
+    // Star EXCLUDE over the self-join (the corpus shapes): unqualified
+    // strips both copies; qualified strips one side's.
+    let p = prep_many("SELECT * EXCLUDE (i) FROM __THIS__ i1, __THIS__ i2").unwrap();
+    assert_eq!(
+        p.program
+            .out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        ["j", "j_1"] // dup names go through the boundary rename
+    );
+    let p = prep_many("SELECT i1.* EXCLUDE (i), i2.* EXCLUDE (j) FROM __THIS__ i1, __THIS__ i2")
+        .unwrap();
+    assert_eq!(
+        p.program
+            .out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        ["j", "i"]
+    );
+    // Default shapes: still the named rejection.
+    let e = prep(
+        "SELECT i1.i FROM __THIS__ i1, __THIS__ i2",
+        &schema,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("dynamic table"), "{e}");
+    // USING self-join: named stage-B follow-up.
+    let e = match prep_many("SELECT * FROM __THIS__ i1 JOIN __THIS__ i2 USING (i)") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("USING self-join must stay a named rejection"),
+    };
+    assert!(e.contains("USING/NATURAL"), "{e}");
+}

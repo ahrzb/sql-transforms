@@ -818,7 +818,7 @@ fn gen_statics(rng: &mut gen::Rng, p: &Program) -> Vec<StaticData> {
                 StaticData::Map(entries)
             }
             // The generator never declares multimaps (see gen.rs).
-            StaticTy::MultiMap { .. } => StaticData::Map(Vec::new()),
+            StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. } => StaticData::Map(Vec::new()),
         })
         .collect()
 }

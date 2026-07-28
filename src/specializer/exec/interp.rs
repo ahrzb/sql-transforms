@@ -90,6 +90,10 @@ struct Ctx<'a> {
     out: &'a mut [OutCol],
     input: &'a Batch,
     statics: &'a [PreparedStatic],
+    /// Stage-B self-join: the batch's rows flattened like multimap values
+    /// (nullable -> validity+payload). Empty unless the program declares a
+    /// batchmap static.
+    batch_rows: &'a [Vec<ScalarVal>],
     row: usize,
 }
 
@@ -108,6 +112,9 @@ pub(super) enum PreparedStatic {
     MultiMap {
         entries: Vec<(Vec<KeyBits>, Vec<ScalarVal>)>,
     },
+    /// Stage-B self-join: the rows come from the BATCH, flattened per call
+    /// in `run` (see `build_batch_rows`) — nothing is prepared here.
+    BatchMap,
 }
 
 struct CBlock {
@@ -147,6 +154,9 @@ pub struct InterpFn {
     statics: Vec<PreparedStatic>,
     in_decl: Vec<(Ty, bool)>,
     out_decl: Vec<Ty>,
+    /// True when a batchmap static exists: `run` flattens the batch's
+    /// rows before the row loop (stage-B self-joins).
+    has_batch_map: bool,
 }
 
 pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, CompileError> {
@@ -190,6 +200,7 @@ pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, Compil
         statics: prepared,
         in_decl: p.in_cols.iter().map(|c| (c.ty.ty, c.ty.nullable)).collect(),
         out_decl: p.out_cols.iter().map(|c| c.ty.ty).collect(),
+        has_batch_map: p.statics.iter().any(|s| matches!(s, StaticTy::BatchMap { .. })),
     })
 }
 
@@ -225,6 +236,13 @@ impl InterpFn {
         }
         reserve_out(&mut st.out, input.rows);
 
+        // Stage-B self-joins: flatten the batch ONCE per call into the
+        // multimap-value layout (nullable -> validity+payload).
+        let batch_rows: Vec<Vec<ScalarVal>> = if self.has_batch_map {
+            build_batch_rows(input, &self.in_decl)
+        } else {
+            Vec::new()
+        };
         let mut emitted = 0usize;
         for row in 0..input.rows {
             let mut ctx = Ctx {
@@ -233,6 +251,7 @@ impl InterpFn {
                 out: &mut st.out,
                 input,
                 statics: &self.statics,
+                batch_rows: &batch_rows,
                 row,
             };
             let mut bi = 0usize;
@@ -375,6 +394,45 @@ pub(super) fn reserve_out(out: &mut [OutCol], rows: usize) {
     }
 }
 
+/// Flatten the batch into multimap-value rows for a batchmap static:
+/// per input row, each column contributes payload (non-nullable) or
+/// validity + payload (nullable), in declaration order — the same layout
+/// the lowering declared for the batchmap's values.
+fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>> {
+    let mut rows = Vec::with_capacity(input.rows);
+    for r in 0..input.rows {
+        let mut vals = Vec::new();
+        for (ci, &(ty, nullable)) in in_decl.iter().enumerate() {
+            let c = &input.cols[ci];
+            let valid = col_valid(c, r);
+            if nullable {
+                vals.push(ScalarVal::I1(valid));
+            }
+            let v = if valid {
+                match c {
+                    ColData::I1 { data, .. } => ScalarVal::I1(data[r]),
+                    ColData::I64 { data, .. } => ScalarVal::I64(data[r]),
+                    ColData::F64 { data, .. } => ScalarVal::F64(data[r]),
+                    ColData::Str { buf, spans, .. } => {
+                        let sp = spans[r];
+                        ScalarVal::Str(buf[sp.off as usize..(sp.off + sp.len) as usize].to_string())
+                    }
+                }
+            } else {
+                match ty {
+                    Ty::I1 => ScalarVal::I1(false),
+                    Ty::I64 => ScalarVal::I64(0),
+                    Ty::F64 => ScalarVal::F64(0.0),
+                    Ty::Str => ScalarVal::Str(String::new()),
+                }
+            };
+            vals.push(v);
+        }
+        rows.push(vals);
+    }
+    rows
+}
+
 pub(super) fn prepare_statics(
     p: &Program,
     statics: Vec<StaticData>,
@@ -451,6 +509,19 @@ pub(super) fn prepare_statics(
                 // engine's documented emission order for 1:N matches.
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 prepared.push(PreparedStatic::MultiMap { entries });
+            }
+            (StaticTy::BatchMap { .. }, StaticData::Map(entries)) => {
+                if !entries.is_empty() {
+                    return Err(CompileError::Static(format!(
+                        "@{i}: batchmap takes no prepared entries"
+                    )));
+                }
+                prepared.push(PreparedStatic::BatchMap);
+            }
+            (StaticTy::BatchMap { .. }, StaticData::Scalar { .. }) => {
+                return Err(CompileError::Static(format!(
+                    "@{i}: declared batchmap, got scalar data"
+                )))
             }
             (StaticTy::MultiMap { .. }, StaticData::Scalar { .. }) => {
                 return Err(CompileError::Static(format!(
@@ -2223,19 +2294,25 @@ fn compile_inst(
             let static_id = static_id as usize;
             let (start, end) = (sl(slots, start), sl(slots, end));
             let keys: Vec<usize> = keys.iter().map(|k| sl(slots, *k)).collect();
+            let is_batch = matches!(&p.statics[static_id], StaticTy::BatchMap { .. });
             Box::new(move |ctx| {
-                let PreparedStatic::MultiMap { entries } = &ctx.statics[static_id] else {
-                    unreachable!("static kind checked at compile");
-                };
-                let (lo, hi) = if keys.is_empty() {
-                    (0, entries.len())
+                let (lo, hi) = if is_batch {
+                    (0, ctx.batch_rows.len())
                 } else {
-                    let lo = entries
-                        .partition_point(|(k, _)| cmp_key(k, &keys, ctx) == std::cmp::Ordering::Less);
-                    let hi = entries.partition_point(|(k, _)| {
-                        cmp_key(k, &keys, ctx) != std::cmp::Ordering::Greater
-                    });
-                    (lo, hi)
+                    let PreparedStatic::MultiMap { entries } = &ctx.statics[static_id] else {
+                        unreachable!("static kind checked at compile");
+                    };
+                    if keys.is_empty() {
+                        (0, entries.len())
+                    } else {
+                        let lo = entries.partition_point(|(k, _)| {
+                            cmp_key(k, &keys, ctx) == std::cmp::Ordering::Less
+                        });
+                        let hi = entries.partition_point(|(k, _)| {
+                            cmp_key(k, &keys, ctx) != std::cmp::Ordering::Greater
+                        });
+                        (lo, hi)
+                    }
                 };
                 ctx.regs[start] = RegVal::I64(lo as i64);
                 ctx.regs[end] = RegVal::I64(hi as i64);
@@ -2250,11 +2327,21 @@ fn compile_inst(
             let static_id = static_id as usize;
             let idx = sl(slots, idx);
             let dsts: Vec<usize> = dsts.iter().map(|d| sl(slots, *d)).collect();
+            let is_batch = matches!(&p.statics[static_id], StaticTy::BatchMap { .. });
             Box::new(move |ctx| {
+                let i = as_i64(ctx.regs[idx]) as usize;
+                if is_batch {
+                    let Some(row) = ctx.batch_rows.get(i) else {
+                        return Err(Trap("probe.read index out of range (lowering bug)".into()));
+                    };
+                    for (di, v) in dsts.iter().zip(row.iter()) {
+                        ctx.regs[*di] = scalar_to_reg(v, ctx.arena);
+                    }
+                    return Ok(());
+                }
                 let PreparedStatic::MultiMap { entries } = &ctx.statics[static_id] else {
                     unreachable!("static kind checked at compile");
                 };
-                let i = as_i64(ctx.regs[idx]) as usize;
                 let Some(row) = entries.get(i) else {
                     return Err(Trap("probe.read index out of range (lowering bug)".into()));
                 };

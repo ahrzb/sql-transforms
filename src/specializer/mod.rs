@@ -28,6 +28,9 @@ pub use frontend::PrepareError;
 /// becomes f64 here), valued by `val_cols`. Rows with a NULL key are dropped
 /// (a NULL never equi-matches); a NULL in a value column is an error.
 pub struct StaticSpec {
+    /// Stage-B self-join: no materialization — the build side is the
+    /// BATCH, assembled per call by the executor.
+    pub batch: bool,
     pub table: String,
     pub key_cols: Vec<String>,
     pub val_cols: Vec<String>,
@@ -78,7 +81,7 @@ pub fn prepare_opaque(
     many: bool,
 ) -> Result<Prepared, PrepareError> {
     let (rel, joins, out_cols, regexes) =
-        frontend::frontend(sql, this_name, in_cols, opaque, structs, statics)?;
+        frontend::frontend(sql, this_name, in_cols, opaque, structs, statics, many)?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
     let mut program =
         lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run", many)?;
@@ -95,8 +98,18 @@ pub fn prepare_opaque(
     let specs = joins
         .iter()
         .map(|j| {
+            if j.batch {
+                return StaticSpec {
+                    batch: true,
+                    table: String::new(),
+                    key_cols: Vec::new(),
+                    val_cols: Vec::new(),
+                    val_nullable: Vec::new(),
+                };
+            }
             let t = &statics[j.table];
             StaticSpec {
+                batch: false,
                 table: t.name.clone(),
                 key_cols: j
                     .key_cols
@@ -144,10 +157,17 @@ fn one_row_blocker(
     }
     for j in joins {
         if j.kind != plan::JoinKind::Left {
+            if j.batch {
+                return Some("an INNER self-join drops rows on a miss".to_string());
+            }
             return Some(format!(
                 "INNER JOIN '{}' drops rows on a key miss (use LEFT JOIN)",
                 statics[j.table].name
             ));
+        }
+        if j.batch {
+            // A LEFT self-join still multiplies rows — never exactly-one.
+            return Some("a self-join multiplies rows".to_string());
         }
     }
     None

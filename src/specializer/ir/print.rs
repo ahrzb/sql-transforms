@@ -22,6 +22,9 @@ pub fn print(p: &Program) -> String {
             StaticTy::MultiMap { keys, values } => {
                 let _ = writeln!(s, "multimap({}) -> ({})", tys(keys), tys(values));
             }
+            StaticTy::BatchMap { values } => {
+                let _ = writeln!(s, "batchmap() -> ({})", tys(values));
+            }
         }
     }
     for (i, re) in p.regexes.iter().enumerate() {

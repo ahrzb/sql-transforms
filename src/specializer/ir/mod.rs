@@ -183,6 +183,11 @@ pub enum StaticTy {
     /// flat row range (ProbeRange -> [start, end), ProbeRead per index).
     /// Zero keys = the keyless one-bucket join (cross/inequality).
     MultiMap { keys: Vec<Ty>, values: Vec<Ty> },
+    /// Stage-B self-join: the BATCH as build side, assembled per call by
+    /// the executor (always keyless; the ON is the join's residual).
+    /// `values` = the batch's columns flattened like multimap values
+    /// (nullable -> validity+payload pairs).
+    BatchMap { values: Vec<Ty> },
 }
 
 /// SSA value id. Presentation names are not stored; the printer derives

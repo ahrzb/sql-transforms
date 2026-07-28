@@ -216,7 +216,7 @@ fn load_all(
             }
             // The random-program generator doesn't emit multiplicity loops
             // (stage-B programs are exercised by targeted tests instead).
-            StaticTy::MultiMap { .. } => {
+            StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. } => {
             }
         }
     }

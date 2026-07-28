@@ -69,10 +69,29 @@ def test_static_tables_are_frozen_unique_key_maps():
 
 
 def test_dynamic_self_join_rejects():
+    # Default shapes: the original named rejection. Under shape='many' the
+    # batch becomes the build side and ON self-joins SERVE (stage B).
     rejects(
         "SELECT t2.a FROM __THIS__ JOIN __THIS__ t2 ON __THIS__.a = t2.a",
         "dynamic table",
     )
+    fn = DuckDBInferFn(
+        "SELECT t2.a FROM __THIS__ JOIN __THIS__ t2 ON __THIS__.a = t2.a",
+        row_tables={"__THIS__": T},
+        static_tables={},
+        output="dict",
+        shape="many",
+    )
+    got = sorted(r["a"] for r in fn.infer({"__THIS__": [T(a=1), T(a=2)]}))
+    assert got == [1, 2]
+    # USING/NATURAL self-joins stay a named follow-up rejection.
+    with pytest.raises(ValueError, match="USING/NATURAL"):
+        DuckDBInferFn(
+            "SELECT * FROM __THIS__ t1 JOIN __THIS__ t2 USING (a)",
+            row_tables={"__THIS__": T},
+            static_tables={},
+            shape="many",
+        )
 
 
 # ---- 2. Out of scope for row-serving --------------------------------------
