@@ -773,10 +773,16 @@ impl DuckDBInferFn {
                 }
             },
         };
-        // The columnar core (TASK-61): compiled from the same program with
-        // freshly materialized statics; a rejection (multiplicity, cycles)
-        // just means infer_arrow uses the row fn.
-        let columnar_fn = {
+        // The columnar core (TASK-61): OPT-IN via SPECIALIZER_COLUMNAR=1.
+        // Measured (benchmarks/scaling_results.json): the v1 core computes
+        // at row-core parity (same scalar helpers per row) with a per-call
+        // allocation cost that hurts small batches — defaulting it on
+        // would regress; it ships as the verified foundation for true
+        // vectorized kernels. A rejection (multiplicity, cycles) means
+        // the row fn regardless.
+        let columnar_fn = if std::env::var_os("SPECIALIZER_COLUMNAR").is_none() {
+            None
+        } else {
             let mut data = Vec::with_capacity(prepared.statics.len());
             let mut ok = true;
             for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {

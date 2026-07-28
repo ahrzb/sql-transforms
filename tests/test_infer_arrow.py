@@ -127,3 +127,21 @@ def test_sliced_and_recordbatch_inputs():
     assert fn.infer_arrow(sliced).to_pylist() == sliced.to_pylist()
     rb = tbl.to_batches()[0]
     assert fn.infer_arrow(rb).to_pylist() == tbl.to_pylist()
+
+
+def test_columnar_core_differential(monkeypatch):
+    # The batch core is OPT-IN (measured: v1 computes at row-core parity
+    # with a per-call allocation cost — see benchmarks/scaling_results.json
+    # and the TASK-61 report). Under the flag, every scenario must still be
+    # bit-identical to the row path.
+    monkeypatch.setenv("SPECIALIZER_COLUMNAR", "1")
+    for mod in sc.all_scenarios():
+        statics = mod.make_statics(sc.SEED)
+        fn = sc.build_spec_fn(mod, statics, output="dict")
+        assert fn.arrow_backend == "columnar"
+        rows_d = mod.make_rows(sc.SEED + 11, 96)
+        model = sc.row_model(mod.ROW_SCHEMA)
+        _cmp(fn, [model(**r) for r in rows_d], sc.rows_table(mod, rows_d))
+    monkeypatch.delenv("SPECIALIZER_COLUMNAR")
+    fn = sc.build_spec_fn(sc.load("titanic"), sc.load("titanic").make_statics(sc.SEED))
+    assert fn.arrow_backend in ("cranelift", "interpreter")
