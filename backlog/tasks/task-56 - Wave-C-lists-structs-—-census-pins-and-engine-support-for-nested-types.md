@@ -3,10 +3,10 @@ id: TASK-56
 title: >-
   Wave A structural tails: structs-as-lanes + dialect/regex/ingest tails (re-cut
   from lists/structs after census)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-27 23:15'
-updated_date: '2026-07-28 00:25'
+updated_date: '2026-07-28 01:08'
 labels:
   - specializer
   - wave-c
@@ -34,13 +34,13 @@ Same rhythm as every wave: pins fleet -> spec in docs/superpowers/specs/ -> stag
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Case-level census committed with the spec (buckets of all 167 non-matches; true struct/list pool named)
-- [ ] #2 DuckDB pins spec for every scope item (struct expansion/NULL semantics, FROM colon alias, reverse graphemes vs unicode-segmentation, COLUMNS(* REPLACE), NULL regex patterns) with raw pin JSONs
-- [ ] #3 Struct-star + nested field access serve bit-identical to DuckDB (oracle tests; structs flattened to scalar lanes, no new runtime types)
-- [ ] #4 FROM-position colon alias, paren-less * REPLACE, COLUMNS(* REPLACE), constant-NULL regex pattern serve with oracle tests
-- [ ] #5 reverse() serves with UAX-29 grapheme semantics; limitations-doc row removed + twin test flipped in the same commit
-- [ ] #6 Unreferenced non-scalar row columns no longer reject; referenced ones keep the named error (tests both ways)
-- [ ] #7 Corpus replay: match count strictly above 511, zero FAILs; full gate green (cargo + pytest incl. twin + fuzzer) on release build
+- [x] #1 Case-level census committed with the spec (buckets of all 167 non-matches; true struct/list pool named)
+- [x] #2 DuckDB pins spec for every scope item (struct expansion/NULL semantics, FROM colon alias, reverse graphemes vs unicode-segmentation, COLUMNS(* REPLACE), NULL regex patterns) with raw pin JSONs
+- [x] #3 Struct-star + nested field access serve bit-identical to DuckDB (oracle tests; structs flattened to scalar lanes, no new runtime types)
+- [x] #4 FROM-position colon alias, paren-less * REPLACE, COLUMNS(* REPLACE), constant-NULL regex pattern serve with oracle tests
+- [x] #5 reverse() serves with UAX-29 grapheme semantics; limitations-doc row removed + twin test flipped in the same commit
+- [x] #6 Unreferenced non-scalar row columns no longer reject; referenced ones keep the named error (tests both ways)
+- [x] #7 Corpus replay: match count strictly above 511, zero FAILs; full gate green (cargo + pytest incl. twin + fuzzer) on release build
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -50,3 +50,15 @@ CENSUS RESULT (pre-pins, changes the wave's premise): the '~25 lists/structs cas
 
 KEY DESIGN INSIGHT for the struct pool: all 6 struct cases have SCALAR outputs (a.* explodes the struct; t.t.t.t is INT). Structs are fixed-shape, so struct row columns can flatten to scalar lanes at bind time - no new runtime type, no list machinery, both backends work unchanged. Scope will be re-cut after the user picks from the reshaped menu.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Wave A shipped as PR #43 (branch task-56-wave-c, 5 commits): corpus 511 -> 529 match / 149 clean-unsupported / 0 FAIL of 678, no new runtime types.
+
+Delivered: (1) lazy non-scalar rejection — opaque row columns reject on REFERENCE (star included, model-order interleaved, EXCLUDE/filter/REPLACE remove them); (2) FROM-position colon alias via token rewrite (measured == AS form); (3) paren-less * REPLACE wrap honoring the measured one-item comma rule; (4) CAST-NULL regex arguments across the family; (5) reverse() lifted from the wave-3 descope — DuckDB's ASCII byte path (splits CRLF, measured) + UAX-29 extended graphemes via unicode-segmentation, limitations row removed + twin flipped same commit; (6) COLUMNS(* REPLACE/EXCLUDE) through the shared star expansion (sqlparser parses WildcardWithOptions natively); (7) structs-as-lanes — nested pydantic models flatten to dotted-path leaf lanes, binder resolves n-part references longest-prefix-with-backtracking per pins, struct-star with case-insensitive EXCLUDE/REPLACE and alias-case naming, both boundaries walk ingest paths with NULL short-circuit; IR/verify/exec untouched.
+
+Pins: docs/superpowers/specs/2026-07-28-waveA-structural-tails.md + pins-waveA/*.json (6 fleet agents, 136 pins) + census-all-nonmatches.json. Key traps caught by measuring first: reverse's ASCII fast path, paren-less REPLACE comma semantics, table-alias-beats-struct-column, quoted-identifier case-insensitivity in struct EXCLUDE.
+
+Gate: cargo 163 green, pytest 607 + 13 xfail (fuzzer + twin included), cranelift verified serving struct+reverse (no silent fallback). known-limitations.md updated in lockstep.
+<!-- SECTION:FINAL_SUMMARY:END -->
