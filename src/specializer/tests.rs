@@ -1958,3 +1958,54 @@ fn reverse_ascii_byte_path_and_grapheme_path() {
         assert!(e.contains("no function matches reverse"), "{sql}: {e}");
     }
 }
+
+#[test]
+fn columns_star_with_modifiers() {
+    // pins-waveA/columns-replace.json: COLUMNS(* <modifiers>) as a bare
+    // select item == * <modifiers> (names, order, values). The regex+
+    // modifier combo is a DuckDB parser error and stays rejected.
+    let schema = cols(&[("a", Ty::I64, false), ("b", Ty::I64, false)]);
+    let input = || batch(1, vec![c_i64(&[Some(1)]), c_i64(&[Some(2)])]);
+    let got = run_sql(
+        "SELECT COLUMNS(* REPLACE (a + 10 AS a, b + 20 AS b)) FROM __THIS__",
+        &schema,
+        input(),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["11", "22"]]));
+    let p = prep(
+        "SELECT COLUMNS(* REPLACE (a + 10 AS a)) FROM __THIS__",
+        &schema,
+    )
+    .unwrap();
+    assert_eq!(
+        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    for (sql, want) in [
+        ("SELECT COLUMNS(* EXCLUDE (b)) FROM __THIS__", vec!["a"]),
+        ("SELECT COLUMNS(* EXCLUDE b) FROM __THIS__", vec!["a"]),
+    ] {
+        let p = prep(sql, &schema).unwrap();
+        assert_eq!(
+            p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            want,
+            "{sql}"
+        );
+    }
+    // Alias stamps every expansion (same rule as COLUMNS('re') AS x).
+    let p = prep(
+        "SELECT COLUMNS(* REPLACE (a + 10 AS a)) AS x FROM __THIS__",
+        &schema,
+    )
+    .unwrap();
+    assert_eq!(
+        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["x", "x_1"]
+    );
+    // COLUMNS('re' REPLACE ...) is a DuckDB parser error — stays rejected.
+    let e = prep("SELECT COLUMNS('a' REPLACE (a+1 AS a)) FROM __THIS__", &schema)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("parse error") || e.contains("unsupported"), "{e}");
+}
