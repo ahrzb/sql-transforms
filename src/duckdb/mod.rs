@@ -495,12 +495,13 @@ pub struct DuckDBInferFn {
     #[pyo3(get)]
     output_model: Py<PyAny>,
     output_dicts: bool,
+    shape_map: bool,
 }
 
 #[pymethods]
 impl DuckDBInferFn {
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None, output=None))]
+    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None, output=None, shape=None))]
     fn new(
         py: Python<'_>,
         sql: String,
@@ -508,7 +509,27 @@ impl DuckDBInferFn {
         static_tables: HashMap<String, Py<PyAny>>,
         output_model: Option<Py<PyAny>>,
         output: Option<String>,
+        shape: Option<String>,
     ) -> PyResult<Self> {
+        // The row-shape contract (TASK-58): "filter" (default) is today's
+        // 0..1 rows out per row in; "map" statically PROVES exactly-one
+        // (out[i] <-> in[i]) or refuses at build; "many" is reserved for
+        // join multiplicity (stage B) and is the only shape under which
+        // those constructs will ever build.
+        let strict_map = match shape.as_deref() {
+            None | Some("filter") => false,
+            Some("map") => true,
+            Some("many") => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "shape='many' is reserved for join multiplicity (stage B — not built yet)",
+                ))
+            }
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "shape must be 'map', 'filter', or 'many', got '{other}'"
+                )))
+            }
+        };
         // output="dict" is the opt-in raw-dict mode: same engine, same
         // lanes, the marshaller just skips model construction. The typed
         // default is untouched.
@@ -653,6 +674,14 @@ impl DuckDBInferFn {
             Err(e @ (PrepareError::Unsupported(_) | PrepareError::Parse(_))) => {
                 match eval_static_only(py, &sql, &static_tables) {
                     Ok((rows, fields)) => {
+                        if strict_map {
+                            // Fixed rows regardless of input — the exact
+                            // opposite of out[i] <-> in[i].
+                            return Err(pyo3::exceptions::PyValueError::new_err(
+                                "shape='map': a static-tables-only query emits fixed \
+                                 rows unrelated to the input rows",
+                            ));
+                        }
                         let output_model = match output_model {
                             Some(m) => m,
                             None => model_from_fields(py, fields)?,
@@ -662,6 +691,7 @@ impl DuckDBInferFn {
                             row_table,
                             output_model,
                             output_dicts,
+                            shape_map: false,
                         });
                     }
                     Err(_) => return Err(build_err(e.to_string())),
@@ -669,6 +699,13 @@ impl DuckDBInferFn {
             }
             Err(e) => return Err(build_err(e.to_string())),
         };
+        if strict_map {
+            if let Some(blocker) = &prepared.one_row_blocker {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "shape='map': {blocker}"
+                )));
+            }
+        }
 
         // Program statics and StaticSpecs are both indexed by join id.
         let mut data = Vec::with_capacity(prepared.statics.len());
@@ -742,7 +779,18 @@ impl DuckDBInferFn {
             row_table,
             output_model,
             output_dicts,
+            shape_map: strict_map,
         })
+    }
+
+    /// The row-shape contract: "map" (proven exactly-1) or "filter" (0..1).
+    #[getter]
+    fn shape(&self) -> &'static str {
+        if self.shape_map {
+            "map"
+        } else {
+            "filter"
+        }
     }
 
     /// The output mode: "model" (typed, default) or "dict" (opt-in).

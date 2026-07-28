@@ -36,6 +36,17 @@ rejected, permanently by design:
 
 ## 2. Out of scope for row-serving (by decision, not difficulty)
 
+**The row-shape contract** (TASK-58): `DuckDBInferFn(..., shape=...)`
+declares how many output rows each input row may produce, checked at
+build time. `"filter"` (the default) is the engine's native 0..1;
+`"map"` statically PROVES exactly-one (`out[i] ↔ in[i]`, the strict
+serving guarantee) by rejecting anything that can drop a row — a WHERE
+clause, an INNER join (key misses drop), a static-tables-only constant
+query; `"many"` (0..N) is reserved for join multiplicity (stage B) and
+will be the only shape under which duplicate-key joins, cross/inequality
+joins, and self-joins ever build — multiplicity can never sneak into a
+serving path by default.
+
 The engine serves **row-at-a-time feature transforms**. Whole-relation
 constructs are out of scope because their output shape is not
 one-row-in/one-row-out:

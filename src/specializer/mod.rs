@@ -42,6 +42,12 @@ pub struct StaticSpec {
 pub struct Prepared {
     pub program: ir::Program,
     pub statics: Vec<StaticSpec>,
+    /// `None` when the query provably emits EXACTLY one output row per
+    /// input row (out[i] <-> in[i]); otherwise names the first construct
+    /// that can drop a row. The static proof behind `shape="map"`
+    /// (TASK-58): no WHERE, and every join is LEFT (unique keys are
+    /// already the map contract, so LEFT never drops or duplicates).
+    pub one_row_blocker: Option<String>,
 }
 
 /// STAGE 1 for the v0 ribbon: SQL text + the dynamic table's name and schema
@@ -72,6 +78,7 @@ pub fn prepare_opaque(
 ) -> Result<Prepared, PrepareError> {
     let (rel, joins, out_cols, regexes) =
         frontend::frontend(sql, this_name, in_cols, opaque, structs, statics)?;
+    let one_row_blocker = one_row_blocker(&rel, &joins, statics);
     let mut program = lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run")?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
@@ -110,5 +117,36 @@ pub fn prepare_opaque(
     Ok(Prepared {
         program,
         statics: specs,
+        one_row_blocker,
     })
+}
+
+/// The static exactly-one-row proof behind `shape="map"`: a Filter node or
+/// a non-LEFT join can drop input rows; everything else the engine serves
+/// is row-preserving (unique join keys are already the map contract, so a
+/// LEFT join never drops or duplicates).
+fn one_row_blocker(
+    rel: &plan::Rel,
+    joins: &[plan::JoinSpec],
+    statics: &[plan::StaticTable],
+) -> Option<String> {
+    fn has_filter(r: &plan::Rel) -> bool {
+        match r {
+            plan::Rel::Filter { .. } => true,
+            plan::Rel::Project { input, .. } => has_filter(input),
+            plan::Rel::Scan => false,
+        }
+    }
+    if has_filter(rel) {
+        return Some("a WHERE clause can drop rows".into());
+    }
+    for j in joins {
+        if j.kind != plan::JoinKind::Left {
+            return Some(format!(
+                "INNER JOIN '{}' drops rows on a key miss (use LEFT JOIN)",
+                statics[j.table].name
+            ));
+        }
+    }
+    None
 }
