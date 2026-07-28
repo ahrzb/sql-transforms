@@ -957,7 +957,7 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
     let has_multiplicity = p
         .statics
         .iter()
-        .any(|s| matches!(s, super::super::ir::StaticTy::MultiMap { .. }))
+        .any(|s| matches!(s, super::super::ir::StaticTy::MultiMap { .. } | super::super::ir::StaticTy::BatchMap { .. }))
         || p.blocks.iter().any(|b| {
             matches!(b.term, Term::EmitTo { .. })
                 || b.insts

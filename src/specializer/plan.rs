@@ -26,6 +26,7 @@ pub enum Rel {
 /// Value-column nullability is deliberately ignored here: arrow schemas
 /// default to nullable, so the real check — no NULL in a value column —
 /// happens against the data at materialization.
+#[derive(Clone)]
 pub struct StaticTable {
     pub name: String,
     pub cols: Vec<Col>,
@@ -85,7 +86,11 @@ pub enum JoinKind {
 /// key column split comes from the ON clause.
 pub struct JoinSpec {
     /// Index into the static-table catalog handed to `prepare`.
+    /// MEANINGLESS when `batch` is true.
     pub table: usize,
+    /// Stage-B self-join: the build side is the BATCH itself (a keyless
+    /// batchmap built per call; the whole ON rides in `residual`).
+    pub batch: bool,
     pub kind: JoinKind,
     /// Dynamic-side key expressions, one per key column, already promoted
     /// to the map's key types.

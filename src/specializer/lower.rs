@@ -74,20 +74,28 @@ pub fn lower(
     }
     if many && joins.len() == 1 {
         fb.lower_many_loop(exprs, filter_pred, &out_cols)?;
-        let statics = vec![StaticTy::MultiMap {
-            keys: joins[0].keys.iter().map(|k| k.ty).collect(),
-            values: joins[0]
-                .val_cols
+        let flat = |cols: &[Col], val_cols: &[u32]| -> Vec<Ty> {
+            val_cols
                 .iter()
                 .flat_map(|&c| {
-                    let ct = catalog[joins[0].table].cols[c as usize].ty;
+                    let ct = cols[c as usize].ty;
                     if ct.nullable {
                         vec![Ty::I1, ct.ty]
                     } else {
                         vec![ct.ty]
                     }
                 })
-                .collect(),
+                .collect()
+        };
+        let statics = vec![if joins[0].batch {
+            StaticTy::BatchMap {
+                values: flat(in_cols, &joins[0].val_cols),
+            }
+        } else {
+            StaticTy::MultiMap {
+                keys: joins[0].keys.iter().map(|k| k.ty).collect(),
+                values: flat(&catalog[joins[0].table].cols, &joins[0].val_cols),
+            }
         }];
         return fb.finish(name, statics, in_cols, out_cols, regexes);
     }
@@ -1015,10 +1023,15 @@ impl<'a> FB<'a> {
     /// (TASK-55), mirroring the StaticTy::Map flattening.
     fn val_slots(&self, j: u32) -> Vec<(Option<usize>, usize)> {
         let spec = &self.joins[j as usize];
+        let cols: &[Col] = if spec.batch {
+            self.in_cols
+        } else {
+            &self.catalog[spec.table].cols
+        };
         let mut out = Vec::with_capacity(spec.val_cols.len());
         let mut i = 0usize;
         for &c in &spec.val_cols {
-            if self.catalog[spec.table].cols[c as usize].ty.nullable {
+            if cols[c as usize].ty.nullable {
                 out.push((Some(i), i + 1));
                 i += 2;
             } else {
@@ -1032,10 +1045,15 @@ impl<'a> FB<'a> {
     /// Flattened probe-dst TYPES for join `j` (same order as val_slots).
     fn val_flat_tys(&self, j: u32) -> Vec<Ty> {
         let spec = &self.joins[j as usize];
+        let cols: &[Col] = if spec.batch {
+            self.in_cols
+        } else {
+            &self.catalog[spec.table].cols
+        };
         spec.val_cols
             .iter()
             .flat_map(|&c| {
-                let ct = self.catalog[spec.table].cols[c as usize].ty;
+                let ct = cols[c as usize].ty;
                 if ct.nullable {
                     vec![Ty::I1, ct.ty]
                 } else {

@@ -669,6 +669,19 @@ impl Parser {
                 self.expect(Tok::RParen)?;
                 Ok(StaticTy::MultiMap { keys, values })
             }
+            "batchmap" => {
+                self.expect(Tok::LParen)?;
+                self.expect(Tok::RParen)?;
+                self.expect(Tok::Arrow)?;
+                self.expect(Tok::LParen)?;
+                let values = if *self.peek() == Tok::RParen {
+                    Vec::new()
+                } else {
+                    self.ty_list()?
+                };
+                self.expect(Tok::RParen)?;
+                Ok(StaticTy::BatchMap { values })
+            }
             other => Err(self.err(format!("expected 'scalar' or 'map', found '{other}'"))),
         }
     }

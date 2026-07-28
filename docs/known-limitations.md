@@ -9,7 +9,7 @@ forces this document to change with it.
 **The contract.** For any SQL you hand it, the engine does exactly one of:
 
 1. **Serve it bit-for-bit identical to DuckDB** (verified continuously
-   against DuckDB's own test corpus: 546 of 678 statements as of stage B), or
+   against DuckDB's own test corpus: 550 of 678 statements as of stage B), or
 2. **Refuse loudly at BUILD time** — `DuckDBInferFn(...)` raises a
    `ValueError` naming the construct. Nothing is ever silently wrong or
    silently dropped at inference time.
@@ -31,7 +31,7 @@ rejected, permanently by design:
 | Regex patterns must be constants (`regexp_matches(s, pattern_col)` rejects) | `unsupported: non-constant regex pattern (compiled at prepare in v0)` | Regexes compile at prepare; DuckDB compiles per row. Per-row compilation is the opposite of specialization. |
 | Replacement strings / regex options / extract group indexes must be constants | `non-constant regexp_replace replacement` etc. | Same. |
 | Static (join) tables must be provided at build time; under the DEFAULT shapes their keys must be unique | `duplicate map key` | Joins are frozen hash maps baked into the function. Duplicate keys mean 1:N join multiplicity, which SERVES under the opt-in `shape='many'` (TASK-59) — along with cross joins, inequality `ON` predicates, and constant `ON` clauses — with multiset parity vs DuckDB (its join output order is a measured hash-join accident; the engine emits probe order outer, build insertion order inner). Under `filter`/`map` the 1:1 contract is unchanged. NULL *values* serve since TASK-55; NULL *keys* never match. |
-| The dynamic table cannot be joined to itself | `joining the dynamic table to itself` | The batch is the probe side; using it as a build side too is the one stage-B piece still in progress (it will also require `shape='many'`). |
+| Self-joins require `shape='many'` (and the ON form) | `joining the dynamic table to itself` | Under `'many'` the batch itself becomes the build side (assembled per call, the ON as a per-pair residual) — comma/cross and `ON` self-joins serve with multiset parity. `USING`/`NATURAL` self-joins stay a named rejection (follow-up); the default shapes keep the original error. |
 | Exactly one row table drives the query | `the specializer takes exactly one row table`, `must be the dynamic table` | The serving contract is rows-in → rows-out for one entity stream. |
 
 ## 2. Out of scope for row-serving (by decision, not difficulty)
@@ -45,8 +45,9 @@ clause, an INNER join (key misses drop), a static-tables-only constant
 query; `"many"` (0..N) is the multiplicity opt-in (stage B): duplicate-key
 joins, cross joins, and inequality/constant `ON` joins build ONLY under
 it (one join per query for now, named restriction) — multiplicity can
-never sneak into a serving path by default. Self-joins are still
-rejected under every shape (in progress).
+never sneak into a serving path by default. Comma and `ON` self-joins
+serve under `'many'` too; `USING`/`NATURAL` self-joins are a named
+follow-up rejection.
 
 The engine serves **row-at-a-time feature transforms**. Whole-relation
 constructs are out of scope because their output shape is not

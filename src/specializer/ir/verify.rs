@@ -228,7 +228,10 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
             static_id, dsts, ..
         } => {
             let mut v = Vec::new();
-            if let Some(StaticTy::MultiMap { values, .. }) = p.statics.get(*static_id as usize) {
+            if let Some(
+                StaticTy::MultiMap { values, .. } | StaticTy::BatchMap { values },
+            ) = p.statics.get(*static_id as usize)
+            {
                 for (d, ty) in dsts.iter().zip(values.iter()) {
                     v.push((*d, *ty));
                 }
@@ -578,7 +581,7 @@ fn check_block(
                         );
                     }
                 }
-                Some(StaticTy::MultiMap { .. }) => err(
+                Some(StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. }) => err(
                     errs,
                     Some(bi),
                     i,
@@ -589,6 +592,16 @@ fn check_block(
                 static_id, keys, ..
             } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                Some(StaticTy::BatchMap { .. }) => {
+                    if !keys.is_empty() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!("@{static_id} is a batchmap: probe.range takes no keys"),
+                        );
+                    }
+                }
                 Some(StaticTy::MultiMap { keys: kts, .. }) => {
                     if keys.len() != kts.len() {
                         err(
@@ -620,7 +633,7 @@ fn check_block(
                 dsts,
             } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                Some(StaticTy::MultiMap { values: vts, .. }) => {
+                Some(StaticTy::MultiMap { values: vts, .. } | StaticTy::BatchMap { values: vts }) => {
                     want(&in_scope, def_types, *idx, Ty::I64, "probe index", bi, i, errs);
                     if dsts.len() != vts.len() {
                         err(
@@ -644,7 +657,7 @@ fn check_block(
             },
             Inst::Sload { static_id, .. } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                Some(StaticTy::Map { .. }) | Some(StaticTy::MultiMap { .. }) => err(
+                Some(StaticTy::Map { .. } | StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. }) => err(
                     errs,
                     Some(bi),
                     i,
@@ -660,7 +673,7 @@ fn check_block(
             },
             Inst::SloadOpt { static_id, .. } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                Some(StaticTy::Map { .. }) | Some(StaticTy::MultiMap { .. }) => err(
+                Some(StaticTy::Map { .. } | StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. }) => err(
                     errs,
                     Some(bi),
                     i,

@@ -69,6 +69,7 @@ pub fn frontend(
     opaque: &[(usize, String)],
     structs: &[super::plan::StructCol],
     statics: &[StaticTable],
+    many: bool,
 ) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>, Vec<super::ir::ReSpec>), PrepareError> {
     // GenericDialect, not DuckDbDialect: measured as a strict superset for
     // the forms we serve (adds ^@, * ILIKE, * RENAME) and matches the oracle
@@ -131,7 +132,7 @@ pub fn frontend(
     }
 
     let (binder, joins, leftover_where) =
-        bind_from(select, this_name, in_cols, opaque, structs, statics)?;
+        bind_from(select, this_name, in_cols, opaque, structs, statics, many)?;
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
@@ -252,6 +253,7 @@ fn bind_from<'a>(
     opaque: &'a [(usize, String)],
     structs: &'a [super::plan::StructCol],
     statics: &'a [StaticTable],
+    many: bool,
 ) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
     // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
     // follow and are addressable ONLY through their struct paths.
@@ -363,7 +365,64 @@ fn bind_from<'a>(
             other => return Err(unsup(format!("JOIN {other}"))),
         };
         if raw_name.eq_ignore_ascii_case(this_name) {
-            return Err(unsup("joining the dynamic table to itself"));
+            if !many {
+                return Err(unsup("joining the dynamic table to itself"));
+            }
+            if !opaque.is_empty() || !structs.is_empty() {
+                return Err(unsup(
+                    "self-join over a row model with non-scalar columns",
+                ));
+            }
+            if binder.this_name.eq_ignore_ascii_case(&scope_name)
+                || binder
+                    .joins
+                    .iter()
+                    .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
+            {
+                return Err(PrepareError::Bind(format!(
+                    "duplicate table name '{scope_name}' in FROM"
+                )));
+            }
+            // Stage-B self-join: the build side is the BATCH — a keyless
+            // batchmap (built per call) with the WHOLE ON as residual.
+            let on = match constraint {
+                JoinConstraint::On(e) => Some(e),
+                JoinConstraint::Using(_) | JoinConstraint::Natural => {
+                    return Err(unsup(
+                        "self-join USING/NATURAL (stage-B follow-up; use ON)",
+                    ))
+                }
+                JoinConstraint::None => {
+                    return Err(unsup("JOIN without ON (cross join)"))
+                }
+            };
+            let n_batch = binder.n_plain as u32;
+            binder.joins.push(ScopeJoin {
+                name: scope_name.clone(),
+                table: std::borrow::Cow::Owned(StaticTable {
+                    name: scope_name,
+                    cols: in_cols[..binder.n_plain].to_vec(),
+                }),
+                kind,
+                key_cols: Vec::new(),
+                val_cols: (0..n_batch).collect(),
+                keys: Vec::new(),
+                using: false,
+            });
+            let residual = match on {
+                None => None,
+                Some(e) => Some(fold(bool_context(binder.expr(e)?, "JOIN condition")?)),
+            };
+            specs.push(JoinSpec {
+                table: 0,
+                batch: true,
+                kind,
+                keys: Vec::new(),
+                key_cols: Vec::new(),
+                val_cols: (0..n_batch).collect(),
+                residual,
+            });
+            continue;
         }
         let table_idx = resolve_static(statics, &raw_name)?;
         if binder.this_name.eq_ignore_ascii_case(&scope_name)
@@ -448,7 +507,7 @@ fn bind_from<'a>(
 
         binder.joins.push(ScopeJoin {
             name: scope_name,
-            table: st,
+            table: std::borrow::Cow::Borrowed(st),
             kind,
             key_cols: key_cols.clone(),
             val_cols: val_cols.clone(),
@@ -460,6 +519,7 @@ fn bind_from<'a>(
         let residual = bind_residual(&binder, j, &residual_raw)?;
         specs.push(JoinSpec {
             table: table_idx,
+            batch: false,
             kind,
             keys,
             key_cols,
@@ -497,7 +557,50 @@ fn bind_from<'a>(
             other => return Err(unsup(format!("FROM {other}"))),
         };
         if raw_name.eq_ignore_ascii_case(this_name) {
-            return Err(unsup("joining the dynamic table to itself"));
+            if !many {
+                return Err(unsup("joining the dynamic table to itself"));
+            }
+            if !opaque.is_empty() || !structs.is_empty() {
+                return Err(unsup(
+                    "self-join over a row model with non-scalar columns",
+                ));
+            }
+            if binder.this_name.eq_ignore_ascii_case(&scope_name)
+                || binder
+                    .joins
+                    .iter()
+                    .any(|j| j.name.eq_ignore_ascii_case(&scope_name))
+            {
+                return Err(PrepareError::Bind(format!(
+                    "duplicate table name '{scope_name}' in FROM"
+                )));
+            }
+            // Comma self-join = pure cross against the batch; equi
+            // conjuncts stay in WHERE (cross-then-filter is bit-identical
+            // under multiplicity — measured, pins-stageB).
+            let n_batch = binder.n_plain as u32;
+            binder.joins.push(ScopeJoin {
+                name: scope_name.clone(),
+                table: std::borrow::Cow::Owned(StaticTable {
+                    name: scope_name,
+                    cols: in_cols[..binder.n_plain].to_vec(),
+                }),
+                kind: JoinKind::Inner,
+                key_cols: Vec::new(),
+                val_cols: (0..n_batch).collect(),
+                keys: Vec::new(),
+                using: false,
+            });
+            specs.push(JoinSpec {
+                table: 0,
+                batch: true,
+                kind: JoinKind::Inner,
+                keys: Vec::new(),
+                key_cols: Vec::new(),
+                val_cols: (0..n_batch).collect(),
+                residual: None,
+            });
+            continue;
         }
         // Unresolvable comma tables (schema-qualified names, table
         // functions we didn't get as statics) stay CLEAN.
@@ -561,7 +664,7 @@ fn bind_from<'a>(
             .collect();
         binder.joins.push(ScopeJoin {
             name: scope_name,
-            table: st,
+            table: std::borrow::Cow::Borrowed(st),
             kind: JoinKind::Inner,
             key_cols: key_cols.clone(),
             val_cols: val_cols.clone(),
@@ -570,6 +673,7 @@ fn bind_from<'a>(
         });
         specs.push(JoinSpec {
             table: table_idx,
+            batch: false,
             kind: JoinKind::Inner,
             keys,
             key_cols,
@@ -868,7 +972,7 @@ fn default_name(e: &SqlExpr) -> String {
 /// dynamic side: `r.id` ≡ CASE match THEN dyn-key ELSE NULL — wave-4).
 struct ScopeJoin<'a> {
     name: String,
-    table: &'a StaticTable,
+    table: std::borrow::Cow<'a, StaticTable>,
     kind: JoinKind,
     key_cols: Vec<u32>,
     val_cols: Vec<u32>,
@@ -2669,6 +2773,9 @@ impl Binder<'_> {
                     sc.name
                 )));
             }
+            if hit.is_none() && name.eq_ignore_ascii_case("rowid") {
+                return Err(unsup("rowid pseudo-column"));
+            }
             let (i, c) = hit.ok_or_else(|| {
                 PrepareError::Bind(format!("column '{name}' does not exist in '{table}'"))
             })?;
@@ -2704,6 +2811,9 @@ impl Binder<'_> {
                 if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
                     return Ok(self.key_lane(j, kp));
                 }
+            }
+            if name.eq_ignore_ascii_case("rowid") {
+                return Err(unsup("rowid pseudo-column"));
             }
             return Err(PrepareError::Bind(format!(
                 "column '{name}' does not exist in '{table}'"

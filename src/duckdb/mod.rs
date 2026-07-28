@@ -715,6 +715,11 @@ impl DuckDBInferFn {
         // Program statics and StaticSpecs are both indexed by join id.
         let mut data = Vec::with_capacity(prepared.statics.len());
         for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
+            if spec.batch {
+                // Stage-B self-join: built per call by the executor.
+                data.push(StaticData::Map(Vec::new()));
+                continue;
+            }
             let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) =
                 sty
             else {
@@ -740,6 +745,11 @@ impl DuckDBInferFn {
                 Err(_) => {
                     let mut data = Vec::with_capacity(prepared.statics.len());
                     for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
+                        if spec.batch {
+                            // Stage-B self-join: built per call by the executor.
+                            data.push(StaticData::Map(Vec::new()));
+                            continue;
+                        }
                         let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) =
                             sty
                         else {
