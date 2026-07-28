@@ -1,0 +1,89 @@
+{
+ "topic": "self-joins — star expansion, EXCLUDE, USING (stage-B self-join corpus cases)",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT * EXCLUDE (i, j) FROM integers i1, integers i2",
+   "result": "cols=['k', 'k']; rows=[(100, 100), (200, 100), (100, 200), (200, 200)]",
+   "note": "CORPUS VERBATIM. Unqualified EXCLUDE strips the named columns from BOTH sides of the self-join. Duplicate output name 'k' survives in cursor.description. Row order = i1 varies fastest, i2 slowest. Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT i1.* EXCLUDE (i, j), i2.* EXCLUDE (i, j, k) FROM integers i1, integers i2",
+   "result": "cols=['k']; rows=[(100,), (100,), (200,), (200,)]",
+   "note": "CORPUS VERBATIM. Qualified star EXCLUDE can strip ALL columns of one side (i2 contributes zero columns — legal, no error). NOTE ROW ORDER: here i1 varies SLOWEST (100,100,200,200) — opposite nesting vs plain star. Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT i1.* EXCLUDE (i, j), i2.* EXCLUDE (k) FROM integers i1, integers i2",
+   "result": "cols=['k', 'i', 'j']; rows=[(100, 1, 10), (100, 2, 20), (200, 1, 10), (200, 2, 20)]",
+   "note": "CORPUS VERBATIM. Per-side EXCLUDE lists are independent; remaining columns keep table order within each star. Row order again i1-slowest here. Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT * EXCLUDE (i) FROM integers i1 JOIN integers i2 USING (i)",
+   "result": "cols=['j', 'k', 'j', 'k']; rows=[(10, 100, 10, 100), (20, 200, 20, 200)]",
+   "note": "CORPUS VERBATIM. USING merges i into ONE leading column; unqualified EXCLUDE (i) removes that merged column. Leftovers: i1.j, i1.k, i2.j, i2.k with duplicate names. Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT * EXCLUDE (i1.i, i2.i) FROM integers i1 JOIN integers i2 USING (i)",
+   "result": "cols=['j', 'k', 'j', 'k']; rows=[(10, 100, 10, 100), (20, 200, 20, 200)]",
+   "note": "CORPUS VERBATIM. Excluding both qualified copies of the USING column is identical to unqualified EXCLUDE (i) — merged column fully removed. Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT * FROM integers i1, integers i2",
+   "result": "cols=['i', 'j', 'k', 'i', 'j', 'k']; rows=[(1, 10, 100, 1, 10, 100), (2, 20, 200, 1, 10, 100), (1, 10, 100, 2, 20, 200), (2, 20, 200, 2, 20, 200)]",
+   "note": "Star over cross self-join: 6 columns with DUPLICATE names in cursor.description (no renaming, no qualification). Row order: i1 cycles FASTEST, i2 slowest (i.e. i2 is the outer loop). Stable 3x + fresh conn. Via .df() pandas dedups to ['i','j','k','i_1','j_1','k_1'] — the _1 suffix is a pandas-conversion artifact, NOT SQL-level naming."
+  },
+  {
+   "q": "SELECT * FROM integers i1 JOIN integers i2 USING (i)",
+   "result": "cols=['i', 'j', 'k', 'j', 'k']; rows=[(1, 10, 100, 10, 100), (2, 20, 200, 20, 200)]",
+   "note": "USING (i) self-join star = 5 columns: merged i ONCE (first), then i1's leftovers (j,k), then i2's leftovers (j,k) with duplicate names. .df() gives ['i','j','k','j_1','k_1']. Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT i FROM integers i1, integers i2",
+   "result": "BinderException: Binder Error: Ambiguous reference to column name \"i\" (use: \"i1.i\" or \"i2.i\")\\n\\nLINE 1: SELECT i FROM integers i1, integers i2\\n               ^",
+   "note": "Bare column over a comma self-join is a binder error; message suggests both qualifications."
+  },
+  {
+   "q": "SELECT i FROM integers i1 JOIN integers i2 USING (i)",
+   "result": "cols=['i']; rows=[(1,), (2,)]",
+   "note": "After USING (i), bare i RESOLVES (no ambiguity) to the merged column. Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT i1.rowid FROM integers i1, integers i2",
+   "result": "cols=['rowid']; rows=[(0,), (1,), (0,), (1,)]",
+   "note": "Qualified rowid works on self-join; values are the base-table row ids per side (i1 cycling fastest, matching plain-star order). Unqualified 'SELECT rowid FROM integers i1, integers i2' is BinderException: Ambiguous reference to column name \"rowid\" (use: \"i1.rowid\" or \"i2.rowid\"). Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT * EXCLUDE (i1.i) FROM integers i1, integers i2",
+   "result": "cols=['j', 'k', 'i', 'j', 'k']; rows=[(10, 100, 1, 10, 100), (10, 100, 2, 20, 200), (20, 200, 1, 10, 100), (20, 200, 2, 20, 200)]",
+   "note": "Qualified EXCLUDE strips only the named side's copy; i2's i survives in i2's position. SURPRISE: row order here is i1-SLOWEST — differs from plain star's i1-fastest on the same FROM clause. Deterministic (10 fresh conns identical) but plan/projection-dependent."
+  },
+  {
+   "q": "SELECT * EXCLUDE (i2.i) FROM integers i1, integers i2",
+   "result": "cols=['i', 'j', 'k', 'j', 'k']; rows=[(1, 10, 100, 10, 100), (2, 20, 200, 10, 100), (1, 10, 100, 20, 200), (2, 20, 200, 20, 200)]",
+   "note": "Mirror case: i1's i survives in leading position. Row order matches plain star (i1-fastest). Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT * EXCLUDE (i1.i) FROM integers i1 JOIN integers i2 USING (i)",
+   "result": "cols=['j', 'k', 'i', 'j', 'k']; rows=[(10, 100, 1, 10, 100), (20, 200, 2, 20, 200)]",
+   "note": "On a USING join, EXCLUDE (i1.i) removes the merged column from the LEADING slot and re-materializes i at i2's slot (position 3). Contrast: EXCLUDE (i2.i) keeps i at leading position 0 (cols=['i','j','k','j','k']). So qualified EXCLUDE of a USING column controls WHERE the survivor sits."
+  },
+  {
+   "q": "SELECT i1.i, i2.i FROM integers i1 JOIN integers i2 USING (i)",
+   "result": "cols=['i', 'i']; rows=[(1, 1), (2, 2)]",
+   "note": "USING does NOT delete the per-side columns — both qualified copies remain addressable (and equal on inner join). Stable 3x + fresh conn."
+  },
+  {
+   "q": "SELECT i1.* FROM integers i1 JOIN integers i2 USING (i)",
+   "result": "cols=['i', 'j', 'k']; rows=[(1, 10, 100), (2, 20, 200)]",
+   "note": "Qualified star after USING still includes the join column i (both i1.* and i2.* return full 3-col rows). The merge-to-one only affects unqualified *."
+  }
+ ],
+ "surprises": [
+  "ROW ORDER IS PROJECTION-DEPENDENT on the same FROM clause: SELECT * FROM integers i1, integers i2 yields i1-cycling-fastest order, but SELECT * EXCLUDE (i1.i) over the identical cross join yields i1-cycling-SLOWEST order (optimizer picks a different build/probe side based on projected columns). Each individual query is deterministic (3x same-conn + 10 fresh conns identical), but a compiler must NOT assume one canonical nesting order for un-ORDER-BY'd cross self-joins.",
+  "cursor.description happily returns DUPLICATE column names (['k','k'], ['i','j','k','i','j','k']) — no renaming at the SQL level; the i_1/j_1/k_1 suffixes seen in .df() are pandas-conversion artifacts only.",
+  "Qualified EXCLUDE of a USING join column relocates the survivor: EXCLUDE (i1.i) puts i at i2's positional slot (position 3 of 5), while EXCLUDE (i2.i) leaves it at the leading merged position 0 — same values, different column order.",
+  "i2.* EXCLUDE (i, j, k) — excluding EVERY column of one star — is legal and simply contributes zero columns (no error).",
+  "Unqualified rowid is ambiguous on a self-join (BinderException naming i1.rowid/i2.rowid), exactly like a regular column; qualified i1.rowid serves base-table row ids 0,1 per side."
+ ],
+ "summary": "Rules for the compiler (DuckDB 1.5.5, table integers(i,j,k) rows (1,10,100),(2,20,200)):\n\n1. STAR EXPANSION over comma/cross self-join concatenates left columns then right columns in table-definition order, keeping duplicate names verbatim in cursor.description ('i','j','k','i','j','k'). No auto-renaming; pandas .df() dedups with _1 suffixes but that is client-side only.\n\n2. UNQUALIFIED EXCLUDE (col,...) removes EVERY copy of each named column across all sides (confirmed for self-joins: EXCLUDE (i,j) over the cross join leaves ['k','k']). QUALIFIED EXCLUDE (i1.i) removes only that side's copy; the other side's copy survives at its own position. Excluding all columns of one qualified star is legal (side contributes nothing).\n\n3. USING (i) semantics: unqualified * emits the merged join column ONCE, FIRST, then i1's remaining columns, then i2's remaining columns (['i','j','k','j','k']). Bare i resolves (no ambiguity) to the merged column. Both i1.i and i2.i remain addressable, and i1.*/i2.* still contain i — the merge affects only unqualified star expansion and bare-name resolution. EXCLUDE (i) == EXCLUDE (i1.i, i2.i) == drop the merged column entirely -> ['j','k','j','k']. EXCLUDE of exactly one qualified copy keeps i but its POSITION depends on which copy was excluded: EXCLUDE (i2.i) keeps it leading (position 0); EXCLUDE (i1.i) moves it to i2's slot (position 3).\n\n4. AMBIGUITY: bare column (and bare rowid) over a comma self-join raises BinderException 'Ambiguous reference to column name \\\"X\\\" (use: \\\"i1.X\\\" or \\\"i2.X\\\")'. Qualified rowid works and returns per-side base-table row ids.\n\n5. ORDER: every query above is deterministic across reruns and fresh connections, BUT cross-join row order flips between i1-fastest and i1-slowest depending on the projection (plain * vs EXCLUDE variants) — plan-dependent. Compiler must treat un-ORDER-BY'd multi-row output order as unspecified and compare stage-B results order-insensitively (or sort) unless it replicates DuckDB's plan choice."
+}
