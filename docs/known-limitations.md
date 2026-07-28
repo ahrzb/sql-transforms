@@ -58,8 +58,18 @@ bool. Measured consequences:
 - **f32 base tables reject** (`engine is f64-only`).
 - **Static-table key/value columns must fit BIGINT** — `UBIGINT`/`HUGEINT`
   payloads outside i64 reject with a named message.
-- **Lists and structs reject** (`row column 'x' has a non-scalar type`) —
-  this is the designated next capability wave ("wave C"), and it also gates
+- **Structs of scalars SERVE** (since TASK-56): struct row columns are
+  flattened to scalar lanes at build time — field access (`a.i`, deep
+  `t.t.t.t` paths) and struct-star (`a.*` incl. EXCLUDE/REPLACE) are
+  bit-identical to DuckDB. What still rejects, by name: the struct as a
+  WHOLE value (`SELECT a` — non-scalar output), bracket field access
+  (`a['i']` — DuckDB names such outputs by full expression text, not
+  modeled), and struct fields whose own types are non-scalar.
+- **Lists reject** (`row column 'x' has a non-scalar type`) — and a
+  non-scalar row-model column rejects only when REFERENCED (star
+  expansion included); since TASK-56 an unreferenced timestamp/list
+  field no longer blocks a scalar-only query, and `EXCLUDE`/name
+  filters/`REPLACE` can remove one from a star. Lists also still gate
   `regexp_extract_all` / `regexp_split_to_array` / the STRUCT form of
   `regexp_extract` (`list-valued — non-scalar in v0`).
 - **DECIMAL literals are f64** — a documented divergence: DuckDB types
@@ -79,7 +89,6 @@ wrong answer or require semantics we can't reproduce exactly:
 
 | Construct | Why it's descoped |
 |---|---|
-| `reverse()` | DuckDB reverses UAX-29 grapheme clusters (incl. regional-indicator pairing), not codepoints. A codepoint reverse would be silently wrong on emoji/accents. |
 | `^` operator | It IS pow in DuckDB, but sqlparser's precedence differs from DuckDB's (`2*x^y` would parse as `(2*x)^y`). Mapping it computes the wrong tree silently. Use `pow()`. |
 | prefix `~`, `#`, `NOT GLOB` | Same class: precedence/parse divergences that would silently mis-associate. `xor()` covers bit-xor; `NOT (x GLOB p)` works. |
 | Regex reject list: `\B`, `\Q…\E`, `(?<name>…)`, duplicate group names, bounds > 1000, stacked quantifiers (`a*+`), `\u` escapes, negated Perl classes inside `[...]` | The RE2↔rust-regex differential battery (98 entries) proved these are the constructs where the engines disagree or DuckDB itself is broken (`\B` crashes DuckDB at runtime on non-ASCII). Everything else is byte-identical. |
@@ -121,7 +130,14 @@ These are served, but with a consciously chosen surface — know them:
   resolve when the table part matches a registered bare name. DuckDB's
   schema-existence errors (`schema "x" does not exist`) are not
   reproduced — a schema-less registry cannot know which schemas would
-  exist. Ambiguous matches still error.
+  exist. Ambiguous matches still error. With struct paths (TASK-56) the
+  same rule extends to n-part references: resolution is
+  longest-qualifier-first with backtracking (measured), and any first
+  part is accepted as a schema when the second matches the table — so
+  `w.w.w` on a table `w` with struct column `w` binds the LONGER
+  schema-ish parse (a whole-struct rejection) where schema-aware DuckDB
+  would fall through to `column.field`. The divergence is always a loud
+  build-time rejection, never a different served value.
 
 ## 6. How to read a rejection
 

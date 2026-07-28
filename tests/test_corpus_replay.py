@@ -68,6 +68,27 @@ def _py_type(t: pa.DataType):
     return None
 
 
+def _struct_model(t: pa.DataType, name: str):
+    """A nested pydantic model for an arrow struct type — the engine
+    flattens it to scalar lanes (TASK-56). Non-identifier field names
+    can't become model fields; the caller falls back to `object` (the
+    engine's clean opaque rejection)."""
+    fields = {}
+    for i in range(t.num_fields):
+        fld = t.field(i)
+        if not fld.name.isidentifier():
+            return None
+        if pa.types.is_struct(fld.type):
+            sub = _struct_model(fld.type, f"{name}_{fld.name}")
+            if sub is None:
+                return None
+            fields[fld.name] = (sub | None, None)
+        else:
+            py = _py_type(fld.type)
+            fields[fld.name] = (py | None, None) if py else (object, None)
+    return create_model(f"S_{name}", **fields)
+
+
 def _norm_row(row) -> tuple[str, ...]:
     # repr keeps int/float/str/bool/None apart and makes NaN self-equal.
     return tuple(repr(v) for v in row)
@@ -122,7 +143,10 @@ def _replay(case: dict) -> tuple[str, str]:
     for f in arrow[driving].schema:
         py = _py_type(f.type)
         if py is None:
-            fields[f.name] = (object, None)  # forces the engine's clean error
+            sub = _struct_model(f.type, f.name) if pa.types.is_struct(f.type) else None
+            # object = the engine's clean opaque rejection (on REFERENCE
+            # since TASK-56; unreferenced columns no longer block).
+            fields[f.name] = (sub | None, None) if sub else (object, None)
         else:
             fields[f.name] = (py | None, None)
     model = create_model("Row", **fields)

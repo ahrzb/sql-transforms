@@ -100,6 +100,47 @@ def test_non_scalar_row_columns_reject():
         )
 
 
+def test_non_scalar_rejection_is_reference_time():
+    # TASK-56: the rejection moved from construction to REFERENCE — an
+    # unreferenced list/timestamp field no longer blocks a scalar query,
+    # and star modifiers can remove one. Referenced (incl. via *) keeps
+    # the named error.
+    L = create_model("L", a=(int, ...), xs=(list[int] | None, None))
+    DuckDBInferFn(
+        "SELECT a FROM __THIS__", row_tables={"__THIS__": L}, static_tables={}
+    )
+    DuckDBInferFn(
+        "SELECT * EXCLUDE (xs) FROM __THIS__",
+        row_tables={"__THIS__": L},
+        static_tables={},
+    )
+    for sql in ["SELECT xs FROM __THIS__", "SELECT * FROM __THIS__"]:
+        with pytest.raises(ValueError, match="non-scalar"):
+            DuckDBInferFn(sql, row_tables={"__THIS__": L}, static_tables={})
+
+
+def test_struct_whole_value_rejects_but_fields_serve():
+    # TASK-56: structs of scalars serve AS FIELDS (flattened to lanes);
+    # the struct as a whole value stays a named non-scalar rejection.
+    Inner = create_model("Inner", i=(int | None, None))
+    M = create_model("M", a=(Inner | None, None))
+    fn = DuckDBInferFn(
+        "SELECT a.i FROM __THIS__",
+        row_tables={"__THIS__": M},
+        static_tables={},
+        output="dict",
+    )
+    assert fn.infer({"__THIS__": [M(a=Inner(i=5))]}) == [{"i": 5}]
+    with pytest.raises(ValueError, match="whole value"):
+        DuckDBInferFn(
+            "SELECT a FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
+        )
+    with pytest.raises(ValueError, match="unsupported"):
+        DuckDBInferFn(
+            "SELECT a['i'] FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
+        )
+
+
 def test_list_valued_regexp_forms_reject():
     # Gated on list types (wave C), not on regex semantics.
     rejects("SELECT regexp_extract_all(s, 'a') FROM __THIS__", "list-valued")
@@ -123,8 +164,6 @@ def test_ubigint_static_payloads_reject():
 @pytest.mark.parametrize(
     ("sql", "needle"),
     [
-        # Grapheme-cluster semantics (UAX-29) not modeled.
-        ("SELECT reverse(s) FROM __THIS__", "grapheme"),
         # ^ IS pow, but sqlparser's precedence would compute the wrong tree.
         ("SELECT a ^ 2 FROM __THIS__", "precedence"),
         # Regex reject list: measured RE2 <-> rust-regex divergences.
