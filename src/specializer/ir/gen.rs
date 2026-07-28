@@ -214,6 +214,10 @@ fn load_all(
                     keys: key_vals,
                 });
             }
+            // The random-program generator doesn't emit multiplicity loops
+            // (stage-B programs are exercised by targeted tests instead).
+            StaticTy::MultiMap { .. } => {
+            }
         }
     }
 }

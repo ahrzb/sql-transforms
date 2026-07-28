@@ -102,6 +102,12 @@ pub(super) enum PreparedStatic {
     Map {
         entries: Vec<(Vec<KeyBits>, Vec<ScalarVal>)>,
     },
+    /// Stage-B: sorted by key with DUPLICATES ADJACENT; probe.range finds
+    /// the equal-key run, probe.read indexes into it. Keyless multimaps
+    /// (cross/inequality joins) range over the whole table.
+    MultiMap {
+        entries: Vec<(Vec<KeyBits>, Vec<ScalarVal>)>,
+    },
 }
 
 struct CBlock {
@@ -126,6 +132,11 @@ enum CTerm {
         else_moves: Vec<(u32, u32)>,
     },
     Emit,
+    /// Emit the completed row and continue at `to` (multiplicity loops).
+    EmitTo {
+        to: usize,
+        moves: Vec<(u32, u32)>,
+    },
     Skip,
     Trap(String),
 }
@@ -252,6 +263,11 @@ impl InterpFn {
                     CTerm::Emit => {
                         emitted += 1;
                         break;
+                    }
+                    CTerm::EmitTo { to, moves } => {
+                        emitted += 1;
+                        do_moves(ctx.regs, moves);
+                        bi = *to;
                     }
                     CTerm::Skip => break,
                     CTerm::Trap(msg) => return Err(Trap(msg.clone())),
@@ -414,6 +430,33 @@ pub(super) fn prepare_statics(
                 }
                 prepared.push(PreparedStatic::Map { entries });
             }
+            (StaticTy::MultiMap { keys, values }, StaticData::Map(mut entries)) => {
+                for (ei, (k, v)) in entries.iter().enumerate() {
+                    let kt: Vec<Ty> = k.iter().map(|kb| kb.ty()).collect();
+                    let vt: Vec<Ty> = v.iter().map(|sv| sv.ty()).collect();
+                    if kt != *keys || vt != *values {
+                        return Err(CompileError::Static(format!(
+                            "@{i}: entry {ei} has shape ({kt:?}) -> ({vt:?}), declared                              ({keys:?}) -> ({values:?})"
+                        )));
+                    }
+                }
+                for (k, _) in entries.iter_mut() {
+                    for kb in k.iter_mut() {
+                        if let KeyBits::F64(bits) = kb {
+                            *bits = super::canon_f64_bits(f64::from_bits(*bits));
+                        }
+                    }
+                }
+                // Stable sort: equal keys keep INSERTION order — the
+                // engine's documented emission order for 1:N matches.
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                prepared.push(PreparedStatic::MultiMap { entries });
+            }
+            (StaticTy::MultiMap { .. }, StaticData::Scalar { .. }) => {
+                return Err(CompileError::Static(format!(
+                    "@{i}: declared multimap, got scalar data"
+                )))
+            }
             (StaticTy::Scalar(_), StaticData::Map(_)) => {
                 return Err(CompileError::Static(format!(
                     "@{i}: declared scalar, got map data"
@@ -512,6 +555,10 @@ fn compile_term(p: &Program, t: &Term, slots: &HashMap<u32, u32>) -> CTerm {
                 else_to,
                 else_moves,
             }
+        }
+        Term::EmitTo { to, args } => {
+            let (to, moves) = mk_moves(*to, args);
+            CTerm::EmitTo { to, moves }
         }
         Term::Emit => CTerm::Emit,
         Term::Skip => CTerm::Skip,
@@ -2163,6 +2210,56 @@ fn compile_inst(
                             ctx.regs[*di] = default_reg(*ty);
                         }
                     }
+                }
+                Ok(())
+            })
+        }
+        Inst::ProbeRange {
+            static_id,
+            start,
+            end,
+            keys,
+        } => {
+            let static_id = static_id as usize;
+            let (start, end) = (sl(slots, start), sl(slots, end));
+            let keys: Vec<usize> = keys.iter().map(|k| sl(slots, *k)).collect();
+            Box::new(move |ctx| {
+                let PreparedStatic::MultiMap { entries } = &ctx.statics[static_id] else {
+                    unreachable!("static kind checked at compile");
+                };
+                let (lo, hi) = if keys.is_empty() {
+                    (0, entries.len())
+                } else {
+                    let lo = entries
+                        .partition_point(|(k, _)| cmp_key(k, &keys, ctx) == std::cmp::Ordering::Less);
+                    let hi = entries.partition_point(|(k, _)| {
+                        cmp_key(k, &keys, ctx) != std::cmp::Ordering::Greater
+                    });
+                    (lo, hi)
+                };
+                ctx.regs[start] = RegVal::I64(lo as i64);
+                ctx.regs[end] = RegVal::I64(hi as i64);
+                Ok(())
+            })
+        }
+        Inst::ProbeRead {
+            static_id,
+            idx,
+            dsts,
+        } => {
+            let static_id = static_id as usize;
+            let idx = sl(slots, idx);
+            let dsts: Vec<usize> = dsts.iter().map(|d| sl(slots, *d)).collect();
+            Box::new(move |ctx| {
+                let PreparedStatic::MultiMap { entries } = &ctx.statics[static_id] else {
+                    unreachable!("static kind checked at compile");
+                };
+                let i = as_i64(ctx.regs[idx]) as usize;
+                let Some(row) = entries.get(i) else {
+                    return Err(Trap("probe.read index out of range (lowering bug)".into()));
+                };
+                for (di, v) in dsts.iter().zip(row.1.iter()) {
+                    ctx.regs[*di] = scalar_to_reg(v, ctx.arena);
                 }
                 Ok(())
             })

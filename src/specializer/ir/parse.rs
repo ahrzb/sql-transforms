@@ -378,6 +378,7 @@ struct RawBlock {
 
 enum RawTerm {
     Jump(String, Vec<Value>),
+    EmitTo(String, Vec<Value>),
     Brif(Value, (String, Vec<Value>), (String, Vec<Value>)),
     Emit,
     Skip,
@@ -587,6 +588,10 @@ impl Parser {
                     else_args: ea,
                 },
                 RawTerm::Emit => Term::Emit,
+                RawTerm::EmitTo(label, args) => Term::EmitTo {
+                    to: resolve(&label, rb.line)?,
+                    args,
+                },
                 RawTerm::Skip => Term::Skip,
                 RawTerm::Trap(msg) => Term::Trap { msg },
             };
@@ -644,6 +649,25 @@ impl Parser {
                 };
                 self.expect(Tok::RParen)?;
                 Ok(StaticTy::Map { keys, values })
+            }
+            "multimap" => {
+                // Stage-B: duplicate keys legal; empty keys = keyless join.
+                self.expect(Tok::LParen)?;
+                let keys = if *self.peek() == Tok::RParen {
+                    Vec::new()
+                } else {
+                    self.ty_list()?
+                };
+                self.expect(Tok::RParen)?;
+                self.expect(Tok::Arrow)?;
+                self.expect(Tok::LParen)?;
+                let values = if *self.peek() == Tok::RParen {
+                    Vec::new()
+                } else {
+                    self.ty_list()?
+                };
+                self.expect(Tok::RParen)?;
+                Ok(StaticTy::MultiMap { keys, values })
             }
             other => Err(self.err(format!("expected 'scalar' or 'map', found '{other}'"))),
         }
@@ -768,6 +792,15 @@ impl Parser {
         match kw.as_str() {
             "emit" => {
                 self.bump();
+                if *self.peek() == Tok::Dot {
+                    self.bump();
+                    let sub = self.ident("'to' after 'emit.'")?;
+                    if sub != "to" {
+                        return Err(self.err(format!("unknown terminator 'emit.{sub}'")));
+                    }
+                    let (label, args) = self.target()?;
+                    return Ok(Some(RawTerm::EmitTo(label, args)));
+                }
                 Ok(Some(RawTerm::Emit))
             }
             "skip" => {
@@ -1310,6 +1343,35 @@ impl Parser {
                     hit,
                     dsts,
                     keys,
+                }
+            }
+            "probe.range" => {
+                want_dsts(2, self)?;
+                let static_id = self.static_ref(statics)?;
+                let mut keys = Vec::new();
+                while *self.peek() == Tok::Comma {
+                    self.bump();
+                    keys.push(self.use_value()?);
+                }
+                Inst::ProbeRange {
+                    static_id,
+                    start: def!(0),
+                    end: def!(1),
+                    keys,
+                }
+            }
+            "probe.read" => {
+                let static_id = self.static_ref(statics)?;
+                self.expect(Tok::Comma)?;
+                let idx = self.use_value()?;
+                let mut dsts = Vec::with_capacity(dst_names.len());
+                for i in 0..dst_names.len() {
+                    dsts.push(def!(i));
+                }
+                Inst::ProbeRead {
+                    static_id,
+                    idx,
+                    dsts,
                 }
             }
             "sload" => {

@@ -145,3 +145,29 @@ pub fn all() -> Vec<(&'static str, &'static str)> {
         ("kitchen", KITCHEN),
     ]
 }
+
+/// Stage-B multiplicity: a multimap probe loop — per input row, one output
+/// row per matching entry (emit.to back-edge), zero matches skip. Covers:
+/// multimap statics, probe.range/probe.read, emit.to, a legal CFG cycle.
+pub const MULTI_EXPAND: &str = r#"
+static @0: multimap(i64) -> (i64)
+
+fn expand(in: batch{id: i64}, out: batch{id: i64, v: i64}) {
+entry:
+  %id = load in.id
+  %lo, %hi = probe.range @0, %id
+  jump head(%lo, %hi, %id)
+head(%i: i64, %end: i64, %rid: i64):
+  %more = icmp.lt %i, %end
+  brif %more, body(%i, %end, %rid), done
+body(%j: i64, %e: i64, %rid2: i64):
+  %v = probe.read @0, %j
+  store out.id, %rid2
+  store out.v, %v
+  %one = const.i64 1
+  %j2 = iadd %j, %one
+  emit.to head(%j2, %e, %rid2)
+done:
+  skip
+}
+"#;

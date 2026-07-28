@@ -817,6 +817,8 @@ fn gen_statics(rng: &mut gen::Rng, p: &Program) -> Vec<StaticData> {
                     .collect();
                 StaticData::Map(entries)
             }
+            // The generator never declares multimaps (see gen.rs).
+            StaticTy::MultiMap { .. } => StaticData::Map(Vec::new()),
         })
         .collect()
 }
@@ -1008,4 +1010,68 @@ entry:
             best as f64 / n as f64
         );
     }
+}
+
+#[test]
+fn multimap_expand_fixture_executes() {
+    // Stage-B machinery end to end: dup keys fan out one output row per
+    // match (probe order outer, INSERTION order inner — the stable sort
+    // keeps equal keys in materialization order), zero matches skip, and
+    // the cyclic CFG verifies + roundtrips through the text format.
+    let p = built(fixtures::MULTI_EXPAND);
+    let printed = super::super::ir::print::print(&p);
+    assert_eq!(parse(&printed).unwrap(), p, "print/parse roundtrip");
+
+    // Entries deliberately unsorted; key 1's values inserted 10 then 11.
+    let data = StaticData::Map(vec![
+        (vec![KeyBits::I64(2)], vec![ScalarVal::I64(20)]),
+        (vec![KeyBits::I64(1)], vec![ScalarVal::I64(10)]),
+        (vec![KeyBits::I64(1)], vec![ScalarVal::I64(11)]),
+    ]);
+    let f = compile(&p, vec![data]).unwrap();
+    let got = run_snapshot(&f, &batch(3, vec![c_i64(&[Some(1), Some(2), Some(3)])])).unwrap();
+    assert_eq!(
+        got,
+        rows(&[&["1", "10"], &["1", "11"], &["2", "20"]]),
+        "id=1 fans out to both matches in insertion order; id=3 skips"
+    );
+}
+
+#[test]
+fn keyless_multimap_is_a_cross_join() {
+    // Zero-key probe.range covers the whole table — the cross/inequality
+    // join primitive.
+    let text = r#"
+static @0: multimap() -> (i64)
+
+fn cross(in: batch{id: i64}, out: batch{id: i64, v: i64}) {
+entry:
+  %id = load in.id
+  %lo, %hi = probe.range @0
+  jump head(%lo, %hi, %id)
+head(%i: i64, %end: i64, %rid: i64):
+  %more = icmp.lt %i, %end
+  brif %more, body(%i, %end, %rid), done
+body(%j: i64, %e: i64, %rid2: i64):
+  %v = probe.read @0, %j
+  store out.id, %rid2
+  store out.v, %v
+  %one = const.i64 1
+  %j2 = iadd %j, %one
+  emit.to head(%j2, %e, %rid2)
+done:
+  skip
+}
+"#;
+    let p = built(text);
+    let data = StaticData::Map(vec![
+        (vec![], vec![ScalarVal::I64(7)]),
+        (vec![], vec![ScalarVal::I64(8)]),
+    ]);
+    let f = compile(&p, vec![data]).unwrap();
+    let got = run_snapshot(&f, &batch(2, vec![c_i64(&[Some(1), Some(2)])])).unwrap();
+    assert_eq!(
+        got,
+        rows(&[&["1", "7"], &["1", "8"], &["2", "7"], &["2", "8"]])
+    );
 }
