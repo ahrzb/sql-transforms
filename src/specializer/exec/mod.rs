@@ -11,6 +11,7 @@
 //! exist.
 
 pub mod casemap;
+pub mod columnar;
 pub mod cranelift;
 pub mod interp;
 mod pow10;
