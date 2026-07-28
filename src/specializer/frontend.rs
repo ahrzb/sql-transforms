@@ -1961,6 +1961,13 @@ impl Binder<'_> {
             self.expand_star_lanes(None, &sqlparser::ast::WildcardAdditionalOptions::default())?;
         match &list.args[..] {
             [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)] => Ok(Some(finalize_star(all)?)),
+            // COLUMNS(* EXCLUDE/REPLACE/... ) — measured identical to the
+            // bare `* <modifiers>` select item (names, order, values;
+            // pins-waveA/columns-replace.json), so route through the same
+            // star expansion.
+            [FunctionArg::Unnamed(FunctionArgExpr::WildcardWithOptions(opts))] => {
+                Ok(Some(self.expand_star(None, opts)?))
+            }
             [FunctionArg::Unnamed(FunctionArgExpr::Expr(p))] => {
                 let Some(bp) = self.expr_or_null(p)? else {
                     return Err(PrepareError::Bind(
