@@ -87,7 +87,9 @@ pub fn frontend(
         .tokenize()
         .map_err(|e| PrepareError::Parse(e.to_string()))?;
     let tokens = super::rewrite::rewrite_glob(super::rewrite::rewrite_star_filters(
-        super::rewrite::rewrite_colon_aliases(tokens),
+        super::rewrite::rewrite_parenless_replace(super::rewrite::rewrite_from_colon_aliases(
+            super::rewrite::rewrite_colon_aliases(tokens),
+        )),
     ));
     let statements = Parser::new(&dialect)
         .with_tokens(tokens)
@@ -2056,6 +2058,10 @@ impl Binder<'_> {
         };
         match self.expr_or_null(o)? {
             None => Ok(None),
+            // CAST(NULL AS VARCHAR) options behave exactly like bare NULL
+            // options (measured: same "must not be NULL" error class /
+            // regexp_replace NULL result).
+            Some(b) if matches!(b.kind, SKind::NullOf) && b.ty == Ty::Str => Ok(None),
             Some(b) => match b.kind {
                 SKind::Lit(Lit::Str(s)) => {
                     super::retrans::parse_options(&s, allow_g).map(Some)
@@ -2089,6 +2095,11 @@ impl Binder<'_> {
         let Some(bp) = self.expr_or_null(p)? else {
             return Ok(None);
         };
+        if matches!(bp.kind, SKind::NullOf) && bp.ty == Ty::Str {
+            // CAST(NULL AS VARCHAR) pattern — measured NULL result, same
+            // as a bare NULL literal (pins-waveA/regex-null-pattern.json).
+            return Ok(None);
+        }
         let SKind::Lit(Lit::Str(raw)) = bp.kind else {
             if bp.ty != Ty::Str {
                 return Err(PrepareError::Bind(format!(
@@ -3755,6 +3766,10 @@ impl Binder<'_> {
                 let Some(br) = self.expr_or_null(r)? else {
                     return Ok(null_of(Ty::Str));
                 };
+                if matches!(br.kind, SKind::NullOf) && br.ty == Ty::Str {
+                    // CAST(NULL AS VARCHAR) replacement — NULL result.
+                    return Ok(null_of(Ty::Str));
+                }
                 let SKind::Lit(Lit::Str(rw)) = br.kind else {
                     return Err(unsup("non-constant regexp_replace replacement"));
                 };
@@ -3782,10 +3797,29 @@ impl Binder<'_> {
             "regexp_split_to_array" | "regexp_extract_all" => Err(unsup(format!(
                 "function {name} (list-valued — non-scalar in v0)"
             ))),
-            "reverse" => Err(unsup(
-                "function reverse (grapheme-cluster semantics — measured UAX-29 \
-                 incl. regional-indicator pairing — not modeled in v0)",
-            )),
+            "reverse" => {
+                // TASK-56 lifts the wave-3 descope: ASCII byte path +
+                // UAX-29 extended grapheme path (pins-waveA). No implicit
+                // casts — reverse(123) is a DuckDB binder error.
+                let [arg] = args[..] else {
+                    return Err(PrepareError::Bind(format!("{name} takes one argument")));
+                };
+                let Some(inner) = self.expr_or_null(arg)? else {
+                    return Ok(null_of(Ty::Str));
+                };
+                if inner.ty != Ty::Str {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches reverse({})",
+                        inner.ty.name()
+                    )));
+                }
+                let nullable = inner.nullable;
+                Ok(SExpr {
+                    kind: SKind::Reverse(Box::new(inner)),
+                    ty: Ty::Str,
+                    nullable,
+                })
+            }
             _ => Err(unsup(format!(
                 "function {} (not in the v0 catalogue)",
                 f.name

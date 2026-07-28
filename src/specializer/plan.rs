@@ -260,6 +260,9 @@ pub enum SKind {
     },
     /// strip_accents — Str -> Str, total (oracle table + Hangul compose).
     StripAccents(Box<SExpr>),
+    /// reverse — Str -> Str, total (ASCII byte path / UAX-29 grapheme
+    /// path, pins-waveA).
+    Reverse(Box<SExpr>),
     /// TRUE iff join `join` MATCHED this row (key hit AND residual) —
     /// i1, never NULL. The building block for key-column reconstruction
     /// (`r.id` ≡ CASE JoinHit THEN dyn-key ELSE NULL) and semi joins.

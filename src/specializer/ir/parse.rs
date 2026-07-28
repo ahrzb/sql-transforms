@@ -1129,6 +1129,7 @@ impl Parser {
                 let op = match opcode.as_str() {
                     "supper" => StrOp1::Upper,
                     "slower" => StrOp1::Lower,
+                    "srev" => StrOp1::Reverse,
                     _ => StrOp1::StripAccents,
                 };
                 let a = self.use_value()?;

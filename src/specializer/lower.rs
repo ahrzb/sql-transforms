@@ -876,11 +876,15 @@ impl<'a> FB<'a> {
                     val: dst,
                 })
             }
-            SKind::StripAccents(a) => {
+            SKind::StripAccents(a) | SKind::Reverse(a) => {
+                let op = match e.kind {
+                    SKind::StripAccents(_) => StrOp1::StripAccents,
+                    _ => StrOp1::Reverse,
+                };
                 let l = self.emit(a, live)?;
                 let dst = self.fresh();
                 self.inst(Inst::Str1 {
-                    op: StrOp1::StripAccents,
+                    op,
                     dst,
                     a: l.val,
                 });
