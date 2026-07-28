@@ -1,60 +1,54 @@
-"""Tests for SQLTransform — the specializer-served authoring surface."""
+"""The surface is the contract: it must exist, and it must refuse honestly.
 
-import pyarrow as pa
+These tests are deliberately about shape, not behaviour. They fail if a method
+is dropped or renamed, and they fail if one quietly starts returning something
+instead of raising -- which is the failure mode a stub package invites.
+"""
+
+from __future__ import annotations
+
+import inspect
+
 import pytest
-from pydantic import BaseModel
 
 from sql_transform import SQLTransform
 
-TRAIN = pa.table({"age": [25, 30, 35], "city": ["a", "b", "a"]})
+# `from_file` is a classmethod, so `cls` is already bound off the class object.
+SIGNATURES = {
+    "__init__": ["self", "sql"],
+    "from_file": ["path"],
+    "fit": ["self", "table", "this_model"],
+    "infer": ["self", "row"],
+    "infer_batch": ["self", "rows"],
+}
 
 
-def test_infer_before_fit_raises_runtime_error():
-    t = SQLTransform("SELECT age FROM __THIS__")
-    with pytest.raises(RuntimeError):
-        t.infer({"age": 1})
+@pytest.mark.parametrize(("name", "params"), SIGNATURES.items())
+def test_surface_keeps_its_signature(name, params):
+    sig = inspect.signature(getattr(SQLTransform, name))
+    assert list(sig.parameters) == params
 
 
-def test_plain_projection_dict_and_model_rows():
-    t = SQLTransform("SELECT age * 2 AS a2, upper(city) AS c FROM __THIS__").fit(TRAIN)
-    assert t.backend == "cranelift"
-    assert t.boundary == "marshaller"
+def test_constructing_raises_not_implemented():
+    with pytest.raises(NotImplementedError, match="rebuilt on confit"):
+        SQLTransform("SELECT 1 AS x FROM __THIS__")
 
-    class Row(BaseModel):
-        age: int
-        city: str
 
-    got_dict = t.infer({"age": 21, "city": "xy"})
-    got_model = t.infer(Row(age=21, city="xy"))
-    for got in (got_dict, got_model):
-        assert got.a2 == 42
-        assert got.c == "XY"
+@pytest.mark.parametrize("name", ["backend", "boundary"])
+def test_properties_are_declared_and_raise(name):
+    prop = getattr(SQLTransform, name)
+    assert isinstance(prop, property), f"{name} must stay a property"
+    with pytest.raises(NotImplementedError):
+        prop.fget(object.__new__(SQLTransform))
 
 
 @pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT age / MEAN(age) OVER () AS age_norm FROM __THIS__",
-        "SELECT age - MEAN(age) OVER (PARTITION BY city) AS d, city FROM __THIS__",
-    ],
+    ("name", "args"),
+    [("fit", (None,)), ("infer", ({},)), ("infer_batch", ([],)), ("from_file", ("x",))],
 )
-def test_window_aggregates_agree_with_sqltransform(sql):
-    spec = SQLTransform(sql).fit(TRAIN)
-    ref = SQLTransform(sql).fit(TRAIN)
-    assert spec.backend == "cranelift"
-    rows = [{"age": 40, "city": "a"}, {"age": 25, "city": "b"}]
-    got = spec.infer_batch(rows)
-    want = ref.infer_batch(rows)
-    assert [m.model_dump() for m in got] == [m.model_dump() for m in want]
-
-
-def test_transformer_ref_rejected_at_construction():
-    class FakeFitted:
-        n_features_in_ = 1
-
-        def transform(self, x):
-            return x
-
-    scaler = FakeFitted()
-    with pytest.raises(ValueError, match="transformer refs"):
-        SQLTransform(t"SELECT {scaler}(age) AS s FROM __THIS__")
+def test_methods_raise_not_implemented(name, args):
+    # Bypass __init__ (which also raises) to reach each method independently.
+    obj = object.__new__(SQLTransform)
+    target = getattr(SQLTransform, name) if name == "from_file" else getattr(obj, name)
+    with pytest.raises(NotImplementedError, match="no implementation yet"):
+        target(*args)

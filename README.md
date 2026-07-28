@@ -10,11 +10,13 @@ This repository is a workspace of two packages:
 | package | what it is |
 |---|---|
 | [`packages/confit`](packages/confit) | **Confit** — the serving engine. SQL plus static tables frozen at fit time are partially evaluated, once, into a native function. Serves bit-exact with DuckDB or refuses at build time. Usable on its own. |
-| [`packages/sql-transform`](packages/sql-transform) | The authoring layer: `SQLTransform` — fit window-aggregate state from training data, then serve through Confit. |
+| [`packages/sql-transform`](packages/sql-transform) | The authoring surface: `SQLTransform`. **Not implemented** — signatures only, being rebuilt on Confit. |
 
-> **sql-transform was reset.** The DataFusion-differentiated native engine, the
-> Python codegen backend, and the batch `transform()` path were removed; the
-> package is being rebuilt on Confit. Confit itself is unaffected.
+> **sql-transform is a stub.** Its implementation was deliberately removed --
+> the DataFusion engine, the codegen backend, the batch `transform()` path and
+> the fit pipeline are all gone. What remains is the interface, raising
+> `NotImplementedError`, as the contract for a rebuild on Confit.
+> **Confit itself is complete and unaffected.**
 
 ## Installation
 
@@ -45,80 +47,67 @@ uv run pytest -q && cargo test --release
 
 ## Quick Start
 
+Confit, the serving engine, works today:
+
 ```python
 import pyarrow as pa
-from sql_transform import SQLTransform
+from pydantic import BaseModel
+from confit import DuckDBInferFn
 
-data = pa.table({
-    "feature1": [1.0, 2.0, 3.0, 4.0, 5.0],
-    "feature2": [10, 20, 30, 40, 50],
-})
+class Row(BaseModel):
+    age: float
 
-# The input table is always referenced as __THIS__.
-sql = """
-SELECT
-    feature1 / MEAN(feature1) OVER () AS feature1_norm,
-    feature2 / SUM(feature2) OVER () AS feature2_share
-FROM __THIS__
-"""
-
-t = SQLTransform(sql)
-t.fit(data)
-
-# Serving: dict or Pydantic model in, typed model out.
-one = t.infer({"feature1": 2.0, "feature2": 20})
-print(one.feature1_norm)
-many = t.infer_batch([{"feature1": 2.0, "feature2": 20}])
+fn = DuckDBInferFn(
+    "SELECT (age - 30.0) / 10.0 AS age_z FROM __THIS__",
+    row_tables={"__THIS__": Row},
+    static_tables={},
+    shape="map",
+)
+fn.infer_rows([Row(age=40.0)])          # row objects in, row objects out
+fn.infer_arrow(pa.table({"age": [40.0]}))  # pa.Table in, pa.Table out
 ```
 
-Per-group statistics use `OVER (PARTITION BY ...)` — the group means/counts are
-frozen at `fit` and looked up per row at inference:
-
-```python
-sql = "SELECT target / MEAN(target) OVER (PARTITION BY city) AS enc FROM __THIS__"
-```
+`sql_transform.SQLTransform` is the intended authoring layer on top of it --
+write SQL with window aggregates, `fit()` to freeze them, then serve. It is
+currently **not implemented**; see [packages/sql-transform](packages/sql-transform).
 
 ## Architecture
 
-Two phases, one rewritten query:
+The intended two-phase shape, of which **only the second phase exists today**:
 
 ```
 SQL over __THIS__
       │
       ▼
-   fit(train) ── DataFusion runs the SQL, freezes each window aggregate (e.g.
-      │          MEAN(age)) into a typed __STATE__ table, and rewrites the SQL
-      │          to reference __STATE__ + the raw row __THIS__ instead of
-      │          recomputing aggregates.
+   fit(train) ── freeze each window aggregate (e.g. MEAN(age)) into a typed
+      │          __STATE__ table and rewrite the SQL to reference it instead
+      │          of recomputing.                         [NOT IMPLEMENTED]
       │
       │  rewritten SQL + frozen state
       ▼
-   Confit ── partially evaluates the pair into a native function:
-      │      binding-time analysis collapses every static lookup into a
-      │      prepare-time probe, so nothing general remains at call time.
+   Confit ── partially evaluates the pair into a native function: binding-time
+      │      analysis collapses every static lookup into a prepare-time probe,
+      │      so nothing general remains at call time.             [WORKS]
       ▼
  infer(row) / infer_batch(rows)
 ```
 
-`fit` pays for a real query engine once; serving pays only for straight-line
-native code over the frozen state. Confit's contract carries through: the fitted
-SQL either serves bit-exact with DuckDB, or `fit()` raises and names the
-construct it will not serve — see
-[Confit's known limitations](docs/known-limitations.md).
+Confit's contract: SQL plus frozen tables either specialize into a function
+bit-exact with DuckDB, or construction raises and names the construct it will
+not serve — see [Confit's known limitations](docs/known-limitations.md).
 
-## What it supports
+## What Confit supports
 
-- **Window aggregates**, computed once at `fit` and frozen: whole-table `OVER ()`
-  and per-group `OVER (PARTITION BY ...)` (`MEAN`, `SUM`, `COUNT`, `STDDEV`, …).
-- **Everything Confit serves** at inference — the expression surface, joins to
-  static tables, and the row-shape contract are documented in
-  [`packages/confit`](packages/confit) and
-  [docs/known-limitations.md](docs/known-limitations.md).
-- **Typed I/O**: Pydantic models for the input row and output, validated when the
-  transform is fitted and again at call time.
+The expression surface, joins to static tables, the row-shape contract
+(`map`/`filter`/`many`) and the Arrow boundary are documented in
+[`packages/confit`](packages/confit) and
+[docs/known-limitations.md](docs/known-limitations.md): **550 of 678** statements
+mined from DuckDB's own test suite replay bit-exact, with the remainder clean,
+named build-time rejections.
 
-Not currently supported, pending the rebuild: batch `transform()`, sklearn
-transformer references, and composing one `SQLTransform` into another.
+The authoring layer on top — window-aggregate `fit`, typed I/O, sklearn
+transformer references, and composing one transform into another — is what the
+rebuild has to supply.
 
 ## Reports
 

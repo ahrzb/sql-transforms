@@ -1,54 +1,45 @@
-"""SQLTransform — SQL feature transforms, fitted once and served by Confit."""
+"""SQLTransform — the authoring surface, awaiting reimplementation.
+
+Every method below raises `NotImplementedError`. The signatures, defaults and
+return types are the contract the rebuild has to satisfy; nothing else survives
+of the previous implementation.
+
+The intended shape, for whoever picks this up:
+
+    fit(table)  -- run the SQL over training data, freeze each window aggregate
+                   into a static table, rewrite the SQL to reference those
+                   tables instead of recomputing, and hand the pair to confit,
+                   which partially evaluates them into a native function.
+    infer(row)  -- one row through that function; no SQL engine at call time.
+
+Confit (`packages/confit`) is already built and does the serving half. What was
+removed was the fit half and everything the deleted DataFusion engine touched.
+"""
 
 from __future__ import annotations
 
 from string.templatelib import Template
 from typing import Any
 
-import datafusion
 import pyarrow as pa
-from confit import DuckDBInferFn
 from pydantic import BaseModel
 
-from sql_transform._compose import desugar_template, inline_references
-from sql_transform._rewrite import rewrite_sql
-from sql_transform._schema import synthesize_this_model
-from sql_transform._sql import find_window_aggregates, parse_and_validate
-from sql_transform._state import build_state_tables
+_TODO = "SQLTransform is being rebuilt on confit; {} has no implementation yet"
 
 
 class SQLTransform:
     """SQL feature transforms: fit once, then serve row-at-a-time.
 
-    fit() extracts the training-time state (window aggregates freeze into
-    per-partition static tables, template refs inline) and hands the
-    rewritten SQL plus those frozen tables to Confit, which partially
-    evaluates the pair into a native function: frontend -> binding-time
-    analysis -> lowering -> native code.
-
-    infer()/infer_batch() take dicts or pydantic models directly and cross
-    the boundary through the prepare-time-generated row marshaller.
-
-    Confit's contract applies: the fitted SQL either serves bit-exact with
-    DuckDB or refuses at fit() time, naming the construct.
+    Not implemented. See the module docstring for the intended shape.
     """
 
     def __init__(self, sql: str | Template) -> None:
-        if isinstance(sql, Template):
-            self._sql, self._refs = desugar_template(sql)
-        else:
-            self._sql, self._refs = sql, {}
-        if any(r.is_transformer for r in self._refs.values()):
-            raise ValueError(
-                "SQLTransform does not support transformer refs: fitted "
-                "transformers cannot be referenced from the SQL yet."
-            )
-        self._fn: DuckDBInferFn | None = None
+        raise NotImplementedError(_TODO.format("__init__"))
 
     @classmethod
     def from_file(cls, path: str) -> SQLTransform:
-        with open(path) as f:
-            return cls(f.read())
+        """Build a transform from a file containing the SQL."""
+        raise NotImplementedError(_TODO.format("from_file"))
 
     def fit(
         self,
@@ -56,46 +47,23 @@ class SQLTransform:
         /,
         this_model: type[BaseModel] | None = None,
     ) -> SQLTransform:
-        this_model = this_model or synthesize_this_model(table.schema)
-        tree = parse_and_validate(self._sql)
-
-        ctx = datafusion.SessionContext()
-        ctx.from_arrow(table, name="__THIS__")
-        inline = inline_references(tree, self._refs, ctx, table)
-        windows = find_window_aggregates(tree)
-        own_state = build_state_tables(
-            windows, ctx, "__THIS__", join_tables=inline.scoped_state
-        )
-        state_tables = {**inline.scoped_state, **own_state}
-        rewritten = rewrite_sql(
-            tree, windows, extra_marker_tables=tuple(inline.scoped_state)
-        )
-        self._fn = DuckDBInferFn(
-            rewritten,
-            row_tables={"__THIS__": this_model},
-            static_tables=state_tables,
-        )
-        return self
+        """Freeze training-time state and specialize; returns self."""
+        raise NotImplementedError(_TODO.format("fit"))
 
     @property
     def backend(self) -> str:
         """Execution backend: "cranelift", "interpreter", or "constant"."""
-        return self._fn_or_raise().backend
+        raise NotImplementedError(_TODO.format("backend"))
 
     @property
     def boundary(self) -> str:
         """Boundary path: "marshaller", "generic", or "constant"."""
-        return self._fn_or_raise().boundary
+        raise NotImplementedError(_TODO.format("boundary"))
 
     def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
         """Single-row inference; returns the typed output model instance."""
-        return self._fn_or_raise().infer_rows([row])[0]
+        raise NotImplementedError(_TODO.format("infer"))
 
     def infer_batch(self, rows: list[dict[str, Any] | BaseModel], /) -> list[BaseModel]:
         """Many-rows inference; returns typed output model instances."""
-        return self._fn_or_raise().infer_rows(rows)
-
-    def _fn_or_raise(self) -> DuckDBInferFn:
-        if self._fn is None:
-            raise RuntimeError("Must call fit() before inference")
-        return self._fn
+        raise NotImplementedError(_TODO.format("infer_batch"))
