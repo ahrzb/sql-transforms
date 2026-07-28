@@ -507,7 +507,6 @@ fn unsupported_constructs_are_named_cleanly() {
             "SELECT regexp_extract_all('x', 'y') FROM __THIS__",
             "list-valued",
         ),
-        ("SELECT reverse('abc') FROM __THIS__", "grapheme"),
         ("SELECT jaro_similarity('x', 'y') FROM __THIS__", "function"),
         // Bare COLUMNS expands since wave B; expression forms stay named.
         ("SELECT COLUMNS('a') + 1 FROM __THIS__", "COLUMNS"),
@@ -1777,4 +1776,185 @@ fn opaque_row_columns_reject_only_on_reference() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("3 columns available but 4"), "{e}");
+}
+
+#[test]
+fn from_colon_prefix_alias_matches_as_form() {
+    // pins-waveA/from-colon-alias.json: `FROM x : T` == `FROM T AS x` in
+    // every probed behavior; whitespace around the colon irrelevant.
+    let schema = cols(&[("i", Ty::I64, false)]);
+    for sql in [
+        "SELECT * FROM b : __THIS__",
+        "SELECT * FROM \"b\" : __THIS__",
+        "SELECT i FROM b:__THIS__",
+        "SELECT b.i FROM b : __THIS__",
+        "SELECT i FROM b : __THIS__ WHERE b.i = 42",
+        "SELECT i FROM b : main.__THIS__",
+    ] {
+        let got = run_sql(sql, &schema, batch(1, vec![c_i64(&[Some(42)])])).unwrap();
+        assert_eq!(got, rows(&[&["42"]]), "{sql}");
+    }
+    // The original name is hidden, exactly like AS.
+    let e = prep("SELECT __THIS__.i FROM b : __THIS__", &schema)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("unknown table"), "{e}");
+    // Static tables take colon aliases too (alias scopes the join).
+    let dim = stat("dim", &[("i", Ty::I64, false), ("v", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT d.v FROM __THIS__ JOIN d : dim ON __THIS__.i = d.i",
+        "__THIS__",
+        &schema,
+        std::slice::from_ref(&dim),
+    )
+    .unwrap();
+    assert_eq!(p.program.out_cols[0].name, "v");
+    // Right sides we don't rewrite stay clean parse errors: chained and
+    // postfix-mixed forms (DuckDB parse errors too), table functions.
+    for sql in [
+        "SELECT * FROM b : c : __THIS__",
+        "SELECT * FROM b : __THIS__ AS d",
+        "SELECT * FROM r : range(3)",
+    ] {
+        let e = prep(sql, &schema).unwrap_err().to_string();
+        assert!(e.contains("parse error") || e.contains("unsupported"), "{sql}: {e}");
+    }
+}
+
+#[test]
+fn parenless_star_replace_consumes_one_item() {
+    // pins-waveA/columns-replace.json: paren-less REPLACE takes exactly
+    // ONE `expr AS name`; a comma starts a NEW select item (dup names and
+    // all). Multiplication by a column named replace is untouched.
+    let schema = cols(&[("i", Ty::I64, false), ("j", Ty::I64, false)]);
+    let input = || batch(1, vec![c_i64(&[Some(1)]), c_i64(&[Some(2)])]);
+    let got = run_sql("SELECT * REPLACE i+100 AS i FROM __THIS__", &schema, input()).unwrap();
+    assert_eq!(got, rows(&[&["101", "2"]]));
+    let got = run_sql(
+        "SELECT integers.* REPLACE i+100 AS i FROM __THIS__ AS integers",
+        &schema,
+        input(),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["101", "2"]]));
+    // Comma ends the item: third column is a separate j+1, and the dup
+    // name goes through the boundary rename (j, j -> j, j_1).
+    let p = prep(
+        "SELECT * REPLACE i+100 AS i, j+1 AS j FROM __THIS__",
+        &schema,
+    )
+    .unwrap();
+    assert_eq!(
+        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["i", "j", "j_1"]
+    );
+    let f = compile(&p, vec![]).unwrap();
+    let got = run_snapshot(&f, &input()).unwrap();
+    assert_eq!(got, rows(&[&["101", "2", "3"]]));
+    // `3 * replace` where replace is a column: not a star modifier.
+    let rschema = cols(&[("replace", Ty::I64, false)]);
+    let got = run_sql(
+        "SELECT 3 * replace AS x FROM __THIS__",
+        &rschema,
+        batch(1, vec![c_i64(&[Some(5)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["15"]]));
+}
+
+#[test]
+fn cast_null_regex_arguments_match_bare_null() {
+    // pins-waveA/regex-null-pattern.json: CAST(NULL AS VARCHAR) behaves
+    // exactly like a bare NULL literal in every regex argument slot.
+    let schema = cols(&[("s", Ty::Str, true)]);
+    let input = || batch(2, vec![c_str(&[Some("a"), None])]);
+    for sql in [
+        "SELECT regexp_matches(s, CAST(NULL AS VARCHAR)) AS r FROM __THIS__",
+        "SELECT s SIMILAR TO CAST(NULL AS VARCHAR) AS r FROM __THIS__",
+        "SELECT NOT (s ~ CAST(NULL AS VARCHAR)) AS r FROM __THIS__",
+    ] {
+        let got = run_sql(sql, &schema, input()).unwrap();
+        assert_eq!(got, rows(&[&["NULL"], &["NULL"]]), "{sql}");
+    }
+    for sql in [
+        "SELECT regexp_replace(s, CAST(NULL AS VARCHAR), 'x') AS r FROM __THIS__",
+        "SELECT regexp_replace(s, 'a', CAST(NULL AS VARCHAR)) AS r FROM __THIS__",
+        "SELECT regexp_replace(s, 'a', 'x', CAST(NULL AS VARCHAR)) AS r FROM __THIS__",
+        "SELECT regexp_extract(s, CAST(NULL AS VARCHAR)) AS r FROM __THIS__",
+    ] {
+        let got = run_sql(sql, &schema, input()).unwrap();
+        assert_eq!(got, rows(&[&["NULL"], &["NULL"]]), "{sql}");
+    }
+    // NULL OPTIONS stay the pinned error for the non-replace functions.
+    let e = prep(
+        "SELECT regexp_matches(s, 'a', CAST(NULL AS VARCHAR)) FROM __THIS__",
+        &schema,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("must not be NULL"), "{e}");
+    // A NULL pattern of the WRONG type is still a bind error.
+    let e = prep(
+        "SELECT regexp_matches(s, CAST(NULL AS INTEGER)) FROM __THIS__",
+        &schema,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("pattern"), "{e}");
+}
+
+#[test]
+fn reverse_ascii_byte_path_and_grapheme_path() {
+    // pins-waveA/reverse-graphemes.json. All-ASCII inputs BYTE-reverse
+    // (CRLF splits — DuckDB's fast path, measured); any non-ASCII char
+    // switches to UAX-29 extended grapheme clusters, byte-preserving.
+    let schema = cols(&[("s", Ty::Str, true)]);
+    let cases: &[(&str, &str)] = &[
+        ("", ""),
+        ("abc", "cba"),
+        ("a\r\nb", "b\n\ra"),          // ASCII: CRLF SPLITS (fast path)
+        ("\u{f6}\r\nb", "b\r\n\u{f6}"), // non-ASCII: CRLF holds
+        ("Mot\u{f6}rHead", "daeHr\u{f6}toM"),
+        ("e\u{301}x", "xe\u{301}"), // combining mark stays attached
+        // 3 regional indicators: U+S pair from the left, F trails alone.
+        ("\u{1f1fa}\u{1f1f8}\u{1f1eb}", "\u{1f1eb}\u{1f1fa}\u{1f1f8}"),
+        // ZWJ family emoji is one cluster.
+        (
+            "x\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}y",
+            "y\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x",
+        ),
+        // Hangul jamo LVT stay one cluster, NOT composed.
+        (
+            "\u{1112}\u{1161}\u{11ab}\u{d55c}",
+            "\u{d55c}\u{1112}\u{1161}\u{11ab}",
+        ),
+        // ZWJ travels with the PRECEDING char.
+        ("a\u{200d}b\u{f6}", "\u{f6}ba\u{200d}"),
+    ];
+    for (input, want) in cases {
+        let got = run_sql(
+            "SELECT reverse(s) AS r FROM __THIS__",
+            &schema,
+            batch(1, vec![c_str(&[Some(input)])]),
+        )
+        .unwrap();
+        assert_eq!(got, rows(&[&[want]]), "input {:?}", input);
+    }
+    // NULL passes through; non-VARCHAR args are binder errors (NO
+    // implicit cast — measured: sole overload reverse(VARCHAR)).
+    let got = run_sql(
+        "SELECT reverse(s) AS r, reverse(NULL) AS n FROM __THIS__",
+        &schema,
+        batch(1, vec![c_str(&[None])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["NULL", "NULL"]]));
+    for sql in [
+        "SELECT reverse(123) FROM __THIS__",
+        "SELECT reverse(1.5) FROM __THIS__",
+        "SELECT reverse(true) FROM __THIS__",
+    ] {
+        let e = prep(sql, &schema).unwrap_err().to_string();
+        assert!(e.contains("no function matches reverse"), "{sql}: {e}");
+    }
 }

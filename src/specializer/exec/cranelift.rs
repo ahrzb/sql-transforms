@@ -746,6 +746,15 @@ extern "C" fn h_sstrip(p: *mut Cx, ao: i64, al: i64, len_out: *mut i64) -> i64 {
     }
 }
 
+extern "C" fn h_srev(p: *mut Cx, ao: i64, al: i64, len_out: *mut i64) -> i64 {
+    let c = unsafe { cx(p) };
+    let arena = unsafe { &mut *c.arena };
+    let out = interp::duck_reverse(arena.get(span(ao, al)));
+    let r = arena.push_str(&out);
+    unsafe { *len_out = r.len as i64 };
+    r.off as i64
+}
+
 extern "C" fn h_ffloordiv(x: f64, y: f64) -> f64 {
     interp::duck_fdiv(x, y)
 }
@@ -1591,6 +1600,7 @@ fn translate_inst(
                 StrOp1::StripAccents => {
                     call_h(b, module, "h_sstrip", &[cxp, o, l, lp]).unwrap()
                 }
+                StrOp1::Reverse => call_h(b, module, "h_srev", &[cxp, o, l, lp]).unwrap(),
                 _ => {
                     let up = icon(b, matches!(op, StrOp1::Upper) as i64);
                     call_h(b, module, "h_scase", &[cxp, o, l, up, lp]).unwrap()
@@ -1963,6 +1973,7 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_sslice", h_sslice as *const u8),
     ("h_sord", h_sord as *const u8),
     ("h_sstrip", h_sstrip as *const u8),
+    ("h_srev", h_srev as *const u8),
     ("h_ffloordiv", h_ffloordiv as *const u8),
     ("h_ffloormod", h_ffloormod as *const u8),
     ("h_fnextafter", h_fnextafter as *const u8),
@@ -2003,6 +2014,7 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_sslice" => (&[ptr, I64, I64, I64, I64, I64], Some(I64)),
         "h_sord" => (&[ptr, I64, I64, I64], Some(I64)),
         "h_sstrip" => (&[ptr, I64, I64, I64], Some(I64)),
+        "h_srev" => (&[ptr, I64, I64, I64], Some(I64)),
         "h_ffloordiv" | "h_ffloormod" | "h_fnextafter" => (&[F64, F64], Some(F64)),
         "h_iabs" => (&[ptr, I64], Some(I64)),
         "h_fcmp" => (&[F64, F64, I64], Some(I8)),

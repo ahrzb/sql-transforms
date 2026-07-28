@@ -254,6 +254,258 @@ pub fn rewrite_glob(tokens: Vec<Token>) -> Vec<Token> {
     out
 }
 
+/// Rewrite the paren-less star REPLACE — `* REPLACE expr AS name` — into
+/// the parenthesized form sqlparser accepts. DuckDB's paren-less form
+/// consumes exactly ONE item: a following comma starts a NEW select item
+/// (measured — `* REPLACE i+100 AS i, j+1 AS j` yields three columns
+/// i,j,j; pins-waveA/columns-replace.json), which terminating the wrap at
+/// the top-level `AS name` reproduces exactly. sqlparser already parses
+/// paren-less EXCLUDE/RENAME singles. A `3 * replace(...)` multiplication
+/// is untouched: function calls have `(` right after the word.
+pub fn rewrite_parenless_replace(tokens: Vec<Token>) -> Vec<Token> {
+    const STOP: &[Keyword] = &[
+        Keyword::FROM,
+        Keyword::WHERE,
+        Keyword::GROUP,
+        Keyword::HAVING,
+        Keyword::ORDER,
+        Keyword::LIMIT,
+        Keyword::OFFSET,
+        Keyword::UNION,
+        Keyword::EXCEPT,
+        Keyword::INTERSECT,
+        Keyword::WINDOW,
+        Keyword::QUALIFY,
+    ];
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let is_replace = matches!(&tokens[i], Token::Word(w)
+            if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("replace"));
+        // The `*` before REPLACE must be a WILDCARD (after SELECT / a
+        // comma / a qualifying period), not multiplication.
+        let prev_is_wildcard_star = {
+            let mut it = out.iter().rev().filter(|t| !matches!(t, Token::Whitespace(_)));
+            matches!(it.next(), Some(Token::Mul))
+                && match it.next() {
+                    Some(Token::Word(w)) => {
+                        w.quote_style.is_none() && w.keyword == Keyword::SELECT
+                    }
+                    Some(Token::Comma) | Some(Token::Period) => true,
+                    _ => false,
+                }
+        };
+        if !(is_replace && prev_is_wildcard_star) {
+            out.push(tokens[i].clone());
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while matches!(tokens.get(j), Some(Token::Whitespace(_))) {
+            j += 1;
+        }
+        if matches!(tokens.get(j), Some(Token::LParen)) {
+            // Already parenthesized.
+            out.push(tokens[i].clone());
+            i += 1;
+            continue;
+        }
+        // Buffer exactly `expr AS name`; bail on any other shape so the
+        // original stream (and its parse error) survives unchanged.
+        let mut buf: Vec<Token> = Vec::new();
+        let mut depth = 0i32;
+        let mut ok = false;
+        while let Some(tok) = tokens.get(j) {
+            match tok {
+                Token::LParen | Token::LBracket => {
+                    depth += 1;
+                    buf.push(tok.clone());
+                    j += 1;
+                }
+                Token::RParen | Token::RBracket => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    buf.push(tok.clone());
+                    j += 1;
+                }
+                Token::Comma if depth == 0 => break,
+                Token::Word(w)
+                    if depth == 0 && w.quote_style.is_none() && w.keyword == Keyword::AS =>
+                {
+                    if !buf.iter().any(|t| !matches!(t, Token::Whitespace(_))) {
+                        break; // `REPLACE AS x` — no expression, bail
+                    }
+                    buf.push(tok.clone());
+                    j += 1;
+                    while matches!(tokens.get(j), Some(Token::Whitespace(_))) {
+                        buf.push(tokens[j].clone());
+                        j += 1;
+                    }
+                    if let Some(name @ Token::Word(_)) = tokens.get(j) {
+                        buf.push(name.clone());
+                        j += 1;
+                        ok = true;
+                    }
+                    break;
+                }
+                Token::Word(w)
+                    if depth == 0 && w.quote_style.is_none() && STOP.contains(&w.keyword) =>
+                {
+                    break
+                }
+                _ => {
+                    buf.push(tok.clone());
+                    j += 1;
+                }
+            }
+        }
+        if !ok {
+            out.push(tokens[i].clone());
+            i += 1;
+            continue;
+        }
+        out.push(tokens[i].clone()); // REPLACE
+        out.push(Token::Whitespace(Whitespace::Space));
+        out.push(Token::LParen);
+        out.extend(buf);
+        out.push(Token::RParen);
+        i = j;
+    }
+    out
+}
+
+/// Rewrite DuckDB's FROM-position prefix alias `FROM x : T` into
+/// `FROM T AS x` — measured IDENTICAL to the AS form in every probed
+/// behavior: shadowing, duplicate-alias laxity, binder errors
+/// (pins-waveA/from-colon-alias.json). Fires when a (possibly quoted)
+/// single identifier followed by `:` sits at a table-ref position (right
+/// after FROM, JOIN, or a FROM-list comma). Only ident-chain right sides
+/// (`T`, `s.T`) are rewritten; a right side continuing with `(` is a
+/// table function / subquery — left alone, so it stays the same clean
+/// parse error as before (unsupported relation kinds regardless).
+pub fn rewrite_from_colon_aliases(tokens: Vec<Token>) -> Vec<Token> {
+    const FROM_END: &[Keyword] = &[
+        Keyword::WHERE,
+        Keyword::GROUP,
+        Keyword::HAVING,
+        Keyword::ORDER,
+        Keyword::LIMIT,
+        Keyword::OFFSET,
+        Keyword::UNION,
+        Keyword::EXCEPT,
+        Keyword::INTERSECT,
+        Keyword::WINDOW,
+        Keyword::QUALIFY,
+    ];
+    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+    let mut fromctx: Vec<i32> = Vec::new(); // paren depths of active FROM lists
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut table_pos = false;
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = &tokens[i];
+        if matches!(t, Token::Whitespace(_)) {
+            out.push(t.clone());
+            i += 1;
+            continue;
+        }
+        let in_ctx = fromctx.last().is_some_and(|d| *d == paren && bracket == 0);
+        match t {
+            Token::Word(w) if w.quote_style.is_none() && w.keyword == Keyword::FROM => {
+                out.push(t.clone());
+                fromctx.push(paren);
+                table_pos = true;
+            }
+            Token::Word(w)
+                if in_ctx && w.quote_style.is_none() && FROM_END.contains(&w.keyword) =>
+            {
+                fromctx.pop();
+                out.push(t.clone());
+                table_pos = false;
+            }
+            Token::Word(w) if in_ctx && w.quote_style.is_none() && w.keyword == Keyword::JOIN => {
+                out.push(t.clone());
+                table_pos = true;
+            }
+            Token::Comma if in_ctx => {
+                out.push(t.clone());
+                table_pos = true;
+            }
+            Token::Word(alias) if table_pos => {
+                // Lookahead for `alias : ident(.ident)*`.
+                let mut j = i + 1;
+                while matches!(tokens.get(j), Some(Token::Whitespace(_))) {
+                    j += 1;
+                }
+                if matches!(tokens.get(j), Some(Token::Colon)) {
+                    j += 1;
+                    while matches!(tokens.get(j), Some(Token::Whitespace(_))) {
+                        j += 1;
+                    }
+                    let mut chain: Vec<Token> = Vec::new();
+                    while let Some(Token::Word(_)) = tokens.get(j) {
+                        chain.push(tokens[j].clone());
+                        j += 1;
+                        if matches!(tokens.get(j), Some(Token::Period)) {
+                            chain.push(tokens[j].clone());
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    let chain_ok = matches!(chain.last(), Some(Token::Word(_)))
+                        && !matches!(tokens.get(j), Some(Token::LParen));
+                    if chain_ok {
+                        out.extend(chain);
+                        out.push(Token::Whitespace(Whitespace::Space));
+                        out.push(Token::make_keyword("AS"));
+                        out.push(Token::Whitespace(Whitespace::Space));
+                        out.push(Token::Word(alias.clone()));
+                        table_pos = false;
+                        i = j;
+                        continue;
+                    }
+                }
+                out.push(t.clone());
+                table_pos = false;
+            }
+            Token::LParen => {
+                paren += 1;
+                out.push(t.clone());
+                table_pos = false;
+            }
+            Token::RParen => {
+                paren -= 1;
+                while fromctx.last().is_some_and(|d| *d > paren) {
+                    fromctx.pop();
+                }
+                out.push(t.clone());
+                table_pos = false;
+            }
+            Token::LBracket => {
+                bracket += 1;
+                out.push(t.clone());
+                table_pos = false;
+            }
+            Token::RBracket => {
+                bracket -= 1;
+                out.push(t.clone());
+                table_pos = false;
+            }
+            _ => {
+                out.push(t.clone());
+                table_pos = false;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Rewrite `SELECT k: expr, ...` into `SELECT expr AS k, ...`.
 ///
 /// Trigger: a (possibly quoted) word followed by a single `:` at the START

@@ -17,5 +17,6 @@ cranelift-jit = "0.126"
 cranelift-module = "0.126"
 pyo3 = { version = "0.29", features = ["abi3-py314"] }
 regex = "1"
+unicode-segmentation = "1"
 sqlparser = "0.62"
 target-lexicon = "0.13.5"

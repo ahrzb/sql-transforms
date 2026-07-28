@@ -182,6 +182,10 @@ pub fn fold(e: SExpr) -> SExpr {
             let a = fold(*a);
             e(SKind::StripAccents(Box::new(a)))
         }
+        SKind::Reverse(a) => {
+            let a = fold(*a);
+            e(SKind::Reverse(Box::new(a)))
+        }
         SKind::Not(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {

@@ -1201,6 +1201,19 @@ pub(super) fn duck_ord(s: &str, empty_zero: bool) -> i64 {
 /// strip_accents: all-ASCII passes VERBATIM (NULs preserved); otherwise
 /// truncate at the first NUL (the measured context-dependent quirk),
 /// per-codepoint oracle map, then Hangul jamo composition. TOTAL.
+/// DuckDB reverse() (pins-waveA/reverse-graphemes.json): an all-ASCII
+/// string BYTE-reverses (this splits CRLF — measured, not a bug to "fix");
+/// anything else reverses UAX-29 EXTENDED grapheme clusters, each cluster
+/// byte-preserved, no normalization.
+pub(super) fn duck_reverse(s: &str) -> String {
+    if s.is_ascii() {
+        s.bytes().rev().map(|b| b as char).collect()
+    } else {
+        use unicode_segmentation::UnicodeSegmentation;
+        s.graphemes(true).rev().collect()
+    }
+}
+
 pub(super) fn duck_strip_accents(s: &str) -> Option<String> {
     if s.is_ascii() {
         return None; // caller keeps the input span — no copy
@@ -1978,6 +1991,12 @@ fn compile_inst(
                         None => RegVal::Str(sref), // ASCII fast path: verbatim
                         Some(s) => RegVal::Str(ctx.arena.push_str(&s)),
                     };
+                    Ok(())
+                }),
+                StrOp1::Reverse => Box::new(move |ctx| {
+                    let sref = as_str(ctx.regs[a]);
+                    let out = duck_reverse(ctx.arena.get(sref));
+                    ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&out));
                     Ok(())
                 }),
             }

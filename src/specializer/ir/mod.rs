@@ -368,6 +368,10 @@ pub enum StrOp1 {
     /// strip_accents: oracle-extracted per-codepoint map + Hangul jamo
     /// composition + the measured NUL quirk (wave-3 pins). TOTAL.
     StripAccents,
+    /// reverse: DuckDB's two paths — all-ASCII input BYTE-reverses
+    /// (splitting CRLF!), anything else reverses UAX-29 EXTENDED grapheme
+    /// clusters byte-preserving (pins-waveA/reverse-graphemes.json). TOTAL.
+    Reverse,
 }
 
 impl StrOp1 {
@@ -376,6 +380,7 @@ impl StrOp1 {
             StrOp1::Upper => "supper",
             StrOp1::Lower => "slower",
             StrOp1::StripAccents => "sstrip",
+            StrOp1::Reverse => "srev",
         }
     }
 }
