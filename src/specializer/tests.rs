@@ -1724,7 +1724,7 @@ fn opaque_row_columns_reject_only_on_reference() {
     let schema = cols(&[("a", Ty::I64, false), ("s", Ty::Str, true)]);
     let opaque = vec![(1usize, "d".to_string())];
     let prep_o = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[]).map(|p| p.program)
+        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false).map(|p| p.program)
     };
 
     // Untouched -> serves end to end.
@@ -2035,7 +2035,7 @@ fn structs_flatten_to_lanes() {
         ],
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[]).map(|p| p.program)
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false).map(|p| p.program)
     };
     let run = |sql: &str| -> Result<Vec<Vec<String>>, String> {
         let p = prep_s(sql).map_err(|e| e.to_string())?;
@@ -2144,7 +2144,7 @@ fn nested_struct_resolution_matches_pins() {
         ))))),
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[]).map(|p| p.program)
+        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false).map(|p| p.program)
     };
     // 8 parts = schema.table.column + 5 field extracts (corpus verbatim).
     let p = prep_s("SELECT t.t.t.t.t.t.t.t FROM t.t").unwrap();
@@ -2167,4 +2167,109 @@ fn nested_struct_resolution_matches_pins() {
     // t.t = column.field chain.
     let p = prep_s("SELECT z.t.t.t.t.t.t FROM t.t AS z").unwrap();
     assert_eq!(p.out_cols[0].name, "t");
+}
+
+#[test]
+fn many_shape_dup_key_joins_fan_out() {
+    // Stage-B loop lowering (pins-stageB): per-pair emission in probe
+    // order outer / build INSERTION order inner; LEFT null-extends
+    // zero-match rows (NULL keys and residual-filters-all included);
+    // WHERE composes per emitted candidate, null-extension included.
+    let schema = cols(&[("pid", Ty::I64, true)]);
+    let dim = stat("d", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
+    let prep_many = |sql: &str| {
+        super::prepare_opaque(
+            sql,
+            "__THIS__",
+            &schema,
+            &[],
+            &[],
+            std::slice::from_ref(&dim),
+            true,
+        )
+    };
+    let data = || {
+        StaticData::Map(vec![
+            (vec![KeyBits::I64(1)], vec![ScalarVal::I64(10)]),
+            (vec![KeyBits::I64(2)], vec![ScalarVal::I64(20)]),
+            (vec![KeyBits::I64(1)], vec![ScalarVal::I64(11)]),
+        ])
+    };
+    let input = || batch(4, vec![c_i64(&[Some(1), Some(2), Some(3), None])]);
+    let run_many = |sql: &str| -> Vec<Vec<String>> {
+        let p = prep_many(sql).unwrap();
+        let f = compile(&p.program, vec![data()]).unwrap();
+        run_snapshot(&f, &input()).unwrap()
+    };
+
+    // LEFT: dup-key fan-out + null-extension for the miss and NULL key.
+    assert_eq!(
+        run_many("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id"),
+        rows(&[
+            &["1", "10"],
+            &["1", "11"],
+            &["2", "20"],
+            &["3", "NULL"],
+            &["NULL", "NULL"],
+        ])
+    );
+    // INNER: zero-match rows drop.
+    assert_eq!(
+        run_many("SELECT pid, v FROM __THIS__ JOIN d ON pid = d.id"),
+        rows(&[&["1", "10"], &["1", "11"], &["2", "20"]])
+    );
+    // Residual filters PER MATCH; a row whose matches are all filtered
+    // still null-extends (measured).
+    assert_eq!(
+        run_many("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id AND d.v > 10"),
+        rows(&[&["1", "11"], &["2", "20"], &["3", "NULL"], &["NULL", "NULL"]])
+    );
+    assert_eq!(
+        run_many("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id AND d.v > 100"),
+        rows(&[
+            &["1", "NULL"],
+            &["2", "NULL"],
+            &["3", "NULL"],
+            &["NULL", "NULL"],
+        ])
+    );
+    // WHERE applies to every emitted candidate incl. the null-extension.
+    assert_eq!(
+        run_many("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id WHERE v IS NULL"),
+        rows(&[&["3", "NULL"], &["NULL", "NULL"]])
+    );
+    assert_eq!(
+        run_many("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id WHERE v > 10"),
+        rows(&[&["1", "11"], &["2", "20"]])
+    );
+    // Under the DEFAULT shape the same dup-key data still errors at
+    // materialization (the 1:1 map contract is untouched).
+    let p = prepare(
+        "SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id",
+        "__THIS__",
+        &schema,
+        std::slice::from_ref(&dim),
+    )
+    .unwrap();
+    let e = match compile(&p.program, vec![data()]) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("dup keys under the default shape must error"),
+    };
+    assert!(e.contains("duplicate map key"), "{e}");
+    // Multi-join under 'many' is the named stage-B restriction.
+    let dim_b = stat("d", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
+    let dim2 = stat("d2", &[("id", Ty::I64, false), ("w", Ty::I64, false)]);
+    let e = match super::prepare_opaque(
+        "SELECT pid FROM __THIS__ LEFT JOIN d ON pid = d.id LEFT JOIN d2 ON pid = d2.id",
+        "__THIS__",
+        &schema,
+        &[],
+        &[],
+        &[dim_b, dim2],
+        true,
+    ) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("multi-join under many must be the named restriction"),
+    };
+    assert!(e.contains("one join per query"), "{e}");
 }

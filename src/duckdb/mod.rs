@@ -516,14 +516,11 @@ impl DuckDBInferFn {
         // (out[i] <-> in[i]) or refuses at build; "many" is reserved for
         // join multiplicity (stage B) and is the only shape under which
         // those constructs will ever build.
+        let many = shape.as_deref() == Some("many");
         let strict_map = match shape.as_deref() {
             None | Some("filter") => false,
             Some("map") => true,
-            Some("many") => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "shape='many' is reserved for join multiplicity (stage B — not built yet)",
-                ))
-            }
+            Some("many") => false, // multiplicity: `many` below
             Some(other) => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "shape must be 'map', 'filter', or 'many', got '{other}'"
@@ -662,8 +659,9 @@ impl DuckDBInferFn {
         }
 
         use super::specializer::PrepareError;
-        let prepared =
-            match prepare_opaque(&sql, &row_table, &in_cols, &opaque, &structs, &catalog) {
+        let prepared = match prepare_opaque(
+            &sql, &row_table, &in_cols, &opaque, &structs, &catalog, many,
+        ) {
             Ok(p) => p,
             // Unsupported/unparseable SQL might still be a static-tables-only
             // query (static driving table, aggregation, ORDER BY, DuckDB
@@ -710,7 +708,9 @@ impl DuckDBInferFn {
         // Program statics and StaticSpecs are both indexed by join id.
         let mut data = Vec::with_capacity(prepared.statics.len());
         for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
-            let StaticTy::Map { keys, values } = sty else {
+            let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) =
+                sty
+            else {
                 return Err(build_err("internal: v0 lowering emits only map statics"));
             };
             let table = static_tables
@@ -733,7 +733,9 @@ impl DuckDBInferFn {
                 Err(_) => {
                     let mut data = Vec::with_capacity(prepared.statics.len());
                     for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
-                        let StaticTy::Map { keys, values } = sty else {
+                        let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) =
+                            sty
+                        else {
                             return Err(build_err("internal: v0 lowering emits only map statics"));
                         };
                         let table = static_tables
