@@ -19,6 +19,9 @@ pub fn print(p: &Program) -> String {
             StaticTy::Map { keys, values } => {
                 let _ = writeln!(s, "map({}) -> ({})", tys(keys), tys(values));
             }
+            StaticTy::MultiMap { keys, values } => {
+                let _ = writeln!(s, "multimap({}) -> ({})", tys(keys), tys(values));
+            }
         }
     }
     for (i, re) in p.regexes.iter().enumerate() {
@@ -213,6 +216,21 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             let ks: Vec<String> = keys.iter().map(|k| val(*k)).collect();
             let _ = write!(s, "probe @{static_id}, {}", ks.join(", "));
         }
+        Inst::ProbeRange {
+            static_id, keys, ..
+        } => {
+            let ks: Vec<String> = keys.iter().map(|k| val(*k)).collect();
+            if ks.is_empty() {
+                let _ = write!(s, "probe.range @{static_id}");
+            } else {
+                let _ = write!(s, "probe.range @{static_id}, {}", ks.join(", "));
+            }
+        }
+        Inst::ProbeRead {
+            static_id, idx, ..
+        } => {
+            let _ = write!(s, "probe.read @{static_id}, {}", val(*idx));
+        }
         Inst::Sload { static_id, .. } => {
             let _ = write!(s, "sload @{static_id}");
         }
@@ -253,6 +271,9 @@ fn print_term(s: &mut String, b: &Block) {
             );
         }
         Term::Emit => s.push_str("emit"),
+        Term::EmitTo { to, args } => {
+            let _ = write!(s, "emit.to {}", target(to.0, args));
+        }
         Term::Skip => s.push_str("skip"),
         Term::Trap { msg } => {
             let _ = write!(s, "trap {}", quote(msg));

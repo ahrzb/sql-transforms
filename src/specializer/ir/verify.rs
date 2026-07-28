@@ -16,7 +16,8 @@
 //!     ones (the null lane can be neither skipped nor invented).
 //!  4. Statics: every `@N` resolves; probe/sload match the static's kind,
 //!     arity, and types.
-//!  5. CFG: all blocks reachable from entry; no cycles (v0); branch args
+//!  5. CFG: all blocks reachable from entry; branch args (cycles are legal
+//!     since stage-B multiplicity loops; see the back-edge notes below);
 //!     match target params in count and type.
 //!  6. Stores: no path stores a column twice, whatever its terminator
 //!     (including `trap` — a double store is always a lowering bug); paths
@@ -220,6 +221,18 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
             }
             // Dsts beyond the declared value columns keep no type; the site
             // check reports the arity mismatch.
+            v
+        }
+        Inst::ProbeRange { start, end, .. } => vec![(*start, Ty::I64), (*end, Ty::I64)],
+        Inst::ProbeRead {
+            static_id, dsts, ..
+        } => {
+            let mut v = Vec::new();
+            if let Some(StaticTy::MultiMap { values, .. }) = p.statics.get(*static_id as usize) {
+                for (d, ty) in dsts.iter().zip(values.iter()) {
+                    v.push((*d, *ty));
+                }
+            }
             v
         }
         Inst::Sload { static_id, dst } => vec![(*dst, scalar_ty(*static_id))],
@@ -565,10 +578,73 @@ fn check_block(
                         );
                     }
                 }
+                Some(StaticTy::MultiMap { .. }) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is a multimap: use probe.range"),
+                ),
+            },
+            Inst::ProbeRange {
+                static_id, keys, ..
+            } => match p.statics.get(*static_id as usize) {
+                None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                Some(StaticTy::MultiMap { keys: kts, .. }) => {
+                    if keys.len() != kts.len() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!(
+                                "@{static_id} has {} key(s), probe.range passes {}",
+                                kts.len(),
+                                keys.len()
+                            ),
+                        );
+                    } else {
+                        for (k, kt) in keys.iter().zip(kts.iter()) {
+                            want(&in_scope, def_types, *k, *kt, "probe key", bi, i, errs);
+                        }
+                    }
+                }
+                Some(_) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is not a multimap: probe.range needs one"),
+                ),
+            },
+            Inst::ProbeRead {
+                static_id,
+                idx,
+                dsts,
+            } => match p.statics.get(*static_id as usize) {
+                None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                Some(StaticTy::MultiMap { values: vts, .. }) => {
+                    want(&in_scope, def_types, *idx, Ty::I64, "probe index", bi, i, errs);
+                    if dsts.len() != vts.len() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!(
+                                "@{static_id} has {} value column(s), probe.read defines {}",
+                                vts.len(),
+                                dsts.len()
+                            ),
+                        );
+                    }
+                }
+                Some(_) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is not a multimap: probe.read needs one"),
+                ),
             },
             Inst::Sload { static_id, .. } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                Some(StaticTy::Map { .. }) => err(
+                Some(StaticTy::Map { .. }) | Some(StaticTy::MultiMap { .. }) => err(
                     errs,
                     Some(bi),
                     i,
@@ -584,7 +660,7 @@ fn check_block(
             },
             Inst::SloadOpt { static_id, .. } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
-                Some(StaticTy::Map { .. }) => err(
+                Some(StaticTy::Map { .. }) | Some(StaticTy::MultiMap { .. }) => err(
                     errs,
                     Some(bi),
                     i,
@@ -671,12 +747,21 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
         return;
     }
 
-    // Iterative DFS for reachability + cycle detection (0 white, 1 gray,
+    // Iterative DFS for reachability + BACK-EDGE detection (0 white, 1 gray,
     // 2 black). Explicit stack, NOT recursion: a deep-but-legal CFG (large
     // CASE/decision-tree lowerings) must not abort the process — recursion
     // stack-overflowed at ~8k blocks under adversarial fuzzing.
+    //
+    // Stage-B: cycles are LEGAL (multiplicity loops jump back to their
+    // header via EmitTo — emit-and-continue — or a plain Jump on a
+    // residual-filtered iteration). Back-edges are excluded from the topo
+    // order below; the store dataflow stays sound because a back-edge's
+    // state must MATCH the header's already-known entry state (EmitTo
+    // propagates the RESET all-zero state; a filtered-continue Jump must
+    // arrive store-free), so no fixpoint iteration is ever needed.
     let mut color = vec![0u8; n];
-    let mut cyclic = false;
+    let mut back_edges: std::collections::HashSet<(usize, usize)> =
+        std::collections::HashSet::new();
     let mut stack: Vec<(usize, usize)> = vec![(0, 0)]; // (block, next successor index)
     color[0] = 1;
     while let Some(frame) = stack.last_mut() {
@@ -693,7 +778,9 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
                     color[s] = 1;
                     stack.push((s, 0));
                 }
-                1 => cyclic = true,
+                1 => {
+                    back_edges.insert((b, s));
+                }
                 _ => {}
             }
         } else {
@@ -701,20 +788,61 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
             stack.pop();
         }
     }
-    if cyclic {
-        err(
-            errs,
-            None,
-            None,
-            "control-flow cycle (v0 CFGs must be acyclic)".to_string(),
-        );
-        return; // the store dataflow below needs a DAG
-    }
     let reachable: Vec<bool> = color.iter().map(|c| *c != 0).collect();
     for (bi, r) in reachable.iter().enumerate() {
         if !r {
             err(errs, Some(bi), None, "unreachable block".to_string());
         }
+    }
+
+    // Cycles must TERMINATE: every reachable block must reach a row-ENDING
+    // terminator (emit/skip/trap — emit.to continues, so it doesn't count).
+    // This is the old acyclicity rule relaxed exactly enough for
+    // multiplicity loops; a cycle with no exit still errors.
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (bi, b) in p.blocks.iter().enumerate() {
+        for (succ, _) in b.term.successors() {
+            let s = succ.0 as usize;
+            if s < n {
+                preds[s].push(bi);
+            }
+        }
+    }
+    let mut reaches_end = vec![false; n];
+    let mut work: Vec<usize> = (0..n)
+        .filter(|&b| {
+            matches!(
+                p.blocks[b].term,
+                Term::Emit | Term::Skip | Term::Trap { .. }
+            )
+        })
+        .collect();
+    for &b in &work {
+        reaches_end[b] = true;
+    }
+    while let Some(b) = work.pop() {
+        for &pb in &preds[b] {
+            if !reaches_end[pb] {
+                reaches_end[pb] = true;
+                work.push(pb);
+            }
+        }
+    }
+    let mut nonterminating = false;
+    for bi in 0..n {
+        if reachable[bi] && !reaches_end[bi] {
+            nonterminating = true;
+            err(
+                errs,
+                Some(bi),
+                None,
+                "control-flow cycle with no path to emit/skip/trap (cannot terminate)"
+                    .to_string(),
+            );
+        }
+    }
+    if nonterminating {
+        return; // the store dataflow's topo order needs terminating loops
     }
 
     // Store dataflow over the DAG in topological order. State: per out
@@ -724,7 +852,7 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
     let mut entry_state: Vec<Option<Vec<u8>>> = vec![None; n];
     entry_state[0] = Some(vec![0; ncols]);
 
-    for bi in topo_order(p, n, &reachable) {
+    for bi in topo_order(p, n, &reachable, &back_edges) {
         let Some(state) = entry_state[bi].clone() else {
             continue; // unreachable; already reported
         };
@@ -759,6 +887,40 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
                             None,
                             format!("emit without storing out.{}", p.out_cols[ci].name),
                         );
+                    }
+                }
+            }
+            Term::EmitTo { .. } => {
+                for (ci, count) in state_out.iter().enumerate() {
+                    if *count == 0 {
+                        err(
+                            errs,
+                            Some(bi),
+                            None,
+                            format!("emit without storing out.{}", p.out_cols[ci].name),
+                        );
+                    }
+                }
+                // The emitted row is complete; the CONTINUATION starts the
+                // next output row from scratch.
+                let zero = vec![0u8; state_out.len()];
+                for (succ, _) in p.blocks[bi].term.successors() {
+                    let s = succ.0 as usize;
+                    if s >= n {
+                        continue;
+                    }
+                    match &entry_state[s] {
+                        None => entry_state[s] = Some(zero.clone()),
+                        Some(existing) if *existing != zero => {
+                            err(
+                                errs,
+                                Some(s),
+                                None,
+                                "paths joining here disagree on which out columns are stored"
+                                    .to_string(),
+                            );
+                        }
+                        Some(_) => {}
                     }
                 }
             }
@@ -804,7 +966,12 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
 /// never drain) must not starve a reachable join of its dataflow visit —
 /// that would mask the join's store errors behind the island's
 /// unreachable-block errors and make them reappear one fix later.
-fn topo_order(p: &Program, n: usize, reachable: &[bool]) -> Vec<usize> {
+fn topo_order(
+    p: &Program,
+    n: usize,
+    reachable: &[bool],
+    back_edges: &std::collections::HashSet<(usize, usize)>,
+) -> Vec<usize> {
     let mut indegree = vec![0usize; n];
     for (bi, b) in p.blocks.iter().enumerate() {
         if !reachable[bi] {
@@ -812,7 +979,7 @@ fn topo_order(p: &Program, n: usize, reachable: &[bool]) -> Vec<usize> {
         }
         for (succ, _) in b.term.successors() {
             let s = succ.0 as usize;
-            if s < n {
+            if s < n && !back_edges.contains(&(bi, s)) {
                 indegree[s] += 1;
             }
         }
@@ -825,7 +992,7 @@ fn topo_order(p: &Program, n: usize, reachable: &[bool]) -> Vec<usize> {
         order.push(b);
         for (succ, _) in p.blocks[b].term.successors() {
             let s = succ.0 as usize;
-            if s < n {
+            if s < n && !back_edges.contains(&(b, s)) {
                 indegree[s] -= 1;
                 if indegree[s] == 0 {
                     stack.push(s);

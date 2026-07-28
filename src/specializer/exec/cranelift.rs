@@ -950,6 +950,25 @@ fn clif_ty(ty: Ty) -> types::Type {
 }
 
 pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<CraneliftFn, CompileError> {
+    // Stage-B multiplicity programs (EmitTo loops / multimap probes) are
+    // interpreter-only for now: rejecting here makes the caller's existing
+    // interp fallback the documented 'many' path. The match arms below can
+    // then treat these constructs as unreachable.
+    let has_multiplicity = p
+        .statics
+        .iter()
+        .any(|s| matches!(s, super::super::ir::StaticTy::MultiMap { .. }))
+        || p.blocks.iter().any(|b| {
+            matches!(b.term, Term::EmitTo { .. })
+                || b.insts
+                    .iter()
+                    .any(|i| matches!(i, Inst::ProbeRange { .. } | Inst::ProbeRead { .. }))
+        });
+    if has_multiplicity {
+        return Err(CompileError::Static(
+            "multiplicity programs run on the interpreter (stage B)".into(),
+        ));
+    }
     // The interpreter compile also runs verify + prepare_statics; its
     // prepared statics are the ones the helpers read.
     let interp = interp::compile(p, statics)?;
@@ -1105,6 +1124,9 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
                 out
             };
             match &ib.term {
+                Term::EmitTo { .. } => {
+                    unreachable!("multiplicity programs are rejected before codegen")
+                }
                 Term::Jump { to, args } => {
                     let a = arg_list(&vals, args);
                     b.ins().jump(blocks[to.0 as usize], &a);
@@ -1253,6 +1275,9 @@ fn translate_inst(
     let icon = |b: &mut FunctionBuilder, v: i64| b.ins().iconst(types::I64, v);
 
     match inst {
+        Inst::ProbeRange { .. } | Inst::ProbeRead { .. } => {
+            unreachable!("multiplicity programs are rejected before codegen")
+        }
         Inst::Const { dst, lit } => {
             let v = match lit {
                 Lit::I1(x) => V::S(b.ins().iconst(types::I8, *x as i64)),

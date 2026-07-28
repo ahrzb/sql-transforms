@@ -179,6 +179,10 @@ pub struct Col {
 pub enum StaticTy {
     Scalar(ColTy),
     Map { keys: Vec<Ty>, values: Vec<Ty> },
+    /// Stage-B (shape='many'): a map whose keys may REPEAT — probed as a
+    /// flat row range (ProbeRange -> [start, end), ProbeRead per index).
+    /// Zero keys = the keyless one-bucket join (cross/inequality).
+    MultiMap { keys: Vec<Ty>, values: Vec<Ty> },
 }
 
 /// SSA value id. Presentation names are not stored; the printer derives
@@ -761,6 +765,24 @@ pub enum Inst {
         dsts: Vec<Value>,
         keys: Vec<Value>,
     },
+    /// Probe a MultiMap static: the flat row range matching `keys`
+    /// (`[start, end)`, both I64; empty range on a miss). Zero keys =
+    /// the whole table (keyless join). TOTAL.
+    ProbeRange {
+        static_id: u32,
+        start: Value,
+        end: Value,
+        keys: Vec<Value>,
+    },
+    /// Read row `idx` of a MultiMap's flat value store — one dst per
+    /// declared value lane. `idx` MUST come from a ProbeRange of the same
+    /// static (verifier-checked bounds are the range's; out-of-range is a
+    /// program bug, trapped at run).
+    ProbeRead {
+        static_id: u32,
+        idx: Value,
+        dsts: Vec<Value>,
+    },
     /// Read a `scalar<T>` static.
     Sload {
         static_id: u32,
@@ -812,6 +834,13 @@ pub enum Term {
     },
     /// Output row complete; advance both cursors.
     Emit,
+    /// Stage-B: emit the completed output row AND continue at `to` (the
+    /// multiplicity loop's back-edge). The stored-output state resets —
+    /// blocks after an EmitTo store the NEXT output row.
+    EmitTo {
+        to: BlockId,
+        args: Vec<Value>,
+    },
     /// Drop this input row; nothing may have been stored on this path.
     Skip,
     /// Abort the whole call with a runtime error.
@@ -891,6 +920,8 @@ impl Inst {
                 all.extend(dsts.iter().copied());
                 all
             }
+            Inst::ProbeRange { start, end, .. } => vec![*start, *end],
+            Inst::ProbeRead { dsts, .. } => dsts.clone(),
             Inst::Store { .. } | Inst::StoreOpt { .. } => vec![],
         }
     }
@@ -911,6 +942,7 @@ impl Term {
                 (*then_to, then_args.as_slice()),
                 (*else_to, else_args.as_slice()),
             ],
+            Term::EmitTo { to, args } => vec![(*to, args.as_slice())],
             Term::Emit | Term::Skip | Term::Trap { .. } => vec![],
         }
     }
@@ -1007,6 +1039,21 @@ impl Inst {
                 *flag = m(*flag);
                 *val = m(*val);
             }
+            Inst::ProbeRange {
+                start, end, keys, ..
+            } => {
+                *start = m(*start);
+                *end = m(*end);
+                for k in keys {
+                    *k = m(*k);
+                }
+            }
+            Inst::ProbeRead { idx, dsts, .. } => {
+                *idx = m(*idx);
+                for d in dsts {
+                    *d = m(*d);
+                }
+            }
             Inst::Probe {
                 hit, dsts, keys, ..
             } => {
@@ -1039,6 +1086,11 @@ impl Term {
             } => {
                 *cond = m(*cond);
                 for a in then_args.iter_mut().chain(else_args.iter_mut()) {
+                    *a = m(*a);
+                }
+            }
+            Term::EmitTo { args, .. } => {
+                for a in args.iter_mut() {
                     *a = m(*a);
                 }
             }
