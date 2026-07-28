@@ -1,24 +1,22 @@
-"""Tests for SpecializedTransform — the specializer-served authoring surface."""
+"""Tests for SQLTransform — the specializer-served authoring surface."""
 
 import pyarrow as pa
 import pytest
 from pydantic import BaseModel
 
-from sql_transform import SpecializedTransform, SQLTransform
+from sql_transform import SQLTransform
 
 TRAIN = pa.table({"age": [25, 30, 35], "city": ["a", "b", "a"]})
 
 
 def test_infer_before_fit_raises_runtime_error():
-    t = SpecializedTransform("SELECT age FROM __THIS__")
+    t = SQLTransform("SELECT age FROM __THIS__")
     with pytest.raises(RuntimeError):
         t.infer({"age": 1})
 
 
 def test_plain_projection_dict_and_model_rows():
-    t = SpecializedTransform(
-        "SELECT age * 2 AS a2, upper(city) AS c FROM __THIS__"
-    ).fit(TRAIN)
+    t = SQLTransform("SELECT age * 2 AS a2, upper(city) AS c FROM __THIS__").fit(TRAIN)
     assert t.backend == "cranelift"
     assert t.boundary == "marshaller"
 
@@ -41,7 +39,7 @@ def test_plain_projection_dict_and_model_rows():
     ],
 )
 def test_window_aggregates_agree_with_sqltransform(sql):
-    spec = SpecializedTransform(sql).fit(TRAIN)
+    spec = SQLTransform(sql).fit(TRAIN)
     ref = SQLTransform(sql).fit(TRAIN)
     assert spec.backend == "cranelift"
     rows = [{"age": 40, "city": "a"}, {"age": 25, "city": "b"}]
@@ -59,4 +57,4 @@ def test_transformer_ref_rejected_at_construction():
 
     scaler = FakeFitted()
     with pytest.raises(ValueError, match="transformer refs"):
-        SpecializedTransform(t"SELECT {scaler}(age) AS s FROM __THIS__")
+        SQLTransform(t"SELECT {scaler}(age) AS s FROM __THIS__")

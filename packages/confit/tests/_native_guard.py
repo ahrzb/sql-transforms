@@ -3,7 +3,7 @@
 After a checkout / rebase / history rewrite the Rust source can be newer than
 the built `.pyd`, so the suite silently runs OLD native code -- this once
 produced 14 phantom identifier-folding failures until a manual rebuild
-(TASK-33). `ensure_native_built()` runs a cheap mtime compare at conftest import
+once. `ensure_native_built()` runs a cheap mtime compare at conftest import
 -- BEFORE anything imports `confit`, which eagerly loads the native module --
 and shells `maturin develop` only when stale; an up-to-date build is a no-op.
 

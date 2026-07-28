@@ -1,5 +1,5 @@
 [workspace]
-members = ["packages/confit", "packages/sql-transform"]
+members = ["packages/confit"]
 resolver = "2"
 
 [workspace.package]
