@@ -95,3 +95,30 @@ code, which is exactly the authoring burden this library exists to remove.
    (arrow schema declaration up front), or is the derived schema enough?
 5. **Multi-language sequencing**: is Python-only columnar the first ship,
    with the WASM/arrow-IPC endpoint as its own later proposal?
+
+## Measured: us vs DuckDB-on-pyarrow (2026-07-28, titanic, p50 per call)
+
+DuckDB gets a PRE-BUILT arrow table each call (register+execute+fetch
+arrow = serving-realistic; "floor" = re-execute on an already-registered
+table, its absolute best). We run today's ROW path (spec_dict) — an upper
+bound for any columnar path of ours.
+
+| n/call | duckdb | duckdb floor | us (row path, today) | us vs duckdb |
+|---|---|---|---|---|
+| 1 | 6.58 ms | 5.52 ms | 3.3 µs | **2055× faster** |
+| 8 | 6.28 ms | 5.86 ms | 24 µs | **265×** |
+| 64 | 6.75 ms | 5.94 ms | 206 µs | **33×** |
+| 1024 | 7.75 ms | 6.93 ms | 3.42 ms | **2.3×** |
+| 16384 | 20.4 ms | 18.7 ms | 60.5 ms | 0.3× (duckdb wins) |
+| 131072 | 105 ms | 98 ms | 543 ms | 0.2× (duckdb wins) |
+
+Reading: DuckDB pays ~5.5–7 ms of per-QUERY cost every call regardless of
+batch size — we pay it once at build. The serving regime (1–1k rows/call)
+is ours by 1–3 orders of magnitude ALREADY, on the row path. Today's
+crossover is ~2–3k rows/call. The columnar path moves that crossover, not
+the small-batch story: boundary-only (compute stays ~1.7 µs/row) puts
+16k-row calls at ~29 ms vs DuckDB's 20 ms (near-tie); a vectorized
+columnar CORE (2–3× on compute) would put the crossover at ~100k+
+rows/call — competitive everywhere except true analytic scans, where
+DuckDB's parallelism should keep the crown (and that's fine: that's not
+serving).
