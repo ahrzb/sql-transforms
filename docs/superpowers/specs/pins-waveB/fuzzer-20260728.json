@@ -1,0 +1,17 @@
+{
+ "topic": "fuzzer deep-run classes, seed 20260728 (overnight run, TASK-56 branch)",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT regexp_matches(s, '$h') FROM t -- s='hello world'",
+   "result": "row path TRUE, constant fold FALSE",
+   "note": "Class 13: DuckDB SELF-inconsistent on a leading '$' anchor followed by a literal. Its row path literal-optimizes '$'+literal into a PREFIX match: '$hello' matches 'hello world', '$b' matches 'b' (but not 'ab'); the constant path matches normally (never). Consistent (both False/True) for: 'h$', '^h', 'x^h', 'a$|b', '(h$)x', '($)h', 'a$b*', '$h*', '$[hb]', '$(h)', '(?i)$H', '[$]h', '\\\\$h', bare '$'. Reject: unescaped '$' outside a class not followed by end, '|', ')', '$', or an anchor escape (\\A \\z \\b \\B). Found: fuzz case 4275."
+  },
+  {
+   "q": "SELECT regexp_full_match(s, '\\S*([^\\wé-üa]{0}.|(?m)\\p{L}){1,1000}ab')",
+   "result": "DuckDB: Invalid Input Error: pattern too large - compile failed; rust-regex: compiles and serves",
+   "note": "Class 14: RE2 program-size budget. Boundary probes: (\\p{L}){1,300} ok, {1,500} ERR; (\\p{Nd}){1,1000} ok; (\\d){1,1000} ok; ([^\\w]){1,1000} ok; ([é-ü]){1,1000} ok; (.|\\p{L}){1,1000} ok (RE2 SIMPLIFIES the alternation to '.'). The budget is on the POST-SIMPLIFICATION program (range units), so exact modeling is impossible; the engine uses a one-sided over-estimate (\\p/\\P = 800 units >= any property's range count, classes = member count, literals 4) and rejects counted repetitions whose weight product clears 100_000 — below the measured error floor (~216k units), so the engine may over-refuse but can never serve where DuckDB errors. Found: fuzz case 17388."
+  }
+ ],
+ "summary": "Two new reject classes from the 20k-case deep run on seed 20260728: (13) leading-'$'-then-atom patterns are DuckDB-self-inconsistent (row-path prefix optimization bug) and unservable in principle; (14) counted repetitions can blow RE2's post-simplification program budget where rust-regex still compiles — guarded by a conservative one-sided weight estimate. After both rejects the full 20k sweep is divergence-free."
+}

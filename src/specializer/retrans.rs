@@ -147,6 +147,17 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
     // Character-class member tracking for range-endpoint rejects.
     let mut class_members = 0usize;
     let mut rangey_dash = false; // last member was a bare '-' with a left operand
+    // RE2 program-size budget (fuzzer 2026-07-28 seed 20260728: DuckDB
+    // errors "pattern too large" on '(\p{L}){1,500}' while rust serves).
+    // One-sided over-estimate in "range units": \p/\P weigh 800 (above any
+    // property's real range count), classes their member count, literals a
+    // flat 4; a counted repetition whose weight product clears 100_000 is
+    // rejected — always BEFORE DuckDB's real budget (measured error floor
+    // ~216k units), so we can refuse but never serve where DuckDB errors.
+    let mut weights: Vec<u64> = Vec::new(); // per open group
+    let mut cur_weight: u64 = 0;
+    let mut last_weight: u64 = 4;
+    let mut class_p: u64 = 0; // \p/\P weight inside the open class
     while i < b.len() {
         let c = b[i];
         match c {
@@ -220,6 +231,13 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                         out.push(other as char);
                     }
                 }
+                let w = if matches!(n, b'p' | b'P') { 800 } else { 8 };
+                if in_class {
+                    class_p += w;
+                } else {
+                    last_weight = w;
+                    cur_weight = cur_weight.saturating_add(w);
+                }
                 i += 2;
                 quant = 0;
                 class_members += 1;
@@ -274,6 +292,9 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                 out.push(']');
                 i += 1;
                 quant = 0;
+                last_weight = 2 + 2 * class_members as u64 + class_p;
+                cur_weight = cur_weight.saturating_add(last_weight);
+                class_p = 0;
             }
             b'&' | b'~' | b'-' if in_class && b.get(i + 1) == Some(&c) => {
                 // '--' / '&&' / '~~' in a class: literals-or-ranges to RE2,
@@ -289,6 +310,30 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                 out.push('-');
                 i += 1;
             }
+            b'$' if !in_class => {
+                // A '$' anchor in NON-final position (not before '|', ')',
+                // or the end): DuckDB's row path literal-optimizes a
+                // leading '$'+literal into a PREFIX match ('$hello' matches
+                // 'hello world'!) while its own constant fold matches
+                // normally — self-inconsistent, unservable (fuzzer-measured
+                // 2026-07-28, seed 20260728 case 4275).
+                let benign = match b.get(i + 1) {
+                    None | Some(b'|') | Some(b')') | Some(b'$') => true,
+                    // Another anchor right after keeps both paths agreeing
+                    // (a '$$h' chain still rejects at ITS last '$').
+                    Some(b'\\') => matches!(b.get(i + 2), Some(b'A' | b'z' | b'b' | b'B')),
+                    _ => false,
+                };
+                if !benign {
+                    return Err(unsup(
+                        "regex '$' anchor in non-final position (DuckDB's row \
+                         path diverges from its own constant fold)",
+                    ));
+                }
+                out.push('$');
+                i += 1;
+                quant = 0;
+            }
             b'(' if !in_class => {
                 // (?<name>...) angle-bracket groups: DuckDB rejects them.
                 if p[i..].starts_with("(?<") && !p[i..].starts_with("(?<=") {
@@ -298,6 +343,8 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                     b.get(i + 1) != Some(&b'?') || p[i..].starts_with("(?P<");
                 groups.push((counted, capturing));
                 counted = 0;
+                weights.push(cur_weight);
+                cur_weight = 0;
                 out.push('(');
                 i += 1;
                 quant = 0;
@@ -329,6 +376,9 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                 } else {
                     counted = counted.max(inner);
                 }
+                // The group is one atom for a following {m,n}'s budget.
+                last_weight = cur_weight.max(1);
+                cur_weight = weights.pop().unwrap_or(0).saturating_add(last_weight);
                 out.push(')');
                 i += 1;
                 quant = 0;
@@ -347,6 +397,14 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                         )));
                     }
                     counted = counted.max(prod.min(1001));
+                    if last_weight.saturating_mul(max.max(1)) > 100_000 {
+                        return Err(unsup(
+                            "counted repetition over RE2's program-size budget \
+                             (pattern too large in DuckDB)",
+                        ));
+                    }
+                    cur_weight =
+                        cur_weight.saturating_add(last_weight.saturating_mul(max.max(1)));
                     out.push_str(&p[i..end]);
                     i = end;
                     quant = 1;
@@ -396,6 +454,10 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                 quant = 0;
                 class_members += 1;
                 rangey_dash = false;
+                if !in_class {
+                    last_weight = 4;
+                    cur_weight = cur_weight.saturating_add(4);
+                }
             }
         }
     }
