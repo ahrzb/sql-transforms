@@ -1,0 +1,53 @@
+{
+ "topic": "left_join_issue_1172.test corpus family (9 cases): LEFT JOIN null-extension with an all-NULL probe side, dup-key build side, predicates =, >, <>",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "setup (cases 0-2): drop table if exists t1; drop table if exists t2; create table t1 (id string); create table t2 (id string); insert into t1 values\n(NULL); insert into t2 values (1), (1);",
+   "result": "t1=[(None,)]  t2=[('1',), ('1',)]  (typeof(id)='VARCHAR' — the bare 1 literals are coerced to string '1')",
+   "note": "Stage-1 setup. Cases 3-5 add: insert into t2 values (1); Cases 6-8 further add: insert into t2 values (NULL), (NULL);"
+  },
+  {
+   "q": "select * from t1 left join t2 on t1.id = t2.id;",
+   "result": "cols ['id','id']  rows [(None, None)]",
+   "note": "Case 0 (stage-1 setup). Identical result for case 3 (t2={1,1,1}) and case 6 (t2={1,1,1,NULL,NULL}). NULL probe row matches nothing (NULL = anything is not TRUE, including NULL = NULL), so exactly one null-extended row. Deterministic: 3x same connection + fresh connection all identical."
+  },
+  {
+   "q": "select * from t1 left join t2 on t1.id > t2.id;",
+   "result": "cols ['id','id']  rows [(None, None)]",
+   "note": "Cases 1, 4, 7 — all three t2 stages give the same single null-extended row. NULL > x is never TRUE. Deterministic 3x + fresh conn."
+  },
+  {
+   "q": "select * from t1 left join t2 on t1.id <> t2.id;",
+   "result": "cols ['id','id']  rows [(None, None)]",
+   "note": "Cases 2, 5, 8 — the trap the original DuckDB issue #1172 was about: <> does NOT mean 'NULL differs from 1'. NULL <> '1' is NULL, not TRUE, so still zero matches and one null-extended row even in stage 3 where t2 also has NULLs (NULL <> NULL is NULL too). Deterministic 3x + fresh conn."
+  },
+  {
+   "q": "select count(*) from t1 left join t2 on <pred>  /  select count(*) from t1 join t2 on <pred>  (all 3 stages x all 3 preds)",
+   "result": "LEFT count = 1 and INNER count = 0 for every stage/pred combination; matches predicted sum(max(1,matches))=1 and sum(matches)=0 exactly (18/18 checks ok)",
+   "note": "Row-count arithmetic verified: LEFT emits max(1, matches) per probe row; INNER emits matches. With a NULL-only probe side, matches is always 0 under =, >, <>."
+  },
+  {
+   "q": ".df() on select * from t1 left join t2 on t1.id = t2.id (stage-3 setup, both sides named 'id')",
+   "result": "df.columns == ['id', 'id_1']  while cursor.description == ['id', 'id'] and fetchall == [(None, None)]",
+   "note": "Pandas dedupes duplicate column names by suffixing _1; the raw cursor keeps both as 'id'. A compiler comparing via .df() must expect the _1 suffix; via fetchall it must tolerate duplicate names."
+  },
+  {
+   "q": "VARIANT (not in corpus) — same stage-3 setup plus insert into t1 values ('1'); then select * from t1 left join t2 on t1.id = t2.id;",
+   "result": "rows [('1', '1'), ('1', '1'), ('1', '1'), (None, None)]  — stable across 3 fresh connections",
+   "note": "Exercises the fan-out branch the corpus family never triggers: probe '1' hits 3 dup build keys -> 3 rows; NULL probe -> 1 null-extended row. ORDER: matched rows come FIRST and the null-extension LAST, even though NULL was inserted into t1 first — LEFT hash-join output is NOT probe order."
+  },
+  {
+   "q": "VARIANT — same setup, select * from t1 left join t2 on t1.id <> t2.id;",
+   "result": "rows [(None, None), ('1', None)]  — stable across 3 fresh connections",
+   "note": "'1' <> '1' is FALSE and '1' <> NULL is NULL, so BOTH probe rows are unmatched. Here the output IS probe insertion order (inequality join path), unlike the = case above where null-extensions trailed."
+  }
+ ],
+ "surprises": [
+  "The whole 9-case family never exercises fan-out at all: every case is matches=0 -> exactly 1 null-extended row, because the only probe row is NULL. The dup keys in t2 (and the t2 NULLs in stage 3) are deliberately inert — the file is a pure NULL-semantics regression test, not a multiplicity test.",
+  "Row order is join-algorithm dependent: with the extra '1' probe row, the equality join emitted the null-extended row LAST (after all matches, not in probe order), while the <> join emitted rows in probe order. Both orders were stable across reruns and fresh connections, but a compiler must not assume LEFT JOIN preserves probe order in general.",
+  ".df() silently renames the duplicate right-side 'id' to 'id_1', while cursor.description reports two identical 'id' names — two different truths about the same result depending on the fetch API.",
+  "insert into t2 values (1) into a STRING column stores VARCHAR '1' (implicit int->varchar cast), so t1.id > t2.id is a string comparison — irrelevant here (probe is NULL) but a trap if the family is extended."
+ ],
+ "summary": "Rules for the compiler from this family: (1) LEFT JOIN multiplicity is per-probe-row max(1, matches); INNER is sum(matches) — verified exactly against DuckDB for all 3 setups x 3 predicates (LEFT=1, INNER=0 everywhere). (2) A NULL probe value matches NOTHING under any comparison predicate: =, >, and crucially <> all evaluate to NULL (not TRUE) against every build value including NULL; NULL <> NULL is NULL. So all 9 corpus cases reduce to one null-extended output row [(None, None)] with cols ['id','id'] — the only stage-B machinery they require is LEFT null-extension on zero matches; the build-side dup keys never fan out. (3) All 9 results are single-row so ordering is trivially deterministic (verified 3x + fresh connection); but the fan-out variant shows equality LEFT joins emit matched rows before trailing null-extensions (not probe order) while the inequality path emitted probe order — treat LEFT JOIN output order as unspecified. (4) Column naming: SELECT * over a shared column name yields duplicate 'id','id' in cursor.description but 'id','id_1' in .df(). (5) The string column coerces bare integer literals: values (1) stores VARCHAR '1'."
+}

@@ -1,0 +1,84 @@
+{
+ "topic": "cross joins and inequality-ON joins (keyless multiplicity)",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "select * from t1 left join t2 on t1.id > t2.id;",
+   "result": "cols ['id','id']; rows [(3, 2), (1, None), (2, None)]",
+   "note": "t1=(1,2,3), t2=(2,3,4). Only t1.id=3 matches (3>2); t1.id=1 AND t1.id=2 both null-extend (2 is not > any of 2,3,4). Matched rows stream FIRST, then all null-extended rows as a trailing block in t1 insertion order. Stable across 3 reruns and a fresh connection."
+  },
+  {
+   "q": "SELECT * FROM t1, t2 WHERE t1.id > t2.id;",
+   "result": "cols ['id','id']; rows [(3, 2)]",
+   "note": "INNER inequality via comma join: non-matchers dropped, single surviving pair. Stable order across reruns/fresh connection."
+  },
+  {
+   "q": "SELECT * FROM t1, t2;",
+   "result": "cols ['id','id']; rows [(1, 2), (2, 2), (3, 2), (1, 3), (2, 3), (3, 3), (1, 4), (2, 4), (3, 4)]",
+   "note": "3x3 cross join order is RHS-outer / LHS-inner (t1 varies fastest), NOT t1-outer. Duplicate column name 'id' appears twice: left cols then right cols. Deterministic across 3 reruns + fresh connection."
+  },
+  {
+   "q": "SELECT * FROM big, small;  -- big=range(500), small=(100,200,300,400)",
+   "result": "2000 rows; first 12 all (a,100) for a=0..11; b changes exactly at row indexes 500/1000/1500; matches t2-outer(t1-inner) exactly",
+   "note": "500x4: the small (4-row) RHS is tuple-iterated (outer) while the 500-row LHS chunk streams. Deterministic across reruns."
+  },
+  {
+   "q": "SELECT * FROM small, big;  -- args swapped",
+   "result": "2000 rows; first 12 all (100,b) for b=0..11; small col changes at 500/1000/1500",
+   "note": "Swapped operands: now the small LHS is tuple-iterated (outer) and big RHS varies fastest. So the OUTER loop side is chosen by chunk size (the smaller chunk is row-iterated), not by syntactic left/right. Compiler cannot assume left-outer nested-loop order."
+  },
+  {
+   "q": "SELECT * FROM big, small;  -- big=range(5000) (3 vectors), small=(10,20,30)",
+   "result": "15000 rows in 9 blocks: (b=10,a=0..2047),(b=20,a=0..2047),(b=30,a=0..2047),(b=10,a=2048..4095),(20,...),(30,...),(10,a=4096..4999),(20,...),(30,...)",
+   "note": "Multi-chunk: order is CHUNK-BLOCKED — for each 2048-row LHS vector, iterate all RHS rows, then advance to next LHS vector. Not a global nested loop over whole tables. Deterministic incl. fresh connection."
+  },
+  {
+   "q": "SELECT * FROM t1 JOIN t2 ON t1.id > 2;",
+   "result": "cols ['id','id']; rows [(3, 2), (3, 3), (3, 4)]",
+   "note": "ON referencing ONLY the left side is legal: acts as filter on t1 then cross with all of t2 (t2 in insertion order). 1 x 3 = 3 rows."
+  },
+  {
+   "q": "SELECT * FROM t1 JOIN t2 ON 1 = 1;",
+   "result": "cols ['id','id']; rows [(1, 2), (2, 2), (3, 2), (1, 3), (2, 3), (3, 3), (1, 4), (2, 4), (3, 4)]",
+   "note": "ON referencing NEITHER side, always-true: identical rows AND identical order to bare cross join."
+  },
+  {
+   "q": "SELECT * FROM t1 JOIN t2 ON NULL = 2;",
+   "result": "cols ['id','id']; rows []",
+   "note": "Corpus case. NULL ON-predicate = no matches at all -> 0 rows. No error, no NULL-matching."
+  },
+  {
+   "q": "SELECT * FROM t1 LEFT JOIN t2 ON NULL = 2;",
+   "result": "cols ['id','id']; rows [(1, None), (2, None), (3, None)]",
+   "note": "LEFT variant of NULL ON: every t1 row null-extends exactly once, t1 insertion order preserved."
+  },
+  {
+   "q": "SELECT * FROM t1 LEFT JOIN t2 ON t1.id > 2;",
+   "result": "cols ['id','id']; rows [(3, 2), (3, 3), (3, 4), (1, None), (2, None)]",
+   "note": "LEFT with left-only ON: t1.id=3 matches all 3 t2 rows; t1.id=1,2 null-extend once each. Again matched block first, null-extended block last in t1 order."
+  },
+  {
+   "q": "SELECT * FROM vals1, vals2 WHERE i>9 AND k>=j AND j>=i AND l>=k",
+   "result": "cols ['i','j','k','l']; rows [(10, 20, 20, 22), (12, 12, 20, 22), (10, 14, 20, 22), (12, 12, 13, 13)]",
+   "note": "vals1=(10,20),(5,30),(12,12),(10,14),(NULL,8); vals2=(11,25),(20,22),(10,20),(13,13),(NULL,50). EXACTLY equal (rows AND order) to the explicit filtered cross join SELECT * FROM (SELECT * FROM vals1 CROSS JOIN vals2) sub WHERE .... NULL i or NULL k rows are eliminated by the comparisons. Stable across reruns/fresh conn."
+  },
+  {
+   "q": "SELECT * FROM t1, t2;  -- t2 empty",
+   "result": "rows []",
+   "note": "Empty side -> 0 rows for cross join and for JOIN ON 1=1. Also 0 rows when t1 is the empty side."
+  },
+  {
+   "q": "SELECT * FROM t1 LEFT JOIN t2 ON t1.id > t2.id;  -- t2 empty",
+   "result": "rows [(1, None), (2, None), (3, None)]",
+   "note": "LEFT vs empty right side: every t1 row null-extended once, t1 insertion order. Same result for LEFT JOIN ON 1=1 vs empty t2. Empty t1 LEFT anything = []."
+  }
+ ],
+ "surprises": [
+  "Cross-join output order is NOT left-outer nested loop: DuckDB row-iterates whichever side's chunk is SMALLER and streams the bigger chunk, so 't1,t2' (3x3) comes out RHS-outer/LHS-inner, while 500x4 vs 4x500 BOTH come out small-side-outer regardless of which operand is written first.",
+  "Above ~2048 rows the order becomes chunk-blocked: for each 2048-row LHS vector, all RHS rows are iterated, then the next LHS vector — a global nested-loop order assumption breaks exactly at vector boundaries.",
+  "LEFT inequality join emits ALL matched rows first and ALL null-extended rows as one trailing block (t1 insertion order), not interleaved per-probe-row.",
+  "Every order observed was deterministic across 3 reruns and a fresh connection (single-threaded-sized data), but the ordering rule is an implementation artifact of chunk sizes, not a spec guarantee.",
+  "ON predicates referencing one side or neither side are legal filters: ON t1.id>2 = filter-then-cross, ON 1=1 = exact cross join (same order too), ON NULL=2 = zero matches (LEFT: null-extend everything)."
+ ],
+ "summary": "Rules for a compiler writer (DuckDB 1.5.5, keyless multiplicity):\n1) SEMANTICS — comma join + WHERE, CROSS JOIN + filter, and JOIN ON <keyless predicate> are all exactly cross-product-then-filter; verified bit-for-bit (rows AND order) on the range-join corpus shape. INNER inequality drops non-matchers; each surviving (left,right) pair appears exactly once.\n2) MULTIPLICITY — inner/cross: |out| = matches (3x3 cross = 9; ON 1=1 = 9; ON NULL=2 = 0; any empty side = 0). LEFT: every left row appears max(matches,1) times; zero-match left rows null-extend exactly once (t2 columns -> None), including when t2 is empty or the ON is constant-NULL/false. ON may reference only one side (filter semantics) or neither (constant), no error.\n3) ORDER (observed artifact, deterministic but unspecified) — cross-product order is chunk-blocked and size-driven: per LHS vector (2048 rows), DuckDB tuple-iterates the smaller chunk side and streams the larger; at 3x3 this yields RHS-outer/LHS-inner (left column varies fastest); at 500x4 the 4-row side is outer regardless of operand order; at 5000x3 blocks are (LHS-chunk x RHS-row). LEFT inequality joins emit all matched rows first, then all null-extended rows as a trailing block in left insertion order. All orders repeated identically across 3 reruns and fresh connections — safe to pin in golden tests at this scale, but do NOT hard-code left-outer nested-loop order into the compiler; treat order as engine-defined.\n4) SCHEMA — SELECT * = left table's columns then right table's columns, duplicate names kept as-is (['id','id'])."
+}

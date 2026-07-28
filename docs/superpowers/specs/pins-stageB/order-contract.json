@@ -1,0 +1,71 @@
+{
+ "topic": "Join output order: contract or accident? (stage B: join multiplicity)",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT * FROM probe JOIN dim USING (k)",
+   "result": "cols=['k','ins']; 10000 rows; first 8: [(38, 0), (67, 1), (73, 2), (8, 3), (38, 4), (18, 5), (76, 6), (27, 7)]; last 3: [(46, 9997), (5, 9998), (19, 9999)]; md5(full repr row-stream)=db999840974adc89e08af76903d2ca69",
+   "note": "Setup: probe(k)=1..100 inserted in order; dim(k,ins)=keys 1..100 x100 shuffled with python random.Random(42), ins=insertion position 0..9999. RESULT ORDER = dim's shuffled INSERTION order exactly (ins is 0..9999 ascending; k-seq == dim's shuffled key seq; NOT probe-major). DuckDB streamed the 10k-row dim and BUILT the hash table on the 100-row probe (EXPLAIN: probe is the right/build child). Stability: 5 runs same con + 2 fresh connections + threads=1 + threads=4 + preserve_insertion_order=false — ALL byte-identical (default threads=12). Deceptive: stable only because 10k rows never engages parallelism."
+  },
+  {
+   "q": "SELECT * FROM dim JOIN probe USING (k)",
+   "result": "cols=['k','ins']; 10000 rows; md5=db999840974adc89e08af76903d2ca69 — byte-identical to 'probe JOIN dim USING (k)' including row order AND column order",
+   "note": "FROM order is completely irrelevant to both row order and (with USING) column order. The optimizer picks stream/build sides by cost, not syntax. 5 runs identical."
+  },
+  {
+   "q": "SELECT * FROM probe JOIN dim ON probe.k = dim.k",
+   "result": "cols=['k','k','ins'] (duplicate name, probe.k then dim.k); first 8: [(38, 38, 0), (67, 67, 1), (73, 73, 2), (8, 8, 3), (38, 38, 4), (18, 18, 5), (76, 76, 6), (27, 27, 7)]; md5=15f31f9f389719beaff5b84b73465984",
+   "note": "Same ROW order as the USING version (verified (dim.k,ins) sequence == USING output), different column shape: ON keeps both key columns, USING merges them. SELECT * FROM probe, dim WHERE probe.k = dim.k gives the identical fingerprint 15f31f9f3897... — comma+WHERE == JOIN ON in both order and columns."
+  },
+  {
+   "q": "SELECT * FROM ps JOIN ds USING (k)",
+   "result": "cols=['k','tag']; rows=[(2, 'x1'), (1, 'y1'), (2, 'x2'), (1, 'y2')]",
+   "note": "Setup: ps(k): INSERT VALUES (1),(2); ds(k,tag): INSERT VALUES (2,'x1'),(1,'y1'),(2,'x2'),(1,'y2'). Output = ds scan/insertion order (ds streamed, 2-row ps built). 'SELECT * FROM ds JOIN ps USING (k)' returns the identical rows. 3 runs + threads 1/4 + fresh connection all identical."
+  },
+  {
+   "q": "SELECT * FROM s JOIN b USING (k)",
+   "result": "cols=['k','pid','tag']; rows=[(1, 50, 'r1'), (2, 40, 'r2'), (1, 50, 'r3'), (2, 40, 'r4'), (1, 30, 'r1'), (2, 20, 'r2'), (1, 30, 'r3'), (2, 20, 'r4'), (1, 10, 'r1'), (1, 10, 'r3')]",
+   "note": "Setup (threads=1): s(k,pid): VALUES (1,10),(2,20),(1,30),(2,40),(1,50); b(k,tag): VALUES (1,'r1'),(2,'r2'),(1,'r3'),(2,'r4'). SURPRISE: DuckDB built on s (5 rows) and STREAMED b (4 rows) — the LARGER side became the build side (EXPLAIN confirms), so 'smaller side builds' is not a rule either; it is a cost-model choice. Shows vectorized LOCKSTEP: matches for one streamed row are NOT contiguous — iteration 1 emits the 1st match for every streamed row in the vector (r1->50, r2->40, r3->50, r4->40), iteration 2 the 2nd (30/20...), iteration 3 the 3rd. Per-key match order from the build side = REVERSE insertion (50,30,10 for key 1 inserted 10,30,50). 3 runs identical."
+  },
+  {
+   "q": "SELECT * FROM s3 JOIN b3 USING (k)",
+   "result": "cols=['k','pid','tag']; rows=[(1, 100, 'w'), (1, 200, 'w'), (1, 100, 'v'), (1, 200, 'v'), (1, 100, 'u'), (1, 200, 'u')]",
+   "note": "Setup (threads=1): b3(k,tag) inserted (1,'u'),(2,'zz'),(1,'v'),(1,'w'); s3 streams rows pid 100,200 (k=1) plus 10 non-matching filler rows to keep s3 the streamed side. Build-side dup-key matches come out w,v,u = exact REVERSE of build insertion order (LIFO hash chains), interleaved lockstep across the streamed vector."
+  },
+  {
+   "q": "SELECT * FROM sv JOIN bv USING (k)",
+   "result": "10000 rows; tag run-length encoding: [('v', 2048), ('u', 2048), ('v', 2048), ('u', 2048), ('v', 904), ('u', 904)]; rows around index 2048: [(1, 2046, 'v'), (1, 2047, 'v'), (1, 0, 'u'), (1, 1, 'u')]; per-pid tag order always ('v','u'); pid sequence NOT globally nondecreasing",
+   "note": "Setup (threads=1): sv = 5000 rows all k=1, pid=0..4999; bv inserted (1,'u'),(1,'v'). Nails the vector geometry: per 2048-row input vector the join emits [1st-match x 2048][2nd-match x 2048]; the 5000-row scan chunks as 2048/2048/904. 'v' (later-inserted) always first = reverse chain. threads=4 3 runs == threads=1 here (too small to parallelize). Output order is therefore a function of DuckDB's VECTOR SIZE (2048) — unreproducible by any natural row-at-a-time loop."
+  },
+  {
+   "q": "SELECT * FROM p JOIN d1 USING (k) JOIN d2 USING (k)",
+   "result": "cols=['k','a','b']; rows=[(2, 'a4', 'b1'), (1, 'a3', 'b2'), (2, 'a4', 'b3'), (1, 'a3', 'b4'), (2, 'a2', 'b1'), (1, 'a1', 'b2'), (2, 'a2', 'b3'), (1, 'a1', 'b4')]",
+   "note": "Setup: p: (1),(2); d1(k,a): (1,'a1'),(2,'a2'),(1,'a3'),(2,'a4'); d2(k,b): (2,'b1'),(1,'b2'),(2,'b3'),(1,'b4'). Chained-join nesting is optimizer-chosen, not FROM-first: plan = HASH_JOIN(stream=SEQ_SCAN d2, build=HASH_JOIN(stream=d1, build=p)). Output = d2-major (b1,b2,b3,b4 lockstep) with d1 matches in reverse insertion (a4/a3 pass then a2/a1 pass). p — the FROM-first table — is the innermost build. Identical across 3 runs, threads 1/4, fresh connection."
+  },
+  {
+   "q": "SELECT * FROM bigprobe JOIN dim2 USING (k)",
+   "result": "1,000,000 rows. threads=1: 3 runs byte-identical, md5 prefix 4c9d94b1f543, first=(1, 0, 1756), last=(1000, 499999, 460). threads=default(12): 3 runs on SAME connection produced DIFFERENT fingerprints (dc5847002a5f first run), last=(640, 368639, 698). threads=4: 3 runs also mutually different (a725f8bc27d9 first run); fresh connection at threads=4 matched none of them. pid nondecreasing = False in ALL configs.",
+   "note": "Setup: bigprobe = 500k rows, k=range%1000+1, pid=range (insertion order); dim2 = keys 1..1000 x2 shuffled with Random(7), ins=position. Here the BIG side streams (dim2 builds). VERDICT PIN: multi-threaded DuckDB join output order is NONDETERMINISTIC run-to-run on the same connection and data. threads=1 is deterministic but interleaved (pid=0's two matches are ins [1756, 427] = reverse of dim2's k=1 insertion positions [427, 1756], ~2048 rows apart). 'SELECT * FROM dim2 JOIN bigprobe USING (k)' at threads=1 = same row sequence modulo column permutation (cols follow FROM order: k,ins,pid vs k,pid,ins)."
+  },
+  {
+   "q": "SELECT * FROM lp LEFT JOIN ld USING (k)",
+   "result": "cols=['k','pid','tag']; rows=[(1, 1, 'm3'), (2, 3, 'm1'), (1, 5, 'm3'), (1, 1, 'm2'), (1, 5, 'm2'), (3, 2, None), (3, 4, None)]",
+   "note": "Setup (threads=1): lp(k,pid): (1,1),(3,2),(2,3),(3,4),(1,5); ld(k,tag): (2,'m1'),(1,'m2'),(1,'m3'). LEFT JOIN placement: all match iterations first (lockstep, reverse-chain m3 before m2), then the NULL-padded unmatched rows appended at the END of the chunk in streamed order. Unmatched rows do NOT sit at their input position. 3 runs + fresh connection identical."
+  },
+  {
+   "q": "SELECT * FROM t_small JOIN t_big USING (k)",
+   "result": "cols=['k','tag','bid']; rows=[(1, 's3', 0), (2, 's1', 1), (1, 's3', 2), (2, 's1', 3), (1, 's3', 4), (2, 's1', 5), (1, 's2', 0), (1, 's2', 2), (1, 's2', 4)]",
+   "note": "Setup (threads=1): t_small(k,tag): (2,'s1'),(1,'s2'),(1,'s3'); t_big: 6 rows k=range%2+1, bid=range. FROM-first t_small is the BUILD side; t_big streams (bid 0..5 lockstep). t_small's k=1 dup matches come s3-then-s2 = reverse insertion. Confirms: output order tracks the optimizer-chosen streamed side, never the FROM-first table per se."
+  }
+ ],
+ "surprises": [
+  "Multi-threaded nondeterminism is real and same-connection: at 500k streamed rows / 1M output, threads=12 and threads=4 each gave 3 DIFFERENT orderings across 3 consecutive runs of the identical query on the same connection. Any order pin against default-config DuckDB is broken by construction.",
+  "Even single-threaded order is unreproducible row-at-a-time: matches for one input row are NOT contiguous. The hash join emits per-2048-row-vector lockstep passes ([1st match for all rows in vector][2nd match for all rows]...), so a probe row's k matches land ~2048 rows apart. Order depends on DuckDB's internal vector size.",
+  "Dup-key build matches come in REVERSE insertion order (LIFO hash chains): build rows inserted u,v,w match as w,v,u — 'dim insertion order' is exactly wrong.",
+  "The streamed (order-defining) side is a cost-model choice, not FROM position — and not even reliably the bigger side: with 4 vs 5 rows DuckDB streamed the 4-row table and built the 5-row one. You cannot predict which table's order dominates without running DuckDB's optimizer.",
+  "Small joins look like a contract but aren't: the 10k-row join was byte-stable across 5 runs, fresh connections, threads=1/4/12, and preserve_insertion_order=false — stability there is just parallelism failing to engage, and it silently evaporates at scale.",
+  "LEFT JOIN unmatched rows are appended after all match passes of the chunk (NULL rows last), not emitted at their input position.",
+  "USING vs ON vs comma+WHERE: identical row order; they differ only in column shape (USING merges the key column; ON/comma keep both; column order follows FROM order)."
+ ],
+ "summary": "DuckDB join output order is an ACCIDENT, not a contract — three independent reasons: (1) which table's scan order dominates is the optimizer's stream/build choice (never FROM order, not even reliably 'smaller builds'); (2) even at threads=1 the vectorized hash join interleaves matches in 2048-row lockstep passes with dup-key matches in REVERSE build-insertion order, so no row-at-a-time loop can naturally reproduce it; (3) at threads>1 with ~500k+ streamed rows, order differs RUN-TO-RUN on the same connection. Rules for the compiler: pin join semantics as MULTISET parity (sort both sides before comparing against the DuckDB oracle; never compare join output ordered). Give our row-at-a-time engine its own documented deterministic order — natural choice: left/probe input rows in input order, all matches for one input row contiguous, matches in dim/build insertion order, LEFT JOIN NULL row emitted in place — and document that this intentionally diverges from DuckDB even single-threaded. The only DuckDB configuration that is deterministic is threads=1 (byte-stable across runs and fresh connections at all tested scales), so if an order-sensitive differential test is ever unavoidable, it must SET threads=1 AND still expect DuckDB's lockstep/reverse-chain order, which is not worth reproducing. One clean special case exists but is too fragile to rely on: single-threaded + unique-keyed build side gives output exactly in streamed-side scan order with no interleaving. Column-shape rules measured in passing: USING merges the key column, ON/comma keep both copies, output column order follows FROM order while row order does not depend on FROM order at all."
+}

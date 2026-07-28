@@ -1,0 +1,59 @@
+{
+ "topic": "1:N equi-join semantics — duplicate build-side keys (emission order, LEFT null-extension, NULL keys, residual ON predicates, USING, duplicate output names)",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT * FROM probe LEFT JOIN dim ON probe.id = dim.id;",
+   "result": "cols=['id', 'tag', 'id', 'v'] rows=[(1, 'p1', 1, 'a'), (2, 'p2', 2, 'b'), (1, 'p1', 1, 'c'), (2, 'p2', 2, 'd'), (1, 'p1', 1, 'e'), (3, 'p3', None, None)]",
+   "note": "3-row probe / 5-row dim. Identical across 3 same-conn runs + fresh conn. Output is in DIM insertion order (a,b,c,d,e), NOT grouped by probe row — optimizer built the hash table on the smaller table (probe) and streamed dim as the physical probe side. Zero-match row (3,'p3') emits exactly one null-extended row, at the very END of the stream. cursor.description has BOTH columns literally named 'id'."
+  },
+  {
+   "q": "SELECT * FROM probe JOIN dim ON probe.id = dim.id;",
+   "result": "cols=['id', 'tag', 'id', 'v'] rows=[(1, 'p1', 1, 'a'), (2, 'p2', 2, 'b'), (1, 'p1', 1, 'c'), (2, 'p2', 2, 'd'), (1, 'p1', 1, 'e')]",
+   "note": "INNER: zero-match probe row 3 dropped (verified). 5 rows = 1 probe row x 3 dim matches for key 1 + 1x2 for key 2. Same dim-scan-order emission. Deterministic 3x + fresh conn."
+  },
+  {
+   "q": "SELECT * FROM probe JOIN dim ON probe.id = dim.id; -- after INSERT INTO probe VALUES (1,'p1b')",
+   "result": "rows=[(1, 'p1b', 1, 'a'), (2, 'p2', 2, 'b'), (1, 'p1b', 1, 'c'), (2, 'p2', 2, 'd'), (1, 'p1b', 1, 'e'), (1, 'p1', 1, 'a'), (1, 'p1', 1, 'c'), (1, 'p1', 1, 'e')]",
+   "note": "Dup keys BOTH sides: key 1 = 2 probe rows x 3 dim rows = 6 output rows (full cross product, verified). Order artifact: for each dim row the LAST-inserted probe row ('p1b') matches FIRST (build-side hash chains are LIFO), then a second pass emits 'p1' matches. LEFT variant identical + (3,'p3',None,None) appended last. Deterministic 3x fresh conns."
+  },
+  {
+   "q": "SELECT * FROM probe LEFT JOIN dim ON probe.id = dim.id; -- after INSERT INTO dim VALUES (NULL,'n'); INSERT INTO probe VALUES (NULL,'pn')",
+   "result": "rows=[(1, 'p1', 1, 'a'), (2, 'p2', 2, 'b'), (1, 'p1', 1, 'c'), (2, 'p2', 2, 'd'), (1, 'p1', 1, 'e'), (None, 'pn', None, None), (3, 'p3', None, None)]",
+   "note": "NULL never matches NULL: dim(NULL,'n') produced zero matches; probe(NULL,'pn') got a LEFT null-extension exactly like a no-match key. INNER drops both (verified: same 5 rows as baseline). Order artifact: unmatched rows emitted ('pn' BEFORE 'p3') — NOT probe insertion order. Deterministic 3x."
+  },
+  {
+   "q": "SELECT * FROM probe LEFT JOIN dim ON probe.id = dim.id AND dim.v > 'b'",
+   "result": "rows=[(1, 'p1', 1, 'e'), (2, 'p2', 2, 'd'), (1, 'p1', 1, 'c'), (3, 'p3', None, None)]",
+   "note": "Residual predicate in ON filters dim-side matches only ('a','b' removed); key semantics unchanged; key 3 still null-extends. CRITICAL order flip vs baseline: adding the residual changed the plan (dim became build side) so per-key order is now e,c (LIFO), interleaved by probe-vector rounds: first-match-per-row [(1,e),(2,d)], then second matches [(1,c)], then unmatched [(3,null)]. No probe row lost: a key whose matches are ALL filtered would null-extend (key 3 pattern). Deterministic 3x + fresh."
+  },
+  {
+   "q": "SELECT * FROM probe JOIN dim USING (id)",
+   "result": "cols=['id', 'tag', 'v'] rows=[(1, 'p1', 'a'), (2, 'p2', 'b'), (1, 'p1', 'c'), (2, 'p2', 'd'), (1, 'p1', 'e')]",
+   "note": "USING merges the key: 3 output columns (id, tag, v), one 'id'. Multiplicity identical to ON form. LEFT JOIN USING: same + (3, 'p3', None) — merged id shows the PROBE value (3), not NULL. Deterministic."
+  },
+  {
+   "q": "SELECT * FROM probe LEFT JOIN dim ON probe.id = dim.id  -- via .df()",
+   "result": "df columns: ['id', 'tag', 'id_1', 'v']",
+   "note": "Name duplication: raw cursor.description gives ['id','tag','id','v'] (both literally 'id'); .fetchall() is positional so no conflict; .df() auto-renames the second to 'id_1'. A compiler emitting named outputs must handle both conventions."
+  },
+  {
+   "q": "SELECT * FROM probe LEFT JOIN dim ON probe.id = dim.id; -- probe grown to 1003 rows (INSERT SELECT (i%10)+1, 'x'||i FROM range(1000))",
+   "result": "first 12: [(1,'p1',1,'e'),(2,'p2',2,'d'),(1,'x0',1,'e'),(2,'x1',2,'d'),...]; every key-1 probe row sees v-order ('e','c','a'); 801 null-extended rows contiguous at positions 505..1305; 3 fresh conns identical; threads=12",
+   "note": "Plan flipped again (big probe = physical probe side, dim = build): per-key match order is now e,c,a — the exact REVERSE of the 3-row case's a,c,e. Emission is round-based within a vector: first match for every probe row, then second, then third; nulls after. Same data, same query, different table SIZE => different per-key order."
+  },
+  {
+   "q": "SELECT * FROM probe LEFT JOIN dim ON probe.id = dim.id; -- probe = 10,000 and 200,000 rows",
+   "result": "n=10000: 13000 rows, 8000 nulls, first null at index 1025, NOT contiguous at end, 9 null/match block transitions, 3 fresh runs identical. n=200000: 260000 rows, first null at 1025, 145 transitions, 3 fresh runs NOT identical (order differs run-to-run)",
+   "note": "Multi-vector reality: null-extensions interleave per-chunk (first null at 1025 ~ vector boundary of 2048/2... appears after the first processed chunk), NOT all-at-end. At 200k rows with threads=12, global row order is NON-DETERMINISTIC across runs (parallel hash join). Row SET is stable; row ORDER is not."
+  }
+ ],
+ "surprises": [
+  "Output of the 3-row corpus query is in DIM insertion order, not probe order — DuckDB flipped the LEFT join to build on the smaller left table, so the SQL-left table is not necessarily the physical probe side.",
+  "Per-key match order REVERSES between small and large probe tables (a,c,e vs e,c,a): build-side hash chains are LIFO, and which side gets built depends on optimizer size estimates. Adding a residual ON predicate alone also flipped it.",
+  "Unmatched LEFT rows are not emitted in probe insertion order even in tiny cases (NULL-key row 'pn' came before 'p3'), and in multi-chunk cases null-extensions interleave per-chunk rather than trailing at the end.",
+  "At 200k input rows (threads=12) three identical fresh-connection runs returned DIFFERENT row orders — determinism observed at small scale is an artifact of single-chunk execution, not a guarantee.",
+  "Duplicate output column names: cursor.description literally reports two columns named 'id'; only .df() disambiguates (id_1)."
+ ],
+ "summary": "Rules for the compiler writer (DuckDB 1.5.5, unordered-query semantics):\n\n1. MULTIPLICITY (the real contract): inner equi-join emits one row per (left row, matching right row) pair — full per-key cross product when both sides have duplicate keys (2x3=6 verified). LEFT JOIN adds exactly ONE null-extended row per left row with zero surviving matches; INNER drops such rows. This row-SET contract is stable everywhere.\n\n2. NULL keys: NULL = NULL never matches (probe NULL vs dim NULL included). A NULL-keyed left row behaves exactly like an unmatched key: dropped by INNER, single null-extension by LEFT.\n\n3. RESIDUAL ON predicates (LEFT JOIN ... ON key AND pred): the predicate filters which matches survive, per match-pair; if ALL of a left row's matches are filtered out, the row still emits one null-extended row. Filters in WHERE on the left side compose orthogonally (they just remove left rows first).\n\n4. USING merges the join column into one output column carrying the LEFT value (visible on null-extended rows: id=3, not NULL); SELECT * = merged key + remaining left cols + remaining right cols. With ON, both id columns appear and cursor.description repeats the name 'id' verbatim; pandas .df() renames the second to 'id_1'.\n\n5. ORDER — do not compile against it. Observed order is a hash-join artifact: rows stream in the PHYSICAL probe-side scan order (the optimizer picks build/probe by estimated size — the SQL-left table is often the BUILD side), duplicate build-side matches emit in LIFO chain order in per-vector rounds (all first matches, then all second matches...), and LEFT null-extensions flush per-chunk, not at the end. The same query's per-key order reversed (a,c,e -> e,c,a) purely from table size, and flipped again from a residual predicate. Small single-chunk results are bit-identical across runs and connections, but at 200k rows with 12 threads run-to-run order diverges. Verdict: treat join output as an unordered multiset; any order the specializer needs must come from an explicit ORDER BY, and differential tests against DuckDB must compare sorted rows (or sort keys) — never raw fetch order."
+}
