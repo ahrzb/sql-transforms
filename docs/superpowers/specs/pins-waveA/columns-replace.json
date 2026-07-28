@@ -1,0 +1,103 @@
+{
+ "topic": "COLUMNS(* REPLACE ...) and paren-less * REPLACE / EXCLUDE / RENAME star modifiers",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT COLUMNS(* REPLACE (a + 10 AS a, b + 20 AS b)) FROM test_t1 NATURAL JOIN test_t2",
+   "result": "names=['a','b','c'] types=[INTEGER,INTEGER,INTEGER] rows=[(11, 22, 3)]",
+   "note": "Corpus verbatim. NATURAL JOIN order: join column a first, then t1 leftover b, then t2 leftover c. REPLACE keeps names/positions, only values change."
+  },
+  {
+   "q": "SELECT COLUMNS(* REPLACE (concat(a::VARCHAR, '_joined') AS a)) FROM test_t1 NATURAL JOIN test_t2",
+   "result": "names=['a','b','c'] types=[VARCHAR,INTEGER,INTEGER] rows=[('1_joined', 2, 3)]; '1_joined' codepoints=['0x31','0x5f','0x6a','0x6f','0x69','0x6e','0x65','0x64']",
+   "note": "Corpus verbatim. Replaced column changes type (INTEGER->VARCHAR) but keeps name and position."
+  },
+  {
+   "q": "SELECT COLUMNS(* REPLACE (a + 10 AS a)) FROM test_t1",
+   "result": "names=['a','b'] rows=[(11, 2)]",
+   "note": "Single table: identical to plain * REPLACE."
+  },
+  {
+   "q": "SELECT COLUMNS(* EXCLUDE (b)) FROM test_t1",
+   "result": "names=['a'] rows=[(1,)]",
+   "note": "EXCLUDE inside COLUMNS supported, parenthesized."
+  },
+  {
+   "q": "SELECT COLUMNS(* EXCLUDE b) FROM test_t1",
+   "result": "names=['a'] rows=[(1,)]",
+   "note": "Paren-less EXCLUDE inside COLUMNS also legal, same result."
+  },
+  {
+   "q": "SELECT COLUMNS(*) FROM test_t1 NATURAL JOIN test_t2",
+   "result": "names=['a','b','c'] rows=[(1, 2, 3)]",
+   "note": "Re-verified: same NATURAL JOIN order as plain *."
+  },
+  {
+   "q": "SELECT abs(COLUMNS(* REPLACE (a + 10 AS a))) FROM test_t1",
+   "result": "names=['abs(a := (a + 10))', 'b'] rows=[(11, 2)]",
+   "note": "Wrapper naming: REPLACEd column gets full rendered expression text with ':=' syntax; NON-replaced column keeps bare name 'b' (no 'abs(b)'). Baseline SELECT abs(COLUMNS(*)) FROM test_t1 gives names=['a','b'] rows=[(1,2)] — bare-column inputs always keep bare names."
+  },
+  {
+   "q": "SELECT COLUMNS(* REPLACE (z + 1 AS z)) FROM test_t1",
+   "result": "BinderException: Binder Error: Column \"z\" in REPLACE list not found in FROM clause",
+   "note": "Nonexistent REPLACE target is a binder error, exact text pinned."
+  },
+  {
+   "q": "SELECT COLUMNS('a|b' REPLACE (a + 10 AS a)) FROM test_t1",
+   "result": "ParserException: Parser Error: syntax error at or near \"REPLACE\"\\n\\nLINE 1: SELECT COLUMNS('a|b' REPLACE (a + 10 AS a)) FROM test_t1\\n                             ^",
+   "note": "COLUMNS('regex' REPLACE ...) combined form is ILLEGAL — parser error. Same for COLUMNS('a' REPLACE ...). Star modifiers only attach to * inside COLUMNS."
+  },
+  {
+   "q": "SELECT * REPLACE i+100 AS i FROM integers",
+   "result": "names=['i','j'] rows=[(101, 2)]",
+   "note": "Corpus verbatim. Paren-less single REPLACE = parenthesized single REPLACE."
+  },
+  {
+   "q": "SELECT * REPLACE i+100 AS i, j+1 AS j FROM integers",
+   "result": "names=['i','j','j'] rows=[(101, 2, 3)]",
+   "note": "LEGAL but the comma ENDS the star item. Paren-less REPLACE consumes exactly ONE replacement; ', j+1 AS j' becomes a second SELECT-list item -> 3 columns with duplicate name 'j'. NOT equivalent to two replacements."
+  },
+  {
+   "q": "SELECT * REPLACE (i+100 AS i, j+1 AS j) FROM integers",
+   "result": "names=['i','j'] rows=[(101, 3)]",
+   "note": "Contrast: parenthesized form is the only way to get multiple replacements."
+  },
+  {
+   "q": "SELECT * EXCLUDE i FROM integers",
+   "result": "names=['j'] rows=[(2,)]",
+   "note": "Paren-less EXCLUDE single works."
+  },
+  {
+   "q": "SELECT * EXCLUDE i, j FROM integers",
+   "result": "names=['j','j'] rows=[(2, 2)]",
+   "note": "Comma ends the star item: * EXCLUDE i (-> j) plus a separate projection of j. Duplicate output names allowed."
+  },
+  {
+   "q": "SELECT * RENAME i AS q FROM integers",
+   "result": "names=['q','j'] rows=[(1, 2)]",
+   "note": "Paren-less RENAME works. Two-item paren-less variant SELECT * RENAME i AS q, j AS r FROM integers gives names=['q','j','r'] rows=[(1,2,2)] — same comma-splits-into-new-item rule."
+  },
+  {
+   "q": "SELECT integers.* REPLACE i+100 AS i FROM integers",
+   "result": "names=['i','j'] rows=[(101, 2)]",
+   "note": "Paren-less modifier legal after a qualified star too."
+  },
+  {
+   "q": "SELECT * REPLACE i+100 AS i LIKE 'i%' FROM integers",
+   "result": "BinderException: Binder Error: Replace list cannot be combined with a filtering operation\\n\\nLINE 1: SELECT * REPLACE i+100 AS i LIKE 'i%' FROM integers\\n                                    ^",
+   "note": "PARSES fine (LIKE after paren-less REPLACE is grammatically accepted) but binder rejects the combination. Identical error without FROM. Baseline SELECT * LIKE 'i%' FROM integers works alone: names=['i'] rows=[(1,)]. Reverse order SELECT * LIKE 'i%' REPLACE (i+100 AS i) FROM integers is a ParserException at REPLACE."
+  },
+  {
+   "q": "SELECT * EXCLUDE (i, j) FROM integers",
+   "result": "BinderException: Binder Error: SELECT list is empty after resolving * expressions!",
+   "note": "Excluding every column is a binder error, exact text pinned."
+  }
+ ],
+ "surprises": [
+  "Two-item paren-less REPLACE is LEGAL but does NOT mean two replacements: the comma terminates the star item and starts a new SELECT-list item, producing extra duplicate-named columns (names ['i','j','j']). Same for EXCLUDE i, j (-> ['j','j']) and RENAME two items (-> ['q','j','r']). A compiler that parses paren-less lists greedily across commas would be wrong.",
+  "COLUMNS('regex' REPLACE ...) is a ParserException — REPLACE/EXCLUDE only combine with * (or qualified star), never with the regex form of COLUMNS.",
+  "abs(COLUMNS(* REPLACE ...)) names asymmetrically: the replaced column becomes 'abs(a := (a + 10))' (note the ':=' rendering of the replace item), while non-replaced columns keep their bare names ('b', not 'abs(b)').",
+  "Star filter + REPLACE incompatibility is a BINDER error ('Replace list cannot be combined with a filtering operation'), not a parser error — 'SELECT * REPLACE i+100 AS i LIKE ...' parses; and the binder raises this even with no FROM clause. LIKE-before-REPLACE is the parser error."
+ ],
+ "summary": "DuckDB 1.5.5. COLUMNS(* REPLACE ...) and plain * REPLACE are name/position-preserving: output keeps original column names and star expansion order (NATURAL JOIN order = join columns first, then left-table leftovers, then right-table leftovers), with only the replaced column's value/type changing. EXCLUDE inside COLUMNS works both parenthesized and paren-less; COLUMNS('regex' REPLACE ...) is a parser error — modifiers attach only to the star form. When COLUMNS(* REPLACE ...) is wrapped in a function like abs(), only the replaced column gets a rendered-expression name ('abs(a := (a + 10))'); untouched columns keep bare names. Critical grammar rule: paren-less REPLACE/EXCLUDE/RENAME consume exactly ONE item — a following comma starts a new independent SELECT-list item (yielding duplicate output names), so multi-item modifiers require parentheses; paren-less modifiers also work after qualified stars (t.*). REPLACE cannot combine with a star filter: 'LIKE after REPLACE' parses but binder-errors ('Replace list cannot be combined with a filtering operation'), 'REPLACE after LIKE' is a parser error. Error pins: unknown REPLACE target -> Binder Error: Column \\\"z\\\" in REPLACE list not found in FROM clause; excluding all columns -> Binder Error: SELECT list is empty after resolving * expressions!"
+}

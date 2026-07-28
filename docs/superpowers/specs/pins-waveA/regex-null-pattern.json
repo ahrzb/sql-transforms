@@ -1,0 +1,118 @@
+{
+ "topic": "NULL as a constant regex pattern/argument across the regexp family (regexp_matches/replace/extract/full_match, SIMILAR TO, ~/!~)",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT regexp_matches(c0, CAST(NULL AS STRING)) from t0;",
+   "result": "DESC [('regexp_matches(c0, CAST(NULL AS VARCHAR))', BOOLEAN, ...)]; ROWS [(None,), (None,)]",
+   "note": "Corpus case verbatim. NULL pattern is NOT a bind error; per-row NULL result, type BOOLEAN. Setup: CREATE TABLE t0(c0 VARCHAR); INSERT INTO t0 VALUES ('a'), (NULL);"
+  },
+  {
+   "q": "SELECT regexp_matches(c0, NULL) from t0;",
+   "result": "DESC [('regexp_matches(c0, NULL)', BOOLEAN, ...)]; ROWS [(None,), (None,)]",
+   "note": "Bare NULL literal identical to CAST form — no bind ambiguity error."
+  },
+  {
+   "q": "SELECT regexp_matches(NULL, 'a');",
+   "result": "DESC [(\"regexp_matches(NULL, 'a')\", BOOLEAN, ...)]; ROWS [(None,)]",
+   "note": "NULL input string -> NULL."
+  },
+  {
+   "q": "SELECT regexp_matches(NULL, NULL);",
+   "result": "DESC [('regexp_matches(NULL, NULL)', BOOLEAN, ...)]; ROWS [(None,)]",
+   "note": "Both NULL -> NULL."
+  },
+  {
+   "q": "SELECT regexp_matches('a', CAST(NULL AS STRING));",
+   "result": "ROWS [(None,)] BOOLEAN",
+   "note": "Constant-fold path (no FROM)."
+  },
+  {
+   "q": "SELECT regexp_matches('a', CAST(NULL AS STRING)) FROM t0;",
+   "result": "ROWS [(None,), (None,)] BOOLEAN",
+   "note": "Row path identical to constant fold — NULL per row."
+  },
+  {
+   "q": "SELECT regexp_replace(c0, CAST(NULL AS STRING), 'x') FROM t0;",
+   "result": "DESC VARCHAR; ROWS [(None,), (None,)]",
+   "note": "NULL pattern in replace -> NULL, type VARCHAR."
+  },
+  {
+   "q": "SELECT regexp_replace(c0, 'a', CAST(NULL AS STRING)) FROM t0;",
+   "result": "DESC VARCHAR; ROWS [(None,), (None,)]",
+   "note": "NULL replacement -> NULL."
+  },
+  {
+   "q": "SELECT regexp_replace(c0, 'a', 'x', CAST(NULL AS STRING)) FROM t0;",
+   "result": "DESC [(\"regexp_replace(c0, 'a', 'x', CAST(NULL AS VARCHAR))\", VARCHAR, ...)]; ROWS [(None,), (None,)]",
+   "note": "ASYMMETRY re-verified: NULL options on regexp_replace -> NULL result, NO error. Also holds on constant path: SELECT regexp_replace('a', 'a', 'x', CAST(NULL AS STRING)); -> [(None,)]."
+  },
+  {
+   "q": "SELECT regexp_extract(c0, CAST(NULL AS STRING)) FROM t0;",
+   "result": "DESC VARCHAR; ROWS [(None,), (None,)]",
+   "note": "NULL pattern in extract -> NULL."
+  },
+  {
+   "q": "SELECT regexp_extract(c0, NULL, 1) FROM t0;",
+   "result": "DESC VARCHAR; ROWS [(None,), (None,)]",
+   "note": "Bare NULL pattern with group index -> NULL."
+  },
+  {
+   "q": "SELECT regexp_extract(c0, 'a', CAST(NULL AS INTEGER)) FROM t0;",
+   "result": "DESC VARCHAR; ROWS [('',), (None,)]",
+   "note": "SURPRISE: NULL group index does NOT propagate NULL. Row 'a' -> '' (empty string, codepoints []), only the NULL input row -> NULL. Same for bare NULL: regexp_extract(c0, 'a', NULL) -> [('',), (None,)]. Grounding: regexp_extract('a','a',0) -> 'a'; regexp_extract('a','a',1) -> ''; NULL index behaves like a nonexistent group (-> ''), not like SQL NULL propagation."
+  },
+  {
+   "q": "SELECT regexp_full_match(c0, CAST(NULL AS STRING)) FROM t0;",
+   "result": "DESC BOOLEAN; ROWS [(None,), (None,)]",
+   "note": "NULL pattern -> NULL."
+  },
+  {
+   "q": "SELECT c0 SIMILAR TO CAST(NULL AS STRING) FROM t0;",
+   "result": "DESC [('regexp_full_match(c0, CAST(NULL AS VARCHAR))', BOOLEAN, ...)]; ROWS [(None,), (None,)]",
+   "note": "SIMILAR TO desugars to regexp_full_match (visible in column name); NULL pattern -> NULL."
+  },
+  {
+   "q": "SELECT c0 NOT SIMILAR TO CAST(NULL AS STRING) FROM t0;",
+   "result": "DESC [('(NOT regexp_full_match(c0, CAST(NULL AS VARCHAR)))', BOOLEAN, ...)]; ROWS [(None,), (None,)]",
+   "note": "NOT of NULL stays NULL — three-valued logic preserved."
+  },
+  {
+   "q": "SELECT c0 SIMILAR TO NULL FROM t0;",
+   "result": "DESC [('regexp_full_match(c0, NULL)', BOOLEAN, ...)]; ROWS [(None,), (None,)]",
+   "note": "Bare NULL after SIMILAR TO parses fine, -> NULL."
+  },
+  {
+   "q": "SELECT c0 ~ CAST(NULL AS STRING) FROM t0;",
+   "result": "DESC [('regexp_full_match(c0, CAST(NULL AS VARCHAR))', BOOLEAN, ...)]; ROWS [(None,), (None,)]",
+   "note": "~ is the same regexp_full_match desugar; !~ variant gives '(NOT regexp_full_match(...))' with ROWS [(None,), (None,)]."
+  },
+  {
+   "q": "SELECT regexp_matches(c0, 'a', CAST(NULL AS STRING)) FROM t0;",
+   "result": "_duckdb.InvalidInputException: 'Invalid Input Error: Regex options field must not be NULL'",
+   "note": "RE-VERIFIED: NULL options -> runtime InvalidInputException (not BinderException, not NULL) for regexp_matches. Same exact error for regexp_full_match(c0,'a',NULL-opts), regexp_extract(c0,'a',0,NULL-opts), for the no-FROM constant path, when pattern is ALSO NULL, and even with WHERE 1=0 (zero rows) — the check fires regardless of row count. Only regexp_replace is exempt (returns NULL)."
+  },
+  {
+   "q": "SELECT regexp_matches(c0, '') FROM t0;",
+   "result": "ROWS [(True,), (None,)] BOOLEAN",
+   "note": "Grounding contrast: empty-string pattern matches everything (True for 'a'), NULL row still NULL. Empty pattern != NULL pattern."
+  },
+  {
+   "q": "SELECT * SIMILAR TO CAST(NULL AS STRING) FROM t0;",
+   "result": "_duckdb.BinderException: 'Binder Error: Pattern applied to a star expression must be a constant\\n\\nLINE 1: SELECT * SIMILAR TO CAST(NULL AS STRING) FROM t0;\\n                 ^'",
+   "note": "Star-filter rejects CAST(NULL AS STRING) at bind time: it demands a literal constant, a constant-foldable expression does not qualify."
+  },
+  {
+   "q": "SELECT regexp_matches(c0, CAST(NULL AS STRING), 'i') FROM t0;",
+   "result": "DESC BOOLEAN; ROWS [(None,), (None,)]",
+   "note": "NULL pattern WITH valid options string: no error, NULL per row — the options validity check passes, then NULL pattern propagates."
+  }
+ ],
+ "surprises": [
+  "regexp_extract NULL group index does NOT propagate NULL: regexp_extract('a','a',CAST(NULL AS INTEGER)) -> '' (empty string), not NULL. It behaves like an absent capture group (same as index 1 on a pattern with no groups). Only a NULL input string yields NULL. A compiler that NULL-propagates all args would be wrong here.",
+  "The NULL-options InvalidInputException ('Regex options field must not be NULL') fires even when the query produces ZERO rows (WHERE 1=0) and even when the pattern is also NULL — it is a constant-argument validation, not per-row evaluation. Compiling it as per-row NULL propagation or dead-code-eliminating it is wrong.",
+  "SELECT * SIMILAR TO CAST(NULL AS STRING) is a BinderException ('Pattern applied to a star expression must be a constant') — the star filter requires a literal, and rejects a constant CAST expression that every other regexp context accepts.",
+  "regexp_replace remains the sole exception to the NULL-options error: 4th-arg NULL -> NULL result on both constant and row paths (asymmetry confirmed, not fixed in 1.5.5)."
+ ],
+ "summary": "DuckDB 1.5.5. NULL pattern (bare NULL or CAST(NULL AS STRING)) is never a bind error anywhere in the regexp family: regexp_matches/regexp_full_match/SIMILAR TO/~/!~ return NULL BOOLEAN per row, regexp_replace/regexp_extract return NULL VARCHAR, and constant-fold (no FROM) and row paths are identical. SIMILAR TO and ~ visibly desugar to regexp_full_match (NOT variants wrap in NOT, preserving NULL). Two args break plain NULL propagation: (1) the options string — NULL options raise InvalidInputException 'Regex options field must not be NULL' for matches/full_match/extract even with zero rows and even when the pattern is also NULL, while regexp_replace alone returns NULL instead; (2) regexp_extract's group index — NULL index yields '' (empty string) for non-NULL inputs, behaving like a missing capture group, not NULL. Star form SELECT * SIMILAR TO CAST(NULL AS STRING) is a BinderException demanding a literal constant pattern. Grounding: pattern '' matches everything (True), so empty and NULL patterns are unrelated."
+}

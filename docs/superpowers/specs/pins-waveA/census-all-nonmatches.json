@@ -1,0 +1,2108 @@
+{
+ "totals": {
+  "match": 511,
+  "unsupported": 167
+ },
+ "nested": [
+  {
+   "i": 36,
+   "source": "test/sql/projection/select_struct_star.test",
+   "sql": "SELECT a.* FROM test;",
+   "setup": [
+    "CREATE TABLE test(a STRUCT(i INT, j INT));"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'a' has a non-scalar type"
+  },
+  {
+   "i": 37,
+   "source": "test/sql/projection/select_struct_star.test",
+   "sql": "SELECT a.* EXCLUDE(j) FROM test;",
+   "setup": [
+    "CREATE TABLE test(a STRUCT(i INT, j INT));"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'a' has a non-scalar type"
+  },
+  {
+   "i": 38,
+   "source": "test/sql/projection/select_struct_star.test",
+   "sql": "SELECT a.* EXCLUDE(i) FROM test;",
+   "setup": [
+    "CREATE TABLE test(a STRUCT(i INT, j INT));"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'a' has a non-scalar type"
+  },
+  {
+   "i": 39,
+   "source": "test/sql/projection/select_struct_star.test",
+   "sql": "SELECT a.* REPLACE(a.i + 3 AS i) FROM test;",
+   "setup": [
+    "CREATE TABLE test(a STRUCT(i INT, j INT));"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'a' has a non-scalar type"
+  },
+  {
+   "i": 161,
+   "source": "test/sql/filter/test_or_pushdown.test",
+   "sql": "select count(*) from t1 where a < 5 or b = 'foo8';",
+   "setup": [
+    "create table t1 as select range a, 'foo' || (range%100)::VARCHAR b, 100000-range c, timestamp '1992-01-01' + interval (range * 20) minute d from range(900000);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'd' has a non-scalar type"
+  },
+  {
+   "i": 162,
+   "source": "test/sql/filter/test_or_pushdown.test",
+   "sql": "select a from t1 where a=5 or a=899999;",
+   "setup": [
+    "create table t1 as select range a, 'foo' || (range%100)::VARCHAR b, 100000-range c, timestamp '1992-01-01' + interval (range * 20) minute d from range(900000);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'd' has a non-scalar type"
+  },
+  {
+   "i": 163,
+   "source": "test/sql/filter/test_or_pushdown.test",
+   "sql": "select a from t1 where d=timestamp '1992-01-01 01:40:00' or d=timestamp '2026-03-22 23:40:00'",
+   "setup": [
+    "create table t1 as select range a, 'foo' || (range%100)::VARCHAR b, 100000-range c, timestamp '1992-01-01' + interval (range * 20) minute d from range(900000);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'd' has a non-scalar type"
+  },
+  {
+   "i": 209,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::BOOLEAN FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 210,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::TINYINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 211,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::SMALLINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 212,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::INTEGER FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 213,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::BIGINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 214,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::UTINYINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 215,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::USMALLINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 216,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::UINTEGER FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 217,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::UBIGINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 218,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::HUGEINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 219,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::UHUGEINT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 220,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::FLOAT FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 221,
+   "source": "test/sql/cast/test_bit_cast.test",
+   "sql": "SELECT b::DOUBLE FROM bits;",
+   "setup": [
+    "CREATE TABLE bits (b bit);",
+    "INSERT INTO bits VALUES('00001111');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'b' has a non-scalar type"
+  },
+  {
+   "i": 227,
+   "source": "test/sql/select/test_multi_column_reference.test",
+   "sql": "SELECT t.t.t.t FROM t.t;",
+   "setup": [
+    "CREATE SCHEMA test",
+    "CREATE TABLE test.tbl(col INTEGER);",
+    "INSERT INTO test.tbl VALUES (1), (2), (3);",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t(t ROW(t INTEGER));",
+    "INSERT INTO t.t VALUES ({'t': 42});"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 't' has a non-scalar type"
+  },
+  {
+   "i": 228,
+   "source": "test/sql/select/test_multi_column_reference.test",
+   "sql": "SELECT t.t.t.t.t.t.t.t FROM t.t;",
+   "setup": [
+    "CREATE SCHEMA test",
+    "CREATE TABLE test.tbl(col INTEGER);",
+    "INSERT INTO test.tbl VALUES (1), (2), (3);",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t(t ROW(t INTEGER));",
+    "INSERT INTO t.t VALUES ({'t': 42});",
+    "DROP SCHEMA t CASCADE;",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t AS SELECT {'t': {'t': {'t': {'t': {'t': 42}}}}} t"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 't' has a non-scalar type"
+  },
+  {
+   "i": 249,
+   "source": "test/sql/join/inner/equality_join_limits.test",
+   "sql": "SELECT t_k0, u_k0 FROM   t, u   WHERE t_k0 = u_k0;",
+   "setup": [
+    "CREATE TABLE t(t_k0 TINYINT);",
+    "INSERT INTO t VALUES (-128), (127);",
+    "CREATE TABLE u(u_k0 TINYINT);",
+    "INSERT INTO u VALUES (-128), (127);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 SMALLINT);",
+    "INSERT INTO t VALUES (-32768), (32767);",
+    "CREATE TABLE u(u_k0 SMALLINT);",
+    "INSERT INTO u VALUES (-32768), (32767);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 INTEGER);",
+    "INSERT INTO t VALUES (-2147483648), (2147483647);",
+    "CREATE TABLE u(u_k0 INTEGER);",
+    "INSERT INTO u VALUES (-2147483648), (2147483647);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 BIGINT);",
+    "INSERT INTO t VALUES (-9223372036854775808), (9223372036854775807);",
+    "CREATE TABLE u(u_k0 BIGINT);",
+    "INSERT INTO u VALUES (-9223372036854775808), (9223372036854775807);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 HUGEINT);",
+    "INSERT INTO t VALUES (-170141183460469231731687303715884105728), (170141183460469231731687303715884105727);",
+    "CREATE TABLE u(u_k0 HUGEINT);",
+    "INSERT INTO u VALUES (-170141183460469231731687303715884105728), (170141183460469231731687303715884105727);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 't_k0' has a non-scalar type"
+  },
+  {
+   "i": 258,
+   "source": "test/sql/join/inner/list_join.test",
+   "sql": "SELECT * FROM test AS t1 LEFT JOIN test AS t2 ON t1.id=t2.id WHERE t1.l!=t2.l or t1.id!=t2.id;",
+   "setup": [
+    "CREATE TABLE test (id INTEGER, l VARCHAR[]);",
+    "INSERT INTO test SELECT i, case when (i/1000)%2=0 then ARRAY[1::VARCHAR, 1::VARCHAR, 1::VARCHAR] else ARRAY[2::VARCHAR, 2::VARCHAR] end FROM generate_series(0, 1999, 1) tbl(i);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'l' has a non-scalar type"
+  },
+  {
+   "i": 603,
+   "source": "test/sql/function/numeric/test_bit_count.test",
+   "sql": "select bit_count(t), bit_count(s), bit_count(i), bit_count(b), bit_count(h) from bits",
+   "setup": [
+    "CREATE TABLE bits(t tinyint, s smallint, i integer, b bigint, h hugeint)",
+    "INSERT INTO bits VALUES (NULL, NULL, NULL, NULL, NULL), (31, 1023, 11834119, 50827156903621017, 3141592653589793238462643383279528841), (-59, -517, -575693, -9876543210, -148873535527910577765226390751398592512)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: row column 'h' has a non-scalar type"
+  },
+  {
+   "i": 604,
+   "source": "test/sql/function/numeric/test_even.test",
+   "sql": "select i, even(i + 0.4) from generate_series(-4,4) tbl(i);",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 605,
+   "source": "test/sql/function/numeric/test_even.test",
+   "sql": "select i, even(i + 0.9) from generate_series(-4,4) tbl(i);",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 623,
+   "source": "test/sql/function/numeric/test_round_even.test",
+   "sql": "select i, round_even(i + 0.5, 0) from generate_series(-2,4) tbl(i);",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 624,
+   "source": "test/sql/function/numeric/test_round_even.test",
+   "sql": "select i, round_even(i + 0.55, 0) from generate_series(-2,4) tbl(i);",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 625,
+   "source": "test/sql/function/numeric/test_round_even.test",
+   "sql": "select i, roundBankers(i + 0.55, 0) from generate_series(-2,4) tbl(i);",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  }
+ ],
+ "other": [
+  {
+   "i": 11,
+   "source": "test/sql/projection/select_star_exclude.test",
+   "sql": "SELECT * EXCLUDE (i, j) FROM integers i1, integers i2",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER, j INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 12,
+   "source": "test/sql/projection/select_star_exclude.test",
+   "sql": "SELECT i1.* EXCLUDE (i, j), i2.* EXCLUDE (i, j, k) FROM integers i1, integers i2",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER, j INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 13,
+   "source": "test/sql/projection/select_star_exclude.test",
+   "sql": "SELECT i1.* EXCLUDE (i, j), i2.* EXCLUDE (k) FROM integers i1, integers i2",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER, j INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 14,
+   "source": "test/sql/projection/select_star_exclude.test",
+   "sql": "SELECT * EXCLUDE (i) FROM integers i1 JOIN integers i2 USING (i)",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER, j INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 19,
+   "source": "test/sql/projection/select_star_exclude.test",
+   "sql": "SELECT * EXCLUDE (i1.i, i2.i) FROM integers i1 JOIN integers i2 USING (i)",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER, j INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 20,
+   "source": "test/sql/projection/select_star_like.test",
+   "sql": "SELECT COLUMNS(lambda x: x LIKE 'col%') FROM integers",
+   "setup": [
+    "CREATE TABLE integers(col1 INTEGER, col2 INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "parse error: sql parser error: Expected: ), found: x"
+  },
+  {
+   "i": 29,
+   "source": "test/sql/projection/select_star_replace.test",
+   "sql": "SELECT * REPLACE i+100 AS i FROM integers",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER, j INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "parse error: sql parser error: Expected: ( after REPLACE but, found: i"
+  },
+  {
+   "i": 40,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE a AS a) FROM range(1) t1(a) NATURAL JOIN range(1) t2(a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 41,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT * FROM range(1) t1(a) NATURAL JOIN range(1) t2(a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 42,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE a AS a) FROM range(1) t1(a) JOIN range(1) t2(a) USING (a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 43,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE (a + 1 AS a)) FROM range(1) t1(a) NATURAL JOIN range(1) t2(a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 44,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE (a * 2 AS a)) FROM range(3) t1(a) NATURAL JOIN range(3) t2(a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 45,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE (a AS a)) FROM range(1) t1(a) NATURAL JOIN range(1) t2(a) NATURAL JOIN range(1) t3(a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 46,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE (a + 1 AS a)) FROM range(2) t1(a) NATURAL JOIN range(2) t2(a) NATURAL JOIN range(2) t3(a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 47,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* RENAME a AS b) FROM range(1) t1(a) NATURAL JOIN range(1) t2(a)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 48,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE (a + 10 AS a, b + 20 AS b)) FROM test_t1 NATURAL JOIN test_t2",
+   "setup": [
+    "CREATE TABLE test_t1 AS SELECT 1 as a, 2 as b, 3 as c",
+    "CREATE TABLE test_t2 AS SELECT 1 as a, 4 as d, 5 as e"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: COLUMNS argument form"
+  },
+  {
+   "i": 49,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT COLUMNS(* REPLACE (concat(a::VARCHAR, '_joined') AS a)) FROM test_t1 NATURAL JOIN test_t2",
+   "setup": [
+    "CREATE TABLE test_t1 AS SELECT 1 as a, 2 as b, 3 as c",
+    "CREATE TABLE test_t2 AS SELECT 1 as a, 4 as d, 5 as e"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: COLUMNS argument form"
+  },
+  {
+   "i": 50,
+   "source": "test/sql/projection/test_columns_replace_using.test",
+   "sql": "SELECT * EXCLUDE (i1.i, i2.i) FROM integers i1 JOIN integers i2 USING (i)",
+   "setup": [
+    "CREATE TABLE test_t1 AS SELECT 1 as a, 2 as b, 3 as c",
+    "CREATE TABLE test_t2 AS SELECT 1 as a, 4 as d, 5 as e",
+    "CREATE TABLE integers(i INTEGER, j INTEGER, k INTEGER)",
+    "INSERT INTO integers VALUES (1, 2, 3)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 67,
+   "source": "test/sql/projection/test_row_id.test",
+   "sql": "SELECT rowid, * FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42), (44);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 68,
+   "source": "test/sql/projection/test_row_id.test",
+   "sql": "SELECT rowid+1 FROM a WHERE CASE WHEN i=42 THEN rowid=0 ELSE rowid=1 END;",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42), (44);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 71,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT rowid + 1, rowid - 1, rowid + rowid, i + rowid FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 72,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT -rowid, +rowid, abs(rowid) FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 73,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT rowid BETWEEN -1 AND 1, 0 BETWEEN rowid AND 1, 1 BETWEEN -3 AND rowid FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 74,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT rowid < i, rowid = NULL, rowid = i, rowid <> 0 FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 75,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT SUM(rowid), MIN(rowid), MAX(rowid), COUNT(rowid), FIRST(rowid) FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: aggregate function sum (no aggregation in v0)"
+  },
+  {
+   "i": 76,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT SUM(rowid), MIN(rowid), MAX(rowid), COUNT(rowid), LAST(rowid) FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: aggregate function sum (no aggregation in v0)"
+  },
+  {
+   "i": 77,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT COUNT(*) FROM a",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 78,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT * FROM a, a a2 WHERE a.rowid=a2.rowid",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 79,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT * FROM a, a a2 WHERE a.rowid<>a2.rowid",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 80,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT * FROM a, a a2 WHERE a.rowid>=a2.rowid",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 81,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT * FROM a WHERE rowid=0",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);",
+    "INSERT INTO a SELECT rowid FROM a",
+    "UPDATE a SET i=rowid"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 82,
+   "source": "test/sql/projection/test_row_id_expression.test",
+   "sql": "SELECT * FROM a WHERE rowid=0 OR rowid=1",
+   "setup": [
+    "create table a(i integer);",
+    "insert into a values (42);",
+    "INSERT INTO a SELECT rowid FROM a",
+    "UPDATE a SET i=rowid"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: rowid pseudo-column"
+  },
+  {
+   "i": 95,
+   "source": "test/sql/filter/filter_cache.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE a<5;",
+   "setup": [
+    "CREATE TABLE integers AS SELECT a FROM generate_series(0, 9999, 1) tbl(a), generate_series(0, 9, 1) tbl2(b);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 204,
+   "source": "test/sql/filter/test_transitive_filters.test",
+   "sql": "SELECT * FROM vals1, vals2 WHERE i>9 AND k>=j AND j>=i AND l>=k",
+   "setup": [
+    "CREATE TABLE vals1 AS SELECT i AS i, i AS j FROM range(0, 11, 1) t1(i)",
+    "INSERT INTO vals1 SELECT i, i+1 FROM vals1",
+    "INSERT INTO vals1 SELECT DISTINCT(i), i-1 FROM vals1 ORDER by i",
+    "CREATE TABLE vals2(k BIGINT, l BIGINT)",
+    "INSERT INTO vals2 SELECT * FROM vals1"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 205,
+   "source": "test/sql/filter/test_transitive_filters.test",
+   "sql": "SELECT * FROM vals1, vals2 WHERE i<1 AND k<=j AND j<=i AND l<=k",
+   "setup": [
+    "CREATE TABLE vals1 AS SELECT i AS i, i AS j FROM range(0, 11, 1) t1(i)",
+    "INSERT INTO vals1 SELECT i, i+1 FROM vals1",
+    "INSERT INTO vals1 SELECT DISTINCT(i), i-1 FROM vals1 ORDER by i",
+    "CREATE TABLE vals2(k BIGINT, l BIGINT)",
+    "INSERT INTO vals2 SELECT * FROM vals1"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 206,
+   "source": "test/sql/conjunction/or_between.test",
+   "sql": "SELECT pk FROM tab0 WHERE (col0 BETWEEN 67 AND 0 OR col0 > 17 AND (col0 > 3));",
+   "setup": [
+    "CREATE TABLE tab0(pk INTEGER PRIMARY KEY, col0 INTEGER, col1 FLOAT, col2 VARCHAR, col3 INTEGER, col4 FLOAT, col5 VARCHAR);",
+    "INSERT INTO tab0 VALUES(0,22,43.95999908447265625,'yoyca',0,80.1399993896484375,'eoenc');",
+    "INSERT INTO tab0 VALUES(1,51,34.900001525878905361,'zeqhw',44,13.489999771118164062,'easox');",
+    "INSERT INTO tab0 VALUES(2,42,59.759998321533203125,'ylshk',15,4.4499998092651367187,'xgrvy');",
+    "INSERT INTO tab0 VALUES(3,67,90.660003662109378552,'rnadc',77,50.360000610351560723,'knooo');",
+    "INSERT INTO tab0 VALUES(4,48,53.099998474121097302,'txhlv',75,9.770000457763671875,'gvudx');",
+    "INSERT INTO tab0 VALUES(5,18,40.580001831054683947,'wgfxz',96,12.5,'mmxbj');",
+    "INSERT INTO tab0 VALUES(6,84,24.239999771118165838,'ttodp',31,72.999999999999998223,'wujjl');",
+    "INSERT INTO tab0 VALUES(7,86,67.449996948242185723,'mwgbl',38,10.479999542236329013,'ypcha');",
+    "INSERT INTO tab0 VALUES(8,68,38.470001220703125,'kaoqh',8,41.500000000000003552,'fyhzl');",
+    "INSERT INTO tab0 VALUES(9,29,19.600000381469726562,'kbenw',20,19.579999923706054687,'gsszq');"
+   ],
+   "outcome": "unsupported",
+   "detail": "f32 base-table column (engine is f64-only)"
+  },
+  {
+   "i": 207,
+   "source": "test/sql/conjunction/or_comparison.test",
+   "sql": "SELECT pk FROM tab0 WHERE col0 < 84 OR col0 < 8 ;",
+   "setup": [
+    "CREATE TABLE tab0(pk INTEGER PRIMARY KEY, col0 INTEGER, col1 FLOAT, col2 VARCHAR, col3 INTEGER, col4 FLOAT, col5 VARCHAR);;",
+    "INSERT INTO tab0 VALUES(0,86,94.959999084472652697,'vuopk',91,47.779998779296875,'sikuk');",
+    "INSERT INTO tab0 VALUES(1,37,20.850000381469726562,'zfuqj',30,10.689999580383300337,'rtcha');",
+    "INSERT INTO tab0 VALUES(2,6,47.540000915527347302,'vubiv',38,46.630001068115234375,'nnuey');",
+    "INSERT INTO tab0 VALUES(3,72,30.629999160766603338,'rezor',59,11.189999580383300781,'mdler');",
+    "INSERT INTO tab0 VALUES(4,12,29.620000839233400213,'gvmir',68,69.669998168945310723,'yfnxa');",
+    "INSERT INTO tab0 VALUES(5,64,21.489999771118162286,'ruygp',31,13.659999847412109819,'fhwkn');",
+    "INSERT INTO tab0 VALUES(6,90,9.3699998855590820312,'tehgk',71,65.720001220703121447,'uibwi');",
+    "INSERT INTO tab0 VALUES(7,38,43.139999389648435723,'axgch',27,98.949996948242180394,'oikcl');",
+    "INSERT INTO tab0 VALUES(8,3,22.399999618530275213,'yigev',19,45.650001525878902697,'tbbkw');",
+    "INSERT INTO tab0 VALUES(9,95,14.31999969482421875,'vssyg',8,12.930000305175781605,'epgyr');"
+   ],
+   "outcome": "unsupported",
+   "detail": "f32 base-table column (engine is f64-only)"
+  },
+  {
+   "i": 208,
+   "source": "test/sql/conjunction/or_comparison.test",
+   "sql": "select pk from tab0 where col0 = 37 or col0 = 86",
+   "setup": [
+    "CREATE TABLE tab0(pk INTEGER PRIMARY KEY, col0 INTEGER, col1 FLOAT, col2 VARCHAR, col3 INTEGER, col4 FLOAT, col5 VARCHAR);;",
+    "INSERT INTO tab0 VALUES(0,86,94.959999084472652697,'vuopk',91,47.779998779296875,'sikuk');",
+    "INSERT INTO tab0 VALUES(1,37,20.850000381469726562,'zfuqj',30,10.689999580383300337,'rtcha');",
+    "INSERT INTO tab0 VALUES(2,6,47.540000915527347302,'vubiv',38,46.630001068115234375,'nnuey');",
+    "INSERT INTO tab0 VALUES(3,72,30.629999160766603338,'rezor',59,11.189999580383300781,'mdler');",
+    "INSERT INTO tab0 VALUES(4,12,29.620000839233400213,'gvmir',68,69.669998168945310723,'yfnxa');",
+    "INSERT INTO tab0 VALUES(5,64,21.489999771118162286,'ruygp',31,13.659999847412109819,'fhwkn');",
+    "INSERT INTO tab0 VALUES(6,90,9.3699998855590820312,'tehgk',71,65.720001220703121447,'uibwi');",
+    "INSERT INTO tab0 VALUES(7,38,43.139999389648435723,'axgch',27,98.949996948242180394,'oikcl');",
+    "INSERT INTO tab0 VALUES(8,3,22.399999618530275213,'yigev',19,45.650001525878902697,'tbbkw');",
+    "INSERT INTO tab0 VALUES(9,95,14.31999969482421875,'vssyg',8,12.930000305175781605,'epgyr');"
+   ],
+   "outcome": "unsupported",
+   "detail": "f32 base-table column (engine is f64-only)"
+  },
+  {
+   "i": 229,
+   "source": "test/sql/select/test_multi_column_reference.test",
+   "sql": "SELECT s1.t1.t FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA test",
+    "CREATE TABLE test.tbl(col INTEGER);",
+    "INSERT INTO test.tbl VALUES (1), (2), (3);",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t(t ROW(t INTEGER));",
+    "INSERT INTO t.t VALUES ({'t': 42});",
+    "DROP SCHEMA t CASCADE;",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t AS SELECT {'t': {'t': {'t': {'t': {'t': 42}}}}} t",
+    "DROP SCHEMA t CASCADE",
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1 AS SELECT 42 t",
+    "CREATE TABLE s2.t1 AS SELECT 84 t"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: comma-joined table 's2.t1' is not a provided static table"
+  },
+  {
+   "i": 230,
+   "source": "test/sql/select/test_multi_column_reference.test",
+   "sql": "SELECT * EXCLUDE (s1.t1.t) FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA test",
+    "CREATE TABLE test.tbl(col INTEGER);",
+    "INSERT INTO test.tbl VALUES (1), (2), (3);",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t(t ROW(t INTEGER));",
+    "INSERT INTO t.t VALUES ({'t': 42});",
+    "DROP SCHEMA t CASCADE;",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t AS SELECT {'t': {'t': {'t': {'t': {'t': 42}}}}} t",
+    "DROP SCHEMA t CASCADE",
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1 AS SELECT 42 t",
+    "CREATE TABLE s2.t1 AS SELECT 84 t"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: comma-joined table 's2.t1' is not a provided static table"
+  },
+  {
+   "i": 231,
+   "source": "test/sql/select/test_multi_column_reference.test",
+   "sql": "SELECT * EXCLUDE (S1.T1.T) FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA test",
+    "CREATE TABLE test.tbl(col INTEGER);",
+    "INSERT INTO test.tbl VALUES (1), (2), (3);",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t(t ROW(t INTEGER));",
+    "INSERT INTO t.t VALUES ({'t': 42});",
+    "DROP SCHEMA t CASCADE;",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t AS SELECT {'t': {'t': {'t': {'t': {'t': 42}}}}} t",
+    "DROP SCHEMA t CASCADE",
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1 AS SELECT 42 t",
+    "CREATE TABLE s2.t1 AS SELECT 84 t"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: comma-joined table 's2.t1' is not a provided static table"
+  },
+  {
+   "i": 232,
+   "source": "test/sql/select/test_multi_column_reference.test",
+   "sql": "SELECT s2.t1.t FROM s1.t1, s2.t1",
+   "setup": [
+    "CREATE SCHEMA test",
+    "CREATE TABLE test.tbl(col INTEGER);",
+    "INSERT INTO test.tbl VALUES (1), (2), (3);",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t(t ROW(t INTEGER));",
+    "INSERT INTO t.t VALUES ({'t': 42});",
+    "DROP SCHEMA t CASCADE;",
+    "CREATE SCHEMA t",
+    "CREATE TABLE t.t AS SELECT {'t': {'t': {'t': {'t': {'t': 42}}}}} t",
+    "DROP SCHEMA t CASCADE",
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1 AS SELECT 42 t",
+    "CREATE TABLE s2.t1 AS SELECT 84 t"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: comma-joined table 's2.t1' is not a provided static table"
+  },
+  {
+   "i": 233,
+   "source": "test/sql/select/test_positional_reference.test",
+   "sql": "SELECT #1 FROM range(1)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 234,
+   "source": "test/sql/select/test_positional_reference.test",
+   "sql": "SELECT #1+#2 FROM range(1) tbl, range(1) tbl2",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 235,
+   "source": "test/sql/select/test_select_alias_prefix_colon.test",
+   "sql": "select column_name from (describe SELECT j : 42)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 236,
+   "source": "test/sql/select/test_select_alias_prefix_colon.test",
+   "sql": "select column_name from (describe SELECT \"hel lo\" : 42)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 239,
+   "source": "test/sql/select/test_select_alias_prefix_colon.test",
+   "sql": "SELECT * FROM b : a",
+   "setup": [
+    "CREATE TABLE a (i INTEGER);",
+    "INSERT INTO a VALUES (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "parse error: sql parser error: Expected: end of statement, found: :"
+  },
+  {
+   "i": 240,
+   "source": "test/sql/select/test_select_alias_prefix_colon.test",
+   "sql": "SELECT * FROM \"b\" : a",
+   "setup": [
+    "CREATE TABLE a (i INTEGER);",
+    "INSERT INTO a VALUES (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "parse error: sql parser error: Expected: end of statement, found: :"
+  },
+  {
+   "i": 241,
+   "source": "test/sql/select/test_select_alias_prefix_colon.test",
+   "sql": "SELECT i FROM b : a",
+   "setup": [
+    "CREATE TABLE a (i INTEGER);",
+    "INSERT INTO a VALUES (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "parse error: sql parser error: Expected: end of statement, found: :"
+  },
+  {
+   "i": 242,
+   "source": "test/sql/select/test_select_alias_prefix_colon.test",
+   "sql": "SELECT b.i FROM b : a",
+   "setup": [
+    "CREATE TABLE a (i INTEGER);",
+    "INSERT INTO a VALUES (42);"
+   ],
+   "outcome": "unsupported",
+   "detail": "parse error: sql parser error: Expected: end of statement, found: :"
+  },
+  {
+   "i": 253,
+   "source": "test/sql/join/inner/equality_join_limits.test",
+   "sql": "SELECT t_k0, u_k0 FROM   t, u   WHERE t_k0 = u_k0;",
+   "setup": [
+    "CREATE TABLE t(t_k0 TINYINT);",
+    "INSERT INTO t VALUES (-128), (127);",
+    "CREATE TABLE u(u_k0 TINYINT);",
+    "INSERT INTO u VALUES (-128), (127);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 SMALLINT);",
+    "INSERT INTO t VALUES (-32768), (32767);",
+    "CREATE TABLE u(u_k0 SMALLINT);",
+    "INSERT INTO u VALUES (-32768), (32767);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 INTEGER);",
+    "INSERT INTO t VALUES (-2147483648), (2147483647);",
+    "CREATE TABLE u(u_k0 INTEGER);",
+    "INSERT INTO u VALUES (-2147483648), (2147483647);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 BIGINT);",
+    "INSERT INTO t VALUES (-9223372036854775808), (9223372036854775807);",
+    "CREATE TABLE u(u_k0 BIGINT);",
+    "INSERT INTO u VALUES (-9223372036854775808), (9223372036854775807);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 HUGEINT);",
+    "INSERT INTO t VALUES (-170141183460469231731687303715884105728), (170141183460469231731687303715884105727);",
+    "CREATE TABLE u(u_k0 HUGEINT);",
+    "INSERT INTO u VALUES (-170141183460469231731687303715884105728), (170141183460469231731687303715884105727);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 UTINYINT);",
+    "INSERT INTO t VALUES (0), (255);",
+    "CREATE TABLE u(u_k0 UTINYINT);",
+    "INSERT INTO u VALUES (0), (255);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 USMALLINT);",
+    "INSERT INTO t VALUES (0), (65535);",
+    "CREATE TABLE u(u_k0 USMALLINT);",
+    "INSERT INTO u VALUES (0), (65535);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 UINTEGER);",
+    "INSERT INTO t VALUES (0), (4294967295);",
+    "CREATE TABLE u(u_k0 UINTEGER);",
+    "INSERT INTO u VALUES (0), (4294967295);",
+    "DROP TABLE t;",
+    "DROP TABLE u;",
+    "CREATE TABLE t(t_k0 UBIGINT);",
+    "INSERT INTO t VALUES (0), (18446744073709551615);",
+    "CREATE TABLE u(u_k0 UBIGINT);",
+    "INSERT INTO u VALUES (0), (18446744073709551615);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: static table 'u' key column 'u_k0' value outside BIGINT range (UBIGINT/HUGEINT payloads)"
+  },
+  {
+   "i": 254,
+   "source": "test/sql/join/inner/join_cache.test",
+   "sql": "SELECT COUNT(*) FROM bigtable JOIN smalltable USING (a)",
+   "setup": [
+    "CREATE TABLE smalltable AS SELECT 1::INTEGER a;",
+    "CREATE TABLE bigtable AS SELECT a::INTEGER a FROM generate_series(0, 10000, 1) tbl(a), generate_series(0, 9, 1) tbl2(b);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 255,
+   "source": "test/sql/join/inner/join_cache.test",
+   "sql": "SELECT COUNT(*) FROM bigtable JOIN smalltable USING (a) JOIN smalltable t3 USING (a)",
+   "setup": [
+    "CREATE TABLE smalltable AS SELECT 1::INTEGER a;",
+    "CREATE TABLE bigtable AS SELECT a::INTEGER a FROM generate_series(0, 10000, 1) tbl(a), generate_series(0, 9, 1) tbl2(b);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 256,
+   "source": "test/sql/join/inner/join_cache.test",
+   "sql": "SELECT COUNT(*) FROM bigtable JOIN smalltable USING (a) JOIN smalltable t3 USING (a) JOIN smalltable t4 USING (a);",
+   "setup": [
+    "CREATE TABLE smalltable AS SELECT 1::INTEGER a;",
+    "CREATE TABLE bigtable AS SELECT a::INTEGER a FROM generate_series(0, 10000, 1) tbl(a), generate_series(0, 9, 1) tbl2(b);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 267,
+   "source": "test/sql/join/inner/test_join.test",
+   "sql": "SELECT a, test.b, c FROM test INNER JOIN test2 ON test2.b = test.b and test.b = 2;",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 268,
+   "source": "test/sql/join/inner/test_join.test",
+   "sql": "SELECT a, test.b, c FROM test INNER JOIN test2 ON NULL = 2;",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 269,
+   "source": "test/sql/join/inner/test_join_duplicates.test",
+   "sql": "SELECT COUNT(*) FROM test2;",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 AS SELECT * FROM repeat(1, 10*1024) t1(b), (SELECT 10) t2(c);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 270,
+   "source": "test/sql/join/inner/test_join_duplicates.test",
+   "sql": "SELECT COUNT(*) FROM test INNER JOIN test2 ON test.b=test2.b",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 AS SELECT * FROM repeat(1, 10*1024) t1(b), (SELECT 10) t2(c);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 271,
+   "source": "test/sql/join/inner/test_range_join.test",
+   "sql": "SELECT test.b, test2.b FROM test, test2 WHERE test.b<test2.b",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 272,
+   "source": "test/sql/join/inner/test_range_join.test",
+   "sql": "SELECT test.a, test.b, test2.b, test2.c FROM test, test2 WHERE test.a>test2.c AND test.b <= test2.b",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 273,
+   "source": "test/sql/join/inner/test_range_join.test",
+   "sql": "SELECT test.a, test.b, test2.b, test2.c FROM test, test2 WHERE test.a>test2.c AND test.b <= test2.b",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)",
+    "INSERT INTO test VALUES (11, NULL), (NULL, 1)"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 274,
+   "source": "test/sql/join/inner/test_range_join.test",
+   "sql": "SELECT test.a, test.b, test2.b, test2.c FROM test, test2 WHERE test.a>test2.c AND test.b <= test2.b",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)",
+    "INSERT INTO test VALUES (11, NULL), (NULL, 1)",
+    "INSERT INTO test2 VALUES (1, NULL), (NULL, 10)"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 275,
+   "source": "test/sql/join/inner/test_range_join.test",
+   "sql": "SELECT * FROM issue4419 t1 INNER JOIN issue4419 t2 ON t1.x < t2.x;",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)",
+    "INSERT INTO test VALUES (11, NULL), (NULL, 1)",
+    "INSERT INTO test2 VALUES (1, NULL), (NULL, 10)",
+    "CREATE TABLE issue4419 (x INT, y VARCHAR);",
+    "INSERT INTO issue4419 VALUES (1, 'sssssssssssssssssueufuheuooefef');",
+    "INSERT INTO issue4419 VALUES (2, 'sssssssssssssssssueufuheuooefesffff');",
+    "INSERT INTO issue4419 VALUES (2, 'sssssssssssssssssueufuheuooefesffffsssssssieiffih');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: joining the dynamic table to itself"
+  },
+  {
+   "i": 276,
+   "source": "test/sql/join/inner/test_unequal_join.test",
+   "sql": "select count(*) from a,b where i <> j",
+   "setup": [
+    "CREATE TABLE test (a INTEGER, b INTEGER);",
+    "INSERT INTO test VALUES (11, 1), (12, 2), (13, 3)",
+    "CREATE TABLE test2 (b INTEGER, c INTEGER);",
+    "INSERT INTO test2 VALUES (1, 10), (1, 20), (2, 30)",
+    "INSERT INTO test VALUES (NULL, NULL)",
+    "INSERT INTO test2 VALUES (NULL, NULL)",
+    "create table a (i integer)",
+    "insert into a values ('28579'),('16098'),('25281'),('28877'),('18048'),('26820'),('26971'),('22812'),('11757'),('21851'),('27752'),('28354'),('29843'),('28828'),('16668'),('20534'),('28222'),('24244'),('28877'),('20150'),('23451'),('23683'),('20419'),('28048'),('24244'),('28605'),('25752'),('24466'),('26557'),('16098'),('29454'),('24854'),('13298'),('29584'),('13394'),('24843'),('22477'),('14593'),('24244'),('28722'),('25124'),('16668'),('26787'),('28877'),('27752'),('28482'),('24408'),('25752'),('24136'),('28222'),('17683'),('24244'),('19275'),('21087'),('26594'),('22293'),('25281'),('12898'),('23451'),('12898'),('21757'),('20965'),('25709'),('26614'),('10399'),('28773'),('11933'),('29584'),('29003'),('26871'),('17746'),('24092'),('26192'),('19310'),('10965'),('29275'),('20191'),('29101'),('28059'),('29584'),('20399'),('24338'),('26192'),('25124'),('28605'),('13003'),('16668'),('23511'),('26534'),('24107')",
+    "create table b (j integer)",
+    "insert into b values ('31904'),('31904'),('31904'),('31904'),('35709'),('31904'),('31904'),('35709'),('31904'),('31904'),('31904'),('31904')"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function count argument form"
+  },
+  {
+   "i": 277,
+   "source": "test/sql/join/inner/test_unequal_join_duplicates.test",
+   "sql": "SELECT COUNT(*) FROM test2;",
+   "setup": [
+    "CREATE TABLE test (b INTEGER);",
+    "INSERT INTO test VALUES (1), (2)",
+    "CREATE TABLE test2 AS SELECT * FROM repeat(1, 10*1024) t1(b);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 278,
+   "source": "test/sql/join/inner/test_unequal_join_duplicates.test",
+   "sql": "SELECT COUNT(*) FROM test INNER JOIN test2 ON test.b<>test2.b",
+   "setup": [
+    "CREATE TABLE test (b INTEGER);",
+    "INSERT INTO test VALUES (1), (2)",
+    "CREATE TABLE test2 AS SELECT * FROM repeat(1, 10*1024) t1(b);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 283,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id = t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 284,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id > t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 285,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id <> t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 286,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id = t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);",
+    "insert into t2 values (1);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 287,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id > t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);",
+    "insert into t2 values (1);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 288,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id <> t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);",
+    "insert into t2 values (1);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 289,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id = t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);",
+    "insert into t2 values (1);",
+    "insert into t2 values (NULL), (NULL);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 290,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id > t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);",
+    "insert into t2 values (1);",
+    "insert into t2 values (NULL), (NULL);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 291,
+   "source": "test/sql/join/left_outer/left_join_issue_1172.test",
+   "sql": "select * from t1 left join t2 on t1.id <> t2.id;",
+   "setup": [
+    "drop table if exists t1;",
+    "drop table if exists t2;",
+    "create table t1 (id string);",
+    "create table t2 (id string);",
+    "insert into t1 values\n(NULL);",
+    "insert into t2 values (1), (1);",
+    "insert into t2 values (1);",
+    "insert into t2 values (NULL), (NULL);"
+   ],
+   "outcome": "unsupported",
+   "detail": "static data mismatch: @0: duplicate map key"
+  },
+  {
+   "i": 302,
+   "source": "test/sql/join/left_outer/unique_left_join.test",
+   "sql": "SELECT COUNT(*) FROM big_fact f LEFT JOIN big_dim d ON f.fk = d.id",
+   "setup": [
+    "CREATE TABLE dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "INSERT INTO dim VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+    "CREATE TABLE fact(fk INTEGER, value INTEGER)",
+    "INSERT INTO fact VALUES (1, 10), (2, 20), (3, 30), (1, 40), (2, 50)",
+    "INSERT INTO fact VALUES (99, 999)",
+    "CREATE TABLE empty_dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "CREATE TABLE dim_unique(id INTEGER UNIQUE, label TEXT)",
+    "INSERT INTO dim_unique VALUES (1, 'x'), (2, 'y')",
+    "CREATE TABLE dim_multi(a INTEGER, b INTEGER, label TEXT, PRIMARY KEY(a, b))",
+    "INSERT INTO dim_multi VALUES (1, 1, 'aa'), (2, 2, 'bb')",
+    "CREATE TABLE fact_multi(fa INTEGER, fb INTEGER, value INTEGER)",
+    "INSERT INTO fact_multi VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30)",
+    "CREATE TABLE big_dim AS SELECT range::INTEGER AS id, 'val_' || range AS label FROM range(1, 10001)",
+    "CREATE TABLE big_fact AS SELECT (range % 15000)::INTEGER AS fk FROM range(1, 50001)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 303,
+   "source": "test/sql/join/left_outer/unique_left_join.test",
+   "sql": "SELECT COUNT(d.label) FROM big_fact f LEFT JOIN big_dim d ON f.fk = d.id",
+   "setup": [
+    "CREATE TABLE dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "INSERT INTO dim VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+    "CREATE TABLE fact(fk INTEGER, value INTEGER)",
+    "INSERT INTO fact VALUES (1, 10), (2, 20), (3, 30), (1, 40), (2, 50)",
+    "INSERT INTO fact VALUES (99, 999)",
+    "CREATE TABLE empty_dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "CREATE TABLE dim_unique(id INTEGER UNIQUE, label TEXT)",
+    "INSERT INTO dim_unique VALUES (1, 'x'), (2, 'y')",
+    "CREATE TABLE dim_multi(a INTEGER, b INTEGER, label TEXT, PRIMARY KEY(a, b))",
+    "INSERT INTO dim_multi VALUES (1, 1, 'aa'), (2, 2, 'bb')",
+    "CREATE TABLE fact_multi(fa INTEGER, fb INTEGER, value INTEGER)",
+    "INSERT INTO fact_multi VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30)",
+    "CREATE TABLE big_dim AS SELECT range::INTEGER AS id, 'val_' || range AS label FROM range(1, 10001)",
+    "CREATE TABLE big_fact AS SELECT (range % 15000)::INTEGER AS fk FROM range(1, 50001)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: aggregate function count (no aggregation in v0)"
+  },
+  {
+   "i": 304,
+   "source": "test/sql/join/left_outer/unique_left_join.test",
+   "sql": "SELECT SUM(f.fk) FROM fact f LEFT JOIN dim d ON f.fk = d.id",
+   "setup": [
+    "CREATE TABLE dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "INSERT INTO dim VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+    "CREATE TABLE fact(fk INTEGER, value INTEGER)",
+    "INSERT INTO fact VALUES (1, 10), (2, 20), (3, 30), (1, 40), (2, 50)",
+    "INSERT INTO fact VALUES (99, 999)",
+    "CREATE TABLE empty_dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "CREATE TABLE dim_unique(id INTEGER UNIQUE, label TEXT)",
+    "INSERT INTO dim_unique VALUES (1, 'x'), (2, 'y')",
+    "CREATE TABLE dim_multi(a INTEGER, b INTEGER, label TEXT, PRIMARY KEY(a, b))",
+    "INSERT INTO dim_multi VALUES (1, 1, 'aa'), (2, 2, 'bb')",
+    "CREATE TABLE fact_multi(fa INTEGER, fb INTEGER, value INTEGER)",
+    "INSERT INTO fact_multi VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30)",
+    "CREATE TABLE big_dim AS SELECT range::INTEGER AS id, 'val_' || range AS label FROM range(1, 10001)",
+    "CREATE TABLE big_fact AS SELECT (range % 15000)::INTEGER AS fk FROM range(1, 50001)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: aggregate function sum (no aggregation in v0)"
+  },
+  {
+   "i": 307,
+   "source": "test/sql/join/left_outer/unique_left_join.test",
+   "sql": "SELECT f.fk, f.value, d.label\nFROM fact f FULL OUTER JOIN dim d ON f.fk = d.id\nWHERE d.id > 3 OR f.fk IS NULL",
+   "setup": [
+    "CREATE TABLE dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "INSERT INTO dim VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+    "CREATE TABLE fact(fk INTEGER, value INTEGER)",
+    "INSERT INTO fact VALUES (1, 10), (2, 20), (3, 30), (1, 40), (2, 50)",
+    "INSERT INTO fact VALUES (99, 999)",
+    "CREATE TABLE empty_dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "CREATE TABLE dim_unique(id INTEGER UNIQUE, label TEXT)",
+    "INSERT INTO dim_unique VALUES (1, 'x'), (2, 'y')",
+    "CREATE TABLE dim_multi(a INTEGER, b INTEGER, label TEXT, PRIMARY KEY(a, b))",
+    "INSERT INTO dim_multi VALUES (1, 1, 'aa'), (2, 2, 'bb')",
+    "CREATE TABLE fact_multi(fa INTEGER, fb INTEGER, value INTEGER)",
+    "INSERT INTO fact_multi VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30)",
+    "CREATE TABLE big_dim AS SELECT range::INTEGER AS id, 'val_' || range AS label FROM range(1, 10001)",
+    "CREATE TABLE big_fact AS SELECT (range % 15000)::INTEGER AS fk FROM range(1, 50001)",
+    "CREATE TABLE dim_wide(id INTEGER PRIMARY KEY, a TEXT, b TEXT, c INTEGER)",
+    "INSERT INTO dim_wide VALUES (1, 'x', 'y', 100), (2, 'p', 'q', 200)",
+    "INSERT INTO fact VALUES (NULL, 777)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: join type FullOuter(On(BinaryOp { left: CompoundIdentifier([Ident { value: \"f\", quote_style: None, span: Span(Location(0,0)..Location(0,0)) }, Ident { value: \"fk\", quote_style: None, span: Span(Location(0,0)..Location(0,0)) }]), op: Eq, right: CompoundIdentifier([Ident { value: \"d\", quote_style: None, span: Span(Location(0,0)..Location(0,0)) }, Ident { value: \"id\", quote_style: None, span: Span(Location(0,0)..Location(0,0)) }]) }))"
+  },
+  {
+   "i": 308,
+   "source": "test/sql/join/left_outer/unique_left_join.test",
+   "sql": "SELECT COUNT(*) - COUNT(d.label) FROM big_fact f LEFT JOIN big_dim d ON f.fk = d.id",
+   "setup": [
+    "CREATE TABLE dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "INSERT INTO dim VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+    "CREATE TABLE fact(fk INTEGER, value INTEGER)",
+    "INSERT INTO fact VALUES (1, 10), (2, 20), (3, 30), (1, 40), (2, 50)",
+    "INSERT INTO fact VALUES (99, 999)",
+    "CREATE TABLE empty_dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "CREATE TABLE dim_unique(id INTEGER UNIQUE, label TEXT)",
+    "INSERT INTO dim_unique VALUES (1, 'x'), (2, 'y')",
+    "CREATE TABLE dim_multi(a INTEGER, b INTEGER, label TEXT, PRIMARY KEY(a, b))",
+    "INSERT INTO dim_multi VALUES (1, 1, 'aa'), (2, 2, 'bb')",
+    "CREATE TABLE fact_multi(fa INTEGER, fb INTEGER, value INTEGER)",
+    "INSERT INTO fact_multi VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30)",
+    "CREATE TABLE big_dim AS SELECT range::INTEGER AS id, 'val_' || range AS label FROM range(1, 10001)",
+    "CREATE TABLE big_fact AS SELECT (range % 15000)::INTEGER AS fk FROM range(1, 50001)",
+    "CREATE TABLE dim_wide(id INTEGER PRIMARY KEY, a TEXT, b TEXT, c INTEGER)",
+    "INSERT INTO dim_wide VALUES (1, 'x', 'y', 100), (2, 'p', 'q', 200)",
+    "INSERT INTO fact VALUES (NULL, 777)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 309,
+   "source": "test/sql/join/left_outer/unique_left_join.test",
+   "sql": "SELECT SUM(f.fk) FROM big_fact f LEFT JOIN big_dim d ON f.fk = d.id",
+   "setup": [
+    "CREATE TABLE dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "INSERT INTO dim VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+    "CREATE TABLE fact(fk INTEGER, value INTEGER)",
+    "INSERT INTO fact VALUES (1, 10), (2, 20), (3, 30), (1, 40), (2, 50)",
+    "INSERT INTO fact VALUES (99, 999)",
+    "CREATE TABLE empty_dim(id INTEGER PRIMARY KEY, label TEXT)",
+    "CREATE TABLE dim_unique(id INTEGER UNIQUE, label TEXT)",
+    "INSERT INTO dim_unique VALUES (1, 'x'), (2, 'y')",
+    "CREATE TABLE dim_multi(a INTEGER, b INTEGER, label TEXT, PRIMARY KEY(a, b))",
+    "INSERT INTO dim_multi VALUES (1, 1, 'aa'), (2, 2, 'bb')",
+    "CREATE TABLE fact_multi(fa INTEGER, fb INTEGER, value INTEGER)",
+    "INSERT INTO fact_multi VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30)",
+    "CREATE TABLE big_dim AS SELECT range::INTEGER AS id, 'val_' || range AS label FROM range(1, 10001)",
+    "CREATE TABLE big_fact AS SELECT (range % 15000)::INTEGER AS fk FROM range(1, 50001)",
+    "CREATE TABLE dim_wide(id INTEGER PRIMARY KEY, a TEXT, b TEXT, c INTEGER)",
+    "INSERT INTO dim_wide VALUES (1, 'x', 'y', 100), (2, 'p', 'q', 200)",
+    "INSERT INTO fact VALUES (NULL, 777)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: aggregate function sum (no aggregation in v0)"
+  },
+  {
+   "i": 310,
+   "source": "test/sql/function/string/hex.test",
+   "sql": "SELECT to_hex(columns('^(.*int|varchar|bignum)$')) FROM test_all_types();",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 311,
+   "source": "test/sql/function/string/hex.test",
+   "sql": "SELECT to_binary(columns('^(.*int|varchar|bignum)$')) FROM test_all_types();",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 312,
+   "source": "test/sql/function/string/like_unicode.test",
+   "sql": "SELECT count(*) FROM t0 WHERE t0.c0 LIKE '_';",
+   "setup": [
+    "CREATE TABLE t0 (c0 VARCHAR);",
+    "INSERT INTO t0 VALUES ('\u7968'),('t'),('%'),('\u4e11'),('\u591a'), ('\ud83e\udd86');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function count argument form"
+  },
+  {
+   "i": 313,
+   "source": "test/sql/function/string/like_unicode.test",
+   "sql": "SELECT count(*) FROM t0 WHERE t0.c0 ILIKE '_';",
+   "setup": [
+    "CREATE TABLE t0 (c0 VARCHAR);",
+    "INSERT INTO t0 VALUES ('\u7968'),('t'),('%'),('\u4e11'),('\u591a'), ('\ud83e\udd86');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function count argument form"
+  },
+  {
+   "i": 314,
+   "source": "test/sql/function/string/regex_extract.test",
+   "sql": "SELECT regexp_extract(s, p, 0) FROM test",
+   "setup": [
+    "CREATE TABLE test (s VARCHAR, p VARCHAR, i INT)",
+    "INSERT INTO test VALUES\n    ('foobarbaz', 'b..', 0),\n    ('foobarbaz', 'b..', 1),\n    ('foobarbaz', '(b..)(b..)', 0),\n    ('foobarbaz', '(b..)(b..)', 1),\n    ('foobarbaz', '(b..)(b..)', 2)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: non-constant regex pattern (compiled at prepare in v0)"
+  },
+  {
+   "i": 320,
+   "source": "test/sql/function/string/regex_operators.test",
+   "sql": "SELECT * ~ 'b' FROM regex_columns_partial",
+   "setup": [
+    "CREATE TABLE regex_columns_partial(abc INTEGER, bcd INTEGER, def INTEGER);",
+    "INSERT INTO regex_columns_partial VALUES (1, 2, 3);"
+   ],
+   "outcome": "unsupported",
+   "detail": "parse error: sql parser error: Expected: end of statement, found: ~"
+  },
+  {
+   "i": 329,
+   "source": "test/sql/function/string/regex_search.test",
+   "sql": "SELECT regexp_matches(c0, CAST(NULL AS STRING)) from t0;",
+   "setup": [
+    "CREATE TABLE t0 as FROM VALUES('asdf') t(c0);"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: non-constant regex pattern (compiled at prepare in v0)"
+  },
+  {
+   "i": 331,
+   "source": "test/sql/function/string/regex_search.test",
+   "sql": "SELECT regexp_matches(s, p) FROM regex",
+   "setup": [
+    "CREATE TABLE t0 as FROM VALUES('asdf') t(c0);",
+    "CREATE TABLE regex(s STRING, p STRING)",
+    "INSERT INTO regex VALUES ('asdf', 'sd'), ('asdf', '^sd'), (NULL, '^sd'), ('asdf', NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: non-constant regex pattern (compiled at prepare in v0)"
+  },
+  {
+   "i": 352,
+   "source": "test/sql/function/string/test_bar.test",
+   "sql": "select bar(x * x, 0, 100) from range(0, 11) t(x)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 418,
+   "source": "test/sql/function/string/test_ilike_embedded_null.test",
+   "sql": "SELECT a ILIKE b FROM t",
+   "setup": [
+    "CREATE TABLE t(a VARCHAR, b VARCHAR);",
+    "INSERT INTO t VALUES ('goo'||chr(0)||'se', 'goo'||chr(0)||'se'), ('\ud83e\udd86','\ud83e\udd86');"
+   ],
+   "outcome": "unsupported",
+   "detail": "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
+  },
+  {
+   "i": 419,
+   "source": "test/sql/function/string/test_ilike_embedded_null.test",
+   "sql": "SELECT a ILIKE b FROM ascii_only",
+   "setup": [
+    "CREATE TABLE t(a VARCHAR, b VARCHAR);",
+    "INSERT INTO t VALUES ('goo'||chr(0)||'se', 'goo'||chr(0)||'se'), ('\ud83e\udd86','\ud83e\udd86');",
+    "CREATE TABLE ascii_only(a VARCHAR, b VARCHAR);",
+    "INSERT INTO ascii_only VALUES ('goo' || chr(0) || 'se', 'goo' || chr(0) || 'se');"
+   ],
+   "outcome": "unsupported",
+   "detail": "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
+  },
+  {
+   "i": 484,
+   "source": "test/sql/function/string/test_prefix.test",
+   "sql": "SELECT COUNT(*) FROM t0 WHERE prefix(t0.c0, '');",
+   "setup": [
+    "CREATE TABLE t0(c0 VARCHAR)",
+    "INSERT INTO t0 VALUES ('a'), ('b'), ('d')"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 485,
+   "source": "test/sql/function/string/test_prefix.test",
+   "sql": "SELECT COUNT(*) FROM t0 WHERE prefix(t0.c0, '');",
+   "setup": [
+    "CREATE TABLE t0(c0 VARCHAR)",
+    "INSERT INTO t0 VALUES ('a'), ('b'), ('d')",
+    "INSERT INTO t0 VALUES (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 492,
+   "source": "test/sql/function/string/test_reverse.test",
+   "sql": "select REVERSE(a) FROM strings",
+   "setup": [
+    "CREATE TABLE strings(a STRING, b STRING)",
+    "INSERT INTO strings VALUES ('Hello', 'World'), ('HuLlD', NULL), ('Mot\u00f6rHead','R\u00c4cks'), ('', NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function reverse (grapheme-cluster semantics \u2014 measured UAX-29 incl. regional-indicator pairing \u2014 not modeled in v0)"
+  },
+  {
+   "i": 493,
+   "source": "test/sql/function/string/test_reverse.test",
+   "sql": "select REVERSE(b) FROM strings",
+   "setup": [
+    "CREATE TABLE strings(a STRING, b STRING)",
+    "INSERT INTO strings VALUES ('Hello', 'World'), ('HuLlD', NULL), ('Mot\u00f6rHead','R\u00c4cks'), ('', NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function reverse (grapheme-cluster semantics \u2014 measured UAX-29 incl. regional-indicator pairing \u2014 not modeled in v0)"
+  },
+  {
+   "i": 494,
+   "source": "test/sql/function/string/test_reverse.test",
+   "sql": "select REVERSE(a) FROM strings WHERE b IS NOT NULL",
+   "setup": [
+    "CREATE TABLE strings(a STRING, b STRING)",
+    "INSERT INTO strings VALUES ('Hello', 'World'), ('HuLlD', NULL), ('Mot\u00f6rHead','R\u00c4cks'), ('', NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function reverse (grapheme-cluster semantics \u2014 measured UAX-29 incl. regional-indicator pairing \u2014 not modeled in v0)"
+  },
+  {
+   "i": 496,
+   "source": "test/sql/function/string/test_similar_to.test",
+   "sql": "SELECT s FROM strings WHERE 'aba' SIMILAR TO p",
+   "setup": [
+    "CREATE TABLE strings (s STRING, p STRING);",
+    "INSERT INTO strings VALUES('aaa', 'a[a-z]a'), ('abab', 'ab.*'), ('aaa', 'a[a-z]a'), ('aaa', '.*b.*');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: non-constant regex pattern (compiled at prepare in v0)"
+  },
+  {
+   "i": 497,
+   "source": "test/sql/function/string/test_similar_to.test",
+   "sql": "SELECT s FROM strings WHERE s SIMILAR TO p",
+   "setup": [
+    "CREATE TABLE strings (s STRING, p STRING);",
+    "INSERT INTO strings VALUES('aaa', 'a[a-z]a'), ('abab', 'ab.*'), ('aaa', 'a[a-z]a'), ('aaa', '.*b.*');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: non-constant regex pattern (compiled at prepare in v0)"
+  },
+  {
+   "i": 498,
+   "source": "test/sql/function/string/test_similar_to.test",
+   "sql": "SELECT s FROM strings WHERE s NOT SIMILAR TO p",
+   "setup": [
+    "CREATE TABLE strings (s STRING, p STRING);",
+    "INSERT INTO strings VALUES('aaa', 'a[a-z]a'), ('abab', 'ab.*'), ('aaa', 'a[a-z]a'), ('aaa', '.*b.*');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: non-constant regex pattern (compiled at prepare in v0)"
+  },
+  {
+   "i": 598,
+   "source": "test/sql/function/string/test_url_encode.test",
+   "sql": "SELECT COUNT(*) from range(1000) t(n) WHERE url_decode(url_encode(chr(n::INT))) = chr(n::INT)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 608,
+   "source": "test/sql/function/numeric/test_geomean.test",
+   "sql": "SELECT geomean(x) FROM numbers",
+   "setup": [
+    "CREATE TABLE numbers(x DOUBLE)",
+    "INSERT INTO numbers VALUES (NULL), (1), (2)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: aggregate function geomean (no aggregation in v0)"
+  },
+  {
+   "i": 609,
+   "source": "test/sql/function/numeric/test_geomean.test",
+   "sql": "SELECT geomean(x::integer) FROM numbers",
+   "setup": [
+    "CREATE TABLE numbers(x DOUBLE)",
+    "INSERT INTO numbers VALUES (NULL), (1), (2)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: aggregate function geomean (no aggregation in v0)"
+  },
+  {
+   "i": 613,
+   "source": "test/sql/function/numeric/test_nextafter.test",
+   "sql": "select nextafter(a, 0::FLOAT) from test",
+   "setup": [
+    "create table test (a FLOAT)",
+    "INSERT INTO test VALUES (10),(20),(30),(40)"
+   ],
+   "outcome": "unsupported",
+   "detail": "f32 base-table column (engine is f64-only)"
+  },
+  {
+   "i": 614,
+   "source": "test/sql/function/numeric/test_nextafter.test",
+   "sql": "select nextafter(a, b) from test_twoc",
+   "setup": [
+    "create table test (a FLOAT)",
+    "INSERT INTO test VALUES (10),(20),(30),(40)",
+    "create table test_twoc (a FLOAT, b FLOAT)",
+    "INSERT INTO test_twoc VALUES (10,1),(20,21),(30,1),(40,41)"
+   ],
+   "outcome": "unsupported",
+   "detail": "f32 base-table column (engine is f64-only)"
+  },
+  {
+   "i": 635,
+   "source": "test/sql/function/generic/cast_to_type.test",
+   "sql": "SELECT try_trim_null(COLUMNS(*)) FROM tbl",
+   "setup": [
+    "CREATE OR REPLACE MACRO try_trim_null(s) AS CASE WHEN typeof(s)=='VARCHAR' THEN cast_to_type(nullif(trim(s::VARCHAR), ''), s) ELSE s END;",
+    "create table tbl(i int, v varchar);",
+    "insert into tbl values (42, ' hello '), (100, '   ');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function try_trim_null (not in the v0 catalogue)"
+  },
+  {
+   "i": 636,
+   "source": "test/sql/function/generic/constant_or_null.test",
+   "sql": "SELECT constant_or_null(1, case when i%2=0 then null else i end) from range(5) tbl(i)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 637,
+   "source": "test/sql/function/generic/constant_or_null.test",
+   "sql": "SELECT constant_or_null(1, case when i%2=0 then null else i end, case when i%2=1 then null else i end) from range(5) tbl(i)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 638,
+   "source": "test/sql/function/generic/replace_type.test",
+   "sql": "SELECT try_trim_null(COLUMNS(*)) FROM tbl",
+   "setup": [
+    "CREATE OR REPLACE MACRO try_trim_null(s) AS CASE WHEN typeof(s)=='VARCHAR' THEN replace_type(nullif(trim(s::VARCHAR), ''), NULL::VARCHAR, s) ELSE s END;",
+    "create table tbl(i int, v varchar);",
+    "insert into tbl values (42, ' hello '), (100, '   ');"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function try_trim_null (not in the v0 catalogue)"
+  },
+  {
+   "i": 639,
+   "source": "test/sql/function/generic/table_func_varargs.test",
+   "sql": "SELECT * FROM repeat_row(1, 2, 'foo', num_rows=3)",
+   "setup": [],
+   "outcome": "unsupported",
+   "detail": "FROM is a table function; no base tables, never v0"
+  },
+  {
+   "i": 640,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 10 BETWEEN 10 AND 20",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 641,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 9 BETWEEN 10 AND 20",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 642,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 10 BETWEEN NULL AND 20",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 643,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 30 BETWEEN NULL AND 20",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 644,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 10 BETWEEN 10 AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 645,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 9 BETWEEN 10 AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 646,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE NULL BETWEEN 10 AND 20",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 647,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE NULL BETWEEN NULL AND 20",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 648,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE NULL BETWEEN 10 AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 649,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE NULL BETWEEN NULL AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 650,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN 1 AND 2",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 651,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN NULL AND 2",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 652,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN 2 AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 653,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE NULL BETWEEN -1 AND +1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 654,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 0 BETWEEN -1 AND +1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 655,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN i-1 AND i+1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 656,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN i-1 AND 10",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 657,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN NULL AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 658,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN i-1 AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 659,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN 0 AND i+1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 660,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE i BETWEEN NULL AND i+1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 661,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 1 BETWEEN i-1 AND i+1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 662,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE NULL BETWEEN i-1 AND i+1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 663,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE NULL BETWEEN i-1 AND NULL",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 664,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 1 BETWEEN i-1 AND 100",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 665,
+   "source": "test/sql/function/generic/test_between.test",
+   "sql": "SELECT COUNT(*) FROM integers WHERE 1 BETWEEN 0 AND i-1",
+   "setup": [
+    "CREATE TABLE integers(i INTEGER);",
+    "INSERT INTO integers VALUES (1), (2), (3), (NULL)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: function COUNT argument form"
+  },
+  {
+   "i": 677,
+   "source": "test/sql/function/operator/test_in_empty_table.test",
+   "sql": "SELECT * FROM test WHERE a IN ('a', 'b', 'c', 'd', 'e')",
+   "setup": [
+    "CREATE OR REPLACE TABLE test (a INTEGER)"
+   ],
+   "outcome": "unsupported",
+   "detail": "unsupported: BETWEEN/IN mixing non-numeric string literals with numbers (exec-time conversion)"
+  }
+ ]
+}

@@ -1,0 +1,114 @@
+{
+ "topic": "FROM-position colon alias (prefix alias in FROM)",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT * FROM b : a",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "Corpus verbatim. Parses; output column names are the table's own columns, alias does not appear in output."
+  },
+  {
+   "q": "SELECT * FROM \"b\" : a",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "Corpus verbatim. Quoted alias on the left works identically."
+  },
+  {
+   "q": "SELECT i FROM b : a",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "Corpus verbatim."
+  },
+  {
+   "q": "SELECT b.i FROM b : a",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "Corpus verbatim. Alias qualifies columns — proves LEFT side is the alias."
+  },
+  {
+   "q": "SELECT a.i FROM b : a",
+   "result": "BinderException: Binder Error: Referenced table \"a\" not found!\\nCandidate tables: \"b\"\\n\\nLINE 1: SELECT a.i FROM b : a\\n               ^",
+   "note": "Original table name is HIDDEN, exactly like AS aliasing. Candidate list names the alias."
+  },
+  {
+   "q": "SELECT * FROM b:a",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "No-space variant parses the same. 'b :a' and 'b: a' also both return COLS ['i']; ROWS [(42,)] — whitespace around ':' is irrelevant."
+  },
+  {
+   "q": "SELECT x.i, y.j FROM x : a, y : c",
+   "result": "COLS ['i', 'j']; ROWS [(42, 42)]",
+   "note": "Two comma-joined colon aliases work; each alias qualifies its table. 'SELECT * FROM x : a, y : c' gives same COLS/ROWS."
+  },
+  {
+   "q": "SELECT * FROM x : a JOIN y : c ON x.i = y.j",
+   "result": "COLS ['i', 'j']; ROWS [(42, 42)]",
+   "note": "Colon alias legal on both sides of explicit JOIN; aliases usable in ON."
+  },
+  {
+   "q": "SELECT * FROM z : main.a",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "Right side may be schema-qualified."
+  },
+  {
+   "q": "SELECT * FROM u(q) : a",
+   "result": "ParserException: Parser Error: syntax error at or near \":\"\\n\\nLINE 1: SELECT * FROM u(q) : a\\n                           ^",
+   "note": "Column-list on the LEFT (alias) side is a parse error."
+  },
+  {
+   "q": "SELECT * FROM u : a(q)",
+   "result": "CatalogException: Catalog Error: Table Function with name a does not exist!\\nDid you mean \"range\"?\\n\\nLINE 1: SELECT * FROM u : a(q)\\n                          ^",
+   "note": "Parens on the RIGHT are parsed as a table-FUNCTION call, not a column-alias list. No column-list support in colon form at all."
+  },
+  {
+   "q": "SELECT i FROM b : a WHERE b.i = 42",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "Alias usable in WHERE. Converse 'SELECT i FROM b : a WHERE a.i = 42' raises BinderException: Referenced table \"a\" not found! Candidate tables: \"b\"."
+  },
+  {
+   "q": "SELECT * FROM \"select\" : a",
+   "result": "COLS ['i']; ROWS [(42,)]",
+   "note": "Quoted keyword alias fine. Unquoted 'SELECT * FROM select : a' is ParserException: syntax error at or near \"select\"."
+  },
+  {
+   "q": "SELECT * FROM a : b",
+   "result": "CatalogException: Catalog Error: Table with name b does not exist!\\nDid you mean \"duckdb_types\"?\\n\\nLINE 1: SELECT * FROM a : b\\n                          ^",
+   "note": "DIRECTION PROOF: right side is resolved as the table (b does not exist -> error), left side is the alias. There is no reversed 'table : alias' reading."
+  },
+  {
+   "q": "SELECT * FROM s : (SELECT 1)",
+   "result": "COLS ['1']; ROWS [(1,)]",
+   "note": "Prefix alias on a parenthesized subquery parses and binds; 'SELECT s.x FROM s : (SELECT 1 AS x)' returns COLS ['x']; ROWS [(1,)]."
+  },
+  {
+   "q": "SELECT * FROM b : a AS d",
+   "result": "ParserException: Parser Error: syntax error at or near \"AS\"\\n\\nLINE 1: SELECT * FROM b : a AS d\\n                            ^",
+   "note": "Cannot combine prefix and postfix alias. Bare 'b : a d' also ParserException at \"d\". Chained 'b : c : a' also ParserException at second \":\"."
+  },
+  {
+   "q": "SELECT * FROM main.b : a",
+   "result": "ParserException: Parser Error: syntax error at or near \":\"\\n\\nLINE 1: SELECT * FROM main.b : a\\n                             ^",
+   "note": "Alias side must be a single (possibly quoted) identifier — no qualification."
+  },
+  {
+   "q": "SELECT c.j FROM c : a",
+   "result": "BinderException: Binder Error: Table \"c\" does not have a column named \"j\"\\n\\nCandidate bindings: : \"i\"\\n\\nLINE 1: SELECT c.j FROM c : a\\n               ^",
+   "note": "Alias shadows a real table of the same name: c binds to a's columns ('SELECT c.i FROM c : a' -> [(42,)]), not to real table c."
+  },
+  {
+   "q": "SELECT x.j FROM x : a, x : c",
+   "result": "COLS ['j']; ROWS [(42,)]",
+   "note": "Duplicate aliases are NOT rejected (matches AS-form: 'SELECT x.i FROM a AS x, c AS x' also succeeds). Qualified ref resolves by column-name lookup across same-named bindings."
+  },
+  {
+   "q": "SELECT * FROM r : range(3)",
+   "result": "COLS ['range']; ROWS [(0,), (1,), (2,)]",
+   "note": "Right side may be a table function; prefix alias applies to it."
+  }
+ ],
+ "surprises": [
+  "Direction is alias-FIRST: 'FROM b : a' means alias b for table a (left=alias, right=table). Proven both ways: a.i errors with candidate tables \"b\", and 'FROM a : b' errors 'Table with name b does not exist'.",
+  "'FROM u : a(q)' does not mean column-list — the parens make the right side a table-FUNCTION reference (CatalogException 'Table Function with name a does not exist'). The colon form has no column-alias-list syntax at all.",
+  "Prefix alias works on subqueries ('s : (SELECT 1)') and real table functions ('r : range(3)'), not just base tables — broader than the corpus suggests.",
+  "Duplicate colon aliases in one FROM are accepted without error, same laxity as duplicate AS aliases; qualified refs resolve by column search across the same-named bindings.",
+  "Cannot mix with postfix alias ('b : a AS d' and 'b : a d' are parse errors) and cannot chain ('b : c : a' parse error)."
+ ],
+ "summary": "DuckDB 1.5.5's FROM-position colon is a PREFIX alias: 'FROM <alias> : <table-ref>' is semantically identical to 'FROM <table-ref> AS <alias>' — the left identifier is the alias, the right side is the thing being aliased, and the original table name is hidden from qualification exactly as with AS. Whitespace around the colon is irrelevant (b:a, b :a, b: a, b : a all identical), and the form composes normally with comma joins, explicit JOIN...ON, WHERE, and schema-qualified tables (z : main.a). The alias side must be a single bare or quoted identifier: no schema qualifier, no column list (u(q) : a is a parse error), no unquoted keywords, no combining with a postfix alias, no chaining. The aliased side may be a base table, a schema-qualified table, a table function (r : range(3)), or a parenthesized subquery (s : (SELECT 1)); parens after a right-side identifier always mean table-function call, never a column-alias list. For a compiler: rewrite 'x : T' to 'T AS x' — every probed behavior (shadowing, duplicate-alias laxity, binder errors) matches the AS form exactly."
+}

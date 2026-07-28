@@ -66,6 +66,7 @@ pub fn frontend(
     sql: &str,
     this_name: &str,
     in_cols: &[Col],
+    opaque: &[(usize, String)],
     statics: &[StaticTable],
 ) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>, Vec<super::ir::ReSpec>), PrepareError> {
     // GenericDialect, not DuckDbDialect: measured as a strict superset for
@@ -126,7 +127,7 @@ pub fn frontend(
         return Err(unsup("GROUP BY / HAVING / aggregation"));
     }
 
-    let (binder, joins, leftover_where) = bind_from(select, this_name, in_cols, statics)?;
+    let (binder, joins, leftover_where) = bind_from(select, this_name, in_cols, opaque, statics)?;
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
@@ -241,6 +242,7 @@ fn bind_from<'a>(
     select: &sqlparser::ast::Select,
     this_name: &str,
     in_cols: &'a [Col],
+    opaque: &'a [(usize, String)],
     statics: &'a [StaticTable],
 ) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
     let Some((table, comma_rels)) = select.from.split_first() else {
@@ -275,11 +277,18 @@ fn bind_from<'a>(
                 // the pinned bind error; old names are fully shadowed
                 // (wave-5 pins).
                 Some(a) => {
-                    if a.columns.len() > in_cols.len() {
+                    if a.columns.len() > in_cols.len() + opaque.len() {
                         return Err(PrepareError::Bind(format!(
                             "table \"{n}\" has {} columns available but {} columns specified",
-                            in_cols.len(),
+                            in_cols.len() + opaque.len(),
                             a.columns.len()
+                        )));
+                    }
+                    // The rename is positional over the FULL model; a name
+                    // landing on an opaque column has no lane to rename.
+                    if let Some((_, oname)) = opaque.iter().find(|(p, _)| *p < a.columns.len()) {
+                        return Err(unsup(format!(
+                            "row column '{oname}' has a non-scalar type"
                         )));
                     }
                     let mut renamed = in_cols.to_vec();
@@ -301,6 +310,7 @@ fn bind_from<'a>(
             Some(v) => std::borrow::Cow::Owned(v),
             None => std::borrow::Cow::Borrowed(in_cols),
         },
+        opaque,
         joins: Vec::new(),
         select_aliases: select
             .projection
@@ -860,6 +870,12 @@ struct Binder<'a> {
     /// prefix rename, old names fully shadowed). Positions never change,
     /// so the lowered program still marshals by the ORIGINAL field names.
     in_cols: std::borrow::Cow<'a, [Col]>,
+    /// Row-model columns whose types have NO scalar lane, at their MODEL
+    /// positions. They exist for resolution — referencing one, or a star
+    /// expansion that keeps one, is the named unsupported error — but an
+    /// EXCLUDEd / name-filtered / REPLACEd one costs nothing, so a query
+    /// that never touches the column serves.
+    opaque: &'a [(usize, String)],
     joins: Vec<ScopeJoin<'a>>,
     /// All SELECT-list aliases (wave-5 pins: DuckDB's lateral aliases — a
     /// later item or WHERE may reference an earlier alias; the REAL column
@@ -944,6 +960,26 @@ fn dedup_output_names(cols: &mut [Col]) {
             n += 1;
         }
     }
+}
+
+/// A star-expansion lane: a real scalar lane, or an opaque row-model
+/// column (kept under its ORIGINAL name so EXCLUDE / REPLACE / name
+/// filters can still remove it). One surviving to the output is the
+/// named unsupported error — deferred so COLUMNS('re') can filter first.
+enum StarLane {
+    Real(SExpr),
+    Opaque(String),
+}
+
+fn finalize_star(cols: Vec<(String, StarLane)>) -> Result<Vec<(String, SExpr)>, PrepareError> {
+    cols.into_iter()
+        .map(|(n, l)| match l {
+            StarLane::Real(e) => Ok((n, e)),
+            StarLane::Opaque(orig) => Err(unsup(format!(
+                "row column '{orig}' has a non-scalar type"
+            ))),
+        })
+        .collect()
 }
 
 /// Bind-time LIKE over column NAMES for star filters: `%`/`_` over
@@ -1241,6 +1277,14 @@ impl Binder<'_> {
         qualifier: Option<&str>,
         opts: &sqlparser::ast::WildcardAdditionalOptions,
     ) -> Result<Vec<(String, SExpr)>, PrepareError> {
+        finalize_star(self.expand_star_lanes(qualifier, opts)?)
+    }
+
+    fn expand_star_lanes(
+        &self,
+        qualifier: Option<&str>,
+        opts: &sqlparser::ast::WildcardAdditionalOptions,
+    ) -> Result<Vec<(String, StarLane)>, PrepareError> {
         use sqlparser::ast::{ExcludeSelectItem, RenameSelectItem};
         if opts.opt_except.is_some() {
             return Err(unsup("SELECT * EXCEPT"));
@@ -1313,20 +1357,33 @@ impl Binder<'_> {
 
         // (origin table, output name, lane) — the origin drives qualified
         // EXCLUDE; it is dropped on return.
-        let mut cols: Vec<(String, String, SExpr)> = Vec::new();
+        let mut cols: Vec<(String, String, StarLane)> = Vec::new();
         let mut matched = false;
         if qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&self.this_name)) {
             matched = true;
-            for (i, c) in self.in_cols.iter().enumerate() {
-                cols.push((
-                    self.this_name.clone(),
-                    c.name.clone(),
-                    SExpr {
-                        kind: SKind::Col(i as u32),
-                        ty: c.ty.ty,
-                        nullable: c.ty.nullable,
-                    },
-                ));
+            // Interleave scalar lanes and opaque columns back into MODEL
+            // order (opaque positions are model positions; scalars fill
+            // the rest in order).
+            let mut scalars = self.in_cols.iter().enumerate();
+            for pos in 0..self.in_cols.len() + self.opaque.len() {
+                if let Some((_, oname)) = self.opaque.iter().find(|(p, _)| *p == pos) {
+                    cols.push((
+                        self.this_name.clone(),
+                        oname.clone(),
+                        StarLane::Opaque(oname.clone()),
+                    ));
+                } else {
+                    let (i, c) = scalars.next().expect("scalar count matches positions");
+                    cols.push((
+                        self.this_name.clone(),
+                        c.name.clone(),
+                        StarLane::Real(SExpr {
+                            kind: SKind::Col(i as u32),
+                            ty: c.ty.ty,
+                            nullable: c.ty.nullable,
+                        }),
+                    ));
+                }
             }
         }
         // Joined tables expand in FROM order, columns in DECLARED order
@@ -1341,7 +1398,11 @@ impl Binder<'_> {
             for (ci, c) in sj.table.cols.iter().enumerate() {
                 let ci = ci as u32;
                 if let Some(pos) = sj.val_cols.iter().position(|&v| v == ci) {
-                    cols.push((sj.name.clone(), c.name.clone(), self.static_lane(j, pos)));
+                    cols.push((
+                        sj.name.clone(),
+                        c.name.clone(),
+                        StarLane::Real(self.static_lane(j, pos)),
+                    ));
                 } else {
                     let kp = sj
                         .key_cols
@@ -1349,7 +1410,11 @@ impl Binder<'_> {
                         .position(|&k| k == ci)
                         .expect("column is key or value");
                     if !sj.using {
-                        cols.push((sj.name.clone(), c.name.clone(), self.key_lane(j, kp)));
+                        cols.push((
+                            sj.name.clone(),
+                            c.name.clone(),
+                            StarLane::Real(self.key_lane(j, kp)),
+                        ));
                     } else if exclude.iter().any(|(t, e)| {
                         t.as_deref()
                             .is_some_and(|t| t.eq_ignore_ascii_case(&sj.name))
@@ -1422,7 +1487,7 @@ impl Binder<'_> {
                             "column \"{name}\" in REPLACE list not found in FROM clause"
                         )))
                     }
-                    [pos] => cols[pos].2 = fold(self.expr(&it.expr)?),
+                    [pos] => cols[pos].2 = StarLane::Real(fold(self.expr(&it.expr)?)),
                     _ => {
                         return Err(PrepareError::Bind(format!(
                             "ambiguous reference to column name \"{name}\" in REPLACE list"
@@ -1484,7 +1549,7 @@ impl Binder<'_> {
                 )));
             }
         }
-        Ok(cols.into_iter().map(|(_, n, e)| (n, e)).collect())
+        Ok(cols.into_iter().map(|(_, n, l)| (n, l)).collect())
     }
 
     /// Bind an expression that must have a definite type on its own — a bare
@@ -1890,9 +1955,10 @@ impl Binder<'_> {
         let FunctionArguments::List(list) = &f.args else {
             return Ok(None);
         };
-        let all = self.expand_star(None, &sqlparser::ast::WildcardAdditionalOptions::default())?;
+        let all =
+            self.expand_star_lanes(None, &sqlparser::ast::WildcardAdditionalOptions::default())?;
         match &list.args[..] {
-            [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)] => Ok(Some(all)),
+            [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)] => Ok(Some(finalize_star(all)?)),
             [FunctionArg::Unnamed(FunctionArgExpr::Expr(p))] => {
                 let Some(bp) = self.expr_or_null(p)? else {
                     return Err(PrepareError::Bind(
@@ -1903,14 +1969,16 @@ impl Binder<'_> {
                     return Err(unsup("COLUMNS with a non-constant or list argument"));
                 };
                 let rx = self.name_regex(&pat, false)?;
-                let cols: Vec<(String, SExpr)> =
+                // Filter BEFORE the opaque check: a regex that never
+                // matches an opaque column must not reject the query.
+                let cols: Vec<(String, StarLane)> =
                     all.into_iter().filter(|(n, _)| rx.is_match(n)).collect();
                 if cols.is_empty() {
                     return Err(PrepareError::Bind(format!(
                         "No matching columns found that match regex \"{pat}\""
                     )));
                 }
-                Ok(Some(cols))
+                Ok(Some(finalize_star(cols)?))
             }
             _ => Err(unsup("COLUMNS argument form")),
         }
@@ -2211,6 +2279,15 @@ impl Binder<'_> {
                 });
             }
         }
+        if let Some((_, n)) = self
+            .opaque
+            .iter()
+            .find(|(_, n)| n.eq_ignore_ascii_case(name))
+        {
+            // The column exists in the model — it just has no lane. Same
+            // precedence as a real-column hit (beats lateral aliases).
+            return Err(unsup(format!("row column '{n}' has a non-scalar type")));
+        }
         for (j, sj) in self.joins.iter().enumerate() {
             for pos in 0..sj.val_cols.len() {
                 if sj.table.cols[sj.val_cols[pos] as usize]
@@ -2281,6 +2358,13 @@ impl Binder<'_> {
                     }
                     hit = Some((i, c));
                 }
+            }
+            if let Some((_, n)) = self
+                .opaque
+                .iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case(name))
+            {
+                return Err(unsup(format!("row column '{n}' has a non-scalar type")));
             }
             let (i, c) = hit.ok_or_else(|| {
                 PrepareError::Bind(format!("column '{name}' does not exist in '{table}'"))

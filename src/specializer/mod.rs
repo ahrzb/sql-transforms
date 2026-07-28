@@ -54,7 +54,23 @@ pub fn prepare(
     in_cols: &[ir::Col],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
-    let (rel, joins, out_cols, regexes) = frontend::frontend(sql, this_name, in_cols, statics)?;
+    prepare_opaque(sql, this_name, in_cols, &[], statics)
+}
+
+/// [`prepare`] plus the row-model columns whose types have no scalar lane
+/// (model position + name). They reject on REFERENCE — including via a
+/// surviving `*` expansion — instead of blocking construction, so an
+/// unreferenced timestamp/list field in a wide model doesn't stop a
+/// scalar-only query.
+pub fn prepare_opaque(
+    sql: &str,
+    this_name: &str,
+    in_cols: &[ir::Col],
+    opaque: &[(usize, String)],
+    statics: &[plan::StaticTable],
+) -> Result<Prepared, PrepareError> {
+    let (rel, joins, out_cols, regexes) =
+        frontend::frontend(sql, this_name, in_cols, opaque, statics)?;
     let mut program = lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run")?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).

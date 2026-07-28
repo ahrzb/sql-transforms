@@ -1,0 +1,191 @@
+{
+ "topic": "nested multi-part struct field access resolution",
+ "duckdb_version": "1.5.5",
+ "pins": [
+  {
+   "q": "SELECT t.t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [(42,)]",
+   "note": "Corpus case 1 verbatim (schema t, table t, col t ROW(t INTEGER) = {'t':42}). Binds schema.table.column.field."
+  },
+  {
+   "q": "SELECT t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': 42},)]",
+   "note": "case 1: bare column."
+  },
+  {
+   "q": "SELECT t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': 42},)]",
+   "note": "case 1: table.column — NOT column.field (would be 42). Table binding beats column binding for part 1."
+  },
+  {
+   "q": "SELECT t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': 42},)]",
+   "note": "case 1: schema.table.column — NOT table.column.field (would be 42). Longest qualifier prefix wins."
+  },
+  {
+   "q": "SELECT t.t.t.t.t FROM t.t;",
+   "result": "BinderException: Binder Error: Cannot extract field 't' from expression \"struct_extract(t, 't')\" because it is not a struct, union, map, or json",
+   "note": "case 1, one part beyond. Error expression shows schema.table.column consumed 3 parts, then field extract on INTEGER fails."
+  },
+  {
+   "q": "SELECT t.t.t.t.t.t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [(42,)]",
+   "note": "Corpus case 2 verbatim (schema t, table t, col t = 5-level struct). schema.table.column + 5 field extracts."
+  },
+  {
+   "q": "SELECT t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': {'t': {'t': {'t': {'t': 42}}}}},)]",
+   "note": "case 2 prefix len 2: table.column = full column value."
+  },
+  {
+   "q": "SELECT t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': {'t': {'t': {'t': {'t': 42}}}}},)]",
+   "note": "case 2 prefix len 3: schema.table.column = STILL the full column (no field extract). Same value as len 2 — non-monotone depth."
+  },
+  {
+   "q": "SELECT t.t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': {'t': {'t': {'t': 42}}}},)]",
+   "note": "case 2 len 4: schema.table.column + 1 field."
+  },
+  {
+   "q": "SELECT t.t.t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': {'t': {'t': 42}}},)]",
+   "note": "case 2 len 5: + 2 fields."
+  },
+  {
+   "q": "SELECT t.t.t.t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': {'t': 42}},)]",
+   "note": "case 2 len 6: + 3 fields."
+  },
+  {
+   "q": "SELECT t.t.t.t.t.t.t FROM t.t;",
+   "result": "COLS ['t'] ROWS [({'t': 42},)]",
+   "note": "case 2 len 7: + 4 fields."
+  },
+  {
+   "q": "SELECT t.t.t.t.t.t.t.t.t FROM t.t;",
+   "result": "BinderException: Binder Error: Cannot extract field 't' from expression \"struct_extract(struct_extract(struct_extract(struct_extract(struct_extract(t, 't'), 't'), 't'), 't'), 't')\" because it is not a struct, union, map, or json",
+   "note": "case 2, 9 parts: 6th field extract on INTEGER fails."
+  },
+  {
+   "q": "SELECT u.v.u.x FROM u",
+   "result": "COLS ['x'] ROWS [(7,)] (setup: CREATE TABLE u(v STRUCT(u STRUCT(x INTEGER))); INSERT INTO u VALUES ({'u': {'x': 7}}))",
+   "note": "First u = table, second u = field. Same identifier binds differently by position."
+  },
+  {
+   "q": "SELECT w.w FROM w",
+   "result": "COLS ['w'] ROWS [({'w': 9},)] (setup: CREATE TABLE w(w STRUCT(w INTEGER)); INSERT INTO w VALUES ({'w': 9}))",
+   "note": "table.column, not column.field (which would give 9). Table beats column."
+  },
+  {
+   "q": "SELECT w.w.w FROM w",
+   "result": "COLS ['w'] ROWS [(9,)]",
+   "note": "table.column.field."
+  },
+  {
+   "q": "SELECT w.w.w.w FROM w",
+   "result": "BinderException: Binder Error: Cannot extract field 'w' from expression \"struct_extract(w, 'w')\" because it is not a struct, union, map, or json",
+   "note": "no schema w, so max qualifier is table.column; extra part fails."
+  },
+  {
+   "q": "SELECT amb.amb.amb FROM amb",
+   "result": "COLS ['amb'] ROWS [({'amb': 5},)] (setup: CREATE TABLE amb(amb STRUCT(amb STRUCT(amb INTEGER))); INSERT ({'amb': {'amb': 5}}))",
+   "note": "table.column.field, not column.field.field (would be 5). SELECT amb.amb.amb.amb gives 5; amb.amb gives full struct."
+  },
+  {
+   "q": "SELECT r.s FROM r",
+   "result": "COLS ['s'] ROWS [(3,)] (setup: CREATE TABLE r(r STRUCT(s INTEGER)); INSERT ({'s': 3}))",
+   "note": "BACKTRACKING PROOF: table r has no column s, so binder falls back to column(r).field(s). Greedy parse failure is not fatal."
+  },
+  {
+   "q": "SELECT t.t.x FROM t.t",
+   "result": "COLS ['x'] ROWS [(7,)] (setup: CREATE TABLE t.t AS SELECT {'x': 99} AS t, 7 AS x)",
+   "note": "Both parses valid: schema.table.column(x)=7 wins over table.column(t).field(x)=99. Longest prefix wins when it binds."
+  },
+  {
+   "q": "SELECT t.t.t.x FROM t.t",
+   "result": "COLS ['x'] ROWS [(99,)] (same setup)",
+   "note": "schema.table.column(t).field(x)."
+  },
+  {
+   "q": "SELECT s3.s3.y FROM s3.s3",
+   "result": "COLS ['y'] ROWS [(5,)] (setup: CREATE SCHEMA s3; CREATE TABLE s3.s3 AS SELECT {'y': 5} AS s3)",
+   "note": "BACKTRACKING at schema level: schema(s3).table(s3).column(y) fails (no column y) -> falls back to table(s3).column(s3).field(y)."
+  },
+  {
+   "q": "SELECT z.t.t FROM t.t AS z",
+   "result": "COLS ['t'] ROWS [(42,)]",
+   "note": "case 1 setup: alias.column.field works."
+  },
+  {
+   "q": "SELECT t.t.t.t FROM t.t AS z",
+   "result": "BinderException: Binder Error: Cannot extract field 't' from expression \"struct_extract(t, 't')\" because it is not a struct, union, map, or json",
+   "note": "Alias hides table AND schema.table names; t reinterpreted as column, t.t.t.t = column + 3 fields, fails at 2nd."
+  },
+  {
+   "q": "SELECT t.t FROM t.t AS z",
+   "result": "COLS ['t'] ROWS [(42,)]",
+   "note": "Under alias z, t.t = column.field = 42 (was table.column = struct without alias). Aliasing CHANGES the value of the same expression."
+  },
+  {
+   "q": "SELECT q.q FROM t2 AS q",
+   "result": "BinderException: Binder Error: Table \"q\" does not have a column named \"q\"\\n\\nCandidate bindings: : \"t2\"\\n\\nLINE 1: SELECT q.q FROM t2 AS q\\n               ^",
+   "note": "setup: CREATE TABLE t2(t2 STRUCT(t2 INTEGER)). Alias matches part 1, no column q, no fallback available."
+  },
+  {
+   "q": "SELECT t.t.t2 FROM t2 AS t",
+   "result": "BinderException: Binder Error: Referenced table \"t.t\" not found!\\nCandidate tables: \"t\"\\n\\nLINE 1: SELECT t.t.t2 FROM t2 AS t",
+   "note": "3+ part reference where no interpretation binds: error is about the 2-part qualifier prefix, phrased as table-not-found."
+  },
+  {
+   "q": "SELECT t['t'] FROM t.t",
+   "result": "COLS [\"t['t']\"] ROWS [(42,)]",
+   "note": "case 1: bracket = struct_extract, same value as dot; part 1 binds as column here. Output column NAME is the full expression text, unlike dot (last part)."
+  },
+  {
+   "q": "SELECT t.t['t'] FROM t.t",
+   "result": "COLS [\"t.t['t']\"] ROWS [(42,)]",
+   "note": "Mixed: t.t = table.column, then bracket field extract."
+  },
+  {
+   "q": "SELECT t.t['t']['t'] FROM t.t",
+   "result": "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(INTEGER, STRING_LITERAL)'. You might need to add explicit type casts.\\n\\tCandidate functions:\\n\\tarray_extract(T[], BIGINT) -> T\\n\\tarray_extract(VARCHAR, BIGINT) -> VARCHAR\\n\\tarray_extract(STRUCT, VARCHAR) -> ANY\\n\\tarray_extract(STRUCT, BIGINT) -> ANY",
+   "note": "Bracket on non-struct errors as array_extract overload failure — a DIFFERENT error shape than dot access on non-struct."
+  },
+  {
+   "q": "SELECT T.t.t.t FROM t.t / SELECT t.T.t.t / SELECT t.t.T.t / SELECT t.t.t.T",
+   "result": "All return ROWS [(42,)]. COLS: ['t'],['t'],['t'],['T'] respectively.",
+   "note": "Every position case-insensitive (schema, table, column, field). Output column name preserves the case AS WRITTEN of the last part."
+  },
+  {
+   "q": "SELECT t.t.t.\"T\" FROM t.t",
+   "result": "COLS ['T'] ROWS [(42,)]",
+   "note": "Quoting does NOT force case-sensitive field lookup: quoted \"T\" still matches field 't'. Same for bracket: SELECT t['T'] -> 42."
+  },
+  {
+   "q": "SELECT t.t.t.nope FROM t.t",
+   "result": "BinderException: Binder Error: Could not find key \"nope\" in struct\\n\\nCandidate Entries: \"t\"",
+   "note": "Nonexistent field error shape. Same message for SELECT t.nope FROM t.t."
+  },
+  {
+   "q": "SELECT (t.t).t FROM t.t",
+   "result": "COLS ['(t.t).t'] ROWS [(42,)]",
+   "note": "(expr).field is supported; inside parens t.t still resolves as table.column. Also (t).t -> 42, COLS ['(t).t']."
+  },
+  {
+   "q": "SELECT s.f FROM ns",
+   "result": "COLS ['f'] ROWS [(None,), (1,)] (setup: CREATE TABLE ns(s STRUCT(f INTEGER)); INSERT INTO ns VALUES (NULL), ({'f': 1}))",
+   "note": "Field access on a NULL struct value yields NULL, no error."
+  }
+ ],
+ "surprises": [
+  "Resolution is longest-prefix-first WITH BACKTRACKING, not greedy-and-commit: SELECT r.s FROM r (table r, column r STRUCT(s INT)) returns 3 by falling back to column(r).field(s) after table(r).column(s) fails; same fallback at schema level (s3.s3.y). Docs' 'longest match' phrasing understates this.",
+  "In case 1, SELECT t.t, SELECT t.t.t and SELECT t both return the identical struct {'t': 42} — prefix length 1/2/3 all denote the bare column (column / table.column / schema.table.column); field extraction only starts at part 4. Value-vs-length is non-monotone.",
+  "Quoted field names are STILL case-insensitive: t.t.t.\"T\" and t['T'] both match field 't'. Quoting does not opt into case sensitivity for struct keys.",
+  "Aliasing a table changes the VALUE of an otherwise-identical expression: SELECT t.t FROM t.t returns the struct, SELECT t.t FROM t.t AS z returns 42 (column.field). An alias hides both the table name and the schema.table path.",
+  "Output column naming: a pure dot chain is named after the last part verbatim (case as written, e.g. 'T'); any bracket or paren form is named by the full expression text (\"t['t']\", '(t.t).t').",
+  "Dot vs bracket fail differently on non-structs: dot gives 'Cannot extract field ... not a struct, union, map, or json'; bracket gives an array_extract overload-resolution error.",
+  "Unresolvable multi-part prefix errors as 'Referenced table \"t.t\" not found!' (it reports the failed qualifier, not the whole chain)."
+ ],
+ "summary": "DuckDB 1.5.5 resolves an n-part dotted reference a1.a2...an by trying qualifier prefixes longest-first — (schema.table).column, then (table-or-alias).column, then bare column — committing to the longest prefix that actually binds, with the remaining parts becoming left-to-right struct_extract calls; if a longer parse fails to bind (e.g. the part after the matched table is not a column), it backtracks to the next shorter interpretation instead of erroring. Consequently both corpus cases resolve as schema.table.column plus trailing field extractions (case 1: t.t.t.t = 42 via 1 field extract; case 2: eight t's = 42 via 5 field extracts), and prefixes of length 1, 2 and 3 all denote the same bare column. A table alias removes both the table name and the schema.table path from scope, which can silently change what an expression like t.t evaluates to. All name matching — schema, table, column, and struct field, even quoted or bracketed — is case-insensitive. NULL struct values propagate NULL through field access. Error shapes: too-deep chains raise BinderException 'Cannot extract field ... because it is not a struct, union, map, or json' (dot) or an array_extract overload error (bracket); missing fields raise 'Could not find key \"...\" in struct / Candidate Entries: ...'; unresolvable qualifiers raise 'Referenced table \"...\" not found!'."
+}
