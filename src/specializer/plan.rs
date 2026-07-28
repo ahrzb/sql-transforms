@@ -31,6 +31,49 @@ pub struct StaticTable {
     pub cols: Vec<Col>,
 }
 
+/// A struct row column flattened to scalar LANES at build time (TASK-56,
+/// pins-waveA/struct-star.json + struct-nested.json): the binder resolves
+/// `col.field...` paths and `col.*` expansion to the leaf lanes; no struct
+/// value exists at runtime. Leaf lanes sit in `in_cols` AFTER every plain
+/// scalar column, named by their dotted path.
+#[derive(Debug, Clone)]
+pub struct StructCol {
+    /// Position among the row MODEL's columns (star order, rename guard).
+    pub pos: usize,
+    pub name: String,
+    pub fields: Vec<StructField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub node: StructNode,
+}
+
+#[derive(Debug, Clone)]
+pub enum StructNode {
+    /// Scalar leaf: an input lane (index into `in_cols`).
+    Leaf(u32),
+    /// Unmappable leaf type — exists for resolution, rejects on reference.
+    Opaque,
+    Nested(Vec<StructField>),
+}
+
+impl StructCol {
+    pub fn leaf_count(&self) -> usize {
+        fn walk(fs: &[StructField]) -> usize {
+            fs.iter()
+                .map(|f| match &f.node {
+                    StructNode::Leaf(_) => 1,
+                    StructNode::Opaque => 0,
+                    StructNode::Nested(n) => walk(n),
+                })
+                .sum()
+        }
+        walk(&self.fields)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JoinKind {
     Inner,

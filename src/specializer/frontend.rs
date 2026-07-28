@@ -67,6 +67,7 @@ pub fn frontend(
     this_name: &str,
     in_cols: &[Col],
     opaque: &[(usize, String)],
+    structs: &[super::plan::StructCol],
     statics: &[StaticTable],
 ) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>, Vec<super::ir::ReSpec>), PrepareError> {
     // GenericDialect, not DuckDbDialect: measured as a strict superset for
@@ -129,7 +130,8 @@ pub fn frontend(
         return Err(unsup("GROUP BY / HAVING / aggregation"));
     }
 
-    let (binder, joins, leftover_where) = bind_from(select, this_name, in_cols, opaque, statics)?;
+    let (binder, joins, leftover_where) =
+        bind_from(select, this_name, in_cols, opaque, structs, statics)?;
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
@@ -204,7 +206,10 @@ pub fn frontend(
         };
     }
     if exprs.is_empty() {
-        return Err(PrepareError::Bind("SELECT list is empty".to_string()));
+        // Pinned text: an EXCLUDE-all star that empties the projection.
+        return Err(PrepareError::Bind(
+            "SELECT list is empty after resolving * expressions!".to_string(),
+        ));
     }
     dedup_output_names(&mut out_cols);
 
@@ -245,8 +250,12 @@ fn bind_from<'a>(
     this_name: &str,
     in_cols: &'a [Col],
     opaque: &'a [(usize, String)],
+    structs: &'a [super::plan::StructCol],
     statics: &'a [StaticTable],
 ) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
+    // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
+    // follow and are addressable ONLY through their struct paths.
+    let n_plain = in_cols.len() - structs.iter().map(|s| s.leaf_count()).sum::<usize>();
     let Some((table, comma_rels)) = select.from.split_first() else {
         return Err(unsup("FROM-less SELECT"));
     };
@@ -279,18 +288,25 @@ fn bind_from<'a>(
                 // the pinned bind error; old names are fully shadowed
                 // (wave-5 pins).
                 Some(a) => {
-                    if a.columns.len() > in_cols.len() + opaque.len() {
+                    let model_cols = n_plain + opaque.len() + structs.len();
+                    if a.columns.len() > model_cols {
                         return Err(PrepareError::Bind(format!(
-                            "table \"{n}\" has {} columns available but {} columns specified",
-                            in_cols.len() + opaque.len(),
+                            "table \"{n}\" has {model_cols} columns available but {} columns specified",
                             a.columns.len()
                         )));
                     }
                     // The rename is positional over the FULL model; a name
-                    // landing on an opaque column has no lane to rename.
+                    // landing on an opaque/struct column has no plain lane
+                    // to rename.
                     if let Some((_, oname)) = opaque.iter().find(|(p, _)| *p < a.columns.len()) {
                         return Err(unsup(format!(
                             "row column '{oname}' has a non-scalar type"
+                        )));
+                    }
+                    if let Some(sc) = structs.iter().find(|s| s.pos < a.columns.len()) {
+                        return Err(unsup(format!(
+                            "column-list alias over struct column '{}'",
+                            sc.name
                         )));
                     }
                     let mut renamed = in_cols.to_vec();
@@ -312,7 +328,9 @@ fn bind_from<'a>(
             Some(v) => std::borrow::Cow::Owned(v),
             None => std::borrow::Cow::Borrowed(in_cols),
         },
+        n_plain,
         opaque,
+        structs,
         joins: Vec::new(),
         select_aliases: select
             .projection
@@ -872,12 +890,18 @@ struct Binder<'a> {
     /// prefix rename, old names fully shadowed). Positions never change,
     /// so the lowered program still marshals by the ORIGINAL field names.
     in_cols: std::borrow::Cow<'a, [Col]>,
+    /// Plain scalar columns are `in_cols[..n_plain]`; struct leaf lanes
+    /// follow, addressable only through struct paths — never by bare name
+    /// or star expansion.
+    n_plain: usize,
     /// Row-model columns whose types have NO scalar lane, at their MODEL
     /// positions. They exist for resolution — referencing one, or a star
     /// expansion that keeps one, is the named unsupported error — but an
     /// EXCLUDEd / name-filtered / REPLACEd one costs nothing, so a query
     /// that never touches the column serves.
     opaque: &'a [(usize, String)],
+    /// Struct row columns flattened to leaf lanes (TASK-56).
+    structs: &'a [super::plan::StructCol],
     joins: Vec<ScopeJoin<'a>>,
     /// All SELECT-list aliases (wave-5 pins: DuckDB's lateral aliases — a
     /// later item or WHERE may reference an earlier alias; the REAL column
@@ -1363,16 +1387,24 @@ impl Binder<'_> {
         let mut matched = false;
         if qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&self.this_name)) {
             matched = true;
-            // Interleave scalar lanes and opaque columns back into MODEL
-            // order (opaque positions are model positions; scalars fill
-            // the rest in order).
-            let mut scalars = self.in_cols.iter().enumerate();
-            for pos in 0..self.in_cols.len() + self.opaque.len() {
+            // Interleave scalar lanes with opaque and struct columns back
+            // into MODEL order (their positions are model positions;
+            // scalars fill the rest in order). Struct columns expand like
+            // opaque ones under a TABLE star: DuckDB would output the
+            // whole struct — non-scalar unless EXCLUDEd/REPLACEd.
+            let mut scalars = self.in_cols[..self.n_plain].iter().enumerate();
+            for pos in 0..self.n_plain + self.opaque.len() + self.structs.len() {
                 if let Some((_, oname)) = self.opaque.iter().find(|(p, _)| *p == pos) {
                     cols.push((
                         self.this_name.clone(),
                         oname.clone(),
                         StarLane::Opaque(oname.clone()),
+                    ));
+                } else if let Some(sc) = self.structs.iter().find(|s| s.pos == pos) {
+                    cols.push((
+                        self.this_name.clone(),
+                        sc.name.clone(),
+                        StarLane::Opaque(sc.name.clone()),
                     ));
                 } else {
                     let (i, c) = scalars.next().expect("scalar count matches positions");
@@ -1428,6 +1460,38 @@ impl Binder<'_> {
                         return Err(unsup(
                             "EXCLUDE of a USING-merged column (DuckDB unmerges it)",
                         ));
+                    }
+                }
+            }
+        }
+        // Struct-star `a.*` — checked AFTER tables: a table alias with the
+        // same name WINS over the struct column (measured, silently).
+        if !matched {
+            if let Some(q) = qualifier {
+                if let Some(sc) = self.structs.iter().find(|s| s.name.eq_ignore_ascii_case(q)) {
+                    matched = true;
+                    if filter.is_some() || opts.opt_rename.is_some() {
+                        return Err(unsup(
+                            "struct star with a name filter or RENAME (unpinned)",
+                        ));
+                    }
+                    use super::plan::StructNode;
+                    for f in &sc.fields {
+                        let lane = match &f.node {
+                            StructNode::Leaf(l) => {
+                                let c = &self.in_cols[*l as usize];
+                                StarLane::Real(SExpr {
+                                    kind: SKind::Col(*l),
+                                    ty: c.ty.ty,
+                                    nullable: c.ty.nullable,
+                                })
+                            }
+                            // Nested-struct / unmappable fields expand as
+                            // non-scalar entries: EXCLUDE removes them,
+                            // surviving is the named error.
+                            _ => StarLane::Opaque(f.name.clone()),
+                        };
+                        cols.push((sc.name.clone(), f.name.clone(), lane));
                     }
                 }
             }
@@ -1489,7 +1553,13 @@ impl Binder<'_> {
                             "column \"{name}\" in REPLACE list not found in FROM clause"
                         )))
                     }
-                    [pos] => cols[pos].2 = StarLane::Real(fold(self.expr(&it.expr)?)),
+                    [pos] => {
+                        cols[pos].2 = StarLane::Real(fold(self.expr(&it.expr)?));
+                        // The output name takes the REPLACE alias's exact
+                        // case (measured on struct-star; the match itself
+                        // stays case-insensitive).
+                        cols[pos].1 = it.column_name.value.clone();
+                    }
                     _ => {
                         return Err(PrepareError::Bind(format!(
                             "ambiguous reference to column name \"{name}\" in REPLACE list"
@@ -1574,13 +1644,7 @@ impl Binder<'_> {
     fn bind(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {
         match e {
             SqlExpr::Identifier(ident) => self.column(&ident.value),
-            SqlExpr::CompoundIdentifier(parts) => match parts.as_slice() {
-                [table, col] => self.qualified(&table.value, &col.value),
-                // `schema.table.col` — the schema part is registry-noise
-                // (TASK-55; structs would be a 4th meaning, not modeled).
-                [_, table, col] => self.qualified(&table.value, &col.value),
-                _ => Err(unsup("nested field access")),
-            },
+            SqlExpr::CompoundIdentifier(parts) => self.compound(parts),
             SqlExpr::Nested(inner) => self.expr(inner),
             SqlExpr::Value(v) => literal(&v.value),
             // DuckDB puts << >> & | in ONE flat left-associative tier;
@@ -2283,12 +2347,212 @@ impl Binder<'_> {
         }
     }
 
+    /// n-part dotted reference (pins-waveA/struct-nested.json): qualifier
+    /// prefixes longest-first — (schema.table).column, then
+    /// (table|alias).column, then bare column — committing to the longest
+    /// prefix whose COLUMN part binds, remaining parts becoming struct
+    /// field extractions. A failed column bind BACKTRACKS to the next
+    /// shorter interpretation; a failed FIELD walk after a bound column is
+    /// a hard error (measured). The schema part follows the registry-noise
+    /// rule (known-limitations §5).
+    fn compound(&self, parts: &[sqlparser::ast::Ident]) -> Result<SExpr, PrepareError> {
+        let not_a_struct = |field: &str, col: &str| {
+            PrepareError::Bind(format!(
+                "Cannot extract field '{field}' from expression \"{col}\" \
+                 because it is not a struct"
+            ))
+        };
+        // R1: schema.(this|join).column[.fields...]
+        if parts.len() >= 3 {
+            if parts[1].value.eq_ignore_ascii_case(&self.this_name) {
+                if let Some(r) = self.this_col_with_fields(&parts[2].value, &parts[3..]) {
+                    return r;
+                }
+            } else if self
+                .joins
+                .iter()
+                .any(|sj| sj.name.eq_ignore_ascii_case(&parts[1].value))
+            {
+                let col = self.qualified(&parts[1].value, &parts[2].value);
+                return match (col, parts.len()) {
+                    (Ok(c), 3) => Ok(c),
+                    // Statics have no struct columns.
+                    (Ok(_), _) => Err(not_a_struct(&parts[3].value, &parts[2].value)),
+                    (Err(e), _) => Err(e),
+                };
+            }
+        }
+        // R2: this.column[.fields...] / join.column
+        if parts.len() >= 2 {
+            if parts[0].value.eq_ignore_ascii_case(&self.this_name) {
+                if let Some(r) = self.this_col_with_fields(&parts[1].value, &parts[2..]) {
+                    return r;
+                }
+            } else if self
+                .joins
+                .iter()
+                .any(|sj| sj.name.eq_ignore_ascii_case(&parts[0].value))
+            {
+                let col = self.qualified(&parts[0].value, &parts[1].value);
+                return match (col, parts.len()) {
+                    (Ok(c), 2) => Ok(c),
+                    (Ok(_), _) => Err(not_a_struct(&parts[2].value, &parts[1].value)),
+                    (Err(e), _) => Err(e),
+                };
+            }
+        }
+        // R3: bare column[.fields...]
+        if parts.len() >= 2 {
+            if let Some(r) = self.bare_col_with_fields(&parts[0].value, &parts[1..]) {
+                return r;
+            }
+            // Nothing bound anywhere: reproduce the pre-struct error
+            // shapes (unknown table / column does not exist).
+            return match parts.len() {
+                2 => self.qualified(&parts[0].value, &parts[1].value),
+                3 => self.qualified(&parts[1].value, &parts[2].value),
+                _ => Err(PrepareError::Bind(format!(
+                    "Referenced table \"{}.{}\" not found",
+                    parts[0].value, parts[1].value
+                ))),
+            };
+        }
+        self.column(&parts[0].value)
+    }
+
+    /// The driving table's column `name` followed by struct-field `fields`.
+    /// `None` = no such column (the caller backtracks); `Some(Err)` = the
+    /// column bound but the reference is an error (hard, per pins).
+    fn this_col_with_fields(
+        &self,
+        name: &str,
+        fields: &[sqlparser::ast::Ident],
+    ) -> Option<Result<SExpr, PrepareError>> {
+        for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
+            if c.name.eq_ignore_ascii_case(name) {
+                if let Some(f) = fields.first() {
+                    return Some(Err(PrepareError::Bind(format!(
+                        "Cannot extract field '{}' from expression \"{}\" \
+                         because it is not a struct",
+                        f.value, c.name
+                    ))));
+                }
+                return Some(Ok(SExpr {
+                    kind: SKind::Col(i as u32),
+                    ty: c.ty.ty,
+                    nullable: c.ty.nullable,
+                }));
+            }
+        }
+        if let Some((_, n)) = self
+            .opaque
+            .iter()
+            .find(|(_, n)| n.eq_ignore_ascii_case(name))
+        {
+            return Some(Err(unsup(format!(
+                "row column '{n}' has a non-scalar type"
+            ))));
+        }
+        let sc = self
+            .structs
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name))?;
+        Some(self.walk_struct(sc, fields))
+    }
+
+    /// A bare first part: the driving table's columns (incl. structs and
+    /// opaque) — static value columns are scalars, so `x.field` never
+    /// binds through them silently (a scalar hit with fields is the hard
+    /// not-a-struct error, matching DuckDB).
+    fn bare_col_with_fields(
+        &self,
+        name: &str,
+        fields: &[sqlparser::ast::Ident],
+    ) -> Option<Result<SExpr, PrepareError>> {
+        if let Some(r) = self.this_col_with_fields(name, fields) {
+            return Some(r);
+        }
+        for sj in &self.joins {
+            for &ci in sj.val_cols.iter().chain(sj.key_cols.iter()) {
+                if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
+                    return Some(Err(PrepareError::Bind(format!(
+                        "Cannot extract field '{}' from expression \"{name}\" \
+                         because it is not a struct",
+                        fields[0].value
+                    ))));
+                }
+            }
+        }
+        None
+    }
+
+    /// Walk `fields` down a struct column to a scalar leaf lane. Empty
+    /// fields = the whole struct (non-scalar output, named rejection).
+    fn walk_struct(
+        &self,
+        sc: &super::plan::StructCol,
+        fields: &[sqlparser::ast::Ident],
+    ) -> Result<SExpr, PrepareError> {
+        use super::plan::StructNode;
+        if fields.is_empty() {
+            return Err(unsup(format!(
+                "struct column '{}' as a whole value (project its fields instead)",
+                sc.name
+            )));
+        }
+        let mut cur = &sc.fields;
+        for (k, f) in fields.iter().enumerate() {
+            // Field matching is case-insensitive even when quoted
+            // (measured — quoting does not opt into case sensitivity).
+            let Some(sf) = cur.iter().find(|x| x.name.eq_ignore_ascii_case(&f.value)) else {
+                return Err(PrepareError::Bind(format!(
+                    "Could not find key \"{}\" in struct",
+                    f.value
+                )));
+            };
+            match &sf.node {
+                StructNode::Leaf(lane) => {
+                    if k + 1 == fields.len() {
+                        let c = &self.in_cols[*lane as usize];
+                        return Ok(SExpr {
+                            kind: SKind::Col(*lane),
+                            ty: c.ty.ty,
+                            nullable: c.ty.nullable,
+                        });
+                    }
+                    return Err(PrepareError::Bind(format!(
+                        "Cannot extract field '{}' from expression \"{}\" \
+                         because it is not a struct",
+                        fields[k + 1].value, sf.name
+                    )));
+                }
+                StructNode::Opaque => {
+                    return Err(unsup(format!(
+                        "struct field '{}' has a non-scalar type",
+                        sf.name
+                    )));
+                }
+                StructNode::Nested(n) => {
+                    if k + 1 == fields.len() {
+                        return Err(unsup(format!(
+                            "struct field '{}' as a whole value (project its \
+                             scalar leaves instead)",
+                            sf.name
+                        )));
+                    }
+                    cur = n;
+                }
+            }
+        }
+        unreachable!("loop returns on the last field")
+    }
+
     /// Case-insensitive, spelling-preserving bare-column bind over the whole
     /// scope: the dynamic table plus every joined static table's value
     /// columns (DuckDB semantics; ambiguity is an error).
     fn column(&self, name: &str) -> Result<SExpr, PrepareError> {
         let mut hits: Vec<SExpr> = Vec::new();
-        for (i, c) in self.in_cols.iter().enumerate() {
+        for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
             if c.name.eq_ignore_ascii_case(name) {
                 hits.push(SExpr {
                     kind: SKind::Col(i as u32),
@@ -2305,6 +2569,17 @@ impl Binder<'_> {
             // The column exists in the model — it just has no lane. Same
             // precedence as a real-column hit (beats lateral aliases).
             return Err(unsup(format!("row column '{n}' has a non-scalar type")));
+        }
+        if let Some(sc) = self
+            .structs
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name))
+        {
+            // A bare struct reference is its WHOLE value — non-scalar out.
+            return Err(unsup(format!(
+                "struct column '{}' as a whole value (project its fields instead)",
+                sc.name
+            )));
         }
         for (j, sj) in self.joins.iter().enumerate() {
             for pos in 0..sj.val_cols.len() {
@@ -2369,7 +2644,7 @@ impl Binder<'_> {
     fn qualified(&self, table: &str, name: &str) -> Result<SExpr, PrepareError> {
         if table.eq_ignore_ascii_case(&self.this_name) {
             let mut hit = None;
-            for (i, c) in self.in_cols.iter().enumerate() {
+            for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
                 if c.name.eq_ignore_ascii_case(name) {
                     if hit.is_some() {
                         return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
@@ -2383,6 +2658,16 @@ impl Binder<'_> {
                 .find(|(_, n)| n.eq_ignore_ascii_case(name))
             {
                 return Err(unsup(format!("row column '{n}' has a non-scalar type")));
+            }
+            if let Some(sc) = self
+                .structs
+                .iter()
+                .find(|s| s.name.eq_ignore_ascii_case(name))
+            {
+                return Err(unsup(format!(
+                    "struct column '{}' as a whole value (project its fields instead)",
+                    sc.name
+                )));
             }
             let (i, c) = hit.ok_or_else(|| {
                 PrepareError::Bind(format!("column '{name}' does not exist in '{table}'"))

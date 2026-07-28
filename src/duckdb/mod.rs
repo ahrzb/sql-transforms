@@ -246,7 +246,9 @@ impl Backend {
 /// dropped, per call). The generic path stays available behind
 /// `SPECIALIZER_GENERIC_BOUNDARY` as the measured baseline.
 struct Marshaller {
-    in_names: Vec<Py<PyString>>,
+    /// Ingest path per lane: one segment for a plain column, the dotted
+    /// segments for a struct leaf (None at any level -> NULL lane).
+    in_names: Vec<Vec<Py<PyString>>>,
     out_names: Vec<Py<PyString>>,
     /// Output rows for the SYNTHESIZED model are built by filling pydantic
     /// v2's instance slots directly (`object.__new__` + `object.__setattr__`
@@ -289,7 +291,12 @@ impl Marshaller {
         Ok(Marshaller {
             in_names: in_cols
                 .iter()
-                .map(|c| PyString::intern(py, &c.name).unbind())
+                .map(|c| {
+                    c.name
+                        .split('.')
+                        .map(|seg| PyString::intern(py, seg).unbind())
+                        .collect()
+                })
                 .collect(),
             out_names: out_cols
                 .iter()
@@ -330,21 +337,42 @@ impl Marshaller {
         for row_obj in rows {
             let bound = row_obj.bind(py);
             let dict = bound.cast::<PyDict>().ok();
-            for ((c, name), col) in in_cols.iter().zip(&self.in_names).zip(&mut self.cols) {
-                let attr = match dict {
-                    Some(d) => d.get_item(name.bind(py))?.ok_or_else(|| {
+            for ((c, path), col) in in_cols.iter().zip(&self.in_names).zip(&mut self.cols) {
+                let mut attr = match dict {
+                    Some(d) => d.get_item(path[0].bind(py))?.ok_or_else(|| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{row_table}' is missing attribute '{}'",
                             c.name
                         ))
                     })?,
-                    None => bound.getattr(name.bind(py)).map_err(|e| {
+                    None => bound.getattr(path[0].bind(py)).map_err(|e| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{row_table}' is missing attribute '{}': {e}",
                             c.name
                         ))
                     })?,
                 };
+                // Struct leaf lanes walk the rest of the path; a None at
+                // any level makes every leaf under it NULL.
+                for seg in &path[1..] {
+                    if attr.is_none() {
+                        break;
+                    }
+                    attr = match attr.cast::<PyDict>() {
+                        Ok(d) => d.get_item(seg.bind(py))?.ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err(format!(
+                                "Row for table '{row_table}' is missing attribute '{}'",
+                                c.name
+                            ))
+                        })?,
+                        Err(_) => attr.getattr(seg.bind(py)).map_err(|e| {
+                            pyo3::exceptions::PyValueError::new_err(format!(
+                                "Row for table '{row_table}' is missing attribute '{}': {e}",
+                                c.name
+                            ))
+                        })?,
+                    };
+                }
                 let null = attr.is_none();
                 if null && !c.ty.nullable {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -509,23 +537,78 @@ impl DuckDBInferFn {
         // Unmappable row-column types reject only when REFERENCED (the
         // binder knows them as opaque, star expansion included) — an
         // unreferenced timestamp field must not block a scalar query.
+        // Struct columns (nested pydantic models) flatten to scalar leaf
+        // LANES appended after every plain column (TASK-56); the dotted
+        // lane name doubles as the ingest path (segments are python
+        // identifiers, so '.' is unambiguous).
         let mut in_cols = Vec::new();
         let mut opaque: Vec<(usize, String)> = Vec::new();
+        let mut struct_defs: Vec<(usize, String, bool, Vec<(String, FieldType)>)> = Vec::new();
         for (pos, (name, ft)) in schema::pydantic_model_fields_ordered(py, &model)?
             .into_iter()
             .enumerate()
         {
-            match base_to_ty(&ft.base) {
-                Some(ty) => in_cols.push(Col {
+            match (base_to_ty(&ft.base), ft.base) {
+                (Some(ty), _) => in_cols.push(Col {
                     name,
                     ty: ColTy {
                         ty,
                         nullable: ft.nullable,
                     },
                 }),
-                None => opaque.push((pos, name)),
+                (None, Base::Struct(fields)) => {
+                    struct_defs.push((pos, name, ft.nullable, fields))
+                }
+                (None, _) => opaque.push((pos, name)),
             }
         }
+        fn build_fields(
+            in_cols: &mut Vec<Col>,
+            prefix: &str,
+            fields: &[(String, FieldType)],
+            parent_nullable: bool,
+        ) -> Vec<crate::specializer::plan::StructField> {
+            use crate::specializer::plan::{StructField, StructNode};
+            fields
+                .iter()
+                .map(|(fname, ft)| {
+                    let nullable = parent_nullable || ft.nullable;
+                    let node = if fname.contains('.') {
+                        StructNode::Opaque // would break the path encoding
+                    } else {
+                        match &ft.base {
+                            Base::Struct(nested) => StructNode::Nested(build_fields(
+                                in_cols,
+                                &format!("{prefix}.{fname}"),
+                                nested,
+                                nullable,
+                            )),
+                            b => match base_to_ty(b) {
+                                Some(ty) => {
+                                    in_cols.push(Col {
+                                        name: format!("{prefix}.{fname}"),
+                                        ty: ColTy { ty, nullable },
+                                    });
+                                    StructNode::Leaf((in_cols.len() - 1) as u32)
+                                }
+                                None => StructNode::Opaque,
+                            },
+                        }
+                    };
+                    StructField {
+                        name: fname.clone(),
+                        node,
+                    }
+                })
+                .collect()
+        }
+        let structs: Vec<crate::specializer::plan::StructCol> = struct_defs
+            .into_iter()
+            .map(|(pos, name, nullable, fields)| {
+                let fields = build_fields(&mut in_cols, &name, &fields, nullable);
+                crate::specializer::plan::StructCol { pos, name, fields }
+            })
+            .collect();
 
         // Non-scalar static columns are omitted from the catalog rather than
         // rejected: unreferenced ones cost nothing, referenced ones fail the
@@ -558,7 +641,8 @@ impl DuckDBInferFn {
         }
 
         use super::specializer::PrepareError;
-        let prepared = match prepare_opaque(&sql, &row_table, &in_cols, &opaque, &catalog) {
+        let prepared =
+            match prepare_opaque(&sql, &row_table, &in_cols, &opaque, &structs, &catalog) {
             Ok(p) => p,
             // Unsupported/unparseable SQL might still be a static-tables-only
             // query (static driving table, aggregation, ORDER BY, DuckDB
@@ -787,20 +871,42 @@ impl DuckDBInferFn {
             // cost (adversarial-review finding, 2026-07-26).
             let dict = bound.cast::<PyDict>().ok();
             for (c, col) in in_cols.iter().zip(&mut cols) {
-                let attr = match dict {
-                    Some(d) => d.get_item(c.name.as_str())?.ok_or_else(|| {
+                let mut segs = c.name.split('.');
+                let first = segs.next().expect("split yields at least one");
+                let mut attr = match dict {
+                    Some(d) => d.get_item(first)?.ok_or_else(|| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{}' is missing attribute '{}'",
                             self.row_table, c.name
                         ))
                     })?,
-                    None => bound.getattr(c.name.as_str()).map_err(|e| {
+                    None => bound.getattr(first).map_err(|e| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{}' is missing attribute '{}': {e}",
                             self.row_table, c.name
                         ))
                     })?,
                 };
+                // Struct leaf lanes: walk the dotted path (None -> NULL).
+                for seg in segs {
+                    if attr.is_none() {
+                        break;
+                    }
+                    attr = match attr.cast::<PyDict>() {
+                        Ok(d) => d.get_item(seg)?.ok_or_else(|| {
+                            pyo3::exceptions::PyValueError::new_err(format!(
+                                "Row for table '{}' is missing attribute '{}'",
+                                self.row_table, c.name
+                            ))
+                        })?,
+                        Err(_) => attr.getattr(seg).map_err(|e| {
+                            pyo3::exceptions::PyValueError::new_err(format!(
+                                "Row for table '{}' is missing attribute '{}': {e}",
+                                self.row_table, c.name
+                            ))
+                        })?,
+                    };
+                }
                 let null = attr.is_none();
                 if null && !c.ty.nullable {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(

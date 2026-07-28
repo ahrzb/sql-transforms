@@ -54,23 +54,24 @@ pub fn prepare(
     in_cols: &[ir::Col],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
-    prepare_opaque(sql, this_name, in_cols, &[], statics)
+    prepare_opaque(sql, this_name, in_cols, &[], &[], statics)
 }
 
-/// [`prepare`] plus the row-model columns whose types have no scalar lane
-/// (model position + name). They reject on REFERENCE — including via a
-/// surviving `*` expansion — instead of blocking construction, so an
-/// unreferenced timestamp/list field in a wide model doesn't stop a
-/// scalar-only query.
+/// [`prepare`] plus the row-model columns that have no plain scalar lane:
+/// `opaque` (model position + name — timestamps, lists; reject on
+/// REFERENCE, star expansion included, instead of blocking construction)
+/// and `structs` (flattened to leaf lanes appended after the plain
+/// columns in `in_cols` — see [`plan::StructCol`]).
 pub fn prepare_opaque(
     sql: &str,
     this_name: &str,
     in_cols: &[ir::Col],
     opaque: &[(usize, String)],
+    structs: &[plan::StructCol],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
     let (rel, joins, out_cols, regexes) =
-        frontend::frontend(sql, this_name, in_cols, opaque, statics)?;
+        frontend::frontend(sql, this_name, in_cols, opaque, structs, statics)?;
     let mut program = lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run")?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
