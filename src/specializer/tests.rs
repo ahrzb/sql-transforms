@@ -1724,7 +1724,7 @@ fn opaque_row_columns_reject_only_on_reference() {
     let schema = cols(&[("a", Ty::I64, false), ("s", Ty::Str, true)]);
     let opaque = vec![(1usize, "d".to_string())];
     let prep_o = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[]).map(|p| p.program)
+        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[]).map(|p| p.program)
     };
 
     // Untouched -> serves end to end.
@@ -2008,4 +2008,163 @@ fn columns_star_with_modifiers() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("parse error") || e.contains("unsupported"), "{e}");
+}
+
+fn struct_field(name: &str, node: super::plan::StructNode) -> super::plan::StructField {
+    super::plan::StructField {
+        name: name.to_string(),
+        node,
+    }
+}
+
+#[test]
+fn structs_flatten_to_lanes() {
+    use super::plan::{StructCol, StructNode};
+    // Model: x (i64), a STRUCT(i INT, j INT) nullable — lanes: x, a.i, a.j.
+    let schema = cols(&[
+        ("x", Ty::I64, false),
+        ("a.i", Ty::I64, true),
+        ("a.j", Ty::I64, true),
+    ]);
+    let structs = vec![StructCol {
+        pos: 1,
+        name: "a".to_string(),
+        fields: vec![
+            struct_field("i", StructNode::Leaf(1)),
+            struct_field("j", StructNode::Leaf(2)),
+        ],
+    }];
+    let prep_s = |sql: &str| {
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[]).map(|p| p.program)
+    };
+    let run = |sql: &str| -> Result<Vec<Vec<String>>, String> {
+        let p = prep_s(sql).map_err(|e| e.to_string())?;
+        let f = compile(&p, vec![]).map_err(|e| e.to_string())?;
+        // Rows: (x=9, a={i:1, j:2}), (x=8, a=NULL) -> leaf lanes NULL.
+        run_snapshot(
+            &f,
+            &batch(
+                2,
+                vec![
+                    c_i64(&[Some(9), Some(8)]),
+                    c_i64(&[Some(1), None]),
+                    c_i64(&[Some(2), None]),
+                ],
+            ),
+        )
+        .map_err(|e| e.to_string())
+    };
+
+    // a.* expands in place to bare field names; NULL struct -> NULL fields.
+    let p = prep_s("SELECT a.* FROM __THIS__").unwrap();
+    assert_eq!(
+        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["i", "j"]
+    );
+    assert_eq!(
+        run("SELECT a.* FROM __THIS__").unwrap(),
+        rows(&[&["1", "2"], &["NULL", "NULL"]])
+    );
+    // EXCLUDE case-insensitive even quoted; REPLACE alias case wins and
+    // its expr sees other columns.
+    assert_eq!(
+        run("SELECT a.* EXCLUDE(J) FROM __THIS__").unwrap(),
+        rows(&[&["1"], &["NULL"]])
+    );
+    assert_eq!(
+        run("SELECT a.* EXCLUDE(\"J\") FROM __THIS__").unwrap(),
+        rows(&[&["1"], &["NULL"]])
+    );
+    let p = prep_s("SELECT a.* REPLACE(a.i + 3 AS I) FROM __THIS__").unwrap();
+    assert_eq!(p.out_cols[0].name, "I");
+    assert_eq!(
+        run("SELECT a.* REPLACE(x + a.i AS i) FROM __THIS__").unwrap(),
+        rows(&[&["10", "2"], &["NULL", "NULL"]])
+    );
+    // Field access paths: this.col.field, schema.this.col.field, bare.
+    for sql in [
+        "SELECT a.i FROM __THIS__",
+        "SELECT __THIS__.a.i FROM __THIS__",
+        "SELECT s.__THIS__.a.i FROM __THIS__",
+    ] {
+        assert_eq!(run(sql).unwrap(), rows(&[&["1"], &["NULL"]]), "{sql}");
+    }
+    // Output name = last part as written.
+    let p = prep_s("SELECT a.I FROM __THIS__").unwrap();
+    assert_eq!(p.out_cols[0].name, "I");
+
+    // Whole-struct values, star expansion keeping the struct, and bad
+    // fields are named errors.
+    for (sql, needle) in [
+        ("SELECT a FROM __THIS__", "whole value"),
+        ("SELECT __THIS__.a FROM __THIS__", "whole value"),
+        ("SELECT * FROM __THIS__", "non-scalar"),
+        ("SELECT a.nope FROM __THIS__", "Could not find key"),
+        ("SELECT a.i.j FROM __THIS__", "not a struct"),
+        ("SELECT x.i FROM __THIS__", "not a struct"),
+    ] {
+        let e = prep_s(sql).unwrap_err().to_string();
+        assert!(e.contains(needle), "{sql}: {e}");
+    }
+    // Star still serves once the struct is excluded or replaced.
+    let p = prep_s("SELECT * EXCLUDE (a) FROM __THIS__").unwrap();
+    assert_eq!(
+        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["x"]
+    );
+    let p = prep_s("SELECT * REPLACE (7 AS a) FROM __THIS__").unwrap();
+    assert_eq!(
+        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["x", "a"]
+    );
+    // EXCLUDE-all on the struct star is legal beside another item; alone
+    // it is the pinned empty-list error.
+    assert_eq!(
+        run("SELECT x, a.* EXCLUDE(i, j) FROM __THIS__").unwrap(),
+        rows(&[&["9"], &["8"]])
+    );
+    let e = prep_s("SELECT a.* EXCLUDE(i, j) FROM __THIS__")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("SELECT list is empty"), "{e}");
+}
+
+#[test]
+fn nested_struct_resolution_matches_pins() {
+    use super::plan::{StructCol, StructNode};
+    // Corpus case 2 shape: column t = 5-deep nested struct of t's, table
+    // registered as 't' (FROM t.t suffix-matches). Lane: t.t.t.t.t.t.
+    let schema = cols(&[("t.t.t.t.t.t", Ty::I64, true)]);
+    let nest = |inner: StructNode| vec![struct_field("t", inner)];
+    let structs = vec![StructCol {
+        pos: 0,
+        name: "t".to_string(),
+        fields: nest(StructNode::Nested(nest(StructNode::Nested(nest(
+            StructNode::Nested(nest(StructNode::Nested(nest(StructNode::Leaf(0))))),
+        ))))),
+    }];
+    let prep_s = |sql: &str| {
+        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[]).map(|p| p.program)
+    };
+    // 8 parts = schema.table.column + 5 field extracts (corpus verbatim).
+    let p = prep_s("SELECT t.t.t.t.t.t.t.t FROM t.t").unwrap();
+    assert_eq!(p.out_cols[0].name, "t");
+    let f = compile(&p, vec![]).unwrap();
+    let got = run_snapshot(&f, &batch(1, vec![c_i64(&[Some(42)])])).unwrap();
+    assert_eq!(got, rows(&[&["42"]]));
+    // Shorter prefixes hit the whole-column / partial-struct rejections;
+    // one part beyond is the pinned hard error.
+    for (sql, needle) in [
+        ("SELECT t.t.t FROM t.t", "whole value"),
+        ("SELECT t.t.t.t FROM t.t", "whole value"), // 1 field: still a struct
+        ("SELECT t.t.t.t.t.t.t.t.t FROM t.t", "not a struct"),
+    ] {
+        let e = prep_s(sql).unwrap_err().to_string();
+        assert!(e.contains(needle), "{sql}: {e}");
+    }
+    // Backtracking: under an alias the schema.table path is hidden and t
+    // re-reads as the column (pins: aliasing changes the value) — here
+    // t.t = column.field chain.
+    let p = prep_s("SELECT z.t.t.t.t.t.t FROM t.t AS z").unwrap();
+    assert_eq!(p.out_cols[0].name, "t");
 }
