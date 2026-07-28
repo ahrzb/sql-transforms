@@ -1,4 +1,5 @@
-"""Extract DuckDB's own pow(10, k) table into src/specializer/exec/pow10.rs.
+"""Extract DuckDB's own pow(10, k) table into
+packages/confit/src/specializer/exec/pow10.rs.
 
 round(x, n) / trunc(x, n) scale by the DuckDB binary's std::pow(10, n),
 which is neither correctly rounded (k=23 is one ulp above strtod's 1e23)
@@ -16,7 +17,15 @@ from pathlib import Path
 
 import duckdb
 
-OUT = Path(__file__).parent.parent / "src" / "specializer" / "exec" / "pow10.rs"
+OUT = (
+    Path(__file__).parent.parent
+    / "packages"
+    / "confit"
+    / "src"
+    / "specializer"
+    / "exec"
+    / "pow10.rs"
+)
 
 # Witnesses measured 2026-07-26 (wave-1 pins): the table is NOT float("1e{k}")
 # everywhere, and NOT ucrt pow everywhere — both must hold or extraction broke.

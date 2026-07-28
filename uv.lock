@@ -7,6 +7,29 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "confit",
+    "sql-transform",
+]
+
+[manifest.dependency-groups]
+dev = [
+    { name = "confit", editable = "packages/confit" },
+    { name = "duckdb", specifier = ">=1.5.5" },
+    { name = "ipdb", specifier = ">=0.13.13" },
+    { name = "ipython", specifier = ">=9.2.0" },
+    { name = "maturin", specifier = ">=1.14,<2.0" },
+    { name = "notebook", specifier = ">=7.6.0" },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "pandas", specifier = ">=2.0" },
+    { name = "pre-commit", specifier = ">=4.6.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "ruff", specifier = ">=0.11.7" },
+    { name = "scikit-learn", specifier = ">=1.5" },
+    { name = "sql-transform", editable = "packages/sql-transform" },
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -296,6 +319,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/4c/13/7d740c5849255756bc17888787313b61fd38a0a8304fc4f073dfc46122aa/comm-0.2.3.tar.gz", hash = "sha256:2dc8048c10962d55d7ad693be1e7045d891b7ce8d999c97963a5e3e99c055971", size = 6319, upload-time = "2025-07-25T14:02:04.452Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/97/891a0971e1e4a8c5d2b20bbe0e524dc04548d2307fee33cdeba148fd4fc7/comm-0.2.3-py3-none-any.whl", hash = "sha256:c615d91d75f7f04f095b30d1c1711babd43bdc6419c1be9886a85f2f4e489417", size = 7294, upload-time = "2025-07-25T14:02:02.896Z" },
+]
+
+[[package]]
+name = "confit"
+version = "0.1.0"
+source = { editable = "packages/confit" }
+dependencies = [
+    { name = "pyarrow" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyarrow", specifier = ">=19.0" },
+    { name = "pydantic", specifier = ">=2.0,<3.0" },
 ]
 
 [[package]]
@@ -1655,50 +1693,22 @@ wheels = [
 [[package]]
 name = "sql-transform"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "packages/sql-transform" }
 dependencies = [
+    { name = "confit" },
     { name = "datafusion" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "sqlglot" },
 ]
 
-[package.dev-dependencies]
-dev = [
-    { name = "duckdb" },
-    { name = "ipdb" },
-    { name = "ipython" },
-    { name = "maturin" },
-    { name = "notebook" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "scikit-learn" },
-]
-
 [package.metadata]
 requires-dist = [
+    { name = "confit", editable = "packages/confit" },
     { name = "datafusion", specifier = ">=46.0.0" },
     { name = "pyarrow", specifier = ">=19.0" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
     { name = "sqlglot", specifier = ">=30.12.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "duckdb", specifier = ">=1.5.5" },
-    { name = "ipdb", specifier = ">=0.13.13" },
-    { name = "ipython", specifier = ">=9.2.0" },
-    { name = "maturin", specifier = ">=1.14,<2.0" },
-    { name = "notebook", specifier = ">=7.6.0" },
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "pandas", specifier = ">=2.0" },
-    { name = "pre-commit", specifier = ">=4.6.0" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "ruff", specifier = ">=0.11.7" },
-    { name = "scikit-learn", specifier = ">=1.5" },
 ]
 
 [[package]]

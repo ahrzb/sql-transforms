@@ -1,0 +1,25 @@
+[package]
+name = "confit"
+version.workspace = true
+edition.workspace = true
+description = "Confit — a partial evaluator that specializes SQL against frozen static tables, bit-exact with DuckDB"
+
+[lib]
+name = "_engine"
+# rlib as well as cdylib: the extension module is the wheel's entry point, but
+# sql-transform links the crate to reuse the shared error/type/schema vocabulary.
+crate-type = ["cdylib", "rlib"]
+
+# extension-module is deliberately NOT a default feature: it suppresses the
+# libpython link, which is right for the wheel but breaks `cargo test`.
+# maturin enables it via [tool.maturin] features in pyproject.toml.
+[dependencies]
+cranelift-codegen = "0.126"
+cranelift-frontend = "0.126"
+cranelift-jit = "0.126"
+cranelift-module = "0.126"
+pyo3.workspace = true
+regex = "1"
+unicode-segmentation = "1"
+sqlparser = "0.62"
+target-lexicon = "0.13.5"

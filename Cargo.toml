@@ -1,22 +1,10 @@
-[package]
-name = "sql-transform-interpreter"
+[workspace]
+members = ["packages/confit", "packages/sql-transform"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-name = "_interpreter"
-crate-type = ["cdylib"]
-
-# extension-module is deliberately NOT a default feature: it suppresses the
-# libpython link, which is right for the wheel but breaks `cargo test`.
-# maturin enables it via [tool.maturin] features in pyproject.toml.
-[dependencies]
-cranelift-codegen = "0.126"
-cranelift-frontend = "0.126"
-cranelift-jit = "0.126"
-cranelift-module = "0.126"
+[workspace.dependencies]
 pyo3 = { version = "0.29", features = ["abi3-py314"] }
-regex = "1"
-unicode-segmentation = "1"
-sqlparser = "0.62"
-target-lexicon = "0.13.5"

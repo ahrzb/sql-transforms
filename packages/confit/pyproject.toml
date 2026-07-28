@@ -1,0 +1,26 @@
+[project]
+name = "confit"
+version = "0.1.0"
+description = "SQL specialized once against frozen static tables, served bit-exact with DuckDB"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pyarrow>=19.0",
+    "pydantic>=2.0,<3.0",
+]
+
+[build-system]
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "confit._engine"
+python-source = "."
+exclude = ["**/*_test.py", "tests/**"]
+# See the note in Cargo.toml: extension-module only for the built wheel,
+# so `cargo test` can link libpython.
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+python_files = ["*_test.py", "test_*.py"]
+testpaths = ["tests"]

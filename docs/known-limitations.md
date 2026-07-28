@@ -2,7 +2,7 @@
 
 This is the user-facing contract of the SQL specializer (`DuckDBInferFn`):
 what it refuses to serve, **why**, and what you see when you hit a limit.
-Its executable twin is [`tests/test_known_limitations.py`](../tests/test_known_limitations.py) —
+Its executable twin is [`packages/confit/tests/test_known_limitations.py`](../tests/test_known_limitations.py) —
 every limitation below is asserted there, so lifting one breaks a test and
 forces this document to change with it.
 
@@ -105,7 +105,7 @@ wrong answer or require semantics we can't reproduce exactly:
 | `^` operator | It IS pow in DuckDB, but sqlparser's precedence differs from DuckDB's (`2*x^y` would parse as `(2*x)^y`). Mapping it computes the wrong tree silently. Use `pow()`. |
 | prefix `~`, `#`, `NOT GLOB` | Same class: precedence/parse divergences that would silently mis-associate. `xor()` covers bit-xor; `NOT (x GLOB p)` works. |
 | Regex reject list: `\B`, `\Q…\E`, `(?<name>…)`, duplicate group names, bounds > 1000, stacked quantifiers (`a*+`), `\u` escapes, negated Perl classes inside `[...]` | The RE2↔rust-regex differential battery (98 entries) proved these are the constructs where the engines disagree or DuckDB itself is broken (`\B` crashes DuckDB at runtime on non-ASCII). Everything else is byte-identical. |
-| Fuzzer-found regex rejects (TASK-54): `\1`–`\9` backrefs outside classes, the full stacked-quantifier grammar (`{2}*`, `?*`, `a???` — one lazy `?` is the only legal follower), nested repetition products > 1000, whitespace inside `{m, n}` bounds, class set-op lookalikes (`--`/`&&`/`~~`), non-POSIX `[` inside classes, Perl-class range endpoints (`[a-\d]`), capturing `(x){0}`, anchor-only multi-anchor patterns (DuckDB is SELF-inconsistent on these — its row path disagrees with its own constant fold), `$` anchors in non-final position (`'$hello'` — DuckDB's row path literal-optimizes the leading `$`+literal into a PREFIX match, matching "hello world", while its own constant fold matches normally; found by the standing fuzzer on seed 20260728), and counted repetitions over RE2's PROGRAM-SIZE budget (`(\p{L}){1,500}` is "pattern too large" in DuckDB while rust-regex serves it — rejected via a one-sided weight estimate that always fires before DuckDB's real budget; same seed, pins `pins-waveB/fuzzer-20260728.json`) | The standing differential fuzzer (`tests/test_duckdb_regexp_fuzz.py`, in the normal gate) found these 12 classes in its first 3k-case deep run — each one a silent-wrong-answer risk in rust-regex — then re-swept to ZERO divergences over 40k cases across 8 seeds. Pins: `pins-waveB/fuzzer-task54.json`. |
+| Fuzzer-found regex rejects (TASK-54): `\1`–`\9` backrefs outside classes, the full stacked-quantifier grammar (`{2}*`, `?*`, `a???` — one lazy `?` is the only legal follower), nested repetition products > 1000, whitespace inside `{m, n}` bounds, class set-op lookalikes (`--`/`&&`/`~~`), non-POSIX `[` inside classes, Perl-class range endpoints (`[a-\d]`), capturing `(x){0}`, anchor-only multi-anchor patterns (DuckDB is SELF-inconsistent on these — its row path disagrees with its own constant fold), `$` anchors in non-final position (`'$hello'` — DuckDB's row path literal-optimizes the leading `$`+literal into a PREFIX match, matching "hello world", while its own constant fold matches normally; found by the standing fuzzer on seed 20260728), and counted repetitions over RE2's PROGRAM-SIZE budget (`(\p{L}){1,500}` is "pattern too large" in DuckDB while rust-regex serves it — rejected via a one-sided weight estimate that always fires before DuckDB's real budget; same seed, pins `pins-waveB/fuzzer-20260728.json`) | The standing differential fuzzer (`packages/confit/tests/test_duckdb_regexp_fuzz.py`, in the normal gate) found these 12 classes in its first 3k-case deep run — each one a silent-wrong-answer risk in rust-regex — then re-swept to ZERO divergences over 40k cases across 8 seeds. Pins: `pins-waveB/fuzzer-task54.json`. |
 | `SIMILAR TO ... ESCAPE` | Not implemented in DuckDB itself. |
 | `* EXCLUDE (t.key)` on a USING join | DuckDB UNMERGES the coalesced column (it reappears at the right table's position) — measured, not modeled. Unqualified EXCLUDE works. |
 | `BETWEEN`/`IN` mixing non-numeric string literals with numbers | DuckDB converts at EXECUTION time (an empty input succeeds!); a bind-time conversion was measured to be over-eager. Numeric literals convert fine. |
@@ -131,7 +131,7 @@ These are served, but with a consciously chosen surface — know them:
   corpus only ever compares successful results, so texts never affect
   parity.
 - **Two known oracle divergences** (excluded from the corpus by name in
-  `tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`): DuckDB
+  `packages/confit/tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`): DuckDB
   behaviors that depend on column STATISTICS (e.g. ILIKE's NUL handling
   selects a different kernel depending on *sibling rows*). A row-at-a-time
   engine cannot reproduce statistics-dependent semantics even in
@@ -172,9 +172,9 @@ Three mechanisms, all in the normal test gate:
 1. **The corpus replay** (678 statements mined from DuckDB's test suite):
    every statement must match bit-for-bit, reject cleanly, or be a named
    divergence — a wrong answer anywhere fails the gate.
-2. **The executable twin** (`tests/test_known_limitations.py`): every
+2. **The executable twin** (`packages/confit/tests/test_known_limitations.py`): every
    limitation in this document is asserted; lifting one breaks a test.
-3. **The standing differential fuzzer** (`tests/test_duckdb_regexp_fuzz.py`):
+3. **The standing differential fuzzer** (`packages/confit/tests/test_duckdb_regexp_fuzz.py`):
    randomized DuckDB-vs-engine sweeps of the regex surface on every run
    (seed/size overridable for deep runs) — new divergences fail with the
    reproducing seed and SQL, and their fix lands as a reject-list entry

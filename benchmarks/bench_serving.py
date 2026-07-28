@@ -150,7 +150,8 @@ def engine_run(engines):
 def refuse_debug_build():
     """Abort unless the imported native extension is a release build.
 
-    tests/_native_guard.py rebuilds the cwd-local .pyd via plain `maturin
+    packages/sql-transform/tests/_native_guard.py rebuilds the cwd-local .pyd
+    via plain `maturin
     develop` (debug) whenever src/*.rs is newer; that shadows the venv's
     release wheel and silently inflates engine rows ~5x (measured 2026-07-26).
     """

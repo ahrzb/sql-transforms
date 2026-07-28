@@ -31,7 +31,7 @@ silently go wrong.
 - [ ] Design doc reviewed and amended by AmirHossein (M-restate gate). Partially
       done in conversation (row-major ABI amendment, 2026-07-25); final go still
       pending.
-- [x] Pending diff landed on this branch (2026-07-25): the `src/duckdb/` stub +
+- [x] Pending diff landed on this branch (2026-07-25): the `packages/confit/src/duckdb/` stub +
       shared-module refactor (`error.rs`/`value.rs`/`types.rs` split) — the
       shared substrate `specializer/` sits on; the stub is the future pyclass
       shell.
@@ -77,7 +77,7 @@ lives only in conversation memory.
 
 ### 1.5 Corpus extraction (pre-mined, not mined mid-loop)
 - [x] `scripts/mine_duckdb_corpus.py` (2026-07-25): 678 cases from 2758 queries
-      across 250 files → `tests/corpus/duckdb_mined.jsonl` (262 KB, checked in;
+      across 250 files → `packages/confit/tests/corpus/duckdb_mined.jsonl` (262 KB, checked in;
       setup statements + sql + duckdb-computed expected rows). Replay contract
       is three-outcome — match / clean-unsupported / FAIL — so the corpus
       includes SQL beyond the v0 builtin list on purpose: each case the engine
@@ -146,7 +146,7 @@ const results = await pipeline(
   OPS,                                      // e.g. ["fdiv", "case", "probe", ...]
   op => agent(`Implement lowering for ${op}; TDD; run mise gate-specializer`,
               {isolation: "worktree", phase: "Implement"}),
-  (r, op) => agent(`Run the ${op} slice of tests/corpus/duckdb_mined.jsonl
+  (r, op) => agent(`Run the ${op} slice of packages/confit/tests/corpus/duckdb_mined.jsonl
                     against the interpreter backend; report mismatches as
                     structured findings`, {phase: "Verify", schema: FINDINGS}),
 )
