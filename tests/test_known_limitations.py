@@ -186,6 +186,13 @@ def test_ubigint_static_payloads_reject():
         ("SELECT regexp_matches(s, '[a-\\d]') FROM __THIS__", "Perl class endpoint"),
         ("SELECT regexp_matches(s, '(x){0}') FROM __THIS__", "unsupported"),
         ("SELECT regexp_matches(s, '^$') FROM __THIS__", "anchor-only"),
+        # Seed-20260728 fuzzer classes: leading-$ prefix optimization bug;
+        # RE2 program-size budget ('pattern too large' in DuckDB).
+        ("SELECT regexp_matches(s, '$h') FROM __THIS__", "non-final position"),
+        (
+            "SELECT regexp_matches(s, '(\\p{L}){1,500}') FROM __THIS__",
+            "program-size budget",
+        ),
         # Not implemented in DuckDB itself.
         ("SELECT s SIMILAR TO 'a' ESCAPE 'x' FROM __THIS__", "escape"),
         # Exec-time conversion order (an empty input succeeds in DuckDB).
