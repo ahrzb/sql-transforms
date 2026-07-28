@@ -60,7 +60,7 @@ pub fn prepare(
     in_cols: &[ir::Col],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
-    prepare_opaque(sql, this_name, in_cols, &[], &[], statics)
+    prepare_opaque(sql, this_name, in_cols, &[], &[], statics, false)
 }
 
 /// [`prepare`] plus the row-model columns that have no plain scalar lane:
@@ -75,11 +75,13 @@ pub fn prepare_opaque(
     opaque: &[(usize, String)],
     structs: &[plan::StructCol],
     statics: &[plan::StaticTable],
+    many: bool,
 ) -> Result<Prepared, PrepareError> {
     let (rel, joins, out_cols, regexes) =
         frontend::frontend(sql, this_name, in_cols, opaque, structs, statics)?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
-    let mut program = lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run")?;
+    let mut program =
+        lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run", many)?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
     ir::canonicalize(&mut program);
