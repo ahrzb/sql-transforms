@@ -3,10 +3,20 @@
 Define ML feature transforms as SQL, fit once, then run them at batch or
 low-latency single-row speed.
 
+## Packages
+
+This repository is a workspace of two packages:
+
+| package | what it is |
+|---|---|
+| [`packages/confit`](packages/confit) | **Confit** — the serving engine. SQL plus static tables frozen at fit time are partially evaluated, once, into a native function. Serves bit-exact with DuckDB or refuses at build time. Usable on its own. |
+| [`packages/sql-transform`](packages/sql-transform) | The authoring layer: `SQLTransform`, the DataFusion-differentiated engine, and the codegen backend. Depends on Confit for specialized serving. |
+
 ## Installation
 
 ```bash
-pip install sql-transform
+pip install sql-transform      # authoring + serving
+pip install confit             # the serving engine alone
 ```
 
 ### Development
@@ -14,11 +24,20 @@ pip install sql-transform
 ```bash
 git clone https://github.com/ahrzb/sql-transforms.git
 cd sql-transforms
-mise run install        # uv sync — installs deps and builds the Rust extension
+mise run install        # uv sync — installs both packages and builds their Rust extensions
 ```
 
-The inference engine is a Rust/PyO3 module built by [maturin](https://www.maturin.rs/).
-After changing Rust code, rebuild it with `uv run maturin develop`.
+Each package ships a Rust/PyO3 extension built by
+[maturin](https://www.maturin.rs/) — `confit._engine` and
+`sql_transform._interpreter`. After changing Rust code, rebuild with
+`uv run maturin develop` from inside that package's directory; the test suite
+also rebuilds automatically when a `.rs` file is newer than the built module.
+
+Run the whole gate from the repository root:
+
+```bash
+uv run pytest -q && cargo test --release
+```
 
 ## Quick Start
 

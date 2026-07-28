@@ -19,7 +19,7 @@ DuckDB pays roughly 5.5–7 ms of per-query cost on every call regardless of bat
 
 The design (docs/superpowers/specs/2026-07-25-sql-specializer-design.md) frames this as the first Futamura projection: `prepare(sql, static_tables) -> f`, where binding-time analysis collapses everything static — a hash join against a frozen table becomes a probe of a prepare-time map; with no pipeline breakers left, the query is a straight-line function over baked-in data.
 
-The correctness side of the contract is enforced by three standing mechanisms: the corpus replay of 678 statements mined from DuckDB's own test suite (tests/test_corpus_replay.py — every case must match bit-for-bit, reject cleanly at build time, or be a named, measured divergence), the executable twin of the limitations document (tests/test_known_limitations.py — lifting a documented limitation breaks a test), and a standing differential regex fuzzer (tests/test_duckdb_regexp_fuzz.py). Every wave of new SQL surface was preceded by a "pins" spec recording DuckDB's measured behavior verbatim (docs/superpowers/specs/2026-07-26-wave5-structural-pins.md, 2026-07-27-waveB-regexp-pins.md, 2026-07-28-waveA-structural-tails.md, 2026-07-28-stageB-multiplicity-pins.md, plus their pins-*/ JSON directories) — measure first, then implement against the pins.
+The correctness side of the contract is enforced by three standing mechanisms: the corpus replay of 678 statements mined from DuckDB's own test suite (packages/confit/tests/test_corpus_replay.py — every case must match bit-for-bit, reject cleanly at build time, or be a named, measured divergence), the executable twin of the limitations document (packages/confit/tests/test_known_limitations.py — lifting a documented limitation breaks a test), and a standing differential regex fuzzer (packages/confit/tests/test_duckdb_regexp_fuzz.py). Every wave of new SQL surface was preceded by a "pins" spec recording DuckDB's measured behavior verbatim (docs/superpowers/specs/2026-07-26-wave5-structural-pins.md, 2026-07-27-waveB-regexp-pins.md, 2026-07-28-waveA-structural-tails.md, 2026-07-28-stageB-multiplicity-pins.md, plus their pins-*/ JSON directories) — measure first, then implement against the pins.
 
 | corpus point | statements bit-exact (of 678) |
 |---|---|
@@ -37,22 +37,22 @@ Zero FAILs at every point: growth only ever converted clean rejections into matc
 sql text
   │  tokenize (sqlparser 0.62, GenericDialect)
   ▼
-token pre-rewrites ............ src/specializer/rewrite.rs
+token pre-rewrites ............ packages/confit/src/specializer/rewrite.rs
   ▼  parse
-frontend / binder ............. src/specializer/frontend.rs
+frontend / binder ............. packages/confit/src/specializer/frontend.rs
   ▼  bound relational tree + join specs (plan.rs); statics -> frozen maps
-lowering (produce/consume) .... src/specializer/lower.rs
+lowering (produce/consume) .... packages/confit/src/specializer/lower.rs
   ▼  imperative IR
-VERIFIER ...................... src/specializer/ir/verify.rs   <- the airtight boundary
+VERIFIER ...................... packages/confit/src/specializer/ir/verify.rs   <- the airtight boundary
   ▼
-backends:  interpreter (oracle) ... src/specializer/exec/interp.rs
-           cranelift JIT .......... src/specializer/exec/cranelift.rs
+backends:  interpreter (oracle) ... packages/confit/src/specializer/exec/interp.rs
+           cranelift JIT .......... packages/confit/src/specializer/exec/cranelift.rs
            [columnar core: built, closed unmerged — §8]
 ```
 
 ### Token pre-rewrites
 
-sqlparser 0.62 cannot represent several DuckDB surface forms, and one of them fails in the worst possible way: `SELECT k: expr` (DuckDB's prefix-alias syntax) parses **silently wrong** as a Snowflake JsonAccess under every dialect — no parse error will ever fire (src/specializer/rewrite.rs, pins-wave5/sqlparser-spike.json). Silent misparse is exactly the failure mode the contract forbids, so these forms are fixed on the token stream before sqlparser sees them: colon aliases in select-item and FROM position, `GLOB` rewritten to `LIKE` with a `__glob_pat` marker call, star name filters (`* LIKE 'pat'`, which sqlparser cannot parse at all) encoded into the one form it can parse with the real operator carried in a `\u{1}`-prefixed marker string, and paren-less `* REPLACE` items wrapped. The frontend rejects any user SQL that already contains a marker (frontend.rs), and the binder's JsonAccess rejection stays as the backstop for anything the rewrite misses. The dialect choice itself was measured, not assumed: GenericDialect is a verified superset of DuckDbDialect for the served forms, with the 678-case corpus as the regression net.
+sqlparser 0.62 cannot represent several DuckDB surface forms, and one of them fails in the worst possible way: `SELECT k: expr` (DuckDB's prefix-alias syntax) parses **silently wrong** as a Snowflake JsonAccess under every dialect — no parse error will ever fire (packages/confit/src/specializer/rewrite.rs, pins-wave5/sqlparser-spike.json). Silent misparse is exactly the failure mode the contract forbids, so these forms are fixed on the token stream before sqlparser sees them: colon aliases in select-item and FROM position, `GLOB` rewritten to `LIKE` with a `__glob_pat` marker call, star name filters (`* LIKE 'pat'`, which sqlparser cannot parse at all) encoded into the one form it can parse with the real operator carried in a `\u{1}`-prefixed marker string, and paren-less `* REPLACE` items wrapped. The frontend rejects any user SQL that already contains a marker (frontend.rs), and the binder's JsonAccess rejection stays as the backstop for anything the rewrite misses. The dialect choice itself was measured, not assumed: GenericDialect is a verified superset of DuckDbDialect for the served forms, with the 678-case corpus as the regression net.
 
 ### Frontend and binder
 
@@ -87,7 +87,7 @@ The **interpreter** (exec/interp.rs) is the oracle: one pre-traversal of a verif
 
 ## 3. The null lane: no nullable SSA type
 
-The IR has no nullable value type (src/specializer/ir/mod.rs, the normative spec). SSA values are always bare scalars — `i1`, `i64`, `f64`, `str` — so a nullable value cannot reach an arithmetic instruction *by construction*: the type system has no way to express it. Nullability exists only at the edges. A nullable column or static is accessed through the `.opt` instruction forms, which split it into an `i1` validity flag plus a bare payload; NULL logic is then ordinary boolean algebra (`and`, `or`, `select`); `store.opt` reassembles flag and payload. On a false flag the payload is the type's default — defined, deterministic, never poison.
+The IR has no nullable value type (packages/confit/src/specializer/ir/mod.rs, the normative spec). SSA values are always bare scalars — `i1`, `i64`, `f64`, `str` — so a nullable value cannot reach an arithmetic instruction *by construction*: the type system has no way to express it. Nullability exists only at the edges. A nullable column or static is accessed through the `.opt` instruction forms, which split it into an `i1` validity flag plus a bare payload; NULL logic is then ordinary boolean algebra (`and`, `or`, `select`); `store.opt` reassembles flag and payload. On a false flag the payload is the type's default — defined, deterministic, never poison.
 
 This is the difference between checking for three-valued-logic bugs and making them unrepresentable. There is no instruction sequence that forgets a null check, because there is no nullable value to forget it on — and rule 3 makes the `.opt` forms mandatory on nullable columns and illegal on non-nullable ones, so the null lane can be neither skipped nor invented.
 
@@ -141,9 +141,9 @@ The founding measurement of this project is that inference cost lives at the FFI
 
 Two boundary layers exist, both specialized at prepare time:
 
-**The generated row marshaller** (src/duckdb/mod.rs, `Marshaller`): everything knowable at prepare time is done at prepare time — attribute names interned once in fixed field order, input buffers and run state owned and reused (cleared, not dropped, per call), and output rows for the synthesized model built by filling pydantic v2's instance slots directly (measured on pydantic 2.13: `model_construct` 1432 ns > `model_validate` 882 ns > slot fill 491 ns per row). The slot fill is only sound for the plain synthesized model, so a user-supplied output model goes through `validate` and keeps full pydantic semantics — an adversarial-review finding, kept as a comment at the decision site.
+**The generated row marshaller** (packages/confit/src/duckdb/mod.rs, `Marshaller`): everything knowable at prepare time is done at prepare time — attribute names interned once in fixed field order, input buffers and run state owned and reused (cleared, not dropped, per call), and output rows for the synthesized model built by filling pydantic v2's instance slots directly (measured on pydantic 2.13: `model_construct` 1432 ns > `model_validate` 882 ns > slot fill 491 ns per row). The slot fill is only sound for the plain synthesized model, so a user-supplied output model goes through `validate` and keeps full pydantic semantics — an adversarial-review finding, kept as a comment at the decision site.
 
-**The Arrow boundary** (src/duckdb/arrow.rs, TASK-60): `infer_arrow(pa.Table) -> pa.Table`. Ingest walks pyarrow's raw buffers directly — address and size via the buffer API, bit-unpacked validity — into the engine's `ColData` lanes with no arrow-rs dependency; output builds one Arrow array per *column* from Rust-built buffers. Zero per-value Python objects on either side, which is precisely the ~1.4 µs/row of boxing the decomposition identified. Measured: at n ≥ 1024 it beats the row-object path on every scenario, and beats the handcrafted twin on most (house_prices 1.8× faster than the twin) — the compute core is unchanged; only the boundary moved.
+**The Arrow boundary** (packages/confit/src/duckdb/arrow.rs, TASK-60): `infer_arrow(pa.Table) -> pa.Table`. Ingest walks pyarrow's raw buffers directly — address and size via the buffer API, bit-unpacked validity — into the engine's `ColData` lanes with no arrow-rs dependency; output builds one Arrow array per *column* from Rust-built buffers. Zero per-value Python objects on either side, which is precisely the ~1.4 µs/row of boxing the decomposition identified. Measured: at n ≥ 1024 it beats the row-object path on every scenario, and beats the handcrafted twin on most (house_prices 1.8× faster than the twin) — the compute core is unchanged; only the boundary moved.
 
 ## 8. What was deliberately not built
 

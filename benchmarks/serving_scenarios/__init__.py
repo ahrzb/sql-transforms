@@ -69,7 +69,7 @@ def rows_table(mod, rows: list[dict]) -> pa.Table:
 
 def build_spec_fn(mod, statics: dict[str, pa.Table], output: str = "model"):
     """The specializer serving fn (env knobs select backend/boundary)."""
-    from sql_transform._interpreter import DuckDBInferFn
+    from confit import DuckDBInferFn
 
     return DuckDBInferFn(
         mod.SQL,

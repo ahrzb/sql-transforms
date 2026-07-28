@@ -24,7 +24,10 @@ wheels/
 # DuckDB source clone — reference corpus for the SQL specializer, not a dependency
 /duckdb/
 
-# Compiled PyO3 extension module (built in-place by `maturin develop`)
-sql_transform/_interpreter*.so
-sql_transform/_interpreter*.pyd
-sql_transform/_interpreter*.pdb
+# Compiled PyO3 extension modules (built in-place by `maturin develop`)
+**/sql_transform/_interpreter*.so
+**/sql_transform/_interpreter*.pyd
+**/sql_transform/_interpreter*.pdb
+**/confit/_engine*.so
+**/confit/_engine*.pyd
+**/confit/_engine*.pdb

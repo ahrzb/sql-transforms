@@ -1,18 +1,17 @@
-[project]
-name = "sql-transform"
-version = "0.1.0"
-description = "SQL-based data transforms on DataFusion"
-readme = "README.md"
-requires-python = ">=3.14"
-dependencies = [
-    "datafusion>=46.0.0",
-    "pyarrow>=19.0",
-    "pydantic>=2.0,<3.0",
-    "sqlglot>=30.12.0",
-]
+[tool.uv.workspace]
+members = ["packages/*"]
 
+[tool.uv.sources]
+confit = { workspace = true }
+sql-transform = { workspace = true }
+
+# The workspace root is virtual: it ships no code of its own. It carries the
+# dev toolchain and the repo-wide lint/test configuration so one `uv run pytest`
+# still gates every package.
 [dependency-groups]
 dev = [
+    "confit",
+    "sql-transform",
     "duckdb>=1.5.5",
     "ipdb>=0.13.13",
     "ipython>=9.2.0",
@@ -26,18 +25,6 @@ dev = [
     "scikit-learn>=1.5",
 ]
 
-[build-system]
-requires = ["maturin>=1.14,<2.0"]
-build-backend = "maturin"
-
-[tool.maturin]
-module-name = "sql_transform._interpreter"
-python-source = "."
-exclude = ["**/*_test.py", "tests/**"]
-# See the note in Cargo.toml: extension-module only for the built wheel,
-# so `cargo test` can link libpython.
-features = ["pyo3/extension-module"]
-
 [tool.ruff]
 fix = true
 lint.select = ["E", "F", "B", "I", "UP", "C4", "S"]
@@ -45,7 +32,7 @@ lint.ignore = ["S101"]
 
 [tool.ruff.lint.isort]
 # datafusion and duckdb are pip packages, but same-named directories exist
-# in-repo (src/datafusion Rust module; duckdb/ source clone), which makes
+# in-repo (the datafusion Rust module; duckdb/ source clone), which makes
 # isort's src-root scan misclassify the imports as first-party.
 known-third-party = ["datafusion", "duckdb"]
 
@@ -62,5 +49,10 @@ known-third-party = ["datafusion", "duckdb"]
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]
 # Scope collection: the duckdb/ source clone (reference corpus) carries its own
-# test_*.py scripts that break under our pytest.
-testpaths = ["tests", "sql_transform"]
+# test_*.py scripts that break under our pytest. Every package's tests are
+# listed so `pytest` from the repo root is the whole gate.
+testpaths = [
+    "packages/confit/tests",
+    "packages/sql-transform/tests",
+    "packages/sql-transform/sql_transform",
+]

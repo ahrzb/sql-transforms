@@ -59,7 +59,7 @@ def bench_fn(f, n):
 
 
 def build_specializer(sql, model, dim):
-    from sql_transform._interpreter import DuckDBInferFn
+    from confit import DuckDBInferFn
 
     return DuckDBInferFn(
         sql, row_tables={"__THIS__": model}, static_tables={"dim": dim}

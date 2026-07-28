@@ -166,11 +166,11 @@ enum StaticStruct {
 }
 ```
 
-## 6. Imperative IR (as implemented — M-ir, `src/specializer/ir/`)
+## 6. Imperative IR (as implemented — M-ir, `packages/confit/src/specializer/ir/`)
 
 SSA, typed, no allocation vocabulary, explicit null lane. Text format is the
 diagnostic surface and round-trips: `parse(print(p)) == p`. The module docs of
-`src/specializer/ir/mod.rs` are the normative spec; highlights:
+`packages/confit/src/specializer/ir/mod.rs` are the normative spec; highlights:
 
 ```
 static @0: map(str) -> (f64)

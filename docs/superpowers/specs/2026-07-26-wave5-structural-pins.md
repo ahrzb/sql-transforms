@@ -22,7 +22,7 @@ Measured per-form on the repo's pinned sqlparser 0.62.0:
 - **GenericDialect is a strict superset on the 20-form sample** — it adds
   `^@` (parses as BinaryOp PGStartsWith), `* ILIKE`, `* RENAME`; nothing
   parsed only under DuckDbDialect. The DataFusion oracle path
-  (src/datafusion/plan.rs) already uses GenericDialect.
+  (packages/sql-transform/src/datafusion/plan.rs) already uses GenericDialect.
   **Decision: switch the specializer frontend to GenericDialect**, verified
   by the full Rust suite + 678-case corpus replay + py gate as the
   regression net (tokenization differences outside the sample are the risk;

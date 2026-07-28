@@ -116,7 +116,7 @@ EXCLUDE-then-filter only. COLUMNS('re') in scope: SELECT-list expansion
 ## Standing fuzzer addendum (TASK-54, pins-waveB/fuzzer-task54.json)
 
 The one-time 98-entry battery left the pass-through path unguarded; the
-standing differential fuzzer (tests/test_duckdb_regexp_fuzz.py, in the normal
+standing differential fuzzer (packages/confit/tests/test_duckdb_regexp_fuzz.py, in the normal
 gate) found 12 further divergence classes in its first deep run — each now on
 the reject list or fixed, re-swept to ZERO divergences over 40k cases / 8
 seeds. Headlines (witnesses + measured outputs in the JSON):

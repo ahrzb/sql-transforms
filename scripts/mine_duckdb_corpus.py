@@ -6,7 +6,7 @@ specializer's v0 subset. Expected outputs are recomputed by DuckDB at mining
 time (the file's own expected blocks are ignored — sort modes and hashing make
 them fiddly, and DuckDB itself is our oracle anyway).
 
-Output: tests/corpus/duckdb_mined.jsonl, one case per line:
+Output: packages/confit/tests/corpus/duckdb_mined.jsonl, one case per line:
     {"source": ..., "setup": [...], "sql": ..., "cols": [...], "rows": [[...]]}
 
 Replay contract: run `setup` in a fresh DuckDB to reconstruct the input tables,
@@ -49,7 +49,7 @@ CORPUS_DIRS = [
     "function/generic",
     "function/operator",
 ]
-OUT = REPO / "tests" / "corpus" / "duckdb_mined.jsonl"
+OUT = REPO / "packages" / "confit" / "tests" / "corpus" / "duckdb_mined.jsonl"
 
 # A whole file is skipped when it uses machinery the replayer doesn't model.
 FILE_SKIP = re.compile(

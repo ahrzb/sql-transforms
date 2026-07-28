@@ -40,7 +40,7 @@ The pins also cut the other way — where DuckDB's behaviour is a quirk (`^` is 
 
 ## 3. The corpus replay: three outcomes, zero FAILs
 
-Pins prove behaviours in isolation; the corpus proves the assembled engine. `scripts/mine_duckdb_corpus.py` extracts 678 statements from DuckDB's own test suite into tests/corpus/duckdb_mined.jsonl, and tests/test_corpus_replay.py reconstructs each case's tables in a fresh DuckDB, feeds them through `DuckDBInferFn`, and classifies:
+Pins prove behaviours in isolation; the corpus proves the assembled engine. `scripts/mine_duckdb_corpus.py` extracts 678 statements from DuckDB's own test suite into packages/confit/tests/corpus/duckdb_mined.jsonl, and packages/confit/tests/test_corpus_replay.py reconstructs each case's tables in a fresh DuckDB, feeds them through `DuckDBInferFn`, and classifies:
 
 - **match** — engine output equals the mined rows;
 - **clean-unsupported** — a build-time rejection naming the limit;
@@ -63,13 +63,13 @@ The three-outcome shape matters more than the ladder. A conventional pass/fail s
 
 ## 4. The executable limitations twin
 
-docs/known-limitations.md would rot like any other document if it were only a document. Its executable twin is tests/test_known_limitations.py, whose module docstring states the mechanism plainly: every deliberate limitation in the document is asserted as a test — the SQL that hits it and the named build-time rejection. **If an engine change lifts a limitation, a test fails, and the document must change in the same commit.**
+docs/known-limitations.md would rot like any other document if it were only a document. Its executable twin is packages/confit/tests/test_known_limitations.py, whose module docstring states the mechanism plainly: every deliberate limitation in the document is asserted as a test — the SQL that hits it and the named build-time rejection. **If an engine change lifts a limitation, a test fails, and the document must change in the same commit.**
 
 This inverts the usual failure mode. Normally, docs describe capabilities and silently lag behind; here the doc describes *incapabilities* and mechanically cannot lag, in either direction. The `reverse()` story ran through this machinery end to end: descoped in wave 3 (grapheme segmentation for three corpus cases failed the cost test — a named rejection citing grapheme semantics), pinned anyway, then lifted in wave A with the instruction "remove the limitations row + flip its twin test in the same commit" (docs/superpowers/specs/2026-07-28-waveA-structural-tails.md §4).
 
 ## 5. Differential fuzzing as a standing gate
 
-The regexp wave translated DuckDB's RE2 patterns to rust-regex behind a measured reject list, validated by a 98-entry differential battery. A one-time battery, however, only guards the constructs its author thought of — the residual risk is exactly the pass-through path. So TASK-54 made the differential a *standing* gate: tests/test_duckdb_regexp_fuzz.py generates patterns from a grammar biased toward the divergence-prone axes and asserts, per case: identical rows, or a conservative engine reject, or both engines error. DuckDB-serves-while-we-mismatch and DuckDB-errors-while-we-serve both fail, with seed, case index, and SQL in the message. It runs at N=250 in the normal gate (~4s, fixed seed) and takes `REGEXP_FUZZ_SEED`/`REGEXP_FUZZ_N` for deep runs.
+The regexp wave translated DuckDB's RE2 patterns to rust-regex behind a measured reject list, validated by a 98-entry differential battery. A one-time battery, however, only guards the constructs its author thought of — the residual risk is exactly the pass-through path. So TASK-54 made the differential a *standing* gate: packages/confit/tests/test_duckdb_regexp_fuzz.py generates patterns from a grammar biased toward the divergence-prone axes and asserts, per case: identical rows, or a conservative engine reject, or both engines error. DuckDB-serves-while-we-mismatch and DuckDB-errors-while-we-serve both fail, with seed, case index, and SQL in the message. It runs at N=250 in the normal gate (~4s, fixed seed) and takes `REGEXP_FUZZ_SEED`/`REGEXP_FUZZ_N` for deep runs.
 
 The first deep run vindicated the design: 122 divergences, distilled to 12 reject classes — including three silent wrong-answer shapes (rust set-notation `--`/`&&`/`~~` in character classes, whitespace inside `{1, 3}` bounds, non-POSIX `[` inside classes) — then a re-sweep to **zero divergences over 40k cases across 8 seeds** (pins-waveB/fuzzer-task54.json).
 
@@ -86,7 +86,7 @@ Two kinds of case break the clean oracle picture, and both are handled by naming
 
 The first is the self-inconsistency family above: where the oracle's evaluation paths disagree with each other, there is no behaviour to be bit-exact *with*; the constructs are rejected, with the measurement recorded.
 
-The second is subtler: DuckDB behaviours that depend on **column statistics**. The measured exemplar involves `ILIKE` on strings with embedded NUL bytes: the result for a given row can change depending on which *other* rows are present in the column, because the engine selects its comparison kernel from column-level statistics. The result for one row depends on its siblings. A row-at-a-time engine cannot reproduce this even in principle. The response is a **named divergence**: the source file is listed in `tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`, each entry required to cite a measured reason the divergence is irreproducible row-locally, and the engine's own behaviour (NUL-transparent) is documented in docs/known-limitations.md §5. Two such sources exist. They are excluded from the corpus *by name* — not silently skipped, not fudged to pass.
+The second is subtler: DuckDB behaviours that depend on **column statistics**. The measured exemplar involves `ILIKE` on strings with embedded NUL bytes: the result for a given row can change depending on which *other* rows are present in the column, because the engine selects its comparison kernel from column-level statistics. The result for one row depends on its siblings. A row-at-a-time engine cannot reproduce this even in principle. The response is a **named divergence**: the source file is listed in `packages/confit/tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`, each entry required to cite a measured reason the divergence is irreproducible row-locally, and the engine's own behaviour (NUL-transparent) is documented in docs/known-limitations.md §5. Two such sources exist. They are excluded from the corpus *by name* — not silently skipped, not fudged to pass.
 
 ## 7. What the discipline costs
 
