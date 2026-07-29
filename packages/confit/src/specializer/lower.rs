@@ -322,6 +322,7 @@ impl<'a> FB<'a> {
         Ok(Program {
             statics,
             regexes,
+            externs: Vec::new(),
             name: name.to_string(),
             in_cols: in_cols.to_vec(),
             out_cols,

@@ -456,6 +456,7 @@ fn sparse_value_ids_use_dense_register_slots() {
     let p = Program {
         statics: vec![],
         regexes: vec![],
+        externs: vec![],
         name: "sparse".into(),
         in_cols: vec![],
         out_cols: vec![Col {
@@ -1074,4 +1075,175 @@ done:
         got,
         rows(&[&["1", "7"], &["1", "8"], &["2", "7"], &["2", "8"]])
     );
+}
+
+// -------------------------------------------------------------- externs --
+// DRAFT-22 step 2: ecall executes the supplied ExternImpl; both backends
+// route through the same call_extern, so results and traps are identical.
+
+/// A width-1 scaler-shaped extern: nullable i64 id + f64 feature -> f64.
+const EXTERN_SCALER: &str = r#"extern @0: "tf" (i64, f64) -> (f64)
+
+fn f(in: batch{id: i64?, x: f64?}, out: batch{z: f64?}) {
+b0:
+  %idf, %idv = load.opt in.id
+  %xf, %xv = load.opt in.x
+  %w, %zf, %zv = ecall @0, %idf, %idv, %xf, %xv
+  store.opt out.z, %zf, %zv
+  emit
+}"#;
+
+fn imp(
+    name: &str,
+    f: impl Fn(&[Option<ScalarVal>]) -> Result<Option<Vec<Option<ScalarVal>>>, String> + 'static,
+) -> super::ExternImpl {
+    super::ExternImpl {
+        name: name.into(),
+        fun: Box::new(f),
+    }
+}
+
+/// (id, x) -> x * (id + 1); any NULL arg -> whole-call NULL (the
+/// PythonTransform NULL-id convention lives in the callable, not here).
+fn scaler_impl() -> super::ExternImpl {
+    imp("tf", |args| {
+        let (Some(ScalarVal::I64(id)), Some(ScalarVal::F64(x))) = (&args[0], &args[1]) else {
+            return Ok(None);
+        };
+        Ok(Some(vec![Some(ScalarVal::F64(x * (*id as f64 + 1.0)))]))
+    })
+}
+
+fn scaler_input() -> Batch {
+    batch(
+        3,
+        vec![
+            c_i64(&[Some(1), None, Some(2)]),
+            c_f64(&[Some(2.0), Some(3.0), None]),
+        ],
+    )
+}
+
+#[test]
+fn extern_call_interp_executes() {
+    let p = built(EXTERN_SCALER);
+    let f = super::interp::compile_ext(&p, vec![], vec![scaler_impl()]).unwrap();
+    assert_eq!(
+        run_snapshot(&f, &scaler_input()).unwrap(),
+        rows(&[&["4.0"], &["NULL"], &["NULL"]])
+    );
+}
+
+#[test]
+fn extern_call_traps_are_named() {
+    let p = built(EXTERN_SCALER);
+    // Raised error -> trap with the callable's message.
+    let f =
+        super::interp::compile_ext(&p, vec![], vec![imp("tf", |_| Err("boom".into()))]).unwrap();
+    let err = run_snapshot(&f, &scaler_input()).unwrap_err();
+    assert!(err.0.contains("boom"), "got: {err:?}");
+    // Wrong arity -> named trap.
+    let f = super::interp::compile_ext(
+        &p,
+        vec![],
+        vec![imp("tf", |_| {
+            Ok(Some(vec![
+                Some(ScalarVal::F64(1.0)),
+                Some(ScalarVal::F64(2.0)),
+            ]))
+        })],
+    )
+    .unwrap();
+    let err = run_snapshot(&f, &scaler_input()).unwrap_err();
+    assert!(
+        err.0.contains("returned 2 value(s), declared 1"),
+        "got: {err:?}"
+    );
+    // Wrong type -> named trap.
+    let f = super::interp::compile_ext(
+        &p,
+        vec![],
+        vec![imp("tf", |_| Ok(Some(vec![Some(ScalarVal::Str("x".into()))])))],
+    )
+    .unwrap();
+    let err = run_snapshot(&f, &scaler_input()).unwrap_err();
+    assert!(err.0.contains("is str, declared f64"), "got: {err:?}");
+}
+
+#[test]
+fn extern_compile_validates_impl_list() {
+    let p = built(EXTERN_SCALER);
+    let Err(err) = super::interp::compile_ext(&p, vec![], vec![]) else {
+        panic!("compiled with a missing extern impl");
+    };
+    assert!(
+        err.to_string().contains("1 extern(s), 0 implementation(s)"),
+        "got: {err}"
+    );
+    let Err(err) = super::interp::compile_ext(&p, vec![], vec![imp("other", |_| Ok(None))]) else {
+        panic!("compiled with a misnamed extern impl");
+    };
+    assert!(
+        err.to_string()
+            .contains("declared 'tf', implementation is named 'other'"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn extern_width_two_with_str_and_component_nulls() {
+    // Width-2 (str, f64): distinguishes the whole-NULL call from a result
+    // with NULL components, and exercises arena strings both directions.
+    let text = r#"extern @0: "pair" (str) -> (str, f64)
+
+fn f(in: batch{s: str?}, out: batch{w: i1, a: str?, b: f64?}) {
+b0:
+  %sf, %sv = load.opt in.s
+  %w, %af, %av, %bf, %bv = ecall @0, %sf, %sv
+  store out.w, %w
+  store.opt out.a, %af, %av
+  store.opt out.b, %bf, %bv
+  emit
+}"#;
+    let p = built(text);
+    let pair = || {
+        imp("pair", |args| match &args[0] {
+            None => Ok(None),
+            Some(ScalarVal::Str(s)) if s == "half" => Ok(Some(vec![None, Some(ScalarVal::F64(0.5))])),
+            Some(ScalarVal::Str(s)) => Ok(Some(vec![
+                Some(ScalarVal::Str(format!("{s}!"))),
+                Some(ScalarVal::F64(s.len() as f64)),
+            ])),
+            _ => Err("bad arg".into()),
+        })
+    };
+    let input = || batch(3, vec![c_str(&[Some("ab"), Some("half"), None])]);
+    let f = super::interp::compile_ext(&p, vec![], vec![pair()]).unwrap();
+    let want = rows(&[
+        &["true", "ab!", "2.0"],
+        &["true", "NULL", "0.5"],
+        &["false", "NULL", "NULL"],
+    ]);
+    assert_eq!(run_snapshot(&f, &input()).unwrap(), want);
+
+    // Cranelift: same program, same impls, byte-identical output.
+    let cf = super::cranelift::compile_ext(&p, vec![], vec![pair()]).unwrap();
+    let mut cst = cf.new_state();
+    cf.run(&input(), &mut cst).unwrap();
+    assert_eq!(snapshot(&cst), want);
+}
+
+#[test]
+fn extern_call_cranelift_agrees_with_interp() {
+    let p = built(EXTERN_SCALER);
+    let cf = super::cranelift::compile_ext(&p, vec![], vec![scaler_impl()]).unwrap();
+    let mut cst = cf.new_state();
+    cf.run(&scaler_input(), &mut cst).unwrap();
+    assert_eq!(snapshot(&cst), rows(&[&["4.0"], &["NULL"], &["NULL"]]));
+    // Traps agree too.
+    let cf =
+        super::cranelift::compile_ext(&p, vec![], vec![imp("tf", |_| Err("boom".into()))]).unwrap();
+    let mut cst = cf.new_state();
+    let err = cf.run(&scaler_input(), &mut cst).unwrap_err();
+    assert!(err.0.contains("boom"), "got: {err:?}");
 }
