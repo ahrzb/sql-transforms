@@ -192,6 +192,73 @@ def test_case_insensitive_keyset_identity():
     assert len(m.params) == 1
 
 
+# --- widened windows (loop 2): order values join the key set -----------------
+
+
+def test_golden_running_window_keys_on_order_values():
+    m = marginalize(
+        "SELECT sum(x) OVER (PARTITION BY k ORDER BY o) AS running FROM __THIS__"
+    )
+    (spec,) = m.params
+    assert spec.keys == ("k", "o")
+    assert (
+        "ON (((__cf_t.k IS NOT DISTINCT FROM __cf_p0.k)"
+        " AND (__cf_t.o IS NOT DISTINCT FROM __cf_p0.o)))"
+    ) in m.serving_sql
+
+
+def test_golden_rank_keys_on_order_values():
+    m = marginalize("SELECT rank() OVER (PARTITION BY k ORDER BY o) AS r FROM __THIS__")
+    (spec,) = m.params
+    assert spec.keys == ("k", "o")
+
+
+def test_golden_first_value_is_partition_keyed():
+    m = marginalize(
+        "SELECT first_value(x) OVER (PARTITION BY k ORDER BY o) AS f FROM __THIS__"
+    )
+    (spec,) = m.params
+    assert spec.keys == ("k",)
+
+
+def test_golden_whole_partition_frame_is_partition_keyed():
+    m = marginalize(
+        "SELECT sum(x) OVER (PARTITION BY k ORDER BY o"
+        " ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS s FROM __THIS__"
+    )
+    (spec,) = m.params
+    assert spec.keys == ("k",)
+
+
+def test_golden_expression_partition_key():
+    m = marginalize("SELECT avg(x) OVER (PARTITION BY k % 2) AS m FROM __THIS__")
+    (spec,) = m.params
+    assert spec.keys == ("__cf_x0",)
+    assert "__cf_p0.__cf_x0" in m.serving_sql
+    assert "__cf_t.k" in m.serving_sql  # the qualified expression joins back
+
+
+def test_running_and_rank_share_a_keyset():
+    m = marginalize(
+        "SELECT sum(x) OVER (PARTITION BY k ORDER BY o) AS s,"
+        " rank() OVER (PARTITION BY k ORDER BY o) AS r FROM __THIS__"
+    )
+    assert len(m.params) == 1
+    assert m.params[0].keys == ("k", "o")
+
+
+def test_order_key_deduped_against_partition():
+    m = marginalize("SELECT sum(x) OVER (PARTITION BY k ORDER BY k) AS s FROM __THIS__")
+    (spec,) = m.params
+    assert spec.keys == ("k",)
+
+
+def test_collate_order_key_strips_to_the_raw_column():
+    m = marginalize("SELECT rank() OVER (ORDER BY c COLLATE NOCASE) AS r FROM __THIS__")
+    (spec,) = m.params
+    assert spec.keys == ("c",)
+
+
 # --- the refusal table -------------------------------------------------------
 
 REFUSALS = [
@@ -213,27 +280,43 @@ REFUSALS = [
     ("SELECT 1; SELECT 2", "multiple SQL statements"),
     ("SELECT avg(a) FROM __THIS__", "without OVER"),
     ("SELECT sum(a) FROM __THIS__", "without OVER"),
-    ("SELECT avg(a) OVER (ORDER BY b) FROM __THIS__", "ORDER BY"),
+    # Position-dependent windows: a join key cannot carry physical order.
+    ("SELECT row_number() OVER () FROM __THIS__", "physical row position"),
+    ("SELECT ntile(4) OVER (ORDER BY a) FROM __THIS__", "physical row position"),
+    ("SELECT lag(a) OVER (PARTITION BY c ORDER BY o) FROM __THIS__", "physical"),
+    ("SELECT lead(a) OVER (PARTITION BY c ORDER BY o) FROM __THIS__", "physical"),
     (
         "SELECT avg(a) OVER (ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM __THIS__",
-        "window frame",
-    ),
-    ("SELECT row_number() OVER () FROM __THIS__", "window function row_number"),
-    ("SELECT lag(a) OVER (PARTITION BY c) FROM __THIS__", "not a per-group constant"),
-    # The oracle classifies first() as its own window type, not an aggregate.
-    ("SELECT first(a) OVER (PARTITION BY c) FROM __THIS__", "window function first"),
-    ("SELECT string_agg(a, ',') OVER (PARTITION BY c) FROM __THIS__", "allowlist"),
-    ("SELECT avg(DISTINCT a) OVER (PARTITION BY c) FROM __THIS__", "DISTINCT inside"),
-    (
-        "SELECT avg(a) FILTER (WHERE a > 0) OVER (PARTITION BY c) FROM __THIS__",
-        "FILTER inside",
+        "ROWS frame",
     ),
     (
-        "SELECT avg(a) OVER (PARTITION BY c + 1) FROM __THIS__",
-        "PARTITION BY expression",
+        "SELECT sum(a) OVER (PARTITION BY c ORDER BY o"
+        " ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM __THIS__",
+        "ROWS frame",
     ),
-    ("SELECT avg(a) OVER (PARTITION BY s.c) FROM __THIS__", "PARTITION BY s.c"),
+    (
+        "SELECT sum(a) OVER (ORDER BY o RANGE BETWEEN UNBOUNDED PRECEDING AND"
+        " CURRENT ROW EXCLUDE CURRENT ROW) FROM __THIS__",
+        "EXCLUDE",
+    ),
+    (
+        "SELECT sum(a) OVER (ORDER BY o RANGE BETWEEN b PRECEDING AND"
+        " CURRENT ROW) FROM __THIS__",
+        "non-constant window frame bound",
+    ),
+    (
+        "SELECT nth_value(a, b) OVER (PARTITION BY c ORDER BY o) FROM __THIS__",
+        "nth_value with a non-constant n",
+    ),
     ("SELECT avg(sum(a)) OVER () FROM __THIS__", "aggregate sum inside an aggregate"),
+    (
+        "SELECT avg(a) FILTER (WHERE avg(b) > 0) OVER () FROM __THIS__",
+        "aggregate avg inside a FILTER",
+    ),
+    (
+        "SELECT avg(a) OVER (PARTITION BY (SELECT 1)) FROM __THIS__",
+        "subquery inside a partition or order key",
+    ),
     ("SELECT avg(a) OVER () AS __cf_x FROM __THIS__", "reserved prefix"),
     ("SELECT __CF_PARAMS_0__.a FROM __THIS__", "reserved prefix"),
     ("SELECT COLUMNS('a.*') FROM __THIS__", "COLUMNS"),

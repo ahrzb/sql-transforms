@@ -28,10 +28,16 @@ loop and still raises `NotImplementedError`.
 
 ## The contract
 
-Strict projection: `SELECT <exprs> FROM __THIS__`. Everything else — WHERE,
-GROUP BY, joins, subqueries, CTEs, running windows, order-sensitive
-aggregates — is refused at construction with a named error. Serve-or-refuse,
-no third mode.
+Strict projection: `SELECT <exprs> FROM __THIS__`, where the window surface is
+wide: any aggregate (including `FILTER`, `DISTINCT`, ordered arguments, and
+order-sensitive ones), running windows and RANGE/GROUPS frames (the order
+values join the key set), the rank family, `first_value`/`last_value`/
+`nth_value`, expression partition keys, and named windows. The rule deciding
+it all: a window is marginalizable iff its value is a function of row-visible
+values. What depends on **physical row position** — `row_number`, `ntile`,
+`lag`/`lead`, bounded ROWS frames, `EXCLUDE` — is refused, as is everything
+non-projection (WHERE, GROUP BY, joins, subqueries, CTEs), each with a named
+error. Serve-or-refuse, no third mode.
 
 Parsing is DuckDB's own (`json_serialize_sql` / `json_deserialize_sql`): the
 oracle's grammar and the oracle's printer, no second SQL dialect anywhere.

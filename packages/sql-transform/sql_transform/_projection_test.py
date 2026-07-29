@@ -10,6 +10,7 @@ the real serving path and gates the wiring end-to-end.
 """
 
 import inspect
+import math
 import os
 import random
 
@@ -49,8 +50,24 @@ def gate(sql: str, table: pa.Table = TRAIN) -> SQLProjection:
     finally:
         con.close()
     assert orig.schema == rew.schema, f"\n{orig.schema}\n!=\n{rew.schema}"
-    assert orig.equals(rew), f"\n{orig.to_pydict()}\n!=\n{rew.to_pydict()}"
+    # pyarrow equals says NaN != NaN; fall back to a NaN-aware (and signed-
+    # zero-strict) recursive compare when the fast path disagrees.
+    assert orig.equals(rew) or _same(orig.to_pylist(), rew.to_pylist()), (
+        f"\n{orig.to_pydict()}\n!=\n{rew.to_pydict()}"
+    )
     return p
+
+
+def _same(a, b):
+    if isinstance(a, float) and isinstance(b, float):
+        if math.isnan(a) and math.isnan(b):
+            return True
+        return a == b and math.copysign(1.0, a) == math.copysign(1.0, b)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(v, b[k]) for k, v in a.items())
+    return type(a) is type(b) and a == b
 
 
 def test_standard_scaler_with_null_keys_and_null_inputs():
@@ -106,6 +123,60 @@ def test_every_allowlisted_aggregate(agg):
 
 def test_expression_aggregate_arguments():
     gate("SELECT avg(age * 2 + fare) OVER (PARTITION BY country) AS m FROM __THIS__")
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # running aggregates: order values join the key set
+        "sum(fare) OVER (PARTITION BY country ORDER BY age)",
+        "avg(age) OVER (ORDER BY fare)",
+        "count(*) OVER (PARTITION BY country ORDER BY age)",
+        # explicit RANGE / GROUPS frames with constant bounds
+        "sum(age) OVER (PARTITION BY country ORDER BY fare"
+        " RANGE BETWEEN 2 PRECEDING AND CURRENT ROW)",
+        "sum(age) OVER (PARTITION BY country ORDER BY fare"
+        " GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW)",
+        # whole-partition frames are per-partition constants
+        "sum(age) OVER (PARTITION BY country ORDER BY fare"
+        " ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)",
+        # rank family: functions of the order values
+        "rank() OVER (PARTITION BY country ORDER BY age)",
+        "dense_rank() OVER (PARTITION BY country ORDER BY age DESC NULLS FIRST)",
+        "percent_rank() OVER (ORDER BY age)",
+        "cume_dist() OVER (PARTITION BY country ORDER BY age)",
+        # value functions
+        "first_value(name) OVER (PARTITION BY country ORDER BY age)",
+        "first_value(city IGNORE NULLS) OVER (PARTITION BY country ORDER BY age)",
+        "last_value(name) OVER (PARTITION BY country ORDER BY age)",
+        "nth_value(name, 2) OVER (PARTITION BY country ORDER BY age)",
+        # FILTER / DISTINCT / ordered-argument aggregates
+        "avg(age) FILTER (WHERE fare > 8) OVER (PARTITION BY country)",
+        "count(DISTINCT city) OVER (PARTITION BY country)",
+        "string_agg(name, ',') OVER (PARTITION BY country)",
+        "string_agg(name, ',' ORDER BY age) OVER (PARTITION BY country)",
+        # order-sensitive / formerly non-allowlisted aggregates
+        "first(name) OVER (PARTITION BY country)",
+        "array_agg(name) OVER (PARTITION BY country)",
+        "quantile_cont(age, 0.25) OVER (PARTITION BY country)",
+        "bool_and(age > 30) OVER (PARTITION BY country)",
+        "corr(age, fare) OVER (PARTITION BY country)",
+        "mode(city) OVER (PARTITION BY country)",
+        # expression keys
+        "sum(fare) OVER (PARTITION BY substr(country, 1, 1))",
+        "avg(age) OVER (PARTITION BY country ORDER BY fare % 3)",
+        "avg(age) OVER (PARTITION BY country, city ORDER BY fare, name)",
+    ],
+)
+def test_widened_window_surface(expr):
+    gate(f"SELECT {expr} AS m, name FROM __THIS__")
+
+
+def test_named_window_is_inlined_by_the_parser():
+    gate(
+        "SELECT avg(age) OVER w AS m, name FROM __THIS__"
+        " WINDOW w AS (PARTITION BY country)"
+    )
 
 
 def test_quoted_and_unicode_identifiers():
@@ -171,15 +242,41 @@ def test_fuzz_differential():
         exprs = []
         for i in range(rng.randrange(1, 4)):
             col = rng.choice(["x", "y"])
-            keys = rng.sample(["k1", "k2"], k=rng.randrange(0, 3))
-            over = f"OVER (PARTITION BY {', '.join(keys)})" if keys else "OVER ()"
+            keys = rng.sample(["k1", "k2", "k2 % 2"], k=rng.randrange(0, 3))
+            p = f"PARTITION BY {', '.join(keys)}" if keys else ""
+            ovp = f"OVER ({p})"
+            o = rng.choice(["y", "x", "y % 7"])
+            po = f"OVER ({p + ' ' if p else ''}ORDER BY {o})"
             agg = rng.choice(aggs)
             arg = col if agg != "count" else rng.choice([col, "*"])
             template = rng.choice(
                 [
-                    f"{agg}({arg}) {over}",
-                    f"{col} - {agg}({arg}) {over}",
+                    f"{agg}({arg}) {ovp}",
+                    f"{col} - {agg}({arg}) {ovp}",
                     f"{col} + 1",
+                    # widened surface: running, frames, rank/value fns,
+                    # FILTER/DISTINCT, order-sensitive aggregates
+                    f"{agg}({arg}) {po}",
+                    f"{agg}({arg}) OVER ({p + ' ' if p else ''}ORDER BY {o}"
+                    " RANGE BETWEEN 2 PRECEDING AND CURRENT ROW)",
+                    f"{agg}({arg}) OVER ({p + ' ' if p else ''}ORDER BY {o}"
+                    " GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW)",
+                    f"{agg}({arg}) OVER ({p + ' ' if p else ''}ORDER BY {o}"
+                    " ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)",
+                    f"rank() {po}",
+                    f"dense_rank() {po}",
+                    f"cume_dist() {po}",
+                    f"first_value({col}) {po}",
+                    f"last_value({col}) {po}",
+                    f"nth_value({col}, 2) {po}",
+                    f"{agg}(DISTINCT {arg.replace('*', col)}) {ovp}",
+                    f"{agg}({arg}) FILTER (WHERE {o} > 1) {ovp}",
+                    f"first({col}) {ovp}",
+                    f"string_agg(k1, '|') {ovp}",
+                    f"string_agg(k1, '|' ORDER BY {o}) {ovp}",
+                    f"array_agg(k1) {ovp}",
+                    f"quantile_cont({col}, 0.25) {ovp}",
+                    f"bool_and({col} > 2) {ovp}",
                 ]
             )
             exprs.append(f"{template} AS e{i}")
