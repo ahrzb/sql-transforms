@@ -59,9 +59,11 @@ fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
-/// SQL text + the dynamic table's name/schema + the static-table catalog ->
-/// bound relational tree, the equi-joins in FROM order, and the derived
-/// output schema.
+/// SQL text + the dynamic table's name/schema + the static-table catalog
+/// (+ declared UDF externs) -> bound relational tree, the equi-joins in
+/// FROM order, the derived output schema, and the width-k UDF output
+/// fields (DRAFT-22).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn frontend(
     sql: &str,
     this_name: &str,
@@ -70,7 +72,17 @@ pub fn frontend(
     structs: &[super::plan::StructCol],
     statics: &[StaticTable],
     many: bool,
-) -> Result<(Rel, Vec<JoinSpec>, Vec<Col>, Vec<super::ir::ReSpec>), PrepareError> {
+    udfs: &[super::ir::ExternSpec],
+) -> Result<
+    (
+        Rel,
+        Vec<JoinSpec>,
+        Vec<Col>,
+        Vec<super::ir::ReSpec>,
+        Vec<super::WideOut>,
+    ),
+    PrepareError,
+> {
     // GenericDialect, not DuckDbDialect: measured as a strict superset for
     // the forms we serve (adds ^@, * ILIKE, * RENAME) and matches the oracle
     // path in datafusion/plan.rs — see pins-wave5/sqlparser-spike.json.
@@ -132,10 +144,11 @@ pub fn frontend(
     }
 
     let (binder, joins, leftover_where) =
-        bind_from(select, this_name, in_cols, opaque, structs, statics, many)?;
+        bind_from(select, this_name, in_cols, opaque, structs, statics, many, udfs)?;
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
+    let mut wide_outs: Vec<super::WideOut> = Vec::new();
     let push_item = |out_cols: &mut Vec<Col>,
                      exprs: &mut Vec<SExpr>,
                      name: String,
@@ -151,9 +164,41 @@ pub fn frontend(
         exprs.push(e);
         Ok(())
     };
+    // A bare width-k UDF item expands to its whole-validity lane plus k
+    // component lanes; the WideOut records how the boundary reassembles
+    // them into ONE `list | None` field (DRAFT-22 step 2).
+    let push_wide = |out_cols: &mut Vec<Col>,
+                         exprs: &mut Vec<SExpr>,
+                         wide_outs: &mut Vec<super::WideOut>,
+                         base: String,
+                         lanes: Vec<(String, SExpr)>|
+     -> Result<(), PrepareError> {
+        let first = out_cols.len() as u32;
+        let width = (lanes.len() - 1) as u32;
+        for (name, ex) in lanes {
+            out_cols.push(Col {
+                name,
+                ty: super::ir::ColTy {
+                    ty: ex.ty,
+                    nullable: ex.nullable,
+                },
+            });
+            exprs.push(ex);
+        }
+        wide_outs.push(super::WideOut {
+            name: base,
+            first,
+            width,
+        });
+        Ok(())
+    };
     for item in &select.projection {
         match item {
             SelectItem::UnnamedExpr(e) => {
+                if let Some(lanes) = binder.wide_extern_lanes(e, &default_name(e))? {
+                    push_wide(&mut out_cols, &mut exprs, &mut wide_outs, default_name(e), lanes)?;
+                    continue;
+                }
                 // COLUMNS('re') expands like a filtered star, keeping the
                 // bare column names (wave-B pins).
                 if let Some(cols) = binder.expand_columns_item(e)? {
@@ -170,6 +215,18 @@ pub fn frontend(
                 }
             }
             SelectItem::ExprWithAlias { expr, alias } => {
+                if let Some(lanes) = binder.wide_extern_lanes(expr, &alias.value)? {
+                    // No lateral-alias registration: the assembled field is
+                    // a list, which no scalar expression can reference.
+                    push_wide(
+                        &mut out_cols,
+                        &mut exprs,
+                        &mut wide_outs,
+                        alias.value.clone(),
+                        lanes,
+                    )?;
+                    continue;
+                }
                 // An alias on COLUMNS stamps EVERY expansion (duplicates
                 // feed the dedup rename — measured).
                 if let Some(cols) = binder.expand_columns_item(expr)? {
@@ -240,12 +297,14 @@ pub fn frontend(
         joins,
         out_cols,
         binder.regexes.into_inner(),
+        wide_outs,
     ))
 }
 
 /// Parse and bind the FROM clause: the dynamic table, then zero or more
 /// equi-joins to static tables. Returns the fully-scoped binder (every join
 /// visible) and the join specs in FROM order.
+#[allow(clippy::too_many_arguments)]
 fn bind_from<'a>(
     select: &sqlparser::ast::Select,
     this_name: &str,
@@ -254,6 +313,7 @@ fn bind_from<'a>(
     structs: &'a [super::plan::StructCol],
     statics: &'a [StaticTable],
     many: bool,
+    udfs: &'a [super::ir::ExternSpec],
 ) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
     // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
     // follow and are addressable ONLY through their struct paths.
@@ -344,6 +404,8 @@ fn bind_from<'a>(
             .collect(),
         bound_aliases: std::cell::RefCell::new(Vec::new()),
         regexes: std::cell::RefCell::new(Vec::new()),
+        udfs,
+        sites: std::cell::Cell::new(0),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -1032,6 +1094,12 @@ struct Binder<'a> {
     /// Program regex table under construction (wave-B); indices are baked
     /// into ReMatch/ReExtract/ReReplace nodes.
     regexes: std::cell::RefCell<Vec<super::ir::ReSpec>>,
+    /// Declared UDF externs (DRAFT-22): an unknown function matching one
+    /// binds as an opaque ecall instead of the named refusal.
+    udfs: &'a [super::ir::ExternSpec],
+    /// Call-site counter: the k+1 lanes of one width-k call share a site
+    /// so lowering executes the callable once per row.
+    sites: std::cell::Cell<u32>,
 }
 
 /// The bound subject of a regex op must be VARCHAR (no implicit casts —
@@ -3211,6 +3279,138 @@ impl Binder<'_> {
     /// The v0 builtin catalogue. Everything here follows the measured pins
     /// in docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md; names
     /// not listed reject as clean unsupported.
+    /// The declared UDF matching `name` (case-insensitive), if any.
+    fn find_udf(&self, name: &str) -> Option<(u32, &super::ir::ExternSpec)> {
+        self.udfs
+            .iter()
+            .enumerate()
+            .find(|(_, u)| u.name.eq_ignore_ascii_case(name))
+            .map(|(i, u)| (i as u32, u))
+    }
+
+    fn fresh_site(&self) -> u32 {
+        let s = self.sites.get();
+        self.sites.set(s + 1);
+        s
+    }
+
+    /// Bind and type-check a UDF call's arguments against its declared
+    /// params. Bare NULLs adopt the param type; an i64 argument against a
+    /// declared f64 promotes exactly like DuckDB's implicit cast; anything
+    /// else refuses by name.
+    fn bind_udf_args(
+        &self,
+        f: &sqlparser::ast::Function,
+        spec: &super::ir::ExternSpec,
+    ) -> Result<Vec<SExpr>, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        let FunctionArguments::List(list) = &f.args else {
+            return Err(unsup(format!(
+                "function {} without an argument list",
+                f.name
+            )));
+        };
+        if !list.clauses.is_empty() || list.duplicate_treatment.is_some() {
+            return Err(unsup(format!("function {} argument clauses", f.name)));
+        }
+        let mut raw: Vec<&SqlExpr> = Vec::with_capacity(list.args.len());
+        for a in &list.args {
+            match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => raw.push(e),
+                _ => return Err(unsup(format!("function {} argument form", f.name))),
+            }
+        }
+        if raw.len() != spec.params.len() {
+            return Err(PrepareError::Bind(format!(
+                "udf '{}' takes {} argument(s), the call passes {}",
+                spec.name,
+                spec.params.len(),
+                raw.len()
+            )));
+        }
+        let mut out = Vec::with_capacity(raw.len());
+        for (i, (arg, &pt)) in raw.iter().zip(&spec.params).enumerate() {
+            let bound = match self.expr_or_null(arg)? {
+                None => null_of(pt),
+                Some(e) => fold(e),
+            };
+            let bound = match (bound.ty, pt) {
+                (a, b) if a == b => bound,
+                (Ty::I64, Ty::F64) => promote_f64(bound),
+                (a, b) => {
+                    return Err(PrepareError::Bind(format!(
+                        "udf '{}' argument {} is {}, declared {}",
+                        spec.name,
+                        i + 1,
+                        a.name(),
+                        b.name()
+                    )))
+                }
+            };
+            out.push(bound);
+        }
+        Ok(out)
+    }
+
+    /// A bare width-k (k >= 2) UDF call as a projection item expands to a
+    /// whole-validity lane plus k nullable component lanes sharing one call
+    /// site; `None` for anything else (width-1 calls stay ordinary scalar
+    /// expressions). Lane names carry U+0001 (reserved at the SQL gate, so
+    /// no user column can collide).
+    fn wide_extern_lanes(
+        &self,
+        e: &SqlExpr,
+        base: &str,
+    ) -> Result<Option<Vec<(String, SExpr)>>, PrepareError> {
+        let mut inner = e;
+        while let SqlExpr::Nested(i) = inner {
+            inner = i;
+        }
+        let SqlExpr::Function(f) = inner else {
+            return Ok(None);
+        };
+        let Some((ext, spec)) = self.find_udf(&f.name.to_string()) else {
+            return Ok(None);
+        };
+        if spec.rets.len() < 2 {
+            return Ok(None);
+        }
+        let args = self.bind_udf_args(f, spec)?;
+        let site = self.fresh_site();
+        let mut lanes = Vec::with_capacity(1 + spec.rets.len());
+        lanes.push((
+            format!("{base}\u{1}valid"),
+            SExpr {
+                kind: SKind::ExternCall {
+                    site,
+                    ext,
+                    args: args.clone(),
+                    ret: 0,
+                    whole: true,
+                },
+                ty: Ty::I1,
+                nullable: false,
+            },
+        ));
+        for (j, &rt) in spec.rets.iter().enumerate() {
+            lanes.push((
+                format!("{base}\u{1}{j}"),
+                SExpr {
+                    kind: SKind::ExternCall {
+                        site,
+                        ext,
+                        args: args.clone(),
+                        ret: j as u32,
+                        whole: false,
+                    },
+                    ty: rt,
+                    nullable: true,
+                },
+            ));
+        }
+        Ok(Some(lanes))
+    }
+
     fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         let name = f.name.to_string().to_lowercase();
@@ -4237,10 +4437,37 @@ impl Binder<'_> {
                     nullable,
                 })
             }
-            _ => Err(unsup(format!(
-                "function {} (not in the v0 catalogue)",
-                f.name
-            ))),
+            _ => {
+                // Declared UDF externs (DRAFT-22): width-1 is an ordinary
+                // scalar expression; width-k is bare-item-only (handled in
+                // the projection loop), so reaching it here is refused.
+                if let Some((ext, spec)) = self.find_udf(&f.name.to_string()) {
+                    if spec.rets.len() != 1 {
+                        return Err(unsup(format!(
+                            "width-{} udf '{}' used as a scalar expression \
+                             (multi-output transformer calls must be bare SELECT items)",
+                            spec.rets.len(),
+                            spec.name
+                        )));
+                    }
+                    let args = self.bind_udf_args(f, spec)?;
+                    return Ok(SExpr {
+                        kind: SKind::ExternCall {
+                            site: self.fresh_site(),
+                            ext,
+                            args,
+                            ret: 0,
+                            whole: false,
+                        },
+                        ty: spec.rets[0],
+                        nullable: true,
+                    });
+                }
+                Err(unsup(format!(
+                    "function {} (not in the v0 catalogue)",
+                    f.name
+                )))
+            }
         }
     }
 

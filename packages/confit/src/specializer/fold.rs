@@ -54,6 +54,20 @@ pub fn fold(e: SExpr) -> SExpr {
     match kind {
         SKind::Col(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf
         | SKind::JoinHit(_) => e(kind),
+        // Opaque call: fold the args, never the call itself.
+        SKind::ExternCall {
+            site,
+            ext,
+            args,
+            ret,
+            whole,
+        } => e(SKind::ExternCall {
+            site,
+            ext,
+            args: args.into_iter().map(fold).collect(),
+            ret,
+            whole,
+        }),
         SKind::IntToFloat(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {
