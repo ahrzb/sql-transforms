@@ -10,13 +10,7 @@ This repository is a workspace of two packages:
 | package | what it is |
 |---|---|
 | [`packages/confit`](packages/confit) | **Confit** — the serving engine. SQL plus static tables frozen at fit time are partially evaluated, once, into a native function. Serves bit-exact with DuckDB or refuses at build time. Usable on its own. |
-| [`packages/sql-transform`](packages/sql-transform) | The authoring surface: `SQLTransform`. **Not implemented** — signatures only, being rebuilt on Confit. |
-
-> **sql-transform is a stub.** Its implementation was deliberately removed --
-> the DataFusion engine, the codegen backend, the batch `transform()` path and
-> the fit pipeline are all gone. What remains is the interface, raising
-> `NotImplementedError`, as the contract for a rebuild on Confit.
-> **Confit itself is complete and unaffected.**
+| [`packages/sql-transform`](packages/sql-transform) | The authoring surface: `SQLProjection`. The **fit half works**: window aggregates over `__THIS__` are marginalized into materialized params tables plus a rewritten serving SQL. The serving half (through Confit) is a later loop. |
 
 ## Installation
 
@@ -67,23 +61,35 @@ fn.infer_rows([Row(age=40.0)])          # row objects in, row objects out
 fn.infer_arrow(pa.table({"age": [40.0]}))  # pa.Table in, pa.Table out
 ```
 
-`sql_transform.SQLTransform` is the intended authoring layer on top of it --
-write SQL with window aggregates, `fit()` to freeze them, then serve. It is
-currently **not implemented**; see [packages/sql-transform](packages/sql-transform).
+`sql_transform.SQLProjection` is the authoring layer on top of it — write SQL
+with window aggregates, `fit()` to freeze them. The fit half works today; see
+[packages/sql-transform](packages/sql-transform).
+
+```python
+from sql_transform import SQLProjection
+
+p = SQLProjection(
+    "SELECT (age - avg(age) OVER (PARTITION BY country)) AS d FROM __THIS__"
+).fit(train)
+p.serving_sql   # the rewritten projection: params joins instead of aggregates
+p.params        # {"__CF_PARAMS_0__": <pyarrow.Table>}
+```
 
 ## Architecture
 
-The intended two-phase shape, of which **only the second phase exists today**:
+The two-phase shape — **fit works, the wiring between the phases is the next
+loop**:
 
 ```
 SQL over __THIS__
       │
       ▼
-   fit(train) ── freeze each window aggregate (e.g. MEAN(age)) into a typed
-      │          __STATE__ table and rewrite the SQL to reference it instead
-      │          of recomputing.                         [NOT IMPLEMENTED]
+   fit(train) ── marginalize each window aggregate (e.g. avg(age) OVER
+      │          (PARTITION BY country)) into a materialized params table and
+      │          rewrite the SQL to LEFT JOIN it instead of recomputing.
+      │          Bit-exact with DuckDB by differential gate.      [WORKS]
       │
-      │  rewritten SQL + frozen state
+      │  rewritten SQL + frozen params          [wiring: NOT IMPLEMENTED]
       ▼
    Confit ── partially evaluates the pair into a native function: binding-time
       │      analysis collapses every static lookup into a prepare-time probe,
@@ -105,9 +111,10 @@ The expression surface, joins to static tables, the row-shape contract
 mined from DuckDB's own test suite replay bit-exact, with the remainder clean,
 named build-time rejections.
 
-The authoring layer on top — window-aggregate `fit`, typed I/O, sklearn
-transformer references, and composing one transform into another — is what the
-rebuild has to supply.
+The authoring layer's window-aggregate `fit` (marginalization) works; typed
+I/O, serving through Confit, static tables in authored SQL, and the broader
+DRAFT-20 program (fitted model artifacts as params tables) are the named next
+loops.
 
 ## Reports
 

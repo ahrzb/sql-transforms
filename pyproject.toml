@@ -37,7 +37,8 @@ lint.ignore = ["S101"]
 known-third-party = ["duckdb"]
 
 [tool.ruff.lint.per-file-ignores]
-"*test*.py" = ["S608"]
+# S311: tests use seeded pseudo-random fuzz generators (S311 is about crypto).
+"*test*.py" = ["S608", "S311"]
 "_state.py" = ["S608"]
 # Bench fixtures: seeded pseudo-random data generators (S311 is about
 # crypto), dense SQL/data-gen literals where wrapping hurts readability,
