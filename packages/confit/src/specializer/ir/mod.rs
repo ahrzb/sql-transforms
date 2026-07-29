@@ -78,9 +78,10 @@
 //! printing uses canonical `%vN` / `bN` names.
 //!
 //! ```text
-//! program   := static* func
+//! program   := static* regex* extern* func
 //! comment   := "#" ... end-of-line     // allowed anywhere whitespace is
 //! static    := "static" "@" INT ":" static_ty
+//! extern    := "extern" "@" INT ":" STRING "(" [ty ("," ty)*] ")" "->" "(" ty ("," ty)* ")"
 //! static_ty := "scalar" "<" col_ty ">"
 //!            | "map" "(" ty ("," ty)* ")" "->" "(" ty ("," ty)* ")"
 //! func      := "fn" IDENT "(" "in" ":" batch "," "out" ":" batch ")" "{" block+ "}"
@@ -123,6 +124,7 @@
 //! %hit, %v1, .. = probe @N, %k1, ..           // map static
 //! %d = sload @N                               // scalar<T> static
 //! %f, %d = sload.opt @N                       // scalar<T?> static
+//! %w, %f1, %v1, .. = ecall @N, %af1, %av1, .. // extern (UDF) call
 //! ```
 //!
 //! Numeric-semantics pins deferred to M-interp (settled against the DuckDB
@@ -788,6 +790,20 @@ pub enum Inst {
         idx: Value,
         dsts: Vec<Value>,
     },
+    /// Call opaque extern (UDF) `ext` — DRAFT-22 step 2. Everything at this
+    /// boundary is nullable: `args` are a (validity i1, payload) pair per
+    /// declared param (payload unread under a false flag); `dsts` are one
+    /// whole-call validity i1 (false iff the callable returned NULL — at
+    /// the width-k output boundary that is the NULL-list case, distinct
+    /// from a list of NULLs) followed by a (validity i1, payload) pair per
+    /// declared return. Component flags are all false when the whole flag
+    /// is. Traps on a raised exception or a result violating the declared
+    /// returns.
+    ExternCall {
+        ext: u32,
+        dsts: Vec<Value>,
+        args: Vec<Value>,
+    },
     /// Read a `scalar<T>` static.
     Sload {
         static_id: u32,
@@ -867,10 +883,23 @@ pub struct Program {
     /// Prepare-time-compiled regexes (wave-B): patterns already translated
     /// to rust-regex syntax (retrans.rs), full-match forms pre-anchored.
     pub regexes: Vec<ReSpec>,
+    /// Declared opaque extern (UDF) signatures, addressed by `ecall @N`.
+    /// The implementations arrive at compile, one per entry, name-checked.
+    pub externs: Vec<ExternSpec>,
     pub name: String,
     pub in_cols: Vec<Col>,
     pub out_cols: Vec<Col>,
     pub blocks: Vec<Block>,
+}
+
+/// One declared extern: a scalar UDF in Confit's type vocabulary. Every
+/// param and return is nullable by contract (DRAFT-22), so nullability is
+/// not spelled here — the `ecall` operand layout carries the flags.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ExternSpec {
+    pub name: String,
+    pub params: Vec<Ty>,
+    pub rets: Vec<Ty>,
 }
 
 /// One entry of [`Program::regexes`]; `rewrite` is a rust replacement
@@ -925,6 +954,7 @@ impl Inst {
                 all.extend(dsts.iter().copied());
                 all
             }
+            Inst::ExternCall { dsts, .. } => dsts.clone(),
             Inst::ProbeRange { start, end, .. } => vec![*start, *end],
             Inst::ProbeRead { dsts, .. } => dsts.clone(),
             Inst::Store { .. } | Inst::StoreOpt { .. } => vec![],
@@ -1068,6 +1098,14 @@ impl Inst {
                 }
                 for k in keys {
                     *k = m(*k);
+                }
+            }
+            Inst::ExternCall { dsts, args, .. } => {
+                for d in dsts {
+                    *d = m(*d);
+                }
+                for a in args {
+                    *a = m(*a);
                 }
             }
         }

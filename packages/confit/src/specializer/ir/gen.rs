@@ -771,6 +771,7 @@ pub fn gen_program(seed: u64) -> Program {
     Program {
         statics,
         regexes: Vec::new(),
+        externs: Vec::new(),
         name: "fuzzed".to_string(),
         in_cols,
         out_cols,

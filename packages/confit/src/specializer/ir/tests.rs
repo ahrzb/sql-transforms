@@ -151,6 +151,7 @@ entry:
     let p = Program {
         statics: vec![],
         regexes: vec![],
+        externs: vec![],
         name: "f".into(),
         in_cols: vec![Col {
             name: "a".into(),
@@ -306,6 +307,113 @@ entry:
   emit
 }"#,
         "has 2 value column(s), probe defines 1",
+    );
+}
+
+// ------------------------------------------------------------- externs --
+// DRAFT-22 step 2: opaque UDF calls. Args are (validity i1, payload) pairs
+// per declared param; dsts are a whole-call validity plus (validity i1,
+// payload) pairs per declared return.
+
+#[test]
+fn extern_call_round_trips_and_verifies() {
+    let text = r#"extern @0: "__cf_tf0" (i64, f64) -> (f64)
+
+fn f(in: batch{id: i64?, x: f64}, out: batch{z: f64?}) {
+b0:
+  %idf, %idv = load.opt in.id
+  %xv = load in.x
+  %t = const.i1 true
+  %w, %zf, %zv = ecall @0, %idf, %idv, %t, %xv
+  store.opt out.z, %zf, %zv
+  emit
+}"#;
+    let p = verified(text);
+    assert_eq!(p.externs.len(), 1);
+    assert_eq!(p.externs[0].name, "__cf_tf0");
+    let printed = print(&p);
+    let p2 = parsed(&printed);
+    assert_eq!(p2, p, "extern round-trip changed the program:\n{printed}");
+    assert_eq!(print(&p2), printed, "printing is not a fixpoint");
+}
+
+#[test]
+fn extern_call_width_two_round_trips() {
+    let text = r#"extern @0: "wide" (f64) -> (f64, f64)
+
+fn f(in: batch{x: f64}, out: batch{a: f64?, b: f64?}) {
+b0:
+  %xv = load in.x
+  %t = const.i1 true
+  %w, %af, %av, %bf, %bv = ecall @0, %t, %xv
+  store.opt out.a, %af, %av
+  store.opt out.b, %bf, %bv
+  emit
+}"#;
+    let p = verified(text);
+    let printed = print(&p);
+    assert_eq!(parsed(&printed), p, "width-2 round-trip changed:\n{printed}");
+}
+
+#[test]
+fn rejects_ecall_on_unknown_or_misshapen_extern() {
+    // Unknown extern id: caught at parse (same guard as probe's @N).
+    let err = parse(
+        r#"fn f(in: batch{x: f64}, out: batch{z: f64?}) {
+b0:
+  %xv = load in.x
+  %t = const.i1 true
+  %w, %zf, %zv = ecall @0, %t, %xv
+  store.opt out.z, %zf, %zv
+  emit
+}"#,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("unknown extern"),
+        "got: {err}"
+    );
+    // Wrong arg shape: one (flag, payload) pair short.
+    assert_verify_rejects(
+        r#"extern @0: "tf" (i64, f64) -> (f64)
+
+fn f(in: batch{x: f64}, out: batch{z: f64?}) {
+b0:
+  %xv = load in.x
+  %t = const.i1 true
+  %w, %zf, %zv = ecall @0, %t, %xv
+  store.opt out.z, %zf, %zv
+  emit
+}"#,
+        "takes 2 param(s)",
+    );
+    // Wrong dst shape: missing the whole-call validity.
+    assert_verify_rejects(
+        r#"extern @0: "tf" (f64) -> (f64)
+
+fn f(in: batch{x: f64}, out: batch{z: f64?}) {
+b0:
+  %xv = load in.x
+  %t = const.i1 true
+  %zf, %zv = ecall @0, %t, %xv
+  store.opt out.z, %zf, %zv
+  emit
+}"#,
+        "1 return(s)",
+    );
+    // Wrong payload type: str arg against an f64 param.
+    assert_verify_rejects(
+        r#"extern @0: "tf" (f64) -> (f64)
+
+fn f(in: batch{x: str}, out: batch{z: f64?}) {
+b0:
+  %xv = load in.x
+  %t = const.i1 true
+  %w, %zf, %zv = ecall @0, %t, %xv
+  store.opt out.z, %zf, %zv
+  emit
+}"#,
+        "must be f64, got str",
     );
 }
 
@@ -539,6 +647,7 @@ fn api_program(statics: Vec<super::StaticTy>, name: &str, blocks: Vec<super::Blo
     Program {
         statics,
         regexes: vec![],
+        externs: vec![],
         name: name.into(),
         in_cols: vec![],
         out_cols: vec![Col {
@@ -653,6 +762,7 @@ fn non_canonical_nan_payload_round_trips() {
     let p = Program {
         statics: vec![],
         regexes: vec![],
+        externs: vec![],
         name: "f".into(),
         in_cols: vec![],
         out_cols: vec![Col {

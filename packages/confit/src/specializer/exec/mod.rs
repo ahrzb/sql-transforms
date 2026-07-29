@@ -327,6 +327,25 @@ pub fn canon_f64_bits(x: f64) -> u64 {
     }
 }
 
+/// One extern (UDF) implementation, supplied to `compile_ext` alongside the
+/// program — one per declared [`super::ir::ExternSpec`], name-checked.
+///
+/// The callable takes one `Option<ScalarVal>` per declared param (`None` =
+/// NULL) and returns:
+/// * `Ok(None)` — the whole call is NULL (every output NULL; at the width-k
+///   output boundary this is the NULL list, distinct from a list of NULLs);
+/// * `Ok(Some(vals))` — one `Option<ScalarVal>` per declared return;
+/// * `Err(msg)` — trap the whole call (a raised Python exception).
+///
+/// Both backends route through [`interp::call_extern`], which enforces the
+/// declared return shape (wrong length/type -> named trap) — the shared-code
+/// rule that keeps the backends from drifting.
+pub struct ExternImpl {
+    pub name: String,
+    #[allow(clippy::type_complexity)]
+    pub fun: Box<dyn Fn(&[Option<ScalarVal>]) -> Result<Option<Vec<Option<ScalarVal>>>, String>>,
+}
+
 /// Runtime payload for a static structure, supplied to `compile` alongside
 /// the program and type-checked against its `StaticTy` declaration.
 pub enum StaticData {

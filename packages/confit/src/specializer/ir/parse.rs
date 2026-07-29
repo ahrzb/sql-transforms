@@ -527,6 +527,44 @@ impl Parser {
                 rewrite,
             });
         }
+        let mut externs: Vec<super::ExternSpec> = Vec::new();
+        while matches!(self.peek(), Tok::Ident(s) if s == "extern") {
+            self.bump();
+            self.expect(Tok::At)?;
+            let idx = self.int_literal("extern index")?;
+            if idx != externs.len() as i64 {
+                return Err(self.err(format!(
+                    "extern ids must be dense and in order: expected @{}, found @{idx}",
+                    externs.len()
+                )));
+            }
+            self.expect(Tok::Colon)?;
+            let name = match self.bump() {
+                Tok::Str(s) => s,
+                other => {
+                    return Err(self.err(format!(
+                        "expected an extern name string, found {}",
+                        other.show()
+                    )))
+                }
+            };
+            self.expect(Tok::LParen)?;
+            let params = if *self.peek() == Tok::RParen {
+                Vec::new()
+            } else {
+                self.ty_list()?
+            };
+            self.expect(Tok::RParen)?;
+            self.expect(Tok::Arrow)?;
+            self.expect(Tok::LParen)?;
+            let rets = if *self.peek() == Tok::RParen {
+                Vec::new()
+            } else {
+                self.ty_list()?
+            };
+            self.expect(Tok::RParen)?;
+            externs.push(super::ExternSpec { name, params, rets });
+        }
 
         self.keyword("fn")?;
         let name = self.ident("function name")?;
@@ -543,7 +581,7 @@ impl Parser {
 
         let mut raw_blocks: Vec<RawBlock> = Vec::new();
         while *self.peek() != Tok::RBrace {
-            let block = self.block(&statics, &in_cols, &out_cols)?;
+            let block = self.block(&statics, &externs, &in_cols, &out_cols)?;
             raw_blocks.push(block);
         }
         self.expect(Tok::RBrace)?;
@@ -605,6 +643,7 @@ impl Parser {
         Ok(Program {
             statics,
             regexes,
+            externs,
             name,
             in_cols,
             out_cols,
@@ -752,6 +791,7 @@ impl Parser {
     fn block(
         &mut self,
         statics: &[StaticTy],
+        externs: &[super::ExternSpec],
         in_cols: &[Col],
         out_cols: &[Col],
     ) -> Result<RawBlock, ParseError> {
@@ -786,7 +826,7 @@ impl Parser {
             if let Some(term) = self.try_terminator()? {
                 break term;
             }
-            insts.push(self.inst(statics, in_cols, out_cols)?);
+            insts.push(self.inst(statics, externs, in_cols, out_cols)?);
         };
         Ok(RawBlock {
             label,
@@ -870,6 +910,7 @@ impl Parser {
     fn inst(
         &mut self,
         statics: &[StaticTy],
+        externs: &[super::ExternSpec],
         in_cols: &[Col],
         out_cols: &[Col],
     ) -> Result<Inst, ParseError> {
@@ -1356,6 +1397,30 @@ impl Parser {
                     hit,
                     dsts,
                     keys,
+                }
+            }
+            "ecall" => {
+                if dst_names.is_empty() {
+                    return Err(self.err("'ecall' defines at least the whole-call validity"));
+                }
+                self.expect(Tok::At)?;
+                let idx = self.int_literal("extern index")?;
+                if idx < 0 || idx as usize >= externs.len() {
+                    return Err(self.err(format!("unknown extern '@{idx}'")));
+                }
+                let mut args = Vec::new();
+                while *self.peek() == Tok::Comma {
+                    self.bump();
+                    args.push(self.use_value()?);
+                }
+                let mut dsts = Vec::with_capacity(dst_names.len());
+                for i in 0..dst_names.len() {
+                    dsts.push(def!(i));
+                }
+                Inst::ExternCall {
+                    ext: idx as u32,
+                    dsts,
+                    args,
                 }
             }
             "probe.range" => {

@@ -40,7 +40,16 @@ pub fn print(p: &Program) -> String {
         }
         s.push('\n');
     }
-    if !p.statics.is_empty() || !p.regexes.is_empty() {
+    for (i, ex) in p.externs.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            "extern @{i}: {} ({}) -> ({})",
+            quote(&ex.name),
+            tys(&ex.params),
+            tys(&ex.rets)
+        );
+    }
+    if !p.statics.is_empty() || !p.regexes.is_empty() || !p.externs.is_empty() {
         s.push('\n');
     }
     let _ = writeln!(
@@ -233,6 +242,14 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             static_id, idx, ..
         } => {
             let _ = write!(s, "probe.read @{static_id}, {}", val(*idx));
+        }
+        Inst::ExternCall { ext, args, .. } => {
+            let a: Vec<String> = args.iter().map(|v| val(*v)).collect();
+            if a.is_empty() {
+                let _ = write!(s, "ecall @{ext}");
+            } else {
+                let _ = write!(s, "ecall @{ext}, {}", a.join(", "));
+            }
         }
         Inst::Sload { static_id, .. } => {
             let _ = write!(s, "sload @{static_id}");

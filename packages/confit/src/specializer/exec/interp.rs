@@ -90,6 +90,8 @@ struct Ctx<'a> {
     out: &'a mut [OutCol],
     input: &'a Batch,
     statics: &'a [PreparedStatic],
+    /// Extern (UDF) implementations, one per program `extern @N`.
+    externs: &'a [super::ExternImpl],
     /// Stage-B self-join: the batch's rows flattened like multimap values
     /// (nullable -> validity+payload). Empty unless the program declares a
     /// batchmap static.
@@ -152,6 +154,7 @@ pub struct InterpFn {
     blocks: Vec<CBlock>,
     nregs: usize,
     statics: Vec<PreparedStatic>,
+    externs: Vec<super::ExternImpl>,
     in_decl: Vec<(Ty, bool)>,
     out_decl: Vec<Ty>,
     /// True when a batchmap static exists: `run` flattens the batch's
@@ -160,7 +163,32 @@ pub struct InterpFn {
 }
 
 pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, CompileError> {
+    compile_ext(p, statics, Vec::new())
+}
+
+/// [`compile`] plus the extern (UDF) implementations — one per program
+/// `extern @N`, name-checked against the declaration.
+pub fn compile_ext(
+    p: &Program,
+    statics: Vec<StaticData>,
+    externs: Vec<super::ExternImpl>,
+) -> Result<InterpFn, CompileError> {
     verify(p).map_err(CompileError::Verify)?;
+    if externs.len() != p.externs.len() {
+        return Err(CompileError::Static(format!(
+            "program declares {} extern(s), {} implementation(s) provided",
+            p.externs.len(),
+            externs.len()
+        )));
+    }
+    for (i, (spec, imp)) in p.externs.iter().zip(&externs).enumerate() {
+        if spec.name != imp.name {
+            return Err(CompileError::Static(format!(
+                "extern @{i} is declared '{}', implementation is named '{}'",
+                spec.name, imp.name
+            )));
+        }
+    }
     let prepared = prepare_statics(p, statics)?;
     let regexes = compile_regexes(p).map_err(CompileError::Regex)?;
 
@@ -198,6 +226,7 @@ pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, Compil
         blocks,
         nregs,
         statics: prepared,
+        externs,
         in_decl: p.in_cols.iter().map(|c| (c.ty.ty, c.ty.nullable)).collect(),
         out_decl: p.out_cols.iter().map(|c| c.ty.ty).collect(),
         has_batch_map: p.statics.iter().any(|s| matches!(s, StaticTy::BatchMap { .. })),
@@ -251,6 +280,7 @@ impl InterpFn {
                 out: &mut st.out,
                 input,
                 statics: &self.statics,
+                externs: &self.externs,
                 batch_rows: &batch_rows,
                 row,
             };
@@ -300,6 +330,12 @@ impl InterpFn {
     /// The prepared statics, shared with the Cranelift backend's helpers.
     pub(super) fn statics(&self) -> &[PreparedStatic] {
         &self.statics
+    }
+
+    /// The extern implementations, shared with the Cranelift backend's
+    /// `h_extern` helper.
+    pub(super) fn externs(&self) -> &[super::ExternImpl] {
+        &self.externs
     }
 
     /// A `RunState` is only valid for the `InterpFn` that created it —
@@ -431,6 +467,55 @@ fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>
         rows.push(vals);
     }
     rows
+}
+
+/// Execute one extern (UDF) call and enforce the declared return shape —
+/// THE shared function behind `ecall` on both backends (the cranelift
+/// helper delegates here, so the backends cannot drift). Returns the
+/// whole-call validity plus one (validity, payload) pair per declared
+/// return; payloads under a false flag are the type default. A raised
+/// error or a result violating the declaration is a named trap.
+pub(super) fn call_extern(
+    imp: &super::ExternImpl,
+    rets: &[Ty],
+    args: &[Option<ScalarVal>],
+) -> Result<(bool, Vec<(bool, ScalarVal)>), Trap> {
+    let default = |ty: Ty| match ty {
+        Ty::I1 => ScalarVal::I1(false),
+        Ty::I64 => ScalarVal::I64(0),
+        Ty::F64 => ScalarVal::F64(0.0),
+        Ty::Str => ScalarVal::Str(String::new()),
+    };
+    match (imp.fun)(args).map_err(Trap)? {
+        // Whole-call NULL: every component flag false.
+        None => Ok((false, rets.iter().map(|&t| (false, default(t))).collect())),
+        Some(vals) => {
+            if vals.len() != rets.len() {
+                return Err(Trap(format!(
+                    "udf '{}' returned {} value(s), declared {}",
+                    imp.name,
+                    vals.len(),
+                    rets.len()
+                )));
+            }
+            let mut out = Vec::with_capacity(rets.len());
+            for (j, (v, &ty)) in vals.into_iter().zip(rets).enumerate() {
+                match v {
+                    None => out.push((false, default(ty))),
+                    Some(sv) if sv.ty() == ty => out.push((true, sv)),
+                    Some(sv) => {
+                        return Err(Trap(format!(
+                            "udf '{}' output {j} is {}, declared {}",
+                            imp.name,
+                            sv.ty().name(),
+                            ty.name()
+                        )))
+                    }
+                }
+            }
+            Ok((true, out))
+        }
+    }
 }
 
 pub(super) fn prepare_statics(
@@ -2281,6 +2366,38 @@ fn compile_inst(
                             ctx.regs[*di] = default_reg(*ty);
                         }
                     }
+                }
+                Ok(())
+            })
+        }
+        Inst::ExternCall { ext, dsts, args } => {
+            let ei = ext as usize;
+            let dsts: Vec<usize> = dsts.iter().map(|d| sl(slots, *d)).collect();
+            let args: Vec<usize> = args.iter().map(|a| sl(slots, *a)).collect();
+            let param_tys = p.externs[ei].params.clone();
+            let ret_tys = p.externs[ei].rets.clone();
+            Box::new(move |ctx| {
+                let mut a = Vec::with_capacity(param_tys.len());
+                for (j, &ty) in param_tys.iter().enumerate() {
+                    let valid = as_i1(ctx.regs[args[2 * j]]);
+                    a.push(if valid {
+                        Some(match ty {
+                            Ty::I1 => ScalarVal::I1(as_i1(ctx.regs[args[2 * j + 1]])),
+                            Ty::I64 => ScalarVal::I64(as_i64(ctx.regs[args[2 * j + 1]])),
+                            Ty::F64 => ScalarVal::F64(as_f64(ctx.regs[args[2 * j + 1]])),
+                            Ty::Str => ScalarVal::Str(
+                                ctx.arena.get(as_str(ctx.regs[args[2 * j + 1]])).to_string(),
+                            ),
+                        })
+                    } else {
+                        None
+                    });
+                }
+                let (whole, outs) = call_extern(&ctx.externs[ei], &ret_tys, &a)?;
+                ctx.regs[dsts[0]] = RegVal::I1(whole);
+                for (j, (f, v)) in outs.iter().enumerate() {
+                    ctx.regs[dsts[1 + 2 * j]] = RegVal::I1(*f);
+                    ctx.regs[dsts[2 + 2 * j]] = scalar_to_reg(v, ctx.arena);
                 }
                 Ok(())
             })

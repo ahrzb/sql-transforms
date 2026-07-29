@@ -59,6 +59,8 @@ struct Cx {
     statics_len: usize,
     regexes: *const CompiledRe,
     regexes_len: usize,
+    externs: *const super::ExternImpl,
+    externs_len: usize,
     trap: Option<Trap>,
 }
 
@@ -94,6 +96,14 @@ struct ProbeDesc {
     static_id: usize,
     key_tys: Vec<Ty>,
     val_tys: Vec<Ty>,
+}
+
+/// Per-ecall-site descriptor owned by the `CraneliftFn`; the JIT'd code
+/// passes its absolute address to `h_extern`.
+struct ExternDesc {
+    ext_id: usize,
+    param_tys: Vec<Ty>,
+    ret_tys: Vec<Ty>,
 }
 
 /// One 16-byte scratch cell: scalar payload in `[0]` (f64 as bits, bool as
@@ -901,6 +911,57 @@ extern "C" fn h_probe(
     }
 }
 
+/// Extern (UDF) call: gather `Option<ScalarVal>` args from the arg cells,
+/// delegate to the SAME [`interp::call_extern`] the interpreter uses, and
+/// write the whole-call validity plus (validity, payload) pairs to the out
+/// cells. A callable error or declaration violation sets the trap flag.
+extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, outs: *mut Cell) {
+    let c = unsafe { cx(p) };
+    let desc = unsafe { &*desc };
+    let args = unsafe { std::slice::from_raw_parts(args, 2 * desc.param_tys.len()) };
+    let mut a = Vec::with_capacity(desc.param_tys.len());
+    {
+        let arena = unsafe { &*c.arena };
+        for (j, &ty) in desc.param_tys.iter().enumerate() {
+            let valid = args[2 * j][0] != 0;
+            let cell = &args[2 * j + 1];
+            a.push(if valid {
+                Some(match ty {
+                    Ty::I1 => ScalarVal::I1(cell[0] != 0),
+                    Ty::I64 => ScalarVal::I64(cell[0] as i64),
+                    Ty::F64 => ScalarVal::F64(f64::from_bits(cell[0])),
+                    Ty::Str => ScalarVal::Str(
+                        arena.get(span(cell[0] as i64, cell[1] as i64)).to_string(),
+                    ),
+                })
+            } else {
+                None
+            });
+        }
+    }
+    let imps = unsafe { std::slice::from_raw_parts(c.externs, c.externs_len) };
+    match interp::call_extern(&imps[desc.ext_id], &desc.ret_tys, &a) {
+        Err(t) => c.set_trap(t.0),
+        Ok((whole, comps)) => {
+            unsafe { *outs = [whole as u64, 0] };
+            let arena = c.arena();
+            for (j, (f, v)) in comps.iter().enumerate() {
+                unsafe { *outs.add(1 + 2 * j) = [*f as u64, 0] };
+                let cell: Cell = match v {
+                    ScalarVal::I1(x) => [*x as u64, 0],
+                    ScalarVal::I64(x) => [*x as u64, 0],
+                    ScalarVal::F64(x) => [x.to_bits(), 0],
+                    ScalarVal::Str(s) => {
+                        let r = arena.push_str(s);
+                        [r.off as u64, r.len as u64]
+                    }
+                };
+                unsafe { *outs.add(2 + 2 * j) = cell };
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------ the JIT'd fn --
 
 type RowFn = extern "C" fn(*mut Cx) -> i64;
@@ -916,6 +977,7 @@ pub struct CraneliftFn {
     /// Owned backing for absolute addresses baked into the code.
     _const_strs: Vec<Box<str>>,
     _probe_descs: Vec<Box<ProbeDesc>>,
+    _extern_descs: Vec<Box<ExternDesc>>,
 }
 
 /// A JIT'd value: scalars are one CLIF value, strings are (offset, length).
@@ -950,6 +1012,16 @@ fn clif_ty(ty: Ty) -> types::Type {
 }
 
 pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<CraneliftFn, CompileError> {
+    compile_ext(p, statics, Vec::new())
+}
+
+/// [`compile`] plus the extern (UDF) implementations — one per program
+/// `extern @N`, validated by the interpreter compile below.
+pub fn compile_ext(
+    p: &Program,
+    statics: Vec<super::StaticData>,
+    externs: Vec<super::ExternImpl>,
+) -> Result<CraneliftFn, CompileError> {
     // Stage-B multiplicity programs (EmitTo loops / multimap probes) are
     // interpreter-only for now: rejecting here makes the caller's existing
     // interp fallback the documented 'many' path. The match arms below can
@@ -970,8 +1042,8 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
         ));
     }
     // The interpreter compile also runs verify + prepare_statics; its
-    // prepared statics are the ones the helpers read.
-    let interp = interp::compile(p, statics)?;
+    // prepared statics (and extern impls) are the ones the helpers read.
+    let interp = interp::compile_ext(p, statics, externs)?;
 
     let mut flags = settings::builder();
     flags.set("use_colocated_libcalls", "false").unwrap();
@@ -1006,6 +1078,7 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
 
     let mut const_strs: Vec<Box<str>> = Vec::new();
     let mut probe_descs: Vec<Box<ProbeDesc>> = Vec::new();
+    let mut extern_descs: Vec<Box<ExternDesc>> = Vec::new();
     let mut trap_msgs: Vec<String> = Vec::new();
 
     {
@@ -1013,7 +1086,16 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
 
         // Scratch stack slots: one 16-byte out-cell for helper out-params,
-        // plus room for the widest probe's keys and values.
+        // plus room for the widest probe's keys and values — and the widest
+        // ecall's arg cells (2 per param) and out cells (1 + 2 per return),
+        // which share the same scratch slots.
+        let ext_args = p.externs.iter().map(|e| 2 * e.params.len()).max().unwrap_or(0);
+        let ext_outs = p
+            .externs
+            .iter()
+            .map(|e| 1 + 2 * e.rets.len())
+            .max()
+            .unwrap_or(0);
         let max_keys = p
             .statics
             .iter()
@@ -1023,6 +1105,7 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
             })
             .max()
             .unwrap_or(1)
+            .max(ext_args)
             .max(1);
         let max_vals = p
             .statics
@@ -1033,6 +1116,7 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
             })
             .max()
             .unwrap_or(1)
+            .max(ext_outs)
             .max(1);
         let slot_out =
             b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
@@ -1104,6 +1188,7 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
                     slot_vals,
                     &mut const_strs,
                     &mut probe_descs,
+                    &mut extern_descs,
                     trap_exit,
                 );
             }
@@ -1200,6 +1285,7 @@ pub fn compile(p: &Program, statics: Vec<super::StaticData>) -> Result<Cranelift
         regexes,
         _const_strs: const_strs,
         _probe_descs: probe_descs,
+        _extern_descs: extern_descs,
     })
 }
 
@@ -1220,6 +1306,7 @@ impl CraneliftFn {
         interp::reserve_out(&mut st.out, input.rows);
 
         let statics = self.interp.statics();
+        let externs = self.interp.externs();
         let mut emitted = 0usize;
         for row in 0..input.rows {
             let mut cx = Cx {
@@ -1233,6 +1320,8 @@ impl CraneliftFn {
                 statics_len: statics.len(),
                 regexes: self.regexes.as_ptr(),
                 regexes_len: self.regexes.len(),
+                externs: externs.as_ptr(),
+                externs_len: externs.len(),
                 trap: None,
             };
             match (self.row_fn)(&mut cx) {
@@ -1263,6 +1352,7 @@ fn translate_inst(
     slot_vals: cranelift_codegen::ir::StackSlot,
     const_strs: &mut Vec<Box<str>>,
     probe_descs: &mut Vec<Box<ProbeDesc>>,
+    extern_descs: &mut Vec<Box<ExternDesc>>,
     trap_exit: cranelift_codegen::ir::Block,
 ) {
     // After any fallible helper: check trap_flag (offset 0 of Cx) and bail.
@@ -1277,6 +1367,74 @@ fn translate_inst(
     match inst {
         Inst::ProbeRange { .. } | Inst::ProbeRead { .. } => {
             unreachable!("multiplicity programs are rejected before codegen")
+        }
+        Inst::ExternCall { ext, dsts, args } => {
+            let spec = &p.externs[*ext as usize];
+            // Write the arg cells: (flag, payload) per param, one cell each.
+            // Payloads under a false flag are never read by the helper.
+            for (i, a) in args.iter().enumerate() {
+                let base = (16 * i) as i32;
+                match vals[&a.0] {
+                    V::S(v) => {
+                        let is_flag = i % 2 == 0;
+                        let as64 = if is_flag {
+                            b.ins().uextend(types::I64, v)
+                        } else {
+                            match spec.params[i / 2] {
+                                Ty::I1 => b.ins().uextend(types::I64, v),
+                                Ty::I64 => v,
+                                Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
+                                Ty::Str => unreachable!("str payload is a two-i64 V::Str"),
+                            }
+                        };
+                        b.ins().stack_store(as64, slot_keys, base);
+                    }
+                    V::Str(o, l) => {
+                        b.ins().stack_store(o, slot_keys, base);
+                        b.ins().stack_store(l, slot_keys, base + 8);
+                    }
+                }
+            }
+            let desc = Box::new(ExternDesc {
+                ext_id: *ext as usize,
+                param_tys: spec.params.clone(),
+                ret_tys: spec.rets.clone(),
+            });
+            let desc_ptr = &*desc as *const ExternDesc as i64;
+            extern_descs.push(desc);
+            let dp = icon(b, desc_ptr);
+            let ap = b.ins().stack_addr(types::I64, slot_keys, 0);
+            let op = b.ins().stack_addr(types::I64, slot_vals, 0);
+            call_h(b, module, "h_extern", &[cxp, dp, ap, op]);
+            trap_check(b);
+            // Read the out cells: whole-call validity, then (flag, payload)
+            // per return.
+            for (i, d) in dsts.iter().enumerate() {
+                let base = (16 * i) as i32;
+                let is_flag = i == 0 || i % 2 == 1;
+                let v = if is_flag {
+                    let x = b.ins().stack_load(types::I64, slot_vals, base);
+                    V::S(b.ins().ireduce(types::I8, x))
+                } else {
+                    match spec.rets[i / 2 - 1] {
+                        Ty::I1 => {
+                            let x = b.ins().stack_load(types::I64, slot_vals, base);
+                            V::S(b.ins().ireduce(types::I8, x))
+                        }
+                        Ty::I64 => V::S(b.ins().stack_load(types::I64, slot_vals, base)),
+                        Ty::F64 => {
+                            let x = b.ins().stack_load(types::I64, slot_vals, base);
+                            V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))
+                        }
+                        Ty::Str => {
+                            let o = b.ins().stack_load(types::I64, slot_vals, base);
+                            let l = b.ins().stack_load(types::I64, slot_vals, base + 8);
+                            V::Str(o, l)
+                        }
+                    }
+                };
+                vals.insert(d.0, v);
+            }
         }
         Inst::Const { dst, lit } => {
             let v = match lit {
@@ -1968,6 +2126,7 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_store_str", h_store_str as *const u8),
     ("h_sload", h_sload as *const u8),
     ("h_probe", h_probe as *const u8),
+    ("h_extern", h_extern as *const u8),
     ("h_ln", h_ln as *const u8),
     ("h_log2", h_log2 as *const u8),
     ("h_log10", h_log10 as *const u8),
@@ -2059,6 +2218,7 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_store_str" => (&[ptr, I64, I8, I64, I64], None),
         "h_sload" => (&[ptr, I64, I64, I64], None),
         "h_probe" => (&[ptr, I64, I64, I64], Some(I8)),
+        "h_extern" => (&[ptr, I64, I64, I64], None),
         _ => unreachable!("unknown helper {name}"),
     };
     for p in params {

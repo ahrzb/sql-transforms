@@ -223,6 +223,25 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
             // check reports the arity mismatch.
             v
         }
+        Inst::ExternCall { ext, dsts, .. } => {
+            // Whole-call validity, then (validity, payload) per return.
+            // Dsts beyond the declared shape keep no type; the site check
+            // reports the arity mismatch.
+            let mut v = Vec::new();
+            let rets: &[Ty] = match p.externs.get(*ext as usize) {
+                Some(spec) => &spec.rets,
+                None => &[],
+            };
+            let mut want = vec![Ty::I1];
+            for r in rets {
+                want.push(Ty::I1);
+                want.push(*r);
+            }
+            for (d, ty) in dsts.iter().zip(want.iter()) {
+                v.push((*d, *ty));
+            }
+            v
+        }
         Inst::ProbeRange { start, end, .. } => vec![(*start, Ty::I64), (*end, Ty::I64)],
         Inst::ProbeRead {
             static_id, dsts, ..
@@ -587,6 +606,69 @@ fn check_block(
                     i,
                     format!("@{static_id} is a multimap: use probe.range"),
                 ),
+            },
+            Inst::ExternCall { ext, dsts, args } => match p.externs.get(*ext as usize) {
+                None => err(errs, Some(bi), i, format!("unknown extern @{ext}")),
+                Some(spec) => {
+                    if args.len() != 2 * spec.params.len() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!(
+                                "extern @{ext} takes {} param(s) — ecall passes {} operand(s), \
+                                 want a (validity, payload) pair per param",
+                                spec.params.len(),
+                                args.len()
+                            ),
+                        );
+                    } else {
+                        for (j, pt) in spec.params.iter().enumerate() {
+                            want(
+                                &in_scope,
+                                def_types,
+                                args[2 * j],
+                                Ty::I1,
+                                "ecall arg validity",
+                                bi,
+                                i,
+                                errs,
+                            );
+                            want(
+                                &in_scope,
+                                def_types,
+                                args[2 * j + 1],
+                                *pt,
+                                "ecall arg payload",
+                                bi,
+                                i,
+                                errs,
+                            );
+                        }
+                    }
+                    if spec.rets.is_empty() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!("extern @{ext} declares no returns"),
+                        );
+                    }
+                    if dsts.len() != 1 + 2 * spec.rets.len() {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!(
+                                "extern @{ext} has {} return(s) — ecall defines {} value(s), \
+                                 want the whole-call validity plus a (validity, payload) pair \
+                                 per return",
+                                spec.rets.len(),
+                                dsts.len()
+                            ),
+                        );
+                    }
+                }
             },
             Inst::ProbeRange {
                 static_id, keys, ..
