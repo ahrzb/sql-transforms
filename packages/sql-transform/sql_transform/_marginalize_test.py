@@ -110,17 +110,21 @@ def test_golden_single_partition():
     (spec,) = m.params
     assert spec.name == "__CF_PARAMS_0__"
     assert spec.keys == ("country",)
-    # Fit is two-stage: windows_sql reruns the original computation (the
+    # The fit plan: the level step reruns the original computation (the
     # original items pin the window-operator chain; GROUP BY or a solo window
     # query would sum floats in a different order — ulp drift, fuzz-found),
-    # then fit_sql collapses the materialized values.
-    assert m.windows_sql == (
-        "SELECT (age - avg(age) OVER (PARTITION BY country)) AS __cf_o0,"
+    # then the collapse step picks the materialized values.
+    level, collapse = m.plan
+    assert level.name == "__CF_LEVEL_0__" and level.reads == ("__THIS__",)
+    assert level.sql == (
+        "SELECT (age - avg(age) OVER (PARTITION BY country)) AS d,"
         " avg(age) OVER (PARTITION BY country) AS __cf_w0, country AS __cf_k0"
         " FROM __THIS__"
     )
-    assert spec.fit_sql == (
-        "SELECT DISTINCT __cf_k0 AS country, __cf_w0 AS __cf_a0 FROM __CF_WINDOWS__"
+    assert collapse.name == "__CF_PARAMS_0__"
+    assert collapse.reads == ("__CF_LEVEL_0__",)
+    assert collapse.sql == (
+        "SELECT DISTINCT __cf_k0 AS country, __cf_w0 AS __cf_a0 FROM __CF_LEVEL_0__"
     )
 
 
@@ -132,15 +136,18 @@ def test_golden_two_keysets_and_dedupe():
         " fare - avg(fare) OVER () AS fare_c FROM __THIS__"
     )
     p0, p1 = m.params
+    sqls = {step.name: step.sql for step in m.plan}
     # avg(age) appears twice under the same key set: one column.
-    assert p0.fit_sql == (
+    assert sqls["__CF_PARAMS_0__"] == (
         "SELECT DISTINCT __cf_k0 AS country, __cf_w0 AS __cf_a0,"
-        " __cf_w1 AS __cf_a1 FROM __CF_WINDOWS__"
+        " __cf_w1 AS __cf_a1 FROM __CF_LEVEL_0__"
     )
     assert p1.keys == ()
-    assert p1.fit_sql == "SELECT DISTINCT __cf_w2 AS __cf_a0 FROM __CF_WINDOWS__"
-    assert m.windows_sql.count("__cf_w") == 3
-    assert "avg(fare) OVER () AS __cf_w2" in m.windows_sql
+    assert sqls["__CF_PARAMS_1__"] == (
+        "SELECT DISTINCT __cf_w2 AS __cf_a0 FROM __CF_LEVEL_0__"
+    )
+    assert sqls["__CF_LEVEL_0__"].count("__cf_w") == 3
+    assert "avg(fare) OVER () AS __cf_w2" in sqls["__CF_LEVEL_0__"]
     # Keyless params (exactly one row) join via LEFT JOIN ON (1 = 1) — never a
     # CROSS join, whose comma print form re-parses with other associativity.
     assert "LEFT JOIN __CF_PARAMS_1__ AS __cf_p1 ON ((1 = 1))" in m.serving_sql
@@ -174,9 +181,12 @@ def test_qualified_this_refs_are_normalized():
         "SELECT __THIS__.age - avg(__THIS__.age) OVER () AS d FROM __THIS__"
     )
     assert "__cf_t.age" in m.serving_sql
-    (spec,) = m.params
-    assert spec.fit_sql == "SELECT DISTINCT __cf_w0 AS __cf_a0 FROM __CF_WINDOWS__"
-    assert "avg(__THIS__.age) OVER () AS __cf_w0" in m.windows_sql
+    sqls = {step.name: step.sql for step in m.plan}
+    assert sqls["__CF_PARAMS_0__"] == (
+        "SELECT DISTINCT __cf_w0 AS __cf_a0 FROM __CF_LEVEL_0__"
+    )
+    # Fit-side text strips the __THIS__ qualifier (bare against the source).
+    assert "avg(age) OVER () AS __cf_w0" in sqls["__CF_LEVEL_0__"]
 
 
 def test_star_is_qualified_when_joins_appear():
@@ -259,6 +269,98 @@ def test_collate_order_key_strips_to_the_raw_column():
     assert spec.keys == ("c",)
 
 
+# --- projection chains and scalar subqueries (loop 3) ------------------------
+
+
+def test_golden_cte_flattens_with_empty_plan():
+    m = marginalize(
+        "WITH a AS (SELECT x + 1 AS b FROM __THIS__) SELECT b * 2 AS c FROM a"
+    )
+    assert m.plan == ()
+    assert m.params == ()
+    assert m.serving_sql == "SELECT ((__cf_t.x + 1) * 2) AS c FROM __THIS__ AS __cf_t"
+
+
+def test_golden_derived_table_flattens():
+    m = marginalize("SELECT c FROM (SELECT x + 1 AS c FROM __THIS__) AS sub")
+    assert m.serving_sql == "SELECT (__cf_t.x + 1) AS c FROM __THIS__ AS __cf_t"
+
+
+def test_golden_cte_column_aliases():
+    m = marginalize("WITH a(z) AS (SELECT x + 1 FROM __THIS__) SELECT z FROM a")
+    assert m.serving_sql == "SELECT (__cf_t.x + 1) AS z FROM __THIS__ AS __cf_t"
+
+
+def test_golden_nested_aggregation_dag():
+    # The DAG case: the second aggregate depends on the first level's output.
+    m = marginalize(
+        "WITH c AS (SELECT x - avg(x) OVER () AS cx FROM __THIS__)"
+        " SELECT stddev_samp(cx) OVER () AS s FROM c"
+    )
+    names = [step.name for step in m.plan]
+    assert names == [
+        "__CF_LEVEL_0__",
+        "__CF_PARAMS_0__",
+        "__CF_LEVEL_1__",
+        "__CF_PARAMS_1__",
+    ]
+    steps = {s.name: s for s in m.plan}
+    assert steps["__CF_LEVEL_1__"].reads == ("__CF_LEVEL_0__",)
+    assert "stddev_samp(cx) OVER () AS __cf_w1" in steps["__CF_LEVEL_1__"].sql
+    assert "__cf_p1.__cf_a0 AS s" in m.serving_sql
+
+
+def test_golden_scalar_subquery_runs_verbatim():
+    m = marginalize("SELECT x / (SELECT max(x) FROM __THIS__) AS xn FROM __THIS__")
+    (step,) = m.plan
+    assert step.name == "__CF_PARAMS_0__"
+    assert step.sql == "SELECT (SELECT max(x) FROM __THIS__) AS __cf_a0"
+    assert step.reads == ("__THIS__",)
+    assert m.serving_sql == (
+        "SELECT (__cf_t.x / __cf_p0.__cf_a0) AS xn FROM __THIS__ AS __cf_t"
+        " LEFT JOIN __CF_PARAMS_0__ AS __cf_p0 ON ((1 = 1))"
+    )
+
+
+def test_golden_exists_subquery():
+    m = marginalize(
+        "SELECT EXISTS(SELECT 1 FROM __THIS__ WHERE x > 5) AS any_big FROM __THIS__"
+    )
+    (step,) = m.plan
+    assert "EXISTS" in step.sql
+    assert "__cf_p0.__cf_a0 AS any_big" in m.serving_sql
+
+
+def test_scalar_subquery_may_contain_anything_over_this():
+    # WHERE/GROUP BY inside a scalar subquery are fine: it is a scalar
+    # computation run verbatim, not a projection.
+    m = marginalize(
+        "SELECT x - (SELECT avg(x) FROM __THIS__ WHERE x > 0) AS d FROM __THIS__"
+    )
+    (step,) = m.plan
+    assert "WHERE" in step.sql
+
+
+def test_star_expansion_through_cte():
+    m = marginalize("WITH a AS (SELECT x + 1 AS b, y FROM __THIS__) SELECT * FROM a")
+    assert m.serving_sql == (
+        "SELECT (__cf_t.x + 1) AS b, __cf_t.y AS y FROM __THIS__ AS __cf_t"
+    )
+
+
+def test_windows_at_upper_level_key_on_projected_expressions():
+    m = marginalize(
+        "WITH a AS (SELECT lower(k) AS lk, x FROM __THIS__)"
+        " SELECT avg(x) OVER (PARTITION BY lk) AS m FROM a"
+    )
+    (spec,) = m.params
+    assert spec.keys == ("lk",)
+    # Serving joins by the substituted expression, fit keys by the level column.
+    assert "lower(__cf_t.k) IS NOT DISTINCT FROM __cf_p0.lk" in m.serving_sql
+    steps = {s.name: s for s in m.plan}
+    assert "lk AS __cf_k0" in steps["__CF_LEVEL_1__"].sql
+
+
 # --- the refusal table -------------------------------------------------------
 
 REFUSALS = [
@@ -270,11 +372,9 @@ REFUSALS = [
     ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
     ("SELECT a FROM __THIS__ LIMIT 5", "LIMIT"),
     ("SELECT DISTINCT a FROM __THIS__", "DISTINCT"),
-    ("WITH x AS (SELECT 1) SELECT a FROM __THIS__", "common table"),
-    ("SELECT (SELECT 1) FROM __THIS__", "subquery"),
-    ("SELECT a FROM __THIS__ JOIN s ON true", "FROM must be exactly __THIS__"),
+    ("SELECT a FROM __THIS__ JOIN s ON true", "joins and set operations"),
     ("SELECT a FROM other_table", "row table must be __THIS__"),
-    ("SELECT 1", "FROM must be exactly __THIS__"),
+    ("SELECT 1", "joins and set operations"),
     ("SELECT a FROM __THIS__ AS x", "alias on __THIS__"),
     ("SELECT a FROM __THIS__ UNION SELECT 1", "query kind"),
     ("SELECT 1; SELECT 2", "multiple SQL statements"),
@@ -317,6 +417,34 @@ REFUSALS = [
         "SELECT avg(a) OVER (PARTITION BY (SELECT 1)) FROM __THIS__",
         "subquery inside a partition or order key",
     ),
+    # loop 3: chains and subqueries
+    ("SELECT x IN (SELECT y FROM __THIS__) FROM __THIS__", "IN/ANY"),
+    ("SELECT x = ANY(SELECT y FROM __THIS__) FROM __THIS__", "IN/ANY"),
+    (
+        "SELECT (SELECT max(y) FROM other) FROM __THIS__",
+        "table other inside a subquery",
+    ),
+    ("SELECT $1 + a FROM __THIS__", "prepared-statement parameter"),
+    ("SELECT a + 1 AS b, b * 2 FROM __THIS__", "lateral alias"),
+    ("WITH a AS (SELECT 1) SELECT x FROM __THIS__", "unused CTE a"),
+    ("WITH a AS (SELECT * FROM a) SELECT * FROM a", "referenced more than once"),
+    (
+        "WITH a AS (SELECT x AS n, y AS n FROM __THIS__) SELECT n FROM a",
+        "duplicate output name n",
+    ),
+    (
+        "WITH a AS (SELECT x FROM __THIS__) SELECT __THIS__.x FROM a",
+        "__THIS__ is not in scope",
+    ),
+    (
+        "WITH a AS (SELECT x AS s FROM __THIS__) SELECT s.f FROM a",
+        "struct-field access through a projected expression",
+    ),
+    (
+        "WITH a AS (SELECT * EXCLUDE (x) FROM __THIS__) SELECT y FROM a",
+        "EXCLUDE",
+    ),
+    ("SELECT a FROM (SELECT b FROM __THIS__ WHERE b > 0)", "WHERE"),
     ("SELECT avg(a) OVER () AS __cf_x FROM __THIS__", "reserved prefix"),
     ("SELECT __CF_PARAMS_0__.a FROM __THIS__", "reserved prefix"),
     ("SELECT COLUMNS('a.*') FROM __THIS__", "COLUMNS"),
@@ -336,7 +464,7 @@ def test_serving_sql_reparses_through_the_oracle():
         " / stddev_samp(age) OVER (PARTITION BY country) AS age_z,"
         " fare - avg(fare) OVER () AS fare_c FROM __THIS__"
     )
-    for sql in (m.serving_sql, m.windows_sql, *(s.fit_sql for s in m.params)):
+    for sql in (m.serving_sql, *(step.sql for step in m.plan)):
         assert not _serialize(sql).get("error")
 
 

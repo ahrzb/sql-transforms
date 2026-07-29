@@ -64,16 +64,14 @@ class SQLProjection:
             # ponytail: threads=1; a parallel fit needs a determinism story.
             con.execute("SET threads = 1")
             con.register("__THIS__", table)
-            if m.windows_sql is not None:
-                # One execution of the original computation; params collapse
-                # out of its materialized values (see Marginalized docstring).
-                con.register(
-                    "__CF_WINDOWS__", con.execute(m.windows_sql).to_arrow_table()
-                )
-            self._params = {
-                spec.name: con.execute(spec.fit_sql).to_arrow_table()
-                for spec in m.params
-            }
+            # The fit plan is a topologically ordered DAG: run each step,
+            # register its result under its name. Every intermediate is
+            # inspectable and every step is plain SQL runnable by hand.
+            materialized: dict[str, pa.Table] = {}
+            for step in m.plan:
+                materialized[step.name] = con.execute(step.sql).to_arrow_table()
+                con.register(step.name, materialized[step.name])
+            self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()
         return self
@@ -82,6 +80,11 @@ class SQLProjection:
     def serving_sql(self) -> str:
         """The rewritten projection: params joins instead of aggregates."""
         return self._marginalized.serving_sql
+
+    @property
+    def plan(self):
+        """The fit plan: an ordered tuple of named FitSteps (debuggable SQL)."""
+        return self._marginalized.plan
 
     @property
     def params(self) -> dict[str, pa.Table]:

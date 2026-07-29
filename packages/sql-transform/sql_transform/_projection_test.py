@@ -179,6 +179,94 @@ def test_named_window_is_inlined_by_the_parser():
     )
 
 
+# --- projection chains and scalar subqueries (loop 3) ------------------------
+
+
+def test_cte_chain_flattening():
+    gate(
+        "WITH a AS (SELECT age + 1 AS b, name FROM __THIS__)"
+        " SELECT b * 2 AS c, name FROM a"
+    )
+
+
+def test_nested_aggregation_dag():
+    # Standardize, then aggregate the standardized values: the DAG case.
+    gate(
+        "WITH c AS (SELECT age - avg(age) OVER () AS cx, country FROM __THIS__)"
+        " SELECT cx / stddev_samp(cx) OVER (PARTITION BY country) AS z FROM c"
+    )
+
+
+def test_three_level_chain():
+    gate(
+        "WITH a AS (SELECT age - avg(age) OVER () AS ca, country FROM __THIS__),"
+        " b AS (SELECT ca * 2 AS cb, country FROM a)"
+        " SELECT cb - avg(cb) OVER (PARTITION BY country) AS m FROM b"
+    )
+
+
+def test_derived_table_with_windows():
+    gate(
+        "SELECT z + 1 AS z1 FROM"
+        " (SELECT (age - avg(age) OVER (PARTITION BY country)) AS z FROM __THIS__)"
+        " AS sub"
+    )
+
+
+def test_upper_level_window_keys_on_projected_expression():
+    gate(
+        "WITH a AS (SELECT substr(country, 1, 1) AS c1, age FROM __THIS__)"
+        " SELECT age - avg(age) OVER (PARTITION BY c1) AS m FROM a"
+    )
+
+
+def test_star_through_cte_with_windows():
+    gate(
+        "WITH a AS (SELECT name, age - avg(age) OVER () AS ca FROM __THIS__)"
+        " SELECT * FROM a"
+    )
+
+
+def test_scalar_subquery():
+    gate("SELECT age / (SELECT max(age) FROM __THIS__) AS r, name FROM __THIS__")
+
+
+def test_scalar_subquery_with_where_and_group_by_inside():
+    gate(
+        "SELECT age - (SELECT avg(age) FROM __THIS__ WHERE fare > 8) AS d,"
+        " (SELECT count(*) FROM (SELECT country FROM __THIS__ GROUP BY country))"
+        " AS n_countries FROM __THIS__"
+    )
+
+
+def test_exists_subquery():
+    gate(
+        "SELECT EXISTS(SELECT 1 FROM __THIS__ WHERE age > 45) AS any_old FROM __THIS__"
+    )
+
+
+def test_scalar_subquery_inside_cte():
+    gate(
+        "WITH a AS (SELECT age / (SELECT max(age) FROM __THIS__) AS r FROM __THIS__)"
+        " SELECT r - avg(r) OVER () AS rc FROM a"
+    )
+
+
+def test_plan_is_inspectable():
+    p = SQLProjection(
+        "WITH c AS (SELECT age - avg(age) OVER () AS cx FROM __THIS__)"
+        " SELECT stddev_samp(cx) OVER () AS s FROM c"
+    )
+    names = [step.name for step in p.plan]
+    assert names == [
+        "__CF_LEVEL_0__",
+        "__CF_PARAMS_0__",
+        "__CF_LEVEL_1__",
+        "__CF_PARAMS_1__",
+    ]
+    assert all(step.sql.startswith("SELECT") for step in p.plan)
+
+
 def test_quoted_and_unicode_identifiers():
     table = pa.table({"país": ["ES", "ES", None], "weird col": [1.0, 2.0, 3.0]})
     gate(
@@ -280,7 +368,32 @@ def test_fuzz_differential():
                 ]
             )
             exprs.append(f"{template} AS e{i}")
-        gate(f"SELECT {', '.join(exprs)} FROM __THIS__", table)
+        inner = f"SELECT {', '.join(exprs)} FROM __THIS__"
+        shape = rng.randrange(4)
+        if shape == 0:
+            gate(inner, table)
+        elif shape == 1:
+            # wrap in a CTE and project over it
+            outer = ", ".join(f"e{j} AS f{j}" for j in range(len(exprs)))
+            gate(f"WITH c AS ({inner}) SELECT {outer} FROM c", table)
+        elif shape == 2:
+            # a second aggregation level over the first (numeric, type-safe)
+            k_in = rng.choice(["PARTITION BY k1", "PARTITION BY k2", ""])
+            k_out = rng.choice(["PARTITION BY k1", "PARTITION BY k2, k1", ""])
+            agg2 = rng.choice(["avg", "sum", "median", "stddev_samp"])
+            gate(
+                f"WITH c AS (SELECT x - avg(x) OVER ({k_in}) AS e0, k1, k2"
+                f" FROM __THIS__)"
+                f" SELECT e0 - {agg2}(e0) OVER ({k_out}) AS g0 FROM c",
+                table,
+            )
+        else:
+            # sprinkle a scalar subquery into a fresh projection
+            gate(
+                f"SELECT x - (SELECT {rng.choice(['max', 'min', 'avg'])}(x)"
+                f" FROM __THIS__) AS s0, {exprs[0]} FROM __THIS__",
+                table,
+            )
 
 
 # --- surface: the not-yet-implemented half stays honest ----------------------
