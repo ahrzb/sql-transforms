@@ -18,12 +18,12 @@ use pyo3::types::{PyDict, PySet, PyString};
 use crate::error::InterpError;
 use crate::schema;
 use crate::specializer::exec::cranelift::{self, CraneliftFn};
-use crate::specializer::exec::interp::{compile, InterpFn};
-use crate::specializer::exec::{Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData};
+use crate::specializer::exec::interp::{compile_ext, InterpFn};
+use crate::specializer::exec::{Batch, ColData, ExternImpl, KeyBits, OutCol, ScalarVal, StaticData};
 use crate::specializer::exec::{RunState, Trap};
-use crate::specializer::ir::{Col, ColTy, StaticTy, Ty};
+use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::StaticTable;
-use crate::specializer::{prepare_opaque, StaticSpec};
+use crate::specializer::{prepare_opaque, StaticSpec, WideOut};
 use crate::types::{Base, FieldType};
 
 /// The scalar slice of the type lattice the specializer handles. `None`
@@ -49,6 +49,283 @@ fn ty_to_base(t: Ty) -> Base {
 
 fn build_err(msg: impl Into<String>) -> PyErr {
     InterpError::Build(msg.into()).into()
+}
+
+/// One field of the output boundary: a plain scalar lane, or a width-k UDF
+/// field assembled from its whole-validity lane plus k component lanes
+/// (DRAFT-22: the field is `list | None`, and a NULL whole-validity is the
+/// NULL list — distinct from a list of NULLs).
+#[derive(Clone)]
+pub(crate) enum EmitField {
+    Scalar(usize),
+    Wide {
+        name: String,
+        valid: usize,
+        first: usize,
+        width: usize,
+    },
+}
+
+impl EmitField {
+    fn name<'a>(&'a self, out_cols: &'a [Col]) -> &'a str {
+        match self {
+            EmitField::Scalar(i) => &out_cols[*i].name,
+            EmitField::Wide { name, .. } => name,
+        }
+    }
+}
+
+/// Collapse the engine's out lanes into boundary fields, in projection
+/// order. `wide` entries are frontend-ordered and non-overlapping.
+fn emit_plan(out_cols: &[Col], wide: &[WideOut]) -> Vec<EmitField> {
+    let mut plan = Vec::new();
+    let mut w = wide.iter().peekable();
+    let mut i = 0usize;
+    while i < out_cols.len() {
+        if let Some(wo) = w.peek() {
+            if wo.first as usize == i {
+                plan.push(EmitField::Wide {
+                    name: wo.name.clone(),
+                    valid: i,
+                    first: i + 1,
+                    width: wo.width as usize,
+                });
+                i += 1 + wo.width as usize;
+                w.next();
+                continue;
+            }
+        }
+        plan.push(EmitField::Scalar(i));
+        i += 1;
+    }
+    plan
+}
+
+/// One engine lane's value at row `r`, as a Python object (None for NULL).
+fn lane_py(py: Python<'_>, st: &RunState, lane: usize, r: usize) -> PyResult<Py<PyAny>> {
+    use pyo3::IntoPyObjectExt;
+    Ok(match &st.out[lane] {
+        OutCol::I1(v) => {
+            let (ok, x) = v[r];
+            if ok {
+                x.into_py_any(py)?
+            } else {
+                py.None()
+            }
+        }
+        OutCol::I64(v) => {
+            let (ok, x) = v[r];
+            if ok {
+                x.into_py_any(py)?
+            } else {
+                py.None()
+            }
+        }
+        OutCol::F64(v) => {
+            let (ok, x) = v[r];
+            if ok {
+                x.into_py_any(py)?
+            } else {
+                py.None()
+            }
+        }
+        OutCol::Str(v) => {
+            let (ok, s) = v[r];
+            if ok {
+                st.arena.get(s).into_py_any(py)?
+            } else {
+                py.None()
+            }
+        }
+    })
+}
+
+/// A wide field's value at row `r`: None when the whole-call validity lane
+/// says NULL, else the k-element list (elements may be None).
+pub(crate) fn wide_py(
+    py: Python<'_>,
+    st: &RunState,
+    valid: usize,
+    first: usize,
+    width: usize,
+    r: usize,
+) -> PyResult<Py<PyAny>> {
+    let OutCol::I1(vlane) = &st.out[valid] else {
+        return Err(build_err("internal: wide validity lane is not i1"));
+    };
+    let (ok, whole) = vlane[r];
+    if !(ok && whole) {
+        return Ok(py.None());
+    }
+    let items = (first..first + width)
+        .map(|l| lane_py(py, st, l, r))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(pyo3::types::PyList::new(py, items)?.unbind().into_any())
+}
+
+/// Declared UDFs, parsed off the Python objects at construction: the
+/// engine-facing signature plus the callable itself.
+struct UdfDecl {
+    spec: ExternSpec,
+    obj: Py<PyAny>,
+}
+
+fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
+    let parse_ty = |name: &str, label: &str, s: &str| -> PyResult<Ty> {
+        Ok(match s {
+            "i1" => Ty::I1,
+            "i64" => Ty::I64,
+            "f64" => Ty::F64,
+            "str" => Ty::Str,
+            other => {
+                return Err(build_err(format!(
+                    "udf '{name}': {label} type '{other}' is not one of \
+                     i1/i64/f64/str"
+                )))
+            }
+        })
+    };
+    let mut out: Vec<UdfDecl> = Vec::new();
+    for obj in udfs {
+        let b = obj.bind(py);
+        let name: String = b
+            .getattr("name")
+            .and_then(|v| v.extract())
+            .map_err(|_| build_err("every udf must declare a string `name`"))?;
+        let takes: Vec<String> = b
+            .getattr("takes")
+            .and_then(|v| v.extract())
+            .map_err(|_| build_err(format!("udf '{name}': `takes` must be a tuple of type names")))?;
+        let rets: Vec<String> = b
+            .getattr("returns")
+            .and_then(|v| v.extract())
+            .map_err(|_| {
+                build_err(format!("udf '{name}': `returns` must be a tuple of type names"))
+            })?;
+        if rets.is_empty() {
+            return Err(build_err(format!(
+                "udf '{name}': `returns` must declare at least one type"
+            )));
+        }
+        let mut params = Vec::with_capacity(takes.len() + 1);
+        // The implicit leading instance id (DRAFT-22): objects with an
+        // `instances` attribute are fitted transformers whose first SQL
+        // argument is the nullable i64 id — never written in `takes`.
+        if b.hasattr("instances")? {
+            params.push(Ty::I64);
+        }
+        for t in &takes {
+            params.push(parse_ty(&name, "takes", t)?);
+        }
+        let rets = rets
+            .iter()
+            .map(|t| parse_ty(&name, "returns", t))
+            .collect::<PyResult<Vec<_>>>()?;
+        if out
+            .iter()
+            .any(|d| d.spec.name.eq_ignore_ascii_case(&name))
+        {
+            return Err(build_err(format!("duplicate udf name '{name}'")));
+        }
+        out.push(UdfDecl {
+            spec: ExternSpec {
+                name,
+                params,
+                rets,
+            },
+            obj: obj.clone_ref(py),
+        });
+    }
+    Ok(out)
+}
+
+/// The engine-side implementations: one boxed trampoline per declared UDF.
+/// Each call attaches to Python, converts NULL-masked scalars to Python
+/// values, calls the object's scalar protocol (`__call__` returning a
+/// tuple or None), and converts back under the declared return types. A
+/// raised exception or a shape-violating result is a named trap (the
+/// shared `call_extern` enforces shape again — belt and braces).
+fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
+    decls
+        .iter()
+        .map(|d| {
+            let obj = d.obj.clone_ref(py);
+            let name = d.spec.name.clone();
+            let rets = d.spec.rets.clone();
+            ExternImpl {
+                name: d.spec.name.clone(),
+                fun: Box::new(move |args| {
+                    Python::attach(|py| -> Result<Option<Vec<Option<ScalarVal>>>, String> {
+                        use pyo3::IntoPyObjectExt;
+                        let mut py_args = Vec::with_capacity(args.len());
+                        for a in args {
+                            py_args.push(match a {
+                                None => py.None(),
+                                Some(ScalarVal::I1(x)) => {
+                                    x.into_py_any(py).map_err(|e| e.to_string())?
+                                }
+                                Some(ScalarVal::I64(x)) => {
+                                    x.into_py_any(py).map_err(|e| e.to_string())?
+                                }
+                                Some(ScalarVal::F64(x)) => {
+                                    x.into_py_any(py).map_err(|e| e.to_string())?
+                                }
+                                Some(ScalarVal::Str(x)) => {
+                                    x.into_py_any(py).map_err(|e| e.to_string())?
+                                }
+                            });
+                        }
+                        let tuple = pyo3::types::PyTuple::new(py, py_args)
+                            .map_err(|e| e.to_string())?;
+                        let res = obj
+                            .bind(py)
+                            .call1(tuple)
+                            .map_err(|e| format!("udf '{name}' raised: {e}"))?;
+                        if res.is_none() {
+                            return Ok(None);
+                        }
+                        let items: Vec<Bound<'_, PyAny>> = res
+                            .try_iter()
+                            .and_then(|it| it.collect())
+                            .map_err(|_| {
+                                format!(
+                                    "udf '{name}' returned a non-sequence; the scalar \
+                                     protocol returns a tuple or None"
+                                )
+                            })?;
+                        if items.len() != rets.len() {
+                            return Err(format!(
+                                "udf '{name}' returned {} values, declared {}",
+                                items.len(),
+                                rets.len()
+                            ));
+                        }
+                        let mut vals = Vec::with_capacity(rets.len());
+                        for (item, ty) in items.iter().zip(&rets) {
+                            if item.is_none() {
+                                vals.push(None);
+                                continue;
+                            }
+                            let bad = |_| {
+                                format!(
+                                    "udf '{name}' returned a value that is not the \
+                                     declared {}",
+                                    ty.name()
+                                )
+                            };
+                            vals.push(Some(match ty {
+                                Ty::I1 => ScalarVal::I1(item.extract().map_err(bad)?),
+                                Ty::I64 => ScalarVal::I64(item.extract().map_err(bad)?),
+                                Ty::F64 => ScalarVal::F64(item.extract().map_err(bad)?),
+                                Ty::Str => ScalarVal::Str(item.extract().map_err(bad)?),
+                            }));
+                        }
+                        Ok(Some(vals))
+                    })
+                }),
+            }
+        })
+        .collect()
 }
 
 /// One map static from a pyarrow Table, per its `StaticSpec` recipe: rows
@@ -190,19 +467,51 @@ fn model_from_fields(py: Python<'_>, fields: Vec<(String, FieldType)>) -> PyResu
     Ok(create_model.call(("OutputRow",), Some(&kwargs))?.unbind())
 }
 
-fn synthesize_output_model(py: Python<'_>, out_cols: &[Col]) -> PyResult<Py<PyAny>> {
-    let fields = out_cols
-        .iter()
-        .map(|c| {
-            (
-                c.name.clone(),
-                FieldType {
-                    base: ty_to_base(c.ty.ty),
-                    nullable: c.ty.nullable,
-                },
-            )
-        })
-        .collect();
+fn synthesize_output_model(
+    py: Python<'_>,
+    out_cols: &[Col],
+    plan: &[EmitField],
+) -> PyResult<Py<PyAny>> {
+    let mut fields = Vec::with_capacity(plan.len());
+    for f in plan {
+        match f {
+            EmitField::Scalar(i) => {
+                let c = &out_cols[*i];
+                fields.push((
+                    c.name.clone(),
+                    FieldType {
+                        base: ty_to_base(c.ty.ty),
+                        nullable: c.ty.nullable,
+                    },
+                ));
+            }
+            EmitField::Wide {
+                name, first, width, ..
+            } => {
+                // Elements share one declared type (the frontend refuses
+                // mixed-return UDFs as bare items today; the guard stays).
+                let elem = out_cols[*first].ty.ty;
+                if out_cols[*first..*first + *width]
+                    .iter()
+                    .any(|c| c.ty.ty != elem)
+                {
+                    return Err(build_err(format!(
+                        "unsupported: udf output field '{name}' mixes return types"
+                    )));
+                }
+                fields.push((
+                    name.clone(),
+                    FieldType {
+                        base: Base::List(Box::new(FieldType {
+                            base: ty_to_base(elem),
+                            nullable: true,
+                        })),
+                        nullable: true,
+                    },
+                ));
+            }
+        }
+    }
     model_from_fields(py, fields)
 }
 
@@ -278,6 +587,8 @@ struct Marshaller {
     /// Ingest path per lane: one segment for a plain column, the dotted
     /// segments for a struct leaf (None at any level -> NULL lane).
     in_names: Vec<Vec<Py<PyString>>>,
+    /// One entry per OUTPUT FIELD (not lane): plan + interned name.
+    plan: Vec<EmitField>,
     out_names: Vec<Py<PyString>>,
     /// Output rows for the SYNTHESIZED model are built by filling pydantic
     /// v2's instance slots directly (`object.__new__` + `object.__setattr__`
@@ -311,6 +622,7 @@ impl Marshaller {
         py: Python<'_>,
         in_cols: &[Col],
         out_cols: &[Col],
+        plan: &[EmitField],
         output_model: &Py<PyAny>,
         supplied: bool,
         emit_dicts: bool,
@@ -327,9 +639,10 @@ impl Marshaller {
                         .collect()
                 })
                 .collect(),
-            out_names: out_cols
+            plan: plan.to_vec(),
+            out_names: plan
                 .iter()
-                .map(|c| PyString::intern(py, &c.name).unbind())
+                .map(|f| PyString::intern(py, f.name(out_cols)).unbind())
                 .collect(),
             model: output_model.clone_ref(py),
             validate: if supplied {
@@ -455,24 +768,34 @@ impl Marshaller {
         let mut out = Vec::with_capacity(self.state.emitted);
         for r in 0..self.state.emitted {
             let d = PyDict::new(py);
-            for (name, oc) in self.out_names.iter().zip(&self.state.out) {
+            for (name, field) in self.out_names.iter().zip(&self.plan) {
                 let k = name.bind(py);
-                match oc {
-                    OutCol::I1(v) => {
-                        let (ok, x) = v[r];
-                        d.set_item(k, ok.then_some(x))?;
-                    }
-                    OutCol::I64(v) => {
-                        let (ok, x) = v[r];
-                        d.set_item(k, ok.then_some(x))?;
-                    }
-                    OutCol::F64(v) => {
-                        let (ok, x) = v[r];
-                        d.set_item(k, ok.then_some(x))?;
-                    }
-                    OutCol::Str(v) => {
-                        let (ok, s) = v[r];
-                        d.set_item(k, ok.then(|| self.state.arena.get(s)))?;
+                match field {
+                    EmitField::Scalar(i) => match &self.state.out[*i] {
+                        OutCol::I1(v) => {
+                            let (ok, x) = v[r];
+                            d.set_item(k, ok.then_some(x))?;
+                        }
+                        OutCol::I64(v) => {
+                            let (ok, x) = v[r];
+                            d.set_item(k, ok.then_some(x))?;
+                        }
+                        OutCol::F64(v) => {
+                            let (ok, x) = v[r];
+                            d.set_item(k, ok.then_some(x))?;
+                        }
+                        OutCol::Str(v) => {
+                            let (ok, s) = v[r];
+                            d.set_item(k, ok.then(|| self.state.arena.get(s)))?;
+                        }
+                    },
+                    EmitField::Wide {
+                        valid,
+                        first,
+                        width,
+                        ..
+                    } => {
+                        d.set_item(k, wide_py(py, &self.state, *valid, *first, *width, r)?)?;
                     }
                 }
             }
@@ -503,6 +826,8 @@ enum Engine {
         fun: Backend,
         in_cols: Vec<Col>,
         out_cols: Vec<Col>,
+        /// Output FIELDS in projection order (wide UDF lanes collapsed).
+        plan: Vec<EmitField>,
         /// `None` when `SPECIALIZER_GENERIC_BOUNDARY` pinned the generic
         /// boundary at construction (the bench baseline). RefCell so infer
         /// stays `&self`: a reentrant call (a row property calling infer on
@@ -531,16 +856,18 @@ pub struct DuckDBInferFn {
 #[pymethods]
 impl DuckDBInferFn {
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, output_model=None, output=None, shape=None))]
+    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, output_model=None, output=None, shape=None))]
     fn new(
         py: Python<'_>,
         sql: String,
         row_tables: HashMap<String, Py<PyAny>>,
         static_tables: HashMap<String, Py<PyAny>>,
+        udfs: Option<Vec<Py<PyAny>>>,
         output_model: Option<Py<PyAny>>,
         output: Option<String>,
         shape: Option<String>,
     ) -> PyResult<Self> {
+        let udf_decls = parse_udfs(py, udfs.unwrap_or_default())?;
         // The row-shape contract (TASK-58): "filter" (default) is today's
         // 0..1 rows out per row in; "map" statically PROVES exactly-one
         // (out[i] <-> in[i]) or refuses at build; "many" is reserved for
@@ -695,10 +1022,21 @@ impl DuckDBInferFn {
         }
 
         use super::specializer::PrepareError;
+        let extern_specs: Vec<ExternSpec> = udf_decls.iter().map(|d| d.spec.clone()).collect();
         let prepared = match prepare_opaque(
-            &sql, &row_table, &in_cols, &opaque, &structs, &catalog, many, &[],
+            &sql,
+            &row_table,
+            &in_cols,
+            &opaque,
+            &structs,
+            &catalog,
+            many,
+            &extern_specs,
         ) {
             Ok(p) => p,
+            // With declared UDFs the constant-emitter fallback is off: DuckDB
+            // cannot evaluate the udf calls, so surface the prepare error.
+            Err(e) if !udf_decls.is_empty() => return Err(build_err(e.to_string())),
             // Unsupported/unparseable SQL might still be a static-tables-only
             // query (static driving table, aggregation, ORDER BY, DuckDB
             // dialect beyond sqlparser): try the constant-emitter path. It
@@ -765,42 +1103,51 @@ impl DuckDBInferFn {
         let force_interp = std::env::var_os("SPECIALIZER_FORCE_INTERP").is_some();
         let fun = match (force_interp, data) {
             (true, data) => Backend::Interp(
-                compile(&prepared.program, data).map_err(|e| build_err(e.to_string()))?,
+                compile_ext(&prepared.program, data, make_externs(py, &udf_decls))
+                    .map_err(|e| build_err(e.to_string()))?,
             ),
-            (false, data) => match cranelift::compile(&prepared.program, data) {
-                Ok(f) => Backend::Cranelift(f),
-                // The failed attempt consumed the static data; rematerialize
-                // on this cold path and fall back to the interpreter.
-                Err(_) => {
-                    let mut data = Vec::with_capacity(prepared.statics.len());
-                    for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
-                        if spec.batch {
-                            // Stage-B self-join: built per call by the executor.
-                            data.push(StaticData::Map(Vec::new()));
-                            continue;
+            (false, data) => {
+                match cranelift::compile_ext(&prepared.program, data, make_externs(py, &udf_decls))
+                {
+                    Ok(f) => Backend::Cranelift(f),
+                    // The failed attempt consumed the static data and the
+                    // externs; rebuild both on this cold path and fall back
+                    // to the interpreter.
+                    Err(_) => {
+                        let mut data = Vec::with_capacity(prepared.statics.len());
+                        for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
+                            if spec.batch {
+                                // Stage-B self-join: built per call by the executor.
+                                data.push(StaticData::Map(Vec::new()));
+                                continue;
+                            }
+                            let (StaticTy::Map { keys, values }
+                            | StaticTy::MultiMap { keys, values }) = sty
+                            else {
+                                return Err(build_err(
+                                    "internal: v0 lowering emits only map statics",
+                                ));
+                            };
+                            let table = static_tables
+                                .get(&spec.table)
+                                .expect("spec names come from the catalog");
+                            data.push(materialize_map(py, table, spec, keys, values)?);
                         }
-                        let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) =
-                            sty
-                        else {
-                            return Err(build_err("internal: v0 lowering emits only map statics"));
-                        };
-                        let table = static_tables
-                            .get(&spec.table)
-                            .expect("spec names come from the catalog");
-                        data.push(materialize_map(py, table, spec, keys, values)?);
+                        Backend::Interp(
+                            compile_ext(&prepared.program, data, make_externs(py, &udf_decls))
+                                .map_err(|e| build_err(e.to_string()))?,
+                        )
                     }
-                    Backend::Interp(
-                        compile(&prepared.program, data).map_err(|e| build_err(e.to_string()))?,
-                    )
                 }
-            },
+            }
         };
+        let plan = emit_plan(&prepared.program.out_cols, &prepared.wide_outputs);
         let supplied = output_model.is_some();
         let output_model = match output_model {
             // Supplied models are trusted as-is in v0 (no shape validation)
             // and keep full model_validate semantics per row.
             Some(m) => m,
-            None => synthesize_output_model(py, &prepared.program.out_cols)?,
+            None => synthesize_output_model(py, &prepared.program.out_cols, &plan)?,
         };
         // SPECIALIZER_GENERIC_BOUNDARY pins the pre-marshaller boundary —
         // the bench baseline, mirroring SPECIALIZER_FORCE_INTERP.
@@ -811,6 +1158,7 @@ impl DuckDBInferFn {
                 py,
                 &in_cols,
                 &prepared.program.out_cols,
+                &plan,
                 &output_model,
                 supplied,
                 output_dicts,
@@ -822,6 +1170,7 @@ impl DuckDBInferFn {
                 fun,
                 in_cols,
                 out_cols: prepared.program.out_cols.clone(),
+                plan,
                 marsh,
             },
             row_table,
@@ -907,13 +1256,14 @@ impl DuckDBInferFn {
     /// Values are byte-identical to infer(); under shape='map' the output
     /// aligns positionally with the input.
     fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        let (fun, in_cols, out_cols) = match &self.engine {
+        let (fun, in_cols, out_cols, plan) = match &self.engine {
             Engine::Compiled {
                 fun,
                 in_cols,
                 out_cols,
+                plan,
                 ..
-            } => (fun, in_cols, out_cols),
+            } => (fun, in_cols, out_cols, plan),
             Engine::Constant { .. } => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "infer_arrow: a static-tables-only query emits fixed rows — use infer()",
@@ -924,19 +1274,20 @@ impl DuckDBInferFn {
         let mut st = fun.new_state();
         fun.run(&input, &mut st)
             .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
-        arrow::emit(py, out_cols, &st)
+        arrow::emit(py, out_cols, plan, &st)
     }
 }
 
 impl DuckDBInferFn {
     fn run_rows(&self, py: Python<'_>, rows: &[Py<PyAny>]) -> PyResult<Vec<Py<PyAny>>> {
-        let (fun, in_cols, out_cols, marsh) = match &self.engine {
+        let (fun, in_cols, out_cols, plan, marsh) = match &self.engine {
             Engine::Compiled {
                 fun,
                 in_cols,
                 out_cols,
+                plan,
                 marsh,
-            } => (fun, in_cols, out_cols, marsh),
+            } => (fun, in_cols, out_cols, plan, marsh),
             Engine::Constant { rows: fixed } => {
                 let model = self.output_model.bind(py);
                 let mut out = Vec::with_capacity(fixed.len());
@@ -1070,23 +1421,34 @@ impl DuckDBInferFn {
         let mut out = Vec::with_capacity(st.emitted);
         for r in 0..st.emitted {
             let dict = PyDict::new(py);
-            for (c, oc) in out_cols.iter().zip(&st.out) {
-                match oc {
-                    OutCol::I1(v) => {
-                        let (ok, x) = v[r];
-                        dict.set_item(&c.name, ok.then_some(x))?;
-                    }
-                    OutCol::I64(v) => {
-                        let (ok, x) = v[r];
-                        dict.set_item(&c.name, ok.then_some(x))?;
-                    }
-                    OutCol::F64(v) => {
-                        let (ok, x) = v[r];
-                        dict.set_item(&c.name, ok.then_some(x))?;
-                    }
-                    OutCol::Str(v) => {
-                        let (ok, s) = v[r];
-                        dict.set_item(&c.name, ok.then(|| st.arena.get(s)))?;
+            for field in plan {
+                let name = field.name(out_cols);
+                match field {
+                    EmitField::Scalar(i) => match &st.out[*i] {
+                        OutCol::I1(v) => {
+                            let (ok, x) = v[r];
+                            dict.set_item(name, ok.then_some(x))?;
+                        }
+                        OutCol::I64(v) => {
+                            let (ok, x) = v[r];
+                            dict.set_item(name, ok.then_some(x))?;
+                        }
+                        OutCol::F64(v) => {
+                            let (ok, x) = v[r];
+                            dict.set_item(name, ok.then_some(x))?;
+                        }
+                        OutCol::Str(v) => {
+                            let (ok, s) = v[r];
+                            dict.set_item(name, ok.then(|| st.arena.get(s)))?;
+                        }
+                    },
+                    EmitField::Wide {
+                        valid,
+                        first,
+                        width,
+                        ..
+                    } => {
+                        dict.set_item(name, wide_py(py, &st, *valid, *first, *width, r)?)?;
                     }
                 }
             }
