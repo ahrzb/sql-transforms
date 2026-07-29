@@ -2,7 +2,9 @@
 
 The fit half works: window aggregates over ``__THIS__`` are marginalized into
 materialized params tables plus a rewritten ``serving_sql`` (see
-``_marginalize``). The serving half (``infer``/``infer_batch`` through Confit)
+``_marginalize``). Transformers and author UDFs serve as scalar calls in that
+SQL — ``transform`` registers them on the connection and runs; there is no
+post-processing. The serving half (``infer``/``infer_batch`` through Confit)
 is a later loop and still raises ``NotImplementedError``.
 """
 
@@ -15,6 +17,7 @@ import pyarrow as pa
 from pydantic import BaseModel
 
 from sql_transform._marginalize import MarginalizeError, marginalize
+from sql_transform._udf import UDF, PythonTransform
 
 
 def _feature_matrix(table: pa.Table, cols: list[str]):
@@ -54,15 +57,21 @@ class SQLProjection:
         unknown columns refuse here, stars/COLUMNS expand with modifiers at
         any level, and lateral aliases resolve by DuckDB's column-wins rule.
         Without it, marginalization is schema-free and the ambiguous cases
-        refuse with a hint."""
+        refuse with a hint.
+
+        ``transformers`` is the explicit registry for transformer windows
+        (objects with fit/transform, called ``fn(...) OVER (...)``) and for
+        author UDFs (objects with declared takes/returns, e.g. ``PythonUDF``,
+        called ``fn(...)``); names not found there resolve from the caller's
+        scope."""
         if isinstance(sql, Template):
             raise NotImplementedError("t-string templates are a later loop")
         self._columns = (
             list(this_model.model_fields) if this_model is not None else None
         )
-        # Transformer resolution: explicit registry first, then the caller's
-        # scope (the `FROM df` replacement-scan idiom). Captured objects are
-        # snapshotted into `self.transformers` at construction.
+        # Resolution: explicit registry first, then the caller's scope (the
+        # `FROM df` replacement-scan idiom). Captured objects are snapshotted
+        # into `self.transformers` at construction.
         import sys
 
         frame = sys._getframe(1)
@@ -80,13 +89,17 @@ class SQLProjection:
 
         self._marginalized = marginalize(sql, self._columns, _resolve)
         self._params: dict[str, pa.Table] | None = None
-        self._fitted: dict[str, dict[tuple, Any]] | None = None
+        self._udfs: dict[str, PythonTransform] | None = None
 
     @classmethod
     def from_file(cls, path: str) -> SQLProjection:
         """Build a projection from a file containing the SQL."""
         with open(path, encoding="utf-8") as f:
             return cls(f.read())
+
+    def _register_author_udfs(self, con) -> None:
+        for name in self._marginalized.scalar_udfs:
+            self.transformers[name].register(con)
 
     def fit(self, table: pa.Table, /) -> SQLProjection:
         """Materialize every params table over the training data; returns self.
@@ -114,27 +127,37 @@ class SQLProjection:
             # ponytail: threads=1; a parallel fit needs a determinism story.
             con.execute("SET threads = 1")
             con.register("__THIS__", table)
+            self._register_author_udfs(con)
             # The fit plan is a topologically ordered DAG: run each step,
             # register its result under its name. Every intermediate is
-            # inspectable and every step is plain SQL runnable by hand.
+            # inspectable; SQL steps are runnable by hand, fit steps produce
+            # a params table (join keys + __cf_est) plus the fitted UDF.
             materialized: dict[str, pa.Table] = {}
-            self._fitted = {}
+            self._udfs = {}
             for step in m.plan:
                 if step.kind == "fit":
-                    self._fitted[step.name] = self._fit_step(
+                    params_table, udf = self._fit_step(
                         step, materialized[step.reads[0]]
                     )
-                    continue
-                materialized[step.name] = con.execute(step.sql).to_arrow_table()
+                    materialized[step.name] = params_table
+                    self._udfs[udf.name] = udf
+                else:
+                    materialized[step.name] = con.execute(step.sql).to_arrow_table()
                 con.register(step.name, materialized[step.name])
             self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()
         return self
 
-    def _fit_step(self, step, table: pa.Table) -> dict[tuple, Any]:
-        """Group by the key columns, fit a clone of the transformer per group
-        on the feature block. Unknown groups at apply time get NULLs."""
+    def _fit_step(self, step, table: pa.Table) -> tuple[pa.Table, PythonTransform]:
+        """Group by the key columns, fit a clone of the transformer per group,
+        and emit the params table linking each key tuple to its instance id.
+        An unseen group at serving time misses the LEFT JOIN — NULL id, NULL
+        output — so only observed groups get rows here."""
+        if table.num_rows == 0:
+            raise MarginalizeError(
+                f"cannot fit transformer {step.transformer} on an empty training set"
+            )
         proto = self.transformers[step.transformer]
         try:
             from sklearn.base import clone
@@ -144,26 +167,49 @@ class SQLProjection:
             def clone(o):  # type: ignore[no-redef]
                 return _copy.deepcopy(o)
 
-        feats = _feature_matrix(table, list(step.features))
-        keys = [table.column(k).to_pylist() for k in step.keys]
-        groups: dict[tuple, list[int]] = {}
-        for i in range(table.num_rows):
-            groups.setdefault(tuple(k[i] for k in keys), []).append(i)
-        fitted: dict[tuple, Any] = {}
-        for key, idx in groups.items():
-            est = clone(proto)
-            est.fit(feats[idx])
-            fitted[key] = est
-        return fitted
-
-    def transform(self, table: pa.Table, /) -> pa.Table:
-        """Batch apply: run ``serving_sql`` through DuckDB, then run each
-        fitted transformer on its helper columns and splice the outputs in
-        place of the helper blocks. Row-at-a-time serving stays with Confit."""
-        import duckdb
         import numpy as np
 
-        if self._params is None or self._fitted is None:
+        m = self._marginalized
+        (spec,) = [u for u in m.udfs if u.step == step.name]
+        (params_spec,) = [p for p in m.params if p.name == step.name]
+        feats = _feature_matrix(table, list(step.features))
+        keyvals = [table.column(k).to_pylist() for k in step.keys]
+        groups: dict[tuple, list[int]] = {}
+        for i in range(table.num_rows):
+            groups.setdefault(tuple(k[i] for k in keyvals), []).append(i)
+        instances: dict[int, Any] = {}
+        width = None
+        key_rows: list[tuple] = []
+        for est_id, (key, idx) in enumerate(groups.items()):
+            est = clone(proto)
+            est.fit(feats[idx])
+            instances[est_id] = est
+            key_rows.append(key)
+            if width is None:
+                probe = np.asarray(est.transform(feats[idx][:1]))
+                width = probe.shape[1] if probe.ndim > 1 else 1
+        cols: dict[str, pa.Array] = {}
+        for pos, colname in enumerate(params_spec.keys):
+            cols[colname] = pa.array(
+                [k[pos] for k in key_rows],
+                type=table.column(step.keys[pos]).type,
+            )
+        cols["__cf_est"] = pa.array(range(len(key_rows)), type=pa.int64())
+        udf = PythonTransform(
+            name=spec.name,
+            instances=instances,
+            takes=("f64",) * len(step.features),
+            returns=("f64",) * width,
+        )
+        return pa.table(cols), udf
+
+    def transform(self, table: pa.Table, /) -> pa.Table:
+        """Batch apply: register the params tables and every UDF (author UDFs
+        and fitted transformers), run ``serving_sql``, done. Row-at-a-time
+        serving stays with Confit."""
+        import duckdb
+
+        if self._params is None or self._udfs is None:
             raise MarginalizeError("not fitted: call fit(table) first")
         if self._columns is not None:
             table = table.select(self._columns)
@@ -174,31 +220,12 @@ class SQLProjection:
             con.register("__THIS__", table)
             for name, params_table in self._params.items():
                 con.register(name, params_table)
-            res = con.execute(m.serving_sql).to_arrow_table()
+            self._register_author_udfs(con)
+            for udf in self._udfs.values():
+                udf.register(con)
+            return con.execute(m.serving_sql).to_arrow_table()
         finally:
             con.close()
-        for spec in m.transforms:
-            feats = _feature_matrix(res, list(spec.feature_cols))
-            keys = [res.column(k).to_pylist() for k in spec.key_cols]
-            groups: dict[tuple, list[int]] = {}
-            for i in range(res.num_rows):
-                groups.setdefault(tuple(k[i] for k in keys), []).append(i)
-            fitted = self._fitted[spec.step]
-            out: list = [None] * res.num_rows
-            for key, idx in groups.items():
-                est = fitted.get(key)
-                if est is None:
-                    continue  # unseen group: NULL output (exact-join policy)
-                block = np.asarray(est.transform(feats[idx]))
-                if block.ndim == 1:
-                    block = block.reshape(-1, 1)
-                for row, vals in zip(idx, block, strict=True):
-                    out[row] = [float(v) for v in vals]
-            first = res.column_names.index(spec.feature_cols[0])
-            drop = set(spec.feature_cols) | set(spec.key_cols)
-            res = res.drop_columns([c for c in res.column_names if c in drop])
-            res = res.add_column(first, spec.alias, pa.array(out))
-        return res
 
     @property
     def serving_sql(self) -> str:
@@ -216,6 +243,19 @@ class SQLProjection:
         if self._params is None:
             raise MarginalizeError("not fitted: call fit(table) first")
         return dict(self._params)
+
+    @property
+    def udfs(self) -> dict[str, UDF]:
+        """Every UDF ``serving_sql`` calls, by SQL name: author UDFs plus the
+        fitted transformers (``__cf_tf{j}``). This dict plus ``params`` plus
+        ``serving_sql`` is the complete serving artifact."""
+        if self._udfs is None:
+            raise MarginalizeError("not fitted: call fit(table) first")
+        out: dict[str, UDF] = {
+            name: self.transformers[name] for name in self._marginalized.scalar_udfs
+        }
+        out.update(self._udfs)
+        return out
 
     @property
     def backend(self) -> str:
