@@ -171,6 +171,17 @@ CURATED_REFUSED = [
 ]
 
 
+# --- curated, schema-aware (loop 4): replayed with a declared this_model -----
+
+CURATED_SCHEMA = [
+    "SELECT COLUMNS('.*name') FROM __THIS__",
+    "SELECT * EXCLUDE (enroll_date) REPLACE (salary + 1 AS salary) FROM __THIS__",
+    "SELECT * RENAME (depname AS dep) FROM __THIS__",
+    "SELECT salary + 1 AS s2, s2 * 2 AS s4 FROM __THIS__",
+    "WITH a AS (SELECT * EXCLUDE (empno) FROM __THIS__) SELECT salary - avg(salary) OVER (PARTITION BY depname) AS d FROM a",
+]
+
+
 def _outcome(sql: str) -> tuple[str, str]:
     try:
         marginalize(sql)
@@ -208,9 +219,21 @@ def test_curated_refuses(sql):
     assert kind == "refused", f"{kind}: {detail}"
 
 
+@pytest.mark.parametrize("sql", CURATED_SCHEMA, ids=lambda s: s[:56])
+def test_curated_schema_marginalizes(sql):
+    from sql_transform._projection_test import gate
+
+    try:
+        marginalize(sql, list(EMPSALARY.column_names))
+    except MarginalizeError as e:
+        raise AssertionError(f"refused: {e}") from e
+    gate(sql, EMPSALARY, schema=True)
+
+
 def test_progression_totals():
     """The metric, in one place. Edit these pins when a loop widens support."""
     assert len(MINED) == 22
     assert MINED_SCOREBOARD["marginalized"] + MINED_SCOREBOARD["refused"] == 22
     assert len(CURATED_MARGINALIZED) == 39
     assert len(CURATED_REFUSED) == 17
+    assert len(CURATED_SCHEMA) == 5
