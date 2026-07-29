@@ -10,8 +10,9 @@ class DuckDBInferFn:
     """SQL specialized against frozen static tables, served bit-exact with DuckDB.
 
     Construction either succeeds with a function that matches DuckDB
-    bit-for-bit, or raises `ValueError` naming the unsupported construct. There
-    is no third mode.
+    bit-for-bit — *with the declared `udfs` registered*, when there are any —
+    or raises `ValueError` naming the unsupported construct. There is no
+    third mode.
     """
 
     output_model: type[BaseModel] | None
@@ -21,11 +22,27 @@ class DuckDBInferFn:
         sql: str,
         row_tables: dict[str, type[BaseModel]],
         static_tables: dict[str, pa.Table],
+        udfs: list[Any] | None = None,
         output_model: type[BaseModel] | None = None,
         output: str | None = None,
         shape: str | None = None,
     ) -> None:
-        """`output`: "model" (typed, default) or "dict".
+        """`udfs`: declared opaque scalar functions the SQL may call
+        (DRAFT-22). Each object carries `name: str`, `takes: tuple[str, ...]`
+        and `returns: tuple[str, ...]` in the engine type vocabulary
+        ("i1" | "i64" | "f64" | "str"), and a scalar `__call__(*args)`
+        receiving one plain Python value per argument (None for NULL) and
+        returning a tuple matching `returns`, or None for an all-NULL
+        result. An object with an `instances` attribute is a fitted
+        transformer: its implicit leading argument is a nullable BIGINT
+        instance id (never written in `takes`). Width-1 calls are scalar
+        expressions; width-k calls are bare SELECT items emitting one
+        `list | None` field. The oracle statement is parameterized, not
+        weakened: the engine matches DuckDB running the same SQL with these
+        same objects registered via `create_function`. UDFs must be
+        deterministic.
+
+        `output`: "model" (typed, default) or "dict".
 
         `shape`: the output-multiplicity contract, proven at build time --
         "map" (exactly one row out per row in; rejects WHERE and inner joins),

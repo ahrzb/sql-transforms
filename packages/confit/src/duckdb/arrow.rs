@@ -230,15 +230,50 @@ fn bitmap(oks: impl Iterator<Item = bool>, n: usize) -> (Vec<u8>, usize) {
     (bits, nulls)
 }
 
-/// Engine output -> pa.Table, one `Array.from_buffers` per column.
-pub fn emit(py: Python<'_>, out_cols: &[Col], st: &RunState) -> PyResult<Py<PyAny>> {
+/// Engine output -> pa.Table, one `Array.from_buffers` per scalar field; a
+/// wide UDF field assembles as `pa.array` of `None | [components]` (the
+/// python-list path — the wide boundary is transformer output, not the
+/// scalar hot lane).
+pub fn emit(
+    py: Python<'_>,
+    out_cols: &[Col],
+    plan: &[super::EmitField],
+    st: &RunState,
+) -> PyResult<Py<PyAny>> {
     let pa = PyModule::import(py, "pyarrow")?;
     let from_buffers = pa.getattr("Array")?.getattr("from_buffers")?;
     let py_buffer = pa.getattr("py_buffer")?;
     let n = st.emitted;
-    let mut arrays = Vec::with_capacity(out_cols.len());
-    let mut names = Vec::with_capacity(out_cols.len());
-    for (c, oc) in out_cols.iter().zip(&st.out) {
+    let mut arrays = Vec::with_capacity(plan.len());
+    let mut names = Vec::with_capacity(plan.len());
+    for field in plan {
+        let (c, oc) = match field {
+            super::EmitField::Scalar(i) => (&out_cols[*i], &st.out[*i]),
+            super::EmitField::Wide {
+                name,
+                valid,
+                first,
+                width,
+            } => {
+                names.push(name.clone());
+                let elem = match out_cols[*first].ty.ty {
+                    crate::specializer::ir::Ty::I1 => pa.call_method0("bool_")?,
+                    crate::specializer::ir::Ty::I64 => pa.call_method0("int64")?,
+                    crate::specializer::ir::Ty::F64 => pa.call_method0("float64")?,
+                    crate::specializer::ir::Ty::Str => pa.call_method0("large_string")?,
+                };
+                let list_ty = pa.call_method1("list_", (elem,))?;
+                let mut values = Vec::with_capacity(n);
+                for r in 0..n {
+                    values.push(super::wide_py(py, st, *valid, *first, *width, r)?);
+                }
+                let vals = PyList::new(py, values)?;
+                let kw = pyo3::types::PyDict::new(py);
+                kw.set_item("type", list_ty)?;
+                arrays.push(pa.call_method("array", (vals,), Some(&kw))?);
+                continue;
+            }
+        };
         names.push(c.name.clone());
         let (dtype, validity, bufs): (Bound<'_, PyAny>, (Vec<u8>, usize), Vec<Py<PyAny>>) =
             match oc {
