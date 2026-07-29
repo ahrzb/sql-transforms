@@ -38,9 +38,10 @@ clauses (WHERE/GROUP BY/... — refused). Everything else passes through.
 
 Join predicates use IS NOT DISTINCT FROM, never ``=``: window PARTITION BY
 groups NULL keys into one partition; an equality join would drop them.
-Multiplicity holds by construction: every allowlisted aggregate is
-deterministic per group, so DISTINCT over (keys, aggs) collapses to exactly
-one params row per group, and the LEFT JOIN matches exactly one per input row.
+Multiplicity holds by construction: every admitted window's value is a
+function of its join keys (constant within the key tuple in one execution),
+so DISTINCT over (keys, values) collapses to exactly one params row per key
+tuple, and the LEFT JOIN matches exactly one per input row.
 
 Design spec: docs/superpowers/specs/2026-07-29-sql-projection-marginalization-design.md
 """
@@ -62,15 +63,20 @@ Node = dict[str, Any]
 _RESERVED = "__cf_"
 _NOLOC = 18446744073709551615  # DuckDB's "no query_location" sentinel (u64 max)
 
-# Aggregates whose per-group value is a deterministic function of the group as
-# a *multiset* — grown one measured entry at a time, like the corpus. Order-
-# sensitive aggregates (first, last, string_agg, array_agg, ...) are refused by
-# absence: their value depends on scan order, which would make fit and the
-# differential gate flaky.
-_ALLOWLIST = frozenset(
-    "avg sum count count_star min max "
-    "stddev stddev_pop stddev_samp var_pop var_samp variance median".split()
+# The marginalizability rule (spec: window-widening design): a window's value
+# must be a function of row-visible values — the partition keys plus, when
+# ORDER BY discriminates, the order values (RANGE/GROUPS peers share values).
+# Physical position is the one thing a join key cannot carry, so positional
+# windows are refused. Any WINDOW_AGGREGATE function is admitted: the
+# two-stage fit reruns the original computation, so even order-sensitive
+# aggregates freeze exactly the value the original text produced.
+_RANK_FAMILY = frozenset(
+    {"WINDOW_RANK", "WINDOW_RANK_DENSE", "WINDOW_PERCENT_RANK", "WINDOW_CUME_DIST"}
 )
+_POSITIONAL = frozenset(
+    {"WINDOW_ROW_NUMBER", "WINDOW_NTILE", "WINDOW_LAG", "WINDOW_LEAD"}
+)
+_VALUE_FNS = frozenset({"WINDOW_FIRST_VALUE", "WINDOW_LAST_VALUE", "WINDOW_NTH_VALUE"})
 
 
 class MarginalizeError(ValueError):
@@ -281,87 +287,130 @@ def _expr_text(expr: Node) -> str:
 # --- validation and rewrite ---------------------------------------------------
 
 
-def _partition_key(part: Node) -> str:
-    """A PARTITION BY entry must be a plain ``__THIS__`` column; its bare name."""
-    if part.get("class") != "COLUMN_REF":
-        _refuse(
-            "PARTITION BY expression (plain columns only)", part.get("query_location")
-        )
-    ref = _ColumnRef.of(part)
-    if len(ref.column_names) == 2 and ref.column_names[0].upper() == "__THIS__":
-        return ref.column_names[1]
-    if len(ref.column_names) == 1:
-        return ref.column_names[0]
-    _refuse(f"PARTITION BY {'.'.join(ref.column_names)}", ref.query_location)
-    raise AssertionError("unreachable")
-
-
-def _check_window(w: _Window) -> None:
-    name = w.function_name.lower()
-    if w.type != "WINDOW_AGGREGATE":
-        _refuse(
-            f"window function {name} (position-dependent, not a per-group constant)",
-            w.query_location,
-        )
-    if name not in _ALLOWLIST:
-        _refuse(
-            f"aggregate {name} is not in the marginalization allowlist",
-            w.query_location,
-        )
-    if w.orders or w.arg_orders:
-        _refuse(
-            "OVER (... ORDER BY ...) — a running window, not a per-group constant",
-            w.query_location,
-        )
-    if (
-        w.start != "UNBOUNDED_PRECEDING"
-        or w.end != "CURRENT_ROW_RANGE"
-        or w.start_expr is not None
-        or w.end_expr is not None
-        or w.offset_expr is not None
-        or w.default_expr is not None
-        or w.exclude_clause != "NO_OTHER"
-    ):
-        _refuse("an explicit window frame", w.query_location)
-    if w.filter_expr is not None:
-        _refuse("FILTER inside an aggregate", w.query_location)
-    if w.distinct:
-        _refuse("DISTINCT inside an aggregate", w.query_location)
-    if w.ignore_nulls:
-        _refuse("IGNORE NULLS", w.query_location)
-    for child in w.children:
-        _walk_agg_arg(child)
-
-
-def _walk_agg_arg(x: Any) -> None:
-    """Aggregate arguments must be row-wise: no nesting of table semantics."""
+def _walk_row_wise(x: Any, where: str) -> None:
+    """The subtree must be row-wise: no nesting of table semantics."""
     if isinstance(x, dict):
         cls = x.get("class")
         if cls == "WINDOW":
-            _refuse("a window function inside an aggregate", x.get("query_location"))
+            _refuse(f"a window function inside {where}", x.get("query_location"))
         if cls == "SUBQUERY":
-            _refuse("a subquery", x.get("query_location"))
+            _refuse(f"a subquery inside {where}", x.get("query_location"))
         if (
             cls == "FUNCTION"
             and x.get("function_name", "").lower() in _aggregate_names()
         ):
             _refuse(
-                f"aggregate {x['function_name']} inside an aggregate",
+                f"aggregate {x['function_name']} inside {where}",
                 x.get("query_location"),
             )
         for v in x.values():
-            _walk_agg_arg(v)
+            _walk_row_wise(v, where)
     elif isinstance(x, list):
         for v in x:
-            _walk_agg_arg(v)
+            _walk_row_wise(v, where)
+
+
+@dataclass
+class _Key:
+    """One join key: a plain ``__THIS__`` column (natural ``name``) or a
+    row-wise expression (``name`` None; the params column is named
+    positionally ``__cf_xJ``)."""
+
+    ident: str
+    expr: Node  # the bare original expression (COLLATE stripped for orders)
+    name: str | None
+
+
+def _key_of(expr: Node) -> _Key:
+    """Classify one PARTITION BY / ORDER BY entry as a join key."""
+    if expr.get("class") == "COLLATE":
+        # Key on the raw child value: raw-equal implies collated-equal
+        # implies peer, so multiplicity survives (joining on the *collated*
+        # value could match several params rows).
+        return _key_of(expr["child"])
+    if expr.get("class") == "COLUMN_REF":
+        names = _ColumnRef.of(expr).column_names
+        if len(names) == 1 or (len(names) == 2 and names[0].upper() == "__THIS__"):
+            bare = names[-1]
+            ref = _clone("column_ref", column_names=[bare], alias="")
+            return _Key(ident=bare.lower(), expr=ref, name=bare)
+    _walk_row_wise(expr, "a partition or order key")
+    return _Key(ident=_stripped(expr), expr=copy.deepcopy(expr), name=None)
+
+
+def _check_frame(w: _Window) -> bool:
+    """Generic frame validation; True when the frame varies with the order
+    values (so they must join the key set), False when it always covers the
+    whole partition."""
+    if w.exclude_clause != "NO_OTHER":
+        _refuse("EXCLUDE in a window frame (distinguishes tied rows)", w.query_location)
+    for bound in (w.start_expr, w.end_expr):
+        if bound is not None and bound.get("class") != "CONSTANT":
+            _refuse("a non-constant window frame bound", w.query_location)
+    if w.start == "UNBOUNDED_PRECEDING" and w.end == "UNBOUNDED_FOLLOWING":
+        return False
+    if w.start.endswith("_ROWS") or w.end.endswith("_ROWS"):
+        _refuse(
+            "a bounded ROWS frame (depends on physical row order;"
+            " RANGE/GROUPS frames are supported)",
+            w.query_location,
+        )
+    return bool(w.orders)
+
+
+def _check_window(w: _Window) -> bool:
+    """Validate one window; True means the order values join the key set."""
+    t = w.type
+    if t in _POSITIONAL:
+        _refuse(
+            f"window function {w.function_name} (its value depends on physical"
+            " row position, which no join key can carry)",
+            w.query_location,
+        )
+    for child in w.children:
+        _walk_row_wise(child, "an aggregate")
+    if w.filter_expr is not None:
+        _walk_row_wise(w.filter_expr, "a FILTER")
+    if t in _RANK_FAMILY:
+        return True  # a function of the order values; frames don't apply
+    if t == "WINDOW_AGGREGATE":
+        if w.ignore_nulls:
+            _refuse("IGNORE NULLS on an aggregate", w.query_location)
+        return _check_frame(w)
+    if t in _VALUE_FNS:
+        if t == "WINDOW_NTH_VALUE" and (
+            len(w.children) < 2 or w.children[1].get("class") != "CONSTANT"
+        ):
+            _refuse("nth_value with a non-constant n", w.query_location)
+        discriminates = _check_frame(w)
+        if (
+            t == "WINDOW_FIRST_VALUE"
+            and not w.ignore_nulls
+            and w.start == "UNBOUNDED_PRECEDING"
+            and w.end in ("CURRENT_ROW_RANGE", "UNBOUNDED_FOLLOWING")
+        ):
+            # The frame always starts at the partition start and is never
+            # empty, so the value is the partition's first row regardless of
+            # the current row's order value.
+            return False
+        return discriminates
+    _refuse(f"window type {t}", w.query_location)
+    raise AssertionError("unreachable")
 
 
 @dataclass
 class _Group:
-    """All aggregates sharing one partition-key set."""
+    """All windows sharing one join-key set."""
 
-    keys: tuple[str, ...]
+    keys: tuple[_Key, ...]
     agg_keys: list[str]  # structural identities, in appearance order
+
+    def colnames(self) -> list[str]:
+        """Params-table column name per key: natural for plain columns."""
+        return [
+            k.name if k.name is not None else f"__cf_x{j}"
+            for j, k in enumerate(self.keys)
+        ]
 
 
 class _Collector:
@@ -375,10 +424,14 @@ class _Collector:
         self.groups: dict[tuple[str, ...], _Group] = {}
         self.windows: dict[str, Node] = {}  # structural identity -> raw node
 
-    def _params_ref(self, raw: Node, w: _Window) -> Node:
-        keys = tuple(_partition_key(p) for p in w.partitions)
-        ident = tuple(k.lower() for k in keys)
-        group = self.groups.setdefault(ident, _Group(keys=keys, agg_keys=[]))
+    def _params_ref(self, raw: Node, w: _Window, discriminates: bool) -> Node:
+        keys = [_key_of(p) for p in w.partitions]
+        if discriminates:
+            keys += [_key_of(o["expression"]) for o in w.orders]
+        seen: set[str] = set()
+        uniq = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
+        ident = tuple(k.ident for k in uniq)
+        group = self.groups.setdefault(ident, _Group(keys=tuple(uniq), agg_keys=[]))
         agg_key = _stripped(raw)
         self.windows.setdefault(agg_key, copy.deepcopy(raw))
         if agg_key not in group.agg_keys:
@@ -396,8 +449,8 @@ class _Collector:
             cls = x.get("class")
             if cls == "WINDOW":
                 w = _Window.of(x)
-                _check_window(w)
-                return self._params_ref(x, w)
+                discriminates = _check_window(w)
+                return self._params_ref(x, w, discriminates)
             if cls == "SUBQUERY":
                 _refuse("a subquery", x.get("query_location"))
             if (
@@ -489,26 +542,26 @@ def _windows_sql(original_items: list[Node], collector: _Collector) -> str:
         for g, raw in enumerate(collector.windows.values())
     ]
     keys = [
-        _clone("column_ref", column_names=[spelled], alias=f"__cf_k{m}")
-        for m, spelled in enumerate(_key_union(collector).values())
+        dict(copy.deepcopy(expr), alias=f"__cf_k{m}")
+        for m, expr in enumerate(_key_union(collector).values())
     ]
     doc["statements"][0]["node"]["select_list"] = [*originals, *windows, *keys]
     return _deserialize(doc)
 
 
-def _key_union(collector: _Collector) -> dict[str, str]:
-    """Casefolded key name -> first spelling, over every group."""
-    union: dict[str, str] = {}
+def _key_union(collector: _Collector) -> dict[str, Node]:
+    """Key identity -> its bare expression, first appearance, over every group."""
+    union: dict[str, Node] = {}
     for group in collector.groups.values():
         for key in group.keys:
-            union.setdefault(key.lower(), key)
+            union.setdefault(key.ident, key.expr)
     return union
 
 
 def _fit_sql(group: _Group, collector: _Collector) -> str:
     """``SELECT DISTINCT <keys>, <this group's window columns> FROM
     __CF_WINDOWS__`` — pure value picking over the materialized windows
-    result; every allowlisted aggregate is deterministic per group, so the
+    result; every admitted window value is constant within its keys, so the
     tuple is constant within a group and DISTINCT collapses to exactly one
     row per group (which is also the serving-side multiplicity argument)."""
     doc = copy.deepcopy(_templates()["collapse_doc"])
@@ -516,10 +569,10 @@ def _fit_sql(group: _Group, collector: _Collector) -> str:
     key_refs = [
         _clone(
             "column_ref",
-            column_names=[f"__cf_k{union_order.index(k.lower())}"],
-            alias=k,
+            column_names=[f"__cf_k{union_order.index(key.ident)}"],
+            alias=colname,
         )
-        for k in group.keys
+        for key, colname in zip(group.keys, group.colnames(), strict=True)
     ]
     windows_order = list(collector.windows)
     agg_refs = [
@@ -534,22 +587,41 @@ def _fit_sql(group: _Group, collector: _Collector) -> str:
     return _deserialize(doc)
 
 
-def _serving_from(specs: list[ParamsSpec]) -> Node:
+def _qualify(x: Any) -> Any:
+    """Qualify a validated key expression's column refs with ``__cf_t``."""
+    if isinstance(x, dict):
+        if x.get("class") == "COLUMN_REF":
+            names = x["column_names"]
+            if names and names[0].upper() == "__THIS__":
+                return dict(copy.deepcopy(x), column_names=["__cf_t", *names[1:]])
+            return dict(copy.deepcopy(x), column_names=["__cf_t", *names])
+        return {k: _qualify(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_qualify(v) for v in x]
+    return x
+
+
+def _serving_from(groups: list[_Group]) -> Node:
     """Left-deep LEFT JOIN chain — every params join, keyed or not, is a LEFT
     JOIN so multiplicity is one uniform argument. A keyless params table is
     exactly one row, so its condition is the always-true ``1 = 1``. (Never a
     CROSS join: the oracle prints those in comma form, which re-parses with
-    different associativity once another join follows.)"""
+    different associativity once another join follows.) Expression keys join
+    by the qualified expression itself."""
     from_table = _clone("base_table")
-    for i, spec in enumerate(specs):
-        right = _clone("base_table", table_name=spec.name, alias=f"__cf_p{i}")
+    for i, group in enumerate(groups):
+        right = _clone(
+            "base_table", table_name=f"__CF_PARAMS_{i}__", alias=f"__cf_p{i}"
+        )
         comparisons = [
             _clone(
                 "not_distinct",
-                left=_clone("column_ref", column_names=["__cf_t", key], alias=""),
-                right=_clone("column_ref", column_names=[f"__cf_p{i}", key], alias=""),
+                left=_qualify(key.expr),
+                right=_clone(
+                    "column_ref", column_names=[f"__cf_p{i}", colname], alias=""
+                ),
             )
-            for key in spec.keys
+            for key, colname in zip(group.keys, group.colnames(), strict=True)
         ]
         if not comparisons:
             condition = _clone("always_true")
@@ -590,14 +662,17 @@ def marginalize(sql: str) -> Marginalized:
         # No aggregates: marginalization is the identity (modulo normalization).
         return Marginalized(serving_sql=_deserialize(doc), windows_sql=None, params=())
 
+    groups = list(collector.groups.values())
     specs = [
         ParamsSpec(
-            name=f"__CF_PARAMS_{i}__", keys=g.keys, fit_sql=_fit_sql(g, collector)
+            name=f"__CF_PARAMS_{i}__",
+            keys=tuple(g.colnames()),
+            fit_sql=_fit_sql(g, collector),
         )
-        for i, g in enumerate(collector.groups.values())
+        for i, g in enumerate(groups)
     ]
     node["select_list"] = rewritten_list
-    node["from_table"] = _serving_from(specs)
+    node["from_table"] = _serving_from(groups)
     return Marginalized(
         serving_sql=_deserialize(doc),
         windows_sql=_windows_sql(original_items, collector),
