@@ -37,13 +37,15 @@ def test_indf_inner_join_null_joins_null():
 
 
 def test_indf_string_key_and_nullable_value():
+    # Same column name on both sides (the marginalizer's shape) — every
+    # reference qualified, exactly as generated SQL qualifies.
     dim = static(
         {"country": "str?", "est": "int?"},
         [{"country": "de", "est": 0}, {"country": None, "est": 1}],
     )
     duck_check(
-        "SELECT country, est FROM __THIS__ "
-        "LEFT JOIN dim ON country IS NOT DISTINCT FROM dim.country",
+        "SELECT t.country, est FROM __THIS__ AS t "
+        "LEFT JOIN dim ON t.country IS NOT DISTINCT FROM dim.country",
         {"country": "str?"},
         [{"country": "de"}, {"country": None}, {"country": "fr"}],
         {"dim": dim},
@@ -52,16 +54,16 @@ def test_indf_string_key_and_nullable_value():
 
 def test_indf_multi_key_conjunction():
     dim = static(
-        {"a": "int?", "b": "str?", "v": "int"},
+        {"ka": "int?", "kb": "str?", "v": "int"},
         [
-            {"a": 1, "b": "x", "v": 10},
-            {"a": 1, "b": None, "v": 11},
-            {"a": None, "b": None, "v": 12},
+            {"ka": 1, "kb": "x", "v": 10},
+            {"ka": 1, "kb": None, "v": 11},
+            {"ka": None, "kb": None, "v": 12},
         ],
     )
     duck_check(
         "SELECT v FROM __THIS__ LEFT JOIN dim ON "
-        "(a IS NOT DISTINCT FROM dim.a) AND (b IS NOT DISTINCT FROM dim.b)",
+        "(a IS NOT DISTINCT FROM dim.ka) AND (b IS NOT DISTINCT FROM dim.kb)",
         {"a": "int?", "b": "str?"},
         [
             {"a": 1, "b": "x"},
@@ -75,12 +77,12 @@ def test_indf_multi_key_conjunction():
 
 def test_indf_mixed_with_eq_key():
     dim = static(
-        {"a": "int", "b": "int?", "v": "int"},
-        [{"a": 1, "b": 5, "v": 10}, {"a": 1, "b": None, "v": 11}],
+        {"ka": "int", "kb": "int?", "v": "int"},
+        [{"ka": 1, "kb": 5, "v": 10}, {"ka": 1, "kb": None, "v": 11}],
     )
     duck_check(
         "SELECT v FROM __THIS__ LEFT JOIN dim ON "
-        "a = dim.a AND (b IS NOT DISTINCT FROM dim.b)",
+        "a = dim.ka AND (b IS NOT DISTINCT FROM dim.kb)",
         {"a": "int?", "b": "int?"},
         [
             {"a": 1, "b": 5},
