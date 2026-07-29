@@ -419,6 +419,7 @@ fn bind_from<'a>(
                 kind,
                 keys: Vec::new(),
                 key_cols: Vec::new(),
+                key_indf: Vec::new(),
                 val_cols: (0..n_batch).collect(),
                 residual,
             });
@@ -437,10 +438,10 @@ fn bind_from<'a>(
         }
 
         let st = &statics[table_idx];
-        let (keys, key_cols, residual_raw, using) = match constraint {
+        let (keys, key_cols, key_indf, residual_raw, using) = match constraint {
             JoinConstraint::On(e) => {
-                let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, e)?;
-                (keys, key_cols, res, false)
+                let (keys, key_cols, key_indf, res) = bind_on(&binder, st, &scope_name, e)?;
+                (keys, key_cols, key_indf, res, false)
             }
             // USING desugar (wave-4 pins): each column pairs the LEFT
             // scope's binding with this table's column; duplicates in the
@@ -475,7 +476,8 @@ fn bind_from<'a>(
                     keys.push(promote_key(key, st, col)?);
                     key_cols.push(col);
                 }
-                (keys, key_cols, Vec::new(), true)
+                let n = key_cols.len();
+                (keys, key_cols, vec![false; n], Vec::new(), true)
             }
             // NATURAL = USING(all common column names), case-insensitive,
             // merged output like USING with the LEFT spelling; NO common
@@ -497,7 +499,8 @@ fn bind_from<'a>(
                             .into(),
                     ));
                 }
-                (keys, key_cols, Vec::new(), true)
+                let n = key_cols.len();
+                (keys, key_cols, vec![false; n], Vec::new(), true)
             }
             JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
         };
@@ -523,6 +526,7 @@ fn bind_from<'a>(
             kind,
             keys,
             key_cols,
+            key_indf,
             val_cols,
             residual,
         });
@@ -597,6 +601,7 @@ fn bind_from<'a>(
                 kind: JoinKind::Inner,
                 keys: Vec::new(),
                 key_cols: Vec::new(),
+                key_indf: Vec::new(),
                 val_cols: (0..n_batch).collect(),
                 residual: None,
             });
@@ -671,12 +676,14 @@ fn bind_from<'a>(
             keys: keys.clone(),
             using: false,
         });
+        let n = key_cols.len();
         specs.push(JoinSpec {
             table: table_idx,
             batch: false,
             kind: JoinKind::Inner,
             keys,
             key_cols,
+            key_indf: vec![false; n],
             val_cols,
             residual: None,
         });
@@ -766,31 +773,38 @@ fn bind_residual(
     Ok(acc)
 }
 
-/// Bind a JOIN ... ON condition. Equalities pairing a dynamic-side
-/// expression with a static column become probe keys; every OTHER conjunct
-/// (non-equalities, constant equalities, both-sides-static equalities) is
-/// returned raw for residual binding once the join is in scope (wave-4:
-/// `match = key_hit AND residual`).
+/// Bind a JOIN ... ON condition. Equalities (and IS NOT DISTINCT FROM)
+/// pairing a dynamic-side expression with a static column become probe
+/// keys; every OTHER conjunct (non-equalities, constant equalities,
+/// both-sides-static equalities) is returned raw for residual binding once
+/// the join is in scope (wave-4: `match = key_hit AND residual`).
+#[allow(clippy::type_complexity)]
 fn bind_on<'e>(
     binder: &Binder<'_>,
     st: &StaticTable,
     scope_name: &str,
     on: &'e SqlExpr,
-) -> Result<(Vec<SExpr>, Vec<u32>, Vec<&'e SqlExpr>), PrepareError> {
+) -> Result<(Vec<SExpr>, Vec<u32>, Vec<bool>, Vec<&'e SqlExpr>), PrepareError> {
     let mut conjuncts = Vec::new();
     collect_conjuncts(on, &mut conjuncts);
     let mut keys = Vec::new();
     let mut key_cols = Vec::new();
+    let mut key_indf = Vec::new();
     let mut residual = Vec::new();
     for c in conjuncts {
-        let SqlExpr::BinaryOp {
-            left,
-            op: BinaryOperator::Eq,
-            right,
-        } = c
-        else {
-            residual.push(c);
-            continue;
+        let (left, right, indf) = match c {
+            SqlExpr::BinaryOp {
+                left,
+                op: BinaryOperator::Eq,
+                right,
+            } => (left, right, false),
+            // IS NOT DISTINCT FROM: NULL is an ordinary key value — NULL
+            // joins NULL (DRAFT-22's params-join contract).
+            SqlExpr::IsNotDistinctFrom(left, right) => (left, right, true),
+            _ => {
+                residual.push(c);
+                continue;
+            }
         };
         let l = static_col_of(left, st, scope_name)?;
         let r = static_col_of(right, st, scope_name)?;
@@ -819,8 +833,9 @@ fn bind_on<'e>(
         let key = promote_key(key, st, col)?;
         keys.push(key);
         key_cols.push(col);
+        key_indf.push(indf);
     }
-    Ok((keys, key_cols, residual))
+    Ok((keys, key_cols, key_indf, residual))
 }
 
 /// Promote a dynamic-side key expression to the map's key type.

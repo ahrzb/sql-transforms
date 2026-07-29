@@ -757,6 +757,220 @@ fn join_shape_errors() {
     .expect("all-key join prepares");
 }
 
+// ------------------------------------------------------- params-join wiring
+// (DRAFT-22 step 3): IS NOT DISTINCT FROM join keys — NULL is an ordinary
+// key value, encoded as a (validity i1, masked payload) key PAIR on both
+// sides — and the keyless always-true LEFT JOIN against a one-row static.
+
+/// INDF i64 key entry: (valid, payload) — NULL is (false, type default).
+fn indf_key(v: Option<i64>) -> Vec<KeyBits> {
+    vec![KeyBits::I1(v.is_some()), KeyBits::I64(v.unwrap_or(0))]
+}
+
+#[test]
+fn indf_left_join_null_key_joins_null_bucket() {
+    let schema = cols(&[("k", Ty::I64, true)]);
+    let dim = stat("dim", &[("id", Ty::I64, true), ("v", Ty::I64, false)]);
+    let data = StaticData::Map(vec![
+        (indf_key(Some(1)), vec![ScalarVal::I64(10)]),
+        (indf_key(None), vec![ScalarVal::I64(99)]),
+    ]);
+    let got = run_join(
+        "SELECT k, v FROM __THIS__ LEFT JOIN dim ON k IS NOT DISTINCT FROM dim.id",
+        &schema,
+        &[dim],
+        vec![data],
+        batch(3, vec![c_i64(&[Some(1), None, Some(2)])]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[&["1", "10"], &["NULL", "99"], &["2", "NULL"]])
+    );
+}
+
+#[test]
+fn indf_inner_join_null_key_hits() {
+    let schema = cols(&[("k", Ty::I64, true)]);
+    let dim = stat("dim", &[("id", Ty::I64, true), ("v", Ty::I64, false)]);
+    let data = StaticData::Map(vec![
+        (indf_key(Some(1)), vec![ScalarVal::I64(10)]),
+        (indf_key(None), vec![ScalarVal::I64(99)]),
+    ]);
+    let got = run_join(
+        "SELECT v FROM __THIS__ JOIN dim ON k IS NOT DISTINCT FROM dim.id",
+        &schema,
+        &[dim],
+        vec![data],
+        batch(3, vec![c_i64(&[Some(1), None, Some(2)])]),
+    )
+    .unwrap();
+    // k=2 misses (INNER drops); NULL hits the NULL bucket.
+    assert_eq!(got, rows(&[&["10"], &["99"]]));
+}
+
+#[test]
+fn indf_multi_key_conjunction_mixed_with_eq() {
+    // `=` key (NULL never matches) AND INDF key (NULL matches NULL).
+    let schema = cols(&[("a", Ty::I64, true), ("b", Ty::Str, true)]);
+    let dim = stat(
+        "dim",
+        &[
+            ("x", Ty::I64, false),
+            ("y", Ty::Str, true),
+            ("v", Ty::I64, false),
+        ],
+    );
+    let entry = |x: i64, y: Option<&str>, v: i64| {
+        (
+            vec![
+                KeyBits::I64(x),
+                KeyBits::I1(y.is_some()),
+                KeyBits::Str(y.unwrap_or("").to_string()),
+            ],
+            vec![ScalarVal::I64(v)],
+        )
+    };
+    let data = StaticData::Map(vec![
+        entry(1, Some("u"), 10),
+        entry(1, None, 11),
+        entry(2, Some("w"), 20),
+    ]);
+    let got = run_join(
+        "SELECT v FROM __THIS__ LEFT JOIN dim \
+         ON a = dim.x AND (b IS NOT DISTINCT FROM dim.y)",
+        &schema,
+        &[dim],
+        vec![data],
+        batch(
+            4,
+            vec![
+                c_i64(&[Some(1), Some(1), None, Some(2)]),
+                c_str(&[Some("u"), None, None, None]),
+            ],
+        ),
+    )
+    .unwrap();
+    // (1,'u') hits 10; (1,NULL) hits the NULL bucket 11; (NULL,NULL)
+    // misses — the `=` key never matches on NULL; (2,NULL) misses.
+    assert_eq!(got, rows(&[&["10"], &["11"], &["NULL"], &["NULL"]]));
+}
+
+#[test]
+fn keyless_left_join_on_one_eq_one() {
+    let schema = cols(&[("k", Ty::I64, false)]);
+    let params = stat("p", &[("v", Ty::I64, false)]);
+    let data = StaticData::Map(vec![(vec![], vec![ScalarVal::I64(7)])]);
+    let got = run_join(
+        "SELECT k, v FROM __THIS__ LEFT JOIN p ON ((1 = 1))",
+        &schema,
+        &[params],
+        vec![data],
+        batch(2, vec![c_i64(&[Some(1), Some(2)])]),
+    )
+    .unwrap();
+    assert_eq!(got, rows(&[&["1", "7"], &["2", "7"]]));
+}
+
+#[test]
+fn keyless_join_two_row_build_refuses() {
+    let schema = cols(&[("k", Ty::I64, false)]);
+    let params = stat("p", &[("v", Ty::I64, false)]);
+    let data = StaticData::Map(vec![
+        (vec![], vec![ScalarVal::I64(7)]),
+        (vec![], vec![ScalarVal::I64(8)]),
+    ]);
+    let err = run_join(
+        "SELECT v FROM __THIS__ LEFT JOIN p ON ((1 = 1))",
+        &schema,
+        &[params],
+        vec![data],
+        batch(1, vec![c_i64(&[Some(1)])]),
+    )
+    .unwrap_err();
+    assert!(err.contains("duplicate map key"), "got: {err}");
+}
+
+#[test]
+fn indf_and_keyless_joins_are_map_shape_provable() {
+    // The serving_sql shape (DRAFT-22): both param joins are LEFT, so the
+    // exactly-one-row proof holds and shape='map' builds.
+    let schema = cols(&[("k", Ty::I64, true)]);
+    let dim = stat("dim", &[("id", Ty::I64, true), ("v", Ty::I64, true)]);
+    let params = stat("p", &[("w", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT (v + w) AS z FROM __THIS__ \
+         LEFT JOIN dim ON (k IS NOT DISTINCT FROM dim.id) \
+         LEFT JOIN p ON ((1 = 1))",
+        "__THIS__",
+        &schema,
+        &[dim, params],
+    )
+    .unwrap();
+    assert_eq!(p.one_row_blocker, None);
+    // The StaticSpec names which key columns join under INDF, so the
+    // materializer knows to KEEP NULL-key rows as (false, default) pairs.
+    assert_eq!(p.statics[0].key_indf, vec![true]);
+    assert!(p.statics[1].key_indf.is_empty());
+    // Chained end to end. `v` is nullable, so values are (validity,
+    // payload) pairs (TASK-55 flattening).
+    let data0 = StaticData::Map(vec![
+        (
+            indf_key(Some(1)),
+            vec![ScalarVal::I1(true), ScalarVal::I64(10)],
+        ),
+        (
+            indf_key(None),
+            vec![ScalarVal::I1(true), ScalarVal::I64(99)],
+        ),
+    ]);
+    let data1 = StaticData::Map(vec![(vec![], vec![ScalarVal::I64(5)])]);
+    let f = compile(&p.program, vec![data0, data1]).unwrap();
+    let got = run_snapshot(&f, &batch(3, vec![c_i64(&[Some(1), None, Some(2)])])).unwrap();
+    assert_eq!(got, rows(&[&["15"], &["104"], &["NULL"]]));
+}
+
+#[test]
+fn indf_under_shape_many_refuses_by_name() {
+    let schema = cols(&[("k", Ty::I64, true)]);
+    let dim = stat("dim", &[("id", Ty::I64, true), ("v", Ty::I64, false)]);
+    match super::prepare_opaque(
+        "SELECT v FROM __THIS__ LEFT JOIN dim ON k IS NOT DISTINCT FROM dim.id",
+        "__THIS__",
+        &schema,
+        &[],
+        &[],
+        &[dim],
+        true,
+    ) {
+        Err(PrepareError::Unsupported(m)) => {
+            assert!(m.contains("IS NOT DISTINCT FROM"), "got: {m}")
+        }
+        Err(other) => panic!("wrong error kind: {other}"),
+        Ok(_) => panic!("INDF under shape='many' unexpectedly prepared"),
+    }
+}
+
+#[test]
+fn indf_join_programs_are_canonical_ir() {
+    let schema = cols(&[("k", Ty::I64, true)]);
+    let dim = stat("dim", &[("id", Ty::I64, true), ("v", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT v FROM __THIS__ LEFT JOIN dim ON k IS NOT DISTINCT FROM dim.id",
+        "__THIS__",
+        &schema,
+        &[dim],
+    )
+    .unwrap()
+    .program;
+    let text = print(&p);
+    assert_eq!(
+        parse(&text).unwrap(),
+        p,
+        "INDF join program is not canonical:\n{text}"
+    );
+}
+
 #[test]
 fn constant_arithmetic_folds_at_prepare() {
     let schema = cols(&[("a", Ty::I64, false)]);

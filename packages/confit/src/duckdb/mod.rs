@@ -52,9 +52,11 @@ fn build_err(msg: impl Into<String>) -> PyErr {
 }
 
 /// One map static from a pyarrow Table, per its `StaticSpec` recipe: rows
-/// with a NULL key are dropped (a NULL never equi-matches), a NULL in a
-/// value column is an error, and an int column joined against a float
-/// expression converts here (the declared key type is the expression's).
+/// with a NULL `=` key are dropped (a NULL never equi-matches) while a NULL
+/// IS NOT DISTINCT FROM key is an ordinary (false, default) key pair, a
+/// NULL in a value column is an error, and an int column joined against a
+/// float expression converts here (the declared key type is the
+/// expression's).
 fn materialize_map(
     py: Python<'_>,
     table: &Py<PyAny>,
@@ -81,23 +83,48 @@ fn materialize_map(
             })
         };
         let mut keys = Vec::with_capacity(key_tys.len());
-        for (name, ty) in spec.key_cols.iter().zip(key_tys) {
+        let mut kt = key_tys.iter();
+        for (name, &indf) in spec.key_cols.iter().zip(&spec.key_indf) {
             let v = get(name)?;
-            if v.is_none() {
-                continue 'row;
+            let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<KeyBits> {
+                Ok(match ty {
+                    Ty::I1 => KeyBits::I1(v.extract()?),
+                    Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
+                        build_err(format!(
+                            "unsupported: static table '{}' key column '{name}' value \
+                             outside BIGINT range (UBIGINT/HUGEINT payloads)",
+                            spec.table
+                        ))
+                    })?),
+                    Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
+                    Ty::Str => KeyBits::Str(v.extract()?),
+                })
+            };
+            if indf {
+                // IS NOT DISTINCT FROM key: (validity, payload) pair; NULL
+                // is an ordinary key value, stored as (false, type default)
+                // — exactly the probe side's masked encoding.
+                let _validity_ty = kt.next();
+                let ty = *kt.next().expect("payload type follows validity");
+                if v.is_none() {
+                    keys.push(KeyBits::I1(false));
+                    keys.push(match ty {
+                        Ty::I1 => KeyBits::I1(false),
+                        Ty::I64 => KeyBits::I64(0),
+                        Ty::F64 => KeyBits::F64(0f64.to_bits()),
+                        Ty::Str => KeyBits::Str(String::new()),
+                    });
+                } else {
+                    keys.push(KeyBits::I1(true));
+                    keys.push(convert(&v, ty)?);
+                }
+            } else {
+                let ty = *kt.next().expect("one type per plain key column");
+                if v.is_none() {
+                    continue 'row;
+                }
+                keys.push(convert(&v, ty)?);
             }
-            keys.push(match ty {
-                Ty::I1 => KeyBits::I1(v.extract()?),
-                Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
-                    build_err(format!(
-                        "unsupported: static table '{}' key column '{name}' value \
-                         outside BIGINT range (UBIGINT/HUGEINT payloads)",
-                        spec.table
-                    ))
-                })?),
-                Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
-                Ty::Str => KeyBits::Str(v.extract()?),
-            });
         }
         let mut vals = Vec::with_capacity(val_tys.len());
         let mut vt = val_tys.iter();
