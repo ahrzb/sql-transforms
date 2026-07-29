@@ -1,12 +1,13 @@
 [project]
 name = "sql-transform"
 version = "0.1.0"
-description = "SQL feature transforms — authoring surface, being rebuilt on Confit"
+description = "SQL projections over __THIS__ — fit marginalizes aggregates via DuckDB, serving via Confit"
 readme = "README.md"
 requires-python = ">=3.14"
-# Only what the surface itself references. The fit-time engine (datafusion,
-# sqlglot, numpy) went with the implementation; add back what the rebuild needs.
+# duckdb is the fit-time engine and the parser (json_serialize_sql); serving
+# will come through confit and never needs it.
 dependencies = [
+    "duckdb>=1.5.5",
     "pyarrow>=19.0",
     "pydantic>=2.0,<3.0",
 ]

@@ -1,15 +1,25 @@
-"""SQLTransform — the authoring surface, awaiting reimplementation.
+"""SQLProjection — projections over ``__THIS__``, fit once, serve row-at-a-time.
 
-Every method raises `NotImplementedError`. The signatures are the contract a
-rebuild has to satisfy; the previous implementation (a DataFusion batch engine,
-a codegen backend, and transform composition) was deleted deliberately.
-
-The serving half already exists and is unaffected: confit takes SQL plus static
-tables frozen at fit time and partially evaluates them into a native function.
+The fit half works today: ``fit(table)`` marginalizes every window aggregate
+into materialized params tables plus a rewritten ``serving_sql``. The serving
+half (``infer``/``infer_batch`` through Confit) is a later loop and raises
+``NotImplementedError``.
 """
 
 from __future__ import annotations
 
-from sql_transform._transform import SQLTransform
+from sql_transform._marginalize import (
+    Marginalized,
+    MarginalizeError,
+    ParamsSpec,
+    marginalize,
+)
+from sql_transform._projection import SQLProjection
 
-__all__ = ["SQLTransform"]
+__all__ = [
+    "Marginalized",
+    "MarginalizeError",
+    "ParamsSpec",
+    "SQLProjection",
+    "marginalize",
+]

@@ -23,24 +23,52 @@ FROM __THIS__
 
 ```sql
 -- serving_sql (generated)
-SELECT (t.age - p0.__cf_a0) / p0.__cf_a1 AS age_z,
-       t.fare - p1.__cf_a0 AS fare_c
-FROM __THIS__ AS t
-LEFT JOIN __CF_PARAMS_0__ AS p0 ON t.country IS NOT DISTINCT FROM p0.country
-CROSS JOIN __CF_PARAMS_1__ AS p1
+SELECT ((__cf_t.age - __cf_p0.__cf_a0) / __cf_p0.__cf_a1) AS age_z,
+       (__cf_t.fare - __cf_p1.__cf_a0) AS fare_c
+FROM __THIS__ AS __cf_t
+LEFT JOIN __CF_PARAMS_0__ AS __cf_p0
+  ON ((__cf_t.country IS NOT DISTINCT FROM __cf_p0.country))
+LEFT JOIN __CF_PARAMS_1__ AS __cf_p1 ON ((1 = 1))
 ```
 
 ```sql
--- params[0].fit_sql   (keys = [country])
-SELECT country, avg(age) AS __cf_a0, stddev_samp(age) AS __cf_a1
-FROM __THIS__ GROUP BY country
+-- windows_sql: ONE fit-time execution — the original select list verbatim
+-- (chain-pinning, discarded), each distinct window re-projected, the keys:
+SELECT (age - avg(age) OVER (PARTITION BY country))
+       / stddev_samp(age) OVER (PARTITION BY country) AS __cf_o0,
+       (fare - avg(fare) OVER ()) AS __cf_o1,
+       avg(age) OVER (PARTITION BY country) AS __cf_w0,
+       stddev_samp(age) OVER (PARTITION BY country) AS __cf_w1,
+       avg(fare) OVER () AS __cf_w2,
+       country AS __cf_k0
+FROM __THIS__
+-- params[0].fit_sql   (keys = [country]) — pure value picking, no arithmetic:
+SELECT DISTINCT __cf_k0 AS country, __cf_w0 AS __cf_a0, __cf_w1 AS __cf_a1
+FROM __CF_WINDOWS__
 -- params[1].fit_sql   (keys = [])
-SELECT avg(fare) AS __cf_a0 FROM __THIS__
+SELECT DISTINCT __cf_w2 AS __cf_a0 FROM __CF_WINDOWS__
 ```
 
-`fit(train)` runs each `fit_sql` over the training table via DuckDB and stores
-the resulting tables. Serving (a later slice) hands `serving_sql` + params to
-Confit as static tables.
+`fit(train)` registers the training table, runs `windows_sql` once
+(single-threaded, see below), registers the materialized result as
+`__CF_WINDOWS__`, and collapses each params table out of it with SELECT
+DISTINCT — every allowlisted aggregate is deterministic per group, so the
+tuple is constant within a group and DISTINCT yields exactly one row per
+group. Serving (a later slice) hands `serving_sql` + params to Confit as
+static tables.
+
+**Why fit is two-stage — measured, not designed.** The differential fuzz
+killed two simpler forms. A `GROUP BY` fit drifts from the original text by
+an ulp: DuckDB's group-by and window aggregates sum floats in different
+orders. A standalone per-keyset window query drifts too: DuckDB chains window
+operators, each reordering rows for the next, so a float aggregate's
+summation order depends on which *other* windows share the query. Keeping the
+original select items in `windows_sql` pins the operator chain, and
+re-projecting an already-present window is CSE'd — the original text's value,
+bit-exactly. The last ulp source is parallelism itself: DuckDB's parallel
+window aggregation is schedule-dependent (measured 1/500 cases), so fit pins
+`SET threads = 1`, making params deterministic and machine-reproducible; the
+gate compares both sides single-threaded.
 
 ## Architecture: parse with the oracle
 
@@ -80,16 +108,23 @@ regardless of parser.
    normalization) within a key set dedupe to one column.
 2. **Join predicate is `IS NOT DISTINCT FROM`, never `USING`/`=`.** Window
    `PARTITION BY` groups NULL keys into one partition; equality joins would
-   drop them. `OVER ()` (empty key set) becomes `CROSS JOIN` against a
-   one-row table.
+   drop them. `OVER ()` (empty key set) joins its one-row table via
+   `LEFT JOIN … ON (1 = 1)` — never a CROSS join, because the oracle prints
+   CROSS joins in comma form, which re-parses with different associativity
+   once another join follows (fuzz-found).
 3. **Multiplicity by construction:** `fit_sql` is `GROUP BY keys` ⇒ keys are
    unique ⇒ LEFT JOIN matches ≤ 1 ⇒ exactly one row out per row in. Map shape
    is proven, not tested.
 4. **`__CF_` is a reserved prefix** (params tables `__CF_PARAMS_N__`, columns
    `__cf_aN`). Input SQL containing it (case-insensitive) is refused — same
    idiom as Confit's `__glob_pat` reservation.
-5. `__THIS__` gains the alias `t` in `serving_sql`; base-column references are
-   qualified through it.
+5. `__THIS__` gains the alias `__cf_t` in `serving_sql`; base-column
+   references are qualified through it (a short alias like `t` could collide
+   with a user column; the reserved prefix cannot). Unaliased non-column
+   select items get their derived name frozen as an explicit alias first —
+   DuckDB names such columns by their own printed text, which qualification
+   would change. Plain column refs are exempt: their name is the last path
+   part, untouched by qualification.
 
 ## Accepted surface and refusals
 
@@ -100,11 +135,13 @@ refusal raises a named, positioned error — serve-or-refuse, no third mode.
 `agg(expr…) OVER ()`, where:
 
 - `agg` is on the **allowlist** (grown one measured entry at a time, like the
-  corpus): `avg`, `sum`, `count`, `min`, `max`, `stddev`, `stddev_pop`,
-  `stddev_samp`, `var_pop`, `var_samp`, `variance`, `median`. Order-sensitive
-  aggregates (`first`, `last`, `string_agg`, `array_agg`, …) are refused by
+  corpus): `avg`, `sum`, `count`, `count_star`, `min`, `max`, `stddev`,
+  `stddev_pop`, `stddev_samp`, `var_pop`, `var_samp`, `variance`, `median`.
+  Order-sensitive aggregates (`string_agg`, `array_agg`, …) are refused by
   absence: their per-group value is nondeterministic, which would make both
-  fit and the differential gate flaky.
+  fit and the differential gate flaky. (`first`/`last` never reach the
+  allowlist check — the oracle classifies them as their own window types, so
+  they are refused as position-dependent window functions.)
 - Partition keys are plain `__THIS__` columns (expressions: next loop).
 - Aggregate arguments are arbitrary expressions over `__THIS__` columns —
   computed training-side, no restriction beyond what DuckDB accepts.
@@ -148,14 +185,23 @@ class SQLProjection:
     def boundary(self) -> str: ...
 ```
 
-Internally, `marginalize(sql) -> Marginalized(serving_sql, params_specs)` is a
-pure function (parse + rewrite + plan, no execution); `fit` = marginalize +
-materialize. `this_model` is accepted for signature stability but unused this
-slice (the training table brings its own schema).
+Internally, `marginalize(sql) -> Marginalized(serving_sql, windows_sql,
+params)` is a pure function (parse + rewrite + plan, no execution); `fit` =
+marginalize + materialize (two stages, see above). `this_model` is accepted
+for signature stability but unused this slice (the training table brings its
+own schema).
+
+The raw AST dicts are handled under a two-tier typing discipline: subtrees
+merely carried pass through as opaque `Node` dicts, while every node the
+module *interprets* is read through a pydantic view that validates shape at
+the read site — a DuckDB format change fails as one named "AST shape drift"
+error, not a `KeyError` mid-walk.
 
 ## The bulletproof gate
 
-DuckDB-vs-DuckDB differential — no inference code anywhere:
+DuckDB-vs-DuckDB differential — no inference code anywhere, both sides at
+`threads = 1` (the only setting where the oracle's own float window
+aggregation is bit-deterministic):
 
 ```python
 original  = duck(sql, __THIS__=train)
@@ -172,6 +218,13 @@ unicode/quoted identifiers. Plus:
 - **AST pins:** executed `json_serialize_sql` examples for every node shape the
   walker relies on, so a DuckDB bump that moves the format fails loudly.
 - Column-order and dtype equality in the differential, not just values.
+- **Seeded differential fuzz** (`MARGINALIZE_FUZZ_N`, default 25; deep runs at
+  500+): random typed tables with NULLs everywhere × random projections. The
+  fuzz found every deep bug in this slice: the CROSS-join comma-form
+  associativity trap, both float summation-order drifts, and the degenerate
+  `pa.null()`-typed-column coercion (an untyped training column is rejected
+  territory for a later loop — the generator now types its columns
+  explicitly).
 
 ## Out of scope (named next loops)
 
