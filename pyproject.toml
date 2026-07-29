@@ -39,6 +39,9 @@ known-third-party = ["duckdb"]
 [tool.ruff.lint.per-file-ignores]
 # S311: tests use seeded pseudo-random fuzz generators (S311 is about crypto).
 "*test*.py" = ["S608", "S311"]
+# The corpus is verbatim mined/curated SQL one-liners; wrapping them hurts
+# greppability against the DuckDB test files they came from.
+"_corpus_test.py" = ["E501"]
 "_state.py" = ["S608"]
 # Bench fixtures: seeded pseudo-random data generators (S311 is about
 # crypto), dense SQL/data-gen literals where wrapping hurts readability,

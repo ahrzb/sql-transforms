@@ -9,6 +9,7 @@ half (``infer``/``infer_batch`` through Confit) is a later loop and raises
 from __future__ import annotations
 
 from sql_transform._marginalize import (
+    FitStep,
     Marginalized,
     MarginalizeError,
     ParamsSpec,
@@ -17,6 +18,7 @@ from sql_transform._marginalize import (
 from sql_transform._projection import SQLProjection
 
 __all__ = [
+    "FitStep",
     "Marginalized",
     "MarginalizeError",
     "ParamsSpec",
