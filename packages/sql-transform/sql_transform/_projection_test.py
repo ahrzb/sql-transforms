@@ -31,9 +31,18 @@ TRAIN = pa.table(
 )
 
 
-def gate(sql: str, table: pa.Table = TRAIN) -> SQLProjection:
+def _model_for(table: pa.Table):
+    import pydantic
+
+    return pydantic.create_model(
+        "Row", **dict.fromkeys(table.column_names, (object, None))
+    )
+
+
+def gate(sql: str, table: pa.Table = TRAIN, schema: bool = False) -> SQLProjection:
     """Assert original == marginalized under the oracle; returns the fitted p."""
-    p = SQLProjection(sql).fit(table)
+    model = _model_for(table) if schema else None
+    p = SQLProjection(sql, this_model=model).fit(table)
     con = duckdb.connect()
     try:
         # Both sides single-threaded: DuckDB's parallel window aggregation is
@@ -252,6 +261,79 @@ def test_scalar_subquery_inside_cte():
     )
 
 
+# --- schema-aware resolution (loop 4) ----------------------------------------
+
+
+def test_schema_mode_basic_and_star():
+    gate(
+        "SELECT age - avg(age) OVER (PARTITION BY country) AS m FROM __THIS__",
+        schema=True,
+    )
+    gate("SELECT * FROM __THIS__", schema=True)
+    gate("SELECT *, avg(age) OVER () AS m FROM __THIS__", schema=True)
+
+
+def test_schema_mode_columns_expansion():
+    gate("SELECT COLUMNS('c.*') FROM __THIS__", schema=True)
+    gate("SELECT COLUMNS('age|fare') FROM __THIS__", schema=True)
+
+
+def test_schema_mode_star_modifiers_through_cte():
+    gate(
+        "WITH a AS (SELECT * FROM __THIS__)"
+        " SELECT * EXCLUDE (name) REPLACE (age + 1 AS age) FROM a",
+        schema=True,
+    )
+    gate(
+        "WITH a AS (SELECT * EXCLUDE (city) FROM __THIS__)"
+        " SELECT age - avg(age) OVER (PARTITION BY country) AS m FROM a",
+        schema=True,
+    )
+
+
+def test_schema_mode_star_rename():
+    gate("SELECT * RENAME (age AS years) FROM __THIS__", schema=True)
+
+
+def test_schema_mode_lateral_alias_resolves():
+    # 'b' is not a column, so the alias applies: (age + 1) * 2.
+    gate("SELECT age + 1 AS b, b * 2 AS c FROM __THIS__", schema=True)
+    # 'fare' IS a column, so the column wins over the alias.
+    gate("SELECT age + 1 AS fare, fare * 2 AS c FROM __THIS__", schema=True)
+
+
+def test_schema_mode_struct_access_through_cte_column():
+    table = pa.table({"s": [{"f": 1.0}, {"f": 2.0}, {"f": None}], "g": ["a", "a", "b"]})
+    gate(
+        "WITH a AS (SELECT s, g FROM __THIS__)"
+        " SELECT s.f - avg(s.f) OVER (PARTITION BY g) AS d FROM a",
+        table,
+        schema=True,
+    )
+
+
+def test_schema_mode_windows_over_columns_expansion():
+    gate(
+        "SELECT avg(fare) OVER (PARTITION BY country) AS m,"
+        " * EXCLUDE (name) FROM __THIS__",
+        schema=True,
+    )
+
+
+def test_model_is_authoritative_at_fit():
+    import pydantic
+
+    model = pydantic.create_model("Row", age=(object, None), country=(object, None))
+    p = SQLProjection("SELECT * FROM __THIS__", this_model=model).fit(TRAIN)
+    # Extra table columns drop; order follows the model.
+    (out_names) = p.serving_sql
+    assert "__cf_t.age AS age, __cf_t.country AS country" in out_names
+    with pytest.raises(MarginalizeError, match="missing model column"):
+        SQLProjection("SELECT * FROM __THIS__", this_model=model).fit(
+            pa.table({"age": [1.0]})
+        )
+
+
 def test_plan_is_inspectable():
     p = SQLProjection(
         "WITH c AS (SELECT age - avg(age) OVER () AS cx FROM __THIS__)"
@@ -369,13 +451,14 @@ def test_fuzz_differential():
             )
             exprs.append(f"{template} AS e{i}")
         inner = f"SELECT {', '.join(exprs)} FROM __THIS__"
+        schema = bool(rng.randrange(2))
         shape = rng.randrange(4)
         if shape == 0:
-            gate(inner, table)
+            gate(inner, table, schema=schema)
         elif shape == 1:
             # wrap in a CTE and project over it
             outer = ", ".join(f"e{j} AS f{j}" for j in range(len(exprs)))
-            gate(f"WITH c AS ({inner}) SELECT {outer} FROM c", table)
+            gate(f"WITH c AS ({inner}) SELECT {outer} FROM c", table, schema=schema)
         elif shape == 2:
             # a second aggregation level over the first (numeric, type-safe)
             k_in = rng.choice(["PARTITION BY k1", "PARTITION BY k2", ""])
@@ -386,6 +469,7 @@ def test_fuzz_differential():
                 f" FROM __THIS__)"
                 f" SELECT e0 - {agg2}(e0) OVER ({k_out}) AS g0 FROM c",
                 table,
+                schema=schema,
             )
         else:
             # sprinkle a scalar subquery into a fresh projection
@@ -393,6 +477,7 @@ def test_fuzz_differential():
                 f"SELECT x - (SELECT {rng.choice(['max', 'min', 'avg'])}(x)"
                 f" FROM __THIS__) AS s0, {exprs[0]} FROM __THIS__",
                 table,
+                schema=schema,
             )
 
 
@@ -433,8 +518,7 @@ def test_serving_properties_still_raise(prop):
 
 def test_signatures_are_stable():
     assert str(inspect.signature(SQLProjection.fit)) == (
-        "(self, table: 'pa.Table', /, this_model: 'type[BaseModel] | None' = None)"
-        " -> 'SQLProjection'"
+        "(self, table: 'pa.Table', /) -> 'SQLProjection'"
     )
     assert str(inspect.signature(SQLProjection.infer)) == (
         "(self, row: 'dict[str, Any] | BaseModel', /) -> 'BaseModel'"

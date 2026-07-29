@@ -29,10 +29,24 @@ class SQLProjection:
     >>> p.params        # {"__CF_PARAMS_0__": <pyarrow.Table>}
     """
 
-    def __init__(self, sql: str | Template) -> None:
+    def __init__(
+        self,
+        sql: str | Template,
+        /,
+        this_model: type[BaseModel] | None = None,
+    ) -> None:
+        """``this_model`` declares the ``__THIS__`` schema (pydantic field
+        names, in definition order — the model is authoritative). With it,
+        unknown columns refuse here, stars/COLUMNS expand with modifiers at
+        any level, and lateral aliases resolve by DuckDB's column-wins rule.
+        Without it, marginalization is schema-free and the ambiguous cases
+        refuse with a hint."""
         if isinstance(sql, Template):
             raise NotImplementedError("t-string templates are a later loop")
-        self._marginalized = marginalize(sql)
+        self._columns = (
+            list(this_model.model_fields) if this_model is not None else None
+        )
+        self._marginalized = marginalize(sql, self._columns)
         self._params: dict[str, pa.Table] | None = None
 
     @classmethod
@@ -41,19 +55,22 @@ class SQLProjection:
         with open(path, encoding="utf-8") as f:
             return cls(f.read())
 
-    def fit(
-        self,
-        table: pa.Table,
-        /,
-        this_model: type[BaseModel] | None = None,
-    ) -> SQLProjection:
+    def fit(self, table: pa.Table, /) -> SQLProjection:
         """Materialize every params table over the training data; returns self.
 
-        ``this_model`` is accepted for signature stability; the training table
-        brings its own schema, so it is unused in this loop.
+        When a ``this_model`` was declared, it is authoritative: the table is
+        canonicalized to the model's columns in model order (extra table
+        columns drop; missing ones refuse by name).
         """
         import duckdb
 
+        if self._columns is not None:
+            missing = [c for c in self._columns if c not in table.column_names]
+            if missing:
+                raise MarginalizeError(
+                    f"training table is missing model column {missing[0]}"
+                )
+            table = table.select(self._columns)
         m = self._marginalized
         con = duckdb.connect()
         try:

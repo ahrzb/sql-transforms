@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cache
 from typing import Any
@@ -217,6 +218,7 @@ class _Star(_View):
     exclude_list: list[Any]
     replace_list: list[Any]
     rename_list: list[Any]
+    qualified_exclude_list: list[Any] = []
     query_location: int
 
 
@@ -608,7 +610,8 @@ class _LevelRewriter:
         self.level_i = level_i
         self.env = env
         self.level = level
-        self.risky_aliases: set[str] = set()
+        self.risky_aliases: set[str] = set()  # schema-free mode only
+        self.alias_exprs: dict[str, Node] = {}  # explicit-env lateral aliases
 
     # -- column resolution
 
@@ -638,12 +641,26 @@ class _LevelRewriter:
                 x.get("query_location"),
             )
         if head in self.env.exprs:
+            target = self.env.exprs[head]
             if len(names) > 1:
+                # Struct access composes through a plain column: extend the
+                # path. Through a computed expression it stays refused.
+                if target.get("class") == "COLUMN_REF" and target["column_names"][
+                    :1
+                ] == ["__cf_t"]:
+                    return dict(
+                        copy.deepcopy(target),
+                        column_names=[*target["column_names"], *names[1:]],
+                    )
                 _refuse(
                     "struct-field access through a projected expression",
                     x.get("query_location"),
                 )
-            return copy.deepcopy(self.env.exprs[head])
+            return copy.deepcopy(target)
+        if was_bare and head in self.alias_exprs:
+            # DuckDB's lateral-alias rule, resolvable because the environment
+            # is explicit: the column did not exist, so the alias applies.
+            return copy.deepcopy(self.alias_exprs[head])
         if self.env.star:
             return dict(copy.deepcopy(x), column_names=["__cf_t", *names])
         _refuse(f"unknown column {'.'.join(names)}", x.get("query_location"))
@@ -703,6 +720,8 @@ class _LevelRewriter:
         if isinstance(x, dict):
             cls = x.get("class")
             if cls == "WINDOW":
+                if self.alias_exprs:
+                    self._check_no_lateral_in_window(x)
                 w = _Window.of(x)
                 discriminates = _check_window(w)
                 return self._params_ref(x, w, discriminates)
@@ -729,51 +748,153 @@ class _LevelRewriter:
         return x
 
     def _rewrite_star(self, x: Node) -> Node:
+        """A star inside an expression (``count(*)``): plain row reference,
+        qualified to the base table. Anything fancier is refused here —
+        expansion is a select-item affair."""
         star = _Star.of(x)
         if star.columns or star.expr is not None:
-            _refuse("COLUMNS(...)", star.query_location)
+            _refuse("COLUMNS(...) inside an expression", star.query_location)
+        if (
+            star.exclude_list
+            or star.replace_list
+            or star.rename_list
+            or star.qualified_exclude_list
+        ):
+            _refuse("* with modifiers inside an expression", star.query_location)
         rel = star.relation_name.lower()
         if rel and rel not in self.level.source_quals and rel != "__this__":
             _refuse(
                 f"star qualified by unknown relation {star.relation_name}",
                 star.query_location,
             )
-        if not self.env.star or len(self.env.entries) > 1:
-            # Expansion through a projecting source happens in the level
-            # pass (a star may become several items); here only the pure
-            # base-passthrough star is rewritable in place.
-            _refuse(
-                "* over a projecting source inside an expression",
-                star.query_location,
-            )
         y = {k: self.rewrite(v) for k, v in x.items()}
         y["relation_name"] = "__cf_t"
         return y
 
+    def _check_no_lateral_in_window(self, x: Any) -> None:
+        """A window's fit-side text runs against the source relation, which
+        has no same-level lateral aliases — refuse them by name."""
+        if isinstance(x, dict):
+            if x.get("class") == "COLUMN_REF":
+                names = x["column_names"]
+                if (
+                    len(names) == 1
+                    and names[0].lower() in self.alias_exprs
+                    and names[0].lower() not in self.env.exprs
+                ):
+                    _refuse(
+                        f"lateral alias {names[0]} inside a window function"
+                        " (name the column or repeat the expression)",
+                        x.get("query_location"),
+                    )
+            for v in x.values():
+                self._check_no_lateral_in_window(v)
+        elif isinstance(x, list):
+            for v in x:
+                self._check_no_lateral_in_window(v)
+
+    def _expand_star(self, star_node: Node) -> list[tuple[str, Node]]:
+        """Expand a star/COLUMNS over a fully explicit environment, composing
+        EXCLUDE/REPLACE/RENAME; returns (output name, rewritten expr) pairs."""
+        star = _Star.of(star_node)
+        if star.qualified_exclude_list:
+            _refuse("qualified EXCLUDE", star.query_location)
+        names = [n for n, _ in self.env.entries]
+        known = {n.lower() for n in names}
+        if star.columns:
+            expr = star.expr
+            if not (isinstance(expr, dict) and expr.get("class") == "CONSTANT"):
+                _refuse(
+                    "COLUMNS with a lambda or non-constant pattern",
+                    star.query_location,
+                )
+            pattern = str(expr["value"]["value"])
+            # The oracle matches its own regex dialect — never Python's re.
+            matched = {
+                n
+                for n in names
+                if duckdb.execute(
+                    "SELECT regexp_matches(?, ?)", [n, pattern]
+                ).fetchone()[0]
+            }
+            if not matched:
+                _refuse(f"COLUMNS({pattern!r}) matched no columns", star.query_location)
+        else:
+            matched = set(names)
+        exclude = {e.lower() for e in star.exclude_list}
+        replace = {
+            entry["key"].lower(): self.rewrite(entry["value"])
+            for entry in star.replace_list
+        }
+        rename = {
+            entry["key"]["column"].lower(): entry["value"] for entry in star.rename_list
+        }
+        for modifier in (exclude, replace, rename):
+            unknown = set(modifier) - known
+            if unknown:
+                _refuse(
+                    f"a star modifier names unknown column {sorted(unknown)[0]}",
+                    star.query_location,
+                )
+        out: list[tuple[str, Node]] = []
+        for name, expr in self.env.entries:
+            if name not in matched or name.lower() in exclude:
+                continue
+            chosen = replace.get(name.lower())
+            chosen = copy.deepcopy(chosen if chosen is not None else expr)
+            out.append((rename.get(name.lower(), name), dict(chosen, alias="")))
+        if not out:
+            _refuse("* expanded to no columns", star.query_location)
+        return out
+
     def rewrite_items(
         self, items: list[Node], is_final: bool
     ) -> tuple[list[Node], list[tuple[str, Node | None]]]:
-        """Rewrite the select list, expanding stars over projecting sources.
-        Returns the rewritten items plus this level's output entries (the
-        environment the next level resolves against)."""
+        """Rewrite the select list, expanding stars over explicit
+        environments. Returns the rewritten items plus this level's output
+        entries (the environment the next level resolves against)."""
         out: list[Node] = []
         entries: list[tuple[str, Node | None]] = []
         names_seen: set[str] = set()
-        projecting = not self.env.star or len(self.env.entries) > 1
+        explicit = not self.env.star
         for item in items:
             if item.get("class") == "STAR":
                 star = _Star.of(item)
-                if star.exclude_list or star.replace_list or star.rename_list:
-                    if projecting or not is_final:
+                if explicit:
+                    for name, expr in self._expand_star(item):
+                        entries.append((name, expr))
+                        out.append(dict(copy.deepcopy(expr), alias=name))
+                    continue
+                # Schema-free: base columns are unknowable, so modifiers are
+                # only expressible in a final level directly over __THIS__.
+                has_mods = star.exclude_list or star.replace_list or star.rename_list
+                if len(self.env.entries) == 1:
+                    if star.columns or star.expr is not None:
                         _refuse(
-                            "* with EXCLUDE/REPLACE/RENAME beyond a final"
-                            " level directly over __THIS__",
+                            "COLUMNS(...) without a schema (declare one via"
+                            " this_model)",
                             star.query_location,
                         )
-                if not projecting:
+                    if has_mods and not is_final:
+                        _refuse(
+                            "* with EXCLUDE/REPLACE/RENAME in a non-final"
+                            " level (declare a schema via this_model)",
+                            star.query_location,
+                        )
                     entries.append(("*", None))
-                    out.append(self.rewrite(item))
+                    if has_mods:
+                        y = {k: self.rewrite(v) for k, v in item.items()}
+                        y["relation_name"] = "__cf_t"
+                        out.append(y)
+                    else:
+                        out.append(self.rewrite(item))
                     continue
+                if has_mods or star.columns or star.expr is not None:
+                    _refuse(
+                        "* with modifiers over a CTE or derived table without"
+                        " a schema (declare one via this_model)",
+                        star.query_location,
+                    )
                 for name, expr in self.env.entries:
                     if expr is None:
                         entries.append(("*", None))
@@ -789,7 +910,12 @@ class _LevelRewriter:
                 rewritten = dict(rewritten, alias=item["alias"])
             out.append(rewritten)
             name = _item_name(item)
-            if item.get("alias") and not (
+            if explicit:
+                if name is not None:
+                    self.alias_exprs.setdefault(
+                        name.lower(), dict(copy.deepcopy(rewritten), alias="")
+                    )
+            elif item.get("alias") and not (
                 item.get("class") == "COLUMN_REF"
                 and _ColumnRef.of(item).column_names[-1].lower()
                 == item["alias"].lower()
@@ -1021,11 +1147,30 @@ def _serving_from(joins: list[_Join]) -> Node:
 # --- the entry point ----------------------------------------------------------
 
 
-def marginalize(sql: str) -> Marginalized:
+def marginalize(sql: str, columns: Sequence[str] | None = None) -> Marginalized:
     """Parse a chain of strict projections over ``__THIS__`` and marginalize
-    it. Pure: parses, rewrites, and plans — never executes."""
+    it. Pure: parses, rewrites, and plans — never executes.
+
+    ``columns``, when given, is the declared ``__THIS__`` schema (names, in
+    order). The base environment then becomes explicit: unknown columns
+    refuse at construction, stars and COLUMNS expand with their modifiers at
+    any level, and lateral aliases resolve by DuckDB's column-wins rule."""
     if _RESERVED in sql.lower():
         _refuse(f"the reserved prefix {_RESERVED} in the SQL")
+    base_env = _BASE_ENV
+    if columns is not None:
+        cols = list(columns)
+        for c in cols:
+            if c.lower().startswith(_RESERVED):
+                _refuse(f"the reserved prefix {_RESERVED} in column {c}")
+        if len({c.lower() for c in cols}) != len(cols):
+            _refuse("duplicate column names in the declared schema")
+        base_env = _Env(
+            [
+                (c, _clone("column_ref", column_names=["__cf_t", c], alias=""))
+                for c in cols
+            ]
+        )
     doc = _serialize(sql)
     if len(doc["statements"]) != 1:
         _refuse("multiple SQL statements")
@@ -1068,7 +1213,7 @@ def marginalize(sql: str) -> Marginalized:
     deepest = max(windows_at, default=-1)
 
     planner = _Planner()
-    env = _BASE_ENV
+    env = base_env
     final_items: list[Node] = []
     for i, level in enumerate(levels):
         is_final = i == len(levels) - 1
@@ -1085,9 +1230,10 @@ def marginalize(sql: str) -> Marginalized:
             break
         env = _Env(entries)
 
-    if not planner.joins and len(levels) == 1:
-        # No aggregates, no chain: marginalization is the identity
-        # (modulo normalization).
+    if not planner.joins and len(levels) == 1 and base_env is _BASE_ENV:
+        # No aggregates, no chain, no schema: marginalization is the identity
+        # (modulo normalization). With a declared schema the rewrite always
+        # canonicalizes — stars/COLUMNS expand, lateral aliases inline.
         return Marginalized(serving_sql=_deserialize(doc), plan=(), params=())
 
     root["select_list"] = final_items

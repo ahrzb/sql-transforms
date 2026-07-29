@@ -348,6 +348,84 @@ def test_star_expansion_through_cte():
     )
 
 
+# --- schema-aware resolution (loop 4) ----------------------------------------
+
+COLS = ["age", "fare", "country", "name"]
+
+
+def test_schema_unknown_column_refuses_at_construction():
+    with pytest.raises(MarginalizeError, match="unknown column nope"):
+        marginalize("SELECT nope FROM __THIS__", COLS)
+
+
+def test_schema_star_expands_explicitly():
+    m = marginalize("SELECT * FROM __THIS__", ["a", "b"])
+    assert m.serving_sql == (
+        "SELECT __cf_t.a AS a, __cf_t.b AS b FROM __THIS__ AS __cf_t"
+    )
+
+
+def test_schema_columns_expands_via_the_oracle_regex():
+    m = marginalize("SELECT COLUMNS('a.*') FROM __THIS__", ["aa", "ab", "b"])
+    assert m.serving_sql == (
+        "SELECT __cf_t.aa AS aa, __cf_t.ab AS ab FROM __THIS__ AS __cf_t"
+    )
+
+
+def test_schema_star_modifiers_compose():
+    m = marginalize(
+        "SELECT * EXCLUDE (b) REPLACE (a + 1 AS a) RENAME (c AS z) FROM __THIS__",
+        ["a", "b", "c"],
+    )
+    assert m.serving_sql == (
+        "SELECT (__cf_t.a + 1) AS a, __cf_t.c AS z FROM __THIS__ AS __cf_t"
+    )
+
+
+def test_schema_lateral_alias_inlines_when_no_column():
+    m = marginalize("SELECT a + 1 AS b, b * 2 AS c FROM __THIS__", ["a"])
+    assert "((__cf_t.a + 1) * 2) AS c" in m.serving_sql
+
+
+def test_schema_lateral_alias_loses_to_the_column():
+    m = marginalize("SELECT a + 1 AS b, b * 2 AS c FROM __THIS__", ["a", "b"])
+    assert "(__cf_t.b * 2) AS c" in m.serving_sql
+
+
+def test_schema_struct_access_composes_through_plain_columns():
+    m = marginalize("WITH a AS (SELECT s FROM __THIS__) SELECT s.f AS f FROM a", ["s"])
+    assert "__cf_t.s.f AS f" in m.serving_sql
+
+
+SCHEMA_REFUSALS = [
+    ("SELECT nope + 1 FROM __THIS__", "unknown column nope"),
+    ("SELECT COLUMNS('zz.*') FROM __THIS__", "matched no columns"),
+    ("SELECT COLUMNS(c -> c LIKE 'a%') FROM __THIS__", "lambda"),
+    ("SELECT * EXCLUDE (nope) FROM __THIS__", "unknown column nope"),
+    (
+        "SELECT a + 1 AS b, avg(b) OVER () FROM __THIS__",
+        "lateral alias b inside a window",
+    ),
+    ("SELECT COLUMNS('a.*') + 1 FROM __THIS__", "COLUMNS.*inside an expression"),
+    ("SELECT min(COLUMNS('a.*')) FROM __THIS__", "without OVER"),
+]
+
+
+@pytest.mark.parametrize(
+    "sql,match", SCHEMA_REFUSALS, ids=[s[:48] for s, _ in SCHEMA_REFUSALS]
+)
+def test_schema_refusals_are_named(sql, match):
+    with pytest.raises(MarginalizeError, match=match):
+        marginalize(sql, ["a", "age", "aa"])
+
+
+def test_schema_validation():
+    with pytest.raises(MarginalizeError, match="duplicate column names"):
+        marginalize("SELECT 1 AS x FROM __THIS__", ["a", "A"])
+    with pytest.raises(MarginalizeError, match="reserved prefix"):
+        marginalize("SELECT 1 AS x FROM __THIS__", ["__cf_bad"])
+
+
 def test_windows_at_upper_level_key_on_projected_expressions():
     m = marginalize(
         "WITH a AS (SELECT lower(k) AS lk, x FROM __THIS__)"
@@ -437,7 +515,7 @@ REFUSALS = [
         "__THIS__ is not in scope",
     ),
     (
-        "WITH a AS (SELECT x AS s FROM __THIS__) SELECT s.f FROM a",
+        "WITH a AS (SELECT x + 1 AS s FROM __THIS__) SELECT s.f FROM a",
         "struct-field access through a projected expression",
     ),
     (
