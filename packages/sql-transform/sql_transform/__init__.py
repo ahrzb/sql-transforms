@@ -13,6 +13,7 @@ from sql_transform._marginalize import (
     Marginalized,
     MarginalizeError,
     ParamsSpec,
+    TransformSpec,
     marginalize,
 )
 from sql_transform._projection import SQLProjection
@@ -23,5 +24,6 @@ __all__ = [
     "MarginalizeError",
     "ParamsSpec",
     "SQLProjection",
+    "TransformSpec",
     "marginalize",
 ]
