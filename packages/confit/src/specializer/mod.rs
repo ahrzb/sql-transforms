@@ -33,6 +33,11 @@ pub struct StaticSpec {
     pub batch: bool,
     pub table: String,
     pub key_cols: Vec<String>,
+    /// Per key_col: true when the key joins under IS NOT DISTINCT FROM.
+    /// Such a key occupies TWO flattened map-key lanes — (validity i1,
+    /// payload) — and the materializer KEEPS NULL-key rows as
+    /// (false, type default) instead of dropping them.
+    pub key_indf: Vec<bool>,
     pub val_cols: Vec<String>,
     /// Per val_col: a declared-nullable column's map value is a
     /// (validity i1, payload) PAIR in the flattened StaticTy::Map values
@@ -103,6 +108,7 @@ pub fn prepare_opaque(
                     batch: true,
                     table: String::new(),
                     key_cols: Vec::new(),
+                    key_indf: Vec::new(),
                     val_cols: Vec::new(),
                     val_nullable: Vec::new(),
                 };
@@ -116,6 +122,7 @@ pub fn prepare_opaque(
                     .iter()
                     .map(|&c| t.cols[c as usize].name.clone())
                     .collect(),
+                key_indf: j.key_indf.clone(),
                 val_cols: j
                     .val_cols
                     .iter()

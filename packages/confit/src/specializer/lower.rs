@@ -72,6 +72,13 @@ pub fn lower(
             "multiple joins under shape='many' (one join per query in stage B)".to_string(),
         ));
     }
+    if many && joins.iter().any(|j| j.key_indf.iter().any(|&b| b)) {
+        return Err(PrepareError::Unsupported(
+            "IS NOT DISTINCT FROM join keys under shape='many' \
+             (params joins are the map/filter shapes)"
+                .to_string(),
+        ));
+    }
     if many && joins.len() == 1 {
         fb.lower_many_loop(exprs, filter_pred, &out_cols)?;
         let flat = |cols: &[Col], val_cols: &[u32]| -> Vec<Ty> {
@@ -173,7 +180,20 @@ pub fn lower(
     let statics = joins
         .iter()
         .map(|spec| StaticTy::Map {
-            keys: spec.keys.iter().map(|k| k.ty).collect(),
+            // An INDF key flattens to (validity i1, payload) — NULL is an
+            // ordinary key value on both sides (DRAFT-22 params joins).
+            keys: spec
+                .keys
+                .iter()
+                .zip(&spec.key_indf)
+                .flat_map(|(k, &indf)| {
+                    if indf {
+                        vec![Ty::I1, k.ty]
+                    } else {
+                        vec![k.ty]
+                    }
+                })
+                .collect(),
             // A NULLABLE value column flattens to (validity i1, payload) —
             // TASK-55; the probe dst layout mirrors this (val_slots).
             values: spec
@@ -1367,13 +1387,27 @@ impl<'a> FB<'a> {
         }
         let mut keys_valid: Option<Value> = None;
         let mut key_vals = Vec::with_capacity(nkeys);
-        for (lane, _) in &live[live.len() - nkeys..] {
-            key_vals.push(lane.val);
-            if let Some(f) = lane.flag {
-                keys_valid = self.combine_flags(keys_valid, Some(f));
+        let start = live.len() - nkeys;
+        for i in 0..nkeys {
+            let (lane, ty) = live[start + i];
+            if spec.key_indf[i] {
+                // INDF key: (validity, payload masked to the type default)
+                // — the build side stores NULL keys the same way, so NULL
+                // joins NULL as one ordinary bucket.
+                let (valid, payload) = match lane.flag {
+                    None => (self.const_i1(true), lane.val),
+                    Some(f) => (f, self.masked(lane, ty)),
+                };
+                key_vals.push(valid);
+                key_vals.push(payload);
+            } else {
+                key_vals.push(lane.val);
+                if let Some(f) = lane.flag {
+                    keys_valid = self.combine_flags(keys_valid, Some(f));
+                }
             }
         }
-        live.truncate(live.len() - nkeys);
+        live.truncate(start);
 
         let flat_len = self.val_flat_tys(j).len();
         let hit = self.fresh();

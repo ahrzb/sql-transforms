@@ -98,6 +98,11 @@ pub struct JoinSpec {
     /// Static-table columns acting as map keys (indices into `table.cols`),
     /// aligned with `keys`.
     pub key_cols: Vec<u32>,
+    /// Per key: true when the ON conjunct was IS NOT DISTINCT FROM. NULL is
+    /// then an ordinary key value: the key flattens to TWO map-key lanes,
+    /// (validity i1, payload masked to the type default under NULL), on
+    /// both the probe and build sides — so NULL joins NULL, one bucket.
+    pub key_indf: Vec<bool>,
     /// The remaining columns, in table order — the probe's value lanes.
     /// May be EMPTY (all-key/semi joins — wave-4 pins).
     /// ponytail: all non-key columns become map values even if unreferenced;
