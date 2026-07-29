@@ -197,10 +197,21 @@ module *interprets* is read through a pydantic view that validates shape at
 the read site — a DuckDB format change fails as one named "AST shape drift"
 error, not a `KeyError` mid-walk.
 
-## The bulletproof gate
+## The bulletproof gate: the training-set round-trip invariant
 
-DuckDB-vs-DuckDB differential — no inference code anywhere, both sides at
-`threads = 1` (the only setting where the oracle's own float window
+The standing invariant, for this loop and every one after it:
+
+> **fit + transform, applied to the training set, must be bit-equal to
+> running the original query with `__THIS__` pointing at the training set.**
+
+It is free — the training set itself is the oracle input, so no expected
+values are ever written by hand — and it survives every future widening:
+today "transform" is played by DuckDB executing `serving_sql` against the
+fitted params; when `infer`/`infer_batch` land, the same assertion runs
+through the real serving path (Confit) and gates the wiring end-to-end.
+
+Concretely, DuckDB-vs-DuckDB differential — no inference code anywhere, both
+sides at `threads = 1` (the only setting where the oracle's own float window
 aggregation is bit-deterministic):
 
 ```python
