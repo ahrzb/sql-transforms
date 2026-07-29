@@ -1,11 +1,13 @@
 """SQLProjection — projections over ``__THIS__``, fit once, serve row-at-a-time.
 
-The fit half works: window aggregates over ``__THIS__`` are marginalized into
+The fit half: window aggregates over ``__THIS__`` are marginalized into
 materialized params tables plus a rewritten ``serving_sql`` (see
-``_marginalize``). Transformers and author UDFs serve as scalar calls in that
-SQL — ``transform`` registers them on the connection and runs; there is no
-post-processing. The serving half (``infer``/``infer_batch`` through Confit)
-is a later loop and still raises ``NotImplementedError``.
+``_marginalize``); transformers fit per group into ``PythonTransform`` UDFs.
+The serving half is two bindings of the same artifact: ``transform`` runs
+``serving_sql`` through DuckDB with the UDFs registered (batch, the oracle),
+and ``infer``/``infer_batch`` run it through Confit's ``DuckDBInferFn`` with
+the same UDF objects passed as ``udfs=`` (row-at-a-time, bit-exact with the
+DuckDB path by Confit's contract).
 """
 
 from __future__ import annotations
@@ -32,7 +34,28 @@ def _feature_matrix(table: pa.Table, cols: list[str]):
     return mat
 
 
-_TODO = "SQLProjection serving is a later loop; {} has no implementation yet"
+def _model_from_arrow(schema: pa.Schema) -> type[BaseModel]:
+    """The serving row model, derived from the training table's schema (real
+    types, guaranteed — a declared ``this_model`` may carry ``object``
+    fields). Unmappable types become opaque ``object`` fields: Confit
+    accepts those unless the SQL references them."""
+    import pydantic
+
+    fields: dict[str, Any] = {}
+    for f in schema:
+        t = f.type
+        if pa.types.is_floating(t):
+            p: type = float
+        elif pa.types.is_integer(t):
+            p = int
+        elif pa.types.is_boolean(t):
+            p = bool
+        elif pa.types.is_string(t) or pa.types.is_large_string(t):
+            p = str
+        else:
+            p = object
+        fields[f.name] = (p | None if p is not object else Any, None)
+    return pydantic.create_model("Row", **fields)
 
 
 class SQLProjection:
@@ -90,6 +113,8 @@ class SQLProjection:
         self._marginalized = marginalize(sql, self._columns, _resolve)
         self._params: dict[str, pa.Table] | None = None
         self._udfs: dict[str, PythonTransform] | None = None
+        self._row_model: type[BaseModel] | None = None
+        self._fn: Any = None  # confit.DuckDBInferFn, built lazily post-fit
 
     @classmethod
     def from_file(cls, path: str) -> SQLProjection:
@@ -147,6 +172,8 @@ class SQLProjection:
             self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()
+        self._row_model = _model_from_arrow(table.schema)
+        self._fn = None  # refit invalidates the prepared serving function
         return self
 
     def _fit_step(self, step, table: pa.Table) -> tuple[pa.Table, PythonTransform]:
@@ -257,20 +284,47 @@ class SQLProjection:
         out.update(self._udfs)
         return out
 
+    def _serving_fn(self):
+        """The Confit binding of the fitted artifact, prepared once: the same
+        ``serving_sql``, params tables, and UDF objects the DuckDB path uses —
+        Confit's contract makes the two bit-exact or refuses by name."""
+        if self._params is None or self._udfs is None or self._row_model is None:
+            raise MarginalizeError("not fitted: call fit(table) first")
+        if self._fn is None:
+            from confit import DuckDBInferFn
+
+            m = self._marginalized
+            udfs = [self.transformers[n] for n in m.scalar_udfs]
+            udfs += list(self._udfs.values())
+            self._fn = DuckDBInferFn(
+                m.serving_sql,
+                row_tables={"__THIS__": self._row_model},
+                static_tables=dict(self._params),
+                udfs=udfs,
+                shape="map",
+            )
+        return self._fn
+
     @property
     def backend(self) -> str:
         """Execution backend: "cranelift", "interpreter", or "constant"."""
-        raise NotImplementedError(_TODO.format("backend"))
+        return self._serving_fn().backend
 
     @property
     def boundary(self) -> str:
         """Boundary path: "marshaller", "generic", or "constant"."""
-        raise NotImplementedError(_TODO.format("boundary"))
+        return self._serving_fn().boundary
+
+    @property
+    def output_model(self) -> type[BaseModel]:
+        """The typed output row model ``infer`` returns instances of."""
+        return self._serving_fn().output_model
 
     def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
         """Single-row inference; returns the typed output model instance."""
-        raise NotImplementedError(_TODO.format("infer"))
+        (out,) = self._serving_fn().infer_rows([row])  # shape="map": exactly one
+        return out
 
     def infer_batch(self, rows: list[dict[str, Any] | BaseModel], /) -> list[BaseModel]:
         """Many-rows inference; returns typed output model instances."""
-        raise NotImplementedError(_TODO.format("infer_batch"))
+        return self._serving_fn().infer_rows(rows)
