@@ -1,10 +1,10 @@
 """SQLProjection — projections over ``__THIS__``, fit once, serve row-at-a-time.
 
-The fit half works today: ``fit(table)`` marginalizes every window aggregate
-into materialized params tables plus a rewritten ``serving_sql``; transformers
-and author UDFs become scalar calls that ``transform(table)`` serves by
-registering them on the connection. The serving half (``infer``/``infer_batch``
-through Confit) is a later loop and raises ``NotImplementedError``.
+``fit(table)`` marginalizes every window aggregate into materialized params
+tables plus a rewritten ``serving_sql``; transformers fit per group into
+``PythonTransform`` UDFs. One artifact, two bindings: ``transform(table)``
+runs it through DuckDB (batch, the oracle), ``infer``/``infer_batch`` run it
+through Confit (row-at-a-time, bit-exact with the DuckDB path).
 """
 
 from __future__ import annotations

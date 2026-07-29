@@ -501,19 +501,14 @@ def test_template_input_is_a_later_loop():
         SQLProjection(t"SELECT 1 AS x FROM __THIS__")
 
 
-@pytest.mark.parametrize("method", ["infer", "infer_batch"])
-def test_serving_methods_still_raise(method):
+@pytest.mark.parametrize("attr", ["infer", "infer_batch", "backend", "boundary"])
+def test_serving_surface_requires_fit(attr):
+    # The serving half is live (see _serving_test.py); unfitted use refuses.
     p = SQLProjection("SELECT age + 1 AS b FROM __THIS__")
-    with pytest.raises(NotImplementedError, match=method):
-        getattr(p, method)(None)
-
-
-@pytest.mark.parametrize("prop", ["backend", "boundary"])
-def test_serving_properties_still_raise(prop):
-    p = SQLProjection("SELECT age + 1 AS b FROM __THIS__")
-    assert isinstance(inspect.getattr_static(SQLProjection, prop), property)
-    with pytest.raises(NotImplementedError, match=prop):
-        getattr(p, prop)
+    with pytest.raises(MarginalizeError, match="not fitted"):
+        v = getattr(p, attr)
+        if callable(v):
+            v(None)
 
 
 def test_signatures_are_stable():
