@@ -188,6 +188,28 @@ unpinnable) — written down per kind, not discovered per bug.
 3. The params-join wiring Confit already needs regardless
    (`IS NOT DISTINCT FROM`, `ON ((1 = 1))`) — previously queued.
 
+## Addendum (2026-07-29, follow-up dialogue — supersedes two points above)
+
+AmirHossein's shape for the PCA/tree cases, adopted:
+
+1. **Optimization = a typed udf entry, never a SQL rewrite.** "Desugaring
+   becomes a column-width decision" above is superseded: fitted state does
+   NOT move into wide params columns, and the call is NOT inlined into SQL
+   arithmetic. Instead the udfs list carries typed entries —
+   `confit.udfs.PCA("pca", n_components=2, instances={id: {"mean": [...],
+   "components": [[...]]}})` — hyperparams on the entry, extracted state
+   (plain arrays / tree tables, no pickle) per instance id, executed by a
+   native kernel behind the same extern slot. The SQL text is identical
+   across tiers, so the oracle gate is "swap the entry, rerun, compare" and
+   a disagreement is always the kernel's fault. Full design: DRAFT-23.
+2. **Keyless transformers inline the literal id** (`pca(0, feats...)`) —
+   no one-row params table, no `ON ((1 = 1))` join for the global case.
+   (Keyless *aggregate* params still join; that wiring stays needed.)
+3. **Serving SQL keeps the author's function name** (`pca`, not
+   `__cf_tf0`) — safe because the catalog guard proved no DuckDB collision;
+   suffix (`pca_1`) when the same name is applied twice with different
+   partitions.
+
 ## Rejected along the way
 
 - **Compile-out as the primary path** (desugar/ONNX): a fallback is
