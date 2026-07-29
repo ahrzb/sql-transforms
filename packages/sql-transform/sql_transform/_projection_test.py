@@ -1,9 +1,12 @@
-"""SQLProjection tests: the DuckDB-vs-DuckDB differential gate.
+"""SQLProjection tests: the training-set round-trip invariant.
 
-The bulletproof property: for any accepted projection, running the original
-SQL over the training table must be bit-exact with running the rewritten
-``serving_sql`` joined against the fitted params — both executed by DuckDB,
-the oracle. No inference code is involved anywhere.
+The standing invariant for this loop and every one after it: fit + transform,
+applied to the training set, must be bit-equal to running the original SQL
+with ``__THIS__`` pointing at the training set. It is free — the training set
+is the oracle input, so no expected values are written by hand. Today
+"transform" is played by DuckDB executing ``serving_sql`` against the fitted
+params; when ``infer``/``infer_batch`` land, the same assertion runs through
+the real serving path and gates the wiring end-to-end.
 """
 
 import inspect
