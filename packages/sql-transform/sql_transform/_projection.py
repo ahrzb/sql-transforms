@@ -16,6 +16,19 @@ from pydantic import BaseModel
 
 from sql_transform._marginalize import MarginalizeError, marginalize
 
+
+def _feature_matrix(table: pa.Table, cols: list[str]):
+    """Feature block as a 2D numpy array (float when possible, else object)."""
+    import numpy as np
+
+    raw = [table.column(c).to_pylist() for c in cols]
+    try:
+        mat = np.array(raw, dtype=float).T
+    except TypeError, ValueError:
+        mat = np.array(raw, dtype=object).T
+    return mat
+
+
 _TODO = "SQLProjection serving is a later loop; {} has no implementation yet"
 
 
@@ -34,6 +47,7 @@ class SQLProjection:
         sql: str | Template,
         /,
         this_model: type[BaseModel] | None = None,
+        transformers: dict[str, Any] | None = None,
     ) -> None:
         """``this_model`` declares the ``__THIS__`` schema (pydantic field
         names, in definition order — the model is authoritative). With it,
@@ -46,8 +60,27 @@ class SQLProjection:
         self._columns = (
             list(this_model.model_fields) if this_model is not None else None
         )
-        self._marginalized = marginalize(sql, self._columns)
+        # Transformer resolution: explicit registry first, then the caller's
+        # scope (the `FROM df` replacement-scan idiom). Captured objects are
+        # snapshotted into `self.transformers` at construction.
+        import sys
+
+        frame = sys._getframe(1)
+        self.transformers: dict[str, Any] = {}
+
+        def _resolve(name: str):
+            obj = None
+            if transformers is not None:
+                obj = transformers.get(name)
+            if obj is None and frame is not None:
+                obj = frame.f_locals.get(name) or frame.f_globals.get(name)
+            if obj is not None:
+                self.transformers[name] = obj
+            return obj
+
+        self._marginalized = marginalize(sql, self._columns, _resolve)
         self._params: dict[str, pa.Table] | None = None
+        self._fitted: dict[str, dict[tuple, Any]] | None = None
 
     @classmethod
     def from_file(cls, path: str) -> SQLProjection:
@@ -85,13 +118,87 @@ class SQLProjection:
             # register its result under its name. Every intermediate is
             # inspectable and every step is plain SQL runnable by hand.
             materialized: dict[str, pa.Table] = {}
+            self._fitted = {}
             for step in m.plan:
+                if step.kind == "fit":
+                    self._fitted[step.name] = self._fit_step(
+                        step, materialized[step.reads[0]]
+                    )
+                    continue
                 materialized[step.name] = con.execute(step.sql).to_arrow_table()
                 con.register(step.name, materialized[step.name])
             self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()
         return self
+
+    def _fit_step(self, step, table: pa.Table) -> dict[tuple, Any]:
+        """Group by the key columns, fit a clone of the transformer per group
+        on the feature block. Unknown groups at apply time get NULLs."""
+        proto = self.transformers[step.transformer]
+        try:
+            from sklearn.base import clone
+        except ImportError:  # duck-typed objects without sklearn installed
+            import copy as _copy
+
+            def clone(o):  # type: ignore[no-redef]
+                return _copy.deepcopy(o)
+
+        feats = _feature_matrix(table, list(step.features))
+        keys = [table.column(k).to_pylist() for k in step.keys]
+        groups: dict[tuple, list[int]] = {}
+        for i in range(table.num_rows):
+            groups.setdefault(tuple(k[i] for k in keys), []).append(i)
+        fitted: dict[tuple, Any] = {}
+        for key, idx in groups.items():
+            est = clone(proto)
+            est.fit(feats[idx])
+            fitted[key] = est
+        return fitted
+
+    def transform(self, table: pa.Table, /) -> pa.Table:
+        """Batch apply: run ``serving_sql`` through DuckDB, then run each
+        fitted transformer on its helper columns and splice the outputs in
+        place of the helper blocks. Row-at-a-time serving stays with Confit."""
+        import duckdb
+        import numpy as np
+
+        if self._params is None or self._fitted is None:
+            raise MarginalizeError("not fitted: call fit(table) first")
+        if self._columns is not None:
+            table = table.select(self._columns)
+        m = self._marginalized
+        con = duckdb.connect()
+        try:
+            con.execute("SET threads = 1")
+            con.register("__THIS__", table)
+            for name, params_table in self._params.items():
+                con.register(name, params_table)
+            res = con.execute(m.serving_sql).to_arrow_table()
+        finally:
+            con.close()
+        for spec in m.transforms:
+            feats = _feature_matrix(res, list(spec.feature_cols))
+            keys = [res.column(k).to_pylist() for k in spec.key_cols]
+            groups: dict[tuple, list[int]] = {}
+            for i in range(res.num_rows):
+                groups.setdefault(tuple(k[i] for k in keys), []).append(i)
+            fitted = self._fitted[spec.step]
+            out: list = [None] * res.num_rows
+            for key, idx in groups.items():
+                est = fitted.get(key)
+                if est is None:
+                    continue  # unseen group: NULL output (exact-join policy)
+                block = np.asarray(est.transform(feats[idx]))
+                if block.ndim == 1:
+                    block = block.reshape(-1, 1)
+                for row, vals in zip(idx, block, strict=True):
+                    out[row] = [float(v) for v in vals]
+            first = res.column_names.index(spec.feature_cols[0])
+            drop = set(spec.feature_cols) | set(spec.key_cols)
+            res = res.drop_columns([c for c in res.column_names if c in drop])
+            res = res.add_column(first, spec.alias, pa.array(out))
+        return res
 
     @property
     def serving_sql(self) -> str:

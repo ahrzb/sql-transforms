@@ -102,12 +102,32 @@ class MarginalizeError(ValueError):
 
 @dataclass(frozen=True)
 class FitStep:
-    """One fit-time execution: register ``name`` as the result of ``sql``,
-    which runs against previously registered tables (``reads``)."""
+    """One fit-time execution. ``kind == "sql"``: register ``name`` as the
+    result of ``sql`` over previously registered tables (``reads``).
+    ``kind == "fit"``: group ``reads[0]`` by the ``keys`` columns, fit a
+    clone of registry transformer ``transformer`` per group on the
+    ``features`` columns, and store the fitted clones under ``name``."""
 
     name: str
     sql: str
     reads: tuple[str, ...]
+    kind: str = "sql"
+    transformer: str = ""
+    features: tuple[str, ...] = ()
+    keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TransformSpec:
+    """One transformer column in the serving output: which fit step supplies
+    the fitted clones, the output column name, and the helper columns in
+    ``serving_sql`` carrying its features and partition keys (the apply layer
+    replaces the helper block with the transformed column in place)."""
+
+    step: str
+    alias: str
+    feature_cols: tuple[str, ...]
+    key_cols: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -128,6 +148,7 @@ class Marginalized:
     serving_sql: str
     plan: tuple[FitStep, ...]
     params: tuple[ParamsSpec, ...]
+    transforms: tuple[TransformSpec, ...] = ()
 
 
 def _refuse(what: str, loc: int | None = None) -> None:
@@ -716,10 +737,71 @@ class _LevelRewriter:
 
     # -- the walk
 
+    def _is_transformer_call(self, item: Node) -> str | None:
+        return _is_tf_node(item)
+
+    def _tf_bundle(self, w_raw: Node) -> list[tuple[str, Node, Node]]:
+        """(field name, fit expr in level terms, serving expr) per feature."""
+        children = w_raw["children"]
+        if len(children) == 0:
+            _refuse(
+                "a transformer call with no arguments — note fn(*) parses to"
+                " zero arguments; pass a column or struct_pack(...)",
+                w_raw.get("query_location"),
+            )
+        if len(children) != 1:
+            _refuse(
+                "a transformer call takes exactly one bundle argument (a"
+                " column or struct_pack(...)); configuration belongs in the"
+                " registered object",
+                w_raw.get("query_location"),
+            )
+        c = children[0]
+        quals = self.level.source_quals
+        if c.get("class") == "COLUMN_REF":
+            fname = _ColumnRef.of(c).column_names[-1]
+            return [(fname, _strip_quals(c, quals), dict(self.rewrite(c), alias=""))]
+        if (
+            c.get("class") == "FUNCTION"
+            and c.get("function_name", "").lower() == "struct_pack"
+        ):
+            out: list[tuple[str, Node, Node]] = []
+            names: set[str] = set()
+            for ch in c["children"]:
+                if not ch.get("alias"):
+                    _refuse(
+                        "struct_pack fields in a transformer bundle must be"
+                        " named (f := expr)",
+                        c.get("query_location"),
+                    )
+                if ch["alias"].lower() in names:
+                    _refuse(f"duplicate bundle field {ch['alias']}")
+                names.add(ch["alias"].lower())
+                _walk_row_wise(ch, "a transformer bundle")
+                out.append(
+                    (
+                        ch["alias"],
+                        dict(_strip_quals(ch, quals), alias=""),
+                        dict(self.rewrite(ch), alias=""),
+                    )
+                )
+            return out
+        _refuse(
+            "a transformer bundle must be a column or struct_pack(...)",
+            c.get("query_location"),
+        )
+        raise AssertionError("unreachable")
+
     def rewrite(self, x: Any) -> Any:
         if isinstance(x, dict):
             cls = x.get("class")
             if cls == "WINDOW":
+                if self._is_transformer_call(x) is not None:
+                    _refuse(
+                        "a transformer call is only supported as a top-level"
+                        " select item",
+                        x.get("query_location"),
+                    )
                 if self.alias_exprs:
                     self._check_no_lateral_in_window(x)
                 w = _Window.of(x)
@@ -858,6 +940,11 @@ class _LevelRewriter:
         names_seen: set[str] = set()
         explicit = not self.env.star
         for item in items:
+            tf_name = self._is_transformer_call(item)
+            if tf_name is not None:
+                helpers = self.planner.transformer_item(self, item, tf_name, is_final)
+                out.extend(helpers)
+                continue
             if item.get("class") == "STAR":
                 star = _Star.of(item)
                 if explicit:
@@ -945,8 +1032,97 @@ class _Planner:
         self.scalars: dict[str, int] = {}
         self.key_count = 0
         self.window_count = 0
+        self.feature_count = 0
         self.window_names: dict[tuple[int, str], str] = {}
         self.key_names: dict[tuple[int, str], str] = {}
+        self.lookup: Any = None  # transformer resolver: name -> object | None
+        self.tf_steps: list[dict] = []
+        self.tf_specs: list[TransformSpec] = []
+
+    def key_name(self, level_i: int, key: _Key) -> str:
+        kid = (level_i, key.ident)
+        if kid not in self.key_names:
+            self.key_names[kid] = f"__cf_k{self.key_count}"
+            self.key_count += 1
+        return self.key_names[kid]
+
+    def transformer_item(
+        self, rw: _LevelRewriter, raw: Node, name: str, is_final: bool
+    ) -> list[Node]:
+        """One transformer window as a top-level item: validate, plan its fit
+        step, and return the serving helper items (features + keys)."""
+        if raw.get("schema"):
+            _refuse(
+                f"namespaced transformer {raw['schema']}.{name}"
+                " (the curated-namespace index is a later loop)",
+                raw.get("query_location"),
+            )
+        if not is_final:
+            _refuse(
+                "a transformer call in a non-final level", raw.get("query_location")
+            )
+        obj = self.lookup(name) if self.lookup is not None else None
+        if obj is None:
+            _refuse(
+                f"unknown window function {name} — not a DuckDB aggregate, and"
+                " no transformer of that name in the registry or caller scope",
+                raw.get("query_location"),
+            )
+        if not (hasattr(obj, "fit") and hasattr(obj, "transform")):
+            _refuse(f"transformer {name} has no fit/transform")
+        w = _Window.of(raw)
+        if w.orders or w.arg_orders:
+            _refuse("ORDER BY on a transformer window", w.query_location)
+        if (
+            w.start != "UNBOUNDED_PRECEDING"
+            or w.end != "CURRENT_ROW_RANGE"
+            or w.start_expr is not None
+            or w.end_expr is not None
+        ):
+            _refuse("a frame on a transformer window", w.query_location)
+        if w.filter_expr is not None or w.distinct or w.ignore_nulls:
+            _refuse(
+                "FILTER/DISTINCT/IGNORE NULLS on a transformer window",
+                w.query_location,
+            )
+        keys = [rw._key_of(p) for p in w.partitions]
+        seen: set[str] = set()
+        keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
+        bundle = rw._tf_bundle(raw)
+        j = len(self.tf_steps)
+        step_name = f"__CF_FIT_{j}__"
+        feature_fit = []
+        helpers: list[Node] = []
+        for i, (fname, fit_expr, serving_expr) in enumerate(bundle):
+            col = f"__cf_f{self.feature_count}"
+            self.feature_count += 1
+            feature_fit.append((fname, col, fit_expr))
+            helpers.append(dict(serving_expr, alias=f"__cf_tf{j}_f{i}"))
+        key_cols = []
+        for m, k in enumerate(keys):
+            self.key_name(rw.level_i, k)
+            helpers.append(
+                dict(copy.deepcopy(k.serving_expr), alias=f"__cf_tf{j}_k{m}")
+            )
+            key_cols.append(f"__cf_tf{j}_k{m}")
+        self.tf_steps.append(
+            {
+                "level": rw.level_i,
+                "name": step_name,
+                "transformer": name,
+                "feature_fit": feature_fit,
+                "keys": keys,
+            }
+        )
+        self.tf_specs.append(
+            TransformSpec(
+                step=step_name,
+                alias=raw.get("alias") or name,
+                feature_cols=tuple(f"__cf_tf{j}_f{i}" for i in range(len(bundle))),
+                key_cols=tuple(key_cols),
+            )
+        )
+        return helpers
 
     def group_for(self, level_i: int, keys: list[_Key]) -> tuple[int, _Join]:
         ident = (level_i, tuple(k.ident for k in keys))
@@ -1036,6 +1212,17 @@ def _validate_subquery_tables(sub_node: Node) -> None:
     check(sub_node)
 
 
+def _is_tf_node(item: Node) -> str | None:
+    """The lowered name when the node is a transformer window call (an
+    unknown-to-DuckDB or namespaced function with OVER), else None."""
+    if item.get("class") != "WINDOW" or item.get("type") != "WINDOW_AGGREGATE":
+        return None
+    name = item.get("function_name", "").lower()
+    if name in _aggregate_names() and not item.get("schema"):
+        return None
+    return name
+
+
 def _has_windows(x: Any) -> bool:
     if isinstance(x, dict):
         if x.get("class") == "WINDOW":
@@ -1058,6 +1245,8 @@ def _level_step(
     quals = level.source_quals
     originals = []
     for item in level.node["select_list"]:
+        if _is_tf_node(item) is not None:
+            continue  # not executable SQL; its features ride as __cf_f cols
         fit_item = _strip_quals(item, quals)
         originals.append(fit_item)
     windows = [
@@ -1066,18 +1255,25 @@ def _level_step(
     ]
     keys: list[Node] = []
     emitted: set[str] = set()
-    for join in planner.joins:
-        if join.level != level_i:
-            continue
-        for k in join.keys:
+    key_lists = [j.keys for j in planner.joins if j.level == level_i] + [
+        t["keys"] for t in planner.tf_steps if t["level"] == level_i
+    ]
+    for klist in key_lists:
+        for k in klist:
             kname = planner.key_names[(level_i, k.ident)]
             if kname not in emitted:
                 emitted.add(kname)
                 keys.append(dict(copy.deepcopy(k.fit_expr), alias=kname))
+    features = [
+        dict(copy.deepcopy(fit_expr), alias=col)
+        for t in planner.tf_steps
+        if t["level"] == level_i
+        for (_, col, fit_expr) in t["feature_fit"]
+    ]
     from_table = _clone("base_table", table_name=source_name, alias="")
     return FitStep(
         name=f"__CF_LEVEL_{level_i}__",
-        sql=_select_doc([*originals, *windows, *keys], from_table),
+        sql=_select_doc([*originals, *windows, *keys, *features], from_table),
         reads=(source_name,),
     )
 
@@ -1147,7 +1343,11 @@ def _serving_from(joins: list[_Join]) -> Node:
 # --- the entry point ----------------------------------------------------------
 
 
-def marginalize(sql: str, columns: Sequence[str] | None = None) -> Marginalized:
+def marginalize(
+    sql: str,
+    columns: Sequence[str] | None = None,
+    transformers: Any = None,
+) -> Marginalized:
     """Parse a chain of strict projections over ``__THIS__`` and marginalize
     it. Pure: parses, rewrites, and plans — never executes.
 
@@ -1213,6 +1413,7 @@ def marginalize(sql: str, columns: Sequence[str] | None = None) -> Marginalized:
     deepest = max(windows_at, default=-1)
 
     planner = _Planner()
+    planner.lookup = transformers.get if hasattr(transformers, "get") else transformers
     env = base_env
     final_items: list[Node] = []
     for i, level in enumerate(levels):
@@ -1225,12 +1426,32 @@ def marginalize(sql: str, columns: Sequence[str] | None = None) -> Marginalized:
             for idx, join in enumerate(planner.joins):
                 if join.level == i:
                     planner.plan.append(_collapse_step(planner, idx, join))
+            for t in planner.tf_steps:
+                if t["level"] == i:
+                    planner.plan.append(
+                        FitStep(
+                            name=t["name"],
+                            sql="",
+                            reads=(f"__CF_LEVEL_{i}__",),
+                            kind="fit",
+                            transformer=t["transformer"],
+                            features=tuple(col for (_, col, _) in t["feature_fit"]),
+                            keys=tuple(
+                                planner.key_names[(i, k.ident)] for k in t["keys"]
+                            ),
+                        )
+                    )
         if is_final:
             final_items = rewritten
             break
         env = _Env(entries)
 
-    if not planner.joins and len(levels) == 1 and base_env is _BASE_ENV:
+    if (
+        not planner.joins
+        and not planner.tf_steps
+        and len(levels) == 1
+        and base_env is _BASE_ENV
+    ):
         # No aggregates, no chain, no schema: marginalization is the identity
         # (modulo normalization). With a declared schema the rewrite always
         # canonicalizes — stars/COLUMNS expand, lateral aliases inline.
@@ -1244,5 +1465,8 @@ def marginalize(sql: str, columns: Sequence[str] | None = None) -> Marginalized:
         for i, j in enumerate(planner.joins)
     )
     return Marginalized(
-        serving_sql=_deserialize(doc), plan=tuple(planner.plan), params=specs
+        serving_sql=_deserialize(doc),
+        plan=tuple(planner.plan),
+        params=specs,
+        transforms=tuple(planner.tf_specs),
     )
