@@ -6,10 +6,15 @@ created_date: '2026-07-18 14:01'
 ---
 # sklearn transformer implementation plan
 
+> **Stale (2026-07-28).** Written for the deleted DataFusion/native line;
+> `decision-4` and the DataFusion function catalogue it referenced are gone,
+> and the sklearn approach is being reconsidered from scratch — see
+> `backlog/drafts/draft-20`. Kept for the transformer priority list only.
+
 The prioritized list of sklearn transformers to implement, and the parity target for
-the sklearn integration work (strategy — fallback-first, then native per transformer —
-canonical: decision-4; scope + parity harness below). Unlike [the DataFusion function catalogue](<doc-1 - DataFusion-function-catalogue.md>) (an auto-generated,
-*exhaustive* engine surface), this is a **curated** list: we deliberately scope to
+the sklearn integration work (strategy — fallback-first, then native per transformer;
+scope + parity harness below). Unlike an auto-generated, *exhaustive* engine
+surface, this is a **curated** list: we deliberately scope to
 **tabular preprocessing** and will never implement most of sklearn. It's a plan, not
 a catalogue of everything.
 
@@ -86,7 +91,7 @@ slice, whole `ColumnTransformer` vector). Leaf correctness here; assembly correc
 
 ## Integration strategy & scope
 
-Strategy (native-goal + opaque-fallback, fallback-first) canonical record: **decision-4**.
+Strategy (native-goal + opaque-fallback, fallback-first) — the decision record that held this was deleted with the old line.
 In scope as the primary serving goal (supersedes the old README `sklearn.*` surface).
 Correctness/coverage first — the simplest bit-identical implementation wins even if it
 isn't yet the zero-copy path; the optimized serving path (DRAFT-3) is validated against
