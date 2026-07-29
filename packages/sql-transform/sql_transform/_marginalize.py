@@ -60,6 +60,7 @@ Design specs, in order:
 docs/superpowers/specs/2026-07-29-sql-projection-marginalization-design.md
 docs/superpowers/specs/2026-07-29-window-widening-design.md
 docs/superpowers/specs/2026-07-29-projection-chains-fit-plan-design.md
+docs/superpowers/specs/2026-07-29-udf-protocol-serving-calls-design.md
 """
 
 from __future__ import annotations
@@ -118,16 +119,16 @@ class FitStep:
 
 
 @dataclass(frozen=True)
-class TransformSpec:
-    """One transformer column in the serving output: which fit step supplies
-    the fitted clones, the output column name, and the helper columns in
-    ``serving_sql`` carrying its features and partition keys (the apply layer
-    replaces the helper block with the transformed column in place)."""
+class UDFSpec:
+    """One transformer application in ``serving_sql``: the scalar function
+    name the SQL calls (``__cf_tf{j}``), the ``kind="fit"`` plan step that
+    produces both its params table (same name: the join keys plus the
+    ``__cf_est`` instance-id column) and its fitted instances, and the
+    registry name of the prototype."""
 
+    name: str
     step: str
-    alias: str
-    feature_cols: tuple[str, ...]
-    key_cols: tuple[str, ...]
+    transformer: str
 
 
 @dataclass(frozen=True)
@@ -148,7 +149,8 @@ class Marginalized:
     serving_sql: str
     plan: tuple[FitStep, ...]
     params: tuple[ParamsSpec, ...]
-    transforms: tuple[TransformSpec, ...] = ()
+    udfs: tuple[UDFSpec, ...] = ()
+    scalar_udfs: tuple[str, ...] = ()
 
 
 def _refuse(what: str, loc: int | None = None) -> None:
@@ -281,6 +283,17 @@ def _aggregate_names() -> frozenset[str]:
 
 
 @cache
+def _known_functions() -> frozenset[str]:
+    """Every function name the oracle knows, of any type. A scalar call
+    outside this set is a UDF candidate — resolved against the registry or
+    the caller's scope, never guessed."""
+    rows = duckdb.execute(
+        "SELECT DISTINCT function_name FROM duckdb_functions()"
+    ).fetchall()
+    return frozenset(name.lower() for (name,) in rows)
+
+
+@cache
 def _templates() -> dict[str, Node]:
     """Shape templates, cut from the oracle's own serialization of reference
     SQL, so grafted nodes always carry every field the deserializer expects."""
@@ -303,6 +316,9 @@ def _templates() -> dict[str, Node]:
         "not_distinct": join["condition"]["children"][0],
         "column_ref": collapse["statements"][0]["node"]["select_list"][0],
         "collapse_doc": collapse,
+        "function": _serialize("SELECT __cf_fn(k) FROM __CF_WINDOWS__")["statements"][
+            0
+        ]["node"]["select_list"][0],
         "star": _serialize("SELECT __cf_t.* FROM __THIS__")["statements"][0]["node"][
             "select_list"
         ][0],
@@ -633,6 +649,7 @@ class _LevelRewriter:
         self.level = level
         self.risky_aliases: set[str] = set()  # schema-free mode only
         self.alias_exprs: dict[str, Node] = {}  # explicit-env lateral aliases
+        self.is_final = False  # set by rewrite_items
 
     # -- column resolution
 
@@ -737,9 +754,6 @@ class _LevelRewriter:
 
     # -- the walk
 
-    def _is_transformer_call(self, item: Node) -> str | None:
-        return _is_tf_node(item)
-
     def _tf_bundle(self, w_raw: Node) -> list[tuple[str, Node, Node]]:
         """(field name, fit expr in level terms, serving expr) per feature."""
         children = w_raw["children"]
@@ -796,30 +810,37 @@ class _LevelRewriter:
         if isinstance(x, dict):
             cls = x.get("class")
             if cls == "WINDOW":
-                if self._is_transformer_call(x) is not None:
-                    _refuse(
-                        "a transformer call is only supported as a top-level"
-                        " select item",
-                        x.get("query_location"),
-                    )
                 if self.alias_exprs:
                     self._check_no_lateral_in_window(x)
+                tf_name = _is_tf_node(x)
+                if tf_name is not None:
+                    return self.planner.transformer_ref(self, x, tf_name)
+                if _contains_tf(x):
+                    _refuse(
+                        "a transformer call inside a window aggregate",
+                        x.get("query_location"),
+                    )
                 w = _Window.of(x)
                 discriminates = _check_window(w)
+                self.planner.note_udfs(x)
                 return self._params_ref(x, w, discriminates)
             if cls == "SUBQUERY":
                 return self.planner.scalar_ref(_Subquery.of(x), x)
             if cls == "PARAMETER":
                 _refuse("a prepared-statement parameter", x.get("query_location"))
-            if (
-                cls == "FUNCTION"
-                and x.get("function_name", "").lower() in _aggregate_names()
-            ):
-                _refuse(
-                    f"aggregate {x['function_name']} without OVER"
-                    " (that would aggregate the whole table, not project rows)",
-                    x.get("query_location"),
-                )
+            if cls == "FUNCTION":
+                fname = x.get("function_name", "").lower()
+                if fname in _aggregate_names():
+                    _refuse(
+                        f"aggregate {x['function_name']} without OVER"
+                        " (that would aggregate the whole table, not project"
+                        " rows)",
+                        x.get("query_location"),
+                    )
+                if fname not in _known_functions() and not x.get("is_operator"):
+                    self.planner.scalar_udf(
+                        fname, len(x.get("children", [])), x.get("query_location")
+                    )
             if cls == "COLUMN_REF":
                 return self._resolve_ref(x)
             if cls == "STAR":
@@ -935,16 +956,12 @@ class _LevelRewriter:
         """Rewrite the select list, expanding stars over explicit
         environments. Returns the rewritten items plus this level's output
         entries (the environment the next level resolves against)."""
+        self.is_final = is_final
         out: list[Node] = []
         entries: list[tuple[str, Node | None]] = []
         names_seen: set[str] = set()
         explicit = not self.env.star
         for item in items:
-            tf_name = self._is_transformer_call(item)
-            if tf_name is not None:
-                helpers = self.planner.transformer_item(self, item, tf_name, is_final)
-                out.extend(helpers)
-                continue
             if item.get("class") == "STAR":
                 star = _Star.of(item)
                 if explicit:
@@ -1035,29 +1052,78 @@ class _Planner:
         self.feature_count = 0
         self.window_names: dict[tuple[int, str], str] = {}
         self.key_names: dict[tuple[int, str], str] = {}
-        self.lookup: Any = None  # transformer resolver: name -> object | None
+        self.lookup: Any = None  # UDF/transformer resolver: name -> obj | None
         self.tf_steps: list[dict] = []
-        self.tf_specs: list[TransformSpec] = []
+        self.udf_specs: list[UDFSpec] = []
+        self.fit_joins: set[int] = set()  # join idxs whose params come from fit
+        self.scalar_udfs: dict[str, int] = {}  # author UDF name -> arity
 
-    def key_name(self, level_i: int, key: _Key) -> str:
-        kid = (level_i, key.ident)
-        if kid not in self.key_names:
-            self.key_names[kid] = f"__cf_k{self.key_count}"
-            self.key_count += 1
-        return self.key_names[kid]
+    def scalar_udf(self, name: str, nargs: int, loc: int | None) -> None:
+        """A scalar call to a function the oracle doesn't know: resolve it as
+        a declared UDF or refuse by name. Runs at every call site, so arity
+        is checked everywhere the name appears."""
+        obj = self.lookup(name) if self.lookup is not None else None
+        if obj is None:
+            _refuse(
+                f"unknown function {name} — not a DuckDB function, and no UDF"
+                " of that name in the registry or caller scope",
+                loc,
+            )
+        if hasattr(obj, "fit") and hasattr(obj, "transform"):
+            _refuse(
+                f"transformer {name} called without OVER (a transformer is a"
+                " window: fn(...) OVER (...))",
+                loc,
+            )
+        takes = getattr(obj, "takes", None)
+        returns = getattr(obj, "returns", None)
+        if takes is None or returns is None or not callable(obj):
+            _refuse(
+                f"{name} is not a UDF (declare takes/returns — e.g. PythonUDF)",
+                loc,
+            )
+        declared = getattr(obj, "name", name)
+        if declared.lower() != name:
+            _refuse(f"UDF {name} resolves to an object named {declared!r}", loc)
+        if len(takes) != nargs:
+            _refuse(
+                f"UDF {name} declares {len(takes)} arguments, called with {nargs}",
+                loc,
+            )
+        if len(returns) != 1:
+            _refuse(f"scalar UDF {name} must declare exactly one return", loc)
+        self.scalar_udfs[name] = nargs
 
-    def transformer_item(
-        self, rw: _LevelRewriter, raw: Node, name: str, is_final: bool
-    ) -> list[Node]:
-        """One transformer window as a top-level item: validate, plan its fit
-        step, and return the serving helper items (features + keys)."""
+    def note_udfs(self, x: Any) -> None:
+        """Scan a subtree that survives verbatim into fit-side SQL (window
+        arguments and their clauses) for unknown scalar calls, so every UDF
+        is resolved or refused at construction, never at fit."""
+        if isinstance(x, dict):
+            if x.get("class") == "FUNCTION" and not x.get("is_operator"):
+                f = x.get("function_name", "").lower()
+                if f and f not in _known_functions():
+                    self.scalar_udf(
+                        f, len(x.get("children", [])), x.get("query_location")
+                    )
+            for v in x.values():
+                self.note_udfs(v)
+        elif isinstance(x, list):
+            for v in x:
+                self.note_udfs(v)
+
+    def transformer_ref(self, rw: _LevelRewriter, raw: Node, name: str) -> Node:
+        """One transformer window, rewritten in place to a scalar call over
+        its own params join: ``__cf_tf{j}(__cf_p{idx}.__cf_est, features...)``.
+        The join's params table (keys + ``__cf_est``) is produced by the
+        ``kind="fit"`` plan step; an unseen group misses the LEFT JOIN, so
+        the id is NULL and the call returns NULL — the one NULL story."""
         if raw.get("schema"):
             _refuse(
                 f"namespaced transformer {raw['schema']}.{name}"
                 " (the curated-namespace index is a later loop)",
                 raw.get("query_location"),
             )
-        if not is_final:
+        if not rw.is_final:
             _refuse(
                 "a transformer call in a non-final level", raw.get("query_location")
             )
@@ -1090,21 +1156,17 @@ class _Planner:
         keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
         bundle = rw._tf_bundle(raw)
         j = len(self.tf_steps)
-        step_name = f"__CF_FIT_{j}__"
+        # A dedicated join, never shared with aggregate groups: its params
+        # table is fit-produced. (Sharing keys with an aggregate join is a
+        # dedup optimization for a later loop.)
+        idx = self.new_join(rw.level_i, keys)
+        self.fit_joins.add(idx)
         feature_fit = []
-        helpers: list[Node] = []
-        for i, (fname, fit_expr, serving_expr) in enumerate(bundle):
+        for fname, fit_expr, _serving in bundle:
             col = f"__cf_f{self.feature_count}"
             self.feature_count += 1
             feature_fit.append((fname, col, fit_expr))
-            helpers.append(dict(serving_expr, alias=f"__cf_tf{j}_f{i}"))
-        key_cols = []
-        for m, k in enumerate(keys):
-            self.key_name(rw.level_i, k)
-            helpers.append(
-                dict(copy.deepcopy(k.serving_expr), alias=f"__cf_tf{j}_k{m}")
-            )
-            key_cols.append(f"__cf_tf{j}_k{m}")
+        step_name = f"__CF_PARAMS_{idx}__"
         self.tf_steps.append(
             {
                 "level": rw.level_i,
@@ -1114,26 +1176,34 @@ class _Planner:
                 "keys": keys,
             }
         )
-        self.tf_specs.append(
-            TransformSpec(
-                step=step_name,
-                alias=raw.get("alias") or name,
-                feature_cols=tuple(f"__cf_tf{j}_f{i}" for i in range(len(bundle))),
-                key_cols=tuple(key_cols),
-            )
+        self.udf_specs.append(
+            UDFSpec(name=f"__cf_tf{j}", step=step_name, transformer=name)
         )
-        return helpers
+        children = [
+            _clone("column_ref", column_names=[f"__cf_p{idx}", "__cf_est"], alias="")
+        ]
+        children += [copy.deepcopy(se) for (_, _, se) in bundle]
+        return _clone(
+            "function",
+            function_name=f"__cf_tf{j}",
+            children=children,
+            alias=raw.get("alias", ""),
+        )
+
+    def new_join(self, level_i: int, keys: list[_Key]) -> int:
+        idx = len(self.joins)
+        self.joins.append(_Join(keys=list(keys), level=level_i))
+        for k in keys:
+            kid = (level_i, k.ident)
+            if kid not in self.key_names:
+                self.key_names[kid] = f"__cf_k{self.key_count}"
+                self.key_count += 1
+        return idx
 
     def group_for(self, level_i: int, keys: list[_Key]) -> tuple[int, _Join]:
         ident = (level_i, tuple(k.ident for k in keys))
         if ident not in self.groups:
-            self.groups[ident] = len(self.joins)
-            self.joins.append(_Join(keys=list(keys), level=level_i))
-            for k in keys:
-                kid = (level_i, k.ident)
-                if kid not in self.key_names:
-                    self.key_names[kid] = f"__cf_k{self.key_count}"
-                    self.key_count += 1
+            self.groups[ident] = self.new_join(level_i, keys)
         idx = self.groups[ident]
         return idx, self.joins[idx]
 
@@ -1202,6 +1272,14 @@ def _validate_subquery_tables(sub_node: Node) -> None:
                         " the subquery's own CTEs)",
                         x.get("query_location"),
                     )
+            if x.get("class") == "FUNCTION" and not x.get("is_operator"):
+                f = x.get("function_name", "").lower()
+                if f and f not in _known_functions():
+                    _refuse(
+                        f"unknown function {f} inside a subquery (UDFs in"
+                        " subqueries are a later loop)",
+                        x.get("query_location"),
+                    )
             for v in x.values():
                 check(v)
         elif isinstance(x, list):
@@ -1221,6 +1299,18 @@ def _is_tf_node(item: Node) -> str | None:
     if name in _aggregate_names() and not item.get("schema"):
         return None
     return name
+
+
+def _contains_tf(x: Any) -> bool:
+    """True when a transformer window call appears anywhere in the subtree
+    (such an expression is not executable SQL on the fit side)."""
+    if isinstance(x, dict):
+        if _is_tf_node(x) is not None:
+            return True
+        return any(_contains_tf(v) for v in x.values())
+    if isinstance(x, list):
+        return any(_contains_tf(v) for v in x)
+    return False
 
 
 def _has_windows(x: Any) -> bool:
@@ -1245,7 +1335,7 @@ def _level_step(
     quals = level.source_quals
     originals = []
     for item in level.node["select_list"]:
-        if _is_tf_node(item) is not None:
+        if _contains_tf(item):
             continue  # not executable SQL; its features ride as __cf_f cols
         fit_item = _strip_quals(item, quals)
         originals.append(fit_item)
@@ -1424,7 +1514,7 @@ def marginalize(
             source = "__THIS__" if i == 0 else f"__CF_LEVEL_{i - 1}__"
             planner.plan.append(_level_step(planner, i, level, source))
             for idx, join in enumerate(planner.joins):
-                if join.level == i:
+                if join.level == i and idx not in planner.fit_joins:
                     planner.plan.append(_collapse_step(planner, idx, join))
             for t in planner.tf_steps:
                 if t["level"] == i:
@@ -1455,7 +1545,12 @@ def marginalize(
         # No aggregates, no chain, no schema: marginalization is the identity
         # (modulo normalization). With a declared schema the rewrite always
         # canonicalizes — stars/COLUMNS expand, lateral aliases inline.
-        return Marginalized(serving_sql=_deserialize(doc), plan=(), params=())
+        return Marginalized(
+            serving_sql=_deserialize(doc),
+            plan=(),
+            params=(),
+            scalar_udfs=tuple(planner.scalar_udfs),
+        )
 
     root["select_list"] = final_items
     root["from_table"] = _serving_from(planner.joins)
@@ -1468,5 +1563,6 @@ def marginalize(
         serving_sql=_deserialize(doc),
         plan=tuple(planner.plan),
         params=specs,
-        transforms=tuple(planner.tf_specs),
+        udfs=tuple(planner.udf_specs),
+        scalar_udfs=tuple(planner.scalar_udfs),
     )
