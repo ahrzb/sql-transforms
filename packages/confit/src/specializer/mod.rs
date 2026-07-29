@@ -22,11 +22,23 @@ mod tests;
 
 pub use frontend::PrepareError;
 
+/// One width-k (k >= 2) UDF output field: the marshaller assembles model
+/// field `name` from out columns `[first, first + 1 + width)` — a
+/// whole-call validity lane (false = the field is NULL, distinct from a
+/// list of NULLs) followed by `width` nullable component lanes.
+#[derive(Debug, Clone)]
+pub struct WideOut {
+    pub name: String,
+    pub first: u32,
+    pub width: u32,
+}
+
 /// How to materialize map static `@N` from the static table it came from:
 /// build one entry per table row, keyed by `key_cols` (converted to the
 /// declared key types — an int column joined against a float expression
 /// becomes f64 here), valued by `val_cols`. Rows with a NULL key are dropped
 /// (a NULL never equi-matches); a NULL in a value column is an error.
+#[derive(Debug)]
 pub struct StaticSpec {
     /// Stage-B self-join: no materialization — the build side is the
     /// BATCH, assembled per call by the executor.
@@ -47,9 +59,12 @@ pub struct StaticSpec {
 
 /// The output of stage 1: a verified program plus, per map static, the
 /// recipe the caller uses to turn its table data into `StaticData`.
+#[derive(Debug)]
 pub struct Prepared {
     pub program: ir::Program,
     pub statics: Vec<StaticSpec>,
+    /// Width-k UDF output fields, in projection order (see [`WideOut`]).
+    pub wide_outputs: Vec<WideOut>,
     /// `None` when the query provably emits EXACTLY one output row per
     /// input row (out[i] <-> in[i]); otherwise names the first construct
     /// that can drop a row. The static proof behind `shape="map"`
@@ -68,14 +83,17 @@ pub fn prepare(
     in_cols: &[ir::Col],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
-    prepare_opaque(sql, this_name, in_cols, &[], &[], statics, false)
+    prepare_opaque(sql, this_name, in_cols, &[], &[], statics, false, &[])
 }
 
 /// [`prepare`] plus the row-model columns that have no plain scalar lane:
 /// `opaque` (model position + name — timestamps, lists; reject on
 /// REFERENCE, star expansion included, instead of blocking construction)
 /// and `structs` (flattened to leaf lanes appended after the plain
-/// columns in `in_cols` — see [`plan::StructCol`]).
+/// columns in `in_cols` — see [`plan::StructCol`]) — plus the declared UDF
+/// externs (DRAFT-22): an unknown function matching a declaration binds as
+/// an opaque `ecall`.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_opaque(
     sql: &str,
     this_name: &str,
@@ -84,12 +102,14 @@ pub fn prepare_opaque(
     structs: &[plan::StructCol],
     statics: &[plan::StaticTable],
     many: bool,
+    udfs: &[ir::ExternSpec],
 ) -> Result<Prepared, PrepareError> {
-    let (rel, joins, out_cols, regexes) =
-        frontend::frontend(sql, this_name, in_cols, opaque, structs, statics, many)?;
+    let (rel, joins, out_cols, regexes, wide_outputs) =
+        frontend::frontend(sql, this_name, in_cols, opaque, structs, statics, many, udfs)?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
-    let mut program =
-        lower::lower(&rel, &joins, statics, in_cols, out_cols, regexes, "run", many)?;
+    let mut program = lower::lower(
+        &rel, &joins, statics, in_cols, out_cols, regexes, udfs, "run", many,
+    )?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
     ir::canonicalize(&mut program);
@@ -139,6 +159,7 @@ pub fn prepare_opaque(
     Ok(Prepared {
         program,
         statics: specs,
+        wide_outputs,
         one_row_blocker,
     })
 }

@@ -33,6 +33,7 @@ use super::ir::{
 };
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
+#[allow(clippy::too_many_arguments)]
 pub fn lower(
     rel: &Rel,
     joins: &[JoinSpec],
@@ -40,6 +41,7 @@ pub fn lower(
     in_cols: &[Col],
     out_cols: Vec<Col>,
     regexes: Vec<super::ir::ReSpec>,
+    udfs: &[super::ir::ExternSpec],
     name: &str,
     many: bool,
 ) -> Result<Program, PrepareError> {
@@ -61,7 +63,7 @@ pub fn lower(
         }
     };
 
-    let mut fb = FB::new(in_cols, joins, catalog);
+    let mut fb = FB::new(in_cols, joins, catalog, udfs);
 
     // shape='many' (stage B): joins lower as multiplicity LOOPS over
     // multimap row ranges — 0..N output rows per input row. One join per
@@ -104,7 +106,7 @@ pub fn lower(
                 values: flat(&catalog[joins[0].table].cols, &joins[0].val_cols),
             }
         }];
-        return fb.finish(name, statics, in_cols, out_cols, regexes);
+        return fb.finish(name, statics, in_cols, out_cols, regexes, udfs.to_vec());
     }
 
     // Joins run before WHERE (SQL order), each in FROM order: probe, and for
@@ -211,7 +213,7 @@ pub fn lower(
         })
         .collect();
 
-    fb.finish(name, statics, in_cols, out_cols, regexes)
+    fb.finish(name, statics, in_cols, out_cols, regexes, udfs.to_vec())
 }
 
 /// A value in the null-lane representation: payload + optional validity.
@@ -235,6 +237,10 @@ struct PB {
     /// Probes already emitted in this block: join index -> (valid hit —
     /// map hit AND every key flag — and the value-column registers).
     probes: HashMap<u32, (Value, Vec<Value>)>,
+    /// Extern calls already emitted in this block: call site -> (whole
+    /// validity, per-return (flag, payload) registers flattened). The k+1
+    /// lanes of one width-k call share a site, so the callable runs once.
+    externs: HashMap<u32, (Value, Vec<Value>)>,
 }
 
 impl PB {
@@ -245,6 +251,7 @@ impl PB {
             term: None,
             cache: HashMap::new(),
             probes: HashMap::new(),
+            externs: HashMap::new(),
         }
     }
 }
@@ -257,6 +264,7 @@ struct FB<'a> {
     in_cols: &'a [Col],
     joins: &'a [JoinSpec],
     catalog: &'a [StaticTable],
+    udfs: &'a [super::ir::ExternSpec],
 }
 
 impl<'a> FB<'a> {
@@ -264,6 +272,7 @@ impl<'a> FB<'a> {
         in_cols: &'a [Col],
         joins: &'a [JoinSpec],
         catalog: &'a [StaticTable],
+        udfs: &'a [super::ir::ExternSpec],
     ) -> FB<'a> {
         FB {
             b: Builder::new(),
@@ -272,6 +281,7 @@ impl<'a> FB<'a> {
             in_cols,
             joins,
             catalog,
+            udfs,
         }
     }
 
@@ -307,6 +317,7 @@ impl<'a> FB<'a> {
         in_cols: &[Col],
         out_cols: Vec<Col>,
         regexes: Vec<super::ir::ReSpec>,
+        externs: Vec<super::ir::ExternSpec>,
     ) -> Result<Program, PrepareError> {
         let mut blocks = Vec::with_capacity(self.blocks.len());
         for (i, pb) in self.blocks.into_iter().enumerate() {
@@ -322,7 +333,7 @@ impl<'a> FB<'a> {
         Ok(Program {
             statics,
             regexes,
-            externs: Vec::new(),
+            externs,
             name: name.to_string(),
             in_cols: in_cols.to_vec(),
             out_cols,
@@ -959,6 +970,26 @@ impl<'a> FB<'a> {
                     val: match_v,
                 })
             }
+            SKind::ExternCall {
+                site,
+                ext,
+                args,
+                ret,
+                whole,
+            } => {
+                let (whole_v, lanes) = self.emit_extern(*site, *ext, args, live)?;
+                if *whole {
+                    Ok(Lane {
+                        flag: None,
+                        val: whole_v,
+                    })
+                } else {
+                    Ok(Lane {
+                        flag: Some(lanes[2 * *ret as usize]),
+                        val: lanes[2 * *ret as usize + 1],
+                    })
+                }
+            }
             SKind::SLen { bytes, a } => {
                 let l = self.emit(a, live)?;
                 let dst = self.fresh();
@@ -1499,6 +1530,50 @@ impl<'a> FB<'a> {
         // read the cache: store the final MATCH there.
         self.blocks[self.cur].probes.insert(j, (match_v, dsts.clone()));
         Ok((match_v, dsts))
+    }
+
+    /// Emit (or reuse, per block, keyed by call site) one extern call:
+    /// args lower to (validity, payload) pairs — a provably non-NULL arg
+    /// gets a constant-true flag; payloads under a false flag are never
+    /// read by the trampoline. Returns the whole-call validity plus the
+    /// flattened per-return (flag, payload) registers.
+    fn emit_extern(
+        &mut self,
+        site: u32,
+        ext: u32,
+        args: &[SExpr],
+        live: &mut Live,
+    ) -> Result<(Value, Vec<Value>), PrepareError> {
+        if let Some(hit) = self.blocks[self.cur].externs.get(&site) {
+            return Ok(hit.clone());
+        }
+        let nargs = args.len();
+        for a in args {
+            let lane = self.emit(a, live)?;
+            live.push((lane, a.ty));
+        }
+        let start = live.len() - nargs;
+        let mut arg_vals = Vec::with_capacity(2 * nargs);
+        for i in 0..nargs {
+            let (lane, _) = live[start + i];
+            let (f, v) = match lane.flag {
+                None => (self.const_i1(true), lane.val),
+                Some(f) => (f, lane.val),
+            };
+            arg_vals.push(f);
+            arg_vals.push(v);
+        }
+        live.truncate(start);
+        let nrets = self.udfs[ext as usize].rets.len();
+        let dsts: Vec<Value> = (0..1 + 2 * nrets).map(|_| self.fresh()).collect();
+        self.inst(Inst::ExternCall {
+            ext,
+            dsts: dsts.clone(),
+            args: arg_vals,
+        });
+        let res = (dsts[0], dsts[1..].to_vec());
+        self.blocks[self.cur].externs.insert(site, res.clone());
+        Ok(res)
     }
 
     /// Branchless Kleene AND/OR from flag algebra. With the lane contract

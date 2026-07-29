@@ -320,6 +320,20 @@ pub enum SKind {
     /// i1, never NULL. The building block for key-column reconstruction
     /// (`r.id` ≡ CASE JoinHit THEN dyn-key ELSE NULL) and semi joins.
     JoinHit(u32),
+    /// One lane of a declared-UDF extern call (DRAFT-22 step 2). The k+1
+    /// lanes of one syntactic width-k call share `site` — lowering executes
+    /// each site once per block (probe-style cache) so the callable runs
+    /// once per row. `whole` reads the call-level validity (i1, never
+    /// NULL); otherwise the lane is output `ret` (declared type, always
+    /// nullable). Width-1 calls are ordinary scalar expressions; width-k
+    /// lanes exist only as bare projection items.
+    ExternCall {
+        site: u32,
+        ext: u32,
+        args: Vec<SExpr>,
+        ret: u32,
+        whole: bool,
+    },
 }
 
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division

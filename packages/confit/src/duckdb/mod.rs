@@ -696,7 +696,7 @@ impl DuckDBInferFn {
 
         use super::specializer::PrepareError;
         let prepared = match prepare_opaque(
-            &sql, &row_table, &in_cols, &opaque, &structs, &catalog, many,
+            &sql, &row_table, &in_cols, &opaque, &structs, &catalog, many, &[],
         ) {
             Ok(p) => p,
             // Unsupported/unparseable SQL might still be a static-tables-only

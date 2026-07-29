@@ -942,6 +942,8 @@ fn indf_under_shape_many_refuses_by_name() {
         &[],
         &[dim],
         true,
+
+        &[],
     ) {
         Err(PrepareError::Unsupported(m)) => {
             assert!(m.contains("IS NOT DISTINCT FROM"), "got: {m}")
@@ -968,6 +970,215 @@ fn indf_join_programs_are_canonical_ir() {
         parse(&text).unwrap(),
         p,
         "INDF join program is not canonical:\n{text}"
+    );
+}
+
+// ------------------------------------------------------------ UDF externs
+// (DRAFT-22 step 2): declared UDFs bind as extern calls; unknown functions
+// keep the named refusal; width-k calls are bare-item-only and expand to a
+// whole-validity lane plus k component lanes for the output boundary.
+
+fn udf(name: &str, params: &[Ty], rets: &[Ty]) -> super::ir::ExternSpec {
+    super::ir::ExternSpec {
+        name: name.to_string(),
+        params: params.to_vec(),
+        rets: rets.to_vec(),
+    }
+}
+
+fn imp(
+    name: &str,
+    f: impl Fn(&[Option<ScalarVal>]) -> Result<Option<Vec<Option<ScalarVal>>>, String> + 'static,
+) -> super::exec::ExternImpl {
+    super::exec::ExternImpl {
+        name: name.into(),
+        fun: Box::new(f),
+    }
+}
+
+fn prep_udfs(
+    sql: &str,
+    in_cols: &[Col],
+    statics: &[StaticTable],
+    udfs: &[super::ir::ExternSpec],
+) -> Result<super::Prepared, PrepareError> {
+    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs)
+}
+
+#[test]
+fn udf_call_serves_the_marginalizer_shape() {
+    // The DRAFT-22 serving_sql shape: params join by INDF, the transformer
+    // call takes the joined instance id plus a row feature (i64 age
+    // promoted to the declared f64 like DuckDB's implicit cast).
+    let schema = cols(&[("g", Ty::Str, true), ("age", Ty::I64, true)]);
+    let params = stat("p0", &[("g", Ty::Str, true), ("est", Ty::I64, true)]);
+    let p = prep_udfs(
+        "SELECT (tf0(p.est, t.age) + 1.0) AS z FROM __THIS__ AS t \
+         LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
+        &schema,
+        &[params],
+        &[udf("tf0", &[Ty::I64, Ty::F64], &[Ty::F64])],
+    )
+    .unwrap();
+    assert_eq!(p.one_row_blocker, None);
+    let data = StaticData::Map(vec![
+        (
+            vec![KeyBits::I1(true), KeyBits::Str("de".into())],
+            vec![ScalarVal::I1(true), ScalarVal::I64(0)],
+        ),
+        (
+            vec![KeyBits::I1(false), KeyBits::Str(String::new())],
+            vec![ScalarVal::I1(true), ScalarVal::I64(1)],
+        ),
+    ]);
+    // tf0(id, x) = x * (id + 1); NULL id or x -> NULL (the callable's
+    // convention, not the engine's).
+    let tf0 = imp("tf0", |args| {
+        let (Some(ScalarVal::I64(id)), Some(ScalarVal::F64(x))) = (&args[0], &args[1]) else {
+            return Ok(None);
+        };
+        Ok(Some(vec![Some(ScalarVal::F64(x * (*id as f64 + 1.0)))]))
+    });
+    let f = super::exec::interp::compile_ext(&p.program, vec![data], vec![tf0]).unwrap();
+    let input = batch(
+        4,
+        vec![
+            c_str(&[Some("de"), None, Some("fr"), Some("de")]),
+            c_i64(&[Some(10), Some(20), Some(30), None]),
+        ],
+    );
+    // de: id 0 -> 10*1+1 = 11; NULL g: id 1 -> 20*2+1 = 41; fr: miss ->
+    // NULL id -> NULL; de with NULL age -> NULL.
+    assert_eq!(
+        run_snapshot(&f, &input).unwrap(),
+        rows(&[&["11.0"], &["41.0"], &["NULL"], &["NULL"]])
+    );
+}
+
+#[test]
+fn unknown_function_refusal_survives_udf_declarations() {
+    let schema = cols(&[("x", Ty::F64, false)]);
+    let err = prep_udfs(
+        "SELECT nope(x) AS z FROM __THIS__",
+        &schema,
+        &[],
+        &[udf("tf0", &[Ty::F64], &[Ty::F64])],
+    )
+    .unwrap_err();
+    match err {
+        PrepareError::Unsupported(m) => {
+            assert!(m.contains("nope"), "got: {m}")
+        }
+        other => panic!("wrong error kind: {other}"),
+    }
+}
+
+#[test]
+fn udf_arity_and_type_mismatches_refuse_by_name() {
+    let schema = cols(&[("x", Ty::F64, false), ("s", Ty::Str, false)]);
+    let err = prep_udfs(
+        "SELECT tf0(x, x) AS z FROM __THIS__",
+        &schema,
+        &[],
+        &[udf("tf0", &[Ty::F64], &[Ty::F64])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Bind(m) if m.contains("tf0") && m.contains("argument")),
+        "got: {err}"
+    );
+    let err = prep_udfs(
+        "SELECT tf0(s) AS z FROM __THIS__",
+        &schema,
+        &[],
+        &[udf("tf0", &[Ty::F64], &[Ty::F64])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Bind(m) if m.contains("tf0") && m.contains("str")),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn wide_udf_bare_item_expands_to_output_lanes() {
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let p = prep_udfs(
+        "SELECT tf2(x) AS z, x AS orig FROM __THIS__",
+        &schema,
+        &[],
+        &[udf("tf2", &[Ty::F64], &[Ty::F64, Ty::F64])],
+    )
+    .unwrap();
+    // One wide output: field z assembles from out cols [0..3) —
+    // whole-validity lane + 2 nullable component lanes.
+    assert_eq!(p.wide_outputs.len(), 1);
+    let w = &p.wide_outputs[0];
+    assert_eq!((w.name.as_str(), w.first, w.width), ("z", 0, 2));
+    assert_eq!(p.program.out_cols.len(), 4);
+    assert_eq!(p.program.out_cols[0].ty.ty, Ty::I1);
+    assert!(p.program.out_cols[1].ty.nullable);
+    assert_eq!(p.program.out_cols[3].name, "orig");
+    // Executes: one callable invocation per row feeds every lane.
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let calls = Rc::new(Cell::new(0u32));
+    let c2 = calls.clone();
+    let tf2 = imp("tf2", move |args| {
+        c2.set(c2.get() + 1);
+        match &args[0] {
+            None => Ok(None),
+            Some(ScalarVal::F64(x)) => Ok(Some(vec![
+                Some(ScalarVal::F64(x + 1.0)),
+                Some(ScalarVal::F64(x * 2.0)),
+            ])),
+            _ => Err("bad arg".into()),
+        }
+    });
+    let f = super::exec::interp::compile_ext(&p.program, vec![], vec![tf2]).unwrap();
+    let input = batch(2, vec![c_f64(&[Some(3.0), None])]);
+    assert_eq!(
+        run_snapshot(&f, &input).unwrap(),
+        rows(&[
+            &["true", "4.0", "6.0", "3.0"],
+            &["false", "NULL", "NULL", "NULL"]
+        ])
+    );
+    assert_eq!(calls.get(), 2, "one callable invocation per row");
+}
+
+#[test]
+fn wide_udf_mid_expression_refuses_by_name() {
+    let schema = cols(&[("x", Ty::F64, false)]);
+    let err = prep_udfs(
+        "SELECT tf2(x) + 1 AS z FROM __THIS__",
+        &schema,
+        &[],
+        &[udf("tf2", &[Ty::F64], &[Ty::F64, Ty::F64])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Unsupported(m) if m.contains("tf2")),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn udf_programs_are_canonical_ir() {
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let p = prep_udfs(
+        "SELECT tf0(x) AS z FROM __THIS__ WHERE x IS NOT NULL",
+        &schema,
+        &[],
+        &[udf("tf0", &[Ty::F64], &[Ty::F64])],
+    )
+    .unwrap()
+    .program;
+    let text = print(&p);
+    assert_eq!(
+        parse(&text).unwrap(),
+        p,
+        "udf program is not canonical:\n{text}"
     );
 }
 
@@ -1938,7 +2149,7 @@ fn opaque_row_columns_reject_only_on_reference() {
     let schema = cols(&[("a", Ty::I64, false), ("s", Ty::Str, true)]);
     let opaque = vec![(1usize, "d".to_string())];
     let prep_o = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false).map(|p| p.program)
+        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false, &[]).map(|p| p.program)
     };
 
     // Untouched -> serves end to end.
@@ -2249,7 +2460,7 @@ fn structs_flatten_to_lanes() {
         ],
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false).map(|p| p.program)
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false, &[]).map(|p| p.program)
     };
     let run = |sql: &str| -> Result<Vec<Vec<String>>, String> {
         let p = prep_s(sql).map_err(|e| e.to_string())?;
@@ -2358,7 +2569,7 @@ fn nested_struct_resolution_matches_pins() {
         ))))),
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false).map(|p| p.program)
+        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false, &[]).map(|p| p.program)
     };
     // 8 parts = schema.table.column + 5 field extracts (corpus verbatim).
     let p = prep_s("SELECT t.t.t.t.t.t.t.t FROM t.t").unwrap();
@@ -2400,6 +2611,7 @@ fn many_shape_dup_key_joins_fan_out() {
             &[],
             std::slice::from_ref(&dim),
             true,
+            &[],
         )
     };
     let data = || {
@@ -2481,6 +2693,8 @@ fn many_shape_dup_key_joins_fan_out() {
         &[],
         &[dim_b, dim2],
         true,
+
+        &[],
     ) {
         Err(e) => e.to_string(),
         Ok(_) => panic!("multi-join under many must be the named restriction"),
@@ -2504,6 +2718,7 @@ fn many_shape_keyless_and_inequality_joins() {
             &[],
             std::slice::from_ref(&dim),
             true,
+            &[],
         )
     };
     let data = || {
@@ -2559,7 +2774,7 @@ fn many_shape_self_joins() {
     // bit-identical under multiplicity; pins-stageB).
     let schema = cols(&[("i", Ty::I64, false), ("j", Ty::I64, false)]);
     let prep_many = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &[], &[], true)
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &[], &[], true, &[])
     };
     let input = || {
         batch(
