@@ -1,5 +1,8 @@
 # KPIs
 
+Companion: `docs/properties.md` — the semantic laws the system holds; KPIs
+measure, properties state what must remain true.
+
 The measurable state of this project, in one place. Two kinds, optimized in
 opposite directions:
 
