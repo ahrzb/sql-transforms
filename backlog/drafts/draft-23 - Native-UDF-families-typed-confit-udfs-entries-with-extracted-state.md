@@ -91,3 +91,30 @@ Rules:
 - **Pickled sklearn as the serving artifact for known families**: keeps
   Python in the serve path and locks out non-Python hosts; it remains the
   catch-all tier only.
+
+## Addendum 2026-08-04 — the SQL-desugar tier, revisited
+
+AmirHossein, during the composition / private-columns design session:
+"with good SQL nesting support that would be pretty easy to do." The
+desugar-into-SQL-expressions tier rejected above was rejected on two
+premises that have since aged:
+
+- *"a rewrite between tiers means the gate compares two different
+  texts"* — marginalization now IS a rewrite pipeline end to end, and the
+  transformer gate (C4) compares against an independent clone-per-group
+  sklearn reference, text-free. Symbolic inlining (composition, DRAFT-24
+  loop 5) makes authored-vs-served text divergence the norm, gated by
+  values.
+- *"wide params columns can't carry matrices/trees"* — simple families'
+  θ fits plain params columns (mean/scale; CASE lanes for a vocabulary;
+  PCA loadings as k columns), and DRAFT-25's θ handles keep anything
+  bigger by reference.
+
+With struct-valued calls + private columns + composition inlining landed,
+a family's transform-half can be a SQL template over θ — StandardScaler
+`(x - mean) / scale`, OneHotEncoder CASE lanes, PCA dot products —
+inlined at marginalize and executed natively by the engine that already
+exists, with no new extern machinery. Native Rust entries remain for
+bodies SQL cannot express (TreeEnsemble). To be settled in the deferred
+DRAFT-23 discussion; recorded here so the rejection above is read with
+its date.
