@@ -234,6 +234,62 @@ class TransformLane(UDF):
         return ["BIGINT", *params], _DUCK[self.returns[0]]
 
 
+class Named:
+    """An estimator with author-declared output field names (DRAFT-24).
+
+    >>> transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))}
+    >>> "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS x ..."
+
+    The declaration is *authoritative*, unlike sklearn's own
+    ``get_feature_names_out`` (advisory: ignored when it disagrees with the
+    learned width). So a fixed override on a learned-width transform — an
+    encoder whose categories change with the data — refuses at fit rather
+    than mislabelling lanes.
+
+    Not required for correctness: SQL is already a rename operator
+    (``struct_pack(x := p.pca0, ...)``, or a wrapper projection level)."""
+
+    def __init__(self, estimator: Any, returns: tuple[str, ...]) -> None:
+        # Keep the caller's object when it is already the normal form:
+        # sklearn's clone asserts the constructor stores params unchanged
+        # (identity, not equality).
+        names = (
+            returns
+            if isinstance(returns, tuple) and all(isinstance(n, str) for n in returns)
+            else tuple(str(n) for n in returns)
+        )
+        if not names:
+            raise UDFError("Named(...): declare at least one output name")
+        if len(set(names)) != len(names):
+            raise UDFError(f"Named(...): duplicate output names in {list(names)}")
+        self.estimator = estimator
+        self.returns = names
+
+    @property
+    def declared_output_names(self) -> tuple[str, ...]:
+        return self.returns
+
+    # sklearn's clone protocol, so per-group cloning keeps its usual meaning
+    # (a fresh unfitted copy) instead of falling back to deepcopy.
+    def get_params(self, deep: bool = True) -> dict[str, Any]:
+        return {"estimator": self.estimator, "returns": self.returns}
+
+    def set_params(self, **params: Any) -> Named:
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+
+    def fit(self, X: Any, y: Any = None) -> Named:
+        self.estimator.fit(X)
+        return self
+
+    def transform(self, X: Any) -> Any:
+        return self.estimator.transform(X)
+
+    def __repr__(self) -> str:
+        return f"Named({self.estimator!r}, returns={list(self.returns)})"
+
+
 def _as_feature(value: Any, ty: str) -> Any:
     """One feature value on its way into ``transform``, per its declared
     type: numerics go through float (NULL as NaN, the estimator's own
@@ -253,10 +309,22 @@ def _flatten_row(row: Any) -> list:
         return [row]
 
 
-def output_names(est: Any, take_names: tuple[str, ...], width: int) -> tuple[str, ...]:
-    """The fitted output field names (T), by DRAFT-24's source order:
-    sklearn's ``get_feature_names_out`` when it is available and agrees with
-    the learned width, else canonical ``f0..``."""
+def output_names(
+    est: Any, take_names: tuple[str, ...], width: int, label: str = ""
+) -> tuple[str, ...]:
+    """The fitted output field names (T), by DRAFT-24's source order: an
+    author declaration (``Named``) — authoritative, so a width disagreement
+    refuses; else sklearn's ``get_feature_names_out`` — advisory, ignored
+    when it disagrees; else canonical ``f0..``."""
+    declared = getattr(est, "declared_output_names", None)
+    if declared is not None:
+        if len(declared) != width:
+            raise UDFError(
+                f"transformer {label or est!r} declares"
+                f" {len(declared)} output names {list(declared)} but fits to"
+                f" width {width}"
+            )
+        return tuple(declared)
     getter = getattr(est, "get_feature_names_out", None)
     if getter is not None:
         for args in ((take_names,) if take_names else (), ()):
