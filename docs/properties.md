@@ -55,6 +55,12 @@ IN/ANY/ALL (per-row membership) refuse.
 **P7 — Refusals are construction-time and named.** Everything refused is
 refused at `SQLProjection(...)`/`DuckDBInferFn(...)` construction with an
 error naming the construct — never at fit, never at serve, never silently.
+*Carve-out (DRAFT-24):* a transform's codomain T is **learned**, so
+refusals that depend on it — an addressed field that does not exist, a
+declared width that disagrees with the fitted one, a per-group codomain
+disagreement, a width-k call used inside an expression — are raised at
+**fit**, by name. Everything syntactic stays construction-time; nothing
+moves to serve time.
 (The corpus's FAILED bucket pins the "never silently" half — control C5.)
 
 **P8 — `__cf_` is reserved.** The prefix (case-insensitive) is refused in
@@ -111,12 +117,29 @@ The default `apply_batch` loops the scalar form: boundary amortized, math
 not vectorized, so batch ≡ row bit-exactly.
 *Spec:* udf-protocol-serving-calls design; DRAFT-22.
 
-**P16 — Width rules.** Output width is knowable only post-fit and is
-declared on the fitted UDF. Width-1 is scalar-valued (composes in
-arithmetic); width-k is a bare-item-only `list | None` field — the NULL
-list (whole-call NULL) is distinct from a list of NULLs. Bundles
+**P16 — Width rules.** Output width and field *names* are knowable only
+post-fit and are declared on the fitted UDF (`returns`/`return_names`).
+Width-1 is scalar-valued (composes in arithmetic); a width-k call is either
+addressed by field (`t(...).name`, resolved at rewrite time to that lane's
+width-1 UDF) or stands as a bare select item, which fit expands into one
+alias-prefixed column per field (`AS e` → `e_pca0`, `e_pca1`). Bundles
 (`struct_pack(...)`) are destructured at construction into positional
-feature arguments: no STRUCT or LIST value ever flows at serving time.
+feature arguments: **no STRUCT or LIST value ever flows at serving time.**
+*Amended 2026-08-04 (DRAFT-24 loop 3):* the flat boundary replaced the
+`list | None` field, so the NULL-list vs list-of-NULLs distinction is gone
+— an unseen group is k NULL columns. Deliberate; the engine's list
+boundary remains for direct `DuckDBInferFn(udfs=...)` users.
+
+**P16a — Names are the type; matching is name-keyed.** A fitted transform
+is `S → T` between named structs: S's field names and types come from the
+bundle (the caller's binding), T's are learned at fit — an author
+declaration (`Named`) is authoritative, sklearn's `get_feature_names_out`
+advisory, canonical `f0..` the fallback. Addressing an output by *position*
+is never possible, because a refit can renumber lanes (measured:
+OneHotEncoder gaining a category shifts every lane after it) — so a field
+that disappears refuses by name rather than silently rewiring. A codomain
+that differs per group is not a function type and refuses.
+*Spec:* DRAFT-24.
 
 **P17 — Serving rows have the training table's shape.** The serving row
 model derives from the training table's arrow schema (real types);
