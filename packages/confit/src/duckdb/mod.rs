@@ -221,6 +221,23 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
             .iter()
             .map(|t| parse_ty(&name, "returns", t))
             .collect::<PyResult<Vec<_>>>()?;
+        // Optional declared output field names (TASK-63): enables field
+        // access over a width-k call. Absent or None = unnamed.
+        let ret_names: Vec<String> = match b.getattr("return_names") {
+            Ok(v) if !v.is_none() => v.extract().map_err(|_| {
+                build_err(format!(
+                    "udf '{name}': `return_names` must be a tuple of strings"
+                ))
+            })?,
+            _ => Vec::new(),
+        };
+        if !ret_names.is_empty() && ret_names.len() != rets.len() {
+            return Err(build_err(format!(
+                "udf '{name}': {} return_names for {} returns",
+                ret_names.len(),
+                rets.len()
+            )));
+        }
         if out
             .iter()
             .any(|d| d.spec.name.eq_ignore_ascii_case(&name))
@@ -232,7 +249,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
                 name,
                 params,
                 rets,
-                ret_names: Vec::new(),
+                ret_names,
             },
             obj: obj.clone_ref(py),
         });
