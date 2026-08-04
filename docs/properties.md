@@ -120,15 +120,25 @@ not vectorized, so batch ≡ row bit-exactly.
 **P16 — Width rules.** Output width and field *names* are knowable only
 post-fit and are declared on the fitted UDF (`returns`/`return_names`).
 Width-1 is scalar-valued (composes in arithmetic); a width-k call is either
-addressed by field (`t(...).name`, resolved at rewrite time to that lane's
-width-1 UDF) or stands as a bare select item, which fit expands into one
-alias-prefixed column per field (`AS e` → `e_pca0`, `e_pca1`). Bundles
-(`struct_pack(...)`) are destructured at construction into positional
-feature arguments: **no STRUCT or LIST value ever flows at serving time.**
+addressed by field (`t(...).name`, validated at fit and served as a field
+read over the ONE whole-value call) or stands as a bare select item, which
+fit expands into one alias-prefixed field read per field (`AS e` →
+`e_pca0`, `e_pca1`) of that same one call. Bundles (`struct_pack(...)`)
+are destructured at construction into positional feature arguments:
+**no STRUCT or LIST value ever crosses the serving output boundary** —
+every output column is scalar.
 *Amended 2026-08-04 (DRAFT-24 loop 3):* the flat boundary replaced the
 `list | None` field, so the NULL-list vs list-of-NULLs distinction is gone
 — an unseen group is k NULL columns. Deliberate; the engine's list
 boundary remains for direct `DuckDBInferFn(udfs=...)` users.
+*Amended 2026-08-04 (DRAFT-24 loop 4, TASK-63):* per-lane width-1 UDFs
+(`__cf_tf{j}_g{m}`, `TransformLane`) are gone — k addressed fields are k
+lane reads of one call, evaluated ONCE per row on both paths (DuckDB CSEs
+the identical pure calls into one struct-returning invocation; confit
+binds each read to one SSA lane of one shared-site ecall). The struct
+exists transiently inside DuckDB's expression evaluation only; confit
+never materializes one. The former clause "no STRUCT or LIST ever *flows
+at serving time*" narrowed to the output-boundary form above.
 
 **P16a — Names are the type; matching is name-keyed.** A fitted transform
 is `S → T` between named structs: S's field names and types come from the

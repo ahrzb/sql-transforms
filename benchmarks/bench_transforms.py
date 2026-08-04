@@ -14,8 +14,10 @@ IS the transformer cost, not the query's.
   tf_fields2  two field accesses on ONE width-2 PCA
   tf_bare2    a bare width-2 PCA item (expands to 2 lane calls)
 
-`tf_fields2`/`tf_bare2` expose DRAFT-24 loop 1's accepted cost: k accessed
-fields re-run the same transform k times (loop 4 removes it).
+`tf_fields2`/`tf_bare2` pin DRAFT-24 loop 4 (TASK-63): k accessed fields
+share ONE evaluation per row on both paths — the row path (confit: lane
+reads off one ecall) and the batch column (DuckDB `transform`: one
+struct-returning call, CSE merges the identical mentions).
 
 Run: uv run python -m benchmarks.bench_transforms [--json out.json]
 """
@@ -108,24 +110,45 @@ def bench(sql: str, sizes=(1, 64), repeats: int = 200) -> dict[int, float]:
     return out
 
 
+def bench_batch(sql: str, repeats: int = 5) -> float:
+    """The DuckDB batch path (`transform` over the full table), ns/row."""
+    p, train = _prepared(sql)
+    p.transform(train)  # warmup
+    samples = []
+    for _ in range(repeats):
+        t0 = time.perf_counter_ns()
+        p.transform(train)
+        samples.append((time.perf_counter_ns() - t0) / train.num_rows)
+    return statistics.median(samples)
+
+
 def main() -> int:
     results: dict[str, dict[int, float]] = {}
+    batch: dict[str, float] = {}
     for label, sql in QUERIES.items():
         results[label] = bench(sql)
+        batch[label] = bench_batch(sql)
     base = results["sql_only"]
-    print(f"{'variant':12} {'n=1 ns/row':>12} {'n=64 ns/row':>12}  delta vs sql_only")
-    print("-" * 62)
+    print(
+        f"{'variant':12} {'n=1 ns/row':>12} {'n=64 ns/row':>12}"
+        f" {'batch ns/row':>13}  delta vs sql_only (n=1)"
+    )
+    print("-" * 76)
     for label, r in results.items():
         d1 = r[1] - base[1]
         print(
-            f"{label:12} {r[1]:12,.0f} {r[64]:12,.0f}"
+            f"{label:12} {r[1]:12,.0f} {r[64]:12,.0f} {batch[label]:13,.0f}"
             + ("" if label == "sql_only" else f"   +{d1:,.0f}ns/row")
         )
     if "--json" in sys.argv:
         path = sys.argv[sys.argv.index("--json") + 1]
         with open(path, "w", encoding="utf-8") as f:
             json.dump(
-                {k: {str(n): v for n, v in r.items()} for k, r in results.items()}, f
+                {
+                    k: {str(n): v for n, v in r.items()} | {"batch": batch[k]}
+                    for k, r in results.items()
+                },
+                f,
             )
         print("wrote", path)
     return 0
