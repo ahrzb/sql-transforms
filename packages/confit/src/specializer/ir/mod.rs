@@ -81,7 +81,8 @@
 //! program   := static* regex* extern* func
 //! comment   := "#" ... end-of-line     // allowed anywhere whitespace is
 //! static    := "static" "@" INT ":" static_ty
-//! extern    := "extern" "@" INT ":" STRING "(" [ty ("," ty)*] ")" "->" "(" ty ("," ty)* ")"
+//! extern    := "extern" "@" INT ":" STRING "(" [ty ("," ty)*] ")" "->" "(" ret ("," ret)* ")"
+//! ret       := ty | STRING ":" ty     // named returns: all named or none
 //! static_ty := "scalar" "<" col_ty ">"
 //!            | "map" "(" ty ("," ty)* ")" "->" "(" ty ("," ty)* ")"
 //! func      := "fn" IDENT "(" "in" ":" batch "," "out" ":" batch ")" "{" block+ "}"
@@ -900,6 +901,10 @@ pub struct ExternSpec {
     pub name: String,
     pub params: Vec<Ty>,
     pub rets: Vec<Ty>,
+    /// Declared output field names, parallel to `rets` (TASK-63): either
+    /// empty (unnamed — field access over the call refuses by name) or
+    /// exactly one name per return.
+    pub ret_names: Vec<String>,
 }
 
 /// One entry of [`Program::regexes`]; `rewrite` is a rust replacement

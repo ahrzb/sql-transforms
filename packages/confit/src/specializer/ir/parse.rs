@@ -557,13 +557,42 @@ impl Parser {
             self.expect(Tok::RParen)?;
             self.expect(Tok::Arrow)?;
             self.expect(Tok::LParen)?;
-            let rets = if *self.peek() == Tok::RParen {
-                Vec::new()
-            } else {
-                self.ty_list()?
-            };
+            let mut rets = Vec::new();
+            let mut ret_names = Vec::new();
+            if *self.peek() != Tok::RParen {
+                if matches!(self.peek(), Tok::Str(_)) {
+                    // Named returns (TASK-63): ("a": f64, "b": f64) —
+                    // all named or none.
+                    loop {
+                        let n = match self.bump() {
+                            Tok::Str(s) => s,
+                            other => {
+                                return Err(self.err(format!(
+                                    "expected a return field name string, found {}",
+                                    other.show()
+                                )))
+                            }
+                        };
+                        self.expect(Tok::Colon)?;
+                        ret_names.push(n);
+                        rets.push(self.ty()?);
+                        if *self.peek() == Tok::Comma {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    rets = self.ty_list()?;
+                }
+            }
             self.expect(Tok::RParen)?;
-            externs.push(super::ExternSpec { name, params, rets });
+            externs.push(super::ExternSpec {
+                name,
+                params,
+                rets,
+                ret_names,
+            });
         }
 
         self.keyword("fn")?;

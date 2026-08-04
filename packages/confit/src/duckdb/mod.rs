@@ -232,6 +232,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
                 name,
                 params,
                 rets,
+                ret_names: Vec::new(),
             },
             obj: obj.clone_ref(py),
         });
