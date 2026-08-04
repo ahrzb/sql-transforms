@@ -12,12 +12,13 @@ IS the transformer cost, not the query's.
   udf_plain   + one author PythonUDF (trampoline, no sklearn)
   tf_width1   + one fitted StandardScaler (one extern call per row)
   tf_fields2  two field accesses on ONE width-2 PCA
-  tf_bare2    a bare width-2 PCA item (expands to 2 lane calls)
 
-`tf_fields2`/`tf_bare2` pin DRAFT-24 loop 4 (TASK-63): k accessed fields
-share ONE evaluation per row on both paths — the row path (confit: lane
-reads off one ecall) and the batch column (DuckDB `transform`: one
-struct-returning call, CSE merges the identical mentions).
+`tf_fields2` pins DRAFT-24 loop 4 (TASK-63): k accessed fields share ONE
+evaluation per row on both paths — the row path (confit: lane reads off
+one ecall) and the batch column (DuckDB `transform`: one struct-returning
+call, CSE merges the identical mentions). The former `tf_bare2` scenario
+(a bare width-2 item) stopped being legal SQL with struct-valued calls —
+bare transformer items refuse until DRAFT-25's nested outputs.
 
 Run: uv run python -m benchmarks.bench_transforms [--json out.json]
 """
@@ -71,8 +72,6 @@ QUERIES = {
     " FROM __THIS__",
     "tf_fields2": f"SELECT pca({BUNDLE}) OVER (PARTITION BY grp).pca0 AS t0,"
     f" pca({BUNDLE}) OVER (PARTITION BY grp).pca1 AS t1, {BASE} FROM __THIS__",
-    "tf_bare2": f"SELECT pca({BUNDLE}) OVER (PARTITION BY grp) AS t, {BASE}"
-    " FROM __THIS__",
 }
 
 

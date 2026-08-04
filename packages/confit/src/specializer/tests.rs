@@ -1234,21 +1234,52 @@ fn field_access_unknown_field_refuses_listing_declared() {
 }
 
 #[test]
-fn field_access_on_width1_refuses() {
-    // DuckDB registers width-1 as a scalar, so `.a` errors there — C2
-    // forbids confit accepting what DuckDB won't.
+fn field_access_on_a_width1_named_extern_binds_lane_zero() {
+    // Struct-valued at every width (the subtraction loop): a named extern
+    // registers as a single-field STRUCT in DuckDB, so `.a` reads lane 0.
     let schema = cols(&[("x", Ty::F64, true)]);
-    let err = prep_udfs(
+    let p = prep_udfs(
         "SELECT (sc(x)).a AS u FROM __THIS__",
         &schema,
         &[],
         &[udf_named("sc", &[Ty::F64], &[("a", Ty::F64)])],
     )
-    .unwrap_err();
-    assert!(
-        matches!(&err, PrepareError::Unsupported(m) if m.contains("sc") && m.contains("width-1")),
-        "got: {err}"
+    .unwrap();
+    let sc = imp("sc", |args| match &args[0] {
+        None => Ok(None),
+        Some(ScalarVal::F64(x)) => Ok(Some(vec![Some(ScalarVal::F64(x * 2.0))])),
+        _ => Err("bad arg".into()),
+    });
+    let f = super::exec::interp::compile_ext(&p.program, vec![], vec![sc]).unwrap();
+    let input = batch(2, vec![c_f64(&[Some(3.0), None])]);
+    assert_eq!(
+        run_snapshot(&f, &input).unwrap(),
+        rows(&[&["6.0"], &["NULL"]])
     );
+}
+
+#[test]
+fn named_extern_outside_a_field_read_refuses() {
+    // A named extern is struct-valued — width-1 included: bare and
+    // mid-expression positions refuse (DuckDB's struct registration would
+    // binder-error on the arithmetic and we have no struct output yet).
+    let schema = cols(&[("x", Ty::F64, true)]);
+    for sql in [
+        "SELECT (sc(x) + 1.0) AS u FROM __THIS__",
+        "SELECT sc(x) AS u FROM __THIS__",
+    ] {
+        let err = prep_udfs(
+            sql,
+            &schema,
+            &[],
+            &[udf_named("sc", &[Ty::F64], &[("a", Ty::F64)])],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, PrepareError::Unsupported(m) if m.contains("sc") && m.contains("struct-valued")),
+            "{sql}: {err}"
+        );
+    }
 }
 
 #[test]
