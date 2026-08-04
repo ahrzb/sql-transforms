@@ -18,7 +18,11 @@ from typing import Any
 import pyarrow as pa
 from pydantic import BaseModel
 
-from sql_transform._marginalize import MarginalizeError, marginalize
+from sql_transform._marginalize import (
+    MarginalizeError,
+    expand_wide_items,
+    marginalize,
+)
 from sql_transform._udf import UDF, PythonTransform
 
 
@@ -132,6 +136,7 @@ class SQLProjection:
         self._udfs: dict[str, PythonTransform] | None = None
         self._row_model: type[BaseModel] | None = None
         self._fn: Any = None  # confit.DuckDBInferFn, built lazily post-fit
+        self._serving_sql: str | None = None  # finalized at fit (wide items)
 
     @classmethod
     def from_file(cls, path: str) -> SQLProjection:
@@ -193,6 +198,22 @@ class SQLProjection:
             self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()
+        # A bare width-k call expands here, where its field names are known:
+        # k aliased lane calls, so the boundary emits flat named columns.
+        from sql_transform._udf import TransformLane
+
+        widths = {
+            u.name: self._udfs[u.name].return_names
+            for u in m.udfs
+            if u.field is None and u.name in self._udfs
+        }
+        self._serving_sql, lanes = expand_wide_items(m, widths)
+        for lane_name, source_name, lane in lanes:
+            self._udfs[lane_name] = TransformLane(
+                name=lane_name, source=self._udfs[source_name], lane=lane
+            )
+        for name in {src for _, src, _ in lanes}:
+            del self._udfs[name]  # the whole-value UDF is no longer called
         self._row_model = _model_from_arrow(table.schema)
         self._fn = None  # refit invalidates the prepared serving function
         return self
@@ -316,7 +337,6 @@ class SQLProjection:
             raise MarginalizeError("not fitted: call fit(table) first")
         if self._columns is not None:
             table = table.select(self._columns)
-        m = self._marginalized
         con = duckdb.connect()
         try:
             con.execute("SET threads = 1")
@@ -326,13 +346,19 @@ class SQLProjection:
             self._register_author_udfs(con)
             for udf in self._udfs.values():
                 udf.register(con)
-            return con.execute(m.serving_sql).to_arrow_table()
+            return con.execute(self.serving_sql).to_arrow_table()
         finally:
             con.close()
 
     @property
     def serving_sql(self) -> str:
-        """The rewritten projection: params joins instead of aggregates."""
+        """The rewritten projection: params joins instead of aggregates.
+
+        Final after fit: a bare width-k transformer item cannot be spelled
+        before its field names are learned, so fit expands it into one
+        aliased lane call per field."""
+        if self._serving_sql is not None:
+            return self._serving_sql
         return self._marginalized.serving_sql
 
     @property
@@ -373,7 +399,7 @@ class SQLProjection:
             udfs = [self.transformers[n] for n in m.scalar_udfs]
             udfs += list(self._udfs.values())
             self._fn = DuckDBInferFn(
-                m.serving_sql,
+                self.serving_sql,
                 row_tables={"__THIS__": self._row_model},
                 static_tables=dict(self._params),
                 udfs=udfs,
