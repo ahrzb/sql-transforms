@@ -46,11 +46,31 @@ def _check_types(name: str, label: str, types: tuple[str, ...]) -> None:
 
 
 class UDF:
-    """Base protocol; subclasses set name/takes/returns and __call__."""
+    """Base protocol; subclasses set name/takes/returns and __call__.
+
+    ``take_names``/``return_names`` carry the *struct* half of the type
+    (DRAFT-24): a fitted transform is a function ``S -> T`` between named
+    structs, and the names are matched name-keyed, never positionally — a
+    refit that renumbers lanes (OneHotEncoder gaining a category) must
+    break loudly, not rewire silently. Names are compile-time keys: field
+    access resolves during the rewrite, so an unquotable name is harmless
+    until it reaches the output boundary."""
 
     name: str
     takes: tuple[str, ...]
     returns: tuple[str, ...]
+    take_names: tuple[str, ...] = ()
+    return_names: tuple[str, ...] = ()
+
+    def lane_of(self, field_name: str) -> int:
+        """Index of an output field, by name; raises naming what exists."""
+        try:
+            return self.return_names.index(field_name)
+        except ValueError:
+            raise UDFError(
+                f"UDF {self.name} has no output field {field_name!r};"
+                f" fitted output is {list(self.return_names)}"
+            ) from None
 
     def __call__(self, *args: Any) -> tuple | None:
         raise NotImplementedError
@@ -105,6 +125,8 @@ class PythonUDF(UDF):
     fn: Callable[..., Any]
     takes: tuple[str, ...]
     returns: tuple[str, ...]
+    take_names: tuple[str, ...] = ()
+    return_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _check_types(self.name, "takes", self.takes)
@@ -133,6 +155,8 @@ class PythonTransform(UDF):
     instances: dict[int, Any] = field(hash=False)
     takes: tuple[str, ...]
     returns: tuple[str, ...]
+    take_names: tuple[str, ...] = ()
+    return_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _check_types(self.name, "takes", self.takes)
@@ -149,9 +173,8 @@ class PythonTransform(UDF):
                 " instances — params table and instances are from"
                 " different fits"
             ) from None
-        row = est.transform([[float("nan") if f is None else float(f) for f in feats]])[
-            0
-        ]
+        vals = [_as_feature(f, t) for f, t in zip(feats, self.takes, strict=True)]
+        row = est.transform([vals])[0]
         out = tuple(float(v) for v in _flatten_row(row))
         if len(out) != len(self.returns):
             raise UDFError(
@@ -165,9 +188,83 @@ class PythonTransform(UDF):
         return ["BIGINT", *params], ret
 
 
+@dataclass(frozen=True)
+class TransformLane(UDF):
+    """One named output field of a fitted transform, as a width-1 UDF.
+
+    Field access (``sc(...) OVER (...).color_red``) is resolved at
+    marginalize time into a call to one of these, so no STRUCT or LIST ever
+    flows at serving time (P16) and neither engine needs a struct type.
+
+    ``ponytail:`` k accessed fields re-run the source transform k times per
+    row; DRAFT-24 loop 4 (STRUCT_EXTRACT over an ecall) makes them share one
+    evaluation."""
+
+    name: str
+    source: PythonTransform = field(hash=False)
+    lane: int = 0
+
+    @property
+    def instances(self) -> dict[int, Any]:
+        # Marks the implicit leading instance-id argument for every binding.
+        return self.source.instances
+
+    @property
+    def takes(self) -> tuple[str, ...]:
+        return self.source.takes
+
+    @property
+    def take_names(self) -> tuple[str, ...]:
+        return self.source.take_names
+
+    @property
+    def returns(self) -> tuple[str, ...]:
+        return (self.source.returns[self.lane],)
+
+    @property
+    def return_names(self) -> tuple[str, ...]:
+        return (self.source.return_names[self.lane],)
+
+    def __call__(self, iid: int | None, *feats: Any) -> tuple | None:
+        out = self.source(iid, *feats)
+        return None if out is None else (out[self.lane],)
+
+    def _duck_signature(self) -> tuple[list[str], str]:
+        params = [_DUCK[t] for t in self.takes]
+        return ["BIGINT", *params], _DUCK[self.returns[0]]
+
+
+def _as_feature(value: Any, ty: str) -> Any:
+    """One feature value on its way into ``transform``, per its declared
+    type: numerics go through float (NULL as NaN, the estimator's own
+    missing-value convention); strings and booleans pass through."""
+    if ty == "str":
+        return value
+    if value is None:
+        return float("nan")
+    return value if ty == "i1" else float(value)
+
+
 def _flatten_row(row: Any) -> list:
     """One transform() output row as a flat list (0-d scalars included)."""
     try:
         return list(row)
     except TypeError:
         return [row]
+
+
+def output_names(est: Any, take_names: tuple[str, ...], width: int) -> tuple[str, ...]:
+    """The fitted output field names (T), by DRAFT-24's source order:
+    sklearn's ``get_feature_names_out`` when it is available and agrees with
+    the learned width, else canonical ``f0..``."""
+    getter = getattr(est, "get_feature_names_out", None)
+    if getter is not None:
+        for args in ((take_names,) if take_names else (), ()):
+            names: tuple[str, ...] = ()
+            try:
+                names = tuple(str(n) for n in getter(*args))
+            except Exception:  # noqa: BLE001,S110 — metadata is advisory, never fatal
+                names = ()
+            if len(names) == width and len(set(names)) == width:
+                return names
+    return tuple(f"f{i}" for i in range(width))
