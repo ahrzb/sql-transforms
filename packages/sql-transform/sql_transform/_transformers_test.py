@@ -77,15 +77,25 @@ def test_transformer_mid_expression():
         np.testing.assert_allclose(got[n], ref[i][0] * 10 + 1, rtol=1e-12)
 
 
-def test_pipeline_pca2_with_struct_bundle_yields_list():
+def test_pipeline_pca2_with_struct_bundle_expands_to_columns():
     embed = Pipeline([("s", StandardScaler()), ("p", PCA(n_components=2))])
     p = SQLProjection(
         "SELECT embed(struct_pack(a := age, f := fare)) OVER () AS e, name"
         " FROM __THIS__",
         transformers={"embed": embed},
     ).fit(TRAIN)
-    assert p.udfs["__cf_tf0"].returns == ("f64", "f64")
-    got = _by_name(p.transform(TRAIN), "e")
+    out = p.transform(TRAIN)
+    # DRAFT-24 loop 3: a bare width-k item is k alias-prefixed columns.
+    assert out.column_names == ["e_pca0", "e_pca1", "name"]
+    got = {
+        n: (a, b)
+        for n, a, b in zip(
+            out.column("name").to_pylist(),
+            out.column("e_pca0").to_pylist(),
+            out.column("e_pca1").to_pylist(),
+            strict=True,
+        )
+    }
     feats = np.array(
         [TRAIN.column("age").to_pylist(), TRAIN.column("fare").to_pylist()],
         dtype=float,

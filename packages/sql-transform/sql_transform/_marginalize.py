@@ -161,6 +161,11 @@ class Marginalized:
     params: tuple[ParamsSpec, ...]
     udfs: tuple[UDFSpec, ...] = ()
     scalar_udfs: tuple[str, ...] = ()
+    # The serving AST behind ``serving_sql``. A bare width-k transformer
+    # item cannot be spelled at construction — its width and field names are
+    # learned — so fit expands it here into one aliased lane call per field
+    # (DRAFT-24 loop 3, ``expand_wide_items``).
+    doc: Node | None = None
 
 
 def _refuse(what: str, loc: int | None = None) -> None:
@@ -1655,4 +1660,70 @@ def marginalize(
         params=specs,
         udfs=tuple(planner.udf_specs),
         scalar_udfs=tuple(planner.scalar_udfs),
+        doc=doc,
     )
+
+
+def expand_wide_items(
+    m: Marginalized, widths: dict[str, tuple[str, ...]]
+) -> tuple[str, list[tuple[str, str, int]]]:
+    """Fit-time finalization of the serving text (DRAFT-24 loop 3).
+
+    ``widths`` maps each whole-value transformer UDF name to the output
+    field names its fit learned. A width-k call standing as a top-level
+    select item expands into k items — one per field, each calling that
+    field's lane UDF and aliased ``{item alias}_{field}`` — so the boundary
+    emits flat named columns instead of one list. Width-1 calls are already
+    scalars and are left alone.
+
+    Returns the finalized SQL plus the lane UDFs to build:
+    ``(udf name, source udf name, lane)``.
+
+    A width-k whole-value call *inside* an expression has no scalar reading
+    and refuses by name (its width is only knowable here, at fit)."""
+    wide = {name: names for name, names in widths.items() if len(names) > 1}
+    if not wide or m.doc is None:
+        return m.serving_sql, []
+    doc = copy.deepcopy(m.doc)
+    node = doc["statements"][0]["node"]
+    lanes: list[tuple[str, str, int]] = []
+    items: list[Node] = []
+    for item in node["select_list"]:
+        target = (
+            item.get("function_name", "") if item.get("class") == "FUNCTION" else ""
+        )
+        if target in wide:
+            names = wide[target]
+            alias = item.get("alias") or target
+            for i, field in enumerate(names):
+                lane_name = f"{target}_w{i}"
+                lanes.append((lane_name, target, i))
+                items.append(
+                    dict(
+                        copy.deepcopy(item),
+                        function_name=lane_name,
+                        alias=f"{alias}_{field}",
+                    )
+                )
+            continue
+        _check_no_nested_wide(item, wide)
+        items.append(item)
+    node["select_list"] = items
+    return _deserialize(doc), lanes
+
+
+def _check_no_nested_wide(x: Any, wide: dict[str, tuple[str, ...]]) -> None:
+    if isinstance(x, dict):
+        if x.get("class") == "FUNCTION" and x.get("function_name", "") in wide:
+            name = x["function_name"]
+            _refuse(
+                f"a width-{len(wide[name])} transformer call inside an"
+                " expression — address one output field (fn(...).name) or"
+                " make it a select item of its own",
+                x.get("query_location"),
+            )
+        for v in x.values():
+            _check_no_nested_wide(v, wide)
+    elif isinstance(x, list):
+        for v in x:
+            _check_no_nested_wide(v, wide)

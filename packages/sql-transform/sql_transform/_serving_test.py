@@ -55,7 +55,7 @@ def test_transformer_partitioned_width1():
     assert isinstance(out.z, float)
 
 
-def test_transformer_global_width2_list_field():
+def test_transformer_global_width2_expands_to_named_columns():
     embed = Pipeline([("s", StandardScaler()), ("p", PCA(n_components=2))])
     p = serve_gate(
         "SELECT embed(struct_pack(a := age, f := fare)) OVER () AS e, name"
@@ -63,7 +63,8 @@ def test_transformer_global_width2_list_field():
         transformers={"embed": embed},
     )
     out = p.infer({"country": "US", "age": 33.0, "fare": 4, "name": "q"})
-    assert isinstance(out.e, list) and len(out.e) == 2
+    # DRAFT-24 loop 3: one flat column per output field, alias-prefixed.
+    assert isinstance(out.e_pca0, float) and isinstance(out.e_pca1, float)
 
 
 def test_unseen_group_is_null_row_at_a_time():
