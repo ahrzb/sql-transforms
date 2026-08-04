@@ -46,6 +46,26 @@ class Embed2:
         return (x + d, x - d)
 
 
+class NamedEmbed2:
+    """Embed2 with declared output field names (TASK-63) + a call counter."""
+
+    name = "emb"
+    takes = ("f64",)
+    returns = ("f64", "f64")
+    return_names = ("a", "b")
+    instances = {0: 0.0, 1: 1.0}
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, iid, x):
+        self.calls += 1
+        if iid is None or x is None:
+            return None
+        d = self.instances[iid]
+        return (x + d, x - d)
+
+
 class Shout:
     """A plain author UDF (no instances -> no implicit id): str -> str."""
 
@@ -58,12 +78,18 @@ class Shout:
 
 
 def _scalar_form(obj):
-    """The DuckDB registration of the same object: unwrap width-1 tuples."""
+    """The DuckDB registration of the same object: unwrap width-1 tuples;
+    width-k becomes a dict (STRUCT) when field names are declared, else a
+    list (DOUBLE[])."""
+
+    rn = getattr(obj, "return_names", None) if len(obj.returns) > 1 else None
 
     def unwrap(out):
         if out is None:
             return None
-        return out[0] if len(out) == 1 else list(out)
+        if len(out) == 1:
+            return out[0]
+        return dict(zip(rn, out, strict=True)) if rn else list(out)
 
     n = len(obj.takes) + (1 if hasattr(obj, "instances") else 0)
     args = ", ".join(f"a{i}" for i in range(n))
@@ -95,7 +121,15 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, output=None):
         params = [_DUCK_T[t] for t in u.takes]
         if hasattr(u, "instances"):
             params = ["BIGINT", *params]
-        ret = _DUCK_T[u.returns[0]] if len(u.returns) == 1 else "DOUBLE[]"
+        rn = getattr(u, "return_names", None)
+        if len(u.returns) == 1:
+            ret = _DUCK_T[u.returns[0]]
+        elif rn:
+            ret = duckdb.struct_type(
+                {n: _DUCK_T[t] for n, t in zip(rn, u.returns, strict=True)}
+            )
+        else:
+            ret = "DOUBLE[]"
         con.create_function(
             u.name, _scalar_form(u), params, ret, null_handling="special"
         )
@@ -172,6 +206,26 @@ def test_wide_udf_bare_item_is_list_field():
     assert by_g[None] == [6.0, 4.0]  # NULL g joins the NULL-key params row
     assert by_g["fr"] is None  # unseen group: NULL id -> NULL list
     assert by_g["de"] is None  # NULL feature: the callable's convention
+
+
+def test_field_access_shares_one_call_per_row():
+    # TASK-63: two field reads of one width-2 call — ONE callable
+    # invocation per row on the engine AND on DuckDB (its CSE), counted.
+    u = NamedEmbed2()
+    got = udf_check(
+        "SELECT (emb(p.est, t.x)).a AS ea, (emb(p.est, t.x)).b AS eb, t.g AS g "
+        "FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
+        {"g": "str?", "x": "float?"},
+        [{"g": None, "x": 5.0}, {"g": "fr", "x": 5.0}, {"g": "de", "x": 2.0}],
+        {"p0": PARAMS},
+        [u],
+    )
+    by_g = {r["g"]: (r["ea"], r["eb"]) for r in got}
+    assert by_g[None] == (6.0, 4.0)  # NULL g joins the NULL-key row: id 1
+    assert by_g["de"] == (2.0, 2.0)  # id 0, d = 0
+    assert by_g["fr"] == (None, None)  # unseen group: NULL id -> NULL fields
+    # 3 rows served by the engine + 3 by DuckDB — one call per ROW each.
+    assert u.calls == 6, f"expected 6 calls (3 rows x 2 paths), got {u.calls}"
 
 
 def test_wide_udf_dict_output():

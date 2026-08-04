@@ -37,7 +37,13 @@ class DuckDBInferFn:
         transformer: its implicit leading argument is a nullable BIGINT
         instance id (never written in `takes`). Width-1 calls are scalar
         expressions; width-k calls are bare SELECT items emitting one
-        `list | None` field. The oracle statement is parameterized, not
+        `list | None` field — or, when the object declares
+        `return_names: tuple[str, ...]` (one per return, TASK-63), field
+        access over the call binds each addressed name to one lane of a
+        single evaluation (`(f(...)).a` or `struct_extract(f(...), 'a')`,
+        usable mid-expression; textually identical calls share the one
+        evaluation, mirroring DuckDB's CSE). The oracle statement is
+        parameterized, not
         weakened: the engine matches DuckDB running the same SQL with these
         same objects registered via `create_function`. UDFs must be
         deterministic.
