@@ -316,3 +316,19 @@ def test_computed_field_name_refuses():
             " FROM __THIS__",
             transformers={"sc": StandardScaler()},
         )
+
+
+def test_struct_literal_bundle_is_the_same_as_struct_pack():
+    # DuckDB desugars {'a': x} to struct_pack(a := x) — same AST, so the
+    # bundle rules and field names are identical. Pinned, not incidental.
+    kw = {"transformers": {"pca": PCA(n_components=2)}}
+    a = SQLProjection(
+        "SELECT pca({'a': age, 'f': fare}) OVER ().pca0 AS c FROM __THIS__", **kw
+    ).fit(TRAIN)
+    b = SQLProjection(
+        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().pca0 AS c FROM __THIS__",
+        **kw,
+    ).fit(TRAIN)
+    assert a.serving_sql == b.serving_sql
+    assert a.transform(TRAIN).to_pylist() == b.transform(TRAIN).to_pylist()
+    assert a.udfs["__cf_tf0_g0"].take_names == ("a", "f")
