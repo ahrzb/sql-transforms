@@ -52,9 +52,9 @@ class UDF:
     (DRAFT-24): a fitted transform is a function ``S -> T`` between named
     structs, and the names are matched name-keyed, never positionally — a
     refit that renumbers lanes (OneHotEncoder gaining a category) must
-    break loudly, not rewire silently. Names are compile-time keys: field
-    access resolves during the rewrite, so an unquotable name is harmless
-    until it reaches the output boundary."""
+    break loudly, not rewire silently. An addressed field is validated at
+    fit and served as a field read over the ONE whole-value call (TASK-63);
+    the names ride as string literals, so any spelling is safe."""
 
     name: str
     takes: tuple[str, ...]
@@ -78,7 +78,9 @@ class UDF:
     def _scalar(self, *args: Any) -> Any:
         """The single-SQL-value form: unwraps a width-1 tuple to its value,
         checks the result against ``returns`` (a violated declaration is a
-        broken artifact — raise, never a silent NULL)."""
+        broken artifact — raise, never a silent NULL). Width-k is a dict
+        (STRUCT — one call, field reads, TASK-63) when field names are
+        declared, else a list."""
         out = self(*args)
         if out is None:
             return None
@@ -86,7 +88,11 @@ class UDF:
             raise UDFError(
                 f"UDF {self.name} returned {out!r}, declared returns {self.returns}"
             )
-        return out[0] if len(out) == 1 else list(out)
+        if len(out) == 1:
+            return out[0]
+        if self.return_names:
+            return dict(zip(self.return_names, out, strict=True))
+        return list(out)
 
     def apply_batch(self, *cols: pa.Array) -> tuple[pa.Array, ...]:
         """Boundary-amortized form; the default loops ``__call__``."""
@@ -97,10 +103,23 @@ class UDF:
             pa.array([None if o is None else o[j] for o in outs]) for j in range(width)
         )
 
-    def _duck_signature(self) -> tuple[list[str], str]:
+    def _duck_signature(self) -> tuple[list[str], Any]:
         params = [_DUCK[t] for t in self.takes]
-        ret = _DUCK[self.returns[0]] if len(self.returns) == 1 else "DOUBLE[]"
-        return params, ret
+        if len(self.returns) == 1:
+            return params, _DUCK[self.returns[0]]
+        if self.return_names:
+            # Width-k with declared names: a STRUCT return, so field access
+            # reads lanes off ONE call (TASK-63) — DuckDB CSEs the
+            # identical pure calls; confit shares the ecall site.
+            import duckdb
+
+            return params, duckdb.struct_type(
+                {
+                    n: _DUCK[t]
+                    for n, t in zip(self.return_names, self.returns, strict=True)
+                }
+            )
+        return params, "DOUBLE[]"
 
     def register(self, con: Any) -> None:
         """Bind to a DuckDB connection: the same object DuckDB executes is
@@ -186,52 +205,6 @@ class PythonTransform(UDF):
     def _duck_signature(self) -> tuple[list[str], str]:
         params, ret = super()._duck_signature()
         return ["BIGINT", *params], ret
-
-
-@dataclass(frozen=True)
-class TransformLane(UDF):
-    """One named output field of a fitted transform, as a width-1 UDF.
-
-    Field access (``sc(...) OVER (...).color_red``) is resolved at
-    marginalize time into a call to one of these, so no STRUCT or LIST ever
-    flows at serving time (P16) and neither engine needs a struct type.
-
-    ``ponytail:`` k accessed fields re-run the source transform k times per
-    row; DRAFT-24 loop 4 (STRUCT_EXTRACT over an ecall) makes them share one
-    evaluation."""
-
-    name: str
-    source: PythonTransform = field(hash=False)
-    lane: int = 0
-
-    @property
-    def instances(self) -> dict[int, Any]:
-        # Marks the implicit leading instance-id argument for every binding.
-        return self.source.instances
-
-    @property
-    def takes(self) -> tuple[str, ...]:
-        return self.source.takes
-
-    @property
-    def take_names(self) -> tuple[str, ...]:
-        return self.source.take_names
-
-    @property
-    def returns(self) -> tuple[str, ...]:
-        return (self.source.returns[self.lane],)
-
-    @property
-    def return_names(self) -> tuple[str, ...]:
-        return (self.source.return_names[self.lane],)
-
-    def __call__(self, iid: int | None, *feats: Any) -> tuple | None:
-        out = self.source(iid, *feats)
-        return None if out is None else (out[self.lane],)
-
-    def _duck_signature(self) -> tuple[list[str], str]:
-        params = [_DUCK[t] for t in self.takes]
-        return ["BIGINT", *params], _DUCK[self.returns[0]]
 
 
 class Named:

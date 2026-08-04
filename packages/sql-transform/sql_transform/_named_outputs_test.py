@@ -1,11 +1,12 @@
-"""Named outputs and field access (DRAFT-24, loop 1).
+"""Named outputs and field access (DRAFT-24, loops 1-4).
 
 A fitted transform is ``S -> T`` between named structs: S's field types come
 from the bundle's real column types, T's field names are learned at fit
 (sklearn's ``get_feature_names_out``, else canonical ``f0..``). Field access
-resolves at marginalize time to a width-1 lane UDF, so no struct flows at
-serving time; identity is name-keyed, so a refit that renumbers lanes breaks
-loudly instead of rewiring silently.
+is validated at fit and serves as a field read over the ONE whole-value call
+(TASK-63) — k addressed fields cost one evaluation per row on both engines;
+identity is name-keyed, so a refit that renumbers lanes breaks loudly
+instead of rewiring silently.
 """
 
 import numpy as np
@@ -41,8 +42,7 @@ def test_sklearn_names_are_used_and_addressable():
         " name FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
-    (lane,) = [u for u in p.udfs.values() if u.name.startswith("__cf_tf0_g")]
-    assert lane.return_names == ("color_red",)
+    assert p.udfs["__cf_tf0"].return_names == ("color_blue", "color_red")
     got = {r["name"]: r["is_red"] for r in p.transform(TRAIN).to_pylist()}
     assert got == {"x": 1.0, "y": 0.0, "z": 1.0, "w": 0.0}
 
@@ -94,8 +94,8 @@ def test_string_feature_keeps_its_type():
         "SELECT ohe(struct_pack(color := color)) OVER ().color_blue AS b FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
-    (lane,) = [u for u in p.udfs.values() if u.name.startswith("__cf_tf0_g")]
-    assert lane.takes == ("str",) and lane.take_names == ("color",)
+    u = p.udfs["__cf_tf0"]
+    assert u.takes == ("str",) and u.take_names == ("color",)
 
 
 def test_mixed_feature_types():
@@ -117,7 +117,7 @@ def test_mixed_feature_types():
         " FROM __THIS__",
         transformers={"w": Widths()},
     ).fit(ints)
-    assert p.udfs["__cf_tf0_g0"].takes == ("str", "i64")
+    assert p.udfs["__cf_tf0"].takes == ("str", "i64")
     got = {r["name"]: r["z"] for r in p.transform(ints).to_pylist()}
     assert got["x"] == len("red") + 7.0
 
@@ -170,8 +170,12 @@ def test_two_fields_share_one_fit_step():
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     assert [s.name for s in p.plan] == ["__CF_LEVEL_0__", "__CF_PARAMS_0__"]
-    assert "__cf_tf0_g0(__cf_p0.__cf_est, __cf_t.color)" in p.serving_sql
-    assert "__cf_tf0_g1(__cf_p0.__cf_est, __cf_t.color)" in p.serving_sql
+    # ONE call, two field reads (TASK-63) — no per-lane UDFs. The identical
+    # mentions cost one evaluation per row (DuckDB CSE / confit's shared
+    # ecall site; counted in _single_eval_test.py).
+    assert "(__cf_tf0(__cf_p0.__cf_est, __cf_t.color)).color_red" in p.serving_sql
+    assert "(__cf_tf0(__cf_p0.__cf_est, __cf_t.color)).color_blue" in p.serving_sql
+    assert "__cf_tf0_g" not in p.serving_sql
     rows = p.transform(TRAIN).to_pylist()
     assert rows[0]["r"] == 1.0 and rows[0]["b"] == 0.0
 
@@ -302,8 +306,7 @@ def test_named_override_replaces_generated_names():
         " pca(struct_pack(a := age, f := fare)) OVER ().cost AS c, name FROM __THIS__",
         transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
     ).fit(TRAIN)
-    assert p.udfs["__cf_tf0_g0"].return_names == ("size",)
-    assert p.udfs["__cf_tf0_g1"].return_names == ("cost",)
+    assert p.udfs["__cf_tf0"].return_names == ("size", "cost")
     ref = clone_ref(PCA(n_components=2), TRAIN)
     got = {r["name"]: (r["s"], r["c"]) for r in p.transform(TRAIN).to_pylist()}
     for i, n in enumerate(TRAIN.column("name").to_pylist()):
@@ -332,7 +335,7 @@ def test_named_override_clones_per_group():
         transformers={"sc": Named(StandardScaler(), returns=("z",))},
     ).fit(TRAIN)
     (step,) = [s for s in p.plan if s.kind == "fit"]
-    base = p.udfs["__cf_tf0_g0"].source
+    base = p.udfs["__cf_tf0"]
     assert len(base.instances) == 2  # one fitted clone per country
     assert base.instances[0].estimator is not base.instances[1].estimator
     got = {r["name"]: r["z"] for r in p.transform(TRAIN).to_pylist()}
@@ -404,4 +407,4 @@ def test_struct_literal_bundle_is_the_same_as_struct_pack():
     ).fit(TRAIN)
     assert a.serving_sql == b.serving_sql
     assert a.transform(TRAIN).to_pylist() == b.transform(TRAIN).to_pylist()
-    assert a.udfs["__cf_tf0_g0"].take_names == ("a", "f")
+    assert a.udfs["__cf_tf0"].take_names == ("a", "f")
