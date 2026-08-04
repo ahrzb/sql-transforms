@@ -157,6 +157,14 @@ row path and **1.84x** on the batch path; it now costs **~0.97x / ~0.92x**
 merges the identical pure calls by CSE, confit reads k lanes off one
 ecall).
 
+*Struct-valued calls (2026-08-04, same session):* the `tf_bare2` scenario
+left the table — bare transformer items stopped being legal SQL (they
+refuse at construction until DRAFT-25's nested outputs; the flat
+expansion they measured is deleted). Re-run after the change: tf_width1
+100,950 / 88,408 / 92,135 and tf_fields2 95,550 / 84,948 / 82,843
+(n=1 / n=64 / batch ns/row) — the 2-field ratio holds at ~0.95x and the
+width-1 single-field STRUCT registration costs nothing outside noise.
+
 **The finding that sets priorities** (unchanged): the extern/UDF machinery
 is cheap (+2,400ns for a plain UDF in this run), and our own marshalling
 is 400ns. **~93% of a fitted transformer's per-row cost is sklearn's own

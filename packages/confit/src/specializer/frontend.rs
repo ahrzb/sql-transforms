@@ -3338,12 +3338,6 @@ impl Binder<'_> {
         let Some((ext, spec)) = self.find_udf(&f.name.to_string()) else {
             return Ok(None);
         };
-        if spec.rets.len() < 2 {
-            return Err(unsup(format!(
-                "field access on width-1 udf '{}' (a scalar call has no fields)",
-                spec.name
-            )));
-        }
         if spec.ret_names.is_empty() {
             return Err(unsup(format!(
                 "field access on udf '{}': no declared output field names",
@@ -4573,6 +4567,18 @@ impl Binder<'_> {
                 // scalar expression; width-k is bare-item-only (handled in
                 // the projection loop), so reaching it here is refused.
                 if let Some((ext, spec)) = self.find_udf(&f.name.to_string()) {
+                    if !spec.ret_names.is_empty() {
+                        // Struct-valued at every width (the subtraction
+                        // loop): a named extern outside a field read has
+                        // no scalar reading — DuckDB's struct registration
+                        // would binder-error, and no struct output boundary
+                        // exists yet.
+                        return Err(unsup(format!(
+                            "udf '{}' is struct-valued (declared field names) \
+                             — address an output field ({}(...).name)",
+                            spec.name, spec.name
+                        )));
+                    }
                     if spec.rets.len() != 1 {
                         return Err(unsup(format!(
                             "width-{} udf '{}' used as a scalar expression \

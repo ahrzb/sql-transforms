@@ -205,35 +205,79 @@ def test_field_access_under_partition_unseen_group_is_null():
     assert out.z is None
 
 
-# --- the boundary: bare width-k expands to flat named columns (loop 3) ---------
+# --- struct-valued calls (the subtraction loop): only field reads cross --------
 
 
-def test_bare_wide_item_expands_to_alias_prefixed_columns():
+def test_bare_transformer_call_refuses_at_construction():
+    # A call is a struct value at EVERY width — a bare item has no output
+    # boundary to cross until DRAFT-25 lands nested outputs.
+    for sql in [
+        "SELECT sc(struct_pack(a := age)) OVER () AS z FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)) OVER () AS e FROM __THIS__",
+    ]:
+        with pytest.raises(MarginalizeError, match="struct value"):
+            SQLProjection(
+                sql,
+                transformers={
+                    "sc": StandardScaler(),
+                    "pca": PCA(n_components=2),
+                },
+            )
+
+
+def test_transformer_arithmetic_without_a_field_refuses_at_construction():
+    with pytest.raises(MarginalizeError, match="struct value"):
+        SQLProjection(
+            "SELECT sc(struct_pack(a := age)) OVER () * 10 AS z FROM __THIS__",
+            transformers={"sc": StandardScaler()},
+        )
+
+
+def test_width1_field_read_survives_to_serving_uniformly():
+    # No width-1 collapse: the serving SQL reads the field off the one
+    # call, same spelling as width-k; both paths agree value-for-value.
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER () AS e, name FROM __THIS__",
-        transformers={"pca": PCA(n_components=2)},
+        "SELECT sc(struct_pack(a := age)) OVER ().a AS z, name FROM __THIS__",
+        transformers={"sc": StandardScaler()},
     ).fit(TRAIN)
-    out = p.transform(TRAIN)
-    assert out.column_names == ["e_pca0", "e_pca1", "name"]
-    ref = clone_ref(PCA(n_components=2), TRAIN)
-    got = {r["name"]: (r["e_pca0"], r["e_pca1"]) for r in out.to_pylist()}
-    for i, n in enumerate(TRAIN.column("name").to_pylist()):
-        np.testing.assert_allclose(got[n], ref[i], rtol=1e-9)
+    assert "(__cf_tf0(__cf_p0.__cf_est, __cf_t.age)).a" in p.serving_sql
+    assert isinstance(p.transform(TRAIN).to_pylist()[0]["z"], float)
+    want = p.transform(TRAIN).to_pylist()
+    got = [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())]
+    assert got == want
 
 
-def test_bare_wide_item_uses_declared_names():
+# --- bare items refuse; field reads are the only crossing ----------------------
+
+
+def test_bare_wide_item_refuses_at_construction():
+    # The loop-3 flat expansion is deleted (struct-valued calls): a bare
+    # item has no output boundary to cross until DRAFT-25 nests it.
+    with pytest.raises(MarginalizeError, match="struct value"):
+        SQLProjection(
+            "SELECT pca(struct_pack(a := age, f := fare)) OVER () AS e, name"
+            " FROM __THIS__",
+            transformers={"pca": PCA(n_components=2)},
+        )
+
+
+def test_field_reads_use_declared_names():
     from sql_transform import Named
 
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER () AS e FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS e_size,"
+        " pca(struct_pack(a := age, f := fare)) OVER ().cost AS e_cost"
+        " FROM __THIS__",
         transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
     ).fit(TRAIN)
     assert p.transform(TRAIN).column_names == ["e_size", "e_cost"]
 
 
-def test_bare_wide_item_serves_row_at_a_time():
+def test_two_field_reads_serve_row_at_a_time():
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER () AS oh, name FROM __THIS__",
+        "SELECT ohe(struct_pack(color := color)) OVER ().color_blue AS oh_color_blue,"
+        " ohe(struct_pack(color := color)) OVER ().color_red AS oh_color_red,"
+        " name FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     want = p.transform(TRAIN)
@@ -242,38 +286,21 @@ def test_bare_wide_item_serves_row_at_a_time():
     assert got == want.to_pylist()
 
 
-def test_bare_width_one_item_stays_scalar():
+def test_wide_call_inside_an_expression_refuses_at_construction():
+    with pytest.raises(MarginalizeError, match="struct value"):
+        SQLProjection(
+            "SELECT list_extract(pca(struct_pack(a := age, f := fare)) OVER (), 1)"
+            " AS e FROM __THIS__",
+            transformers={"pca": PCA(n_components=2)},
+        )
+
+
+def test_unseen_group_nulls_every_field_read():
     p = SQLProjection(
-        "SELECT sc(struct_pack(a := age)) OVER () AS z, name FROM __THIS__",
-        transformers={"sc": StandardScaler()},
-    ).fit(TRAIN)
-    assert p.transform(TRAIN).column_names == ["z", "name"]
-    assert isinstance(p.transform(TRAIN).to_pylist()[0]["z"], float)
-
-
-def test_wide_call_inside_an_expression_refuses_at_fit():
-    p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER () AS e, age + 1 AS b"
-        " FROM __THIS__",
-        transformers={"pca": PCA(n_components=2)},
-    )
-    ok = p.fit(TRAIN)  # bare item is fine
-    assert ok.transform(TRAIN).column_names == ["e_pca0", "e_pca1", "b"]
-
-    from sql_transform import MarginalizeError as _E
-
-    p2 = SQLProjection(
-        "SELECT list_extract(pca(struct_pack(a := age, f := fare)) OVER (), 1) AS e"
-        " FROM __THIS__",
-        transformers={"pca": PCA(n_components=2)},
-    )
-    with pytest.raises(_E, match="width-2 transformer call inside an expression"):
-        p2.fit(TRAIN)
-
-
-def test_unseen_group_nulls_every_expanded_column():
-    p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER (PARTITION BY country) AS e,"
+        "SELECT pca(struct_pack(a := age, f := fare)) OVER (PARTITION BY country)"
+        ".pca0 AS e_pca0,"
+        " pca(struct_pack(a := age, f := fare)) OVER (PARTITION BY country)"
+        ".pca1 AS e_pca1,"
         " name FROM __THIS__",
         transformers={"pca": PCA(n_components=2)},
     ).fit(TRAIN)
@@ -281,8 +308,8 @@ def test_unseen_group_nulls_every_expanded_column():
     out = p.infer(
         {"color": "red", "country": "JP", "age": 1.0, "fare": 1.0, "name": "q"}
     )
-    # Flattening trades away P16's NULL-list vs list-of-NULLs distinction:
-    # an unseen group is k NULL columns (DRAFT-24, a deliberate consequence).
+    # Field reads of a NULL struct: an unseen group is k NULL columns
+    # (the struct-level NULL returns with DRAFT-25's nested outputs).
     assert out.e_pca0 is None and out.e_pca1 is None
 
 

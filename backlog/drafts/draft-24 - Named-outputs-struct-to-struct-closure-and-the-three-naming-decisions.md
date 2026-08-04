@@ -140,12 +140,22 @@ naming the available fields; per-group shape disagreement (one group's
 fit yields a different width/names than another's) refuses at fit.
 *Cost accepted:* k accessed fields = k evaluations of the same opaque
 transform. Fixed later by loop 4, not by weakening anything.
+*Superseded 2026-08-04 (struct-valued calls):* loop 1's per-lane width-1
+UDF mechanism is gone (loop 4), and its width-1 scalar-valuedness is
+deleted — a named call is struct-valued at every width; only field reads
+are scalars. Named outputs, name-keyed identity, and fit-time validation
+stand.
 
 **Loop 2 — `Named(...)` registration override.** Small; depends on loop 1.
 
 **Loop 3 — flat alias-prefixed boundary.** Bare width-k items emit named
 columns; touches confit's `WideOut` (names travel on the udf object,
 boundary only). Independent of loop 2.
+*Superseded 2026-08-04 (struct-valued calls):* the expansion is deleted —
+it had no oracle reading. A bare transformer item now refuses at
+construction; the flat-columns use case re-spells as explicit field reads
+of the one call, and DRAFT-25's nested outputs give bare items a meaning
+again. The engine's unnamed-extern list boundary is untouched.
 
 **Loop 4 — single-evaluation field access. DONE 2026-08-04 (TASK-63).**
 The engine binds STRUCT_EXTRACT-over-`ecall`: `(f(...)).a` and

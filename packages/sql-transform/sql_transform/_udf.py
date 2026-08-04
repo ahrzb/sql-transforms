@@ -88,11 +88,11 @@ class UDF:
             raise UDFError(
                 f"UDF {self.name} returned {out!r}, declared returns {self.returns}"
             )
-        if len(out) == 1:
-            return out[0]
         if self.return_names:
+            # Struct-valued at EVERY width (the subtraction loop): the
+            # registration is a STRUCT, so the value is a dict.
             return dict(zip(self.return_names, out, strict=True))
-        return list(out)
+        return out[0] if len(out) == 1 else list(out)
 
     def apply_batch(self, *cols: pa.Array) -> tuple[pa.Array, ...]:
         """Boundary-amortized form; the default loops ``__call__``."""
@@ -105,11 +105,9 @@ class UDF:
 
     def _duck_signature(self) -> tuple[list[str], Any]:
         params = [_DUCK[t] for t in self.takes]
-        if len(self.returns) == 1:
-            return params, _DUCK[self.returns[0]]
         if self.return_names:
-            # Width-k with declared names: a STRUCT return, so field access
-            # reads lanes off ONE call (TASK-63) — DuckDB CSEs the
+            # Declared names => a STRUCT return at EVERY width, so field
+            # access reads lanes off ONE call (TASK-63) — DuckDB CSEs the
             # identical pure calls; confit shares the ecall site.
             import duckdb
 
@@ -119,6 +117,8 @@ class UDF:
                     for n, t in zip(self.return_names, self.returns, strict=True)
                 }
             )
+        if len(self.returns) == 1:
+            return params, _DUCK[self.returns[0]]
         return params, "DOUBLE[]"
 
     def register(self, con: Any) -> None:

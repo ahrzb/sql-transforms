@@ -20,7 +20,6 @@ from pydantic import BaseModel
 
 from sql_transform._marginalize import (
     MarginalizeError,
-    expand_wide_items,
     marginalize,
 )
 from sql_transform._udf import UDF, PythonTransform
@@ -210,11 +209,10 @@ class SQLProjection:
             self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()
-        # Fit-time finalization (DRAFT-24 loops 3+4): width-1 field reads
-        # collapse to the bare call; a bare width-k item expands into flat
-        # alias-prefixed field reads of the one call.
-        widths = {name: u.return_names for name, u in self._udfs.items()}
-        self._serving_sql = expand_wide_items(m, widths)
+        # Struct-valued calls: the serving text is final at marginalize —
+        # every transformer mention is a field read over the one call, at
+        # every width. Nothing left to rewrite at fit.
+        self._serving_sql = m.serving_sql
         self._row_model = _model_from_arrow(table.schema)
         self._fn = None  # refit invalidates the prepared serving function
         return self

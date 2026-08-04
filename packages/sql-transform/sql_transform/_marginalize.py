@@ -334,9 +334,6 @@ def _templates() -> dict[str, Node]:
         "function": _serialize("SELECT __cf_fn(k) FROM __CF_WINDOWS__")["statements"][
             0
         ]["node"]["select_list"][0],
-        "struct_extract": _serialize(
-            "SELECT struct_extract(__cf_fn(k), '__cf_f__') FROM __CF_WINDOWS__"
-        )["statements"][0]["node"]["select_list"][0],
         "star": _serialize("SELECT __cf_t.* FROM __THIS__")["statements"][0]["node"][
             "select_list"
         ][0],
@@ -874,7 +871,17 @@ class _LevelRewriter:
                     self._check_no_lateral_in_window(x)
                 tf_name = _is_tf_node(x)
                 if tf_name is not None:
-                    return self.planner.transformer_ref(self, x, tf_name)
+                    # Identity problems keep their precise refusals; a
+                    # GENUINE transformer outside a field read then refuses
+                    # as a struct value (the subtraction loop): no scalar
+                    # reading, no output boundary to cross yet.
+                    self.planner.check_transformer_identity(x, tf_name)
+                    _refuse(
+                        f"a transformer call is a struct value — address an"
+                        f" output field ({tf_name}(...).name); nested"
+                        " outputs arrive with DRAFT-25",
+                        x.get("query_location"),
+                    )
                 if _contains_tf(x):
                     _refuse(
                         "a transformer call inside a window aggregate",
@@ -1192,25 +1199,11 @@ class _Planner:
         ident = _stripped(raw)
         if ident in self.tf_calls:
             return self._tf_call_node(self.tf_calls[ident], field_name, alias)
-        if raw.get("schema"):
-            _refuse(
-                f"namespaced transformer {raw['schema']}.{name}"
-                " (the curated-namespace index is a later loop)",
-                raw.get("query_location"),
-            )
+        self.check_transformer_identity(raw, name)
         if not rw.is_final:
             _refuse(
                 "a transformer call in a non-final level", raw.get("query_location")
             )
-        obj = self.lookup(name) if self.lookup is not None else None
-        if obj is None:
-            _refuse(
-                f"unknown window function {name} — not a DuckDB aggregate, and"
-                " no transformer of that name in the registry or caller scope",
-                raw.get("query_location"),
-            )
-        if not (hasattr(obj, "fit") and hasattr(obj, "transform")):
-            _refuse(f"transformer {name} has no fit/transform")
         w = _Window.of(raw)
         if w.orders or w.arg_orders:
             _refuse("ORDER BY on a transformer window", w.query_location)
@@ -1264,6 +1257,26 @@ class _Planner:
         )
         self.tf_calls[ident] = j
         return self._tf_call_node(j, field_name, alias or raw.get("alias", ""))
+
+    def check_transformer_identity(self, raw: Node, name: str) -> None:
+        """The identity refusals shared by field-addressed and bare calls —
+        a namespaced name, an unknown name, or a non-transformer object
+        refuses the same way wherever the call appears."""
+        if raw.get("schema"):
+            _refuse(
+                f"namespaced transformer {raw['schema']}.{name}"
+                " (the curated-namespace index is a later loop)",
+                raw.get("query_location"),
+            )
+        obj = self.lookup(name) if self.lookup is not None else None
+        if obj is None:
+            _refuse(
+                f"unknown window function {name} — not a DuckDB aggregate, and"
+                " no transformer of that name in the registry or caller scope",
+                raw.get("query_location"),
+            )
+        if not (hasattr(obj, "fit") and hasattr(obj, "transform")):
+            _refuse(f"transformer {name} has no fit/transform")
 
     def _tf_call_node(self, j: int, field_name: str | None, alias: str | None) -> Node:
         """The serving call for transformer step ``j`` — always the ONE
@@ -1679,48 +1692,6 @@ def marginalize(
     )
 
 
-def expand_wide_items(m: Marginalized, widths: dict[str, tuple[str, ...]]) -> str:
-    """Fit-time finalization of the serving text (DRAFT-24 loops 3 + 4).
-
-    ``widths`` maps each transformer UDF name to the output field names its
-    fit learned. A field read over a width-1 call collapses to the bare
-    call — a scalar has no fields (the name was already validated at fit).
-    A field read over a width-k call STAYS: one call plus k lane reads,
-    evaluated once per row on both engines (TASK-63 — DuckDB CSEs the
-    identical pure calls; confit shares the ecall site). A width-k call
-    standing as a bare select item expands into k field reads aliased
-    ``{item alias}_{field}`` — flat named columns instead of one list.
-
-    A width-k whole-value call *inside* an expression has no scalar reading
-    and refuses by name (its width is only knowable here, at fit)."""
-    if m.doc is None or not widths:
-        return m.serving_sql
-    doc = copy.deepcopy(m.doc)
-    node = doc["statements"][0]["node"]
-    node["select_list"] = [
-        _finalize_fields(item, widths) for item in node["select_list"]
-    ]
-    wide = {name: names for name, names in widths.items() if len(names) > 1}
-    if not wide:
-        return _deserialize(doc)
-    items: list[Node] = []
-    for item in node["select_list"]:
-        target = (
-            item.get("function_name", "") if item.get("class") == "FUNCTION" else ""
-        )
-        if target in wide:
-            alias = item.get("alias") or target
-            call = dict(copy.deepcopy(item), alias="")
-            items.extend(
-                _field_read(call, field, f"{alias}_{field}") for field in wide[target]
-            )
-            continue
-        _check_no_nested_wide(item, wide)
-        items.append(item)
-    node["select_list"] = items
-    return _deserialize(doc)
-
-
 def _is_struct_extract(x: Node) -> bool:
     """Either spelling of a struct field read: the OPERATOR node the dot
     form parses to, or the ``struct_extract(...)`` FUNCTION."""
@@ -1728,63 +1699,3 @@ def _is_struct_extract(x: Node) -> bool:
         x.get("class") == "FUNCTION"
         and x.get("function_name", "").lower() == "struct_extract"
     )
-
-
-def _is_field_read(x: Any) -> tuple[Node, str] | None:
-    """``(call node, field name)`` when ``x`` is a field read — either
-    spelling — over a FUNCTION call node; else None."""
-    if not isinstance(x, dict):
-        return None
-    kids = x.get("children") or []
-    if not (_is_struct_extract(x) and len(kids) == 2 and isinstance(kids[0], dict)):
-        return None
-    if kids[0].get("class") != "FUNCTION":
-        return None
-    field = _const_str(kids[1])
-    return None if field is None else (kids[0], field)
-
-
-def _field_read(call: Node, field_name: str, alias: str) -> Node:
-    """A ``struct_extract(call, 'field')`` node in the oracle's own shape."""
-    node = _clone("struct_extract", alias=alias)
-    node["children"][0] = copy.deepcopy(call)
-    node["children"][1]["value"]["value"] = field_name
-    return node
-
-
-def _finalize_fields(x: Any, widths: dict[str, tuple[str, ...]]) -> Any:
-    got = _is_field_read(x)
-    if got is not None and got[0].get("function_name", "") in widths:
-        call, _field = got
-        if len(widths[call["function_name"]]) == 1:
-            # Width-1: the single lane IS the value; DuckDB registers it
-            # scalar, so the read must not survive.
-            return dict(copy.deepcopy(call), alias=x.get("alias", ""))
-        return x
-    if isinstance(x, dict):
-        return {k: _finalize_fields(v, widths) for k, v in x.items()}
-    if isinstance(x, list):
-        return [_finalize_fields(v, widths) for v in x]
-    return x
-
-
-def _check_no_nested_wide(x: Any, wide: dict[str, tuple[str, ...]]) -> None:
-    if isinstance(x, dict):
-        got = _is_field_read(x)
-        if got is not None and got[0].get("function_name", "") in wide:
-            # A lane read is scalar — only the call's arguments need checking.
-            _check_no_nested_wide(got[0].get("children") or [], wide)
-            return
-        if x.get("class") == "FUNCTION" and x.get("function_name", "") in wide:
-            name = x["function_name"]
-            _refuse(
-                f"a width-{len(wide[name])} transformer call inside an"
-                " expression — address one output field (fn(...).name) or"
-                " make it a select item of its own",
-                x.get("query_location"),
-            )
-        for v in x.values():
-            _check_no_nested_wide(v, wide)
-    elif isinstance(x, list):
-        for v in x:
-            _check_no_nested_wide(v, wide)
