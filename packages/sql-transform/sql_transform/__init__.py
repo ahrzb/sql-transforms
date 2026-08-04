@@ -23,7 +23,6 @@ from sql_transform._udf import (
     Named,
     PythonTransform,
     PythonUDF,
-    TransformLane,
     UDFError,
 )
 
@@ -37,7 +36,6 @@ __all__ = [
     "PythonTransform",
     "PythonUDF",
     "SQLProjection",
-    "TransformLane",
     "UDFError",
     "UDFSpec",
     "marginalize",

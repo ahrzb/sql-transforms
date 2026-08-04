@@ -129,11 +129,11 @@ class UDFSpec:
     name: the join keys plus the ``__cf_est`` instance-id column) and its
     fitted instances, and the registry name of the prototype.
 
-    ``field`` is None for a whole-value call (``__cf_tf{j}``, width-k rides
-    as a list) and the requested output field name for a field access
-    (``__cf_tf{j}_g{m}`` — a width-1 lane UDF; the SQL name is positional so
-    it is always a legal identifier, while the field name it resolves to is
-    checked against the fitted output at fit time, DRAFT-24)."""
+    ``field`` is None for a whole-value call (``__cf_tf{j}``) and the
+    requested output field name for a field access, which serves as a field
+    read over that same one call (TASK-63) — the name is checked against
+    the fitted output at fit time (DRAFT-24, the P7 carve-out). One spec
+    per distinct (name, field) request."""
 
     name: str
     step: str
@@ -334,6 +334,9 @@ def _templates() -> dict[str, Node]:
         "function": _serialize("SELECT __cf_fn(k) FROM __CF_WINDOWS__")["statements"][
             0
         ]["node"]["select_list"][0],
+        "struct_extract": _serialize(
+            "SELECT struct_extract(__cf_fn(k), '__cf_f__') FROM __CF_WINDOWS__"
+        )["statements"][0]["node"]["select_list"][0],
         "star": _serialize("SELECT __cf_t.* FROM __THIS__")["statements"][0]["node"][
             "select_list"
         ][0],
@@ -842,13 +845,21 @@ class _LevelRewriter:
                         )
                     if self.alias_exprs:
                         self._check_no_lateral_in_window(kids[0])
-                    return self.planner.transformer_ref(
+                    # The field read SURVIVES over the whole-value call
+                    # (TASK-63): one call, k lane reads — DuckDB CSEs the
+                    # identical mentions, confit shares the ecall site.
+                    # Width-1 collapses to the bare call at fit, where the
+                    # width is known.
+                    call = self.planner.transformer_ref(
                         self,
                         kids[0],
                         _is_tf_node(kids[0]),
                         field_name=fname,
-                        alias=x.get("alias", ""),
+                        alias="",
                     )
+                    out = copy.deepcopy(x)
+                    out["children"] = [call, copy.deepcopy(kids[1])]
+                    return out
             if cls == "WINDOW":
                 if self.alias_exprs:
                     self._check_no_lateral_in_window(x)
@@ -1240,24 +1251,19 @@ class _Planner:
                     ),
                     *[copy.deepcopy(se) for (_, _, se) in bundle],
                 ],
-                "fields": [],  # requested output fields, in order of appearance
             }
         )
         self.tf_calls[ident] = j
         return self._tf_call_node(j, field_name, alias or raw.get("alias", ""))
 
     def _tf_call_node(self, j: int, field_name: str | None, alias: str | None) -> Node:
-        """The serving call for transformer step ``j``: the whole-value UDF,
-        or the width-1 lane UDF for one requested output field."""
+        """The serving call for transformer step ``j`` — always the ONE
+        whole-value UDF (TASK-63). A requested field is recorded on its spec
+        for fit-time validation; the field read wraps this call at the call
+        site."""
         step = self.tf_steps[j]
-        if field_name is None:
-            fn_name = f"__cf_tf{j}"
-        else:
-            fields: list[str] = step["fields"]
-            if field_name not in fields:
-                fields.append(field_name)
-            fn_name = f"__cf_tf{j}_g{fields.index(field_name)}"
-        if not any(s.name == fn_name for s in self.udf_specs):
+        fn_name = f"__cf_tf{j}"
+        if not any(s.name == fn_name and s.field == field_name for s in self.udf_specs):
             self.udf_specs.append(
                 UDFSpec(
                     name=fn_name,
@@ -1664,56 +1670,97 @@ def marginalize(
     )
 
 
-def expand_wide_items(
-    m: Marginalized, widths: dict[str, tuple[str, ...]]
-) -> tuple[str, list[tuple[str, str, int]]]:
-    """Fit-time finalization of the serving text (DRAFT-24 loop 3).
+def expand_wide_items(m: Marginalized, widths: dict[str, tuple[str, ...]]) -> str:
+    """Fit-time finalization of the serving text (DRAFT-24 loops 3 + 4).
 
-    ``widths`` maps each whole-value transformer UDF name to the output
-    field names its fit learned. A width-k call standing as a top-level
-    select item expands into k items — one per field, each calling that
-    field's lane UDF and aliased ``{item alias}_{field}`` — so the boundary
-    emits flat named columns instead of one list. Width-1 calls are already
-    scalars and are left alone.
-
-    Returns the finalized SQL plus the lane UDFs to build:
-    ``(udf name, source udf name, lane)``.
+    ``widths`` maps each transformer UDF name to the output field names its
+    fit learned. A field read over a width-1 call collapses to the bare
+    call — a scalar has no fields (the name was already validated at fit).
+    A field read over a width-k call STAYS: one call plus k lane reads,
+    evaluated once per row on both engines (TASK-63 — DuckDB CSEs the
+    identical pure calls; confit shares the ecall site). A width-k call
+    standing as a bare select item expands into k field reads aliased
+    ``{item alias}_{field}`` — flat named columns instead of one list.
 
     A width-k whole-value call *inside* an expression has no scalar reading
     and refuses by name (its width is only knowable here, at fit)."""
-    wide = {name: names for name, names in widths.items() if len(names) > 1}
-    if not wide or m.doc is None:
-        return m.serving_sql, []
+    if m.doc is None or not widths:
+        return m.serving_sql
     doc = copy.deepcopy(m.doc)
     node = doc["statements"][0]["node"]
-    lanes: list[tuple[str, str, int]] = []
+    node["select_list"] = [
+        _finalize_fields(item, widths) for item in node["select_list"]
+    ]
+    wide = {name: names for name, names in widths.items() if len(names) > 1}
+    if not wide:
+        return _deserialize(doc)
     items: list[Node] = []
     for item in node["select_list"]:
         target = (
             item.get("function_name", "") if item.get("class") == "FUNCTION" else ""
         )
         if target in wide:
-            names = wide[target]
             alias = item.get("alias") or target
-            for i, field in enumerate(names):
-                lane_name = f"{target}_w{i}"
-                lanes.append((lane_name, target, i))
-                items.append(
-                    dict(
-                        copy.deepcopy(item),
-                        function_name=lane_name,
-                        alias=f"{alias}_{field}",
-                    )
-                )
+            call = dict(copy.deepcopy(item), alias="")
+            items.extend(
+                _field_read(call, field, f"{alias}_{field}") for field in wide[target]
+            )
             continue
         _check_no_nested_wide(item, wide)
         items.append(item)
     node["select_list"] = items
-    return _deserialize(doc), lanes
+    return _deserialize(doc)
+
+
+def _is_field_read(x: Any) -> tuple[Node, str] | None:
+    """``(call node, field name)`` when ``x`` is a field read — either
+    spelling — over a FUNCTION call node; else None."""
+    if not isinstance(x, dict):
+        return None
+    shaped = (x.get("class") == "OPERATOR" and x.get("type") == "STRUCT_EXTRACT") or (
+        x.get("class") == "FUNCTION"
+        and x.get("function_name", "").lower() == "struct_extract"
+    )
+    kids = x.get("children") or []
+    if not (shaped and len(kids) == 2 and isinstance(kids[0], dict)):
+        return None
+    if kids[0].get("class") != "FUNCTION":
+        return None
+    field = _const_str(kids[1])
+    return None if field is None else (kids[0], field)
+
+
+def _field_read(call: Node, field_name: str, alias: str) -> Node:
+    """A ``struct_extract(call, 'field')`` node in the oracle's own shape."""
+    node = _clone("struct_extract", alias=alias)
+    node["children"][0] = copy.deepcopy(call)
+    node["children"][1]["value"]["value"] = field_name
+    return node
+
+
+def _finalize_fields(x: Any, widths: dict[str, tuple[str, ...]]) -> Any:
+    got = _is_field_read(x)
+    if got is not None and got[0].get("function_name", "") in widths:
+        call, _field = got
+        if len(widths[call["function_name"]]) == 1:
+            # Width-1: the single lane IS the value; DuckDB registers it
+            # scalar, so the read must not survive.
+            return dict(copy.deepcopy(call), alias=x.get("alias", ""))
+        return x
+    if isinstance(x, dict):
+        return {k: _finalize_fields(v, widths) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_finalize_fields(v, widths) for v in x]
+    return x
 
 
 def _check_no_nested_wide(x: Any, wide: dict[str, tuple[str, ...]]) -> None:
     if isinstance(x, dict):
+        got = _is_field_read(x)
+        if got is not None and got[0].get("function_name", "") in wide:
+            # A lane read is scalar — only the call's arguments need checking.
+            _check_no_nested_wide(got[0].get("children") or [], wide)
+            return
         if x.get("class") == "FUNCTION" and x.get("function_name", "") in wide:
             name = x["function_name"]
             _refuse(

@@ -187,58 +187,37 @@ class SQLProjection:
                         step, materialized[step.reads[0]]
                     )
                     materialized[step.name] = params_table
-                    # The base UDF is registered only when the query calls it
-                    # whole; addressed fields serve through their lane UDFs.
-                    if any(u.name == udf.name and u.field is None for u in m.udfs):
-                        self._udfs[udf.name] = udf
-                    self._udfs.update(self._lane_udfs(step, udf))
+                    # ONE UDF per step (TASK-63): whole-value calls and
+                    # field reads all serve through it. Every addressed
+                    # field must exist in the fitted output — checked here,
+                    # at fit, not construction: T is learned (DRAFT-24, the
+                    # P7 carve-out).
+                    self._udfs[udf.name] = udf
+                    for spec in m.udfs:
+                        if (
+                            spec.step == step.name
+                            and spec.field is not None
+                            and spec.field not in udf.return_names
+                        ):
+                            raise MarginalizeError(
+                                f"transformer {step.transformer} has no output"
+                                f" field {spec.field!r}; it fits to"
+                                f" {list(udf.return_names)}"
+                            )
                 else:
                     materialized[step.name] = con.execute(step.sql).to_arrow_table()
                 con.register(step.name, materialized[step.name])
             self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()
-        # A bare width-k call expands here, where its field names are known:
-        # k aliased lane calls, so the boundary emits flat named columns.
-        from sql_transform._udf import TransformLane
-
-        widths = {
-            u.name: self._udfs[u.name].return_names
-            for u in m.udfs
-            if u.field is None and u.name in self._udfs
-        }
-        self._serving_sql, lanes = expand_wide_items(m, widths)
-        for lane_name, source_name, lane in lanes:
-            self._udfs[lane_name] = TransformLane(
-                name=lane_name, source=self._udfs[source_name], lane=lane
-            )
-        for name in {src for _, src, _ in lanes}:
-            del self._udfs[name]  # the whole-value UDF is no longer called
+        # Fit-time finalization (DRAFT-24 loops 3+4): width-1 field reads
+        # collapse to the bare call; a bare width-k item expands into flat
+        # alias-prefixed field reads of the one call.
+        widths = {name: u.return_names for name, u in self._udfs.items()}
+        self._serving_sql = expand_wide_items(m, widths)
         self._row_model = _model_from_arrow(table.schema)
         self._fn = None  # refit invalidates the prepared serving function
         return self
-
-    def _lane_udfs(self, step, base: PythonTransform) -> dict[str, Any]:
-        """The width-1 lane UDFs for every field this query addresses on
-        ``base``. A requested field absent from the fitted output refuses
-        here — at fit, not at construction: T is learned, so its names are
-        not knowable earlier (DRAFT-24, the P7 carve-out)."""
-        from sql_transform._udf import TransformLane, UDFError
-
-        out: dict[str, Any] = {}
-        for spec in self._marginalized.udfs:
-            if spec.step != step.name or spec.field is None:
-                continue
-            try:
-                lane = base.lane_of(spec.field)
-            except UDFError:
-                raise MarginalizeError(
-                    f"transformer {step.transformer} has no output field"
-                    f" {spec.field!r}; it fits to"
-                    f" {list(base.return_names)}"
-                ) from None
-            out[spec.name] = TransformLane(name=spec.name, source=base, lane=lane)
-        return out
 
     def _fit_step(self, step, table: pa.Table) -> tuple[pa.Table, PythonTransform]:
         """Group by the key columns, fit a clone of the transformer per group,
@@ -269,14 +248,9 @@ class SQLProjection:
         from sql_transform._udf import output_names
 
         m = self._marginalized
-        # The whole-value spec if the query uses one; otherwise any spec of
-        # this step names the base UDF (lane UDFs hang off it).
         specs = [u for u in m.udfs if u.step == step.name]
         (params_spec,) = [p for p in m.params if p.name == step.name]
-        base_name = next(
-            (u.name for u in specs if u.field is None),
-            specs[0].name.rsplit("_g", 1)[0],  # the lane UDFs' shared source
-        )
+        base_name = specs[0].name  # every spec of a step shares the one UDF
         feats = _feature_matrix(table, list(step.features))
         keyvals = [table.column(k).to_pylist() for k in step.keys]
         groups: dict[tuple, list[int]] = {}
