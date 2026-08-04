@@ -18,17 +18,26 @@ from sql_transform._marginalize import (
     marginalize,
 )
 from sql_transform._projection import SQLProjection
-from sql_transform._udf import UDF, PythonTransform, PythonUDF, UDFError
+from sql_transform._udf import (
+    UDF,
+    Named,
+    PythonTransform,
+    PythonUDF,
+    TransformLane,
+    UDFError,
+)
 
 __all__ = [
     "UDF",
     "FitStep",
     "Marginalized",
     "MarginalizeError",
+    "Named",
     "ParamsSpec",
     "PythonTransform",
     "PythonUDF",
     "SQLProjection",
+    "TransformLane",
     "UDFError",
     "UDFSpec",
     "marginalize",
