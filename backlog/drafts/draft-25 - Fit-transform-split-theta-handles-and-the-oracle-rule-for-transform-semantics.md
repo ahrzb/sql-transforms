@@ -76,6 +76,15 @@ boundary clauses get rewritten around "struct crosses the OUTPUT boundary
 where the author left it nested; nothing struct-shaped flows INTO
 computation (bundles still destructure; θ passes by reference)".
 
+Also on the deletion list (ruled 2026-08-04, and **pulled forward into
+the immediate "struct-valued transform calls" loop** rather than waiting
+for this epic): loop 1/4's width-1 scalar-valuedness — `sc(...) * 10`
+treating a one-field struct as a bare scalar, and the fit-time collapse
+of width-1 field reads to the bare call. Under the oracle rule a call is
+struct-valued at every width; only field reads are scalars. Until this
+epic lands the nested output boundary, a bare transformer call as a
+select item refuses by name instead of expanding or unwrapping.
+
 ## What the split makes expressible (previously unspellable)
 
 ```sql
@@ -119,6 +128,16 @@ SELECT g, tfm_fit(x) AS theta FROM __THIS__ GROUP BY g
    (phantom-typed Θ<tfm>, static mixing errors)** — or both.
 5. Whether `tfm_fit`/`tfm_transform` are user-visible surface or only the
    semantic ground truth under the `tfm(x)` sugar.
+6. **Work deduplication is future work, gated on type-system support**
+   (AmirHossein, 2026-08-04). Evaluation sharing beyond what already
+   shipped (the shared-site ecall + DuckDB CSE for textually identical
+   pure calls) — cross-member sharing in composition, cross-projection
+   CSE, dedup of repeated private-column subexpressions — is only safe
+   for provably pure computations; a stochastic or volatile transform
+   shared across mentions is silently wrong. Before any further dedup,
+   the type system needs a purity/volatility distinction so safety is
+   checked, not assumed (P15 declares purity today but nothing marks the
+   exceptions).
 
 ## Native-boundary facts (measured 2026-08-04, for the record)
 
@@ -133,8 +152,14 @@ SELECT g, tfm_fit(x) AS theta FROM __THIS__ GROUP BY g
 
 ## Sequencing
 
-After DRAFT-24 loop 5 (composition: projections as vocabulary members,
-symbolic inlining, α-renaming, recursion refusal, fit-time type-checking
-of composed members). Loop 5 should avoid painting over this epic:
-refit-through members are its natural v1 scope; FROZEN members are this
-epic's machinery (θ as argument) and should wait for it.
+Ruled 2026-08-04, in order:
+1. **Struct-valued transform calls** (the pulled-forward deletions above:
+   no width-1 auto-unwrap, no flat expansion; bare calls refuse until the
+   nested boundary arrives).
+2. **DRAFT-24 loop 5 — composition**, WITH partition composition
+   (call-site keys prepending to member windows) as the draft wrote it.
+   Refit-through members only; FROZEN members are this epic's machinery
+   (θ as argument) and wait for it.
+3. **Private columns** (TASK-64: `_`-prefixed output fields never cross
+   the output boundary; lateral-alias sugar lowered by substitution).
+4. This epic.
