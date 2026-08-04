@@ -47,6 +47,7 @@ known-third-party = ["duckdb"]
 # crypto), dense SQL/data-gen literals where wrapping hurts readability,
 # and SQL assembled from module-internal constants (S608, no user input).
 "benchmarks/serving_scenarios/*.py" = ["S311", "E501", "S608"]
+"benchmarks/bench_transforms.py" = ["S311", "S608"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]

@@ -106,18 +106,55 @@ semantics for order-keyed windows off the training support (DRAFT-21),
 static-table joins + frozen composition, IN-subqueries as fitted sets,
 star bundles into transformers, typed takes (string features).
 
-### D2. Serving latency vs baselines — current: **STALE, no reading**
+### D2. Serving latency vs baselines — measured 2026-08-04
 
-Row-at-a-time serving cost vs the baselines (DuckDB batch, the generic
-boundary, prior engines) on the realistic wide-table scenarios in
-`benchmarks/`. **Nothing has been measured since the UDF surface landed**:
-the Python-trampoline path has no number, so DRAFT-23's speedup is
-currently an argument, not a measurement. First action on this KPI is a
-perf checkpoint run, not an optimization.
+Row-at-a-time serving cost on the wide-table scenarios in `benchmarks/`.
+Two harnesses: `bench_serving.py` (pure-SQL path) and
+`bench_transforms.py` (the transformer/UDF path).
 
-Levers, in intended order: native UDF families (DRAFT-23 — removes
-GIL+sklearn from the hot path), vectorized `apply_batch` binding for
-`infer_arrow`, marshaller work as measured.
+**Pure SQL, p50 ns per call** (`uv run python -m benchmarks.bench_serving`):
+
+| scenario | spec (n=1) | handcrafted python | duckdb per call |
+|---|---|---|---|
+| titanic | 4,000 | 6,000 | 6,224,800 |
+| house_prices | 5,700 | 10,200 | 10,997,600 |
+| fraud_txn | 6,100 | 10,200 | 11,685,100 |
+| store_sales | 6,300 | 9,600 | 11,289,300 |
+
+Healthy: ~1.5-1.7x faster than a handwritten Python microservice twin, and
+three orders of magnitude off DuckDB-per-row (which is not a serving
+engine). The interpreter backend runs ~1.3x the cranelift one; the
+pre-marshaller boundary ~2.7x.
+
+**Transformer path, p50 ns per row** (`bench_transforms.py`, same query
+shape in every row so deltas are the transformer's cost alone):
+
+| variant | n=1 | delta vs sql_only |
+|---|---|---|
+| sql_only (marginalized aggregates) | 1,500 | — |
+| + one author `PythonUDF` | 2,100 | **+600** |
+| + one fitted `StandardScaler` | 86,900 | **+85,400** |
+| + two field accesses on one PCA(2) | 138,600 | +137,100 |
+| + a bare width-2 PCA item | 136,700 | +135,200 |
+
+**The finding that sets priorities:** the extern/UDF machinery is cheap
+(+600ns for a plain UDF), and our own marshalling is 400ns. **93% of a
+fitted transformer's per-row cost is sklearn's own `transform()`** —
+measured 60,900ns for `StandardScaler.transform` on one row, versus
+1,500ns for the identical arithmetic in numpy and 1,000ns in pure Python.
+sklearn's per-call validation, not the boundary, is the bottleneck: one
+transformer costs ~57x the entire rest of the query.
+
+Levers, re-ordered by the measurement:
+
+1. **Native UDF families (DRAFT-23)** — replaces the 60µs sklearn call
+   with ~1µs of arithmetic. This is a ~100x lever on transformer queries
+   and by far the dominant one.
+2. **Single-evaluation field access (DRAFT-24 loop 4)** — k accessed
+   fields currently re-run the transform k times (visible above:
+   2 fields = 137µs vs 1 field = 85µs). Removes ~35% on multi-field
+   queries; secondary to (1) but real.
+3. Vectorized `apply_batch` for `infer_arrow`; marshaller work as measured.
 
 ---
 
