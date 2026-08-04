@@ -1287,6 +1287,80 @@ fn named_extern_programs_are_canonical_ir() {
 }
 
 #[test]
+fn lateral_reference_to_a_duplicated_alias_refuses() {
+    // DuckDB resolves a lateral ref to the LAST definition of a name, so a
+    // reference between two definitions is its forward-reference binder
+    // error (measured 1.5.5). Confit's binding is per-occurrence, so a
+    // shared-site ecall bound through a mutating alias would silently take
+    // the FIRST binding — refusing the duplicated-alias reference keeps
+    // binding time-invariant and site sharing sound for every accepted
+    // query.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let err = prep_udfs(
+        "SELECT 1.0 AS z, (emb(z)).a AS p, 2.0 AS z, (emb(z)).b AS q FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Bind(m) if m.contains("\"z\"")),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn distinct_args_to_the_same_extern_get_distinct_ecalls() {
+    // The site cache keys on the FULL syntactic call — two reads with
+    // different arguments must stay two evaluations (a name-keyed cache
+    // would serve ya from emb(x); mutation-tested in review).
+    let schema = cols(&[("x", Ty::F64, true), ("y", Ty::F64, true)]);
+    let p = prep_udfs(
+        "SELECT (emb(x)).a AS xa, (emb(y)).a AS ya FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+    )
+    .unwrap();
+    let text = print(&p.program);
+    assert_eq!(text.matches("ecall").count(), 2, "IR:\n{text}");
+    let emb = imp("emb", |args| match &args[0] {
+        None => Ok(None),
+        Some(ScalarVal::F64(x)) => Ok(Some(vec![
+            Some(ScalarVal::F64(x + 1.0)),
+            Some(ScalarVal::F64(x * 2.0)),
+        ])),
+        _ => Err("bad arg".into()),
+    });
+    let f = super::exec::interp::compile_ext(&p.program, vec![], vec![emb]).unwrap();
+    let input = batch(1, vec![c_f64(&[Some(3.0)]), c_f64(&[Some(10.0)])]);
+    assert_eq!(
+        run_snapshot(&f, &input).unwrap(),
+        rows(&[&["4.0", "11.0"]])
+    );
+}
+
+#[test]
+fn named_wide_extern_as_a_bare_item_refuses() {
+    // A NAMED width-k extern registers as a STRUCT on the DuckDB side, so
+    // the engine's list|None bare-item boundary would be a silent third
+    // behavior (C2) — refuse by name; the unnamed list boundary stays.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let err = prep_udfs(
+        "SELECT emb(x) AS e FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Unsupported(m)
+            if m.contains("emb") && m.contains("bare") && m.contains("field")),
+        "got: {err}"
+    );
+}
+
+#[test]
 fn udf_programs_are_canonical_ir() {
     let schema = cols(&[("x", Ty::F64, true)]);
     let p = prep_udfs(

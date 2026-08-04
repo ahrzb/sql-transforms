@@ -2816,15 +2816,30 @@ impl Binder<'_> {
             0 => {
                 // Lateral aliases: an already-bound alias resolves to its
                 // expression; a known-but-later alias is the pinned
-                // forward-reference error.
-                if let Some((_, e)) = self
-                    .bound_aliases
-                    .borrow()
+                // forward-reference error. A name defined MORE THAN ONCE
+                // falls through to that same error: DuckDB resolves lateral
+                // refs to the LAST definition (so a between-definitions ref
+                // is its forward-reference error, measured 1.5.5), while
+                // our per-occurrence binding would take the first — and a
+                // shared extern site bound through a mutating alias would
+                // silently freeze it (TASK-63 review). Refusal keeps
+                // binding time-invariant for every accepted query.
+                let dup = self
+                    .select_aliases
                     .iter()
-                    .rev()
-                    .find(|(a, _)| a.eq_ignore_ascii_case(name))
-                {
-                    return Ok(e.clone());
+                    .filter(|a| a.eq_ignore_ascii_case(name))
+                    .count()
+                    > 1;
+                if !dup {
+                    if let Some((_, e)) = self
+                        .bound_aliases
+                        .borrow()
+                        .iter()
+                        .rev()
+                        .find(|(a, _)| a.eq_ignore_ascii_case(name))
+                    {
+                        return Ok(e.clone());
+                    }
                 }
                 if self
                     .select_aliases
@@ -3456,6 +3471,19 @@ impl Binder<'_> {
         };
         if spec.rets.len() < 2 {
             return Ok(None);
+        }
+        if !spec.ret_names.is_empty() {
+            // A NAMED width-k extern registers as a STRUCT on the DuckDB
+            // side (TASK-63), so the list|None bare-item boundary would be
+            // a silent third behavior — refuse; address the fields instead.
+            // The list boundary stays for unnamed externs.
+            return Err(unsup(format!(
+                "width-{} udf '{}' with declared field names as a bare item \
+                 — address its output fields ({}(...).name)",
+                spec.rets.len(),
+                spec.name,
+                spec.name
+            )));
         }
         let args = self.bind_udf_args(f, spec)?;
         let site = self.fresh_site();

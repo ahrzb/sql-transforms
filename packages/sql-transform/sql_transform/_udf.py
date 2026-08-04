@@ -233,7 +233,8 @@ class Named:
         )
         if not names:
             raise UDFError("Named(...): declare at least one output name")
-        if len(set(names)) != len(names):
+        if len({n.lower() for n in names}) != len(names):
+            # Field matching is case-insensitive on both engines.
             raise UDFError(f"Named(...): duplicate output names in {list(names)}")
         self.estimator = estimator
         self.returns = names

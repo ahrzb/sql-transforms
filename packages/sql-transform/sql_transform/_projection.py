@@ -267,6 +267,15 @@ class SQLProjection:
             probe = np.asarray(est.transform(feats[idx][:1]))
             width = probe.shape[1] if probe.ndim > 1 else 1
             names = output_names(est, step.feature_names, width, step.transformer)
+            # Field matching is ASCII-case-insensitive on both engines
+            # (DuckDB struct keys; confit lane binding) — colliding fitted
+            # names would serve silently wrong values.
+            if len({n.lower() for n in names}) != len(names):
+                raise MarginalizeError(
+                    f"transformer {step.transformer} fits to case-colliding"
+                    f" output names {list(names)} — field matching is"
+                    " case-insensitive"
+                )
             # Every group must fit to the SAME output struct — a codomain
             # that varies per group is not a function type (an encoder whose
             # categories differ per partition hits this).

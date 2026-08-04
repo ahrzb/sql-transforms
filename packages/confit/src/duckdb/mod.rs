@@ -238,6 +238,15 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
                 rets.len()
             )));
         }
+        // Field binding is ASCII-case-insensitive (here and in DuckDB's
+        // struct keys) — colliding names would bind silently wrong.
+        for (i, a) in ret_names.iter().enumerate() {
+            if ret_names[..i].iter().any(|b| b.eq_ignore_ascii_case(a)) {
+                return Err(build_err(format!(
+                    "udf '{name}': return_names collide case-insensitively ('{a}')"
+                )));
+            }
+        }
         if out
             .iter()
             .any(|d| d.spec.name.eq_ignore_ascii_case(&name))
