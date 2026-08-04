@@ -983,6 +983,7 @@ fn udf(name: &str, params: &[Ty], rets: &[Ty]) -> super::ir::ExternSpec {
         name: name.to_string(),
         params: params.to_vec(),
         rets: rets.to_vec(),
+        ret_names: Vec::new(),
     }
 }
 
@@ -1160,6 +1161,128 @@ fn wide_udf_mid_expression_refuses_by_name() {
     assert!(
         matches!(&err, PrepareError::Unsupported(m) if m.contains("tf2")),
         "got: {err}"
+    );
+}
+
+fn udf_named(name: &str, params: &[Ty], rets: &[(&str, Ty)]) -> super::ir::ExternSpec {
+    super::ir::ExternSpec {
+        name: name.to_string(),
+        params: params.to_vec(),
+        rets: rets.iter().map(|(_, t)| *t).collect(),
+        ret_names: rets.iter().map(|(n, _)| n.to_string()).collect(),
+    }
+}
+
+#[test]
+fn field_access_reads_lanes_off_one_ecall() {
+    // TASK-63: k field reads of one width-k call share ONE ecall — the dot
+    // spelling and the struct_extract spelling, mid-expression included (a
+    // field read is width-1 and composes).
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let p = prep_udfs(
+        "SELECT (emb(x)).a AS u, (struct_extract(emb(x), 'b') + 1.0) AS v FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+    )
+    .unwrap();
+    let text = print(&p.program);
+    assert_eq!(
+        text.matches("ecall").count(),
+        1,
+        "two field reads must share one ecall:\n{text}"
+    );
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let calls = Rc::new(Cell::new(0u32));
+    let c2 = calls.clone();
+    let emb = imp("emb", move |args| {
+        c2.set(c2.get() + 1);
+        match &args[0] {
+            None => Ok(None),
+            Some(ScalarVal::F64(x)) => Ok(Some(vec![
+                Some(ScalarVal::F64(x + 1.0)),
+                Some(ScalarVal::F64(x * 2.0)),
+            ])),
+            _ => Err("bad arg".into()),
+        }
+    });
+    let f = super::exec::interp::compile_ext(&p.program, vec![], vec![emb]).unwrap();
+    let input = batch(2, vec![c_f64(&[Some(3.0), None])]);
+    assert_eq!(
+        run_snapshot(&f, &input).unwrap(),
+        rows(&[&["4.0", "7.0"], &["NULL", "NULL"]])
+    );
+    assert_eq!(calls.get(), 2, "one evaluation per row, not one per field");
+}
+
+#[test]
+fn field_access_unknown_field_refuses_listing_declared() {
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let err = prep_udfs(
+        "SELECT (emb(x)).c AS u FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Bind(m)
+            if m.contains("'c'") && m.contains("emb") && m.contains("'a'") && m.contains("'b'")),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn field_access_on_width1_refuses() {
+    // DuckDB registers width-1 as a scalar, so `.a` errors there — C2
+    // forbids confit accepting what DuckDB won't.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let err = prep_udfs(
+        "SELECT (sc(x)).a AS u FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("sc", &[Ty::F64], &[("a", Ty::F64)])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Unsupported(m) if m.contains("sc") && m.contains("width-1")),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn field_access_without_declared_names_refuses() {
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let err = prep_udfs(
+        "SELECT (tf2(x)).a AS u FROM __THIS__",
+        &schema,
+        &[],
+        &[udf("tf2", &[Ty::F64], &[Ty::F64, Ty::F64])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Unsupported(m) if m.contains("tf2") && m.contains("field names")),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn named_extern_programs_are_canonical_ir() {
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let p = prep_udfs(
+        "SELECT (emb(x)).a AS u, (emb(x)).b AS v FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+    )
+    .unwrap()
+    .program;
+    let text = print(&p);
+    assert_eq!(
+        parse(&text).unwrap(),
+        p,
+        "named-extern program is not canonical:\n{text}"
     );
 }
 

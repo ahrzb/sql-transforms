@@ -406,6 +406,7 @@ fn bind_from<'a>(
         regexes: std::cell::RefCell::new(Vec::new()),
         udfs,
         sites: std::cell::Cell::new(0),
+        extern_sites: std::cell::RefCell::new(Vec::new()),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -1100,6 +1101,10 @@ struct Binder<'a> {
     /// Call-site counter: the k+1 lanes of one width-k call share a site
     /// so lowering executes the callable once per row.
     sites: std::cell::Cell<u32>,
+    /// Textually identical extern calls under field access share one site
+    /// (TASK-63) — the confit twin of DuckDB's common-subexpression
+    /// elimination, which is what keeps call counts equal on both paths.
+    extern_sites: std::cell::RefCell<Vec<(sqlparser::ast::Function, u32)>>,
 }
 
 /// The bound subject of a regex op must be VARCHAR (no implicit casts —
@@ -2133,6 +2138,19 @@ impl Binder<'_> {
             // array_slice in DuckDB (one shared implementation, measured:
             // pins-wave5/{subscripts-extended,slices}.json).
             SqlExpr::CompoundFieldAccess { root, access_chain } => {
+                // Field read over a declared wide extern: a lane off one
+                // shared ecall (TASK-63).
+                if let [AccessExpr::Dot(SqlExpr::Identifier(id))] = access_chain.as_slice() {
+                    let mut base: &SqlExpr = root;
+                    while let SqlExpr::Nested(i) = base {
+                        base = i;
+                    }
+                    if let SqlExpr::Function(func) = base {
+                        if let Some(lane) = self.extern_field_lane(func, &id.value)? {
+                            return Ok(lane);
+                        }
+                    }
+                }
                 let mut cur = match self.expr_or_null(root)? {
                     Some(b) => b,
                     None => null_of(Ty::Str),
@@ -3294,6 +3312,70 @@ impl Binder<'_> {
         s
     }
 
+    /// Field access over a declared width-k extern call: bind the named
+    /// lane of ONE shared ecall (TASK-63). `Ok(None)` when this isn't
+    /// that shape — callers fall through to their own handling.
+    fn extern_field_lane(
+        &self,
+        f: &sqlparser::ast::Function,
+        field: &str,
+    ) -> Result<Option<SExpr>, PrepareError> {
+        let Some((ext, spec)) = self.find_udf(&f.name.to_string()) else {
+            return Ok(None);
+        };
+        if spec.rets.len() < 2 {
+            return Err(unsup(format!(
+                "field access on width-1 udf '{}' (a scalar call has no fields)",
+                spec.name
+            )));
+        }
+        if spec.ret_names.is_empty() {
+            return Err(unsup(format!(
+                "field access on udf '{}': no declared output field names",
+                spec.name
+            )));
+        }
+        let Some(ret) = spec
+            .ret_names
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(field))
+        else {
+            return Err(PrepareError::Bind(format!(
+                "udf '{}' has no output field '{}' (declared: {})",
+                spec.name,
+                field,
+                spec.ret_names
+                    .iter()
+                    .map(|n| format!("'{n}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        };
+        let args = self.bind_udf_args(f, spec)?;
+        let site = {
+            let mut cache = self.extern_sites.borrow_mut();
+            match cache.iter().find(|(k, _)| k == f) {
+                Some((_, s)) => *s,
+                None => {
+                    let s = self.fresh_site();
+                    cache.push((f.clone(), s));
+                    s
+                }
+            }
+        };
+        Ok(Some(SExpr {
+            kind: SKind::ExternCall {
+                site,
+                ext,
+                args,
+                ret: ret as u32,
+                whole: false,
+            },
+            ty: spec.rets[ret],
+            nullable: true,
+        }))
+    }
+
     /// Bind and type-check a UDF call's arguments against its declared
     /// params. Bare NULLs adopt the param type; an i64 argument against a
     /// declared f64 promotes exactly like DuckDB's implicit cast; anything
@@ -4436,6 +4518,27 @@ impl Binder<'_> {
                     ty: Ty::Str,
                     nullable,
                 })
+            }
+            // The FUNCTION spelling of field access over a wide extern
+            // (TASK-63) — DuckDB serializes it distinct from the dot form.
+            "struct_extract" => {
+                if let [target, SqlExpr::Value(v)] = args[..] {
+                    if let SqlValue::SingleQuotedString(field) = &v.value {
+                        let mut base = target;
+                        while let SqlExpr::Nested(i) = base {
+                            base = i;
+                        }
+                        if let SqlExpr::Function(func) = base {
+                            if let Some(lane) = self.extern_field_lane(func, field)? {
+                                return Ok(lane);
+                            }
+                        }
+                    }
+                }
+                Err(unsup(format!(
+                    "function {} (not in the v0 catalogue)",
+                    f.name
+                )))
             }
             _ => {
                 // Declared UDF externs (DRAFT-22): width-1 is an ordinary

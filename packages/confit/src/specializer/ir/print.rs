@@ -41,12 +41,21 @@ pub fn print(p: &Program) -> String {
         s.push('\n');
     }
     for (i, ex) in p.externs.iter().enumerate() {
+        let rets = if ex.ret_names.is_empty() {
+            tys(&ex.rets)
+        } else {
+            ex.ret_names
+                .iter()
+                .zip(&ex.rets)
+                .map(|(n, t)| format!("{}: {}", quote(n), t.name()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let _ = writeln!(
             s,
-            "extern @{i}: {} ({}) -> ({})",
+            "extern @{i}: {} ({}) -> ({rets})",
             quote(&ex.name),
             tys(&ex.params),
-            tys(&ex.rets)
         );
     }
     if !p.statics.is_empty() || !p.regexes.is_empty() || !p.externs.is_empty() {
