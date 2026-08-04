@@ -34,6 +34,23 @@ def _feature_matrix(table: pa.Table, cols: list[str]):
     return mat
 
 
+def _engine_ty(t: pa.DataType, where: str) -> str:
+    """An arrow column type in the engine's vocabulary; refuses by name for
+    anything a UDF argument cannot carry."""
+    if pa.types.is_floating(t):
+        return "f64"
+    if pa.types.is_boolean(t):
+        return "i1"
+    if pa.types.is_integer(t):
+        return "i64"
+    if pa.types.is_string(t) or pa.types.is_large_string(t):
+        return "str"
+    raise MarginalizeError(
+        f"transformer feature {where} has type {t}, which no UDF argument"
+        " can carry (i1/i64/f64/str)"
+    )
+
+
 def _model_from_arrow(schema: pa.Schema) -> type[BaseModel]:
     """The serving row model, derived from the training table's schema (real
     types, guaranteed — a declared ``this_model`` may carry ``object``
@@ -165,7 +182,11 @@ class SQLProjection:
                         step, materialized[step.reads[0]]
                     )
                     materialized[step.name] = params_table
-                    self._udfs[udf.name] = udf
+                    # The base UDF is registered only when the query calls it
+                    # whole; addressed fields serve through their lane UDFs.
+                    if any(u.name == udf.name and u.field is None for u in m.udfs):
+                        self._udfs[udf.name] = udf
+                    self._udfs.update(self._lane_udfs(step, udf))
                 else:
                     materialized[step.name] = con.execute(step.sql).to_arrow_table()
                 con.register(step.name, materialized[step.name])
@@ -175,6 +196,28 @@ class SQLProjection:
         self._row_model = _model_from_arrow(table.schema)
         self._fn = None  # refit invalidates the prepared serving function
         return self
+
+    def _lane_udfs(self, step, base: PythonTransform) -> dict[str, Any]:
+        """The width-1 lane UDFs for every field this query addresses on
+        ``base``. A requested field absent from the fitted output refuses
+        here — at fit, not at construction: T is learned, so its names are
+        not knowable earlier (DRAFT-24, the P7 carve-out)."""
+        from sql_transform._udf import TransformLane, UDFError
+
+        out: dict[str, Any] = {}
+        for spec in self._marginalized.udfs:
+            if spec.step != step.name or spec.field is None:
+                continue
+            try:
+                lane = base.lane_of(spec.field)
+            except UDFError:
+                raise MarginalizeError(
+                    f"transformer {step.transformer} has no output field"
+                    f" {spec.field!r}; it fits to"
+                    f" {list(base.return_names)}"
+                ) from None
+            out[spec.name] = TransformLane(name=spec.name, source=base, lane=lane)
+        return out
 
     def _fit_step(self, step, table: pa.Table) -> tuple[pa.Table, PythonTransform]:
         """Group by the key columns, fit a clone of the transformer per group,
@@ -186,35 +229,60 @@ class SQLProjection:
                 f"cannot fit transformer {step.transformer} on an empty training set"
             )
         proto = self.transformers[step.transformer]
-        try:
-            from sklearn.base import clone
-        except ImportError:  # duck-typed objects without sklearn installed
-            import copy as _copy
 
-            def clone(o):  # type: ignore[no-redef]
+        def clone(o):
+            """sklearn's clone when the object is an estimator; a deepcopy
+            otherwise — duck-typed transformers are first-class, and
+            sklearn's clone raises TypeError (not ImportError) on them."""
+            try:
+                from sklearn.base import clone as _sk_clone
+
+                return _sk_clone(o)
+            except ImportError, TypeError:
+                import copy as _copy
+
                 return _copy.deepcopy(o)
 
         import numpy as np
 
+        from sql_transform._udf import output_names
+
         m = self._marginalized
-        (spec,) = [u for u in m.udfs if u.step == step.name]
+        # The whole-value spec if the query uses one; otherwise any spec of
+        # this step names the base UDF (lane UDFs hang off it).
+        specs = [u for u in m.udfs if u.step == step.name]
         (params_spec,) = [p for p in m.params if p.name == step.name]
+        base_name = next(
+            (u.name for u in specs if u.field is None),
+            specs[0].name.rsplit("_g", 1)[0],  # the lane UDFs' shared source
+        )
         feats = _feature_matrix(table, list(step.features))
         keyvals = [table.column(k).to_pylist() for k in step.keys]
         groups: dict[tuple, list[int]] = {}
         for i in range(table.num_rows):
             groups.setdefault(tuple(k[i] for k in keyvals), []).append(i)
         instances: dict[int, Any] = {}
-        width = None
+        shape: tuple[str, ...] | None = None
         key_rows: list[tuple] = []
         for est_id, (key, idx) in enumerate(groups.items()):
             est = clone(proto)
             est.fit(feats[idx])
             instances[est_id] = est
             key_rows.append(key)
-            if width is None:
-                probe = np.asarray(est.transform(feats[idx][:1]))
-                width = probe.shape[1] if probe.ndim > 1 else 1
+            probe = np.asarray(est.transform(feats[idx][:1]))
+            width = probe.shape[1] if probe.ndim > 1 else 1
+            names = output_names(est, step.feature_names, width)
+            # Every group must fit to the SAME output struct — a codomain
+            # that varies per group is not a function type (an encoder whose
+            # categories differ per partition hits this).
+            if shape is None:
+                shape = names
+            elif names != shape:
+                raise MarginalizeError(
+                    f"transformer {step.transformer} fits to different output"
+                    f" shapes per group: {list(shape)} vs {list(names)}"
+                    f" (group {key})"
+                )
         cols: dict[str, pa.Array] = {}
         for pos, colname in enumerate(params_spec.keys):
             cols[colname] = pa.array(
@@ -222,11 +290,19 @@ class SQLProjection:
                 type=table.column(step.keys[pos]).type,
             )
         cols["__cf_est"] = pa.array(range(len(key_rows)), type=pa.int64())
+        assert shape is not None  # groups is non-empty: the table has rows
         udf = PythonTransform(
-            name=spec.name,
+            name=base_name,
             instances=instances,
-            takes=("f64",) * len(step.features),
-            returns=("f64",) * width,
+            # S's field types come from the level table — the real types of
+            # the bundle expressions, so a string feature stays a string.
+            takes=tuple(
+                _engine_ty(table.column(c).type, n)
+                for c, n in zip(step.features, step.feature_names, strict=True)
+            ),
+            returns=("f64",) * len(shape),
+            take_names=tuple(step.feature_names),
+            return_names=shape,
         )
         return pa.table(cols), udf
 

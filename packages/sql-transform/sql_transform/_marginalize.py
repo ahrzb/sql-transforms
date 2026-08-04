@@ -116,19 +116,29 @@ class FitStep:
     transformer: str = ""
     features: tuple[str, ...] = ()
     keys: tuple[str, ...] = ()
+    # The bundle's field names, positionally aligned with ``features`` — the
+    # input struct type S (DRAFT-24), passed to sklearn as input_features so
+    # the learned output names can refer to them.
+    feature_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class UDFSpec:
-    """One transformer application in ``serving_sql``: the scalar function
-    name the SQL calls (``__cf_tf{j}``), the ``kind="fit"`` plan step that
-    produces both its params table (same name: the join keys plus the
-    ``__cf_est`` instance-id column) and its fitted instances, and the
-    registry name of the prototype."""
+    """One UDF the serving SQL calls: the scalar function name in the SQL,
+    the ``kind="fit"`` plan step that produces both its params table (same
+    name: the join keys plus the ``__cf_est`` instance-id column) and its
+    fitted instances, and the registry name of the prototype.
+
+    ``field`` is None for a whole-value call (``__cf_tf{j}``, width-k rides
+    as a list) and the requested output field name for a field access
+    (``__cf_tf{j}_g{m}`` — a width-1 lane UDF; the SQL name is positional so
+    it is always a legal identifier, while the field name it resolves to is
+    checked against the fitted output at fit time, DRAFT-24)."""
 
     name: str
     step: str
     transformer: str
+    field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -809,6 +819,31 @@ class _LevelRewriter:
     def rewrite(self, x: Any) -> Any:
         if isinstance(x, dict):
             cls = x.get("class")
+            if (cls == "OPERATOR" and x.get("type") == "STRUCT_EXTRACT") or (
+                cls == "FUNCTION"
+                and x.get("function_name", "").lower() == "struct_extract"
+            ):
+                # `t(...) OVER (...).field` (either spelling) — resolve the
+                # field at rewrite time to that lane's width-1 UDF
+                # (DRAFT-24), so no struct ever flows at serving time.
+                kids = x.get("children") or []
+                if len(kids) == 2 and _is_tf_node(kids[0]) is not None:
+                    fname = _const_str(kids[1])
+                    if fname is None:
+                        _refuse(
+                            "a computed field name on a transformer call"
+                            " (write the field literally)",
+                            x.get("query_location"),
+                        )
+                    if self.alias_exprs:
+                        self._check_no_lateral_in_window(kids[0])
+                    return self.planner.transformer_ref(
+                        self,
+                        kids[0],
+                        _is_tf_node(kids[0]),
+                        field_name=fname,
+                        alias=x.get("alias", ""),
+                    )
             if cls == "WINDOW":
                 if self.alias_exprs:
                     self._check_no_lateral_in_window(x)
@@ -1054,6 +1089,7 @@ class _Planner:
         self.key_names: dict[tuple[int, str], str] = {}
         self.lookup: Any = None  # UDF/transformer resolver: name -> obj | None
         self.tf_steps: list[dict] = []
+        self.tf_calls: dict[str, int] = {}  # structural identity -> step index
         self.udf_specs: list[UDFSpec] = []
         self.fit_joins: set[int] = set()  # join idxs whose params come from fit
         self.scalar_udfs: dict[str, int] = {}  # author UDF name -> arity
@@ -1111,12 +1147,26 @@ class _Planner:
             for v in x:
                 self.note_udfs(v)
 
-    def transformer_ref(self, rw: _LevelRewriter, raw: Node, name: str) -> Node:
+    def transformer_ref(
+        self,
+        rw: _LevelRewriter,
+        raw: Node,
+        name: str,
+        field_name: str | None = None,
+        alias: str | None = None,
+    ) -> Node:
         """One transformer window, rewritten in place to a scalar call over
         its own params join: ``__cf_tf{j}(__cf_p{idx}.__cf_est, features...)``.
         The join's params table (keys + ``__cf_est``) is produced by the
         ``kind="fit"`` plan step; an unseen group misses the LEFT JOIN, so
-        the id is NULL and the call returns NULL — the one NULL story."""
+        the id is NULL and the call returns NULL — the one NULL story.
+
+        With ``field_name`` (``t(...) OVER (...).f``) the call is to that
+        field's width-1 lane UDF instead. Structurally identical calls share
+        one fit step, so ``t(...).a`` and ``t(...).b`` fit once."""
+        ident = _stripped(raw)
+        if ident in self.tf_calls:
+            return self._tf_call_node(self.tf_calls[ident], field_name, alias)
         if raw.get("schema"):
             _refuse(
                 f"namespaced transformer {raw['schema']}.{name}"
@@ -1174,20 +1224,48 @@ class _Planner:
                 "transformer": name,
                 "feature_fit": feature_fit,
                 "keys": keys,
+                "join": idx,
+                # The serving-side argument nodes, kept so a second field
+                # access on the same call rebuilds the call without refitting.
+                "children": [
+                    _clone(
+                        "column_ref",
+                        column_names=[f"__cf_p{idx}", "__cf_est"],
+                        alias="",
+                    ),
+                    *[copy.deepcopy(se) for (_, _, se) in bundle],
+                ],
+                "fields": [],  # requested output fields, in order of appearance
             }
         )
-        self.udf_specs.append(
-            UDFSpec(name=f"__cf_tf{j}", step=step_name, transformer=name)
-        )
-        children = [
-            _clone("column_ref", column_names=[f"__cf_p{idx}", "__cf_est"], alias="")
-        ]
-        children += [copy.deepcopy(se) for (_, _, se) in bundle]
+        self.tf_calls[ident] = j
+        return self._tf_call_node(j, field_name, alias or raw.get("alias", ""))
+
+    def _tf_call_node(self, j: int, field_name: str | None, alias: str | None) -> Node:
+        """The serving call for transformer step ``j``: the whole-value UDF,
+        or the width-1 lane UDF for one requested output field."""
+        step = self.tf_steps[j]
+        if field_name is None:
+            fn_name = f"__cf_tf{j}"
+        else:
+            fields: list[str] = step["fields"]
+            if field_name not in fields:
+                fields.append(field_name)
+            fn_name = f"__cf_tf{j}_g{fields.index(field_name)}"
+        if not any(s.name == fn_name for s in self.udf_specs):
+            self.udf_specs.append(
+                UDFSpec(
+                    name=fn_name,
+                    step=step["name"],
+                    transformer=step["transformer"],
+                    field=field_name,
+                )
+            )
         return _clone(
             "function",
-            function_name=f"__cf_tf{j}",
-            children=children,
-            alias=raw.get("alias", ""),
+            function_name=fn_name,
+            children=[copy.deepcopy(c) for c in step["children"]],
+            alias=alias or "",
         )
 
     def new_join(self, level_i: int, keys: list[_Key]) -> int:
@@ -1299,6 +1377,17 @@ def _is_tf_node(item: Node) -> str | None:
     if name in _aggregate_names() and not item.get("schema"):
         return None
     return name
+
+
+def _const_str(node: Node) -> str | None:
+    """The literal VARCHAR a constant node carries, else None."""
+    if node.get("class") != "CONSTANT":
+        return None
+    value = node.get("value") or {}
+    if (value.get("type") or {}).get("id") != "VARCHAR" or value.get("is_null"):
+        return None
+    got = value.get("value")
+    return got if isinstance(got, str) else None
 
 
 def _contains_tf(x: Any) -> bool:
@@ -1526,6 +1615,7 @@ def marginalize(
                             kind="fit",
                             transformer=t["transformer"],
                             features=tuple(col for (_, col, _) in t["feature_fit"]),
+                            feature_names=tuple(f for (f, _, _) in t["feature_fit"]),
                             keys=tuple(
                                 planner.key_names[(i, k.ident)] for k in t["keys"]
                             ),
