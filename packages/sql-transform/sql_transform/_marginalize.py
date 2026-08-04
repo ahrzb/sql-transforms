@@ -827,14 +827,23 @@ class _LevelRewriter:
     def rewrite(self, x: Any) -> Any:
         if isinstance(x, dict):
             cls = x.get("class")
-            if (cls == "OPERATOR" and x.get("type") == "STRUCT_EXTRACT") or (
-                cls == "FUNCTION"
-                and x.get("function_name", "").lower() == "struct_extract"
-            ):
-                # `t(...) OVER (...).field` (either spelling) — resolve the
-                # field at rewrite time to that lane's width-1 UDF
-                # (DRAFT-24), so no struct ever flows at serving time.
+            if _is_struct_extract(x):
                 kids = x.get("children") or []
+                if (
+                    len(kids) == 2
+                    and isinstance(kids[0], dict)
+                    and _is_struct_extract(kids[0])
+                    and len(kids[0].get("children") or []) == 2
+                    and _is_tf_node((kids[0]["children"])[0]) is not None
+                ):
+                    # `t(...) OVER ().a.b` — a field is a scalar; the outer
+                    # name could never be validated at fit and would only
+                    # die mid-serving, differently per path.
+                    _refuse(
+                        "chained field access on a transformer call"
+                        " (a field is a scalar)",
+                        x.get("query_location"),
+                    )
                 if len(kids) == 2 and _is_tf_node(kids[0]) is not None:
                     fname = _const_str(kids[1])
                     if fname is None:
@@ -1712,17 +1721,22 @@ def expand_wide_items(m: Marginalized, widths: dict[str, tuple[str, ...]]) -> st
     return _deserialize(doc)
 
 
+def _is_struct_extract(x: Node) -> bool:
+    """Either spelling of a struct field read: the OPERATOR node the dot
+    form parses to, or the ``struct_extract(...)`` FUNCTION."""
+    return (x.get("class") == "OPERATOR" and x.get("type") == "STRUCT_EXTRACT") or (
+        x.get("class") == "FUNCTION"
+        and x.get("function_name", "").lower() == "struct_extract"
+    )
+
+
 def _is_field_read(x: Any) -> tuple[Node, str] | None:
     """``(call node, field name)`` when ``x`` is a field read — either
     spelling — over a FUNCTION call node; else None."""
     if not isinstance(x, dict):
         return None
-    shaped = (x.get("class") == "OPERATOR" and x.get("type") == "STRUCT_EXTRACT") or (
-        x.get("class") == "FUNCTION"
-        and x.get("function_name", "").lower() == "struct_extract"
-    )
     kids = x.get("children") or []
-    if not (shaped and len(kids) == 2 and isinstance(kids[0], dict)):
+    if not (_is_struct_extract(x) and len(kids) == 2 and isinstance(kids[0], dict)):
         return None
     if kids[0].get("class") != "FUNCTION":
         return None

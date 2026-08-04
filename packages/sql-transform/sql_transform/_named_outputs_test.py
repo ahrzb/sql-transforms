@@ -385,6 +385,34 @@ def test_named_declaration_is_validated_eagerly():
         Named(PCA(n_components=2), returns=())
 
 
+def test_case_colliding_output_names_refuse_at_fit():
+    # Both binders resolve field names ASCII-case-insensitively (DuckDB
+    # struct keys; confit lane binding), so 'color_Red'/'color_red' would
+    # serve silently wrong values — refuse at fit, naming the collision.
+    mixed = pa.table({"color": ["Red", "red"], "name": ["x", "y"]})
+    p = SQLProjection(
+        "SELECT ohe(struct_pack(color := color)) OVER ().color_red AS r FROM __THIS__",
+        transformers={"ohe": _ohe()},
+    )
+    with pytest.raises(MarginalizeError, match="case-colliding output"):
+        p.fit(mixed)
+
+
+def test_named_case_collision_refuses_eagerly():
+    from sql_transform import Named, UDFError
+
+    with pytest.raises(UDFError, match="duplicate output names"):
+        Named(PCA(n_components=2), returns=("x", "X"))
+
+
+def test_chained_field_access_refuses():
+    with pytest.raises(MarginalizeError, match="chained field access"):
+        SQLProjection(
+            "SELECT sc(struct_pack(a := age)) OVER ().a.b AS z FROM __THIS__",
+            transformers={"sc": StandardScaler()},
+        )
+
+
 def test_computed_field_name_refuses():
     with pytest.raises(MarginalizeError, match="computed field name"):
         SQLProjection(

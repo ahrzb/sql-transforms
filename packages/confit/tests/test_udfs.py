@@ -101,9 +101,10 @@ def _scalar_form(obj):
 _DUCK_T = {"i1": "BOOLEAN", "i64": "BIGINT", "f64": "DOUBLE", "str": "VARCHAR"}
 
 
-def udf_check(sql, row_schema, row_rows, statics, udfs, output=None):
+def udf_check(sql, row_schema, row_rows, statics, udfs, output=None, after_engine=None):
     """Differential: engine with udfs= vs DuckDB with the same objects
-    registered. Returns the engine rows (dicts) for extra assertions."""
+    registered. Returns the engine rows (dicts) for extra assertions.
+    ``after_engine`` runs between the two legs (call-count attribution)."""
     model = _row_model(row_schema)
     fn = DuckDBInferFn(
         sql,
@@ -115,6 +116,8 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, output=None):
     inputs = [model(**r) for r in row_rows]
     res = fn.infer({"__THIS__": inputs})
     got = res if output == "dict" else [r.model_dump() for r in res]
+    if after_engine is not None:
+        after_engine()
 
     con = duckdb.connect()
     for u in udfs:
@@ -208,10 +211,33 @@ def test_wide_udf_bare_item_is_list_field():
     assert by_g["de"] is None  # NULL feature: the callable's convention
 
 
+def test_case_colliding_return_names_refuse_at_build():
+    # Field binding is ASCII-case-insensitive on both sides — declared
+    # names that collide under it would bind silently wrong.
+    class Bad2:
+        name = "bad2"
+        takes = ("f64",)
+        returns = ("f64", "f64")
+        return_names = ("x", "X")
+
+        def __call__(self, x):
+            return (x, x)
+
+    model = _row_model({"x": "float?"})
+    with pytest.raises(Exception, match="return_names"):
+        DuckDBInferFn(
+            "SELECT (bad2(x)).x AS a FROM __THIS__",
+            row_tables={"__THIS__": model},
+            static_tables={},
+            udfs=[Bad2()],
+        )
+
+
 def test_field_access_shares_one_call_per_row():
     # TASK-63: two field reads of one width-2 call — ONE callable
     # invocation per row on the engine AND on DuckDB (its CSE), counted.
     u = NamedEmbed2()
+    engine_calls = []
     got = udf_check(
         "SELECT (emb(p.est, t.x)).a AS ea, (emb(p.est, t.x)).b AS eb, t.g AS g "
         "FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
@@ -219,13 +245,15 @@ def test_field_access_shares_one_call_per_row():
         [{"g": None, "x": 5.0}, {"g": "fr", "x": 5.0}, {"g": "de", "x": 2.0}],
         {"p0": PARAMS},
         [u],
+        after_engine=lambda: engine_calls.append(u.calls),
     )
     by_g = {r["g"]: (r["ea"], r["eb"]) for r in got}
     assert by_g[None] == (6.0, 4.0)  # NULL g joins the NULL-key row: id 1
     assert by_g["de"] == (2.0, 2.0)  # id 0, d = 0
     assert by_g["fr"] == (None, None)  # unseen group: NULL id -> NULL fields
-    # 3 rows served by the engine + 3 by DuckDB — one call per ROW each.
-    assert u.calls == 6, f"expected 6 calls (3 rows x 2 paths), got {u.calls}"
+    # One call per ROW per path — attributed, not just a cross-path total.
+    assert engine_calls == [3], f"engine leg: {engine_calls} calls for 3 rows"
+    assert u.calls == 6, f"DuckDB leg: {u.calls - 3} calls for 3 rows"
 
 
 def test_wide_udf_dict_output():
