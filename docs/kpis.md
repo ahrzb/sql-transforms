@@ -127,33 +127,51 @@ engine). The interpreter backend runs ~1.3x the cranelift one; the
 pre-marshaller boundary ~2.7x.
 
 **Transformer path, p50 ns per row** (`bench_transforms.py`, same query
-shape in every row so deltas are the transformer's cost alone):
+shape in every row so deltas are the transformer's cost alone). Absolute
+numbers drift with machine load between runs — compare WITHIN a run; the
+honest cross-run metric is the ratio of a 2-field query to a 1-field one.
 
-| variant | n=1 | delta vs sql_only |
-|---|---|---|
-| sql_only (marginalized aggregates) | 1,500 | — |
-| + one author `PythonUDF` | 2,100 | **+600** |
-| + one fitted `StandardScaler` | 86,900 | **+85,400** |
-| + two field accesses on one PCA(2) | 138,600 | +137,100 |
-| + a bare width-2 PCA item | 136,700 | +135,200 |
+Before loop 4 (master a6fa318, re-measured 2026-08-04; the original
+2026-08-04 reading — tf_fields2 138,600 — reproduces within noise):
 
-**The finding that sets priorities:** the extern/UDF machinery is cheap
-(+600ns for a plain UDF), and our own marshalling is 400ns. **93% of a
-fitted transformer's per-row cost is sklearn's own `transform()`** —
-measured 60,900ns for `StandardScaler.transform` on one row, versus
-1,500ns for the identical arithmetic in numpy and 1,000ns in pure Python.
-sklearn's per-call validation, not the boundary, is the bottleneck: one
-transformer costs ~57x the entire rest of the query.
+| variant | n=1 row | n=64 row | batch (`transform`) |
+|---|---|---|---|
+| + one fitted `StandardScaler` | 75,750 | 73,705 | 80,156 |
+| + two field accesses on one PCA(2) | 143,500 | 136,882 | 147,754 |
+| + a bare width-2 PCA item | 140,000 | 136,648 | 145,790 |
+
+After loop 4 (TASK-63, same session):
+
+| variant | n=1 row | n=64 row | batch (`transform`) |
+|---|---|---|---|
+| sql_only (marginalized aggregates) | 6,600 | 3,734 | 3,540 |
+| + one author `PythonUDF` | 9,000 | 5,732 | 4,322 |
+| + one fitted `StandardScaler` | 98,900 | 88,668 | 87,498 |
+| + two field accesses on one PCA(2) | 96,400 | 81,145 | 80,383 |
+| + a bare width-2 PCA item | 95,500 | 83,655 | 82,264 |
+
+**Loop 4's result:** a 2-field query cost **1.89x** a 1-field query on the
+row path and **1.84x** on the batch path; it now costs **~0.97x / ~0.92x**
+— k addressed fields share ONE `transform()` call per row on BOTH paths
+(counted, not timed: `_single_eval_test.py` asserts the call count; DuckDB
+merges the identical pure calls by CSE, confit reads k lanes off one
+ecall).
+
+**The finding that sets priorities** (unchanged): the extern/UDF machinery
+is cheap (+2,400ns for a plain UDF in this run), and our own marshalling
+is 400ns. **~93% of a fitted transformer's per-row cost is sklearn's own
+`transform()`** — measured 60,900ns for `StandardScaler.transform` on one
+row, versus 1,500ns for the identical arithmetic in numpy and 1,000ns in
+pure Python. sklearn's per-call validation, not the boundary, is the
+bottleneck.
 
 Levers, re-ordered by the measurement:
 
 1. **Native UDF families (DRAFT-23)** — replaces the 60µs sklearn call
    with ~1µs of arithmetic. This is a ~100x lever on transformer queries
    and by far the dominant one.
-2. **Single-evaluation field access (DRAFT-24 loop 4)** — k accessed
-   fields currently re-run the transform k times (visible above:
-   2 fields = 137µs vs 1 field = 85µs). Removes ~35% on multi-field
-   queries; secondary to (1) but real.
+2. ~~Single-evaluation field access (DRAFT-24 loop 4)~~ — **DONE**
+   (TASK-63, above): the k-times re-run is gone on both paths.
 3. Vectorized `apply_batch` for `infer_arrow`; marshaller work as measured.
 
 ---

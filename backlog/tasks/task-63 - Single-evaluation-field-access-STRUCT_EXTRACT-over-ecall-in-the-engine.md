@@ -31,12 +31,12 @@ Measured context (docs/kpis.md D2, 2026-08-04): this is a ~35% lever on multi-fi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The frontend binds STRUCT_EXTRACT (or lane-select) over an `ecall`, reading the k SSA values of one call; the "width-k must be a bare SELECT item" refusal relaxes to allow lane reads while still refusing a width-k value used as a scalar
-- [ ] #2 The marginalizer emits one call plus k field reads instead of k lane UDFs, for both addressed fields and loop-3's expanded bare items
-- [ ] #3 Both engines evaluate the transformer once per row for k addressed fields, on the row path AND the DuckDB batch path; a counting test asserts the call count, not just the timing
-- [ ] #4 Every control KPI holds unchanged: round-trip bit-exact, Confit == DuckDB, infer == transform, transformer columns == the sklearn reference, no new silent-success path
-- [ ] #5 `benchmarks/bench_transforms.py` re-run and docs/kpis.md D2 updated with the before/after for tf_fields2 and tf_bare2, including the batch path
-- [ ] #6 P16 (or a successor note) records that field access reads lanes off one call, and the one-slot memo is removed or kept with its reason stated
+- [x] #1 The frontend binds STRUCT_EXTRACT (or lane-select) over an `ecall`, reading the k SSA values of one call; the "width-k must be a bare SELECT item" refusal relaxes to allow lane reads while still refusing a width-k value used as a scalar
+- [x] #2 The marginalizer emits one call plus k field reads instead of k lane UDFs, for both addressed fields and loop-3's expanded bare items
+- [x] #3 Both engines evaluate the transformer once per row for k addressed fields, on the row path AND the DuckDB batch path; a counting test asserts the call count, not just the timing
+- [x] #4 Every control KPI holds unchanged: round-trip bit-exact, Confit == DuckDB, infer == transform, transformer columns == the sklearn reference, no new silent-success path
+- [x] #5 `benchmarks/bench_transforms.py` re-run and docs/kpis.md D2 updated with the before/after for tf_fields2 and tf_bare2, including the batch path
+- [x] #6 P16 (or a successor note) records that field access reads lanes off one call, and the one-slot memo is removed or kept with its reason stated
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -45,4 +45,6 @@ Measured context (docs/kpis.md D2, 2026-08-04): this is a ~35% lever on multi-fi
 Prior art in-repo: the `ecall` instruction already produces k dsts (a whole-call validity lane plus one (validity, payload) pair per declared return) — see `packages/confit/src/specializer/ir/mod.rs` and the shared `call_extern` in `exec/interp.rs` that both backends route through. Nothing new is needed in execution; the work is in binding (`frontend.rs`) plus the sql-transform side that currently mints `__cf_tf{j}_g{m}`.
 
 Watch the boundary interaction with loop 3: `WideOut`/the flat alias-prefixed expansion happens at fit and rewrites the serving AST — the k lane calls it emits are exactly what should become k lane reads of one call.
+
+**Shipped 2026-08-04.** Spec: `docs/superpowers/specs/2026-08-04-single-eval-field-access-design.md`. The DuckDB side needed no query restructuring: measured, DuckDB CSEs textually identical pure scalar-UDF calls (4 mentions = 1 call/row), so a struct-returning registration + repeated mentions is single-evaluation; confit mirrors this with a frontend site cache keyed on the syntactic call. Counted k→1 in `_single_eval_test.py` (both paths + bare item, interleaved groups value-checked) and `test_udfs.py::test_field_access_shares_one_call_per_row` (engine+DuckDB, 3 rows × 2 paths = 6 calls). D2 ratios: 1.89x→0.97x row, 1.84x→0.92x batch. The parallel session's one-slot memo (row-path-only, lost uncommitted) is superseded, not reintroduced — see DRAFT-24 loop 4.
 <!-- SECTION:NOTES:END -->

@@ -147,10 +147,21 @@ transform. Fixed later by loop 4, not by weakening anything.
 columns; touches confit's `WideOut` (names travel on the udf object,
 boundary only). Independent of loop 2.
 
-**Loop 4 (not yet requested) — single-evaluation field access.** Teach the
-engine STRUCT_EXTRACT-over-`ecall` (or lane-select), so k field accesses
-share one call. Removes loop 1's k× cost; also the prerequisite for
-composition proper (extern → extern lane wiring).
+**Loop 4 — single-evaluation field access. DONE 2026-08-04 (TASK-63).**
+The engine binds STRUCT_EXTRACT-over-`ecall`: `(f(...)).a` and
+`struct_extract(f(...), 'a')` each read one SSA lane of a shared-site
+ecall (textually identical calls share the site — the confit twin of
+DuckDB's CSE), and the marginalizer emits ONE `__cf_tf{j}` call plus k
+field reads instead of k lane UDFs (`__cf_tf{j}_g{m}` and `TransformLane`
+are deleted; width-k fitted UDFs register in DuckDB as STRUCTs from
+`return_names`). Loop 1's k× cost is gone on BOTH paths — counted by
+`_single_eval_test.py`, measured 1.89x → 0.97x (row) and 1.84x → 0.92x
+(batch) in kpis.md D2 — and the lane-read mechanism is the prerequisite
+for composition (loop 5's extern → extern wiring). A parallel session's
+one-slot memo on `PythonTransform` (row-path-only version of this; its
+files were lost uncommitted) is superseded and NOT reintroduced: the
+engine fix covers the batch path the memo never could, since DuckDB
+evaluates column-at-a-time so sibling lane calls are never adjacent.
 
 **Loop 5 (not yet requested) — composition.** Projections as vocabulary
 members: `q(struct_pack(...))` with symbolic inlining as the fast path,
