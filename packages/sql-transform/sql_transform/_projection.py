@@ -271,7 +271,7 @@ class SQLProjection:
             key_rows.append(key)
             probe = np.asarray(est.transform(feats[idx][:1]))
             width = probe.shape[1] if probe.ndim > 1 else 1
-            names = output_names(est, step.feature_names, width)
+            names = output_names(est, step.feature_names, width, step.transformer)
             # Every group must fit to the SAME output struct — a codomain
             # that varies per group is not a function type (an encoder whose
             # categories differ per partition hits this).

@@ -218,6 +218,97 @@ def test_unknown_field_name_refuses_at_fit():
         p.fit(TRAIN)
 
 
+# --- Named(...): the author's declaration wins (DRAFT-24 loop 2) ---------------
+
+
+def test_named_override_replaces_generated_names():
+    from sql_transform import Named
+
+    p = SQLProjection(
+        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS s,"
+        " pca(struct_pack(a := age, f := fare)) OVER ().cost AS c, name FROM __THIS__",
+        transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
+    ).fit(TRAIN)
+    assert p.udfs["__cf_tf0_g0"].return_names == ("size",)
+    assert p.udfs["__cf_tf0_g1"].return_names == ("cost",)
+    ref = clone_ref(PCA(n_components=2), TRAIN)
+    got = {r["name"]: (r["s"], r["c"]) for r in p.transform(TRAIN).to_pylist()}
+    for i, n in enumerate(TRAIN.column("name").to_pylist()):
+        np.testing.assert_allclose(got[n], ref[i], rtol=1e-9)
+
+
+def test_named_override_serves_row_at_a_time():
+    from sql_transform import Named
+
+    p = SQLProjection(
+        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS s, name"
+        " FROM __THIS__",
+        transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
+    ).fit(TRAIN)
+    assert [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())] == (
+        p.transform(TRAIN).to_pylist()
+    )
+
+
+def test_named_override_clones_per_group():
+    from sql_transform import Named
+
+    p = SQLProjection(
+        "SELECT sc(struct_pack(a := age)) OVER (PARTITION BY country).z AS z, name"
+        " FROM __THIS__",
+        transformers={"sc": Named(StandardScaler(), returns=("z",))},
+    ).fit(TRAIN)
+    (step,) = [s for s in p.plan if s.kind == "fit"]
+    base = p.udfs["__cf_tf0_g0"].source
+    assert len(base.instances) == 2  # one fitted clone per country
+    assert base.instances[0].estimator is not base.instances[1].estimator
+    got = {r["name"]: r["z"] for r in p.transform(TRAIN).to_pylist()}
+    assert got["x"] == 1.0 and got["y"] == -1.0  # US: mean 35, per-group z
+
+
+def test_named_override_width_mismatch_refuses():
+    from sql_transform import Named, UDFError
+
+    p = SQLProjection(
+        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().a AS s FROM __THIS__",
+        transformers={"pca": Named(PCA(n_components=2), returns=("a", "b", "c"))},
+    )
+    with pytest.raises(UDFError, match="declares 3 output names.*fits to width 2"):
+        p.fit(TRAIN)
+
+
+def test_named_override_cannot_paper_over_a_learned_width():
+    from sql_transform import Named, UDFError
+
+    # Declared width matches the first fit's vocabulary, not the second's —
+    # exactly the case a fixed override must refuse rather than mislabel.
+    p = SQLProjection(
+        "SELECT ohe(struct_pack(color := color)) OVER ().is_red AS r FROM __THIS__",
+        transformers={"ohe": Named(_ohe(), returns=("is_blue", "is_red"))},
+    ).fit(TRAIN)
+    assert p.transform(TRAIN).to_pylist()[0]["r"] == 1.0
+    three = pa.table(
+        {
+            "color": ["red", "blue", "aqua"],
+            "country": ["US"] * 3,
+            "age": [1.0, 2.0, 3.0],
+            "fare": [1.0, 2.0, 3.0],
+            "name": list("abc"),
+        }
+    )
+    with pytest.raises(UDFError, match="declares 2 output names.*fits to width 3"):
+        p.fit(three)
+
+
+def test_named_declaration_is_validated_eagerly():
+    from sql_transform import Named, UDFError
+
+    with pytest.raises(UDFError, match="duplicate output names"):
+        Named(PCA(n_components=2), returns=("a", "a"))
+    with pytest.raises(UDFError, match="at least one output name"):
+        Named(PCA(n_components=2), returns=())
+
+
 def test_computed_field_name_refuses():
     with pytest.raises(MarginalizeError, match="computed field name"):
         SQLProjection(
