@@ -341,6 +341,28 @@ def _clone(template_name: str, **fields: Any) -> Node:
     return node
 
 
+def _alias_sig(node: Node) -> str:
+    """Lowered INNER aliases (named arguments, struct_pack field names) in
+    traversal order. ``_stripped`` erases every alias — right for the output
+    name, wrong for named args, whose names are semantic (P16a's family;
+    review round 2026-08-05: two windows differing only in a struct field
+    name collapsed to one params column and served the first's value)."""
+    out: list[str] = []
+
+    def walk(x: Any, root: bool) -> None:
+        if isinstance(x, dict):
+            if not root and x.get("alias"):
+                out.append(str(x["alias"]).lower())
+            for v in x.values():
+                walk(v, False)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, False)
+
+    walk(node, True)
+    return ",".join(out)
+
+
 def _stripped(node: Node) -> str:
     """Structural identity: the node minus locations and aliases."""
 
@@ -779,8 +801,9 @@ class _LevelRewriter:
                     name=bare,
                 )
         _walk_row_wise(expr, "a partition or order key", self.planner.lookup)
+        stripped = _strip_quals(expr, quals)
         return _Key(
-            ident=_stripped(_strip_quals(expr, quals)),
+            ident=_stripped(stripped) + "|" + _alias_sig(stripped),
             fit_expr=dict(_strip_quals(expr, quals), alias=""),
             serving_expr=self.rewrite(expr),
             name=None,
@@ -793,7 +816,7 @@ class _LevelRewriter:
         seen: set[str] = set()
         uniq = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
         idx, join = self.planner.group_for(self.level_i, uniq)
-        agg_key = _stripped(raw)
+        agg_key = _stripped(raw) + "|" + _alias_sig(raw)
         self.planner.level_window(self.level_i, agg_key, raw)
         if agg_key not in join.agg_keys:
             join.agg_keys.append(agg_key)
@@ -847,6 +870,17 @@ class _LevelRewriter:
                 if ch["alias"].lower() in names:
                     _refuse(f"duplicate bundle field {ch['alias']}")
                 names.add(ch["alias"].lower())
+                if (
+                    ch.get("class") == "FUNCTION"
+                    and ch.get("function_name", "").lower() == "struct_pack"
+                ):
+                    # Statically visible; anything else struct-typed is
+                    # caught by name at fit, before est.fit sees it.
+                    _refuse(
+                        f"bundle field {ch['alias']} is a struct — a bundle"
+                        " field must be a scalar",
+                        ch.get("query_location"),
+                    )
                 _walk_row_wise(ch, "a transformer bundle", self.planner.lookup)
                 out.append(
                     (
@@ -1690,7 +1724,7 @@ class _Planner:
                 view.query_location,
             )
         _validate_subquery_tables(view.subquery["node"])
-        ident = _stripped(raw)
+        ident = _stripped(raw) + "|" + _alias_sig(raw)
         if ident not in self.scalars:
             idx = len(self.joins)
             self.scalars[ident] = idx

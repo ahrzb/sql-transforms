@@ -247,19 +247,56 @@ def test_schema_free_star_rename_to_private_refuses():
         SQLProjection("SELECT * RENAME (age AS _age) FROM __THIS__")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="pre-existing: window identity (_stripped) erases struct field"
-    " names, collapsing distinct windows into one params column"
-    " (review round 2026-08-05; needs a ticket)",
-)
 def test_distinct_struct_field_names_mint_distinct_windows():
+    """Named-argument aliases are semantic (P16a's family): identity must
+    not collapse two windows differing only in a struct field name."""
     p = _fit(
         "SELECT min(struct_pack(a := age)) OVER () AS m1,"
         " min(struct_pack(b := age)) OVER () AS m2, name FROM __THIS__"
     )
     (m2,) = p.transform(TRAIN.slice(0, 1)).column("m2").to_pylist()
     assert list(m2) == ["b"]
+
+
+def test_distinct_struct_field_names_mint_distinct_scalars():
+    """The same identity rule for scalar-subquery params."""
+    p = _fit(
+        "SELECT (SELECT struct_pack(a := max(age)) FROM __THIS__) AS s1,"
+        " (SELECT struct_pack(b := max(age)) FROM __THIS__) AS s2,"
+        " name FROM __THIS__"
+    )
+    out = p.transform(TRAIN.slice(0, 1))
+    assert list(out.column("s1").to_pylist()[0]) == ["a"]
+    assert list(out.column("s2").to_pylist()[0]) == ["b"]
+
+
+def test_nested_struct_bundle_refuses_at_construction():
+    """A bundle field must be a scalar — the nested spelling used to crash
+    raw in sklearn mid-fit (review round 2026-08-05)."""
+    with pytest.raises(MarginalizeError, match="must be a scalar"):
+        SQLProjection(
+            "SELECT sc(struct_pack(v := struct_pack(a := age))).v AS z FROM __THIS__",
+            this_model=ROW,
+            transformers={"sc": StandardScaler()},
+        )
+
+
+def test_struct_typed_feature_refuses_at_fit_by_name():
+    """The catch-all: a struct COLUMN reaching a bundle refuses by name at
+    fit (the type check now runs before est.fit)."""
+    t = pa.table(
+        {
+            "age": [30.0, 40.0],
+            "s": [{"a": 1.0}, {"a": 2.0}],
+            "name": ["x", "y"],
+        }
+    )
+    p = SQLProjection(
+        "SELECT sc(struct_pack(v := s)).v AS z, name FROM __THIS__",
+        transformers={"sc": StandardScaler()},
+    )
+    with pytest.raises(MarginalizeError, match="no UDF argument"):
+        p.fit(t)
 
 
 def test_declared_schema_cannot_express_a_private_column():
