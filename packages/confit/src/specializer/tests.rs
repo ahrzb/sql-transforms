@@ -1338,6 +1338,25 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
 }
 
 #[test]
+fn unnest_named_extern_expands_to_per_field_columns() {
+    // Measured oracle behavior: one column per declared field, named by
+    // the field, in place, alias ignored — all off ONE ecall site.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let udf = udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)]);
+    for sql in [
+        "SELECT unnest(emb(x)), x AS keep FROM __THIS__",
+        "SELECT unnest(emb(x)) AS ignored, x AS keep FROM __THIS__",
+    ] {
+        let p = prep_udfs(sql, &schema, &[], &[udf.clone()]).unwrap();
+        let names: Vec<&str> = p.program.out_cols.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "keep"], "{sql}");
+        // Expanded columns are PLAIN scalars — no wide/struct assembly.
+        assert!(p.wide_outputs.is_empty(), "{sql}");
+        assert_eq!(print(&p.program).matches("ecall").count(), 1, "{sql}");
+    }
+}
+
+#[test]
 fn whole_item_and_field_read_share_one_ecall() {
     // Review round (P16 single-eval): a whole item and a field read of the
     // SAME call share one ecall site, in either item order — the wide

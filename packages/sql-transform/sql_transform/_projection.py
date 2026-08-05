@@ -241,6 +241,24 @@ class SQLProjection:
                 else:
                     materialized[step.name] = con.execute(step.sql).to_arrow_table()
                 con.register(step.name, materialized[step.name])
+            # unnest expands to the LEARNED field names, so its collision
+            # check waits for fit. DuckDB would emit duplicate result
+            # columns (measured: a, b, a); the row path's output model
+            # cannot carry them, so a collision refuses by name (P7's
+            # learned-T carve-out).
+            used = {n.lower() for n in m.unnest_siblings}
+            for step_name in m.unnest_items:
+                spec = next(u for u in m.udfs if u.step == step_name)
+                for n in self._udfs[spec.name].return_names:
+                    if n.lower() in used:
+                        raise MarginalizeError(
+                            f"unnest expands to output name {n}, which"
+                            " collides with another output column (DuckDB"
+                            " would emit duplicate columns; a row is a"
+                            " named struct) — alias the other column or"
+                            " address the fields directly"
+                        )
+                    used.add(n.lower())
             self._params = {spec.name: materialized[spec.name] for spec in m.params}
         finally:
             con.close()

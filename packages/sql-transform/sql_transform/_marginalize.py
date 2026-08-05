@@ -168,6 +168,13 @@ class Marginalized:
     params: tuple[ParamsSpec, ...]
     udfs: tuple[UDFSpec, ...] = ()
     scalar_udfs: tuple[str, ...] = ()
+    # One entry per ``unnest(tfm(...))`` output item, in output order: the
+    # fit step whose LEARNED field names become that item's columns. Their
+    # collision check runs at fit, where the names exist.
+    unnest_items: tuple[str, ...] = ()
+    # The output names that are known at construction (every non-unnest
+    # final item) — what an expanded name must not collide with.
+    unnest_siblings: tuple[str, ...] = ()
 
 
 def _refuse(what: str, loc: int | None = None) -> None:
@@ -729,6 +736,9 @@ class _LevelRewriter:
         # The fit-side view of this level's items: expanded (alias-free of
         # laterals) and private-filtered — what __CF_LEVEL_{i}__ projects.
         self.fit_items: list[Node] = []
+        # Fit step name per unnest(tfm(...)) item, in output order — their
+        # columns are the LEARNED field names, checked for collisions at fit.
+        self.unnest_steps: list[str] = []
         self.is_final = False  # set by rewrite_items
 
     # -- column resolution
@@ -1058,6 +1068,14 @@ class _LevelRewriter:
                 if fname not in _known_functions() and not x.get("is_operator"):
                     self.planner.scalar_udf(
                         fname, len(x.get("children", [])), x.get("query_location")
+                    )
+                if fname == "unnest" and _contains_tf(x, self.planner.lookup):
+                    # Measured: DuckDB binds UNNEST over a struct only as a
+                    # whole select item — anywhere else is a binder error.
+                    _refuse(
+                        "UNNEST() on a struct column can only be applied as"
+                        " the root element of a SELECT expression",
+                        x.get("query_location"),
                     )
             if cls == "COLUMN_REF":
                 return self._resolve_ref(x)
@@ -1420,6 +1438,39 @@ class _LevelRewriter:
             # boundary as a struct column on both paths. An unaliased item
             # already carries DuckDB's derived name (the parse step stamps
             # it as the alias), so the oracle's column name survives.
+            # unnest(tfm(...)): the oracle expands the struct into one column
+            # per field, in place, IGNORING any alias (measured). The names
+            # are learned at fit, so the item carries no construction-time
+            # output name and its collision check waits for fit.
+            if (unnested := _unnest_child(item, self.planner.lookup)) is not None:
+                if not is_final:
+                    _refuse(
+                        "unnest of a transformer call in a non-final level",
+                        item.get("query_location"),
+                    )
+                tf_bare = _bare_tf_name(unnested, self.planner.lookup)
+                tf_split = (
+                    None
+                    if tf_bare is not None
+                    else _split_transform_name(unnested, self.planner.lookup)
+                )
+                ref = (
+                    self.planner.transformer_ref
+                    if tf_bare is not None
+                    else (self.planner.split_ref)
+                )
+                call = ref(
+                    self, unnested, tf_bare or tf_split, field_name=None, alias=""
+                )
+                j = int(call["function_name"].removeprefix("__cf_tf"))
+                self.unnest_steps.append(self.planner.tf_steps[j]["name"])
+                out.append(
+                    _clone(
+                        "function", function_name="unnest", children=[call], alias=""
+                    )
+                )
+                entries.append(("*", None))
+                continue
             whole_bare = _bare_tf_name(item, self.planner.lookup)
             whole_split = (
                 None
@@ -2028,6 +2079,40 @@ def _const_str(node: Node) -> str | None:
     return got if isinstance(got, str) else None
 
 
+def _unnest_child(item: Node, lookup: Any) -> Node | None:
+    """The transformer call inside a root ``unnest(tfm(...))`` select item,
+    else None. Nested unnest refuses here — measured: DuckDB's binder does
+    the same ("Nested UNNEST calls are not supported")."""
+    if item.get("class") != "FUNCTION" or item.get("is_operator"):
+        return None
+    if item.get("function_name", "").lower() != "unnest" or item.get("schema"):
+        return None
+    kids = item.get("children") or []
+    if len(kids) != 1:
+        # recursive := / max_depth := are no-ops over a depth-1 struct;
+        # refusing by name beats guessing at deeper shapes.
+        if any(_contains_tf(k, lookup) for k in kids):
+            _refuse(
+                "unnest of a transformer call with extra arguments",
+                item.get("query_location"),
+            )
+        return None
+    child = kids[0]
+    if (
+        isinstance(child, dict)
+        and child.get("class") == "FUNCTION"
+        and child.get("function_name", "").lower() == "unnest"
+        and _contains_tf(child, lookup)
+    ):
+        _refuse("Nested UNNEST calls are not supported", item.get("query_location"))
+    if (
+        _bare_tf_name(child, lookup) is not None
+        or _split_transform_name(child, lookup) is not None
+    ):
+        return child
+    return None
+
+
 def _bare_tf_name(node: Node, lookup: Any) -> str | None:
     """The lowered name when the node is a bare transformer call — the one
     sugar (global fit-transform, 2026-08-05 spec): a scalar FUNCTION the
@@ -2359,6 +2444,8 @@ def marginalize(
     deepest = max(windows_at, default=-1)
     env = base_env
     final_items: list[Node] = []
+    unnest_items: tuple[str, ...] = ()
+    unnest_siblings: tuple[str, ...] = ()
     for i, level in enumerate(levels):
         is_final = i == len(levels) - 1
         rewriter = _LevelRewriter(planner, i, env, level)
@@ -2394,6 +2481,8 @@ def marginalize(
                     )
         if is_final:
             final_items = rewritten
+            unnest_items = tuple(rewriter.unnest_steps)
+            unnest_siblings = tuple(n for n, _ in entries if n not in ("*", ""))
             break
         env = _Env(entries, private=frozenset(rewriter.private_names))
 
@@ -2426,6 +2515,8 @@ def marginalize(
         params=specs,
         udfs=tuple(planner.udf_specs),
         scalar_udfs=tuple(planner.scalar_udfs),
+        unnest_items=unnest_items,
+        unnest_siblings=unnest_siblings,
     )
 
 
