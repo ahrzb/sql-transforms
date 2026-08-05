@@ -320,7 +320,14 @@ struct is NULL, distinct from a struct of NULLs). Mechanics:
   evaluates once. Unlawful positions refuse by name, matching the oracle's
   binder: inside an expression ("root element of a SELECT expression"),
   nested unnest, extra `recursive :=`/`max_depth :=` arguments, and a
-  non-final level. Collisions refuse AT FIT (P7's learned-T carve-out):
+  non-final level. Modifiers on the UNNEST node itself refuse by the
+  oracle's own wording (measured: `"DISTINCT", "FILTER", and "ORDER BY"
+  are not applicable to "UNNEST"`; OVER is a catalog error, IGNORE NULLS
+  a parser error) — the branch REBUILDS the item, so it must re-screen
+  what `rewrite` would have caught (review round: they dropped silently).
+  IGNORE NULLS parses onto the INNER call, so the engine screens
+  call-node modifiers once in the shared UDF arg binder, covering every
+  caller. Collisions refuse AT FIT (P7's learned-T carve-out):
   DuckDB emits duplicate result columns (measured `a, b, a`), which a row
   — a named struct — cannot carry, so a learned name colliding with any
   sibling output or another unnest refuses by name. θ export (slice 6)

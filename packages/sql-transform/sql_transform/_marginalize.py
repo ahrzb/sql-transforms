@@ -2087,6 +2087,23 @@ def _unnest_child(item: Node, lookup: Any) -> Node | None:
         return None
     if item.get("function_name", "").lower() != "unnest" or item.get("schema"):
         return None
+    # The branch below rebuilds the item, so every modifier the oracle
+    # rejects on UNNEST itself must be screened HERE — measured:
+    # '"DISTINCT", "FILTER", and "ORDER BY" are not applicable to "UNNEST"'
+    # (review round: they used to drop silently).
+    for key, what in (
+        ("distinct", "DISTINCT"),
+        ("filter", "FILTER"),
+        ("order_bys", "ORDER BY"),
+    ):
+        got = item.get(key)
+        if key == "order_bys":
+            got = (got or {}).get("orders")
+        if got and _contains_tf(item, lookup):
+            _refuse(
+                f'{what} is not applicable to "UNNEST"',
+                item.get("query_location"),
+            )
     kids = item.get("children") or []
     if len(kids) != 1:
         # recursive := / max_depth := are no-ops over a depth-1 struct;

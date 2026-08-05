@@ -221,6 +221,23 @@ def test_two_unnests_of_the_same_call_refuse_at_fit():
 
 
 @pytest.mark.parametrize(
+    "clause,sql",
+    [
+        ("DISTINCT", "SELECT unnest(DISTINCT sc(%s)), name FROM __THIS__"),
+        ("FILTER", "SELECT unnest(sc(%s)) FILTER (WHERE age > 0), name FROM __THIS__"),
+        ("ORDER BY", "SELECT unnest(sc(%s) ORDER BY age), name FROM __THIS__"),
+    ],
+)
+def test_modifiers_on_the_unnest_item_refuse(clause, sql):
+    # Measured: DuckDB refuses all three on UNNEST itself ('"DISTINCT",
+    # "FILTER", and "ORDER BY" are not applicable to "UNNEST"'). The
+    # unnest branch rebuilds the item, so it must re-screen them —
+    # they were silently dropped (review round).
+    with pytest.raises(MarginalizeError, match="UNNEST"):
+        _fit(sql % "struct_pack(a := age, f := fare)")
+
+
+@pytest.mark.parametrize(
     "sql,match",
     [
         # Measured binder errors — the oracle has no reading for these.
