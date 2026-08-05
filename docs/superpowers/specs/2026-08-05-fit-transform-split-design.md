@@ -243,6 +243,31 @@ edges:
   qualify-or-rename hint. Fit-step identity includes the predicate's
   named-argument aliases (`_alias_sig`), like every other ident site.
 
+## Slice 4 addendum — ordered fits (2026-08-05)
+
+`OrderSensitive(est)` (the `Named` wrapper pattern: full delegation +
+sklearn clone protocol, `order_sensitive = True`) flips the fit contract
+from multiset to sequence; the query names the order with the in-call
+spelling, `sm_fit(bundle ORDER BY key, ...) OVER (w)`. Mechanics:
+
+- Order keys resolve like FILTER predicates (no serving side →
+  rewrite-and-discard at construction; transformer calls inside refuse;
+  they ride into the level table as `__cf_ord{j}_{n}` columns).
+- The fit scope sorts before `est.fit`: DuckDB does the comparing (its
+  collations, its NULL placement — one ORDER BY over the level table
+  with a row-index tiebreak), so ties keep input order. That is the
+  whole promise: *we sort by what you name.* Defaults are DuckDB's own,
+  measured: ASC, NULLS LAST in both directions.
+- An order-sensitive transformer without in-call ORDER BY refuses by
+  name — on the split spelling and on the bare sugar (which cannot name
+  an order). In-call ORDER BY on an order-*blind* fit is accepted and
+  honored (the oracle accepts `avg(x ORDER BY ts)`).
+- Identity: the θ node carries `arg_orders`, so direction, null
+  placement, and key text all distinguish fit steps; `_alias_sig`
+  covers named-arg aliases inside keys.
+- Composes with FILTER (filter first, then sort the passing rows) and
+  with θ laterals. Running fits (window-clause ORDER BY) stay refused.
+
 ## Implementation slices (sequential standalone PRs)
 
 1. **The split.** Recognize `x_fit`/`x_transform`, fit-scope clauses on

@@ -307,6 +307,34 @@ class SQLProjection:
                 f"FILTER on transformer {step.transformer} left no training"
                 " rows — the fitted output shape is unlearnable"
             )
+        if step.order_by:
+            import duckdb
+
+            # Stable sort of each fit scope by the named keys: DuckDB does
+            # the comparing (its collations, its NULL placement), a row-index
+            # tiebreak keeps input order — the mechanism promise, nothing
+            # more (2026-08-05 spec, fit lawfulness).
+            idx_tbl = table.append_column(
+                "__cf_idx", pa.array(range(table.num_rows), type=pa.int64())
+            )
+            order_text = ", ".join(
+                f'"{c}" {"ASC" if asc else "DESC"} NULLS {"FIRST" if nf else "LAST"}'
+                for c, asc, nf in step.order_by
+            )
+            con_s = duckdb.connect()
+            try:
+                con_s.register("__cf_lvl", idx_tbl)
+                # order_text is built solely from generated __cf_ord{j}_{n}
+                # identifiers and ASC/DESC/NULLS keywords — no user text.
+                perm = con_s.execute(
+                    f"SELECT __cf_idx FROM __cf_lvl"  # noqa: S608
+                    f" ORDER BY {order_text}, __cf_idx"
+                ).fetchall()
+            finally:
+                con_s.close()
+            rank = {i: p for p, (i,) in enumerate(perm)}
+            for idx in groups.values():
+                idx.sort(key=rank.__getitem__)
         instances: dict[int, Any] = {}
         shape: tuple[str, ...] | None = None
         key_rows: list[tuple] = []

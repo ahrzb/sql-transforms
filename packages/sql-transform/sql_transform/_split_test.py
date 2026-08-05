@@ -126,12 +126,8 @@ REFUSALS = [
         " AS z FROM __THIS__",
         "running fit",
     ),
-    (
-        "SELECT sc_transform(sc_fit(age ORDER BY fare) OVER (), age).age"
-        " AS z FROM __THIS__",
-        "later slice",
-    ),
-    # FILTER on tfm_fit graduated in slice 3 (pinned in _filter_test).
+    # In-call ORDER BY graduated in slice 4 (_ordered_test); FILTER in
+    # slice 3 (_filter_test).
     # A field is a scalar; chaining can never resolve.
     ("SELECT sc(age).age.x AS z FROM __THIS__", "chained field access"),
     (

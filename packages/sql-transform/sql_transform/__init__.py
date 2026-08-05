@@ -21,6 +21,7 @@ from sql_transform._projection import SQLProjection
 from sql_transform._udf import (
     UDF,
     Named,
+    OrderSensitive,
     PythonTransform,
     PythonUDF,
     UDFError,
@@ -32,6 +33,7 @@ __all__ = [
     "Marginalized",
     "MarginalizeError",
     "Named",
+    "OrderSensitive",
     "ParamsSpec",
     "PythonTransform",
     "PythonUDF",
