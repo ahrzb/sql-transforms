@@ -440,9 +440,9 @@ class SQLProjection:
     def serving_sql(self) -> str:
         """The rewritten projection: params joins instead of aggregates.
 
-        Final after fit: a bare width-k transformer item cannot be spelled
-        before its field names are learned, so fit expands it into one
-        aliased lane call per field."""
+        Final at construction: every transformer mention — a whole struct
+        output or a field read — serves through the one whole-value call
+        (TASK-63); fit rewrites nothing."""
         if self._serving_sql is not None:
             return self._serving_sql
         return self._marginalized.serving_sql

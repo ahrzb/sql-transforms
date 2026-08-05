@@ -1259,27 +1259,82 @@ fn field_access_on_a_width1_named_extern_binds_lane_zero() {
 }
 
 #[test]
-fn named_extern_outside_a_field_read_refuses() {
-    // A named extern is struct-valued — width-1 included: bare and
-    // mid-expression positions refuse (DuckDB's struct registration would
-    // binder-error on the arithmetic and we have no struct output yet).
+fn named_extern_mid_expression_refuses() {
+    // A named extern is struct-valued — width-1 included: a MID-EXPRESSION
+    // position refuses (DuckDB's struct registration would binder-error on
+    // the arithmetic). Bare items take the struct boundary (slice 5).
     let schema = cols(&[("x", Ty::F64, true)]);
-    for sql in [
+    let err = prep_udfs(
         "SELECT (sc(x) + 1.0) AS u FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("sc", &[Ty::F64], &[("a", Ty::F64)])],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, PrepareError::Unsupported(m) if m.contains("sc") && m.contains("struct-valued")),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn named_extern_bare_item_expands_to_struct_lanes() {
+    // Slice 5 (DRAFT-25): a NAMED extern as a bare item serves its whole
+    // output struct — whole-validity lane + one lane per declared field,
+    // the names riding the WideOut for the boundary to key the struct.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let p = prep_udfs(
+        "SELECT emb(x) AS z, x AS orig FROM __THIS__",
+        &schema,
+        &[],
+        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+    )
+    .unwrap();
+    assert_eq!(p.wide_outputs.len(), 1);
+    let w = &p.wide_outputs[0];
+    assert_eq!((w.name.as_str(), w.first, w.width), ("z", 0, 2));
+    assert_eq!(w.names, ["a", "b"]);
+    assert_eq!(p.program.out_cols.len(), 4);
+    assert_eq!(p.program.out_cols[0].ty.ty, Ty::I1);
+    // One evaluation feeds every lane (same site sharing as the unnamed
+    // list boundary).
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let calls = Rc::new(Cell::new(0u32));
+    let c2 = calls.clone();
+    let emb = imp("emb", move |args| {
+        c2.set(c2.get() + 1);
+        match &args[0] {
+            None => Ok(None),
+            Some(ScalarVal::F64(x)) => Ok(Some(vec![
+                Some(ScalarVal::F64(x + 1.0)),
+                Some(ScalarVal::F64(x * 2.0)),
+            ])),
+            _ => Err("bad arg".into()),
+        }
+    });
+    let f = super::exec::interp::compile_ext(&p.program, vec![], vec![emb]).unwrap();
+    let input = batch(2, vec![c_f64(&[Some(3.0), None])]);
+    assert_eq!(
+        run_snapshot(&f, &input).unwrap(),
+        rows(&[
+            &["true", "4.0", "6.0", "3.0"],
+            &["false", "NULL", "NULL", "NULL"]
+        ])
+    );
+    assert_eq!(calls.get(), 2, "one evaluation per row, not one per lane");
+    // Width-1 named externs take the same boundary — struct at every width.
+    let p1 = prep_udfs(
         "SELECT sc(x) AS u FROM __THIS__",
-    ] {
-        let err = prep_udfs(
-            sql,
-            &schema,
-            &[],
-            &[udf_named("sc", &[Ty::F64], &[("a", Ty::F64)])],
-        )
-        .unwrap_err();
-        assert!(
-            matches!(&err, PrepareError::Unsupported(m) if m.contains("sc") && m.contains("struct-valued")),
-            "{sql}: {err}"
-        );
-    }
+        &schema,
+        &[],
+        &[udf_named("sc", &[Ty::F64], &[("a", Ty::F64)])],
+    )
+    .unwrap();
+    assert_eq!(p1.wide_outputs.len(), 1);
+    let w1 = &p1.wide_outputs[0];
+    assert_eq!((w1.name.as_str(), w1.first, w1.width), ("u", 0, 1));
+    assert_eq!(w1.names, ["a"]);
 }
 
 #[test]
@@ -1368,26 +1423,6 @@ fn distinct_args_to_the_same_extern_get_distinct_ecalls() {
     assert_eq!(
         run_snapshot(&f, &input).unwrap(),
         rows(&[&["4.0", "11.0"]])
-    );
-}
-
-#[test]
-fn named_wide_extern_as_a_bare_item_refuses() {
-    // A NAMED width-k extern registers as a STRUCT on the DuckDB side, so
-    // the engine's list|None bare-item boundary would be a silent third
-    // behavior (C2) — refuse by name; the unnamed list boundary stays.
-    let schema = cols(&[("x", Ty::F64, true)]);
-    let err = prep_udfs(
-        "SELECT emb(x) AS e FROM __THIS__",
-        &schema,
-        &[],
-        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
-    )
-    .unwrap_err();
-    assert!(
-        matches!(&err, PrepareError::Unsupported(m)
-            if m.contains("emb") && m.contains("bare") && m.contains("field")),
-        "got: {err}"
     );
 }
 

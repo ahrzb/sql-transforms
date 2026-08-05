@@ -254,22 +254,36 @@ pub fn emit(
                 valid,
                 first,
                 width,
+                names: field_names,
             } => {
                 names.push(name.clone());
-                let elem = match out_cols[*first].ty.ty {
-                    crate::specializer::ir::Ty::I1 => pa.call_method0("bool_")?,
-                    crate::specializer::ir::Ty::I64 => pa.call_method0("int64")?,
-                    crate::specializer::ir::Ty::F64 => pa.call_method0("float64")?,
-                    crate::specializer::ir::Ty::Str => pa.call_method0("large_string")?,
+                let lane_ty = |t: crate::specializer::ir::Ty| match t {
+                    crate::specializer::ir::Ty::I1 => pa.call_method0("bool_"),
+                    crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
+                    crate::specializer::ir::Ty::F64 => pa.call_method0("float64"),
+                    crate::specializer::ir::Ty::Str => pa.call_method0("large_string"),
                 };
-                let list_ty = pa.call_method1("list_", (elem,))?;
+                // Unnamed extern: list<elem>; named extern: struct keyed by
+                // the declared names (slice 5), matching DuckDB's output.
+                let out_ty = if field_names.is_empty() {
+                    pa.call_method1("list_", (lane_ty(out_cols[*first].ty.ty)?,))?
+                } else {
+                    let members = field_names
+                        .iter()
+                        .zip(&out_cols[*first..*first + *width])
+                        .map(|(fname, c)| {
+                            pa.call_method1("field", (fname.as_str(), lane_ty(c.ty.ty)?))
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                    pa.call_method1("struct", (PyList::new(py, members)?,))?
+                };
                 let mut values = Vec::with_capacity(n);
                 for r in 0..n {
-                    values.push(super::wide_py(py, st, *valid, *first, *width, r)?);
+                    values.push(super::wide_py(py, st, *valid, *first, *width, field_names, r)?);
                 }
                 let vals = PyList::new(py, values)?;
                 let kw = pyo3::types::PyDict::new(py);
-                kw.set_item("type", list_ty)?;
+                kw.set_item("type", out_ty)?;
                 arrays.push(pa.call_method("array", (vals,), Some(&kw))?);
                 continue;
             }

@@ -281,6 +281,44 @@ spelling, `sm_fit(bundle ORDER BY key, ...) OVER (w)`. Mechanics:
   neither wrapper forwards dunders — protocol probes (`__sklearn_clone__`,
   pickle) must see the wrapper, or `clone()` strips it.
 
+## Slice 5 addendum — nested struct outputs (2026-08-05)
+
+**Bare call = struct output, both paths.** A bare `tfm(bundle)` or
+`tfm_transform(θ, bundle)` as a WHOLE output item serves its output
+struct — `{field: value, ...}`, NULL for an unseen group (the whole
+struct is NULL, distinct from a struct of NULLs). Mechanics:
+
+- Construction: whole-item routing in `rewrite_items` sends the item to
+  the existing whole-value call (`__cf_tf{j}`, `UDFSpec.field=None`,
+  TASK-63); embedded positions still refuse by name ("struct value
+  inside an expression" — DuckDB's struct registration would
+  binder-error there). An unaliased item keeps DuckDB's derived column
+  name: the parse step stamps it as the alias (`AS "sc(age)"`), so the
+  oracle's name survives the rewrite verbatim.
+- Batch path: nothing to lift — the serving text has been final since
+  TASK-63 and the arrow-typed struct registration already serves the
+  column.
+- Row path (engine): `WideOut`/`EmitField::Wide` carry the declared
+  field names; a NAMED extern takes the wide-lane boundary at EVERY
+  width (whole-validity lane + one lane per declared field, one ecall
+  site); `wide_py` assembles a dict keyed by the names (the DRAFT-22
+  list boundary stays for unnamed externs); the synthesized output
+  model types the field as a nested struct model; arrow emit builds a
+  `pa.struct_` column. A plan holding a named wide field routes through
+  `model_validate` — the slot-fill fast path is sound only for plain
+  scalar fields (a raw dict in a nested-model slot serializes with
+  warnings and breaks attribute access).
+- Measured law (2026-08-05): `call.*` / `(call).*` are DuckDB PARSER
+  errors — star-over-expression does not exist in the oracle, so the
+  spelling refuses at parse (pinned). `unnest(call)` IS the oracle's
+  expansion spelling: one column per learned field, named by the FIELD
+  names (an alias is ignored), expanded in place among the other items.
+- Unnest is the slice's follow-up PR: learned output names crossing the
+  boundary drag in the duplicate-name law (DuckDB allows duplicate
+  result columns; the row-path model cannot) — a strict xfail pins the
+  serving shape until it lands. θ export (slice 6) rides on the
+  whole-value struct boundary landed here.
+
 ## Implementation slices (sequential standalone PRs)
 
 1. **The split.** Recognize `x_fit`/`x_transform`, fit-scope clauses on

@@ -1025,17 +1025,19 @@ class _LevelRewriter:
                 bare = _bare_tf_name(x, self.planner.lookup)
                 if bare is not None:
                     _refuse(
-                        f"a transformer call is a struct value — address an"
-                        f" output field ({bare}(...).name); the nested"
-                        " output boundary is a later slice",
+                        f"a transformer call is a struct value inside an"
+                        f" expression — serve it whole as its own output item"
+                        f" ({bare}(...) AS out) or address an output field"
+                        f" ({bare}(...).name)",
                         x.get("query_location"),
                     )
                 split = _split_transform_name(x, self.planner.lookup)
                 if split is not None:
                     _refuse(
-                        f"a transformer call is a struct value — address an"
-                        f" output field ({split}_transform(...).name); the"
-                        " nested output boundary is a later slice",
+                        f"a transformer call is a struct value inside an"
+                        f" expression — serve it whole as its own output item"
+                        f" ({split}_transform(...) AS out) or address an"
+                        f" output field ({split}_transform(...).name)",
                         x.get("query_location"),
                     )
                 fit_scalar = _fit_scalar_name(x, self.planner.lookup)
@@ -1405,7 +1407,29 @@ class _LevelRewriter:
                         entries.append((name, copy.deepcopy(expr)))
                         out.append(dict(copy.deepcopy(expr), alias=name))
                 continue
-            rewritten = self.rewrite(item)
+            # A bare or split transformer call as a WHOLE item serves its
+            # output struct (slice 5) — the whole-value call crosses the
+            # boundary as a struct column on both paths. An unaliased item
+            # already carries DuckDB's derived name (the parse step stamps
+            # it as the alias), so the oracle's column name survives.
+            whole_bare = _bare_tf_name(item, self.planner.lookup)
+            whole_split = (
+                None
+                if whole_bare is not None
+                else _split_transform_name(item, self.planner.lookup)
+            )
+            if whole_bare is not None or whole_split is not None:
+                tf = whole_bare or whole_split
+                if whole_bare is not None:
+                    rewritten = self.planner.transformer_ref(
+                        self, item, tf, field_name=None, alias=item.get("alias", "")
+                    )
+                else:
+                    rewritten = self.planner.split_ref(
+                        self, item, tf, field_name=None, alias=item.get("alias", "")
+                    )
+            else:
+                rewritten = self.rewrite(item)
             if item.get("alias"):
                 # Substitution may return an env expression whose alias field
                 # is empty; the item's output name must survive it.
@@ -1483,9 +1507,9 @@ class _Planner:
         if hasattr(obj, "fit") and hasattr(obj, "transform"):
             # Normally caught earlier in rewrite; defensive for other paths.
             _refuse(
-                f"a transformer call is a struct value — address an output"
-                f" field ({name}(...).name); the nested output boundary is"
-                " a later slice",
+                f"a transformer call is a struct value inside an expression"
+                f" — serve it whole as its own output item ({name}(...) AS"
+                f" out) or address an output field ({name}(...).name)",
                 loc,
             )
         takes = getattr(obj, "takes", None)

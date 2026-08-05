@@ -296,10 +296,6 @@ def test_udf_declaration_violation_traps():
     [
         ("SELECT nope(age) OVER () FROM __THIS__", "unknown window function nope"),
         (
-            "SELECT sc_transform(sc_fit(age) OVER (), age) AS s FROM __THIS__",
-            "address an output field",
-        ),
-        (
             "SELECT sc_transform(sc_fit(age) OVER (ORDER BY age), age).age"
             " AS z FROM __THIS__",
             "running fit",
@@ -316,7 +312,6 @@ def test_udf_declaration_violation_traps():
             "SELECT avg(sc(age).age) OVER () FROM __THIS__",
             "inside a window aggregate",
         ),
-        ("SELECT sc(age) FROM __THIS__", "struct value"),
         ("SELECT mystery(age) FROM __THIS__", "unknown function mystery"),
         (
             "SELECT (SELECT max(mystery(age)) FROM __THIS__) FROM __THIS__",

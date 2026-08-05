@@ -110,18 +110,29 @@ def test_two_fields_cost_one_call_per_row_on_the_row_path():
         np.testing.assert_allclose([r["x"], r["y"]], ref[i], rtol=1e-9, atol=1e-12)
 
 
-def test_bare_wide_item_refuses_at_construction():
-    # Struct-valued calls: the flat expansion is gone; a bare item refuses
-    # until DRAFT-25's nested outputs. (Counting for the field-read shape
-    # is covered above — the bare shape no longer exists to count.)
-    import pytest
-
-    from sql_transform import MarginalizeError
-
-    with pytest.raises(MarginalizeError, match="struct value"):
-        SQLProjection(
-            "SELECT pca_transform(pca_fit(struct_pack(a := a, b := b))"
-            " OVER (PARTITION BY grp), struct_pack(a := a, b := b)) AS e,"
-            " name FROM __THIS__",
-            transformers={"pca": CountingPCA(n_components=2)},
+def test_bare_wide_item_costs_one_call_per_row():
+    # Slice 5: the bare shape serves the whole struct through the same one
+    # call — still exactly one transform() per row on both paths.
+    p = SQLProjection(
+        "SELECT pca_transform(pca_fit(struct_pack(a := a, b := b))"
+        " OVER (PARTITION BY grp), struct_pack(a := a, b := b)) AS e,"
+        " name FROM __THIS__",
+        transformers={"pca": CountingPCA(n_components=2)},
+    ).fit(TRAIN)
+    CountingPCA.calls = 0
+    out = p.transform(TRAIN)
+    assert CountingPCA.calls == TRAIN.num_rows
+    feats = np.array(
+        [TRAIN.column("a").to_pylist(), TRAIN.column("b").to_pylist()], dtype=float
+    ).T
+    ref = _reference(feats, TRAIN.column("grp").to_pylist())
+    for i, e in enumerate(out.column("e").to_pylist()):
+        np.testing.assert_allclose(
+            [e["pca0"], e["pca1"]], ref[i], rtol=1e-9, atol=1e-12
         )
+    CountingPCA.calls = 0
+    one = p.infer(TRAIN.to_pylist()[0]).model_dump()
+    assert CountingPCA.calls == 1, "one row, one bare item: exactly one call"
+    np.testing.assert_allclose(
+        [one["e"]["pca0"], one["e"]["pca1"]], ref[0], rtol=1e-9, atol=1e-12
+    )
