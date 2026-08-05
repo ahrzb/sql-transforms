@@ -234,6 +234,14 @@ edges:
   fit-step identity includes the filter (a filtered and an unfiltered
   fit never share a step); θ laterals compose (`... FILTER (...) OVER ()
   AS _th`).
+- The predicate RESOLVES like any expression (review round): it has no
+  serving side, so split_ref rewrites-and-discards it at construction —
+  unknown columns and functions refuse by name, author UDFs register for
+  the fit connection. Backward select-alias names bind laterally in the
+  level table, matching DuckDB; a FORWARD name is undecidable
+  schema-free (DuckDB refuses the text) and refuses with the
+  qualify-or-rename hint. Fit-step identity includes the predicate's
+  named-argument aliases (`_alias_sig`), like every other ident site.
 
 ## Implementation slices (sequential standalone PRs)
 

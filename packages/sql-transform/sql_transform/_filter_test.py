@@ -136,7 +136,85 @@ def test_everything_filtered_refuses_at_fit_by_name():
         p.fit(TRAIN)
 
 
+def test_author_udf_in_predicate_serves():
+    """Review round: the predicate skipped UDF resolution, so a registered
+    author UDF crashed raw at fit (CatalogException)."""
+    from sql_transform import PythonUDF
+
+    gt6 = PythonUDF(
+        name="gt6",
+        fn=lambda v: v is not None and v > 6.0,
+        takes=("f64",),
+        returns=("i1",),
+    )
+    p = SQLProjection(
+        "SELECT sc_transform(sc_fit(age) FILTER (WHERE gt6(fare)) OVER (), age)"
+        ".age AS z, name FROM __THIS__",
+        this_model=ROW,
+        transformers={"sc": StandardScaler(), "gt6": gt6},
+    ).fit(TRAIN)
+    ref = _fit(
+        "SELECT sc_transform(sc_fit(age) FILTER (WHERE fare > 6) OVER (), age)"
+        ".age AS z, name FROM __THIS__"
+    )
+    got = _by_name(p.transform(TRAIN), "z")
+    want = _by_name(ref.transform(TRAIN), "z")
+    for n, v in want.items():
+        np.testing.assert_allclose(got[n], v, rtol=1e-12)
+
+
+def test_predicates_differing_in_named_args_are_distinct_steps():
+    """Review round: _stripped erases the named-arg aliases inside the
+    predicate, collapsing two different fits into one step."""
+    p = _fit(
+        "SELECT sc_transform(sc_fit(age) FILTER (WHERE struct_extract("
+        "struct_pack(a := fare, b := age), 'a') > 6) OVER (), age).age AS za,"
+        " sc_transform(sc_fit(age) FILTER (WHERE struct_extract("
+        "struct_pack(b := fare, a := age), 'a') > 6) OVER (), age).age AS zb,"
+        " name FROM __THIS__"
+    )
+    assert len([s for s in p.plan if s.kind == "fit"]) == 2
+    feats = np.array([TRAIN.column("age").to_pylist()], dtype=float).T
+    mask_a = [f > 6 for f in TRAIN.column("fare").to_pylist()]  # 'a' := fare
+    mask_b = [a > 6 for a in TRAIN.column("age").to_pylist()]  # 'a' := age
+    ref_a = _ref_filtered(StandardScaler(), feats, [()] * TRAIN.num_rows, mask_a)
+    ref_b = _ref_filtered(StandardScaler(), feats, [()] * TRAIN.num_rows, mask_b)
+    out = p.transform(TRAIN)
+    got_a, got_b = _by_name(out, "za"), _by_name(out, "zb")
+    for i, n in enumerate(TRAIN.column("name").to_pylist()):
+        np.testing.assert_allclose(got_a[n], ref_a[i], rtol=1e-12)
+        np.testing.assert_allclose(got_b[n], ref_b[i], rtol=1e-12)
+
+
+def test_schema_free_forward_alias_in_predicate_refuses():
+    """Review round: schema-free, a predicate naming a LATER select alias
+    served text DuckDB refuses (binds backward in the level table)."""
+    with pytest.raises(MarginalizeError, match="lateral alias"):
+        SQLProjection(
+            "SELECT sc_transform(sc_fit(age) FILTER (WHERE m > 0) OVER (), age)"
+            ".age AS z, fare - 6 AS m, name FROM __THIS__",
+            transformers={"sc": StandardScaler()},
+        )
+
+
 REFUSALS = [
+    # The predicate resolves like any expression (review round): unknown
+    # columns and functions refuse at construction, not mid-fit.
+    (
+        "SELECT sc_transform(sc_fit(age) FILTER (WHERE nope > 0) OVER (), age)"
+        ".age AS z FROM __THIS__",
+        "unknown column nope",
+    ),
+    (
+        "SELECT sc_transform(sc_fit(age) FILTER (WHERE nosuchfn(fare))"
+        " OVER (), age).age AS z FROM __THIS__",
+        "unknown function nosuchfn",
+    ),
+    (
+        "SELECT sc_transform(sc_fit(age) FILTER (WHERE fare >"
+        " (SELECT max(age) FROM __THIS__)) OVER (), age).age AS z FROM __THIS__",
+        "subquery inside a FILTER",
+    ),
     # FILTER on any scalar call refuses (measured: DuckDB binds FILTER only
     # on aggregates) — at construction, by name.
     (
@@ -163,5 +241,6 @@ def test_filter_refusals(sql, match):
     with pytest.raises(MarginalizeError, match=match):
         SQLProjection(
             sql,
+            this_model=ROW,
             transformers={"sc": StandardScaler(), "pca": PCA(n_components=1)},
         )

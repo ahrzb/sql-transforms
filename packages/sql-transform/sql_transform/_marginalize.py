@@ -1185,6 +1185,39 @@ class _LevelRewriter:
             return [self._expand(v, in_window) for v in x]
         return x
 
+    def validate_filter(self, pred: Node) -> None:
+        """A fit FILTER predicate has no serving side, so nothing else
+        resolves it (review round 2026-08-05). Rewrite-and-discard validates
+        columns at construction and registers author UDFs; the fit-side text
+        then binds laterally in the level table, which matches DuckDB for
+        backward names — a FORWARD name is undecidable schema-free (DuckDB
+        refuses the text), so it refuses with the risky-alias hint."""
+        self.rewrite(pred)
+        if not self.env.star:
+            return  # explicit envs screened forward refs at item expansion
+
+        def walk(x: Any) -> None:
+            if isinstance(x, dict):
+                if x.get("class") == "COLUMN_REF":
+                    names = x["column_names"]
+                    if (
+                        len(names) == 1
+                        and self.item_pos.get(names[0].lower(), -1) > self.item_i
+                    ):
+                        _refuse(
+                            f"{names[0]} may be a lateral alias of a later"
+                            " select item — qualify the column (e.g."
+                            " __THIS__.{0}) or rename the alias".format(names[0]),
+                            x.get("query_location"),
+                        )
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+
+        walk(pred)
+
     def _refuse_lateral_in_subquery(self, x: Any) -> None:
         if isinstance(x, dict):
             if x.get("class") == "COLUMN_REF":
@@ -1279,12 +1312,11 @@ class _LevelRewriter:
         entries: list[tuple[str, Node | None]] = []
         names_seen: set[str] = set()
         explicit = not self.env.star
-        if explicit:
-            self.item_pos = {
-                n.lower(): i
-                for i, it in enumerate(items)
-                if (n := _item_name(it)) is not None
-            }
+        self.item_pos = {
+            n.lower(): i
+            for i, it in enumerate(items)
+            if (n := _item_name(it)) is not None
+        }
         for self.item_i, raw_item in enumerate(items):
             name = _item_name(raw_item)
             lname = name.lower() if name is not None else None
@@ -1506,7 +1538,7 @@ class _Planner:
                 " FILTER (...) OVER (...))",
                 raw.get("query_location"),
             )
-        ident = _stripped(raw) + "|" + _bundle_names_key(raw)
+        ident = "|".join([_stripped(raw), _bundle_names_key(raw), _alias_sig(raw)])
         if ident in self.tf_calls:
             return self._tf_call_node(self.tf_calls[ident], field_name, alias)
         self.check_transformer_identity(raw, name)
@@ -1632,6 +1664,7 @@ class _Planner:
         filter_fit = None
         if w.filter_expr is not None:
             _walk_row_wise(w.filter_expr, "a FILTER", self.lookup)
+            rw.validate_filter(w.filter_expr)
             filter_fit = _strip_quals(w.filter_expr, rw.level.source_quals)
         if (
             w.start != "UNBOUNDED_PRECEDING"
@@ -1643,7 +1676,9 @@ class _Planner:
         if w.distinct or w.ignore_nulls:
             _refuse(f"DISTINCT/IGNORE NULLS on {tf_name}_fit", w.query_location)
         tbundle = rw._bundle_of(kids[1])
-        ident = _stripped(theta) + "|" + _bundle_names_key(theta)
+        ident = "|".join(
+            [_stripped(theta), _bundle_names_key(theta), _alias_sig(theta)]
+        )
         if ident in self.tf_calls:
             j = self.tf_calls[ident]
         else:
