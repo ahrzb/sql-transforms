@@ -152,14 +152,17 @@ SELECT g, tfm_fit(x) AS theta FROM __THIS__ GROUP BY g
 
 ## Sequencing
 
-Ruled 2026-08-04, in order:
-1. **Struct-valued transform calls** (the pulled-forward deletions above:
-   no width-1 auto-unwrap, no flat expansion; bare calls refuse until the
-   nested boundary arrives).
-2. **DRAFT-24 loop 5 — composition**, WITH partition composition
-   (call-site keys prepending to member windows) as the draft wrote it.
-   Refit-through members only; FROZEN members are this epic's machinery
-   (θ as argument) and wait for it.
-3. **Private columns** (TASK-64: `_`-prefixed output fields never cross
-   the output boundary; lateral-alias sugar lowered by substitution).
-4. This epic.
+Re-ruled 2026-08-04 (evening): **composition is PARKED until this epic
+settles** — "maybe let's discuss this after the whole fit / transform
+saga, because that might cause changes here." Standing order:
+1. **Struct-valued transform calls** — DONE (merged 2026-08-04).
+2. **This epic** — the fit/transform saga, next up for design discussion
+   (its open edges above, plus the deferred DRAFT-23 conversation).
+3. **DRAFT-24 loop 5 — composition** — revisited AFTER the epic, since
+   the epic's semantics may change its design. Parked state: PR #79
+   closed; branch `composition-members` holds the spec, the TASK-65
+   ticket, and slice-1 red-checkpoint tests (skip-marked, 13ded21).
+   Partition composition stays in its scope per the earlier ruling;
+   frozen members remain this epic's machinery.
+4. **Private columns** (TASK-64) — independent and small; slot wherever
+   convenient.
