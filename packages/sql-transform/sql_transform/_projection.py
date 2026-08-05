@@ -284,6 +284,12 @@ class SQLProjection:
         specs = [u for u in m.udfs if u.step == step.name]
         (params_spec,) = [p for p in m.params if p.name == step.name]
         base_name = specs[0].name  # every spec of a step shares the one UDF
+        # Typed BEFORE fitting: a nested feature column dies here by name,
+        # never as a raw error inside est.fit (review round 2026-08-05).
+        takes = tuple(
+            _engine_ty(table.column(c).type, n)
+            for c, n in zip(step.features, step.feature_names, strict=True)
+        )
         feats = _feature_matrix(table, list(step.features))
         keyvals = [table.column(k).to_pylist() for k in step.keys]
         groups: dict[tuple, list[int]] = {}
@@ -333,10 +339,7 @@ class SQLProjection:
             instances=instances,
             # S's field types come from the level table — the real types of
             # the bundle expressions, so a string feature stays a string.
-            takes=tuple(
-                _engine_ty(table.column(c).type, n)
-                for c, n in zip(step.features, step.feature_names, strict=True)
-            ),
+            takes=takes,
             returns=("f64",) * len(shape),
             take_names=tuple(step.feature_names),
             return_names=shape,
