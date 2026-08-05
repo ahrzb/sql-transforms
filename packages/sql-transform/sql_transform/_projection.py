@@ -196,6 +196,14 @@ class SQLProjection:
                 )
             table = table.select(self._columns)
         m = self._marginalized
+        if self._columns is None and m.star_passthrough:
+            leaked = [c for c in table.column_names if c.startswith("_")]
+            if leaked:
+                raise MarginalizeError(
+                    f"column {leaked[0]} would cross the output boundary via *"
+                    " (output fields starting with _ are private) — declare a"
+                    " this_model or rename it"
+                )
         con = duckdb.connect()
         try:
             # DuckDB's parallel window aggregation accumulates floats in a

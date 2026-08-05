@@ -161,6 +161,9 @@ class Marginalized:
     params: tuple[ParamsSpec, ...]
     udfs: tuple[UDFSpec, ...] = ()
     scalar_udfs: tuple[str, ...] = ()
+    # A schema-free ``*`` survives to the output: fit must refuse if the
+    # table would leak a ``_`` column through it (privates never cross).
+    star_passthrough: bool = False
 
 
 def _refuse(what: str, loc: int | None = None) -> None:
@@ -592,9 +595,12 @@ class _Key:
 @dataclass
 class _Env:
     """What one level's outputs look like from above: ordered entries of
-    ("*",) — base columns pass through — or (spelled name, serving expr)."""
+    ("*",) — base columns pass through — or (spelled name, serving expr).
+    ``private`` names the lower level's private columns, which never cross
+    levels — reading one refuses by name."""
 
     entries: list[tuple[str, Node | None]]
+    private: frozenset[str] = frozenset()
 
     @property
     def exprs(self) -> dict[str, Node]:
@@ -606,6 +612,16 @@ class _Env:
 
 
 _BASE_ENV = _Env(entries=[("*", None)])
+
+
+def _contains_window(x: Any) -> bool:
+    if isinstance(x, dict):
+        return x.get("class") == "WINDOW" or any(
+            _contains_window(v) for v in x.values()
+        )
+    if isinstance(x, list):
+        return any(_contains_window(v) for v in x)
+    return False
 
 
 def _item_name(item: Node) -> str | None:
@@ -668,7 +684,15 @@ class _LevelRewriter:
         self.env = env
         self.level = level
         self.risky_aliases: set[str] = set()  # schema-free mode only
-        self.alias_exprs: dict[str, Node] = {}  # explicit-env lateral aliases
+        # Explicit-env lateral aliases, stored as EXPANDED raw expressions in
+        # level terms — consumers β-reduce before any rewrite, so windows and
+        # fit-side SQL always see closed expressions (slice-2 addendum).
+        self.raw_aliases: dict[str, Node] = {}
+        self.private_names: set[str] = set()
+        self.private_unread: set[str] = set()
+        # The fit-side view of this level's items: expanded (alias-free of
+        # laterals) and private-filtered — what __CF_LEVEL_{i}__ projects.
+        self.fit_items: list[Node] = []
         self.is_final = False  # set by rewrite_items
 
     # -- column resolution
@@ -715,10 +739,12 @@ class _LevelRewriter:
                     x.get("query_location"),
                 )
             return copy.deepcopy(target)
-        if was_bare and head in self.alias_exprs:
-            # DuckDB's lateral-alias rule, resolvable because the environment
-            # is explicit: the column did not exist, so the alias applies.
-            return copy.deepcopy(self.alias_exprs[head])
+        if head in self.env.private:
+            _refuse(
+                f"private column {names[0]} is same-SELECT scope — it never"
+                " crosses levels (make it public in its own level)",
+                x.get("query_location"),
+            )
         if self.env.star:
             return dict(copy.deepcopy(x), column_names=["__cf_t", *names])
         _refuse(f"unknown column {'.'.join(names)}", x.get("query_location"))
@@ -877,8 +903,6 @@ class _LevelRewriter:
                             " (write the field literally)",
                             x.get("query_location"),
                         )
-                    if self.alias_exprs:
-                        self._check_no_lateral_in_window(kids[0])
                     if win_name is not None:
                         # θ field reads and the deleted OVER sugar refuse
                         # the same way here as anywhere else.
@@ -904,8 +928,6 @@ class _LevelRewriter:
                     out["children"] = [call, copy.deepcopy(kids[1])]
                     return out
             if cls == "WINDOW":
-                if self.alias_exprs:
-                    self._check_no_lateral_in_window(x)
                 tf_name = _is_tf_node(x)
                 if tf_name is not None:
                     self._refuse_window_tf(x, tf_name)
@@ -1016,8 +1038,9 @@ class _LevelRewriter:
         if fit_stem is not None:
             _refuse(
                 f"{fit_stem}_fit(...) OVER (...) must be consumed as the"
-                f" first argument of {fit_stem}_transform — θ export"
-                " arrives in a later slice",
+                f" first argument of {fit_stem}_transform or parked in a"
+                " private column (AS _theta) — θ public export arrives in a"
+                " later slice",
                 loc,
             )
         self.planner.check_transformer_identity(x, tf_name)
@@ -1029,27 +1052,73 @@ class _LevelRewriter:
             loc,
         )
 
-    def _check_no_lateral_in_window(self, x: Any) -> None:
-        """A window's fit-side text runs against the source relation, which
-        has no same-level lateral aliases — refuse them by name."""
+    def _expand(self, x: Any, in_window: bool = False) -> Any:
+        """β-reduce same-level lateral aliases at the raw AST, before any
+        rewrite: consumers receive closed level-term expressions, so windows,
+        partition keys, and transformer bundles never mention an alias.
+        Column-wins (DuckDB's rule) is preserved via the env check."""
+        if isinstance(x, dict):
+            cls = x.get("class")
+            if cls == "COLUMN_REF":
+                names = x["column_names"]
+                head = names[0].lower() if names else ""
+                if (
+                    head in self.raw_aliases
+                    and head not in self.env.exprs
+                    and not (len(names) > 1 and head in self.level.source_quals)
+                ):
+                    if len(names) > 1:
+                        # Measured: DuckDB binds a dotted name as
+                        # table.column and refuses ("Referenced table not
+                        # found") — the FUNCTION spelling binds laterally.
+                        _refuse(
+                            f"{'.'.join(names)} reads lateral alias"
+                            f" {names[0]} as a table — write"
+                            f" struct_extract({names[0]}, {names[1]!r})",
+                            x.get("query_location"),
+                        )
+                    self.private_unread.discard(head)
+                    sub = copy.deepcopy(self.raw_aliases[head])
+                    if x.get("alias"):
+                        # The ref's own alias (an output name, a struct_pack
+                        # field name) must survive the substitution.
+                        sub = dict(sub, alias=x["alias"])
+                    if in_window and _contains_window(sub):
+                        _refuse(
+                            f"window-valued alias {names[0]} inside a window"
+                            " (DuckDB: window function calls cannot be"
+                            " nested)",
+                            x.get("query_location"),
+                        )
+                    return sub
+                return copy.deepcopy(x)
+            if cls == "SUBQUERY":
+                # A subquery step runs verbatim where no same-level alias
+                # exists (DuckDB binds these laterally; v0 refuses by name).
+                self._refuse_lateral_in_subquery(x)
+                return copy.deepcopy(x)
+            inner = in_window or cls == "WINDOW"
+            return {k: self._expand(v, inner) for k, v in x.items()}
+        if isinstance(x, list):
+            return [self._expand(v, in_window) for v in x]
+        return x
+
+    def _refuse_lateral_in_subquery(self, x: Any) -> None:
         if isinstance(x, dict):
             if x.get("class") == "COLUMN_REF":
                 names = x["column_names"]
-                if (
-                    len(names) == 1
-                    and names[0].lower() in self.alias_exprs
-                    and names[0].lower() not in self.env.exprs
-                ):
+                head = names[0].lower() if names else ""
+                if head in self.raw_aliases and head not in self.env.exprs:
                     _refuse(
-                        f"lateral alias {names[0]} inside a window function"
-                        " (name the column or repeat the expression)",
+                        f"lateral alias {names[0]} inside a subquery (the"
+                        " subquery step runs where the alias does not exist)",
                         x.get("query_location"),
                     )
             for v in x.values():
-                self._check_no_lateral_in_window(v)
+                self._refuse_lateral_in_subquery(v)
         elif isinstance(x, list):
             for v in x:
-                self._check_no_lateral_in_window(v)
+                self._refuse_lateral_in_subquery(v)
 
     def _expand_star(self, star_node: Node) -> list[tuple[str, Node]]:
         """Expand a star/COLUMNS over a fully explicit environment, composing
@@ -1100,7 +1169,14 @@ class _LevelRewriter:
                 continue
             chosen = replace.get(name.lower())
             chosen = copy.deepcopy(chosen if chosen is not None else expr)
-            out.append((rename.get(name.lower(), name), dict(chosen, alias="")))
+            renamed = rename.get(name.lower(), name)
+            if renamed.lower().startswith("_"):
+                _refuse(
+                    f"a star modifier renames {name} to the private name"
+                    f" {renamed} (a declared schema cannot carry one)",
+                    star.query_location,
+                )
+            out.append((renamed, dict(chosen, alias="")))
         if not out:
             _refuse("* expanded to no columns", star.query_location)
         return out
@@ -1116,7 +1192,29 @@ class _LevelRewriter:
         entries: list[tuple[str, Node | None]] = []
         names_seen: set[str] = set()
         explicit = not self.env.star
-        for item in items:
+        for raw_item in items:
+            name = _item_name(raw_item)
+            lname = name.lower() if name is not None else None
+            private = lname is not None and lname.startswith("_")
+            item = self._expand(raw_item) if explicit else raw_item
+            if private and not explicit:
+                _refuse(
+                    f"private column {name} without a declared schema (lateral"
+                    " resolution is undecidable against unknown table columns"
+                    " — declare one via this_model)",
+                    raw_item.get("query_location"),
+                )
+            if private:
+                # A private column is a same-SELECT macro: consumers already
+                # β-reduced it above; it is never rewritten as an item and
+                # never becomes an output or a next-level entry.
+                if lname in self.private_names:
+                    _refuse(f"duplicate private column {name}")
+                self.raw_aliases[lname] = dict(copy.deepcopy(item), alias="")
+                self.private_names.add(lname)
+                self.private_unread.add(lname)
+                continue
+            self.fit_items.append(copy.deepcopy(item))
             if item.get("class") == "STAR":
                 star = _Star.of(item)
                 if explicit:
@@ -1168,12 +1266,12 @@ class _LevelRewriter:
                 # is empty; the item's output name must survive it.
                 rewritten = dict(rewritten, alias=item["alias"])
             out.append(rewritten)
-            name = _item_name(item)
             if explicit:
                 if name is not None:
-                    self.alias_exprs.setdefault(
-                        name.lower(), dict(copy.deepcopy(rewritten), alias="")
-                    )
+                    # Plain assignment, not setdefault: DuckDB resolves a
+                    # duplicated alias to its LAST definition (measured
+                    # 2026-08-05; first-wins served the wrong column).
+                    self.raw_aliases[lname] = dict(copy.deepcopy(item), alias="")
             elif item.get("alias") and not (
                 item.get("class") == "COLUMN_REF"
                 and _ColumnRef.of(item).column_names[-1].lower()
@@ -1189,6 +1287,17 @@ class _LevelRewriter:
                 entries.append((name, dict(copy.deepcopy(rewritten), alias="")))
             else:
                 entries.append((name or "", None))
+        if not out:
+            _refuse(
+                "every output column is private (nothing would cross the"
+                " output boundary)"
+            )
+        if self.private_unread:
+            first = sorted(self.private_unread)[0]
+            _refuse(
+                f"private column {first} is never read (a private column is a"
+                " same-SELECT intermediate — read it or drop it)"
+            )
         return out, entries
 
 
@@ -1756,14 +1865,19 @@ def _has_windows(x: Any) -> bool:
 
 
 def _level_step(
-    planner: _Planner, level_i: int, level: _Level, source_name: str
+    planner: _Planner,
+    level_i: int,
+    level: _Level,
+    source_name: str,
+    fit_items: list[Node],
 ) -> FitStep:
-    """``__CF_LEVEL_{i}__``: the level's original items under their original
-    output names (the next level's verbatim input) plus its windows and key
-    expressions, reading from the previous level's table."""
+    """``__CF_LEVEL_{i}__``: the level's items — laterals expanded, privates
+    dropped — under their original output names (the next level's verbatim
+    input) plus its windows and key expressions, reading from the previous
+    level's table."""
     quals = level.source_quals
     originals = []
-    for item in level.node["select_list"]:
+    for item in fit_items:
         if _contains_tf(item, planner.lookup):
             continue  # not executable SQL; its features ride as __cf_f cols
         fit_item = _strip_quals(item, quals)
@@ -1945,7 +2059,9 @@ def marginalize(
         rewritten, entries = rewriter.rewrite_items(level.node["select_list"], is_final)
         if i <= deepest:
             source = "__THIS__" if i == 0 else f"__CF_LEVEL_{i - 1}__"
-            planner.plan.append(_level_step(planner, i, level, source))
+            planner.plan.append(
+                _level_step(planner, i, level, source, rewriter.fit_items)
+            )
             for idx, join in enumerate(planner.joins):
                 if join.level == i and idx not in planner.fit_joins:
                     planner.plan.append(_collapse_step(planner, idx, join))
@@ -1968,7 +2084,7 @@ def marginalize(
         if is_final:
             final_items = rewritten
             break
-        env = _Env(entries)
+        env = _Env(entries, private=frozenset(rewriter.private_names))
 
     if (
         not planner.joins
@@ -1984,6 +2100,9 @@ def marginalize(
             plan=(),
             params=(),
             scalar_udfs=tuple(planner.scalar_udfs),
+            star_passthrough=any(
+                it.get("class") == "STAR" for it in root["select_list"]
+            ),
         )
 
     root["select_list"] = final_items
@@ -1999,6 +2118,7 @@ def marginalize(
         params=specs,
         udfs=tuple(planner.udf_specs),
         scalar_udfs=tuple(planner.scalar_udfs),
+        star_passthrough=any(it.get("class") == "STAR" for it in final_items),
     )
 
 
