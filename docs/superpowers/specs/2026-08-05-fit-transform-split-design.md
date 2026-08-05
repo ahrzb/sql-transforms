@@ -267,6 +267,19 @@ spelling, `sm_fit(bundle ORDER BY key, ...) OVER (w)`. Mechanics:
   covers named-arg aliases inside keys.
 - Composes with FILTER (filter first, then sort the passing rows) and
   with θ laterals. Running fits (window-clause ORDER BY) stay refused.
+- Review-round decisions: a top-level `COLLATE` on a key is carried by
+  name and re-emitted in the fit-side sort (Arrow strips the annotation
+  from the level column); unknown collations refuse at construction
+  (probed against the oracle) and a `COLLATE` nested deeper in a key
+  expression refuses. Non-integer literal keys refuse (DuckDB's binder
+  rule); integer literals are constants, not positional (measured).
+  In-call ORDER BY on any *scalar* call — the bare sugar, the transform
+  half, plain and author functions — refuses at construction (measured:
+  aggregates-only binding; it used to drop silently or crash at
+  serving). Wrapper hygiene: `Named` forwards inner declarations like
+  `OrderSensitive` does (nesting order cannot cancel a contract), and
+  neither wrapper forwards dunders — protocol probes (`__sklearn_clone__`,
+  pickle) must see the wrapper, or `clone()` strips it.
 
 ## Implementation slices (sequential standalone PRs)
 

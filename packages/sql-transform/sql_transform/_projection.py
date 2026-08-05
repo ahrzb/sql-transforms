@@ -318,8 +318,11 @@ class SQLProjection:
                 "__cf_idx", pa.array(range(table.num_rows), type=pa.int64())
             )
             order_text = ", ".join(
-                f'"{c}" {"ASC" if asc else "DESC"} NULLS {"FIRST" if nf else "LAST"}'
-                for c, asc, nf in step.order_by
+                f'"{c}"'
+                + (f" COLLATE {coll}" if coll else "")
+                + f" {'ASC' if asc else 'DESC'}"
+                + f" NULLS {'FIRST' if nf else 'LAST'}"
+                for c, asc, nf, coll in step.order_by
             )
             con_s = duckdb.connect()
             try:

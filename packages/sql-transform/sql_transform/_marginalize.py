@@ -119,9 +119,10 @@ class FitStep:
     # BOOLEAN level-table column gating which rows enter the fit (FILTER on
     # the fit call); "" fits on every row.
     filter_col: str = ""
-    # In-call ORDER BY keys as (level-table column, ascending, nulls_first),
-    # in declared order — each fit scope stably sorts by them before fit.
-    order_by: tuple[tuple[str, bool, bool], ...] = ()
+    # In-call ORDER BY keys as (level-table column, ascending, nulls_first,
+    # collation) in declared order — each fit scope stably sorts by them
+    # before fit; "" collation means the default (binary).
+    order_by: tuple[tuple[str, bool, bool, str], ...] = ()
     # The bundle's field names, positionally aligned with ``features`` — the
     # input struct type S (DRAFT-24), passed to sklearn as input_features so
     # the learned output names can refer to them.
@@ -1014,6 +1015,13 @@ class _LevelRewriter:
                         " OVER (...))",
                         x.get("query_location"),
                     )
+                if (x.get("order_bys") or {}).get("orders"):
+                    # Same binder rule for in-call ORDER BY.
+                    _refuse(
+                        f"ORDER BY inside the scalar call {x['function_name']}"
+                        " (DuckDB binds in-call ORDER BY only on aggregates)",
+                        x.get("query_location"),
+                    )
                 bare = _bare_tf_name(x, self.planner.lookup)
                 if bare is not None:
                     _refuse(
@@ -1541,6 +1549,12 @@ class _Planner:
                 " FILTER (...) OVER (...))",
                 raw.get("query_location"),
             )
+        if (raw.get("order_bys") or {}).get("orders"):
+            _refuse(
+                f"ORDER BY inside the {name}(...) sugar — the order belongs"
+                f" on {name}_fit(bundle ORDER BY key) OVER (...)",
+                raw.get("query_location"),
+            )
         if getattr(self.lookup(name), "order_sensitive", False):
             _refuse(
                 f"{name} is order-sensitive — the bare sugar cannot name an"
@@ -1572,7 +1586,7 @@ class _Planner:
         keys: list[_Key],
         bundle: list[tuple[str, Node, Node]],
         filter_fit: Node | None = None,
-        order_fit: list[tuple[Node, bool, bool]] | None = None,
+        order_fit: list[tuple[Node, bool, bool, str]] | None = None,
     ) -> int:
         """One fit step + its dedicated params join, never shared with
         aggregate groups. (Sharing keys with an aggregate join is a dedup
@@ -1595,10 +1609,10 @@ class _Planner:
                 "join": idx,
                 "filter_fit": filter_fit,
                 "filter_col": f"__cf_flt{j}" if filter_fit is not None else "",
-                # (column name, key expr in level terms, asc, nulls_first)
+                # (column, key expr in level terms, asc, nulls_first, collation)
                 "order_fit": [
-                    (f"__cf_ord{j}_{n}", expr, asc, nf)
-                    for n, (expr, asc, nf) in enumerate(order_fit or [])
+                    (f"__cf_ord{j}_{n}", expr, asc, nf, coll)
+                    for n, (expr, asc, nf, coll) in enumerate(order_fit or [])
                 ],
                 # The serving-side argument nodes, kept so a second field
                 # access on the same call rebuilds the call without refitting.
@@ -1641,6 +1655,13 @@ class _Planner:
                 " FILTER (...) OVER (...))",
                 loc,
             )
+        if (raw.get("order_bys") or {}).get("orders"):
+            _refuse(
+                f"ORDER BY on {tf_name}_transform ({tf_name}_transform is a"
+                f" scalar — the order lives on {tf_name}_fit(bundle ORDER BY"
+                " key) OVER (...))",
+                loc,
+            )
         kids = raw.get("children") or []
         if len(kids) != 2:
             _refuse(
@@ -1675,9 +1696,39 @@ class _Planner:
         # In-call ORDER BY — DuckDB's ordered-aggregate spelling. Each key
         # resolves like any fit-side expression; direction and null placement
         # default to DuckDB's (ASC, NULLS LAST — measured 2026-08-05).
-        order_fit: list[tuple[Node, bool, bool]] = []
+        order_fit: list[tuple[Node, bool, bool, str]] = []
         for o in w.arg_orders:
             key = o["expression"]
+            collation = ""
+            if isinstance(key, dict) and key.get("class") == "COLLATE":
+                # The collation is a comparison annotation — it cannot ride
+                # the level table (Arrow strips it), so it is carried by name
+                # and re-emitted in the fit-side sort. Validated against the
+                # oracle here, never mid-fit.
+                collation = key.get("collation", "")
+                try:
+                    duckdb.execute(f"SELECT '' COLLATE {collation}")  # noqa: S608
+                except duckdb.Error:
+                    _refuse(
+                        f"unknown collation {collation} in an ORDER BY key",
+                        key.get("query_location"),
+                    )
+                key = key["child"]
+            if _contains_class(key, "COLLATE"):
+                _refuse(
+                    "a COLLATE inside an order-key expression (put it at the"
+                    " top level of the key)",
+                    w.query_location,
+                )
+            if key.get("class") == "CONSTANT":
+                ty = ((key.get("value") or {}).get("type") or {}).get("id", "")
+                if "INT" not in str(ty).upper():
+                    # DuckDB's binder rule, mirrored.
+                    _refuse(
+                        "ORDER BY non-integer literal has no effect"
+                        " (DuckDB's binder refuses it)",
+                        key.get("query_location"),
+                    )
             _walk_row_wise(key, "an ORDER BY key", self.lookup)
             rw.validate_fit_expr(key)
             order_fit.append(
@@ -1685,6 +1736,7 @@ class _Planner:
                     _strip_quals(key, rw.level.source_quals),
                     o.get("type") != "DESCENDING",
                     o.get("null_order") == "NULLS FIRST",
+                    collation,
                 )
             )
         if getattr(self.lookup(tf_name), "order_sensitive", False) and not order_fit:
@@ -2109,7 +2161,7 @@ def _level_step(
         dict(copy.deepcopy(expr), alias=col)
         for t in planner.tf_steps
         if t["level"] == level_i
-        for (col, expr, _asc, _nf) in t["order_fit"]
+        for (col, expr, _asc, _nf, _coll) in t["order_fit"]
     ]
     from_table = _clone("base_table", table_name=source_name, alias="")
     return FitStep(
@@ -2291,7 +2343,8 @@ def marginalize(
                             ),
                             filter_col=t["filter_col"],
                             order_by=tuple(
-                                (col, asc, nf) for (col, _e, asc, nf) in t["order_fit"]
+                                (col, asc, nf, coll)
+                                for (col, _e, asc, nf, coll) in t["order_fit"]
                             ),
                         )
                     )

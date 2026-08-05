@@ -292,6 +292,17 @@ class Named:
     def transform(self, X: Any) -> Any:
         return self.estimator.transform(X)
 
+    def __getattr__(self, name: str) -> Any:
+        # Forward inner declarations (order_sensitive, feature-name probes)
+        # so wrapper nesting order never cancels a contract (review round
+        # 2026-08-05: Named(OrderSensitive(est)) ran order-blind). Dunders
+        # never forward: protocol probes (__sklearn_clone__, __deepcopy__,
+        # pickle) must see the WRAPPER, or clone() strips it.
+        est = self.__dict__.get("estimator")
+        if est is None or (name.startswith("__") and name.endswith("__")):
+            raise AttributeError(name)
+        return getattr(est, name)
+
     def __repr__(self) -> str:
         return f"Named({self.estimator!r}, returns={list(self.returns)})"
 
@@ -328,10 +339,15 @@ class OrderSensitive:
 
     def __getattr__(self, name: str) -> Any:
         # Forward declared_output_names / get_feature_names_out / anything
-        # else the naming machinery probes on the inner estimator.
-        if name == "estimator":
+        # else the naming machinery probes on the inner estimator. The .get
+        # guard keeps pickle/copy (which probe on empty instance state) on
+        # AttributeError, never KeyError; dunders never forward — protocol
+        # probes (__sklearn_clone__, __deepcopy__) must see the WRAPPER, or
+        # clone() strips it.
+        est = self.__dict__.get("estimator")
+        if est is None or (name.startswith("__") and name.endswith("__")):
             raise AttributeError(name)
-        return getattr(self.__dict__["estimator"], name)
+        return getattr(est, name)
 
     def __repr__(self) -> str:
         return f"OrderSensitive({self.estimator!r})"
