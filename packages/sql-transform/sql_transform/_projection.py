@@ -292,9 +292,21 @@ class SQLProjection:
         )
         feats = _feature_matrix(table, list(step.features))
         keyvals = [table.column(k).to_pylist() for k in step.keys]
+        # FILTER on the fit call: only predicate-TRUE rows (the level table
+        # holds CAST(pred AS BOOLEAN), so SQL's three-valued logic already
+        # happened) enter the fit; a group with no passing rows gets no
+        # params row — an unseen group, NULL at serving (P14).
+        mask = table.column(step.filter_col).to_pylist() if step.filter_col else None
         groups: dict[tuple, list[int]] = {}
         for i in range(table.num_rows):
+            if mask is not None and mask[i] is not True:
+                continue
             groups.setdefault(tuple(k[i] for k in keyvals), []).append(i)
+        if not groups:
+            raise MarginalizeError(
+                f"FILTER on transformer {step.transformer} left no training"
+                " rows — the fitted output shape is unlearnable"
+            )
         instances: dict[int, Any] = {}
         shape: tuple[str, ...] | None = None
         key_rows: list[tuple] = []

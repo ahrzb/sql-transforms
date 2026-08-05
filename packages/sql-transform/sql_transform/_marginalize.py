@@ -116,6 +116,9 @@ class FitStep:
     transformer: str = ""
     features: tuple[str, ...] = ()
     keys: tuple[str, ...] = ()
+    # BOOLEAN level-table column gating which rows enter the fit (FILTER on
+    # the fit call); "" fits on every row.
+    filter_col: str = ""
     # The bundle's field names, positionally aligned with ``features`` — the
     # input struct type S (DRAFT-24), passed to sklearn as input_features so
     # the learned output names can refer to them.
@@ -326,6 +329,12 @@ def _templates() -> dict[str, Node]:
         "not_distinct": join["condition"]["children"][0],
         "column_ref": collapse["statements"][0]["node"]["select_list"][0],
         "collapse_doc": collapse,
+        # FILTER fit semantics ride on DuckDB's own cast: the level table
+        # materializes CAST(pred AS BOOLEAN), so a non-boolean predicate
+        # keeps DuckDB's nonzero-is-true reading (measured 2026-08-05).
+        "bool_cast": _serialize("SELECT CAST(k AS BOOLEAN) FROM __CF_WINDOWS__")[
+            "statements"
+        ][0]["node"]["select_list"][0],
         "function": _serialize("SELECT __cf_fn(k) FROM __CF_WINDOWS__")["statements"][
             0
         ]["node"]["select_list"][0],
@@ -993,6 +1002,15 @@ class _LevelRewriter:
                         " rows)",
                         x.get("query_location"),
                     )
+                if x.get("filter") is not None:
+                    # Measured: DuckDB binds FILTER only on aggregates.
+                    _refuse(
+                        f"FILTER on the scalar call {x['function_name']}"
+                        " (DuckDB binds FILTER only on aggregates — a fit"
+                        " scope takes it on tf_fit(...) FILTER (...)"
+                        " OVER (...))",
+                        x.get("query_location"),
+                    )
                 bare = _bare_tf_name(x, self.planner.lookup)
                 if bare is not None:
                     _refuse(
@@ -1481,6 +1499,13 @@ class _Planner:
         Structurally identical calls share one fit step, so ``t(...).a``
         and ``t(...).b`` fit once. Windowed fit scopes take the split path
         (``split_ref``)."""
+        if raw.get("filter") is not None:
+            _refuse(
+                f"FILTER on the {name}(...) sugar ({name} is a scalar"
+                f" fit-transform — leakage control lives on {name}_fit(...)"
+                " FILTER (...) OVER (...))",
+                raw.get("query_location"),
+            )
         ident = _stripped(raw) + "|" + _bundle_names_key(raw)
         if ident in self.tf_calls:
             return self._tf_call_node(self.tf_calls[ident], field_name, alias)
@@ -1504,6 +1529,7 @@ class _Planner:
         name: str,
         keys: list[_Key],
         bundle: list[tuple[str, Node, Node]],
+        filter_fit: Node | None = None,
     ) -> int:
         """One fit step + its dedicated params join, never shared with
         aggregate groups. (Sharing keys with an aggregate join is a dedup
@@ -1524,6 +1550,8 @@ class _Planner:
                 "feature_fit": feature_fit,
                 "keys": keys,
                 "join": idx,
+                "filter_fit": filter_fit,
+                "filter_col": f"__cf_flt{j}" if filter_fit is not None else "",
                 # The serving-side argument nodes, kept so a second field
                 # access on the same call rebuilds the call without refitting.
                 "children": [
@@ -1556,6 +1584,13 @@ class _Planner:
             _refuse(
                 f"namespaced transformer {raw['schema']}.{tf_name}_transform"
                 " (the curated-namespace index is a later loop)",
+                loc,
+            )
+        if raw.get("filter") is not None:
+            _refuse(
+                f"FILTER on {tf_name}_transform ({tf_name}_transform is a"
+                f" scalar — leakage control lives on {tf_name}_fit(...)"
+                " FILTER (...) OVER (...))",
                 loc,
             )
         kids = raw.get("children") or []
@@ -1594,11 +1629,10 @@ class _Planner:
                 f"ORDER BY inside {tf_name}_fit (ordered fits arrive in a later slice)",
                 w.query_location,
             )
+        filter_fit = None
         if w.filter_expr is not None:
-            _refuse(
-                f"FILTER on {tf_name}_fit (arrives in a later slice)",
-                w.query_location,
-            )
+            _walk_row_wise(w.filter_expr, "a FILTER", self.lookup)
+            filter_fit = _strip_quals(w.filter_expr, rw.level.source_quals)
         if (
             w.start != "UNBOUNDED_PRECEDING"
             or w.end != "CURRENT_ROW_RANGE"
@@ -1616,7 +1650,9 @@ class _Planner:
             keys = [rw._key_of(p) for p in w.partitions]
             seen: set[str] = set()
             keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
-            j = self._mint_step(rw, tf_name, keys, rw._tf_bundle(theta))
+            j = self._mint_step(
+                rw, tf_name, keys, rw._tf_bundle(theta), filter_fit=filter_fit
+            )
             self.tf_calls[ident] = j
         step = self.tf_steps[j]
         fit_names = [f.lower() for (f, _, _) in step["feature_fit"]]
@@ -1988,10 +2024,19 @@ def _level_step(
         if t["level"] == level_i
         for (_, col, fit_expr) in t["feature_fit"]
     ]
+    filters = [
+        _clone(
+            "bool_cast",
+            child=copy.deepcopy(t["filter_fit"]),
+            alias=t["filter_col"],
+        )
+        for t in planner.tf_steps
+        if t["level"] == level_i and t["filter_col"]
+    ]
     from_table = _clone("base_table", table_name=source_name, alias="")
     return FitStep(
         name=f"__CF_LEVEL_{level_i}__",
-        sql=_select_doc([*originals, *windows, *keys, *features], from_table),
+        sql=_select_doc([*originals, *windows, *keys, *features, *filters], from_table),
         reads=(source_name,),
     )
 
@@ -2164,6 +2209,7 @@ def marginalize(
                             keys=tuple(
                                 planner.key_names[(i, k.ident)] for k in t["keys"]
                             ),
+                            filter_col=t["filter_col"],
                         )
                     )
         if is_final:
