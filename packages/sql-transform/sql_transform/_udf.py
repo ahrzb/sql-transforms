@@ -31,6 +31,12 @@ import pyarrow as pa
 
 _TYPES = frozenset({"i1", "i64", "f64", "str"})
 _DUCK = {"i1": "BOOLEAN", "i64": "BIGINT", "f64": "DOUBLE", "str": "VARCHAR"}
+_ARROW = {
+    "i1": pa.bool_(),
+    "i64": pa.int64(),
+    "f64": pa.float64(),
+    "str": pa.string(),
+}
 
 
 class UDFError(ValueError):
@@ -123,6 +129,28 @@ class UDF:
             return params, _DUCK[self.returns[0]]
         return params, "DOUBLE[]"
 
+    def _arrow_ret(self) -> pa.DataType:
+        """The return type as arrow, mirroring ``_duck_signature``."""
+        if self.return_names:
+            return pa.struct(
+                [
+                    pa.field(n, _ARROW[t])
+                    for n, t in zip(self.return_names, self.returns, strict=True)
+                ]
+            )
+        if len(self.returns) == 1:
+            return _ARROW[self.returns[0]]
+        return pa.list_(pa.float64())
+
+    def _arrow_scalar_batch(self, *cols: Any) -> pa.Array:
+        """One chunk of ``_scalar`` calls as an arrow array. This is the
+        DuckDB-facing form: the native return conversion maps NaN to NULL
+        (losing a value both engines represent — 2026-08-05 review), while
+        arrow arrays carry NaN as a real float, so the ``__call__`` contract
+        survives the boundary bit-exact."""
+        rows = zip(*(c.to_pylist() for c in cols), strict=True)
+        return pa.array([self._scalar(*r) for r in rows], type=self._arrow_ret())
+
     def register(self, con: Any) -> None:
         """Bind to a DuckDB connection: the same object DuckDB executes is
         the one every other engine must match."""
@@ -130,9 +158,11 @@ class UDF:
         # DuckDB inspects the callable's arity, so *args won't do — generate
         # a wrapper with exactly len(params) positional parameters.
         names = ", ".join(f"a{i}" for i in range(len(params)))
-        ns: dict[str, Any] = {"call": self._scalar}
+        ns: dict[str, Any] = {"call": self._arrow_scalar_batch}
         exec(f"def w({names}): return call({names})", ns)  # noqa: S102
-        con.create_function(self.name, ns["w"], params, ret, null_handling="special")
+        con.create_function(
+            self.name, ns["w"], params, ret, type="arrow", null_handling="special"
+        )
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,8 @@ query. ``transform`` is the DuckDB oracle side; ``infer_batch`` is the
 row-at-a-time path this project exists for.
 """
 
+import math
+
 import pyarrow as pa
 import pytest
 from sklearn.decomposition import PCA
@@ -139,3 +141,28 @@ def test_transform_preserves_input_row_order_with_unseen_groups():
     z = out.column("z").to_pylist()
     assert z[0] is None and z[2] is None  # unseen group -> NULL, in place
     assert z[1] is not None and z[3] is not None
+
+
+def test_null_feature_serves_nan_on_both_paths():
+    """Review round (2026-08-05): DuckDB's native Python-UDF return
+    conversion mapped a returned NaN to NULL, so a NULL-fed transformer
+    call diverged between batch (NULL) and row (NaN) serving. Registration
+    is arrow-typed now — sklearn's NaN convention is the value on BOTH
+    paths, bit-equal."""
+    p = serve_gate(
+        "SELECT sc_transform(sc_fit(struct_pack(v := age)) OVER (),"
+        " struct_pack(v := fare)).v AS z, name FROM __THIS__",
+        transformers={"sc": StandardScaler()},
+    )
+    frame = pa.table(
+        {
+            "country": ["US"],
+            "age": [10.0],
+            "fare": pa.array([None], pa.float64()),
+            "name": ["p"],
+        }
+    )
+    batch = p.transform(frame).column("z").to_pylist()[0]
+    row = p.infer({"country": "US", "age": 10.0, "fare": None, "name": "p"}).z
+    assert batch is not None and math.isnan(batch)
+    assert row is not None and math.isnan(row)
