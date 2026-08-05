@@ -1803,7 +1803,10 @@ class _Planner:
             _refuse(
                 f"the first argument of {tf_name}_transform must be an inline"
                 f" {tf_name}_fit(...) OVER (...) call — θ has no other lawful"
-                " provenance in this slice",
+                " provenance (an EXPORTED handle is readable, not"
+                f" consumable; to apply one, park it privately: {tf_name}"
+                f"_fit(bundle) OVER (...) AS _th, {tf_name}_transform(_th,"
+                " bundle))",
                 loc,
             )
         if not rw.is_final:

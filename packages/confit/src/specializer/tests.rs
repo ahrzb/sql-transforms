@@ -1338,6 +1338,45 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
 }
 
 #[test]
+fn struct_pack_item_is_a_struct_output() {
+    // θ export (slice 6): a struct_pack item takes the wide-lane boundary
+    // — one validity lane plus a component lane per named field. Guarded
+    // by CASE WHEN g IS NULL THEN NULL, the guard IS the validity lane, so
+    // an unseen group's handle is wholly NULL (measured against DuckDB).
+    let schema = cols(&[("x", Ty::I64, true)]);
+    let plain = prepare(
+        "SELECT struct_pack(\"type\" := 'tf0', id := x) AS th FROM __THIS__",
+        "__THIS__",
+        &schema,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(plain.wide_outputs.len(), 1);
+    assert_eq!(plain.wide_outputs[0].names, ["type", "id"]);
+    assert_eq!(plain.wide_outputs[0].width, 2);
+
+    let guarded = prepare(
+        "SELECT CASE WHEN (x IS NULL) THEN (NULL) ELSE \
+         struct_pack(\"type\" := 'tf0', id := x) END AS th FROM __THIS__",
+        "__THIS__",
+        &schema,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(guarded.wide_outputs.len(), 1);
+    assert_eq!(guarded.wide_outputs[0].names, ["type", "id"]);
+    // The validity lane IS the guard: `x IS NOT NULL` folds to the load's
+    // own validity flag, so the handle is NULL exactly when x is.
+    let text = print(&guarded.program);
+    assert!(
+        text.contains("%v0, %v1 = load.opt in.x") && text.contains(r#"valid", %v0"#),
+        "guard must drive the validity lane:\n{text}"
+    );
+    // The unguarded spelling cannot have the same validity lane.
+    assert_ne!(print(&plain.program), text);
+}
+
+#[test]
 fn modifiers_on_an_unnest_item_refuse() {
     // Measured: DuckDB refuses every modifier on UNNEST itself (DISTINCT /
     // FILTER / in-call ORDER BY are "not applicable to UNNEST", OVER is a

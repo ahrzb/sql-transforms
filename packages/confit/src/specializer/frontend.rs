@@ -213,6 +213,16 @@ pub fn frontend(
                 }
                 continue;
             }
+            // A struct-valued item (θ export): same wide-lane boundary as a
+            // named extern's output struct.
+            let base = match item {
+                SelectItem::ExprWithAlias { alias, .. } => alias.value.clone(),
+                _ => default_name(e),
+            };
+            if let Some((lanes, names)) = binder.struct_pack_lanes(e, &base)? {
+                push_wide(&mut out_cols, &mut exprs, &mut wide_outs, base, lanes, names)?;
+                continue;
+            }
         }
         match item {
             SelectItem::UnnamedExpr(e) => {
@@ -3501,6 +3511,128 @@ impl Binder<'_> {
     /// else (width-1 unnamed calls stay ordinary scalar expressions). Lane
     /// names carry U+0001 (reserved at the SQL gate, so no user column can
     /// collide).
+    /// A struct-VALUED projection item — `struct_pack(n := e, ...)`, or that
+    /// guarded by `CASE WHEN g IS NULL THEN NULL ELSE ... END` (θ export,
+    /// slice 6). Lowered to the same wide-lane shape a named extern uses: a
+    /// whole-validity lane (false = the whole struct is NULL, distinct from
+    /// a struct of NULLs) plus one component lane per field. `None` when
+    /// this isn't that shape.
+    fn struct_pack_lanes(
+        &self,
+        e: &SqlExpr,
+        base: &str,
+    ) -> Result<Option<(Vec<(String, SExpr)>, Vec<String>)>, PrepareError> {
+        let mut inner = e;
+        while let SqlExpr::Nested(i) = inner {
+            inner = i;
+        }
+        // The guard arm: exactly the shape the θ rewrite emits. Anything
+        // else with a struct in it falls through and refuses by name.
+        let (guard, packed) = match inner {
+            SqlExpr::Case {
+                operand,
+                conditions,
+                else_result,
+                ..
+            } if operand.is_none() && conditions.len() == 1 => {
+                let arm = &conditions[0];
+                // The oracle's own serialization parenthesizes both arms.
+                let mut res = &arm.result;
+                while let SqlExpr::Nested(i) = res {
+                    res = i;
+                }
+                let is_null_lit = matches!(
+                    res,
+                    SqlExpr::Value(v) if matches!(v.value, SqlValue::Null)
+                );
+                match (is_null_lit, else_result) {
+                    (true, Some(alt)) => (Some(&arm.condition), &**alt),
+                    _ => return Ok(None),
+                }
+            }
+            other => (None, other),
+        };
+        let mut packed_inner = packed;
+        while let SqlExpr::Nested(i) = packed_inner {
+            packed_inner = i;
+        }
+        let SqlExpr::Function(f) = packed_inner else {
+            return Ok(None);
+        };
+        if !f.name.to_string().eq_ignore_ascii_case("struct_pack") {
+            return Ok(None);
+        }
+        use sqlparser::ast::{FunctionArg, FunctionArguments};
+        let FunctionArguments::List(list) = &f.args else {
+            return Ok(None);
+        };
+        // Every field must be NAMED — an unnamed struct_pack arg is a
+        // binder error in the oracle too.
+        let mut names: Vec<String> = Vec::with_capacity(list.args.len());
+        let mut values: Vec<&SqlExpr> = Vec::with_capacity(list.args.len());
+        for a in &list.args {
+            match a {
+                FunctionArg::Named { name, arg, .. } => {
+                    let sqlparser::ast::FunctionArgExpr::Expr(v) = arg else {
+                        return Ok(None);
+                    };
+                    names.push(name.value.clone());
+                    values.push(v);
+                }
+                _ => return Ok(None),
+            }
+        }
+        if names.is_empty() {
+            return Ok(None);
+        }
+        // Whole-struct validity: the guard's IS NOT NULL, else always-true.
+        let valid = match guard {
+            None => SExpr {
+                kind: SKind::Lit(Lit::I1(true)),
+                ty: Ty::I1,
+                nullable: false,
+            },
+            Some(g) => {
+                let mut guard_inner = g;
+                while let SqlExpr::Nested(i) = guard_inner {
+                    guard_inner = i;
+                }
+                let SqlExpr::IsNull(target) = guard_inner else {
+                    return Ok(None);
+                };
+                let bound = match self.expr_or_null(target)? {
+                    None => {
+                        // A provably-NULL guard: the struct is always NULL.
+                        SExpr {
+                            kind: SKind::Lit(Lit::I1(false)),
+                            ty: Ty::I1,
+                            nullable: false,
+                        }
+                    }
+                    Some(t) => SExpr {
+                        kind: SKind::IsNull {
+                            negated: true,
+                            inner: Box::new(t),
+                        },
+                        ty: Ty::I1,
+                        nullable: false,
+                    },
+                };
+                bound
+            }
+        };
+        let mut lanes = Vec::with_capacity(1 + values.len());
+        lanes.push((format!("{base}\u{1}valid"), valid));
+        for (j, v) in values.iter().enumerate() {
+            let bound = match self.expr_or_null(v)? {
+                None => null_of(Ty::I64),
+                Some(x) => fold(x),
+            };
+            lanes.push((format!("{base}\u{1}{j}"), bound));
+        }
+        Ok(Some((lanes, names)))
+    }
+
     fn unnest_extern_columns(
         &self,
         e: &SqlExpr,
