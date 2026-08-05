@@ -140,6 +140,23 @@ alias-prefixed bare-item expansion (`AS e` → `e_pca0`). Authored
 spellings that used them now refuse or re-spell as field reads; an unseen
 group is NULL per field read. DRAFT-25 restores struct-level outputs (and
 the NULL-struct distinction) properly.
+*Amended 2026-08-05 (fit/transform split):* the `tfm(x) OVER w` sugar is
+**deleted** — the one construct with no oracle reading (a window
+aggregate returns one value per partition; the sugar returned per-row
+values). The surface: bare `tfm(bundle).field` is the single sugar
+(global fit-transform); any other fit scope spells the split —
+`tfm_transform(tfm_fit(bundle) OVER (PARTITION BY ...), bundle).field` —
+where `tfm_fit` is a true window aggregate (same θ per partition, θ =
+`Struct<type, id>`) and `tfm_transform` a true scalar (fit-here-apply-
+there: the transform bundle may differ in values, name-keyed against the
+fit bundle). A registered transformer `x` reserves `x_fit`/`x_transform`.
+Fit-side contract: a fit is a multiset aggregate (order-blind,
+seed-fixed, author-signed — P15's family); declared order-sensitive fits
+will name their order in-call (a later slice); there is NO determinism
+promise for fit reproducibility in v0. Not-yet-landed fit clauses refuse
+by name: FILTER, in-call ORDER BY (ordered fits), frames, window-clause
+ORDER BY (running fits), θ export.
+*Spec:* 2026-08-05-fit-transform-split-design.
 
 **P16a — Names are the type; matching is name-keyed.** A fitted transform
 is `S → T` between named structs: S's field names and types come from the

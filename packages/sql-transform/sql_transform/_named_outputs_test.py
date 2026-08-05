@@ -38,7 +38,7 @@ def _ohe():
 
 def test_sklearn_names_are_used_and_addressable():
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().color_red AS is_red,"
+        "SELECT ohe(struct_pack(color := color)).color_red AS is_red,"
         " name FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
@@ -56,7 +56,7 @@ def test_canonical_names_when_sklearn_offers_none():
             return np.asarray(X) * 2.0
 
     p = SQLProjection(
-        "SELECT d(struct_pack(a := age)) OVER ().f0 AS z, name FROM __THIS__",
+        "SELECT d(struct_pack(a := age)).f0 AS z, name FROM __THIS__",
         transformers={"d": Duck()},
     ).fit(TRAIN)
     got = {r["name"]: r["z"] for r in p.transform(TRAIN).to_pylist()}
@@ -66,7 +66,7 @@ def test_canonical_names_when_sklearn_offers_none():
 def test_pca_generated_names_mid_expression():
     pca = Pipeline([("p", PCA(n_components=2))])
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().pca0 * 2 AS c,"
+        "SELECT pca(struct_pack(a := age, f := fare)).pca0 * 2 AS c,"
         " name FROM __THIS__",
         transformers={"pca": pca},
     ).fit(TRAIN)
@@ -91,7 +91,7 @@ def clone_ref(proto, table):
 
 def test_string_feature_keeps_its_type():
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().color_blue AS b FROM __THIS__",
+        "SELECT ohe(struct_pack(color := color)).color_blue AS b FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     u = p.udfs["__cf_tf0"]
@@ -113,8 +113,7 @@ def test_mixed_feature_types():
             return np.asarray([[len(str(r[0])) + float(r[1])] for r in X])
 
     p = SQLProjection(
-        "SELECT w(struct_pack(c := color, f := fare)) OVER ().f0 AS z, name"
-        " FROM __THIS__",
+        "SELECT w(struct_pack(c := color, f := fare)).f0 AS z, name FROM __THIS__",
         transformers={"w": Widths()},
     ).fit(ints)
     assert p.udfs["__cf_tf0"].takes == ("str", "i64")
@@ -127,7 +126,7 @@ def test_mixed_feature_types():
 
 def test_refit_that_drops_a_field_refuses_by_name():
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().color_red AS r FROM __THIS__",
+        "SELECT ohe(struct_pack(color := color)).color_red AS r FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     without_red = pa.table(
@@ -152,8 +151,8 @@ def test_per_group_shape_disagreement_refuses():
         }
     )
     p = SQLProjection(
-        "SELECT ohe(struct_pack(c := c)) OVER (PARTITION BY g).c_red AS r"
-        " FROM __THIS__",
+        "SELECT ohe_transform(ohe_fit(struct_pack(c := c)) OVER (PARTITION BY g),"
+        " struct_pack(c := c)).c_red AS r FROM __THIS__",
         transformers={"ohe": _ohe()},
     )
     with pytest.raises(MarginalizeError, match="different output shapes per group"):
@@ -165,8 +164,8 @@ def test_per_group_shape_disagreement_refuses():
 
 def test_two_fields_share_one_fit_step():
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().color_red AS r,"
-        " ohe(struct_pack(color := color)) OVER ().color_blue AS b, name FROM __THIS__",
+        "SELECT ohe(struct_pack(color := color)).color_red AS r,"
+        " ohe(struct_pack(color := color)).color_blue AS b, name FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     assert [s.name for s in p.plan] == ["__CF_LEVEL_0__", "__CF_PARAMS_0__"]
@@ -182,8 +181,7 @@ def test_two_fields_share_one_fit_step():
 
 def test_field_access_serves_row_at_a_time():
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().color_red AS r, name"
-        " FROM __THIS__",
+        "SELECT ohe(struct_pack(color := color)).color_red AS r, name FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     want = p.transform(TRAIN).to_pylist()
@@ -195,7 +193,8 @@ def test_field_access_under_partition_unseen_group_is_null():
     # StandardScaler passes input names through, so the output field of
     # `struct_pack(a := age)` is `a` — names follow the producer.
     p = SQLProjection(
-        "SELECT sc(struct_pack(a := age)) OVER (PARTITION BY country).a AS z, name"
+        "SELECT sc_transform(sc_fit(struct_pack(a := age)) OVER"
+        " (PARTITION BY country), struct_pack(a := age)).a AS z, name"
         " FROM __THIS__",
         transformers={"sc": StandardScaler()},
     ).fit(TRAIN)
@@ -212,8 +211,8 @@ def test_bare_transformer_call_refuses_at_construction():
     # A call is a struct value at EVERY width — a bare item has no output
     # boundary to cross until DRAFT-25 lands nested outputs.
     for sql in [
-        "SELECT sc(struct_pack(a := age)) OVER () AS z FROM __THIS__",
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER () AS e FROM __THIS__",
+        "SELECT sc(struct_pack(a := age)) AS z FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)) AS e FROM __THIS__",
     ]:
         with pytest.raises(MarginalizeError, match="struct value"):
             SQLProjection(
@@ -228,7 +227,7 @@ def test_bare_transformer_call_refuses_at_construction():
 def test_transformer_arithmetic_without_a_field_refuses_at_construction():
     with pytest.raises(MarginalizeError, match="struct value"):
         SQLProjection(
-            "SELECT sc(struct_pack(a := age)) OVER () * 10 AS z FROM __THIS__",
+            "SELECT sc(struct_pack(a := age)) * 10 AS z FROM __THIS__",
             transformers={"sc": StandardScaler()},
         )
 
@@ -237,7 +236,7 @@ def test_width1_field_read_survives_to_serving_uniformly():
     # No width-1 collapse: the serving SQL reads the field off the one
     # call, same spelling as width-k; both paths agree value-for-value.
     p = SQLProjection(
-        "SELECT sc(struct_pack(a := age)) OVER ().a AS z, name FROM __THIS__",
+        "SELECT sc(struct_pack(a := age)).a AS z, name FROM __THIS__",
         transformers={"sc": StandardScaler()},
     ).fit(TRAIN)
     assert "(__cf_tf0(__cf_p0.__cf_est, __cf_t.age)).a" in p.serving_sql
@@ -255,8 +254,7 @@ def test_bare_wide_item_refuses_at_construction():
     # item has no output boundary to cross until DRAFT-25 nests it.
     with pytest.raises(MarginalizeError, match="struct value"):
         SQLProjection(
-            "SELECT pca(struct_pack(a := age, f := fare)) OVER () AS e, name"
-            " FROM __THIS__",
+            "SELECT pca(struct_pack(a := age, f := fare)) AS e, name FROM __THIS__",
             transformers={"pca": PCA(n_components=2)},
         )
 
@@ -265,8 +263,8 @@ def test_field_reads_use_declared_names():
     from sql_transform import Named
 
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS e_size,"
-        " pca(struct_pack(a := age, f := fare)) OVER ().cost AS e_cost"
+        "SELECT pca(struct_pack(a := age, f := fare)).size AS e_size,"
+        " pca(struct_pack(a := age, f := fare)).cost AS e_cost"
         " FROM __THIS__",
         transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
     ).fit(TRAIN)
@@ -275,8 +273,8 @@ def test_field_reads_use_declared_names():
 
 def test_two_field_reads_serve_row_at_a_time():
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().color_blue AS oh_color_blue,"
-        " ohe(struct_pack(color := color)) OVER ().color_red AS oh_color_red,"
+        "SELECT ohe(struct_pack(color := color)).color_blue AS oh_color_blue,"
+        " ohe(struct_pack(color := color)).color_red AS oh_color_red,"
         " name FROM __THIS__",
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
@@ -289,7 +287,7 @@ def test_two_field_reads_serve_row_at_a_time():
 def test_wide_call_inside_an_expression_refuses_at_construction():
     with pytest.raises(MarginalizeError, match="struct value"):
         SQLProjection(
-            "SELECT list_extract(pca(struct_pack(a := age, f := fare)) OVER (), 1)"
+            "SELECT list_extract(pca(struct_pack(a := age, f := fare)), 1)"
             " AS e FROM __THIS__",
             transformers={"pca": PCA(n_components=2)},
         )
@@ -297,9 +295,11 @@ def test_wide_call_inside_an_expression_refuses_at_construction():
 
 def test_unseen_group_nulls_every_field_read():
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER (PARTITION BY country)"
+        "SELECT pca_transform(pca_fit(struct_pack(a := age, f := fare)) OVER"
+        " (PARTITION BY country), struct_pack(a := age, f := fare))"
         ".pca0 AS e_pca0,"
-        " pca(struct_pack(a := age, f := fare)) OVER (PARTITION BY country)"
+        " pca_transform(pca_fit(struct_pack(a := age, f := fare)) OVER"
+        " (PARTITION BY country), struct_pack(a := age, f := fare))"
         ".pca1 AS e_pca1,"
         " name FROM __THIS__",
         transformers={"pca": PCA(n_components=2)},
@@ -315,7 +315,7 @@ def test_unseen_group_nulls_every_field_read():
 
 def test_unknown_field_name_refuses_at_fit():
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().nope AS z FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)).nope AS z FROM __THIS__",
         transformers={"pca": PCA(n_components=2)},
     )
     with pytest.raises(MarginalizeError, match="no output field 'nope'"):
@@ -329,8 +329,8 @@ def test_named_override_replaces_generated_names():
     from sql_transform import Named
 
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS s,"
-        " pca(struct_pack(a := age, f := fare)) OVER ().cost AS c, name FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)).size AS s,"
+        " pca(struct_pack(a := age, f := fare)).cost AS c, name FROM __THIS__",
         transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
     ).fit(TRAIN)
     assert p.udfs["__cf_tf0"].return_names == ("size", "cost")
@@ -344,8 +344,7 @@ def test_named_override_serves_row_at_a_time():
     from sql_transform import Named
 
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS s, name"
-        " FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)).size AS s, name FROM __THIS__",
         transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
     ).fit(TRAIN)
     assert [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())] == (
@@ -357,7 +356,8 @@ def test_named_override_clones_per_group():
     from sql_transform import Named
 
     p = SQLProjection(
-        "SELECT sc(struct_pack(a := age)) OVER (PARTITION BY country).z AS z, name"
+        "SELECT sc_transform(sc_fit(struct_pack(a := age)) OVER"
+        " (PARTITION BY country), struct_pack(a := age)).z AS z, name"
         " FROM __THIS__",
         transformers={"sc": Named(StandardScaler(), returns=("z",))},
     ).fit(TRAIN)
@@ -373,7 +373,7 @@ def test_named_override_width_mismatch_refuses():
     from sql_transform import Named, UDFError
 
     p = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().a AS s FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)).a AS s FROM __THIS__",
         transformers={"pca": Named(PCA(n_components=2), returns=("a", "b", "c"))},
     )
     with pytest.raises(UDFError, match="declares 3 output names.*fits to width 2"):
@@ -386,7 +386,7 @@ def test_named_override_cannot_paper_over_a_learned_width():
     # Declared width matches the first fit's vocabulary, not the second's —
     # exactly the case a fixed override must refuse rather than mislabel.
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().is_red AS r FROM __THIS__",
+        "SELECT ohe(struct_pack(color := color)).is_red AS r FROM __THIS__",
         transformers={"ohe": Named(_ohe(), returns=("is_blue", "is_red"))},
     ).fit(TRAIN)
     assert p.transform(TRAIN).to_pylist()[0]["r"] == 1.0
@@ -418,7 +418,7 @@ def test_case_colliding_output_names_refuse_at_fit():
     # serve silently wrong values — refuse at fit, naming the collision.
     mixed = pa.table({"color": ["Red", "red"], "name": ["x", "y"]})
     p = SQLProjection(
-        "SELECT ohe(struct_pack(color := color)) OVER ().color_red AS r FROM __THIS__",
+        "SELECT ohe(struct_pack(color := color)).color_red AS r FROM __THIS__",
         transformers={"ohe": _ohe()},
     )
     with pytest.raises(MarginalizeError, match="case-colliding output"):
@@ -435,7 +435,7 @@ def test_named_case_collision_refuses_eagerly():
 def test_chained_field_access_refuses():
     with pytest.raises(MarginalizeError, match="chained field access"):
         SQLProjection(
-            "SELECT sc(struct_pack(a := age)) OVER ().a.b AS z FROM __THIS__",
+            "SELECT sc(struct_pack(a := age)).a.b AS z FROM __THIS__",
             transformers={"sc": StandardScaler()},
         )
 
@@ -443,8 +443,7 @@ def test_chained_field_access_refuses():
 def test_computed_field_name_refuses():
     with pytest.raises(MarginalizeError, match="computed field name"):
         SQLProjection(
-            "SELECT struct_extract(sc(struct_pack(a := age)) OVER (), name) AS z"
-            " FROM __THIS__",
+            "SELECT struct_extract(sc(struct_pack(a := age)), name) AS z FROM __THIS__",
             transformers={"sc": StandardScaler()},
         )
 
@@ -454,10 +453,10 @@ def test_struct_literal_bundle_is_the_same_as_struct_pack():
     # bundle rules and field names are identical. Pinned, not incidental.
     kw = {"transformers": {"pca": PCA(n_components=2)}}
     a = SQLProjection(
-        "SELECT pca({'a': age, 'f': fare}) OVER ().pca0 AS c FROM __THIS__", **kw
+        "SELECT pca({'a': age, 'f': fare}).pca0 AS c FROM __THIS__", **kw
     ).fit(TRAIN)
     b = SQLProjection(
-        "SELECT pca(struct_pack(a := age, f := fare)) OVER ().pca0 AS c FROM __THIS__",
+        "SELECT pca(struct_pack(a := age, f := fare)).pca0 AS c FROM __THIS__",
         **kw,
     ).fit(TRAIN)
     assert a.serving_sql == b.serving_sql

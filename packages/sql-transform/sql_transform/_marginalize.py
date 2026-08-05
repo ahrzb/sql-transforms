@@ -161,11 +161,6 @@ class Marginalized:
     params: tuple[ParamsSpec, ...]
     udfs: tuple[UDFSpec, ...] = ()
     scalar_udfs: tuple[str, ...] = ()
-    # The serving AST behind ``serving_sql``. A bare width-k transformer
-    # item cannot be spelled at construction — its width and field names are
-    # learned — so fit expands it here into one aliased lane call per field
-    # (DRAFT-24 loop 3, ``expand_wide_items``).
-    doc: Node | None = None
 
 
 def _refuse(what: str, loc: int | None = None) -> None:
@@ -785,7 +780,11 @@ class _LevelRewriter:
                 " registered object",
                 w_raw.get("query_location"),
             )
-        c = children[0]
+        return self._bundle_of(children[0])
+
+    def _bundle_of(self, c: Node) -> list[tuple[str, Node, Node]]:
+        """Parse ONE bundle node (a column or struct_pack(...)):
+        (field name, fit expr in level terms, serving expr) per feature."""
         quals = self.level.source_quals
         if c.get("class") == "COLUMN_REF":
             fname = _ColumnRef.of(c).column_names[-1]
@@ -831,17 +830,36 @@ class _LevelRewriter:
                     and isinstance(kids[0], dict)
                     and _is_struct_extract(kids[0])
                     and len(kids[0].get("children") or []) == 2
-                    and _is_tf_node((kids[0]["children"])[0]) is not None
+                    and (
+                        _is_tf_node(kids[0]["children"][0]) is not None
+                        or _bare_tf_name(kids[0]["children"][0], self.planner.lookup)
+                        is not None
+                        or _split_transform_name(
+                            kids[0]["children"][0], self.planner.lookup
+                        )
+                        is not None
+                    )
                 ):
-                    # `t(...) OVER ().a.b` — a field is a scalar; the outer
-                    # name could never be validated at fit and would only
-                    # die mid-serving, differently per path.
+                    # `t(...).a.b` — a field is a scalar; the outer name
+                    # could never be validated at fit and would only die
+                    # mid-serving, differently per path.
                     _refuse(
                         "chained field access on a transformer call"
                         " (a field is a scalar)",
                         x.get("query_location"),
                     )
-                if len(kids) == 2 and _is_tf_node(kids[0]) is not None:
+                split_tf = (
+                    _split_transform_name(kids[0], self.planner.lookup)
+                    if len(kids) == 2
+                    else None
+                )
+                bare_tf = (
+                    _bare_tf_name(kids[0], self.planner.lookup)
+                    if len(kids) == 2
+                    else None
+                )
+                win_name = _is_tf_node(kids[0]) if len(kids) == 2 else None
+                if split_tf is not None or bare_tf is not None or win_name is not None:
                     fname = _const_str(kids[1])
                     if fname is None:
                         _refuse(
@@ -851,18 +869,27 @@ class _LevelRewriter:
                         )
                     if self.alias_exprs:
                         self._check_no_lateral_in_window(kids[0])
+                    if win_name is not None:
+                        # θ field reads and the deleted OVER sugar refuse
+                        # the same way here as anywhere else.
+                        self._refuse_window_tf(kids[0], win_name)
                     # The field read SURVIVES over the whole-value call
                     # (TASK-63): one call, k lane reads — DuckDB CSEs the
                     # identical mentions, confit shares the ecall site.
                     # Width-1 collapses to the bare call at fit, where the
                     # width is known.
-                    call = self.planner.transformer_ref(
-                        self,
-                        kids[0],
-                        _is_tf_node(kids[0]),
-                        field_name=fname,
-                        alias="",
-                    )
+                    if split_tf is not None:
+                        call = self.planner.split_ref(
+                            self, kids[0], split_tf, field_name=fname, alias=""
+                        )
+                    else:
+                        call = self.planner.transformer_ref(
+                            self,
+                            kids[0],
+                            bare_tf,
+                            field_name=fname,
+                            alias="",
+                        )
                     out = copy.deepcopy(x)
                     out["children"] = [call, copy.deepcopy(kids[1])]
                     return out
@@ -871,18 +898,8 @@ class _LevelRewriter:
                     self._check_no_lateral_in_window(x)
                 tf_name = _is_tf_node(x)
                 if tf_name is not None:
-                    # Identity problems keep their precise refusals; a
-                    # GENUINE transformer outside a field read then refuses
-                    # as a struct value (the subtraction loop): no scalar
-                    # reading, no output boundary to cross yet.
-                    self.planner.check_transformer_identity(x, tf_name)
-                    _refuse(
-                        f"a transformer call is a struct value — address an"
-                        f" output field ({tf_name}(...).name); nested"
-                        " outputs arrive with DRAFT-25",
-                        x.get("query_location"),
-                    )
-                if _contains_tf(x):
+                    self._refuse_window_tf(x, tf_name)
+                if _contains_tf(x, self.planner.lookup):
                     _refuse(
                         "a transformer call inside a window aggregate",
                         x.get("query_location"),
@@ -902,6 +919,29 @@ class _LevelRewriter:
                         f"aggregate {x['function_name']} without OVER"
                         " (that would aggregate the whole table, not project"
                         " rows)",
+                        x.get("query_location"),
+                    )
+                bare = _bare_tf_name(x, self.planner.lookup)
+                if bare is not None:
+                    _refuse(
+                        f"a transformer call is a struct value — address an"
+                        f" output field ({bare}(...).name); the nested"
+                        " output boundary is a later slice",
+                        x.get("query_location"),
+                    )
+                split = _split_transform_name(x, self.planner.lookup)
+                if split is not None:
+                    _refuse(
+                        f"a transformer call is a struct value — address an"
+                        f" output field ({split}_transform(...).name); the"
+                        " nested output boundary is a later slice",
+                        x.get("query_location"),
+                    )
+                fit_scalar = _fit_scalar_name(x, self.planner.lookup)
+                if fit_scalar is not None:
+                    _refuse(
+                        f"{fit_scalar}_fit is a window aggregate — write"
+                        f" {fit_scalar}_fit(bundle) OVER (...)",
                         x.get("query_location"),
                     )
                 if fname not in _known_functions() and not x.get("is_operator"):
@@ -940,6 +980,29 @@ class _LevelRewriter:
         y = {k: self.rewrite(v) for k, v in x.items()}
         y["relation_name"] = "__cf_t"
         return y
+
+    def _refuse_window_tf(self, x: Node, tf_name: str) -> None:
+        """Every transformer-flavored WINDOW node refuses by name
+        (2026-08-05 spec): a standalone fit (θ export is a later slice),
+        then the identity refusals (namespaced/unknown/non-transformer),
+        then — for a genuine registered transformer — the deleted sugar."""
+        loc = x.get("query_location")
+        fit_stem = _fit_node_name(x, self.planner.lookup)
+        if fit_stem is not None:
+            _refuse(
+                f"{fit_stem}_fit(...) OVER (...) must be consumed as the"
+                f" first argument of {fit_stem}_transform — θ export"
+                " arrives in a later slice",
+                loc,
+            )
+        self.planner.check_transformer_identity(x, tf_name)
+        _refuse(
+            f"the {tf_name}(...) OVER (...) sugar is deleted — the fit"
+            f" scope moved to {tf_name}_fit: write"
+            f" {tf_name}_transform({tf_name}_fit(bundle) OVER (...),"
+            f" bundle).field, or {tf_name}(bundle).field for a global fit",
+            loc,
+        )
 
     def _check_no_lateral_in_window(self, x: Any) -> None:
         """A window's fit-side text runs against the source relation, which
@@ -1138,9 +1201,11 @@ class _Planner:
                 loc,
             )
         if hasattr(obj, "fit") and hasattr(obj, "transform"):
+            # Normally caught earlier in rewrite; defensive for other paths.
             _refuse(
-                f"transformer {name} called without OVER (a transformer is a"
-                " window: fn(...) OVER (...))",
+                f"a transformer call is a struct value — address an output"
+                f" field ({name}(...).name); the nested output boundary is"
+                " a later slice",
                 loc,
             )
         takes = getattr(obj, "takes", None)
@@ -1187,15 +1252,16 @@ class _Planner:
         field_name: str | None = None,
         alias: str | None = None,
     ) -> Node:
-        """One transformer window, rewritten in place to a scalar call over
+        """One BARE transformer call — the sugar ``tfm(bundle).field``
+        (global fit-transform) — rewritten in place to a scalar call over
         its own params join: ``__cf_tf{j}(__cf_p{idx}.__cf_est, features...)``.
         The join's params table (keys + ``__cf_est``) is produced by the
         ``kind="fit"`` plan step; an unseen group misses the LEFT JOIN, so
         the id is NULL and the call returns NULL — the one NULL story.
 
-        With ``field_name`` (``t(...) OVER (...).f``) the call is to that
-        field's width-1 lane UDF instead. Structurally identical calls share
-        one fit step, so ``t(...).a`` and ``t(...).b`` fit once."""
+        Structurally identical calls share one fit step, so ``t(...).a``
+        and ``t(...).b`` fit once. Windowed fit scopes take the split path
+        (``split_ref``)."""
         ident = _stripped(raw)
         if ident in self.tf_calls:
             return self._tf_call_node(self.tf_calls[ident], field_name, alias)
@@ -1204,29 +1270,26 @@ class _Planner:
             _refuse(
                 "a transformer call in a non-final level", raw.get("query_location")
             )
-        w = _Window.of(raw)
-        if w.orders or w.arg_orders:
-            _refuse("ORDER BY on a transformer window", w.query_location)
-        if (
-            w.start != "UNBOUNDED_PRECEDING"
-            or w.end != "CURRENT_ROW_RANGE"
-            or w.start_expr is not None
-            or w.end_expr is not None
-        ):
-            _refuse("a frame on a transformer window", w.query_location)
-        if w.filter_expr is not None or w.distinct or w.ignore_nulls:
-            _refuse(
-                "FILTER/DISTINCT/IGNORE NULLS on a transformer window",
-                w.query_location,
-            )
-        keys = [rw._key_of(p) for p in w.partitions]
-        seen: set[str] = set()
-        keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
+        # The bare sugar: tfm(x) ≡ tfm_transform(tfm_fit(x) OVER (), x)
+        # — a global fit scope, so no keys. (Windowed spellings never reach
+        # here: every transformer-flavored WINDOW node refuses in rewrite.)
+        keys: list[_Key] = []
         bundle = rw._tf_bundle(raw)
+        j = self._mint_step(rw, name, keys, bundle)
+        self.tf_calls[ident] = j
+        return self._tf_call_node(j, field_name, alias or raw.get("alias", ""))
+
+    def _mint_step(
+        self,
+        rw: _LevelRewriter,
+        name: str,
+        keys: list[_Key],
+        bundle: list[tuple[str, Node, Node]],
+    ) -> int:
+        """One fit step + its dedicated params join, never shared with
+        aggregate groups. (Sharing keys with an aggregate join is a dedup
+        optimization for a later loop.)"""
         j = len(self.tf_steps)
-        # A dedicated join, never shared with aggregate groups: its params
-        # table is fit-produced. (Sharing keys with an aggregate join is a
-        # dedup optimization for a later loop.)
         idx = self.new_join(rw.level_i, keys)
         self.fit_joins.add(idx)
         feature_fit = []
@@ -1234,11 +1297,10 @@ class _Planner:
             col = f"__cf_f{self.feature_count}"
             self.feature_count += 1
             feature_fit.append((fname, col, fit_expr))
-        step_name = f"__CF_PARAMS_{idx}__"
         self.tf_steps.append(
             {
                 "level": rw.level_i,
-                "name": step_name,
+                "name": f"__CF_PARAMS_{idx}__",
                 "transformer": name,
                 "feature_fit": feature_fit,
                 "keys": keys,
@@ -1255,8 +1317,101 @@ class _Planner:
                 ],
             }
         )
-        self.tf_calls[ident] = j
-        return self._tf_call_node(j, field_name, alias or raw.get("alias", ""))
+        return j
+
+    def split_ref(
+        self,
+        rw: _LevelRewriter,
+        raw: Node,
+        tf_name: str,
+        field_name: str | None = None,
+        alias: str | None = None,
+    ) -> Node:
+        """A ``{tf}_transform(θ, bundle)`` call (2026-08-05 spec): θ must be
+        an inline ``{tf}_fit(...) OVER (...)`` call — the only lawful
+        provenance in this slice. The fit half mints the step (fit scope =
+        its partitions, fit features = its bundle); the transform half
+        supplies the serving arguments, name-keyed against the fit bundle."""
+        loc = raw.get("query_location")
+        if raw.get("schema"):
+            _refuse(
+                f"namespaced transformer {raw['schema']}.{tf_name}_transform"
+                " (the curated-namespace index is a later loop)",
+                loc,
+            )
+        kids = raw.get("children") or []
+        if len(kids) != 2:
+            _refuse(
+                f"{tf_name}_transform takes exactly two arguments"
+                f" ({tf_name}_fit(...) OVER (...), bundle)",
+                loc,
+            )
+        theta = kids[0]
+        if _fit_node_name(theta, self.lookup) != tf_name or theta.get("schema"):
+            _refuse(
+                f"the first argument of {tf_name}_transform must be an inline"
+                f" {tf_name}_fit(...) OVER (...) call — θ has no other lawful"
+                " provenance in this slice",
+                loc,
+            )
+        if not rw.is_final:
+            _refuse("a transformer call in a non-final level", loc)
+        w = _Window.of(theta)
+        if w.orders:
+            _refuse(
+                f"ORDER BY in the window clause of {tf_name}_fit means a"
+                " running fit (a θ per row-prefix) — not supported",
+                w.query_location,
+            )
+        if w.arg_orders:
+            _refuse(
+                f"ORDER BY inside {tf_name}_fit (ordered fits arrive in a later slice)",
+                w.query_location,
+            )
+        if w.filter_expr is not None:
+            _refuse(
+                f"FILTER on {tf_name}_fit (arrives in a later slice)",
+                w.query_location,
+            )
+        if (
+            w.start != "UNBOUNDED_PRECEDING"
+            or w.end != "CURRENT_ROW_RANGE"
+            or w.start_expr is not None
+            or w.end_expr is not None
+        ):
+            _refuse(f"a frame on {tf_name}_fit", w.query_location)
+        if w.distinct or w.ignore_nulls:
+            _refuse(f"DISTINCT/IGNORE NULLS on {tf_name}_fit", w.query_location)
+        tbundle = rw._bundle_of(kids[1])
+        ident = _stripped(theta)
+        if ident in self.tf_calls:
+            j = self.tf_calls[ident]
+        else:
+            keys = [rw._key_of(p) for p in w.partitions]
+            seen: set[str] = set()
+            keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
+            j = self._mint_step(rw, tf_name, keys, rw._tf_bundle(theta))
+            self.tf_calls[ident] = j
+        step = self.tf_steps[j]
+        fit_names = [f.lower() for (f, _, _) in step["feature_fit"]]
+        got_names = [f.lower() for (f, _, _) in tbundle]
+        if got_names != fit_names:
+            _refuse(
+                f"{tf_name}_transform bundle fields {got_names} do not match"
+                f" the fit bundle fields {fit_names} (name-keyed, in order)",
+                loc,
+            )
+        children = [
+            _clone(
+                "column_ref",
+                column_names=[f"__cf_p{step['join']}", "__cf_est"],
+                alias="",
+            ),
+            *[copy.deepcopy(se) for (_, _, se) in tbundle],
+        ]
+        return self._tf_call_node(
+            j, field_name, alias or raw.get("alias", ""), children=children
+        )
 
     def check_transformer_identity(self, raw: Node, name: str) -> None:
         """The identity refusals shared by field-addressed and bare calls —
@@ -1278,11 +1433,18 @@ class _Planner:
         if not (hasattr(obj, "fit") and hasattr(obj, "transform")):
             _refuse(f"transformer {name} has no fit/transform")
 
-    def _tf_call_node(self, j: int, field_name: str | None, alias: str | None) -> Node:
+    def _tf_call_node(
+        self,
+        j: int,
+        field_name: str | None,
+        alias: str | None,
+        children: list[Node] | None = None,
+    ) -> Node:
         """The serving call for transformer step ``j`` — always the ONE
         whole-value UDF (TASK-63). A requested field is recorded on its spec
         for fit-time validation; the field read wraps this call at the call
-        site."""
+        site. ``children`` overrides the argument nodes (a split call's
+        transform bundle may differ from the fit bundle)."""
         step = self.tf_steps[j]
         fn_name = f"__cf_tf{j}"
         if not any(s.name == fn_name and s.field == field_name for s in self.udf_specs):
@@ -1297,7 +1459,10 @@ class _Planner:
         return _clone(
             "function",
             function_name=fn_name,
-            children=[copy.deepcopy(c) for c in step["children"]],
+            children=[
+                copy.deepcopy(c)
+                for c in (children if children is not None else step["children"])
+            ],
             alias=alias or "",
         )
 
@@ -1423,15 +1588,87 @@ def _const_str(node: Node) -> str | None:
     return got if isinstance(got, str) else None
 
 
-def _contains_tf(x: Any) -> bool:
-    """True when a transformer window call appears anywhere in the subtree
-    (such an expression is not executable SQL on the fit side)."""
+def _bare_tf_name(node: Node, lookup: Any) -> str | None:
+    """The lowered name when the node is a bare transformer call — the one
+    sugar (global fit-transform, 2026-08-05 spec): a scalar FUNCTION the
+    oracle doesn't know whose name resolves to a fit/transform object."""
+    if node.get("class") != "FUNCTION" or node.get("is_operator"):
+        return None
+    fname = node.get("function_name", "").lower()
+    if not fname or fname in _known_functions():
+        return None
+    obj = lookup(fname) if lookup is not None else None
+    if obj is not None and hasattr(obj, "fit") and hasattr(obj, "transform"):
+        return fname
+    return None
+
+
+def _reserved_stem(fname: str, suffix: str, lookup: Any) -> str | None:
+    """The transformer stem when ``fname`` is ``{stem}{suffix}`` for a
+    registered transformer — the split's reserved names. A registry entry
+    under the full reserved name is ambiguous and refuses (never silently
+    shadow either reading)."""
+    if not fname.endswith(suffix):
+        return None
+    stem = fname[: -len(suffix)]
+    if not stem or lookup is None:
+        return None
+    obj = lookup(stem)
+    if obj is None or not (hasattr(obj, "fit") and hasattr(obj, "transform")):
+        return None
+    if lookup(fname) is not None:
+        _refuse(
+            f"transformer {stem} reserves the name {fname} — rename the"
+            f" {fname} registry entry"
+        )
+    return stem
+
+
+def _split_transform_name(node: Node, lookup: Any) -> str | None:
+    """The transformer stem when the node is a ``{tf}_transform(θ, bundle)``
+    scalar call (the split's application half, 2026-08-05 spec)."""
+    if node.get("class") != "FUNCTION" or node.get("is_operator"):
+        return None
+    fname = node.get("function_name", "").lower()
+    if fname in _known_functions():
+        return None
+    return _reserved_stem(fname, "_transform", lookup)
+
+
+def _fit_node_name(node: Node, lookup: Any) -> str | None:
+    """The transformer stem when the node is a ``{tf}_fit(...) OVER (...)``
+    window call (the split's aggregate half)."""
+    name = _is_tf_node(node)
+    if name is None:
+        return None
+    return _reserved_stem(name, "_fit", lookup)
+
+
+def _fit_scalar_name(node: Node, lookup: Any) -> str | None:
+    """The transformer stem when the node is a ``{tf}_fit`` call WITHOUT
+    OVER — a fit is a window aggregate, so this always refuses upstream."""
+    if node.get("class") != "FUNCTION" or node.get("is_operator"):
+        return None
+    fname = node.get("function_name", "").lower()
+    if fname in _known_functions():
+        return None
+    return _reserved_stem(fname, "_fit", lookup)
+
+
+def _contains_tf(x: Any, lookup: Any = None) -> bool:
+    """True when a transformer call (window or bare sugar) appears anywhere
+    in the subtree (such an expression is not executable SQL on the fit
+    side)."""
     if isinstance(x, dict):
         if _is_tf_node(x) is not None:
             return True
-        return any(_contains_tf(v) for v in x.values())
+        if _bare_tf_name(x, lookup) is not None:
+            return True
+        if _split_transform_name(x, lookup) is not None:
+            return True
+        return any(_contains_tf(v, lookup) for v in x.values())
     if isinstance(x, list):
-        return any(_contains_tf(v) for v in x)
+        return any(_contains_tf(v, lookup) for v in x)
     return False
 
 
@@ -1457,7 +1694,7 @@ def _level_step(
     quals = level.source_quals
     originals = []
     for item in level.node["select_list"]:
-        if _contains_tf(item):
+        if _contains_tf(item, planner.lookup):
             continue  # not executable SQL; its features ride as __cf_f cols
         fit_item = _strip_quals(item, quals)
         originals.append(fit_item)
@@ -1621,11 +1858,15 @@ def marginalize(
         for pos, alias in enumerate(level.output_aliases):
             items[pos]["alias"] = alias
 
-    windows_at = [i for i, lvl in enumerate(levels) if _has_windows(lvl.node)]
-    deepest = max(windows_at, default=-1)
-
     planner = _Planner()
     planner.lookup = transformers.get if hasattr(transformers, "get") else transformers
+
+    windows_at = [
+        i
+        for i, lvl in enumerate(levels)
+        if _has_windows(lvl.node) or _contains_tf(lvl.node, planner.lookup)
+    ]
+    deepest = max(windows_at, default=-1)
     env = base_env
     final_items: list[Node] = []
     for i, level in enumerate(levels):
@@ -1688,7 +1929,6 @@ def marginalize(
         params=specs,
         udfs=tuple(planner.udf_specs),
         scalar_udfs=tuple(planner.scalar_udfs),
-        doc=doc,
     )
 
 
