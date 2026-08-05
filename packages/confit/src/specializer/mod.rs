@@ -22,15 +22,20 @@ mod tests;
 
 pub use frontend::PrepareError;
 
-/// One width-k (k >= 2) UDF output field: the marshaller assembles model
-/// field `name` from out columns `[first, first + 1 + width)` — a
-/// whole-call validity lane (false = the field is NULL, distinct from a
-/// list of NULLs) followed by `width` nullable component lanes.
+/// One wide UDF output field: the marshaller assembles model field `name`
+/// from out columns `[first, first + 1 + width)` — a whole-call validity
+/// lane (false = the field is NULL, distinct from a container of NULLs)
+/// followed by `width` nullable component lanes.
 #[derive(Debug, Clone)]
 pub struct WideOut {
     pub name: String,
     pub first: u32,
     pub width: u32,
+    /// Declared output field names — empty for an unnamed width-k extern
+    /// (the DRAFT-22 `list | None` boundary); non-empty for a NAMED extern
+    /// at every width, where the boundary assembles a STRUCT keyed by these
+    /// names (slice 5), matching DuckDB's struct registration.
+    pub names: Vec<String>,
 }
 
 /// How to materialize map static `@N` from the static table it came from:

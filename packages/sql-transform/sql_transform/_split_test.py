@@ -93,12 +93,8 @@ REFUSALS = [
     # The deleted sugar: fit scope belongs on {tf}_fit (2026-08-05 spec).
     ("SELECT sc(age) OVER ().age AS z FROM __THIS__", "fit scope"),
     ("SELECT sc(age) OVER (PARTITION BY country).age AS z FROM __THIS__", "fit scope"),
-    # Struct values outside a field read (output boundary is a later slice).
-    ("SELECT sc(age) AS s FROM __THIS__", "struct value"),
-    (
-        "SELECT sc_transform(sc_fit(age) OVER (), age) AS s FROM __THIS__",
-        "struct value",
-    ),
+    # Struct values embedded in an expression (whole items serve, slice 5).
+    ("SELECT sc(age) + 1 AS s FROM __THIS__", "struct value"),
     # θ positions that have no lawful reading yet.
     ("SELECT sc_fit(age) OVER () AS t FROM __THIS__", "later slice"),
     ("SELECT sc_fit(age).age AS z FROM __THIS__", "window aggregate"),

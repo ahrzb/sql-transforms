@@ -51,10 +51,12 @@ fn build_err(msg: impl Into<String>) -> PyErr {
     InterpError::Build(msg.into()).into()
 }
 
-/// One field of the output boundary: a plain scalar lane, or a width-k UDF
-/// field assembled from its whole-validity lane plus k component lanes
-/// (DRAFT-22: the field is `list | None`, and a NULL whole-validity is the
-/// NULL list — distinct from a list of NULLs).
+/// One field of the output boundary: a plain scalar lane, or a wide UDF
+/// field assembled from its whole-validity lane plus k component lanes.
+/// Empty `names` is the DRAFT-22 unnamed boundary (the field is
+/// `list | None`); non-empty assembles a STRUCT keyed by the declared
+/// names (slice 5). Either way a NULL whole-validity is the NULL field —
+/// distinct from a container of NULLs.
 #[derive(Clone)]
 pub(crate) enum EmitField {
     Scalar(usize),
@@ -63,6 +65,7 @@ pub(crate) enum EmitField {
         valid: usize,
         first: usize,
         width: usize,
+        names: Vec<String>,
     },
 }
 
@@ -89,6 +92,7 @@ fn emit_plan(out_cols: &[Col], wide: &[WideOut]) -> Vec<EmitField> {
                     valid: i,
                     first: i + 1,
                     width: wo.width as usize,
+                    names: wo.names.clone(),
                 });
                 i += 1 + wo.width as usize;
                 w.next();
@@ -141,13 +145,16 @@ fn lane_py(py: Python<'_>, st: &RunState, lane: usize, r: usize) -> PyResult<Py<
 }
 
 /// A wide field's value at row `r`: None when the whole-call validity lane
-/// says NULL, else the k-element list (elements may be None).
+/// says NULL, else the k-element list (unnamed extern) or the dict keyed by
+/// the declared field names (named extern — DuckDB's struct value). Values
+/// may be None either way.
 pub(crate) fn wide_py(
     py: Python<'_>,
     st: &RunState,
     valid: usize,
     first: usize,
     width: usize,
+    names: &[String],
     r: usize,
 ) -> PyResult<Py<PyAny>> {
     let OutCol::I1(vlane) = &st.out[valid] else {
@@ -160,7 +167,14 @@ pub(crate) fn wide_py(
     let items = (first..first + width)
         .map(|l| lane_py(py, st, l, r))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(pyo3::types::PyList::new(py, items)?.unbind().into_any())
+    if names.is_empty() {
+        return Ok(pyo3::types::PyList::new(py, items)?.unbind().into_any());
+    }
+    let d = PyDict::new(py);
+    for (n, v) in names.iter().zip(items) {
+        d.set_item(n, v)?;
+    }
+    Ok(d.unbind().into_any())
 }
 
 /// Declared UDFs, parsed off the Python objects at construction: the
@@ -513,8 +527,37 @@ fn synthesize_output_model(
                 ));
             }
             EmitField::Wide {
-                name, first, width, ..
+                name,
+                first,
+                width,
+                names,
+                ..
             } => {
+                if !names.is_empty() {
+                    // Named extern: the field is a nullable struct whose
+                    // members carry the per-lane types (slice 5).
+                    let members = names
+                        .iter()
+                        .zip(&out_cols[*first..*first + *width])
+                        .map(|(n, c)| {
+                            (
+                                n.clone(),
+                                FieldType {
+                                    base: ty_to_base(c.ty.ty),
+                                    nullable: true,
+                                },
+                            )
+                        })
+                        .collect();
+                    fields.push((
+                        name.clone(),
+                        FieldType {
+                            base: Base::Struct(members),
+                            nullable: true,
+                        },
+                    ));
+                    continue;
+                }
                 // Elements share one declared type (the frontend refuses
                 // mixed-return UDFs as bare items today; the guard stays).
                 let elem = out_cols[*first].ty.ty;
@@ -672,7 +715,15 @@ impl Marshaller {
                 .map(|f| PyString::intern(py, f.name(out_cols)).unbind())
                 .collect(),
             model: output_model.clone_ref(py),
-            validate: if supplied {
+            // The slot fill below is sound only for plain scalar fields; a
+            // named wide field is a NESTED MODEL in the synthesized output
+            // model, so a raw dict in its slot would serialize with warnings
+            // and break attribute access — those plans validate per row.
+            validate: if supplied
+                || plan
+                    .iter()
+                    .any(|f| matches!(f, EmitField::Wide { names, .. } if !names.is_empty()))
+            {
                 Some(output_model.bind(py).getattr("model_validate")?.unbind())
             } else {
                 None
@@ -820,9 +871,13 @@ impl Marshaller {
                         valid,
                         first,
                         width,
+                        names,
                         ..
                     } => {
-                        d.set_item(k, wide_py(py, &self.state, *valid, *first, *width, r)?)?;
+                        d.set_item(
+                            k,
+                            wide_py(py, &self.state, *valid, *first, *width, names, r)?,
+                        )?;
                     }
                 }
             }
@@ -1473,9 +1528,13 @@ impl DuckDBInferFn {
                         valid,
                         first,
                         width,
+                        names,
                         ..
                     } => {
-                        dict.set_item(name, wide_py(py, &st, *valid, *first, *width, r)?)?;
+                        dict.set_item(
+                            name,
+                            wide_py(py, &st, *valid, *first, *width, names, r)?,
+                        )?;
                     }
                 }
             }

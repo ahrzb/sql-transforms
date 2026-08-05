@@ -204,24 +204,35 @@ def test_field_access_under_partition_unseen_group_is_null():
     assert out.z is None
 
 
-# --- struct-valued calls (the subtraction loop): only field reads cross --------
+# --- struct-valued calls: whole items serve; embedded positions refuse ---------
 
 
-def test_bare_transformer_call_refuses_at_construction():
-    # A call is a struct value at EVERY width — a bare item has no output
-    # boundary to cross until DRAFT-25 lands nested outputs.
-    for sql in [
-        "SELECT sc(struct_pack(a := age)) AS z FROM __THIS__",
-        "SELECT pca(struct_pack(a := age, f := fare)) AS e FROM __THIS__",
-    ]:
-        with pytest.raises(MarginalizeError, match="struct value"):
-            SQLProjection(
-                sql,
-                transformers={
-                    "sc": StandardScaler(),
-                    "pca": PCA(n_components=2),
-                },
-            )
+def test_bare_call_serves_width1_struct():
+    # A call is a struct value at EVERY width (slice 5): a width-1 bare
+    # item serves a one-field struct, same boundary as width-k.
+    p = SQLProjection(
+        "SELECT sc(struct_pack(a := age)) AS z, name FROM __THIS__",
+        transformers={"sc": StandardScaler()},
+    ).fit(TRAIN)
+    est = StandardScaler().fit(
+        np.array([TRAIN.column("age").to_pylist()], dtype=float).T
+    )
+    ref = est.transform(np.array([TRAIN.column("age").to_pylist()], dtype=float).T)
+    got = p.transform(TRAIN).column("z").to_pylist()
+    for i in range(TRAIN.num_rows):
+        assert set(got[i]) == {"a"}
+        np.testing.assert_allclose(got[i]["a"], ref[i][0], rtol=1e-12)
+
+
+def test_unaliased_bare_call_keeps_duckdbs_derived_name():
+    # The parse step stamps DuckDB's derived column name as the item alias,
+    # so an unaliased bare call serves under the ORIGINAL call text — the
+    # oracle's name, not the rewritten internal one.
+    p = SQLProjection(
+        "SELECT sc(struct_pack(a := age)) FROM __THIS__",
+        transformers={"sc": StandardScaler()},
+    ).fit(TRAIN)
+    assert p.transform(TRAIN).column_names == ["sc(struct_pack(a := age))"]
 
 
 def test_transformer_arithmetic_without_a_field_refuses_at_construction():
@@ -246,17 +257,7 @@ def test_width1_field_read_survives_to_serving_uniformly():
     assert got == want
 
 
-# --- bare items refuse; field reads are the only crossing ----------------------
-
-
-def test_bare_wide_item_refuses_at_construction():
-    # The loop-3 flat expansion is deleted (struct-valued calls): a bare
-    # item has no output boundary to cross until DRAFT-25 nests it.
-    with pytest.raises(MarginalizeError, match="struct value"):
-        SQLProjection(
-            "SELECT pca(struct_pack(a := age, f := fare)) AS e, name FROM __THIS__",
-            transformers={"pca": PCA(n_components=2)},
-        )
+# --- field reads coexist with the struct boundary ------------------------------
 
 
 def test_field_reads_use_declared_names():

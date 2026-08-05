@@ -164,14 +164,17 @@ pub fn frontend(
         exprs.push(e);
         Ok(())
     };
-    // A bare width-k UDF item expands to its whole-validity lane plus k
+    // A bare wide UDF item expands to its whole-validity lane plus k
     // component lanes; the WideOut records how the boundary reassembles
-    // them into ONE `list | None` field (DRAFT-22 step 2).
+    // them into ONE field — `list | None` for an unnamed extern (DRAFT-22
+    // step 2), a struct keyed by the declared names for a named one
+    // (slice 5).
     let push_wide = |out_cols: &mut Vec<Col>,
                          exprs: &mut Vec<SExpr>,
                          wide_outs: &mut Vec<super::WideOut>,
                          base: String,
-                         lanes: Vec<(String, SExpr)>|
+                         lanes: Vec<(String, SExpr)>,
+                         names: Vec<String>|
      -> Result<(), PrepareError> {
         let first = out_cols.len() as u32;
         let width = (lanes.len() - 1) as u32;
@@ -189,14 +192,22 @@ pub fn frontend(
             name: base,
             first,
             width,
+            names,
         });
         Ok(())
     };
     for item in &select.projection {
         match item {
             SelectItem::UnnamedExpr(e) => {
-                if let Some(lanes) = binder.wide_extern_lanes(e, &default_name(e))? {
-                    push_wide(&mut out_cols, &mut exprs, &mut wide_outs, default_name(e), lanes)?;
+                if let Some((lanes, names)) = binder.wide_extern_lanes(e, &default_name(e))? {
+                    push_wide(
+                        &mut out_cols,
+                        &mut exprs,
+                        &mut wide_outs,
+                        default_name(e),
+                        lanes,
+                        names,
+                    )?;
                     continue;
                 }
                 // COLUMNS('re') expands like a filtered star, keeping the
@@ -215,15 +226,16 @@ pub fn frontend(
                 }
             }
             SelectItem::ExprWithAlias { expr, alias } => {
-                if let Some(lanes) = binder.wide_extern_lanes(expr, &alias.value)? {
+                if let Some((lanes, names)) = binder.wide_extern_lanes(expr, &alias.value)? {
                     // No lateral-alias registration: the assembled field is
-                    // a list, which no scalar expression can reference.
+                    // a container, which no scalar expression can reference.
                     push_wide(
                         &mut out_cols,
                         &mut exprs,
                         &mut wide_outs,
                         alias.value.clone(),
                         lanes,
+                        names,
                     )?;
                     continue;
                 }
@@ -3443,16 +3455,20 @@ impl Binder<'_> {
         Ok(out)
     }
 
-    /// A bare width-k (k >= 2) UDF call as a projection item expands to a
-    /// whole-validity lane plus k nullable component lanes sharing one call
-    /// site; `None` for anything else (width-1 calls stay ordinary scalar
-    /// expressions). Lane names carry U+0001 (reserved at the SQL gate, so
-    /// no user column can collide).
+    /// A bare wide UDF call as a projection item expands to a whole-validity
+    /// lane plus per-return nullable component lanes sharing one call site:
+    /// a width-k (k >= 2) unnamed extern (the DRAFT-22 list boundary), or a
+    /// NAMED extern at EVERY width (slice 5 — DuckDB registers named
+    /// externs as STRUCT, so the boundary assembles a struct keyed by the
+    /// returned declared names; empty names = list). `None` for anything
+    /// else (width-1 unnamed calls stay ordinary scalar expressions). Lane
+    /// names carry U+0001 (reserved at the SQL gate, so no user column can
+    /// collide).
     fn wide_extern_lanes(
         &self,
         e: &SqlExpr,
         base: &str,
-    ) -> Result<Option<Vec<(String, SExpr)>>, PrepareError> {
+    ) -> Result<Option<(Vec<(String, SExpr)>, Vec<String>)>, PrepareError> {
         let mut inner = e;
         while let SqlExpr::Nested(i) = inner {
             inner = i;
@@ -3463,21 +3479,8 @@ impl Binder<'_> {
         let Some((ext, spec)) = self.find_udf(&f.name.to_string()) else {
             return Ok(None);
         };
-        if spec.rets.len() < 2 {
+        if spec.rets.len() < 2 && spec.ret_names.is_empty() {
             return Ok(None);
-        }
-        if !spec.ret_names.is_empty() {
-            // A NAMED width-k extern registers as a STRUCT on the DuckDB
-            // side (TASK-63), so the list|None bare-item boundary would be
-            // a silent third behavior — refuse; address the fields instead.
-            // The list boundary stays for unnamed externs.
-            return Err(unsup(format!(
-                "width-{} udf '{}' with declared field names as a bare item \
-                 — address its output fields ({}(...).name)",
-                spec.rets.len(),
-                spec.name,
-                spec.name
-            )));
         }
         let args = self.bind_udf_args(f, spec)?;
         let site = self.fresh_site();
@@ -3512,7 +3515,7 @@ impl Binder<'_> {
                 },
             ));
         }
-        Ok(Some(lanes))
+        Ok(Some((lanes, spec.ret_names.clone())))
     }
 
     fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
@@ -4569,13 +4572,14 @@ impl Binder<'_> {
                 if let Some((ext, spec)) = self.find_udf(&f.name.to_string()) {
                     if !spec.ret_names.is_empty() {
                         // Struct-valued at every width (the subtraction
-                        // loop): a named extern outside a field read has
-                        // no scalar reading — DuckDB's struct registration
-                        // would binder-error, and no struct output boundary
-                        // exists yet.
+                        // loop): a named extern MID-EXPRESSION has no
+                        // scalar reading — DuckDB's struct registration
+                        // would binder-error. Bare items take the struct
+                        // boundary in the projection loop (slice 5).
                         return Err(unsup(format!(
                             "udf '{}' is struct-valued (declared field names) \
-                             — address an output field ({}(...).name)",
+                             — serve it as its own SELECT item or address an \
+                             output field ({}(...).name)",
                             spec.name, spec.name
                         )));
                     }
