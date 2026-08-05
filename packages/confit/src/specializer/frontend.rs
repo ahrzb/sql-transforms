@@ -3439,6 +3439,20 @@ impl Binder<'_> {
         if !list.clauses.is_empty() || list.duplicate_treatment.is_some() {
             return Err(unsup(format!("function {} argument clauses", f.name)));
         }
+        // Every caller of a declared UDF routes through here, so the
+        // call-node modifiers the oracle rejects are screened once
+        // (review round: IGNORE NULLS rode in on the INNER call of an
+        // unnest item and expanded as if unadorned).
+        if f.filter.is_some()
+            || f.null_treatment.is_some()
+            || !f.within_group.is_empty()
+        {
+            return Err(unsup(format!(
+                "modifier on udf call {} (FILTER, IGNORE NULLS and WITHIN \
+                 GROUP apply to aggregates)",
+                f.name
+            )));
+        }
         let mut raw: Vec<&SqlExpr> = Vec::with_capacity(list.args.len());
         for a in &list.args {
             match a {
@@ -3505,6 +3519,23 @@ impl Binder<'_> {
         let FunctionArguments::List(list) = &uf.args else {
             return Ok(None);
         };
+        // Measured: the oracle rejects every modifier on UNNEST itself
+        // (DISTINCT/FILTER/in-call ORDER BY "not applicable to UNNEST",
+        // OVER a catalog error, IGNORE NULLS a parser error) — refuse by
+        // name rather than expanding as if unadorned (review round).
+        if !list.clauses.is_empty()
+            || list.duplicate_treatment.is_some()
+            || uf.filter.is_some()
+            || uf.over.is_some()
+            || uf.null_treatment.is_some()
+            || !uf.within_group.is_empty()
+        {
+            return Err(unsup(
+                "modifier on UNNEST (DISTINCT, FILTER, ORDER BY, OVER and \
+                 IGNORE NULLS are not applicable to UNNEST)"
+                    .to_string(),
+            ));
+        }
         let [FunctionArg::Unnamed(FunctionArgExpr::Expr(arg))] = &list.args[..] else {
             return Ok(None);
         };

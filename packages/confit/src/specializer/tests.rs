@@ -1338,6 +1338,32 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
 }
 
 #[test]
+fn modifiers_on_an_unnest_item_refuse() {
+    // Measured: DuckDB refuses every modifier on UNNEST itself (DISTINCT /
+    // FILTER / in-call ORDER BY are "not applicable to UNNEST", OVER is a
+    // catalog error, IGNORE NULLS a parser error) — the expansion must
+    // re-screen them instead of dropping them (review round).
+    let schema = cols(&[("x", Ty::F64, true)]);
+    let udf = udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)]);
+    for sql in [
+        "SELECT unnest(DISTINCT emb(x)) FROM __THIS__",
+        "SELECT unnest(emb(x) ORDER BY x) FROM __THIS__",
+        "SELECT unnest(emb(x)) FILTER (WHERE x > 0.0) FROM __THIS__",
+        "SELECT unnest(emb(x)) OVER () FROM __THIS__",
+        "SELECT unnest(emb(x) IGNORE NULLS) FROM __THIS__",
+    ] {
+        let err = prep_udfs(sql, &schema, &[], &[udf.clone()]).unwrap_err();
+        let msg = err.to_string().to_lowercase();
+        // IGNORE NULLS parses onto the INNER call, so it refuses there —
+        // either way the modifier is named, never dropped.
+        assert!(
+            msg.contains("unnest") || msg.contains("modifier"),
+            "{sql}: expected a named modifier refusal, got: {msg}"
+        );
+    }
+}
+
+#[test]
 fn unnest_named_extern_expands_to_per_field_columns() {
     // Measured oracle behavior: one column per declared field, named by
     // the field, in place, alias ignored — all off ONE ecall site.
