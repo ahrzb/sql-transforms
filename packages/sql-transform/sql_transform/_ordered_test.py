@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-08-05-fit-transform-split-design.md.
 """
 
 import numpy as np
+import pyarrow as pa
 import pydantic
 import pytest
 from sklearn.preprocessing import StandardScaler
@@ -184,6 +185,68 @@ def test_theta_lateral_ordered_equals_inline():
     assert lateral.serving_sql == inline.serving_sql
 
 
+def test_collate_key_is_honored():
+    """Review round: the collation annotation dropped through Arrow and the
+    sort ran binary — the named collation must do the comparing."""
+    import duckdb
+
+    t = pa.table({"rid": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "s": list("bABaCc")})
+    model = pydantic.create_model("R", **dict.fromkeys(t.column_names, (object, None)))
+    p = SQLProjection(
+        "SELECT sm_transform(sm_fit(rid ORDER BY s COLLATE NOCASE) OVER (), rid)"
+        ".rid AS z, rid FROM __THIS__",
+        this_model=model,
+        transformers={"sm": OrderSensitive(SeqMean())},
+    ).fit(t)
+    con = duckdb.connect()
+    con.register("t", t)
+    (oracle_order,) = con.execute(
+        "SELECT list(rid ORDER BY s COLLATE NOCASE, rid) FROM t"
+    ).fetchone()
+    con.close()
+    w = _w(list(oracle_order))
+    got = {r["rid"]: r["z"] for r in p.transform(t).to_pylist()}
+    for rid in t.column("rid").to_pylist():
+        np.testing.assert_allclose(got[rid], rid - w, rtol=1e-12)
+
+
+def test_named_wrapping_order_sensitive_still_requires_order():
+    """Review round: Named had no attribute forwarding, so it silently
+    cancelled the inner order-sensitivity declaration."""
+    from sql_transform import Named
+
+    with pytest.raises(MarginalizeError, match="order-sensitive"):
+        SQLProjection(
+            "SELECT sm_transform(sm_fit(age) OVER (), age).age AS z FROM __THIS__",
+            this_model=ROW,
+            transformers={"sm": Named(OrderSensitive(SeqMean()), returns=("age",))},
+        )
+
+
+def test_wrapper_survives_pickle_roundtrip():
+    """Review round: __getattr__ raised KeyError (not AttributeError) on
+    empty instance state, crashing pickle/copy protocols."""
+    import pickle
+
+    # S301: test-local roundtrip of our own object, no untrusted data.
+    back = pickle.loads(pickle.dumps(OrderSensitive(StandardScaler())))  # noqa: S301
+    assert back.order_sensitive is True
+    assert isinstance(back.estimator, StandardScaler)
+
+
+def test_integer_literal_key_is_a_constant():
+    """Measured: DuckDB treats in-call ORDER BY 1 as a constant (not
+    positional) — all ties, input order."""
+    ordered = _fit(
+        "SELECT sm_transform(sm_fit(age ORDER BY 1) OVER (), age).age AS z,"
+        " name FROM __THIS__"
+    )
+    w = _w(AGES)
+    got = _by_name(ordered.transform(TRAIN), "z")
+    for i, n in enumerate(NAMES):
+        np.testing.assert_allclose(got[n], AGES[i] - w, rtol=1e-12)
+
+
 REFUSALS = [
     # An order-sensitive transformer must name its order.
     (
@@ -201,6 +264,35 @@ REFUSALS = [
         "SELECT sm_transform(sm_fit(age ORDER BY sc(fare).fare) OVER (), age)"
         ".age AS z FROM __THIS__",
         "inside an ORDER BY key",
+    ),
+    # Review round: collation edges refuse by name at construction.
+    (
+        "SELECT sm_transform(sm_fit(age ORDER BY name COLLATE nosuch)"
+        " OVER (), age).age AS z FROM __THIS__",
+        "collation",
+    ),
+    (
+        "SELECT sm_transform(sm_fit(age ORDER BY (name COLLATE NOCASE) || 'x')"
+        " OVER (), age).age AS z FROM __THIS__",
+        "COLLATE inside",
+    ),
+    # DuckDB's binder rule: a non-integer literal key has no effect.
+    (
+        "SELECT sm_transform(sm_fit(age ORDER BY 'a') OVER (), age).age"
+        " AS z FROM __THIS__",
+        "non-integer literal",
+    ),
+    # In-call ORDER BY binds only on aggregates (measured) — every scalar
+    # spelling refuses instead of crashing at serving or dropping silently.
+    (
+        "SELECT round(age ORDER BY fare) AS r FROM __THIS__",
+        "ORDER BY inside the scalar call",
+    ),
+    ("SELECT sc(age ORDER BY fare).age AS z FROM __THIS__", "ORDER BY"),
+    (
+        "SELECT sc_transform(sc_fit(age) OVER (), age ORDER BY fare).age"
+        " AS z FROM __THIS__",
+        "ORDER BY",
     ),
 ]
 
