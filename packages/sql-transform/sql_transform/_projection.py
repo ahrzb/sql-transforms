@@ -395,7 +395,7 @@ class SQLProjection:
         # Probe the real model builder so the refusal tracks pydantic, not
         # a blocklist (review round 2026-08-05). Field-read-only fits skip
         # this: their learned names never become pydantic fields.
-        if any(s.field is None for s in specs):
+        if any(s.whole for s in specs):
             import warnings
 
             import pydantic
