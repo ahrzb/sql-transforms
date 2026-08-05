@@ -197,6 +197,23 @@ pub fn frontend(
         Ok(())
     };
     for item in &select.projection {
+        // unnest(udf(...)) expands IN PLACE to one plain scalar column per
+        // declared field, named by the field names, alias ignored — the
+        // oracle's own expansion (measured). Every column reads a lane of
+        // the ONE shared ecall site.
+        let unnest_expr = match item {
+            SelectItem::UnnamedExpr(e) => Some(e),
+            SelectItem::ExprWithAlias { expr, .. } => Some(expr),
+            _ => None,
+        };
+        if let Some(e) = unnest_expr {
+            if let Some(cols) = binder.unnest_extern_columns(e)? {
+                for (name, ex) in cols {
+                    push_item(&mut out_cols, &mut exprs, name, ex)?;
+                }
+                continue;
+            }
+        }
         match item {
             SelectItem::UnnamedExpr(e) => {
                 if let Some((lanes, names)) = binder.wide_extern_lanes(e, &default_name(e))? {
@@ -3470,6 +3487,70 @@ impl Binder<'_> {
     /// else (width-1 unnamed calls stay ordinary scalar expressions). Lane
     /// names carry U+0001 (reserved at the SQL gate, so no user column can
     /// collide).
+    fn unnest_extern_columns(
+        &self,
+        e: &SqlExpr,
+    ) -> Result<Option<Vec<(String, SExpr)>>, PrepareError> {
+        let mut outer = e;
+        while let SqlExpr::Nested(i) = outer {
+            outer = i;
+        }
+        let SqlExpr::Function(uf) = outer else {
+            return Ok(None);
+        };
+        if !uf.name.to_string().eq_ignore_ascii_case("unnest") {
+            return Ok(None);
+        }
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        let FunctionArguments::List(list) = &uf.args else {
+            return Ok(None);
+        };
+        let [FunctionArg::Unnamed(FunctionArgExpr::Expr(arg))] = &list.args[..] else {
+            return Ok(None);
+        };
+        let mut inner = arg;
+        while let SqlExpr::Nested(i) = inner {
+            inner = i;
+        }
+        let SqlExpr::Function(f) = inner else {
+            return Ok(None);
+        };
+        let Some((ext, spec)) = self.find_udf(&f.name.to_string()) else {
+            return Ok(None);
+        };
+        if spec.ret_names.is_empty() {
+            return Err(unsup(format!(
+                "unnest of udf '{}': no declared output field names",
+                spec.name
+            )));
+        }
+        let args = self.bind_udf_args(f, spec)?;
+        let site = self.site_for(f);
+        Ok(Some(
+            spec.ret_names
+                .iter()
+                .zip(&spec.rets)
+                .enumerate()
+                .map(|(j, (n, &rt))| {
+                    (
+                        n.clone(),
+                        SExpr {
+                            kind: SKind::ExternCall {
+                                site,
+                                ext,
+                                args: args.clone(),
+                                ret: j as u32,
+                                whole: false,
+                            },
+                            ty: rt,
+                            nullable: true,
+                        },
+                    )
+                })
+                .collect(),
+        ))
+    }
+
     fn wide_extern_lanes(
         &self,
         e: &SqlExpr,

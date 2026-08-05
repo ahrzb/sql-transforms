@@ -158,13 +158,89 @@ def test_star_over_a_call_is_the_oracles_parser_error():
         _fit("SELECT sc(struct_pack(a := age, f := fare)).*, name FROM __THIS__")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="slice-5 follow-up: unnest over a struct-valued transformer call"
-    " expands to per-field columns named by the LEARNED field names"
-    " (measured: alias ignored, one column per field, in place)",
-)
 def test_unnest_expands_struct_output():
     p = _fit("SELECT unnest(sc(struct_pack(a := age, f := fare))), name FROM __THIS__")
     out = p.transform(TRAIN)
     assert out.column_names == ["a", "f", "name"]
+    ref = _ref_struct()
+    for i in range(TRAIN.num_rows):
+        np.testing.assert_allclose(
+            out.column("a").to_pylist()[i], ref[i]["a"], rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            out.column("f").to_pylist()[i], ref[i]["f"], rtol=1e-12
+        )
+
+
+def test_unnest_expands_struct_output_row_path():
+    """C3: the row path expands to the same columns, same values."""
+    p = _fit("SELECT unnest(sc(struct_pack(a := age, f := fare))), name FROM __THIS__")
+    want = p.transform(TRAIN).to_pylist()
+    got = [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())]
+    assert got == want
+
+
+def test_unnest_ignores_its_alias():
+    # Measured: DuckDB ignores an alias on an unnest item — the learned
+    # field names are the output names, at every width.
+    p = _fit(
+        "SELECT unnest(sc(struct_pack(a := age, f := fare))) AS zzz, name FROM __THIS__"
+    )
+    assert p.transform(TRAIN).column_names == ["a", "f", "name"]
+
+
+def test_unnest_alongside_a_field_read_shares_one_fit():
+    p = _fit(
+        "SELECT unnest(sc(struct_pack(a := age, f := fare))),"
+        " sc(struct_pack(a := age, f := fare)).a AS ra, name FROM __THIS__"
+    )
+    assert len([st for st in p.plan if st.kind == "fit"]) == 1
+    out = p.transform(TRAIN)
+    assert out.column_names == ["a", "f", "ra", "name"]
+    assert out.column("a").to_pylist() == out.column("ra").to_pylist()
+
+
+def test_unnest_name_collision_refuses_at_fit():
+    # Measured: DuckDB emits DUPLICATE result columns (a, b, a) — the row
+    # path's output model cannot carry that, so a learned name colliding
+    # with any sibling output refuses by name at fit (P7 carve-out: the
+    # names are learned, so construction cannot know them).
+    with pytest.raises(MarginalizeError, match="collides"):
+        _fit(
+            "SELECT unnest(sc(struct_pack(a := age, f := fare))),"
+            " name AS a FROM __THIS__"
+        )
+
+
+def test_two_unnests_of_the_same_call_refuse_at_fit():
+    with pytest.raises(MarginalizeError, match="collides"):
+        _fit(
+            "SELECT unnest(sc(struct_pack(a := age, f := fare))),"
+            " unnest(sc(struct_pack(a := age, f := fare))) FROM __THIS__"
+        )
+
+
+@pytest.mark.parametrize(
+    "sql,match",
+    [
+        # Measured binder errors — the oracle has no reading for these.
+        (
+            "SELECT unnest(sc(struct_pack(a := age, f := fare))) + 1 FROM __THIS__",
+            "root element",
+        ),
+        (
+            "SELECT unnest(unnest(sc(struct_pack(a := age, f := fare)))) FROM __THIS__",
+            "[Nn]ested UNNEST",
+        ),
+        # WHERE is refused wholesale (filter shape, not a projection) —
+        # it never reaches the unnest position check.
+        (
+            "SELECT name FROM __THIS__ WHERE"
+            " unnest(sc(struct_pack(a := age, f := fare))) > 0",
+            "filter shape",
+        ),
+    ],
+)
+def test_unlawful_unnest_positions_refuse(sql, match):
+    with pytest.raises(MarginalizeError, match=match):
+        _fit(sql)

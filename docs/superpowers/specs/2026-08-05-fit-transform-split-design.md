@@ -313,11 +313,18 @@ struct is NULL, distinct from a struct of NULLs). Mechanics:
   spelling refuses at parse (pinned). `unnest(call)` IS the oracle's
   expansion spelling: one column per learned field, named by the FIELD
   names (an alias is ignored), expanded in place among the other items.
-- Unnest is the slice's follow-up PR: learned output names crossing the
-  boundary drag in the duplicate-name law (DuckDB allows duplicate
-  result columns; the row-path model cannot) — a strict xfail pins the
-  serving shape until it lands. θ export (slice 6) rides on the
-  whole-value struct boundary landed here.
+- Unnest LANDED as the slice's follow-up (measured rules): `unnest(tfm(...))`
+  as a root select item expands in place to one column per LEARNED field,
+  named by the field, **alias ignored**; every column reads a lane of the
+  one shared ecall site, so unnest alongside a field read still fits and
+  evaluates once. Unlawful positions refuse by name, matching the oracle's
+  binder: inside an expression ("root element of a SELECT expression"),
+  nested unnest, extra `recursive :=`/`max_depth :=` arguments, and a
+  non-final level. Collisions refuse AT FIT (P7's learned-T carve-out):
+  DuckDB emits duplicate result columns (measured `a, b, a`), which a row
+  — a named struct — cannot carry, so a learned name colliding with any
+  sibling output or another unnest refuses by name. θ export (slice 6)
+  rides on the whole-value struct boundary landed in slice 5.
 - Review-round decisions (2026-08-05): learned output names must survive
   the row-path model boundary WHEN SERVED WHOLE — a fit-time probe of
   the real pydantic model builder refuses by name (`_`-leading names
