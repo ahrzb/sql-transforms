@@ -82,9 +82,11 @@ honored (DuckDB accepts it on `avg`; the oracle rule answers this one).
 
 - **θ is an ordinary value.** Private columns, public output columns,
   arbitrary expressions — it flows like any struct. Export is already
-  paid for: a public `... AS theta` column serves as
-  `struct_pack(type := '__cf_tf0', id := __cf_p0.__cf_est)` — pure
-  existing parts, same value per group, lawful under the oracle.
+  paid for: a public `... AS theta` column serves as a `struct_pack`
+  of pure existing parts, same value per group, lawful under the
+  oracle. (Slice 6 landed it CASE-guarded so an unseen group yields a
+  NULL handle rather than a live type tag with a NULL id — see the
+  addendum for the exact text.)
 - **Staleness is out of scope in v0 — unreachable.** `fit()` rebuilds
   instances + params atomically in one object; exported θ is inert data
   with no re-entry path (literals refuse; `tfm_transform` accepts only
@@ -360,9 +362,12 @@ struct is NULL, distinct from a struct of NULLs). Mechanics:
 3. **`FILTER` on `tfm_fit`.** Small.
 4. **Ordered fits.** `OrderSensitive` wrapper + in-call `ORDER BY` +
    the stable sort.
-5. **Nested struct outputs.** Bare call as an output column, `s.*`,
-   `unnest` — the output boundary learns struct columns on both paths
-   (engine work; C2/C3 for struct-valued outputs).
+5. **Nested struct outputs.** Bare call as an output column, plus
+   `unnest(call)` to expand it — the output boundary learns struct
+   columns on both paths (engine work; C2/C3 for struct-valued
+   outputs). LANDED without `.*`: star-over-expression is a DuckDB
+   parser error, so `unnest` is the oracle's only expansion spelling
+   (see the addendum).
 6. **θ public export.** Rides on 5 — θ is just another struct output.
 
 ## Slice 6 addendum — θ public export (2026-08-05)
