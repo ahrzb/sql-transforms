@@ -481,27 +481,37 @@ def _resolve_chain(root: Node) -> list[_Level]:
 # --- window and key rules (spec: window-widening design) ----------------------
 
 
-def _walk_row_wise(x: Any, where: str) -> None:
-    """The subtree must be row-wise: no nesting of table semantics."""
+def _walk_row_wise(x: Any, where: str, lookup: Any = None) -> None:
+    """The subtree must be row-wise: no nesting of table semantics. With a
+    ``lookup``, transformer calls (bare sugar, split halves) are screened
+    too — composition is TASK-65, parked, and un-screened text would ride
+    verbatim into fit-side SQL and die mid-fit (review round 2026-08-05)."""
     if isinstance(x, dict):
         cls = x.get("class")
         if cls == "WINDOW":
             _refuse(f"a window function inside {where}", x.get("query_location"))
         if cls == "SUBQUERY":
             _refuse(f"a subquery inside {where}", x.get("query_location"))
-        if (
-            cls == "FUNCTION"
-            and x.get("function_name", "").lower() in _aggregate_names()
-        ):
-            _refuse(
-                f"aggregate {x['function_name']} inside {where}",
-                x.get("query_location"),
-            )
+        if cls == "FUNCTION":
+            if x.get("function_name", "").lower() in _aggregate_names():
+                _refuse(
+                    f"aggregate {x['function_name']} inside {where}",
+                    x.get("query_location"),
+                )
+            if lookup is not None and (
+                _bare_tf_name(x, lookup) is not None
+                or _split_transform_name(x, lookup) is not None
+                or _fit_scalar_name(x, lookup) is not None
+            ):
+                _refuse(
+                    f"a transformer call inside {where}",
+                    x.get("query_location"),
+                )
         for v in x.values():
-            _walk_row_wise(v, where)
+            _walk_row_wise(v, where, lookup)
     elif isinstance(x, list):
         for v in x:
-            _walk_row_wise(v, where)
+            _walk_row_wise(v, where, lookup)
 
 
 def _check_frame(w: _Window) -> bool:
@@ -736,7 +746,7 @@ class _LevelRewriter:
                     serving_expr=self.rewrite(expr),
                     name=bare,
                 )
-        _walk_row_wise(expr, "a partition or order key")
+        _walk_row_wise(expr, "a partition or order key", self.planner.lookup)
         return _Key(
             ident=_stripped(_strip_quals(expr, quals)),
             fit_expr=dict(_strip_quals(expr, quals), alias=""),
@@ -805,7 +815,7 @@ class _LevelRewriter:
                 if ch["alias"].lower() in names:
                     _refuse(f"duplicate bundle field {ch['alias']}")
                 names.add(ch["alias"].lower())
-                _walk_row_wise(ch, "a transformer bundle")
+                _walk_row_wise(ch, "a transformer bundle", self.planner.lookup)
                 out.append(
                     (
                         ch["alias"],
@@ -987,6 +997,21 @@ class _LevelRewriter:
         then the identity refusals (namespaced/unknown/non-transformer),
         then — for a genuine registered transformer — the deleted sugar."""
         loc = x.get("query_location")
+        if x.get("schema"):
+            # The namespace is the actual mistake — name it before any
+            # split-shape advice (review round 2026-08-05).
+            _refuse(
+                f"namespaced transformer {x['schema']}.{tf_name}"
+                " (the curated-namespace index is a later loop)",
+                loc,
+            )
+        tr_stem = _reserved_stem(tf_name, "_transform", self.planner.lookup)
+        if tr_stem is not None:
+            _refuse(
+                f"{tr_stem}_transform is a scalar function — the fit scope"
+                f" lives on {tr_stem}_fit(...) OVER (...)",
+                loc,
+            )
         fit_stem = _fit_node_name(x, self.planner.lookup)
         if fit_stem is not None:
             _refuse(
@@ -1262,7 +1287,7 @@ class _Planner:
         Structurally identical calls share one fit step, so ``t(...).a``
         and ``t(...).b`` fit once. Windowed fit scopes take the split path
         (``split_ref``)."""
-        ident = _stripped(raw)
+        ident = _stripped(raw) + "|" + _bundle_names_key(raw)
         if ident in self.tf_calls:
             return self._tf_call_node(self.tf_calls[ident], field_name, alias)
         self.check_transformer_identity(raw, name)
@@ -1347,7 +1372,14 @@ class _Planner:
                 loc,
             )
         theta = kids[0]
-        if _fit_node_name(theta, self.lookup) != tf_name or theta.get("schema"):
+        if isinstance(theta, dict) and theta.get("schema") and _is_tf_node(theta):
+            _refuse(
+                f"namespaced transformer {theta['schema']}"
+                f".{theta.get('function_name', '')}"
+                " (the curated-namespace index is a later loop)",
+                theta.get("query_location"),
+            )
+        if _fit_node_name(theta, self.lookup) != tf_name:
             _refuse(
                 f"the first argument of {tf_name}_transform must be an inline"
                 f" {tf_name}_fit(...) OVER (...) call — θ has no other lawful"
@@ -1383,7 +1415,7 @@ class _Planner:
         if w.distinct or w.ignore_nulls:
             _refuse(f"DISTINCT/IGNORE NULLS on {tf_name}_fit", w.query_location)
         tbundle = rw._bundle_of(kids[1])
-        ident = _stripped(theta)
+        ident = _stripped(theta) + "|" + _bundle_names_key(theta)
         if ident in self.tf_calls:
             j = self.tf_calls[ident]
         else:
@@ -1540,6 +1572,16 @@ def _validate_subquery_tables(sub_node: Node) -> None:
 
     def check(x: Any) -> None:
         if isinstance(x, dict):
+            if x.get("class") == "WINDOW":
+                f = x.get("function_name", "").lower()
+                if f and f not in _aggregate_names():
+                    # Pre-existing hole closed in the 2026-08-05 review
+                    # round: this used to ride verbatim into the fit step
+                    # and die there as a raw CatalogException.
+                    _refuse(
+                        f"unknown window function {f} inside a subquery",
+                        x.get("query_location"),
+                    )
             if x.get("type") == "BASE_TABLE":
                 name = x.get("table_name", "")
                 if name.lower() != "__this__" and name.lower() not in own_ctes:
@@ -1599,8 +1641,36 @@ def _bare_tf_name(node: Node, lookup: Any) -> str | None:
         return None
     obj = lookup(fname) if lookup is not None else None
     if obj is not None and hasattr(obj, "fit") and hasattr(obj, "transform"):
+        # A bare call spelled like a reserved name is ambiguous — refuse
+        # (review round 2026-08-05: x_fit on a {x, x_fit} registry used to
+        # silently serve the x_fit object).
+        for suffix in ("_fit", "_transform"):
+            _reserved_stem(fname, suffix, lookup)
         return fname
     return None
+
+
+def _bundle_names_key(call: Node) -> str:
+    """The lowered bundle field names of a transformer/fit call, for fit-step
+    identity. ``_stripped`` erases aliases — but S's field names ARE the type
+    (P16a), so two fits differing only in struct_pack names must never share
+    a step (review round 2026-08-05: the collision served the wrong fit's
+    lanes)."""
+    kids = call.get("children") or []
+    if len(kids) != 1 or not isinstance(kids[0], dict):
+        return ""
+    c = kids[0]
+    if c.get("class") == "COLUMN_REF":
+        names = c.get("column_names") or [""]
+        return str(names[-1]).lower()
+    if (
+        c.get("class") == "FUNCTION"
+        and c.get("function_name", "").lower() == "struct_pack"
+    ):
+        return ",".join(
+            str(ch.get("alias") or "").lower() for ch in c.get("children") or []
+        )
+    return ""
 
 
 def _reserved_stem(fname: str, suffix: str, lookup: Any) -> str | None:
