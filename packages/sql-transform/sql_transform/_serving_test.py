@@ -114,3 +114,28 @@ def test_not_fitted_refuses():
         p.infer({"age": 1.0})
     with pytest.raises(MarginalizeError, match="not fitted"):
         _ = p.backend
+
+
+def test_transform_preserves_input_row_order_with_unseen_groups():
+    """Review round (2026-08-05): DuckDB's params LEFT JOIN emits unmatched
+    probe rows after matched ones, so a frame with unseen-group rows came
+    back reordered — silently misaligning positional consumers. transform()
+    must restore input row order explicitly."""
+    p = serve_gate(
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
+        " AS z, name FROM __THIS__",
+        transformers={"sc": StandardScaler()},
+    )
+    frame = pa.table(
+        {
+            "country": ["JP", "US", "JP", "US"],
+            "age": [1.0, 33.0, 2.0, 41.0],
+            "fare": [0.0, 0.0, 0.0, 0.0],
+            "name": ["a", "b", "c", "d"],
+        }
+    )
+    out = p.transform(frame)
+    assert out.column("name").to_pylist() == ["a", "b", "c", "d"]
+    z = out.column("z").to_pylist()
+    assert z[0] is None and z[2] is None  # unseen group -> NULL, in place
+    assert z[1] is not None and z[3] is not None
