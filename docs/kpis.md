@@ -165,6 +165,12 @@ expansion they measured is deleted). Re-run after the change: tf_width1
 (n=1 / n=64 / batch ns/row) — the 2-field ratio holds at ~0.95x and the
 width-1 single-field STRUCT registration costs nothing outside noise.
 
+*Fit/transform split (2026-08-05):* scenarios re-spelled to the split
+surface (`sc_transform(sc_fit(b) OVER (PARTITION BY grp), b).a`; the
+OVER sugar is deleted). Serving text is unchanged by design, and the
+numbers confirm it: tf_width1 96,800 / 87,441 / 90,269 and tf_fields2
+95,700 / 84,567 / 85,219 — within noise of the struct-valued run.
+
 **The finding that sets priorities** (unchanged): the extern/UDF machinery
 is cheap (+2,400ns for a plain UDF in this run), and our own marshalling
 is 400ns. **~93% of a fitted transformer's per-row cost is sklearn's own
