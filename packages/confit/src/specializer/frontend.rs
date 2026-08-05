@@ -3585,6 +3585,23 @@ impl Binder<'_> {
         if names.is_empty() {
             return Ok(None);
         }
+        for (i, n) in names.iter().enumerate() {
+            // Measured: DuckDB's binder rejects a duplicate struct entry
+            // name, case-insensitively — never serve what batch cannot.
+            if names[..i].iter().any(|m| m.eq_ignore_ascii_case(n)) {
+                return Err(PrepareError::Bind(format!(
+                    "duplicate struct entry name \"{n}\""
+                )));
+            }
+            // A _-leading field becomes a pydantic private attribute, so
+            // the row model would silently drop it while batch serves it.
+            if n.starts_with('_') {
+                return Err(unsup(format!(
+                    "struct field '{n}' cannot cross the row-path model \
+                     boundary (a leading underscore is private) — rename it"
+                )));
+            }
+        }
         // Whole-struct validity: the guard's IS NOT NULL, else always-true.
         let valid = match guard {
             None => SExpr {

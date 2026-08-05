@@ -1374,6 +1374,29 @@ fn struct_pack_item_is_a_struct_output() {
     );
     // The unguarded spelling cannot have the same validity lane.
     assert_ne!(print(&plain.program), text);
+
+    // Duplicate field names are a BINDER ERROR in the oracle (measured:
+    // 'Duplicate struct entry name "a"', case-insensitively) — refuse
+    // rather than serve a struct the batch path cannot produce.
+    for sql in [
+        "SELECT struct_pack(a := x, a := x) AS th FROM __THIS__",
+        "SELECT struct_pack(a := x, A := x) AS th FROM __THIS__",
+    ] {
+        let err = prepare(sql, "__THIS__", &schema, &[]).unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("duplicate"), "{sql}: {err}");
+    }
+    // A _-leading field cannot cross the row-path model boundary (pydantic
+    // makes it a private attribute), so it refuses by name instead of
+    // vanishing from the served struct.
+    let err = prepare(
+        "SELECT struct_pack(_a := x, b := x) AS th FROM __THIS__",
+        "__THIS__",
+        &schema,
+        &[],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("_a"), "{err}");
 }
 
 #[test]

@@ -87,6 +87,41 @@ def test_unseen_group_theta_is_null_on_both_paths():
     )
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT name AS th, sc_fit({B}) OVER () AS th FROM __THIS__",
+        f"SELECT sc_fit({B}) OVER () AS th, name AS th FROM __THIS__",
+    ],
+)
+def test_theta_export_obeys_the_duplicate_output_name_law(sql):
+    # A θ item is an output column like any other: DuckDB would emit two
+    # same-named columns, which a row (a named struct) cannot carry — the
+    # law refuses at EVERY level, θ included (review round).
+    with pytest.raises(MarginalizeError, match="duplicate output name"):
+        _fit(sql)
+
+
+def test_theta_export_colliding_with_a_star_column_refuses():
+    # The duplicate law counts star-expanded names too — the row path
+    # cannot carry two `age` columns (review round).
+    with pytest.raises(MarginalizeError, match="duplicate output name age"):
+        _fit(f"SELECT *, sc_fit({B}) OVER () AS age FROM __THIS__")
+    ok = _fit(f"SELECT *, sc_fit({B}) OVER () AS theta FROM __THIS__")
+    assert ok.transform(TRAIN).column_names[-1] == "theta"
+
+
+def test_schema_free_theta_export_refuses_by_name_not_by_crash():
+    # Schema-free: a bare reference to an earlier alias is undecidable
+    # (lateral alias vs table column), so it must refuse BY NAME — the θ
+    # item used to skip risky_aliases and die as a raw binder error.
+    with pytest.raises(MarginalizeError, match="lateral alias|not found|unknown"):
+        SQLProjection(
+            f"SELECT sc_fit({B}) OVER () AS q, q AS r FROM __THIS__",
+            transformers={"sc": StandardScaler()},
+        ).fit(TRAIN)
+
+
 def test_hand_written_theta_still_refuses():
     # Export makes θ readable, NOT constructible: a hand-written handle
     # has no lawful provenance (it graduates with composition).
