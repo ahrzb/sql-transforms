@@ -78,6 +78,35 @@ def _model_from_arrow(schema: pa.Schema) -> type[BaseModel]:
     return pydantic.create_model("Row", **fields)
 
 
+def _row_ordered_sql(con: Any, sql: str) -> str:
+    """The serving text with the input's ``__cf_row`` threaded through every
+    spine SELECT (the statement node and its CTEs — never expression
+    subqueries) and a final ORDER BY on it. Every level is row-preserving
+    (the surface admits no GROUP BY), so the extra item is always lawful.
+    Node shapes are harvested from a serialized template, never hand-built."""
+    import json
+
+    (ser,) = con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
+    ast = json.loads(ser)
+    (tser,) = con.execute(
+        "SELECT json_serialize_sql("
+        "'SELECT __cf_row AS __cf_row FROM t ORDER BY __cf_row')"
+    ).fetchone()
+    template = json.loads(tser)["statements"][0]["node"]
+    item, modifiers = template["select_list"][0], template["modifiers"]
+    node = ast["statements"][0]["node"]
+    spine = [node] + [
+        e["value"]["query"]["node"] for e in node.get("cte_map", {}).get("map", [])
+    ]
+    for s in spine:
+        s["select_list"] = [*s["select_list"], item]
+    node["modifiers"] = [*node.get("modifiers", []), *modifiers]
+    (out,) = con.execute(
+        "SELECT json_deserialize_sql(?::JSON)", [json.dumps(ast)]
+    ).fetchone()
+    return out
+
+
 class SQLProjection:
     """A SQL projection: fit freezes its window aggregates into params tables.
 
@@ -327,13 +356,22 @@ class SQLProjection:
         con = duckdb.connect()
         try:
             con.execute("SET threads = 1")
+            # SQL results are unordered, and the params LEFT JOIN really
+            # does emit unmatched (unseen-group) probe rows last — restore
+            # input order explicitly (2026-08-05 review round).
+            table = table.append_column(
+                "__cf_row", pa.array(range(table.num_rows), type=pa.int64())
+            )
             con.register("__THIS__", table)
             for name, params_table in self._params.items():
                 con.register(name, params_table)
             self._register_author_udfs(con)
             for udf in self._udfs.values():
                 udf.register(con)
-            return con.execute(self.serving_sql).to_arrow_table()
+            out = con.execute(_row_ordered_sql(con, self.serving_sql)).to_arrow_table()
+            return out.select(
+                [i for i, c in enumerate(out.column_names) if c != "__cf_row"]
+            )
         finally:
             con.close()
 
