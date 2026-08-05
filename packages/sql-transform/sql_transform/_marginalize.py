@@ -119,6 +119,9 @@ class FitStep:
     # BOOLEAN level-table column gating which rows enter the fit (FILTER on
     # the fit call); "" fits on every row.
     filter_col: str = ""
+    # In-call ORDER BY keys as (level-table column, ascending, nulls_first),
+    # in declared order — each fit scope stably sorts by them before fit.
+    order_by: tuple[tuple[str, bool, bool], ...] = ()
     # The bundle's field names, positionally aligned with ``features`` — the
     # input struct type S (DRAFT-24), passed to sklearn as input_features so
     # the learned output names can refer to them.
@@ -1185,9 +1188,9 @@ class _LevelRewriter:
             return [self._expand(v, in_window) for v in x]
         return x
 
-    def validate_filter(self, pred: Node) -> None:
-        """A fit FILTER predicate has no serving side, so nothing else
-        resolves it (review round 2026-08-05). Rewrite-and-discard validates
+    def validate_fit_expr(self, pred: Node) -> None:
+        """A fit FILTER predicate or in-call ORDER BY key has no serving
+        side, so nothing else resolves it. Rewrite-and-discard validates
         columns at construction and registers author UDFs; the fit-side text
         then binds laterally in the level table, which matches DuckDB for
         backward names — a FORWARD name is undecidable schema-free (DuckDB
@@ -1538,6 +1541,13 @@ class _Planner:
                 " FILTER (...) OVER (...))",
                 raw.get("query_location"),
             )
+        if getattr(self.lookup(name), "order_sensitive", False):
+            _refuse(
+                f"{name} is order-sensitive — the bare sugar cannot name an"
+                f" order; write {name}_transform({name}_fit(bundle ORDER BY"
+                " key) OVER (), bundle)",
+                raw.get("query_location"),
+            )
         ident = "|".join([_stripped(raw), _bundle_names_key(raw), _alias_sig(raw)])
         if ident in self.tf_calls:
             return self._tf_call_node(self.tf_calls[ident], field_name, alias)
@@ -1562,6 +1572,7 @@ class _Planner:
         keys: list[_Key],
         bundle: list[tuple[str, Node, Node]],
         filter_fit: Node | None = None,
+        order_fit: list[tuple[Node, bool, bool]] | None = None,
     ) -> int:
         """One fit step + its dedicated params join, never shared with
         aggregate groups. (Sharing keys with an aggregate join is a dedup
@@ -1584,6 +1595,11 @@ class _Planner:
                 "join": idx,
                 "filter_fit": filter_fit,
                 "filter_col": f"__cf_flt{j}" if filter_fit is not None else "",
+                # (column name, key expr in level terms, asc, nulls_first)
+                "order_fit": [
+                    (f"__cf_ord{j}_{n}", expr, asc, nf)
+                    for n, (expr, asc, nf) in enumerate(order_fit or [])
+                ],
                 # The serving-side argument nodes, kept so a second field
                 # access on the same call rebuilds the call without refitting.
                 "children": [
@@ -1656,15 +1672,31 @@ class _Planner:
                 " running fit (a θ per row-prefix) — not supported",
                 w.query_location,
             )
-        if w.arg_orders:
+        # In-call ORDER BY — DuckDB's ordered-aggregate spelling. Each key
+        # resolves like any fit-side expression; direction and null placement
+        # default to DuckDB's (ASC, NULLS LAST — measured 2026-08-05).
+        order_fit: list[tuple[Node, bool, bool]] = []
+        for o in w.arg_orders:
+            key = o["expression"]
+            _walk_row_wise(key, "an ORDER BY key", self.lookup)
+            rw.validate_fit_expr(key)
+            order_fit.append(
+                (
+                    _strip_quals(key, rw.level.source_quals),
+                    o.get("type") != "DESCENDING",
+                    o.get("null_order") == "NULLS FIRST",
+                )
+            )
+        if getattr(self.lookup(tf_name), "order_sensitive", False) and not order_fit:
             _refuse(
-                f"ORDER BY inside {tf_name}_fit (ordered fits arrive in a later slice)",
+                f"{tf_name} is order-sensitive — name the order in the call:"
+                f" {tf_name}_fit(bundle ORDER BY key) OVER (...)",
                 w.query_location,
             )
         filter_fit = None
         if w.filter_expr is not None:
             _walk_row_wise(w.filter_expr, "a FILTER", self.lookup)
-            rw.validate_filter(w.filter_expr)
+            rw.validate_fit_expr(w.filter_expr)
             filter_fit = _strip_quals(w.filter_expr, rw.level.source_quals)
         if (
             w.start != "UNBOUNDED_PRECEDING"
@@ -1686,7 +1718,12 @@ class _Planner:
             seen: set[str] = set()
             keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
             j = self._mint_step(
-                rw, tf_name, keys, rw._tf_bundle(theta), filter_fit=filter_fit
+                rw,
+                tf_name,
+                keys,
+                rw._tf_bundle(theta),
+                filter_fit=filter_fit,
+                order_fit=order_fit,
             )
             self.tf_calls[ident] = j
         step = self.tf_steps[j]
@@ -2068,10 +2105,18 @@ def _level_step(
         for t in planner.tf_steps
         if t["level"] == level_i and t["filter_col"]
     ]
+    orders = [
+        dict(copy.deepcopy(expr), alias=col)
+        for t in planner.tf_steps
+        if t["level"] == level_i
+        for (col, expr, _asc, _nf) in t["order_fit"]
+    ]
     from_table = _clone("base_table", table_name=source_name, alias="")
     return FitStep(
         name=f"__CF_LEVEL_{level_i}__",
-        sql=_select_doc([*originals, *windows, *keys, *features, *filters], from_table),
+        sql=_select_doc(
+            [*originals, *windows, *keys, *features, *filters, *orders], from_table
+        ),
         reads=(source_name,),
     )
 
@@ -2245,6 +2290,9 @@ def marginalize(
                                 planner.key_names[(i, k.ident)] for k in t["keys"]
                             ),
                             filter_col=t["filter_col"],
+                            order_by=tuple(
+                                (col, asc, nf) for (col, _e, asc, nf) in t["order_fit"]
+                            ),
                         )
                     )
         if is_final:

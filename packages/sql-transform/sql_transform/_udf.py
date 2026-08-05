@@ -296,6 +296,47 @@ class Named:
         return f"Named({self.estimator!r}, returns={list(self.returns)})"
 
 
+class OrderSensitive:
+    """Declares a fit ORDER-sensitive (2026-08-05 spec, fit lawfulness):
+    the default contract makes a fit a multiset aggregate — order-blind,
+    author-signed. Wrapping an estimator in ``OrderSensitive`` flips the
+    contract: the query must name the order via in-call ``ORDER BY``
+    (``sm_fit(bundle ORDER BY ts) OVER (...)``), and the fit scope is
+    stably sorted by it before ``fit``. Mechanism promise only: we sort
+    by what you name."""
+
+    order_sensitive = True
+
+    def __init__(self, estimator: Any) -> None:
+        self.estimator = estimator
+
+    # sklearn's clone protocol, like Named.
+    def get_params(self, deep: bool = True) -> dict[str, Any]:
+        return {"estimator": self.estimator}
+
+    def set_params(self, **params: Any) -> OrderSensitive:
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+
+    def fit(self, X: Any, y: Any = None) -> OrderSensitive:
+        self.estimator.fit(X)
+        return self
+
+    def transform(self, X: Any) -> Any:
+        return self.estimator.transform(X)
+
+    def __getattr__(self, name: str) -> Any:
+        # Forward declared_output_names / get_feature_names_out / anything
+        # else the naming machinery probes on the inner estimator.
+        if name == "estimator":
+            raise AttributeError(name)
+        return getattr(self.__dict__["estimator"], name)
+
+    def __repr__(self) -> str:
+        return f"OrderSensitive({self.estimator!r})"
+
+
 def _as_feature(value: Any, ty: str) -> Any:
     """One feature value on its way into ``transform``, per its declared
     type: numerics go through float (NULL as NaN, the estimator's own
