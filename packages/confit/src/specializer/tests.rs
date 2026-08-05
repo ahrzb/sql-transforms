@@ -1338,6 +1338,32 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
 }
 
 #[test]
+fn whole_item_and_field_read_share_one_ecall() {
+    // Review round (P16 single-eval): a whole item and a field read of the
+    // SAME call share one ecall site, in either item order — the wide
+    // expansion consults the extern_sites cache like extern_field_lane.
+    let schema = cols(&[("x", Ty::F64, true)]);
+    for sql in [
+        "SELECT emb(x) AS s, (emb(x)).a AS z FROM __THIS__",
+        "SELECT (emb(x)).a AS z, emb(x) AS s FROM __THIS__",
+    ] {
+        let p = prep_udfs(
+            sql,
+            &schema,
+            &[],
+            &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+        )
+        .unwrap();
+        let text = print(&p.program);
+        assert_eq!(
+            text.matches("ecall").count(),
+            1,
+            "{sql}: whole item and field read must share one ecall:\n{text}"
+        );
+    }
+}
+
+#[test]
 fn field_access_without_declared_names_refuses() {
     let schema = cols(&[("x", Ty::F64, true)]);
     let err = prep_udfs(

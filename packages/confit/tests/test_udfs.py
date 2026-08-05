@@ -284,6 +284,27 @@ def test_infer_arrow_wide_and_scalar():
     assert out.column("y").to_pylist() == [3.0, None]
 
 
+def test_infer_arrow_named_struct():
+    # Slice-5 review round: the named branch (pa.struct_ keyed by the
+    # declared field names; whole-NULL row stays a NULL struct) was
+    # unpinned on the columnar boundary.
+    import pyarrow as pa
+
+    model = _row_model({"x": "float?"})
+    fn = DuckDBInferFn(
+        "SELECT emb(0, x) AS e FROM __THIS__",
+        row_tables={"__THIS__": model},
+        static_tables={},
+        udfs=[NamedEmbed2()],
+    )
+    batch = pa.table({"x": pa.array([2.0, None], type=pa.float64())})
+    out = fn.infer_arrow(batch)
+    assert out.schema.field("e").type == pa.struct(
+        [pa.field("a", pa.float64()), pa.field("b", pa.float64())]
+    )
+    assert out.column("e").to_pylist() == [{"a": 2.0, "b": 2.0}, None]
+
+
 def test_both_backends_agree(monkeypatch):
     def run():
         model = _row_model({"x": "float?"})

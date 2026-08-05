@@ -318,6 +318,19 @@ struct is NULL, distinct from a struct of NULLs). Mechanics:
   result columns; the row-path model cannot) — a strict xfail pins the
   serving shape until it lands. θ export (slice 6) rides on the
   whole-value struct boundary landed here.
+- Review-round decisions (2026-08-05): learned output names must survive
+  the row-path model boundary WHEN SERVED WHOLE — a fit-time probe of
+  the real pydantic model builder refuses by name (`_`-leading names
+  become private attributes = silent drop; config/protected/dunder
+  names crash raw); field-read-only fits are exempt, their names never
+  become pydantic fields. DISTINCT on any scalar call — the bare sugar,
+  the transform half, author UDFs and builtins — refuses at
+  construction (measured: DuckDB binds DISTINCT only on aggregates; the
+  flag used to drop silently). The whole-item lowering shares the field
+  read's ecall site (P16 single-eval — the row path used to
+  double-evaluate a call served both whole and by field). P14
+  whole-struct NULL and the infer_arrow struct branch got their missing
+  pins.
 
 ## Implementation slices (sequential standalone PRs)
 

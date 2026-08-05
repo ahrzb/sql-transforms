@@ -369,6 +369,34 @@ class SQLProjection:
                     f" shapes per group: {list(shape)} vs {list(names)}"
                     f" (group {key})"
                 )
+        assert shape is not None  # groups is non-empty: the table has rows
+        # Served WHOLE (a spec with field=None), the learned names become
+        # pydantic fields of the synthesized nested output model — and
+        # pydantic silently reclassifies _-leading create_model kwargs as
+        # private attributes and reserves config/protected/dunder names.
+        # Probe the real model builder so the refusal tracks pydantic, not
+        # a blocklist (review round 2026-08-05). Field-read-only fits skip
+        # this: their learned names never become pydantic fields.
+        if any(s.field is None for s in specs):
+            import warnings
+
+            import pydantic
+
+            for n in shape:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        probe = pydantic.create_model("Probe", **{n: (float, None)})
+                    ok = n in probe.model_fields
+                except Exception:
+                    ok = False
+                if not ok:
+                    raise MarginalizeError(
+                        f"transformer {step.transformer} fits to output field"
+                        f" {n!r}, which cannot cross the row-path model"
+                        " boundary (pydantic drops or reserves the name) —"
+                        " rename it or address the other fields directly"
+                    )
         cols: dict[str, pa.Array] = {}
         for pos, colname in enumerate(params_spec.keys):
             cols[colname] = pa.array(
@@ -376,7 +404,6 @@ class SQLProjection:
                 type=table.column(step.keys[pos]).type,
             )
         cols["__cf_est"] = pa.array(range(len(key_rows)), type=pa.int64())
-        assert shape is not None  # groups is non-empty: the table has rows
         udf = PythonTransform(
             name=base_name,
             instances=instances,

@@ -10,11 +10,12 @@ row ≡ batch. Spec: docs/superpowers/specs/
 """
 
 import numpy as np
+import pyarrow as pa
 import pydantic
 import pytest
 from sklearn.preprocessing import StandardScaler
 
-from sql_transform import SQLProjection
+from sql_transform import MarginalizeError, SQLProjection
 
 from ._transformers_test import TRAIN, _reference
 
@@ -93,12 +94,66 @@ def test_split_spelling_serves_struct_column():
         np.testing.assert_allclose(got[i]["f"], ref[i][1], rtol=1e-12)
 
 
+def test_unseen_group_serves_null_whole_struct_both_paths():
+    """P14: an unseen group misses the params LEFT JOIN — the WHOLE struct
+    is NULL on both paths, distinct from a struct of NULLs."""
+    p = _fit(
+        "SELECT sc_transform(sc_fit(struct_pack(a := age, f := fare))"
+        " OVER (PARTITION BY country), struct_pack(a := age, f := fare)) AS s,"
+        " name FROM __THIS__"
+    )
+    unseen = pa.table({"country": ["JP"], "age": [33.0], "fare": [4.0], "name": ["q"]})
+    assert p.transform(unseen).column("s").to_pylist() == [None]
+    assert p.infer({"country": "JP", "age": 33.0, "fare": 4.0, "name": "q"}).s is None
+
+
+def test_underscore_fitted_field_refuses_at_fit_when_served_whole():
+    # pydantic silently reclassifies _-leading create_model kwargs as
+    # private attributes — the row path would drop the member the batch
+    # path serves (review round). Refuse by name at fit, where T is
+    # learned (the P7 carve-out).
+    with pytest.raises(MarginalizeError, match="row-path model boundary"):
+        _fit('SELECT sc(struct_pack("_a" := age, f := fare)) AS s, name FROM __THIS__')
+
+
+def test_underscore_fitted_field_still_fits_for_field_reads():
+    # The refusal is scoped to whole-value serving: a field read never
+    # turns the learned name into a pydantic field, so it keeps working.
+    p = _fit(
+        'SELECT sc(struct_pack("_a" := age, f := fare)).f AS zf, name FROM __THIS__'
+    )
+    assert isinstance(p.transform(TRAIN).column("zf").to_pylist()[0], float)
+
+
+def test_pydantic_reserved_fitted_field_refuses_at_fit():
+    # Names pydantic reserves (config/protected namespaces, dunders) would
+    # raw-crash or silently vanish at first infer — the fit-time probe of
+    # the real model builder refuses them by name (review round).
+    for member in ("model_config", "model_validate", "__init__"):
+        with pytest.raises(MarginalizeError, match="row-path model boundary"):
+            _fit(
+                f'SELECT sc(struct_pack("{member}" := age, f := fare)) AS s,'
+                " name FROM __THIS__"
+            )
+
+
+def test_distinct_on_the_call_refuses_at_construction():
+    # Measured: DuckDB refuses DISTINCT on any registered scalar function
+    # ("only applicable to aggregate functions") — the original text has
+    # no oracle reading, so every spelling refuses by name (review round).
+    for sql in [
+        "SELECT sc(DISTINCT age) AS s FROM __THIS__",
+        "SELECT sc(DISTINCT age).age AS z FROM __THIS__",
+        "SELECT sc_transform(DISTINCT sc_fit(age) OVER (), age) AS s FROM __THIS__",
+    ]:
+        with pytest.raises(MarginalizeError, match="DISTINCT"):
+            _fit(sql)
+
+
 def test_star_over_a_call_is_the_oracles_parser_error():
     # Measured 2026-08-05: `call.*` / `(call).*` are DuckDB PARSER errors —
     # the star-over-expression spelling does not exist in the oracle. The
     # lawful expansion spelling is unnest (below).
-    from sql_transform import MarginalizeError
-
     with pytest.raises(MarginalizeError, match="parse error"):
         _fit("SELECT sc(struct_pack(a := age, f := fare)).*, name FROM __THIS__")
 
