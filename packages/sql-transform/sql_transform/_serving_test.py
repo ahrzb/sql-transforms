@@ -48,8 +48,8 @@ def test_keyless_aggregate_and_int_column():
 def test_transformer_partitioned_width1():
     sc = StandardScaler()
     p = serve_gate(
-        "SELECT sc(age) OVER (PARTITION BY country).age * 10 + 1 AS z, name"
-        " FROM __THIS__",
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
+        " * 10 + 1 AS z, name FROM __THIS__",
         transformers={"sc": sc},
     )
     out = p.infer({"country": "US", "age": 33.0, "fare": 1, "name": "q"})
@@ -59,8 +59,8 @@ def test_transformer_partitioned_width1():
 def test_transformer_global_width2_two_field_reads():
     embed = Pipeline([("s", StandardScaler()), ("p", PCA(n_components=2))])
     p = serve_gate(
-        "SELECT embed(struct_pack(a := age, f := fare)) OVER ().pca0 AS e_pca0,"
-        " embed(struct_pack(a := age, f := fare)) OVER ().pca1 AS e_pca1, name"
+        "SELECT embed(struct_pack(a := age, f := fare)).pca0 AS e_pca0,"
+        " embed(struct_pack(a := age, f := fare)).pca1 AS e_pca1, name"
         " FROM __THIS__",
         transformers={"embed": embed},
     )
@@ -73,7 +73,8 @@ def test_transformer_global_width2_two_field_reads():
 def test_unseen_group_is_null_row_at_a_time():
     sc = StandardScaler()
     p = serve_gate(
-        "SELECT sc(age) OVER (PARTITION BY country).age AS z, name FROM __THIS__",
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
+        " AS z, name FROM __THIS__",
         transformers={"sc": sc},
     )
     out = p.infer({"country": "JP", "age": 1.0, "fare": 1, "name": "q"})
@@ -94,7 +95,8 @@ def test_chain_with_transformer():
     sc = StandardScaler()
     serve_gate(
         "WITH a AS (SELECT age * 2 AS age2, country, name FROM __THIS__)"
-        " SELECT sc(age2) OVER (PARTITION BY country).age2 - 1 AS z, name FROM a",
+        " SELECT sc_transform(sc_fit(age2) OVER (PARTITION BY country), age2).age2"
+        " - 1 AS z, name FROM a",
         transformers={"sc": sc},
     )
 

@@ -68,10 +68,12 @@ BASE = (
 QUERIES = {
     "sql_only": f"SELECT {BASE} FROM __THIS__",
     "udf_plain": f"SELECT half(a) AS t, {BASE} FROM __THIS__",
-    "tf_width1": f"SELECT sc({BUNDLE}) OVER (PARTITION BY grp).a AS t, {BASE}"
-    " FROM __THIS__",
-    "tf_fields2": f"SELECT pca({BUNDLE}) OVER (PARTITION BY grp).pca0 AS t0,"
-    f" pca({BUNDLE}) OVER (PARTITION BY grp).pca1 AS t1, {BASE} FROM __THIS__",
+    "tf_width1": f"SELECT sc_transform(sc_fit({BUNDLE}) OVER (PARTITION BY grp),"
+    f" {BUNDLE}).a AS t, {BASE} FROM __THIS__",
+    "tf_fields2": f"SELECT pca_transform(pca_fit({BUNDLE}) OVER (PARTITION BY grp),"
+    f" {BUNDLE}).pca0 AS t0,"
+    f" pca_transform(pca_fit({BUNDLE}) OVER (PARTITION BY grp),"
+    f" {BUNDLE}).pca1 AS t1, {BASE} FROM __THIS__",
 }
 
 

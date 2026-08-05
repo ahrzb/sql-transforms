@@ -102,9 +102,12 @@ class SQLProjection:
         Without it, marginalization is schema-free and the ambiguous cases
         refuse with a hint.
 
-        ``transformers`` is the explicit registry for transformer windows
-        (objects with fit/transform, called ``fn(...) OVER (...)``) and for
-        author UDFs (objects with declared takes/returns, e.g. ``PythonUDF``,
+        ``transformers`` is the explicit registry for transformers (objects
+        with fit/transform — bare ``tfm(bundle).field`` is a global
+        fit-transform; other fit scopes spell the split,
+        ``tfm_transform(tfm_fit(bundle) OVER (...), bundle).field``; a
+        registered ``x`` reserves ``x_fit``/``x_transform``) and for author
+        UDFs (objects with declared takes/returns, e.g. ``PythonUDF``,
         called ``fn(...)``); names not found there resolve from the caller's
         scope."""
         if isinstance(sql, Template):

@@ -26,8 +26,10 @@ TRAIN = pa.table(
 )
 
 TWO_FIELDS = (
-    "SELECT pca(struct_pack(a := a, b := b)) OVER (PARTITION BY grp).pca0 AS x,"
-    " pca(struct_pack(a := a, b := b)) OVER (PARTITION BY grp).pca1 AS y,"
+    "SELECT pca_transform(pca_fit(struct_pack(a := a, b := b))"
+    " OVER (PARTITION BY grp), struct_pack(a := a, b := b)).pca0 AS x,"
+    " pca_transform(pca_fit(struct_pack(a := a, b := b))"
+    " OVER (PARTITION BY grp), struct_pack(a := a, b := b)).pca1 AS y,"
     " name FROM __THIS__"
 )
 
@@ -118,7 +120,8 @@ def test_bare_wide_item_refuses_at_construction():
 
     with pytest.raises(MarginalizeError, match="struct value"):
         SQLProjection(
-            "SELECT pca(struct_pack(a := a, b := b)) OVER (PARTITION BY grp) AS e,"
+            "SELECT pca_transform(pca_fit(struct_pack(a := a, b := b))"
+            " OVER (PARTITION BY grp), struct_pack(a := a, b := b)) AS e,"
             " name FROM __THIS__",
             transformers={"pca": CountingPCA(n_components=2)},
         )

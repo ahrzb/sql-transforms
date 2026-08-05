@@ -211,7 +211,7 @@ class Named:
     """An estimator with author-declared output field names (DRAFT-24).
 
     >>> transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))}
-    >>> "SELECT pca(struct_pack(a := age, f := fare)) OVER ().size AS x ..."
+    >>> "SELECT pca(struct_pack(a := age, f := fare)).size AS x ..."
 
     The declaration is *authoritative*, unlike sklearn's own
     ``get_feature_names_out`` (advisory: ignored when it disagrees with the

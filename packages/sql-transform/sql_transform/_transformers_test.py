@@ -1,10 +1,13 @@
-"""Transformers and UDFs as in-place scalar calls (DRAFT-22, step 1).
+"""Transformers and UDFs as in-place scalar calls (DRAFT-22, step 1;
+re-spelled to the 2026-08-05 fit/transform split).
 
-A transformer window rewrites in place to ``__cf_tf{j}(id, features...)``
-over its own params join, so mid-expression use works; a width-1 transform
-is scalar-valued, width-k yields a list column. The gate's oracle for
-transformer columns is an independent clone/fit/transform reference; author
-UDF queries round-trip exactly (the same object runs on both sides).
+A transformer call — the bare ``tf(bundle).field`` sugar (global fit) or
+the split ``tf_transform(tf_fit(bundle) OVER (...), bundle).field`` —
+rewrites in place to ``__cf_tf{j}(id, features...)`` over its own params
+join, so mid-expression use works; a width-1 transform is scalar-valued,
+width-k yields a list column. The gate's oracle for transformer columns is
+an independent clone/fit/transform reference; author UDF queries round-trip
+exactly (the same object runs on both sides).
 """
 
 import duckdb
@@ -52,7 +55,7 @@ def _by_name(table, value_col):
 
 def test_global_scaler_from_scope_is_scalar_valued():
     sc = StandardScaler()
-    p = SQLProjection("SELECT sc(age) OVER ().age AS z, name FROM __THIS__").fit(TRAIN)
+    p = SQLProjection("SELECT sc(age).age AS z, name FROM __THIS__").fit(TRAIN)
     (step,) = [s for s in p.plan if s.kind == "fit"]
     assert step.transformer == "sc" and step.keys == ()
     assert p.udfs["__cf_tf0"].returns == ("f64",)
@@ -67,8 +70,8 @@ def test_global_scaler_from_scope_is_scalar_valued():
 def test_transformer_mid_expression():
     sc = StandardScaler()
     p = SQLProjection(
-        "SELECT sc(age) OVER (PARTITION BY country).age * 10 + 1 AS z, name"
-        " FROM __THIS__",
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
+        " * 10 + 1 AS z, name FROM __THIS__",
         transformers={"sc": sc},
     ).fit(TRAIN)
     got = _by_name(p.transform(TRAIN), "z")
@@ -81,8 +84,8 @@ def test_transformer_mid_expression():
 def test_pipeline_pca2_with_struct_bundle_two_field_reads():
     embed = Pipeline([("s", StandardScaler()), ("p", PCA(n_components=2))])
     p = SQLProjection(
-        "SELECT embed(struct_pack(a := age, f := fare)) OVER ().pca0 AS e_pca0,"
-        " embed(struct_pack(a := age, f := fare)) OVER ().pca1 AS e_pca1, name"
+        "SELECT embed(struct_pack(a := age, f := fare)).pca0 AS e_pca0,"
+        " embed(struct_pack(a := age, f := fare)).pca1 AS e_pca1, name"
         " FROM __THIS__",
         transformers={"embed": embed},
     ).fit(TRAIN)
@@ -109,8 +112,9 @@ def test_pipeline_pca2_with_struct_bundle_two_field_reads():
 def test_per_country_pipeline_pca1_with_struct_bundle():
     embed = Pipeline([("s", StandardScaler()), ("p", PCA(n_components=1))])
     p = SQLProjection(
-        "SELECT embed(struct_pack(a := age, f := fare))"
-        " OVER (PARTITION BY country).pca0 AS e, name FROM __THIS__",
+        "SELECT embed_transform(embed_fit(struct_pack(a := age, f := fare))"
+        " OVER (PARTITION BY country), struct_pack(a := age, f := fare)).pca0"
+        " AS e, name FROM __THIS__",
         transformers={"embed": embed},
     ).fit(TRAIN)
     got = _by_name(p.transform(TRAIN), "e")
@@ -126,7 +130,8 @@ def test_per_country_pipeline_pca1_with_struct_bundle():
 def test_params_table_carries_instance_ids():
     sc = StandardScaler()
     p = SQLProjection(
-        "SELECT sc(age) OVER (PARTITION BY country).age AS z FROM __THIS__",
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
+        " AS z FROM __THIS__",
         transformers={"sc": sc},
     ).fit(TRAIN)
     (params,) = p.params.values()
@@ -140,7 +145,8 @@ def test_params_table_carries_instance_ids():
 def test_unseen_group_gets_null():
     sc = StandardScaler()
     p = SQLProjection(
-        "SELECT sc(age) OVER (PARTITION BY country).age AS z, name FROM __THIS__",
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
+        " AS z, name FROM __THIS__",
         transformers={"sc": sc},
     ).fit(TRAIN)
     new = pa.table({"country": ["JP"], "age": [1.0], "fare": [1.0], "name": ["q"]})
@@ -150,8 +156,7 @@ def test_unseen_group_gets_null():
 def test_mixed_sql_and_transformer_columns():
     sc = StandardScaler()
     p = SQLProjection(
-        "SELECT age - avg(age) OVER () AS c, sc(fare) OVER ().fare AS z, name"
-        " FROM __THIS__",
+        "SELECT age - avg(age) OVER () AS c, sc(fare).fare AS z, name FROM __THIS__",
         transformers={"sc": sc},
     ).fit(TRAIN)
     out = p.transform(TRAIN)
@@ -165,7 +170,8 @@ def test_mixed_sql_and_transformer_columns():
 def test_serving_sql_calls_in_place():
     sc = StandardScaler()
     p = SQLProjection(
-        "SELECT sc(age) OVER (PARTITION BY country).age + 1 AS z FROM __THIS__",
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY country), age).age"
+        " + 1 AS z FROM __THIS__",
         transformers={"sc": sc},
     )
     assert "__cf_tf0(__cf_p0.__cf_est, __cf_t.age)" in p.serving_sql
@@ -181,7 +187,8 @@ def test_transformer_at_final_level_of_chain_with_renamed_feature():
     sc = StandardScaler()
     p = SQLProjection(
         "WITH a AS (SELECT age * 2 AS age2, country, name FROM __THIS__)"
-        " SELECT sc(age2) OVER (PARTITION BY country).age2 - 1 AS z, name FROM a",
+        " SELECT sc_transform(sc_fit(age2) OVER (PARTITION BY country),"
+        " age2).age2 - 1 AS z, name FROM a",
         transformers={"sc": sc},
     ).fit(TRAIN)
     assert "__cf_tf0(__cf_p0.__cf_est, (__cf_t.age * 2))" in p.serving_sql
@@ -246,7 +253,7 @@ def test_author_udf_inside_transformer_bundle():
     )
     sc = StandardScaler()
     p = SQLProjection(
-        "SELECT sc(struct_pack(h := halve(age))) OVER ().h AS z, name FROM __THIS__",
+        "SELECT sc(struct_pack(h := halve(age))).h AS z, name FROM __THIS__",
         transformers={"halve": halve, "sc": sc},
     ).fit(TRAIN)
     assert p._marginalized.scalar_udfs == ("halve",)
@@ -260,7 +267,7 @@ def test_author_udf_inside_transformer_bundle():
 def test_registry_beats_scope():
     sc = StandardScaler()  # noqa: F841 — the scope decoy
     p = SQLProjection(
-        "SELECT sc(age) OVER ().z AS z FROM __THIS__",
+        "SELECT sc(age).z AS z FROM __THIS__",
         transformers={"sc": Pipeline([("s", StandardScaler())])},
     )
     assert isinstance(p.transformers["sc"], Pipeline)
@@ -288,24 +295,28 @@ def test_udf_declaration_violation_traps():
     "sql,match",
     [
         ("SELECT nope(age) OVER () FROM __THIS__", "unknown window function nope"),
-        ("SELECT sc(age) OVER () AS z FROM __THIS__", "struct value"),
         (
-            "SELECT sc(age) OVER (ORDER BY age).a FROM __THIS__",
-            "ORDER BY on a transformer",
+            "SELECT sc_transform(sc_fit(age) OVER (), age) AS s FROM __THIS__",
+            "address an output field",
         ),
-        ("SELECT sc(*) OVER ().a FROM __THIS__", "zero arguments"),
-        ("SELECT sc(age, fare) OVER ().a FROM __THIS__", "exactly one bundle"),
-        ("SELECT sc(struct_pack(age)) OVER ().a FROM __THIS__", "must be named"),
         (
-            "WITH a AS (SELECT sc(age) OVER ().a AS z FROM __THIS__) SELECT z FROM a",
+            "SELECT sc_transform(sc_fit(age) OVER (ORDER BY age), age).age"
+            " AS z FROM __THIS__",
+            "running fit",
+        ),
+        ("SELECT sc(*).a AS z FROM __THIS__", "zero arguments"),
+        ("SELECT sc(age, fare).a AS z FROM __THIS__", "exactly one bundle"),
+        ("SELECT sc(struct_pack(age)).a AS z FROM __THIS__", "must be named"),
+        (
+            "WITH a AS (SELECT sc(age).age AS z FROM __THIS__) SELECT z FROM a",
             "non-final level",
         ),
-        ("SELECT sk.sc(age) OVER () FROM __THIS__", "namespaced transformer"),
+        ("SELECT sk.sc(age).age AS z FROM __THIS__", "namespaced transformer"),
         (
-            "SELECT avg(sc(age) OVER ()) OVER () FROM __THIS__",
+            "SELECT avg(sc(age).age) OVER () FROM __THIS__",
             "inside a window aggregate",
         ),
-        ("SELECT sc(age) FROM __THIS__", "without OVER"),
+        ("SELECT sc(age) FROM __THIS__", "struct value"),
         ("SELECT mystery(age) FROM __THIS__", "unknown function mystery"),
         (
             "SELECT (SELECT max(mystery(age)) FROM __THIS__) FROM __THIS__",
