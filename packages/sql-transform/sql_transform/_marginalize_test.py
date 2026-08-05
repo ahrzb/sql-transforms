@@ -402,10 +402,8 @@ SCHEMA_REFUSALS = [
     ("SELECT COLUMNS('zz.*') FROM __THIS__", "matched no columns"),
     ("SELECT COLUMNS(c -> c LIKE 'a%') FROM __THIS__", "lambda"),
     ("SELECT * EXCLUDE (nope) FROM __THIS__", "unknown column nope"),
-    (
-        "SELECT a + 1 AS b, avg(b) OVER () FROM __THIS__",
-        "lateral alias b inside a window",
-    ),
+    # `a + 1 AS b, avg(b) OVER ()` refused here pre-slice-2; lateral aliases
+    # now β-reduce into windows (accepted, pinned in _private_test).
     ("SELECT COLUMNS('a.*') + 1 FROM __THIS__", "COLUMNS.*inside an expression"),
     ("SELECT min(COLUMNS('a.*')) FROM __THIS__", "without OVER"),
 ]

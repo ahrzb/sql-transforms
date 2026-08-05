@@ -156,6 +156,56 @@ members); artifact serialization; `SELECT g, tfm_fit(x) ... GROUP BY g`
 projection surface does not admit); the `deterministic` flag; work
 deduplication (gated on purity/volatility typing — DRAFT-25 edge 6).
 
+## Slice 2 addendum — private columns + θ laterals (2026-08-05)
+
+Decisions required by TASK-64's acceptance criteria, recorded here.
+
+**Privacy trigger: output-field-NAME based** (AC#1). Any select item
+whose output name starts with `_` is private. Rejected alternative —
+authored-alias-only — is non-uniform: a `_meta` table column arriving
+via `*` would leak the boundary. Measured constraint that shrinks the
+surface: pydantic treats `_`-leading names as private attrs and drops
+them from `model_fields`, so a declared `this_model` can never carry a
+`_` column — star expansion under a schema cannot produce one, and at
+fit the table canonicalizes to the model (extras drop). The one leak
+path left is a schema-free `*` passthrough, which refuses at fit by
+name. A star `RENAME` to a `_` name refuses at construction.
+
+**The lateral-in-window refusal is LIFTED via substitution** (AC#5).
+Lateral aliases now β-reduce at the raw-AST level *before* any rewrite,
+so every consumer — later items, window partition/order keys, in-call
+aggregate args, transformer bundles — receives a closed expression in
+level terms; fit-side SQL never mentions an alias. The old
+"lateral alias inside a window function" refusal is deleted.
+
+**A private column is a same-SELECT macro.** It is never rewritten as
+an item, never enters the serving text, the output model, or the next
+level's environment. Consequences, each a named refusal:
+
+| spelling | verdict (measured DuckDB 1.5.5, 2026-08-05) |
+|---|---|
+| private column never read | refuse — dead code, and its errors would otherwise never surface (P7) |
+| every output column private | refuse — nothing crosses the boundary |
+| `_t.f` dotted read of a lateral | refuse — DuckDB binds `_t.f` as table.column ("Referenced table not found"); hint `struct_extract(_t, 'f')`, which DuckDB accepts and we support |
+| window-valued lateral inside any window clause | refuse — DuckDB: "window function calls cannot be nested" |
+| lateral referenced inside a scalar subquery | refuse — DuckDB accepts (correlated), but our subquery fit steps run verbatim where the alias does not exist; v0 refuses by name |
+| duplicate private name | refuse — DuckDB resolves duplicate aliases last-wins; for privates we refuse rather than pick |
+| private column read from a higher level | refuse — same-SELECT scope, by name |
+| authored private item without a declared schema | refuse — lateral resolution is undecidable against unknown table columns (same family as the schema-free star-modifier refusals) |
+| schema-free `*` passthrough over a table with a `_` column | refuse at fit — the star cannot be rewritten to exclude it |
+
+**Public laterals** keep today's surface but ride the same substitution
+(identical serving text), which also makes them legal inside windows.
+Duplicate public aliases now resolve last-wins — the measured DuckDB
+rule; the old first-wins store silently served the wrong column.
+
+**θ laterals**: `sc_fit(b) OVER w AS _th` is legal as a private item;
+`sc_transform(_th, b)` β-reduces to the inline slice-1 spelling — same
+serving SQL, same fit-step dedup. A *public* θ alias still refuses
+(export is slice 6; the message now hints the private spelling).
+Cross-level θ (a fit parked in a CTE, consumed above) stays refused —
+that is θ-as-data, slice 6 territory.
+
 ## Implementation slices (sequential standalone PRs)
 
 1. **The split.** Recognize `x_fit`/`x_transform`, fit-scope clauses on
