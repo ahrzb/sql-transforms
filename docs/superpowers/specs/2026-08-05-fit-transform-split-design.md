@@ -211,6 +211,30 @@ serving SQL, same fit-step dedup. A *public* θ alias still refuses
 Cross-level θ (a fit parked in a CTE, consumed above) stays refused —
 that is θ-as-data, slice 6 territory.
 
+## Slice 3 addendum — FILTER on tfm_fit (2026-08-05)
+
+`tfm_fit(b) FILTER (WHERE pred) OVER (w)` fits each scope on
+predicate-TRUE rows and transforms every row. Mechanics and measured
+edges:
+
+- The level table materializes `CAST(pred AS BOOLEAN)`; the fit step
+  keeps rows where that column IS TRUE. DuckDB accepts non-boolean
+  predicates (measured: nonzero is true) — the cast inherits exactly its
+  semantics, and SQL's three-valued logic happens in the engine.
+- A group with no passing rows gets no params row: an unseen group,
+  NULL at serving — the same P14 story, and exactly DuckDB's answer for
+  an all-filtered aggregate partition (measured: NULL).
+- Everything filtered (no groups at all) refuses at fit by name — the
+  fitted output shape is unlearnable.
+- FILTER on any *scalar* call — the bare sugar, `tfm_transform`, plain
+  functions — refuses at construction (measured: DuckDB binds FILTER
+  only on aggregates; previously this crashed at serving or silently
+  dropped the clause).
+- The predicate is row-wise: transformer calls inside it refuse; the
+  fit-step identity includes the filter (a filtered and an unfiltered
+  fit never share a step); θ laterals compose (`... FILTER (...) OVER ()
+  AS _th`).
+
 ## Implementation slices (sequential standalone PRs)
 
 1. **The split.** Recognize `x_fit`/`x_transform`, fit-scope clauses on
