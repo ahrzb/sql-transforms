@@ -175,12 +175,47 @@ def test_public_lateral_in_window_now_lawful():
         np.testing.assert_allclose(got[n], m, rtol=1e-12)
 
 
-def test_duplicate_public_alias_is_last_wins_like_duckdb():
-    """Measured 2026-08-05: DuckDB resolves a duplicated alias to its LAST
-    definition; the old first-wins store served the wrong column."""
-    p = _fit("SELECT age AS d, name AS d, d AS out FROM __THIS__")
-    out = p.transform(TRAIN)
-    assert out.column("out").to_pylist() == TRAIN.column("name").to_pylist()
+def test_struct_pack_named_args_survive_resolution():
+    """Review round: _resolve_ref dropped the ref's own alias — the struct
+    field name — serving {'age': ...} where DuckDB serves {'a': ...}."""
+    for sql in (
+        "SELECT struct_pack(a := age) AS s, name FROM __THIS__",
+        "SELECT age AS _x, struct_pack(a := _x) AS s, name FROM __THIS__",
+    ):
+        p = _fit(sql)
+        (row,) = p.transform(TRAIN.slice(0, 1)).column("s").to_pylist()
+        assert list(row) == ["a"], sql
+
+
+def test_struct_extract_on_plain_struct_lateral():
+    """The dotted-read refusal hints this spelling; it must actually serve."""
+    p = _fit(
+        "SELECT struct_pack(f := age) AS _s, struct_extract(_s, 'f') + 1 AS z,"
+        " name FROM __THIS__"
+    )
+    got = _by_name(p.transform(TRAIN), "z")
+    for a, n in zip(
+        TRAIN.column("age").to_pylist(), TRAIN.column("name").to_pylist(), strict=True
+    ):
+        assert got[n] == a + 1
+
+
+def test_aliased_reprojection_keeps_its_output_name():
+    """Substitution must not leak the rewritten text (or the reserved __cf_
+    prefix) as the output name."""
+    p = _fit("SELECT age + 1 AS b, b AS b2, name FROM __THIS__")
+    assert p.transform(TRAIN).column_names == ["b", "b2", "name"]
+
+
+def test_plain_lambda_still_refuses_by_name():
+    """A lambda param that shadows a lateral must not be substituted into —
+    lambdas refuse by name (unknown column), never crash mid-serving."""
+    with pytest.raises(MarginalizeError, match="unknown column"):
+        SQLProjection(
+            "SELECT age AS _d, list_transform([1.0], _d -> _d + 1) AS l,"
+            " _d + 1 AS out, name FROM __THIS__",
+            this_model=ROW,
+        )
 
 
 def test_real_column_still_beats_alias():
@@ -192,12 +227,39 @@ def test_real_column_still_beats_alias():
 # --- the boundary and the refusals --------------------------------------------
 
 
-def test_schema_free_star_over_private_table_column_refuses_at_fit():
+def test_schema_free_star_private_column_refuses_at_the_boundary():
+    """The batch boundary refuses a *-leaked _ column at transform — per
+    input table, not per fit table (review round); EXCLUDE-ing it serves."""
     t = pa.table({"age": [1.0, 2.0], "_meta": ["a", "b"]})
-    p = SQLProjection("SELECT * FROM __THIS__")
+    p = SQLProjection("SELECT * FROM __THIS__").fit(t)
     with pytest.raises(MarginalizeError, match="_meta"):
-        p.fit(t)
-    SQLProjection("SELECT age FROM __THIS__").fit(t)  # no leak, no refusal
+        p.transform(t)
+    clean = SQLProjection("SELECT * FROM __THIS__").fit(pa.table({"age": [1.0]}))
+    with pytest.raises(MarginalizeError, match="_meta"):
+        clean.transform(t)
+    ex = SQLProjection("SELECT * EXCLUDE (_meta) FROM __THIS__").fit(t)
+    assert ex.transform(t).column_names == ["age"]
+    SQLProjection("SELECT age FROM __THIS__").fit(t).transform(t)  # no leak
+
+
+def test_schema_free_star_rename_to_private_refuses():
+    with pytest.raises(MarginalizeError, match="private name"):
+        SQLProjection("SELECT * RENAME (age AS _age) FROM __THIS__")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="pre-existing: window identity (_stripped) erases struct field"
+    " names, collapsing distinct windows into one params column"
+    " (review round 2026-08-05; needs a ticket)",
+)
+def test_distinct_struct_field_names_mint_distinct_windows():
+    p = _fit(
+        "SELECT min(struct_pack(a := age)) OVER () AS m1,"
+        " min(struct_pack(b := age)) OVER () AS m2, name FROM __THIS__"
+    )
+    (m2,) = p.transform(TRAIN.slice(0, 1)).column("m2").to_pylist()
+    assert list(m2) == ["b"]
 
 
 def test_declared_schema_cannot_express_a_private_column():
@@ -232,8 +294,43 @@ REFUSALS = [
         " SELECT out, _d AS y FROM c",
         "same-SELECT",
     ),
-    ("SELECT _d + 1 AS out, age * 2 AS _d, name FROM __THIS__", "unknown column"),
+    (
+        "SELECT _d + 1 AS out, age * 2 AS _d, name FROM __THIS__",
+        "before it is defined",
+    ),
     ("SELECT * RENAME (age AS _age) FROM __THIS__", "private name"),
+    # Duplicate output names refuse at every level (review round): the
+    # fit-side level table cannot carry two same-named columns, and DuckDB's
+    # own rules (last-wins after, refuse between) cannot be half-honored.
+    ("SELECT age AS d, name AS d, d AS out FROM __THIS__", "duplicate output"),
+    (
+        "SELECT age AS d, name AS d,"
+        " avg(fare) OVER (PARTITION BY d) AS w FROM __THIS__",
+        "duplicate output",
+    ),
+    ("SELECT age + 1 AS b, b, name FROM __THIS__", "duplicate output"),
+    # Forward references refuse by DuckDB's own rule — including the paths
+    # that ride raw into fit-side SQL (windows, subqueries).
+    (
+        "SELECT avg(_d) OVER () AS m, age * 2 AS _d, _d + 1 AS o, name FROM __THIS__",
+        "before it is defined",
+    ),
+    (
+        "SELECT (SELECT max(age) + _d FROM __THIS__) AS s, age * 2 AS _d,"
+        " _d + 1 AS out FROM __THIS__",
+        "inside a subquery",
+    ),
+    # Measured: DuckDB refuses referencing an alias whose expr has a subquery.
+    (
+        "SELECT (SELECT max(age) FROM __THIS__) AS q, q + 1 AS e, name FROM __THIS__",
+        "holds a subquery",
+    ),
+    # A lower level's private is unreachable from a subquery too.
+    (
+        "WITH c AS (SELECT age * 2 AS _d, _d + 1 AS out, name FROM __THIS__)"
+        " SELECT out, (SELECT max(_d) FROM __THIS__) AS s FROM c",
+        "same-SELECT",
+    ),
     (
         "SELECT sc_fit(age) OVER () AS th, sc_transform(th, age).age AS z"
         " FROM __THIS__",

@@ -196,14 +196,6 @@ class SQLProjection:
                 )
             table = table.select(self._columns)
         m = self._marginalized
-        if self._columns is None and m.star_passthrough:
-            leaked = [c for c in table.column_names if c.startswith("_")]
-            if leaked:
-                raise MarginalizeError(
-                    f"column {leaked[0]} would cross the output boundary via *"
-                    " (output fields starting with _ are private) — declare a"
-                    " this_model or rename it"
-                )
         con = duckdb.connect()
         try:
             # DuckDB's parallel window aggregation accumulates floats in a
@@ -377,6 +369,21 @@ class SQLProjection:
             for udf in self._udfs.values():
                 udf.register(con)
             out = con.execute(_row_ordered_sql(con, self.serving_sql)).to_arrow_table()
+            # Only a schema-free * can smuggle a _-named column this far
+            # (authored ones refuse at construction); privates never cross
+            # the output boundary. The row path cannot express one at all —
+            # the row model drops _-leading fields.
+            leaked = [
+                c
+                for c in out.column_names
+                if c.startswith("_") and not c.startswith("__cf_")
+            ]
+            if leaked:
+                raise MarginalizeError(
+                    f"column {leaked[0]} crossed the output boundary via *"
+                    " (output fields starting with _ are private) — declare a"
+                    " this_model or rename it"
+                )
             return out.select(
                 [i for i, c in enumerate(out.column_names) if c != "__cf_row"]
             )
