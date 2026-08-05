@@ -1022,6 +1022,14 @@ class _LevelRewriter:
                         " (DuckDB binds in-call ORDER BY only on aggregates)",
                         x.get("query_location"),
                     )
+                if x.get("distinct"):
+                    # Same binder rule again (review round 2026-08-05: the
+                    # flag used to drop silently).
+                    _refuse(
+                        f"DISTINCT inside the scalar call {x['function_name']}"
+                        " (DuckDB binds DISTINCT only on aggregates)",
+                        x.get("query_location"),
+                    )
                 bare = _bare_tf_name(x, self.planner.lookup)
                 if bare is not None:
                     _refuse(
@@ -1579,6 +1587,12 @@ class _Planner:
                 f" on {name}_fit(bundle ORDER BY key) OVER (...)",
                 raw.get("query_location"),
             )
+        if raw.get("distinct"):
+            _refuse(
+                f"DISTINCT inside the {name}(...) sugar (DuckDB binds"
+                " DISTINCT only on aggregates)",
+                raw.get("query_location"),
+            )
         if getattr(self.lookup(name), "order_sensitive", False):
             _refuse(
                 f"{name} is order-sensitive — the bare sugar cannot name an"
@@ -1684,6 +1698,12 @@ class _Planner:
                 f"ORDER BY on {tf_name}_transform ({tf_name}_transform is a"
                 f" scalar — the order lives on {tf_name}_fit(bundle ORDER BY"
                 " key) OVER (...))",
+                loc,
+            )
+        if raw.get("distinct"):
+            _refuse(
+                f"DISTINCT on {tf_name}_transform (DuckDB binds DISTINCT"
+                " only on aggregates)",
                 loc,
             )
         kids = raw.get("children") or []

@@ -3339,6 +3339,22 @@ impl Binder<'_> {
         s
     }
 
+    /// The shared ecall site for a UDF call AST node: every mention of the
+    /// SAME call — field reads and the whole item — binds one site
+    /// (TASK-63 / P16 single-eval; the whole-item leg is the slice-5
+    /// review round).
+    fn site_for(&self, f: &sqlparser::ast::Function) -> u32 {
+        let mut cache = self.extern_sites.borrow_mut();
+        match cache.iter().find(|(k, _)| k == f) {
+            Some((_, s)) => *s,
+            None => {
+                let s = self.fresh_site();
+                cache.push((f.clone(), s));
+                s
+            }
+        }
+    }
+
     /// Field access over a declared width-k extern call: bind the named
     /// lane of ONE shared ecall (TASK-63). `Ok(None)` when this isn't
     /// that shape — callers fall through to their own handling.
@@ -3373,17 +3389,7 @@ impl Binder<'_> {
             )));
         };
         let args = self.bind_udf_args(f, spec)?;
-        let site = {
-            let mut cache = self.extern_sites.borrow_mut();
-            match cache.iter().find(|(k, _)| k == f) {
-                Some((_, s)) => *s,
-                None => {
-                    let s = self.fresh_site();
-                    cache.push((f.clone(), s));
-                    s
-                }
-            }
-        };
+        let site = self.site_for(f);
         Ok(Some(SExpr {
             kind: SKind::ExternCall {
                 site,
@@ -3483,7 +3489,7 @@ impl Binder<'_> {
             return Ok(None);
         }
         let args = self.bind_udf_args(f, spec)?;
-        let site = self.fresh_site();
+        let site = self.site_for(f);
         let mut lanes = Vec::with_capacity(1 + spec.rets.len());
         lanes.push((
             format!("{base}\u{1}valid"),

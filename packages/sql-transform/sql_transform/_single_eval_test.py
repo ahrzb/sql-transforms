@@ -110,6 +110,24 @@ def test_two_fields_cost_one_call_per_row_on_the_row_path():
         np.testing.assert_allclose([r["x"], r["y"]], ref[i], rtol=1e-9, atol=1e-12)
 
 
+def test_whole_item_and_field_read_share_one_call_per_row():
+    # Review round: the whole-item site must share the field read's ecall
+    # (P16 single-eval) — the row path used to double-evaluate here.
+    p = SQLProjection(
+        "SELECT pca(struct_pack(a := a, b := b)) AS e,"
+        " pca(struct_pack(a := a, b := b)).pca0 AS x, name FROM __THIS__",
+        transformers={"pca": CountingPCA(n_components=2)},
+    ).fit(TRAIN)
+    CountingPCA.calls = 0
+    out = p.transform(TRAIN)
+    assert CountingPCA.calls == TRAIN.num_rows
+    CountingPCA.calls = 0
+    one = p.infer(TRAIN.to_pylist()[0]).model_dump()
+    assert CountingPCA.calls == 1, "whole item + field read: exactly one call"
+    assert one["e"]["pca0"] == one["x"]
+    assert out.column("e").to_pylist()[0]["pca0"] == out.column("x").to_pylist()[0]
+
+
 def test_bare_wide_item_costs_one_call_per_row():
     # Slice 5: the bare shape serves the whole struct through the same one
     # call — still exactly one transform() per row on both paths.
