@@ -188,16 +188,21 @@ level's environment. Consequences, each a named refusal:
 | every output column private | refuse — nothing crosses the boundary |
 | `_t.f` dotted read of a lateral | refuse — DuckDB binds `_t.f` as table.column ("Referenced table not found"); hint `struct_extract(_t, 'f')`, which DuckDB accepts and we support |
 | window-valued lateral inside any window clause | refuse — DuckDB: "window function calls cannot be nested" |
-| lateral referenced inside a scalar subquery | refuse — DuckDB accepts (correlated), but our subquery fit steps run verbatim where the alias does not exist; v0 refuses by name |
-| duplicate private name | refuse — DuckDB resolves duplicate aliases last-wins; for privates we refuse rather than pick |
-| private column read from a higher level | refuse — same-SELECT scope, by name |
+| lateral referenced inside a scalar subquery | refuse — DuckDB accepts (correlated), but our subquery fit steps run verbatim where the alias does not exist; v0 refuses by name. The scan is name-based in both directions and conservatively also hits a subquery-internal binding of the same name |
+| consumed lateral whose expression holds a subquery | refuse — measured DuckDB: "the expression has a subquery" |
+| any reference before its definition (incl. into windows and subqueries, which ride raw into fit-side SQL) | refuse — DuckDB's own left-to-right rule |
+| duplicate output name, any level | refuse — DuckDB's duplicate rules (last-wins after the last definition, refuse between) cannot be honored: the fit-side level table cannot carry two same-named columns |
+| duplicate private name | refuse |
+| private column read from a higher level | refuse — same-SELECT scope, by name (subqueries included) |
+| lambda whose parameter shadows a lateral | substitution never enters a lambda; lambdas already refuse by name (unknown column) |
 | authored private item without a declared schema | refuse — lateral resolution is undecidable against unknown table columns (same family as the schema-free star-modifier refusals) |
-| schema-free `*` passthrough over a table with a `_` column | refuse at fit — the star cannot be rewritten to exclude it |
+| schema-free `*` leaking a `_` table column | refuses at transform, per input table (the batch boundary check); `* EXCLUDE (_x)` serves; the row model cannot carry `_` fields at all |
 
 **Public laterals** keep today's surface but ride the same substitution
 (identical serving text), which also makes them legal inside windows.
-Duplicate public aliases now resolve last-wins — the measured DuckDB
-rule; the old first-wins store silently served the wrong column.
+The reference's own alias — a struct_pack field name, a named argument —
+survives resolution on every path (review round: it used to be dropped,
+so `struct_pack(a := age)` served the wrong field name under a schema).
 
 **θ laterals**: `sc_fit(b) OVER w AS _th` is legal as a private item;
 `sc_transform(_th, b)` β-reduces to the inline slice-1 spelling — same

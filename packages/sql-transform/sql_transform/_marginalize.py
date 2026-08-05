@@ -161,9 +161,6 @@ class Marginalized:
     params: tuple[ParamsSpec, ...]
     udfs: tuple[UDFSpec, ...] = ()
     scalar_udfs: tuple[str, ...] = ()
-    # A schema-free ``*`` survives to the output: fit must refuse if the
-    # table would leak a ``_`` column through it (privates never cross).
-    star_passthrough: bool = False
 
 
 def _refuse(what: str, loc: int | None = None) -> None:
@@ -614,13 +611,11 @@ class _Env:
 _BASE_ENV = _Env(entries=[("*", None)])
 
 
-def _contains_window(x: Any) -> bool:
+def _contains_class(x: Any, cls: str) -> bool:
     if isinstance(x, dict):
-        return x.get("class") == "WINDOW" or any(
-            _contains_window(v) for v in x.values()
-        )
+        return x.get("class") == cls or any(_contains_class(v, cls) for v in x.values())
     if isinstance(x, list):
-        return any(_contains_window(v) for v in x)
+        return any(_contains_class(v, cls) for v in x)
     return False
 
 
@@ -690,6 +685,12 @@ class _LevelRewriter:
         self.raw_aliases: dict[str, Node] = {}
         self.private_names: set[str] = set()
         self.private_unread: set[str] = set()
+        # Where each output name is defined, set upfront by rewrite_items; a
+        # reference is FORWARD (refused, DuckDB's rule) only when its
+        # definition is a strictly later item — a self-named bare ref falls
+        # through to normal resolution.
+        self.item_pos: dict[str, int] = {}
+        self.item_i = 0
         # The fit-side view of this level's items: expanded (alias-free of
         # laterals) and private-filtered — what __CF_LEVEL_{i}__ projects.
         self.fit_items: list[Node] = []
@@ -722,6 +723,9 @@ class _LevelRewriter:
                 " alias".format(names[0]),
                 x.get("query_location"),
             )
+        # The ref's own alias (a struct_pack field name, a named argument)
+        # must survive resolution — the env expression carries alias="".
+        al = x.get("alias", "")
         if head in self.env.exprs:
             target = self.env.exprs[head]
             if len(names) > 1:
@@ -733,12 +737,14 @@ class _LevelRewriter:
                     return dict(
                         copy.deepcopy(target),
                         column_names=[*target["column_names"], *names[1:]],
+                        **({"alias": al} if al else {}),
                     )
                 _refuse(
                     "struct-field access through a projected expression",
                     x.get("query_location"),
                 )
-            return copy.deepcopy(target)
+            resolved = copy.deepcopy(target)
+            return dict(resolved, alias=al) if al else resolved
         if head in self.env.private:
             _refuse(
                 f"private column {names[0]} is same-SELECT scope — it never"
@@ -1059,6 +1065,11 @@ class _LevelRewriter:
         Column-wins (DuckDB's rule) is preserved via the env check."""
         if isinstance(x, dict):
             cls = x.get("class")
+            if cls == "LAMBDA":
+                # A lambda binds its own parameters; substituting into it
+                # would break the binder. Left alone, the rewrite refuses
+                # lambdas by name (unknown column) — never a raw crash.
+                return copy.deepcopy(x)
             if cls == "COLUMN_REF":
                 names = x["column_names"]
                 head = names[0].lower() if names else ""
@@ -1083,14 +1094,33 @@ class _LevelRewriter:
                         # The ref's own alias (an output name, a struct_pack
                         # field name) must survive the substitution.
                         sub = dict(sub, alias=x["alias"])
-                    if in_window and _contains_window(sub):
+                    if in_window and _contains_class(sub, "WINDOW"):
                         _refuse(
                             f"window-valued alias {names[0]} inside a window"
                             " (DuckDB: window function calls cannot be"
                             " nested)",
                             x.get("query_location"),
                         )
+                    if _contains_class(sub, "SUBQUERY"):
+                        # Measured: DuckDB refuses referencing an alias whose
+                        # expression has a subquery.
+                        _refuse(
+                            f"lateral alias {names[0]} holds a subquery"
+                            " (DuckDB refuses referencing it — repeat the"
+                            " expression)",
+                            x.get("query_location"),
+                        )
                     return sub
+                if (
+                    len(names) == 1
+                    and self.item_pos.get(head, -1) > self.item_i
+                    and head not in self.env.exprs
+                ):
+                    # DuckDB's own rule: select aliases bind left to right.
+                    _refuse(
+                        f"{names[0]} is referenced before it is defined",
+                        x.get("query_location"),
+                    )
                 return copy.deepcopy(x)
             if cls == "SUBQUERY":
                 # A subquery step runs verbatim where no same-level alias
@@ -1108,12 +1138,24 @@ class _LevelRewriter:
             if x.get("class") == "COLUMN_REF":
                 names = x["column_names"]
                 head = names[0].lower() if names else ""
-                if head in self.raw_aliases and head not in self.env.exprs:
-                    _refuse(
-                        f"lateral alias {names[0]} inside a subquery (the"
-                        " subquery step runs where the alias does not exist)",
-                        x.get("query_location"),
-                    )
+                if head not in self.env.exprs:
+                    # Name-based, both directions (a forward alias would ride
+                    # unresolved into the fit step) — conservatively also
+                    # hits a subquery-internal binding of the same name.
+                    if head in self.item_pos and self.item_pos[head] != self.item_i:
+                        _refuse(
+                            f"lateral alias {names[0]} inside a subquery (the"
+                            " subquery step runs where the alias does not"
+                            " exist)",
+                            x.get("query_location"),
+                        )
+                    if head in self.env.private:
+                        _refuse(
+                            f"private column {names[0]} is same-SELECT scope"
+                            " — it never crosses levels (make it public in"
+                            " its own level)",
+                            x.get("query_location"),
+                        )
             for v in x.values():
                 self._refuse_lateral_in_subquery(v)
         elif isinstance(x, list):
@@ -1169,14 +1211,7 @@ class _LevelRewriter:
                 continue
             chosen = replace.get(name.lower())
             chosen = copy.deepcopy(chosen if chosen is not None else expr)
-            renamed = rename.get(name.lower(), name)
-            if renamed.lower().startswith("_"):
-                _refuse(
-                    f"a star modifier renames {name} to the private name"
-                    f" {renamed} (a declared schema cannot carry one)",
-                    star.query_location,
-                )
-            out.append((renamed, dict(chosen, alias="")))
+            out.append((rename.get(name.lower(), name), dict(chosen, alias="")))
         if not out:
             _refuse("* expanded to no columns", star.query_location)
         return out
@@ -1192,7 +1227,13 @@ class _LevelRewriter:
         entries: list[tuple[str, Node | None]] = []
         names_seen: set[str] = set()
         explicit = not self.env.star
-        for raw_item in items:
+        if explicit:
+            self.item_pos = {
+                n.lower(): i
+                for i, it in enumerate(items)
+                if (n := _item_name(it)) is not None
+            }
+        for self.item_i, raw_item in enumerate(items):
             name = _item_name(raw_item)
             lname = name.lower() if name is not None else None
             private = lname is not None and lname.startswith("_")
@@ -1217,6 +1258,15 @@ class _LevelRewriter:
             self.fit_items.append(copy.deepcopy(item))
             if item.get("class") == "STAR":
                 star = _Star.of(item)
+                for entry in star.rename_list:
+                    renamed = entry["value"]
+                    if renamed.lower().startswith("_"):
+                        _refuse(
+                            f"a star modifier renames"
+                            f" {entry['key']['column']} to the private name"
+                            f" {renamed}",
+                            star.query_location,
+                        )
                 if explicit:
                     for name, expr in self._expand_star(item):
                         entries.append((name, expr))
@@ -1268,9 +1318,6 @@ class _LevelRewriter:
             out.append(rewritten)
             if explicit:
                 if name is not None:
-                    # Plain assignment, not setdefault: DuckDB resolves a
-                    # duplicated alias to its LAST definition (measured
-                    # 2026-08-05; first-wins served the wrong column).
                     self.raw_aliases[lname] = dict(copy.deepcopy(item), alias="")
             elif item.get("alias") and not (
                 item.get("class") == "COLUMN_REF"
@@ -1278,12 +1325,16 @@ class _LevelRewriter:
                 == item["alias"].lower()
             ):
                 self.risky_aliases.add(item["alias"].lower())
+            if name is not None:
+                # Refused at EVERY level (review round): DuckDB's duplicate
+                # rules (last-wins after, refuse between) cannot be honored —
+                # the fit-side level table cannot carry two same-named columns.
+                if name.lower() in names_seen:
+                    _refuse(f"duplicate output name {name}")
+                names_seen.add(name.lower())
             if not is_final:
                 if name is None:
                     _refuse("an unnameable select item in a non-final level")
-                if name.lower() in names_seen:
-                    _refuse(f"duplicate output name {name} in a non-final level")
-                names_seen.add(name.lower())
                 entries.append((name, dict(copy.deepcopy(rewritten), alias="")))
             else:
                 entries.append((name or "", None))
@@ -2100,9 +2151,6 @@ def marginalize(
             plan=(),
             params=(),
             scalar_udfs=tuple(planner.scalar_udfs),
-            star_passthrough=any(
-                it.get("class") == "STAR" for it in root["select_list"]
-            ),
         )
 
     root["select_list"] = final_items
@@ -2118,7 +2166,6 @@ def marginalize(
         params=specs,
         udfs=tuple(planner.udf_specs),
         scalar_udfs=tuple(planner.scalar_udfs),
-        star_passthrough=any(it.get("class") == "STAR" for it in final_items),
     )
 
 
