@@ -1493,10 +1493,23 @@ class _LevelRewriter:
             theta_stem = _fit_node_name(item, self.planner.lookup)
             if theta_stem is not None and is_final:
                 self.planner.check_transformer_identity(item, theta_stem)
+                oname = name or "theta"
+                # An exported handle is an output column like any other: it
+                # obeys the duplicate-name law, and in schema-free mode its
+                # alias is as undecidable as any other (review round — the
+                # branch used to skip both). It is deliberately NOT put in
+                # raw_aliases: export is readable, not consumable.
+                taken = names_seen | {
+                    n.lower() for n, _ in entries if n not in ("*", "")
+                }
+                if oname.lower() in taken:
+                    _refuse(f"duplicate output name {oname}")
+                if not explicit:
+                    self.risky_aliases.add(oname.lower())
                 rewritten = self.planner.theta_ref(self, item, theta_stem)
-                out.append(dict(rewritten, alias=name or "theta"))
-                entries.append((name or "theta", None))
-                names_seen.add((name or "theta").lower())
+                out.append(dict(rewritten, alias=oname))
+                entries.append((oname, None))
+                names_seen.add(oname.lower())
                 continue
             whole_bare = _bare_tf_name(item, self.planner.lookup)
             whole_split = (
