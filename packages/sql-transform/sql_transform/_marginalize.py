@@ -68,7 +68,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from typing import Any
 
@@ -146,6 +146,11 @@ class UDFSpec:
     step: str
     transformer: str
     field: str | None = None
+    # True when the UDF's OWN output struct crosses the output boundary, so
+    # its learned field names become row-model fields. θ export registers a
+    # spec (the step must exist) without ever serving that struct — the
+    # handle is struct_pack of a tag and an id, not the transform's output.
+    whole: bool = False
 
 
 @dataclass(frozen=True)
@@ -349,6 +354,15 @@ def _templates() -> dict[str, Node]:
         "function": _serialize("SELECT __cf_fn(k) FROM __CF_WINDOWS__")["statements"][
             0
         ]["node"]["select_list"][0],
+        # θ export (slice 6): the handle IS the wire mechanism — a type tag
+        # naming the minted UDF plus the joined instance id. NULL id (an
+        # unseen group) makes the WHOLE handle NULL: P14's story, not a
+        # half-built handle with a live type tag. Graft slots: the two
+        # `k` refs (the params id column) and the type constant's value.
+        "theta": _serialize(
+            "SELECT CASE WHEN k IS NULL THEN NULL ELSE"
+            " struct_pack(type := '__cf_ty', id := k) END FROM __CF_WINDOWS__"
+        )["statements"][0]["node"]["select_list"][0],
         "star": _serialize("SELECT __cf_t.* FROM __THIS__")["statements"][0]["node"][
             "select_list"
         ][0],
@@ -1134,10 +1148,11 @@ class _LevelRewriter:
         fit_stem = _fit_node_name(x, self.planner.lookup)
         if fit_stem is not None:
             _refuse(
-                f"{fit_stem}_fit(...) OVER (...) must be consumed as the"
-                f" first argument of {fit_stem}_transform or parked in a"
-                " private column (AS _theta) — θ public export arrives in a"
-                " later slice",
+                f"{fit_stem}_fit(...) OVER (...) in a non-final level — a θ"
+                " exported here would be θ-as-data one level up, which has"
+                " no lawful provenance (export it from the final level, or"
+                " park it in a private column AS _theta and consume it in"
+                " the same SELECT)",
                 loc,
             )
         self.planner.check_transformer_identity(x, tf_name)
@@ -1471,6 +1486,18 @@ class _LevelRewriter:
                 )
                 entries.append(("*", None))
                 continue
+            # A public fit call IS θ export (slice 6): the handle serves as
+            # an ordinary struct value. Private θ laterals never reach here
+            # (they β-reduce above), and every other fit position still
+            # refuses through _refuse_window_tf.
+            theta_stem = _fit_node_name(item, self.planner.lookup)
+            if theta_stem is not None and is_final:
+                self.planner.check_transformer_identity(item, theta_stem)
+                rewritten = self.planner.theta_ref(self, item, theta_stem)
+                out.append(dict(rewritten, alias=name or "theta"))
+                entries.append((name or "theta", None))
+                names_seen.add((name or "theta").lower())
+                continue
             whole_bare = _bare_tf_name(item, self.planner.lookup)
             whole_split = (
                 None
@@ -1781,6 +1808,71 @@ class _Planner:
             )
         if not rw.is_final:
             _refuse("a transformer call in a non-final level", loc)
+        j = self.fit_half(rw, theta, tf_name)
+        tbundle = rw._bundle_of(kids[1])
+        step = self.tf_steps[j]
+        fit_names = [f.lower() for (f, _, _) in step["feature_fit"]]
+        got_names = [f.lower() for (f, _, _) in tbundle]
+        if got_names != fit_names:
+            _refuse(
+                f"{tf_name}_transform bundle fields {got_names} do not match"
+                f" the fit bundle fields {fit_names} (name-keyed, in order)",
+                loc,
+            )
+        children = [
+            _clone(
+                "column_ref",
+                column_names=[f"__cf_p{step['join']}", "__cf_est"],
+                alias="",
+            ),
+            *[copy.deepcopy(se) for (_, _, se) in tbundle],
+        ]
+        return self._tf_call_node(
+            j, field_name, alias or raw.get("alias", ""), children=children
+        )
+
+    def theta_ref(self, rw: _LevelRewriter, theta: Node, tf_name: str) -> Node:
+        """A PUBLIC ``{tf}_fit(bundle) OVER (...)`` item — θ export (slice
+        6). θ IS the wire mechanism, so the handle is built from existing
+        parts: ``struct_pack(type := '__cf_tf{j}', id := __cf_p{idx}
+        .__cf_est)`` — the same value for every row of a fit scope, NULL id
+        for an unseen group. Same fit half as the split spelling, so an
+        exported handle and a consumed one share one step."""
+        if not rw.is_final:
+            _refuse(
+                "a transformer call in a non-final level",
+                theta.get("query_location"),
+            )
+        j = self.fit_half(rw, theta, tf_name)
+        step = self.tf_steps[j]
+        # The whole handle is NULL when the group was never fitted: the id
+        # comes from the params LEFT JOIN, so P14's NULL story decides the
+        # struct, not a half-built handle with a live type tag.
+        fn_name = f"__cf_tf{j}"
+        if not any(s.name == fn_name for s in self.udf_specs):
+            # The step must exist (it fits the instances the handle names),
+            # but nothing serves the transform's own struct here.
+            self.udf_specs.append(
+                UDFSpec(
+                    name=fn_name,
+                    step=step["name"],
+                    transformer=step["transformer"],
+                )
+            )
+        est = _clone(
+            "column_ref", column_names=[f"__cf_p{step['join']}", "__cf_est"], alias=""
+        )
+        node = _clone("theta")
+        node["case_checks"][0]["when_expr"]["children"] = [copy.deepcopy(est)]
+        pack = node["else_expr"]
+        pack["children"][0]["value"]["value"] = f"__cf_tf{j}"
+        pack["children"][1] = dict(copy.deepcopy(est), alias="id")
+        return node
+
+    def fit_half(self, rw: _LevelRewriter, theta: Node, tf_name: str) -> int:
+        """The fit half of a θ node — window shape, in-call ORDER BY,
+        FILTER, frame/DISTINCT refusals, then the deduped fit step. Shared
+        by the split spelling and θ export so the two cannot diverge."""
         w = _Window.of(theta)
         if w.orders:
             _refuse(
@@ -1854,45 +1946,24 @@ class _Planner:
             _refuse(f"a frame on {tf_name}_fit", w.query_location)
         if w.distinct or w.ignore_nulls:
             _refuse(f"DISTINCT/IGNORE NULLS on {tf_name}_fit", w.query_location)
-        tbundle = rw._bundle_of(kids[1])
         ident = "|".join(
             [_stripped(theta), _bundle_names_key(theta), _alias_sig(theta)]
         )
         if ident in self.tf_calls:
-            j = self.tf_calls[ident]
-        else:
-            keys = [rw._key_of(p) for p in w.partitions]
-            seen: set[str] = set()
-            keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
-            j = self._mint_step(
-                rw,
-                tf_name,
-                keys,
-                rw._tf_bundle(theta),
-                filter_fit=filter_fit,
-                order_fit=order_fit,
-            )
-            self.tf_calls[ident] = j
-        step = self.tf_steps[j]
-        fit_names = [f.lower() for (f, _, _) in step["feature_fit"]]
-        got_names = [f.lower() for (f, _, _) in tbundle]
-        if got_names != fit_names:
-            _refuse(
-                f"{tf_name}_transform bundle fields {got_names} do not match"
-                f" the fit bundle fields {fit_names} (name-keyed, in order)",
-                loc,
-            )
-        children = [
-            _clone(
-                "column_ref",
-                column_names=[f"__cf_p{step['join']}", "__cf_est"],
-                alias="",
-            ),
-            *[copy.deepcopy(se) for (_, _, se) in tbundle],
-        ]
-        return self._tf_call_node(
-            j, field_name, alias or raw.get("alias", ""), children=children
+            return self.tf_calls[ident]
+        keys = [rw._key_of(p) for p in w.partitions]
+        seen: set[str] = set()
+        keys = [k for k in keys if not (k.ident in seen or seen.add(k.ident))]
+        j = self._mint_step(
+            rw,
+            tf_name,
+            keys,
+            rw._tf_bundle(theta),
+            filter_fit=filter_fit,
+            order_fit=order_fit,
         )
+        self.tf_calls[ident] = j
+        return j
 
     def check_transformer_identity(self, raw: Node, name: str) -> None:
         """The identity refusals shared by field-addressed and bare calls —
@@ -1928,9 +1999,17 @@ class _Planner:
         transform bundle may differ from the fit bundle)."""
         step = self.tf_steps[j]
         fn_name = f"__cf_tf{j}"
-        if not any(s.name == fn_name and s.field == field_name for s in self.udf_specs):
+        for i, s in enumerate(self.udf_specs):
+            if s.name == fn_name and s.field == field_name:
+                # A θ export may have registered this step already; a real
+                # whole-value call upgrades it (its struct now IS served).
+                if field_name is None and not s.whole:
+                    self.udf_specs[i] = replace(s, whole=True)
+                break
+        else:
             self.udf_specs.append(
                 UDFSpec(
+                    whole=field_name is None,
                     name=fn_name,
                     step=step["name"],
                     transformer=step["transformer"],
