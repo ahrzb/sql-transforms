@@ -63,9 +63,11 @@ class UDF:
     return_names: tuple[str, ...] = ()
 
     def lane_of(self, field_name: str) -> int:
-        """Index of an output field, by name; raises naming what exists."""
+        """Index of an output field, by name — ASCII-case-insensitive like
+        both engines' struct reads (case collisions refuse at declaration);
+        raises naming what exists."""
         try:
-            return self.return_names.index(field_name)
+            return [n.lower() for n in self.return_names].index(field_name.lower())
         except ValueError:
             raise UDFError(
                 f"UDF {self.name} has no output field {field_name!r};"

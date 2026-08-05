@@ -142,6 +142,50 @@ REFUSALS = [
         "SELECT sc_transform(sc_fit(age) OVER (), age).age.x AS z FROM __THIS__",
         "chained field access",
     ),
+    # Nested transformer calls refuse at construction, never mid-fit
+    # (composition is TASK-65, parked; review round 2026-08-05).
+    (
+        "SELECT pca(struct_pack(v := sc(age).age)).pca0 AS z FROM __THIS__",
+        "inside a transformer bundle",
+    ),
+    (
+        "SELECT sc_transform(sc_fit(age) OVER (PARTITION BY pca(fare).pca0),"
+        " age).age AS z FROM __THIS__",
+        "inside a partition",
+    ),
+    (
+        "SELECT sc_transform(sc_fit(struct_pack(v := age)) OVER (),"
+        " struct_pack(v := pca(fare).pca0)).v AS z FROM __THIS__",
+        "inside a transformer bundle",
+    ),
+    # The namespace is the named mistake, on every half.
+    ("SELECT ns.sc_fit(age) OVER () AS t FROM __THIS__", "namespaced"),
+    (
+        "SELECT sc_transform(ns.sc_fit(age) OVER (), age).age AS z FROM __THIS__",
+        "namespaced",
+    ),
+    # OVER on the transform half names the actual mistake.
+    (
+        "SELECT sc_transform(sc_fit(age) OVER (), age) OVER () AS z FROM __THIS__",
+        "is a scalar",
+    ),
+    # A fit window inside a subquery dies at construction, not mid-fit.
+    (
+        "SELECT (SELECT sc_fit(age) OVER () FROM __THIS__) AS t FROM __THIS__",
+        "inside a subquery",
+    ),
+    # Bundle matching is name-keyed IN ORDER — same names, swapped order.
+    (
+        "SELECT sc_transform(sc_fit(struct_pack(a := age, f := fare)) OVER (),"
+        " struct_pack(f := fare, a := age)).a AS z FROM __THIS__",
+        "do not match",
+    ),
+    # A split call with a non-window θ inside an aggregate keeps its name.
+    (
+        "SELECT avg(sc_transform({'type': 'sc', 'id': 3}, age).age) OVER ()"
+        " AS z FROM __THIS__",
+        "inside a window aggregate",
+    ),
 ]
 
 
@@ -151,6 +195,56 @@ def test_split_refusals(sql, match):
     pca = PCA(n_components=1)
     with pytest.raises(MarginalizeError, match=match):
         SQLProjection(sql, transformers={"sc": sc, "pca": pca})
+
+
+def test_reserved_fit_name_collision_on_bare_spelling_refuses():
+    """Review round (2026-08-05): the bare x_fit(...).field spelling used to
+    silently serve the x_fit registry object instead of refusing the
+    reservation — the one spelling the struct-value hint points users at."""
+    with pytest.raises(MarginalizeError, match="reserve"):
+        SQLProjection(
+            "SELECT x_fit(age).age AS z FROM __THIS__",
+            transformers={"x": StandardScaler(), "x_fit": StandardScaler()},
+        )
+
+
+def test_distinct_bundle_names_mint_distinct_fits():
+    """Review round (2026-08-05): fit-step identity must include the bundle
+    FIELD NAMES (S's names are the type, P16a) — _stripped erases aliases,
+    so two fits differing only in struct_pack names used to collide into
+    one step and serve the wrong fit's lanes."""
+    sc = StandardScaler()
+    p = SQLProjection(
+        "SELECT sc_transform(sc_fit(struct_pack(v := age)) OVER (),"
+        " struct_pack(v := age)).v AS a,"
+        " sc_transform(sc_fit(struct_pack(w := age)) OVER (),"
+        " struct_pack(w := age)).w AS b, name FROM __THIS__",
+        transformers={"sc": sc},
+    ).fit(TRAIN)
+    assert len([s for s in p.plan if s.kind == "fit"]) == 2
+    out = p.transform(TRAIN)
+    got_a = _by_name(out, "a")
+    got_b = _by_name(out, "b")
+    feats = np.array([TRAIN.column("age").to_pylist()], dtype=float).T
+    ref = _reference(StandardScaler(), feats, [()] * TRAIN.num_rows)
+    for i, n in enumerate(TRAIN.column("name").to_pylist()):
+        np.testing.assert_allclose(got_a[n], ref[i][0], rtol=1e-12)
+        np.testing.assert_allclose(got_b[n], ref[i][0], rtol=1e-12)
+
+
+def test_field_read_is_case_insensitive():
+    """DuckDB struct reads are ASCII-case-insensitive and so is the confit
+    binder; the fit-time field check must match (review round 2026-08-05)."""
+    sc = StandardScaler()
+    p = SQLProjection(
+        "SELECT sc(struct_pack(V := age)).v AS z, name FROM __THIS__",
+        transformers={"sc": sc},
+    ).fit(TRAIN)
+    got = _by_name(p.transform(TRAIN), "z")
+    feats = np.array([TRAIN.column("age").to_pylist()], dtype=float).T
+    ref = _reference(StandardScaler(), feats, [()] * TRAIN.num_rows)
+    for i, n in enumerate(TRAIN.column("name").to_pylist()):
+        np.testing.assert_allclose(got[n], ref[i][0], rtol=1e-12)
 
 
 def test_reserved_name_collision_refuses():

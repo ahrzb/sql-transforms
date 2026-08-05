@@ -199,7 +199,10 @@ class SQLProjection:
                         if (
                             spec.step == step.name
                             and spec.field is not None
-                            and spec.field not in udf.return_names
+                            # ASCII-case-insensitive, like both engines'
+                            # struct reads (case COLLISIONS refuse earlier).
+                            and spec.field.lower()
+                            not in {n.lower() for n in udf.return_names}
                         ):
                             raise MarginalizeError(
                                 f"transformer {step.transformer} has no output"
