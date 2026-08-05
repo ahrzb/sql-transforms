@@ -96,7 +96,7 @@ REFUSALS = [
     # Struct values embedded in an expression (whole items serve, slice 5).
     ("SELECT sc(age) + 1 AS s FROM __THIS__", "struct value"),
     # θ positions that have no lawful reading yet.
-    ("SELECT sc_fit(age) OVER () AS t FROM __THIS__", "later slice"),
+    # (A public fit item is θ EXPORT since slice 6 — see _theta_test.py.)
     ("SELECT sc_fit(age).age AS z FROM __THIS__", "window aggregate"),
     (
         "SELECT sc_transform(sc_fit(age), age).age AS z FROM __THIS__",

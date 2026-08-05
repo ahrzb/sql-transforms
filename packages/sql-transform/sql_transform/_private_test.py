@@ -369,9 +369,11 @@ REFUSALS = [
         "same-SELECT",
     ),
     (
+        # θ export (slice 6) makes a PUBLIC handle readable, not
+        # consumable: applying it still needs the private spelling.
         "SELECT sc_fit(age) OVER () AS th, sc_transform(th, age).age AS z"
         " FROM __THIS__",
-        "private column",
+        "lawful provenance",
     ),
 ]
 

@@ -365,5 +365,34 @@ struct is NULL, distinct from a struct of NULLs). Mechanics:
    (engine work; C2/C3 for struct-valued outputs).
 6. **θ public export.** Rides on 5 — θ is just another struct output.
 
+## Slice 6 addendum — θ public export (2026-08-05)
+
+A public `tfm_fit(bundle) OVER (...)` item is θ EXPORT: the handle serves
+as `CASE WHEN __cf_p{idx}.__cf_est IS NULL THEN NULL ELSE
+struct_pack(type := '__cf_tf{j}', id := __cf_p{idx}.__cf_est) END` — pure
+existing parts, one handle per fit scope.
+
+- **Unseen group ⇒ the WHOLE handle is NULL**, not a live type tag with a
+  NULL id (measured: bare `struct_pack` gives `{type, id: NULL}`, so the
+  CASE guard is what buys P14's story — DuckDB computes both readings;
+  we pick the one that never hands out a dangling handle).
+- **Export is readable, not consumable.** A public alias cannot be fed to
+  `tfm_transform` — the refusal now names the private spelling
+  (`... AS _th, tfm_transform(_th, bundle)`). Consuming a public alias is
+  ~4 lines (register the item in `raw_aliases` and slice 2's β-reduction
+  does the rest, measured) but stays refused until composition needs it.
+  Cross-level θ likewise refuses, now by naming the non-final level.
+- **The fit half is shared.** `split_ref`'s window/ORDER BY/FILTER/frame
+  handling moved to `_Planner.fit_half`, so exporting and consuming the
+  same fit mint ONE step and cannot drift apart.
+- **`UDFSpec.whole`** separates "this step exists" from "the transform's
+  own struct crosses the boundary" — export must not trigger the
+  learned-name pydantic probe, since the handle's fields are `type`/`id`,
+  not the transform's output names.
+- **Engine**: `struct_pack(n := e, ...)`, optionally CASE-guarded, lowers
+  to the wide-lane boundary already built for named externs — the guard
+  IS the whole-validity lane (it folds to the load's own validity flag).
+  Struct construction is now a first-class output shape on the row path.
+
 Order fixed only by dependency (2 needs TASK-64; 6 needs 5); 3 and 4
 may slot anywhere after 1.
