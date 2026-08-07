@@ -9,9 +9,10 @@ Freezing: every maximal subquery whose leaves are all ``__FIT__`` and
 constants is evaluated once at fit and replaced by a table. Those tables are
 ``params``.
 
-Slice 1 of `docs/superpowers/specs/2026-08-07-datamodel-redesign-design.md`:
-single level, no nesting. DuckDB is both the parser and the oracle — a
-construct means what DuckDB computes.
+Implements `docs/superpowers/specs/2026-08-07-datamodel-redesign-design.md`:
+the two parameters and freezing, calling (nesting, chaining, per group), and
+foreign transforms. DuckDB is both the parser and the oracle — a construct
+means what DuckDB computes.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+import threading
 from functools import cache
 from typing import Any
 
@@ -236,6 +238,233 @@ def _correlation(node: Node, outer: dict[str, bool]) -> tuple[str, bool] | None:
     return found
 
 
+# --- foreign transforms -------------------------------------------------------
+
+THETA_SQL = "STRUCT(type VARCHAR, id BIGINT)"
+THETA_ARROW = pa.struct([("type", pa.string()), ("id", pa.int64())])
+
+
+def _struct_sql(fields: tuple[str, ...]) -> str:
+    for field in fields:
+        if not field.isidentifier():
+            raise TransformError(f"{field!r} is not a usable struct field name")
+    return "STRUCT(" + ", ".join(f"{f} DOUBLE" for f in fields) + ")"
+
+
+class _Registry:
+    """The fitted instances a run mints, and the first error it hit.
+
+    Ids come from a monotone counter under a lock, never from
+    ``len(instances)``. Measured with the length form, fitting two categories:
+    both θ rows carried ``id 0`` and only one instance was stored, so every
+    row of one category was served by the other's estimator — silently, with
+    plausible numbers. DuckDB fits groups on several threads, and the window
+    is not one bytecode: ``iid = len(instances)`` is read, ``fit()`` runs, and
+    only then is the instance stored, so the whole fit sits between the read
+    and the write. ``ids_are_unique_under_concurrency`` reproduces exactly
+    that shape.
+
+    The lock also carries the first exception out, because DuckDB rewraps a
+    Python exception as ``InvalidInputException`` and a refusal has to keep
+    its name.
+
+    ponytail: one lock for the whole registry. Per-instance locks only if fit
+    ever becomes a throughput problem, which it is not — fit runs once.
+    """
+
+    def __init__(self, instances: dict[int, Any] | None = None) -> None:
+        self.instances = dict(instances or {})
+        self.error: Exception | None = None
+        self._next = max(self.instances, default=-1) + 1
+        self._lock = threading.Lock()
+
+    def add(self, instance: Any) -> int:
+        with self._lock:
+            iid = self._next
+            self._next += 1
+            self.instances[iid] = instance
+        return iid
+
+    def fail(self, exc: Exception) -> None:
+        with self._lock:
+            if self.error is None:
+                self.error = exc
+        raise exc
+
+
+def _execute(con: Any, sql: str, registry: _Registry) -> pa.Table:
+    """Run ``sql``, letting a foreign transform's own refusal out by name."""
+    try:
+        # to_arrow_table, never .arrow(): see _duckdb_arrow_test.py — the
+        # reader .arrow() returns deadlocks when registered back.
+        return con.execute(sql).to_arrow_table()
+    except Exception as exc:
+        if registry.error is not None:
+            raise registry.error from exc
+        raise
+
+
+class Transform:
+    """A foreign transform: the ``(fit, transform)`` pair, supplied directly.
+
+    ``fit(F) -> instance`` and ``transform(instance, T) -> R``, both over
+    relations. An sklearn transformer is already this pair — see
+    ``from_estimator``.
+
+    In SQL the pair splits: ``x_fit`` is the UDAF half and ``x_transform`` the
+    UDF half, joined by θ, an opaque ``Struct<type, id>`` handle into a
+    registry of fitted instances. An SQL leaf gives an inspectable, shippable
+    params table; a fitted RandomForest gives a pointer.
+
+    ``takes``/``returns`` name the input and output struct fields, and are
+    author-declared rather than inferred: DuckDB has no ``ANY`` type, so the
+    shapes must be concrete before the functions can be registered at all. The
+    declaration is authoritative — a transform whose output width disagrees
+    refuses rather than mislabelling lanes.
+
+    Everything is DOUBLE. Widening the vocabulary is a later problem; nothing
+    in the design turns on it.
+    """
+
+    def __init__(
+        self,
+        fit: Any,
+        transform: Any,
+        takes: tuple[str, ...],
+        returns: tuple[str, ...],
+    ) -> None:
+        self.fit = fit
+        self.transform = transform
+        self.takes = takes
+        self.returns = returns
+        _struct_sql(takes)
+        _struct_sql(returns)
+
+    @staticmethod
+    def from_estimator(
+        estimator: Any, takes: tuple[str, ...], returns: tuple[str, ...]
+    ) -> Transform:
+        """An sklearn transformer as the pair. Cloned per fit, so one
+        estimator object can back many groups without sharing learned state."""
+        import numpy as np  # noqa: PLC0415
+        from sklearn.base import clone  # noqa: PLC0415
+
+        def as_matrix(table: pa.Table) -> Any:
+            return np.column_stack(
+                [table[f].to_numpy(zero_copy_only=False) for f in takes]
+            )
+
+        def fit(relation: pa.Table) -> Any:
+            return clone(estimator).fit(as_matrix(relation))
+
+        def transform(instance: Any, relation: pa.Table) -> pa.Table:
+            out = np.asarray(instance.transform(as_matrix(relation)))
+            return pa.table(
+                {name: out[:, i].astype(float) for i, name in enumerate(returns)}
+            )
+
+        return Transform(fit=fit, transform=transform, takes=takes, returns=returns)
+
+    # -- the two SQL halves ----------------------------------------------------
+
+    def _fit_batch(self, groups: Any, stem: str, registry: _Registry) -> pa.Array:
+        thetas = []
+        for group in groups.to_pylist():
+            if group is None:
+                thetas.append(None)
+                continue
+            relation = pa.table(
+                {
+                    field: pa.array([row[field] for row in group], pa.float64())
+                    for field in self.takes
+                }
+            )
+            thetas.append({"type": stem, "id": registry.add(self.fit(relation))})
+        return pa.array(thetas, type=THETA_ARROW)
+
+    def _transform_batch(
+        self, theta: Any, features: Any, stem: str, registry: _Registry
+    ) -> pa.Array:
+        thetas, feats = theta.to_pylist(), features.to_pylist()
+        out: list[Any] = [None] * len(thetas)
+        rows_by_instance: dict[int, list[int]] = {}
+        for i, handle in enumerate(thetas):
+            # P14, the one NULL story: a NULL θ is a LEFT JOIN miss, which is
+            # an unseen group. The row stays, its output is NULL.
+            if handle is not None:
+                rows_by_instance.setdefault(handle["id"], []).append(i)
+
+        for iid, positions in rows_by_instance.items():
+            if iid not in registry.instances:
+                registry.fail(
+                    TransformError(
+                        f"{stem}: θ id {iid} is not in the fitted instances — "
+                        "the params table and the instances are from different fits"
+                    )
+                )
+            relation = pa.table(
+                {
+                    field: pa.array([feats[i][field] for i in positions], pa.float64())
+                    for field in self.takes
+                }
+            )
+            produced = self.transform(registry.instances[iid], relation)
+            if tuple(produced.column_names) != self.returns:
+                registry.fail(
+                    TransformError(
+                        f"{stem}: declared width {self.returns} but produced "
+                        f"{tuple(produced.column_names)}"
+                    )
+                )
+            values = produced.to_pylist()
+            for position, value in zip(positions, values, strict=True):
+                out[position] = value
+        return pa.array(out, type=pa.struct([(f, pa.float64()) for f in self.returns]))
+
+    def register(self, con: Any, stem: str, registry: _Registry) -> None:
+        """Bind both halves to a connection. Both are always registered: a
+        fit-only subtree may transform, and ``x_fit`` over ``__THIS__`` is
+        legal and means refit on the batch you were handed."""
+        struct_in = _struct_sql(self.takes)
+        con.create_function(
+            f"{stem}_fit",
+            lambda groups: self._fit_batch(groups, stem, registry),
+            [f"{struct_in}[]"],
+            THETA_SQL,
+            type="arrow",
+            null_handling="special",
+        )
+        con.create_function(
+            f"{stem}_transform",
+            lambda theta, feats: self._transform_batch(theta, feats, stem, registry),
+            [THETA_SQL, struct_in],
+            _struct_sql(self.returns),
+            type="arrow",
+            null_handling="special",
+        )
+
+
+@cache
+def _duckdb_functions() -> frozenset[str]:
+    """Every function the oracle knows, of any type. A call outside this set
+    is a foreign candidate — resolved against the caller's frame, never
+    guessed."""
+    rows = duckdb.execute(
+        "SELECT DISTINCT function_name FROM duckdb_functions()"
+    ).fetchall()
+    return frozenset(name.lower() for (name,) in rows)
+
+
+def _list_of(argument: Node) -> Node:
+    """``list(arg)``. DuckDB's Python API has no aggregate UDF, so the UDAF
+    half is a scalar function over the list DuckDB's own ``list()`` collects.
+    The author's text is unchanged; ``GROUP BY`` still does the grouping."""
+    call = _template("SELECT list(1)")["select_list"][0]
+    call["children"] = [argument]
+    call["alias"] = ""
+    return call
+
+
 # --- calling ------------------------------------------------------------------
 
 
@@ -276,7 +505,23 @@ def _bind_parameters(body: Node, args: dict[str, Node]) -> None:
         parent[key] = bound
 
 
-def _splice(call: Node, scope: dict[str, Any], bindings: dict[str, Any]) -> Node:
+def _rename_functions(body: Node, renames: dict[str, str]) -> None:
+    """Rename the member's foreign calls the same way as its free tables, so
+    two members can each carry their own ``sc`` without colliding."""
+    for _, _, v in list(_under(body, deep=True)):
+        if v.get("class") != "FUNCTION":
+            continue
+        stem, _, half = v["function_name"].rpartition("_")
+        if half in ("fit", "transform") and stem in renames:
+            v["function_name"] = f"{renames[stem]}_{half}"
+
+
+def _splice(
+    call: Node,
+    scope: dict[str, Any],
+    bindings: dict[str, Any],
+    foreign: dict[str, Transform],
+) -> Node:
     """A member call, as the spliced relation it denotes.
 
     Splice, never emit a DuckDB macro: measured, a table macro invoked under
@@ -305,7 +550,7 @@ def _splice(call: Node, scope: dict[str, Any], bindings: dict[str, Any]) -> Node
     depth = member.depth
     bound = {}
     for parameter, arg in zip((FIT, THIS), args, strict=True):
-        relation, arg_depth = _argument(arg, scope, bindings)
+        relation, arg_depth = _argument(arg, scope, bindings, foreign)
         bound[parameter] = relation
         depth = max(depth, arg_depth)
     if depth + 1 > MAX_DEPTH:
@@ -319,6 +564,13 @@ def _splice(call: Node, scope: dict[str, Any], bindings: dict[str, Any]) -> Node
         renames[free] = f"{name}__{free}"
         bindings[f"{name}__{free}"] = obj
     _rename_free(body, renames)
+
+    function_renames = {}
+    for stem, leaf in member.foreign.items():
+        function_renames[stem] = f"{name}__{stem}"
+        foreign[f"{name}__{stem}"] = leaf
+    _rename_functions(body, function_renames)
+
     _bind_parameters(body, bound)
 
     ref = _subquery_ref(body, call.get("alias", ""))
@@ -327,7 +579,10 @@ def _splice(call: Node, scope: dict[str, Any], bindings: dict[str, Any]) -> Node
 
 
 def _argument(
-    arg: Node, scope: dict[str, Any], bindings: dict[str, Any]
+    arg: Node,
+    scope: dict[str, Any],
+    bindings: dict[str, Any],
+    foreign: dict[str, Transform],
 ) -> tuple[Node, int]:
     """An argument expression, as the relation it denotes."""
     kind = arg.get("class")
@@ -336,7 +591,7 @@ def _argument(
     if kind == "SUBQUERY":
         return _subquery_ref(arg["subquery"]["node"], ""), 0
     if kind == "FUNCTION":
-        ref = _splice(_table_function_ref(arg, ""), scope, bindings)
+        ref = _splice(_table_function_ref(arg, ""), scope, bindings, foreign)
         return ref, ref.pop("_depth")
     raise TransformError(
         f"a transform argument is a relation — {FIT}, {THIS}, a parenthesised "
@@ -344,13 +599,38 @@ def _argument(
     )
 
 
-def _resolve(doc: Node, scope: dict[str, Any], bindings: dict[str, Any]) -> int:
-    """Splice every member call and resolve every free reference, in place.
+def _resolve(
+    doc: Node,
+    scope: dict[str, Any],
+    bindings: dict[str, Any],
+    foreign: dict[str, Transform],
+) -> int:
+    """Splice every member call and resolve every free name, in place.
 
     Returns the nesting depth. Children are resolved before their parent, so a
     splice at this level always grafts an already-resolved body.
     """
     depth = 0
+
+    def foreign_call(call: Node) -> None:
+        """``x_fit``/``x_transform``: the stem resolves, the suffix says half."""
+        name = call["function_name"]
+        stem, _, half = name.rpartition("_")
+        member = scope.get(stem) if half in ("fit", "transform") else None
+        if not isinstance(member, Transform):
+            raise UnknownName(
+                f"{name} is not a DuckDB function, and "
+                + (
+                    f"{stem} resolves to nothing in the caller's frame"
+                    if member is None
+                    else f"{stem} resolves to a {type(member).__name__}, "
+                    "not a Transform"
+                )
+            )
+        foreign[stem] = member
+        if half == "fit":
+            # The UDAF half is a scalar function over a collected list.
+            call["children"] = [_list_of(child) for child in call["children"]]
 
     def walk(node: Node, ctes: frozenset[str]) -> None:
         nonlocal depth
@@ -364,7 +644,7 @@ def _resolve(doc: Node, scope: dict[str, Any], bindings: dict[str, Any]) -> int:
             if v.get("type") == "TABLE_FUNCTION":
                 if v["function"]["function_name"].lower() in _duckdb_table_functions():
                     continue
-                ref = _splice(v, scope, bindings)
+                ref = _splice(v, scope, bindings, foreign)
                 depth = max(depth, ref.pop("_depth"))
                 parent[key] = ref
             elif v.get("type") == "BASE_TABLE":
@@ -381,6 +661,15 @@ def _resolve(doc: Node, scope: dict[str, Any], bindings: dict[str, Any]) -> int:
                         f"{name} is a transform; call it as {name}({FIT}, {THIS})"
                     )
                 bindings[name] = obj
+        # Member calls are gone by now, so every FUNCTION left at this level is
+        # a scalar one — no need to tell the table call's own function apart.
+        for _, _, v in list(_under(node, deep=False)):
+            if (
+                v.get("class") == "FUNCTION"
+                and not v.get("is_operator")
+                and v["function_name"].lower() not in _duckdb_functions()
+            ):
+                foreign_call(v)
 
     walk(doc["statements"][0]["node"], frozenset())
     return depth
@@ -485,17 +774,26 @@ class Fitted:
         sql: str,
         params: dict[str, pa.Table],
         bindings: dict[str, Any],
+        foreign: dict[str, Transform],
+        instances: dict[int, Any],
     ) -> None:
         self.sql = sql
         self.params = params
         self.bindings = bindings
+        self.foreign = foreign
+        self.instances = instances
 
     def transform(self, data: Any) -> pa.Table:
         con = duckdb.connect()
         con.register(THIS, data)
         for name, table in (self.bindings | self.params).items():
             con.register(name, table)
-        return con.execute(self.sql).to_arrow_table()
+        # A copy: `x_fit` over `__THIS__` is legal and mints instances, but a
+        # transductive refit belongs to the call that asked for it.
+        registry = _Registry(self.instances)
+        for stem, leaf in self.foreign.items():
+            leaf.register(con, stem, registry)
+        return _execute(con, self.sql, registry)
 
     __call__ = transform
 
@@ -517,23 +815,31 @@ class SQLTransform:
         del frame
 
         self.bindings: dict[str, Any] = {}
-        self.depth = _resolve(doc, scope, self.bindings)
+        self.foreign: dict[str, Transform] = {}
+        self.depth = _resolve(doc, scope, self.bindings, self.foreign)
         self.node = doc["statements"][0]["node"]
         self.sql = _deserialize(doc)
         self._steps, self._residual = _plan(copy.deepcopy(doc))
 
-    def fit(self, data: Any) -> Fitted:
+    def _connect(self, registry: _Registry) -> Any:
         con = duckdb.connect()
-        con.register(FIT, data)
         for name, table in self.bindings.items():
             con.register(name, table)
+        for stem, leaf in self.foreign.items():
+            leaf.register(con, stem, registry)
+        return con
+
+    def fit(self, data: Any) -> Fitted:
+        registry = _Registry()
+        con = self._connect(registry)
+        con.register(FIT, data)
         params: dict[str, pa.Table] = {}
         for param, sql in self._steps:
-            # to_arrow_table, never .arrow(): see _duckdb_arrow_test.py — the
-            # reader .arrow() returns deadlocks when registered back here.
-            params[param] = con.execute(sql).to_arrow_table()
+            params[param] = _execute(con, sql, registry)
             con.register(param, params[param])
-        return Fitted(self._residual, params, self.bindings)
+        return Fitted(
+            self._residual, params, self.bindings, self.foreign, registry.instances
+        )
 
     __call__ = fit
 
@@ -544,9 +850,8 @@ def run(transform: SQLTransform, data: Any) -> pa.Table:
     The reference side of "freezing is faithful". It is a *binding*, not a
     rewrite, which is what keeps that law from restating the implementation.
     """
-    con = duckdb.connect()
+    registry = _Registry()
+    con = transform._connect(registry)
     con.register(FIT, data)
     con.register(THIS, data)
-    for name, table in transform.bindings.items():
-        con.register(name, table)
-    return con.execute(transform.sql).to_arrow_table()
+    return _execute(con, transform.sql, registry)
