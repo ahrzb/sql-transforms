@@ -41,9 +41,28 @@ SQLTransform     table function.   N -> M.   fit / transform
 SQLProjection    UDAF + UDF pair.  N -> N.   fit / transform / compile
 ```
 
-`SQLProjection` is a subtype of `SQLTransform` — it adds a constraint and a
-capability, and inherits `fit`/`transform` unchanged. Two terms used
-throughout:
+**The two are independent classes. `SQLProjection` does not inherit from
+`SQLTransform`.** The conceptual relation is narrowing — a projection is a
+transform that satisfies row-locality — but expressing it as inheritance
+would make `isinstance(proj, SQLTransform)` true, and the two types nest
+*differently* (table function versus UDAF/UDF pair), so telling them apart is
+the one job the types have. An inherited `isinstance` makes every nesting
+check order-dependent, which is the same failure already present in the tree
+as the `hasattr(obj, "fit") and hasattr(obj, "transform")` duck-check that an
+`SQLProjection` passes. The relation is a constructor, not a base class:
+
+```python
+class SQLProjection:                            # not a subclass
+    def __init__(self, sql, **kw):
+        t = SQLTransform(sql, **kw)
+        require_row_local(marginalize(t))       # NotRowLocal, at construction
+    def as_transform(self) -> SQLTransform: ... # explicit widening
+```
+
+Shared implementation lives in functions. Two classes do not earn a
+hierarchy.
+
+Two terms used throughout:
 
 - **residual** — what is left of a marginalized transform once the
   `memorize` sections are lifted out into their own relations. It is the
@@ -238,7 +257,10 @@ class FittedTransform:
     def transform(self, data) -> pa.Table: ...
 
 @dataclass(frozen=True)
-class FittedProjection(FittedTransform):
+class FittedProjection:                 # not a subclass of FittedTransform
+    residual: SQLProjection
+    tables:   dict[str, pa.Table]
+    def transform(self, data) -> pa.Table: ...
     def compile(self) -> "Inference": ...
 ```
 
