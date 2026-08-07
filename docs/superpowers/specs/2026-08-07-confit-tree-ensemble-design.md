@@ -49,7 +49,13 @@ the IR:
 |---|---|
 | a value in the params map | **impossible today**: map values are `Vec<ScalarVal>` — scalars only ([`exec/mod.rs`](../../../packages/confit/src/specializer/exec/mod.rs) `StaticData::Map`). List-typed IR values are a far bigger change than one opcode. |
 | an `ecall` extern | that is the Python trampoline (DRAFT-22). Wrong tier: a built-in needs no GIL, no `ExternImpl` box, and should be type-checked and foldable like any other op. |
-| **a prepare-time declaration** | chosen. Mirrors `regex`, which is already hoisted from a literal at build. Materialization layout is a backend decision, exactly as the design doc already licenses for maps. |
+| **a third static kind** | chosen. `PreparedStatic` is already a heterogeneous table (`Scalar \| Map`) reached through `Cx::statics`, so a `Model` variant reuses materialization, `Cx` wiring, the compile-time kind check and lifetime verbatim. Layout inside it is a backend decision, exactly as the design doc already licenses for maps. |
+
+A separate top-level `model @N` declaration (the regex precedent) was the
+first sketch and is strictly more machinery: regexes need their own namespace
+because they are not row-shaped data, whereas a model is precisely "a
+prepare-time structure behind a handle", which is what `static` already
+means.
 
 The layout freedom matters: `predict` can become QuickScorer, or grow a
 vectorized multi-tree walk, without touching the IR. A *data-driven*
@@ -88,9 +94,12 @@ happens, which is why the first cut does not wait on the measurement.
 
 ## IR surface
 
+No new declaration class — one more `static_ty`:
+
 ```text
-program   := static* regex* model* extern* func
-model     := "model" "@" INT ":" "tree_ensemble" "(" INT ")"    # INT = n_features
+static_ty := "scalar" "<" col_ty ">"
+           | "map" "(" ty ("," ty)* ")" "->" "(" ty ("," ty)* ")"
+           | "model" "<" "tree_ensemble" "(" INT ")" ">"      # INT = n_features
 ```
 
 One instruction, variadic like `probe` and `ecall`:
@@ -102,15 +111,18 @@ One instruction, variadic like `probe` and `ecall`:
 Bare scalars in, bare scalar out: the null lane never enters the kernel and
 stays ordinary `i1` algebra in the caller, per the IR's null-lane rule.
 
-Verifier rules, all local (the header carries the arity, so nothing needs
+Verifier rules, all local (the declaration carries the arity, so nothing needs
 prepare-time data to check):
 
-- `@N` names a declared model; operand count is exactly `n_features + 1`.
+- `@N` is a static declared `model<...>`; operand count is exactly
+  `n_features + 1`.
 - `%id` is `i64`; every feature operand is `f64`; the result is `f64`.
 - `n_features >= 1`.
+- Symmetrically, `probe`/`sload` against a `model<...>` static refuse — the
+  same kind check the other two static kinds already get.
 
-Round-trip closure (`parse(print(p)) == p`) extends to the new declaration
-and instruction; `gen.rs` grows a case so the property tests cover them.
+Round-trip closure (`parse(print(p)) == p`) extends to the new static kind and
+instruction; `gen.rs` grows a case so the property tests cover them.
 
 ### Lowered example
 
@@ -119,7 +131,7 @@ and instruction; `gen.rs` grows a case so the property tests cover them.
 #   FROM row r LEFT JOIN models m ON (r.region IS NOT DISTINCT FROM m.region)
 
 static @2 : map(str) -> (i64)
-model  @3 : tree_ensemble(2)
+static @3 : model<tree_ensemble(2)>
 
 b0:
   %hit, %id = probe @2, %region
@@ -155,9 +167,9 @@ tree_predict('trees', <id expr>, <f64 expr>, ...)
 ```
 
 The first argument is a **string literal naming the model set**, hoisted at
-build into a `model @N` declaration — the same treatment regex patterns
-already get, so no new name-resolution machinery and no ambiguity with a
-column called `trees`. Features are positional `f64` expressions; the count
+build into a `model<...>` static — the same literal-to-prepared-structure
+treatment regex patterns already get, so no new name-resolution machinery and
+no ambiguity with a column called `trees`. Features are positional `f64` expressions; the count
 must equal the declared `n_features` or the build refuses. The id expression
 is any `i64`, usually a params-map probe result.
 
@@ -197,6 +209,54 @@ impl TreeEnsemble {
 Both backends route through this one routine — the existing shared-code rule
 that keeps the interpreter and cranelift from drifting.
 
+### The cranelift binding
+
+The `h_probe` pattern almost verbatim
+([`cranelift.rs`](../../../packages/confit/src/specializer/exec/cranelift.rs)):
+a per-site descriptor owned by the `CraneliftFn` whose absolute address is
+baked in as an `iconst`, arguments marshalled through a stack slot, result
+returned in a register.
+
+```rust
+struct PredictDesc { static_id: usize, n_features: usize }
+
+extern "C" fn h_predict(p: *mut Cx, desc: *const PredictDesc, id: i64, feats: *const f64) -> f64 {
+    let c = unsafe { cx(p) };
+    let d = unsafe { &*desc };
+    let feats = unsafe { std::slice::from_raw_parts(feats, d.n_features) };
+    let statics = unsafe { std::slice::from_raw_parts(c.statics, c.statics_len) };
+    let PreparedStatic::Model(m) = &statics[d.static_id] else {
+        unreachable!("kind checked at compile")
+    };
+    match m.predict(id, feats) {          // the SAME routine the interpreter calls
+        Ok(v)  => v,
+        Err(t) => { c.set_trap(t.0); f64::NAN }
+    }
+}
+```
+
+```rust
+// one slot per function, sized to the widest predict site
+let slot = b.create_sized_stack_slot(StackSlotData::new(ExplicitSlot, 8 * max_feats, 3));
+// at the site
+for (j, v) in feats.iter().enumerate() { b.ins().stack_store(*v, slot, (8 * j) as i32); }
+let fp = b.ins().stack_addr(types::I64, slot, 0);
+let dp = b.ins().iconst(types::I64, desc_addr as i64);
+let r  = b.inst_results(b.ins().call(h_predict_ref, &[cxp, dp, id, fp]))[0];
+// standard trap_flag check after a fallible helper
+```
+
+One deliberate difference from `probe`/`ecall`: those marshal through 16-byte
+`Cell` pairs because they carry validity lanes and string spans. `predict`
+needs neither — every feature is a bare `f64` and NaN carries missingness — so
+it uses a **contiguous f64 slot**: no validity stores, no unpacking loop in
+the helper.
+
+The trap guard is only reachable when the id comes from a row column. Where
+the id is a static map's value, the build-time check makes the call infallible
+and the guard can be elided — an optimization to take later, not in the first
+cut.
+
 ### Which backend runs it
 
 One backend runs a whole program; they are never mixed per instruction.
@@ -220,9 +280,9 @@ misleading numbers. Two consequences:
 
 ## The boundary
 
-Two Arrow record batches per model set, supplied to `compile` beside
-`StaticData` as a `ModelData` payload and type-checked against the
-declaration (`n_features` must agree):
+Two Arrow record batches per model set, materialized into a
+`StaticData::Model` entry in the same statics vector `compile` already takes,
+and type-checked against the declaration (`n_features` must agree):
 
 ```text
 nodes:  model_id i64 | tree_id i64 | node_id i64 | feature i32 (-1 = leaf)
@@ -293,11 +353,11 @@ These are the correctness surface; each is a test, not a comment.
 
 | file | change |
 |---|---|
-| `ir/mod.rs` | grammar + doc for `model` declaration and `predict` |
+| `ir/mod.rs` | grammar + doc for the `model<...>` static kind and `predict` |
 | `ir/parse.rs`, `ir/print.rs` | round-trip for both — **check first** whether `const.f64 nan` already round-trips; the NULL-to-NaN lowering needs a NaN literal, and `canon_f64_bits` suggests NaN awareness exists but does not prove the text format carries it |
 | `ir/verify.rs` | the local rules above |
 | `ir/gen.rs` | generator case, so property tests cover it |
-| `exec/mod.rs` | `ModelData` beside `StaticData`; declaration type-check |
+| `exec/mod.rs` | `StaticTy::Model` + `StaticData::Model` + `PreparedStatic::Model`; kind check at compile |
 | `exec/models/tree_ensemble.rs` | new: layout, `from_arrow`, `predict` |
 | `exec/interp.rs`, `exec/cranelift.rs` | one call site each into the shared routine |
 | `frontend.rs` | resolve `tree_predict`, hoist the literal, arity/type check |
