@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import duckdb
 import pyarrow as pa
+import pytest
 from confit import DuckDBInferFn
 from pydantic import create_model
 
@@ -77,3 +78,24 @@ def test_engine_order_contract():
         (3, None),
         (None, None),
     ]
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "COALESCE(d.v, 'z')",
+        "CASE WHEN d.v = 'a' THEN 'A' ELSE d.v END",
+        "NULLIF(d.v, 'a')",
+    ],
+)
+@pytest.mark.xfail(
+    strict=True,
+    reason="A CFG split starts a fresh block whose probe cache is empty, and "
+    "`case` never reseeds it, so a joined column read inside a CASE arm falls "
+    "through to the scalar `Inst::Probe` — which verify rejects for a multimap "
+    "with '@N is a multimap: use probe.range'. Build-time and loud, not a wrong "
+    "answer. Distinct from TASK-66 (different site, different message, no "
+    "tree_predict); found while fixing that one, not yet ticketed.",
+)
+def test_split_over_a_joined_column_under_many(expr):
+    _many_check(f"SELECT {expr} AS v FROM __THIS__ AS t JOIN d ON t.pid = d.id")

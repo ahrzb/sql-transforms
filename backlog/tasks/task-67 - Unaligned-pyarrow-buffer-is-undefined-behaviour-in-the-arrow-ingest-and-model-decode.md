@@ -107,6 +107,14 @@ away. If it ever needs recovering, the move is to bulk
 alignment requirement — and apply validity in a second pass, rather than to
 branch on alignment and keep two loop bodies.
 
+Folded in as free hardening, same "a raw address is not a Rust reference"
+class: the two string-bytes reads used `raw.bufs[2].unwrap_or((0, 0))` and
+handed a NULL pointer to `from_raw_parts`, which demands a non-null pointer
+even at len 0. Now one `str_bytes` helper returning `&[]`. pyarrow refuses to
+build a string array without a data buffer (`ArrowInvalid: Value data buffer
+is null`), so this is unreachable today and has no red test — flagged rather
+than claimed as a live bug.
+
 Tests live in `packages/confit/tests/test_infer_arrow.py` and run the probe in
 a SUBPROCESS: an abort kills the interpreter rather than raising, so it has to
 be observed from outside — and "a request batch must never end the process" is

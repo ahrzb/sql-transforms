@@ -81,6 +81,23 @@ impl<T: Copy> Unaligned<T> {
     }
 }
 
+/// A string array's character bytes (buffer slot 2).
+///
+/// `from_raw_parts` requires a non-null, aligned pointer EVEN AT LEN 0, so a
+/// missing or empty data buffer cannot go through it — `unwrap_or((0, 0))`
+/// built a null slice, which is UB in its own right. pyarrow refuses to
+/// construct a string array without a data buffer today (`ArrowInvalid: Value
+/// data buffer is null`), so this is hardening rather than a live bug, but it
+/// is the same "a raw address is not a Rust reference" mistake as TASK-67.
+fn str_bytes<'a>(raw: &'a RawArray<'_>) -> &'a [u8] {
+    match raw.bufs.get(2).copied().flatten() {
+        Some((addr, size)) if size > 0 => unsafe {
+            std::slice::from_raw_parts(addr as *const u8, size)
+        },
+        _ => &[],
+    }
+}
+
 fn raw_array<'py>(arr: Bound<'py, PyAny>) -> PyResult<RawArray<'py>> {
     let offset: usize = arr.getattr("offset")?.extract()?;
     let len: usize = arr.call_method0("__len__")?.extract()?;
@@ -218,9 +235,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                     buf: String::new(),
                     spans: Vec::with_capacity(rows),
                 };
-                let (daddr, dsize) = raw.bufs[2].unwrap_or((0, 0));
-                let bytes =
-                    unsafe { std::slice::from_raw_parts(daddr as *const u8, dsize) };
+                let bytes = str_bytes(&raw);
                 for i in 0..rows {
                     let v = raw.valid(i);
                     null_seen |= !v;
@@ -348,8 +363,7 @@ fn strings(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<Str
             )))
         }
     };
-    let (daddr, dsize) = raw.bufs[2].unwrap_or((0, 0));
-    let bytes = unsafe { std::slice::from_raw_parts(daddr as *const u8, dsize) };
+    let bytes = str_bytes(&raw);
     (0..raw.len)
         .map(|i| {
             let (lo, hi) = if large {
