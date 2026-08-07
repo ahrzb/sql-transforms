@@ -20,8 +20,6 @@ Strict xfail: it flips to XPASS the day DuckDB materialises, raises, or times
 out, and that is the day to delete the workaround.
 """
 
-from __future__ import annotations
-
 import subprocess
 import sys
 
