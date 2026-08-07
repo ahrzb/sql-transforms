@@ -149,15 +149,38 @@ def _table_function_ref(function: Node, alias: str) -> Node:
     return ref
 
 
+# `table_macro` as well as `table`: a user's `CREATE MACRO ... AS TABLE` is a
+# table function too, and calling one is not a member call.
+_TABLE_FUNCTIONS = (
+    "SELECT DISTINCT function_name FROM duckdb_functions()"
+    " WHERE function_type IN ('table', 'table_macro')"
+)
+_ALL_FUNCTIONS = "SELECT DISTINCT function_name FROM duckdb_functions()"
+
+
 @cache
-def _duckdb_table_functions() -> frozenset[str]:
-    """Names the oracle already owns. A table call outside this set is a
-    member call, resolved against the caller's frame, never guessed."""
-    rows = duckdb.execute(
-        "SELECT DISTINCT function_name FROM duckdb_functions()"
-        " WHERE function_type = 'table'"
-    ).fetchall()
-    return frozenset(name.lower() for (name,) in rows)
+def _default_functions(query: str) -> frozenset[str]:
+    """The oracle's own vocabulary, on the default connection. Cached for the
+    process because it cannot change: nobody can define a macro there."""
+    return frozenset(name.lower() for (name,) in duckdb.execute(query).fetchall())
+
+
+def _functions(query: str, con: Connection | None) -> frozenset[str]:
+    """Every function name in scope.
+
+    Read off ``con`` when there is one. Passing a connection says *use my
+    catalog*, and a catalog includes its macros and UDFs — reading the
+    module-level default connection instead made the user's own functions
+    invisible, so a transform calling one refused at construction while a
+    *table* in the same catalog resolved.
+
+    Not cached per connection: that would pin the connection for the life of
+    the process, and a macro defined after the first lookup would be missed.
+    Construction is not a hot path.
+    """
+    if con is None:
+        return _default_functions(query)
+    return frozenset(name.lower() for (name,) in con.execute(query).fetchall())
 
 
 def normalize(sql: str) -> str:
@@ -521,17 +544,6 @@ class Transform:
         )
 
 
-@cache
-def _duckdb_functions() -> frozenset[str]:
-    """Every function the oracle knows, of any type. A call outside this set
-    is a foreign candidate — resolved against the caller's frame, never
-    guessed."""
-    rows = duckdb.execute(
-        "SELECT DISTINCT function_name FROM duckdb_functions()"
-    ).fetchall()
-    return frozenset(name.lower() for (name,) in rows)
-
-
 def _list_of(argument: Node) -> Node:
     """``list(arg)``. DuckDB's Python API has no aggregate UDF, so the UDAF
     half is a scalar function over the list DuckDB's own ``list()`` collects.
@@ -691,6 +703,7 @@ def _resolve(
     scope: dict[str, Any],
     captured: Captured,
     catalog: frozenset[str] = frozenset(),
+    con: Connection | None = None,
 ) -> int:
     """Splice every member call and resolve every free name, in place.
 
@@ -750,7 +763,7 @@ def _resolve(
         for parent, key, v in list(_under(node, deep=False)):
             match v:
                 case {"type": "TABLE_FUNCTION", "function": {"function_name": call}}:
-                    if call.lower() in _duckdb_table_functions():
+                    if call.lower() in _functions(_TABLE_FUNCTIONS, con):
                         continue
                     ref = _splice(v, scope, captured)
                     depth = max(depth, ref.pop("_depth"))
@@ -779,12 +792,41 @@ def _resolve(
             if (
                 v.get("class") == "FUNCTION"
                 and not v.get("is_operator")
-                and v["function_name"].lower() not in _duckdb_functions()
+                and v["function_name"].lower() not in _functions(_ALL_FUNCTIONS, con)
             ):
                 foreign_call(v)
 
     walk(doc["statements"][0]["node"], frozenset())
     return depth
+
+
+def _pin_derived_names(node: Node) -> None:
+    """Freeze the output column names before the expressions move.
+
+    DuckDB names an unaliased select item after its own printed text, so
+    replacing a frozen subquery with ``SELECT * FROM __param_0`` renamed the
+    column to that — ``get_feature_names_out()`` handed back an internal
+    parameter name, and the schema stopped matching ``run``'s.
+
+    Written as an explicit alias first, so the name survives the rewrite. Only
+    items that contain a query node are touched; a plain column reference is
+    named after its last path part and is unaffected by any of this.
+    """
+    for item in node.get("select_list", []):
+        if not isinstance(item, dict) or item.get("alias"):
+            continue
+        if not any(_is_query(v) for _, _, v in _under(item, deep=True)):
+            continue
+        printed = _deserialize(_statement(_one_item(item)))
+        item["alias"] = printed[len("SELECT ") :]
+
+
+def _one_item(item: Node) -> Node:
+    """``SELECT <item>`` as a query node, for asking the oracle what it would
+    call that column."""
+    node = _template("SELECT 1")
+    node["select_list"] = [copy.deepcopy(item)]
+    return node
 
 
 # --- the plan -----------------------------------------------------------------
@@ -891,6 +933,7 @@ def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
         outer: dict[str, bool],
         reading: dict[str, set[str]],
     ) -> None:
+        _pin_derived_names(node)
         ctes = list(ctes)
         reading = dict(reading)
         for entry in node[_QUERY]["map"]:
@@ -1138,6 +1181,8 @@ class SQLTransform:
         scope = frame.f_globals | frame.f_locals
         del frame
 
+        if output not in OUTPUTS:
+            raise TransformError(f"output must be one of {OUTPUTS}; got {output!r}")
         self.output = output
         # Given rather than conjured. A transform that makes its own hidden
         # connection cannot compose with anything: a DuckDBPyRelation belongs
@@ -1150,7 +1195,9 @@ class SQLTransform:
         self.captured: Captured = {} if captured is None else captured
         scope = scope | self.captured
 
-        self.depth = _resolve(doc, scope, self.captured, _catalog(connection))
+        self.depth = _resolve(
+            doc, scope, self.captured, _catalog(connection), connection
+        )
         # Two runtime views. A member is spliced away, so it is neither.
         self.foreign: Foreign = {
             k: v for k, v in self.captured.items() if isinstance(v, Transform)
