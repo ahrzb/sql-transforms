@@ -396,13 +396,36 @@ Four gates, strongest first.
    whose expected value should be frozen regardless: NaN feature, NULL
    feature, probe miss, single-node (root-is-leaf) tree, empty ensemble.
 
-**Float tolerance, to be settled before writing gate 1, not discovered from a
-red bar:** a single tree returns a leaf value verbatim, so bit-exact holds.
-Forests and boosted models sum across trees, and numpy's `sum` uses pairwise
-summation while `tree_span` order is sequential — the two need not agree in
-the last ulp. Options: replicate numpy's pairwise order in the kernel, or
-declare a per-aggregation-mode tolerance. Decide from a measurement of the
-actual divergence on realistic ensemble sizes.
+**Float tolerance — SETTLED BY MEASUREMENT (2026-08-07), and the premise was
+wrong.** sklearn 1.9.0 / numpy 2.5.1, 2000 rows at 10 / 100 / 500 trees:
+
+- **Neither estimator uses numpy's pairwise summation.** `ForestRegressor`
+  accumulates `out[0] += prediction` per tree into a zeroed array;
+  `GradientBoosting` runs `raw_predictions[k] += learning_rate *
+  tree.predict(X)` stage by stage. Both are strictly sequential in tree
+  order. `arr.sum(axis=1)` agrees with neither — it diverges on 509 to 1853
+  of 2000 rows in every configuration, up to 320 ULP, and the divergence is
+  already there at 10 trees (numpy's 8-way unrolled path engages at n >= 8).
+  So a sequential `tree_span` walk is what makes us bit-exact; the plan to
+  replicate pairwise order would have *introduced* the divergence it was
+  meant to avoid.
+- **Where the base term enters is not cosmetic, and it differs by mode.**
+  A boosted model SEEDS its accumulator with the init prediction
+  (`_raw_predict_init`) and adds each stage into it. Summing the trees and
+  adding the base afterwards diverges on up to 1365/2000 rows, 632 ULP. A
+  forest starts at 0.0, accumulates, divides by `n`, and has no base at all.
+  The kernel therefore seeds for `sum` and adds after the divide for `mean`,
+  with a pin using values whose addition is order-sensitive.
+- **A RandomForest with `n_jobs != 1` cannot be held to bit-exactness at
+  all.** The lock-serialized `+=` interleaves nondeterministically: two
+  `.predict` calls on the same fitted model and the same X in one process
+  differ on up to 1187/2000 rows, 19 ULP. No fixed-order kernel can be
+  bit-exact against a moving target, so gate 1 must fit with `n_jobs=1`, and
+  any forest scored otherwise needs a declared tolerance for reasons that
+  have nothing to do with us.
+
+A single tree still returns its leaf value verbatim, so bit-exactness there
+was never in question.
 
 Extraction fidelity has one more independent check available if wanted:
 compare against the estimator's own `decision_path`/`apply` (which leaf did
@@ -427,6 +450,41 @@ to a node instead of a number.
   the fallback, not the default.
 - **Landing**: specs and implementation land together in one PR on
   `claude/optimized-transforms-499a5a`. No stacked PRs.
+
+## What the implementation changed (2026-08-07, commit `fd761d4`)
+
+Three places where the design above was wrong or heavier than needed. All
+three are simplifications; none changes the SQL surface or the Arrow
+boundary.
+
+- **`from_arrow(&RecordBatch)` does not exist, and should not.** confit has
+  no `arrow-rs` dependency and that is deliberate:
+  [`duckdb/arrow.rs`](../../../packages/confit/src/duckdb/arrow.rs) walks
+  pyarrow buffers by address through the Python buffer API. The kernel
+  therefore takes plain Rust slices (`NodeRows` / `ModelRows`), and the
+  pyarrow decode will live beside the existing ingest. Arrow is still what
+  crosses from Python; only the Rust-side type changed. This also keeps
+  confit's own tests free of any Arrow construction.
+- **`predict` needs no per-site descriptor.** `probe` and `ecall` own a
+  boxed `ProbeDesc`/`ExternDesc` because they carry `Vec<Ty>`. Everything
+  `predict` needs at a site is two integers, which ride in as `iconst`
+  immediates — no heap descriptor, no ownership vector on `CraneliftFn`, no
+  extra parameter threaded through `translate_inst`.
+- **Features share `slot_vals` rather than getting their own slot**, packed
+  at 8-byte stride (a model contributes `ceil(k/2)` cells to the slot
+  sizing). `slot_keys` is already shared between probe keys and ecall args,
+  so this is the house pattern, not a new one.
+
+Two notes for whoever picks this up:
+
+- **The "acyclic CFG in v0" premise is stale.** `MULTI_EXPAND`
+  ([`ir/fixtures.rs`](../../../packages/confit/src/specializer/ir/fixtures.rs))
+  already contains a legal cycle via `emit.to`. The kernel-versus-lowering
+  argument above leaned on that rule; it should lean on the size and refit
+  arguments instead, which are unaffected.
+- **The verifier had two silent holes** the compiler could not catch:
+  `sload @model` and `sload.opt @model` fell through `Some(_) => {}` arms
+  and would have verified clean, then panicked in both backends. Closed.
 
 ## Sequencing
 
