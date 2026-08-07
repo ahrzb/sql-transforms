@@ -666,6 +666,16 @@ def _resolve(
     def walk(node: Node, ctes: frozenset[str]) -> None:
         nonlocal depth
         for entry in node[_QUERY]["map"]:
+            # DuckDB would let such a CTE win, and we would go on rewriting the
+            # reference to the training set — two meanings for one name, and
+            # the row count changed with no error. Refused where it is
+            # defined, so `__FIT__` means the parameter everywhere or the text
+            # does not compile.
+            if entry["key"].upper() in (FIT, THIS):
+                raise TransformError(
+                    f"a CTE may not be named {entry['key']!r}: {FIT} and "
+                    f"{THIS} are the transform's two parameters"
+                )
             body = entry["value"]["query"]["node"]
             # A RECURSIVE CTE is in scope inside its own body; a plain one is
             # not, where the same name means whatever the caller's frame binds.
@@ -731,6 +741,7 @@ def _plan(doc: Node) -> tuple[list[tuple[str, str]], Node]:
     """
     steps: list[tuple[str, str]] = []
     taken: set[str] = set()
+    whole: str | None = None
 
     def name(hint: str | None) -> str:
         base = f"__param_{hint}" if hint else f"__param_{len(steps)}"
@@ -743,10 +754,19 @@ def _plan(doc: Node) -> tuple[list[tuple[str, str]], Node]:
     def whole_fit() -> str:
         # A bare `FROM __FIT__` inside a relation that also reads `__THIS__`.
         # The training set itself is the parameter; `len(params)` says so.
-        if "__param_fit" not in taken:
-            taken.add("__param_fit")
-            steps.append(("__param_fit", f"SELECT * FROM {FIT}"))  # noqa: S608
-        return "__param_fit"
+        #
+        # `whole` rather than a membership test on `taken`: hints come from CTE
+        # keys, so a CTE named `fit` mints `__param_fit` too. Asking whether
+        # the *name* was taken conflated "someone else has it" with "my step is
+        # already emitted", and the bare `FROM __FIT__` was then aliased onto
+        # that CTE's table — silently, and only when a CTE happened to be
+        # called `fit`. Emitted-ness is its own fact; the name comes from the
+        # same collision-avoiding allocator as every other one.
+        nonlocal whole
+        if whole is None:
+            whole = name("fit")
+            steps.append((whole, f"SELECT * FROM {FIT}"))  # noqa: S608
+        return whole
 
     def freeze(sub: Node, ctes: list[Node], hint: str | None) -> Node:
         frozen = copy.deepcopy(sub)
