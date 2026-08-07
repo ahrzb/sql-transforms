@@ -2,7 +2,7 @@
 id: TASK-67
 title: >-
   Unaligned pyarrow buffer is undefined behaviour in the arrow ingest and model decode
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-07 22:40'
 labels:
@@ -55,11 +55,11 @@ reproduce it on both backends and did stage a release build to check.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 An unaligned input buffer either works or raises a named Python error;
+- [x] #1 An unaligned input buffer either works or raises a named Python error;
       it never aborts the process
-- [ ] #2 Covers the request path (`infer_arrow`) and the construction path
+- [x] #2 Covers the request path (`infer_arrow`) and the construction path
       (`models=` decode)
-- [ ] #3 A test builds a deliberately unaligned buffer and asserts the outcome
+- [x] #3 A test builds a deliberately unaligned buffer and asserts the outcome
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -73,4 +73,42 @@ exception rather than a panic.
 
 Same pattern in every arm: ingest `I64`/`F64`/`Str` offsets, plus `ints`,
 `doubles` and `strings` in the model decode.
+
+## Resolution (2026-08-07): `read_unaligned` everywhere, behind a newtype
+
+**Independently reproduced first** (this was the finding I had only relayed).
+`np.ndarray(buffer=blob, offset=4)` through `pa.array()` is zero-copied, and a
+debug build aborts on it — verified at three distinct sites: `arrow.rs:154`
+(i64 ingest), `:205` (i32 string offsets), and the `models=` decode. Exit code
+0xC0000409, non-unwinding, process gone. Release read them correctly.
+
+Refusal was rejected as the remedy for exactly that reason: release serves
+these inputs correctly today, so refusing them would regress working callers.
+
+`RawArray::data` now returns `Unaligned<T>` — a newtype whose only reader is
+`get(i)` doing `read_unaligned`, so the unchecked deref is not spellable at a
+future call site. All typed reads were already `*p.add(i)` derefs rather than
+slices, so nothing needed restructuring; `from_raw_parts` appears only on
+`*const u8` (align 1) and on Rust-owned output `Vec`s.
+
+**Measured cost on the ALIGNED path** (the one that must not regress),
+`infer_arrow`, 8 f64 + 2 i64 columns, median of 3 runs:
+
+| rows | plain deref | read_unaligned | delta |
+|---|---|---|---|
+| 1024 | 71.8 ns/row | 74.4 | +3.6% |
+| 8192 | 41.7 ns/row | 43.5 | +4.3% |
+| 65536 | 69.5 ns/row | 74.4 | +7.0% |
+
+Real, small, and largest where it matters least (large-batch columnar is
+ceded to DuckDB; the sub-5k band pays 3.6%). Accepted rather than optimised
+away. If it ever needs recovering, the move is to bulk
+`copy_nonoverlapping` the value buffer once per column — which has no
+alignment requirement — and apply validity in a second pass, rather than to
+branch on alignment and keep two loop bodies.
+
+Tests live in `packages/confit/tests/test_infer_arrow.py` and run the probe in
+a SUBPROCESS: an abort kills the interpreter rather than raising, so it has to
+be observed from outside — and "a request batch must never end the process" is
+the actual contract. They pass trivially in release and are only red in debug.
 <!-- SECTION:NOTES:END -->

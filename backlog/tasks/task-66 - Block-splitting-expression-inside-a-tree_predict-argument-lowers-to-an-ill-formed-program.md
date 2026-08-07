@@ -2,7 +2,7 @@
 id: TASK-66
 title: >-
   Block-splitting expression inside a tree_predict argument lowers to an ill-formed program
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-07 22:40'
 labels:
@@ -54,10 +54,10 @@ Found by the 2026-08-07 adversarial sweep (four independent agents); confirmed.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 `COALESCE`, `CASE`, `NULLIF` and a guarded `CAST` all build and serve
+- [x] #1 `COALESCE`, `CASE`, `NULLIF` and a guarded `CAST` all build and serve
       correctly as `tree_predict` feature expressions
-- [ ] #2 The same holds for the id expression, not just the features
-- [ ] #3 A test covers a block split in the FIRST feature and in a LATER one —
+- [x] #2 The same holds for the id expression, not just the features
+- [x] #3 A test covers a block split in the FIRST feature and in a LATER one —
       the stranding differs
 <!-- AC:END -->
 
@@ -69,4 +69,29 @@ multi-operand arms do. Worth checking whether the id needs the same treatment
 separately, and whether `shape='many'` with a CASE/COALESCE over a joined
 static column (reported as a separate symptom by the sweep) is the same root
 cause or a distinct one.
+
+## Resolution (2026-08-07)
+
+One arm, but the push was only half of it. `emit_probe`/`emit_extern` push each
+operand AND then read the operands back out of `live` — because a split calls
+`rebind_live`, which rewrites the lanes in place, leaving any `Lane` held in a
+local stale. Pushing without re-reading still produces an ill-formed program
+(mutation-checked: 18 failures). The NaN constant and the NULL-to-NaN selects
+also moved after the operand loop, so the once-hoisted constant cannot be
+stranded either.
+
+**The id alone was never affected** — nothing is emitted before it, so there is
+no earlier lane to strand. AC #2 held already; that case is kept as a control
+test rather than a fix.
+
+Also promoted `debug_assert!(live.is_empty())` (lower.rs, once per output
+column at prepare — never per row) to a real `assert!`. A leak is well-formed
+IR, so `verify` is silent, and the release-only suite is silent too: measured,
+this very fix passed all 805 tests with its own `live.truncate` deleted. With
+the assert promoted, that mutation fails.
+
+Not investigated: whether the sweep's `shape='many'` symptom is this same root
+cause. All four reported reproducers (`COALESCE`, `CASE`, `NULLIF`, `CAST`) now
+build and score correctly, in the first feature, a later feature, every
+feature, and with a split after the call.
 <!-- SECTION:NOTES:END -->
