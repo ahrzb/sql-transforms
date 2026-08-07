@@ -7,17 +7,25 @@ implementation and this one agree on the corpus.
 from __future__ import annotations
 
 from sql_transform.model._transform import (
+    MAX_DEPTH,
     CorrelatedFit,
     Fitted,
+    NestingTooDeep,
     SQLTransform,
     TransformError,
+    UnknownName,
+    normalize,
     run,
 )
 
 __all__ = [
+    "MAX_DEPTH",
     "CorrelatedFit",
     "Fitted",
+    "NestingTooDeep",
     "SQLTransform",
     "TransformError",
+    "UnknownName",
+    "normalize",
     "run",
 ]

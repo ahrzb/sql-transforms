@@ -12,7 +12,14 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 
-from sql_transform.model import CorrelatedFit, SQLTransform, TransformError, run
+from sql_transform.model import (
+    CorrelatedFit,
+    SQLTransform,
+    TransformError,
+    normalize,
+    run,
+)
+from sql_transform.model._transform import FIT, _reads, _serialize
 
 D = pa.table(
     {
@@ -44,6 +51,15 @@ def approx(table: pa.Table, places: int = 9) -> list[tuple]:
         tuple(round(v, places) if isinstance(v, float) else v for v in r)
         for r in rows(table)
     ]
+
+
+def reads_fit(sql: str) -> bool:
+    """Does the residual still *read* ``__FIT__``?
+
+    A substring check would also trip on the alias a spliced member leaves
+    behind (``FROM <arg> AS __FIT__``), which reads nothing.
+    """
+    return FIT in _reads(_serialize(sql)["statements"][0]["node"])
 
 
 def z_ref(fit_t: pa.Table, this_t: pa.Table) -> pa.Table:
@@ -123,7 +139,7 @@ def test_freezing_is_complete():
     """Every maximal ``__FIT__``-only subtree is in params; none survives."""
     fitted = SQLTransform(TWO_CTES_SQL).fit(D)
     assert set(fitted.params) == {"__param_a", "__param_b"}
-    assert "__FIT__" not in fitted.sql
+    assert not reads_fit(fitted.sql)
 
 
 def test_freezing_is_faithful():
@@ -169,11 +185,10 @@ def test_statelessness_is_real():
 def test_substitution_is_surgical():
     """The residual differs from the original only at the frozen subtrees."""
     fitted = SQLTransform(TWO_CTES_SQL).fit(D)
-    expected = SQLTransform(
+    assert fitted.sql == normalize(
         "WITH a AS (SELECT * FROM __param_a), b AS (SELECT * FROM __param_b) "
         "SELECT (t.price - a.m) / b.s AS z FROM __THIS__ t, a, b"
-    ).sql
-    assert fitted.sql == expected
+    )
 
 
 def test_params_are_measurable():
@@ -213,7 +228,7 @@ def test_internal_correlation_is_allowed():
     """
     fitted = SQLTransform(sql).fit(D)
     assert len(fitted.params) == 1
-    assert "__FIT__" not in fitted.sql
+    assert not reads_fit(fitted.sql)
     assert approx(fitted(D), 4) == [("a", 0.6667), ("a", 1.3333), ("b", 1.0)]
 
 
