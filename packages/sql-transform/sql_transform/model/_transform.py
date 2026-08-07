@@ -16,6 +16,7 @@ means what DuckDB computes.
 """
 
 import copy
+import itertools
 import json
 import sys
 import threading
@@ -43,9 +44,14 @@ _RECURSIVE_CTE = "RECURSIVE_CTE_NODE"
 type Node = dict[str, Any]
 type Relation = Any  # anything DuckDB will register: arrow, pandas, polars
 type Connection = duckdb.DuckDBPyConnection
+type LazyRelation = duckdb.DuckDBPyRelation
 type Params = dict[str, pa.Table]
 type Bindings = dict[str, Relation]
 type Foreign = dict[str, Transform]
+# Everything a transform resolved from the caller's frame, by name: lookup
+# relations, foreign transforms, and members. One map so `clone` can carry
+# the lot; the two views above are derived from it.
+type Captured = dict[str, Any]
 
 
 class TransformError(Exception):
@@ -68,6 +74,14 @@ class UnknownName(TransformError):
 
 class NestingTooDeep(TransformError):
     """More than ``MAX_DEPTH`` levels of member calls."""
+
+
+class NotFitted(TransformError):
+    """The estimator surface was used before ``fit``.
+
+    Ours rather than sklearn's ``NotFittedError``, because sklearn is not a
+    runtime dependency — a SQL transform must not need one to refuse.
+    """
 
 
 # --- the oracle as parser and printer ----------------------------------------
@@ -525,12 +539,7 @@ def _rename_functions(body: Node, renames: dict[str, str]) -> None:
             v["function_name"] = f"{renames[stem]}_{half}"
 
 
-def _splice(
-    call: Node,
-    scope: dict[str, Any],
-    bindings: Bindings,
-    foreign: Foreign,
-) -> Node:
+def _splice(call: Node, scope: dict[str, Any], captured: Captured) -> Node:
     """A member call, as the spliced relation it denotes.
 
     Splice, never emit a DuckDB macro: measured, a table macro invoked under
@@ -559,7 +568,7 @@ def _splice(
     depth = member.depth
     bound = {}
     for parameter, arg in zip((FIT, THIS), args, strict=True):
-        relation, arg_depth = _argument(arg, scope, bindings, foreign)
+        relation, arg_depth = _argument(arg, scope, captured)
         bound[parameter] = relation
         depth = max(depth, arg_depth)
     if depth + 1 > MAX_DEPTH:
@@ -567,17 +576,19 @@ def _splice(
             f"{name} nests deeper than {MAX_DEPTH} levels of member calls"
         )
 
+    captured[name] = member  # spliced away, but a clone has to find it again
+
     body = copy.deepcopy(member.node)
     renames = {}
     for free, obj in member.bindings.items():
         renames[free] = f"{name}__{free}"
-        bindings[f"{name}__{free}"] = obj
+        captured[f"{name}__{free}"] = obj
     _rename_free(body, renames)
 
     function_renames = {}
     for stem, leaf in member.foreign.items():
         function_renames[stem] = f"{name}__{stem}"
-        foreign[f"{name}__{stem}"] = leaf
+        captured[f"{name}__{stem}"] = leaf
     _rename_functions(body, function_renames)
 
     _bind_parameters(body, bound)
@@ -587,12 +598,7 @@ def _splice(
     return ref
 
 
-def _argument(
-    arg: Node,
-    scope: dict[str, Any],
-    bindings: Bindings,
-    foreign: Foreign,
-) -> tuple[Node, int]:
+def _argument(arg: Node, scope: dict[str, Any], captured: Captured) -> tuple[Node, int]:
     """An argument expression, as the relation it denotes."""
     match arg:
         case {"class": "COLUMN_REF", "column_names": [name]}:
@@ -600,7 +606,7 @@ def _argument(
         case {"class": "SUBQUERY", "subquery": {"node": node}}:
             return _subquery_ref(node, ""), 0
         case {"class": "FUNCTION"}:
-            ref = _splice(_table_function_ref(arg, ""), scope, bindings, foreign)
+            ref = _splice(_table_function_ref(arg, ""), scope, captured)
             return ref, ref.pop("_depth")
     raise TransformError(
         f"a transform argument is a relation — {FIT}, {THIS}, a parenthesised "
@@ -608,11 +614,27 @@ def _argument(
     )
 
 
+def _catalog(con: Connection | None) -> frozenset[str]:
+    """Tables and views the supplied connection already owns.
+
+    Passing a connection is how you say *use my catalog*, so a name it can
+    already resolve is not a free reference and must not be looked for in
+    the caller's frame — nor renamed when a shared connection is mangled.
+    """
+    if con is None:
+        return frozenset()
+    rows = con.execute(
+        "SELECT table_name FROM duckdb_tables()"
+        " UNION ALL SELECT view_name FROM duckdb_views()"
+    ).fetchall()
+    return frozenset(name for (name,) in rows)
+
+
 def _resolve(
     doc: Node,
     scope: dict[str, Any],
-    bindings: Bindings,
-    foreign: Foreign,
+    captured: Captured,
+    catalog: frozenset[str] = frozenset(),
 ) -> int:
     """Splice every member call and resolve every free name, in place.
 
@@ -636,7 +658,7 @@ def _resolve(
                     "not a Transform"
                 )
             )
-        foreign[stem] = member
+        captured[stem] = member
         if half == "fit":
             # The UDAF half is a scalar function over a collected list.
             call["children"] = [_list_of(child) for child in call["children"]]
@@ -661,13 +683,14 @@ def _resolve(
                 case {"type": "TABLE_FUNCTION", "function": {"function_name": call}}:
                     if call.lower() in _duckdb_table_functions():
                         continue
-                    ref = _splice(v, scope, bindings, foreign)
+                    ref = _splice(v, scope, captured)
                     depth = max(depth, ref.pop("_depth"))
                     parent[key] = ref
                 case {"type": "BASE_TABLE", "table_name": name} if (
                     name not in (FIT, THIS)
                     and name not in ctes
-                    and name not in bindings
+                    and name not in captured
+                    and name not in catalog
                 ):
                     match scope.get(name):
                         case None:
@@ -680,7 +703,7 @@ def _resolve(
                                 f"{name}({FIT}, {THIS})"
                             )
                         case obj:
-                            bindings[name] = obj
+                            captured[name] = obj
         # Member calls are gone by now, so every FUNCTION left at this level is
         # a scalar one — no need to tell the table call's own function apart.
         for _, _, v in list(_under(node, deep=False)):
@@ -698,7 +721,7 @@ def _resolve(
 # --- the plan -----------------------------------------------------------------
 
 
-def _plan(doc: Node) -> tuple[list[tuple[str, str]], str]:
+def _plan(doc: Node) -> tuple[list[tuple[str, str]], Node]:
     """Rewrite ``doc`` in place into the residual, returning the fit steps.
 
     A step is ``(param_name, sql)``, in dependency order: running them against
@@ -777,13 +800,13 @@ def _plan(doc: Node) -> tuple[list[tuple[str, str]], str]:
                 v["table_name"] = whole_fit()
 
     visit(doc["statements"][0], "node", [], {}, None)
-    return steps, _deserialize(doc)
+    return steps, doc["statements"][0]["node"]
 
 
 # --- the surface --------------------------------------------------------------
 
 
-@dataclass(slots=True, eq=False)
+@dataclass(slots=True, eq=False, repr=False)
 class Fitted:
     """``T -> R``, with the captured environment reified as data.
 
@@ -792,31 +815,133 @@ class Fitted:
     that a measurement instead of a rule.
     """
 
-    sql: str
+    node: Node
     params: Params
     bindings: Bindings
     foreign: Foreign
     instances: dict[int, Any]
+    connection: Connection | None = None
+
+    def __repr__(self) -> str:
+        # The generated one prints the whole residual AST: unreadable, and
+        # it buries the two numbers that actually say what you are holding.
+        shape = ", ".join(f"{k}[{len(v)}]" for k, v in self.params.items())
+        return f"Fitted(params={shape or 'none'}, instances={len(self.instances)})"
+
+    @property
+    def sql(self) -> str:
+        """The residual, under the names ``params`` uses. What you read."""
+        return _deserialize(_statement(self.node))
+
+    def _bind(self, data: Relation) -> tuple[Connection, str, _Registry]:
+        """Register everything this residual needs, and say what to execute.
+
+        On a connection we own, names are the readable ones and a fresh
+        connection per call makes collisions impossible.
+
+        On a *shared* connection they cannot be: two transforms in a pipeline
+        both bind `__THIS__` and both call a parameter `__param_0`. Eagerly
+        that is harmless — each materialises before the next registers — but a
+        lazy relation is not executed yet, so stage one would end up reading
+        stage two's tables. Same shape, different numbers, no error. So a
+        shared connection gets one rename per execution.
+        """
+        registry = _Registry(self.instances)
+        tables = {THIS: data} | self.bindings | self.params
+        if self.connection is None:
+            con = duckdb.connect()
+            for name, table in tables.items():
+                con.register(name, table)
+            for stem, leaf in self.foreign.items():
+                leaf.register(con, stem, registry)
+            return con, self.sql, registry
+
+        con = self.connection
+        token = next(_EXECUTIONS)
+        renames = {name: f"{name}__x{token}" for name in tables}
+        functions = {stem: f"{stem}__x{token}" for stem in self.foreign}
+        doc = copy.deepcopy(_statement(self.node))
+        _rename_free(doc, renames)
+        _rename_functions(doc, functions)
+        for name, table in tables.items():
+            con.register(renames[name], table)
+        for stem, leaf in self.foreign.items():
+            leaf.register(con, functions[stem], registry)
+        return con, _deserialize(doc), registry
 
     def transform(self, data: Relation) -> pa.Table:
-        con = duckdb.connect()
-        con.register(THIS, data)
-        for name, table in (self.bindings | self.params).items():
-            con.register(name, table)
-        # A copy: `x_fit` over `__THIS__` is legal and mints instances, but a
-        # transductive refit belongs to the call that asked for it.
-        registry = _Registry(self.instances)
-        for stem, leaf in self.foreign.items():
-            leaf.register(con, stem, registry)
-        return _execute(con, self.sql, registry)
+        con, sql, registry = self._bind(data)
+        return _execute(con, sql, registry)
 
     __call__ = transform
 
+    def relation(self, data: Relation) -> LazyRelation:
+        """The residual as an unexecuted ``DuckDBPyRelation``.
+
+        Nothing is materialised: bind, plan, hand it back. DuckDB still
+        *binds* eagerly, so an unknown column refuses here; a foreign
+        transform's refusal only surfaces when the relation is consumed, which
+        is the price of not materialising.
+
+        A relation belongs to the connection that built it and cannot be
+        handed to another one, not even to a cursor of the same connection.
+        Chaining lazily therefore means giving both transforms the same
+        ``connection=``.
+        """
+        con, sql, _ = self._bind(data)
+        return con.sql(sql)
+
+
+OUTPUTS = ("default", "arrow", "duckdb", "pandas", "numpy")
+
+# One counter per process, so a shared connection never sees two executions
+# under the same name. See Fitted._bind.
+_EXECUTIONS = itertools.count()
+
+
+def _as_output(table: pa.Table, output: str) -> Any:
+    match output:
+        case "default" | "arrow":
+            return table
+        case "pandas":
+            return table.to_pandas()
+        case "numpy":
+            return table.to_pandas().to_numpy()
+    raise TransformError(f"output must be one of {OUTPUTS}; got {output!r}")
+
 
 class SQLTransform:
-    """``F -> Fitted``. Construction parses, plans and refuses; nothing else does."""
+    """``F -> Fitted``, and an sklearn estimator.
 
-    def __init__(self, sql: str) -> None:
+    ``fit`` returns the ``Fitted`` artifact rather than ``self``. That is the
+    currying the model is built on — ``.params`` is a thing you can ship —
+    and it costs nothing with sklearn, which never reads what ``fit``
+    returned: ``Pipeline`` keeps the object it called and asks *it* to
+    ``transform`` later. So ``fit`` also remembers, and both spellings agree:
+
+        t.fit(D).transform(X)     # curried: the artifact transforms
+        t.fit(D); t.transform(X)  # stateful: the estimator transforms
+
+    ``bindings`` and ``foreign`` are constructor parameters as well as frame
+    lookups, because ``clone`` rebuilds an estimator inside sklearn's own
+    frame, where a member or a lookup table is not in scope. They ride along
+    in ``get_params`` so a clone resolves to the very same objects.
+
+    Those two mappings are *adopted*, not copied, and completed in place with
+    whatever the frame supplied. ``clone`` demands that ``get_params`` hand
+    back the very object the constructor was given — a defensive copy fails
+    its identity check — and carrying the completed set is the whole point.
+
+    Construction parses, plans and refuses; nothing else does.
+    """
+
+    def __init__(
+        self,
+        sql: str,
+        output: str = "default",
+        connection: Connection | None = None,
+        captured: Captured | None = None,
+    ) -> None:
         doc = _serialize(sql)
         if len(doc["statements"]) != 1:
             raise TransformError(
@@ -829,22 +954,57 @@ class SQLTransform:
         scope = frame.f_globals | frame.f_locals
         del frame
 
-        self.bindings: Bindings = {}
-        self.foreign: Foreign = {}
-        self.depth = _resolve(doc, scope, self.bindings, self.foreign)
+        self.output = output
+        # Given rather than conjured. A transform that makes its own hidden
+        # connection cannot compose with anything: a DuckDBPyRelation belongs
+        # to the connection that built it, so lazy output only chains when
+        # both stages share one. Pass it and you own it.
+        self.connection = connection
+        # Adopted, not copied: see the class docstring. Explicit entries win,
+        # and are how a clone keeps names the frame it was rebuilt in cannot
+        # see.
+        self.captured: Captured = {} if captured is None else captured
+        scope = scope | self.captured
+
+        self.depth = _resolve(doc, scope, self.captured, _catalog(connection))
+        # Two runtime views. A member is spliced away, so it is neither.
+        self.foreign: Foreign = {
+            k: v for k, v in self.captured.items() if isinstance(v, Transform)
+        }
+        self.bindings: Bindings = {
+            k: v
+            for k, v in self.captured.items()
+            if not isinstance(v, Transform | SQLTransform)
+        }
         self.node = doc["statements"][0]["node"]
+        self.source = sql  # the exact object, so clone's identity check passes
         self.sql = _deserialize(doc)
         self._steps, self._residual = _plan(copy.deepcopy(doc))
+        self._own = connection is None
+        self.fitted_: Fitted | None = None
+        self.feature_names_out_: list[str] | None = None
+
+    # -- the model's own surface ----------------------------------------------
+
+    def __repr__(self) -> str:
+        state = "fitted" if self.fitted_ is not None else "unfitted"
+        return f"SQLTransform({self.sql!r}, output={self.output!r}, {state})"
 
     def _connect(self, registry: _Registry) -> Connection:
-        con = duckdb.connect()
+        con = duckdb.connect() if self._own else self.connection
         for name, table in self.bindings.items():
             con.register(name, table)
         for stem, leaf in self.foreign.items():
             leaf.register(con, stem, registry)
         return con
 
-    def fit(self, data: Relation) -> Fitted:
+    def fit(self, data: Relation, y: Any = None) -> Fitted:
+        """Partial application — and the estimator remembers the result.
+
+        ``y`` is accepted and ignored: a target belongs in the relation, as a
+        column ``__FIT__`` can read, not in a second argument the SQL cannot
+        name.
+        """
         registry = _Registry()
         con = self._connect(registry)
         con.register(FIT, data)
@@ -852,11 +1012,93 @@ class SQLTransform:
         for param, sql in self._steps:
             params[param] = _execute(con, sql, registry)
             con.register(param, params[param])
-        return Fitted(
-            self._residual, params, self.bindings, self.foreign, registry.instances
+        self.fitted_ = Fitted(
+            self._residual,
+            params,
+            self.bindings,
+            self.foreign,
+            registry.instances,
+            self.connection,
         )
+        return self.fitted_
 
     __call__ = fit
+
+    @property
+    def params_(self) -> Params:
+        return self._require_fit().params
+
+    @property
+    def instances_(self) -> dict[int, Any]:
+        return self._require_fit().instances
+
+    # -- the sklearn surface ---------------------------------------------------
+
+    def _require_fit(self) -> Fitted:
+        if self.fitted_ is None:
+            raise NotFitted("this transform has not been fit; call fit first")
+        return self.fitted_
+
+    def transform(self, data: Relation) -> Any:
+        fitted = self._require_fit()
+        if self.output == "duckdb":
+            lazy = fitted.relation(data)  # the whole point: never materialise
+            self.feature_names_out_ = list(lazy.columns)
+            return lazy
+        out = fitted.transform(data)
+        self.feature_names_out_ = out.column_names
+        return _as_output(out, self.output)
+
+    def fit_transform(self, data: Relation, y: Any = None) -> Any:
+        """On the training relation this is exactly ``run(t, D)`` — that is
+        the *freezing is faithful* law, not a coincidence."""
+        self.fit(data)
+        return self.transform(data)
+
+    def get_feature_names_out(self, input_features: Any = None) -> list[str]:
+        if self.feature_names_out_ is None:
+            raise NotFitted(
+                "output column names are only known once something has been "
+                "transformed; call transform or fit_transform first"
+            )
+        return list(self.feature_names_out_)
+
+    def set_output(self, *, transform: str | None = None) -> Self:
+        """sklearn's opt-in: ``pandas`` or ``numpy`` for a downstream
+        estimator, ``default`` for the model's own arrow tables."""
+        if transform is not None:
+            if transform not in OUTPUTS:
+                raise TransformError(
+                    f"output must be one of {OUTPUTS}; got {transform!r}"
+                )
+            self.output = transform
+        return self
+
+    def get_params(self, deep: bool = True) -> dict[str, Any]:
+        return {
+            "sql": self.source,
+            "output": self.output,
+            "connection": self.connection,
+            "captured": self.captured,
+        }
+
+    def set_params(self, **params: Any) -> Self:
+        unknown = set(params) - set(self.get_params())
+        if unknown:
+            raise TransformError(f"unknown parameters {sorted(unknown)}")
+        if {"sql", "captured", "connection"} & set(params):
+            # The plan is derived from all three, so rebuild rather than let
+            # them drift apart.
+            rebuilt = type(self)(
+                params.get("sql", self.source),
+                output=params.get("output", self.output),
+                connection=params.get("connection", self.connection),
+                captured=params.get("captured", self.captured),
+            )
+            self.__dict__.update(rebuilt.__dict__)
+        elif "output" in params:
+            self.set_output(transform=params["output"])
+        return self
 
 
 def run(transform: SQLTransform, data: Relation) -> pa.Table:
