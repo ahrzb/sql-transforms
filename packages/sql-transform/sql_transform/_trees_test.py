@@ -23,7 +23,7 @@ from sklearn.ensemble import (
 )
 from sklearn.tree import DecisionTreeRegressor
 
-from sql_transform import TreePackError, pack_trees
+from sql_transform import PythonTransform, TreePackError, pack_trees
 
 FEATURES = ["a", "b", "c", "d"]
 ROW = create_model(
@@ -182,6 +182,153 @@ def test_per_group_models_score_by_id():
     got = np.array([r.p for r in fn.infer({"__THIS__": rows})])
     want = np.array([fits[g].predict(x[None])[0] for g, x in zip(ids, X, strict=True)])
     assert np.array_equal(got, want)
+
+
+# --------------------------------------------- gate 2: ecall vs predict --
+#
+# The same estimator, the same rows, lowered two ways inside confit: once
+# through the Python trampoline (`ecall` over a PythonTransform — the path
+# production uses today), once through the native kernel. No DuckDB, no
+# sklearn call on the confit side of the second one.
+#
+# This is what the swap-in has to be safe on: replacing the trampoline with
+# the kernel must not move a single bit, or every model that was fit against
+# the old serving path silently shifts.
+
+
+class _AsTransform:
+    """A regressor seen as a transformer — `PythonTransform` calls
+    `transform`, a regressor offers `predict`. Counts its calls: if this
+    never fires, the "ecall" side did not go through the trampoline and the
+    comparison below is two runs of the same path."""
+
+    def __init__(self, est):
+        self.est = est
+        self.calls = 0
+
+    def transform(self, X):
+        self.calls += 1
+        return np.asarray(self.est.predict(np.asarray(X, dtype=float))).reshape(-1, 1)
+
+
+ECALL_SQL = "SELECT score(id, " + ", ".join(FEATURES) + ") AS p FROM __THIS__"
+
+
+def _both_paths(ests, rows, row_model=None):
+    """(ecall answers, predict answers) for the same estimators and rows."""
+    row_model = row_model or ROW
+    shims = {i: _AsTransform(e) for i, e in enumerate(ests)}
+    udf = PythonTransform(
+        name="score",
+        instances=shims,
+        takes=("f64",) * len(FEATURES),
+        returns=("f64",),
+    )
+    ecall_fn = DuckDBInferFn(
+        ECALL_SQL, row_tables={"__THIS__": row_model}, static_tables={}, udfs=[udf]
+    )
+    predict_fn = DuckDBInferFn(
+        SQL,
+        row_tables={"__THIS__": row_model},
+        static_tables={},
+        models={"m": pack_trees(ests, FEATURES)},
+    )
+    ecall = [r.p for r in ecall_fn.infer({"__THIS__": rows})]
+    predict = [r.p for r in predict_fn.infer({"__THIS__": rows})]
+    scored = sum(1 for v in ecall if v is not None)
+    assert sum(s.calls for s in shims.values()) == scored, (
+        "the ecall side did not run the Python trampoline once per scored row"
+    )
+    return ecall, predict
+
+
+def _rows(X, ids):
+    return [
+        ROW(
+            id=int(g),
+            **{
+                f: (None if np.isnan(v) else float(v))
+                for f, v in zip(FEATURES, x, strict=True)
+            },
+        )
+        for g, x in zip(ids, X, strict=True)
+    ]
+
+
+def test_ecall_and_predict_agree_bit_for_bit():
+    ests = [
+        fit(
+            RandomForestRegressor(
+                n_estimators=9, max_depth=5, random_state=s, n_jobs=1
+            ),
+            s,
+        )
+        for s in (81, 82)
+    ]
+    X = np.random.RandomState(83).rand(200, len(FEATURES)) * 5 - 2.5
+    ecall, predict = _both_paths(ests, _rows(X, np.arange(len(X)) % 2))
+    assert ecall == predict
+
+
+def test_ecall_and_predict_agree_on_missing_values():
+    """The paths reach the estimator differently — the trampoline maps NULL to
+    NaN in `_as_feature`, the kernel maps it in the lowering. They must land
+    on the same number."""
+    rng = np.random.RandomState(84)
+    Xf = rng.rand(150, len(FEATURES)) * 4 - 2
+    Xf[rng.rand(*Xf.shape) < 0.25] = np.nan
+    est = RandomForestRegressor(
+        n_estimators=12, max_depth=5, random_state=85, n_jobs=1
+    ).fit(Xf, np.nan_to_num(Xf[:, 0]))
+    X = rng.rand(200, len(FEATURES)) * 5 - 2.5
+    X[rng.rand(*X.shape) < 0.3] = np.nan
+    ecall, predict = _both_paths([est], _rows(X, np.zeros(len(X), int)))
+    assert ecall == predict
+
+
+def test_ecall_and_predict_agree_on_a_boosted_model():
+    """The base term and the learning-rate scaling exist only on the kernel
+    side — the trampoline gets them from sklearn. Most likely place for the
+    two paths to part company."""
+    est = fit(
+        GradientBoostingRegressor(n_estimators=30, max_depth=3, random_state=86), 86
+    )
+    X = np.random.RandomState(87).rand(200, len(FEATURES)) * 5 - 2.5
+    ecall, predict = _both_paths([est], _rows(X, np.zeros(len(X), int)))
+    assert ecall == predict
+
+
+def test_ecall_and_predict_agree_on_a_null_id():
+    """A NULL id is an unseen group on both paths: NULL out, no call."""
+    est = fit(RandomForestRegressor(n_estimators=5, random_state=88, n_jobs=1), 88)
+    X = np.random.RandomState(89).rand(4, len(FEATURES))
+    nullable_row = create_model(
+        "NRow",
+        id=(int | None, None),
+        **dict.fromkeys(FEATURES, (float | None, None)),
+    )
+    rows = [
+        nullable_row(id=None, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)})
+        for x in X
+    ]
+    udf = PythonTransform(
+        name="score",
+        instances={0: _AsTransform(est)},
+        takes=("f64",) * len(FEATURES),
+        returns=("f64",),
+    )
+    ecall_fn = DuckDBInferFn(
+        ECALL_SQL, row_tables={"__THIS__": nullable_row}, static_tables={}, udfs=[udf]
+    )
+    predict_fn = DuckDBInferFn(
+        SQL,
+        row_tables={"__THIS__": nullable_row},
+        static_tables={},
+        models={"m": pack_trees([est], FEATURES)},
+    )
+    ecall = [r.p for r in ecall_fn.infer({"__THIS__": rows})]
+    predict = [r.p for r in predict_fn.infer({"__THIS__": rows})]
+    assert ecall == predict == [None] * len(rows)
 
 
 # ------------------------------------------------------------ refusals --
