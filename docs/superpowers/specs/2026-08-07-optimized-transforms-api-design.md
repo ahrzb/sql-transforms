@@ -5,6 +5,15 @@ Status: design, approved in dialogue with AmirHossein (this session)
 Supersedes the open question in DRAFT-23's 2026-08-04 addendum; refines
 DRAFT-22's addendum (typed udf entries) and DRAFT-24's named-struct framing.
 
+**Scope note (2026-08-07, later the same session):** the confit half of this
+document — artifacts carried as `instances` on a typed UDF entry — assumes
+DRAFT-22's `udfs=` surface, which is not the current confit direction. Native
+scoring in confit is specified separately in
+`2026-08-07-confit-tree-ensemble-design.md`, where a model is a prepare-time
+declaration and scoring is one IR instruction. Read that document for the
+engine side; this one stands for the family protocol (tiers, full-SELECT
+halves, symbolic θ, the shape tier) and the schema-typed UDF protocol.
+
 ## The problem
 
 A fitted sklearn transformer serves today as an opaque Python callout: one
