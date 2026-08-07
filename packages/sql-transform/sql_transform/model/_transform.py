@@ -332,6 +332,46 @@ def _execute(con: Connection, sql: str, registry: _Registry) -> pa.Table:
         raise
 
 
+def _as_matrix(table: pa.Table, takes: tuple[str, ...]) -> Any:
+    import numpy as np  # noqa: PLC0415
+
+    return np.column_stack([table[f].to_numpy(zero_copy_only=False) for f in takes])
+
+
+@dataclass(frozen=True, slots=True)
+class _EstimatorFit:
+    """``from_estimator``'s fit half, as data rather than a closure.
+
+    Cloned per call, so one estimator object backs many groups without any of
+    them sharing learned state — the reason the closure existed.
+    """
+
+    estimator: Any
+    takes: tuple[str, ...]
+
+    def __call__(self, relation: pa.Table) -> Any:
+        from sklearn.base import clone  # noqa: PLC0415
+
+        return clone(self.estimator).fit(_as_matrix(relation, self.takes))
+
+
+@dataclass(frozen=True, slots=True)
+class _EstimatorTransform:
+    """``from_estimator``'s transform half. Holds no estimator: the fitted
+    instance arrives through θ."""
+
+    takes: tuple[str, ...]
+    returns: tuple[str, ...]
+
+    def __call__(self, instance: Any, relation: pa.Table) -> pa.Table:
+        import numpy as np  # noqa: PLC0415
+
+        out = np.asarray(instance.transform(_as_matrix(relation, self.takes)))
+        return pa.table(
+            {name: out[:, i].astype(float) for i, name in enumerate(self.returns)}
+        )
+
+
 @dataclass(slots=True)
 class Transform:
     """A foreign transform: the ``(fit, transform)`` pair, supplied directly.
@@ -369,25 +409,20 @@ class Transform:
         cls, estimator: Any, takes: tuple[str, ...], returns: tuple[str, ...]
     ) -> Self:
         """An sklearn transformer as the pair. Cloned per fit, so one
-        estimator object can back many groups without sharing learned state."""
-        import numpy as np  # noqa: PLC0415
-        from sklearn.base import clone  # noqa: PLC0415
+        estimator object can back many groups without sharing learned state.
 
-        def as_matrix(table: pa.Table) -> Any:
-            return np.column_stack(
-                [table[f].to_numpy(zero_copy_only=False) for f in takes]
-            )
-
-        def fit(relation: pa.Table) -> Any:
-            return clone(estimator).fit(as_matrix(relation))
-
-        def transform(instance: Any, relation: pa.Table) -> pa.Table:
-            out = np.asarray(instance.transform(as_matrix(relation)))
-            return pa.table(
-                {name: out[:, i].astype(float) for i, name in enumerate(returns)}
-            )
-
-        return cls(fit=fit, transform=transform, takes=takes, returns=returns)
+        The halves are module-level objects holding the estimator as data
+        rather than closures over it: a local function is unpicklable, and
+        ``deepcopy`` hid that by treating functions as atomic, so ``clone``
+        worked while anything that actually serialised — ``Pipeline(memory=)``,
+        ``n_jobs>1`` — did not.
+        """
+        return cls(
+            fit=_EstimatorFit(estimator, takes),
+            transform=_EstimatorTransform(takes, returns),
+            takes=takes,
+            returns=returns,
+        )
 
     # -- the two SQL halves ----------------------------------------------------
 
@@ -980,15 +1015,34 @@ def _rendered(node: Node, names: dict[str, str], stems: dict[str, str]) -> str:
     return _deserialize(doc)
 
 
-def _as_output(table: pa.Table, output: str) -> Any:
+def _as_output(table: pa.Table, output: str, source: Relation = None) -> Any:
+    """The result in the caller's currency.
+
+    ``pandas`` carries the caller's index when there is one to carry, which is
+    what every sklearn transformer does. Resetting it was silent: in a
+    ``FeatureUnion`` alongside an estimator that preserves the index, pandas
+    aligns on index rather than position and NaN-pads the difference — four
+    rows in, seven out, no error.
+
+    A SQL transform may change cardinality, which an sklearn one cannot. When
+    the row counts disagree there is no row correspondence to express, so no
+    index is attached rather than one invented.
+    """
     match output:
-        case "default" | "arrow":
+        case "default" | "arrow" | "duckdb":
             return table
         case "pandas":
-            return table.to_pandas()
+            return _with_index(table.to_pandas(), source)
         case "numpy":
-            return table.to_pandas().to_numpy()
+            return _with_index(table.to_pandas(), source).to_numpy()
     raise TransformError(f"output must be one of {OUTPUTS}; got {output!r}")
+
+
+def _with_index(frame: Any, source: Relation) -> Any:
+    index = getattr(source, "index", None)
+    if index is not None and len(index) == len(frame):
+        frame.index = index
+    return frame
 
 
 class SQLTransform:
@@ -1140,7 +1194,7 @@ class SQLTransform:
             return lazy
         out = fitted.transform(data)
         self.feature_names_out_ = out.column_names
-        return _as_output(out, self.output)
+        return _as_output(out, self.output, data)
 
     def fit_transform(self, data: Relation, y: Any = None) -> Any:
         """On the training relation this is exactly ``run(t, D)`` — that is
@@ -1166,6 +1220,22 @@ class SQLTransform:
                 )
             self.output = transform
         return self
+
+    def __sklearn_clone__(self) -> Self:
+        """sklearn's own hook, because the default clones by deep-copying
+        every parameter and a live DuckDB connection cannot be deep-copied —
+        ``clone``, and so ``GridSearchCV``/``cross_val_score``/``Pipeline``,
+        died with a raw TypeError on any transform built with ``connection=``.
+
+        A connection is a resource, not a value: the clone shares it. Rebuilt
+        from ``source`` so the plan is derived rather than copied.
+        """
+        return type(self)(
+            self.source,
+            output=self.output,
+            connection=self.connection,
+            captured=self.captured,
+        )
 
     def get_params(self, deep: bool = True) -> dict[str, Any]:
         return {
