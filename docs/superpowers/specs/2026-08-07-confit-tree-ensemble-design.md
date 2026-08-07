@@ -15,10 +15,20 @@ crossing, no `ecall` trampoline. Per row the engine probes the existing
 params map for a model id and walks packed nodes over an f64 register file.
 
 One kernel covers `DecisionTree*`, `RandomForest*`, `GradientBoosting*`, and
-(via the same node layout) XGBoost and LightGBM. Linear and logistic models
-need **no** kernel — `w0*x0 + ... + b` with a `sigmoid` is already scalar IR
-with weights riding the params map, and adding a matvec kernel for it would
-be negative work.
+(via the same node layout) XGBoost and LightGBM.
+
+**Open question, not settled here:** whether linear/logistic/PCA-class models
+ever want a matvec kernel. `w0*x0 + ... + b` with a `sigmoid` lowers to a
+branchless `fmul`/`fadd` chain with weights riding the params map, and for a
+handful of features a kernel call would plainly cost more than it saves. Two
+cases are unmeasured: **wide k** (k weights means k map value columns and an
+O(k) program, so the pressure is program size, not arithmetic) and
+**multi-output** (multinomial logistic, PCA — 20 features x 50 components is
+1000 unrolled multiply-adds per row, lowered as scalar chains that nothing
+vectorizes). Settle it by measuring the unrolled path at k = 8 / 64 / 512 and
+at 20x50 — per-row latency and compile time — before writing any `mat_stack`
+kernel. Scope of *this* document is unaffected either way: tree_ensemble
+only.
 
 ## The shape: a model is a prepare-time structure
 

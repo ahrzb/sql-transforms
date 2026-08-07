@@ -212,15 +212,23 @@ immutable code. Fitted artifacts are never global — they live in the entry's
 
 ### Which algorithms need an artifact
 
-| algorithms | mechanism |
-|---|---|
-| scalers, ordinal/one-hot/target encoding, PCA, all linear models incl. logistic | SQL tier; `udfs=[]`; no kernel, no parity surface |
-| decision tree, random forest, GBM, XGBoost, LightGBM | one artifact kind, one entry (N=1 covers a single tree) |
-| MLP | later: a MatStack artifact, same pattern |
-| kNN, kernel SVM | need the training set as state; deferred |
+Expressibility — which algorithms *can* be written in the SQL tier at all,
+independent of whether that is the fastest way to serve them:
 
-First confit milestone is `tree_ensemble` only. A `LinearArtifact` is
-negative work: a dot product with an intercept is an expression.
+| algorithms | expressible in SQL over θ |
+|---|---|
+| scalers, ordinal/one-hot/target encoding | yes |
+| linear, logistic, PCA | yes — dot products over θ lists |
+| decision tree, random forest, GBM, XGBoost, LightGBM | no: traversal is a loop |
+| kNN, kernel SVM | no: the training set is the state |
+
+Scope, decided 2026-08-07: the first kernel is `tree_ensemble` only.
+
+Whether the SQL-tier-expressible matvec cases (linear, logistic, PCA) would
+still serve faster through a kernel is **open and unmeasured** — see the open
+question in `2026-08-07-confit-tree-ensemble-design.md`. Nothing in this spec
+depends on the answer: those families are written in the SQL tier either way,
+and a kernel would change only what their template calls.
 
 ## The UDF protocol, schema-typed
 
