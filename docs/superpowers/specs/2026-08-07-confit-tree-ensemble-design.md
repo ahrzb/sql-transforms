@@ -298,6 +298,32 @@ pickle, no live model reference reaches the engine.
 `model_id` values are dense indices assigned by the builder; the params map's
 value column holds them.
 
+**As built**, one model set is a three-key mapping, not a bare pair:
+
+```python
+DuckDBInferFn(sql, ..., models={"trees": {
+    "nodes": nodes_table, "models": header_table, "features": ["price", "sqft"],
+}})
+```
+
+`features` is the third key because the names describe the SET, not a row of
+either table — and the struct call site resolves against them by name, so
+they have to be somewhere. `sql_transform._trees.pack(estimators, features)`
+produces exactly this mapping from fitted sklearn regressors.
+
+Decoding reuses the pyarrow buffer walk in `duckdb/arrow.rs` rather than
+`to_pylist()`: a 100k-node forest would otherwise allocate 100k Python dicts
+to build a structure that is pure numbers. int32 and int64 are both accepted
+for the id, child and feature columns — `pa.array([1, 2])` defaults to int64,
+and refusing that would be a papercut with no safety value.
+
+The `models=` entries are materialized into `StaticData::Model` values
+appended AFTER every map static, which is what keeps existing probes' `@N`
+from shifting. Both materialization paths (the cranelift attempt consumes the
+static data, so the interpreter fallback rebuilds it) go through one
+`materialize_statics`, and its zip over `statics[n_join..]` asserts the
+ordering rather than assuming it.
+
 ## Build-time refusals (P7)
 
 Every one of these names the offending row or field, before any data flows:
@@ -347,7 +373,9 @@ These are the correctness surface; each is a test, not a comment.
   reproducible bit-for-bit across backends and runs.
 - **Bad id at runtime**: a row-supplied id outside `model_span` traps with a
   named message. (Reachable only when the id is not a static-map value; see
-  the refusal above.)
+  the refusal above.) It **traps rather than yielding NULL** — a NULL feature
+  is data the model handles, but an id naming no model is a bug in the
+  caller's params table, and quietly nulling it would hide a broken join.
 
 ## What it touches
 
@@ -395,6 +423,27 @@ Four gates, strongest first.
 4. **Pins** for the cases a random generator will not reliably produce and
    whose expected value should be frozen regardless: NaN feature, NULL
    feature, probe miss, single-node (root-is-leaf) tree, empty ensemble.
+
+**As built** ([`_trees_test.py`](../../../packages/sql-transform/sql_transform/_trees_test.py),
+[`test_tree_predict.py`](../../../packages/confit/tests/test_tree_predict.py)):
+
+- Gate 1 compares against `est.predict` **directly** rather than through a
+  DuckDB-registered UDF. The SQL on both sides would have been
+  `SELECT tree_predict(...) FROM __THIS__` with no other construct in it, so
+  DuckDB contributes only transport — and transport with a known hazard, the
+  NaN-return conversion this document already flags. The estimator is the
+  oracle either way; routing it through DuckDB would have added a failure
+  mode without adding coverage.
+- Gate 3 is the existing `fuzz_cranelift_agrees_with_interpreter`, which now
+  generates `predict` sites; the Python gates additionally assert
+  `fn.backend`, because the cranelift compile error is discarded and the
+  fallback is silent.
+- Gate 2 (`ecall` vs `predict` inside confit) is **not built**. It is a
+  diagnostic gate, not a detection one — gate 1 covers the whole chain
+  bit-exactly, so gate 2 would only localize a failure gate 1 already
+  catches. Its real value arrives with the swap-in, where the same SQL must
+  produce the same answers through either path; that milestone is not
+  authorized, so the gate waits for it.
 
 **Float tolerance — SETTLED BY MEASUREMENT (2026-08-07), and the premise was
 wrong.** sklearn 1.9.0 / numpy 2.5.1, 2000 rows at 10 / 100 / 500 trees:

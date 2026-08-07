@@ -359,6 +359,26 @@ def test_null_in_a_node_column_refuses():
         build({"trees": {**STUMP, "nodes": nodes}})
 
 
+def test_empty_ensemble_refuses():
+    empty_nodes = STUMP["nodes"].slice(0, 0)
+    with pytest.raises(Exception, match="no nodes"):
+        build({"trees": {**STUMP, "nodes": empty_nodes}})
+    with pytest.raises(Exception, match="no models"):
+        build({"trees": {**STUMP, "models": STUMP["models"].slice(0, 0)}})
+
+
+def test_root_is_leaf_tree_scores_its_constant(backend):
+    """A depth-0 tree — the degenerate shape a traversal loop most easily
+    gets wrong."""
+    got = run(
+        SQL,
+        {"id": "int", "x": "float"},
+        [{"id": 0, "x": -99.0}, {"id": 0, "x": 99.0}],
+        {"trees": ensemble([leaf(0, 0, 0, 7.5)], features=["x"])},
+    )
+    assert [r["p"] for r in got] == [7.5, 7.5]
+
+
 def test_malformed_model_set_entry_refuses():
     with pytest.raises(Exception, match="nodes"):
         build({"trees": {"models": STUMP["models"], "features": ["x"]}})
