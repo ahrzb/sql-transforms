@@ -14,8 +14,8 @@ import pyarrow.compute as pc
 import pytest
 
 from sql_transform.model import SQLTransform, Transform, TransformError, run
+from sql_transform.model._foreign import _Registry
 from sql_transform.model._freezing_test import approx, reads_fit, rows
-from sql_transform.model._transform import _Registry
 
 D = pa.table(
     {
