@@ -9,7 +9,7 @@ use std::cell::Cell;
 use super::super::ir::{fixtures, gen, parse::parse, verify::verify, Program, StaticTy, Ty};
 use super::interp::{compile, CompileError};
 use super::testutil::{batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot, snapshot};
-use super::{Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData, Trap};
+use super::{tree_ensemble, Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData, Trap};
 
 // ------------------------------------------------- counting allocator --
 // Thread-local counter so parallel tests don't disturb each other; const-
@@ -818,10 +818,72 @@ fn gen_statics(rng: &mut gen::Rng, p: &Program) -> Vec<StaticData> {
                     .collect();
                 StaticData::Map(entries)
             }
+            // A small random ensemble whose model 0 always exists, since the
+            // generated program always scores id 0 (see gen.rs). This is what
+            // puts `predict` under the backend-equality differential.
+            StaticTy::Model { n_features } => {
+                StaticData::Model(Box::new(gen_ensemble(rng, *n_features)))
+            }
             // The generator never declares multimaps (see gen.rs).
             StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. } => StaticData::Map(Vec::new()),
         })
         .collect()
+}
+
+/// A random 1-model ensemble of `1..=3` stumps-or-deeper trees over
+/// `n_features`. Deliberately hand-rolled rather than extracted from a
+/// library: confit never imports one.
+fn gen_ensemble(rng: &mut gen::Rng, n_features: u32) -> tree_ensemble::TreeEnsemble {
+    let (mut model_id, mut tree_id, mut node_id) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut feature, mut threshold) = (Vec::new(), Vec::new());
+    let (mut left, mut right, mut missing_left, mut value) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for t in 0..1 + rng.below(3) as i64 {
+        // Either a bare leaf or a depth-1 split, so both shapes appear.
+        let split = rng.chance(70);
+        let n = if split { 3 } else { 1 };
+        for k in 0..n {
+            model_id.push(0);
+            tree_id.push(t);
+            node_id.push(k);
+            let is_split = split && k == 0;
+            feature.push(if is_split {
+                rng.below(n_features as u64) as i32
+            } else {
+                -1
+            });
+            threshold.push(if is_split {
+                (rng.below(5) as f64) - 2.0
+            } else {
+                0.0
+            });
+            left.push(if is_split { 1 } else { -1 });
+            right.push(if is_split { 2 } else { -1 });
+            missing_left.push(rng.chance(50));
+            value.push((rng.below(9) as f64) - 4.0);
+        }
+    }
+    tree_ensemble::TreeEnsemble::new(
+        &tree_ensemble::NodeRows {
+            model_id: &model_id,
+            tree_id: &tree_id,
+            node_id: &node_id,
+            feature: &feature,
+            threshold: &threshold,
+            left: &left,
+            right: &right,
+            missing_left: &missing_left,
+            value: &value,
+        },
+        &tree_ensemble::ModelRows {
+            model_id: &[0],
+            base: &[(rng.below(5) as f64) - 2.0],
+            agg: &[if rng.chance(50) { "sum" } else { "mean" }],
+            link: &[if rng.chance(50) { "identity" } else { "sigmoid" }],
+        },
+        n_features,
+    )
+    .expect("the generator only builds valid ensembles")
 }
 
 fn gen_input(rng: &mut gen::Rng, p: &Program) -> Batch {
@@ -931,9 +993,21 @@ fn casemap_tables_sorted_and_marquee_pins() {
 #[test]
 fn fuzz_cranelift_agrees_with_interpreter() {
     use super::cranelift;
+    use super::super::ir::Inst;
+    // Counting programs is not coverage — assert from inside the loop that
+    // the opcodes we care about actually reached BOTH backends. The
+    // cranelift fallback is silent, so an unimplemented opcode would
+    // otherwise look green while only the interpreter ever ran it.
+    let mut predicts = 0usize;
     // More seeds than the determinism fuzz: this is the backend contract.
     for seed in 0..gen::fuzz_seeds(500) {
         let p = gen::gen_program(seed);
+        predicts += p
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|i| matches!(i, Inst::Predict { .. }))
+            .count();
         let mut rng = gen::Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
         let statics_i = gen_statics(&mut rng, &p);
         let mut rng2 = gen::Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
@@ -954,6 +1028,89 @@ fn fuzz_cranelift_agrees_with_interpreter() {
             (x, y) => panic!("seed {seed}: outcome diverged: interp {x:?} vs cranelift {y:?}"),
         }
     }
+    assert!(
+        predicts > 20,
+        "the generator emitted only {predicts} predict instruction(s) — this test \
+         is not covering the tree kernel on either backend"
+    );
+}
+
+/// The `predict` semantics the design froze, run END TO END on BOTH
+/// backends: a NULL feature is not a NULL result (the model has a defined
+/// answer for missing), whereas an unseen group is.
+#[test]
+fn tree_score_fixture_pins_null_and_unseen_group_on_both_backends() {
+    use super::cranelift;
+    let p = built(fixtures::TREE_SCORE);
+
+    // region -> model id ('north' = 0, 'south' = 1); 'west' is absent, so it
+    // is the probe-miss row. compile() consumes the statics, so both are
+    // rebuilt per backend.
+    let statics = || {
+        let map = StaticData::Map(vec![
+            (vec![KeyBits::Str("north".into())], vec![ScalarVal::I64(0)]),
+            (vec![KeyBits::Str("south".into())], vec![ScalarVal::I64(1)]),
+        ]);
+        // Both models split `price <= 100` -> 1.0 else 2.0. They differ only
+        // in where a MISSING price goes: model 0 right (the untrained
+        // default), model 1 left (a tree that learned a missing branch).
+        let model = tree_ensemble::TreeEnsemble::new(
+            &tree_ensemble::NodeRows {
+                model_id: &[0, 0, 0, 1, 1, 1],
+                tree_id: &[0, 0, 0, 0, 0, 0],
+                node_id: &[0, 1, 2, 0, 1, 2],
+                feature: &[0, -1, -1, 0, -1, -1],
+                threshold: &[100.0, 0.0, 0.0, 100.0, 0.0, 0.0],
+                left: &[1, -1, -1, 1, -1, -1],
+                right: &[2, -1, -1, 2, -1, -1],
+                missing_left: &[false, false, false, true, false, false],
+                value: &[0.0, 1.0, 2.0, 0.0, 1.0, 2.0],
+            },
+            &tree_ensemble::ModelRows {
+                model_id: &[0, 1],
+                base: &[0.0, 0.0],
+                agg: &["sum", "sum"],
+                link: &["identity", "identity"],
+            },
+            2,
+        )
+        .expect("fixture ensemble builds");
+        vec![map, StaticData::Model(Box::new(model))]
+    };
+
+    let input = batch(
+        4,
+        vec![
+            c_str(&[
+                Some("north"),
+                Some("north"),
+                Some("south"),
+                Some("west"),
+            ]),
+            c_f64(&[Some(50.0), None, None, Some(50.0)]),
+            c_f64(&[Some(1.0), Some(1.0), Some(1.0), Some(1.0)]),
+        ],
+    );
+    let want = rows(&[
+        // present feature, below the threshold -> left leaf
+        &["1.0"],
+        // NULL price -> NaN -> model 0 sends missing RIGHT
+        &["2.0"],
+        // same NULL, but model 1 learned missing goes LEFT
+        &["1.0"],
+        // unseen region: a missing MODEL is NULL, unlike a missing feature
+        &["NULL"],
+    ]);
+
+    let fi = compile(&p, statics()).expect("interp compile");
+    assert_eq!(run_snapshot(&fi, &input).unwrap(), want, "interpreter");
+
+    // Directly, NOT through the fallback-guarded path: a missing cranelift
+    // binding must fail here rather than silently drop to the interpreter.
+    let fc = cranelift::compile(&p, statics()).expect("cranelift compile");
+    let mut st = fc.new_state();
+    fc.run(&input, &mut st).expect("cranelift run");
+    assert_eq!(snapshot(&st), want, "cranelift");
 }
 
 /// Raw compute, no Python boundary: `cargo test --release backend_compute_

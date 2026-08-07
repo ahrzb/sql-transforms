@@ -25,6 +25,9 @@ pub fn print(p: &Program) -> String {
             StaticTy::BatchMap { values } => {
                 let _ = writeln!(s, "batchmap() -> ({})", tys(values));
             }
+            StaticTy::Model { n_features } => {
+                let _ = writeln!(s, "model<tree_ensemble({n_features})>");
+            }
         }
     }
     for (i, re) in p.regexes.iter().enumerate() {
@@ -259,6 +262,12 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             } else {
                 let _ = write!(s, "ecall @{ext}, {}", a.join(", "));
             }
+        }
+        Inst::Predict {
+            static_id, id, feats, ..
+        } => {
+            let fs: Vec<String> = feats.iter().map(|f| val(*f)).collect();
+            let _ = write!(s, "predict @{static_id}, {}, {}", val(*id), fs.join(", "));
         }
         Inst::Sload { static_id, .. } => {
             let _ = write!(s, "sload @{static_id}");

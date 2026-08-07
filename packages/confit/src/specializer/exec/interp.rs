@@ -117,6 +117,8 @@ pub(super) enum PreparedStatic {
     /// Stage-B self-join: the rows come from the BATCH, flattened per call
     /// in `run` (see `build_batch_rows`) — nothing is prepared here.
     BatchMap,
+    /// A fitted ensemble; the packed layout is the kernel's own.
+    Model(Box<super::tree_ensemble::TreeEnsemble>),
 }
 
 struct CBlock {
@@ -602,6 +604,25 @@ pub(super) fn prepare_statics(
                     )));
                 }
                 prepared.push(PreparedStatic::BatchMap);
+            }
+            (StaticTy::Model { n_features }, StaticData::Model(m)) => {
+                if m.n_features() != *n_features {
+                    return Err(CompileError::Static(format!(
+                        "@{i}: model takes {} feature(s), declared {n_features}",
+                        m.n_features()
+                    )));
+                }
+                prepared.push(PreparedStatic::Model(m));
+            }
+            (StaticTy::Model { .. }, _) => {
+                return Err(CompileError::Static(format!(
+                    "@{i}: declared model, got non-model data"
+                )))
+            }
+            (_, StaticData::Model(_)) => {
+                return Err(CompileError::Static(format!(
+                    "@{i}: got model data for a non-model declaration"
+                )))
             }
             (StaticTy::BatchMap { .. }, StaticData::Scalar { .. }) => {
                 return Err(CompileError::Static(format!(
@@ -2367,6 +2388,36 @@ fn compile_inst(
                         }
                     }
                 }
+                Ok(())
+            })
+        }
+        Inst::Predict {
+            static_id,
+            dst,
+            id,
+            feats,
+        } => {
+            let static_id = static_id as usize;
+            let dst = sl(slots, dst);
+            let id = sl(slots, id);
+            let feats: Vec<usize> = feats.iter().map(|f| sl(slots, *f)).collect();
+            // Per-site scratch so the kernel gets a contiguous &[f64] without
+            // a per-row allocation. `InstFn` is `Fn`, not `FnMut`, so the
+            // buffer lives behind a RefCell; it reaches its final capacity on
+            // the first row and never grows again, which is the zero-alloc
+            // contract RunState documents. (Cranelift uses a stack slot
+            // instead — same routine, no cell.)
+            let scratch = std::cell::RefCell::new(vec![0.0f64; feats.len()]);
+            Box::new(move |ctx| {
+                let PreparedStatic::Model(m) = &ctx.statics[static_id] else {
+                    unreachable!("static kind checked at compile");
+                };
+                let mut buf = scratch.borrow_mut();
+                for (j, f) in feats.iter().enumerate() {
+                    buf[j] = as_f64(ctx.regs[*f]);
+                }
+                let v = m.predict(as_i64(ctx.regs[id]), &buf)?;
+                ctx.regs[dst] = RegVal::F64(v);
                 Ok(())
             })
         }

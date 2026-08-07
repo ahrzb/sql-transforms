@@ -89,15 +89,20 @@ fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
     // EMPTY values (all-key/semi joins — the probe carries only the hit).
     // A map that is empty on BOTH axes carries no information at all.
     for (i, st) in p.statics.iter().enumerate() {
-        if let StaticTy::Map { keys, values } = st {
-            if keys.is_empty() && values.is_empty() {
-                err(
-                    errs,
-                    None,
-                    None,
-                    format!("@{i}: map static with neither keys nor values"),
-                );
-            }
+        match st {
+            StaticTy::Map { keys, values } if keys.is_empty() && values.is_empty() => err(
+                errs,
+                None,
+                None,
+                format!("@{i}: map static with neither keys nor values"),
+            ),
+            StaticTy::Model { n_features: 0 } => err(
+                errs,
+                None,
+                None,
+                format!("@{i}: model static with no features"),
+            ),
+            _ => {}
         }
     }
     if p.blocks.is_empty() {
@@ -200,6 +205,7 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         Inst::ReExtract { dst, .. } | Inst::ReReplace { dst, .. } => vec![(*dst, Ty::Str)],
         Inst::Round2f { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::Round2i { dst, .. } => vec![(*dst, Ty::I64)],
+        Inst::Predict { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::StoiOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::I64)],
         Inst::StofOpt { flag, dst, .. } => vec![(*flag, Ty::I1), (*dst, Ty::F64)],
         Inst::Load { dst, col } => vec![(*dst, in_col(*col).unwrap_or(Ty::I1))],
@@ -606,6 +612,43 @@ fn check_block(
                     i,
                     format!("@{static_id} is a multimap: use probe.range"),
                 ),
+                Some(StaticTy::Model { .. }) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is a model: use predict"),
+                ),
+            },
+            Inst::Predict {
+                static_id,
+                id,
+                feats,
+                ..
+            } => match p.statics.get(*static_id as usize) {
+                None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
+                Some(StaticTy::Model { n_features }) => {
+                    if feats.len() != *n_features as usize {
+                        err(
+                            errs,
+                            Some(bi),
+                            i,
+                            format!(
+                                "@{static_id} takes {n_features} feature(s), predict passes {}",
+                                feats.len()
+                            ),
+                        );
+                    }
+                    want(&in_scope, def_types, *id, Ty::I64, "model id", bi, i, errs);
+                    for f in feats {
+                        want(&in_scope, def_types, *f, Ty::F64, "feature", bi, i, errs);
+                    }
+                }
+                Some(_) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is not a model: predict needs model<...>"),
+                ),
             },
             Inst::ExternCall { ext, dsts, args } => match p.externs.get(*ext as usize) {
                 None => err(errs, Some(bi), i, format!("unknown extern @{ext}")),
@@ -751,7 +794,13 @@ fn check_block(
                     i,
                     format!("@{static_id} is nullable: use sload.opt"),
                 ),
-                Some(_) => {}
+                Some(StaticTy::Model { .. }) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is a model: use predict"),
+                ),
+                Some(StaticTy::Scalar(_)) => {}
             },
             Inst::SloadOpt { static_id, .. } => match p.statics.get(*static_id as usize) {
                 None => err(errs, Some(bi), i, format!("unknown static @{static_id}")),
@@ -767,7 +816,13 @@ fn check_block(
                     i,
                     format!("@{static_id} is not nullable: use sload"),
                 ),
-                Some(_) => {}
+                Some(StaticTy::Model { .. }) => err(
+                    errs,
+                    Some(bi),
+                    i,
+                    format!("@{static_id} is a model: use predict"),
+                ),
+                Some(StaticTy::Scalar(_)) => {}
             },
         }
 

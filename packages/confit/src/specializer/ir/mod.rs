@@ -85,6 +85,7 @@
 //! ret       := ty | STRING ":" ty     // named returns: all named or none
 //! static_ty := "scalar" "<" col_ty ">"
 //!            | "map" "(" ty ("," ty)* ")" "->" "(" ty ("," ty)* ")"
+//!            | "model" "<" "tree_ensemble" "(" INT ")" ">"   // INT = n_features
 //! func      := "fn" IDENT "(" "in" ":" batch "," "out" ":" batch ")" "{" block+ "}"
 //! batch     := "batch" "{" [col ("," col)*] "}"
 //! col       := (IDENT | STRING) ":" col_ty        // STRING for non-ident names
@@ -123,6 +124,7 @@
 //! store out.COL, %v                           // COL not nullable
 //! store.opt out.COL, %f, %v                   // COL nullable
 //! %hit, %v1, .. = probe @N, %k1, ..           // map static
+//! %d = predict @N, %id, %f1, ..               // model static; %id i64, rest f64
 //! %d = sload @N                               // scalar<T> static
 //! %f, %d = sload.opt @N                       // scalar<T?> static
 //! %w, %f1, %v1, .. = ecall @N, %af1, %av1, .. // extern (UDF) call
@@ -191,6 +193,12 @@ pub enum StaticTy {
     /// `values` = the batch's columns flattened like multimap values
     /// (nullable -> validity+payload pairs).
     BatchMap { values: Vec<Ty> },
+    /// A fitted model, scored with `predict`. Prepare-time like every other
+    /// static; the packed layout behind it is a backend decision, exactly as
+    /// it is for a map. The text form names a kind — `model<tree_ensemble(k)>`
+    /// — but `tree_ensemble` is the only one, so it is a literal token rather
+    /// than a stored enum; a second kind (mat_stack) turns it into one.
+    Model { n_features: u32 },
 }
 
 /// SSA value id. Presentation names are not stored; the printer derives
@@ -805,6 +813,18 @@ pub enum Inst {
         dsts: Vec<Value>,
         args: Vec<Value>,
     },
+    /// Score a `model<...>` static: one f64 per declared feature in, one f64
+    /// out. Bare scalars only — the null lane never enters the kernel and
+    /// stays ordinary `i1` algebra in the caller. A NULL feature is presented
+    /// as NaN by the lowering (the model has a defined answer for missing);
+    /// a missing *model* is the caller's probe miss, not this instruction's
+    /// business. Traps on an `id` outside the prepared model set.
+    Predict {
+        static_id: u32,
+        dst: Value,
+        id: Value,
+        feats: Vec<Value>,
+    },
     /// Read a `scalar<T>` static.
     Sload {
         static_id: u32,
@@ -949,6 +969,7 @@ impl Inst {
             | Inst::ReMatch { dst, .. }
             | Inst::ReExtract { dst, .. }
             | Inst::ReReplace { dst, .. }
+            | Inst::Predict { dst, .. }
             | Inst::Sload { dst, .. } => vec![*dst],
             Inst::StoiOpt { flag, dst, .. }
             | Inst::StofOpt { flag, dst, .. }
@@ -1111,6 +1132,13 @@ impl Inst {
                 }
                 for a in args {
                     *a = m(*a);
+                }
+            }
+            Inst::Predict { dst, id, feats, .. } => {
+                *dst = m(*dst);
+                *id = m(*id);
+                for f in feats {
+                    *f = m(*f);
                 }
             }
         }

@@ -226,6 +226,29 @@ fn load_all(
                     keys: key_vals,
                 });
             }
+            StaticTy::Model { n_features } => {
+                // Model id 0 always exists (the data generator builds at
+                // least one model per declaration), so the differential
+                // exercises the traversal rather than degenerating into
+                // "both backends trap". The out-of-range id is a pin.
+                let id = b.fresh();
+                insts.push(Inst::Const {
+                    dst: id,
+                    lit: Lit::I64(0),
+                });
+                scope.add(id, Ty::I64);
+                let feats: Vec<Value> = (0..*n_features)
+                    .map(|_| ensure(rng, b, scope, insts, Ty::F64))
+                    .collect();
+                let dst = b.fresh();
+                scope.add(dst, Ty::F64);
+                insts.push(Inst::Predict {
+                    static_id: si as u32,
+                    dst,
+                    id,
+                    feats,
+                });
+            }
             // The random-program generator doesn't emit multiplicity loops
             // (stage-B programs are exercised by targeted tests instead).
             StaticTy::MultiMap { .. } | StaticTy::BatchMap { .. } => {
@@ -609,12 +632,16 @@ pub fn gen_program(seed: u64) -> Program {
 
     let statics: Vec<StaticTy> = (0..rng.below(3))
         .map(|_| {
-            if rng.chance(50) {
+            if rng.chance(40) {
                 StaticTy::Scalar(rand_col_ty(&mut rng))
-            } else {
+            } else if rng.chance(66) {
                 StaticTy::Map {
                     keys: (0..1 + rng.below(2)).map(|_| rand_ty(&mut rng)).collect(),
                     values: (0..1 + rng.below(2)).map(|_| rand_ty(&mut rng)).collect(),
+                }
+            } else {
+                StaticTy::Model {
+                    n_features: 1 + rng.below(3) as u32,
                 }
             }
         })
