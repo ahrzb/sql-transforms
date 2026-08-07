@@ -169,7 +169,14 @@ pub fn lower(
 
     let mut live = Vec::new();
     for (ci, (_, e)) in exprs.iter().enumerate() {
-        debug_assert!(live.is_empty());
+        // Not a `debug_assert`: this runs once per output column at prepare,
+        // never per row, and it is the ONLY thing that catches an arm which
+        // pushes lanes and forgets to truncate. A leak leaves dead values
+        // riding every later block transition — well-formed IR, so `verify`
+        // says nothing, and a release-only test run sees nothing either
+        // (measured: TASK-66's own fix passed the whole suite with its
+        // `live.truncate` deleted).
+        assert!(live.is_empty(), "live stack leaked before column {ci}");
         let lane = fb.emit(e, &mut live)?;
         let col = ci as u32;
         if out_cols[ci].ty.nullable {
@@ -1025,7 +1032,23 @@ impl<'a> FB<'a> {
                 })
             }
             SKind::TreePredict { model, id, feats } => {
+                // Every operand rides the `live` stack while its siblings are
+                // emitted. A CASE or guarded CAST inside a later feature
+                // splits the CFG, and `rebind_live` then rewrites the earlier
+                // lanes to the new block's params — so a `Lane` still held in
+                // a local from before the split names a register that block
+                // cannot see (TASK-66: `COALESCE(x, 0.0)` around a nullable
+                // feature stranded the id). Reading the operands back OUT of
+                // `live` afterwards is the point, not the pushing; this is
+                // the same shape as `emit_probe` and `emit_extern`.
                 let idl = self.emit(id, live)?;
+                live.push((idl, Ty::I64));
+                for f in feats {
+                    let lane = self.emit(f, live)?;
+                    live.push((lane, f.ty));
+                }
+                let start = live.len() - (feats.len() + 1);
+                let (idl, _) = live[start];
                 let id_flag = idl.flag;
                 // MASK the id, as every other trapping op does. Under a false
                 // validity flag the payload is arbitrary, and `predict` traps
@@ -1040,10 +1063,14 @@ impl<'a> FB<'a> {
                 // defined answer for missing (the node's learned direction),
                 // so its validity is deliberately NOT folded into the result
                 // flag. Only the id's is: an unseen group has no model.
+                //
+                // Both the NaN constant and the selects are emitted HERE, in
+                // whatever block the operands ended up in, so the hoisted
+                // constant cannot be stranded either.
                 let mut nan: Option<Value> = None;
                 let mut vals = Vec::with_capacity(feats.len());
-                for f in feats {
-                    let l = self.emit(f, live)?;
+                for i in 0..feats.len() {
+                    let (l, _) = live[start + 1 + i];
                     // A non-nullable feature is already the value; only a
                     // nullable one needs the NULL-to-NaN select.
                     let Some(flag) = l.flag else {
@@ -1071,6 +1098,7 @@ impl<'a> FB<'a> {
                     });
                     vals.push(v);
                 }
+                live.truncate(start);
                 let dst = self.fresh();
                 self.inst(Inst::Predict {
                     static_id: (self.model_base + *model as usize) as u32,

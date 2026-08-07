@@ -440,3 +440,119 @@ def test_unused_model_set_costs_nothing(backend):
         {"trees": STUMP},
     )
     assert got == [{"p": 3.0}]
+
+
+# ------------------------------------------- TASK-66: block-splitting args --
+#
+# CASE and guarded CASTs split the CFG, and the IR's strict block-param SSA
+# means every value that must outlive the split has to ride the branch. The
+# `TreePredict` arm never put its operands on the live stack, so an ordinary
+# `COALESCE` around a nullable feature stranded the model id in the previous
+# block and `ir::verify` rejected the program.
+#
+# Two features, so the split can sit in the FIRST argument or a LATER one --
+# the stranding differs. x <= 0.5 picks the y-fork on the left, else the one
+# on the right; the four leaves are distinct so a fix that builds but reads
+# the wrong column still fails.
+FORK = ensemble(
+    [
+        split(0, 0, 0, feature=0, threshold=0.5, left=1, right=4),
+        split(0, 0, 1, feature=1, threshold=0.5, left=2, right=3),
+        leaf(0, 0, 2, 10.0),
+        leaf(0, 0, 3, 20.0),
+        split(0, 0, 4, feature=1, threshold=0.5, left=5, right=6),
+        leaf(0, 0, 5, 30.0),
+        leaf(0, 0, 6, 40.0),
+    ],
+    features=["x", "y"],
+)
+FORK_ROWS = [{"id": 0, "x": 0.2, "y": 0.8}, {"id": 0, "x": 0.8, "y": 0.2}]
+FORK_SCHEMA = {"id": "int", "x": "float?", "y": "float?"}
+# swapping x and y would give [30.0, 20.0]
+FORK_WANT = [20.0, 30.0]
+
+SPLITTERS = [
+    pytest.param("COALESCE({c}, 0.0)", id="coalesce"),
+    pytest.param("CASE WHEN {c} > 9.0 THEN 9.0 ELSE {c} END", id="case"),
+    pytest.param("NULLIF({c}, 99.0)", id="nullif"),
+]
+
+
+@pytest.mark.parametrize("expr", SPLITTERS)
+def test_split_in_the_first_feature(backend, expr):
+    got = run(
+        "SELECT tree_predict('trees', id, struct_pack("
+        f"x := {expr.format(c='x')}, y := y)) AS p FROM __THIS__",
+        FORK_SCHEMA,
+        FORK_ROWS,
+        {"trees": FORK},
+    )
+    assert [r["p"] for r in got] == FORK_WANT
+
+
+@pytest.mark.parametrize("expr", SPLITTERS)
+def test_split_in_a_later_feature(backend, expr):
+    """The first feature is already emitted when the split happens, so this
+    strands a different set of lanes than a split in the first."""
+    got = run(
+        "SELECT tree_predict('trees', id, struct_pack("
+        f"x := x, y := {expr.format(c='y')})) AS p FROM __THIS__",
+        FORK_SCHEMA,
+        FORK_ROWS,
+        {"trees": FORK},
+    )
+    assert [r["p"] for r in got] == FORK_WANT
+
+
+@pytest.mark.parametrize("expr", SPLITTERS)
+def test_split_in_every_feature(backend, expr):
+    got = run(
+        "SELECT tree_predict('trees', id, struct_pack("
+        f"x := {expr.format(c='x')}, y := {expr.format(c='y')})) AS p FROM __THIS__",
+        FORK_SCHEMA,
+        FORK_ROWS,
+        {"trees": FORK},
+    )
+    assert [r["p"] for r in got] == FORK_WANT
+
+
+def test_split_in_the_model_id(backend):
+    """The id is emitted before every feature, so it is the lane with the
+    longest way to travel."""
+    got = run(
+        "SELECT tree_predict('trees', COALESCE(id, 0), "
+        "struct_pack(x := x, y := y)) AS p FROM __THIS__",
+        {"id": "int?", "x": "float?", "y": "float?"},
+        FORK_ROWS,
+        {"trees": FORK},
+    )
+    assert [r["p"] for r in got] == FORK_WANT
+
+
+def test_split_outside_the_call_still_works(backend):
+    """The control: the same expression one level out has always built, so a
+    fix that breaks this has moved the bug rather than removed it."""
+    got = run(
+        "SELECT tree_predict('trees', id, struct_pack(x := x, y := y)) AS p, "
+        "COALESCE(x, 0.0) AS c FROM __THIS__",
+        FORK_SCHEMA,
+        FORK_ROWS,
+        {"trees": FORK},
+    )
+    assert [(r["p"], r["c"]) for r in got] == [(20.0, 0.2), (30.0, 0.8)]
+
+
+def test_split_after_the_call(backend):
+    """The operands come back OFF the live stack when the call is done. If
+    they were left on it, a split further out would carry stale lanes into
+    the join block's params and every later transition would be one shape
+    too wide."""
+    got = run(
+        "SELECT tree_predict('trees', id, struct_pack("
+        "x := COALESCE(x, 0.0), y := y)) "
+        "+ CASE WHEN y > 0.5 THEN 1.0 ELSE 2.0 END AS p FROM __THIS__",
+        FORK_SCHEMA,
+        FORK_ROWS,
+        {"trees": FORK},
+    )
+    assert [r["p"] for r in got] == [21.0, 32.0]
