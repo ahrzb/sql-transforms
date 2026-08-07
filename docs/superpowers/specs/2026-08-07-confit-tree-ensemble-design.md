@@ -416,13 +416,18 @@ wrong.** sklearn 1.9.0 / numpy 2.5.1, 2000 rows at 10 / 100 / 500 trees:
   forest starts at 0.0, accumulates, divides by `n`, and has no base at all.
   The kernel therefore seeds for `sum` and adds after the divide for `mean`,
   with a pin using values whose addition is order-sensitive.
-- **A RandomForest with `n_jobs != 1` cannot be held to bit-exactness at
-  all.** The lock-serialized `+=` interleaves nondeterministically: two
-  `.predict` calls on the same fitted model and the same X in one process
-  differ on up to 1187/2000 rows, 19 ULP. No fixed-order kernel can be
-  bit-exact against a moving target, so gate 1 must fit with `n_jobs=1`, and
-  any forest scored otherwise needs a declared tolerance for reasons that
-  have nothing to do with us.
+- **`n_jobs=1` is the reference configuration, and gate 1 fits with it.**
+  Not a workaround — a serving decision (AmirHossein, 2026-08-07):
+  per-request parallelism is not on the table inside our latency budget, so
+  the single-threaded estimator is the one we are reproducing. It also
+  happens to be the only configuration where bit-exactness is a coherent
+  goal: with `n_jobs != 1` the lock-serialized `+=` interleaves
+  nondeterministically, and two `.predict` calls on the same fitted model
+  and the same X in one process differ on up to 1187/2000 rows (19 ULP). No
+  fixed-order kernel can be bit-exact against a target that moves against
+  itself, so a forest fitted for throughput rather than serving needs a
+  declared tolerance — a property of how it was configured, not of the
+  kernel.
 
 A single tree still returns its leaf value verbatim, so bit-exactness there
 was never in question.
