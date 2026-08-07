@@ -34,7 +34,11 @@ MAX_DEPTH = 8
 
 # Only query nodes (SELECT_NODE, SET_OPERATION_NODE, ...) carry a cte_map, so
 # its presence is what tells a query node from a table ref or an expression.
+# A TableRef is then anything carrying a `sample`. Both are internal DuckDB
+# details rather than a documented API; `_shapes_test.py` is what keeps them
+# true, and replays DuckDB's own corpus to catch the format moving.
 _QUERY = "cte_map"
+_RECURSIVE_CTE = "RECURSIVE_CTE_NODE"
 
 type Node = dict[str, Any]
 type Relation = Any  # anything DuckDB will register: arrow, pandas, polars
@@ -640,7 +644,14 @@ def _resolve(
     def walk(node: Node, ctes: frozenset[str]) -> None:
         nonlocal depth
         for entry in node[_QUERY]["map"]:
-            walk(entry["value"]["query"]["node"], ctes)
+            body = entry["value"]["query"]["node"]
+            # A RECURSIVE CTE is in scope inside its own body; a plain one is
+            # not, where the same name means whatever the caller's frame binds.
+            # The inner node type is the only thing that tells them apart.
+            visible = ctes
+            if body["type"] == _RECURSIVE_CTE:
+                visible = ctes | {entry["key"]}
+            walk(body, visible)
             ctes = ctes | {entry["key"]}
         for _, _, v in list(_under(node, deep=False)):
             if _is_query(v):
