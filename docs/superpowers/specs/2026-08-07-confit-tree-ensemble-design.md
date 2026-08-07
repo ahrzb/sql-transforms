@@ -438,12 +438,17 @@ Four gates, strongest first.
   generates `predict` sites; the Python gates additionally assert
   `fn.backend`, because the cranelift compile error is discarded and the
   fallback is silent.
-- Gate 2 (`ecall` vs `predict` inside confit) is **not built**. It is a
-  diagnostic gate, not a detection one — gate 1 covers the whole chain
-  bit-exactly, so gate 2 would only localize a failure gate 1 already
-  catches. Its real value arrives with the swap-in, where the same SQL must
-  produce the same answers through either path; that milestone is not
-  authorized, so the gate waits for it.
+- Gate 2 (`ecall` vs `predict` inside confit) **is built**: the same fitted
+  estimator behind a `PythonTransform` trampoline on one side and the kernel
+  on the other, same rows, `==` on the answers. Covered: plain forest,
+  missing values (the two paths reach NaN by different routes — `_as_feature`
+  vs the lowering's `select`), a boosted model (base and learning-rate
+  scaling exist only on the kernel side), and a NULL id. The ecall side
+  counts its trampoline invocations and asserts one per scored row, so a
+  regression that made both sides take the SAME path fails loudly rather than
+  passing green. This is the gate the swap-in needs: replacing the trampoline
+  with the kernel must not move a bit, or every model fit against the old
+  serving path silently shifts.
 
 **Float tolerance — SETTLED BY MEASUREMENT (2026-08-07), and the premise was
 wrong.** sklearn 1.9.0 / numpy 2.5.1, 2000 rows at 10 / 100 / 500 trees:
