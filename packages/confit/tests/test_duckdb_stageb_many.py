@@ -168,3 +168,22 @@ def test_split_inside_a_multi_operand_expression():
         "(CASE WHEN d.id > 1 THEN d.v ELSE 'y' END) AS v "
         "FROM __THIS__ AS t JOIN d ON t.pid = d.id"
     )
+
+
+def test_split_in_the_join_condition():
+    """The ON residual is its own seed site, emitted before the output
+    columns exist. A CASE there that reads the joined column is the case the
+    per-expression reseed could not reach.
+
+    The bare `AND CASE ... END` spelling on an INNER join is refused earlier
+    by an unrelated pre-existing rule ("single-side residual with trapping
+    ops"), so the reachable forms are a LEFT join and a comparison.
+    """
+    _many_check(
+        "SELECT pid, v FROM __THIS__ AS t LEFT JOIN d "
+        "ON t.pid = d.id AND CASE WHEN d.id > 1 THEN TRUE ELSE FALSE END"
+    )
+    _many_check(
+        "SELECT pid, v FROM __THIS__ AS t JOIN d "
+        "ON t.pid = d.id AND (CASE WHEN d.id > 1 THEN d.v ELSE 'a' END) <> 'b'"
+    )
