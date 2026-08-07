@@ -911,6 +911,35 @@ extern "C" fn h_probe(
     }
 }
 
+/// Tree-ensemble scoring, delegating to the SAME kernel routine the
+/// interpreter calls. Unlike `h_probe`/`h_extern` this takes no per-site
+/// descriptor: `probe` needs one because it carries `Vec<Ty>`, whereas
+/// everything `predict` needs at the site is two integers, which ride in as
+/// immediates. Features arrive as a CONTIGUOUS f64 buffer rather than
+/// 16-byte cells — there is no validity lane and no string span to carry, so
+/// the kernel gets its `&[f64]` with no gather step.
+extern "C" fn h_predict(
+    p: *mut Cx,
+    static_id: i64,
+    n_features: i64,
+    id: i64,
+    feats: *const f64,
+) -> f64 {
+    let c = unsafe { cx(p) };
+    let feats = unsafe { std::slice::from_raw_parts(feats, n_features as usize) };
+    let statics = unsafe { std::slice::from_raw_parts(c.statics, c.statics_len) };
+    let PreparedStatic::Model(m) = &statics[static_id as usize] else {
+        unreachable!("static kind checked at compile");
+    };
+    match m.predict(id, feats) {
+        Ok(v) => v,
+        Err(t) => {
+            c.set_trap(t.0);
+            f64::NAN
+        }
+    }
+}
+
 /// Extern (UDF) call: gather `Option<ScalarVal>` args from the arg cells,
 /// delegate to the SAME [`interp::call_extern`] the interpreter uses, and
 /// write the whole-call validity plus (validity, payload) pairs to the out
@@ -1112,6 +1141,10 @@ pub fn compile_ext(
             .iter()
             .map(|s| match s {
                 StaticTy::Map { values, .. } => values.len(),
+                // `predict` reuses slot_vals as its feature buffer, but packs
+                // bare f64s at 8-byte stride rather than 16-byte cells — so k
+                // features need ceil(k/2) cells' worth of room.
+                StaticTy::Model { n_features } => (*n_features as usize).div_ceil(2),
                 _ => 1,
             })
             .max()
@@ -1987,6 +2020,26 @@ fn translate_inst(
                 vals.insert(d.0, v);
             }
         }
+        Inst::Predict {
+            static_id,
+            dst,
+            id,
+            feats,
+        } => {
+            let StaticTy::Model { n_features } = &p.statics[*static_id as usize] else {
+                unreachable!("predict on a non-model is rejected by the verifier");
+            };
+            // Contiguous f64s, 8-byte stride — see h_predict.
+            for (j, f) in feats.iter().enumerate() {
+                b.ins().stack_store(vals[&f.0].s(), slot_vals, (8 * j) as i32);
+            }
+            let sid = icon(b, *static_id as i64);
+            let nf = icon(b, *n_features as i64);
+            let fp = b.ins().stack_addr(types::I64, slot_vals, 0);
+            let v = call_h(b, module, "h_predict", &[cxp, sid, nf, vals[&id.0].s(), fp]).unwrap();
+            trap_check(b);
+            vals.insert(dst.0, V::S(v));
+        }
         Inst::Sload { static_id, dst } => {
             sload(
                 b, module, call_h, p, cxp, vals, *static_id, None, *dst, slot_out, slot_vals,
@@ -2126,6 +2179,7 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_store_str", h_store_str as *const u8),
     ("h_sload", h_sload as *const u8),
     ("h_probe", h_probe as *const u8),
+    ("h_predict", h_predict as *const u8),
     ("h_extern", h_extern as *const u8),
     ("h_ln", h_ln as *const u8),
     ("h_log2", h_log2 as *const u8),
@@ -2218,6 +2272,7 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_store_str" => (&[ptr, I64, I8, I64, I64], None),
         "h_sload" => (&[ptr, I64, I64, I64], None),
         "h_probe" => (&[ptr, I64, I64, I64], Some(I8)),
+        "h_predict" => (&[ptr, I64, I64, I64, I64], Some(F64)),
         "h_extern" => (&[ptr, I64, I64, I64], None),
         _ => unreachable!("unknown helper {name}"),
     };

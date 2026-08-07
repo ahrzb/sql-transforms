@@ -750,7 +750,25 @@ impl Parser {
                 self.expect(Tok::RParen)?;
                 Ok(StaticTy::BatchMap { values })
             }
-            other => Err(self.err(format!("expected 'scalar' or 'map', found '{other}'"))),
+            "model" => {
+                // `tree_ensemble` is the only kind, so the token is checked
+                // rather than stored — a second kind makes it an enum.
+                self.expect(Tok::Lt)?;
+                let k = self.ident("a model kind")?;
+                if k != "tree_ensemble" {
+                    return Err(self.err(format!("unknown model kind '{k}'")));
+                }
+                self.expect(Tok::LParen)?;
+                let n = self.int_literal("n_features")?;
+                let n_features = u32::try_from(n)
+                    .map_err(|_| self.err(format!("n_features out of range: {n}")))?;
+                self.expect(Tok::RParen)?;
+                self.expect(Tok::Gt)?;
+                Ok(StaticTy::Model { n_features })
+            }
+            other => Err(self.err(format!(
+                "expected 'scalar', 'map' or 'model', found '{other}'"
+            ))),
         }
     }
 
@@ -1426,6 +1444,23 @@ impl Parser {
                     hit,
                     dsts,
                     keys,
+                }
+            }
+            "predict" => {
+                want_dsts(1, self)?;
+                let static_id = self.static_ref(statics)?;
+                self.expect(Tok::Comma)?;
+                let id = self.use_value()?;
+                let mut feats = Vec::new();
+                while *self.peek() == Tok::Comma {
+                    self.bump();
+                    feats.push(self.use_value()?);
+                }
+                Inst::Predict {
+                    static_id,
+                    dst: def!(0),
+                    id,
+                    feats,
                 }
             }
             "ecall" => {

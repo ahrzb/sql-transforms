@@ -15,6 +15,7 @@ pub mod cranelift;
 pub mod interp;
 mod pow10;
 mod strip_accents;
+pub mod tree_ensemble;
 
 #[cfg(test)]
 mod tests;
@@ -358,6 +359,12 @@ pub enum StaticData {
     /// materialized is a backend decision — the oracle picks the simplest
     /// correct structure, perfect hashing is the codegen backend's game).
     Map(Vec<(Vec<KeyBits>, Vec<ScalarVal>)>),
+    /// A fitted ensemble, already structurally validated by
+    /// [`tree_ensemble::TreeEnsemble::new`]; compile only checks that its
+    /// width matches the declaration. Boxed so one model does not widen
+    /// every static in the vector — statics are prepared once, so the
+    /// indirection never shows up per row.
+    Model(Box<tree_ensemble::TreeEnsemble>),
 }
 
 /// Output column builder: `(valid, value)` pairs; strings are arena spans.

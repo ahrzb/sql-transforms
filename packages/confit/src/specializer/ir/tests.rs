@@ -80,6 +80,7 @@ fn fixtures_cover_every_opcode() {
         "store out.",
         "store.opt out.",
         "probe @",
+        "predict @",
         "sload @",
         "sload.opt @",
         "jump",

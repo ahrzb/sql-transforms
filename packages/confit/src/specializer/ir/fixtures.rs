@@ -136,6 +136,40 @@ entry:
 }
 "#;
 
+/// Per-group tree scoring: the group's model id comes from a params-map
+/// probe, the features come from nullable columns. Covers: model statics,
+/// predict, const.f64 nan, the NULL-to-NaN select.
+///
+/// Only the probe miss gates the output — a NULL *feature* is a value the
+/// model has a defined answer for (it takes the node's missing direction),
+/// while a missing *model* is not.
+pub const TREE_SCORE: &str = r#"
+static @0: map(str) -> (i64)
+static @1: model<tree_ensemble(2)>
+
+fn score(in: batch{region: str, price: f64?, sqft: f64?}, out: batch{pred: f64?}) {
+entry:
+  %region = load in.region
+  %hit, %mid = probe @0, %region
+  %pf, %pv = load.opt in.price
+  %sf, %sv = load.opt in.sqft
+  %nan = const.f64 nan
+  %f0 = select %pf, %pv, %nan
+  %f1 = select %sf, %sv, %nan
+  brif %hit, scored(%mid, %f0, %f1), unseen
+scored(%m: i64, %a: f64, %b: f64):
+  %p = predict @1, %m, %a, %b
+  %t = const.i1 true
+  store.opt out.pred, %t, %p
+  emit
+unseen:
+  %f = const.i1 false
+  %z = const.f64 0.0
+  store.opt out.pred, %f, %z
+  emit
+}
+"#;
+
 pub fn all() -> Vec<(&'static str, &'static str)> {
     vec![
         ("projection", PROJECTION),
@@ -143,6 +177,7 @@ pub fn all() -> Vec<(&'static str, &'static str)> {
         ("case_diamond", CASE_DIAMOND),
         ("casts", CASTS),
         ("kitchen", KITCHEN),
+        ("tree_score", TREE_SCORE),
     ]
 }
 
