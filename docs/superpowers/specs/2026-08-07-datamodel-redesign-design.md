@@ -232,17 +232,102 @@ but the substitution mechanism is identical:
 identifier, so there is no marker to parse, no function node to match, and no
 orphaned CTE to prune after substitution.
 
+## Properties and gates
+
+Every property is named descriptively rather than numbered, so citing one in
+a review carries its meaning. Where a property restates an existing law from
+`docs/properties.md` or `docs/kpis.md`, that is noted.
+
+### Freezing
+
+| Property | Statement | Gate |
+| --- | --- | --- |
+| **Freezing is complete** | Every maximal `__FIT__`-only subtree appears in `frozen`; nothing reading `__FIT__` survives into the residual | Construct a transform with two `__FIT__` CTEs and one mixed relation; assert `frozen` has exactly the two, and `"__FIT__" not in residual.sql` |
+| **Freezing is faithful** | `t.fit(D).transform(D) == run(t, D)`, where `run` binds `__FIT__` and `__THIS__` both to `D` | Property test over the corpus. The reference side is a binding, not a rewrite |
+| **Freezing is observable** | For `D' != D`, `fit(D).transform(D')` uses `D`'s parameters | Measured: frozen `[0.5, 6.66]` vs recomputed `[1.0, 1.0]`. **Load-bearing — see below** |
+| **Freezing is deterministic** | `fit(D)` twice yields equal `frozen` tables | Equality on two fits of the same data |
+| **Fit ignores `__THIS__`** | `fit` reads only `__FIT__`; no serving batch need exist | `fit(D)` succeeds with nothing bound to `__THIS__` |
+| **Statelessness is real** | A transform never naming `__FIT__` has `frozen == {}` and a no-op `fit` | `fit(D1).transform(X) == fit(D2).transform(X)` for arbitrary `D1 != D2` |
+| **Substitution is surgical** | The residual differs from the original *only* at the frozen subtrees | Text comparison against a hand-written expected residual |
+
+**"Freezing is observable" is what keeps "freezing is faithful" from being
+vacuous.** An implementation that freezes nothing at all — `fit` a no-op,
+`transform` re-running the whole query with `__FIT__` bound to the serving
+batch — passes the faithfulness law on every input. The law only bites when
+paired with a second data set. Any test suite that pins the first without the
+second is testing nothing.
+
+### Refusals
+
+All at construction (P7 — "refusals are construction-time and named":
+everything refused is refused at construction with an error naming the
+construct, never at fit, never at serve, never silently).
+
+| Property | Statement | Gate |
+| --- | --- | --- |
+| **Correlated `__FIT__` refuses** | A `__FIT__` subquery referencing outer columns raises `CorrelatedFit` | Construction raises; the message names the correlated column. Assert it raises at construction, **not** at fit or transform |
+| **Unknown name refuses** | A name resolving to nothing raises, naming the identifier | Construction with an unbound name; message contains the name |
+| **Depth cap holds** | Nesting deeper than 8 refuses by name | 9-deep construction raises; 8-deep succeeds |
+| **No third mode** | Every transform either serves or refuses by name (C5 — silent wrongness is the one unrecoverable state) | Corpus FAILED bucket pinned empty |
+
+### Deliberate permissiveness
+
+These are cases the design *allows* and a previous draft refused. Each needs a
+gate that pins the current behaviour, so a future change cannot quietly alter
+it.
+
+| Property | Statement | Gate |
+| --- | --- | --- |
+| **Ordered frames over `__FIT__` are legal** | A window with an order-keyed frame over `__FIT__` freezes and joins by the order key | Pin the measured behaviour: a seen key returns the training value *ignoring the row's own*, an unseen key returns NULL. Both asserted explicitly, with a comment saying this is intended |
+| **`__THIS__`-side aggregation is live** | An aggregate over `__THIS__` means what DuckDB means — recomputed per batch | `transform(X1)` and `transform(X2)` give batch-dependent answers; nothing appears in `frozen` |
+| **Transductive `sc_fit` is legal** | `sc_fit` over `__THIS__` refits per call | Two transforms of different batches yield different parameters |
+
+The ordered-frame gate is the uncomfortable one, and that is why it is here.
+It pins a result that *looks like a bug* — hence the requirement that the test
+carry a comment stating it is intended, so nobody "fixes" it in a year.
+
+### Name resolution
+
+| Property | Statement | Gate |
+| --- | --- | --- |
+| **Capture is by value** | Rebinding a name after construction does not change the built transform | Build `outer` from `z`, rebind `z`, assert `outer` unchanged |
+| **No frame is retained** | Construction holds no reference to the caller's stack frame | Construct inside a function, drop it, assert via `gc`/`weakref` that the frame is collected |
+
+### Nesting
+
+| Property | Statement | Gate |
+| --- | --- | --- |
+| **Implicit tables pass through** | A member's `__FIT__` is the outer's `__FIT__`; one `fit` freezes everything | Nested transform's `frozen` contains the member's tables, prefixed |
+| **Prefixing avoids collisions** | Two members each with a CTE named `cs` yield `z__cs` and `y__cs` | Both keys present in `frozen`, values distinct |
+| **Splicing is text-checkable** | The spliced SQL equals a hand-written equivalent | Text comparison — the gate that reports *where* it broke, not just *that* it did |
+
+### sklearn leaves
+
+| Property | Statement | Gate |
+| --- | --- | --- |
+| **Leaves need no special case** | An sklearn leaf freezes by the same rule as SQL | The faithfulness law with a `StandardScaler` leaf |
+| **The one NULL story** | Unseen key ⇒ LEFT JOIN miss ⇒ NULL θ ⇒ NULL output, never a dropped row (P14) | Transform a batch with an unseen key; the row is present, the output is NULL |
+| **Broken artifacts raise** | A θ id present but absent from `instances` raises, never NULL | Delete an instance, transform, expect a raise naming the id |
+
 ## Slices
 
 1. **`SQLTransform`, `__FIT__`/`__THIS__`, `fit`/`transform`.** Single level,
    no nesting. Find maximal `__FIT__`-only subtrees, refuse correlated ones,
-   freeze at fit, substitute at transform. Gate: the law, plus `CorrelatedFit`.
+   freeze at fit, substitute at transform.
+   Gates: all of **Freezing**, `CorrelatedFit` and **No third mode** from
+   **Refusals**, and both `__THIS__`-side entries under **Deliberate
+   permissiveness**.
 2. **Nesting and name resolution.** Frame lookup at construction, splice,
-   name-prefix, depth cap. Gate: the law on a nested transform, plus spliced
-   text equals a hand-written reference.
+   name-prefix, depth cap.
+   Gates: all of **Name resolution** and **Nesting**, plus **Unknown name
+   refuses** and **Depth cap holds**.
 3. **sklearn leaves.** `x_fit` UDAF / `x_transform` UDF, θ handles, the
-   instance registry. Gate: the law with a `StandardScaler` leaf, plus P14 on
-   an unseen key.
+   instance registry.
+   Gates: all of **sklearn leaves**, plus **Transductive `sc_fit` is legal**.
+
+The ordered-frame gate belongs to slice 1 and should be written first in that
+slice, not last. It is the property most likely to be "corrected" by someone
+who does not know it is deliberate.
 
 TDD, red before green. Lands alongside the existing modules in
 `sql_transform/model/`; nothing is deleted until the old implementation and
