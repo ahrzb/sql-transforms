@@ -197,6 +197,27 @@ impl TreeEnsemble {
 Both backends route through this one routine — the existing shared-code rule
 that keeps the interpreter and cranelift from drifting.
 
+### Which backend runs it
+
+One backend runs a whole program; they are never mixed per instruction.
+[`duckdb/mod.rs`](../../../packages/confit/src/duckdb/mod.rs) tries
+`cranelift::compile_ext` first and falls back to the interpreter when
+compilation fails, with `SPECIALIZER_FORCE_INTERP` pinning the interpreter
+for benches and debugging. The kernel is native Rust either way: the
+interpreter calls it directly, cranelift emits a call to an `extern "C"` shim
+over the same routine, so tree-scoring cost is identical and only the
+surrounding row code differs.
+
+**The fallback is silent** — the compile error is discarded. A `predict`
+implemented in the interpreter but not yet in cranelift therefore drops every
+query that uses it to the interpreter *entirely*, with correct results and
+misleading numbers. Two consequences:
+
+- land both bindings before drawing any performance conclusion;
+- the cranelift binding needs a test that fails when it is missing, which
+  means calling `cranelift::compile_ext` directly (as `exec/tests.rs` already
+  does) rather than going through the fallback-guarded path.
+
 ## The boundary
 
 Two Arrow record batches per model set, supplied to `compile` beside
@@ -331,13 +352,16 @@ to a node instead of a number.
 ## Sequencing
 
 1. IR: declaration + instruction + verify + round-trip (no execution yet).
-2. Kernel: layout, `from_arrow` with its refusals, `predict`, layout check.
+2. Kernel: layout, `from_arrow` with its refusals, `predict`.
 3. Interpreter binding + pins.
-4. Cranelift binding + backend-equality harness.
+4. Cranelift binding + backend-equality harness, tested through
+   `cranelift::compile_ext` directly so a missing binding fails loudly instead
+   of falling back.
 5. Frontend: `tree_predict` resolution, literal hoisting, arity/type checks.
 
 Steps 1–2 are independent and can land separately; nothing before step 5 is
-reachable from SQL, so each lands green on its own.
+reachable from SQL, so each lands green on its own. Steps 3 and 4 are one
+unit for benchmarking purposes — see the silent-fallback note above.
 
 ## Deferred
 
