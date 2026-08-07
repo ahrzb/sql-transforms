@@ -301,7 +301,7 @@ it cannot agree by sharing a bug.
 | Property | Statement | Gate |
 | --- | --- | --- |
 | **Freezing is complete** | Every maximal `__FIT__`-only subtree appears in `params`; nothing reading `__FIT__` survives into the residual | Two `__FIT__` CTEs plus one mixed relation; assert `params` has exactly the two and `"__FIT__" not in residual.sql` |
-| **Freezing is faithful** | `t.fit(D).transform(D) == run(t, D)`, where `run` binds both parameters to `D` | Property test over the corpus. The reference side is a binding, not a rewrite |
+| **Freezing is faithful** | `t.fit(D).transform(D) == run(t, D)`, where `run` binds both parameters to `D`. **Column names too, not only values** (decided 2026-08-08, TASK-72): DuckDB names an unaliased select item after its printed text, so a rewrite that does not pin the name changes the schema and leaks `__param_N` into `get_feature_names_out()` | Property test over the corpus. The reference side is a binding, not a rewrite |
 | **Freezing is observable** | For `D' != D`, `fit(D).transform(D')` uses `D`'s parameters | Measured: frozen `[0.5, 6.66]` versus recomputed `[1.0, 1.0]`. **Load-bearing — see below** |
 | **Freezing is deterministic** | `fit(D)` twice yields equal params | Equality on two fits of the same data |
 | **Fit ignores `__THIS__`** | `fit` reads only `__FIT__`; no serving batch need exist | `fit(D)` succeeds with nothing bound to `__THIS__` |
