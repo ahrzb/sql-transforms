@@ -575,6 +575,10 @@ mask per output, or refuse the ragged case at extraction.
   representation — the missing direction is covered by `missing_left`, the
   binning is not.
 - QuickScorer or a vectorized multi-tree walk — a pure layout change behind
-  the same instruction.
+  the same instruction, with one constraint the measurement above pins: it
+  must keep the **accumulation** sequential in `tree_span` order. Traversal
+  can be reordered freely; the reduction cannot. A blocked or SIMD sum
+  across trees is exactly the mistake `n_jobs != 1` makes, and it would cost
+  bit-exactness for a reduction that is not where the time goes.
 - kNN and kernel SVM: they need the training set as state, which is a
   different structure, not a bigger kernel.
