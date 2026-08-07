@@ -63,7 +63,10 @@ Pinned by `test_duckdb_stageb_many.py::test_split_over_a_joined_column_under_man
       the DuckDB oracle under `shape='many'`, inner and LEFT
 - [x] #2 The existing xfail-strict pin is removed, not weakened
 - [x] #3 A case with the split in the JOIN CONDITION, and one with two output
-      columns where only the second splits, are covered
+      columns where only the second splits, are covered — note the bare
+      `AND CASE ... END` spelling on an INNER join is refused earlier by an
+      unrelated pre-existing rule ("single-side residual with trapping ops"),
+      so the reachable ON forms are a LEFT join and a comparison
 <!-- AC:END -->
 
 ## Implementation Notes
