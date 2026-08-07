@@ -132,8 +132,24 @@ outer = SQLTransform("SELECT * FROM z(__FIT__, __THIS__) WHERE z > 0")
 ```
 
 Splice the member's SQL at the call site with its two parameters bound to the
-arguments, prefixing its CTE names with the binding name. One `fit` freezes
-everything; `params["z__cs"]` says where each table came from.
+arguments. One `fit` freezes everything.
+
+**Rename the member's free references, not its own definitions.** Measured:
+splicing a member as a parenthesised derived table already scopes its CTEs, so
+its own definitions cannot collide with the outer's. The hazard runs the other
+way — a *free* name the member resolved from the caller's frame gets captured
+by an outer CTE that happens to share it:
+
+```
+member alone                        [20.0, 40.0, 60.0]           scale.factor = 2.0
+spliced under `WITH scale AS (...)`  [10000.0, 20000.0, 30000.0]  captured: 1000.0
+free references renamed              [20.0, 40.0, 60.0]           correct
+```
+
+Silent, no error, different numbers. So each free reference is rewritten to a
+unique name (`z__scale`) bound to the object resolution already captured at
+construction — ordinary capture-avoiding substitution. Frozen tables are named
+the same way, so `params["z__cs"]` still says where each came from.
 
 **Splice, never emit a DuckDB macro.** Measured: a table macro invoked under
 `LATERAL` does not see the correlation and silently returns the whole-table
@@ -332,8 +348,9 @@ back where this started.
 | --- | --- | --- |
 | **Both parameters slice** | Per-group passes sliced `__FIT__` *and* `__THIS__` | Filtering only `__FIT__` yields 8 rows from 4 with cross-group statistics; the correct form yields 4 |
 | **Members splice, never macro** | No DuckDB macro is created for a member | A member applied per group returns per-group values, not the whole-table value repeated |
+| **Splicing equals materializing** | A nested call behaves exactly as if the member were a registered table function | A table function call *is* its materialized output, so: compute the member with the pyarrow reference, `con.register` the result, run the outer query over that table, and require the spliced result to match. This is the nesting oracle |
+| **Splicing is capture-free** | An outer CTE cannot rebind a name the member resolved from the caller's frame | Hostile outer: `WITH scale AS (SELECT 1000.0 AS factor)` wrapping a member that freely references a registered `scale`. Must give `[20, 40, 60]`, not `[10000, 20000, 30000]`. **This is the gate a naive splice fails** |
 | **Splicing is text-checkable** | Spliced SQL equals a hand-written equivalent | Text comparison — reports *where* it broke, not just *that* it did |
-| **Prefixing avoids collisions** | Two members each with a CTE named `cs` yield `z__cs` and `y__cs` | Both keys present, values distinct |
 
 ### Name resolution
 
