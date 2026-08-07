@@ -397,7 +397,9 @@ def _rendered(node: Node, names: dict[str, str], stems: dict[str, str]) -> str:
     return _deserialize(doc)
 
 
-def _as_output(table: pa.Table, output: str, source: Relation = None) -> Any:
+def _as_output(
+    table: pa.Table, output: str, source: Relation = None, aligned: bool = True
+) -> Any:
     """The result in the caller's currency.
 
     ``pandas`` carries the caller's index when there is one to carry, which is
@@ -414,15 +416,37 @@ def _as_output(table: pa.Table, output: str, source: Relation = None) -> Any:
         case "default" | "arrow" | "duckdb":
             return table
         case "pandas":
-            return _with_index(table.to_pandas(), source)
+            return _with_index(table.to_pandas(), source, aligned)
         case "numpy":
-            return _with_index(table.to_pandas(), source).to_numpy()
+            return _with_index(table.to_pandas(), source, aligned).to_numpy()
     raise TransformError(f"output must be one of {OUTPUTS}; got {output!r}")
 
 
-def _with_index(frame: Any, source: Relation) -> Any:
+def _keeps_row_order(node: Node) -> bool:
+    """Whether output row *i* still stands for input row *i*.
+
+    An index is a claim about which input row each output row came from, and
+    positional correspondence is the only evidence available. Any ORDER BY or
+    LIMIT in the residual destroys it — measured, and silently: a three-row
+    frame indexed a/b/c through ``ORDER BY v`` came back with a's label on b's
+    value, no error.
+
+    The query's own ORDER BY / LIMIT lives in the top-level ``modifiers``,
+    which is what this reads. A deep scan is wrong: an ordinary projection
+    carries an empty nested ORDER_MODIFIER, so scanning everything never
+    carries an index at all.
+
+    Even so this is a good-faith reading rather than a proof — SQL guarantees
+    no row order without ORDER BY. Losing the index is loud (a FeatureUnion
+    misaligns visibly) while attaching a wrong one is not, so where the two
+    compete the doubt resolves toward dropping it.
+    """
+    return not node.get("modifiers")
+
+
+def _with_index(frame: Any, source: Relation, aligned: bool) -> Any:
     index = getattr(source, "index", None)
-    if index is not None and len(index) == len(frame):
+    if aligned and index is not None and len(index) == len(frame):
         frame.index = index
     return frame
 
@@ -596,7 +620,7 @@ class SQLTransform:
             return lazy
         out = fitted.transform(data)
         self.feature_names_out_ = out.column_names
-        return _as_output(out, self.output, data)
+        return _as_output(out, self.output, data, _keeps_row_order(fitted.node))
 
     def fit_transform(self, data: Relation, y: Any = None) -> Any:
         """On the training relation this is exactly ``run(t, D)`` — that is
