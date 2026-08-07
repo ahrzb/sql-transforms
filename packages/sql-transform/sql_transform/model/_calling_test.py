@@ -6,8 +6,6 @@ stands in — computed in pyarrow, sharing no engine, no control flow and no
 code with the SQL path, so it cannot agree by sharing a bug.
 """
 
-from __future__ import annotations
-
 import gc
 import weakref
 
