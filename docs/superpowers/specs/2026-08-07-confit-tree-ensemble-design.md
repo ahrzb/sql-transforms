@@ -442,6 +442,67 @@ Steps 1–2 are independent and can land separately; nothing before step 5 is
 reachable from SQL, so each lands green on its own. Steps 3 and 4 are one
 unit for benchmarking purposes — see the silent-fallback note above.
 
+## Where this grows (sketch, not built)
+
+The point of this section is the **ceiling**: two kernel operations, forever.
+Neither the number of outputs nor the sklearn method name ever becomes part of
+a function name — `multi_tree_predict_proba` and its siblings must not exist.
+
+**Shape rides the declaration.** Measured on sklearn 1.9.0, `tree_.value` is
+always `(n_nodes, n_outputs, max_n_classes)`; today's one-f64-per-node layout
+is the `(1,1)` corner. Two extra layout fields cover every case, because the
+libraries use two different mechanisms:
+
+```rust
+value_stride: u32,      // leaf width: 1 today; n_outputs * max_n_classes for vector leaves
+tree_output:  Vec<u32>, // which output lane a tree feeds (all 0 for vector leaves)
+```
+
+- sklearn trees and forests use **vector leaves**: `value_stride = k`, every
+  tree feeds all lanes (multi-output regressor `(15, 2, 1)`, multiclass
+  `(5, 1, 3)`).
+- GBM uses **one tree per class**: `estimators_` is `(n_stages, n_classes)`
+  with scalar leaves, so `value_stride = 1` and `tree_output[t] = t %
+  n_classes`. LightGBM and classic XGBoost `multi:softprob` do the same;
+  XGBoost 2.x added vector leaves (unverified here). GBM refuses multi-output
+  regression outright.
+
+The instruction then declares its width, which is idiomatic — `probe` and
+`ecall` are already multi-result:
+
+```text
+static @4 : model<tree_ensemble(2, 3)>       # n_features, n_outputs
+%a, %b, %c = predict @4, %id, %f0, %f1
+```
+
+At the SQL level a k-wide call is a struct-valued call, which already landed
+(single-eval field access, the shared ecall site).
+
+**Methods compose in SQL.** The seven output methods across the target classes
+reduce to two primitives:
+
+| primitive | serves |
+|---|---|
+| aggregated leaf value | `decision_function` (raw), `predict_proba` (link), `predict_log_proba` (`ln`), `predict` (score, or `argmax` / `> 0.5`) |
+| leaf id (`apply`) | `RandomTreesEmbedding.transform` (one-hot of leaf ids — the shape tier), and a gate that localizes a traversal bug to a node instead of a number |
+
+`decision_path` is a sparse node-membership matrix, not a serving shape.
+
+**Open fork this exposes in the current design.** `link` lives in the models
+batch, so the kernel applies it and the pre-link score is unreachable — one
+model cannot serve both `decision_function` and `predict_proba`. Returning the
+raw score and applying the link in SQL is strictly more composable. What
+decides it is bit-exactness: `sigmoid`/`softmax` must match numpy, and
+DuckDB's `exp` need not. If it diverges, the answer is not to fold the link
+back into the tree kernel but to ship `sigmoid`/`softmax` as small confit
+builtins implementing scipy's `expit`, keeping one traversal entry.
+
+Two wrinkles to handle when this is built, both of which produce wrong numbers
+rather than errors: **softmax is cross-lane** (it normalizes across outputs,
+unlike `sigmoid`), and **class counts can be ragged** (`n_classes_ = [2 3]`
+padded to `max_n_classes = 3`, so the padding lane is not a probability) —
+mask per output, or refuse the ragged case at extraction.
+
 ## Deferred
 
 - `mat_stack` (MLP) as a second model kind — same instruction, new header
