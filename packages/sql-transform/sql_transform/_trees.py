@@ -26,8 +26,9 @@ from typing import Any
 
 import numpy as np
 import pyarrow as pa
+from sklearn.base import is_regressor
 
-__all__ = ["TreePackError", "pack"]
+__all__ = ["TreePackError", "pack_trees"]
 
 
 class TreePackError(ValueError):
@@ -37,9 +38,17 @@ class TreePackError(ValueError):
 def _stages(est: Any) -> tuple[list[Any], float, str, float]:
     """(trees, base, agg, leaf scale) for one fitted estimator."""
     cls = type(est).__name__
+    # A classifier's tree stores per-class scores in `values`, not the number
+    # `predict` returns — and it has a `tree_` just like a regressor does, so
+    # without this check it would pack cleanly and score class-0 fractions.
+    if not is_regressor(est):
+        raise TreePackError(
+            f"{cls}: only regressors pack — a classifier's leaf values are"
+            " class scores, not predictions"
+        )
     if hasattr(est, "tree_"):
         return [est], 0.0, "sum", 1.0
-    if cls in ("RandomForestRegressor", "ExtraTreesRegressor", "BaggingRegressor"):
+    if cls in ("RandomForestRegressor", "ExtraTreesRegressor"):
         return list(est.estimators_), 0.0, "mean", 1.0
     if cls == "GradientBoostingRegressor":
         if getattr(est, "n_classes_", 1) != 1:
@@ -60,10 +69,14 @@ def _stages(est: Any) -> tuple[list[Any], float, str, float]:
         zeros = np.zeros((1, est.n_features_in_))
         base = float(est._raw_predict_init(zeros)[0, 0])
         return list(est.estimators_[:, 0]), base, "sum", float(est.learning_rate)
+    # BaggingRegressor is deliberately absent. Its `estimators_features_`
+    # gives each tree a feature SUBSET, so that tree's `feature` ids are
+    # subset-local — reading them as global indices scores the wrong columns
+    # and answers plausibly. Its base estimator need not be a tree at all.
     raise TreePackError(f"{cls} is not a tree ensemble this packer knows")
 
 
-def pack(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, Any]:
+def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, Any]:
     """Fitted regressors in, a confit `models=` entry out.
 
     Model ids are dense and follow the sequence order, so the params table's
