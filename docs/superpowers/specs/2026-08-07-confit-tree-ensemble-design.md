@@ -64,13 +64,13 @@ today ("lift when one needs a loop, e.g. QuickScorer" —
 [`ir/mod.rs`](../../../packages/confit/src/specializer/ir/mod.rs)); putting
 the loop in the kernel leaves that rule intact.
 
-### Kernel vs lowering the tree into IR — unresolved, and not blocking
+### Kernel vs lowering the tree into IR — measured 2026-08-07, kernel stays
 
 The acyclic rule does **not** rule out the other design: a tree is itself
 acyclic, so it can be lowered into nested `brif` blocks with no loop at all —
 the model compiled to code rather than interpreted from data. Both are
-viable; this document picks the kernel, and the reasons are structural, not
-measured:
+viable; this document picked the kernel on structural grounds, and the
+measurement below confirms it:
 
 | | one instruction + kernel | lower the tree into IR branches |
 |---|---|---|
@@ -78,19 +78,51 @@ measured:
 | forest of 100 x 255 nodes | data; program size unchanged | ~25k blocks — cranelift compile time and code size |
 | refit | swap the Arrow batch, re-prepare | re-JIT the whole program |
 | interpreter backend | native speed for free | interpreted per node — slow |
-| small tree (depth <= 6) | indirect loads, loop overhead | likely faster: inlined compares, no indirection |
+| small tree (depth <= 6) | indirect loads, loop overhead | **confirmed** faster: 18.6 vs 36.6 ns/row at 31 nodes — and 2.8% of end-to-end |
 | large ensembles | can adopt QuickScorer / vectorized walks with no IR churn | i-cache and branch-prediction pressure |
 | parity | identical | identical |
 
-**Unmeasured.** The experiment that settles it: per-row latency for (1 tree,
-depth 4), (100 trees, depth 8) and (500 trees, depth 12) — kernel versus a
-hand-written branch program — plus cranelift compile time and code size at
-each point.
+**Measured 2026-08-07** — release build, i7-12700-class 12-core, 8 features,
+`n_jobs=1`. The branch program is generated *from the packed tables*, so both
+paths encode literally the same tree, and a parity gate (`==` on raw doubles,
+against sklearn too) runs before any timing. Both assert
+`fn.backend == "cranelift"`; the compile error is discarded and the
+interpreter fallback is silent, so an unasserted run may time the wrong
+engine.
 
-The choice is also reversible and invisible to users: the two can coexist,
-with the frontend lowering small trees to branches and emitting `predict` for
-large ones. Nothing in the SQL surface or the Arrow boundary changes if that
-happens, which is why the first cut does not wait on the measurement.
+Serving here is boundary-bound, so the table reports **compute** — p50 at
+n=1024 minus the same-shape `SELECT f0` floor (668 µs / 1024 rows).
+
+| point | nodes | kernel compute | branch compute | kernel build | branch build | branch program |
+|---|---|---|---|---|---|---|
+| 1 tree, depth 4 | 31 | 36.6 ns/row | **18.6 ns/row** | 1.0 ms | 1.7 ms | 1.1 KB |
+| 10 trees, depth 6 | 1266 | 192 ns/row | 604 ns/row | 1.1 ms | 31.8 ms | 42 KB |
+| 100 trees, depth 8 | 47828 | 4.4 µs/row | 20.2 µs/row | 2.6 ms | 2062 ms | 1.6 MB |
+| 500 trees, depth 12 | 1301092 | 106 µs/row | — | 49.9 ms | — | 43 MB, not attempted |
+
+**The kernel stays, and the hybrid is not worth building.** The predicted
+small-tree win is real and repeatable — 6 of 6 alternating-order rounds, ~2x
+on compute — but it is 18 ns/row against a ~650 ns/row boundary floor: **2.8%
+end-to-end**, and at n=1 the two are identical to the resolution of the clock
+(1.30 µs, both exactly the floor). The crossover sits between 31 and 1266
+nodes, i.e. immediately: by 10 trees the branch program is already 3.1x the
+kernel's compute and 29x its build, and by 100 trees it is 4.6x compute and
+**783x** build (2.1 s of cranelift for one model). At 500 trees the branch
+path does not exist — 45 MB of generated SQL.
+
+So the hybrid the structural argument left open — lower small trees to
+branches, emit `predict` for large ones — would buy under 3% on the only
+shape where it wins, in exchange for a second code path and a lowering pass.
+The reversibility still holds if that ever changes; nothing in the SQL surface
+or the Arrow boundary depends on the choice.
+
+One thing the numbers say that the table did not predict: the kernel's own
+cost is **memory-bound at scale**, not compare-bound. Per node actually
+visited it goes 3.2 ns (1266 nodes) → 5.5 ns (47.8k) → 19.4 ns (1.3M) — the
+same instruction getting 6x slower as the working set leaves cache. That, not
+branch prediction, is the axis a QuickScorer or vectorized walk would attack,
+and it is reachable without touching the IR — which was the kernel's argument
+in the first place.
 
 ## IR surface
 
