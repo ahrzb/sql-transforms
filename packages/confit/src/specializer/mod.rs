@@ -76,6 +76,10 @@ pub struct Prepared {
     /// (TASK-58): no WHERE, and every join is LEFT (unique keys are
     /// already the map contract, so LEFT never drops or duplicates).
     pub one_row_blocker: Option<String>,
+    /// Referenced model sets by name, in `model<...>` static order. These
+    /// statics sit AFTER every map static, so the caller materializes the
+    /// map recipes first and then one ensemble per name here.
+    pub models: Vec<String>,
 }
 
 /// STAGE 1 for the v0 ribbon: SQL text + the dynamic table's name and schema
@@ -88,7 +92,7 @@ pub fn prepare(
     in_cols: &[ir::Col],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
-    prepare_opaque(sql, this_name, in_cols, &[], &[], statics, false, &[])
+    prepare_opaque(sql, this_name, in_cols, &[], &[], statics, false, &[], &[])
 }
 
 /// [`prepare`] plus the row-model columns that have no plain scalar lane:
@@ -108,12 +112,15 @@ pub fn prepare_opaque(
     statics: &[plan::StaticTable],
     many: bool,
     udfs: &[ir::ExternSpec],
+    models: &[plan::ModelTable],
 ) -> Result<Prepared, PrepareError> {
-    let (rel, joins, out_cols, regexes, wide_outputs) =
-        frontend::frontend(sql, this_name, in_cols, opaque, structs, statics, many, udfs)?;
+    let (rel, joins, out_cols, regexes, wide_outputs, model_refs) = frontend::frontend(
+        sql, this_name, in_cols, opaque, structs, statics, many, udfs, models,
+    )?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
     let mut program = lower::lower(
-        &rel, &joins, statics, in_cols, out_cols, regexes, udfs, "run", many,
+        &rel, &joins, statics, in_cols, out_cols, regexes, udfs, "run", many, models,
+        &model_refs,
     )?;
     // Block-splitting lowerings mint ids out of text order; renumber so
     // every prepared program is exactly canonical (parse(print(p)) == p).
@@ -166,6 +173,10 @@ pub fn prepare_opaque(
         statics: specs,
         wide_outputs,
         one_row_blocker,
+        models: model_refs
+            .iter()
+            .map(|r| models[*r as usize].name.clone())
+            .collect(),
     })
 }
 

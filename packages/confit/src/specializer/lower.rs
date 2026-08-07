@@ -44,7 +44,18 @@ pub fn lower(
     udfs: &[super::ir::ExternSpec],
     name: &str,
     many: bool,
+    models: &[super::plan::ModelTable],
+    model_refs: &[u32],
 ) -> Result<Program, PrepareError> {
+    // One `model<...>` static per referenced model set, APPENDED after every
+    // join static: join index IS the static id (see emit_probe below), so a
+    // model static anywhere earlier would shift every probe's @N.
+    let model_statics: Vec<StaticTy> = model_refs
+        .iter()
+        .map(|r| StaticTy::Model {
+            n_features: models[*r as usize].features.len() as u32,
+        })
+        .collect();
     let (exprs, filter_pred) = match rel {
         Rel::Project { input, exprs } => match input.as_ref() {
             Rel::Filter { input: scan, pred } => {
@@ -63,7 +74,10 @@ pub fn lower(
         }
     };
 
-    let mut fb = FB::new(in_cols, joins, catalog, udfs);
+    // The many path emits exactly one join static (it is guarded to a single
+    // join); the normal path emits one per join.
+    let model_base = if many && joins.len() == 1 { 1 } else { joins.len() };
+    let mut fb = FB::new(in_cols, joins, catalog, udfs, model_base);
 
     // shape='many' (stage B): joins lower as multiplicity LOOPS over
     // multimap row ranges — 0..N output rows per input row. One join per
@@ -106,6 +120,7 @@ pub fn lower(
                 values: flat(&catalog[joins[0].table].cols, &joins[0].val_cols),
             }
         }];
+        let statics = [statics, model_statics].concat();
         return fb.finish(name, statics, in_cols, out_cols, regexes, udfs.to_vec());
     }
 
@@ -212,6 +227,7 @@ pub fn lower(
                 .collect(),
         })
         .collect();
+    let statics = [statics, model_statics].concat();
 
     fb.finish(name, statics, in_cols, out_cols, regexes, udfs.to_vec())
 }
@@ -265,6 +281,9 @@ struct FB<'a> {
     joins: &'a [JoinSpec],
     catalog: &'a [StaticTable],
     udfs: &'a [super::ir::ExternSpec],
+    /// Index of the first `model<...>` static: model statics are appended
+    /// after every join static, so `predict @N` is `model_base + model`.
+    model_base: usize,
 }
 
 impl<'a> FB<'a> {
@@ -273,6 +292,7 @@ impl<'a> FB<'a> {
         joins: &'a [JoinSpec],
         catalog: &'a [StaticTable],
         udfs: &'a [super::ir::ExternSpec],
+        model_base: usize,
     ) -> FB<'a> {
         FB {
             b: Builder::new(),
@@ -282,6 +302,7 @@ impl<'a> FB<'a> {
             joins,
             catalog,
             udfs,
+            model_base,
         }
     }
 
@@ -1000,6 +1021,55 @@ impl<'a> FB<'a> {
                 });
                 Ok(Lane {
                     flag: l.flag,
+                    val: dst,
+                })
+            }
+            SKind::TreePredict { model, id, feats } => {
+                let idl = self.emit(id, live)?;
+                // A NULL feature is handed to the model as NaN — it has a
+                // defined answer for missing (the node's learned direction),
+                // so its validity is deliberately NOT folded into the result
+                // flag. Only the id's is: an unseen group has no model.
+                let mut nan: Option<Value> = None;
+                let mut vals = Vec::with_capacity(feats.len());
+                for f in feats {
+                    let l = self.emit(f, live)?;
+                    // A non-nullable feature is already the value; only a
+                    // nullable one needs the NULL-to-NaN select.
+                    let Some(flag) = l.flag else {
+                        vals.push(l.val);
+                        continue;
+                    };
+                    let n = match nan {
+                        Some(n) => n,
+                        None => {
+                            let n = self.fresh();
+                            self.inst(Inst::Const {
+                                dst: n,
+                                lit: super::ir::Lit::F64(f64::NAN),
+                            });
+                            nan = Some(n);
+                            n
+                        }
+                    };
+                    let v = self.fresh();
+                    self.inst(Inst::Select {
+                        dst: v,
+                        cond: flag,
+                        a: l.val,
+                        b: n,
+                    });
+                    vals.push(v);
+                }
+                let dst = self.fresh();
+                self.inst(Inst::Predict {
+                    static_id: (self.model_base + *model as usize) as u32,
+                    dst,
+                    id: idl.val,
+                    feats: vals,
+                });
+                Ok(Lane {
+                    flag: idl.flag,
                     val: dst,
                 })
             }

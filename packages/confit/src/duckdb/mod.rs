@@ -1105,6 +1105,12 @@ impl DuckDBInferFn {
 
         use super::specializer::PrepareError;
         let extern_specs: Vec<ExternSpec> = udf_decls.iter().map(|d| d.spec.clone()).collect();
+        // No model sets cross this boundary yet, so `tree_predict` resolves
+        // to "model set '..' was not provided to prepare" rather than
+        // half-working. The pyarrow decode that fills this is the next
+        // slice; until then `prepared.models` is always empty and the
+        // map-static materialization below stays exactly as it was.
+        let model_catalog: Vec<super::specializer::plan::ModelTable> = Vec::new();
         let prepared = match prepare_opaque(
             &sql,
             &row_table,
@@ -1114,6 +1120,7 @@ impl DuckDBInferFn {
             &catalog,
             many,
             &extern_specs,
+            &model_catalog,
         ) {
             Ok(p) => p,
             // With declared UDFs the constant-emitter fallback is off: DuckDB
