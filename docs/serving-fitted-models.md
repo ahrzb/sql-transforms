@@ -83,11 +83,32 @@ because the objects *look* packable:
 representations; they would need their own packer emitting the same two
 tables. The engine side is already general — see below.
 
-## Bit-exactness, and `n_jobs=1`
+## Parity with sklearn — read this before trusting a number
 
-Parity with sklearn is asserted at `==` on raw doubles, not at a tolerance.
-That is only achievable because the packing mirrors each family's own
-summation order rather than a tidier one:
+> **Known gap (2026-08-07): we do NOT match sklearn on quantized features.**
+>
+> sklearn narrows `X` to **float32** before traversal and keeps thresholds in
+> float64, so it evaluates `float32(x) <= threshold`. The kernel compares the
+> raw f64. Every `x` whose float32 rounding crosses a threshold takes the
+> other branch — and the threshold *is* the float32 midpoint, because the
+> split was **learned** on that grid. Our f64 compare is not a more precise
+> version of that model; it is a different model.
+>
+> Measured on a 2-decimal price grid with `RandomForestRegressor(30)`:
+> **157 of 3000 rows differ**, max delta 0.43 against a target range of
+> −7.9..19.4 — a whole-leaf jump, not a rounding wobble. Narrowing the inputs
+> to float32 before handing them over drops it to 0 of 3000, which pins the
+> cause exactly.
+>
+> Continuous float64 draws hide it: the mismatch band is about one float32
+> ULP wide. Quantized features — prices, percentages, any decimal grid — hit
+> it constantly. **If your features are quantized, do not rely on parity
+> yet.** Pinned by `test_quantised_features_match_sklearn` (xfail-strict), so
+> it cannot silently start or stop failing.
+
+Everything below holds *given the same branch decisions*, and is why parity is
+asserted at `==` on raw doubles rather than at a tolerance: the packing
+mirrors each family's own summation order rather than a tidier one:
 
 - a forest sums its trees in order, then divides;
 - a boosted model **seeds** its accumulator with the init prediction and adds

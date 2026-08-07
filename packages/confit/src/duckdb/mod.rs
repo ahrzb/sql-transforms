@@ -512,6 +512,19 @@ fn parse_model_sets(
     py: Python<'_>,
     models: HashMap<String, Py<PyAny>>,
 ) -> PyResult<HashMap<String, ModelSet>> {
+    // `tree_predict('trees', ..)` resolves case-insensitively and takes the
+    // first catalog hit, so two keys differing only in case would bind the
+    // WRONG fitted model and return a plausible number. `parse_udfs` refuses
+    // the identical hazard on the neighbouring surface.
+    let mut seen: Vec<&String> = Vec::with_capacity(models.len());
+    for name in models.keys() {
+        if let Some(other) = seen.iter().find(|o| o.eq_ignore_ascii_case(name)) {
+            return Err(build_err(format!(
+                "model set names collide case-insensitively ('{other}' and '{name}')"
+            )));
+        }
+        seen.push(name);
+    }
     models
         .into_iter()
         .map(|(name, v)| {

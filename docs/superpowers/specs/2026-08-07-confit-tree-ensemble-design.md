@@ -324,6 +324,54 @@ static data, so the interpreter fallback rebuilds it) go through one
 `materialize_statics`, and its zip over `statics[n_join..]` asserts the
 ordering rather than assuming it.
 
+## OPEN: the float32 comparison gap (found 2026-08-07, undecided)
+
+The parity claim above is **false for quantized features**, and the reason is
+structural rather than a rounding detail.
+
+sklearn narrows `X` to float32 (`DTYPE`) before traversal and keeps
+`tree_.threshold` in float64, so it evaluates `float32(x) <= threshold`. The
+kernel compares raw f64. The threshold is *exactly* the float32 midpoint of
+the two neighbouring training values, which proves the splitter itself only
+ever saw float32 — the narrowing is baked into where the split SITS, not
+applied incidentally at predict time.
+
+```text
+threshold        = 0.15000000223517418   # == mean(f32(0.1), f32(0.2))
+float64 midpoint = 0.15000000000000002   # not this
+x = 0.15   ->  kernel -1.0,  sklearn +1.0
+```
+
+Measured: 2-decimal grid, `RandomForestRegressor(30)`, 157/3000 rows differ,
+max delta 0.43 on a −7.9..19.4 range. Pre-narrowing inputs to float32 gives
+0/3000. Continuous float64 draws hide it (the band is ~1 f32 ULP wide), which
+is why the original gate passed — it was passing by luck, not immunity.
+
+So the f64 compare is not a more accurate evaluation of the same model. It is
+a different model.
+
+**Three candidate fixes; the choice is NOT obvious and is deferred.**
+
+1. **Rewrite thresholds at pack time** — `pack_trees` maps each threshold to
+   the f64 value that reproduces the f32 comparison. Build-time, zero per-row
+   cost, kernel stays library-agnostic. Correct only for float32-trained
+   models.
+2. **Narrow in the kernel** — cast each feature to f32 before the compare.
+   Correct for sklearn, wrong for float64-trained libraries, and adds a cast
+   to the hot path.
+3. **Declare and enforce an f32 contract at the boundary** — refuse or narrow
+   explicitly, so the caller knows which grid they are on.
+
+The reason this cannot be settled by picking the cheapest: the same two-table
+layout is documented as the path for other libraries, and **XGBoost is
+float32 while LightGBM is float64**. So the narrowing is a property of the
+ENTRY, not of the kernel or of the packer — which points at a per-entry flag
+in the model header rather than any of the three as written. That is a design
+change to the layout, hence deferred rather than patched.
+
+Pinned by `_trees_test.py::test_quantised_features_match_sklearn`
+(xfail-strict): it cannot silently start passing or stop failing.
+
 ## Build-time refusals (P7)
 
 Every one of these names the offending row or field, before any data flows:

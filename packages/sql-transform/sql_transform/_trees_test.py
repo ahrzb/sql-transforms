@@ -377,6 +377,47 @@ def test_bagging_refuses():
         pack_trees([est], FEATURES)
 
 
+def test_multi_output_regressor_refuses():
+    """`values[:, 0, 0]` takes target 0 unconditionally, so a regressor fitted
+    on a 2-D y packs cleanly and serves `est.predict(X)[:, 0]` while the other
+    targets vanish. Exactly the failure BaggingRegressor is refused for, one
+    axis over."""
+    rng = np.random.RandomState(74)
+    X = rng.rand(60, len(FEATURES))
+    y = np.column_stack([X[:, 0], X[:, 1] * 100])
+    for est in (
+        DecisionTreeRegressor(max_depth=3, random_state=74).fit(X, y),
+        RandomForestRegressor(n_estimators=4, random_state=74, n_jobs=1).fit(X, y),
+        ExtraTreesRegressor(n_estimators=4, random_state=74, n_jobs=1).fit(X, y),
+    ):
+        with pytest.raises(TreePackError, match="multi-output|n_outputs"):
+            pack_trees([est], FEATURES)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="sklearn narrows X to float32 before traversal and the split was LEARNED "
+    "on that grid; the kernel compares raw f64, so any feature whose float32 "
+    "rounding crosses a threshold takes the other branch. Ticketed — the fix "
+    "(narrow in the kernel vs rewrite thresholds at pack time) is a per-entry "
+    "decision because XGBoost is float32 and LightGBM float64.",
+)
+def test_quantised_features_match_sklearn():
+    """The parity claim, on data that is not a continuous float64 draw. A
+    2-decimal grid is what prices and percentages actually look like."""
+    rng = np.random.RandomState(75)
+    Xtr = np.round(rng.rand(400, len(FEATURES)) * 10, 2)
+    ytr = Xtr[:, 0] * 2 - Xtr[:, 1]
+    fitted = RandomForestRegressor(n_estimators=30, random_state=75, n_jobs=1).fit(
+        Xtr, ytr
+    )
+    Xq = np.round(rng.rand(1500, len(FEATURES)) * 10, 2)
+    got = score(pack_trees([fitted], FEATURES), Xq)
+    want = fitted.predict(Xq)
+    bad = np.flatnonzero(got != want)
+    assert bad.size == 0, f"{bad.size}/{len(Xq)} rows differ"
+
+
 def test_hist_gradient_boosting_refuses():
     """A different tree representation entirely (`_predictors`, binned
     thresholds) — not this layout."""
