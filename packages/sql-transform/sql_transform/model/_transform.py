@@ -20,6 +20,7 @@ import itertools
 import json
 import sys
 import threading
+import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from functools import cache
@@ -504,6 +505,8 @@ def _rename_free(body: Node, renames: dict[str, str]) -> None:
     for _, _, v in list(_under(body, deep=True)):
         if v.get("type") == "BASE_TABLE" and v.get("table_name") in renames:
             old = v["table_name"]
+            if renames[old] == old:
+                continue  # identity: leave the node exactly as it was
             v["table_name"] = renames[old]
             v["alias"] = v.get("alias") or old
 
@@ -731,15 +734,19 @@ def _resolve(
 # --- the plan -----------------------------------------------------------------
 
 
-def _plan(doc: Node) -> tuple[list[tuple[str, str]], Node]:
+def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
     """Rewrite ``doc`` in place into the residual, returning the fit steps.
 
-    A step is ``(param_name, sql)``, in dependency order: running them against
+    A step is ``(param_name, node)``, in dependency order: running them against
     a connection with ``__FIT__`` bound, registering each result as it lands,
     produces every table the residual needs. All the analysis — and every
     refusal — happens here, at construction, before any data exists.
+
+    The step is kept as a node rather than printed SQL because ``fit`` has to
+    rename its free references per execution, the same way serving does, and
+    renaming a node is a walk while renaming text is a guess.
     """
-    steps: list[tuple[str, str]] = []
+    steps: list[tuple[str, Node]] = []
     taken: set[str] = set()
     whole: str | None = None
 
@@ -765,7 +772,7 @@ def _plan(doc: Node) -> tuple[list[tuple[str, str]], Node]:
         nonlocal whole
         if whole is None:
             whole = name("fit")
-            steps.append((whole, f"SELECT * FROM {FIT}"))  # noqa: S608
+            steps.append((whole, _select_star(FIT)))
         return whole
 
     def freeze(sub: Node, ctes: list[Node], hint: str | None) -> Node:
@@ -774,7 +781,7 @@ def _plan(doc: Node) -> tuple[list[tuple[str, str]], Node]:
         # by now their own definitions have been rewritten to frozen tables.
         frozen[_QUERY]["map"] = copy.deepcopy(ctes) + frozen[_QUERY]["map"]
         param = name(hint)
-        steps.append((param, _deserialize(_statement(frozen))))
+        steps.append((param, frozen))
         return _select_star(param)
 
     def visit(
@@ -853,45 +860,32 @@ class Fitted:
         """The residual, under the names ``params`` uses. What you read."""
         return _deserialize(_statement(self.node))
 
-    def _bind(self, data: Relation) -> tuple[Connection, str, _Registry]:
-        """Register everything this residual needs, and say what to execute.
+    def _bind(
+        self, data: Relation
+    ) -> tuple[Connection, str, _Registry, Callable[[], None]]:
+        """Register everything this residual needs, and say what to execute
+        and how to clean up.
 
-        On a connection we own, names are the readable ones and a fresh
-        connection per call makes collisions impossible.
-
-        On a *shared* connection they cannot be: two transforms in a pipeline
-        both bind `__THIS__` and both call a parameter `__param_0`. Eagerly
-        that is harmless — each materialises before the next registers — but a
-        lazy relation is not executed yet, so stage one would end up reading
-        stage two's tables. Same shape, different numbers, no error. So a
-        shared connection gets one rename per execution.
+        On a connection we own, names stay the readable ones — a fresh
+        connection per call makes collisions impossible, and it dies with the
+        call, so there is nothing to give back. On a *shared* connection every
+        execution is renamed and leased; see ``_lease``.
         """
         registry = _Registry(self.instances)
         tables = {THIS: data} | self.bindings | self.params
-        if self.connection is None:
-            con = duckdb.connect()
-            for name, table in tables.items():
-                con.register(name, table)
-            for stem, leaf in self.foreign.items():
-                leaf.register(con, stem, registry)
-            return con, self.sql, registry
-
-        con = self.connection
-        token = next(_EXECUTIONS)
-        renames = {name: f"{name}__x{token}" for name in tables}
-        functions = {stem: f"{stem}__x{token}" for stem in self.foreign}
-        doc = copy.deepcopy(_statement(self.node))
-        _rename_free(doc, renames)
-        _rename_functions(doc, functions)
-        for name, table in tables.items():
-            con.register(renames[name], table)
-        for stem, leaf in self.foreign.items():
-            leaf.register(con, functions[stem], registry)
-        return con, _deserialize(doc), registry
+        own = self.connection is None
+        con = duckdb.connect() if own else self.connection
+        names, stems, release = _lease(
+            con, tables, self.foreign, registry, rename=not own
+        )
+        return con, _rendered(self.node, names, stems), registry, release
 
     def transform(self, data: Relation) -> pa.Table:
-        con, sql, registry = self._bind(data)
-        return _execute(con, sql, registry)
+        con, sql, registry, release = self._bind(data)
+        try:
+            return _execute(con, sql, registry)
+        finally:
+            release()
 
     __call__ = transform
 
@@ -903,20 +897,87 @@ class Fitted:
         transform's refusal only surfaces when the relation is consumed, which
         is the price of not materialising.
 
+        This is the one path that cannot release at the end of the call — the
+        tables have to outlive it or there would be nothing left to execute.
+        So the lease is tied to the relation's own lifetime instead: when the
+        caller drops it, the registrations go with it.
+
         A relation belongs to the connection that built it and cannot be
         handed to another one, not even to a cursor of the same connection.
         Chaining lazily therefore means giving both transforms the same
         ``connection=``.
         """
-        con, sql, _ = self._bind(data)
-        return con.sql(sql)
+        con, sql, _, release = self._bind(data)
+        lazy = con.sql(sql)
+        weakref.finalize(lazy, release)
+        return lazy
 
 
 OUTPUTS = ("default", "arrow", "duckdb", "pandas", "numpy")
 
 # One counter per process, so a shared connection never sees two executions
-# under the same name. See Fitted._bind.
+# under the same name. See _lease.
 _EXECUTIONS = itertools.count()
+
+
+def _lease(
+    con: Connection,
+    tables: Bindings,
+    foreign: Foreign,
+    registry: _Registry,
+    *,
+    rename: bool,
+) -> tuple[dict[str, str], dict[str, str], Callable[[], None]]:
+    """Register one execution's tables and functions, and say how to give
+    them back.
+
+    Two rules, both learned the hard way. **Renamed**, because two transforms
+    sharing a connection both bind ``__THIS__`` and both call a parameter
+    ``__param_0``; eagerly that is harmless, but a lazy relation is not
+    executed yet, so one stage would read the other's tables — same shape,
+    different numbers, no error. **Released**, because the rename alone turned
+    that correctness bug into a resource one: every execution added names
+    nobody ever took away, so a serving loop pinned every batch it had seen,
+    and the leftovers were visible to ``_catalog``, which made the *next*
+    transform bind to them instead of capturing from its caller's frame.
+
+    Returned rather than a context manager because the lazy path cannot
+    release at the end of the call — it releases when the relation it handed
+    back is collected.
+
+    ``names`` is live: ``fit`` adds each parameter as it lands, and the
+    release closes over the same dict, so those come back too.
+    """
+    token = next(_EXECUTIONS)
+
+    def under(name: str) -> str:
+        return f"{name}__x{token}" if rename else name
+
+    names = {name: under(name) for name in tables}
+    stems = {stem: under(stem) for stem in foreign}
+    for name, table in tables.items():
+        con.register(names[name], table)
+    for stem, leaf in foreign.items():
+        leaf.register(con, stems[stem], registry)
+
+    def release() -> None:
+        if not rename:
+            return  # a connection we own dies with the call; θ keeps its name
+        for name in names.values():
+            con.unregister(name)
+        for stem in stems.values():
+            con.remove_function(f"{stem}_fit")
+            con.remove_function(f"{stem}_transform")
+
+    return names, stems, release
+
+
+def _rendered(node: Node, names: dict[str, str], stems: dict[str, str]) -> str:
+    """``node`` under the names this execution actually registered."""
+    doc = copy.deepcopy(_statement(node))
+    _rename_free(doc, names)
+    _rename_functions(doc, stems)
+    return _deserialize(doc)
 
 
 def _as_output(table: pa.Table, output: str) -> Any:
@@ -1010,13 +1071,8 @@ class SQLTransform:
         state = "fitted" if self.fitted_ is not None else "unfitted"
         return f"SQLTransform({self.sql!r}, output={self.output!r}, {state})"
 
-    def _connect(self, registry: _Registry) -> Connection:
-        con = duckdb.connect() if self._own else self.connection
-        for name, table in self.bindings.items():
-            con.register(name, table)
-        for stem, leaf in self.foreign.items():
-            leaf.register(con, stem, registry)
-        return con
+    def _connect(self) -> Connection:
+        return duckdb.connect() if self._own else self.connection
 
     def fit(self, data: Relation, y: Any = None) -> Fitted:
         """Partial application — and the estimator remembers the result.
@@ -1024,14 +1080,31 @@ class SQLTransform:
         ``y`` is accepted and ignored: a target belongs in the relation, as a
         column ``__FIT__`` can read, not in a second argument the SQL cannot
         name.
+
+        Every step runs under leased names and they are all given back, so a
+        shared connection is the caller's again when this returns — including
+        ``__FIT__``, which used to stay bound to the whole training relation
+        for the life of the connection.
         """
         registry = _Registry()
-        con = self._connect(registry)
-        con.register(FIT, data)
+        con = self._connect()
         params: Params = {}
-        for param, sql in self._steps:
-            params[param] = _execute(con, sql, registry)
-            con.register(param, params[param])
+        names, stems, release = _lease(
+            con,
+            {FIT: data} | self.bindings,
+            self.foreign,
+            registry,
+            rename=not self._own,
+        )
+        try:
+            for param, node in self._steps:
+                params[param] = _execute(con, _rendered(node, names, stems), registry)
+                # Into the same dict the release closes over: later steps see
+                # it, and it comes back with everything else.
+                names[param] = param if self._own else f"{param}__x{next(_EXECUTIONS)}"
+                con.register(names[param], params[param])
+        finally:
+            release()
         self.fitted_ = Fitted(
             self._residual,
             params,
@@ -1128,7 +1201,15 @@ def run(transform: SQLTransform, data: Relation) -> pa.Table:
     rewrite, which is what keeps that law from restating the implementation.
     """
     registry = _Registry()
-    con = transform._connect(registry)
-    con.register(FIT, data)
-    con.register(THIS, data)
-    return _execute(con, transform.sql, registry)
+    con = transform._connect()
+    names, stems, release = _lease(
+        con,
+        {FIT: data, THIS: data} | transform.bindings,
+        transform.foreign,
+        registry,
+        rename=not transform._own,
+    )
+    try:
+        return _execute(con, _rendered(transform.node, names, stems), registry)
+    finally:
+        release()
