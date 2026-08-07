@@ -291,6 +291,20 @@ struct FB<'a> {
     /// Index of the first `model<...>` static: model statics are appended
     /// after every join static, so `predict @N` is `model_base + model`.
     model_base: usize,
+    /// The many-join whose probe cache must be re-created in every block a
+    /// split creates, while one expression is being emitted under it
+    /// (TASK-68). `base` is where the join's value lanes sit on the live
+    /// stack — NOT `live.len() - nd`, which holds only at an expression
+    /// boundary, before operands are pushed on top of them.
+    many: Option<ManySeed>,
+}
+
+#[derive(Clone, Copy)]
+struct ManySeed {
+    join: u32,
+    hit: bool,
+    base: usize,
+    nd: usize,
 }
 
 impl<'a> FB<'a> {
@@ -310,6 +324,7 @@ impl<'a> FB<'a> {
             catalog,
             udfs,
             model_base,
+            many: None,
         }
     }
 
@@ -1344,8 +1359,7 @@ impl<'a> FB<'a> {
         let rv = match &residual {
             None => None,
             Some(res) => {
-                self.reseed_many(j, true, &live, nd);
-                let rl = self.emit(res, &mut live)?;
+                let rl = self.emit_many(res, &mut live, j, true, nd)?;
                 Some(self.truthy(rl))
             }
         };
@@ -1382,8 +1396,7 @@ impl<'a> FB<'a> {
             live.push((Lane { flag: None, val: d }, ty));
         }
         if let Some(pred) = filter_pred {
-            self.reseed_many(j, true, &live, nd);
-            let pl = self.emit(pred, &mut live)?;
+            let pl = self.emit_many(pred, &mut live, j, true, nd)?;
             let pv = self.truthy(pl);
             let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
             let (keep, kp) = {
@@ -1439,8 +1452,7 @@ impl<'a> FB<'a> {
             }
             if let Some(pred) = filter_pred {
                 // WHERE sees the null-extended row too (measured).
-                self.reseed_many(j, false, &live, nd);
-                let pl = self.emit(pred, &mut live)?;
+                let pl = self.emit_many(pred, &mut live, j, false, nd)?;
                 let pv = self.truthy(pl);
                 let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
                 let (keep, kp) = self.create_block(&dst_tys);
@@ -1470,13 +1482,58 @@ impl<'a> FB<'a> {
         Ok(())
     }
 
-    /// Re-seed the CURRENT block's probe cache for many-join `j` from the
-    /// live stack's trailing `nd` lanes (the invariant of the loop
-    /// lowering) with a fresh hit constant.
-    fn reseed_many(&mut self, j: u32, hit: bool, live: &Live, nd: usize) {
+    /// Emit `e` with many-join `j`'s probe cache seeded in the current block
+    /// AND re-created in every block a split inside `e` creates.
+    ///
+    /// The join's values ride the live stack, so they survive a transition on
+    /// their own — but the CACHE that says "@j is already probed, here are its
+    /// registers" is per block (`PB::new` starts it empty). Without the
+    /// re-creation, a joined column read inside a CASE arm misses the cache
+    /// and falls through to the scalar `Inst::Probe`, which `ir::verify`
+    /// rejects for a multimap: "@N is a multimap: use probe.range" (TASK-68).
+    fn emit_many(
+        &mut self,
+        e: &SExpr,
+        live: &mut Live,
+        j: u32,
+        hit: bool,
+        nd: usize,
+    ) -> Result<Lane, PrepareError> {
+        self.many = Some(ManySeed {
+            join: j,
+            hit,
+            base: live.len() - nd,
+            nd,
+        });
+        self.seed_many(live);
+        let out = self.emit(e, live);
+        self.many = None;
+        out
+    }
+
+    /// (Re)create the current block's probe cache entry for the active
+    /// many-join, from the live lanes its values ride on. No-op outside a
+    /// many-join.
+    fn seed_many(&mut self, live: &Live) {
+        let Some(ManySeed {
+            join,
+            hit,
+            base,
+            nd,
+        }) = self.many
+        else {
+            return;
+        };
         let h = self.const_i1(hit);
-        let ds: Vec<Value> = live[live.len() - nd..].iter().map(|(l, _)| l.val).collect();
-        self.blocks[self.cur].probes.insert(j, (h, ds));
+        let ds: Vec<Value> = live[base..base + nd].iter().map(|(l, _)| l.val).collect();
+        self.blocks[self.cur].probes.insert(join, (h, ds));
+    }
+
+    /// Every block transition goes through here: rebind the live stack to the
+    /// block just switched to, then restore what that block cannot inherit.
+    fn enter_block(&mut self, live: &mut Live, params: &[Value]) {
+        Self::rebind_live(live, params);
+        self.seed_many(live);
     }
 
     /// Emit every output expression and store it. Under a many-join
@@ -1492,10 +1549,10 @@ impl<'a> FB<'a> {
         nd: usize,
     ) -> Result<(), PrepareError> {
         for (ci, (_, e)) in exprs.iter().enumerate() {
-            if let Some((j, hit)) = seed {
-                self.reseed_many(j, hit, live, nd);
-            }
-            let lane = self.emit(e, live)?;
+            let lane = match seed {
+                Some((j, hit)) => self.emit_many(e, live, j, hit, nd)?,
+                None => self.emit(e, live)?,
+            };
             let col = ci as u32;
             if out_cols[ci].ty.nullable {
                 let flag = match lane.flag {
@@ -1601,7 +1658,7 @@ impl<'a> FB<'a> {
                     else_args: miss_args,
                 });
                 self.switch(eval);
-                Self::rebind_live(live, &eval_params[..live_width]);
+                self.enter_block(live, &eval_params[..live_width]);
                 // Ride the dsts on the live stack through the residual —
                 // and seed the cache with hit = TRUE (by construction in
                 // the guarded branch) so StaticCol/JoinHit resolve here.
@@ -1629,7 +1686,7 @@ impl<'a> FB<'a> {
                     args: hit_args,
                 });
                 self.switch(join);
-                Self::rebind_live(live, &join_params[..live_width]);
+                self.enter_block(live, &join_params[..live_width]);
                 dsts = join_params[live_width..live_width + dst_tys.len()].to_vec();
                 join_params[live_width + dst_tys.len()]
             }
@@ -1780,13 +1837,13 @@ impl<'a> FB<'a> {
             });
 
             self.switch(then_b);
-            Self::rebind_live(live, &then_p);
+            self.enter_block(live, &then_p);
             let rl = self.emit(result, live)?;
             let jump = finish_branch(self, rl, live);
             self.term(jump);
 
             self.switch(else_b);
-            Self::rebind_live(live, &else_p);
+            self.enter_block(live, &else_p);
         }
 
         let dl = match default {
@@ -1804,7 +1861,7 @@ impl<'a> FB<'a> {
         self.term(jump);
 
         self.switch(join);
-        Self::rebind_live(live, &join_params[..live_width]);
+        self.enter_block(live, &join_params[..live_width]);
         let tail = &join_params[live_width..];
         Ok(if res_nullable {
             Lane {
@@ -2031,7 +2088,7 @@ impl<'a> FB<'a> {
                     ),
                 });
                 self.switch(cont_b);
-                Self::rebind_live(live, &cont_p[..live_width]);
+                self.enter_block(live, &cont_p[..live_width]);
                 let tail = &cont_p[live_width..];
                 Ok(if flag_in_shape {
                     Lane {
@@ -2095,7 +2152,7 @@ impl<'a> FB<'a> {
                 });
 
                 self.switch(conv_b);
-                Self::rebind_live(live, &conv_p);
+                self.enter_block(live, &conv_p);
                 let payload = live.last().expect("pushed above").0.val;
                 let r = self.fresh();
                 self.inst(Inst::Ftoi {
@@ -2113,7 +2170,7 @@ impl<'a> FB<'a> {
                 });
 
                 self.switch(null_b);
-                Self::rebind_live(live, &null_p);
+                self.enter_block(live, &null_p);
                 let f = self.const_i1(false);
                 let d = self.const_lit(Lit::I64(0));
                 let mut args = Self::live_args(live);
@@ -2125,7 +2182,7 @@ impl<'a> FB<'a> {
                 });
 
                 self.switch(join);
-                Self::rebind_live(live, &join_p[..live_width]);
+                self.enter_block(live, &join_p[..live_width]);
                 live.pop();
                 let tail = &join_p[live_width..];
                 Ok(Lane {

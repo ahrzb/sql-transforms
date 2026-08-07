@@ -88,14 +88,83 @@ def test_engine_order_contract():
         "NULLIF(d.v, 'a')",
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason="A CFG split starts a fresh block whose probe cache is empty, and "
-    "`case` never reseeds it, so a joined column read inside a CASE arm falls "
-    "through to the scalar `Inst::Probe` — which verify rejects for a multimap "
-    "with '@N is a multimap: use probe.range'. Build-time and loud, not a wrong "
-    "answer. Distinct from TASK-66 (different site, different message, no "
-    "tree_predict); found while fixing that one. TASK-68.",
-)
 def test_split_over_a_joined_column_under_many(expr):
+    """TASK-68: the many-join's probe CACHE lives per block while its values
+    ride the live stack, so a CFG split used to drop it and the joined column
+    fell through to the scalar `Inst::Probe` — rejected by verify with '@N is
+    a multimap: use probe.range'."""
     _many_check(f"SELECT {expr} AS v FROM __THIS__ AS t JOIN d ON t.pid = d.id")
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "COALESCE(d.v, 'z')",
+        "CASE WHEN d.v = 'a' THEN 'A' ELSE d.v END",
+    ],
+)
+def test_split_over_a_joined_column_left_join(expr):
+    """The null-extended path seeds the cache with hit=false and a different
+    lane set, so it is a separate seed site from the matched path."""
+    _many_check(f"SELECT {expr} AS v FROM __THIS__ AS t LEFT JOIN d ON t.pid = d.id")
+
+
+def test_split_in_a_later_output_column_only():
+    """The cache is re-created per output expression, so a split in the SECOND
+    column exercises a seed that a first-column-only test would not."""
+    _many_check(
+        "SELECT d.v AS a, CASE WHEN d.v = 'a' THEN 'A' ELSE d.v END AS b "
+        "FROM __THIS__ AS t JOIN d ON t.pid = d.id"
+    )
+
+
+def test_split_in_the_where_clause():
+    """WHERE is emitted through its own seed site (`filter_pred`), on both the
+    matched and the null-extended path."""
+    _many_check(
+        "SELECT d.v AS v FROM __THIS__ AS t JOIN d ON t.pid = d.id "
+        "WHERE COALESCE(d.v, 'z') <> 'b'"
+    )
+    _many_check(
+        "SELECT d.v AS v FROM __THIS__ AS t LEFT JOIN d ON t.pid = d.id "
+        "WHERE CASE WHEN d.v IS NULL THEN TRUE ELSE d.v <> 'b' END"
+    )
+
+
+def test_split_reading_the_joined_column_twice_across_a_split():
+    """Two reads of the same joined column, one before and one inside the
+    split: the second must reuse the re-created cache entry rather than
+    emitting a second probe."""
+    _many_check(
+        "SELECT d.v AS a, d.id AS i, "
+        "CASE WHEN d.id > 1 THEN d.v ELSE 'z' END AS b "
+        "FROM __THIS__ AS t JOIN d ON t.pid = d.id"
+    )
+
+
+def test_nested_splits_over_a_joined_column():
+    """A split inside a split: the innermost block is two transitions from the
+    seed, so a fix that only restores one level fails here."""
+    _many_check(
+        "SELECT CASE WHEN d.id > 1 THEN "
+        "  (CASE WHEN d.v = 'b' THEN 'B' ELSE COALESCE(d.v, 'z') END) "
+        "ELSE d.v END AS v "
+        "FROM __THIS__ AS t JOIN d ON t.pid = d.id"
+    )
+
+
+def test_split_inside_a_multi_operand_expression():
+    """The seed has to remember WHERE the join's lanes sit, not assume they
+    are the trailing ones. Here `||` pushes its first operand onto the live
+    stack before the CASE splits, so the join's lanes are no longer at the
+    tail — reading `live[len - nd..]` would seed the cache with the wrong
+    registers and silently score the wrong column."""
+    _many_check(
+        "SELECT d.v || (CASE WHEN d.id > 1 THEN 'x' ELSE d.v END) AS v "
+        "FROM __THIS__ AS t JOIN d ON t.pid = d.id"
+    )
+    _many_check(
+        "SELECT COALESCE(d.v, 'z') || d.v || "
+        "(CASE WHEN d.id > 1 THEN d.v ELSE 'y' END) AS v "
+        "FROM __THIS__ AS t JOIN d ON t.pid = d.id"
+    )
