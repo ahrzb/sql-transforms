@@ -1,23 +1,38 @@
-"""DuckDB 1.5.5: registering an ``.arrow()`` result deadlocks its own connection.
+"""DuckDB 1.5.5: a lazy Arrow reader does not survive being registered back.
 
-``DuckDBPyConnection.arrow()`` returns a lazy ``pyarrow.RecordBatchReader``,
-not a materialised ``pa.Table``. Register that reader back into the connection
-that produces it, then scan it, and the scan never returns — no error, no
-timeout, no output. That is C5's "no third mode" violated at the API level:
-neither serving nor refusing. Observed once it was worse still, returning zero
-rows and reporting success.
+``.arrow()`` returns a ``pyarrow.RecordBatchReader``, not a materialised
+``pa.Table``. Register that reader into the connection that produced it, scan
+it, and it does not work — but *how* it fails is not stable:
 
-Measured 2026-08-07 on duckdb 1.5.5 / pyarrow 25.0.0 / CPython 3.14, six for
-six across process restarts. The reader is fine when its producer is a
-*different* connection, and ``to_arrow_table()`` is fine on the same one —
-that second spelling is the workaround, pinned below, and is what the nesting
-oracle in the datamodel spec must use to materialise a member.
+    con = duckdb.connect()                     # one connection, not two
+    con.register("src", pa.table({"price": [10.0, 20.0, 30.0]}))
+    con.register("out", con.execute("SELECT price * 2 AS z FROM src").arrow())
+    con.execute("SELECT * FROM out").fetchall()
 
-The repro runs in a child process because a deadlocked DuckDB scan cannot be
-interrupted from Python; a thread would wedge interpreter exit.
+Measured 2026-08-07 on duckdb 1.5.5 / pyarrow 25.0.0 / CPython 3.14, five
+runs of that exact script: **three hung with no output and no error, two
+returned zero rows and reported success.** The reader spellings
+``con.sql(...).arrow()`` and ``fetch_record_batch()`` hung on every attempt.
 
-Strict xfail: it flips to XPASS the day DuckDB materialises, raises, or times
-out, and that is the day to delete the workaround.
+The silent-empty outcome is the one that matters — C5's "no third mode"
+violated at the API level, since it neither serves nor refuses. An earlier
+version of this file called the whole thing a deadlock; that was overstated
+from a run of three where it happened to hang each time.
+
+This is *not* a cross-connection problem. One connection, and no module-level
+``duckdb.execute`` (which would be the default connection, i.e. a second one).
+Feeding a connection its own undrained result is the self-reference at issue.
+
+Working spellings, both pinned below: ``to_arrow_table()``, and draining the
+reader into a table yourself. The model uses the first and never calls
+``.arrow()`` at all.
+
+The repro runs in a child process because a wedged DuckDB scan cannot be
+interrupted from Python; a thread would hang interpreter exit.
+
+Strict xfail, and it stays strict under either failure mode: a hang trips the
+timeout and an empty result trips the comparison. It flips to XPASS the day
+DuckDB materialises, drains, or raises.
 """
 
 import subprocess
@@ -25,18 +40,28 @@ import sys
 
 import pytest
 
-# The healthy spelling finishes in ~1s including interpreter start.
+# The healthy spellings finish in ~1s including interpreter start.
 _TIMEOUT = 10.0
 _EXPECTED = "[(20.0,), (40.0,), (60.0,)]"
 
+_DRAIN = (
+    "r = con.execute('SELECT price * 2 AS z FROM src').arrow()\n"
+    "obj = pa.Table.from_batches(list(r), r.schema)\n"
+)
+
 
 def _repro(fetch: str) -> str:
+    body = (
+        _DRAIN
+        if fetch == "drain"
+        else f'obj = con.execute("SELECT price * 2 AS z FROM src").{fetch}()\n'
+    )
     return (
         "import duckdb, pyarrow as pa\n"
         "con = duckdb.connect()\n"
         'con.register("src", pa.table({"price": [10.0, 20.0, 30.0]}))\n'
-        f'con.register("out", con.execute("SELECT price * 2 AS z '
-        f'FROM src").{fetch}())\n'
+        + body
+        + 'con.register("out", obj)\n'
         'print(con.execute("SELECT * FROM out ORDER BY 1").fetchall())\n'
     )
 
@@ -51,16 +76,18 @@ def _run(fetch: str) -> str:
     ).stdout.strip()
 
 
-def test_to_arrow_table_round_trips_through_register():
-    """The workaround. Not xfailed — the implementation depends on it."""
-    assert _run("to_arrow_table") == _EXPECTED
+@pytest.mark.parametrize("fetch", ["to_arrow_table", "drain"])
+def test_the_working_spellings(fetch):
+    """Not xfailed: the model depends on ``to_arrow_table``."""
+    assert _run(fetch) == _EXPECTED
 
 
+@pytest.mark.parametrize("fetch", ["arrow", "fetch_record_batch"])
 @pytest.mark.xfail(
     strict=True,
-    reason="DuckDB 1.5.5 hangs forever scanning a RecordBatchReader that was "
-    "registered back into the connection producing it; .arrow() returns a "
-    "reader, not a table. Use .to_arrow_table(). See module docstring.",
+    reason="DuckDB 1.5.5: a RecordBatchReader registered back into the "
+    "connection that produced it either hangs or scans as zero rows. Use "
+    "to_arrow_table(). See the module docstring for the measurements.",
 )
-def test_arrow_result_round_trips_through_register():
-    assert _run("arrow") == _EXPECTED
+def test_a_lazy_reader_round_trips_through_register(fetch):
+    assert _run(fetch) == _EXPECTED
