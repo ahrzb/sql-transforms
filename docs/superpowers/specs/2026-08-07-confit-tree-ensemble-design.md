@@ -220,22 +220,48 @@ These are the correctness surface; each is a test, not a comment.
 
 ## Gate
 
-DuckDB has no counterpart for this function, so it is **not** a differential
-test against the oracle. Three gates instead:
+The contract was never "match DuckDB bare" — it is **match DuckDB with the
+reference function registered** (DRAFT-22, Decision 3). DuckDB lacking a
+`tree_predict` builtin therefore costs nothing: register one for the test and
+the standing differential harness applies unchanged.
 
-1. **Pins** — expected outputs for hand-written ensembles covering: single
-   tree, forest with `mean`, boosted with `base` + `sum`, `sigmoid` link, NaN
-   feature, NULL feature, probe miss, single-node (root-is-leaf) tree.
-2. **interp ≡ cranelift** — the standing backend-equality harness, extended
+The distinction that matters: a Python *reimplementation of our node layout*
+would be a twin — it can drift with the kernel and proves nothing. The
+**fitted estimator itself** is an oracle: it is the ground truth the kernel
+exists to reproduce.
+
+Four gates, strongest first.
+
+1. **Differential against sklearn, via `check`.** Same SQL text both sides;
+   the DuckDB side registers `tree_predict` as a scalar UDF over the original
+   fitted estimator (`est.predict`), the confit side runs the `predict`
+   instruction over batches extracted from that same estimator. Random
+   ensembles x random rows. This is the only gate that covers the whole
+   chain at once — extraction, packing, traversal, aggregation, link — and it
+   subsumes the layout check I had listed as a separate item.
+2. **Differential inside confit: `ecall` vs `predict`.** The same query
+   lowered twice — once with the estimator behind the Python trampoline
+   (`ExternImpl`, already in the IR), once through the kernel. No DuckDB, no
+   SQL-level differences; isolates the kernel from everything else, so a
+   disagreement here is unambiguously the kernel's fault.
+3. **interp ≡ cranelift** — the standing backend-equality harness, extended
    with programs containing `predict`.
-3. **Layout check** — a test-only naive walk over the raw `nodes` batch,
-   compared against `predict` on random ensembles. This exists to catch
-   packing bugs in the optimized layout; it is a test oracle, never a serving
-   path.
+4. **Pins** for the cases a random generator will not reliably produce and
+   whose expected value should be frozen regardless: NaN feature, NULL
+   feature, probe miss, single-node (root-is-leaf) tree, empty ensemble.
 
-Extraction fidelity (does a builder lower sklearn's tree faithfully?) is not
-gated here — it belongs to whoever builds the batches, and in sql_transform's
-case to the family-level gate in the other spec.
+**Float tolerance, to be settled before writing gate 1, not discovered from a
+red bar:** a single tree returns a leaf value verbatim, so bit-exact holds.
+Forests and boosted models sum across trees, and numpy's `sum` uses pairwise
+summation while `tree_span` order is sequential — the two need not agree in
+the last ulp. Options: replicate numpy's pairwise order in the kernel, or
+declare a per-aggregation-mode tolerance. Decide from a measurement of the
+actual divergence on realistic ensemble sizes.
+
+Extraction fidelity has one more independent check available if wanted:
+compare against the estimator's own `decision_path`/`apply` (which leaf did
+each row reach) rather than only the final value, localizing a traversal bug
+to a node instead of a number.
 
 ## Sequencing
 
