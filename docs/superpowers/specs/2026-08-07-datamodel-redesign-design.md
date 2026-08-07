@@ -72,10 +72,11 @@ SELECT (SELECT avg(price) FROM __FIT__ f WHERE f.cat = t.cat) AS m FROM __THIS__
 ```
 
 That subquery is per-serving-row, so it cannot be evaluated once into a
-table. Freezing it would mean inferring the key `cat`, lifting it to a
-`GROUP BY`, and rewriting the correlation into a join — which is
-marginalization, arriving through the front door. Refusing keeps freezing
-equal to "evaluate once".
+table. Supporting it means inferring the key `cat`, lifting it to a
+`GROUP BY`, and rewriting the correlation into a join — which is exactly
+marginalization. **Future work, not a permanent boundary**: it is the natural
+first surface for marginalization to enable, and it is deferred with it. Here
+the refusal keeps freezing equal to "evaluate once".
 
 Refused at construction (P7 — "refusals are construction-time and named":
 everything refused is refused at construction with an error naming the
@@ -255,6 +256,11 @@ lost:
 - **`SQLProjection`** as a second type, defined by row-locality of the
   residual. Needs marginalization to define, and `compile()` to be worth
   having.
+- **Correlated `__FIT__` subqueries.** `(SELECT avg(price) FROM __FIT__ f
+  WHERE f.cat = t.cat)` — refused by `CorrelatedFit` in slice 1. Enabling it
+  is lifting the correlation to a `GROUP BY` and rewriting it as a join, so
+  it lands with marginalization and is the first thing marginalization should
+  buy.
 - **Marginalization** — automatic lifting of windows over `__THIS__` into
   frozen tables. Everything is hand-written here.
 - **`compile()` / `Inference`** — the serving artifact and the row path.
