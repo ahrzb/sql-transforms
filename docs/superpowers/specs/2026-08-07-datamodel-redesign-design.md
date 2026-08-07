@@ -205,6 +205,57 @@ The old design was safe only because a fit is always a reduction. `LATERAL`
 is correct without that precondition, so it is the mechanism; key-folding is
 an optimization to consider later, gated on a reduction check.
 
+### Applying an existing member per group
+
+A member has *both* implicit tables, so per-group has to slice both. The
+spelling is a named argument, measured to parse on 1.5.5:
+
+```sql
+SELECT * FROM z(__THIS__, partition_by := ['store'])
+```
+
+`PARTITION BY` inside the argument list and a trailing `OVER (...)` are both
+Parser Errors, so this is the only spelling available — and it matches
+DuckDB's own convention (`read_csv(..., header := true)`). `partition_by` is
+reserved; a member cannot take an argument of that name.
+
+The rewrite is mechanical. Given the member:
+
+```sql
+WITH cs AS (SELECT cat, avg(price) a FROM __FIT__ GROUP BY cat)
+SELECT t.price / f.a AS z FROM __THIS__ t LEFT JOIN cs f USING (cat)
+```
+
+`partition_by := ['store']` produces:
+
+```sql
+WITH cs AS (
+  SELECT g.store, x.* FROM (SELECT DISTINCT store FROM __FIT__) g,
+       LATERAL (SELECT cat, avg(price) a FROM __FIT__ WHERE store = g.store GROUP BY cat) x
+)
+SELECT t.price / f.a AS z FROM __THIS__ t LEFT JOIN cs f USING (store, cat)
+```
+
+Two edits, and neither needs to understand what the member computes:
+
+1. Each `__FIT__` subtree is wrapped in a `LATERAL` over the distinct keys.
+2. Each join against a partitioned table gains the keys.
+
+The member's `__THIS__` references are untouched — every serving row already
+carries its own `store`, so the widened join routes it to the right slice.
+This is the earlier design's key merge, made correct for members that are not
+reductions.
+
+Two preconditions, both refusing by name:
+
+- **A partitioned frozen table must be reached by a join.** If the member
+  reads one through a scalar subquery instead, edit (2) has no join to widen.
+  Refuse rather than attempt a subquery rewrite.
+  `# ponytail: join-only; widen scalar subqueries if a real member needs it`
+- **The member must have at least one `__FIT__` subtree.** For a stateless
+  member, per-group is identity — a no-op would silently accept a typo'd
+  member name.
+
 ## sklearn transformers
 
 An sklearn transformer is a UDAF (`fit`) plus a UDF (`transform`). Its fit
@@ -350,6 +401,9 @@ carry a comment stating it is intended, so nobody "fixes" it in a year.
 | **Prefixing avoids collisions** | Two members each with a CTE named `cs` yield `z__cs` and `y__cs` | Both keys present in `frozen`, values distinct |
 | **Splicing is text-checkable** | The spliced SQL equals a hand-written equivalent | Text comparison — the gate that reports *where* it broke, not just *that* it did |
 | **Members splice, never macro** | No DuckDB macro is created for a member | A member applied per group via `LATERAL` returns per-group values, not the whole-table value repeated. This is the gate that catches a macro-based implementation |
+| **`partition_by` matches hand-written** | `z(__THIS__, partition_by := ['store'])` equals the hand-written per-group member | Text comparison of the rewrite, plus value equality against a per-group reference built with an explicit `LATERAL` |
+| **`partition_by` widens the join** | Every join against a partitioned frozen table gains the keys | The unpartitioned and partitioned forms differ: `[-0.93, ...]` keyed on `cat` alone versus per-`(store, cat)` values |
+| **`partition_by` preconditions refuse** | A frozen table reached other than by join, or a member with no `__FIT__` subtree, refuses by name | Two construction-time raises, each naming the cause |
 
 ### sklearn leaves
 
