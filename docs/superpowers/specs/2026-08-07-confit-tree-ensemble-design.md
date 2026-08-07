@@ -324,10 +324,10 @@ static data, so the interpreter fallback rebuilds it) go through one
 `materialize_statics`, and its zip over `statics[n_join..]` asserts the
 ordering rather than assuming it.
 
-## OPEN: the float32 comparison gap (found 2026-08-07, undecided)
+## RESOLVED: the float32 comparison gap (found and fixed 2026-08-07)
 
-The parity claim above is **false for quantized features**, and the reason is
-structural rather than a rounding detail.
+The parity claim above was **false for quantized features**, for a structural
+reason rather than a rounding detail.
 
 sklearn narrows `X` to float32 (`DTYPE`) before traversal and keeps
 `tree_.threshold` in float64, so it evaluates `float32(x) <= threshold`. The
@@ -350,27 +350,55 @@ is why the original gate passed — it was passing by luck, not immunity.
 So the f64 compare is not a more accurate evaluation of the same model. It is
 a different model.
 
-**Three candidate fixes; the choice is NOT obvious and is deferred.**
+### The decision: rewrite the thresholds in `pack_trees`
 
-1. **Rewrite thresholds at pack time** — `pack_trees` maps each threshold to
-   the f64 value that reproduces the f32 comparison. Build-time, zero per-row
-   cost, kernel stays library-agnostic. Correct only for float32-trained
-   models.
-2. **Narrow in the kernel** — cast each feature to f32 before the compare.
-   Correct for sklearn, wrong for float64-trained libraries, and adds a cast
-   to the hot path.
-3. **Declare and enforce an f32 contract at the boundary** — refuse or narrow
-   explicitly, so the caller knows which grid they are on.
+Three candidates were on the table: rewrite thresholds at pack time, narrow
+each feature to f32 inside the kernel, or declare an f32 contract at the
+boundary and refuse anything else. The deferral note argued that none of them
+was right on its own, because the same two-table layout is documented as the
+path for other libraries and **XGBoost is float32 while LightGBM is float64**
+— so the narrowing looked like a property of the model ENTRY, needing a
+per-entry flag in the header and therefore a layout change.
 
-The reason this cannot be settled by picking the cheapest: the same two-table
-layout is documented as the path for other libraries, and **XGBoost is
-float32 while LightGBM is float64**. So the narrowing is a property of the
-ENTRY, not of the kernel or of the packer — which points at a per-entry flag
-in the model header rather than any of the three as written. That is a design
-change to the layout, hence deferred rather than patched.
+**That premise was wrong, and measurement is what showed it.** The rewrite is
+not an approximation of the f32 compare — it *is* the f32 compare. Rounding to
+float32 is monotone, so `float32(x) <= t` is still a single cutpoint over the
+doubles; `t'` is the largest double that still narrows to the largest float32
+at or below `t`, i.e. their midpoint, minus one ulp where ties-to-even would
+round the midpoint back up. Verified by walking f64 ULPs across the boundary
+of 18012 thresholds — sklearn-shaped midpoints, exactly-f32 values,
+subnormals, and both overflow ends — for **zero** disagreements in ~4.8M
+probes.
 
-Pinned by `_trees_test.py::test_quantised_features_match_sklearn`
-(xfail-strict): it cannot silently start passing or stop failing.
+Exactness is what collapses the layout question. Because the rewrite is
+lossless, it belongs wholly to whoever packs: a LightGBM packer simply does
+not call it, and the wire format keeps meaning "compare this double" for every
+library. No header flag, no kernel change, no per-row cast, no float32
+anywhere in the engine.
+
+What it costs: the packed `threshold` column no longer equals
+`tree_.threshold`. That is documented rather than hidden — the column means
+"the double this split compares against", not "sklearn's stored number".
+
+Two boundaries the implementation has to respect, both found by running it
+rather than by reading it:
+
+- **`t = +inf` is a real fitted threshold**, not a sentinel — sklearn writes
+  it for "every non-missing value goes left". It already admits every non-NaN
+  double, so it passes through untouched. A first revision *refused*
+  out-of-f32-range thresholds and broke all three missing-value tests.
+- **The overflow ends have no finite neighbour** to take a midpoint against;
+  ±inf stands in at ±2**128, where float32 rounding actually tips.
+
+Pinned by three tests. The load-bearing one is
+`test_threshold_rewrite_reproduces_the_f32_comparison`, which walks ULPs
+rather than sampling: mutating the rewrite by a **single ULP** still passes
+the 1500-row end-to-end parity test, measured. The end-to-end test is not a
+sufficient gate for this property, and now it does not have to be.
+
+Independently swept after the fix: 4 estimator families × 6 quantisation grids
+(integers, 1–3 decimals, wide scale, percentages) × both backends × 3000 rows
+= 144000 rows, **0 mismatches**.
 
 ## Build-time refusals (P7)
 
@@ -391,7 +419,9 @@ Every one of these names the offending row or field, before any data flows:
 
 These are the correctness surface; each is a test, not a comment.
 
-- **Comparison**: `x <= threshold` goes left.
+- **Comparison**: `x <= threshold` goes left, on the raw double. Reproducing
+  a library that compares on a narrower grid is the packer's job, not this
+  instruction's — see the float32 resolution above.
 - **Missing values follow sklearn, per node, not a house rule.** Measured on
   sklearn 1.9.0: `predict` never raises on NaN. Every tree carries
   `tree_.missing_go_to_left`, and a NaN feature takes that node's declared
