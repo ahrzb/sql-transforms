@@ -32,6 +32,17 @@ pub struct StaticTable {
     pub cols: Vec<Col>,
 }
 
+/// A fitted model set's schema, as given to `prepare` — like [`StaticTable`],
+/// this holds no data, only what the binder needs to check a call site.
+/// Feature NAMES live here and nowhere else: the frontend resolves a struct
+/// call site's fields to lane positions at build, so the lowered `predict`
+/// is positional and the IR never carries a name.
+#[derive(Clone, Debug)]
+pub struct ModelTable {
+    pub name: String,
+    pub features: Vec<String>,
+}
+
 /// A struct row column flattened to scalar LANES at build time (TASK-56,
 /// pins-waveA/struct-star.json + struct-nested.json): the binder resolves
 /// `col.field...` paths and `col.*` expansion to the leaf lanes; no struct
@@ -231,6 +242,19 @@ pub enum SKind {
     SLen {
         bytes: bool,
         a: Box<SExpr>,
+    },
+    /// Score model set `model` (an index into the hoisted model table).
+    /// `feats` is already in the model's declared feature order — the
+    /// struct call site's names were resolved away at bind.
+    ///
+    /// Nullability is deliberately asymmetric: the RESULT is NULL exactly
+    /// when `id` is, because an unseen group has no model. A NULL FEATURE
+    /// does not propagate — the model has a defined answer for missing, and
+    /// lowering hands it NaN.
+    TreePredict {
+        model: u32,
+        id: Box<SExpr>,
+        feats: Vec<SExpr>,
     },
     /// Regex match against program regex `re` (wave-B; full-match forms
     /// pre-anchored in the ReSpec pattern at bind) -> I1.

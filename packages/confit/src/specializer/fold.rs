@@ -68,6 +68,15 @@ pub fn fold(e: SExpr) -> SExpr {
             ret,
             whole,
         }),
+        // Fold the operands, never the scoring — a model is prepare-time
+        // data, not a constant the folder can evaluate. Note a NULL feature
+        // does NOT collapse the call to NULL: that is the whole point of the
+        // missing-value rule.
+        SKind::TreePredict { model, id, feats } => e(SKind::TreePredict {
+            model,
+            id: Box::new(fold(*id)),
+            feats: feats.into_iter().map(fold).collect(),
+        }),
         SKind::IntToFloat(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {

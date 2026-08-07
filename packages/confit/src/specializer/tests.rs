@@ -944,6 +944,7 @@ fn indf_under_shape_many_refuses_by_name() {
         true,
 
         &[],
+        &[],
     ) {
         Err(PrepareError::Unsupported(m)) => {
             assert!(m.contains("IS NOT DISTINCT FROM"), "got: {m}")
@@ -1003,7 +1004,203 @@ fn prep_udfs(
     statics: &[StaticTable],
     udfs: &[super::ir::ExternSpec],
 ) -> Result<super::Prepared, PrepareError> {
-    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs)
+    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs, &[])
+}
+
+// ------------------------------------------------------- tree_predict --
+
+fn model(name: &str, features: &[&str]) -> super::plan::ModelTable {
+    super::plan::ModelTable {
+        name: name.to_string(),
+        features: features.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+fn prep_models(
+    sql: &str,
+    in_cols: &[Col],
+    statics: &[StaticTable],
+    models: &[super::plan::ModelTable],
+) -> Result<super::Prepared, PrepareError> {
+    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, &[], models)
+}
+
+/// The serving shape: the group's model id comes from a params join, the
+/// features from a struct whose field NAMES are checked and reordered into
+/// the model's declared order — the one mistake a fitted model cannot catch
+/// for itself.
+#[test]
+fn tree_predict_resolves_struct_features_by_name() {
+    let schema = cols(&[
+        ("g", Ty::Str, true),
+        ("price", Ty::F64, false),
+        ("sqft", Ty::I64, false),
+    ]);
+    let params = stat("p0", &[("g", Ty::Str, true), ("est", Ty::I64, true)]);
+    // Fields deliberately given in the WRONG order, and sqft as an i64.
+    let p = prep_models(
+        "SELECT tree_predict('trees', p.est, struct_pack(sqft := t.sqft, price := t.price)) AS z \
+         FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
+        &schema,
+        &[params],
+        &[model("trees", &["price", "sqft"])],
+    )
+    .unwrap();
+    assert_eq!(p.models, vec!["trees".to_string()]);
+    // The model static is appended AFTER the join static, so the probe's @0
+    // is untouched.
+    let text = print(&p.program);
+    assert!(
+        text.contains("static @0: map(") && text.contains("static @1: model<tree_ensemble(2)>"),
+        "model static must follow the join static:\n{text}"
+    );
+    // Exactly one predict, against @1.
+    assert_eq!(text.matches("predict @1,").count(), 1, "{text}");
+    assert_eq!(feature_position_of_itof(&text), 1, "sqft is declared second:\n{text}");
+
+    // Same SQL, same struct, only the DECLARED order flipped: the operand
+    // order must follow the declaration, not the call site. That is the
+    // whole point of naming the features.
+    let schema = cols(&[
+        ("g", Ty::Str, true),
+        ("price", Ty::F64, false),
+        ("sqft", Ty::I64, false),
+    ]);
+    let params = stat("p0", &[("g", Ty::Str, true), ("est", Ty::I64, true)]);
+    let p = prep_models(
+        "SELECT tree_predict('trees', p.est, struct_pack(sqft := t.sqft, price := t.price)) AS z \
+         FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
+        &schema,
+        &[params],
+        &[model("trees", &["sqft", "price"])],
+    )
+    .unwrap();
+    let text = print(&p.program);
+    assert_eq!(feature_position_of_itof(&text), 0, "sqft is declared first:\n{text}");
+}
+
+/// Which feature slot of the single `predict` carries the `itof` result.
+/// sqft is the only i64 feature, so the promotion identifies it positionally
+/// without parsing the whole program.
+fn feature_position_of_itof(text: &str) -> usize {
+    let itof = text
+        .lines()
+        .find_map(|l| {
+            let (dst, rest) = l.trim().split_once(" = ")?;
+            rest.starts_with("itof ").then(|| dst.trim().to_string())
+        })
+        .expect("an itof promoting the i64 feature");
+    let line = text
+        .lines()
+        .find(|l| l.contains("predict @1,"))
+        .expect("a predict line");
+    let ops: Vec<&str> = line
+        .split_once("predict @1, ")
+        .expect("predict operands")
+        .1
+        .split(", ")
+        .map(|s| s.trim())
+        .collect();
+    // ops[0] is the model id; features follow.
+    ops[1..]
+        .iter()
+        .position(|o| *o == itof)
+        .unwrap_or_else(|| panic!("itof result {itof} is not a feature operand of: {line}"))
+}
+
+/// A NULL feature is not a NULL result — the model answers for missing.
+/// A NULL model id is, because an unseen group has no model at all.
+#[test]
+fn only_the_model_id_makes_a_prediction_null() {
+    let schema = cols(&[("price", Ty::F64, true), ("id", Ty::I64, false)]);
+    let p = prep_models(
+        "SELECT tree_predict('trees', id, struct_pack(price := price)) AS z FROM __THIS__",
+        &schema,
+        &[],
+        &[model("trees", &["price"])],
+    )
+    .unwrap();
+    // id is NOT NULL, price IS — the output column must still be non-null.
+    assert!(
+        !p.program.out_cols[0].ty.nullable,
+        "a nullable feature must not make the prediction nullable:\n{}",
+        print(&p.program)
+    );
+    // The NULL feature becomes NaN through an explicit select.
+    let text = print(&p.program);
+    assert!(text.contains("const.f64 nan") && text.contains("select "), "{text}");
+
+    let schema = cols(&[("price", Ty::F64, false), ("id", Ty::I64, true)]);
+    let p = prep_models(
+        "SELECT tree_predict('trees', id, struct_pack(price := price)) AS z FROM __THIS__",
+        &schema,
+        &[],
+        &[model("trees", &["price"])],
+    )
+    .unwrap();
+    assert!(
+        p.program.out_cols[0].ty.nullable,
+        "a nullable model id must make the prediction nullable"
+    );
+    // No feature is nullable here, so no NULL-to-NaN select is emitted.
+    assert!(!print(&p.program).contains("const.f64 nan"));
+}
+
+#[test]
+fn tree_predict_refuses_by_name() {
+    let schema = cols(&[("price", Ty::F64, false), ("s", Ty::Str, false), ("id", Ty::I64, false)]);
+    let models = [model("trees", &["price", "sqft"])];
+    let one = [model("trees", &["price"])];
+    let cases: &[(&str, &str, &[super::plan::ModelTable])] = &[
+        (
+            "was not provided to prepare",
+            "SELECT tree_predict('nope', id, struct_pack(price := price)) FROM __THIS__",
+            &one,
+        ),
+        (
+            "no feature 'weight'",
+            "SELECT tree_predict('trees', id, struct_pack(weight := price)) FROM __THIS__",
+            &one,
+        ),
+        (
+            "missing feature(s): sqft",
+            "SELECT tree_predict('trees', id, struct_pack(price := price)) FROM __THIS__",
+            &models,
+        ),
+        (
+            "given twice",
+            "SELECT tree_predict('trees', id, struct_pack(price := price, PRICE := price)) \
+             FROM __THIS__",
+            &one,
+        ),
+        (
+            "want a number",
+            "SELECT tree_predict('trees', id, struct_pack(price := s)) FROM __THIS__",
+            &one,
+        ),
+        (
+            "must be a struct_pack",
+            "SELECT tree_predict('trees', id, price) FROM __THIS__",
+            &one,
+        ),
+        (
+            "exactly 3 arguments",
+            "SELECT tree_predict('trees', id) FROM __THIS__",
+            &one,
+        ),
+        (
+            "non-constant tree_predict model set",
+            "SELECT tree_predict(s, id, struct_pack(price := price)) FROM __THIS__",
+            &one,
+        ),
+    ];
+    for (needle, sql, ms) in cases {
+        let e = prep_models(sql, &schema, &[], ms)
+            .err()
+            .unwrap_or_else(|| panic!("accepted a bad call site ({needle}): {sql}"));
+        let msg = e.to_string();
+        assert!(msg.contains(needle), "wanted '{needle}', got '{msg}' for: {sql}");
+    }
 }
 
 #[test]
@@ -2545,7 +2742,8 @@ fn opaque_row_columns_reject_only_on_reference() {
     let schema = cols(&[("a", Ty::I64, false), ("s", Ty::Str, true)]);
     let opaque = vec![(1usize, "d".to_string())];
     let prep_o = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false, &[]).map(|p| p.program)
+        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false, &[], &[])
+            .map(|p| p.program)
     };
 
     // Untouched -> serves end to end.
@@ -2856,7 +3054,8 @@ fn structs_flatten_to_lanes() {
         ],
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false, &[]).map(|p| p.program)
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false, &[], &[])
+            .map(|p| p.program)
     };
     let run = |sql: &str| -> Result<Vec<Vec<String>>, String> {
         let p = prep_s(sql).map_err(|e| e.to_string())?;
@@ -2965,7 +3164,8 @@ fn nested_struct_resolution_matches_pins() {
         ))))),
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false, &[]).map(|p| p.program)
+        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false, &[], &[])
+            .map(|p| p.program)
     };
     // 8 parts = schema.table.column + 5 field extracts (corpus verbatim).
     let p = prep_s("SELECT t.t.t.t.t.t.t.t FROM t.t").unwrap();
@@ -3007,6 +3207,7 @@ fn many_shape_dup_key_joins_fan_out() {
             &[],
             std::slice::from_ref(&dim),
             true,
+            &[],
             &[],
         )
     };
@@ -3091,6 +3292,7 @@ fn many_shape_dup_key_joins_fan_out() {
         true,
 
         &[],
+        &[],
     ) {
         Err(e) => e.to_string(),
         Ok(_) => panic!("multi-join under many must be the named restriction"),
@@ -3114,6 +3316,7 @@ fn many_shape_keyless_and_inequality_joins() {
             &[],
             std::slice::from_ref(&dim),
             true,
+            &[],
             &[],
         )
     };
@@ -3170,7 +3373,7 @@ fn many_shape_self_joins() {
     // bit-identical under multiplicity; pins-stageB).
     let schema = cols(&[("i", Ty::I64, false), ("j", Ty::I64, false)]);
     let prep_many = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &[], &[], true, &[])
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &[], &[], true, &[], &[])
     };
     let input = || {
         batch(

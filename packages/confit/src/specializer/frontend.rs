@@ -55,6 +55,52 @@ impl std::fmt::Display for PrepareError {
     }
 }
 
+/// Pull `(name, expr)` pairs out of a literal `struct_pack(a := x, b := y)`
+/// call site. Purely syntactic: the struct is never bound as a value, which
+/// is why the engine needs no struct construction at all. Anything else in
+/// the feature slot refuses by name rather than binding to something whose
+/// field names we could not have checked.
+fn struct_fields(e: &SqlExpr) -> Result<Vec<(String, &SqlExpr)>, PrepareError> {
+    use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments, FunctionArgOperator};
+    let SqlExpr::Function(f) = e else {
+        return Err(PrepareError::Bind(
+            "tree_predict features must be a struct_pack(name := expr, ..) call".into(),
+        ));
+    };
+    if !f.name.to_string().eq_ignore_ascii_case("struct_pack") {
+        return Err(PrepareError::Bind(format!(
+            "tree_predict features must be struct_pack(name := expr, ..), found {}",
+            f.name
+        )));
+    }
+    let FunctionArguments::List(list) = &f.args else {
+        return Err(PrepareError::Bind(
+            "struct_pack without an argument list".into(),
+        ));
+    };
+    if list.args.is_empty() {
+        return Err(PrepareError::Bind(
+            "struct_pack needs at least one field".into(),
+        ));
+    }
+    let mut out = Vec::with_capacity(list.args.len());
+    for a in &list.args {
+        match a {
+            FunctionArg::Named {
+                name,
+                arg: FunctionArgExpr::Expr(v),
+                operator: FunctionArgOperator::Assignment,
+            } => out.push((name.value.clone(), v)),
+            _ => {
+                return Err(PrepareError::Bind(
+                    "struct_pack fields must be written `name := expr`".into(),
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
@@ -73,6 +119,7 @@ pub fn frontend(
     statics: &[StaticTable],
     many: bool,
     udfs: &[super::ir::ExternSpec],
+    models: &[super::plan::ModelTable],
 ) -> Result<
     (
         Rel,
@@ -80,6 +127,7 @@ pub fn frontend(
         Vec<Col>,
         Vec<super::ir::ReSpec>,
         Vec<super::WideOut>,
+        Vec<u32>,
     ),
     PrepareError,
 > {
@@ -144,7 +192,7 @@ pub fn frontend(
     }
 
     let (binder, joins, leftover_where) =
-        bind_from(select, this_name, in_cols, opaque, structs, statics, many, udfs)?;
+        bind_from(select, this_name, in_cols, opaque, structs, statics, many, udfs, models)?;
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
@@ -337,6 +385,7 @@ pub fn frontend(
         out_cols,
         binder.regexes.into_inner(),
         wide_outs,
+        binder.model_refs.into_inner(),
     ))
 }
 
@@ -353,6 +402,7 @@ fn bind_from<'a>(
     statics: &'a [StaticTable],
     many: bool,
     udfs: &'a [super::ir::ExternSpec],
+    models: &'a [super::plan::ModelTable],
 ) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
     // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
     // follow and are addressable ONLY through their struct paths.
@@ -444,6 +494,8 @@ fn bind_from<'a>(
         bound_aliases: std::cell::RefCell::new(Vec::new()),
         regexes: std::cell::RefCell::new(Vec::new()),
         udfs,
+        models,
+        model_refs: std::cell::RefCell::new(Vec::new()),
         sites: std::cell::Cell::new(0),
         extern_sites: std::cell::RefCell::new(Vec::new()),
     };
@@ -1137,6 +1189,12 @@ struct Binder<'a> {
     /// Declared UDF externs (DRAFT-22): an unknown function matching one
     /// binds as an opaque ecall instead of the named refusal.
     udfs: &'a [super::ir::ExternSpec],
+    /// Fitted model sets available to `tree_predict`, by name.
+    models: &'a [super::plan::ModelTable],
+    /// Model sets actually referenced, as catalog indices in first-use
+    /// order. Lowering appends one `StaticTy::Model` per entry AFTER every
+    /// join static, so no existing probe's `@N` shifts.
+    model_refs: std::cell::RefCell<Vec<u32>>,
     /// Call-site counter: the k+1 lanes of one width-k call share a site
     /// so lowering executes the callable once per row.
     sites: std::cell::Cell<u32>,
@@ -3785,6 +3843,145 @@ impl Binder<'_> {
         Ok(Some((lanes, spec.ret_names.clone())))
     }
 
+    /// `tree_predict('set', <i64 id>, struct_pack(feat := expr, ..))`.
+    ///
+    /// The set name is a string literal hoisted at build, exactly like a
+    /// regex pattern. Features arrive as a struct so their NAMES can be
+    /// checked — positional features would let a caller silently transpose
+    /// two columns, which is the one mistake a fitted model cannot detect.
+    /// The struct is destructured SYNTACTICALLY: no struct value exists at
+    /// runtime, and the emitted `predict` is positional in the model's
+    /// declared feature order (DuckDB reorders `struct_pack` fields to the
+    /// declared order too — measured 1.5.5 — so this matches the oracle).
+    fn tree_predict(
+        &self,
+        f: &sqlparser::ast::Function,
+        args: &[&SqlExpr],
+    ) -> Result<SExpr, PrepareError> {
+        let [set, id, feats] = args[..] else {
+            return Err(PrepareError::Bind(
+                "tree_predict takes exactly 3 arguments: a model set name, a model id, \
+                 and a struct of features"
+                    .into(),
+            ));
+        };
+
+        // 1. The model set: a literal name resolved against the catalog.
+        let Some(bset) = self.expr_or_null(set)? else {
+            return Err(PrepareError::Bind(
+                "tree_predict model set name must be a string literal, not NULL".into(),
+            ));
+        };
+        let SKind::Lit(Lit::Str(set_name)) = bset.kind else {
+            if bset.ty != Ty::Str {
+                return Err(PrepareError::Bind(format!(
+                    "tree_predict model set name is {}, want a string literal",
+                    bset.ty.name()
+                )));
+            }
+            return Err(unsup(
+                "non-constant tree_predict model set (resolved at prepare in v0)",
+            ));
+        };
+        let Some(cat) = self
+            .models
+            .iter()
+            .position(|m| m.name.eq_ignore_ascii_case(&set_name))
+        else {
+            return Err(PrepareError::Bind(format!(
+                "model set '{set_name}' was not provided to prepare"
+            )));
+        };
+        let decl = &self.models[cat];
+
+        // 2. The features, destructured from struct_pack by name.
+        let fields = struct_fields(feats)?;
+        let mut seen: Vec<&str> = Vec::with_capacity(fields.len());
+        let mut bound: Vec<Option<SExpr>> = (0..decl.features.len()).map(|_| None).collect();
+        for (fname, fexpr) in &fields {
+            if seen.iter().any(|s| s.eq_ignore_ascii_case(fname)) {
+                return Err(PrepareError::Bind(format!(
+                    "tree_predict feature '{fname}' given twice"
+                )));
+            }
+            seen.push(fname);
+            let Some(pos) = decl
+                .features
+                .iter()
+                .position(|d| d.eq_ignore_ascii_case(fname))
+            else {
+                return Err(PrepareError::Bind(format!(
+                    "model set '{set_name}' has no feature '{fname}' (declared: {})",
+                    decl.features.join(", ")
+                )));
+            };
+            // A bare NULL feature is legal and means "missing" — the model
+            // has an answer for that. It types as f64 like any other.
+            let e = match self.expr_or_null(fexpr)? {
+                None => null_of(Ty::F64),
+                Some(e) => match e.ty {
+                    Ty::F64 => e,
+                    Ty::I64 => promote_f64(e),
+                    other => {
+                        return Err(PrepareError::Bind(format!(
+                            "tree_predict feature '{fname}' is {}, want a number",
+                            other.name()
+                        )))
+                    }
+                },
+            };
+            bound[pos] = Some(e);
+        }
+        let missing: Vec<&str> = decl
+            .features
+            .iter()
+            .zip(bound.iter())
+            .filter(|(_, b)| b.is_none())
+            .map(|(d, _)| d.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return Err(PrepareError::Bind(format!(
+                "model set '{set_name}' is missing feature(s): {}",
+                missing.join(", ")
+            )));
+        }
+
+        // 3. The model id gates the RESULT: an unseen group has no model.
+        // Feature nullability deliberately does not propagate.
+        let Some(bid) = self.expr_or_null(id)? else {
+            return Ok(null_of(Ty::F64));
+        };
+        let bid = match bid.ty {
+            Ty::I64 => bid,
+            other => {
+                return Err(PrepareError::Bind(format!(
+                    "tree_predict model id is {}, want a number",
+                    other.name()
+                )))
+            }
+        };
+        let nullable = bid.nullable;
+
+        let mut refs = self.model_refs.borrow_mut();
+        let model = match refs.iter().position(|r| *r == cat as u32) {
+            Some(i) => i as u32,
+            None => {
+                refs.push(cat as u32);
+                (refs.len() - 1) as u32
+            }
+        };
+        let _ = f;
+        Ok(SExpr {
+            kind: SKind::TreePredict {
+                model,
+                id: Box::new(bid),
+                feats: bound.into_iter().map(|b| b.expect("all present")).collect(),
+            },
+            ty: Ty::F64,
+            nullable,
+        })
+    }
+
     fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         let name = f.name.to_string().to_lowercase();
@@ -3805,6 +4002,7 @@ impl Binder<'_> {
             }
         }
         match name.as_str() {
+            "tree_predict" => self.tree_predict(f, &args),
             // ucase/lcase are alias-identical to upper/lower (wave-3 pins:
             // exhaustive all-codepoint sweep, zero mismatches).
             "upper" | "lower" | "ucase" | "lcase" => {
