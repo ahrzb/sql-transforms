@@ -409,6 +409,25 @@ compare against the estimator's own `decision_path`/`apply` (which leaf did
 each row reach) rather than only the final value, localizing a traversal bug
 to a node instead of a number.
 
+## Decisions taken before implementation (2026-08-07)
+
+- **confit stays sklearn-free.** The engine accepts only the two Arrow
+  batches. The sklearn walk — `tree_.__getstate__()`, `missing_go_to_left`,
+  ensemble unrolling — lives in sql_transform; confit's own tests build
+  batches by hand. confit never imports sklearn.
+- **Coverage in the first cut**: regressors (`DecisionTreeRegressor`,
+  `RandomForestRegressor`, `GradientBoosting*`) plus **binary** classifiers
+  through the single probability lane. Multiclass refuses by name at
+  extraction — its `value` is `n_nodes x n_outputs x n_classes` and would
+  change `predict`'s return from one `f64` to k.
+- **Float policy**: measure the real divergence between numpy's pairwise
+  summation and a sequential `tree_span` walk on realistic ensembles first. If
+  it is nonzero, replicate pairwise order in the kernel so the differential
+  gate stays bit-exact, per C2's match-or-refuse rule. A declared tolerance is
+  the fallback, not the default.
+- **Landing**: specs and implementation land together in one PR on
+  `claude/optimized-transforms-499a5a`. No stacked PRs.
+
 ## Sequencing
 
 1. IR: declaration + instruction + verify + round-trip (no execution yet).
