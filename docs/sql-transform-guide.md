@@ -487,6 +487,146 @@ For a lag you want computed from the *live* batch instead, put the window over
 `__THIS__`. The two are one character apart in intent and a world apart in
 behaviour, which is exactly why the model makes you write which one you meant.
 
+## Backtesting: train on the last three months, score the next one
+
+Twelve months, two stores, one trending up and one down:
+
+```
+>>> MONTHS = [date(2024, m, 1) for m in range(1, 13)]
+>>> SALES12 = pa.table({
+...     "store": ["S1"] * 12 + ["S2"] * 12,
+...     "month": pa.array(MONTHS * 2, pa.date32()),
+...     "price": [100.0 + 10 * i for i in range(12)]
+...            + [500.0 - 20 * i for i in range(12)],
+... })
+>>> def window(lo, hi):
+...     m = SALES12["month"]
+...     return SALES12.filter(pc.and_(
+...         pc.greater_equal(m, pa.scalar(MONTHS[lo], pa.date32())),
+...         pc.less_equal(m, pa.scalar(MONTHS[hi], pa.date32())),
+...     ))
+
+```
+
+### The loop
+
+One transform, refitted per origin. `__FIT__` is literally the three months
+you handed it, so *did this feature see the future* is a question you answer by
+pointing, not by auditing:
+
+```
+>>> baseline = SQLTransform('''
+...     SELECT t.month::VARCHAR AS month, t.store,
+...            round(t.price / h.baseline, 4) AS rel
+...     FROM __THIS__ t
+...     LEFT JOIN (SELECT store, avg(price) AS baseline FROM __FIT__ GROUP BY store) h
+...       ON t.store = h.store
+...     ORDER BY t.month, t.store
+... ''')
+
+>>> rolling = []
+>>> for i in range(3, 12):
+...     rolling += baseline.fit(window(i - 3, i - 1)).transform(window(i, i)).to_pylist()
+>>> len({r["month"] for r in rolling})
+9
+>>> rolling[:2]
+[{'month': '2024-04-01', 'store': 'S1', 'rel': 1.1818}, {'month': '2024-04-01', 'store': 'S2', 'rel': 0.9167}]
+
+```
+
+Nine fits. Nothing is shared between them, and nothing has to be: the artifact
+of one origin cannot leak into the next, because each is a separate `Fitted`.
+
+### The same thing in one fit
+
+An ordered frame over `__FIT__` *is* a rolling origin. `ROWS BETWEEN 3
+PRECEDING AND 1 PRECEDING` excludes the row it is computed for, so the baseline
+for a month never contains that month:
+
+```
+>>> one_shot = SQLTransform('''
+...     SELECT t.month::VARCHAR AS month, t.store,
+...            round(t.price / h.baseline, 4) AS rel
+...     FROM __THIS__ t
+...     LEFT JOIN (
+...         SELECT store, month,
+...                avg(price) OVER (PARTITION BY store ORDER BY month
+...                                 ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) AS baseline
+...         FROM __FIT__
+...     ) h ON t.store = h.store AND t.month = h.month
+...     ORDER BY t.month, t.store
+... ''')
+>>> shot = one_shot.fit(SALES12).transform(SALES12).to_pylist()
+>>> shot[:4]
+[{'month': '2024-01-01', 'store': 'S1', 'rel': None}, {'month': '2024-01-01', 'store': 'S2', 'rel': None}, {'month': '2024-02-01', 'store': 'S1', 'rel': 1.1}, {'month': '2024-02-01', 'store': 'S2', 'rel': 0.96}]
+
+```
+
+January has no history at all, so it is NULL rather than nothing. February and
+March get a partial window. From April on, the window is full — and there the
+two spellings are the same numbers:
+
+```
+>>> [r for r in shot if r["month"] >= "2024-04"] == rolling
+True
+
+```
+
+That equality is the point. In pandas the loop and the windowed version are two
+different programs and agreeing is a hope; here it is one line of test.
+
+### Scoring every month
+
+```
+>>> mape = SQLTransform('''
+...     SELECT t.month::VARCHAR AS month,
+...            round(avg(abs((t.price / h.baseline) - 1)), 4) AS mape
+...     FROM __THIS__ t
+...     LEFT JOIN (
+...         SELECT store, month,
+...                avg(price) OVER (PARTITION BY store ORDER BY month
+...                                 ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) AS baseline
+...         FROM __FIT__
+...     ) h ON t.store = h.store AND t.month = h.month
+...     WHERE h.baseline IS NOT NULL
+...     GROUP BY t.month ORDER BY t.month
+... ''')
+>>> mape.fit(SALES12).transform(SALES12).to_pylist()[:4]
+[{'month': '2024-02-01', 'mape': 0.07}, {'month': '2024-03-01', 'mape': 0.102}, {'month': '2024-04-01', 'mape': 0.1326}, {'month': '2024-05-01', 'mape': 0.1268}]
+
+```
+
+### What each costs
+
+The one-shot version ships a baseline per store-month, which is the whole
+training grid:
+
+```
+>>> {k: len(v) for k, v in one_shot.fit(SALES12).params.items()}
+{'__param_0': 24}
+
+```
+
+Nine fits and O(1) params each, or one fit and |D| params. Neither is hidden.
+
+And the ordered frame's documented hazard is, in a backtest, exactly the right
+answer — a month the training data never had has no baseline, so it is NULL:
+
+```
+>>> unseen = pa.table({
+...     "store": ["S1"],
+...     "month": pa.array([date(2025, 1, 1)], pa.date32()),
+...     "price": [999.0],
+... })
+>>> one_shot.fit(SALES12).transform(unseen).to_pylist()
+[{'month': '2025-01-01', 'store': 'S1', 'rel': None}]
+
+```
+
+In production that NULL is the trap the spec warns about. In a backtest it is
+the truth. Same construct, and which one you are doing is something only you
+know — which is why it is legal and loud rather than refused.
+
 ## Not here yet
 
 Marginalization (so per-group fitting collapses to one row per group instead of
