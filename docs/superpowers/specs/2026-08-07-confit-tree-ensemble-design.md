@@ -32,6 +32,16 @@ only.
 
 ## The shape: a model is a prepare-time structure
 
+Confit compiles each query into a specialized per-row function. Anything
+known *before rows arrive* is materialized once at prepare time and reached
+through an opaque handle — that is what the IR calls a **static**, and it is
+already how a params table works:
+
+```text
+static @2 : map(str) -> (i64)
+%hit, %id = probe @2, %region      # this IS the LEFT JOIN; a miss is %hit = false
+```
+
 Three candidate homes for a fitted model, and only one survives contact with
 the IR:
 
@@ -42,11 +52,39 @@ the IR:
 | **a prepare-time declaration** | chosen. Mirrors `regex`, which is already hoisted from a literal at build. Materialization layout is a backend decision, exactly as the design doc already licenses for maps. |
 
 The layout freedom matters: `predict` can become QuickScorer, or grow a
-vectorized multi-tree walk, without touching the IR. The CFG stays acyclic —
-the traversal loop lives inside the kernel, so the "lift when one needs a
-loop, e.g. QuickScorer" caveat in
-[`ir/mod.rs`](../../../packages/confit/src/specializer/ir/mod.rs) stays
-deferred rather than spent.
+vectorized multi-tree walk, without touching the IR. A *data-driven*
+traversal in the IR would need a loop, which the acyclic-CFG rule forbids
+today ("lift when one needs a loop, e.g. QuickScorer" —
+[`ir/mod.rs`](../../../packages/confit/src/specializer/ir/mod.rs)); putting
+the loop in the kernel leaves that rule intact.
+
+### Kernel vs lowering the tree into IR — unresolved, and not blocking
+
+The acyclic rule does **not** rule out the other design: a tree is itself
+acyclic, so it can be lowered into nested `brif` blocks with no loop at all —
+the model compiled to code rather than interpreted from data. Both are
+viable; this document picks the kernel, and the reasons are structural, not
+measured:
+
+| | one instruction + kernel | lower the tree into IR branches |
+|---|---|---|
+| IR surface | 1 declaration + 1 opcode | a lowering pass emitting O(nodes) blocks |
+| forest of 100 x 255 nodes | data; program size unchanged | ~25k blocks — cranelift compile time and code size |
+| refit | swap the Arrow batch, re-prepare | re-JIT the whole program |
+| interpreter backend | native speed for free | interpreted per node — slow |
+| small tree (depth <= 6) | indirect loads, loop overhead | likely faster: inlined compares, no indirection |
+| large ensembles | can adopt QuickScorer / vectorized walks with no IR churn | i-cache and branch-prediction pressure |
+| parity | identical | identical |
+
+**Unmeasured.** The experiment that settles it: per-row latency for (1 tree,
+depth 4), (100 trees, depth 8) and (500 trees, depth 12) — kernel versus a
+hand-written branch program — plus cranelift compile time and code size at
+each point.
+
+The choice is also reversible and invisible to users: the two can coexist,
+with the frontend lowering small trees to branches and emitting `predict` for
+large ones. Nothing in the SQL surface or the Arrow boundary changes if that
+happens, which is why the first cut does not wait on the measurement.
 
 ## IR surface
 
@@ -85,11 +123,12 @@ model  @3 : tree_ensemble(2)
 
 b0:
   %hit, %id = probe @2, %region
-  %pv, %f0  = load.opt in.price
-  %sv, %f1  = load.opt in.sqft
-  %a  = and %hit, %pv
-  %ok = and %a, %sv
-  brif %ok, b1(%id, %f0, %f1), b2
+  %pv, %p0  = load.opt in.price
+  %sv, %s0  = load.opt in.sqft
+  %nan = const.f64 nan
+  %f0  = select %pv, %p0, %nan       # NULL feature -> NaN, per the missing rule below
+  %f1  = select %sv, %s0, %nan
+  brif %hit, b1(%id, %f0, %f1), b2
 b1(%id: i64, %f0: f64, %f1: f64):
   %p = predict @3, %id, %f0, %f1
   store.opt out.pred, true, %p
@@ -100,7 +139,12 @@ b2:
   emit
 ```
 
-Branching on validity rather than scoring-then-discarding is the lowering's
+Only the probe hit gates the output: a NULL *feature* is a value the model
+knows how to handle, while a missing *model* is not. `load.opt` yields the
+type default (`0.0`) on an invalid lane, so the NULL-to-NaN conversion is an
+explicit `select`, not an implicit payload reading.
+
+Branching on the hit rather than scoring-then-discarding is the lowering's
 choice; both are correct (a miss leaves `%id` at its defined default), the
 branch merely avoids a pointless traversal.
 
@@ -133,6 +177,7 @@ pub struct TreeEnsemble {
     threshold: Vec<f64>,
     left: Vec<i32>,
     right: Vec<i32>,
+    missing_left: Vec<bool>,  // sklearn's tree_.missing_go_to_left, per node
     value: Vec<f64>,
     tree_span:  Vec<(u32, u32)>,   // tree  -> node range
     model_span: Vec<(u32, u32)>,   // model -> tree range   (id = dense index)
@@ -160,7 +205,8 @@ declaration (`n_features` must agree):
 
 ```text
 nodes:  model_id i64 | tree_id i64 | node_id i64 | feature i32 (-1 = leaf)
-                     | threshold f64 | left i32 | right i32 | value f64
+                     | threshold f64 | left i32 | right i32 | missing_left bool
+                     | value f64
 models: model_id i64 | base f64 | agg str ('sum'|'mean') | link str ('identity'|'sigmoid')
 ```
 
@@ -190,12 +236,31 @@ Every one of these names the offending row or field, before any data flows:
 
 These are the correctness surface; each is a test, not a comment.
 
-- **Comparison**: `x <= threshold` goes left. NaN compares false, so a NaN
-  feature goes right — sklearn's own convention.
-- **NULL**: a NULL feature or a probe miss yields a NULL result; the kernel is
-  never handed a NULL. Validity is `i1` algebra in the caller. No
-  missing-value direction in v0 — a model trained with one (HistGB) is out of
-  scope until the layout carries it.
+- **Comparison**: `x <= threshold` goes left.
+- **Missing values follow sklearn, per node, not a house rule.** Measured on
+  sklearn 1.9.0: `predict` never raises on NaN. Every tree carries
+  `tree_.missing_go_to_left`, and a NaN feature takes that node's declared
+  direction — right by default (`0`), left where the tree learned a missing
+  branch. A tree trained without any missing values still has the array, so
+  the flag is always available and the layout always carries it. XGBoost's
+  `missing=` direction lands in the same column.
+- **NULL is NaN**: a SQL NULL feature is presented to the model as NaN and
+  follows the same per-node direction. This is deliberately *not* the usual
+  NULL-in-NULL-out rule, because the model has a defined answer for missing —
+  and it matches the engine's existing convention, where `_as_feature`
+  already maps NULL to NaN as "the estimator's own missing-value convention"
+  ([`_udf.py`](../../../packages/sql-transform/sql_transform/_udf.py)).
+  Consequence for the IR: NULL features are *not* folded into the caller's
+  validity `and`-chain; only the probe miss is. The kernel therefore does
+  receive NaN, and `predict` needs a NaN-carrying feature operand rather than
+  a bare validity split.
+- **Probe miss** (unseen group, no model) still yields NULL — that is a
+  missing *model*, not a missing feature.
+- **NaN out of the reference UDF**: register it with `type="arrow"`. Measured
+  on DuckDB 1.5.5 both modes preserve NaN and NULL distinctly on the way *in*,
+  but the native return conversion maps a NaN prediction to NULL, which would
+  make the oracle disagree with the kernel for a reason that has nothing to do
+  with the kernel.
 - **Aggregation**: `base + sum(leaf values)` for `sum`, `base + mean(...)` for
   `mean`, then the link. Summation follows `tree_span` order, so the result is
   reproducible bit-for-bit across backends and runs.
@@ -208,7 +273,7 @@ These are the correctness surface; each is a test, not a comment.
 | file | change |
 |---|---|
 | `ir/mod.rs` | grammar + doc for `model` declaration and `predict` |
-| `ir/parse.rs`, `ir/print.rs` | round-trip for both |
+| `ir/parse.rs`, `ir/print.rs` | round-trip for both — **check first** whether `const.f64 nan` already round-trips; the NULL-to-NaN lowering needs a NaN literal, and `canon_f64_bits` suggests NaN awareness exists but does not prove the text format carries it |
 | `ir/verify.rs` | the local rules above |
 | `ir/gen.rs` | generator case, so property tests cover it |
 | `exec/mod.rs` | `ModelData` beside `StaticData`; declaration type-check |
@@ -279,7 +344,9 @@ reachable from SQL, so each lands green on its own.
 - `mat_stack` (MLP) as a second model kind — same instruction, new header
   spelling.
 - Struct call sites with name-checked features.
-- Missing-value direction in the node layout (HistGB, XGBoost `missing=`).
+- `HistGradientBoosting*`: binned thresholds and a different tree
+  representation — the missing direction is covered by `missing_left`, the
+  binning is not.
 - QuickScorer or a vectorized multi-tree walk — a pure layout change behind
   the same instruction.
 - kNN and kernel SVM: they need the training set as state, which is a
