@@ -95,7 +95,7 @@ def test_engine_order_contract():
     "through to the scalar `Inst::Probe` — which verify rejects for a multimap "
     "with '@N is a multimap: use probe.range'. Build-time and loud, not a wrong "
     "answer. Distinct from TASK-66 (different site, different message, no "
-    "tree_predict); found while fixing that one, not yet ticketed.",
+    "tree_predict); found while fixing that one. TASK-68.",
 )
 def test_split_over_a_joined_column_under_many(expr):
     _many_check(f"SELECT {expr} AS v FROM __THIS__ AS t JOIN d ON t.pid = d.id")
