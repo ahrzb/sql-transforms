@@ -85,29 +85,47 @@ tables. The engine side is already general — see below.
 
 ## Parity with sklearn — read this before trusting a number
 
-> **Known gap (2026-08-07): we do NOT match sklearn on quantized features.**
->
-> sklearn narrows `X` to **float32** before traversal and keeps thresholds in
-> float64, so it evaluates `float32(x) <= threshold`. The kernel compares the
-> raw f64. Every `x` whose float32 rounding crosses a threshold takes the
-> other branch — and the threshold *is* the float32 midpoint, because the
-> split was **learned** on that grid. Our f64 compare is not a more precise
-> version of that model; it is a different model.
->
-> Measured on a 2-decimal price grid with `RandomForestRegressor(30)`:
-> **157 of 3000 rows differ**, max delta 0.43 against a target range of
-> −7.9..19.4 — a whole-leaf jump, not a rounding wobble. Narrowing the inputs
-> to float32 before handing them over drops it to 0 of 3000, which pins the
-> cause exactly.
->
-> Continuous float64 draws hide it: the mismatch band is about one float32
-> ULP wide. Quantized features — prices, percentages, any decimal grid — hit
-> it constantly. **If your features are quantized, do not rely on parity
-> yet.** Pinned by `test_quantised_features_match_sklearn` (xfail-strict), so
-> it cannot silently start or stop failing.
+### The float32 grid, and why the packed thresholds are not sklearn's
 
-Everything below holds *given the same branch decisions*, and is why parity is
-asserted at `==` on raw doubles rather than at a tolerance: the packing
+sklearn narrows `X` to **float32** before traversal and keeps thresholds in
+float64, so it splits on `float32(x) <= threshold`. The threshold *is* the
+float32 midpoint of two neighbouring training values, because the split was
+**learned** on that grid — so comparing the raw double is not a more precise
+evaluation of that model, it is a different model.
+
+Left alone, that cost 157 of 3000 rows on a 2-decimal price grid with
+`RandomForestRegressor(30)`, max delta 0.43 against a −7.9..19.4 range: a
+whole-leaf jump, not a rounding wobble. Continuous float64 draws hide it —
+the mismatch band is about one float32 ULP wide — so it is quantized
+features, prices and percentages and any decimal grid, that hit it.
+
+`pack_trees` closes it at **build time**. Rounding to float32 is monotone, so
+`float32(x) <= t` is still a single cutpoint in the doubles, and moving the
+cutpoint reproduces it exactly:
+
+```python
+threshold        = 0.15000000223517418   # sklearn's, == mean(f32(0.1), f32(0.2))
+packed threshold = 0.14999999850988385   # ours: last double still narrowing to <= it
+x = 0.15   ->  sklearn right, packed right   (raw f64 went left)
+```
+
+So **the `threshold` column does not match `tree_.threshold`, deliberately**.
+Nothing else moves: no float32 appears anywhere in the engine, no cast lands
+on the row path, and a float64-trained library's packer would simply skip this
+step. The one threshold left untouched is `+inf`, which sklearn writes for
+"every non-missing value goes left" and which already admits every non-NaN
+double.
+
+`test_threshold_rewrite_reproduces_the_f32_comparison` walks float64 ULPs
+across each rewritten boundary rather than sampling, because a rewrite that is
+off by a single ULP still passes an end-to-end parity test on 1500 rows —
+measured.
+
+### Summation order
+
+With the branch decisions identical, what is left is arithmetic — and it is
+why parity is asserted at `==` on raw doubles rather than at a tolerance: the
+packing
 mirrors each family's own summation order rather than a tidier one:
 
 - a forest sums its trees in order, then divides;

@@ -24,6 +24,7 @@ from sklearn.ensemble import (
 from sklearn.tree import DecisionTreeRegressor
 
 from sql_transform import PythonTransform, TreePackError, pack_trees
+from sql_transform._trees import _f32_grid_threshold
 
 FEATURES = ["a", "b", "c", "d"]
 ROW = create_model(
@@ -394,14 +395,93 @@ def test_multi_output_regressor_refuses():
             pack_trees([est], FEATURES)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="sklearn narrows X to float32 before traversal and the split was LEARNED "
-    "on that grid; the kernel compares raw f64, so any feature whose float32 "
-    "rounding crosses a threshold takes the other branch. Ticketed — the fix "
-    "(narrow in the kernel vs rewrite thresholds at pack time) is a per-entry "
-    "decision because XGBoost is float32 and LightGBM float64.",
-)
+def test_threshold_rewrite_reproduces_the_f32_comparison():
+    """The rewrite has to be exact, not close: `x <= t'` must answer what
+    sklearn's `float32(x) <= t` answers for EVERY double, not for sampled
+    ones. So probe by walking f64 ULPs across the boundary — a sampled test
+    would pass on a rewrite that is off by one ULP, which is the entire bug
+    being fixed."""
+    rng = np.random.RandomState(76)
+    lo = rng.randn(400).astype(np.float32) * np.float32(50)
+    hi = rng.randn(400).astype(np.float32) * np.float32(50)
+    f32_max = np.float64(np.finfo(np.float32).max)
+    thresholds = np.concatenate(
+        [
+            (lo.astype(np.float64) + hi.astype(np.float64)) / 2,  # sklearn-shaped
+            lo.astype(np.float64),  # already exactly f32
+            # the ends, where the midpoint has no finite neighbour to average
+            # against: +inf is sklearn's own missing-only split marker
+            np.array(
+                [
+                    0.0,
+                    -0.0,
+                    -2.0,
+                    1.0,
+                    -1.0,
+                    1e-45,
+                    -1e-45,
+                    1e-320,
+                    np.inf,
+                    -np.inf,
+                    f32_max,
+                    -f32_max,
+                    1e300,
+                    -1e300,
+                    np.nextafter(f32_max, 0.0),
+                ]
+            ),
+        ]
+    )
+    with np.errstate(over="ignore"):  # probing the overflow end is the point
+        for t, tp in zip(thresholds, _f32_grid_threshold(thresholds), strict=True):
+            probes = [tp, t, np.float64(np.float32(t)), np.inf, -np.inf, np.nan]
+            probes += [1e300, -1e300, 0.0, -0.0]
+            for seed in (tp, np.float64(np.float32(t))):
+                for toward in (-np.inf, np.inf):
+                    x = seed
+                    for _ in range(8):
+                        x = np.nextafter(x, toward)
+                        probes.append(x)
+            for x in probes:
+                assert (np.float64(np.float32(x)) <= t) == (x <= tp), (
+                    f"threshold {t!r} -> {tp!r} disagrees at x={x!r}"
+                )
+
+
+def test_threshold_rewrite_flips_the_ticketed_witness():
+    """TASK-65's witness, spelled out: 0.15 is BELOW the stored threshold in
+    f64 and ABOVE it once narrowed, so the raw compare went left where
+    sklearn went right. The rewrite has to move the split below 0.15."""
+    t = 0.15000000223517418  # == mean(f32(0.1), f32(0.2))
+    (tp,) = _f32_grid_threshold(np.array([t]))
+    assert 0.15 <= t, "the raw f64 compare sends 0.15 left"
+    assert not 0.15 <= tp, "the rewritten compare must send it right, as sklearn does"
+
+
+def test_infinite_threshold_is_left_alone():
+    """sklearn writes `threshold = inf` for a node whose split is "every
+    non-missing value goes left" — a real fitted value, not a sentinel. It
+    already admits every non-NaN double, so moving it at all would break the
+    missing-value trees, and an earlier revision that refused it did."""
+    got = _f32_grid_threshold(np.array([np.inf, 1.0]))
+    assert got[0] == np.inf
+
+
+def test_threshold_rewrite_leaves_leaf_sentinels_alone():
+    """A leaf's -2.0 is never read, but a packed table should still look like
+    the tree it came from."""
+    entry = pack_trees(
+        [fit(DecisionTreeRegressor(max_depth=3, random_state=77), 77)], FEATURES
+    )
+    nodes = entry["nodes"].to_pydict()
+    leaves = [
+        thr
+        for f, thr in zip(nodes["feature"], nodes["threshold"], strict=True)
+        if f < 0
+    ]
+    assert leaves and set(leaves) == {-2.0}
+
+
 def test_quantised_features_match_sklearn():
     """The parity claim, on data that is not a continuous float64 draw. A
     2-decimal grid is what prices and percentages actually look like."""

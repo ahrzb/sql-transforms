@@ -45,10 +45,12 @@ silently misaligned batch.
 
 A fitted tree ensemble is a **static**, like a params table — prepared once,
 then scored by a native instruction with no Python on the row path. Parity
-with sklearn is asserted at `==` on raw doubles, not at a tolerance — with one
-**known gap**: sklearn narrows features to float32 before traversal and we do
-not, so quantized features (prices, percentages, decimal grids) can take the
-other branch at a split. Measured at 157/3000 rows on a 2-decimal grid. See
+with sklearn is asserted at `==` on raw doubles, not at a tolerance, and it
+holds on quantized features (prices, percentages, decimal grids) as well as
+continuous ones — sklearn splits on `float32(x) <= threshold`, so `pack_trees`
+moves each threshold to the double that reproduces that comparison exactly.
+The packed thresholds therefore differ from `tree_.threshold` on purpose; the
+engine stays float64 throughout. See
 [docs/serving-fitted-models.md](../../docs/serving-fitted-models.md).
 
 ```python

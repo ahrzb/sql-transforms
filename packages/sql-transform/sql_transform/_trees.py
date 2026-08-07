@@ -4,8 +4,14 @@ Only numbers cross: no estimator object, no pickle, no live model reference
 reaches the engine. The engine stays sklearn-free; this module is the one
 place that knows what a `tree_` looks like.
 
-Bit-exactness is the whole point, so the packing mirrors each family's own
-summation order rather than a tidier one:
+Bit-exactness is the whole point, so the packing mirrors sklearn's own
+arithmetic rather than a tidier version of it.
+
+Thresholds are rewritten onto the grid sklearn actually splits on — it
+narrows `X` to float32 first, so the stored number is not the number to
+compare a double against. See `_f32_grid_threshold`.
+
+Summation order is preserved per family:
 
 - a forest sums its trees and divides — `agg="mean"`, `base=0`;
 - a boosted model SEEDS the accumulator with its init prediction and adds
@@ -33,6 +39,46 @@ __all__ = ["TreePackError", "pack_trees"]
 
 class TreePackError(ValueError):
     """A fitted estimator this packer refuses to describe."""
+
+
+_F32_INF = np.float32(np.inf)
+# The magnitude float32 rounding tips to infinity at — ±inf's stand-in when a
+# midpoint has to be taken against it.
+_F32_OVERFLOW = np.float64(2.0**128)
+
+
+def _f32_grid_threshold(t: np.ndarray) -> np.ndarray:
+    """The f64 threshold `t'` for which `x <= t'` answers `float32(x) <= t`.
+
+    sklearn narrows `X` to float32 before traversal and keeps the threshold in
+    float64, so it splits on `float32(x) <= t`. That is not a rounding artefact
+    to tolerate: the threshold IS the float32 midpoint of two neighbouring
+    training values, so the split was *learned* on that grid, and comparing the
+    raw double evaluates a different model (TASK-65 measured 157 of 3000 rows
+    differing on a 2-decimal price grid, by up to a whole leaf).
+
+    Rounding to float32 is monotone, so the predicate is still a single
+    cutpoint and moving that cutpoint reproduces it EXACTLY — no per-row cast,
+    no float32 anywhere in the engine, and a float64-trained library simply
+    does not call this. `t'` is the largest double still rounding down to the
+    largest float32 at or below `t`: their midpoint, minus one ulp where
+    ties-to-even would round that midpoint back up.
+    """
+    with np.errstate(over="ignore"):  # the float32 overflow IS what is modelled
+        below = t.astype(np.float32)
+        # `astype` rounds to NEAREST, so it overshoots roughly half the time.
+        over = below.astype(np.float64) > t
+        below = np.where(over, np.nextafter(below, -_F32_INF), below)
+        above = np.nextafter(below, _F32_INF)
+        # An infinite end has no float64 value to average against; the rounding
+        # boundary beyond the last finite float32 sits at ±2**128.
+        lo = np.where(np.isneginf(below), -_F32_OVERFLOW, below.astype(np.float64))
+        hi = np.where(np.isposinf(above), _F32_OVERFLOW, above.astype(np.float64))
+        mid = (lo + hi) / 2.0
+        out = np.where(mid.astype(np.float32) <= below, mid, np.nextafter(mid, -np.inf))
+    # sklearn writes t = +inf for "every non-missing value goes left", which
+    # already admits every non-NaN double — that split does not move.
+    return np.where(np.isposinf(t), t, out)
 
 
 def _stages(est: Any) -> tuple[list[Any], float, str, float]:
@@ -130,7 +176,12 @@ def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, 
             cols["tree_id"].append(np.full(n, tid, np.int64))
             cols["node_id"].append(np.arange(n, dtype=np.int64))
             cols["feature"].append(feature)
-            cols["threshold"].append(nodes["threshold"].astype(np.float64))
+            # Leaves keep sklearn's -2.0 sentinel: the engine never reads it,
+            # and a dumped table should still look like the tree it came from.
+            thr = nodes["threshold"].astype(np.float64)
+            cols["threshold"].append(
+                np.where(feature >= 0, _f32_grid_threshold(thr), thr)
+            )
             cols["left"].append(left)
             cols["right"].append(nodes["right_child"].astype(np.int32))
             cols["missing_left"].append(nodes["missing_go_to_left"].astype(bool))

@@ -2,7 +2,7 @@
 id: TASK-65
 title: >-
   tree_predict disagrees with sklearn on quantised features (float32 comparison grid)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-07 22:40'
 labels:
@@ -51,11 +51,11 @@ Found by the 2026-08-07 adversarial sweep; independently reproduced.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 `_trees_test.py::test_quantised_features_match_sklearn` passes without
+- [x] #1 `_trees_test.py::test_quantised_features_match_sklearn` passes without
       the xfail marker
-- [ ] #2 The choice among the three candidate fixes is made deliberately and
+- [x] #2 The choice among the three candidate fixes is made deliberately and
       recorded, NOT defaulted to the cheapest
-- [ ] #3 Whatever is chosen holds for a float64-trained library too, or refuses
+- [x] #3 Whatever is chosen holds for a float64-trained library too, or refuses
       it by name
 <!-- AC:END -->
 
@@ -78,4 +78,36 @@ while LightGBM is float64**. The narrowing is a property of the ENTRY, not of
 the kernel or the packer — which points at a per-entry flag in the model header
 rather than any of the three as written. That is a layout change, hence a
 decision rather than a patch.
+
+## Resolution (2026-08-07): candidate 1, and the layout premise was wrong
+
+`_f32_grid_threshold` in `packages/sql-transform/sql_transform/_trees.py` maps
+each threshold to the largest double still narrowing to the largest float32 at
+or below it. Rounding to float32 is monotone, so `float32(x) <= t` remains a
+single cutpoint over the doubles and the rewrite is **exact, not approximate**
+— verified by walking f64 ULPs across the boundary of 18012 thresholds
+(sklearn-shaped midpoints, exactly-f32 values, subnormals, both overflow ends)
+for 0 disagreements in ~4.8M probes.
+
+Exactness is what removes the need for the per-entry flag: a lossless rewrite
+belongs to whoever packs, so a LightGBM packer just does not call it, and the
+wire format keeps meaning "compare this double" for every library. No header
+change, no kernel change, no cast on the row path (AC #3). Cost: the packed
+`threshold` column deliberately no longer equals `tree_.threshold`.
+
+Two things only running it revealed:
+
+- **`t = +inf` is a real sklearn threshold** ("every non-missing value goes
+  left"), not a sentinel. It passes through untouched. A first revision
+  refused out-of-f32-range thresholds and broke all three missing-value tests.
+- The overflow ends have no finite neighbour to average against; ±inf stands
+  in at ±2**128, where float32 rounding actually tips.
+
+Mutation-checked: a **one-ULP** perturbation of the rewrite still passes the
+1500-row end-to-end parity test, and is caught only by the ULP-walking test —
+which is why that test walks instead of samples. Identity (no rewrite)
+reproduces the original defect at 69/1500.
+
+Post-fix sweep: 4 families × 6 quantisation grids × both backends × 3000 rows
+= 144000 rows, 0 mismatches.
 <!-- SECTION:NOTES:END -->
