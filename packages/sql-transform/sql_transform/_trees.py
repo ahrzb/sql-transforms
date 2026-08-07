@@ -46,6 +46,15 @@ def _stages(est: Any) -> tuple[list[Any], float, str, float]:
             f"{cls}: only regressors pack — a classifier's leaf values are"
             " class scores, not predictions"
         )
+    # `values[:, 0, 0]` takes target 0, so a 2-D y would pack cleanly and
+    # serve `predict(X)[:, 0]` with the other targets silently gone — the
+    # same shape of failure BaggingRegressor is refused for, one axis over.
+    n_out = getattr(est, "n_outputs_", 1)
+    if n_out != 1:
+        raise TreePackError(
+            f"{cls}: multi-output regression is not supported (n_outputs_"
+            f"={n_out}) — one model set scores one number per row"
+        )
     if hasattr(est, "tree_"):
         return [est], 0.0, "sum", 1.0
     if cls in ("RandomForestRegressor", "ExtraTreesRegressor"):

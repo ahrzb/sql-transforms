@@ -1026,6 +1026,16 @@ impl<'a> FB<'a> {
             }
             SKind::TreePredict { model, id, feats } => {
                 let idl = self.emit(id, live)?;
+                let id_flag = idl.flag;
+                // MASK the id, as every other trapping op does. Under a false
+                // validity flag the payload is arbitrary, and `predict` traps
+                // on an id it does not know — so an unmasked payload turns a
+                // NULL id into a hard error the moment anything arithmetic
+                // sits between the probe and the call (`p.est - 1` on a LEFT
+                // miss). Model 0 always exists (an empty model set is refused
+                // at build), so the type default is a safe id whose result
+                // the flag discards anyway.
+                let id_val = self.masked(idl, Ty::I64);
                 // A NULL feature is handed to the model as NaN — it has a
                 // defined answer for missing (the node's learned direction),
                 // so its validity is deliberately NOT folded into the result
@@ -1065,11 +1075,11 @@ impl<'a> FB<'a> {
                 self.inst(Inst::Predict {
                     static_id: (self.model_base + *model as usize) as u32,
                     dst,
-                    id: idl.val,
+                    id: id_val,
                     feats: vals,
                 });
                 Ok(Lane {
-                    flag: idl.flag,
+                    flag: id_flag,
                     val: dst,
                 })
             }

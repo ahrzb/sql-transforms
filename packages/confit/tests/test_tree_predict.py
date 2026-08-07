@@ -379,6 +379,29 @@ def test_root_is_leaf_tree_scores_its_constant(backend):
     assert [r["p"] for r in got] == [7.5, 7.5]
 
 
+def test_case_colliding_model_set_names_refuse():
+    """Set-name resolution is case-insensitive and takes the first catalog
+    hit, so two keys differing only in case bind the WRONG fitted model and
+    return a plausible number. `parse_udfs` already refuses the identical
+    hazard next door."""
+    with pytest.raises(Exception, match="collide case-insensitively"):
+        build({"trees": STUMP, "Trees": ensemble([leaf(0, 0, 0, 111.0)], ["x"])})
+
+
+def test_null_id_through_arithmetic_stays_null(backend):
+    """A NULL id must stay NULL however it is computed. The Predict site takes
+    the id's raw payload rather than the masked value every other trapping op
+    uses, so today's `0` payload is luck — arithmetic turns it into a real
+    out-of-range id and traps the whole batch."""
+    got = run(
+        "SELECT tree_predict('trees', id - 1, struct_pack(x := x)) AS p FROM __THIS__",
+        {"id": "int?", "x": "float"},
+        [{"id": 1, "x": 0.0}, {"id": None, "x": 0.0}],
+        {"trees": STUMP},
+    )
+    assert got == [{"p": 10.0}, {"p": None}]
+
+
 def test_malformed_model_set_entry_refuses():
     with pytest.raises(Exception, match="nodes"):
         build({"trees": {"models": STUMP["models"], "features": ["x"]}})
