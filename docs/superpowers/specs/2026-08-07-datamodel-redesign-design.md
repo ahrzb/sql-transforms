@@ -64,7 +64,11 @@ A transform that never mentions `__FIT__` is stateless: `fit` is a no-op and
 
 ### The one refusal
 
-`__FIT__` may appear only in an **uncorrelated** relation.
+A `__FIT__` subtree may not correlate to **`__THIS__`**.
+
+Correlation *inside* a closed `__FIT__` subtree is fine — it is evaluated once
+as a whole, so nothing about it is per-serving-row. That distinction is what
+makes per-group members work (below) without new machinery.
 
 ```sql
 SELECT (SELECT avg(price) FROM __FIT__ f WHERE f.cat = t.cat) AS m FROM __THIS__ t
@@ -156,6 +160,50 @@ freezes everything, and `ft.frozen["z__cs"]` says where each table came from.
 
 Nesting depth is capped at 8, refusing by name beyond that. Same cap the
 previous composition design used; no reason found to change it.
+
+### Applying a member per group
+
+A member is `N -> M`, so "fit it per store" cannot be a window — windows do
+not change cardinality. The mechanism is `LATERAL`, and it needs nothing new,
+because the whole construct is a closed `__FIT__` subtree and freezes as one
+unit:
+
+```sql
+WITH per_store AS (
+    SELECT g.store, x.*
+    FROM (SELECT DISTINCT store FROM __FIT__) g,
+         LATERAL (SELECT cat, avg(price) AS a FROM __FIT__ WHERE store = g.store GROUP BY cat) x
+)
+SELECT t.price / p.a AS rel FROM __THIS__ t LEFT JOIN per_store p USING (store, cat)
+```
+
+**Splice members, never emit a DuckDB macro for them.** Measured 2026-08-07 on
+1.5.5: a table macro invoked under `LATERAL` does not see the correlation and
+silently returns the whole-table answer for every group.
+
+```
+LATERAL <spliced body>   S1/book=15,   S1/toy=30,   S2/book=100,  S2/toy=250    correct
+LATERAL m('t')           S1/book=43.3, S1/toy=176.7, S2/book=43.3, S2/toy=176.7 wrong
+```
+
+It runs, returns the right shape, and is wrong — C5's silent-wrongness case.
+Splicing avoids it entirely, which is one more reason the member surface is
+text substitution rather than catalog objects.
+
+**Key-folding is not a general alternative.** Rewriting the member's
+`GROUP BY cat` into `GROUP BY store, cat` — what the previous composition
+design did — agrees with `LATERAL` only when the member's relation is a keyed
+reduction. Measured on a member that is not one:
+
+```
+member = avg(price)       fold key  [('S1',20), ('S2',200)]                    == LATERAL
+member = top 2 by price   fold key  [('S2',300), ('S2',200)]                   wrong: LIMIT applies after grouping
+                          LATERAL   [('S1',30),('S1',20),('S2',300),('S2',200)] correct
+```
+
+The old design was safe only because a fit is always a reduction. `LATERAL`
+is correct without that precondition, so it is the mechanism; key-folding is
+an optimization to consider later, gated on a reduction check.
 
 ## sklearn transformers
 
@@ -265,7 +313,8 @@ construct, never at fit, never at serve, never silently).
 
 | Property | Statement | Gate |
 | --- | --- | --- |
-| **Correlated `__FIT__` refuses** | A `__FIT__` subquery referencing outer columns raises `CorrelatedFit` | Construction raises; the message names the correlated column. Assert it raises at construction, **not** at fit or transform |
+| **`__THIS__`-correlated `__FIT__` refuses** | A `__FIT__` subquery referencing a `__THIS__` column raises `CorrelatedFit` | Construction raises; the message names the correlated column. Assert it raises at construction, **not** at fit or transform |
+| **Internal correlation is allowed** | A `LATERAL` inside a closed `__FIT__` subtree is admitted and freezes as one table | The per-group example constructs, fits, and matches a hand-written per-group reference |
 | **Unknown name refuses** | A name resolving to nothing raises, naming the identifier | Construction with an unbound name; message contains the name |
 | **Depth cap holds** | Nesting deeper than 8 refuses by name | 9-deep construction raises; 8-deep succeeds |
 | **No third mode** | Every transform either serves or refuses by name (C5 — silent wrongness is the one unrecoverable state) | Corpus FAILED bucket pinned empty |
@@ -300,6 +349,7 @@ carry a comment stating it is intended, so nobody "fixes" it in a year.
 | **Implicit tables pass through** | A member's `__FIT__` is the outer's `__FIT__`; one `fit` freezes everything | Nested transform's `frozen` contains the member's tables, prefixed |
 | **Prefixing avoids collisions** | Two members each with a CTE named `cs` yield `z__cs` and `y__cs` | Both keys present in `frozen`, values distinct |
 | **Splicing is text-checkable** | The spliced SQL equals a hand-written equivalent | Text comparison — the gate that reports *where* it broke, not just *that* it did |
+| **Members splice, never macro** | No DuckDB macro is created for a member | A member applied per group via `LATERAL` returns per-group values, not the whole-table value repeated. This is the gate that catches a macro-based implementation |
 
 ### sklearn leaves
 
