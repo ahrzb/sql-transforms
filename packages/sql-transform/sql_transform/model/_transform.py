@@ -202,13 +202,29 @@ def _is_ref(value: Node) -> bool:
     return "sample" in value and not _is_query(value)
 
 
-def _reads(node: Node) -> set[str]:
+def _reads(node: Node, ctes: dict[str, set[str]] | None = None) -> set[str]:
     """Which of the two parameters the whole subtree reads. ``node`` itself
-    counts — a bare ``FROM __THIS__`` ref is the whole subtree."""
-    seen = set()
+    counts — a bare ``FROM __THIS__`` ref is the whole subtree.
+
+    A CTE reference reads whatever that CTE reads, which is why ``ctes`` is
+    needed: matching literal ``__FIT__``/``__THIS__`` nodes alone let an
+    enclosing CTE hide a ``__THIS__`` dependency, and the subtree was then
+    frozen and evaluated at fit, where ``__THIS__`` does not exist.
+
+    Deliberately over-approximating: an inner CTE shadowing an outer one of
+    the same name contributes both. Reporting a read that is not there costs
+    a freeze; missing one is wrong.
+    """
+    ctes = ctes or {}
+    seen: set[str] = set()
     for v in (node, *(v for _, _, v in _under(node, deep=True))):
-        if v.get("type") == "BASE_TABLE" and v.get("table_name") in (FIT, THIS):
-            seen.add(v["table_name"])
+        if v.get("type") != "BASE_TABLE":
+            continue
+        name = v.get("table_name")
+        if name in (FIT, THIS):
+            seen.add(name)
+        else:
+            seen |= ctes.get(str(name).lower(), set())
     return seen
 
 
@@ -224,21 +240,23 @@ def _names_in(node: Node) -> set[str]:
     return names
 
 
-def _bindings_at(node: Node) -> dict[str, bool]:
+def _bindings_at(
+    node: Node, ctes: dict[str, set[str]] | None = None
+) -> dict[str, bool]:
     """The names this level binds, each mapped to *does it read ``__THIS__``*.
 
     Which side a correlation lands on is what separates the one refusal from
     the case that merely costs params.
     """
     out = {
-        e["key"]: THIS in _reads(e["value"]["query"]["node"])
+        e["key"]: THIS in _reads(e["value"]["query"]["node"], ctes)
         for e in node[_QUERY]["map"]
     }
     for _, _, v in _under(node, deep=False):
         if _is_ref(v):
             alias = v.get("alias") or v.get("table_name") or ""
             if alias:
-                out[alias] = THIS in _reads(v)
+                out[alias] = THIS in _reads(v, ctes)
     return out
 
 
@@ -720,9 +738,12 @@ def _resolve(
             # The inner node type is the only thing that tells them apart.
             visible = ctes
             if body["type"] == _RECURSIVE_CTE:
-                visible = ctes | {entry["key"]}
+                visible = ctes | {entry["key"].lower()}
             walk(body, visible)
-            ctes = ctes | {entry["key"]}
+            # Folded, because DuckDB's binder is case-insensitive: `WITH Sales`
+            # then `FROM sales` resolves for the oracle, and comparing exact
+            # strings refused valid SQL as an unknown free name.
+            ctes = ctes | {entry["key"].lower()}
         for _, _, v in list(_under(node, deep=False)):
             if _is_query(v):
                 walk(v, ctes)
@@ -736,7 +757,7 @@ def _resolve(
                     parent[key] = ref
                 case {"type": "BASE_TABLE", "table_name": name} if (
                     name not in (FIT, THIS)
-                    and name not in ctes
+                    and name.lower() not in ctes
                     and name not in captured
                     and name not in catalog
                 ):
@@ -825,9 +846,25 @@ def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
         ctes: list[Node],
         outer: dict[str, bool],
         hint: str | None,
+        reading: dict[str, set[str]],
     ) -> None:
         sub = parent[key]
-        reads = _reads(sub)
+        reads = _reads(sub, reading)
+        # A recursive CTE's self-reference is bound by the enclosing entry key,
+        # not by anything inside the body, so hoisting the body into a
+        # standalone statement leaves that name unbound. Left live instead: the
+        # training set becomes the parameter, which costs params size and is
+        # correct. Freezing it properly means reconstructing the WITH RECURSIVE
+        # wrapper, which is worth doing only if it ever matters.
+        if sub.get("type") == _RECURSIVE_CTE:
+            # Nothing inside may be frozen, not just the body as a whole: the
+            # self-reference is visible to every arm but bound by none of them,
+            # so hoisting any part of it out leaves that name dangling. The
+            # training set becomes the parameter and the recursion stays live.
+            for _, _, v in _under(sub, deep=True):
+                if v.get("type") == "BASE_TABLE" and v.get("table_name") == FIT:
+                    v["table_name"] = whole_fit()
+            return
         if FIT in reads and THIS not in reads:
             match _correlation(sub, outer):
                 case None:
@@ -846,22 +883,34 @@ def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
                     # itself becomes the parameter; `len(params)` reports
                     # the cost. Marginalization makes it one row per group.
                     pass
-        descend(sub, ctes, outer)
+        descend(sub, ctes, outer, reading)
 
-    def descend(node: Node, ctes: list[Node], outer: dict[str, bool]) -> None:
+    def descend(
+        node: Node,
+        ctes: list[Node],
+        outer: dict[str, bool],
+        reading: dict[str, set[str]],
+    ) -> None:
         ctes = list(ctes)
+        reading = dict(reading)
         for entry in node[_QUERY]["map"]:
-            visit(entry["value"]["query"], "node", ctes, outer, entry["key"])
+            visit(entry["value"]["query"], "node", ctes, outer, entry["key"], reading)
+            # After visiting, not before: a frozen body reads nothing, and one
+            # left live has had its `__FIT__` rewritten already. Either way this
+            # is what a later reference to the name actually depends on.
+            reading[entry["key"].lower()] = _reads(
+                entry["value"]["query"]["node"], reading
+            )
             ctes.append(entry)
-        outer = outer | _bindings_at(node)
+        outer = outer | _bindings_at(node, reading)
         sites = [(p, k) for p, k, v in _under(node, deep=False) if _is_query(v)]
         for parent, key in sites:
-            visit(parent, key, ctes, outer, None)
+            visit(parent, key, ctes, outer, None, reading)
         for _, _, v in _under(node, deep=False):
             if v.get("type") == "BASE_TABLE" and v.get("table_name") == FIT:
                 v["table_name"] = whole_fit()
 
-    visit(doc["statements"][0], "node", [], {}, None)
+    visit(doc["statements"][0], "node", [], {}, None, {})
     return steps, doc["statements"][0]["node"]
 
 
@@ -1152,7 +1201,23 @@ class SQLTransform:
         )
         try:
             for param, node in self._steps:
-                params[param] = _execute(con, _rendered(node, names, stems), registry)
+                try:
+                    params[param] = _execute(
+                        con, _rendered(node, names, stems), registry
+                    )
+                except duckdb.Error as exc:
+                    # Whether an *unqualified* name resolves inward or outward
+                    # cannot be known at construction — `__FIT__` has no schema
+                    # until there is data — so this is the one refusal that
+                    # cannot be hoisted to P7's construction time. It can at
+                    # least carry our name rather than DuckDB's.
+                    raise TransformError(
+                        f"{param}: this {FIT} subquery does not stand on its "
+                        f"own, so it cannot be evaluated once into a table "
+                        f"({exc}). If the name comes from the outer query it "
+                        f"is a correlated {FIT} subquery; qualifying it "
+                        f"(f.x = t.x) makes that a refusal at construction."
+                    ) from exc
                 # Into the same dict the release closes over: later steps see
                 # it, and it comes back with everything else.
                 names[param] = param if self._own else f"{param}__x{next(_EXECUTIONS)}"
