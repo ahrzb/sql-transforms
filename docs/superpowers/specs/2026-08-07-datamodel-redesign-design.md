@@ -41,6 +41,16 @@ SQLTransform     table function.   N -> M.   fit / transform
 SQLProjection    UDAF + UDF pair.  N -> N.   fit / transform / compile
 ```
 
+`SQLProjection` is a subtype of `SQLTransform` — it adds a constraint and a
+capability, and inherits `fit`/`transform` unchanged. Two terms used
+throughout:
+
+- **residual** — what is left of a marginalized transform once the
+  `memorize` sections are lifted out into their own relations. It is the
+  query that runs at serving time.
+- **`run(t, D)`** — execute `t`'s SQL directly against `D` with `__THIS__`
+  bound, no fitting and no freezing. The reference behavior.
+
 They are DuckDB's function kinds, which is why composition needs no separate
 design: a projection is usable as a scalar UDF *because* it is row-local, a
 transform is usable as a table function *because* it is a relation.
@@ -187,15 +197,25 @@ this a layer rather than a pass into a private IR: the output is a legal
 transform you can print, hand-edit, and feed back in.
 
 ```python
-L1  strip_memorize(marginalize(t)).fit(D).transform(D) == t.fit(D).transform(D)
-L2  t.fit(D).transform(D)                              == marginalize(t).fit(D).transform(D)
-L3  proj.fit(D).compile()(row)                         == proj.fit(D).transform(one_row_table)
+L1  run(strip_memorize(marginalize(t)), D) == run(t, D)          for all D
+L2  t.fit(D).transform(D)                  == run(t, D)
+L3  proj.fit(D).compile()(row)             == proj.fit(D).transform(one_row_table)
 ```
 
-L1 is "marginalize preserves meaning" — fuzzable over the corpus. L2 is the
-training-set roundtrip invariant: freezing on the data you fitted on changes
-nothing. L3 is C3 ("binding parity": the row path equals the batch path
+L1 is "marginalize preserves meaning": the rewrite is semantics-preserving
+on *any* data, before freezing enters the picture. Fuzzable over the corpus.
+
+L2 is the training-set roundtrip invariant: freezing on the data you fitted
+on changes nothing. It holds only at `D`, which is exactly what makes it a
+test of *what* got frozen — a transform that froze an ordered frame fails it
+the moment `D` has a repeated order key.
+
+L3 is C3 ("binding parity": the row path equals the batch path
 value-for-value on the same fitted artifact).
+
+The two must be stated separately. L1 with `t.fit(D)` on the right would be
+vacuous, since `fit` marginalizes internally and `marginalize` is
+idempotent; `run` is what makes both laws bite.
 
 The point of separating them is that a failure now names a layer. Today a
 wrong number tells you the pipeline is broken; here L1 failing means the
