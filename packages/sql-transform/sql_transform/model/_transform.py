@@ -5,606 +5,71 @@ binds one and ``transform`` binds the other. Which half is learned and which
 is live is read off the text — there is no annotation to remember and none to
 forget.
 
-Freezing: every maximal subquery whose leaves are all ``__FIT__`` and
-constants is evaluated once at fit and replaced by a table. Those tables are
-``params``.
+This module is the surface — resolution, binding and the two classes. The
+parts it stands on live next door: ``_ast`` (the oracle as parser and printer),
+``_analysis`` (what a subtree reads), ``_plan`` (freezing), ``_foreign`` (the
+supplied pair), ``_errors``.
 
-Implements `docs/superpowers/specs/2026-08-07-datamodel-redesign-design.md`:
-the two parameters and freezing, calling (nesting, chaining, per group), and
-foreign transforms. DuckDB is both the parser and the oracle — a construct
-means what DuckDB computes.
+Implements `docs/superpowers/specs/2026-08-07-datamodel-redesign-design.md`.
+DuckDB is both the parser and the oracle — a construct means what DuckDB
+computes.
 """
 
 import copy
 import itertools
-import json
 import sys
-import threading
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cache
 from typing import Any, Self
 
 import duckdb
 import pyarrow as pa
 
-FIT = "__FIT__"
-THIS = "__THIS__"
+from sql_transform.model._ast import (
+    _ALL_FUNCTIONS,
+    _QUERY,
+    _RECURSIVE_CTE,
+    _TABLE_FUNCTIONS,
+    FIT,
+    THIS,
+    Bindings,
+    Captured,
+    Connection,
+    LazyRelation,
+    Node,
+    Params,
+    Relation,
+    _base_table,
+    _bind_parameters,
+    _catalog,
+    _deserialize,
+    _functions,
+    _is_query,
+    _list_of,
+    _rename_free,
+    _rename_functions,
+    _serialize,
+    _statement,
+    _subquery_ref,
+    _table_function_ref,
+    _under,
+)
+from sql_transform.model._errors import (
+    NestingTooDeep,
+    NotFitted,
+    TransformError,
+    UnknownName,
+)
+from sql_transform.model._foreign import (
+    Foreign,
+    Transform,
+    _execute,
+    _Registry,
+)
+from sql_transform.model._plan import _plan
 
 MAX_DEPTH = 8
-
-# Only query nodes (SELECT_NODE, SET_OPERATION_NODE, ...) carry a cte_map, so
-# its presence is what tells a query node from a table ref or an expression.
-# A TableRef is then anything carrying a `sample`. Both are internal DuckDB
-# details rather than a documented API; `_shapes_test.py` is what keeps them
-# true, and replays DuckDB's own corpus to catch the format moving.
-_QUERY = "cte_map"
-_RECURSIVE_CTE = "RECURSIVE_CTE_NODE"
-
-type Node = dict[str, Any]
-type Relation = Any  # anything DuckDB will register: arrow, pandas, polars
-type Connection = duckdb.DuckDBPyConnection
-type LazyRelation = duckdb.DuckDBPyRelation
-type Params = dict[str, pa.Table]
-type Bindings = dict[str, Relation]
-type Foreign = dict[str, Transform]
-# Everything a transform resolved from the caller's frame, by name: lookup
-# relations, foreign transforms, and members. One map so `clone` can carry
-# the lot; the two views above are derived from it.
-type Captured = dict[str, Any]
-
-
-class TransformError(Exception):
-    """Every refusal. Named, and raised at construction (P7)."""
-
-
-class CorrelatedFit(TransformError):
-    """A ``__FIT__`` subtree correlates out of itself.
-
-    It is per-outer-row, so it cannot be evaluated once into a table.
-    Supporting it means lifting the correlation to a ``GROUP BY`` and
-    rewriting it as a join — which is marginalization. Future work, not a
-    permanent boundary.
-    """
-
-
-class UnknownName(TransformError):
-    """An identifier resolved to nothing in the caller's frame."""
-
-
-class NestingTooDeep(TransformError):
-    """More than ``MAX_DEPTH`` levels of member calls."""
-
-
-class NotFitted(TransformError):
-    """The estimator surface was used before ``fit``.
-
-    Ours rather than sklearn's ``NotFittedError``, because sklearn is not a
-    runtime dependency — a SQL transform must not need one to refuse.
-    """
-
-
-# --- the oracle as parser and printer ----------------------------------------
-
-
-def _serialize(sql: str) -> Node:
-    (out,) = duckdb.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
-    doc = json.loads(out)
-    if doc.get("error"):
-        raise TransformError(
-            f"parse error at position {doc.get('position')}: {doc.get('error_message')}"
-        )
-    return doc
-
-
-def _deserialize(doc: Node) -> str:
-    (out,) = duckdb.execute(
-        "SELECT json_deserialize_sql(?::JSON)", [json.dumps(doc)]
-    ).fetchone()
-    return out
-
-
-def _statement(node: Node) -> Node:
-    return {"error": False, "statements": [{"node": node, "named_param_map": []}]}
-
-
-def _select_star(name: str) -> Node:
-    """A query node reading nothing but ``name``. Cut from the oracle's own
-    serialization so it carries every field the deserializer expects."""
-    node = _template("SELECT * FROM __tpl__")
-    node["from_table"]["table_name"] = name
-    return node
-
-
-@cache
-def _cached_template(sql: str) -> str:
-    return json.dumps(_serialize(sql)["statements"][0]["node"])
-
-
-def _template(sql: str) -> Node:
-    """A fresh copy of a node shape, cut from the oracle's own serialization
-    so a grafted node always carries every field the deserializer expects."""
-    return json.loads(_cached_template(sql))
-
-
-def _base_table(name: str, alias: str = "") -> Node:
-    ref = _template("SELECT * FROM __tpl__")["from_table"]
-    ref["table_name"] = name
-    ref["alias"] = alias
-    return ref
-
-
-def _subquery_ref(node: Node, alias: str) -> Node:
-    ref = _template("SELECT * FROM (SELECT 1) __tpl__")["from_table"]
-    ref["subquery"]["node"] = node
-    ref["alias"] = alias
-    return ref
-
-
-def _table_function_ref(function: Node, alias: str) -> Node:
-    ref = _template("SELECT * FROM range(1)")["from_table"]
-    ref["function"] = function
-    ref["alias"] = alias
-    return ref
-
-
-# `table_macro` as well as `table`: a user's `CREATE MACRO ... AS TABLE` is a
-# table function too, and calling one is not a member call.
-_TABLE_FUNCTIONS = (
-    "SELECT DISTINCT function_name FROM duckdb_functions()"
-    " WHERE function_type IN ('table', 'table_macro')"
-)
-_ALL_FUNCTIONS = "SELECT DISTINCT function_name FROM duckdb_functions()"
-
-
-@cache
-def _default_functions(query: str) -> frozenset[str]:
-    """The oracle's own vocabulary, on the default connection. Cached for the
-    process because it cannot change: nobody can define a macro there."""
-    return frozenset(name.lower() for (name,) in duckdb.execute(query).fetchall())
-
-
-def _functions(query: str, con: Connection | None) -> frozenset[str]:
-    """Every function name in scope.
-
-    Read off ``con`` when there is one. Passing a connection says *use my
-    catalog*, and a catalog includes its macros and UDFs — reading the
-    module-level default connection instead made the user's own functions
-    invisible, so a transform calling one refused at construction while a
-    *table* in the same catalog resolved.
-
-    Not cached per connection: that would pin the connection for the life of
-    the process, and a macro defined after the first lookup would be missed.
-    Construction is not a hot path.
-    """
-    if con is None:
-        return _default_functions(query)
-    return frozenset(name.lower() for (name,) in con.execute(query).fetchall())
-
-
-def normalize(sql: str) -> str:
-    """``sql`` as the oracle prints it. The only way to compare SQL text."""
-    return _deserialize(_serialize(sql))
-
-
-# --- walking ------------------------------------------------------------------
-
-
-def _is_query(value: Any) -> bool:
-    return isinstance(value, dict) and _QUERY in value
-
-
-def _under(obj: Any, *, deep: bool) -> Iterator[tuple[Any, Any, Node]]:
-    """Yield ``(parent, key, dict)`` for every dict below ``obj``.
-
-    ``deep=False`` stops at nested query nodes — it still yields them, so a
-    caller can rewrite the slot, but does not look inside. It also skips
-    ``cte_map``, which callers walk in definition order instead.
-    """
-    if isinstance(obj, dict):
-        items: Any = list(obj.items())
-    elif isinstance(obj, list):
-        items = list(enumerate(obj))
-    else:
-        return
-    for key, value in items:
-        if key == _QUERY and not deep:
-            continue
-        if isinstance(value, dict):
-            yield obj, key, value
-            if _is_query(value) and not deep:
-                continue
-        if isinstance(value, dict | list):
-            yield from _under(value, deep=deep)
-
-
-def _is_ref(value: Node) -> bool:
-    """A TableRef. Only those carry a ``sample``; query nodes do too, so the
-    discriminator is `has sample and is not a query node`."""
-    return "sample" in value and not _is_query(value)
-
-
-def _reads(node: Node, ctes: dict[str, set[str]] | None = None) -> set[str]:
-    """Which of the two parameters the whole subtree reads. ``node`` itself
-    counts — a bare ``FROM __THIS__`` ref is the whole subtree.
-
-    A CTE reference reads whatever that CTE reads, which is why ``ctes`` is
-    needed: matching literal ``__FIT__``/``__THIS__`` nodes alone let an
-    enclosing CTE hide a ``__THIS__`` dependency, and the subtree was then
-    frozen and evaluated at fit, where ``__THIS__`` does not exist.
-
-    Deliberately over-approximating: an inner CTE shadowing an outer one of
-    the same name contributes both. Reporting a read that is not there costs
-    a freeze; missing one is wrong.
-    """
-    ctes = ctes or {}
-    seen: set[str] = set()
-    for v in (node, *(v for _, _, v in _under(node, deep=True))):
-        if v.get("type") != "BASE_TABLE":
-            continue
-        name = v.get("table_name")
-        if name in (FIT, THIS):
-            seen.add(name)
-        else:
-            seen |= ctes.get(str(name).lower(), set())
-    return seen
-
-
-def _names_in(node: Node) -> set[str]:
-    """Every name a column reference could be qualified by, anywhere inside."""
-    names = {e["key"] for e in node[_QUERY]["map"]}
-    for _, _, v in _under(node, deep=True):
-        if _is_ref(v):
-            names.add(v.get("alias") or v.get("table_name") or "")
-        if _is_query(v):
-            names.update(e["key"] for e in v[_QUERY]["map"])
-    names.discard("")
-    return names
-
-
-def _bindings_at(
-    node: Node, ctes: dict[str, set[str]] | None = None
-) -> dict[str, bool]:
-    """The names this level binds, each mapped to *does it read ``__THIS__``*.
-
-    Which side a correlation lands on is what separates the one refusal from
-    the case that merely costs params.
-    """
-    out = {
-        e["key"]: THIS in _reads(e["value"]["query"]["node"], ctes)
-        for e in node[_QUERY]["map"]
-    }
-    for _, _, v in _under(node, deep=False):
-        if _is_ref(v):
-            alias = v.get("alias") or v.get("table_name") or ""
-            if alias:
-                out[alias] = THIS in _reads(v, ctes)
-    return out
-
-
-def _correlation(node: Node, outer: dict[str, bool]) -> tuple[str, bool] | None:
-    """A column reference reaching out of ``node``, and whether its target
-    reads ``__THIS__``.
-
-    Only qualified references are checked. An unqualified one is ambiguous
-    without a binder, and DuckDB resolves it inward whenever it can.
-    """
-    inside = _names_in(node)
-    found: tuple[str, bool] | None = None
-    for _, _, v in _under(node, deep=True):
-        if v.get("class") != "COLUMN_REF":
-            continue
-        parts = v["column_names"]
-        if len(parts) >= 2 and parts[0] not in inside and parts[0] in outer:
-            if outer[parts[0]]:
-                return ".".join(parts), True  # into __THIS__: the one refusal
-            found = found or (".".join(parts), False)
-    return found
-
-
-# --- foreign transforms -------------------------------------------------------
-
-THETA_SQL = "STRUCT(type VARCHAR, id BIGINT)"
-THETA_ARROW = pa.struct([("type", pa.string()), ("id", pa.int64())])
-
-
-def _struct_sql(fields: tuple[str, ...]) -> str:
-    for field in fields:
-        if not field.isidentifier():
-            raise TransformError(f"{field!r} is not a usable struct field name")
-    return "STRUCT(" + ", ".join(f"{f} DOUBLE" for f in fields) + ")"
-
-
-class _Registry:
-    """The fitted instances a run mints, and the first error it hit.
-
-    Ids come from a monotone counter under a lock, never from
-    ``len(instances)``. Measured with the length form, fitting two categories:
-    both θ rows carried ``id 0`` and only one instance was stored, so every
-    row of one category was served by the other's estimator — silently, with
-    plausible numbers. DuckDB fits groups on several threads, and the window
-    is not one bytecode: ``iid = len(instances)`` is read, ``fit()`` runs, and
-    only then is the instance stored, so the whole fit sits between the read
-    and the write. ``ids_are_unique_under_concurrency`` reproduces exactly
-    that shape.
-
-    Nothing here leans on the GIL, and it must not: 3.14 supports
-    free-threaded builds, where every window widens and a dict update is no
-    longer atomic either.
-
-    The lock also carries the first exception out, because DuckDB rewraps a
-    Python exception as ``InvalidInputException`` and a refusal has to keep
-    its name.
-
-    ponytail: one lock for the whole registry. Per-instance locks only if fit
-    ever becomes a throughput problem, which it is not — fit runs once.
-    """
-
-    def __init__(self, instances: dict[int, Any] | None = None) -> None:
-        self.instances = dict(instances or {})
-        self.error: Exception | None = None
-        self._next = max(self.instances, default=-1) + 1
-        self._lock = threading.Lock()
-
-    def add(self, instance: Any) -> int:
-        with self._lock:
-            iid = self._next
-            self._next += 1
-            self.instances[iid] = instance
-        return iid
-
-    def fail(self, exc: Exception) -> None:
-        with self._lock:
-            if self.error is None:
-                self.error = exc
-        raise exc
-
-
-def _execute(con: Connection, sql: str, registry: _Registry) -> pa.Table:
-    """Run ``sql``, letting a foreign transform's own refusal out by name."""
-    try:
-        # to_arrow_table, never .arrow(): see _duckdb_arrow_test.py — the
-        # reader .arrow() returns deadlocks when registered back.
-        return con.execute(sql).to_arrow_table()
-    except Exception as exc:
-        if registry.error is not None:
-            raise registry.error from exc
-        raise
-
-
-def _as_matrix(table: pa.Table, takes: tuple[str, ...]) -> Any:
-    import numpy as np  # noqa: PLC0415
-
-    return np.column_stack([table[f].to_numpy(zero_copy_only=False) for f in takes])
-
-
-@dataclass(frozen=True, slots=True)
-class _EstimatorFit:
-    """``from_estimator``'s fit half, as data rather than a closure.
-
-    Cloned per call, so one estimator object backs many groups without any of
-    them sharing learned state — the reason the closure existed.
-    """
-
-    estimator: Any
-    takes: tuple[str, ...]
-
-    def __call__(self, relation: pa.Table) -> Any:
-        from sklearn.base import clone  # noqa: PLC0415
-
-        return clone(self.estimator).fit(_as_matrix(relation, self.takes))
-
-
-@dataclass(frozen=True, slots=True)
-class _EstimatorTransform:
-    """``from_estimator``'s transform half. Holds no estimator: the fitted
-    instance arrives through θ."""
-
-    takes: tuple[str, ...]
-    returns: tuple[str, ...]
-
-    def __call__(self, instance: Any, relation: pa.Table) -> pa.Table:
-        import numpy as np  # noqa: PLC0415
-
-        out = np.asarray(instance.transform(_as_matrix(relation, self.takes)))
-        return pa.table(
-            {name: out[:, i].astype(float) for i, name in enumerate(self.returns)}
-        )
-
-
-@dataclass(slots=True)
-class Transform:
-    """A foreign transform: the ``(fit, transform)`` pair, supplied directly.
-
-    ``fit(F) -> instance`` and ``transform(instance, T) -> R``, both over
-    relations. An sklearn transformer is already this pair — see
-    ``from_estimator``.
-
-    In SQL the pair splits: ``x_fit`` is the UDAF half and ``x_transform`` the
-    UDF half, joined by θ, an opaque ``Struct<type, id>`` handle into a
-    registry of fitted instances. An SQL leaf gives an inspectable, shippable
-    params table; a fitted RandomForest gives a pointer.
-
-    ``takes``/``returns`` name the input and output struct fields, and are
-    author-declared rather than inferred: DuckDB has no ``ANY`` type, so the
-    shapes must be concrete before the functions can be registered at all. The
-    declaration is authoritative — a transform whose output width disagrees
-    refuses rather than mislabelling lanes.
-
-    Everything is DOUBLE. Widening the vocabulary is a later problem; nothing
-    in the design turns on it.
-    """
-
-    fit: Callable[[pa.Table], Any]
-    transform: Callable[[Any, pa.Table], pa.Table]
-    takes: tuple[str, ...]
-    returns: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        _struct_sql(self.takes)  # a bad field name refuses here, not at fit
-        _struct_sql(self.returns)
-
-    @classmethod
-    def from_estimator(
-        cls, estimator: Any, takes: tuple[str, ...], returns: tuple[str, ...]
-    ) -> Self:
-        """An sklearn transformer as the pair. Cloned per fit, so one
-        estimator object can back many groups without sharing learned state.
-
-        The halves are module-level objects holding the estimator as data
-        rather than closures over it: a local function is unpicklable, and
-        ``deepcopy`` hid that by treating functions as atomic, so ``clone``
-        worked while anything that actually serialised — ``Pipeline(memory=)``,
-        ``n_jobs>1`` — did not.
-        """
-        return cls(
-            fit=_EstimatorFit(estimator, takes),
-            transform=_EstimatorTransform(takes, returns),
-            takes=takes,
-            returns=returns,
-        )
-
-    # -- the two SQL halves ----------------------------------------------------
-
-    def _fit_batch(self, groups: Any, stem: str, registry: _Registry) -> pa.Array:
-        thetas = []
-        for group in groups.to_pylist():
-            if group is None:
-                thetas.append(None)
-                continue
-            relation = pa.table(
-                {
-                    field: pa.array([row[field] for row in group], pa.float64())
-                    for field in self.takes
-                }
-            )
-            thetas.append({"type": stem, "id": registry.add(self.fit(relation))})
-        return pa.array(thetas, type=THETA_ARROW)
-
-    def _transform_batch(
-        self, theta: Any, features: Any, stem: str, registry: _Registry
-    ) -> pa.Array:
-        thetas, feats = theta.to_pylist(), features.to_pylist()
-        out: list[Any] = [None] * len(thetas)
-        rows_by_instance: dict[int, list[int]] = {}
-        for i, handle in enumerate(thetas):
-            # P14, the one NULL story: a NULL θ is a LEFT JOIN miss, which is
-            # an unseen group. The row stays, its output is NULL.
-            if handle is not None:
-                rows_by_instance.setdefault(handle["id"], []).append(i)
-
-        for iid, positions in rows_by_instance.items():
-            if iid not in registry.instances:
-                registry.fail(
-                    TransformError(
-                        f"{stem}: θ id {iid} is not in the fitted instances — "
-                        "the params table and the instances are from different fits"
-                    )
-                )
-            relation = pa.table(
-                {
-                    field: pa.array([feats[i][field] for i in positions], pa.float64())
-                    for field in self.takes
-                }
-            )
-            produced = self.transform(registry.instances[iid], relation)
-            if tuple(produced.column_names) != self.returns:
-                registry.fail(
-                    TransformError(
-                        f"{stem}: declared width {self.returns} but produced "
-                        f"{tuple(produced.column_names)}"
-                    )
-                )
-            values = produced.to_pylist()
-            for position, value in zip(positions, values, strict=True):
-                out[position] = value
-        return pa.array(out, type=pa.struct([(f, pa.float64()) for f in self.returns]))
-
-    def register(self, con: Connection, stem: str, registry: _Registry) -> None:
-        """Bind both halves to a connection. Both are always registered: a
-        fit-only subtree may transform, and ``x_fit`` over ``__THIS__`` is
-        legal and means refit on the batch you were handed."""
-        struct_in = _struct_sql(self.takes)
-        con.create_function(
-            f"{stem}_fit",
-            lambda groups: self._fit_batch(groups, stem, registry),
-            [f"{struct_in}[]"],
-            THETA_SQL,
-            type="arrow",
-            null_handling="special",
-        )
-        con.create_function(
-            f"{stem}_transform",
-            lambda theta, feats: self._transform_batch(theta, feats, stem, registry),
-            [THETA_SQL, struct_in],
-            _struct_sql(self.returns),
-            type="arrow",
-            null_handling="special",
-        )
-
-
-def _list_of(argument: Node) -> Node:
-    """``list(arg)``. DuckDB's Python API has no aggregate UDF, so the UDAF
-    half is a scalar function over the list DuckDB's own ``list()`` collects.
-    The author's text is unchanged; ``GROUP BY`` still does the grouping."""
-    call = _template("SELECT list(1)")["select_list"][0]
-    call["children"] = [argument]
-    call["alias"] = ""
-    return call
-
-
-# --- calling ------------------------------------------------------------------
-
-
-def _rename_free(body: Node, renames: dict[str, str]) -> None:
-    """Rename the member's *free* references, not its own definitions.
-
-    A parenthesised derived table already scopes its own CTEs, so the member's
-    definitions cannot collide with the caller's. The hazard runs the other
-    way: a free name the member resolved from its own frame gets captured by
-    an outer CTE that happens to share it. Measured — silent, no error,
-    different numbers. The old name survives as the alias, so every column
-    reference qualified by it still resolves.
-    """
-    for _, _, v in list(_under(body, deep=True)):
-        if v.get("type") == "BASE_TABLE" and v.get("table_name") in renames:
-            old = v["table_name"]
-            if renames[old] == old:
-                continue  # identity: leave the node exactly as it was
-            v["table_name"] = renames[old]
-            v["alias"] = v.get("alias") or old
-
-
-def _bind_parameters(body: Node, args: dict[str, Node]) -> None:
-    """Bind the member's two parameters to the call site's arguments.
-
-    Sites are collected before any replacement, so an argument that itself
-    mentions ``__FIT__`` — every chained call does — is never re-substituted.
-    ``_under`` happens to be safe against that anyway, since it lists each
-    dict's items before descending; collecting first is what keeps the
-    guarantee from resting on that detail.
-    """
-    sites = [
-        (parent, key, v)
-        for parent, key, v in _under(body, deep=True)
-        if v.get("type") == "BASE_TABLE" and v.get("table_name") in args
-    ]
-    for parent, key, ref in sites:
-        bound = copy.deepcopy(args[ref["table_name"]])
-        bound["alias"] = ref.get("alias") or ref["table_name"]
-        parent[key] = bound
-
-
-def _rename_functions(body: Node, renames: dict[str, str]) -> None:
-    """Rename the member's foreign calls the same way as its free tables, so
-    two members can each carry their own ``sc`` without colliding."""
-    for _, _, v in list(_under(body, deep=True)):
-        if v.get("class") != "FUNCTION":
-            continue
-        stem, _, half = v["function_name"].rpartition("_")
-        if half in ("fit", "transform") and stem in renames:
-            v["function_name"] = f"{renames[stem]}_{half}"
 
 
 def _splice(call: Node, scope: dict[str, Any], captured: Captured) -> Node:
@@ -680,22 +145,6 @@ def _argument(arg: Node, scope: dict[str, Any], captured: Captured) -> tuple[Nod
         f"a transform argument is a relation — {FIT}, {THIS}, a parenthesised "
         "query, or another transform call"
     )
-
-
-def _catalog(con: Connection | None) -> frozenset[str]:
-    """Tables and views the supplied connection already owns.
-
-    Passing a connection is how you say *use my catalog*, so a name it can
-    already resolve is not a free reference and must not be looked for in
-    the caller's frame — nor renamed when a shared connection is mangled.
-    """
-    if con is None:
-        return frozenset()
-    rows = con.execute(
-        "SELECT table_name FROM duckdb_tables()"
-        " UNION ALL SELECT view_name FROM duckdb_views()"
-    ).fetchall()
-    return frozenset(name for (name,) in rows)
 
 
 def _resolve(
@@ -800,166 +249,6 @@ def _resolve(
     return depth
 
 
-def _pin_derived_names(node: Node) -> None:
-    """Freeze the output column names before the expressions move.
-
-    DuckDB names an unaliased select item after its own printed text, so
-    replacing a frozen subquery with ``SELECT * FROM __param_0`` renamed the
-    column to that — ``get_feature_names_out()`` handed back an internal
-    parameter name, and the schema stopped matching ``run``'s.
-
-    Written as an explicit alias first, so the name survives the rewrite. Only
-    items that contain a query node are touched; a plain column reference is
-    named after its last path part and is unaffected by any of this.
-    """
-    for item in node.get("select_list", []):
-        if not isinstance(item, dict) or item.get("alias"):
-            continue
-        if not any(_is_query(v) for _, _, v in _under(item, deep=True)):
-            continue
-        printed = _deserialize(_statement(_one_item(item)))
-        item["alias"] = printed[len("SELECT ") :]
-
-
-def _one_item(item: Node) -> Node:
-    """``SELECT <item>`` as a query node, for asking the oracle what it would
-    call that column."""
-    node = _template("SELECT 1")
-    node["select_list"] = [copy.deepcopy(item)]
-    return node
-
-
-# --- the plan -----------------------------------------------------------------
-
-
-def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
-    """Rewrite ``doc`` in place into the residual, returning the fit steps.
-
-    A step is ``(param_name, node)``, in dependency order: running them against
-    a connection with ``__FIT__`` bound, registering each result as it lands,
-    produces every table the residual needs. All the analysis — and every
-    refusal — happens here, at construction, before any data exists.
-
-    The step is kept as a node rather than printed SQL because ``fit`` has to
-    rename its free references per execution, the same way serving does, and
-    renaming a node is a walk while renaming text is a guess.
-    """
-    steps: list[tuple[str, Node]] = []
-    taken: set[str] = set()
-    whole: str | None = None
-
-    def name(hint: str | None) -> str:
-        base = f"__param_{hint}" if hint else f"__param_{len(steps)}"
-        candidate, n = base, 1
-        while candidate in taken:
-            candidate, n = f"{base}_{n}", n + 1
-        taken.add(candidate)
-        return candidate
-
-    def whole_fit() -> str:
-        # A bare `FROM __FIT__` inside a relation that also reads `__THIS__`.
-        # The training set itself is the parameter; `len(params)` says so.
-        #
-        # `whole` rather than a membership test on `taken`: hints come from CTE
-        # keys, so a CTE named `fit` mints `__param_fit` too. Asking whether
-        # the *name* was taken conflated "someone else has it" with "my step is
-        # already emitted", and the bare `FROM __FIT__` was then aliased onto
-        # that CTE's table — silently, and only when a CTE happened to be
-        # called `fit`. Emitted-ness is its own fact; the name comes from the
-        # same collision-avoiding allocator as every other one.
-        nonlocal whole
-        if whole is None:
-            whole = name("fit")
-            steps.append((whole, _select_star(FIT)))
-        return whole
-
-    def freeze(sub: Node, ctes: list[Node], hint: str | None) -> Node:
-        frozen = copy.deepcopy(sub)
-        # Carry the enclosing CTEs in: a frozen subtree may reference one, and
-        # by now their own definitions have been rewritten to frozen tables.
-        frozen[_QUERY]["map"] = copy.deepcopy(ctes) + frozen[_QUERY]["map"]
-        param = name(hint)
-        steps.append((param, frozen))
-        return _select_star(param)
-
-    def visit(
-        parent: Node,
-        key: str,
-        ctes: list[Node],
-        outer: dict[str, bool],
-        hint: str | None,
-        reading: dict[str, set[str]],
-    ) -> None:
-        sub = parent[key]
-        reads = _reads(sub, reading)
-        # A recursive CTE's self-reference is bound by the enclosing entry key,
-        # not by anything inside the body, so hoisting the body into a
-        # standalone statement leaves that name unbound. Left live instead: the
-        # training set becomes the parameter, which costs params size and is
-        # correct. Freezing it properly means reconstructing the WITH RECURSIVE
-        # wrapper, which is worth doing only if it ever matters.
-        if sub.get("type") == _RECURSIVE_CTE:
-            # Nothing inside may be frozen, not just the body as a whole: the
-            # self-reference is visible to every arm but bound by none of them,
-            # so hoisting any part of it out leaves that name dangling. The
-            # training set becomes the parameter and the recursion stays live.
-            for _, _, v in _under(sub, deep=True):
-                if v.get("type") == "BASE_TABLE" and v.get("table_name") == FIT:
-                    v["table_name"] = whole_fit()
-            return
-        if FIT in reads and THIS not in reads:
-            match _correlation(sub, outer):
-                case None:
-                    parent[key] = freeze(sub, ctes, hint)
-                    return  # maximal: a frozen subtree never refreezes
-                case (reference, True):
-                    raise CorrelatedFit(
-                        f"{FIT} subquery references {reference} from the "
-                        "outer query, so it cannot be evaluated once into "
-                        "a table"
-                    )
-                case _:
-                    # Correlated into a `__FIT__`-only relation instead:
-                    # still per-outer-row, so still unfreezable, but
-                    # nothing is wrong. Fall through and the training set
-                    # itself becomes the parameter; `len(params)` reports
-                    # the cost. Marginalization makes it one row per group.
-                    pass
-        descend(sub, ctes, outer, reading)
-
-    def descend(
-        node: Node,
-        ctes: list[Node],
-        outer: dict[str, bool],
-        reading: dict[str, set[str]],
-    ) -> None:
-        _pin_derived_names(node)
-        ctes = list(ctes)
-        reading = dict(reading)
-        for entry in node[_QUERY]["map"]:
-            visit(entry["value"]["query"], "node", ctes, outer, entry["key"], reading)
-            # After visiting, not before: a frozen body reads nothing, and one
-            # left live has had its `__FIT__` rewritten already. Either way this
-            # is what a later reference to the name actually depends on.
-            reading[entry["key"].lower()] = _reads(
-                entry["value"]["query"]["node"], reading
-            )
-            ctes.append(entry)
-        outer = outer | _bindings_at(node, reading)
-        sites = [(p, k) for p, k, v in _under(node, deep=False) if _is_query(v)]
-        for parent, key in sites:
-            visit(parent, key, ctes, outer, None, reading)
-        for _, _, v in _under(node, deep=False):
-            if v.get("type") == "BASE_TABLE" and v.get("table_name") == FIT:
-                v["table_name"] = whole_fit()
-
-    visit(doc["statements"][0], "node", [], {}, None, {})
-    return steps, doc["statements"][0]["node"]
-
-
-# --- the surface --------------------------------------------------------------
-
-
 @dataclass(slots=True, eq=False, repr=False)
 class Fitted:
     """``T -> R``, with the captured environment reified as data.
@@ -1041,6 +330,7 @@ class Fitted:
 
 
 OUTPUTS = ("default", "arrow", "duckdb", "pandas", "numpy")
+
 
 # One counter per process, so a shared connection never sees two executions
 # under the same name. See _lease.

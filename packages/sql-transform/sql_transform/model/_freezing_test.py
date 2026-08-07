@@ -17,7 +17,8 @@ from sql_transform.model import (
     normalize,
     run,
 )
-from sql_transform.model._transform import FIT, _reads, _serialize
+from sql_transform.model._analysis import _reads
+from sql_transform.model._ast import FIT, _serialize
 
 D = pa.table(
     {

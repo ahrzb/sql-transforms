@@ -19,7 +19,7 @@ import pyarrow as pa
 import pytest
 
 from sql_transform.model import SQLTransform, TransformError, run
-from sql_transform.model._transform import _QUERY, _serialize, _under
+from sql_transform.model._ast import _QUERY, _serialize, _under
 
 D = pa.table({"cat": ["a", "a", "b"], "price": [1.0, 3.0, 10.0]})
 
