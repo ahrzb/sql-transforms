@@ -6,8 +6,6 @@ ordered-frame gate is written first, deliberately: it pins a result that looks
 like a bug and must not be "corrected".
 """
 
-from __future__ import annotations
-
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest

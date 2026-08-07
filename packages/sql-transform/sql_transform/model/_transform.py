@@ -15,14 +15,14 @@ foreign transforms. DuckDB is both the parser and the oracle — a construct
 means what DuckDB computes.
 """
 
-from __future__ import annotations
-
 import copy
 import json
 import sys
 import threading
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from functools import cache
-from typing import Any
+from typing import Any, Self
 
 import duckdb
 import pyarrow as pa
@@ -36,7 +36,12 @@ MAX_DEPTH = 8
 # its presence is what tells a query node from a table ref or an expression.
 _QUERY = "cte_map"
 
-Node = dict[str, Any]
+type Node = dict[str, Any]
+type Relation = Any  # anything DuckDB will register: arrow, pandas, polars
+type Connection = duckdb.DuckDBPyConnection
+type Params = dict[str, pa.Table]
+type Bindings = dict[str, Relation]
+type Foreign = dict[str, Transform]
 
 
 class TransformError(Exception):
@@ -148,7 +153,7 @@ def _is_query(value: Any) -> bool:
     return isinstance(value, dict) and _QUERY in value
 
 
-def _under(obj: Any, *, deep: bool):
+def _under(obj: Any, *, deep: bool) -> Iterator[tuple[Any, Any, Node]]:
     """Yield ``(parent, key, dict)`` for every dict below ``obj``.
 
     ``deep=False`` stops at nested query nodes — it still yields them, so a
@@ -264,6 +269,10 @@ class _Registry:
     and the write. ``ids_are_unique_under_concurrency`` reproduces exactly
     that shape.
 
+    Nothing here leans on the GIL, and it must not: 3.14 supports
+    free-threaded builds, where every window widens and a dict update is no
+    longer atomic either.
+
     The lock also carries the first exception out, because DuckDB rewraps a
     Python exception as ``InvalidInputException`` and a refusal has to keep
     its name.
@@ -292,7 +301,7 @@ class _Registry:
         raise exc
 
 
-def _execute(con: Any, sql: str, registry: _Registry) -> pa.Table:
+def _execute(con: Connection, sql: str, registry: _Registry) -> pa.Table:
     """Run ``sql``, letting a foreign transform's own refusal out by name."""
     try:
         # to_arrow_table, never .arrow(): see _duckdb_arrow_test.py — the
@@ -304,6 +313,7 @@ def _execute(con: Any, sql: str, registry: _Registry) -> pa.Table:
         raise
 
 
+@dataclass(slots=True)
 class Transform:
     """A foreign transform: the ``(fit, transform)`` pair, supplied directly.
 
@@ -326,24 +336,19 @@ class Transform:
     in the design turns on it.
     """
 
-    def __init__(
-        self,
-        fit: Any,
-        transform: Any,
-        takes: tuple[str, ...],
-        returns: tuple[str, ...],
-    ) -> None:
-        self.fit = fit
-        self.transform = transform
-        self.takes = takes
-        self.returns = returns
-        _struct_sql(takes)
-        _struct_sql(returns)
+    fit: Callable[[pa.Table], Any]
+    transform: Callable[[Any, pa.Table], pa.Table]
+    takes: tuple[str, ...]
+    returns: tuple[str, ...]
 
-    @staticmethod
+    def __post_init__(self) -> None:
+        _struct_sql(self.takes)  # a bad field name refuses here, not at fit
+        _struct_sql(self.returns)
+
+    @classmethod
     def from_estimator(
-        estimator: Any, takes: tuple[str, ...], returns: tuple[str, ...]
-    ) -> Transform:
+        cls, estimator: Any, takes: tuple[str, ...], returns: tuple[str, ...]
+    ) -> Self:
         """An sklearn transformer as the pair. Cloned per fit, so one
         estimator object can back many groups without sharing learned state."""
         import numpy as np  # noqa: PLC0415
@@ -363,7 +368,7 @@ class Transform:
                 {name: out[:, i].astype(float) for i, name in enumerate(returns)}
             )
 
-        return Transform(fit=fit, transform=transform, takes=takes, returns=returns)
+        return cls(fit=fit, transform=transform, takes=takes, returns=returns)
 
     # -- the two SQL halves ----------------------------------------------------
 
@@ -421,7 +426,7 @@ class Transform:
                 out[position] = value
         return pa.array(out, type=pa.struct([(f, pa.float64()) for f in self.returns]))
 
-    def register(self, con: Any, stem: str, registry: _Registry) -> None:
+    def register(self, con: Connection, stem: str, registry: _Registry) -> None:
         """Bind both halves to a connection. Both are always registered: a
         fit-only subtree may transform, and ``x_fit`` over ``__THIS__`` is
         legal and means refit on the batch you were handed."""
@@ -519,8 +524,8 @@ def _rename_functions(body: Node, renames: dict[str, str]) -> None:
 def _splice(
     call: Node,
     scope: dict[str, Any],
-    bindings: dict[str, Any],
-    foreign: dict[str, Transform],
+    bindings: Bindings,
+    foreign: Foreign,
 ) -> Node:
     """A member call, as the spliced relation it denotes.
 
@@ -581,18 +586,18 @@ def _splice(
 def _argument(
     arg: Node,
     scope: dict[str, Any],
-    bindings: dict[str, Any],
-    foreign: dict[str, Transform],
+    bindings: Bindings,
+    foreign: Foreign,
 ) -> tuple[Node, int]:
     """An argument expression, as the relation it denotes."""
-    kind = arg.get("class")
-    if kind == "COLUMN_REF" and len(arg["column_names"]) == 1:
-        return _base_table(arg["column_names"][0]), 0
-    if kind == "SUBQUERY":
-        return _subquery_ref(arg["subquery"]["node"], ""), 0
-    if kind == "FUNCTION":
-        ref = _splice(_table_function_ref(arg, ""), scope, bindings, foreign)
-        return ref, ref.pop("_depth")
+    match arg:
+        case {"class": "COLUMN_REF", "column_names": [name]}:
+            return _base_table(name), 0
+        case {"class": "SUBQUERY", "subquery": {"node": node}}:
+            return _subquery_ref(node, ""), 0
+        case {"class": "FUNCTION"}:
+            ref = _splice(_table_function_ref(arg, ""), scope, bindings, foreign)
+            return ref, ref.pop("_depth")
     raise TransformError(
         f"a transform argument is a relation — {FIT}, {THIS}, a parenthesised "
         "query, or another transform call"
@@ -602,8 +607,8 @@ def _argument(
 def _resolve(
     doc: Node,
     scope: dict[str, Any],
-    bindings: dict[str, Any],
-    foreign: dict[str, Transform],
+    bindings: Bindings,
+    foreign: Foreign,
 ) -> int:
     """Splice every member call and resolve every free name, in place.
 
@@ -641,26 +646,30 @@ def _resolve(
             if _is_query(v):
                 walk(v, ctes)
         for parent, key, v in list(_under(node, deep=False)):
-            if v.get("type") == "TABLE_FUNCTION":
-                if v["function"]["function_name"].lower() in _duckdb_table_functions():
-                    continue
-                ref = _splice(v, scope, bindings, foreign)
-                depth = max(depth, ref.pop("_depth"))
-                parent[key] = ref
-            elif v.get("type") == "BASE_TABLE":
-                name = v["table_name"]
-                if name in (FIT, THIS) or name in ctes or name in bindings:
-                    continue
-                obj = scope.get(name)
-                if obj is None:
-                    raise UnknownName(
-                        f"{name} resolves to nothing in the caller's frame"
-                    )
-                if isinstance(obj, SQLTransform):
-                    raise TransformError(
-                        f"{name} is a transform; call it as {name}({FIT}, {THIS})"
-                    )
-                bindings[name] = obj
+            match v:
+                case {"type": "TABLE_FUNCTION", "function": {"function_name": call}}:
+                    if call.lower() in _duckdb_table_functions():
+                        continue
+                    ref = _splice(v, scope, bindings, foreign)
+                    depth = max(depth, ref.pop("_depth"))
+                    parent[key] = ref
+                case {"type": "BASE_TABLE", "table_name": name} if (
+                    name not in (FIT, THIS)
+                    and name not in ctes
+                    and name not in bindings
+                ):
+                    match scope.get(name):
+                        case None:
+                            raise UnknownName(
+                                f"{name} resolves to nothing in the caller's frame"
+                            )
+                        case SQLTransform():
+                            raise TransformError(
+                                f"{name} is a transform; call it as "
+                                f"{name}({FIT}, {THIS})"
+                            )
+                        case obj:
+                            bindings[name] = obj
         # Member calls are gone by now, so every FUNCTION left at this level is
         # a scalar one — no need to tell the table call's own function apart.
         for _, _, v in list(_under(node, deep=False)):
@@ -724,21 +733,23 @@ def _plan(doc: Node) -> tuple[list[tuple[str, str]], str]:
         sub = parent[key]
         reads = _reads(sub)
         if FIT in reads and THIS not in reads:
-            correlated = _correlation(sub, outer)
-            if correlated is None:
-                parent[key] = freeze(sub, ctes, hint)
-                return  # maximal: nothing inside a frozen subtree freezes again
-            reference, into_this = correlated
-            if into_this:
-                raise CorrelatedFit(
-                    f"{FIT} subquery references {reference} from the outer "
-                    "query, so it cannot be evaluated once into a table"
-                )
-            # Correlated into a `__FIT__`-only relation instead: still
-            # per-outer-row, so still unfreezable, but nothing is wrong — fall
-            # through and the training set itself becomes the parameter.
-            # `len(params)` reports the cost. Marginalization is what turns it
-            # into one row per group.
+            match _correlation(sub, outer):
+                case None:
+                    parent[key] = freeze(sub, ctes, hint)
+                    return  # maximal: a frozen subtree never refreezes
+                case (reference, True):
+                    raise CorrelatedFit(
+                        f"{FIT} subquery references {reference} from the "
+                        "outer query, so it cannot be evaluated once into "
+                        "a table"
+                    )
+                case _:
+                    # Correlated into a `__FIT__`-only relation instead:
+                    # still per-outer-row, so still unfreezable, but
+                    # nothing is wrong. Fall through and the training set
+                    # itself becomes the parameter; `len(params)` reports
+                    # the cost. Marginalization makes it one row per group.
+                    pass
         descend(sub, ctes, outer)
 
     def descend(node: Node, ctes: list[Node], outer: dict[str, bool]) -> None:
@@ -761,6 +772,7 @@ def _plan(doc: Node) -> tuple[list[tuple[str, str]], str]:
 # --- the surface --------------------------------------------------------------
 
 
+@dataclass(slots=True, eq=False)
 class Fitted:
     """``T -> R``, with the captured environment reified as data.
 
@@ -769,21 +781,13 @@ class Fitted:
     that a measurement instead of a rule.
     """
 
-    def __init__(
-        self,
-        sql: str,
-        params: dict[str, pa.Table],
-        bindings: dict[str, Any],
-        foreign: dict[str, Transform],
-        instances: dict[int, Any],
-    ) -> None:
-        self.sql = sql
-        self.params = params
-        self.bindings = bindings
-        self.foreign = foreign
-        self.instances = instances
+    sql: str
+    params: Params
+    bindings: Bindings
+    foreign: Foreign
+    instances: dict[int, Any]
 
-    def transform(self, data: Any) -> pa.Table:
+    def transform(self, data: Relation) -> pa.Table:
         con = duckdb.connect()
         con.register(THIS, data)
         for name, table in (self.bindings | self.params).items():
@@ -814,14 +818,14 @@ class SQLTransform:
         scope = frame.f_globals | frame.f_locals
         del frame
 
-        self.bindings: dict[str, Any] = {}
-        self.foreign: dict[str, Transform] = {}
+        self.bindings: Bindings = {}
+        self.foreign: Foreign = {}
         self.depth = _resolve(doc, scope, self.bindings, self.foreign)
         self.node = doc["statements"][0]["node"]
         self.sql = _deserialize(doc)
         self._steps, self._residual = _plan(copy.deepcopy(doc))
 
-    def _connect(self, registry: _Registry) -> Any:
+    def _connect(self, registry: _Registry) -> Connection:
         con = duckdb.connect()
         for name, table in self.bindings.items():
             con.register(name, table)
@@ -829,11 +833,11 @@ class SQLTransform:
             leaf.register(con, stem, registry)
         return con
 
-    def fit(self, data: Any) -> Fitted:
+    def fit(self, data: Relation) -> Fitted:
         registry = _Registry()
         con = self._connect(registry)
         con.register(FIT, data)
-        params: dict[str, pa.Table] = {}
+        params: Params = {}
         for param, sql in self._steps:
             params[param] = _execute(con, sql, registry)
             con.register(param, params[param])
@@ -844,7 +848,7 @@ class SQLTransform:
     __call__ = fit
 
 
-def run(transform: SQLTransform, data: Any) -> pa.Table:
+def run(transform: SQLTransform, data: Relation) -> pa.Table:
     """Both parameters bound to the same relation, with no freezing at all.
 
     The reference side of "freezing is faithful". It is a *binding*, not a

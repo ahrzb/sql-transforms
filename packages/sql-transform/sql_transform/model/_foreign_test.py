@@ -6,8 +6,6 @@ estimators, so a `Fitted` carries ``instances`` alongside ``params``: an SQL
 leaf gives an inspectable params table, a fitted RandomForest gives a pointer.
 """
 
-from __future__ import annotations
-
 import sys
 import threading
 
