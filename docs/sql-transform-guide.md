@@ -59,9 +59,11 @@ nothing else — the training set is gone, and you can prove it:
 
 ```
 
-## Why not just write a sklearn transformer
+## What the two-parameter form changes
 
-### 1. Train/serve skew becomes unrepresentable
+Six comparisons against the hand-written transformer. Each one is a trade, not a win; the costs are collected in **Trade-offs** below.
+
+### 1. Train and serve are one expression
 
 The classic failure is two pieces of code — a training job and a serving path —
 that are supposed to compute the same thing and slowly stop doing so.
@@ -121,11 +123,11 @@ models[row.store]            # KeyError on a store that appeared after training
 whole, so every group crosses every row — measured, 4 rows in and 8 out, with
 S1's statistics applied to S2's rows.
 
-### 3. Joins are first-class
+### 3. A join is available where a transformer has no room for one
 
-A transformer that needs a lookup table has nowhere to put it; the join happens
-outside the pipeline and is not part of the artifact. Here it is just SQL, and
-the table is captured **by value** at construction:
+An sklearn transformer sees arrays, so a lookup joins outside the pipeline
+and is not part of the artifact. Here it is in the text, and the table is
+captured **by value** at construction:
 
 ```
 >>> REGION = pa.table({"store": ["S1", "S2"], "region": ["north", "south"]})
@@ -165,10 +167,11 @@ parameter, so the thing that is easy to get wrong is the thing you can see:
 
 ```
 
-Fitting `z` on the *raw* training data instead would give `0.0625` and `0.125`
-— close enough to never notice, far enough to matter.
+Fitting `z` on the *raw* training data instead gives `0.0625` and `0.125`.
+The cost is that you write each stage twice, which is a new thing to get
+wrong — putting `__THIS__` in the fit slot is not a syntax error.
 
-### 5. Unseen categories have exactly one story
+### 5. An unseen category is a join miss
 
 A join miss is a NULL. Not a `KeyError`, not a silent zero, not a dropped row:
 
@@ -186,9 +189,11 @@ A join miss is a NULL. Not a `KeyError`, not a silent zero, not a dropped row:
 
 ```
 
-The row survives. `docs/properties.md` calls this P14, the one NULL story.
+The row survives, carrying NULL. `docs/properties.md` calls this P14. Whether
+that beats a `KeyError` depends on whether you would rather find out at the
+call site or downstream — NULL propagates quietly.
 
-### 6. sklearn where you actually want sklearn
+### 6. sklearn estimators are usable as leaves
 
 An estimator is already the `(fit, transform)` pair, so it drops in as a leaf —
 per group, without a loop:
@@ -257,7 +262,7 @@ the training data on this key*, so a serving row with an unseen key gets NULL
 forever. The hazard is real and it is visible in the text — which is why
 refusing it would overrule something you can already see.
 
-## Cost is a measurement, not a promise
+## The artifact's size is visible
 
 A transform that genuinely needs the training set at serving time gets one —
 and says so, instead of hiding it in a pickle:
@@ -313,7 +318,7 @@ True
 
 ```
 
-## Your connection, and output that has not been executed
+## Connections and unexecuted output
 
 A transform makes no hidden connection: pass yours, and it uses your catalog.
 
@@ -372,9 +377,10 @@ readable ones stay yours.
 
 ## Timeseries
 
-The thing pandas cannot tell you: **which side the window is on.** `.rolling()`
-looks the same whether it is a live feature or a frozen statistic. Here it is
-the parameter you wrote it over.
+A `.rolling()` call looks the same whether it is a live feature or a frozen
+statistic; which one it is lives in the surrounding code. Here it is the
+parameter the window is written over. That is a smaller difference than it
+sounds — it moves the distinction into the text instead of removing it.
 
 ```
 >>> from datetime import date
@@ -483,9 +489,10 @@ says so rather than hiding it:
 
 ```
 
-For a lag you want computed from the *live* batch instead, put the window over
-`__THIS__`. The two are one character apart in intent and a world apart in
-behaviour, which is exactly why the model makes you write which one you meant.
+For a lag computed from the *live* batch instead, put the window over
+`__THIS__`. The two read almost identically and behave very differently, so
+the model makes you name which one you meant. It does not stop you naming
+the wrong one.
 
 ## Backtesting: train on the last three months, score the next one
 
@@ -572,8 +579,9 @@ True
 
 ```
 
-That equality is the point. In pandas the loop and the windowed version are two
-different programs and agreeing is a hope; here it is one line of test.
+Two implementations of the same idea, checked against each other in one line.
+The windowed version is harder to read than the loop, and the loop is easier
+to be sure of; the equality is what lets you pick on other grounds.
 
 ### Scoring every month
 
@@ -623,9 +631,32 @@ answer — a month the training data never had has no baseline, so it is NULL:
 
 ```
 
-In production that NULL is the trap the spec warns about. In a backtest it is
-the truth. Same construct, and which one you are doing is something only you
-know — which is why it is legal and loud rather than refused.
+In a backtest that NULL is correct: there is no baseline for that month. In
+production it is the trap — an unseen key stays NULL for good, and nothing
+warns you. The construct cannot tell which you are doing, so it is allowed
+and you carry the risk.
+
+## Trade-offs
+
+What you give up, against a hand-written sklearn transformer:
+
+| cost | detail |
+| --- | --- |
+| **You debug generated SQL** | The residual is machine-printed and members are spliced inline. A binder error points at text you did not write, with no Python stack. |
+| **Per-group fit ships the training set** | The `LATERAL` form cannot freeze once, so `params` is O(\|D\|). A dict of estimators is O(groups). Marginalization is what closes this, and it is not built. |
+| **No row-at-a-time serving** | `compile()`/`Inference` is deferred, so serving means running DuckDB over a batch. For a single row a pickled sklearn pipeline is faster today. |
+| **DuckDB at serve time** | It is the parser, the planner and the oracle. There is no engine-free artifact. |
+| **The AST walk rests on an internal format** | `json_serialize_sql` has no stability promise; `_shapes_test.py` replays DuckDB's own corpus to notice it moving, which is detection, not prevention. |
+| **Name resolution reads your frame** | Convenient, and implicit. Anywhere the name is not in the caller's frame — `clone`, a factory, a config loader — you must pass `captured=` yourself. |
+| **`fit` returns `Fitted`, not `self`** | Deliberate, and a real protocol deviation. `Pipeline` does not care; a stricter meta-estimator or `check_estimator` will. |
+| **Foreign transforms are all DOUBLE** | `takes`/`returns` are declared by hand because DuckDB has no `ANY` type, and a learned output width fails at fit rather than construction. |
+| **No `y`** | A supervised transform carries its target as a column in the relation. |
+| **Ordered frames over `__FIT__`** | Legal, and a live foot-gun outside a backtest. Chosen over refusing, because refusing overrules a join key the author wrote. |
+
+What you get in exchange is the top of this document: one text for both halves,
+an artifact that is data, and laws (`run` versus `fit`/`transform`) that a test
+can check. Whether that is the right trade depends on how much your training
+and serving paths have drifted, and how much SQL you want to own.
 
 ## Not here yet
 
