@@ -23,7 +23,7 @@ from sklearn.ensemble import (
 )
 from sklearn.tree import DecisionTreeRegressor
 
-from sql_transform._trees import TreePackError, pack
+from sql_transform import TreePackError, pack_trees
 
 FEATURES = ["a", "b", "c", "d"]
 ROW = create_model(
@@ -82,7 +82,7 @@ def test_matches_sklearn_bit_exactly(est, seed):
     rng = np.random.RandomState(seed + 900)
     X = rng.rand(400, len(FEATURES)) * 5 - 2.5
     want = fitted.predict(X)
-    got = score(pack([fitted], FEATURES), X)
+    got = score(pack_trees([fitted], FEATURES), X)
     bad = np.flatnonzero(got != want)
     assert bad.size == 0, (
         f"{bad.size}/{len(X)} rows differ; first at {bad[:3]}: "
@@ -100,7 +100,7 @@ def test_both_backends_match_sklearn(backend, monkeypatch):
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
     fitted = fit(RandomForestRegressor(n_estimators=20, random_state=8, n_jobs=1), 21)
     X = np.random.RandomState(22).rand(300, len(FEATURES)) * 5 - 2.5
-    got = score(pack([fitted], FEATURES), X, backend=backend)
+    got = score(pack_trees([fitted], FEATURES), X, backend=backend)
     assert np.array_equal(got, fitted.predict(X))
 
 
@@ -115,13 +115,13 @@ def test_nan_features_match_sklearn():
     fitted = RandomForestRegressor(
         n_estimators=15, max_depth=6, random_state=32, n_jobs=1
     ).fit(X, y)
-    nodes = pack([fitted], FEATURES)["nodes"]
+    nodes = pack_trees([fitted], FEATURES)["nodes"]
     assert len(set(nodes.column("missing_left").to_pylist())) == 2, (
         "every node has the same missing direction — the fit saw no NaNs"
     )
     Xq = rng.rand(400, len(FEATURES)) * 5 - 2.5
     Xq[rng.rand(*Xq.shape) < 0.3] = np.nan
-    got = score(pack([fitted], FEATURES), Xq)
+    got = score(pack_trees([fitted], FEATURES), Xq)
     assert np.array_equal(got, fitted.predict(Xq))
 
 
@@ -134,7 +134,7 @@ def test_null_and_nan_are_the_same_input():
     fitted = RandomForestRegressor(
         n_estimators=10, max_depth=5, random_state=42, n_jobs=1
     ).fit(X, np.nan_to_num(X[:, 0]))
-    entry = pack([fitted], FEATURES)
+    entry = pack_trees([fitted], FEATURES)
     fn = DuckDBInferFn(
         SQL, row_tables={"__THIS__": ROW}, static_tables={}, models={"m": entry}
     )
@@ -169,7 +169,7 @@ def test_per_group_models_score_by_id():
         )
         for s in (51, 52, 53)
     ]
-    entry = pack(fits, FEATURES)
+    entry = pack_trees(fits, FEATURES)
     X = np.random.RandomState(54).rand(90, len(FEATURES)) * 5 - 2.5
     fn = DuckDBInferFn(
         SQL, row_tables={"__THIS__": ROW}, static_tables={}, models={"m": entry}
@@ -191,15 +191,63 @@ def test_unfitted_family_refuses():
     from sklearn.linear_model import LinearRegression
 
     with pytest.raises(TreePackError, match="LinearRegression"):
-        pack([LinearRegression().fit(np.zeros((3, 4)), np.zeros(3))], FEATURES)
+        pack_trees([LinearRegression().fit(np.zeros((3, 4)), np.zeros(3))], FEATURES)
+
+
+def test_classifier_refuses():
+    """A classifier has a `tree_` exactly like a regressor, but its leaf
+    `values` are per-class scores — packing one would score class-0
+    fractions and look entirely plausible doing it."""
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.tree import DecisionTreeClassifier
+
+    rng = np.random.RandomState(71)
+    X = rng.rand(60, len(FEATURES))
+    y = (X[:, 0] > 0.5).astype(int)
+    for est in (
+        DecisionTreeClassifier(max_depth=3, random_state=71).fit(X, y),
+        RandomForestClassifier(n_estimators=4, random_state=71, n_jobs=1).fit(X, y),
+    ):
+        with pytest.raises(TreePackError, match="only regressors"):
+            pack_trees([est], FEATURES)
+
+
+def test_bagging_refuses():
+    """`estimators_features_` gives each tree a feature SUBSET, so its
+    `feature` ids are subset-local. Reading them as global indices scores the
+    wrong columns and answers plausibly — refuse instead."""
+    from sklearn.ensemble import BaggingRegressor
+
+    rng = np.random.RandomState(72)
+    X = rng.rand(60, len(FEATURES))
+    est = BaggingRegressor(
+        DecisionTreeRegressor(max_depth=3),
+        n_estimators=4,
+        max_features=2,
+        random_state=72,
+    ).fit(X, X[:, 0])
+    with pytest.raises(TreePackError, match="BaggingRegressor"):
+        pack_trees([est], FEATURES)
+
+
+def test_hist_gradient_boosting_refuses():
+    """A different tree representation entirely (`_predictors`, binned
+    thresholds) — not this layout."""
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    rng = np.random.RandomState(73)
+    X = rng.rand(60, len(FEATURES))
+    est = HistGradientBoostingRegressor(max_iter=5, random_state=73).fit(X, X[:, 0])
+    with pytest.raises(TreePackError, match="HistGradientBoostingRegressor"):
+        pack_trees([est], FEATURES)
 
 
 def test_feature_count_mismatch_refuses():
     fitted = fit(DecisionTreeRegressor(max_depth=3, random_state=61), 61)
     with pytest.raises(TreePackError, match="4 features"):
-        pack([fitted], ["a", "b"])
+        pack_trees([fitted], ["a", "b"])
 
 
 def test_empty_refuses():
     with pytest.raises(TreePackError, match="no estimators"):
-        pack([], FEATURES)
+        pack_trees([], FEATURES)

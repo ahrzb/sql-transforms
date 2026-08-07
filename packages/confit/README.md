@@ -41,6 +41,29 @@ The shape is a build-time proof about output multiplicity, not a runtime check:
 A serving stack that assumes row alignment gets a build-time error rather than a
 silently misaligned batch.
 
+## Fitted models
+
+A fitted tree ensemble is a **static**, like a params table — prepared once,
+then scored by a native instruction with no Python on the row path. Parity
+with sklearn is asserted at `==` on raw doubles, not at a tolerance.
+
+```python
+from sql_transform import pack_trees
+
+fn = DuckDBInferFn(
+    "SELECT tree_predict('m', p.est, struct_pack(price := t.price, sqft := t.sqft)) AS p "
+    "FROM __THIS__ AS t LEFT JOIN params AS p ON t.country = p.country",
+    row_tables={"__THIS__": Row},
+    static_tables={"params": params},
+    models={"m": pack_trees([fit_de, fit_fr], ["price", "sqft"])},
+)
+```
+
+`DecisionTreeRegressor`, `RandomForestRegressor`, `ExtraTreesRegressor` and
+`GradientBoostingRegressor` pack; everything else refuses by name. Other
+libraries can emit the two Arrow tables directly — the engine never sees
+sklearn. See [docs/serving-fitted-models.md](../../docs/serving-fitted-models.md).
+
 ## Where it wins
 
 Per-call, against DuckDB handed a pre-built Arrow table (release build, p50,
