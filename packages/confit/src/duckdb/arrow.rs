@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
 
 use crate::error::InterpError;
+use crate::specializer::exec::tree_ensemble::{ModelRows, NodeRows, TreeEnsemble};
 use crate::specializer::exec::{Batch, ColData, OutCol, RunState};
 use crate::specializer::ir::{Col, Ty};
 
@@ -71,16 +72,20 @@ fn raw_array<'py>(arr: Bound<'py, PyAny>) -> PyResult<RawArray<'py>> {
     })
 }
 
-/// A single-chunk column by NAME from a Table or RecordBatch.
-fn column<'py>(batch: &Bound<'py, PyAny>, name: &str) -> PyResult<Bound<'py, PyAny>> {
+/// A single-chunk column by NAME from a Table or RecordBatch. `what` names
+/// the caller's table in every error ("infer_arrow", "model set 'trees'
+/// nodes") so the message points at the input the user actually passed.
+fn column<'py>(
+    batch: &Bound<'py, PyAny>,
+    name: &str,
+    what: &str,
+) -> PyResult<Bound<'py, PyAny>> {
     let schema = batch.getattr("schema")?;
     let idx: i64 = schema
         .call_method1("get_field_index", (name,))?
         .extract()?;
     if idx < 0 {
-        return Err(err(format!(
-            "infer_arrow: the batch is missing column '{name}'"
-        )));
+        return Err(err(format!("{what}: missing column '{name}'")));
     }
     let col = batch.call_method1("column", (idx,))?;
     // Table columns are ChunkedArrays; RecordBatch columns are Arrays.
@@ -90,7 +95,7 @@ fn column<'py>(batch: &Bound<'py, PyAny>, name: &str) -> PyResult<Bound<'py, PyA
             1 => col.call_method1("chunk", (0,)),
             0 => col.call_method1("combine_chunks", ()),
             _ => Err(err(format!(
-                "infer_arrow: column '{name}' has {n} chunks — call \
+                "{what}: column '{name}' has {n} chunks — call \
                  combine_chunks() on the table first"
             ))),
         }
@@ -111,7 +116,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
     let rows: usize = batch.call_method0("__len__")?.extract()?;
     let mut cols = Vec::with_capacity(in_cols.len());
     for c in in_cols {
-        let arr = column(batch, &c.name)?;
+        let arr = column(batch, &c.name, "infer_arrow")?;
         let dtype: String = arr.getattr("type")?.str()?.extract()?;
         let ok = matches!(
             (c.ty.ty, dtype.as_str()),
@@ -215,6 +220,178 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
         cols.push(col_data);
     }
     Ok(Batch { rows, cols })
+}
+
+// --------------------------------------------------------- model sets --
+
+/// One column of a model-set table, null-checked. A NULL anywhere in these
+/// nine columns is a malformed extract, not a value the kernel can score, so
+/// it refuses here with the row index rather than reaching `TreeEnsemble`.
+fn model_col<'py>(
+    table: &Bound<'py, PyAny>,
+    what: &str,
+    name: &str,
+) -> PyResult<(RawArray<'py>, String)> {
+    let arr = column(table, name, what)?;
+    let dtype: String = arr.getattr("type")?.str()?.extract()?;
+    let raw = raw_array(arr)?;
+    for i in 0..raw.len {
+        if !raw.valid(i) {
+            return Err(err(format!(
+                "{what}: column '{name}' has a NULL at row {i}"
+            )));
+        }
+    }
+    Ok((raw, dtype))
+}
+
+/// int32 and int64 both read as i64 — `pa.array([1, 2])` defaults to int64,
+/// and refusing that would be a papercut with no safety value.
+fn ints(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<i64>> {
+    let (raw, dtype) = model_col(table, what, name)?;
+    match dtype.as_str() {
+        "int64" => Ok((0..raw.len)
+            .map(|i| unsafe { *raw.data::<i64>(1).add(i) })
+            .collect()),
+        "int32" => Ok((0..raw.len)
+            .map(|i| unsafe { *raw.data::<i32>(1).add(i) as i64 })
+            .collect()),
+        d => Err(err(format!(
+            "{what}: column '{name}' is {d}, want int32 or int64"
+        ))),
+    }
+}
+
+/// [`ints`] narrowed: `feature`, `left` and `right` are i32 in the kernel.
+fn small_ints(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<i32>> {
+    ints(table, what, name)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            i32::try_from(v).map_err(|_| {
+                err(format!(
+                    "{what}: column '{name}' row {i} is {v}, outside the int32 range"
+                ))
+            })
+        })
+        .collect()
+}
+
+fn doubles(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<f64>> {
+    let (raw, dtype) = model_col(table, what, name)?;
+    if dtype != "double" {
+        return Err(err(format!(
+            "{what}: column '{name}' is {dtype}, want double"
+        )));
+    }
+    Ok((0..raw.len)
+        .map(|i| unsafe { *raw.data::<f64>(1).add(i) })
+        .collect())
+}
+
+fn bools(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<bool>> {
+    let (raw, dtype) = model_col(table, what, name)?;
+    if dtype != "bool" {
+        return Err(err(format!(
+            "{what}: column '{name}' is {dtype}, want bool"
+        )));
+    }
+    let (addr, _) = raw.bufs[1].expect("bool data buffer");
+    Ok((0..raw.len)
+        .map(|i| {
+            let bit = raw.offset + i;
+            let b = unsafe { *(addr as *const u8).add(bit / 8) };
+            (b >> (bit % 8)) & 1 == 1
+        })
+        .collect())
+}
+
+fn strings(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<String>> {
+    let (raw, dtype) = model_col(table, what, name)?;
+    let large = match dtype.as_str() {
+        "string" => false,
+        "large_string" => true,
+        d => {
+            return Err(err(format!(
+                "{what}: column '{name}' is {d}, want string"
+            )))
+        }
+    };
+    let (daddr, dsize) = raw.bufs[2].unwrap_or((0, 0));
+    let bytes = unsafe { std::slice::from_raw_parts(daddr as *const u8, dsize) };
+    (0..raw.len)
+        .map(|i| {
+            let (lo, hi) = if large {
+                let p = unsafe { raw.data::<i64>(1) };
+                unsafe { (*p.add(i) as usize, *p.add(i + 1) as usize) }
+            } else {
+                let p = unsafe { raw.data::<i32>(1) };
+                unsafe { (*p.add(i) as usize, *p.add(i + 1) as usize) }
+            };
+            std::str::from_utf8(&bytes[lo..hi])
+                .map(str::to_owned)
+                .map_err(|_| err(format!("{what}: invalid UTF-8 in column '{name}'")))
+        })
+        .collect()
+}
+
+/// The `models=` boundary: a node table and a header table in, a validated
+/// [`TreeEnsemble`] out. Nothing but Arrow crosses — no estimator object, no
+/// pickle, no live model reference. Column layout is the spec's:
+///
+/// ```text
+/// nodes:  model_id | tree_id | node_id | feature (-1 = leaf) | threshold
+///                  | left | right | missing_left | value
+/// models: model_id | base | agg ('sum'|'mean') | link ('identity'|'sigmoid')
+/// ```
+pub fn ensemble(
+    nodes: &Bound<'_, PyAny>,
+    headers: &Bound<'_, PyAny>,
+    n_features: u32,
+    set: &str,
+) -> PyResult<TreeEnsemble> {
+    let nw = format!("model set '{set}' nodes");
+    let hw = format!("model set '{set}' models");
+    let (model_id, tree_id, node_id) = (
+        ints(nodes, &nw, "model_id")?,
+        ints(nodes, &nw, "tree_id")?,
+        ints(nodes, &nw, "node_id")?,
+    );
+    let feature = small_ints(nodes, &nw, "feature")?;
+    let threshold = doubles(nodes, &nw, "threshold")?;
+    let left = small_ints(nodes, &nw, "left")?;
+    let right = small_ints(nodes, &nw, "right")?;
+    let missing_left = bools(nodes, &nw, "missing_left")?;
+    let value = doubles(nodes, &nw, "value")?;
+
+    let h_model_id = ints(headers, &hw, "model_id")?;
+    let base = doubles(headers, &hw, "base")?;
+    let agg = strings(headers, &hw, "agg")?;
+    let link = strings(headers, &hw, "link")?;
+    let agg: Vec<&str> = agg.iter().map(String::as_str).collect();
+    let link: Vec<&str> = link.iter().map(String::as_str).collect();
+
+    TreeEnsemble::new(
+        &NodeRows {
+            model_id: &model_id,
+            tree_id: &tree_id,
+            node_id: &node_id,
+            feature: &feature,
+            threshold: &threshold,
+            left: &left,
+            right: &right,
+            missing_left: &missing_left,
+            value: &value,
+        },
+        &ModelRows {
+            model_id: &h_model_id,
+            base: &base,
+            agg: &agg,
+            link: &link,
+        },
+        n_features,
+    )
+    .map_err(|e| err(format!("model set '{set}': {e}")))
 }
 
 fn bitmap(oks: impl Iterator<Item = bool>, n: usize) -> (Vec<u8>, usize) {
