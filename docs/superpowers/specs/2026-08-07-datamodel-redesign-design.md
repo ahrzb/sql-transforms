@@ -8,7 +8,7 @@ Marginalization and the serving path are deferred — see the end.
 
 ```python
 class SQLTransform:
-    def __init__(self, sql, *, transforms=None, tables=None): ...
+    def __init__(self, sql): ...          # references resolve from the caller's frame
     def fit(self, data) -> "FittedTransform": ...
 
 @dataclass(frozen=True)
@@ -103,13 +103,38 @@ SELECT t.*, g.n FROM __THIS__ t LEFT JOIN memorize(geo) g USING (region)
 Freezing `geo` pins `store_dim` as of fit time; later edits do not reach the
 fitted model. Right default — reproducibility — but a behavior, not a detail.
 
+## Name resolution
+
+Unresolved identifiers in the SQL resolve against the caller's frame, exactly
+as `duckdb.sql("SELECT * FROM my_df")` does. Locals first, then globals.
+
+```python
+store_dim = pa.table(...)                                    # a static table
+z         = SQLTransform("... memorize(cat_stats) ...")      # another transform
+
+outer = SQLTransform("SELECT * FROM z(__THIS__) WHERE z > 0")
+```
+
+No `transforms=` or `tables=` kwargs. What a name resolves to determines how
+it is used: an `SQLTransform` gets spliced as a table function, an Arrow
+table or DataFrame becomes a static table.
+
+**Resolution happens once, at construction, and captures by value.** The
+frame is not retained. Rebinding `z` afterwards does not change `outer`, and
+nothing holds a reference to a dead stack frame. A name that resolves to
+nothing refuses at construction, naming the identifier.
+
+Skipped: an explicit-binding escape hatch for transforms built where the
+name is not a local (a loop, a factory). DuckDB keeps `con.register` for
+exactly this; add it when it bites.
+
 ## Nesting
 
 A transform is usable inside another transform as a table function:
 
 ```python
-z = SQLTransform("... LEFT JOIN memorize(cat_stats) m USING (cat)")
-outer = SQLTransform("SELECT * FROM z(__THIS__) WHERE z > 0", transforms={"z": z})
+z     = SQLTransform("... LEFT JOIN memorize(cat_stats) m USING (cat)")
+outer = SQLTransform("SELECT * FROM z(__THIS__) WHERE z > 0")
 ```
 
 Splice the member's SQL at the call site; prefix its CTE names with the
@@ -155,9 +180,9 @@ text modulo one function call.
    "refusals are construction-time and named"), freeze at fit, substitute at
    transform. Gate: the law above, plus `CannotMemorize` on the ordered
    frame.
-2. **Nesting.** `transforms={...}`, splice, name-prefix, depth cap. Gate: the
-   law on a nested transform, plus spliced text equals a hand-written
-   reference.
+2. **Nesting and name resolution.** Frame lookup at construction, splice,
+   name-prefix, depth cap. Gate: the law on a nested transform, plus spliced
+   text equals a hand-written reference.
 
 TDD, red before green. Lands alongside the existing modules in
 `sql_transform/model/`; nothing is deleted until the old implementation and
