@@ -43,10 +43,41 @@ impl RawArray<'_> {
         }
     }
 
-    /// Typed data slice starting at the array's offset.
-    unsafe fn data<T: Copy>(&self, slot: usize) -> *const T {
+    /// Typed data pointer starting at the array's offset. Unaligned by
+    /// contract — see [`Unaligned`].
+    unsafe fn data<T: Copy>(&self, slot: usize) -> Unaligned<T> {
         let (addr, _) = self.bufs[slot].expect("data buffer present");
-        unsafe { (addr as *const T).add(self.offset) }
+        Unaligned(unsafe { (addr as *const T).add(self.offset) })
+    }
+}
+
+/// A pointer into an Arrow value buffer, which carries NO alignment
+/// guarantee (TASK-67).
+///
+/// Arrow does not promise naturally aligned value buffers, and pyarrow
+/// zero-copies one that is not: `np.frombuffer(blob, np.float64, offset=4)`
+/// — a packed binary record, an mmap with a header — goes straight through
+/// `pa.array()` and pyarrow computes over it perfectly. Dereferencing that
+/// as `*const f64` is UB. A debug build traps it as a NON-UNWINDING panic,
+/// so a single request batch ends the serving process rather than raising;
+/// release merely happens not to fault today, which is a property of this
+/// week's codegen and not a guarantee (nothing stops LLVM turning the row
+/// loop into aligned vector moves).
+///
+/// Hence a newtype rather than a raw `*const T`: `get` is the only way to
+/// read one, so the unchecked deref is not spellable. On x86-64
+/// `read_unaligned` lowers to the same `mov` as an aligned load for a
+/// scalar — what it costs is exactly the autovectorisation that would have
+/// introduced the fault.
+#[derive(Clone, Copy)]
+struct Unaligned<T>(*const T);
+
+impl<T: Copy> Unaligned<T> {
+    /// # Safety
+    /// `i` must be in bounds of the buffer this pointer came from.
+    #[inline]
+    unsafe fn get(self, i: usize) -> T {
+        unsafe { self.0.add(i).read_unaligned() }
     }
 }
 
@@ -151,7 +182,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                     let v = raw.valid(i);
                     null_seen |= !v;
                     valid.push(v);
-                    data.push(if v { unsafe { *p.add(i) } } else { 0 });
+                    data.push(if v { unsafe { p.get(i) } } else { 0 });
                 }
                 ColData::I64 { valid, data }
             }
@@ -163,7 +194,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                     let v = raw.valid(i);
                     null_seen |= !v;
                     valid.push(v);
-                    data.push(if v { unsafe { *p.add(i) } } else { 0.0 });
+                    data.push(if v { unsafe { p.get(i) } } else { 0.0 });
                 }
                 ColData::F64 { valid, data }
             }
@@ -199,10 +230,10 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                     }
                     let (lo, hi) = if large {
                         let p = unsafe { raw.data::<i64>(1) };
-                        unsafe { (*p.add(i) as usize, *p.add(i + 1) as usize) }
+                        unsafe { (p.get(i) as usize, p.get(i + 1) as usize) }
                     } else {
                         let p = unsafe { raw.data::<i32>(1) };
-                        unsafe { (*p.add(i) as usize, *p.add(i + 1) as usize) }
+                        unsafe { (p.get(i) as usize, p.get(i + 1) as usize) }
                     };
                     let s = std::str::from_utf8(&bytes[lo..hi])
                         .map_err(|_| err("infer_arrow: invalid UTF-8 in string column"))?;
@@ -251,10 +282,10 @@ fn ints(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<i64>> 
     let (raw, dtype) = model_col(table, what, name)?;
     match dtype.as_str() {
         "int64" => Ok((0..raw.len)
-            .map(|i| unsafe { *raw.data::<i64>(1).add(i) })
+            .map(|i| unsafe { raw.data::<i64>(1).get(i) })
             .collect()),
         "int32" => Ok((0..raw.len)
-            .map(|i| unsafe { *raw.data::<i32>(1).add(i) as i64 })
+            .map(|i| unsafe { raw.data::<i32>(1).get(i) as i64 })
             .collect()),
         d => Err(err(format!(
             "{what}: column '{name}' is {d}, want int32 or int64"
@@ -285,7 +316,7 @@ fn doubles(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<f64
         )));
     }
     Ok((0..raw.len)
-        .map(|i| unsafe { *raw.data::<f64>(1).add(i) })
+        .map(|i| unsafe { raw.data::<f64>(1).get(i) })
         .collect())
 }
 
@@ -323,10 +354,10 @@ fn strings(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<Str
         .map(|i| {
             let (lo, hi) = if large {
                 let p = unsafe { raw.data::<i64>(1) };
-                unsafe { (*p.add(i) as usize, *p.add(i + 1) as usize) }
+                unsafe { (p.get(i) as usize, p.get(i + 1) as usize) }
             } else {
                 let p = unsafe { raw.data::<i32>(1) };
-                unsafe { (*p.add(i) as usize, *p.add(i + 1) as usize) }
+                unsafe { (p.get(i) as usize, p.get(i + 1) as usize) }
             };
             std::str::from_utf8(&bytes[lo..hi])
                 .map(str::to_owned)

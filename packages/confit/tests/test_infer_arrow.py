@@ -7,6 +7,10 @@ impossible.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
@@ -127,3 +131,135 @@ def test_sliced_and_recordbatch_inputs():
     assert fn.infer_arrow(sliced).to_pylist() == sliced.to_pylist()
     rb = tbl.to_batches()[0]
     assert fn.infer_arrow(rb).to_pylist() == tbl.to_pylist()
+
+
+# --------------------------------------- TASK-67: unaligned value buffers --
+#
+# Arrow does not promise aligned value buffers. `np.frombuffer(blob,
+# np.float64, offset=4)` — what you get parsing a packed binary record or an
+# mmap with a header — is zero-copied straight through `pa.array()`, and
+# pyarrow computes over it perfectly. Dereferencing a misaligned `*const f64`
+# is UB in Rust: a DEBUG build traps it as a non-unwinding abort that takes
+# the whole interpreter down rather than raising, and release only happens
+# not to fault today.
+#
+# So these run in a subprocess. Observed from inside the session, an abort
+# would kill the test run instead of failing a test; and the whole point is
+# that a per-request input batch must never be able to end a serving process.
+
+_PROBE_PRELUDE = """
+import numpy as np, pyarrow as pa
+from confit import DuckDBInferFn
+from pydantic import create_model
+
+def misaligned(values, dtype):
+    "A pyarrow array whose value buffer is deliberately not naturally aligned."
+    dt = np.dtype(dtype)
+    off = max(1, dt.itemsize // 2)
+    blob = bytearray(dt.itemsize * len(values) + off)
+    view = np.ndarray(len(values), dtype=dt, buffer=blob, offset=off)
+    view[:] = values
+    arr = pa.array(view)
+    addr = arr.buffers()[1].address
+    # a copy anywhere upstream would make the probe vacuous
+    assert addr % dt.itemsize != 0, f"{dtype} buffer came back aligned"
+    return arr
+"""
+
+
+def _probe(body: str) -> str:
+    src = _PROBE_PRELUDE + textwrap.dedent(body)
+    r = subprocess.run(  # noqa: S603 — the source is this file's own literal
+        [sys.executable, "-c", src], capture_output=True, text=True, timeout=180
+    )
+    assert r.returncode == 0, (
+        f"probe exited {r.returncode} — a misaligned buffer must never end the "
+        f"process\nstdout: {r.stdout}\nstderr: {r.stderr[-3000:]}"
+    )
+    return r.stdout.strip()
+
+
+def test_unaligned_input_buffers_on_the_request_path():
+    """`infer_arrow`, per request — the one that a caller controls."""
+    out = _probe(
+        """
+        T = create_model("T", a=(int, ...), f=(float, ...))
+        fn = DuckDBInferFn(
+            "SELECT a + 1 AS b, f * 2 AS d FROM __THIS__",
+            row_tables={"__THIS__": T}, static_tables={}, output="dict",
+        )
+        tbl = pa.table({
+            "a": misaligned([1, 2, 3], np.int64),
+            "f": misaligned([1.5, 2.5, 3.5], np.float64),
+        })
+        got = fn.infer_arrow(tbl).to_pylist()
+        assert got == [{"b": 2, "d": 3.0}, {"b": 3, "d": 5.0}, {"b": 4, "d": 7.0}], got
+        print("ok")
+        """
+    )
+    assert out == "ok"
+
+
+def test_unaligned_string_offset_buffer():
+    """String offsets are read the same way as values, and are the buffer a
+    caller is least likely to have thought about."""
+    out = _probe(
+        """
+        T = create_model("T", s=(str, ...))
+        fn = DuckDBInferFn(
+            "SELECT upper(s) AS u FROM __THIS__",
+            row_tables={"__THIS__": T}, static_tables={}, output="dict",
+        )
+        vals = ["ab", "cde", "f"]
+        offs = np.array([0, 2, 5, 6], dtype=np.int32)
+        data = b"abcdef"
+        blob = bytearray(offs.nbytes + 2)
+        view = np.ndarray(len(offs), dtype=np.int32, buffer=blob, offset=2)
+        view[:] = offs
+        obuf = pa.py_buffer(memoryview(blob)[2:])
+        assert obuf.address % 4 != 0, "offset buffer came back aligned"
+        arr = pa.Array.from_buffers(pa.string(), len(vals),
+                                    [None, obuf, pa.py_buffer(data)])
+        assert arr.to_pylist() == vals, arr.to_pylist()
+        got = fn.infer_arrow(pa.table({"s": arr})).to_pylist()
+        assert got == [{"u": "AB"}, {"u": "CDE"}, {"u": "F"}], got
+        print("ok")
+        """
+    )
+    assert out == "ok"
+
+
+def test_unaligned_model_tables_at_construction():
+    """The other path: the `models=` decode runs once at build, not per
+    request, but it reads the same way."""
+    out = _probe(
+        """
+        nodes = pa.table({
+            "model_id": misaligned([0, 0, 0], np.int64),
+            "tree_id": misaligned([0, 0, 0], np.int64),
+            "node_id": misaligned([0, 1, 2], np.int64),
+            "feature": misaligned([0, -1, -1], np.int32),
+            "threshold": misaligned([0.5, 0.0, 0.0], np.float64),
+            "left": misaligned([1, -1, -1], np.int32),
+            "right": misaligned([2, -1, -1], np.int32),
+            "missing_left": pa.array([True, True, True], pa.bool_()),
+            "value": misaligned([0.0, 10.0, 20.0], np.float64),
+        })
+        headers = pa.table({
+            "model_id": misaligned([0], np.int64),
+            "base": misaligned([0.0], np.float64),
+            "agg": pa.array(["sum"], pa.string()),
+            "link": pa.array(["identity"], pa.string()),
+        })
+        T = create_model("T", id=(int, ...), x=(float, ...))
+        fn = DuckDBInferFn(
+            "SELECT tree_predict('m', id, struct_pack(x := x)) AS p FROM __THIS__",
+            row_tables={"__THIS__": T}, static_tables={}, output="dict",
+            models={"m": {"nodes": nodes, "models": headers, "features": ["x"]}},
+        )
+        got = fn.infer({"__THIS__": [T(id=0, x=0.0), T(id=0, x=1.0)]})
+        assert [r["p"] for r in got] == [10.0, 20.0], got
+        print("ok")
+        """
+    )
+    assert out == "ok"
