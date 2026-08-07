@@ -498,6 +498,123 @@ fn materialize_map(
     Ok(StaticData::Map(entries))
 }
 
+/// One `models=` entry: the two Arrow tables plus the feature names a
+/// `struct_pack` call site is resolved against. The names live here rather
+/// than in the node table because they describe the SET, not a row of it.
+struct ModelSet {
+    nodes: Py<PyAny>,
+    headers: Py<PyAny>,
+    features: Vec<String>,
+}
+
+/// `models={'trees': {'nodes': tbl, 'models': tbl, 'features': [...]}}`.
+fn parse_model_sets(
+    py: Python<'_>,
+    models: HashMap<String, Py<PyAny>>,
+) -> PyResult<HashMap<String, ModelSet>> {
+    models
+        .into_iter()
+        .map(|(name, v)| {
+            let entry = v.bind(py);
+            let get = |k: &str| {
+                entry.get_item(k).map_err(|_| {
+                    build_err(format!(
+                        "model set '{name}': expected a mapping with keys 'nodes', \
+                         'models' and 'features' — no '{k}'"
+                    ))
+                })
+            };
+            let nodes = get("nodes")?.unbind();
+            let headers = get("models")?.unbind();
+            let features: Vec<String> = get("features")?.extract().map_err(|_| {
+                build_err(format!(
+                    "model set '{name}': 'features' must be a list of column names"
+                ))
+            })?;
+            if features.is_empty() {
+                return Err(build_err(format!(
+                    "model set '{name}': 'features' is empty — a model scores at \
+                     least one feature"
+                )));
+            }
+            // Duplicates would make name-keyed call-site resolution ambiguous.
+            let mut sorted = features.clone();
+            sorted.sort();
+            if let Some(w) = sorted.windows(2).find(|w| w[0] == w[1]) {
+                return Err(build_err(format!(
+                    "model set '{name}': duplicate feature name '{}'",
+                    w[0]
+                )));
+            }
+            Ok((
+                name,
+                ModelSet {
+                    nodes,
+                    headers,
+                    features,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Every static the program declares, in program order: one entry per join
+/// (from its `StaticSpec` recipe) followed by one per referenced model set.
+///
+/// Called twice — the cranelift attempt CONSUMES the static data, so the
+/// interpreter fallback rebuilds it. One function so the two paths cannot
+/// drift.
+fn materialize_statics(
+    py: Python<'_>,
+    prepared: &crate::specializer::Prepared,
+    static_tables: &HashMap<String, Py<PyAny>>,
+    model_sets: &HashMap<String, ModelSet>,
+) -> PyResult<Vec<StaticData>> {
+    let n_join = prepared.statics.len();
+    if prepared.program.statics.len() != n_join + prepared.models.len() {
+        return Err(build_err("internal: static count disagrees with the program"));
+    }
+    let mut data = Vec::with_capacity(prepared.program.statics.len());
+    // Program statics and StaticSpecs are both indexed by join id.
+    for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
+        if spec.batch {
+            // Stage-B self-join: built per call by the executor.
+            data.push(StaticData::Map(Vec::new()));
+            continue;
+        }
+        let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) = sty else {
+            return Err(build_err("internal: a join static lowered to a non-map"));
+        };
+        let table = static_tables
+            .get(&spec.table)
+            .expect("spec names come from the catalog");
+        data.push(materialize_map(py, table, spec, keys, values)?);
+    }
+    // Model statics are appended AFTER every join static — that ordering is
+    // what keeps existing probes' `@N` from shifting, and this zip asserts it.
+    for (name, sty) in prepared
+        .models
+        .iter()
+        .zip(&prepared.program.statics[n_join..])
+    {
+        let StaticTy::Model { n_features } = sty else {
+            return Err(build_err(
+                "internal: model statics must follow every join static",
+            ));
+        };
+        let set = model_sets
+            .get(name)
+            .expect("model names come from the catalog");
+        data.push(StaticData::Model(Box::new(arrow::ensemble(
+            set.nodes.bind(py),
+            set.headers.bind(py),
+            *n_features,
+            name,
+        )?)));
+    }
+    Ok(data)
+}
+
 fn model_from_fields(py: Python<'_>, fields: Vec<(String, FieldType)>) -> PyResult<Py<PyAny>> {
     let create_model = PyModule::import(py, "pydantic")?.getattr("create_model")?;
     let ellipsis = PyModule::import(py, "builtins")?.getattr("Ellipsis")?;
@@ -938,7 +1055,8 @@ pub struct DuckDBInferFn {
 #[pymethods]
 impl DuckDBInferFn {
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, output_model=None, output=None, shape=None))]
+    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, output_model=None, output=None, shape=None, models=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         sql: String,
@@ -948,8 +1066,10 @@ impl DuckDBInferFn {
         output_model: Option<Py<PyAny>>,
         output: Option<String>,
         shape: Option<String>,
+        models: Option<HashMap<String, Py<PyAny>>>,
     ) -> PyResult<Self> {
         let udf_decls = parse_udfs(py, udfs.unwrap_or_default())?;
+        let model_sets = parse_model_sets(py, models.unwrap_or_default())?;
         // The row-shape contract (TASK-58): "filter" (default) is today's
         // 0..1 rows out per row in; "map" statically PROVES exactly-one
         // (out[i] <-> in[i]) or refuses at build; "many" is reserved for
@@ -1105,12 +1225,16 @@ impl DuckDBInferFn {
 
         use super::specializer::PrepareError;
         let extern_specs: Vec<ExternSpec> = udf_decls.iter().map(|d| d.spec.clone()).collect();
-        // No model sets cross this boundary yet, so `tree_predict` resolves
-        // to "model set '..' was not provided to prepare" rather than
-        // half-working. The pyarrow decode that fills this is the next
-        // slice; until then `prepared.models` is always empty and the
-        // map-static materialization below stays exactly as it was.
-        let model_catalog: Vec<super::specializer::plan::ModelTable> = Vec::new();
+        // Sorted so a build error names model sets in a stable order —
+        // HashMap iteration order is not.
+        let mut model_catalog: Vec<super::specializer::plan::ModelTable> = model_sets
+            .iter()
+            .map(|(name, set)| super::specializer::plan::ModelTable {
+                name: name.clone(),
+                features: set.features.clone(),
+            })
+            .collect();
+        model_catalog.sort_by(|a, b| a.name.cmp(&b.name));
         let prepared = match prepare_opaque(
             &sql,
             &row_table,
@@ -1168,24 +1292,7 @@ impl DuckDBInferFn {
             }
         }
 
-        // Program statics and StaticSpecs are both indexed by join id.
-        let mut data = Vec::with_capacity(prepared.statics.len());
-        for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
-            if spec.batch {
-                // Stage-B self-join: built per call by the executor.
-                data.push(StaticData::Map(Vec::new()));
-                continue;
-            }
-            let (StaticTy::Map { keys, values } | StaticTy::MultiMap { keys, values }) =
-                sty
-            else {
-                return Err(build_err("internal: v0 lowering emits only map statics"));
-            };
-            let table = static_tables
-                .get(&spec.table)
-                .expect("spec names come from the catalog");
-            data.push(materialize_map(py, table, spec, keys, values)?);
-        }
+        let data = materialize_statics(py, &prepared, &static_tables, &model_sets)?;
 
         // SPECIALIZER_FORCE_INTERP pins the interpreter — the bench control
         // and a debugging escape hatch.
@@ -1202,31 +1309,14 @@ impl DuckDBInferFn {
                     // The failed attempt consumed the static data and the
                     // externs; rebuild both on this cold path and fall back
                     // to the interpreter.
-                    Err(_) => {
-                        let mut data = Vec::with_capacity(prepared.statics.len());
-                        for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
-                            if spec.batch {
-                                // Stage-B self-join: built per call by the executor.
-                                data.push(StaticData::Map(Vec::new()));
-                                continue;
-                            }
-                            let (StaticTy::Map { keys, values }
-                            | StaticTy::MultiMap { keys, values }) = sty
-                            else {
-                                return Err(build_err(
-                                    "internal: v0 lowering emits only map statics",
-                                ));
-                            };
-                            let table = static_tables
-                                .get(&spec.table)
-                                .expect("spec names come from the catalog");
-                            data.push(materialize_map(py, table, spec, keys, values)?);
-                        }
-                        Backend::Interp(
-                            compile_ext(&prepared.program, data, make_externs(py, &udf_decls))
-                                .map_err(|e| build_err(e.to_string()))?,
+                    Err(_) => Backend::Interp(
+                        compile_ext(
+                            &prepared.program,
+                            materialize_statics(py, &prepared, &static_tables, &model_sets)?,
+                            make_externs(py, &udf_decls),
                         )
-                    }
+                        .map_err(|e| build_err(e.to_string()))?,
+                    ),
                 }
             }
         };

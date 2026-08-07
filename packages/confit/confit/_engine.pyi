@@ -1,10 +1,34 @@
-from typing import Any
+from typing import Any, TypedDict
 
 import pyarrow as pa
 from pydantic import BaseModel
 
 BUILD_PROFILE: str
 """"debug" or "release" — benchmarks refuse a debug build."""
+
+class ModelSet(TypedDict):
+    """One fitted tree ensemble, as Arrow. Nothing else crosses — no
+    estimator object, no pickle, no live model reference.
+
+    `nodes` columns: `model_id` | `tree_id` | `node_id` | `feature` (-1 on a
+    leaf) | `threshold` | `left` | `right` | `missing_left` | `value`, grouped
+    by model then tree, node ids dense from 0 per tree, children after their
+    parent.
+
+    `models` columns: `model_id` (dense from 0) | `base` | `agg`
+    ("sum" | "mean") | `link` ("identity" | "sigmoid"). A boosted model seeds
+    the accumulator with `base`; a forest divides the sum by its tree count
+    and then adds it — matching each family's own summation order, which is
+    what makes scoring bit-exact with sklearn.
+
+    `features`: the feature names, in the order the `feature` column indexes
+    them. A `tree_predict(..., struct_pack(...))` call site is resolved
+    against these by NAME, so call-site order is free.
+    """
+
+    nodes: pa.Table
+    models: pa.Table
+    features: list[str]
 
 class DuckDBInferFn:
     """SQL specialized against frozen static tables, served bit-exact with DuckDB.
@@ -26,6 +50,7 @@ class DuckDBInferFn:
         output_model: type[BaseModel] | None = None,
         output: str | None = None,
         shape: str | None = None,
+        models: dict[str, ModelSet] | None = None,
     ) -> None:
         """`udfs`: declared opaque scalar functions the SQL may call
         (DRAFT-22). Each object carries `name: str`, `takes: tuple[str, ...]`
