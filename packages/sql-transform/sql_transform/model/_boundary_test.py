@@ -149,3 +149,45 @@ def test_a_pickled_leaf_still_transforms():
     out = revived.transform(instance, pa.table({"v": [2.0]}))
     assert out.column_names == ["v"]
     assert out["v"][0].as_py() == pytest.approx(0.0)
+
+
+# ------------------------------------------------- the index is a claim (F4b)
+
+
+def test_a_reordering_transform_does_not_relabel_rows():
+    """The regression the index fix introduced, found in review.
+
+    Carrying the caller's index attaches it *positionally*. A query with
+    ORDER BY returns the same rows in a different order, so every label ended
+    up on someone else's value — silently, and worse than the misalignment the
+    carrying was added to fix.
+    """
+    frame = pd.DataFrame({"v": [3.0, 1.0, 2.0]}, index=["a", "b", "c"])
+    t = SQLTransform("SELECT t.v AS out FROM __THIS__ t ORDER BY t.v")
+    out = t.set_output(transform="pandas").fit_transform(frame)
+    assert list(out.index) == [0, 1, 2]  # no claim, rather than a false one
+
+
+def test_a_row_preserving_transform_still_carries_the_index():
+    frame = pd.DataFrame({"v": [3.0, 1.0, 2.0]}, index=["a", "b", "c"])
+    t = SQLTransform("SELECT t.v * 2 AS out FROM __THIS__ t")
+    out = t.set_output(transform="pandas").fit_transform(frame)
+    assert list(out.index) == ["a", "b", "c"]
+    assert out.loc["a", "out"] == 6.0  # a's own value, not someone else's
+
+
+def test_a_label_never_carries_another_rows_value():
+    """The property both cases are instances of: if there is an index at all,
+    it means what it says."""
+    frame = pd.DataFrame({"v": [3.0, 1.0, 2.0]}, index=["a", "b", "c"])
+    for sql in (
+        "SELECT t.v * 2 AS out FROM __THIS__ t",
+        "SELECT t.v AS out FROM __THIS__ t ORDER BY t.v",
+        "SELECT t.v AS out FROM __THIS__ t ORDER BY t.v DESC",
+    ):
+        out = SQLTransform(sql).set_output(transform="pandas").fit_transform(frame)
+        if list(out.index) == list(frame.index):
+            for label in frame.index:
+                assert out.loc[label, "out"] == pytest.approx(
+                    frame.loc[label, "v"] * (2 if "* 2" in sql else 1)
+                )
