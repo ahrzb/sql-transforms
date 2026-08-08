@@ -14,7 +14,7 @@ one built from the diff passes for the same reason the diff does.
 import pyarrow as pa
 import pytest
 
-from sql_transform.model import SQLTransform
+from sql_transform.model import SQLTransform, TransformError
 from sql_transform.model._ast import _parse
 from sql_transform.model._nodes import CteMap, Opaque, is_query, is_ref
 
@@ -90,24 +90,22 @@ def test_a_frozen_cte_stops_reading_fit_for_everything_after_it():
     assert approx(fitted(D), 4) == [(-3.6667,), (-1.6667,), (5.3333,)]
 
 
-def test_a_recursive_cte_reading_fit_ships_the_training_set_and_says_so():
+def test_a_recursive_cte_reading_fit_refuses_rather_than_shipping_it():
     """A recursive CTE cannot be hoisted — its self-reference is bound by the
-    enclosing entry key — so `__FIT__` inside one is repointed at the training
-    set instead. Left unrewritten, `__FIT__` is simply unbound at serve.
+    enclosing entry key — so nothing inside it can become a parameter.
 
-    `__param_fit` with `len(D)` rows is the honest report of what that costs.
-    """
-    t = SQLTransform("""
+    `__FIT__` inside one used to be repointed at the whole training set, which
+    served the right answer and put every row in the artifact to get one
+    number. Refused where it is written instead."""
+    t = """
         WITH RECURSIVE r(n) AS (
             SELECT count(*) AS n FROM __FIT__
             UNION ALL
             SELECT n - 1 FROM r WHERE n > 0)
         SELECT t.price, (SELECT max(n) FROM r) AS k FROM __THIS__ t
-    """)
-    fitted = t.fit(D)
-    assert set(fitted.params) == {"__param_fit"}
-    assert len(fitted.params["__param_fit"]) == len(D)
-    assert approx(fitted(D)) == [(1.0, 3), (3.0, 3), (10.0, 3)]
+    """
+    with pytest.raises(TransformError, match="training set"):
+        SQLTransform(t)
 
 
 # ---------------------------------------------------------------- resolution

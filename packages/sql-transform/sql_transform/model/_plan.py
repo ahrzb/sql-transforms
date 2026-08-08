@@ -11,19 +11,18 @@ Nothing is mutated: each step returns a new subtree, so a node handed to
 turned it into.
 """
 
-from collections.abc import Callable
-
 from sql_transform.model._analysis import _bindings_at, _correlation, _reads
 from sql_transform.model._ast import (
     FIT,
     THIS,
     _deserialize,
     _is_recursive_cte,
+    _one_item,
     _select_star,
     _statement,
-    _template,
 )
-from sql_transform.model._errors import CorrelatedFit
+from sql_transform.model._correlate import decorrelate
+from sql_transform.model._errors import CorrelatedFit, WholeTrainingSet
 from sql_transform.model._nodes import (
     AstNode,
     BaseTable,
@@ -67,26 +66,31 @@ def _pin_derived_names[N](node: N) -> N:
     return node.model_copy(update={"select_list": pinned})
 
 
-def _one_item(item: Node) -> Node:
-    """``SELECT <item>`` as a query node, for asking the oracle what it would
-    call that column."""
-    return _template("SELECT 1").model_copy(update={"select_list": [item]})
+# The one edit that turns a refused retention into an allowed one, and the
+# reason it is worth asking for: a subquery names the rows *and* drops the
+# columns, so the artifact is smaller as well as legible.
+_RETAIN_HINT = (
+    "Wrap the __FIT__ reference in a subquery selecting the rows and columns "
+    "you need — `(SELECT ... FROM __FIT__) f` — so the artifact's size is "
+    "visible in the text"
+)
 
 
-def _rewrite_fit_refs(node: Node, mint: "Callable[[], str]", *, deep: bool) -> Node:
-    """Every bare ``FROM __FIT__`` under ``node``, pointed at ``mint()``.
+def _refuse_whole_fit(node: Node, why: str, *, deep: bool) -> None:
+    """A bare ``FROM __FIT__`` that no rewrite reached.
 
-    ``mint`` is called only when a reference is actually found, and it is
-    idempotent — so a level with nothing to rewrite emits no step, which is
-    what the mutating version got from only calling it inside the loop.
+    It used to become a parameter holding every row and every column of the
+    training set — correct, and reported by ``len(params)``, but the artifact's
+    size was then a fact about freezing rather than about the text. Refused
+    instead. Retention is still available and takes one edit: name the rows you
+    want in a subquery, and the query's value *is* those rows.
     """
-
-    def point(v: AstNode) -> AstNode | None:
+    for v in descendants(node, deep=deep):
         if isinstance(v, BaseTable) and v.table_name == FIT:
-            return v.model_copy(update={"table_name": mint()})
-        return None
-
-    return rebuild(node, point, deep=deep)
+            raise WholeTrainingSet(
+                f"{why} would put the whole training set in the artifact. "
+                + _RETAIN_HINT
+            )
 
 
 def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
@@ -103,7 +107,6 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
     """
     steps: list[tuple[str, Node]] = []
     taken: set[str] = set()
-    whole: str | None = None
 
     def name(hint: str | None) -> str:
         base = f"__param_{hint}" if hint else f"__param_{len(steps)}"
@@ -113,30 +116,16 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
         taken.add(candidate)
         return candidate
 
-    def whole_fit() -> str:
-        # A bare `FROM __FIT__` inside a relation that also reads `__THIS__`.
-        # The training set itself is the parameter; `len(params)` says so.
-        #
-        # `whole` rather than a membership test on `taken`: hints come from CTE
-        # keys, so a CTE named `fit` mints `__param_fit` too. Asking whether
-        # the *name* was taken conflated "someone else has it" with "my step is
-        # already emitted", and the bare `FROM __FIT__` was then aliased onto
-        # that CTE's table — silently, and only when a CTE happened to be
-        # called `fit`. Emitted-ness is its own fact; the name comes from the
-        # same collision-avoiding allocator as every other one.
-        nonlocal whole
-        if whole is None:
-            whole = name("fit")
-            steps.append((whole, _select_star(FIT)))
-        return whole
-
-    def freeze(sub: Node, ctes: list[CteEntry], hint: str | None) -> Node:
+    def freeze_into(sub: Node, ctes: list[CteEntry], hint: str | None = None) -> str:
         # Carry the enclosing CTEs in: a frozen subtree may reference one, and
         # by now their own definitions have been rewritten to frozen tables.
         frozen = with_cte_entries(sub, list(ctes) + list(cte_entries(sub)))
         param = name(hint)
         steps.append((param, frozen))
-        return _select_star(param)
+        return param
+
+    def freeze(sub: Node, ctes: list[CteEntry], hint: str | None) -> Node:
+        return _select_star(freeze_into(sub, ctes, hint))
 
     def visit(
         sub: Node,
@@ -157,24 +146,23 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
         # self-reference is visible to every arm but bound by none of them, so
         # hoisting any part of it out leaves that name dangling.
         if _is_recursive_cte(sub):
-            return _rewrite_fit_refs(sub, whole_fit, deep=True)
+            _refuse_whole_fit(sub, "a recursive CTE reading __FIT__", deep=True)
+            return sub
         if FIT in reads and THIS not in reads:
             match _correlation(sub, outer):
                 case None:
                     return freeze(sub, ctes, hint)  # maximal: never refreezes
-                case (reference, True):
+                case (reference, _):
+                    # `decorrelate` has already had its turn on the shapes it
+                    # claims — this is what it left. Which side the correlation
+                    # reaches no longer separates two outcomes: reaching a
+                    # `__FIT__`-only relation used to fall through and ship the
+                    # training set, and that is not an outcome any more.
                     raise CorrelatedFit(
                         f"{FIT} subquery references {reference} from the "
                         "outer query, so it cannot be evaluated once into "
                         "a table"
                     )
-                case _:
-                    # Correlated into a `__FIT__`-only relation instead:
-                    # still per-outer-row, so still unfreezable, but
-                    # nothing is wrong. Fall through and the training set
-                    # itself becomes the parameter; `len(params)` reports
-                    # the cost. Marginalization makes it one row per group.
-                    pass
         return descend(sub, ctes, outer, reading)
 
     def descend(
@@ -207,11 +195,20 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
         node = with_cte_entries(node, rewritten)
         outer = outer | _bindings_at(node, reading)
 
+        # Before `visit` descends, not after: what this claims is exactly what
+        # `visit` would otherwise refuse. `_pin_derived_names` has run, so a
+        # rewritten select item still carries the output column name it had.
+        def lifted(v: AstNode) -> AstNode | None:
+            return decorrelate(v, outer, reading, lambda sub: freeze_into(sub, ctes))
+
+        node = rebuild(node, lifted, deep=False)
+
         def nested(v: AstNode) -> AstNode | None:
             return visit(v, ctes, outer, None, reading) if is_query(v) else None
 
         node = rebuild(node, nested, deep=False)
-        return _rewrite_fit_refs(node, whole_fit, deep=False)
+        _refuse_whole_fit(node, f"a bare `FROM {FIT}` beside {THIS}", deep=False)
+        return node
 
     residual = visit(doc.statements[0].node, [], {}, None, {})
     return steps, residual

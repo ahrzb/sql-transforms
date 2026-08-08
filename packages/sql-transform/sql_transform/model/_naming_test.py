@@ -10,6 +10,12 @@ breaking *freezing is faithful*:
 * a CTE named ``__FIT__`` shadowed the parameter for DuckDB but not for us,
   so the rewrite pointed it at the training set and the row count changed.
 
+``whole_fit()`` is gone — a bare ``FROM __FIT__`` beside ``__THIS__`` refuses
+rather than shipping the training set — so the first bug's *mechanism* cannot
+recur. The property it was an instance of still can: several producers mint
+names from one pool, and correlation lifting added two more per subquery. The
+shapes below keep that pressure on.
+
 ``run`` is the reference throughout: it binds both parameters to the same
 relation with no freezing at all, so any disagreement is the plan's fault.
 """
@@ -30,32 +36,37 @@ def test_a_cte_named_fit_does_not_capture_the_training_sets_parameter():
 
     ``WITH fit AS (...)`` is an unremarkable name in a library whose two
     parameters are ``__FIT__`` and ``__THIS__``. Before the fix the frozen
-    CTE's table was served in place of the training set: same shape, same
+    CTE's table was served in place of the other step's: same shape, same
     column names, hundred-fold different numbers, no error.
     """
     t = SQLTransform(
         "WITH fit AS (SELECT price * 100 AS price FROM __FIT__) "
-        "SELECT t.price AS live, f.price AS trained FROM __THIS__ t, __FIT__ f"
+        "SELECT t.price AS live, (SELECT sum(price) FROM fit) AS trained, "
+        "(SELECT avg(f.price) FROM __FIT__ f WHERE f.price = t.price) AS m "
+        "FROM __THIS__ t"
     )
     assert t.fit(D).transform(D).to_pydict() == run(t, D).to_pydict()
 
 
-def test_the_training_set_step_is_emitted_even_when_its_name_is_taken():
+def test_every_producer_draws_from_one_pool_under_distinct_names():
     """The mechanism, pinned separately from the symptom.
 
     ``whole_fit()`` guarded with ``if "__param_fit" not in taken`` — one name
-    pool, two producers, and only ``freeze`` treated a hit as a collision.
-    A name being taken must never be read as *my step is already there*.
+    pool, two producers, and only ``freeze`` treated a hit as a collision. A
+    name being taken must never be read as *my step is already there*. Three
+    producers now: the CTE freeze, and the keyed table and empty-input probe
+    that correlation lifting emits.
     """
     t = SQLTransform(
         "WITH fit AS (SELECT price * 100 AS price FROM __FIT__) "
-        "SELECT t.price AS live, f.price AS trained FROM __THIS__ t, __FIT__ f"
+        "SELECT t.price AS live, (SELECT sum(price) FROM fit) AS trained, "
+        "(SELECT avg(f.price) FROM __FIT__ f WHERE f.price = t.price) AS m "
+        "FROM __THIS__ t"
     )
-    params = t.fit(D).params
-    assert len(t._steps) == 2  # the CTE's, and the training set's own
-    assert len({name for name, _ in t._steps}) == 2  # under distinct names
-    whole = [p for p in params.values() if p.column_names == ["price"]]
-    assert any(p.to_pydict() == {"price": [1.0, 2.0]} for p in whole)
+    names = [name for name, _ in t._steps]
+    assert len(names) == 3
+    assert len(set(names)) == 3
+    assert len(t.fit(D).params) == 3
 
 
 @pytest.mark.parametrize("cte", ["fit", "0", "fit_1", "THIS"])
@@ -67,9 +78,10 @@ def test_a_cte_may_be_named_anything_without_changing_the_answer(cte):
     """
     t = SQLTransform(
         f'WITH "{cte}" AS (SELECT price * 100 AS price FROM __FIT__) '
-        "SELECT t.price AS live, f.price AS trained, "
-        f'(SELECT sum(price) FROM "{cte}") AS s '
-        "FROM __THIS__ t, __FIT__ f"
+        "SELECT t.price AS live, "
+        f'(SELECT sum(price) FROM "{cte}") AS s, '
+        "(SELECT avg(f.price) FROM __FIT__ f WHERE f.price = t.price) AS m "
+        "FROM __THIS__ t"
     )
     assert t.fit(D).transform(D).to_pydict() == run(t, D).to_pydict()
 
@@ -79,8 +91,9 @@ def test_generated_names_stay_distinct_across_many_colliding_ctes():
         "WITH fit AS (SELECT price FROM __FIT__), "
         '     "0" AS (SELECT price FROM fit), '
         '     "1" AS (SELECT price FROM "0") '
-        'SELECT t.price AS live, f.price AS trained, (SELECT sum(price) FROM "1") AS s '
-        "FROM __THIS__ t, __FIT__ f"
+        'SELECT t.price AS live, (SELECT sum(price) FROM "1") AS s, '
+        "(SELECT avg(f.price) FROM __FIT__ f WHERE f.price = t.price) AS m "
+        "FROM __THIS__ t"
     )
     names = [name for name, _ in t._steps]
     assert len(names) == len(set(names))

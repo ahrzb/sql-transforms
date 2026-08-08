@@ -21,6 +21,7 @@ from sql_transform.model._errors import (
     NotFitted,
     TransformError,
     UnknownName,
+    WholeTrainingSet,
 )
 from sql_transform.model._foreign import Transform
 from sql_transform.model._transform import MAX_DEPTH, Fitted, SQLTransform, run
@@ -35,6 +36,7 @@ __all__ = [
     "Transform",
     "TransformError",
     "UnknownName",
+    "WholeTrainingSet",
     "normalize",
     "run",
 ]

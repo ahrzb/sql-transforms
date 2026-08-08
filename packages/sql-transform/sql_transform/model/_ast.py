@@ -101,6 +101,59 @@ def _template(sql: str) -> Node:
     return _parse(sql).statements[0].node
 
 
+def _one_item(item: Node) -> Node:
+    """``SELECT <item>`` as a query node, for asking the oracle what it would
+    call that column — or what it would print for that expression."""
+    return _template("SELECT 1").model_copy(update={"select_list": [item]})
+
+
+def _unaliased[N](item: N) -> N:
+    """``item`` with its alias removed, whether it is typed or carried.
+
+    Printing an expression to splice it somewhere else has to drop the alias:
+    ``avg(f.price) AS m`` reads back as an alias where the caller wants a bare
+    expression, and ``(avg(f.price) AS m) AS __value`` does not parse at all.
+    """
+    if isinstance(item, Opaque):
+        if not item.fields.get("alias"):
+            return item
+        return item.model_copy(update={"fields": item.fields | {"alias": ""}})
+    return item.model_copy(update={"alias": ""}) if getattr(item, "alias", "") else item
+
+
+def _aliased[N](item: N, alias: str) -> N:
+    """``item`` wearing ``alias``. The write half of `_unaliased`."""
+    if isinstance(item, Opaque):
+        return item.model_copy(update={"fields": item.fields | {"alias": alias}})
+    return item.model_copy(update={"alias": alias})
+
+
+def _print_expr(item: Node) -> str:
+    """An expression as the oracle prints it, alias and all removed.
+
+    The only way to move a fragment of one statement into another: DuckDB is
+    the printer as well as the parser (P9), so a fragment it printed is one it
+    will parse back to the same tree.
+    """
+    return _deserialize(_statement(_one_item(_unaliased(item))))[len("SELECT ") :]
+
+
+_AGGREGATE_FUNCTIONS = (
+    "SELECT DISTINCT function_name FROM duckdb_functions()"
+    " WHERE function_type = 'aggregate'"
+)
+
+
+def _aggregates() -> frozenset[str]:
+    """Every aggregate the oracle knows, folded.
+
+    The default connection is enough, unlike `_functions`: DuckDB's Python API
+    has no aggregate UDF and a macro cannot be one, so no user connection can
+    hold an aggregate this misses.
+    """
+    return _default_functions(_AGGREGATE_FUNCTIONS)
+
+
 def _select_star(name: str) -> Node:
     """A query node reading nothing but ``name``."""
     node = _template("SELECT * FROM __tpl__")

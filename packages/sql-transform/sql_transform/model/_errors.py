@@ -10,12 +10,26 @@ class TransformError(Exception):
 
 
 class CorrelatedFit(TransformError):
-    """A ``__FIT__`` subtree correlates out of itself.
+    """A ``__FIT__`` subtree correlates out of itself, and no rewrite reaches it.
 
-    It is per-outer-row, so it cannot be evaluated once into a table.
-    Supporting it means lifting the correlation to a ``GROUP BY`` and
-    rewriting it as a join — which is marginalization. Future work, not a
-    permanent boundary.
+    The equality case is lifted to a ``GROUP BY`` and served as a keyed table
+    (`_correlate`). What is left raises this, and ``reason`` says which of the
+    named shapes it is — the set of reasons is the refusal list, kept short on
+    purpose and written down in ``docs/decorrelation-unsupported.md``.
+    """
+
+    def __init__(self, message: str, reason: str = "correlated") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class WholeTrainingSet(TransformError):
+    """Honouring this text would put every row of ``__FIT__`` in the artifact.
+
+    Not a correlation problem: there is simply no smaller table that answers
+    it. Retention is allowed — but only where the author wrote a query whose
+    value *is* those rows, so the artifact's size is visible in the text
+    instead of being an implementation detail of freezing.
     """
 
 

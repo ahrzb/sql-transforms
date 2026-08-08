@@ -195,23 +195,35 @@ def test_params_are_measurable():
     well_behaved = SQLTransform(Z_SQL).fit(D)
     assert sum(len(p) for p in well_behaved.params.values()) == 1
 
-    retains = SQLTransform("SELECT t.price - f.price AS d FROM __THIS__ t, __FIT__ f")
+    # Retaining is allowed where the author wrote a query whose value *is*
+    # those rows. `FROM __THIS__ t, __FIT__ f` is refused instead: same
+    # artifact, but its size would be a fact about freezing rather than about
+    # the text.
+    retains = SQLTransform(
+        "SELECT t.price - f.price AS d FROM __THIS__ t, (SELECT price FROM __FIT__) f"
+    )
     fitted = retains.fit(D)
-    assert set(fitted.params) == {"__param_fit"}
-    assert len(fitted.params["__param_fit"]) == len(D)
+    assert sum(len(p) for p in fitted.params.values()) == len(D)
 
 
 # ------------------------------------------------------------------- refusals
 
 
 def test_this_correlated_fit_refuses_at_construction():
-    """P7: refused at construction, naming the column. Not at fit, not at serve."""
+    """P7: refused at construction, naming what it cannot do. Not at fit, not
+    at serve.
+
+    The equality case is lifted into a keyed table now (`_correlate_test.py`);
+    what is left refuses. Here the correlation is an inequality, so no
+    ``GROUP BY`` reproduces its equivalence classes.
+    """
     sql = (
-        "SELECT (SELECT avg(price) FROM __FIT__ f WHERE f.cat = t.cat) AS m "
+        "SELECT (SELECT avg(price) FROM __FIT__ f WHERE f.price <= t.price) AS m "
         "FROM __THIS__ t"
     )
-    with pytest.raises(CorrelatedFit, match=r"t\.cat"):
+    with pytest.raises(CorrelatedFit, match="equalit") as caught:
         SQLTransform(sql)
+    assert caught.value.reason == "not-an-equality"
 
 
 def test_internal_correlation_is_allowed():

@@ -12,7 +12,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 
-from sql_transform.model import CorrelatedFit, SQLTransform, TransformError, run
+from sql_transform.model import SQLTransform, TransformError, run
 
 D = pa.table({"grp": ["a", "a", "b"], "price": [1.0, 3.0, 100.0]})
 T = pa.table({"grp": ["a", "b"], "price": [7.0, 9.0]})
@@ -27,7 +27,8 @@ def test_a_subtree_reading_this_through_a_cte_is_not_frozen():
     ``__THIS__`` is not bound when parameters are computed."""
     t = SQLTransform(
         "WITH w AS (SELECT * FROM __THIS__) "
-        "SELECT t.grp, (SELECT count(*) FROM w, __FIT__) AS c FROM __THIS__ t"
+        "SELECT t.grp, (SELECT count(*) FROM w, (SELECT price FROM __FIT__) f) AS c "
+        "FROM __THIS__ t"
     )
     assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
 
@@ -46,7 +47,8 @@ def test_a_cte_reading_only_fit_still_freezes():
 def test_a_chain_of_ctes_propagates_what_it_reads():
     t = SQLTransform(
         "WITH a AS (SELECT * FROM __THIS__), b AS (SELECT * FROM a) "
-        "SELECT t.grp, (SELECT count(*) FROM b, __FIT__) AS c FROM __THIS__ t"
+        "SELECT t.grp, (SELECT count(*) FROM b, (SELECT price FROM __FIT__) f) AS c "
+        "FROM __THIS__ t"
     )
     assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
 
@@ -86,13 +88,20 @@ def test_an_unqualified_name_that_binds_inward_is_left_alone():
     assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
 
 
-def test_the_qualified_form_still_refuses_at_construction():
-    """The case we *can* see without data keeps its construction-time refusal."""
-    with pytest.raises(CorrelatedFit):
-        SQLTransform(
-            "SELECT (SELECT avg(price) FROM __FIT__ f WHERE f.grp = t.grp) AS m "
-            "FROM __THIS__ t"
-        )
+def test_the_qualified_form_is_lifted_because_we_can_see_it():
+    """The other half of the pair. Being able to see the correlation without
+    the data is what lets it become a keyed table rather than a refusal — the
+    unqualified sibling above cannot be read either way until fit."""
+    t = SQLTransform(
+        "SELECT t.grp, (SELECT avg(price) FROM __FIT__ f WHERE f.grp = t.grp) AS m "
+        "FROM __THIS__ t"
+    )
+    fitted = t.fit(D)
+    assert "__FIT__" not in fitted.sql
+    assert fitted.transform(T).to_pylist() == [
+        {"grp": "a", "m": 2.0},
+        {"grp": "b", "m": 100.0},
+    ]
 
 
 def test_an_ordinary_unqualified_column_is_untouched():
@@ -108,17 +117,21 @@ def test_an_ordinary_unqualified_column_is_untouched():
 # ------------------------------------------------- a recursive CTE (F13)
 
 
-def test_a_recursive_cte_reading_fit_agrees_with_run():
-    """``freeze`` hoisted the body into a standalone statement, but a
-    recursive CTE's self-reference is bound by the enclosing entry key, not by
-    anything inside the body."""
-    t = SQLTransform(
-        "WITH RECURSIVE c(i) AS ("
-        "  SELECT 1 UNION ALL"
-        "  SELECT i+1 FROM c WHERE i < (SELECT count(*) FROM __FIT__)"
-        ") SELECT t.grp, (SELECT count(*) FROM c) AS n FROM __THIS__ t"
-    )
-    assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
+def test_a_recursive_cte_reading_fit_refuses_by_name():
+    """``freeze`` hoisted the body into a standalone statement, but a recursive
+    CTE's self-reference is bound by the enclosing entry key, not by anything
+    inside the body — so nothing inside it can be lifted out.
+
+    It used to be left live with the training set as the parameter. Refused
+    now: ``(SELECT count(*) FROM __FIT__)`` needs one number and was shipping
+    every row to get it."""
+    with pytest.raises(TransformError, match="training set"):
+        SQLTransform(
+            "WITH RECURSIVE c(i) AS ("
+            "  SELECT 1 UNION ALL"
+            "  SELECT i+1 FROM c WHERE i < (SELECT count(*) FROM __FIT__)"
+            ") SELECT t.grp, (SELECT count(*) FROM c) AS n FROM __THIS__ t"
+        )
 
 
 def test_a_plain_cte_named_like_its_own_body_still_freezes():
@@ -170,10 +183,13 @@ def test_nothing_run_accepts_dies_at_fit_with_someone_elses_error(sql):
     A construct either serves or refuses *by our name*. A raw
     ``CatalogException`` or ``BinderException`` escaping from ``fit``, on a
     query ``run`` executes happily, is the model failing to know its own mind.
+
+    Construction is inside the ``try`` because refusing there is the *better*
+    outcome (P7), and two of these now do: a bare ``FROM __FIT__`` beside
+    ``__THIS__`` would put the training set in the artifact.
     """
-    t = SQLTransform(sql)
-    expected = run(t, D).to_pylist()
     try:
-        assert t.fit(D).transform(D).to_pylist() == expected
+        t = SQLTransform(sql)
+        assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
     except TransformError as refusal:
         assert not isinstance(refusal, duckdb.Error)

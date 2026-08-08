@@ -185,6 +185,7 @@ def test_a_subtree_reading_this_through_a_cte_in_another_case_is_not_frozen(used
     not bound."""
     t = SQLTransform(
         "WITH Live AS (SELECT * FROM __THIS__) "
-        f"SELECT t.v, (SELECT count(*) FROM {used}, __FIT__) AS c FROM __THIS__ t"
+        f"SELECT t.v, (SELECT count(*) FROM {used}, (SELECT v FROM __FIT__) f) AS c "
+        "FROM __THIS__ t"
     )
     assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
