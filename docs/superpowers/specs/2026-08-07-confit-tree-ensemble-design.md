@@ -439,7 +439,9 @@ Every one of these names the offending row or field, before any data flows:
 - a child index out of range, or one that does not strictly follow its parent
   — that ordering is what makes traversal provably terminate, and it rules
   out cycles by construction;
-- a node unreachable from its tree's root;
+- a non-root node with anything other than exactly one parent: none (it is
+  unreachable from its tree's root) or two (a shared child — a decision DAG,
+  not a tree);
 - a leaf (`feature = -1`) with children, or an internal node without both;
 - `feature >= n_features`;
 - unknown `agg` or `link` spelling;
@@ -449,15 +451,25 @@ Every one of these names the offending row or field, before any data flows:
 - a model id in a *static* map's value column that names no model — the
   static case is fully known at build, so it refuses instead of trapping.
 
-A node with **two parents is accepted**, and that is deliberate. An earlier
-draft of this list called it "a cycle", which it is not: with children forced
-to strictly follow their parent, a shared child is a decision DAG, traversal
-from the root still takes exactly one path, still terminates, and still yields
-the value the table names. There is no wrong number to prevent, no library we
-target emits one, and checking it would cost a parent-count pass at build.
-Every other refusal above is exercised by construction in
-`test_known_divergences.py` (TASK-76 — adjudicated 2026-08-08; the finding was
-against the SPEC, not the code).
+The exactly-one-parent rule is worth stating precisely, because an earlier
+draft of this list got it wrong in both directions (TASK-76, adjudicated
+2026-08-08).
+
+It called a shared child "a cycle". It is not one — with children forced to
+strictly follow their parent, cycles are impossible by construction, and a
+shared child is a decision DAG that traverses in exactly one path, terminates,
+and yields the value the table names. It was never a wrong-answer bug.
+
+It is refused anyway, because *"every non-root node has exactly one parent"* is
+a **complete** characterisation of tree-ness here: one parent each makes the
+parent function total, and the forward ordering makes walking parents strictly
+decrease, so every node has a unique path back to node 0. The validator kept a
+saturating parent count already and rejected only the zero end. Rejecting zero
+while allowing two was an arbitrary place to stop, and the other end is the
+same array — so the full check costs one line and no extra pass.
+
+Every refusal above is exercised by construction in
+`test_known_divergences.py`, not assumed.
 
 ## Pinned runtime semantics
 
