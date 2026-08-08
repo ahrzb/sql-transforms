@@ -80,6 +80,14 @@ printed by DuckDB itself (`json_serialize_sql`/`json_deserialize_sql`);
 interpreted node shapes are validated by pydantic views (drift fails as
 one named error), carried nodes pass through opaquely, and synthetic nodes
 are cloned from oracle-serialized templates.
+*Corollary — an identifier means what the oracle binds.* DuckDB folds every
+identifier, quoted ones too (unlike Postgres), so wherever the walk compares
+one name to another it folds: CTE keys, the supplied connection's catalog,
+and a correlated reference's qualifier. It also binds *less* than it lists —
+internal views and ATTACHed databases are not on the search path, so they are
+not names the catalog may claim. The boundary is the caller's frame: Python's
+namespace is case-sensitive and is looked up, not bound, so `codes` and
+`Codes` stay two variables (TASK-76).
 
 ## Fit
 

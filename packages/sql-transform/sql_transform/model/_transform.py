@@ -240,7 +240,7 @@ def _resolve(
             if _is_ref(v):
                 if alias := v.get("alias"):
                     _reserve(alias, "an alias named")
-                if (named := v.get("table_name")) and named not in ctes:
+                if (named := v.get("table_name")) and named.lower() not in ctes:
                     _reserve(named, "a relation named")
         for parent, key, v in list(_under(node, deep=False)):
             match v:
@@ -250,11 +250,15 @@ def _resolve(
                     ref = _splice(v, scope, captured)
                     depth = max(depth, ref.pop("_depth"))
                     parent[key] = ref
+                # Folded against `ctes` and `catalog` because DuckDB binds
+                # those; *not* against `captured` and `scope`, which are
+                # Python's own namespace, where `codes` and `Codes` are two
+                # different variables and folding would merge them.
                 case {"type": "BASE_TABLE", "table_name": name} if (
                     name not in (FIT, THIS)
                     and name.lower() not in ctes
                     and name not in captured
-                    and name not in catalog
+                    and name.lower() not in catalog
                 ):
                     match scope.get(name):
                         case None:
