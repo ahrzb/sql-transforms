@@ -1,10 +1,10 @@
 ---
 id: TASK-42
 title: 'Specializer M-interp: closure-compiled IR interpreter (the oracle backend)'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-25 02:31'
-updated_date: '2026-07-25 19:18'
+updated_date: '2026-08-08 03:38'
 labels: []
 milestone: m-7
 dependencies:
