@@ -134,30 +134,60 @@ def test_ordinary_query_still_builds():
 
 # ------------------------------------------------- CAST rounding mode --
 #
-# `lower::cast` emits `Inst::Ftoi { mode: RoundMode::Round }` under the comment
-# "ftoi.round matches DuckDB CAST rounding". It does not. Both backends
-# implement RoundMode::Round as Rust `f64::round()` — half AWAY from zero —
+# `lower::cast` emitted `Inst::Ftoi { mode: RoundMode::Round }` under the
+# comment "ftoi.round matches DuckDB CAST rounding". It did not. Both backends
+# implemented RoundMode::Round as Rust `f64::round()` — half AWAY from zero —
 # while DuckDB's DOUBLE->BIGINT cast is half-to-EVEN.
 #
-# The confusion is real and worth stating: the SQL `round()` FUNCTION *is*
-# half-away-from-zero and is correctly pinned that way in the wave-1 builtin
-# pins. The CAST is a different operation and needs its own mode. Cranelift's
-# `nearest` instruction is already half-to-even.
+# FIXED 2026-08-08 (TASK-70). The mode is now `RoundMode::Nearest`
+# (`ftoi.nearest` in the IR text), half-to-even on both backends. Only CAST
+# and TRY_CAST ever emitted it, so no other op moved.
 #
-# Relayed from the sweep, not reproduced by hand. TASK-70.
+# TWO SEPARATE ROUNDINGS LIVE HERE AND THEY ARE EASY TO CONFUSE:
+#
+#   CAST(DOUBLE AS BIGINT)   half to even        -2.5 -> -2
+#   CAST(DECIMAL AS BIGINT)  half away from zero -2.5 -> -3
+#   round(DOUBLE)            half away from zero -2.5 -> -3.0
+#
+# Two pre-existing Rust pins asserted half-away-from-zero for the DOUBLE cast
+# and had to be corrected. Both were written from a DuckDB query on a bare
+# `-2.5` literal — which DuckDB types DECIMAL(2,1), not DOUBLE. Measure a
+# DOUBLE cast with a DOUBLE column or an explicit `::DOUBLE`, never a literal.
+# (Decimal literals binding as f64 is a separate, deliberate v0 divergence;
+# see docs/known-limitations.md.)
 
 CastRow = create_model("CastRow", f=(float, ...))
-_CAST_F = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5]
+_CAST_F = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 2.6, -2.6, 1e19]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-70: CAST(DOUBLE AS BIGINT) rounds half away from zero; "
-    "DuckDB rounds half to even. Every exactly-representable half-integer "
-    "differs by 1.",
-)
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
 def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch):
+    """Every exactly-representable half-integer used to differ by 1. `1e19` is
+    on the end to keep the range-guarded TRY_CAST path (a second `Ftoi` site)
+    in the same comparison — it overflows BIGINT and must become NULL."""
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    sql = "SELECT TRY_CAST(f AS BIGINT) AS i, round(f) AS r FROM __THIS__"
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": CastRow}, static_tables={}, output="dict"
+    )
+    assert fn.backend == backend
+    got = [
+        (r["i"], r["r"])
+        for r in fn.infer({"__THIS__": [CastRow(f=v) for v in _CAST_F]})
+    ]
+    want = duck(sql, "CREATE TABLE __THIS__ (f DOUBLE)", [(v,) for v in _CAST_F])
+    assert got == want
+    # And the contrast, stated rather than implied: the two columns disagree
+    # on every tie, so this test fails if the cast ever adopts round()'s mode.
+    assert [(i, r) for i, r in got if i is not None and float(i) != r] != []
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
+    """The non-TRY path shares the rounding but keeps its own range trap."""
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
@@ -167,12 +197,15 @@ def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch):
         sql, row_tables={"__THIS__": CastRow}, static_tables={}, output="dict"
     )
     assert fn.backend == backend
-    got = [r["i"] for r in fn.infer({"__THIS__": [CastRow(f=v) for v in _CAST_F]})]
+    fine = [v for v in _CAST_F if v != 1e19]
+    got = [r["i"] for r in fn.infer({"__THIS__": [CastRow(f=v) for v in fine]})]
     want = [
         r[0]
-        for r in duck(sql, "CREATE TABLE __THIS__ (f DOUBLE)", [(v,) for v in _CAST_F])
+        for r in duck(sql, "CREATE TABLE __THIS__ (f DOUBLE)", [(v,) for v in fine])
     ]
     assert got == want
+    with pytest.raises(ValueError, match="range"):
+        fn.infer({"__THIS__": [CastRow(f=1e19)]})
 
 
 # ------------------------------------------------- the infer_arrow path --
@@ -296,65 +329,195 @@ def test_split_in_the_on_residual_builds_and_is_correct(join, residual):
     assert p.stdout.strip().splitlines()[-1] == f"BUILT {want}", p.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-74: scan_residual clears `total` for any SKind::Case without "
-    "looking at the arms, so a CASE whose every arm is an integer literal is "
-    "refused as a 'single-side residual with trapping ops' — naming a trapping "
-    "op the expression does not contain. COALESCE and NULLIF desugar to CASE, "
-    "so they are refused the same way.",
+# FIXED 2026-08-08 (TASK-74). `scan_residual` no longer decides
+# trap-freeness at all: that question moved to `plan::may_trap`, one
+# definition shared with Kleene lowering (TASK-75) so the two cannot drift.
+# A CASE is trap-free exactly when all of its arms are.
+
+_ONESIDED = pa.table(
+    {"id": pa.array([0, 1], pa.int64()), "cat": pa.array([1, 2], pa.int64())}
 )
-def test_trap_free_case_in_a_one_sided_on_residual_builds():
+_ONESIDED_DDL = "CREATE TABLE r (id BIGINT, cat BIGINT)"
+_ONESIDED_ROWS = [(0, 1), (1, 2)]
+
+
+def _one_sided(residual: str, rows: list[tuple[int, int]]) -> list[tuple]:
+    """Run `JOIN r ON t.k = r.id AND <residual>` and check it against DuckDB.
+
+    `residual` mentions only the dynamic side, which is the case the wave-4
+    rule guards: DuckDB scan-pushes a single-side residual, so trap TIMING
+    would differ from our hit-guarded lowering if it could trap at all.
+    """
     Row = create_model("Row", k=(int, ...), n=(int, ...))
-    r = pa.table(
-        {"id": pa.array([0, 1], pa.int64()), "cat": pa.array([1, 2], pa.int64())}
-    )
-    sql = (
-        "SELECT n, r.cat AS c FROM __THIS__ AS t JOIN r "
-        "ON t.k = r.id AND (CASE WHEN n > 1 THEN 1 ELSE 0 END) = 1"
-    )
+    sql = f"SELECT n, r.cat AS c FROM __THIS__ AS t JOIN r ON t.k = r.id AND {residual}"
     fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": Row}, static_tables={"r": r}, output="dict"
+        sql, row_tables={"__THIS__": Row}, static_tables={"r": _ONESIDED}, output="dict"
     )
-    got = [tuple(x.values()) for x in fn.infer({"__THIS__": [Row(k=0, n=5)]})]
-    assert got == [(5, 1)]
+    got = [
+        tuple(x.values())
+        for x in fn.infer({"__THIS__": [Row(k=k, n=n) for k, n in rows]})
+    ]
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, n BIGINT)")
+    for k, n in rows:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [k, n])
+    con.execute(_ONESIDED_DDL)
+    for r in _ONESIDED_ROWS:
+        con.execute("INSERT INTO r VALUES (?, ?)", list(r))
+    assert got == con.execute(sql).fetchall()
+    return got
+
+
+@pytest.mark.parametrize(
+    "residual",
+    [
+        # every arm an integer literal — nothing here can trap
+        "(CASE WHEN n > 1 THEN 1 ELSE 0 END) = 1",
+        # no ELSE: the implicit NULL default is not a trap either
+        "(CASE WHEN n > 1 THEN 1 END) = 1",
+        # COALESCE and NULLIF desugar to CASE and were refused the same way
+        "COALESCE(n, 0) > 1",
+        "NULLIF(n, 7) > 1",
+        # nested, and with a comparison in the arm rather than the condition
+        "(CASE WHEN n > 1 THEN (CASE WHEN n > 3 THEN 1 ELSE 0 END) ELSE 0 END) = 1",
+    ],
+)
+def test_trap_free_case_in_a_one_sided_on_residual_builds(residual):
+    _one_sided(residual, [(0, 5), (1, 0), (0, 1)])
+
+
+@pytest.mark.parametrize(
+    "residual",
+    [
+        # an arm that really can overflow
+        "(CASE WHEN n > 1 THEN 9223372036854775807 + n ELSE 0 END) = 1",
+        # ... and one in the CONDITION rather than the result
+        "(CASE WHEN 9223372036854775807 + n > 1 THEN 1 ELSE 0 END) = 1",
+        # ... and in the ELSE
+        "(CASE WHEN n > 1 THEN 0 ELSE 9223372036854775807 + n END) = 1",
+        # bare arithmetic, the case that always was refused
+        "9223372036854775807 + n > 1",
+    ],
+)
+def test_a_genuinely_trapping_one_sided_on_residual_is_still_refused(residual):
+    """The guard exists for a real reason. Widening it to trap-free CASEs must
+    not widen it to CASEs that trap."""
+    with pytest.raises(ValueError, match="single-side residual with trapping ops"):
+        _one_sided(residual, [(0, 5)])
 
 
 # ------------------------------------------- WHERE does not short-circuit --
 #
-# `fn kleene` is "branchless Kleene AND/OR from flag algebra" and emits BOTH
-# operands unconditionally. `fn case`, immediately below it, DOES branch —
-# which is why the same trapping call inside a never-taken CASE arm is
-# correctly skipped. So a guard that excludes every row still evaluates the
-# thing it was written to guard, and its trap kills the whole request.
+# `fn kleene` was "branchless Kleene AND/OR from flag algebra" and emitted
+# BOTH operands unconditionally. `fn case`, immediately below it, DOES branch
+# — which is why the same trapping call inside a never-taken CASE arm was
+# correctly skipped. So a guard that excluded every row still evaluated the
+# thing it was written to guard, and its trap killed the whole request.
 #
-# Not tree-specific: a native BIGINT overflow in the same position diverges
-# from DuckDB too, which makes DuckDB the oracle for the second case.
+# FIXED 2026-08-08 (TASK-75). The branchless form is kept — it is what makes
+# three-valued NULL semantics cheap — and is now used only when the RIGHT
+# operand cannot trap, which is the overwhelmingly common case (`a > 1 AND
+# b < 2` is still entirely branchless). When it can trap, AND/OR lowers to a
+# branch that evaluates the right operand only on rows the left one does not
+# already decide: a definite FALSE decides an AND, a definite TRUE decides an
+# OR, and a NULL decides nothing — so the right operand still runs there, and
+# still traps there, exactly as DuckDB does.
 #
-# Relayed from the sweep, not reproduced by hand. TASK-75.
+# "Can this trap" is `plan::may_trap`, the same predicate the JOIN ON residual
+# rule uses (TASK-74). One definition, so the two cannot drift apart.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-75: WHERE's AND is branchless, so `WHERE k = 0 AND <trapping "
-    "expr>` evaluates the right side on every row even though the left is "
-    "false for all of them. DuckDB short-circuits and returns []; the engine "
-    "traps and the whole batch fails.",
-)
 @pytest.mark.parametrize(
     "sql",
     [
         "SELECT k FROM __THIS__ WHERE k = 0 AND 9223372036854775807 + k > 0",
         "SELECT k FROM __THIS__ WHERE k > 0 OR 9223372036854775807 + k > 0",
+        # the guard in the middle of a longer conjunction
+        "SELECT k FROM __THIS__ WHERE k > 0 AND k = 0 AND 9223372036854775807 + k > 0",
+        # a trapping CAST rather than an overflow
+        "SELECT k FROM __THIS__ WHERE k = 0 AND CAST(1e19 * k AS BIGINT) > 0",
     ],
 )
-def test_where_and_or_short_circuits_like_duckdb(sql):
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_where_and_or_short_circuits_like_duckdb(sql, backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
     Row = create_model("Row", k=(int, ...))
     fn = DuckDBInferFn(
         sql, row_tables={"__THIS__": Row}, static_tables={}, output="dict"
     )
+    assert fn.backend == backend
     got = [tuple(r.values()) for r in fn.infer({"__THIS__": [Row(k=1), Row(k=2)]})]
     assert got == duck(sql, "CREATE TABLE __THIS__ (k BIGINT)", [(1,), (2,)])
+
+
+_3VL_ROWS = [(k, x) for k in (None, 0, 1) for x in (-1.5, 1.5)]
+
+
+@pytest.mark.parametrize(
+    "right",
+    [
+        "CAST(x AS BIGINT) > 0",  # may trap -> the new branching path
+        "x > 0",  # cannot trap -> the original branchless path
+    ],
+)
+def test_short_circuit_preserves_three_valued_logic(right):
+    """AC #3: the branchless form was chosen because Kleene NULL semantics
+    fall out of flag algebra for free, and the branch must not regress them.
+
+    The full truth table — left in {NULL, FALSE, TRUE} against a right that
+    is FALSE and TRUE — evaluated both ways and checked against DuckDB. The
+    two parametrisations differ ONLY in which lowering path they take.
+    """
+    Row = create_model("Row", k=(int | None, None), x=(float, ...))
+    sql = f"SELECT k, (k > 0 AND {right}) AS aa, (k > 0 OR {right}) AS oo FROM __THIS__"
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": Row}, static_tables={}, output="dict"
+    )
+    got = [
+        tuple(r.values())
+        for r in fn.infer({"__THIS__": [Row(k=k, x=x) for k, x in _3VL_ROWS]})
+    ]
+    want = duck(sql, "CREATE TABLE __THIS__ (k BIGINT, x DOUBLE)", _3VL_ROWS)
+    assert got == want
+    # The table really does exercise all three left-hand values.
+    assert {r[1] for r in got} == {None, True, False}
+
+
+def test_where_guard_skips_an_unknown_model_trap():
+    """AC #2's other half: `tree_predict` on an id with no model raises, and a
+    guard that excludes every row must stop it from ever being called.
+    DuckDB cannot be the oracle here — it has no `tree_predict` — so the
+    assertion is the empty result the guard implies."""
+    entry = {
+        "nodes": pa.Table.from_pylist(
+            [_node(0, -1, 0.0, -1, -1, value=1.0)], NODE_SCHEMA
+        ),
+        "models": pa.Table.from_pylist(
+            [{"model_id": 0, "base": 0.0, "agg": "sum", "link": "identity"}],
+            schema=MODEL_SCHEMA,
+        ),
+        "features": ["x"],
+    }
+    Row = create_model("Row", k=(int, ...), mid=(int, ...), x=(float, ...))
+    sql = (
+        "SELECT k FROM __THIS__ "
+        "WHERE k = 0 AND tree_predict('m', mid, struct_pack(x := x)) > 0"
+    )
+    fn = DuckDBInferFn(
+        sql,
+        row_tables={"__THIS__": Row},
+        static_tables={},
+        output="dict",
+        models={"m": entry},
+    )
+    rows = [Row(k=1, mid=999, x=0.0), Row(k=2, mid=999, x=0.0)]
+    assert list(fn.infer({"__THIS__": rows})) == []
+    # ... and the trap is still real for a row the guard lets through.
+    with pytest.raises(ValueError, match="model"):
+        fn.infer({"__THIS__": [Row(k=0, mid=999, x=0.0)]})
 
 
 # ------------------------------------------ model-table structure checks --

@@ -103,13 +103,16 @@ fn casts_fixture_executes_and_traps() {
         vec![
             StaticData::Scalar {
                 valid: true,
-                val: ScalarVal::F64(2.5),
+                val: ScalarVal::F64(3.5),
             },
             snd,
         ]
     };
-    // @1 NULL: n = round(2.5) - trunc(2.5) = 3 - 2 = 1; msg = select over
-    // scmp.eq("2.5:", ":") = false -> ":".
+    // @1 NULL: n = nearest(3.5) - trunc(3.5) = 4 - 3 = 1; msg = select over
+    // scmp.eq("3.5:", ":") = false -> ":". 3.5 rather than 2.5 so the two
+    // opcodes still disagree now that `nearest` is half-to-EVEN (TASK-70) —
+    // nearest(2.5) == trunc(2.5) == 2 would make this fixture blind to a
+    // collapse of the two modes.
     let f = compile(
         &p,
         statics(StaticData::Scalar {
@@ -694,11 +697,20 @@ fn pin_ssubstr_range_guards_trap() {
 
 #[test]
 fn pin_ftoi_rounding_and_traps() {
+    // `nearest` is half-to-EVEN: it is DuckDB's DOUBLE->BIGINT cast, and it
+    // is deliberately NOT the SQL round() builtin, which is
+    // half-away-from-zero and never reaches this opcode (TASK-70).
     for (lit, mode, expect) in [
-        ("2.5", "round", "3"),
-        ("-2.5", "round", "-3"),
-        ("0.5", "round", "1"),
-        ("-0.5", "round", "-1"),
+        ("2.5", "nearest", "2"),
+        ("-2.5", "nearest", "-2"),
+        ("0.5", "nearest", "0"),
+        ("-0.5", "nearest", "0"),
+        ("1.5", "nearest", "2"),
+        ("-1.5", "nearest", "-2"),
+        ("3.5", "nearest", "4"),
+        ("2.4", "nearest", "2"),
+        ("2.6", "nearest", "3"),
+        ("-2.6", "nearest", "-3"),
         ("2.5", "trunc", "2"),
         ("-2.5", "trunc", "-2"),
     ] {

@@ -12,8 +12,10 @@
 //! Null-lane discipline: an SExpr with `nullable == false` lowers to a bare
 //! payload register (no flag anywhere); a nullable one carries an `i1` flag,
 //! combined with `and` where NULL propagates. Kleene AND/OR are lowered
-//! branchless from flag algebra. WHERE keeps a row iff the predicate is
-//! TRUE — flag && value.
+//! branchless from flag algebra — except when the right operand can trap
+//! ([`plan::may_trap`]), where SQL's short-circuit is observable and they
+//! branch instead (TASK-75). WHERE keeps a row iff the predicate is TRUE —
+//! flag && value.
 //!
 //! CASE lowers to a condition chain with a join block; branch results are
 //! evaluated only on their taken path (a guarded `1/0`-style branch must not
@@ -31,7 +33,7 @@ use super::ir::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
     StrOp2, Term, Ty, Value,
 };
-use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
+use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap};
 
 #[allow(clippy::too_many_arguments)]
 pub fn lower(
@@ -1791,9 +1793,16 @@ impl<'a> FB<'a> {
         Ok(res)
     }
 
-    /// Branchless Kleene AND/OR from flag algebra. With the lane contract
-    /// (payloads under a false flag may be garbage), every value read is
-    /// guarded by its flag.
+    /// Kleene AND/OR. Branchless from flag algebra whenever the right
+    /// operand cannot trap — that is the common case and the reason the
+    /// branchless form exists. When it CAN trap the operator has to
+    /// short-circuit instead, because SQL's does: `WHERE k = 0 AND <trap>`
+    /// returns `[]` in DuckDB rather than failing the request, and
+    /// evaluating both operands unconditionally made the guard useless
+    /// (TASK-75).
+    ///
+    /// With the lane contract (payloads under a false flag may be garbage),
+    /// every value read is guarded by its flag on both paths.
     fn kleene(
         &mut self,
         a: &SExpr,
@@ -1802,10 +1811,17 @@ impl<'a> FB<'a> {
         is_and: bool,
     ) -> Result<Lane, PrepareError> {
         let la = self.emit(a, live)?;
+        if may_trap(b) {
+            return self.kleene_shortcut(la, b, live, is_and);
+        }
         live.push((la, Ty::I1));
         let lb = self.emit(b, live)?;
         let (la, _) = live.pop().expect("pushed above");
+        Ok(self.kleene_combine(la, lb, is_and))
+    }
 
+    /// The flag algebra itself, shared by both paths.
+    fn kleene_combine(&mut self, la: Lane, lb: Lane, is_and: bool) -> Lane {
         let op = if is_and { BinOp::And } else { BinOp::Or };
         let val = self.bin(op, la.val, lb.val);
         let flag = match (la.flag, lb.flag) {
@@ -1832,7 +1848,90 @@ impl<'a> FB<'a> {
                 Some(self.bin(BinOp::Or, t, db))
             }
         };
-        Ok(Lane { flag, val })
+        Lane { flag, val }
+    }
+
+    /// Short-circuiting AND/OR: evaluate the right operand only on the rows
+    /// the left one does not already decide. AND is decided by a definite
+    /// FALSE, OR by a definite TRUE; a NULL left decides nothing, so the
+    /// right operand still runs there — and still traps there, exactly as
+    /// DuckDB does.
+    ///
+    /// The left lane rides the branch as a live entry: it is computed in the
+    /// predecessor block and read again in the arm that needs it, since
+    /// values never cross blocks except as branch args.
+    fn kleene_shortcut(
+        &mut self,
+        la: Lane,
+        b: &SExpr,
+        live: &mut Live,
+        is_and: bool,
+    ) -> Result<Lane, PrepareError> {
+        let decides = {
+            let d = if is_and { self.not(la.val) } else { la.val };
+            match la.flag {
+                Some(f) => self.bin(BinOp::And, f, d),
+                None => d,
+            }
+        };
+
+        live.push((la, Ty::I1));
+        let live_width = Self::live_types(live).len();
+        let mut join_tys = Self::live_types(live);
+        join_tys.push(Ty::I1); // flag
+        join_tys.push(Ty::I1); // value
+        let (join, join_p) = self.create_block(&join_tys);
+        let shape = Self::live_types(live);
+        let (short_b, short_p) = self.create_block(&shape);
+        let (eval_b, eval_p) = self.create_block(&shape);
+        let args = Self::live_args(live);
+        self.term(Term::Brif {
+            cond: decides,
+            then_to: BlockId(short_b as u32),
+            then_args: args.clone(),
+            else_to: BlockId(eval_b as u32),
+            else_args: args,
+        });
+
+        // Decided by the left operand: FALSE for AND, TRUE for OR, and
+        // definite either way — never NULL.
+        self.switch(short_b);
+        self.enter_block(live, &short_p);
+        let flag = self.const_i1(true);
+        let val = self.const_i1(!is_and);
+        let mut args = Self::live_args(live);
+        args.push(flag);
+        args.push(val);
+        self.term(Term::Jump {
+            to: BlockId(join as u32),
+            args,
+        });
+
+        // Undecided: the answer is whatever the ordinary flag algebra says.
+        self.switch(eval_b);
+        self.enter_block(live, &eval_p);
+        let lb = self.emit(b, live)?;
+        let (la, _) = *live.last().expect("pushed above");
+        let res = self.kleene_combine(la, lb, is_and);
+        let flag = match res.flag {
+            Some(f) => f,
+            None => self.const_i1(true),
+        };
+        let mut args = Self::live_args(live);
+        args.push(flag);
+        args.push(res.val);
+        self.term(Term::Jump {
+            to: BlockId(join as u32),
+            args,
+        });
+
+        self.switch(join);
+        self.enter_block(live, &join_p[..live_width]);
+        live.pop().expect("pushed above");
+        Ok(Lane {
+            flag: Some(join_p[live_width]),
+            val: join_p[live_width + 1],
+        })
     }
 
     /// CASE chain: one condition block per arm, results evaluated only on
@@ -1951,14 +2050,16 @@ impl<'a> FB<'a> {
                 })
             }
             (Ty::F64, Ty::I64) if !trying => {
-                // ftoi.round matches DuckDB CAST rounding; its own range trap
-                // stands in for DuckDB's conversion error. Nullable payloads
-                // are masked: computed garbage under a false flag (x * 1e300
-                // * 1e300 with x NULL) must not fire the range trap.
+                // ftoi.nearest is half-to-even, which is DuckDB's cast
+                // rounding (TASK-70 — the round() BUILTIN is the other one,
+                // half-away-from-zero, and lowers elsewhere). Its own range
+                // trap stands in for DuckDB's conversion error. Nullable
+                // payloads are masked: computed garbage under a false flag
+                // (x * 1e300 * 1e300 with x NULL) must not fire the trap.
                 let a = self.masked(l, Ty::F64);
                 let dst = self.fresh();
                 self.inst(Inst::Ftoi {
-                    mode: super::ir::RoundMode::Round,
+                    mode: super::ir::RoundMode::Nearest,
                     dst,
                     a,
                 });
@@ -2206,7 +2307,7 @@ impl<'a> FB<'a> {
                 let payload = live.last().expect("pushed above").0.val;
                 let r = self.fresh();
                 self.inst(Inst::Ftoi {
-                    mode: super::ir::RoundMode::Round,
+                    mode: super::ir::RoundMode::Nearest,
                     dst: r,
                     a: payload,
                 });

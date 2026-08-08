@@ -373,10 +373,14 @@ impl CmpPred {
     }
 }
 
+/// How `ftoi` breaks a tie. `Nearest` is half-to-EVEN, which is what
+/// DuckDB's DOUBLE->BIGINT cast does — not the same thing as the SQL
+/// `round()` builtin, which is half-away-from-zero and lowers through
+/// `NumOp1::Round` instead (TASK-70).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RoundMode {
     Trunc,
-    Round,
+    Nearest,
 }
 
 /// One-operand string ops (Str -> Str). Case mapping is SIMPLE (per-codepoint

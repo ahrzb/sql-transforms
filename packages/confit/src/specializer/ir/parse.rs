@@ -1142,12 +1142,12 @@ impl Parser {
                 let a = self.use_value()?;
                 Inst::Itof { dst: def!(0), a }
             }
-            "ftoi.trunc" | "ftoi.round" => {
+            "ftoi.trunc" | "ftoi.nearest" => {
                 want_dsts(1, self)?;
                 let mode = if opcode.ends_with("trunc") {
                     RoundMode::Trunc
                 } else {
-                    RoundMode::Round
+                    RoundMode::Nearest
                 };
                 let a = self.use_value()?;
                 Inst::Ftoi {

@@ -142,7 +142,7 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Ftoi { mode, a, .. } => {
             let m = match mode {
                 super::RoundMode::Trunc => "trunc",
-                super::RoundMode::Round => "round",
+                super::RoundMode::Nearest => "nearest",
             };
             let _ = write!(s, "ftoi.{m} {}", val(*a));
         }

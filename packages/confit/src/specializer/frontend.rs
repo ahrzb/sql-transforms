@@ -31,7 +31,7 @@ use sqlparser::parser::Parser;
 
 use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
-use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
+use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrepareError {
@@ -1035,8 +1035,9 @@ fn bind_residual(
     let mut acc: Option<SExpr> = None;
     for c in raw {
         let bound = bool_context(fold(binder.expr(c)?), "JOIN ON condition")?;
-        let (mut right, mut left, mut total, mut known) = (false, false, true, true);
-        scan_residual(&bound, j, &mut right, &mut left, &mut total, &mut known);
+        let (mut right, mut left, mut known) = (false, false, true);
+        scan_residual(&bound, j, &mut right, &mut left, &mut known);
+        let total = !may_trap(&bound);
         if !(total || (left && right && known)) {
             return Err(unsup(format!(
                 "JOIN ON condition '{c}' (single-side residual with trapping \
@@ -1145,22 +1146,19 @@ fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareE
     }
 }
 
-/// One traversal answering the wave-4 residual questions about a bound ON
-/// residual: `right`/`left` — does it reference THIS join's columns / any
-/// other scope; `total` — is every node in the conservative trap-free
-/// allowlist (columns, literals, comparisons, IS NULL, logic); `known` —
-/// was every node classifiable at all. Acceptance rule at the call site:
-/// `total || (left && right && known)` — measured: DuckDB scan-pushes
+/// One traversal answering the wave-4 residual SCOPE questions about a bound
+/// ON residual: `right`/`left` — does it reference THIS join's columns / any
+/// other scope; `known` — was every node classifiable at all, since an
+/// unrecognised node's children are never visited and so `left`/`right` are
+/// not trustworthy past it.
+///
+/// Trap-freeness is deliberately NOT computed here — it is
+/// [`plan::may_trap`], shared with Kleene lowering so the two cannot drift
+/// (TASK-74/75). Acceptance rule at the call site:
+/// `!may_trap(e) || (left && right && known)` — measured: DuckDB scan-pushes
 /// single-side residuals (eager trap timing) but evaluates both-sides
 /// residuals per candidate pair, which our hit-guarded lowering matches.
-fn scan_residual(
-    e: &SExpr,
-    j: u32,
-    right: &mut bool,
-    left: &mut bool,
-    total: &mut bool,
-    known: &mut bool,
-) {
+fn scan_residual(e: &SExpr, j: u32, right: &mut bool, left: &mut bool, known: &mut bool) {
     match &e.kind {
         SKind::StaticCol { join, .. } | SKind::JoinHit(join) => {
             if *join == j {
@@ -1171,34 +1169,28 @@ fn scan_residual(
         }
         SKind::Col(_) => *left = true,
         SKind::Lit(_) | SKind::NullOf => {}
-        SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
-            scan_residual(a, j, right, left, total, known);
-            scan_residual(b, j, right, left, total, known);
+        SKind::Cmp { a, b, .. }
+        | SKind::And { a, b }
+        | SKind::Or { a, b }
+        | SKind::Arith { a, b, .. } => {
+            scan_residual(a, j, right, left, known);
+            scan_residual(b, j, right, left, known);
         }
         SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => {
-            scan_residual(a, j, right, left, total, known);
-        }
-        SKind::Arith { a, b, .. } => {
-            *total = false;
-            scan_residual(a, j, right, left, total, known);
-            scan_residual(b, j, right, left, total, known);
+            scan_residual(a, j, right, left, known);
         }
         SKind::Case { arms, default } => {
-            *total = false;
             for (c, r) in arms {
-                scan_residual(c, j, right, left, total, known);
-                scan_residual(r, j, right, left, total, known);
+                scan_residual(c, j, right, left, known);
+                scan_residual(r, j, right, left, known);
             }
             if let Some(d) = default {
-                scan_residual(d, j, right, left, total, known);
+                scan_residual(d, j, right, left, known);
             }
         }
         // Anything else: not classifiable — the caller must reject rather
         // than risk the permissive both-sides path on a wrong guess.
-        _ => {
-            *total = false;
-            *known = false;
-        }
+        _ => *known = false,
     }
 }
 

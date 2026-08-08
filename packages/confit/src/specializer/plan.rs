@@ -360,6 +360,43 @@ pub enum SKind {
     },
 }
 
+/// Can evaluating this expression trap — overflow, division by zero, a
+/// failed CAST, an unknown model id? Conservative in one direction only:
+/// anything not on the trap-free allowlist counts as trapping.
+///
+/// One definition, two callers, and they must not drift apart:
+///
+/// * the JOIN ON residual rule — a single-side residual has to be trap-free
+///   because DuckDB scan-pushes it, so a trap would fire at a different time
+///   than ours (`bind_residual`);
+/// * Kleene AND/OR lowering, which stays branchless — and therefore
+///   evaluates both operands on every row — only when the right operand
+///   cannot trap (`FB::kleene`, TASK-75).
+///
+/// A CASE is trap-free exactly when all of its arms are: lowering branches,
+/// so an arm that is not taken is never evaluated (TASK-74).
+pub fn may_trap(e: &SExpr) -> bool {
+    match &e.kind {
+        SKind::Col(_)
+        | SKind::StaticCol { .. }
+        | SKind::JoinHit(_)
+        | SKind::Lit(_)
+        | SKind::NullOf => false,
+        SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
+            may_trap(a) || may_trap(b)
+        }
+        SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => may_trap(a),
+        SKind::Case { arms, default } => {
+            arms.iter().any(|(c, r)| may_trap(c) || may_trap(r))
+                || default.as_deref().is_some_and(may_trap)
+        }
+        // Arith overflows, CAST fails, ABS traps on i64::MIN, tree_predict
+        // rejects an unknown model id — and anything not named above is
+        // simply unclassified. All of it counts as trapping.
+        _ => true,
+    }
+}
+
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division
 /// (measured: `5/2 = 2.5 DOUBLE`); the frontend promotes both sides to f64.
 /// Integer `%` stays integral (measured: `5%2 -> INTEGER`). `IDiv` is

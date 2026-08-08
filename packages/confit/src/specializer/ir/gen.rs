@@ -360,7 +360,7 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 let mode = if rng.chance(50) {
                     RoundMode::Trunc
                 } else {
-                    RoundMode::Round
+                    RoundMode::Nearest
                 };
                 let a = ensure(rng, b, scope, insts, Ty::F64);
                 let dst = b.fresh();
