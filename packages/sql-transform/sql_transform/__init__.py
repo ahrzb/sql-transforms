@@ -18,7 +18,7 @@ from sql_transform._marginalize import (
     marginalize,
 )
 from sql_transform._projection import SQLProjection
-from sql_transform._trees import TreePackError, pack_trees
+from sql_transform._trees import TreeBasedTransform, TreePackError
 from sql_transform._udf import (
     UDF,
     Named,
@@ -39,9 +39,9 @@ __all__ = [
     "PythonTransform",
     "PythonUDF",
     "SQLProjection",
+    "TreeBasedTransform",
     "TreePackError",
     "UDFError",
     "UDFSpec",
     "marginalize",
-    "pack_trees",
 ]
