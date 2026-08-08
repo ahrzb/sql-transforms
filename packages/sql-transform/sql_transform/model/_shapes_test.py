@@ -19,20 +19,32 @@ import pyarrow as pa
 import pytest
 
 from sql_transform.model import SQLTransform, TransformError, run
-from sql_transform.model._ast import _QUERY, _serialize, _under
+from sql_transform.model._ast import _serialize
 
 D = pa.table({"cat": ["a", "a", "b"], "price": [1.0, 3.0, 10.0]})
 
 
 def shapes(sql: str) -> tuple[set[str], set[str]]:
-    """(TableRef types, query-node types) as the two discriminators see them."""
-    doc = _serialize(sql)
+    """(TableRef types, query-node types) as the two discriminators see them.
+
+    Asked of the raw JSON on purpose. This is the claim `is_query`/`is_ref`
+    are built on, so reading it through them would be circular.
+    """
     refs, queries = set(), set()
-    for _, _, v in _under(doc, deep=True):
-        if _QUERY in v:
-            queries.add(v.get("type"))
-        elif "sample" in v:
-            refs.add(v.get("type"))
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            if "cte_map" in obj:
+                queries.add(obj.get("type"))
+            elif "sample" in obj:
+                refs.add(obj.get("type"))
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(_serialize(sql))
     return refs, queries
 
 

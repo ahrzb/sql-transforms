@@ -1,14 +1,17 @@
 """DuckDB as the parser and the printer, and the walk over what it returns.
 
 ``json_serialize_sql`` / ``json_deserialize_sql``: one grammar, and it is the
-oracle's. The node shapes below are internal DuckDB details rather than a
-documented API — ``_shapes_test.py`` is what keeps them true, and replays
-DuckDB's own corpus to catch the format moving.
+oracle's. The node shapes are internal DuckDB details rather than a documented
+API — ``_nodes.py`` types the ones we interpret and ``_shapes.json`` pins the
+rest per version, so drift surfaces as a named diff instead of as a wrong
+answer.
+
+Nothing here mutates a node. The models are frozen, so a rewrite returns a new
+tree and the old one stays valid — which is why the template cache below can
+hand the same object to every caller.
 """
 
-import copy
 import json
-from collections.abc import Iterator
 from functools import cache
 from typing import Any
 
@@ -16,6 +19,20 @@ import duckdb
 import pyarrow as pa
 
 from sql_transform.model._errors import TransformError
+from sql_transform.model._nodes import (
+    AstNode,
+    BaseTable,
+    Document,
+    Function,
+    Node,
+    Opaque,
+    Subquery,
+    SubqueryRef,
+    TableFunction,
+    from_json,
+    rebuild,
+    to_json,
+)
 
 FIT = "__FIT__"
 
@@ -23,18 +40,7 @@ FIT = "__FIT__"
 THIS = "__THIS__"
 
 
-# Only query nodes (SELECT_NODE, SET_OPERATION_NODE, ...) carry a cte_map, so
-# its presence is what tells a query node from a table ref or an expression.
-# A TableRef is then anything carrying a `sample`. Both are internal DuckDB
-# details rather than a documented API; `_shapes_test.py` is what keeps them
-# true, and replays DuckDB's own corpus to catch the format moving.
-_QUERY = "cte_map"
-
-
 _RECURSIVE_CTE = "RECURSIVE_CTE_NODE"
-
-
-type Node = dict[str, Any]
 
 
 type Relation = Any  # anything DuckDB will register: arrow, pandas, polars
@@ -58,7 +64,7 @@ type Bindings = dict[str, Relation]
 type Captured = dict[str, Any]
 
 
-def _serialize(sql: str) -> Node:
+def _serialize(sql: str) -> dict[str, Any]:
     (out,) = duckdb.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
     doc = json.loads(out)
     if doc.get("error"):
@@ -68,55 +74,59 @@ def _serialize(sql: str) -> Node:
     return doc
 
 
-def _deserialize(doc: Node) -> str:
+def _parse(sql: str) -> Document:
+    return from_json(_serialize(sql))
+
+
+def _deserialize(doc: Document | dict[str, Any]) -> str:
+    raw = to_json(doc) if isinstance(doc, AstNode) else doc
     (out,) = duckdb.execute(
-        "SELECT json_deserialize_sql(?::JSON)", [json.dumps(doc)]
+        "SELECT json_deserialize_sql(?::JSON)", [json.dumps(raw)]
     ).fetchone()
     return out
 
 
-def _statement(node: Node) -> Node:
-    return {"error": False, "statements": [{"node": node, "named_param_map": []}]}
-
-
-def _select_star(name: str) -> Node:
-    """A query node reading nothing but ``name``. Cut from the oracle's own
-    serialization so it carries every field the deserializer expects."""
-    node = _template("SELECT * FROM __tpl__")
-    node["from_table"]["table_name"] = name
-    return node
+def _statement(node: Node) -> Document:
+    return Document(error=False, statements=[Subquery(node=node, named_param_map=[])])
 
 
 @cache
-def _cached_template(sql: str) -> str:
-    return json.dumps(_serialize(sql)["statements"][0]["node"])
-
-
 def _template(sql: str) -> Node:
-    """A fresh copy of a node shape, cut from the oracle's own serialization
-    so a grafted node always carries every field the deserializer expects."""
-    return json.loads(_cached_template(sql))
+    """A node shape cut from the oracle's own serialization, so a grafted node
+    always carries every field the deserializer expects.
+
+    Shared, not copied: the models are frozen, so the old ``json.loads`` of a
+    cached string per call bought nothing but garbage.
+    """
+    return _parse(sql).statements[0].node
 
 
-def _base_table(name: str, alias: str = "") -> Node:
-    ref = _template("SELECT * FROM __tpl__")["from_table"]
-    ref["table_name"] = name
-    ref["alias"] = alias
-    return ref
+def _select_star(name: str) -> Node:
+    """A query node reading nothing but ``name``."""
+    node = _template("SELECT * FROM __tpl__")
+    return node.model_copy(
+        update={"from_table": node.from_table.model_copy(update={"table_name": name})}
+    )
 
 
-def _subquery_ref(node: Node, alias: str) -> Node:
-    ref = _template("SELECT * FROM (SELECT 1) __tpl__")["from_table"]
-    ref["subquery"]["node"] = node
-    ref["alias"] = alias
-    return ref
+def _base_table(name: str, alias: str = "") -> BaseTable:
+    ref = _template("SELECT * FROM __tpl__").from_table
+    return ref.model_copy(update={"table_name": name, "alias": alias})
 
 
-def _table_function_ref(function: Node, alias: str) -> Node:
-    ref = _template("SELECT * FROM range(1)")["from_table"]
-    ref["function"] = function
-    ref["alias"] = alias
-    return ref
+def _subquery_ref(node: Node, alias: str) -> SubqueryRef:
+    ref = _template("SELECT * FROM (SELECT 1) __tpl__").from_table
+    return ref.model_copy(
+        update={
+            "subquery": ref.subquery.model_copy(update={"node": node}),
+            "alias": alias,
+        }
+    )
+
+
+def _table_function_ref(function: Node, alias: str) -> TableFunction:
+    ref = _template("SELECT * FROM range(1)").from_table
+    return ref.model_copy(update={"function": function, "alias": alias})
 
 
 # `table_macro` as well as `table`: a user's `CREATE MACRO ... AS TABLE` is a
@@ -192,41 +202,7 @@ def normalize(sql: str) -> str:
     return _deserialize(_serialize(sql))
 
 
-def _is_query(value: Any) -> bool:
-    return isinstance(value, dict) and _QUERY in value
-
-
-def _under(obj: Any, *, deep: bool) -> Iterator[tuple[Any, Any, Node]]:
-    """Yield ``(parent, key, dict)`` for every dict below ``obj``.
-
-    ``deep=False`` stops at nested query nodes — it still yields them, so a
-    caller can rewrite the slot, but does not look inside. It also skips
-    ``cte_map``, which callers walk in definition order instead.
-    """
-    if isinstance(obj, dict):
-        items: Any = list(obj.items())
-    elif isinstance(obj, list):
-        items = list(enumerate(obj))
-    else:
-        return
-    for key, value in items:
-        if key == _QUERY and not deep:
-            continue
-        if isinstance(value, dict):
-            yield obj, key, value
-            if _is_query(value) and not deep:
-                continue
-        if isinstance(value, dict | list):
-            yield from _under(value, deep=deep)
-
-
-def _is_ref(value: Node) -> bool:
-    """A TableRef. Only those carry a ``sample``; query nodes do too, so the
-    discriminator is `has sample and is not a query node`."""
-    return "sample" in value and not _is_query(value)
-
-
-def _rename_free(body: Node, renames: dict[str, str]) -> None:
+def _rename_free[N](body: N, renames: dict[str, str]) -> N:
     """Rename the member's *free* references, not its own definitions.
 
     A parenthesised derived table already scopes its own CTEs, so the member's
@@ -236,51 +212,67 @@ def _rename_free(body: Node, renames: dict[str, str]) -> None:
     different numbers. The old name survives as the alias, so every column
     reference qualified by it still resolves.
     """
-    for _, _, v in list(_under(body, deep=True)):
-        if v.get("type") == "BASE_TABLE" and v.get("table_name") in renames:
-            old = v["table_name"]
-            if renames[old] == old:
-                continue  # identity: leave the node exactly as it was
-            v["table_name"] = renames[old]
-            v["alias"] = v.get("alias") or old
+
+    def rename(node: AstNode) -> AstNode | None:
+        if not isinstance(node, BaseTable) or node.table_name not in renames:
+            return None
+        old = node.table_name
+        if renames[old] == old:
+            return None  # identity: leave the node exactly as it was
+        return node.model_copy(
+            update={"table_name": renames[old], "alias": node.alias or old}
+        )
+
+    return rebuild(body, rename, deep=True)
 
 
-def _bind_parameters(body: Node, args: dict[str, Node]) -> None:
+def _bind_parameters[N](body: N, args: dict[str, Node]) -> N:
     """Bind the member's two parameters to the call site's arguments.
 
-    Sites are collected before any replacement, so an argument that itself
-    mentions ``__FIT__`` — every chained call does — is never re-substituted.
-    ``_under`` happens to be safe against that anyway, since it lists each
-    dict's items before descending; collecting first is what keeps the
-    guarantee from resting on that detail.
+    An argument that itself mentions ``__FIT__`` — every chained call does —
+    is never re-substituted, because ``rebuild`` works bottom-up and never
+    offers a replacement back. That used to rest on collecting every site
+    before touching any of them.
     """
-    sites = [
-        (parent, key, v)
-        for parent, key, v in _under(body, deep=True)
-        if v.get("type") == "BASE_TABLE" and v.get("table_name") in args
-    ]
-    for parent, key, ref in sites:
-        bound = copy.deepcopy(args[ref["table_name"]])
-        bound["alias"] = ref.get("alias") or ref["table_name"]
-        parent[key] = bound
+
+    def bind(node: AstNode) -> AstNode | None:
+        if not isinstance(node, BaseTable) or node.table_name not in args:
+            return None
+        bound = args[node.table_name]
+        return bound.model_copy(update={"alias": node.alias or node.table_name})
+
+    return rebuild(body, bind, deep=True)
 
 
-def _rename_functions(body: Node, renames: dict[str, str]) -> None:
+def _rename_functions[N](body: N, renames: dict[str, str]) -> N:
     """Rename the member's foreign calls the same way as its free tables, so
     two members can each carry their own ``sc`` without colliding."""
-    for _, _, v in list(_under(body, deep=True)):
-        if v.get("class") != "FUNCTION":
-            continue
-        stem, _, half = v["function_name"].rpartition("_")
+
+    def rename(node: AstNode) -> AstNode | None:
+        if not isinstance(node, Function):
+            return None
+        stem, _, half = node.function_name.rpartition("_")
         if half in ("fit", "transform") and stem in renames:
-            v["function_name"] = f"{renames[stem]}_{half}"
+            return node.model_copy(update={"function_name": f"{renames[stem]}_{half}"})
+        return None
+
+    return rebuild(body, rename, deep=True)
 
 
-def _list_of(argument: Node) -> Node:
+def _list_of(argument: Node) -> Function:
     """``list(arg)``. DuckDB's Python API has no aggregate UDF, so the UDAF
     half is a scalar function over the list DuckDB's own ``list()`` collects.
     The author's text is unchanged; ``GROUP BY`` still does the grouping."""
-    call = _template("SELECT list(1)")["select_list"][0]
-    call["children"] = [argument]
-    call["alias"] = ""
-    return call
+    call = _template("SELECT list(1)").select_list[0]
+    return call.model_copy(update={"children": [argument], "alias": ""})
+
+
+def _is_recursive_cte(node: Any) -> bool:
+    """A ``WITH RECURSIVE`` body. Its self-reference is bound by the enclosing
+    entry key rather than by anything inside, which is what stops it being
+    hoisted."""
+    from sql_transform.model._nodes import RecursiveCte  # noqa: PLC0415
+
+    if isinstance(node, RecursiveCte):
+        return True
+    return isinstance(node, Opaque) and node.tag_name == _RECURSIVE_CTE

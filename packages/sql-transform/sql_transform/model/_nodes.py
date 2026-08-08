@@ -474,6 +474,47 @@ def is_ref(node: Any) -> bool:
     return isinstance(node, Opaque) and "sample" in node.fields and not is_query(node)
 
 
+def cte_entries(node: Any) -> list[CteEntry]:
+    """The CTEs a query node defines, in definition order.
+
+    Empty for anything else, including an ``Opaque`` that happens to carry a
+    ``cte_map`` — the entries are still typed there, because `_convert` builds
+    every dict.
+    """
+    if isinstance(node, QUERY_NODES):
+        return node.cte_map.map
+    if isinstance(node, Opaque) and isinstance(m := node.fields.get("cte_map"), CteMap):
+        return m.map
+    return []
+
+
+def with_cte_entries[N](node: N, entries: list[CteEntry]) -> N:
+    """``node`` with its ``cte_map`` replaced. The write half of `cte_entries`."""
+    replacement = CteMap(map=entries)
+    if isinstance(node, QUERY_NODES):
+        return node.model_copy(update={"cte_map": replacement})
+    if isinstance(node, Opaque) and "cte_map" in node.fields:
+        return node.model_copy(
+            update={"fields": node.fields | {"cte_map": replacement}}
+        )
+    return node
+
+
+def field(node: Any, name: str, default: Any = None) -> Any:
+    """One field of a node, whether it is typed or carried.
+
+    The typed replacement for `v.get(...)`, and deliberately not a substitute
+    for `isinstance`: it exists for the handful of fields — `alias`,
+    `table_name` — that the walk reads off *any* ref, including one no class
+    claims.
+    """
+    if isinstance(node, Opaque):
+        return node.fields.get(name, default)
+    if isinstance(node, AstNode):
+        return getattr(node, name, default)
+    return default
+
+
 def descendants(node: Any, *, deep: bool) -> Iterator[AstNode]:
     """Every node below ``node``, itself excluded.
 
@@ -488,8 +529,13 @@ def descendants(node: Any, *, deep: bool) -> Iterator[AstNode]:
             yield from descendants(child, deep=deep)
 
 
-def rebuild(node: Any, fn: Callable[[AstNode], AstNode | None], *, deep: bool) -> Any:
-    """``node`` with every descendant ``fn`` claims replaced by what it returns.
+def rebuild[N](node: N, fn: Callable[[AstNode], AstNode | None], *, deep: bool) -> N:
+    """``node`` with every *descendant* ``fn`` claims replaced by what it returns.
+
+    ``descendants``' contract, in rewriting form: the root is rebuilt but never
+    offered to ``fn``, ``deep=False`` offers nested query nodes without going
+    into them, and ``cte_map`` is skipped there for callers that walk CTEs in
+    definition order themselves.
 
     Bottom-up, so a replacement is never re-visited — the property
     ``_bind_parameters`` used to get by collecting every site before touching
@@ -498,29 +544,29 @@ def rebuild(node: Any, fn: Callable[[AstNode], AstNode | None], *, deep: bool) -
     ``fn`` returning ``None`` means *leave this one alone*.
     """
 
-    def go(value: Any, *, inside_query: bool) -> Any:
+    def children_of(n: AstNode) -> AstNode:
+        if isinstance(n, Opaque):
+            fields = {k: go(v) for k, v in n.fields.items() if deep or k != "cte_map"}
+            return n.model_copy(update={"fields": n.fields | fields})
+        updates = {
+            name: go(getattr(n, name))
+            for name in type(n).model_fields
+            if deep or name != "cte_map"
+        }
+        return n.model_copy(update=updates)
+
+    def go(value: Any) -> Any:
         if isinstance(value, list):
-            return [go(v, inside_query=inside_query) for v in value]
-        if isinstance(value, Opaque):
-            fields = {
-                k: go(v, inside_query=inside_query) for k, v in value.fields.items()
-            }
-            return fn(rebuilt := value.model_copy(update={"fields": fields})) or rebuilt
+            return [go(v) for v in value]
         if isinstance(value, AstNode):
-            if not deep and inside_query and is_query(value):
-                return fn(value) or value  # yielded, not descended into
-            fields = {}
-            for name in type(value).model_fields:
-                if name == "cte_map" and not deep:
-                    continue
-                fields[name] = go(getattr(value, name), inside_query=True)
-            rebuilt = value.model_copy(update=fields)
-            return fn(rebuilt) or rebuilt
+            if not deep and is_query(value):
+                return fn(value) or value  # offered, not descended into
+            return fn(rebuilt := children_of(value)) or rebuilt
         if isinstance(value, dict):
-            return {k: go(v, inside_query=inside_query) for k, v in value.items()}
+            return {k: go(v) for k, v in value.items()}
         return value
 
-    return go(node, inside_query=False)
+    return children_of(node) if isinstance(node, AstNode) else go(node)
 
 
 def child_nodes(node: Any, *, skip_ctes: bool = False) -> Iterator[AstNode]:

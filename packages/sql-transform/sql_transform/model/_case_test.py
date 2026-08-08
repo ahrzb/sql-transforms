@@ -24,13 +24,13 @@ import pytest
 
 from sql_transform.model import CorrelatedFit, SQLTransform, UnknownName, run
 from sql_transform.model._analysis import _reads
-from sql_transform.model._ast import _serialize
+from sql_transform.model._ast import _parse
 
 D = pa.table({"v": [1.0, 2.0, 3.0]})
 
 
 def node(sql: str):
-    return _serialize(sql)["statements"][0]["node"]
+    return _parse(sql).statements[0].node
 
 
 # ------------------------------------------------------------- the oracle

@@ -5,18 +5,20 @@ and *does it correlate out of itself*. Both are answered from the AST, before
 any data exists.
 """
 
-from sql_transform.model._ast import (
-    _QUERY,
-    FIT,
-    THIS,
-    Node,
-    _is_query,
-    _is_ref,
-    _under,
+from sql_transform.model._ast import FIT, THIS
+from sql_transform.model._nodes import (
+    AstNode,
+    BaseTable,
+    ColumnRef,
+    cte_entries,
+    descendants,
+    field,
+    is_query,
+    is_ref,
 )
 
 
-def _reads(node: Node, ctes: dict[str, set[str]] | None = None) -> set[str]:
+def _reads(node: AstNode, ctes: dict[str, set[str]] | None = None) -> set[str]:
     """Which of the two parameters the whole subtree reads. ``node`` itself
     counts — a bare ``FROM __THIS__`` ref is the whole subtree.
 
@@ -31,18 +33,17 @@ def _reads(node: Node, ctes: dict[str, set[str]] | None = None) -> set[str]:
     """
     ctes = ctes or {}
     seen: set[str] = set()
-    for v in (node, *(v for _, _, v in _under(node, deep=True))):
-        if v.get("type") != "BASE_TABLE":
+    for v in (node, *descendants(node, deep=True)):
+        if not isinstance(v, BaseTable):
             continue
-        name = v.get("table_name")
-        if name in (FIT, THIS):
-            seen.add(name)
+        if v.table_name in (FIT, THIS):
+            seen.add(v.table_name)
         else:
-            seen |= ctes.get(str(name).lower(), set())
+            seen |= ctes.get(v.table_name.lower(), set())
     return seen
 
 
-def _names_in(node: Node) -> set[str]:
+def _names_in(node: AstNode) -> set[str]:
     """Every name a column reference could be qualified by, anywhere inside.
 
     Folded, like every other identifier comparison here: DuckDB's binder is
@@ -50,18 +51,18 @@ def _names_in(node: Node) -> set[str]:
     ``T`` does shadow an outer ``t``, and comparing exact strings called that
     a correlation and refused a query the oracle binds inward.
     """
-    names = {e["key"].lower() for e in node[_QUERY]["map"]}
-    for _, _, v in _under(node, deep=True):
-        if _is_ref(v):
-            names.add((v.get("alias") or v.get("table_name") or "").lower())
-        if _is_query(v):
-            names.update(e["key"].lower() for e in v[_QUERY]["map"])
+    names = {e.key.lower() for e in cte_entries(node)}
+    for v in descendants(node, deep=True):
+        if is_ref(v):
+            names.add(str(field(v, "alias") or field(v, "table_name") or "").lower())
+        if is_query(v):
+            names.update(e.key.lower() for e in cte_entries(v))
     names.discard("")
     return names
 
 
 def _bindings_at(
-    node: Node, ctes: dict[str, set[str]] | None = None
+    node: AstNode, ctes: dict[str, set[str]] | None = None
 ) -> dict[str, bool]:
     """The names this level binds, each mapped to *does it read ``__THIS__``*.
 
@@ -72,18 +73,18 @@ def _bindings_at(
     qualifier up in here and DuckDB would have matched it either way.
     """
     out = {
-        e["key"].lower(): THIS in _reads(e["value"]["query"]["node"], ctes)
-        for e in node[_QUERY]["map"]
+        e.key.lower(): THIS in _reads(e.value.query.node, ctes)
+        for e in cte_entries(node)
     }
-    for _, _, v in _under(node, deep=False):
-        if _is_ref(v):
-            alias = v.get("alias") or v.get("table_name") or ""
+    for v in descendants(node, deep=False):
+        if is_ref(v):
+            alias = str(field(v, "alias") or field(v, "table_name") or "")
             if alias:
                 out[alias.lower()] = THIS in _reads(v, ctes)
     return out
 
 
-def _correlation(node: Node, outer: dict[str, bool]) -> tuple[str, bool] | None:
+def _correlation(node: AstNode, outer: dict[str, bool]) -> tuple[str, bool] | None:
     """A column reference reaching out of ``node``, and whether its target
     reads ``__THIS__``.
 
@@ -95,10 +96,10 @@ def _correlation(node: Node, outer: dict[str, bool]) -> tuple[str, bool] | None:
     """
     inside = _names_in(node)
     found: tuple[str, bool] | None = None
-    for _, _, v in _under(node, deep=True):
-        if v.get("class") != "COLUMN_REF":
+    for v in descendants(node, deep=True):
+        if not isinstance(v, ColumnRef):
             continue
-        parts = v["column_names"]
+        parts = v.column_names
         qualifier = parts[0].lower()
         if len(parts) >= 2 and qualifier not in inside and qualifier in outer:
             if outer[qualifier]:

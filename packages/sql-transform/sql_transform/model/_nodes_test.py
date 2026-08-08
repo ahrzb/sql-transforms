@@ -23,19 +23,13 @@ Three properties, in the order they matter:
 """
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import duckdb
 import pytest
 
-from sql_transform.model._ast import (
-    _deserialize,
-    _is_query,
-    _is_ref,
-    _serialize,
-    _under,
-)
+from sql_transform.model._ast import _deserialize, _serialize
 from sql_transform.model._nodes import (
     INTERPRETED,
     AstNode,
@@ -53,6 +47,40 @@ from sql_transform.model._nodes import (
     rebuild,
     to_json,
 )
+
+# --------------------------------------------- the dict walk, as the reference
+# `_ast.py` used to read the oracle's output through these. They live here now,
+# and nowhere else, as the other side of the differential below: the typed walk
+# has to visit the same nodes in the same order, or the migration changed what
+# freezing sees. Deleting them means giving that up.
+
+
+def _is_query(value):
+    return isinstance(value, dict) and "cte_map" in value
+
+
+def _is_ref(value):
+    return isinstance(value, dict) and "sample" in value and not _is_query(value)
+
+
+def _under(obj, *, deep):
+    """Yield ``(parent, key, dict)`` for every dict below ``obj``."""
+    if isinstance(obj, dict):
+        items = list(obj.items())
+    elif isinstance(obj, list):
+        items = list(enumerate(obj))
+    else:
+        return
+    for key, value in items:
+        if key == "cte_map" and not deep:
+            continue
+        if isinstance(value, dict):
+            yield obj, key, value
+            if _is_query(value) and not deep:
+                continue
+        if isinstance(value, dict | list):
+            yield from _under(value, deep=deep)
+
 
 # --------------------------------------------------------------- the corpus
 
@@ -340,6 +368,24 @@ def test_rebuild_without_a_replacement_is_the_identity(sql):
     doc = from_json(_serialize(sql))
     assert to_json(rebuild(doc, lambda _: None, deep=True)) == _serialize(sql)
     assert to_json(rebuild(doc, lambda _: None, deep=False)) == _serialize(sql)
+
+
+@pytest.mark.parametrize("deep", [True, False])
+@pytest.mark.parametrize("sql", PARSEABLE)
+def test_rebuild_offers_exactly_what_descendants_yields(sql, deep):
+    """Same nodes, deliberately not the same order.
+
+    `descendants` reads pre-order, matching `_under`, because `_correlation`
+    returns its *first* qualified reference. `rebuild` writes post-order, so a
+    replacement is never offered back to `fn`. Sets must agree or a caller
+    that reads with one and writes with the other misses a site.
+    """
+    typed = from_json(_serialize(sql)).statements[0].node
+    offered: list = []
+    rebuild(typed, lambda n: offered.append(n) or None, deep=deep)
+    assert Counter(_shape(n) for n in offered) == Counter(
+        _shape(n) for n in descendants(typed, deep=deep)
+    )
 
 
 def test_rebuild_replaces_every_site_and_never_rewalks_one():
