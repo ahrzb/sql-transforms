@@ -20,7 +20,7 @@ The shapes here are internal DuckDB details with no stability promise.
 ``_shapes.json`` pins them per version and the drift gate reads the diff.
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag
@@ -55,7 +55,13 @@ class AstNode(BaseModel):
 
 
 class Subquery(AstNode):
-    """The ``{node, named_param_map}`` wrapper around a nested query."""
+    """The ``{node, named_param_map}`` wrapper around a query.
+
+    One class for two positions, because DuckDB spells them identically: the
+    wrapper around a nested subquery, and the wrapper around a top-level
+    statement. Keeping them apart would need a class the shape cannot pick
+    between, which is the ambiguity `_structural` exists to avoid.
+    """
 
     node: "Node"
     named_param_map: list[Any]
@@ -77,16 +83,11 @@ class CteMap(AstNode):
     map: list[CteEntry]
 
 
-class Statement(AstNode):
-    node: "Node"
-    named_param_map: list[Any]
-
-
 class Document(AstNode):
     """What ``_serialize`` hands back."""
 
     error: bool
-    statements: list[Statement]
+    statements: list[Subquery]
 
 
 # ------------------------------------------------------------- query nodes
@@ -120,9 +121,9 @@ class SetOperation(AstNode):
     modifiers: list["Node"]
     cte_map: CteMap
     setop_type: str
-    setop_all: bool
     left: "Node"
     right: "Node"
+    setop_all: bool
 
 
 class RecursiveCte(AstNode):
@@ -134,10 +135,10 @@ class RecursiveCte(AstNode):
     cte_map: CteMap
     cte_name: str
     union_all: bool
-    aliases: list[str]
-    key_targets: list["Node"]
     left: "Node"
     right: "Node"
+    aliases: list[str]
+    key_targets: list["Node"]
 
 
 # --------------------------------------------------------------- table refs
@@ -152,10 +153,10 @@ class BaseTable(AstNode):
     alias: str
     sample: "Node | None"
     query_location: int
-    catalog_name: str
     schema_name: str
     table_name: str
     column_name_alias: list[str]
+    catalog_name: str
     at_clause: "Node | None"
 
 
@@ -222,8 +223,8 @@ class ColumnRef(AstNode):
     tag: ClassVar[str] = "COLUMN_REF"
     kind: ClassVar[str] = "expr"
 
-    type: Literal["COLUMN_REF"] = "COLUMN_REF"
     class_: str = Field(alias="class")
+    type: Literal["COLUMN_REF"] = "COLUMN_REF"
     alias: str
     query_location: int
     column_names: list[str]
@@ -233,8 +234,8 @@ class Function(AstNode):
     tag: ClassVar[str] = "FUNCTION"
     kind: ClassVar[str] = "expr"
 
-    type: Literal["FUNCTION"] = "FUNCTION"
     class_: str = Field(alias="class")
+    type: Literal["FUNCTION"] = "FUNCTION"
     alias: str
     query_location: int
     function_name: str
@@ -252,8 +253,8 @@ class SubqueryExpr(AstNode):
     tag: ClassVar[str] = "SUBQUERY"
     kind: ClassVar[str] = "expr"
 
-    type: Literal["SUBQUERY"] = "SUBQUERY"
     class_: str = Field(alias="class")
+    type: Literal["SUBQUERY"] = "SUBQUERY"
     alias: str
     query_location: int
     subquery_type: str
@@ -341,7 +342,10 @@ type Node = Annotated[
 
 def from_json(raw: dict[str, Any]) -> Document:
     """DuckDB's JSON into the typed tree."""
-    return Document.model_validate(_convert(raw))
+    built = _convert(raw)
+    if not isinstance(built, Document):
+        raise TypeError(f"not a serialized statement: {sorted(raw)}")
+    return built
 
 
 def to_json(doc: Document) -> dict[str, Any]:
@@ -358,15 +362,51 @@ def to_json(doc: Document) -> dict[str, Any]:
 # nodes DuckDB serializes untagged, like a TABLESAMPLE clause. Pinned by
 # `test_the_structural_shapes_are_what_we_think`, so a change here fails as a
 # named mismatch rather than as a node quietly turning opaque.
+_CTE_VALUE = frozenset({"aliases", "query", "materialized", "key_targets"})
+
 _STRUCTURAL: frozenset[frozenset[str]] = frozenset(
     {
         frozenset({"node", "named_param_map"}),  # Subquery, Statement
         frozenset({"map"}),  # CteMap
         frozenset({"key", "value"}),  # CteEntry
-        frozenset({"aliases", "query", "materialized", "key_targets"}),  # CteValue
+        _CTE_VALUE,  # CteValue
         frozenset({"error", "statements"}),  # Document
     }
 )
+
+
+_BY_SHAPE: dict[frozenset[str], type[AstNode]] = {
+    frozenset({"node", "named_param_map"}): Subquery,
+    frozenset({"map"}): CteMap,
+    frozenset({"key", "value"}): CteEntry,
+    _CTE_VALUE: CteValue,
+    frozenset({"error", "statements"}): Document,
+}
+
+
+def _structural(value: dict[str, Any]) -> type[AstNode] | None:
+    """The class a shape names, or ``None`` if the dict is vocabulary.
+
+    ``{key, value}`` alone does not settle it. Measured:
+    ``SELECT * REPLACE (x+1 AS x)`` puts ``{"key", "value"}`` entries in a
+    STAR's ``replace_list``, the same two keys a CTE entry has. Claiming those
+    as CTE entries left them plain dicts inside an ``Opaque``, where nothing
+    validates, and the walk stopped yielding them — one node fewer than the
+    dict walk saw. The inner shape tells the two apart: a CTE entry's value is
+    a CteValue, a replace entry's is an expression.
+    """
+    keys = frozenset(value)
+    if keys == frozenset({"key", "value"}):
+        inner = value.get("value")
+        ok = isinstance(inner, dict | CteValue) and (
+            isinstance(inner, CteValue) or frozenset(inner) == _CTE_VALUE
+        )
+        return CteEntry if ok else None
+    return _BY_SHAPE.get(keys)
+
+
+def _is_structural(value: dict[str, Any]) -> bool:
+    return _structural(value) is not None
 
 
 def _convert(value: Any) -> Any:
@@ -381,13 +421,14 @@ def _convert(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     inner = {k: _convert(v) for k, v in value.items()}
-    if frozenset(value) in _STRUCTURAL:
-        return inner  # shape, not vocabulary: pydantic builds it from the slot
-    # Built here rather than left for pydantic, because a node inside an
-    # `Opaque` sits in a `dict[str, Any]` slot, where pydantic validates
-    # nothing. Leaving it raw is exactly the bug this file exists to prevent:
-    # measured, a `__FIT__` under a BETWEEN stayed a plain dict and the walk
-    # never saw it.
+    # Everything is built here rather than left for pydantic, because a node
+    # inside an `Opaque` sits in a `dict[str, Any]` slot where pydantic
+    # validates nothing. Leaving one raw is exactly the bug this file exists to
+    # prevent: measured, a `__FIT__` under a BETWEEN stayed a plain dict and
+    # the walk never saw it. So the invariant is uniform — after `_convert`,
+    # every dict in the tree is a model.
+    if (shape := _structural(value)) is not None:
+        return shape.model_validate(inner)
     if (key := _which(value)) != "opaque":
         return _BY_KEY[key].model_validate(inner)
     tag = value.get("type")
@@ -410,18 +451,96 @@ def _revert(value: Any) -> Any:
     return value
 
 
-def child_nodes(node: Any) -> Iterator[AstNode]:
+QUERY_NODES = (Select, SetOperation, RecursiveCte)
+REF_NODES = (BaseTable, SubqueryRef, Join, TableFunction, EmptyTable)
+
+
+def is_query(node: Any) -> bool:
+    """A query node — something with a ``cte_map``.
+
+    The structural test survives alongside the class test on purpose: a query
+    node DuckDB adds later arrives as an ``Opaque``, and answering ``False``
+    for it would let the walk treat a whole subquery as an expression.
+    """
+    if isinstance(node, QUERY_NODES):
+        return True
+    return isinstance(node, Opaque) and "cte_map" in node.fields
+
+
+def is_ref(node: Any) -> bool:
+    """A table ref — something with a ``sample`` that is not a query node."""
+    if isinstance(node, REF_NODES):
+        return True
+    return isinstance(node, Opaque) and "sample" in node.fields and not is_query(node)
+
+
+def descendants(node: Any, *, deep: bool) -> Iterator[AstNode]:
+    """Every node below ``node``, itself excluded.
+
+    ``deep=False`` stops at nested query nodes — it still yields them, so a
+    caller can replace one, but does not look inside — and skips ``cte_map``,
+    which callers walk in definition order instead. Exactly ``_under``'s
+    contract, minus the ``(parent, key)`` pair nothing can assign to now.
+    """
+    for child in child_nodes(node, skip_ctes=not deep):
+        yield child
+        if deep or not is_query(child):
+            yield from descendants(child, deep=deep)
+
+
+def rebuild(node: Any, fn: Callable[[AstNode], AstNode | None], *, deep: bool) -> Any:
+    """``node`` with every descendant ``fn`` claims replaced by what it returns.
+
+    Bottom-up, so a replacement is never re-visited — the property
+    ``_bind_parameters`` used to get by collecting every site before touching
+    any of them, now structural rather than a discipline to remember.
+
+    ``fn`` returning ``None`` means *leave this one alone*.
+    """
+
+    def go(value: Any, *, inside_query: bool) -> Any:
+        if isinstance(value, list):
+            return [go(v, inside_query=inside_query) for v in value]
+        if isinstance(value, Opaque):
+            fields = {
+                k: go(v, inside_query=inside_query) for k, v in value.fields.items()
+            }
+            return fn(rebuilt := value.model_copy(update={"fields": fields})) or rebuilt
+        if isinstance(value, AstNode):
+            if not deep and inside_query and is_query(value):
+                return fn(value) or value  # yielded, not descended into
+            fields = {}
+            for name in type(value).model_fields:
+                if name == "cte_map" and not deep:
+                    continue
+                fields[name] = go(getattr(value, name), inside_query=True)
+            rebuilt = value.model_copy(update=fields)
+            return fn(rebuilt) or rebuilt
+        if isinstance(value, dict):
+            return {k: go(v, inside_query=inside_query) for k, v in value.items()}
+        return value
+
+    return go(node, inside_query=False)
+
+
+def child_nodes(node: Any, *, skip_ctes: bool = False) -> Iterator[AstNode]:
     """Every ``AstNode`` directly under ``node``, ``Opaque`` included.
 
     A free function rather than a method: ``Function`` has a field called
     ``children``, and the field name is not ours to rename.
     """
     if isinstance(node, Opaque):
-        values: Any = node.fields.values()
+        values: Any = [
+            v for k, v in node.fields.items() if not (skip_ctes and k == "cte_map")
+        ]
     elif isinstance(node, AstNode):
-        values = (getattr(node, name) for name in type(node).model_fields)
+        values = [
+            getattr(node, name)
+            for name in type(node).model_fields
+            if not (skip_ctes and name == "cte_map")
+        ]
     elif isinstance(node, dict):
-        values = node.values()
+        values = list(node.values())
     elif isinstance(node, list):
         values = node
     else:
@@ -430,4 +549,4 @@ def child_nodes(node: Any) -> Iterator[AstNode]:
         if isinstance(value, AstNode):
             yield value
         elif isinstance(value, dict | list):
-            yield from child_nodes(value)
+            yield from child_nodes(value, skip_ctes=skip_ctes)

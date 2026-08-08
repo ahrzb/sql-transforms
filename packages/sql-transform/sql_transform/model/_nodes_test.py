@@ -29,17 +29,28 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sql_transform.model._ast import _deserialize, _serialize
+from sql_transform.model._ast import (
+    _deserialize,
+    _is_query,
+    _is_ref,
+    _serialize,
+    _under,
+)
 from sql_transform.model._nodes import (
-    _STRUCTURAL,
     INTERPRETED,
+    AstNode,
     BaseTable,
     ColumnRef,
     Function,
     Opaque,
     Select,
+    _is_structural,
     child_nodes,
+    descendants,
     from_json,
+    is_query,
+    is_ref,
+    rebuild,
     to_json,
 )
 
@@ -199,7 +210,35 @@ def test_the_structural_shapes_are_what_we_think():
         entry["value"],  # CteValue
         entry["value"]["query"],  # Subquery
     ):
-        assert frozenset(shape) in _STRUCTURAL, sorted(shape)
+        assert _is_structural(shape), sorted(shape)
+
+
+@pytest.mark.parametrize("sql", PARSEABLE)
+def test_no_raw_dict_survives_the_conversion(sql):
+    """The invariant the walk rests on: after `from_json` every dict in the
+    tree is a model. A raw one is a place `isinstance` cannot look, and that
+    is where a `__FIT__` hides."""
+
+    def raw_dicts(value):
+        if isinstance(value, Opaque):
+            return sum(raw_dicts(v) for v in value.fields.values())
+        if isinstance(value, AstNode):
+            return sum(raw_dicts(getattr(value, n)) for n in type(value).model_fields)
+        if isinstance(value, list):
+            return sum(raw_dicts(v) for v in value)
+        return 1 if isinstance(value, dict) else 0
+
+    assert raw_dicts(from_json(_serialize(sql))) == 0
+
+
+def test_a_star_replace_entry_is_not_a_cte_entry():
+    """The one shape collision: DuckDB spells both `{key, value}`. Claiming the
+    replace entry as a CTE entry left it a plain dict inside an Opaque, where
+    nothing validates it and the walk stopped yielding it."""
+    star = _serialize("SELECT * REPLACE (x+1 AS x) FROM a")["statements"][0]["node"]
+    entry = star["select_list"][0]["replace_list"][0]
+    assert frozenset(entry) == frozenset({"key", "value"})
+    assert not _is_structural(entry)
 
 
 def test_a_dropped_field_is_accepted_and_changes_the_query():
@@ -245,6 +284,79 @@ def _walk(node):
     yield node
     for child in child_nodes(node):
         yield from _walk(child)
+
+
+# ------------------------------------------------- the walk, against the old one
+
+
+def _shape(node):
+    """A node as a comparable key: its tag plus its own field names.
+
+    Identity is no use across the two walks — one yields dicts, the other
+    models — and printing is no use either, since two `SELECT 1` nodes are
+    indistinguishable and both walks may yield both.
+
+    A `type` that is not a string is not a tag: DuckDB nests a whole type
+    descriptor under that key inside a VALUE_CONSTANT, and the typed side
+    reports no tag for it.
+    """
+    if isinstance(node, dict):
+        tag = node.get("type")
+        return (tag if isinstance(tag, str) else None, tuple(sorted(node)))
+    if isinstance(node, Opaque):
+        return (node.tag_name or None, tuple(sorted(node.fields)))
+    fields = type(node).model_fields
+    keys = sorted(spec.alias or name for name, spec in fields.items())
+    return (type(node).tag or None, tuple(keys))
+
+
+@pytest.mark.parametrize("deep", [True, False])
+@pytest.mark.parametrize("sql", PARSEABLE)
+def test_the_typed_walk_visits_what_the_dict_walk_visited(sql, deep):
+    """`descendants` replaces `_under`. Same nodes, same order, or the refactor
+    changed what freezing sees — which is exactly how a silent one happens."""
+    doc = _serialize(sql)
+    raw = doc["statements"][0]["node"]
+    typed = from_json(doc).statements[0].node
+    old = [_shape(v) for _, _, v in _under(raw, deep=deep)]
+    new = [_shape(n) for n in descendants(typed, deep=deep)]
+    assert new == old
+
+
+@pytest.mark.parametrize("sql", PARSEABLE)
+def test_the_typed_predicates_agree_with_the_structural_ones(sql):
+    """`is_query`/`is_ref` replace `_is_query`/`_is_ref`, including for tags
+    no class claims — a query node DuckDB adds later arrives as an Opaque, and
+    answering False for it would treat a whole subquery as an expression."""
+    raw = _serialize(sql)["statements"][0]["node"]
+    typed = from_json(_serialize(sql)).statements[0].node
+    old = [(_is_query(v), _is_ref(v)) for _, _, v in _under(raw, deep=True)]
+    new = [(is_query(n), is_ref(n)) for n in descendants(typed, deep=True)]
+    assert new == old
+
+
+@pytest.mark.parametrize("sql", PARSEABLE)
+def test_rebuild_without_a_replacement_is_the_identity(sql):
+    doc = from_json(_serialize(sql))
+    assert to_json(rebuild(doc, lambda _: None, deep=True)) == _serialize(sql)
+    assert to_json(rebuild(doc, lambda _: None, deep=False)) == _serialize(sql)
+
+
+def test_rebuild_replaces_every_site_and_never_rewalks_one():
+    """A replacement that itself matches must not be replaced again — the
+    property `_bind_parameters` used to get by collecting sites up front."""
+    doc = from_json(_serialize("SELECT * FROM a, (SELECT * FROM a) s"))
+    seen = 0
+
+    def rename(node):
+        nonlocal seen
+        if isinstance(node, BaseTable) and node.table_name == "a":
+            seen += 1
+            return node.model_copy(update={"table_name": "a"})  # matches again
+        return None
+
+    rebuild(doc, rename, deep=True)
+    assert seen == 2
 
 
 # --------------------------------------------------------------- the manifest
