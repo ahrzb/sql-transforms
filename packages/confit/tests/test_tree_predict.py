@@ -89,8 +89,8 @@ class TreeUDF:
 
     def __init__(self, name, nodes, headers, n_features, grid):
         self.name = name
-        self.takes = ("f64",) * n_features
-        self.returns = ("f64",)
+        self.takes = pa.schema([(f"f{i}", pa.float64()) for i in range(n_features)])
+        self.returns = pa.float64()
         self.instances = dict.fromkeys(range(headers.num_rows))
         self._tables = (nodes, headers)
         self._grid = grid
@@ -449,8 +449,8 @@ def test_a_tree_transform_and_an_ecall_udf_cannot_share_a_name():
 
     class Scale:
         name = "trees"
-        takes = ("f64",)
-        returns = ("f64",)
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.float64()
 
         def __call__(self, x):
             return (x * 2.0,)
@@ -485,8 +485,8 @@ def test_malformed_tree_tables_refuses():
 
     class Wrong:
         name = "trees"
-        takes = ("f64",)
-        returns = ("f64",)
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.float64()
         instances = {0: None}
 
         def tree_tables(self):

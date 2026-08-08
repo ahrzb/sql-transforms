@@ -324,7 +324,8 @@ def test_unaligned_model_tables_at_construction():
             "link": pa.array(["identity"], pa.string()),
         })
         class M:
-            name, takes, returns, instances = "m", ("f64",), ("f64",), {0: None}
+            name, takes, returns = "m", pa.schema([("x", pa.float64())]), pa.float64()
+            instances = {0: None}
             def tree_tables(self):
                 return nodes, headers, "float32"
 

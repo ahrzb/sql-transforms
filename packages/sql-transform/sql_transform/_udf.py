@@ -29,7 +29,6 @@ from typing import Any
 
 import pyarrow as pa
 
-_TYPES = frozenset({"i1", "i64", "f64", "str"})
 _DUCK = {"i1": "BOOLEAN", "i64": "BIGINT", "f64": "DOUBLE", "str": "VARCHAR"}
 _ARROW = {
     "i1": pa.bool_(),
@@ -37,36 +36,118 @@ _ARROW = {
     "f64": pa.float64(),
     "str": pa.string(),
 }
+# The engine computes in exactly i64 / f64 / string / bool, so these four are
+# the whole vocabulary. A narrower arrow type refuses rather than widening
+# silently, which would make the declared schema a lie about what is served.
+_CODE = {v: k for k, v in _ARROW.items()}
 
 
 class UDFError(ValueError):
     """A UDF declaration or result violated its contract; names how."""
 
 
-def _check_types(name: str, label: str, types: tuple[str, ...]) -> None:
-    for t in types:
-        if t not in _TYPES:
-            raise UDFError(
-                f"UDF {name}: {label} type {t!r} is not one of {sorted(_TYPES)}"
-            )
+def _code(name: str, label: str, t: pa.DataType) -> str:
+    try:
+        return _CODE[t]
+    except KeyError:
+        raise UDFError(
+            f"UDF {name}: {label} type {t} is not one of"
+            f" {', '.join(str(a) for a in _ARROW.values())}"
+        ) from None
+
+
+def _lanes(name: str, returns: pa.DataType) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """`(field names, type codes)` for a declared return type — see
+    [`UDF.returns`] for what each arrow shape means."""
+    if pa.types.is_struct(returns):
+        if returns.num_fields == 0:
+            raise UDFError(f"UDF {name}: returns struct declares no fields")
+        fields = [returns.field(i) for i in range(returns.num_fields)]
+        return (
+            tuple(f.name for f in fields),
+            tuple(_code(name, "returns", f.type) for f in fields),
+        )
+    if pa.types.is_fixed_size_list(returns):
+        if returns.list_size < 1:
+            raise UDFError(f"UDF {name}: returns list size must be at least 1")
+        return (), (_code(name, "returns", returns.value_type),) * returns.list_size
+    if pa.types.is_list(returns) or pa.types.is_large_list(returns):
+        raise UDFError(
+            f"UDF {name}: returns list must declare its width —"
+            f" pa.list_({returns.value_type}, k), not pa.list_({returns.value_type})"
+        )
+    return (), (_code(name, "returns", returns),)
 
 
 class UDF:
     """Base protocol; subclasses set name/takes/returns and __call__.
 
-    ``take_names``/``return_names`` carry the *struct* half of the type
-    (DRAFT-24): a fitted transform is a function ``S -> T`` between named
-    structs, and the names are matched name-keyed, never positionally — a
-    refit that renumbers lanes (OneHotEncoder gaining a category) must
-    break loudly, not rewire silently. An addressed field is validated at
-    fit and served as a field read over the ONE whole-value call (TASK-63);
-    the names ride as string literals, so any spelling is safe."""
+    The schema is **arrow**, and it is the whole declaration — one field per
+    argument, one type for the result:
+
+    ``takes`` is a ``pa.Schema``: names and types together, in call order.
+    Arguments bind by POSITION; the names are the *struct* half of the type
+    (DRAFT-24), a fitted transform being a function ``S -> T`` between named
+    structs.
+
+    ``returns`` is the SQL return TYPE, which also says how wide the call is
+    and whether its lanes are addressable:
+
+    ===========================  =======================================
+    ``pa.float64()``             an ordinary scalar expression
+    ``pa.struct([...])``         width-k with addressable field names
+                                 (TASK-63) — struct-valued at EVERY width,
+                                 so ``f(x).a`` reads a lane off ONE call
+    ``pa.list_(t, k)``           width-k unnamed (the DRAFT-22 list
+                                 boundary); fixed size because the width
+                                 is part of the declaration
+    ===========================  =======================================
+
+    Names are matched name-keyed, never positionally, so a refit that
+    renumbers lanes (OneHotEncoder gaining a category) breaks loudly rather
+    than rewiring silently. An addressed field is validated at fit and served
+    as a field read over the one whole-value call; the names ride as string
+    literals, so any spelling is safe.
+    """
 
     name: str
-    takes: tuple[str, ...]
-    returns: tuple[str, ...]
-    take_names: tuple[str, ...] = ()
-    return_names: tuple[str, ...] = ()
+    takes: pa.Schema
+    returns: pa.DataType
+
+    @property
+    def take_names(self) -> tuple[str, ...]:
+        return tuple(self.takes.names)
+
+    @property
+    def take_types(self) -> tuple[str, ...]:
+        """Argument types as engine codes, in call order."""
+        return tuple(_code(self.name, "takes", t) for t in self.takes.types)
+
+    @property
+    def return_names(self) -> tuple[str, ...]:
+        """Output field names — empty unless ``returns`` is a struct."""
+        return _lanes(self.name, self.returns)[0]
+
+    @property
+    def return_types(self) -> tuple[str, ...]:
+        """Output lane types as engine codes; its length is the call width."""
+        return _lanes(self.name, self.returns)[1]
+
+    def _check_schema(self) -> None:
+        """Force every type through the vocabulary at declaration, so a bad
+        one names itself while the author is still holding the object rather
+        than at prepare. The lane readings raise; their values are not wanted
+        here."""
+        _ = self.take_types, self.return_types
+        names = self.return_names
+        # Field binding is ASCII-case-insensitive (here and in DuckDB's struct
+        # keys) — colliding names would bind silently wrong.
+        for i, a in enumerate(names):
+            if any(b.lower() == a.lower() for b in names[:i]):
+                raise UDFError(
+                    f"UDF {self.name}: returns field names collide"
+                    f" case-insensitively ({a!r})"
+                )
 
     def lane_of(self, field_name: str) -> int:
         """Index of an output field, by name — ASCII-case-insensitive like
@@ -92,55 +173,52 @@ class UDF:
         out = self(*args)
         if out is None:
             return None
-        if not isinstance(out, tuple) or len(out) != len(self.returns):
+        rets = self.return_types
+        if not isinstance(out, tuple) or len(out) != len(rets):
             raise UDFError(
                 f"UDF {self.name} returned {out!r}, declared returns {self.returns}"
             )
-        if self.return_names:
+        names = self.return_names
+        if names:
             # Struct-valued at EVERY width (the subtraction loop): the
             # registration is a STRUCT, so the value is a dict.
-            return dict(zip(self.return_names, out, strict=True))
+            return dict(zip(names, out, strict=True))
         return out[0] if len(out) == 1 else list(out)
 
     def apply_batch(self, *cols: pa.Array) -> tuple[pa.Array, ...]:
         """Boundary-amortized form; the default loops ``__call__``."""
         rows = zip(*(c.to_pylist() for c in cols), strict=True)
         outs = [self(*r) for r in rows]
-        width = len(self.returns)
+        width = len(self.return_types)
         return tuple(
             pa.array([None if o is None else o[j] for o in outs]) for j in range(width)
         )
 
     def _duck_signature(self) -> tuple[list[str], Any]:
-        params = [_DUCK[t] for t in self.takes]
-        if self.return_names:
+        params = [_DUCK[t] for t in self.take_types]
+        names, rets = self.return_names, self.return_types
+        if names:
             # Declared names => a STRUCT return at EVERY width, so field
             # access reads lanes off ONE call (TASK-63) — DuckDB CSEs the
             # identical pure calls; confit shares the ecall site.
             import duckdb
 
             return params, duckdb.struct_type(
-                {
-                    n: _DUCK[t]
-                    for n, t in zip(self.return_names, self.returns, strict=True)
-                }
+                {n: _DUCK[t] for n, t in zip(names, rets, strict=True)}
             )
-        if len(self.returns) == 1:
-            return params, _DUCK[self.returns[0]]
+        if len(rets) == 1:
+            return params, _DUCK[rets[0]]
         return params, "DOUBLE[]"
 
     def _arrow_ret(self) -> pa.DataType:
-        """The return type as arrow, mirroring ``_duck_signature``."""
-        if self.return_names:
-            return pa.struct(
-                [
-                    pa.field(n, _ARROW[t])
-                    for n, t in zip(self.return_names, self.returns, strict=True)
-                ]
-            )
-        if len(self.returns) == 1:
-            return _ARROW[self.returns[0]]
-        return pa.list_(pa.float64())
+        """The return type as arrow, mirroring ``_duck_signature``.
+
+        This is ``returns`` itself except for the unnamed width-k case, where
+        the declaration is a FIXED-size list and the value crossing the
+        boundary is a variable one (DuckDB registers `DOUBLE[]`)."""
+        if pa.types.is_fixed_size_list(self.returns):
+            return pa.list_(self.returns.value_type)
+        return self.returns
 
     def _arrow_scalar_batch(self, *cols: Any) -> pa.Array:
         """One chunk of ``_scalar`` calls as an arrow array. This is the
@@ -174,17 +252,14 @@ class PythonUDF(UDF):
 
     name: str
     fn: Callable[..., Any]
-    takes: tuple[str, ...]
-    returns: tuple[str, ...]
-    take_names: tuple[str, ...] = ()
-    return_names: tuple[str, ...] = ()
+    takes: pa.Schema = field(hash=False)
+    returns: pa.DataType = pa.float64()
 
     def __post_init__(self) -> None:
-        _check_types(self.name, "takes", self.takes)
-        _check_types(self.name, "returns", self.returns)
-        if len(self.returns) != 1:
+        self._check_schema()
+        if len(self.return_types) != 1 or self.return_names:
             raise UDFError(
-                f"UDF {self.name}: a scalar UDF declares exactly one return"
+                f"UDF {self.name}: a scalar UDF declares one plain return"
                 f" type, got {self.returns}"
             )
 
@@ -204,14 +279,11 @@ class PythonTransform(UDF):
 
     name: str
     instances: dict[int, Any] = field(hash=False)
-    takes: tuple[str, ...]
-    returns: tuple[str, ...]
-    take_names: tuple[str, ...] = ()
-    return_names: tuple[str, ...] = ()
+    takes: pa.Schema = field(hash=False)
+    returns: pa.DataType = pa.float64()
 
     def __post_init__(self) -> None:
-        _check_types(self.name, "takes", self.takes)
-        _check_types(self.name, "returns", self.returns)
+        self._check_schema()
 
     def __call__(self, iid: int | None, *feats: Any) -> tuple | None:
         if iid is None:
@@ -224,13 +296,13 @@ class PythonTransform(UDF):
                 " instances — params table and instances are from"
                 " different fits"
             ) from None
-        vals = [_as_feature(f, t) for f, t in zip(feats, self.takes, strict=True)]
+        vals = [_as_feature(f, t) for f, t in zip(feats, self.take_types, strict=True)]
         row = est.transform([vals])[0]
         out = tuple(float(v) for v in _flatten_row(row))
-        if len(out) != len(self.returns):
+        width = len(self.return_types)
+        if len(out) != width:
             raise UDFError(
-                f"UDF {self.name} produced {len(out)} values, declared"
-                f" {len(self.returns)}"
+                f"UDF {self.name} produced {len(out)} values, declared {width}"
             )
         return out
 

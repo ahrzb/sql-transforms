@@ -8,6 +8,7 @@ Spec: docs/superpowers/specs/2026-08-05-fit-transform-split-design.md.
 """
 
 import numpy as np
+import pyarrow as pa
 import pydantic
 import pytest
 from sklearn.base import clone
@@ -144,8 +145,8 @@ def test_author_udf_in_predicate_serves():
     gt6 = PythonUDF(
         name="gt6",
         fn=lambda v: v is not None and v > 6.0,
-        takes=("f64",),
-        returns=("i1",),
+        takes=pa.schema([("v", pa.float64())]),
+        returns=pa.bool_(),
     )
     p = SQLProjection(
         "SELECT sc_transform(sc_fit(age) FILTER (WHERE gt6(fare)) OVER (), age)"

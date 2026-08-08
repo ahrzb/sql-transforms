@@ -12,17 +12,43 @@ class.
 from __future__ import annotations
 
 import duckdb
+import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 from test_duckdb_interpreter import _row_model, static
+
+
+def test_the_schema_is_arrow():
+    """`takes` is a `pa.Schema` and `returns` is the SQL return TYPE — one
+    declaration each, names included. The three return shapes are three arrow
+    types rather than a width plus an optional names tuple."""
+    model = _row_model({"id": "int", "x": "float"})
+
+    class Halve:
+        name = "halve"
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.float64()
+
+        def __call__(self, x):
+            return (None if x is None else x / 2.0,)
+
+    fn = DuckDBInferFn(
+        "SELECT halve(x) AS p FROM __THIS__",
+        row_tables={"__THIS__": model},
+        static_tables={},
+        udfs=[Halve()],
+    )
+    assert fn.backend == "cranelift"
+    got = [r.p for r in fn.infer({"__THIS__": [model(id=0, x=5.0)]})]
+    assert got == [2.5]
 
 
 class Scale:
     """A fitted-transformer stand-in: tf(id, x) = x * factor[id] (width 1)."""
 
     name = "tf0"
-    takes = ("f64",)
-    returns = ("f64",)
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.float64()
     instances = {0: 10.0, 1: 100.0}
 
     def __call__(self, iid, x):
@@ -35,8 +61,8 @@ class Embed2:
     """A width-2 transformer stand-in: emb(id, x) = (x + id, x - id)."""
 
     name = "emb"
-    takes = ("f64",)
-    returns = ("f64", "f64")
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.list_(pa.float64(), 2)
     instances = {0: 0.0, 1: 1.0}
 
     def __call__(self, iid, x):
@@ -50,9 +76,8 @@ class NamedEmbed2:
     """Embed2 with declared output field names (TASK-63) + a call counter."""
 
     name = "emb"
-    takes = ("f64",)
-    returns = ("f64", "f64")
-    return_names = ("a", "b")
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.struct([("a", pa.float64()), ("b", pa.float64())])
     instances = {0: 0.0, 1: 1.0}
 
     def __init__(self):
@@ -70,11 +95,24 @@ class Shout:
     """A plain author UDF (no instances -> no implicit id): str -> str."""
 
     name = "shout"
-    takes = ("str",)
-    returns = ("str",)
+    takes = pa.schema([("s", pa.string())])
+    returns = pa.string()
 
     def __call__(self, s):
         return (None if s is None else s.upper(),)
+
+
+def _lanes(obj):
+    """`(field names, lane types)` off a declared `returns` — the same reading
+    the engine does, spelled here so this package's tests exercise the arrow
+    protocol rather than importing sql_transform's implementation of it."""
+    r = obj.returns
+    if pa.types.is_struct(r):
+        f = [r.field(i) for i in range(r.num_fields)]
+        return tuple(x.name for x in f), tuple(x.type for x in f)
+    if pa.types.is_fixed_size_list(r):
+        return (), (r.value_type,) * r.list_size
+    return (), (r,)
 
 
 def _scalar_form(obj):
@@ -82,7 +120,8 @@ def _scalar_form(obj):
     width-k becomes a dict (STRUCT) when field names are declared, else a
     list (DOUBLE[])."""
 
-    rn = getattr(obj, "return_names", None) if len(obj.returns) > 1 else None
+    names, types = _lanes(obj)
+    rn = names if len(types) > 1 else None
 
     def unwrap(out):
         if out is None:
@@ -98,7 +137,12 @@ def _scalar_form(obj):
     return ns["w"]
 
 
-_DUCK_T = {"i1": "BOOLEAN", "i64": "BIGINT", "f64": "DOUBLE", "str": "VARCHAR"}
+_DUCK_T = {
+    pa.bool_(): "BOOLEAN",
+    pa.int64(): "BIGINT",
+    pa.float64(): "DOUBLE",
+    pa.string(): "VARCHAR",
+}
 
 
 def udf_check(sql, row_schema, row_rows, statics, udfs, output=None, after_engine=None):
@@ -121,16 +165,16 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, output=None, after_engin
 
     con = duckdb.connect()
     for u in udfs:
-        params = [_DUCK_T[t] for t in u.takes]
+        params = [_DUCK_T[t] for t in u.takes.types]
         if hasattr(u, "instances"):
             params = ["BIGINT", *params]
-        rn = getattr(u, "return_names", None)
-        if len(u.returns) == 1:
-            ret = _DUCK_T[u.returns[0]]
-        elif rn:
+        rn, rt = _lanes(u)
+        if rn:
             ret = duckdb.struct_type(
-                {n: _DUCK_T[t] for n, t in zip(rn, u.returns, strict=True)}
+                {n: _DUCK_T[t] for n, t in zip(rn, rt, strict=True)}
             )
+        elif len(rt) == 1:
+            ret = _DUCK_T[rt[0]]
         else:
             ret = "DOUBLE[]"
         con.create_function(
@@ -216,15 +260,14 @@ def test_case_colliding_return_names_refuse_at_build():
     # names that collide under it would bind silently wrong.
     class Bad2:
         name = "bad2"
-        takes = ("f64",)
-        returns = ("f64", "f64")
-        return_names = ("x", "X")
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.struct([("x", pa.float64()), ("X", pa.float64())])
 
         def __call__(self, x):
             return (x, x)
 
     model = _row_model({"x": "float?"})
-    with pytest.raises(Exception, match="return_names"):
+    with pytest.raises(Exception, match="collide case-insensitively"):
         DuckDBInferFn(
             "SELECT (bad2(x)).x AS a FROM __THIS__",
             row_tables={"__THIS__": model},
@@ -328,8 +371,8 @@ def test_both_backends_agree(monkeypatch):
 def test_udf_exception_traps():
     class Boom:
         name = "boom"
-        takes = ("f64",)
-        returns = ("f64",)
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.float64()
 
         def __call__(self, x):
             raise RuntimeError("kapow")
@@ -348,8 +391,8 @@ def test_udf_exception_traps():
 def test_wrong_return_shape_traps():
     class Liar:
         name = "liar"
-        takes = ("f64",)
-        returns = ("f64", "f64")
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.list_(pa.float64(), 2)
 
         def __call__(self, x):
             return (x,)  # declared 2, returns 1
@@ -388,22 +431,39 @@ def test_wide_mid_expression_refuses():
 
 
 def test_declaration_validation():
+    """The vocabulary is exactly bool/int64/double/string. A narrower arrow
+    type refuses rather than widening silently, which would make the declared
+    schema a lie about what is served."""
+
     class BadTy:
         name = "bad"
-        takes = ("f32",)
-        returns = ("f64",)
+        takes = pa.schema([("x", pa.float32())])
+        returns = pa.float64()
 
         def __call__(self, x):
             return (x,)
 
+    class BadRet(BadTy):
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.int32()
+
+    class UnsizedList(BadTy):
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.list_(pa.float64())
+
     model = _row_model({"x": "float?"})
-    with pytest.raises(Exception, match="f32.*i1/i64/f64/str"):
-        DuckDBInferFn(
-            "SELECT bad(x) AS z FROM __THIS__",
-            row_tables={"__THIS__": model},
-            static_tables={},
-            udfs=[BadTy()],
-        )
+    for cls, needle in (
+        (BadTy, "float.*bool/int64/double/string"),
+        (BadRet, "int32.*bool/int64/double/string"),
+        (UnsizedList, "must declare its width"),
+    ):
+        with pytest.raises(Exception, match=needle):
+            DuckDBInferFn(
+                "SELECT bad(x) AS z FROM __THIS__",
+                row_tables={"__THIS__": model},
+                static_tables={},
+                udfs=[cls()],
+            )
     with pytest.raises(Exception, match="duplicate udf name"):
         DuckDBInferFn(
             "SELECT tf0(0, x) AS z FROM __THIS__",

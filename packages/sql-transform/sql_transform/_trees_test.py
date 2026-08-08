@@ -13,6 +13,7 @@ run to run (measured 2026-08-07: up to 1187 of 2000 rows differ, 19 ULP).
 from __future__ import annotations
 
 import numpy as np
+import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 from pydantic import create_model
@@ -47,8 +48,8 @@ def tbt(estimators, name="score", **kw):
     return TreeBasedTransform(
         name,
         instances=dict(enumerate(estimators)),
-        takes=("f64",) * len(FEATURES),
-        returns=("f64",),
+        takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        returns=pa.float64(),
         **kw,
     )
 
@@ -79,8 +80,8 @@ def test_a_tree_based_transform_registers_like_every_other_transform():
             TreeBasedTransform(
                 "score",
                 instances=dict(enumerate(ests)),
-                takes=("f64",) * len(FEATURES),
-                returns=("f64",),
+                takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+                returns=pa.float64(),
             )
         ],
     )
@@ -271,8 +272,8 @@ def _both_paths(ests, rows, row_model=None):
     udf = PythonTransform(
         name="score",
         instances=shims,
-        takes=("f64",) * len(FEATURES),
-        returns=("f64",),
+        takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        returns=pa.float64(),
     )
     ecall_fn = DuckDBInferFn(
         SQL, row_tables={"__THIS__": row_model}, static_tables={}, udfs=[udf]
@@ -364,8 +365,8 @@ def test_ecall_and_predict_agree_on_a_null_id():
     udf = PythonTransform(
         name="score",
         instances={0: _AsTransform(est)},
-        takes=("f64",) * len(FEATURES),
-        returns=("f64",),
+        takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        returns=pa.float64(),
     )
     ecall_fn = DuckDBInferFn(
         SQL, row_tables={"__THIS__": nullable_row}, static_tables={}, udfs=[udf]
@@ -565,13 +566,19 @@ def test_feature_count_mismatch_refuses():
     fitted = fit(DecisionTreeRegressor(max_depth=3, random_state=61), 61)
     with pytest.raises(TreePackError, match="fitted on 4 features"):
         TreeBasedTransform(
-            "score", instances={0: fitted}, takes=("f64", "f64"), returns=("f64",)
+            "score",
+            instances={0: fitted},
+            takes=pa.schema([("a", pa.float64()), ("b", pa.float64())]),
         )
 
 
 def test_empty_refuses():
     with pytest.raises(UDFError, match="no fitted instances"):
-        TreeBasedTransform("score", instances={}, takes=("f64",) * 4, returns=("f64",))
+        TreeBasedTransform(
+            "score",
+            instances={},
+            takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        )
 
 
 def test_sparse_instance_ids_refuse():
@@ -582,8 +589,8 @@ def test_sparse_instance_ids_refuse():
         TreeBasedTransform(
             "score",
             instances={0: fitted, 2: fitted},
-            takes=("f64",) * len(FEATURES),
-            returns=("f64",),
+            takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+            returns=pa.float64(),
         )
 
 
@@ -655,7 +662,7 @@ def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
         static_tables={},
         udfs=[
             TreeBasedTransform(
-                "m", instances={0: est}, takes=("f64",), returns=("f64",)
+                "m", instances={0: est}, takes=pa.schema([("n", pa.float64())])
             )
         ],
     )
@@ -682,7 +689,9 @@ def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
         static_tables={},
         udfs=[
             TreeBasedTransform(
-                "m", instances={0: est}, takes=("f64", "f64"), returns=("f64",)
+                "m",
+                instances={0: est},
+                takes=pa.schema([("a", pa.float64()), ("b", pa.float64())]),
             )
         ],
     )
@@ -710,7 +719,7 @@ def test_integer_feature_literal_is_narrowed_too():
         static_tables={},
         udfs=[
             TreeBasedTransform(
-                "m", instances={0: est}, takes=("f64",), returns=("f64",)
+                "m", instances={0: est}, takes=pa.schema([("n", pa.float64())])
             )
         ],
     )
@@ -722,23 +731,22 @@ def test_integer_feature_literal_is_narrowed_too():
 # ADJUDICATED and CONFIRMED 2026-08-08 (TASK-78). The sweep's verifiers had
 # split on it; reproduced by hand, and the divergence is not subtle — a forest
 # fitted on columns ['b', 'a'] and declared as ['a', 'b'] built without
-# complaint and scored -2.72 where sklearn said 0.84. FIXED: when `take_names`
-# is declared it must match the fitted order — conditional on both, since
-# `feature_names_in_` exists only for an estimator fitted on something with
-# column names, and `take_names` only when the author declared them.
+# complaint and scored -2.72 where sklearn said 0.84. FIXED: the schema's
+# field names must match the fitted order. Since the schema always carries
+# names, the check is no longer opt-in the way the old `take_names` was; it
+# stays conditional on `feature_names_in_`, which exists only for an estimator
+# fitted on something with column names.
 
 
 def _named(est, names):
     return TreeBasedTransform(
         "score",
         instances={0: est},
-        takes=("f64",) * len(names),
-        returns=("f64",),
-        take_names=tuple(names),
+        takes=pa.schema([(n, pa.float64()) for n in names]),
     )
 
 
-def test_dataframe_fitted_model_refuses_mismatched_take_names():
+def test_dataframe_fitted_model_refuses_mismatched_schema_names():
     pd = pytest.importorskip("pandas")
 
     rng = np.random.RandomState(90)
@@ -755,14 +763,14 @@ def test_dataframe_fitted_model_refuses_mismatched_take_names():
     assert _named(est, ["b", "a"]).take_names == ("b", "a")
 
 
-def test_take_names_are_optional_and_do_not_bind_the_call_site():
+def test_schema_names_do_not_bind_the_call_site():
     """Arguments bind by POSITION, so a call site names its columns whatever
-    it likes; `take_names` is a fit-time cross-check, not a call-site key."""
+    it likes; the schema's names are a fit-time cross-check, not a key."""
     rng = np.random.RandomState(91)
     x = rng.rand(80, 2) * 4 - 2
     est = DecisionTreeRegressor(max_depth=4, random_state=91).fit(x, x[:, 0] * 3)
     assert not hasattr(est, "feature_names_in_")
-    # no `feature_names_in_`: any declaration is accepted, as is none at all
+    # no `feature_names_in_`: any naming is accepted
     assert _named(est, ["anything", "at_all"]).take_names == ("anything", "at_all")
 
     from pydantic import create_model as _cm

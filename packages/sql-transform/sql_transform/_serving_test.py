@@ -85,7 +85,9 @@ def test_unseen_group_is_null_row_at_a_time():
 
 def test_author_udf_serves():
     halve = PythonUDF(
-        "halve", lambda x: None if x is None else x / 2.0, ("f64",), ("f64",)
+        "halve",
+        lambda x: None if x is None else x / 2.0,
+        pa.schema([("x", pa.float64())]),
     )
     serve_gate(
         "SELECT halve(age) - avg(halve(age)) OVER () AS d, name FROM __THIS__",

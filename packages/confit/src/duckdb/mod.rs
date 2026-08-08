@@ -184,21 +184,88 @@ struct UdfDecl {
     obj: Py<PyAny>,
 }
 
+/// One arrow type as an engine type. The engine computes in exactly
+/// `i64` / `f64` / string / bool, so the four spellings that map are the
+/// whole vocabulary — a narrower arrow type refuses rather than widening
+/// silently, which would make the declared schema a lie about what is served.
+fn arrow_ty(name: &str, label: &str, t: &Bound<'_, PyAny>) -> PyResult<Ty> {
+    let s = t.str()?.extract::<String>()?;
+    Ok(match s.as_str() {
+        "bool" => Ty::I1,
+        "int64" => Ty::I64,
+        "double" => Ty::F64,
+        "string" => Ty::Str,
+        other => {
+            return Err(build_err(format!(
+                "udf '{name}': {label} type '{other}' is not one of \
+                 bool/int64/double/string"
+            )))
+        }
+    })
+}
+
+/// `takes`: a `pa.Schema`, one field per argument, in call order.
+fn parse_takes(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec<Ty>)> {
+    let bad = || build_err(format!("udf '{name}': `takes` must be a pyarrow Schema"));
+    let names: Vec<String> = obj.getattr("names").map_err(|_| bad())?.extract().map_err(|_| bad())?;
+    let types = obj.getattr("types").map_err(|_| bad())?;
+    let mut tys = Vec::with_capacity(names.len());
+    for t in types.try_iter().map_err(|_| bad())? {
+        tys.push(arrow_ty(name, "takes", &t?)?);
+    }
+    if names.len() != tys.len() {
+        return Err(bad());
+    }
+    Ok((names, tys))
+}
+
+/// `returns`: the SQL return TYPE, which is also what says how wide the call
+/// is and whether its lanes are addressable.
+///
+/// * a scalar type — an ordinary scalar expression;
+/// * `pa.struct([...])` — width-k with addressable field names (TASK-63),
+///   struct-valued at EVERY width including 1;
+/// * `pa.list_(t, k)` — width-k unnamed, the DRAFT-22 list boundary. Fixed
+///   size because the width is part of the declaration; a variable-length
+///   list would leave it unsaid.
+fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec<Ty>)> {
+    let s = obj.str()?.extract::<String>()?;
+    if s.starts_with("struct<") {
+        let n: usize = obj.getattr("num_fields")?.extract()?;
+        if n == 0 {
+            return Err(build_err(format!(
+                "udf '{name}': `returns` struct declares no fields"
+            )));
+        }
+        let mut names = Vec::with_capacity(n);
+        let mut tys = Vec::with_capacity(n);
+        for i in 0..n {
+            let f = obj.call_method1("field", (i,))?;
+            names.push(f.getattr("name")?.extract::<String>()?);
+            tys.push(arrow_ty(name, "returns", &f.getattr("type")?)?);
+        }
+        return Ok((names, tys));
+    }
+    if s.starts_with("fixed_size_list<") {
+        let k: i64 = obj.getattr("list_size")?.extract()?;
+        if k < 1 {
+            return Err(build_err(format!(
+                "udf '{name}': `returns` list size must be at least 1"
+            )));
+        }
+        let ty = arrow_ty(name, "returns", &obj.getattr("value_type")?)?;
+        return Ok((Vec::new(), vec![ty; k as usize]));
+    }
+    if s.starts_with("list<") {
+        return Err(build_err(format!(
+            "udf '{name}': `returns` list must declare its width — \
+             pa.list_(pa.float64(), k), not pa.list_(pa.float64())"
+        )));
+    }
+    Ok((Vec::new(), vec![arrow_ty(name, "returns", obj)?]))
+}
+
 fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, Vec<TreeDecl>)> {
-    let parse_ty = |name: &str, label: &str, s: &str| -> PyResult<Ty> {
-        Ok(match s {
-            "i1" => Ty::I1,
-            "i64" => Ty::I64,
-            "f64" => Ty::F64,
-            "str" => Ty::Str,
-            other => {
-                return Err(build_err(format!(
-                    "udf '{name}': {label} type '{other}' is not one of \
-                     i1/i64/f64/str"
-                )))
-            }
-        })
-    };
     let mut out: Vec<UdfDecl> = Vec::new();
     let mut trees: Vec<TreeDecl> = Vec::new();
     // One namespace: a call site resolves a name against both lists, so a
@@ -216,64 +283,32 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
             )));
         }
         names.push(name.clone());
-        let takes: Vec<String> = b
-            .getattr("takes")
-            .and_then(|v| v.extract())
-            .map_err(|_| build_err(format!("udf '{name}': `takes` must be a tuple of type names")))?;
+        let (_take_names, take_tys) = parse_takes(&name, &b.getattr("takes").map_err(|_| {
+            build_err(format!("udf '{name}': `takes` must be a pyarrow Schema"))
+        })?)?;
         // A UDF exposing `tree_tables()` is scored by the native kernel, so
         // it never becomes an extern: no callable, no GIL on the row path.
         // Its features bind positionally after the implicit instance id.
         if b.hasattr("tree_tables")? {
-            if takes.is_empty() {
+            if take_tys.is_empty() {
                 return Err(build_err(format!(
                     "udf '{name}': a tree transform scores at least one feature"
                 )));
             }
-            trees.push(parse_tree_udf(py, name, takes.len(), &b)?);
+            trees.push(parse_tree_udf(py, name, take_tys.len(), &b)?);
             continue;
         }
-        let rets: Vec<String> = b
-            .getattr("returns")
-            .and_then(|v| v.extract())
-            .map_err(|_| {
-                build_err(format!("udf '{name}': `returns` must be a tuple of type names"))
-            })?;
-        if rets.is_empty() {
-            return Err(build_err(format!(
-                "udf '{name}': `returns` must declare at least one type"
-            )));
-        }
-        let mut params = Vec::with_capacity(takes.len() + 1);
+        let (ret_names, rets) = parse_returns(&name, &b.getattr("returns").map_err(|_| {
+            build_err(format!("udf '{name}': `returns` must be a pyarrow DataType"))
+        })?)?;
+        let mut params = Vec::with_capacity(take_tys.len() + 1);
         // The implicit leading instance id (DRAFT-22): objects with an
         // `instances` attribute are fitted transformers whose first SQL
         // argument is the nullable i64 id — never written in `takes`.
         if b.hasattr("instances")? {
             params.push(Ty::I64);
         }
-        for t in &takes {
-            params.push(parse_ty(&name, "takes", t)?);
-        }
-        let rets = rets
-            .iter()
-            .map(|t| parse_ty(&name, "returns", t))
-            .collect::<PyResult<Vec<_>>>()?;
-        // Optional declared output field names (TASK-63): enables field
-        // access over a width-k call. Absent or None = unnamed.
-        let ret_names: Vec<String> = match b.getattr("return_names") {
-            Ok(v) if !v.is_none() => v.extract().map_err(|_| {
-                build_err(format!(
-                    "udf '{name}': `return_names` must be a tuple of strings"
-                ))
-            })?,
-            _ => Vec::new(),
-        };
-        if !ret_names.is_empty() && ret_names.len() != rets.len() {
-            return Err(build_err(format!(
-                "udf '{name}': {} return_names for {} returns",
-                ret_names.len(),
-                rets.len()
-            )));
-        }
+        params.extend(take_tys);
         // Field binding is ASCII-case-insensitive (here and in DuckDB's
         // struct keys) — colliding names would bind silently wrong.
         for (i, a) in ret_names.iter().enumerate() {

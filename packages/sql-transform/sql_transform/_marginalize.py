@@ -1626,7 +1626,11 @@ class _Planner:
                 f"UDF {name} declares {len(takes)} arguments, called with {nargs}",
                 loc,
             )
-        if len(returns) != 1:
+        # `returns` is the SQL return TYPE: a scalar UDF used mid-expression
+        # must be a plain one, never a struct or a list.
+        import pyarrow as pa
+
+        if pa.types.is_struct(returns) or pa.types.is_nested(returns):
             _refuse(f"scalar UDF {name} must declare exactly one return", loc)
         self.scalar_udfs[name] = nargs
 
