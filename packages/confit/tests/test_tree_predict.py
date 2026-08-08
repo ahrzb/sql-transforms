@@ -1,8 +1,14 @@
-"""The `models=` boundary: two pyarrow tables in, native scoring out.
+"""The tree-transform boundary: two pyarrow tables in, native scoring out.
 
-DuckDB has no `tree_predict`, so there is no differential oracle here — the
-values are asserted directly against the tree the test itself builds. Parity
-against sklearn is a separate gate that lives in sql-transform.
+A declared UDF that exposes `tree_tables()` is scored by the native kernel
+instead of a Python callback, and is otherwise an ordinary transform: called
+`name(id, feats...)`, registered through `udfs=`. Nothing here imports
+sklearn — the protocol is a pair of Arrow tables and a grid, which is exactly
+what a non-sklearn packer would supply.
+
+DuckDB has no native tree scoring, so there is no differential oracle here —
+the values are asserted directly against the tree the test itself builds.
+Parity against sklearn is a separate gate that lives in sql-transform.
 
 Every scoring case runs on BOTH backends: `duckdb/mod.rs` discards the
 cranelift compile error and falls back to the interpreter silently, so a
@@ -72,37 +78,73 @@ def leaf(model_id, tree_id, node_id, value):
     }
 
 
+class TreeUDF:
+    """A tree transform built straight from Arrow — the whole engine-facing
+    protocol, with no packer and no sklearn behind it.
+
+    `grid=None` returns a 2-tuple, which is how the is-it-required test
+    builds one; everything else declares sklearn's grid, since that is what
+    these fixtures' thresholds imitate.
+    """
+
+    def __init__(self, name, nodes, headers, n_features, grid, lane=None):
+        self.name = name
+        lane = lane or pa.float64()
+        self.takes = pa.schema([(f"f{i}", lane) for i in range(n_features)])
+        self.returns = pa.float64()
+        self.instances = dict.fromkeys(range(headers.num_rows))
+        self._tables = (nodes, headers)
+        self._grid = grid
+
+    def tree_tables(self):
+        if self._grid is None:
+            return self._tables
+        return (*self._tables, self._grid)
+
+
 def ensemble(
     nodes: list[dict[str, Any]],
     features: list[str],
     headers: list[dict[str, Any]] | None = None,
     grid: str | None = "float32",
-) -> dict[str, Any]:
-    """`grid=None` omits `compare_grid` entirely, which is how the
-    is-it-required test builds an entry — everything else declares sklearn's
-    grid, since that is what these fixtures' thresholds imitate."""
+    lane: pa.DataType | None = None,
+):
+    """A model set, not yet named — `run` names it from the call site so the
+    existing `{"trees": ...}` fixtures keep reading the same way. `lane` is
+    the DECLARED feature type, which is what decides how an argument reaches
+    the comparison; it defaults to DOUBLE."""
     headers = headers or [
         {"model_id": 0, "base": 0.0, "agg": "sum", "link": "identity"}
     ]
-    entry = {
-        "nodes": pa.Table.from_pylist(nodes, schema=NODE_SCHEMA),
-        "models": pa.Table.from_pylist(headers, schema=MODEL_SCHEMA),
-        "features": features,
-    }
-    if grid is not None:
-        entry["compare_grid"] = grid
-    return entry
+    return lambda name: TreeUDF(
+        name,
+        pa.Table.from_pylist(nodes, schema=NODE_SCHEMA),
+        pa.Table.from_pylist(headers, schema=MODEL_SCHEMA),
+        len(features),
+        grid,
+        lane,
+    )
 
 
 # One model, one tree: x <= 0.5 -> 10.0, else 20.0. Missing goes left.
-STUMP = ensemble(
-    [
-        split(0, 0, 0, feature=0, threshold=0.5, left=1, right=2),
-        leaf(0, 0, 1, 10.0),
-        leaf(0, 0, 2, 20.0),
-    ],
-    features=["x"],
-)
+_STUMP_NODES = [
+    split(0, 0, 0, feature=0, threshold=0.5, left=1, right=2),
+    leaf(0, 0, 1, 10.0),
+    leaf(0, 0, 2, 20.0),
+]
+STUMP = ensemble(_STUMP_NODES, features=["x"])
+# The stump's tables, for the tests that hand over a MALFORMED pair.
+_SN, _SH, _ = STUMP("trees").tree_tables()
+
+
+def tables(nodes=None, headers=None, n_features=1, grid="float32"):
+    return lambda name: TreeUDF(
+        name,
+        _SN if nodes is None else nodes,
+        _SH if headers is None else headers,
+        n_features,
+        grid,
+    )
 
 
 _EXPECT: list[str] = []
@@ -133,14 +175,14 @@ def run(sql, row_schema, rows, models, **kw):
         sql,
         row_tables={"__THIS__": model},
         static_tables={},
-        models=models,
+        udfs=[make(name) for name, make in models.items()],
         **kw,
     )
     check_backend(fn)
     return [r.model_dump() for r in fn.infer({"__THIS__": [model(**r) for r in rows]})]
 
 
-SQL = "SELECT tree_predict('trees', id, struct_pack(x := x)) AS p FROM __THIS__"
+SQL = "SELECT trees(id, x) AS p FROM __THIS__"
 
 
 def test_stump_scores_both_leaves(backend):
@@ -263,8 +305,9 @@ def test_two_models_score_independently(backend):
     assert [r["p"] for r in got] == [10.0, 20.0]
 
 
-def test_features_resolve_by_name_not_position(backend):
-    """Declared order is ['a', 'b']; the call site writes them backwards."""
+def test_features_bind_by_position(backend):
+    """The tree splits on feature 1, so the SECOND argument decides — whatever
+    the columns happen to be called."""
     two_feat = ensemble(
         [
             split(0, 0, 0, feature=1, threshold=0.5, left=1, right=2),
@@ -274,13 +317,20 @@ def test_features_resolve_by_name_not_position(backend):
         features=["a", "b"],
     )
     got = run(
-        "SELECT tree_predict('trees', id, struct_pack(b := b, a := a)) AS p "
-        "FROM __THIS__",
+        "SELECT trees(id, a, b) AS p FROM __THIS__",
         {"id": "int", "a": "float", "b": "float"},
         [{"id": 0, "a": 9.0, "b": 0.0}, {"id": 0, "a": 0.0, "b": 9.0}],
         {"trees": two_feat},
     )
     assert [r["p"] for r in got] == [10.0, 20.0]
+    # Swap the arguments and the answers swap with them.
+    got = run(
+        "SELECT trees(id, b, a) AS p FROM __THIS__",
+        {"id": "int", "a": "float", "b": "float"},
+        [{"id": 0, "a": 9.0, "b": 0.0}, {"id": 0, "a": 0.0, "b": 9.0}],
+        {"trees": two_feat},
+    )
+    assert [r["p"] for r in got] == [20.0, 10.0]
 
 
 def test_int_feature_promotes_to_double(backend):
@@ -299,18 +349,23 @@ def test_int_feature_promotes_to_double(backend):
 def build(models, sql=SQL, row_schema=None):
     model = _row_model(row_schema or {"id": "int", "x": "float"})
     return DuckDBInferFn(
-        sql, row_tables={"__THIS__": model}, static_tables={}, models=models
+        sql,
+        row_tables={"__THIS__": model},
+        static_tables={},
+        udfs=[make(name) for name, make in models.items()],
     )
 
 
-def test_unnamed_model_set_refuses():
-    with pytest.raises(Exception, match="not provided to prepare"):
+def test_undeclared_transform_refuses():
+    with pytest.raises(Exception, match="not in the v0 catalogue"):
         build({"other": STUMP})
 
 
-def test_feature_name_mismatch_refuses():
-    with pytest.raises(Exception, match="feature"):
-        build({"trees": ensemble(STUMP["nodes"].to_pylist(), features=["zzz"])})
+def test_feature_count_mismatch_refuses():
+    """`takes` is the declared arity; a call passing a different number of
+    features refuses like any other UDF."""
+    with pytest.raises(Exception, match=r"takes 3 argument\(s\), the call passes 2"):
+        build({"trees": ensemble(_STUMP_NODES, features=["x", "y"])})
 
 
 def test_child_index_out_of_range_refuses():
@@ -363,15 +418,14 @@ def test_null_in_a_node_column_refuses():
         }
     )
     with pytest.raises(Exception, match="NULL"):
-        build({"trees": {**STUMP, "nodes": nodes}})
+        build({"trees": tables(nodes=nodes)})
 
 
 def test_empty_ensemble_refuses():
-    empty_nodes = STUMP["nodes"].slice(0, 0)
     with pytest.raises(Exception, match="no nodes"):
-        build({"trees": {**STUMP, "nodes": empty_nodes}})
+        build({"trees": tables(nodes=_SN.slice(0, 0))})
     with pytest.raises(Exception, match="no models"):
-        build({"trees": {**STUMP, "models": STUMP["models"].slice(0, 0)}})
+        build({"trees": tables(headers=_SH.slice(0, 0))})
 
 
 def test_root_is_leaf_tree_scores_its_constant(backend):
@@ -386,13 +440,34 @@ def test_root_is_leaf_tree_scores_its_constant(backend):
     assert [r["p"] for r in got] == [7.5, 7.5]
 
 
-def test_case_colliding_model_set_names_refuse():
-    """Set-name resolution is case-insensitive and takes the first catalog
-    hit, so two keys differing only in case bind the WRONG fitted model and
-    return a plausible number. `parse_udfs` already refuses the identical
-    hazard next door."""
-    with pytest.raises(Exception, match="collide case-insensitively"):
+def test_case_colliding_transform_names_refuse():
+    """Name resolution is case-insensitive and takes the first hit, so two
+    transforms differing only in case would bind the WRONG fitted model and
+    return a plausible number."""
+    with pytest.raises(Exception, match="duplicate udf name"):
         build({"trees": STUMP, "Trees": ensemble([leaf(0, 0, 0, 111.0)], ["x"])})
+
+
+def test_a_tree_transform_and_an_ecall_udf_cannot_share_a_name():
+    """One namespace across both kinds — the kernel silently outranking a
+    same-named callback is exactly the confusion this refuses."""
+
+    class Scale:
+        name = "trees"
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.float64()
+
+        def __call__(self, x):
+            return (x * 2.0,)
+
+    model = _row_model({"id": "int", "x": "float"})
+    with pytest.raises(Exception, match="duplicate udf name"):
+        DuckDBInferFn(
+            SQL,
+            row_tables={"__THIS__": model},
+            static_tables={},
+            udfs=[STUMP("trees"), Scale()],
+        )
 
 
 def test_null_id_through_arithmetic_stays_null(backend):
@@ -401,7 +476,7 @@ def test_null_id_through_arithmetic_stays_null(backend):
     uses, so today's `0` payload is luck — arithmetic turns it into a real
     out-of-range id and traps the whole batch."""
     got = run(
-        "SELECT tree_predict('trees', id - 1, struct_pack(x := x)) AS p FROM __THIS__",
+        "SELECT trees(id - 1, x) AS p FROM __THIS__",
         {"id": "int?", "x": "float"},
         [{"id": 1, "x": 0.0}, {"id": None, "x": 0.0}],
         {"trees": STUMP},
@@ -409,14 +484,34 @@ def test_null_id_through_arithmetic_stays_null(backend):
     assert got == [{"p": 10.0}, {"p": None}]
 
 
-def test_malformed_model_set_entry_refuses():
-    with pytest.raises(Exception, match="nodes"):
-        build({"trees": {"models": STUMP["models"], "features": ["x"]}})
+def test_malformed_tree_tables_refuses():
+    """The protocol is a 3-tuple; anything else names the offending UDF
+    rather than unpacking into nonsense."""
+
+    class Wrong:
+        name = "trees"
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.float64()
+        instances = {0: None}
+
+        def tree_tables(self):
+            return (_SN,)
+
+    class Raises(Wrong):
+        def tree_tables(self):
+            raise RuntimeError("boom")
+
+    model = _row_model({"id": "int", "x": "float"})
+    for cls, needle in ((Wrong, "must return"), (Raises, "raised")):
+        with pytest.raises(Exception, match=needle):
+            DuckDBInferFn(
+                SQL, row_tables={"__THIS__": model}, static_tables={}, udfs=[cls()]
+            )
 
 
 def test_missing_node_column_refuses():
     with pytest.raises(Exception, match="threshold"):
-        build({"trees": {**STUMP, "nodes": STUMP["nodes"].drop_columns(["threshold"])}})
+        build({"trees": tables(nodes=_SN.drop_columns(["threshold"]))})
 
 
 def test_model_set_alongside_a_static_join(backend):
@@ -427,11 +522,11 @@ def test_model_set_alongside_a_static_join(backend):
     )
     model = _row_model({"k": "int", "x": "float"})
     fn = DuckDBInferFn(
-        "SELECT tree_predict('trees', p.est, struct_pack(x := t.x)) AS p "
+        "SELECT trees(p.est, t.x) AS p "
         "FROM __THIS__ AS t LEFT JOIN params AS p ON t.k = p.k",
         row_tables={"__THIS__": model},
         static_tables={"params": params},
-        models={"trees": STUMP},
+        udfs=[STUMP("trees")],
     )
     check_backend(fn)
     rows = [{"k": 1, "x": 0.0}, {"k": 1, "x": 1.0}, {"k": 2, "x": 0.0}]
@@ -488,8 +583,7 @@ SPLITTERS = [
 @pytest.mark.parametrize("expr", SPLITTERS)
 def test_split_in_the_first_feature(backend, expr):
     got = run(
-        "SELECT tree_predict('trees', id, struct_pack("
-        f"x := {expr.format(c='x')}, y := y)) AS p FROM __THIS__",
+        f"SELECT trees(id, {expr.format(c='x')}, y) AS p FROM __THIS__",
         FORK_SCHEMA,
         FORK_ROWS,
         {"trees": FORK},
@@ -502,8 +596,7 @@ def test_split_in_a_later_feature(backend, expr):
     """The first feature is already emitted when the split happens, so this
     strands a different set of lanes than a split in the first."""
     got = run(
-        "SELECT tree_predict('trees', id, struct_pack("
-        f"x := x, y := {expr.format(c='y')})) AS p FROM __THIS__",
+        f"SELECT trees(id, x, {expr.format(c='y')}) AS p FROM __THIS__",
         FORK_SCHEMA,
         FORK_ROWS,
         {"trees": FORK},
@@ -514,8 +607,8 @@ def test_split_in_a_later_feature(backend, expr):
 @pytest.mark.parametrize("expr", SPLITTERS)
 def test_split_in_every_feature(backend, expr):
     got = run(
-        "SELECT tree_predict('trees', id, struct_pack("
-        f"x := {expr.format(c='x')}, y := {expr.format(c='y')})) AS p FROM __THIS__",
+        f"SELECT trees(id, {expr.format(c='x')}, {expr.format(c='y')}) AS p "
+        "FROM __THIS__",
         FORK_SCHEMA,
         FORK_ROWS,
         {"trees": FORK},
@@ -527,8 +620,7 @@ def test_split_in_the_model_id(backend):
     """The id is emitted before every feature, so it is the lane with the
     longest way to travel."""
     got = run(
-        "SELECT tree_predict('trees', COALESCE(id, 0), "
-        "struct_pack(x := x, y := y)) AS p FROM __THIS__",
+        "SELECT trees(COALESCE(id, 0), x, y) AS p FROM __THIS__",
         {"id": "int?", "x": "float?", "y": "float?"},
         FORK_ROWS,
         {"trees": FORK},
@@ -540,8 +632,7 @@ def test_split_outside_the_call_still_works(backend):
     """The control: the same expression one level out has always built, so a
     fix that breaks this has moved the bug rather than removed it."""
     got = run(
-        "SELECT tree_predict('trees', id, struct_pack(x := x, y := y)) AS p, "
-        "COALESCE(x, 0.0) AS c FROM __THIS__",
+        "SELECT trees(id, x, y) AS p, COALESCE(x, 0.0) AS c FROM __THIS__",
         FORK_SCHEMA,
         FORK_ROWS,
         {"trees": FORK},
@@ -555,8 +646,7 @@ def test_split_after_the_call(backend):
     the join block's params and every later transition would be one shape
     too wide."""
     got = run(
-        "SELECT tree_predict('trees', id, struct_pack("
-        "x := COALESCE(x, 0.0), y := y)) "
+        "SELECT trees(id, COALESCE(x, 0.0), y) "
         "+ CASE WHEN y > 0.5 THEN 1.0 ELSE 2.0 END AS p FROM __THIS__",
         FORK_SCHEMA,
         FORK_ROWS,
@@ -591,12 +681,12 @@ _GRID_NODES = [
     leaf(0, 0, 1, 10.0),  # n <= T
     leaf(0, 0, 2, 20.0),  # n >  T
 ]
-_GRID_SQL = "SELECT tree_predict('trees', id, struct_pack(n := n)) AS p FROM __THIS__"
+_GRID_SQL = "SELECT trees(id, n) AS p FROM __THIS__"
 _GRID_SCHEMA = {"id": "int", "n": "int"}
 
 
-def _grid_entry(grid):
-    return ensemble(_GRID_NODES, features=["n"], grid=grid)
+def _grid_entry(grid, lane=None):
+    return ensemble(_GRID_NODES, features=["n"], grid=grid, lane=lane)
 
 
 @pytest.mark.parametrize(
@@ -609,13 +699,32 @@ def _grid_entry(grid):
     ],
 )
 def test_compare_grid_decides_whether_an_integer_feature_narrows(grid, want, backend):
+    """The lane is DECLARED BIGINT — that is what makes it the one-step
+    conversion the grid governs. A declared DOUBLE lane is widened first (the
+    cast DuckDB would insert) and never reaches this branch."""
     got = run(
         _GRID_SQL,
         _GRID_SCHEMA,
         [{"id": 0, "n": _GRID_N}],
-        {"trees": _grid_entry(grid)},
+        {"trees": _grid_entry(grid, lane=pa.int64())},
     )
     assert [r["p"] for r in got] == [want]
+
+
+@pytest.mark.parametrize("grid", ["float32", "float64"])
+def test_a_declared_double_lane_widens_an_integer_argument(grid, backend):
+    """DuckDB casts a BIGINT argument to a declared DOUBLE before calling, so
+    the model sees `float64(n)` and the grid's integer narrowing must not
+    fire. Binding off the ARGUMENT's type instead (as this did) made the
+    engine disagree with both DuckDB and the class's own `__call__`."""
+    got = run(
+        _GRID_SQL,
+        _GRID_SCHEMA,
+        [{"id": 0, "n": _GRID_N}],
+        {"trees": _grid_entry(grid, lane=pa.float64())},
+    )
+    # float64(2**24 + 1) is exact and > T, so it goes right on both grids.
+    assert [r["p"] for r in got] == [20.0], grid
 
 
 def test_compare_grid_is_irrelevant_to_a_double_feature(backend):
@@ -625,7 +734,7 @@ def test_compare_grid_is_irrelevant_to_a_double_feature(backend):
     here, so both see the same value."""
     for grid in ("float32", "float64"):
         got = run(
-            "SELECT tree_predict('trees', id, struct_pack(n := n)) AS p FROM __THIS__",
+            _GRID_SQL,
             {"id": "int", "n": "float"},
             [{"id": 0, "n": float(_GRID_N)}],
             {"trees": _grid_entry(grid)},
@@ -635,8 +744,8 @@ def test_compare_grid_is_irrelevant_to_a_double_feature(backend):
 
 def test_compare_grid_is_required():
     e = ensemble(_GRID_NODES, features=["n"], grid=None)
-    assert "compare_grid" not in e
-    with pytest.raises(Exception, match="compare_grid"):
+    assert len(e("trees").tree_tables()) == 2
+    with pytest.raises(Exception, match="must return"):
         build({"trees": e}, sql=_GRID_SQL, row_schema=_GRID_SCHEMA)
 
 

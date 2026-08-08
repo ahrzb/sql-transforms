@@ -1,9 +1,23 @@
 # Confit: native tree-ensemble scoring
 
 Date: 2026-08-07
-Status: design, from the 2026-08-07 session with AmirHossein
-Scope: **confit only**. No `udfs=` surface, no DuckDB registration, no
-sql_transform family protocol — those live in
+Status: **SUPERSEDED 2026-08-08 for everything above the kernel.**
+
+> The user-facing surface in this document — a `models=` constructor kwarg, a
+> `tree_predict('name', id, struct_pack(...))` builtin, and a user-visible
+> `pack_trees` — was never approved and has been removed. A fitted tree
+> ensemble is a `TreeBasedTransform`: constructed and passed in `udfs=` like
+> every other transform, and called `name(id, feats...)`. See
+> `docs/serving-fitted-models.md`.
+>
+> Scoping this document to "confit only, no `udfs=` surface" (below) is what
+> produced the divergence: it ruled the registration question out of scope and
+> then answered it anyway with a second, parallel mechanism. **The kernel, the
+> node/model table layout, the f32 threshold rewrite and the parity argument
+> all stand unchanged** — the migration did not touch them.
+
+Original scope: **confit only**. No `udfs=` surface, no DuckDB registration,
+no sql_transform family protocol — those live in
 `2026-08-07-optimized-transforms-api-design.md` and DRAFT-22 and are out of
 scope here. This document adds one built-in capability to the engine.
 

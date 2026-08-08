@@ -34,6 +34,7 @@ import time
 import pyarrow as pa
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+
 from sql_transform import PythonUDF, SQLProjection
 
 SEED = 20260804

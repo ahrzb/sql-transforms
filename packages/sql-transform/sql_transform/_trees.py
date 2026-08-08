@@ -28,13 +28,16 @@ detail you can wave off.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import pyarrow as pa
 from sklearn.base import is_regressor
 
-__all__ = ["TreePackError", "pack_trees"]
+from sql_transform._udf import UDF, UDFError
+
+__all__ = ["TreeBasedTransform", "TreePackError"]
 
 
 class TreePackError(ValueError):
@@ -131,16 +134,19 @@ def _stages(est: Any) -> tuple[list[Any], float, str, float]:
     raise TreePackError(f"{cls} is not a tree ensemble this packer knows")
 
 
-def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, Any]:
-    """Fitted regressors in, a confit `models=` entry out.
+def _pack(
+    estimators: Sequence[Any], n_features: int, names: Sequence[str]
+) -> tuple[pa.Table, pa.Table]:
+    """Fitted regressors in, the engine's two Arrow tables out.
 
     Model ids are dense and follow the sequence order, so the params table's
-    instance-id column indexes straight into it.
+    instance-id column indexes straight into it. `names` — the declared
+    schema's field names — is checked against what each estimator was fitted
+    on.
     """
     estimators = list(estimators)
     if not estimators:
         raise TreePackError("no estimators to pack")
-    features = list(features)
 
     cols: dict[str, list[np.ndarray]] = {
         k: []
@@ -158,25 +164,25 @@ def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, 
     }
     headers = {"model_id": [], "base": [], "agg": [], "link": []}
     for mid, est in enumerate(estimators):
-        if getattr(est, "n_features_in_", len(features)) != len(features):
+        if getattr(est, "n_features_in_", n_features) != n_features:
             raise TreePackError(
                 f"model {mid} was fitted on {est.n_features_in_} features,"
-                f" {len(features)} names given"
+                f" but the transform declares {n_features}"
             )
         # Features bind by POSITION, so names in the wrong order pass every
         # other check and score a plausible-looking wrong answer — the same
         # failure shape BaggingRegressor and multi-output are refused for
         # (TASK-78). `feature_names_in_` exists only when the estimator was
-        # fitted on something with column names, so the check is conditional
-        # and ndarray-fitted models — the common case — are unaffected.
+        # fitted on something with column names, so ndarray-fitted models —
+        # the common case — are unaffected. Since the schema always carries
+        # names, this check is no longer opt-in the way `take_names` was.
         fitted_names = getattr(est, "feature_names_in_", None)
-        if fitted_names is not None and list(fitted_names) != features:
+        if fitted_names is not None and list(fitted_names) != list(names):
             raise TreePackError(
                 f"model {mid} was fitted on columns {list(fitted_names)}, but"
-                f" the names given are {features} — pass them in the fitted"
-                f" order. To expose a feature under a different name in SQL,"
-                f" rename at the call site instead:"
-                f" struct_pack({fitted_names[0]} := <expr>, ...)"
+                f" the schema declares {list(names)} — name them in the fitted"
+                f" order. Arguments bind by position, so a SQL call site may"
+                f" name its columns whatever it likes."
             )
         trees, base, agg, scale = _stages(est)
         for tid, t in enumerate(trees):
@@ -219,11 +225,11 @@ def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, 
         "missing_left": pa.bool_(),
         "value": pa.float64(),
     }
-    return {
-        "nodes": pa.table(
+    return (
+        pa.table(
             {k: pa.array(np.concatenate(v), type=arrow_ty[k]) for k, v in cols.items()}
         ),
-        "models": pa.table(
+        pa.table(
             {
                 "model_id": pa.array(headers["model_id"], pa.int64()),
                 "base": pa.array(headers["base"], pa.float64()),
@@ -231,12 +237,123 @@ def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, 
                 "link": pa.array(headers["link"], pa.string()),
             }
         ),
-        "features": features,
-        # The thresholds above went through `_f32_grid_threshold`, so this
-        # set's comparisons live on sklearn's float32 grid — which is also
-        # how the engine must convert an INTEGER feature to reach them. It is
-        # declared rather than assumed because it is a property of the packer:
-        # a packer for a library that compares in float64 skips the rewrite
-        # and says "float64", and its integer features stay exact.
-        "compare_grid": "float32",
-    }
+    )
+
+
+def _as_grid_value(f: Any, declared: str) -> float:
+    """One feature value as the double the model will actually compare.
+
+    A BIGINT feature must reach float32 in ONE rounding — that is what
+    sklearn's `_validate_X_predict` does to an integer feature array, and
+    what the engine's `itof.f32` does (TASK-77). Going through `float(n)`
+    first rounds twice and lands a whole float32 ULP away above `2**53`,
+    which is a whole leaf.
+
+    `np.float32(n)` is NOT that conversion: the scalar constructor rounds via
+    float64, so only the array `astype` reproduces it. A DOUBLE feature is
+    already the double DuckDB would cast it to, and is passed through.
+    """
+    if f is None:
+        return np.nan
+    if declared == "i64":
+        return float(np.array([f], dtype=np.int64).astype(np.float32)[0])
+    return float(f)
+
+
+@dataclass(frozen=True)
+class TreeBasedTransform(UDF):
+    """A fitted tree ensemble as a UDF — `PythonTransform`'s native sibling.
+
+    Same construction, same registration, same call site as every other
+    transform; the difference is invisible from SQL and is that the engine
+    scores it with a native kernel instead of calling back into Python:
+
+        TreeBasedTransform("score", instances={0: fit_de, 1: fit_fr},
+                           takes=pa.schema([("price", pa.float64()),
+                                            ("sqft", pa.float64())]))
+        -- SELECT score(p.est, t.price, t.sqft) FROM ...
+
+    The implicit leading argument is the nullable instance id, exactly as in
+    `PythonTransform`: NULL id = the LEFT JOIN missed = unseen group = NULL
+    out, and an id that names no instance raises.
+
+    Feature names come from the schema, and they are a fit-time cross-check
+    against the estimator's `feature_names_in_` (TASK-78) — arguments bind by
+    POSITION, so a call site may name its columns anything.
+
+    You hand over the FITTED ESTIMATOR. Turning it into the tables the engine
+    walks happens here, at build, and no estimator object, pickle or live
+    model reference ever reaches the engine.
+
+    Ids must be dense from 0 — that is what the engine indexes on, and it is
+    what a fitted params table's `__cf_est` column already produces.
+
+    `compare_grid` is `"float32"` because sklearn narrows `X` to float32
+    before traversal; a class wrapping a float64-grid library returns
+    `"float64"` from `tree_tables` and skips the threshold rewrite. That is
+    the whole protocol: `name`/`instances`/`takes`/`returns` plus a
+    `tree_tables()` returning `(nodes, models, compare_grid)`.
+    """
+
+    name: str
+    instances: dict[int, Any] = field(hash=False)
+    takes: pa.Schema = field(hash=False)
+    returns: pa.DataType = pa.float64()
+
+    def __post_init__(self) -> None:
+        self._check_schema()
+        if self.returns != pa.float64():
+            raise UDFError(
+                f"UDF {self.name}: a tree ensemble scores one double per row,"
+                f" declared returns {self.returns}"
+            )
+        if any(t not in ("f64", "i64") for t in self.take_types):
+            raise UDFError(
+                f"UDF {self.name}: tree features are numbers, declared"
+                f" takes {self.takes}"
+            )
+        if not self.instances:
+            raise UDFError(f"UDF {self.name}: no fitted instances")
+        if sorted(self.instances) != list(range(len(self.instances))):
+            raise UDFError(
+                f"UDF {self.name}: instance ids must be dense from 0, got"
+                f" {sorted(self.instances)} — the engine indexes models by"
+                " position, and a fitted params table's ids already are dense"
+            )
+        # Pack at construction rather than at prepare: a refusal names the
+        # estimator while the user is still holding it, and the engine-facing
+        # tables then cost nothing to hand over twice (cranelift attempt +
+        # interpreter fallback both materialize statics).
+        object.__setattr__(self, "_tables", self._pack_now())
+
+    def _pack_now(self) -> tuple[pa.Table, pa.Table]:
+        ordered = [self.instances[i] for i in range(len(self.instances))]
+        return _pack(ordered, len(self.takes), self.take_names)
+
+    def tree_tables(self) -> tuple[pa.Table, pa.Table, str]:
+        """The engine hook: `(nodes, models, compare_grid)`. Its presence is
+        what routes this UDF to the native kernel instead of an ecall."""
+        nodes, headers = self._tables
+        return nodes, headers, "float32"
+
+    def __call__(self, iid: int | None, *feats: Any) -> tuple | None:
+        """The semantic contract, and the DuckDB-side binding: sklearn's own
+        `predict`. The native kernel is gated against this bit-for-bit."""
+        if iid is None:
+            return None
+        try:
+            est = self.instances[iid]
+        except KeyError:
+            raise UDFError(
+                f"UDF {self.name}: instance id {iid} not in the fitted"
+                " instances — params table and instances are from"
+                " different fits"
+            ) from None
+        row = [
+            _as_grid_value(f, t) for f, t in zip(feats, self.take_types, strict=True)
+        ]
+        return (float(est.predict(np.array([row], dtype=np.float64))[0]),)
+
+    def _duck_signature(self) -> tuple[list[str], str]:
+        params, ret = super()._duck_signature()
+        return ["BIGINT", *params], ret

@@ -590,32 +590,18 @@ def test_short_circuit_preserves_three_valued_logic(right):
 
 
 def test_where_guard_skips_an_unknown_model_trap():
-    """AC #2's other half: `tree_predict` on an id with no model raises, and a
-    guard that excludes every row must stop it from ever being called.
-    DuckDB cannot be the oracle here — it has no `tree_predict` — so the
+    """AC #2's other half: scoring an id with no model raises, and a guard
+    that excludes every row must stop it from ever being called. DuckDB
+    cannot be the oracle here — it has no native tree scoring — so the
     assertion is the empty result the guard implies."""
-    entry = {
-        "nodes": pa.Table.from_pylist(
-            [_node(0, -1, 0.0, -1, -1, value=1.0)], NODE_SCHEMA
-        ),
-        "models": pa.Table.from_pylist(
-            [{"model_id": 0, "base": 0.0, "agg": "sum", "link": "identity"}],
-            schema=MODEL_SCHEMA,
-        ),
-        "features": ["x"],
-        "compare_grid": "float32",
-    }
     Row = create_model("Row", k=(int, ...), mid=(int, ...), x=(float, ...))
-    sql = (
-        "SELECT k FROM __THIS__ "
-        "WHERE k = 0 AND tree_predict('m', mid, struct_pack(x := x)) > 0"
-    )
+    sql = "SELECT k FROM __THIS__ WHERE k = 0 AND m(mid, x) > 0"
     fn = DuckDBInferFn(
         sql,
         row_tables={"__THIS__": Row},
         static_tables={},
         output="dict",
-        models={"m": entry},
+        udfs=[_tree_udf([_node(0, -1, 0.0, -1, -1, value=1.0)])],
     )
     rows = [Row(k=1, mid=999, x=0.0), Row(k=2, mid=999, x=0.0)]
     assert list(fn.infer({"__THIS__": rows})) == []
@@ -671,22 +657,39 @@ def _node(nid, feature, threshold, left, right, value=0.0):
 ModelRow = create_model("ModelRow", id=(int, ...), x=(float, ...))
 
 
-def _model_fn(nodes, agg="sum", link="identity", features=("x",)):
-    entry = {
-        "nodes": pa.Table.from_pylist(nodes, schema=NODE_SCHEMA),
-        "models": pa.Table.from_pylist(
+class _TreeUDF:
+    """A tree transform straight from Arrow — the engine protocol without a
+    packer behind it."""
+
+    def __init__(self, nodes, headers, n_features):
+        self.name = "m"
+        self.takes = pa.schema([(f"f{i}", pa.float64()) for i in range(n_features)])
+        self.returns = pa.float64()
+        self.instances = {0: None}
+        self._t = (nodes, headers, "float32")
+
+    def tree_tables(self):
+        return self._t
+
+
+def _tree_udf(nodes, agg="sum", link="identity", n_features=1):
+    return _TreeUDF(
+        pa.Table.from_pylist(nodes, schema=NODE_SCHEMA),
+        pa.Table.from_pylist(
             [{"model_id": 0, "base": 0.0, "agg": agg, "link": link}],
             schema=MODEL_SCHEMA,
         ),
-        "features": list(features),
-        "compare_grid": "float32",
-    }
+        n_features,
+    )
+
+
+def _model_fn(nodes, agg="sum", link="identity", features=("x",)):
     return DuckDBInferFn(
-        "SELECT tree_predict('m', id, struct_pack(x := x)) AS p FROM __THIS__",
+        "SELECT m(id, x) AS p FROM __THIS__",
         row_tables={"__THIS__": ModelRow},
         static_tables={},
         output="dict",
-        models={"m": entry},
+        udfs=[_tree_udf(nodes, agg, link, len(features))],
     )
 
 

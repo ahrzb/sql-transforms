@@ -43,32 +43,41 @@ silently misaligned batch.
 
 ## Fitted models
 
-A fitted tree ensemble is a **static**, like a params table — prepared once,
-then scored by a native instruction with no Python on the row path. Parity
-with sklearn is asserted at `==` on raw doubles, not at a tolerance, and it
-holds on quantized features (prices, percentages, decimal grids) as well as
-continuous ones — sklearn splits on `float32(x) <= threshold`, so `pack_trees`
-moves each threshold to the double that reproduces that comparison exactly.
-The packed thresholds therefore differ from `tree_.threshold` on purpose; the
-engine stays float64 throughout. See
-[docs/serving-fitted-models.md](../../docs/serving-fitted-models.md).
+A fitted tree ensemble is a transform like any other — constructed, passed in
+`udfs=`, and called by its own name with the instance id first. The only
+difference is invisible from SQL: it is scored by a native instruction with no
+Python on the row path.
 
 ```python
-from sql_transform import pack_trees
+from sql_transform import TreeBasedTransform
 
 fn = DuckDBInferFn(
-    "SELECT tree_predict('m', p.est, struct_pack(price := t.price, sqft := t.sqft)) AS p "
+    "SELECT score(p.est, t.price, t.sqft) AS p "
     "FROM __THIS__ AS t LEFT JOIN params AS p ON t.country = p.country",
     row_tables={"__THIS__": Row},
     static_tables={"params": params},
-    models={"m": pack_trees([fit_de, fit_fr], ["price", "sqft"])},
+    udfs=[
+        TreeBasedTransform(
+            "score",
+            instances={0: fit_de, 1: fit_fr},
+            takes=pa.schema([("price", pa.float64()), ("sqft", pa.float64())]),
+        )
+    ],
 )
 ```
 
+Parity with sklearn is asserted at `==` on raw doubles, not at a tolerance,
+and it holds on quantized features (prices, percentages, decimal grids) as
+well as continuous ones — sklearn splits on `float32(x) <= threshold`, so the
+packing moves each threshold to the double that reproduces that comparison
+exactly. The packed thresholds therefore differ from `tree_.threshold` on
+purpose; the engine stays float64 throughout.
+
 `DecisionTreeRegressor`, `RandomForestRegressor`, `ExtraTreesRegressor` and
-`GradientBoostingRegressor` pack; everything else refuses by name. Other
-libraries can emit the two Arrow tables directly — the engine never sees
-sklearn. See [docs/serving-fitted-models.md](../../docs/serving-fitted-models.md).
+`GradientBoostingRegressor` pack; everything else refuses by name. Another
+library plugs in by exposing `tree_tables()` on its own transform class — the
+engine never sees sklearn. See
+[docs/serving-fitted-models.md](../../docs/serving-fitted-models.md).
 
 ## Where it wins
 

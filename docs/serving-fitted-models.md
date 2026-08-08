@@ -1,26 +1,35 @@
 # Serving fitted models
 
-A fitted tree ensemble becomes a **static**, like a params table — prepared
-once, then scored by a native instruction with no Python on the row path.
-Nothing but Arrow crosses the boundary: no estimator object, no pickle, no
-live model reference reaches the engine.
+`TreeBasedTransform` is `PythonTransform`'s native sibling: the same
+construction, the same registration, the same call site. The difference is
+invisible from SQL — the engine scores it with a native kernel instead of
+calling back into Python, so there is no GIL on the row path.
+
+You hand over the **fitted estimator**. Turning it into the tables the engine
+walks happens inside the class, at construction; nothing but Arrow crosses the
+boundary, and no estimator object, pickle or live model reference reaches the
+engine.
 
 ## Quick start
 
 ```python
 from confit import DuckDBInferFn
 from sklearn.ensemble import RandomForestRegressor
-from sql_transform import pack_trees
+from sql_transform import TreeBasedTransform
 
-FEATURES = ["price", "sqft"]
 est = RandomForestRegressor(n_estimators=200, n_jobs=1).fit(X, y)
 
 fn = DuckDBInferFn(
-    "SELECT tree_predict('price_model', 0, struct_pack(price := price, sqft := sqft)) AS p "
-    "FROM __THIS__",
+    "SELECT price_model(0, price, sqft) AS p FROM __THIS__",
     row_tables={"__THIS__": Row},
     static_tables={},
-    models={"price_model": pack_trees([est], FEATURES)},
+    udfs=[
+        TreeBasedTransform(
+            "price_model",
+            instances={0: est},
+            takes=pa.schema([("price", pa.float64()), ("sqft", pa.float64())]),
+        )
+    ],
 )
 fn.infer_rows(rows)
 ```
@@ -28,37 +37,50 @@ fn.infer_rows(rows)
 ## The SQL surface
 
 ```sql
-tree_predict(<model set name>, <id expr>, struct_pack(<name> := <expr>, ...))
+<name>(<id expr>, <feature expr>, ...)
 ```
 
-- The **model set name** is a string literal, hoisted at build into a
-  `model<tree_ensemble(k)>` static. Not a column reference — no ambiguity with
-  a column called `price_model`.
-- The **id** is any `BIGINT` expression: which model in the set to score.
-  Usually a params-map probe result.
-- The **features** are a `struct_pack`, resolved **by name** against the
-  entry's `features` list. Call-site order is free; a name that is not a
-  declared feature, a missing one, or a duplicate is a build error. `INTEGER`
-  features promote to `DOUBLE`.
+Exactly the shape every other declared transform has:
+
+- The **name** is the transform's own `name`, resolved case-insensitively in
+  the same namespace as the ecall UDFs. A tree transform and an ecall UDF
+  cannot share one — that refuses at construction.
+- The **id** is the implicit leading argument, any `BIGINT` expression: which
+  instance to score. Never written in `takes`. Usually a params-map probe.
+- The **features** follow, bound **by position** in `takes` order. A call
+  passing the wrong number refuses by name; so does a non-numeric argument.
+  `INTEGER` features convert per the compare grid (below).
+
+The schema is arrow: `takes` is a `pa.Schema` — names and types in one
+declaration — and `returns` is the SQL return type, `pa.float64()` for a tree
+(scored one number per row), which is the default.
+
+Transposing two features is the caller's mistake to avoid, the same as for any
+positional call. The schema's NAMES do not bind the call site; they are
+checked against the estimator's `feature_names_in_` at construction, so a
+DataFrame-fitted model whose columns you name in the wrong order refuses
+instead of scoring plausibly (TASK-78).
 
 ## One model per group
 
-The real serving shape: fit per group, join the group's model id, score.
+The real serving shape: fit per group, join the group's instance id, score.
 
 ```python
 params = pa.table({"country": ["de", "fr"], "est": [0, 1]})   # dense ids
-models = {"m": pack_trees([fit_de, fit_fr], FEATURES)}              # same order
 
 sql = """
-SELECT tree_predict('m', p.est, struct_pack(price := t.price, sqft := t.sqft)) AS p
+SELECT score(p.est, t.price, t.sqft) AS p
 FROM __THIS__ AS t
 LEFT JOIN params AS p ON t.country = p.country
 """
+udfs = [TreeBasedTransform("score", instances={0: fit_de, 1: fit_fr},
+                           takes=pa.schema([("price", pa.float64()),
+                                            ("sqft", pa.float64())]))]
 ```
 
 An unseen country misses the `LEFT JOIN`, so `p.est` is NULL and the output is
-NULL. A model set's ids are dense from 0 and follow the sequence you passed to
-`pack_trees`, so the params table indexes straight into it.
+NULL. Instance ids must be dense from 0 — that is what the engine indexes on,
+and it is what a fitted params table's `__cf_est` column already produces.
 
 ## Which estimators pack
 
@@ -69,7 +91,8 @@ NULL. A model set's ids are dense from 0 and follow the sequence you passed to
 | `ExtraTreesRegressor` | mean | |
 | `GradientBoostingRegressor` | sum, seeded with the init | `init="zero"` and the default `DummyRegressor` only |
 
-Everything else refuses by name at `pack_trees` time. Two refusals are worth knowing
+Everything else refuses by name when the transform is constructed. Two refusals
+are worth knowing
 because the objects *look* packable:
 
 - **Classifiers** have a `tree_` exactly like a regressor, but their leaf
@@ -80,7 +103,7 @@ because the objects *look* packable:
   Reading them as global indices scores the wrong columns.
 
 `HistGradientBoostingRegressor`, XGBoost and LightGBM use different tree
-representations; they would need their own packer emitting the same two
+representations; they would need their own class emitting the same two
 tables. The engine side is already general — see below.
 
 ## Parity with sklearn — read this before trusting a number
@@ -99,7 +122,8 @@ whole-leaf jump, not a rounding wobble. Continuous float64 draws hide it —
 the mismatch band is about one float32 ULP wide — so it is quantized
 features, prices and percentages and any decimal grid, that hit it.
 
-`pack_trees` closes it at **build time**. Rounding to float32 is monotone, so
+`TreeBasedTransform` closes it at **build time**. Rounding to float32 is
+monotone, so
 `float32(x) <= t` is still a single cutpoint in the doubles, and moving the
 cutpoint reproduces it exactly:
 
@@ -123,10 +147,21 @@ feature it is not, because the value handed over is `float64(n)`, and above
 `float32(float64(n))` where sklearn, which narrows an int64 array to float32
 in a single step, computes `float32(n)`. A whole float32 ULP apart.
 
-An integer feature therefore converts with the IR's `itof.f32` rather than the
-ordinary promotion: `n as f32 as f64`, one rounding. Below `2**53`,
-`float64(n)` is exact and the two are identical, so this is a no-op for every
-ordinary integer feature rather than a trade (TASK-77).
+A feature **declared** `pa.int64()` therefore converts with the IR's
+`itof.f32` rather than the ordinary promotion: `n as f32 as f64`, one
+rounding. Below `2**53`, `float64(n)` is exact and the two are identical, so
+this is a no-op for every ordinary integer feature rather than a trade
+(TASK-77).
+
+**The declaration decides, not the column.** A BIGINT column passed into a
+lane declared `pa.float64()` is cast to a double by DuckDB before the call, so
+the model sees `float64(n)` and narrows from there — a different leaf above
+`2**53`, and the right one for that declaration. The class's own `__call__`
+follows the same rule, which is what makes it a usable oracle: it builds an
+int64 array and narrows it in one step for a declared BIGINT lane, and passes
+the double through for a declared DOUBLE one. (`np.float32(n)` is *not* that
+conversion — the scalar constructor rounds via float64. Only the array
+`astype` reproduces it.)
 
 That opcode adds no float32 TYPE — its lane is f64 out, the same way
 `ftoi.nearest` is a rounding mode and not an integer type. The engine still
@@ -136,16 +171,18 @@ row path.
 ### Which grid you are on is DECLARED, not assumed
 
 Both of the above are sklearn's semantics, and neither is universal — so a
-model set says which floating-point grid its comparisons live on:
+transform says which floating-point grid its comparisons live on, as the third
+member of `tree_tables()`:
 
 ```python
-{"nodes": ..., "models": ..., "features": [...], "compare_grid": "float32"}
+def tree_tables(self):
+    return nodes, models, "float32"
 ```
 
-`pack_trees` rewrites its thresholds and declares `"float32"`. A packer for a
-library that compares in float64 skips the threshold rewrite and declares
-`"float64"`, and the engine then converts its integer features exactly rather
-than narrowing them.
+`TreeBasedTransform` rewrites its thresholds and declares `"float32"`. A class
+wrapping a library that compares in float64 skips the threshold rewrite and
+declares `"float64"`, and the engine then converts its integer features
+exactly rather than narrowing them.
 
 Without the field the narrowing would fire for every model, which would make
 the wire format quietly sklearn-specific: a float64-grid packer would get its
@@ -157,10 +194,10 @@ the conversion is not, so the engine has to be told.
 exactly the one that never thought about it, and a default would be the same
 trap with an extra step.
 
-**It belongs to the SET, not to a model inside it.** `tree_predict('m', id, ..)`
-takes the model id from a row, so it is a runtime value, while the conversion
-is chosen once when the query is lowered. A per-model grid could only be
-honoured with a per-row branch.
+**It belongs to the TRANSFORM, not to an instance inside it.** `score(id, ..)`
+takes the instance id from a row, so it is a runtime value, while the
+conversion is chosen once when the query is lowered. A per-instance grid could
+only be honoured with a per-row branch.
 
 `test_threshold_rewrite_reproduces_the_f32_comparison` walks float64 ULPs
 across each rewritten boundary rather than sampling, because a rewrite that is
@@ -204,16 +241,23 @@ A NULL feature is deliberately *not* NULL-in-NULL-out: the model has a defined
 answer for missing. A bad id is different — that is a broken join in your
 params table, and nulling it would hide the break.
 
-## Building the tables yourself
+## Plugging in another library
 
-For a library `pack_trees` does not know, emit these two tables directly. The engine
-never sees sklearn.
+For a library `TreeBasedTransform` does not know, write your own transform
+class. The whole protocol is four attributes and one method — the engine never
+sees sklearn, and never calls `__call__` on a class that has `tree_tables`.
 
 ```python
-models={"m": {
-    "nodes": nodes_table, "models": header_table, "features": [...],
-    "compare_grid": "float64",   # or "float32" if your thresholds were
-}}                               # rewritten onto sklearn's grid — see above
+class XGBTransform:
+    name = "score"
+    # names + types in one declaration; the features bind by position
+    takes = pa.schema([("price", pa.float64()), ("sqft", pa.float64())])
+    returns = pa.float64()
+    instances = {0: booster}    # presence is what adds the leading id argument
+
+    def tree_tables(self):
+        return nodes_table, header_table, "float64"   # or "float32" if your
+        # thresholds were rewritten onto sklearn's grid — see above
 ```
 
 **`nodes`** — one row per node, grouped by model then tree:
@@ -256,9 +300,17 @@ Each names the offending row or field, before any data flows:
 - a node id out of dense order;
 - an unknown `agg` or `link` spelling;
 - non-dense or non-contiguous `model_id`, a model with no nodes, an empty
-  model set;
-- a call-site feature name that is not declared, missing, or duplicated;
-- a model set name that was not passed to the constructor.
+  model table;
+- instance ids that are not dense from 0;
+- a call passing the wrong number of arguments, or a non-numeric one;
+- two declared UDFs whose names collide case-insensitively, whichever kinds
+  they are;
+- a declared UDF whose name is a builtin (`least`, `round`, `upper`, …): the
+  binder matches the builtin catalogue before it consults the declared UDFs,
+  while DuckDB lets a registered function shadow its own builtin, so the two
+  engines would answer the same SQL differently;
+- a `tree_tables()` that raises or does not return
+  `(nodes, models, compare_grid)`.
 
 ## Which backend runs it
 

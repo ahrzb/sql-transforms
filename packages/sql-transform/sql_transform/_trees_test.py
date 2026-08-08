@@ -13,6 +13,7 @@ run to run (measured 2026-08-07: up to 1187 of 2000 rows differ, 19 ULP).
 from __future__ import annotations
 
 import numpy as np
+import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 from pydantic import create_model
@@ -23,7 +24,12 @@ from sklearn.ensemble import (
 )
 from sklearn.tree import DecisionTreeRegressor
 
-from sql_transform import PythonTransform, TreePackError, pack_trees
+from sql_transform import (
+    PythonTransform,
+    TreeBasedTransform,
+    TreePackError,
+    UDFError,
+)
 from sql_transform._trees import _f32_grid_threshold
 
 FEATURES = ["a", "b", "c", "d"]
@@ -32,11 +38,20 @@ ROW = create_model(
     id=(int, ...),
     **dict.fromkeys(FEATURES, (float | None, None)),
 )
-SQL = (
-    "SELECT tree_predict('m', id, struct_pack("
-    + ", ".join(f"{f} := {f}" for f in FEATURES)
-    + ")) AS p FROM __THIS__"
-)
+# One call shape for both lowerings: a transform is called by its own name,
+# instance id first. That the ecall path and the kernel path run the SAME SQL
+# is what makes the parity gate below a comparison of engines, not of surfaces.
+SQL = "SELECT score(id, " + ", ".join(FEATURES) + ") AS p FROM __THIS__"
+
+
+def tbt(estimators, name="score", **kw):
+    return TreeBasedTransform(
+        name,
+        instances=dict(enumerate(estimators)),
+        takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        returns=pa.float64(),
+        **kw,
+    )
 
 
 def fit(kind, seed, n=120):
@@ -46,12 +61,47 @@ def fit(kind, seed, n=120):
     return kind.fit(X, y)
 
 
-def score(entry, X, backend=None):
+# --- the surface: a sibling of PythonTransform, called `name(id, feats...)` ---
+
+
+def test_a_tree_based_transform_registers_like_every_other_transform():
+    """The whole point of the surface: `udfs=[...]` and `score(id, a, b, c, d)`,
+    identical in shape to a PythonTransform. No `models=`, no name-as-a-string,
+    no struct at the call site, no user-visible packing step."""
+    ests = [
+        fit(RandomForestRegressor(n_estimators=12, random_state=s, n_jobs=1), s)
+        for s in (41, 42)
+    ]
     fn = DuckDBInferFn(
         SQL,
         row_tables={"__THIS__": ROW},
         static_tables={},
-        models={"m": entry},
+        udfs=[
+            TreeBasedTransform(
+                "score",
+                instances=dict(enumerate(ests)),
+                takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+                returns=pa.float64(),
+            )
+        ],
+    )
+    assert fn.backend == "cranelift"
+    X = np.random.RandomState(43).rand(200, len(FEATURES)) * 5 - 2.5
+    rows = [
+        ROW(id=i % 2, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)})
+        for i, x in enumerate(X)
+    ]
+    got = [r.p for r in fn.infer({"__THIS__": rows})]
+    want = [float(ests[i % 2].predict(x[None, :])[0]) for i, x in enumerate(X)]
+    assert got == want
+
+
+def score(estimators, X, backend=None):
+    fn = DuckDBInferFn(
+        SQL,
+        row_tables={"__THIS__": ROW},
+        static_tables={},
+        udfs=[tbt(estimators)],
     )
     if backend is not None:
         assert fn.backend == backend
@@ -83,7 +133,7 @@ def test_matches_sklearn_bit_exactly(est, seed):
     rng = np.random.RandomState(seed + 900)
     X = rng.rand(400, len(FEATURES)) * 5 - 2.5
     want = fitted.predict(X)
-    got = score(pack_trees([fitted], FEATURES), X)
+    got = score([fitted], X)
     bad = np.flatnonzero(got != want)
     assert bad.size == 0, (
         f"{bad.size}/{len(X)} rows differ; first at {bad[:3]}: "
@@ -101,7 +151,7 @@ def test_both_backends_match_sklearn(backend, monkeypatch):
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
     fitted = fit(RandomForestRegressor(n_estimators=20, random_state=8, n_jobs=1), 21)
     X = np.random.RandomState(22).rand(300, len(FEATURES)) * 5 - 2.5
-    got = score(pack_trees([fitted], FEATURES), X, backend=backend)
+    got = score([fitted], X, backend=backend)
     assert np.array_equal(got, fitted.predict(X))
 
 
@@ -116,13 +166,13 @@ def test_nan_features_match_sklearn():
     fitted = RandomForestRegressor(
         n_estimators=15, max_depth=6, random_state=32, n_jobs=1
     ).fit(X, y)
-    nodes = pack_trees([fitted], FEATURES)["nodes"]
+    nodes, _, _ = tbt([fitted]).tree_tables()
     assert len(set(nodes.column("missing_left").to_pylist())) == 2, (
         "every node has the same missing direction — the fit saw no NaNs"
     )
     Xq = rng.rand(400, len(FEATURES)) * 5 - 2.5
     Xq[rng.rand(*Xq.shape) < 0.3] = np.nan
-    got = score(pack_trees([fitted], FEATURES), Xq)
+    got = score([fitted], Xq)
     assert np.array_equal(got, fitted.predict(Xq))
 
 
@@ -135,9 +185,8 @@ def test_null_and_nan_are_the_same_input():
     fitted = RandomForestRegressor(
         n_estimators=10, max_depth=5, random_state=42, n_jobs=1
     ).fit(X, np.nan_to_num(X[:, 0]))
-    entry = pack_trees([fitted], FEATURES)
     fn = DuckDBInferFn(
-        SQL, row_tables={"__THIS__": ROW}, static_tables={}, models={"m": entry}
+        SQL, row_tables={"__THIS__": ROW}, static_tables={}, udfs=[tbt([fitted])]
     )
     Xq = np.array([[np.nan, 0.5, np.nan, -1.0], [1.0, np.nan, 2.0, np.nan]])
     as_null = [
@@ -170,10 +219,9 @@ def test_per_group_models_score_by_id():
         )
         for s in (51, 52, 53)
     ]
-    entry = pack_trees(fits, FEATURES)
     X = np.random.RandomState(54).rand(90, len(FEATURES)) * 5 - 2.5
     fn = DuckDBInferFn(
-        SQL, row_tables={"__THIS__": ROW}, static_tables={}, models={"m": entry}
+        SQL, row_tables={"__THIS__": ROW}, static_tables={}, udfs=[tbt(fits)]
     )
     ids = np.arange(len(X)) % 3
     rows = [
@@ -212,27 +260,29 @@ class _AsTransform:
         return np.asarray(self.est.predict(np.asarray(X, dtype=float))).reshape(-1, 1)
 
 
-ECALL_SQL = "SELECT score(id, " + ", ".join(FEATURES) + ") AS p FROM __THIS__"
-
-
 def _both_paths(ests, rows, row_model=None):
-    """(ecall answers, predict answers) for the same estimators and rows."""
+    """(ecall answers, predict answers) for the same estimators and rows.
+
+    Both run the IDENTICAL SQL, because both are transforms named `score`
+    called `score(id, a, b, c, d)`. Swapping `PythonTransform` for
+    `TreeBasedTransform` in the `udfs=` list is the entire difference — which
+    is the property the surface exists to have."""
     row_model = row_model or ROW
     shims = {i: _AsTransform(e) for i, e in enumerate(ests)}
     udf = PythonTransform(
         name="score",
         instances=shims,
-        takes=("f64",) * len(FEATURES),
-        returns=("f64",),
+        takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        returns=pa.float64(),
     )
     ecall_fn = DuckDBInferFn(
-        ECALL_SQL, row_tables={"__THIS__": row_model}, static_tables={}, udfs=[udf]
+        SQL, row_tables={"__THIS__": row_model}, static_tables={}, udfs=[udf]
     )
     predict_fn = DuckDBInferFn(
         SQL,
         row_tables={"__THIS__": row_model},
         static_tables={},
-        models={"m": pack_trees(ests, FEATURES)},
+        udfs=[tbt(ests)],
     )
     ecall = [r.p for r in ecall_fn.infer({"__THIS__": rows})]
     predict = [r.p for r in predict_fn.infer({"__THIS__": rows})]
@@ -315,17 +365,17 @@ def test_ecall_and_predict_agree_on_a_null_id():
     udf = PythonTransform(
         name="score",
         instances={0: _AsTransform(est)},
-        takes=("f64",) * len(FEATURES),
-        returns=("f64",),
+        takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        returns=pa.float64(),
     )
     ecall_fn = DuckDBInferFn(
-        ECALL_SQL, row_tables={"__THIS__": nullable_row}, static_tables={}, udfs=[udf]
+        SQL, row_tables={"__THIS__": nullable_row}, static_tables={}, udfs=[udf]
     )
     predict_fn = DuckDBInferFn(
         SQL,
         row_tables={"__THIS__": nullable_row},
         static_tables={},
-        models={"m": pack_trees([est], FEATURES)},
+        udfs=[tbt([est])],
     )
     ecall = [r.p for r in ecall_fn.infer({"__THIS__": rows})]
     predict = [r.p for r in predict_fn.infer({"__THIS__": rows})]
@@ -339,7 +389,7 @@ def test_unfitted_family_refuses():
     from sklearn.linear_model import LinearRegression
 
     with pytest.raises(TreePackError, match="LinearRegression"):
-        pack_trees([LinearRegression().fit(np.zeros((3, 4)), np.zeros(3))], FEATURES)
+        tbt([LinearRegression().fit(np.zeros((3, 4)), np.zeros(3))])
 
 
 def test_classifier_refuses():
@@ -357,7 +407,7 @@ def test_classifier_refuses():
         RandomForestClassifier(n_estimators=4, random_state=71, n_jobs=1).fit(X, y),
     ):
         with pytest.raises(TreePackError, match="only regressors"):
-            pack_trees([est], FEATURES)
+            tbt([est])
 
 
 def test_bagging_refuses():
@@ -375,7 +425,7 @@ def test_bagging_refuses():
         random_state=72,
     ).fit(X, X[:, 0])
     with pytest.raises(TreePackError, match="BaggingRegressor"):
-        pack_trees([est], FEATURES)
+        tbt([est])
 
 
 def test_multi_output_regressor_refuses():
@@ -392,7 +442,7 @@ def test_multi_output_regressor_refuses():
         ExtraTreesRegressor(n_estimators=4, random_state=74, n_jobs=1).fit(X, y),
     ):
         with pytest.raises(TreePackError, match="multi-output|n_outputs"):
-            pack_trees([est], FEATURES)
+            tbt([est])
 
 
 def test_threshold_rewrite_reproduces_the_f32_comparison():
@@ -470,10 +520,10 @@ def test_infinite_threshold_is_left_alone():
 def test_threshold_rewrite_leaves_leaf_sentinels_alone():
     """A leaf's -2.0 is never read, but a packed table should still look like
     the tree it came from."""
-    entry = pack_trees(
-        [fit(DecisionTreeRegressor(max_depth=3, random_state=77), 77)], FEATURES
-    )
-    nodes = entry["nodes"].to_pydict()
+    nodes, _, _ = tbt(
+        [fit(DecisionTreeRegressor(max_depth=3, random_state=77), 77)]
+    ).tree_tables()
+    nodes = nodes.to_pydict()
     leaves = [
         thr
         for f, thr in zip(nodes["feature"], nodes["threshold"], strict=True)
@@ -492,7 +542,7 @@ def test_quantised_features_match_sklearn():
         Xtr, ytr
     )
     Xq = np.round(rng.rand(1500, len(FEATURES)) * 10, 2)
-    got = score(pack_trees([fitted], FEATURES), Xq)
+    got = score([fitted], Xq)
     want = fitted.predict(Xq)
     bad = np.flatnonzero(got != want)
     assert bad.size == 0, f"{bad.size}/{len(Xq)} rows differ"
@@ -507,18 +557,41 @@ def test_hist_gradient_boosting_refuses():
     X = rng.rand(60, len(FEATURES))
     est = HistGradientBoostingRegressor(max_iter=5, random_state=73).fit(X, X[:, 0])
     with pytest.raises(TreePackError, match="HistGradientBoostingRegressor"):
-        pack_trees([est], FEATURES)
+        tbt([est])
 
 
 def test_feature_count_mismatch_refuses():
+    """`takes` is the declared width; an estimator fitted on a different one
+    would read the wrong columns."""
     fitted = fit(DecisionTreeRegressor(max_depth=3, random_state=61), 61)
-    with pytest.raises(TreePackError, match="4 features"):
-        pack_trees([fitted], ["a", "b"])
+    with pytest.raises(TreePackError, match="fitted on 4 features"):
+        TreeBasedTransform(
+            "score",
+            instances={0: fitted},
+            takes=pa.schema([("a", pa.float64()), ("b", pa.float64())]),
+        )
 
 
 def test_empty_refuses():
-    with pytest.raises(TreePackError, match="no estimators"):
-        pack_trees([], FEATURES)
+    with pytest.raises(UDFError, match="no fitted instances"):
+        TreeBasedTransform(
+            "score",
+            instances={},
+            takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+        )
+
+
+def test_sparse_instance_ids_refuse():
+    """The engine indexes models by position, so a hole would silently score
+    the wrong instance (or none)."""
+    fitted = fit(DecisionTreeRegressor(max_depth=3, random_state=62), 62)
+    with pytest.raises(UDFError, match="dense from 0"):
+        TreeBasedTransform(
+            "score",
+            instances={0: fitted, 2: fitted},
+            takes=pa.schema([(f, pa.float64()) for f in FEATURES]),
+            returns=pa.float64(),
+        )
 
 
 # ------------------------- known divergences, 2026-08-08 adversarial sweep --
@@ -584,15 +657,57 @@ def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
 
     row = _cm("IntRow", id=(int, ...), n=(int, ...))
     fn = DuckDBInferFn(
-        "SELECT tree_predict('m', id, struct_pack(n := n)) AS p FROM __THIS__",
+        "SELECT m(id, n) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
         static_tables={},
-        models={"m": pack_trees([est], ["n"])},
+        udfs=[
+            TreeBasedTransform(
+                "m", instances={0: est}, takes=pa.schema([("n", pa.int64())])
+            )
+        ],
     )
     assert fn.backend == backend
     got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n) for n in probes]})]
     want = list(est.predict(np.array([[n] for n in probes], dtype=np.int64)))
     assert got == want, f"engine {got} vs sklearn {want} (int64 features)"
+
+
+@pytest.mark.parametrize("declared", [pa.int64(), pa.float64()])
+def test_call_and_kernel_agree_on_an_integer_feature_above_2_53(declared):
+    """`__call__` IS the DuckDB binding and the semantic contract the kernel is
+    gated against, so the two must agree — and the sweep found they did not.
+
+    `__call__` built its array with `float(f)`, so sklearn's own float32
+    narrowing became a SECOND rounding, while the kernel narrows once
+    (`itof.f32`, TASK-77). Above 2**53 that is a whole float32 ULP and a whole
+    leaf. Both declarations are checked because they are different right
+    answers, not one: a declared BIGINT reaches sklearn as an int64 and
+    narrows once, while a declared DOUBLE is cast by DuckDB first and narrows
+    from the double — the engine must follow the DECLARATION, not the column.
+    """
+    from pydantic import create_model as _cm
+
+    est, mid = _int_split_model()
+    n = mid + 1
+    u = TreeBasedTransform("m", instances={0: est}, takes=pa.schema([("n", declared)]))
+
+    as_int = est.predict(np.array([[n]], dtype=np.int64))[0]
+    as_dbl = est.predict(np.array([[n]], dtype=np.float64))[0]
+    assert as_int != as_dbl, "the probe must sit where the two roundings differ"
+    want = as_int if declared == pa.int64() else as_dbl
+
+    assert u(0, n) == (want,), "__call__ (the contract, and DuckDB's binding)"
+
+    row = _cm("IntRow", id=(int, ...), n=(int, ...))
+    fn = DuckDBInferFn(
+        "SELECT m(id, n) AS p FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+        udfs=[u],
+    )
+    assert fn.backend == "cranelift"
+    got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n)]})]
+    assert got == [want], f"kernel {got} vs contract {want}"
 
 
 def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
@@ -607,10 +722,16 @@ def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
 
     row = _cm("SmallRow", id=(int, ...), a=(int, ...), b=(int, ...))
     fn = DuckDBInferFn(
-        "SELECT tree_predict('m', id, struct_pack(a := a, b := b)) AS p FROM __THIS__",
+        "SELECT m(id, a, b) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
         static_tables={},
-        models={"m": pack_trees([est], ["a", "b"])},
+        udfs=[
+            TreeBasedTransform(
+                "m",
+                instances={0: est},
+                takes=pa.schema([("a", pa.float64()), ("b", pa.float64())]),
+            )
+        ],
     )
     probe = rng.randint(-100_000, 100_000, size=(200, 2)).astype(np.int64)
     got = [
@@ -631,10 +752,14 @@ def test_integer_feature_literal_is_narrowed_too():
     n = mid + 1
     row = _cm("LitRow", id=(int, ...))
     fn = DuckDBInferFn(
-        f"SELECT tree_predict('m', id, struct_pack(n := {n})) AS p FROM __THIS__",
+        f"SELECT m(id, {n}) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
         static_tables={},
-        models={"m": pack_trees([est], ["n"])},
+        udfs=[
+            TreeBasedTransform(
+                "m", instances={0: est}, takes=pa.schema([("n", pa.int64())])
+            )
+        ],
     )
     got = [r.p for r in fn.infer({"__THIS__": [row(id=0)]})]
     want = list(est.predict(np.array([[n]], dtype=np.int64)))
@@ -643,36 +768,63 @@ def test_integer_feature_literal_is_narrowed_too():
 
 # ADJUDICATED and CONFIRMED 2026-08-08 (TASK-78). The sweep's verifiers had
 # split on it; reproduced by hand, and the divergence is not subtle — a forest
-# fitted on columns ['b', 'a'] and packed as ['a', 'b'] built without complaint
-# and scored -2.72 where sklearn said 0.84. FIXED: the names must match the
-# fitted order, conditionally, since `feature_names_in_` exists only for an
-# estimator fitted on something with column names.
+# fitted on columns ['b', 'a'] and declared as ['a', 'b'] built without
+# complaint and scored -2.72 where sklearn said 0.84. FIXED: the schema's
+# field names must match the fitted order. Since the schema always carries
+# names, the check is no longer opt-in the way the old `take_names` was; it
+# stays conditional on `feature_names_in_`, which exists only for an estimator
+# fitted on something with column names.
 
 
-def test_dataframe_fitted_model_refuses_mismatched_feature_names():
+def _named(est, names):
+    return TreeBasedTransform(
+        "score",
+        instances={0: est},
+        takes=pa.schema([(n, pa.float64()) for n in names]),
+    )
+
+
+def test_dataframe_fitted_model_refuses_mismatched_schema_names():
     pd = pytest.importorskip("pandas")
 
     rng = np.random.RandomState(90)
     df = pd.DataFrame(rng.rand(80, 2) * 4 - 2, columns=["b", "a"])
     est = DecisionTreeRegressor(max_depth=4, random_state=90).fit(df, df["b"] * 3)
     assert list(est.feature_names_in_) == ["b", "a"]
-    # the packer is handed the names in the OTHER order; the count still matches
+    # declared in the OTHER order; the count still matches
     with pytest.raises(TreePackError, match=r"fitted on columns \['b', 'a'\]"):
-        pack_trees([est], ["a", "b"])
+        _named(est, ["a", "b"])
     # a name that was never fitted is caught by the same check
     with pytest.raises(TreePackError, match="fitted on columns"):
-        pack_trees([est], ["b", "zzz"])
-    # ... and the fitted order packs and scores exactly like sklearn
-    entry = pack_trees([est], ["b", "a"])
-    assert entry["features"] == ["b", "a"]
+        _named(est, ["b", "zzz"])
+    # ... and the fitted order builds
+    assert _named(est, ["b", "a"]).take_names == ("b", "a")
 
 
-def test_ndarray_fitted_model_still_packs():
-    """`feature_names_in_` is absent when the estimator saw a bare ndarray —
-    the common case, and it must not be caught by TASK-78's check."""
+def test_schema_names_do_not_bind_the_call_site():
+    """Arguments bind by POSITION, so a call site names its columns whatever
+    it likes; the schema's names are a fit-time cross-check, not a key."""
     rng = np.random.RandomState(91)
     x = rng.rand(80, 2) * 4 - 2
     est = DecisionTreeRegressor(max_depth=4, random_state=91).fit(x, x[:, 0] * 3)
     assert not hasattr(est, "feature_names_in_")
-    entry = pack_trees([est], ["anything", "at_all"])
-    assert entry["features"] == ["anything", "at_all"]
+    # no `feature_names_in_`: any naming is accepted
+    assert _named(est, ["anything", "at_all"]).take_names == ("anything", "at_all")
+
+    from pydantic import create_model as _cm
+
+    row = _cm("PosRow", id=(int, ...), zzz=(float, ...), qqq=(float, ...))
+    fn = DuckDBInferFn(
+        "SELECT score(id, zzz, qqq) AS p FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+        udfs=[_named(est, ["anything", "at_all"])],
+    )
+    probe = rng.rand(20, 2) * 4 - 2
+    got = [
+        r.p
+        for r in fn.infer(
+            {"__THIS__": [row(id=0, zzz=float(a), qqq=float(b)) for a, b in probe]}
+        )
+    ]
+    assert got == list(est.predict(probe))

@@ -184,74 +184,147 @@ struct UdfDecl {
     obj: Py<PyAny>,
 }
 
-fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
-    let parse_ty = |name: &str, label: &str, s: &str| -> PyResult<Ty> {
-        Ok(match s {
-            "i1" => Ty::I1,
-            "i64" => Ty::I64,
-            "f64" => Ty::F64,
-            "str" => Ty::Str,
-            other => {
-                return Err(build_err(format!(
-                    "udf '{name}': {label} type '{other}' is not one of \
-                     i1/i64/f64/str"
-                )))
-            }
-        })
-    };
+/// One arrow type as an engine type. The engine computes in exactly
+/// `i64` / `f64` / string / bool, so the four spellings that map are the
+/// whole vocabulary — a narrower arrow type refuses rather than widening
+/// silently, which would make the declared schema a lie about what is served.
+fn arrow_ty(name: &str, label: &str, t: &Bound<'_, PyAny>) -> PyResult<Ty> {
+    let s = t.str()?.extract::<String>()?;
+    Ok(match s.as_str() {
+        "bool" => Ty::I1,
+        "int64" => Ty::I64,
+        "double" => Ty::F64,
+        "string" => Ty::Str,
+        other => {
+            return Err(build_err(format!(
+                "udf '{name}': {label} type '{other}' is not one of \
+                 bool/int64/double/string"
+            )))
+        }
+    })
+}
+
+/// `takes`: a `pa.Schema`, one field per argument, in call order.
+fn parse_takes(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec<Ty>)> {
+    let bad = || build_err(format!("udf '{name}': `takes` must be a pyarrow Schema"));
+    let names: Vec<String> = obj.getattr("names").map_err(|_| bad())?.extract().map_err(|_| bad())?;
+    let types = obj.getattr("types").map_err(|_| bad())?;
+    let mut tys = Vec::with_capacity(names.len());
+    for t in types.try_iter().map_err(|_| bad())? {
+        tys.push(arrow_ty(name, "takes", &t?)?);
+    }
+    if names.len() != tys.len() {
+        return Err(bad());
+    }
+    Ok((names, tys))
+}
+
+/// `returns`: the SQL return TYPE, which is also what says how wide the call
+/// is and whether its lanes are addressable.
+///
+/// * a scalar type — an ordinary scalar expression;
+/// * `pa.struct([...])` — width-k with addressable field names (TASK-63),
+///   struct-valued at EVERY width including 1;
+/// * `pa.list_(t, k)` — width-k unnamed, the DRAFT-22 list boundary. Fixed
+///   size because the width is part of the declaration; a variable-length
+///   list would leave it unsaid.
+fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec<Ty>)> {
+    let s = obj.str()?.extract::<String>()?;
+    if s.starts_with("struct<") {
+        let n: usize = obj.getattr("num_fields")?.extract()?;
+        if n == 0 {
+            return Err(build_err(format!(
+                "udf '{name}': `returns` struct declares no fields"
+            )));
+        }
+        let mut names = Vec::with_capacity(n);
+        let mut tys = Vec::with_capacity(n);
+        for i in 0..n {
+            let f = obj.call_method1("field", (i,))?;
+            names.push(f.getattr("name")?.extract::<String>()?);
+            tys.push(arrow_ty(name, "returns", &f.getattr("type")?)?);
+        }
+        return Ok((names, tys));
+    }
+    if s.starts_with("fixed_size_list<") {
+        let k: i64 = obj.getattr("list_size")?.extract()?;
+        // k == 1 is the one shape where the lane COUNT and the arrow SHAPE
+        // disagree: width-1 unnamed binds as a plain scalar expression here
+        // and registers as a scalar on DuckDB, so a value declared as a list
+        // would cross as its element.
+        if k < 2 {
+            return Err(build_err(format!(
+                "udf '{name}': a width-1 list return is a scalar — declare the \
+                 element type rather than pa.list_(t, {k})"
+            )));
+        }
+        let ty = arrow_ty(name, "returns", &obj.getattr("value_type")?)?;
+        return Ok((Vec::new(), vec![ty; k as usize]));
+    }
+    if s.starts_with("list<") {
+        return Err(build_err(format!(
+            "udf '{name}': `returns` list must declare its width — \
+             pa.list_(pa.float64(), k), not pa.list_(pa.float64())"
+        )));
+    }
+    Ok((Vec::new(), vec![arrow_ty(name, "returns", obj)?]))
+}
+
+fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, Vec<TreeDecl>)> {
     let mut out: Vec<UdfDecl> = Vec::new();
+    let mut trees: Vec<TreeDecl> = Vec::new();
+    // One namespace: a call site resolves a name against both lists, so a
+    // collision between them would bind the wrong implementation silently.
+    let mut names: Vec<String> = Vec::new();
     for obj in udfs {
         let b = obj.bind(py);
         let name: String = b
             .getattr("name")
             .and_then(|v| v.extract())
             .map_err(|_| build_err("every udf must declare a string `name`"))?;
-        let takes: Vec<String> = b
-            .getattr("takes")
-            .and_then(|v| v.extract())
-            .map_err(|_| build_err(format!("udf '{name}': `takes` must be a tuple of type names")))?;
-        let rets: Vec<String> = b
-            .getattr("returns")
-            .and_then(|v| v.extract())
-            .map_err(|_| {
-                build_err(format!("udf '{name}': `returns` must be a tuple of type names"))
-            })?;
-        if rets.is_empty() {
+        if let Some(other) = names.iter().find(|o| o.eq_ignore_ascii_case(&name)) {
             return Err(build_err(format!(
-                "udf '{name}': `returns` must declare at least one type"
+                "duplicate udf name '{other}' and '{name}'"
             )));
         }
-        let mut params = Vec::with_capacity(takes.len() + 1);
+        // A third namespace, and the binder consults it FIRST: a UDF named
+        // after a builtin would be shadowed here while DuckDB binds the UDF.
+        // See `frontend::BUILTIN_NAMES` for why this refuses rather than
+        // letting either side win.
+        if super::specializer::frontend::is_builtin(&name) {
+            return Err(build_err(format!(
+                "udf '{name}' collides with the builtin function '{name}' — \
+                 rename it. The builtin binds first here, while DuckDB binds \
+                 the udf, so the two engines would answer differently."
+            )));
+        }
+        names.push(name.clone());
+        let (_take_names, take_tys) = parse_takes(&name, &b.getattr("takes").map_err(|_| {
+            build_err(format!("udf '{name}': `takes` must be a pyarrow Schema"))
+        })?)?;
+        // A UDF exposing `tree_tables()` is scored by the native kernel, so
+        // it never becomes an extern: no callable, no GIL on the row path.
+        // Its features bind positionally after the implicit instance id.
+        if b.hasattr("tree_tables")? {
+            if take_tys.is_empty() {
+                return Err(build_err(format!(
+                    "udf '{name}': a tree transform scores at least one feature"
+                )));
+            }
+            trees.push(parse_tree_udf(py, name, take_tys, &b)?);
+            continue;
+        }
+        let (ret_names, rets) = parse_returns(&name, &b.getattr("returns").map_err(|_| {
+            build_err(format!("udf '{name}': `returns` must be a pyarrow DataType"))
+        })?)?;
+        let mut params = Vec::with_capacity(take_tys.len() + 1);
         // The implicit leading instance id (DRAFT-22): objects with an
         // `instances` attribute are fitted transformers whose first SQL
         // argument is the nullable i64 id — never written in `takes`.
         if b.hasattr("instances")? {
             params.push(Ty::I64);
         }
-        for t in &takes {
-            params.push(parse_ty(&name, "takes", t)?);
-        }
-        let rets = rets
-            .iter()
-            .map(|t| parse_ty(&name, "returns", t))
-            .collect::<PyResult<Vec<_>>>()?;
-        // Optional declared output field names (TASK-63): enables field
-        // access over a width-k call. Absent or None = unnamed.
-        let ret_names: Vec<String> = match b.getattr("return_names") {
-            Ok(v) if !v.is_none() => v.extract().map_err(|_| {
-                build_err(format!(
-                    "udf '{name}': `return_names` must be a tuple of strings"
-                ))
-            })?,
-            _ => Vec::new(),
-        };
-        if !ret_names.is_empty() && ret_names.len() != rets.len() {
-            return Err(build_err(format!(
-                "udf '{name}': {} return_names for {} returns",
-                ret_names.len(),
-                rets.len()
-            )));
-        }
+        params.extend(take_tys);
         // Field binding is ASCII-case-insensitive (here and in DuckDB's
         // struct keys) — colliding names would bind silently wrong.
         for (i, a) in ret_names.iter().enumerate() {
@@ -260,12 +333,6 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
                     "udf '{name}': return_names collide case-insensitively ('{a}')"
                 )));
             }
-        }
-        if out
-            .iter()
-            .any(|d| d.spec.name.eq_ignore_ascii_case(&name))
-        {
-            return Err(build_err(format!("duplicate udf name '{name}'")));
         }
         out.push(UdfDecl {
             spec: ExternSpec {
@@ -277,7 +344,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<Vec<UdfDecl>> {
             obj: obj.clone_ref(py),
         });
     }
-    Ok(out)
+    Ok((out, trees))
 }
 
 /// The engine-side implementations: one boxed trampoline per declared UDF.
@@ -498,99 +565,57 @@ fn materialize_map(
     Ok(StaticData::Map(entries))
 }
 
-/// One `models=` entry: the two Arrow tables plus the feature names a
-/// `struct_pack` call site is resolved against. The names live here rather
-/// than in the node table because they describe the SET, not a row of it.
-struct ModelSet {
+/// A declared tree transform: the two Arrow tables its `tree_tables()` handed
+/// over, plus the width and grid the binder needs. Held as Python objects
+/// because the statics are materialized twice (the cranelift attempt consumes
+/// them, the interpreter fallback rebuilds).
+struct TreeDecl {
+    name: String,
     nodes: Py<PyAny>,
     headers: Py<PyAny>,
-    features: Vec<String>,
+    takes: Vec<Ty>,
     grid: super::specializer::plan::CompareGrid,
 }
 
-/// `models={'trees': {'nodes': tbl, 'models': tbl, 'features': [...]}}`.
-fn parse_model_sets(
+/// A declared UDF that exposes `tree_tables()` is served by the native kernel
+/// rather than an ecall: `(nodes, models, compare_grid)` in, a `TreeDecl` out.
+///
+/// The grid is REQUIRED of the protocol, deliberately not defaulted: it says
+/// which floating-point grid the thresholds were fitted on, and the packer
+/// that would get it wrong is exactly the one that never thought about it. A
+/// default would be the same trap with an extra step. See `plan::CompareGrid`.
+fn parse_tree_udf(
     py: Python<'_>,
-    models: HashMap<String, Py<PyAny>>,
-) -> PyResult<HashMap<String, ModelSet>> {
-    // `tree_predict('trees', ..)` resolves case-insensitively and takes the
-    // first catalog hit, so two keys differing only in case would bind the
-    // WRONG fitted model and return a plausible number. `parse_udfs` refuses
-    // the identical hazard on the neighbouring surface.
-    let mut seen: Vec<&String> = Vec::with_capacity(models.len());
-    for name in models.keys() {
-        if let Some(other) = seen.iter().find(|o| o.eq_ignore_ascii_case(name)) {
-            return Err(build_err(format!(
-                "model set names collide case-insensitively ('{other}' and '{name}')"
-            )));
-        }
-        seen.push(name);
-    }
-    models
-        .into_iter()
-        .map(|(name, v)| {
-            let entry = v.bind(py);
-            let get = |k: &str| {
-                entry.get_item(k).map_err(|_| {
-                    build_err(format!(
-                        "model set '{name}': expected a mapping with keys 'nodes', \
-                         'models', 'features' and 'compare_grid' — no '{k}'"
-                    ))
-                })
-            };
-            let nodes = get("nodes")?.unbind();
-            let headers = get("models")?.unbind();
-            let features: Vec<String> = get("features")?.extract().map_err(|_| {
-                build_err(format!(
-                    "model set '{name}': 'features' must be a list of column names"
-                ))
-            })?;
-            if features.is_empty() {
-                return Err(build_err(format!(
-                    "model set '{name}': 'features' is empty — a model scores at \
-                     least one feature"
-                )));
-            }
-            // Duplicates would make name-keyed call-site resolution ambiguous.
-            let mut sorted = features.clone();
-            sorted.sort();
-            if let Some(w) = sorted.windows(2).find(|w| w[0] == w[1]) {
-                return Err(build_err(format!(
-                    "model set '{name}': duplicate feature name '{}'",
-                    w[0]
-                )));
-            }
-            // REQUIRED, deliberately not defaulted: this says which
-            // floating-point grid the thresholds were fitted on, and the
-            // packer that would get it wrong is exactly the one that never
-            // thought about it. A default would be the same trap with an
-            // extra step. See `plan::CompareGrid`.
-            let grid: String = get("compare_grid")?.extract().map_err(|_| {
-                build_err(format!(
-                    "model set '{name}': 'compare_grid' must be 'float32' or 'float64'"
-                ))
-            })?;
-            let grid = match grid.as_str() {
-                "float32" => super::specializer::plan::CompareGrid::F32,
-                "float64" => super::specializer::plan::CompareGrid::F64,
-                other => {
-                    return Err(build_err(format!(
-                        "model set '{name}': compare_grid '{other}' is not \
-                         'float32' or 'float64'"
-                    )))
-                }
-            };
-            Ok((
-                name,
-                ModelSet {
-                    nodes,
-                    headers,
-                    features,
-                    grid,
-                },
+    name: String,
+    takes: Vec<Ty>,
+    obj: &Bound<'_, PyAny>,
+) -> PyResult<TreeDecl> {
+    let got = obj
+        .call_method0("tree_tables")
+        .map_err(|e| build_err(format!("udf '{name}': tree_tables() raised: {e}")))?;
+    let (nodes, headers, grid): (Py<PyAny>, Py<PyAny>, String) =
+        got.extract().map_err(|_| {
+            build_err(format!(
+                "udf '{name}': tree_tables() must return (nodes, models, compare_grid)"
             ))
-        })
-        .collect()
+        })?;
+    let grid = match grid.as_str() {
+        "float32" => super::specializer::plan::CompareGrid::F32,
+        "float64" => super::specializer::plan::CompareGrid::F64,
+        other => {
+            return Err(build_err(format!(
+                "udf '{name}': compare_grid '{other}' is not 'float32' or 'float64'"
+            )))
+        }
+    };
+    let _ = py;
+    Ok(TreeDecl {
+        name,
+        nodes,
+        headers,
+        takes,
+        grid,
+    })
 }
 
 /// Every static the program declares, in program order: one entry per join
@@ -603,7 +628,7 @@ fn materialize_statics(
     py: Python<'_>,
     prepared: &crate::specializer::Prepared,
     static_tables: &HashMap<String, Py<PyAny>>,
-    model_sets: &HashMap<String, ModelSet>,
+    trees: &[TreeDecl],
 ) -> PyResult<Vec<StaticData>> {
     let n_join = prepared.statics.len();
     if prepared.program.statics.len() != n_join + prepared.models.len() {
@@ -637,12 +662,13 @@ fn materialize_statics(
                 "internal: model statics must follow every join static",
             ));
         };
-        let set = model_sets
-            .get(name)
+        let decl = trees
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(name))
             .expect("model names come from the catalog");
         data.push(StaticData::Model(Box::new(arrow::ensemble(
-            set.nodes.bind(py),
-            set.headers.bind(py),
+            decl.nodes.bind(py),
+            decl.headers.bind(py),
             *n_features,
             name,
         )?)));
@@ -1096,7 +1122,7 @@ pub struct DuckDBInferFn {
 #[pymethods]
 impl DuckDBInferFn {
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, output_model=None, output=None, shape=None, models=None))]
+    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, output_model=None, output=None, shape=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1107,10 +1133,8 @@ impl DuckDBInferFn {
         output_model: Option<Py<PyAny>>,
         output: Option<String>,
         shape: Option<String>,
-        models: Option<HashMap<String, Py<PyAny>>>,
     ) -> PyResult<Self> {
-        let udf_decls = parse_udfs(py, udfs.unwrap_or_default())?;
-        let model_sets = parse_model_sets(py, models.unwrap_or_default())?;
+        let (udf_decls, tree_decls) = parse_udfs(py, udfs.unwrap_or_default())?;
         // The row-shape contract (TASK-58): "filter" (default) is today's
         // 0..1 rows out per row in; "map" statically PROVES exactly-one
         // (out[i] <-> in[i]) or refuses at build; "many" is reserved for
@@ -1266,17 +1290,14 @@ impl DuckDBInferFn {
 
         use super::specializer::PrepareError;
         let extern_specs: Vec<ExternSpec> = udf_decls.iter().map(|d| d.spec.clone()).collect();
-        // Sorted so a build error names model sets in a stable order —
-        // HashMap iteration order is not.
-        let mut model_catalog: Vec<super::specializer::plan::ModelTable> = model_sets
+        let model_catalog: Vec<super::specializer::plan::ModelTable> = tree_decls
             .iter()
-            .map(|(name, set)| super::specializer::plan::ModelTable {
-                name: name.clone(),
-                features: set.features.clone(),
-                grid: set.grid,
+            .map(|t| super::specializer::plan::ModelTable {
+                name: t.name.clone(),
+                takes: t.takes.clone(),
+                grid: t.grid,
             })
             .collect();
-        model_catalog.sort_by(|a, b| a.name.cmp(&b.name));
         let prepared = match prepare_opaque(
             &sql,
             &row_table,
@@ -1291,7 +1312,9 @@ impl DuckDBInferFn {
             Ok(p) => p,
             // With declared UDFs the constant-emitter fallback is off: DuckDB
             // cannot evaluate the udf calls, so surface the prepare error.
-            Err(e) if !udf_decls.is_empty() => return Err(build_err(e.to_string())),
+            Err(e) if !udf_decls.is_empty() || !tree_decls.is_empty() => {
+                return Err(build_err(e.to_string()))
+            }
             // Unsupported/unparseable SQL might still be a static-tables-only
             // query (static driving table, aggregation, ORDER BY, DuckDB
             // dialect beyond sqlparser): try the constant-emitter path. It
@@ -1336,7 +1359,7 @@ impl DuckDBInferFn {
             }
         }
 
-        let data = materialize_statics(py, &prepared, &static_tables, &model_sets)?;
+        let data = materialize_statics(py, &prepared, &static_tables, &tree_decls)?;
 
         // SPECIALIZER_FORCE_INTERP pins the interpreter — the bench control
         // and a debugging escape hatch.
@@ -1356,7 +1379,7 @@ impl DuckDBInferFn {
                     Err(_) => Backend::Interp(
                         compile_ext(
                             &prepared.program,
-                            materialize_statics(py, &prepared, &static_tables, &model_sets)?,
+                            materialize_statics(py, &prepared, &static_tables, &tree_decls)?,
                             make_externs(py, &udf_decls),
                         )
                         .map_err(|e| build_err(e.to_string()))?,

@@ -22,7 +22,7 @@ from sql_transform._marginalize import (
     MarginalizeError,
     marginalize,
 )
-from sql_transform._udf import UDF, PythonTransform
+from sql_transform._udf import _ARROW, UDF, PythonTransform
 
 
 def _feature_matrix(table: pa.Table, cols: list[str]):
@@ -304,9 +304,11 @@ class SQLProjection:
         base_name = specs[0].name  # every spec of a step shares the one UDF
         # Typed BEFORE fitting: a nested feature column dies here by name,
         # never as a raw error inside est.fit (review round 2026-08-05).
-        takes = tuple(
-            _engine_ty(table.column(c).type, n)
-            for c, n in zip(step.features, step.feature_names, strict=True)
+        takes = pa.schema(
+            [
+                (n, _ARROW[_engine_ty(table.column(c).type, n)])
+                for c, n in zip(step.features, step.feature_names, strict=True)
+            ]
         )
         feats = _feature_matrix(table, list(step.features))
         keyvals = [table.column(k).to_pylist() for k in step.keys]
@@ -428,9 +430,9 @@ class SQLProjection:
             # S's field types come from the level table — the real types of
             # the bundle expressions, so a string feature stays a string.
             takes=takes,
-            returns=("f64",) * len(shape),
-            take_names=tuple(step.feature_names),
-            return_names=shape,
+            # T is a STRUCT: the learned names are addressable, at every
+            # width (TASK-63).
+            returns=pa.struct([(n, pa.float64()) for n in shape]),
         )
         return pa.table(cols), udf
 

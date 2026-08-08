@@ -1,34 +1,10 @@
-from typing import Any, TypedDict
+from typing import Any
 
 import pyarrow as pa
 from pydantic import BaseModel
 
 BUILD_PROFILE: str
 """"debug" or "release" — benchmarks refuse a debug build."""
-
-class ModelSet(TypedDict):
-    """One fitted tree ensemble, as Arrow. Nothing else crosses — no
-    estimator object, no pickle, no live model reference.
-
-    `nodes` columns: `model_id` | `tree_id` | `node_id` | `feature` (-1 on a
-    leaf) | `threshold` | `left` | `right` | `missing_left` | `value`, grouped
-    by model then tree, node ids dense from 0 per tree, children after their
-    parent.
-
-    `models` columns: `model_id` (dense from 0) | `base` | `agg`
-    ("sum" | "mean") | `link` ("identity" | "sigmoid"). A boosted model seeds
-    the accumulator with `base`; a forest divides the sum by its tree count
-    and then adds it — matching each family's own summation order, which is
-    what makes scoring bit-exact with sklearn.
-
-    `features`: the feature names, in the order the `feature` column indexes
-    them. A `tree_predict(..., struct_pack(...))` call site is resolved
-    against these by NAME, so call-site order is free.
-    """
-
-    nodes: pa.Table
-    models: pa.Table
-    features: list[str]
 
 class DuckDBInferFn:
     """SQL specialized against frozen static tables, served bit-exact with DuckDB.
@@ -50,28 +26,70 @@ class DuckDBInferFn:
         output_model: type[BaseModel] | None = None,
         output: str | None = None,
         shape: str | None = None,
-        models: dict[str, ModelSet] | None = None,
     ) -> None:
         """`udfs`: declared opaque scalar functions the SQL may call
-        (DRAFT-22). Each object carries `name: str`, `takes: tuple[str, ...]`
-        and `returns: tuple[str, ...]` in the engine type vocabulary
-        ("i1" | "i64" | "f64" | "str"), and a scalar `__call__(*args)`
-        receiving one plain Python value per argument (None for NULL) and
-        returning a tuple matching `returns`, or None for an all-NULL
-        result. An object with an `instances` attribute is a fitted
-        transformer: its implicit leading argument is a nullable BIGINT
-        instance id (never written in `takes`). Width-1 calls are scalar
-        expressions; width-k calls are bare SELECT items emitting one
-        `list | None` field — or, when the object declares
-        `return_names: tuple[str, ...]` (one per return, TASK-63), field
-        access over the call binds each addressed name to one lane of a
-        single evaluation (`(f(...)).a` or `struct_extract(f(...), 'a')`,
-        usable mid-expression; textually identical calls share the one
-        evaluation, mirroring DuckDB's CSE). The oracle statement is
-        parameterized, not
-        weakened: the engine matches DuckDB running the same SQL with these
-        same objects registered via `create_function`. UDFs must be
-        deterministic.
+        (DRAFT-22). Each object carries `name: str`, a `takes: pa.Schema`
+        (one field per argument, names and types together, in call order) and
+        a `returns: pa.DataType`, plus a scalar `__call__(*args)` receiving
+        one plain Python value per argument (None for NULL) and returning a
+        tuple of the output lanes, or None for an all-NULL result.
+
+        The type vocabulary is exactly `bool` / `int64` / `double` / `string`
+        — the engine computes in those four, so a narrower arrow type refuses
+        rather than widening silently.
+
+        `returns` is the SQL return TYPE, which also says how wide the call is
+        and whether its lanes are addressable:
+
+            pa.float64()          an ordinary scalar expression
+            pa.struct([...])      width-k with addressable field names
+                                  (TASK-63) — struct-valued at EVERY width,
+                                  so `f(x).a` reads a lane off ONE call
+            pa.list_(t, k)        width-k unnamed (the DRAFT-22 list
+                                  boundary); FIXED size, because the width is
+                                  part of the declaration, and k >= 2 — a
+                                  width-1 list is a scalar and refuses
+
+        Arguments bind against the DECLARED type, not their own: an argument
+        widens to it exactly as DuckDB's implicit cast would (BIGINT into a
+        declared DOUBLE), and anything else refuses by name. For a tree
+        transform that is load-bearing rather than cosmetic — a declared
+        BIGINT feature narrows to float32 in ONE step, while a declared DOUBLE
+        is cast first and narrows from the double, which is a different leaf
+        above 2**53.
+
+        An object with an `instances` attribute is a fitted transformer: its
+        implicit leading argument is a nullable BIGINT instance id (never
+        written in `takes`).
+
+        A udf name may not be a builtin (`least`, `round`, `upper`, …) and may
+        not collide case-insensitively with another declared udf. The builtin
+        catalogue is matched before the declared udfs, while DuckDB lets a
+        registered function shadow its own builtin — so a collision is refused
+        rather than resolved, in either direction.
+
+        An object that also exposes `tree_tables() -> (nodes, models,
+        compare_grid)` is a fitted tree ensemble, scored by the native kernel
+        instead of a callback — no Python on the row path, and no `__call__`
+        is ever made by the engine (it stays the DuckDB-side binding and the
+        semantic contract the kernel is gated against). `nodes` columns:
+        `model_id` | `tree_id` | `node_id` | `feature` (-1 on a leaf) |
+        `threshold` | `left` | `right` | `missing_left` | `value`, grouped by
+        model then tree, node ids dense from 0 per tree, children after their
+        parent. `models` columns: `model_id` (dense from 0) | `base` | `agg`
+        ("sum" | "mean") | `link` ("identity" | "sigmoid"). `compare_grid` is
+        "float32" or "float64": which grid the thresholds were fitted on, and
+        therefore how an INTEGER feature reaches the comparison. Features bind
+        by POSITION, in `takes` order, after the instance id.
+
+        Width-k calls are bare SELECT items emitting one `list | None` field
+        — or, when `returns` is a struct, field access over the call binds
+        each addressed name to one lane of a single evaluation (`(f(...)).a`
+        or `struct_extract(f(...), 'a')`, usable mid-expression; textually
+        identical calls share the one evaluation, mirroring DuckDB's CSE).
+        The oracle statement is parameterized, not weakened: the engine
+        matches DuckDB running the same SQL with these same objects
+        registered via `create_function`. UDFs must be deterministic.
 
         `output`: "model" (typed, default) or "dict".
 

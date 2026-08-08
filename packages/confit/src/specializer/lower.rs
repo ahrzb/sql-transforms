@@ -49,13 +49,13 @@ pub fn lower(
     models: &[super::plan::ModelTable],
     model_refs: &[u32],
 ) -> Result<Program, PrepareError> {
-    // One `model<...>` static per referenced model set, APPENDED after every
-    // join static: join index IS the static id (see emit_probe below), so a
-    // model static anywhere earlier would shift every probe's @N.
+    // One `model<...>` static per referenced tree transform, APPENDED after
+    // every join static: join index IS the static id (see emit_probe below),
+    // so a model static anywhere earlier would shift every probe's @N.
     let model_statics: Vec<StaticTy> = model_refs
         .iter()
         .map(|r| StaticTy::Model {
-            n_features: models[*r as usize].features.len() as u32,
+            n_features: models[*r as usize].takes.len() as u32,
         })
         .collect();
     let (exprs, filter_pred) = match rel {
