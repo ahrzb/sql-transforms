@@ -65,6 +65,18 @@ and the reference), `_names_in`, `_bindings_at`, `_correlation`'s qualifier,
 and `_resolve`'s catalog test. Restrict `_catalog` to
 `NOT internal AND database_name IN (current_database(), 'temp')`. Nothing folds
 on the `scope`/`captured` side.
+
+## A regression the narrowing caused, caught before merge
+
+Narrowing `_catalog` broke *qualified* names: `side.main.far` and
+`information_schema.tables` both worked before, precisely because the
+unfiltered listing contained `far` and `tables`. The catalog was never the
+right test for them — a captured object is registered under a bare name, so a
+qualified reference can never mean one, whatever the listing holds. `_resolve`
+now takes a qualified name as the connection's own without consulting
+anything, and refuses at construction when there is no connection to own it,
+since `fit` makes a fresh one per call and nothing qualified could ever be
+there. Gated in `_catalog_test.py`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -91,11 +103,14 @@ goes red before any of this does. It lives in `_case_test.py` rather than
 `_shapes_test.py` as the ticket suggested — it is a binder behaviour, not a
 serialization shape, and it belongs next to the folds that depend on it.
 
-Mutation-checked, all seven fix sites, each reverted in turn with the file
+Mutation-checked, all nine fix sites, each reverted in turn with the file
 restored byte-exact: catalog fold, catalog filter, `_resolve`'s compare,
-`_names_in`, `_bindings_at`, `_correlation`, `_reads`. Three survived the
-first pass — every one a weak gate of mine, not dead code, because the
-spellings in my tests were already lowercase. Parametrising both sides of each
-comparison caught them. That is the third time in this ticket series a gate
-was shaped like the fix instead of like the usage.
+`_names_in`, `_bindings_at`, `_correlation`, `_reads`, and the two halves of
+the qualified-name arm. Three survived the first pass — every one a weak gate
+of mine, not dead code, because the spellings in my tests were already
+lowercase. Parametrising both sides of each comparison caught them. That is
+the third time in this ticket series a gate was shaped like the fix instead of
+like the usage, and the qualified-name regression above is the fourth: no gate
+covered it, and it only surfaced because the guide sentence "pass yours, and
+it uses your catalog" sent me to try the shapes a user would.
 <!-- SECTION:NOTES:END -->
