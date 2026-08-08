@@ -115,9 +115,12 @@ output column only, splits in WHERE on both the matched and null-extended
 paths, the joined column read twice across a split, nested splits, and the
 multi-operand case above.
 
-**Not changed:** a SCALAR join loses its probe cache across a split too, but
-`emit_probe` simply re-emits `Inst::Probe` in the new block — correct, and
-free when the split is a branch (only one arm runs). It costs a redundant
-probe only when a column before the split and one inside it both read the same
-join. Small, pre-existing, and a different fix; deliberately left alone.
+**CORRECTION (2026-08-08, see TASK-73).** This note originally claimed the
+scalar-join cache hole was harmless — "correct, and free when the split is a
+branch (only one arm runs)". That was asserted without being tested, and it is
+false when the split sits inside the join's OWN ON residual: the cache miss
+re-enters `emit_probe`, which re-emits the residual, which contains the split,
+without bound. The build died with STATUS_STACK_OVERFLOW. Fixed in TASK-73 by
+giving the scalar cache the same per-block re-seeding this ticket gave the
+many-join cache, plus a re-entry guard.
 <!-- SECTION:NOTES:END -->

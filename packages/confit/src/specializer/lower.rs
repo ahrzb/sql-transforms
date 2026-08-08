@@ -297,12 +297,27 @@ struct FB<'a> {
     /// stack — NOT `live.len() - nd`, which holds only at an expression
     /// boundary, before operands are pushed on top of them.
     many: Option<ManySeed>,
+    /// Scalar joins whose residual is being emitted right now, innermost
+    /// last. Same hazard as `many`, different cache: the join's value lanes
+    /// ride the live stack but the cache ENTRY is per block, and a split
+    /// inside the residual used to drop it, miss, and re-enter `emit_probe`
+    /// without bound — a stack overflow that killed the process rather than
+    /// raising (TASK-73). A stack, not an Option: a residual may probe
+    /// another join.
+    probe_seeds: Vec<ProbeSeed>,
 }
 
 #[derive(Clone, Copy)]
 struct ManySeed {
     join: u32,
     hit: bool,
+    base: usize,
+    nd: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ProbeSeed {
+    join: u32,
     base: usize,
     nd: usize,
 }
@@ -325,6 +340,7 @@ impl<'a> FB<'a> {
             udfs,
             model_base,
             many: None,
+            probe_seeds: Vec::new(),
         }
     }
 
@@ -1534,6 +1550,20 @@ impl<'a> FB<'a> {
     fn enter_block(&mut self, live: &mut Live, params: &[Value]) {
         Self::rebind_live(live, params);
         self.seed_many(live);
+        self.seed_probes(live);
+    }
+
+    /// (Re)create this block's probe cache entry for every scalar join whose
+    /// residual is currently being emitted. The hit is TRUE by construction —
+    /// we are inside the `brif raw_hit -> eval` branch — but the constant is
+    /// a register like any other and has to be re-materialised here.
+    fn seed_probes(&mut self, live: &Live) {
+        for i in 0..self.probe_seeds.len() {
+            let ProbeSeed { join, base, nd } = self.probe_seeds[i];
+            let t = self.const_i1(true);
+            let ds: Vec<Value> = live[base..base + nd].iter().map(|(l, _)| l.val).collect();
+            self.blocks[self.cur].probes.insert(join, (t, ds));
+        }
     }
 
     /// Emit every output expression and store it. Under a many-join
@@ -1575,6 +1605,16 @@ impl<'a> FB<'a> {
     fn emit_probe(&mut self, j: u32, live: &mut Live) -> Result<(Value, Vec<Value>), PrepareError> {
         if let Some((valid_hit, dsts)) = self.blocks[self.cur].probes.get(&j) {
             return Ok((*valid_hit, dsts.clone()));
+        }
+        // Re-entering a join while emitting its OWN residual means the cache
+        // entry was lost across a block transition. That used to recurse until
+        // the process died of stack overflow (TASK-73); the seeding above
+        // prevents it, and this turns any FUTURE hole into a named error
+        // rather than a dead serving process.
+        if self.probe_seeds.iter().any(|p| p.join == j) {
+            return Err(PrepareError::Internal(format!(
+                "probe cache for @{j} lost inside its own residual"
+            )));
         }
         let spec = &self.joins[j as usize];
         let nkeys = spec.keys.len();
@@ -1668,7 +1708,17 @@ impl<'a> FB<'a> {
                 }
                 let t = self.const_i1(true);
                 self.blocks[self.cur].probes.insert(j, (t, eval_dsts));
-                let rl = self.emit(&res, live)?;
+                // Keep that cache entry alive across any CFG split INSIDE the
+                // residual — a CASE arm, a COALESCE over a nullable joined
+                // column, a guarded CAST (TASK-73).
+                self.probe_seeds.push(ProbeSeed {
+                    join: j,
+                    base: live.len() - dst_tys.len(),
+                    nd: dst_tys.len(),
+                });
+                let rl = self.emit(&res, live);
+                self.probe_seeds.pop();
+                let rl = rl?;
                 // 3VL collapse: NULL residual is a non-match.
                 let rv = match rl.flag {
                     None => rl.val,

@@ -259,24 +259,41 @@ print("BUILT", [tuple(x.values()) for x in fn.infer({{"__THIS__": [Row(k=0, n=1)
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-73: a CFG split inside a join's own ON residual re-enters "
-    "emit_probe without bound — the build dies with STATUS_STACK_OVERFLOW "
-    "(0xC00000FD) rather than returning or raising. A build-time input must "
-    "never be able to kill the process.",
-)
+# FIXED 2026-08-08 (TASK-73). The scalar probe cache is now re-created on
+# every block transition, exactly as TASK-68 did for the many-join cache, plus
+# a re-entry guard so a FUTURE cache hole raises a named error instead of
+# recursing to death.
+#
+# Still run in a SUBPROCESS: if this ever regresses it goes back to killing the
+# interpreter, and a subprocess turns that into a failed test rather than a
+# dead suite.
+
+
 @pytest.mark.parametrize("join", ["JOIN", "LEFT JOIN"])
-def test_split_in_the_on_residual_does_not_kill_the_process(join):
+@pytest.mark.parametrize(
+    "residual",
+    [
+        "n + COALESCE(r.bud, 0) > 50",
+        "n + (CASE WHEN r.bud > 1 THEN r.bud ELSE 0 END) > 50",
+        "n + COALESCE(NULLIF(r.bud, 7), 0) > 50",
+    ],
+)
+def test_split_in_the_on_residual_builds_and_is_correct(join, residual):
     sql = (
-        f"SELECT n, r.bud AS b FROM __THIS__ AS t {join} r "
-        "ON t.k = r.id AND n + COALESCE(r.bud, 0) > 50"
+        f"SELECT n, r.bud AS b FROM __THIS__ AS t {join} r ON t.k = r.id AND {residual}"
     )
     p = probe(_ONRES_BODY.format(sql=sql))
     code = hex(p.returncode & 0xFFFFFFFF)
     assert p.returncode == 0, (
         f"exit {p.returncode} ({code})\n{p.stdout}\n{p.stderr[-1500:]}"
     )
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, n BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (0, 1)")
+    con.execute("CREATE TABLE r (id BIGINT, bud BIGINT)")
+    con.execute("INSERT INTO r VALUES (0, 100)")
+    want = con.execute(sql).fetchall()
+    assert p.stdout.strip().splitlines()[-1] == f"BUILT {want}", p.stdout
 
 
 @pytest.mark.xfail(
