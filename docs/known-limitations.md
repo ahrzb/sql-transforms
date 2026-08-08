@@ -101,7 +101,7 @@ bool. Measured consequences:
   in `infer_arrow`'s OUTPUT schema — DuckDB types a bare integer literal
   `INTEGER`, so `CASE WHEN .. THEN 1 ELSE 0 END` is `int32` for it and
   `int64` for us. Values agree; the schemas don't stack. Pinned
-  xfail-strict in `test_known_divergences.py`, ticket pending.
+  xfail-strict in `test_known_divergences.py`; ticket TASK-79.
 
 ## 3a. `infer_arrow` refuses a supplied `output_model`
 

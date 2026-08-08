@@ -326,7 +326,7 @@ def test_infer_arrow_string_type_matches_duckdb(sql):
 # It bites the `titanic` serving scenario, whose `multi_cabin` column is
 # exactly that CASE — so this is not hypothetical SQL.
 #
-# Reproduced by hand 2026-08-08. NEEDS A TICKET.
+# Reproduced by hand 2026-08-08. TASK-79.
 
 
 @pytest.mark.xfail(
