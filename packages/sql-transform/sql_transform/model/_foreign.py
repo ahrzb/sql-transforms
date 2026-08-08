@@ -66,6 +66,12 @@ class _Registry:
             self.instances[iid] = instance
         return iid
 
+    def keep(self, exc: Exception) -> None:
+        """Remember the first error, without raising it."""
+        with self._lock:
+            if self.error is None:
+                self.error = exc
+
     def fail(self, exc: Exception) -> None:
         with self._lock:
             if self.error is None:
@@ -191,7 +197,16 @@ class Transform:
                     for field in self.takes
                 }
             )
-            thetas.append({"type": stem, "id": registry.add(self.fit(relation))})
+            # DuckDB rewraps a Python exception from a UDF, so a leaf's own
+            # named refusal reaches fit() unrecognisable. The registry is
+            # where the first real error is kept — put it there before it is
+            # buried.
+            try:
+                fitted = self.fit(relation)
+            except Exception as exc:
+                registry.keep(exc)
+                raise
+            thetas.append({"type": stem, "id": registry.add(fitted)})
         return pa.array(thetas, type=THETA_ARROW)
 
     def _transform_batch(
@@ -220,7 +235,11 @@ class Transform:
                     for field in self.takes
                 }
             )
-            produced = self.transform(registry.instances[iid], relation)
+            try:
+                produced = self.transform(registry.instances[iid], relation)
+            except Exception as exc:
+                registry.keep(exc)
+                raise
             if tuple(produced.column_names) != self.returns:
                 registry.fail(
                     TransformError(

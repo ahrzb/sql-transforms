@@ -177,7 +177,7 @@ def test_foreign_functions_do_not_accumulate():
 # ------------------------------------------------------------ the lazy path
 
 
-def test_a_lazy_relation_survives_until_it_is_consumed():
+def test_a_lazy_relation_survives_a_later_execution():
     """Cleanup must not reach a relation that has not run yet — that is the
     whole point of ``duckdb`` output."""
     con = duckdb.connect()
@@ -185,8 +185,34 @@ def test_a_lazy_relation_survives_until_it_is_consumed():
     t.fit(SMALL)
     lazy = t.transform(LIVE)
     t.transform(LIVE)  # a later execution must not pull it out from under
+    assert lazy.to_arrow_table().to_pylist() == [{"z": 5.0}, {"z": 10.0}]
+
+
+def test_holding_the_artifact_keeps_its_relations_alive_across_a_refit():
+    """TASK-74 tied the lease to the artifact, so this is the contract now: a
+    relation belongs to the fit that produced it. Keep that fit and the
+    relation keeps working, however many times the estimator is refitted."""
+    con = duckdb.connect()
+    t = SQLTransform(REL, connection=con).set_output(transform="duckdb")
+    fitted = t.fit(SMALL)  # held, so it is not collected on refit
+    lazy = fitted.relation(LIVE)
     t.fit(BIG)
     assert lazy.to_arrow_table().to_pylist() == [{"z": 5.0}, {"z": 10.0}]
+
+
+def test_a_refit_releases_the_previous_fits_relations():
+    """The other half of the same contract, and how the retention stays
+    bounded: nothing holds the old artifact, so its tables go back. Written
+    down because it is a behaviour change — before TASK-74 the relation
+    survived its own fit being replaced."""
+    con = duckdb.connect()
+    t = SQLTransform(REL, connection=con).set_output(transform="duckdb")
+    t.fit(SMALL)
+    lazy = t.transform(LIVE)  # only t.fitted_ holds that artifact
+    t.fit(BIG)
+    gc.collect()
+    with pytest.raises(duckdb.Error):
+        lazy.to_arrow_table()
 
 
 def test_two_lazy_relations_stay_independent():
@@ -200,18 +226,18 @@ def test_two_lazy_relations_stay_independent():
     assert second.to_arrow_table().to_pylist() == [{"z": 0.1}, {"z": 0.2}]
 
 
-def test_a_dropped_lazy_relation_releases_what_it_held():
-    """The lazy path cannot clean up when the call returns, so it cleans up
-    when the relation it handed back is collected."""
+def test_lazy_retention_is_bounded_by_the_artifact():
+    """The lazy path cannot clean up when the call returns — a derived
+    relation would lose its tables — so it cleans up with the artifact, and
+    ``release()`` is the deterministic way to ask for it sooner."""
     con = duckdb.connect()
     t = SQLTransform(REL, connection=con).set_output(transform="duckdb")
     t.fit(SMALL)
-    t.transform(LIVE).to_arrow_table()
-    gc.collect()
     before = catalog(con)
     for _ in range(20):
         t.transform(LIVE).to_arrow_table()
-    gc.collect()
+    assert len(catalog(con)) > len(before)  # it does accumulate, on purpose
+    t.fitted_.release()
     assert catalog(con) == before
 
 

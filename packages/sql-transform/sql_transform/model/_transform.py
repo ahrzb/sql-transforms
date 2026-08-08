@@ -20,7 +20,7 @@ import itertools
 import sys
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Self
 
 import duckdb
@@ -249,7 +249,20 @@ def _resolve(
     return depth
 
 
-@dataclass(slots=True, eq=False, repr=False)
+def _give_back(leases: list[Callable[[], None]]) -> None:
+    """Release every lease in the list, once.
+
+    Module-level and taking the *list* rather than the ``Fitted``, because a
+    finalizer that closes over the object keeps it alive: it never becomes
+    unreachable, so the finalizer never runs and the release silently never
+    happens. The list is shared with the Fitted; holding it strongly is fine.
+    """
+    for release in leases:
+        release()
+    leases.clear()
+
+
+@dataclass(slots=True, eq=False, repr=False, weakref_slot=True)
 class Fitted:
     """``T -> R``, with the captured environment reified as data.
 
@@ -264,6 +277,11 @@ class Fitted:
     foreign: Foreign
     instances: dict[int, Any]
     connection: Connection | None = None
+    # Leases handed out by `relation()` and not yet given back. See `relation`.
+    _leases: list[Callable[[], None]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        weakref.finalize(self, _give_back, self._leases)
 
     def __repr__(self) -> str:
         # The generated one prints the whole residual AST: unreadable, and
@@ -315,8 +333,18 @@ class Fitted:
 
         This is the one path that cannot release at the end of the call — the
         tables have to outlive it or there would be nothing left to execute.
-        So the lease is tied to the relation's own lifetime instead: when the
-        caller drops it, the registrations go with it.
+
+        The lease therefore lives on *this artifact*, not on the relation.
+        Tying it to the relation was wrong and crashed: a relation derived
+        from this one still needs the tables but holds no reference to its
+        parent, so ``t.transform(D).limit(2)`` lost them the moment the parent
+        was collected.
+
+        The cost is real and bounded rather than free — one registration per
+        outstanding relation until this artifact is released, refit or
+        dropped. ``release()`` is the deterministic way out; the eager
+        ``transform`` path never accumulates at all, and is the right tool for
+        serving in a loop.
 
         A relation belongs to the connection that built it and cannot be
         handed to another one, not even to a cursor of the same connection.
@@ -324,9 +352,16 @@ class Fitted:
         ``connection=``.
         """
         con, sql, _, release = self._bind(data)
-        lazy = con.sql(sql)
-        weakref.finalize(lazy, release)
-        return lazy
+        self._leases.append(release)
+        return con.sql(sql)
+
+    def release(self) -> None:
+        """Give back every table this artifact still has registered.
+
+        Only lazy output leaves anything to give back. Idempotent, so a caller
+        can put it in a ``finally`` without checking.
+        """
+        _give_back(self._leases)
 
 
 OUTPUTS = ("default", "arrow", "duckdb", "pandas", "numpy")
@@ -567,6 +602,14 @@ class SQLTransform:
                         con, _rendered(node, names, stems), registry
                     )
                 except duckdb.Error as exc:
+                    # A leaf's own refusal comes back through here wearing
+                    # DuckDB's coat: a Python exception raised inside a UDF is
+                    # rewrapped as InvalidInputException. `_Registry` kept the
+                    # original precisely so a refusal keeps its name, and
+                    # dressing it up as a correlation problem was both wrong
+                    # and unactionable.
+                    if registry.error is not None:
+                        raise registry.error from exc
                     # Whether an *unqualified* name resolves inward or outward
                     # cannot be known at construction — `__FIT__` has no schema
                     # until there is data — so this is the one refusal that
