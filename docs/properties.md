@@ -142,14 +142,20 @@ from instances* is a broken artifact and raises — never NULL.
 *Pinned:* `_transformers_test.py`, `_serving_test.py`,
 `confit/tests/test_udfs.py`.
 *Scope — also a **window** rule.* An unseen key in a lifted correlation takes
-the subquery's own **empty-input value**, which is what the author's `WHERE`
-would have produced by admitting no rows — `0` for `count`, NULL for `avg`,
-whatever the author's `CASE` says. There is no list of which aggregates those
-are: `count_if(x)` is NULL on empty and `count(x) FILTER (WHERE x)` is 0, the
-same count spelled twice. It is read off `__FIT__`'s schema by a zero-row
-probe, and hit-ness is *counted*, never inferred from the value — a present
-group that is legitimately NULL is not a miss, which is exactly what
-`COALESCE` cannot tell apart.
+whatever **DuckDB's own correlated subquery** returns for a key that is not
+there — `0` for `count`, NULL for `avg`, whatever the author's `CASE` says.
+There is no list of which aggregates those are, and there cannot be one:
+`count_if(x)` is NULL on empty input and `count(x) FILTER (WHERE x)` is 0, the
+same count spelled twice.
+
+Nor is it the aggregate's value on an empty *input*, which is a different
+number for three of DuckDB's 68 aggregates — `entropy` is 0.0 on empty and NULL
+on a miss, because the count-bug repair is applied to `count` alone. P9 settles
+which is right: DuckDB is the oracle. So the probe is a *guaranteed miss*
+rather than an empty scan, and it inherits both behaviours without knowing
+either. Hit-ness is *counted*, never inferred from the value — a present group
+that is legitimately NULL is not a miss, which is exactly what `COALESCE`
+cannot tell apart.
 *Pinned:* `_correlate_test.py::test_an_unseen_key_takes_the_subquerys_own...`,
 `...::test_a_present_group_whose_value_is_null_is_not_a_miss`.
 

@@ -40,8 +40,8 @@ but the group it asks for can, one row per key:
 ```
 
 Two stores, two rows, whatever the size of the training set — plus one row
-holding what the aggregate returns on no rows at all, which is the answer for
-a store fit never saw:
+holding what the subquery itself returns for a key that is not there, which
+is the answer for a store fit never saw:
 
 ```
 >>> fitted(pa.table({"store": ["S1", "NEW"]})).to_pylist()

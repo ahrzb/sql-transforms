@@ -60,6 +60,7 @@ from sql_transform.model._nodes import (
     cte_entries,
     descendants,
     field,
+    with_cte_entries,
 )
 
 # The keyed table's columns. `__` is reserved (P8), so none of these can
@@ -102,6 +103,10 @@ REASONS: dict[str, str] = {
         "comparisons each need their own rule"
     ),
     "not-a-select": "it is a set operation rather than a plain SELECT",
+    "not-in-a-subquery": (
+        "it is a CTE definition or a set-operation arm rather than a subquery, "
+        "so there is no body to replace with a lookup"
+    ),
     "modifier": "it carries its own ORDER BY, LIMIT or DISTINCT",
     "grouping": "it does its own grouping",
     "sample": "it samples __FIT__, so fit would freeze one draw and ship it",
@@ -112,7 +117,47 @@ REASONS: dict[str, str] = {
         "the correlation is not a conjunction of equalities — {ref} joins the "
         "two relations some other way"
     ),
+    "shadowed-by-a-nested-column": (
+        "__FIT__ has a nested column named {ref}, which DuckDB binds in "
+        "preference to the outer relation — so what looks like a correlation "
+        "is field access, and this is not the query it appears to be"
+    ),
 }
+
+
+# DuckDB prefers field access over a correlated outer reference, but only for a
+# nested column: measured, a STRUCT or MAP column named `t` wins over an outer
+# alias `t`, a plain column does not, and a STRUCT without the field is a
+# binder error rather than a fallback.
+_NESTED = ("STRUCT", "MAP", "UNION")
+
+
+def refuse_if_shadowed(
+    describe: Callable[[], list[tuple[str, str]]], qualifiers: set[str]
+) -> None:
+    """The one thing the AST cannot decide, checked where the schema exists.
+
+    ``t.cat`` inside the subquery is an outer reference *unless* ``__FIT__`` has
+    a nested column called ``t`` — then it is field access, the subquery is not
+    correlated at all, and lifting it builds a keyed table on a correlation the
+    author never wrote. Silently: every step binds, and the numbers are wrong.
+
+    Undecidable at construction, because ``__FIT__`` has no schema until there
+    is data. So this is a carve-out from P7 in the same place as the
+    unqualified-name one, and for the same reason.
+    """
+    if not qualifiers:
+        return
+    clash = sorted(
+        name
+        for name, kind in describe()
+        if name.lower() in qualifiers and kind.upper().startswith(_NESTED)
+    )
+    if clash:
+        raise CorrelatedFit(
+            REASONS["shadowed-by-a-nested-column"].format(ref=clash[0]),
+            "shadowed-by-a-nested-column",
+        )
 
 
 def decorrelate(
@@ -120,6 +165,7 @@ def decorrelate(
     outer: dict[str, bool],
     reading: dict[str, set[str]],
     freeze: Callable[[Node], str],
+    shadowable: set[str],
 ) -> AstNode | None:
     """``node`` rewritten to read a keyed table, or ``None`` if it is not ours.
 
@@ -132,6 +178,11 @@ def decorrelate(
     ``freeze`` takes a fit-time query node and returns the parameter name it
     was registered under: the same allocator every other step uses, so a
     generated name can never mean a user's relation.
+
+    ``shadowable`` collects every qualifier this rewrite *read as outer*, for
+    `refuse_if_shadowed` to check against ``__FIT__``'s columns once there are
+    any. Whether ``t.cat`` means the outer relation or a nested column of
+    ``__FIT__`` is not a question the AST can answer.
 
     Only the subquery's own body is replaced, so the alias, the enclosing
     select list and the row count are untouched by construction.
@@ -165,7 +216,12 @@ def decorrelate(
         refuse("grouping")
     if sub.aggregate_handling != "STANDARD_HANDLING":
         refuse("grouping")
-    if sub.sample is not None:
+    # `sub.sample` alone is not the check: that is the SELECT-level
+    # `USING SAMPLE`, and `TABLESAMPLE` written after a table lands on the table
+    # *ref* instead. Only the first spelling was read, so the second froze one
+    # draw into the artifact — three fits of one relation, three models — and
+    # the page's own printed example used the spelling that escaped.
+    if any(field(v, "sample") is not None for v in (sub, *descendants(sub, deep=True))):
         refuse("sample")
     if any(_is_window(v) for v in descendants(sub, deep=True)):
         refuse("window")
@@ -193,6 +249,7 @@ def decorrelate(
         else:
             refuse("not-an-equality", ref=out[0])
 
+    shadowable.update(r.split(".")[0].lower() for r in _outward(sub, inside, outer))
     body = _emit(sub, kept, guards, keys, freeze)
     return node.model_copy(
         update={"subquery": node.subquery.model_copy(update={"node": body})}
@@ -236,19 +293,42 @@ def _emit(
         )
     )
 
-    # The empty-input value, read off `__FIT__`'s schema and none of its rows.
-    # Four strands of the survey each produced a different list of "aggregates
-    # that are non-NULL on empty input"; the category does not exist —
-    # `count_if(x)` is NULL and `count(x) FILTER (WHERE x)` is 0, the same count
-    # spelled twice. A probe needs no list and cannot rot.
+    # What the author's own subquery returns for a key `__FIT__` does not have,
+    # read off its schema and none of its rows.
+    #
+    # Not the same thing as the aggregate's value on an *empty input*, which is
+    # what a `WHERE false` scalar gives. DuckDB repairs the count bug for
+    # `count`/`count_star` and hands back NULL for everything else, whatever the
+    # empty-input value would be: `entropy` is 0.0 on empty and NULL on a miss,
+    # and so are `approx_count_distinct` and `regr_count`. 65 of its 68
+    # aggregates agree and three do not. P9 settles which is right — DuckDB is
+    # the oracle, so the target is what it does, not what the aggregate means.
+    #
+    # So the probe is a *guaranteed miss* rather than an empty scan: correlated
+    # to a one-row relation whose only value is NULL, which DuckDB unnests by
+    # the same path as the real thing. Still no list of aggregates, and still
+    # nothing that can rot.
     probe = freeze(
-        sub.model_copy(
-            update={
-                "select_list": _expressions(values),
-                "where_clause": _template("SELECT 1 WHERE false").where_clause,
-                "group_expressions": [],
-                "group_sets": [],
-            }
+        with_cte_entries(
+            _template("SELECT 1 FROM (SELECT NULL AS n) __miss").model_copy(
+                update={
+                    "select_list": [
+                        _scalar(
+                            sub.model_copy(
+                                update={
+                                    "select_list": _expressions([value]),
+                                    "where_clause": _where(["__miss.n IS NOT NULL"]),
+                                    "group_expressions": [],
+                                    "group_sets": [],
+                                }
+                            ),
+                            VALUE.format(i),
+                        )
+                        for i, value in enumerate(values)
+                    ]
+                }
+            ),
+            cte_entries(sub),
         )
     )
 
@@ -277,13 +357,33 @@ def _emit(
         f"{table}.{KEY.format(i)} {op} ({_print_expr(o)})"
         for i, (_, op, o) in enumerate(keys)
     ] + [f"({_print_expr(g)})" for g in guards]
-    return sub.model_copy(
+    # `with_cte_entries([])`, not a copy of the subquery's: the lookup reads the
+    # keyed table and nothing else, so any CTE the author wrote here is dead —
+    # but a dead one still *names* `__FIT__`, and the walk that comes after
+    # reads that as an unfrozen reference and refuses a query it had already
+    # rewritten correctly.
+    reading = _template(f"SELECT 1 FROM {table}").from_table  # noqa: S608
+    return with_cte_entries(
+        sub.model_copy(
+            update={
+                "select_list": columns,
+                "from_table": reading,
+                "where_clause": _where(on),
+                "group_expressions": [],
+                "group_sets": [],
+            }
+        ),
+        [],
+    )
+
+
+def _scalar(node: Select, alias: str) -> Node:
+    """``node`` as a scalar subquery expression, aliased."""
+    made = _template("SELECT (SELECT 1)").select_list[0]
+    return made.model_copy(
         update={
-            "select_list": columns,
-            "from_table": _template(f"SELECT 1 FROM {table}").from_table,  # noqa: S608
-            "where_clause": _where(on),
-            "group_expressions": [],
-            "group_sets": [],
+            "subquery": made.subquery.model_copy(update={"node": node}),
+            "alias": alias,
         }
     )
 
@@ -300,6 +400,16 @@ def _flatten(sub: Select) -> Select:
     shape refuses for a reason that is an artefact of how it was written —
     which is how the per-group ``LATERAL``, a documented pattern, came to ship
     the whole training set.
+
+    The condition, and both halves are load-bearing: merge only when **the set
+    of names the base answers to does not change**. Getting that wrong is not a
+    refusal, it is a different query —
+
+    * publishing the inner alias to the parent captures a name the parent
+      already bound, so an outer CTE's constant filter silently became a filter
+      on training rows;
+    * pushing the outer alias onto the base renames it out from under its own
+      qualified references, and fit dies on a query the oracle answers.
     """
     while True:
         ref = sub.from_table
@@ -311,8 +421,10 @@ def _flatten(sub: Select) -> Select:
         base = inner.from_table
         if not isinstance(base, BaseTable):
             return sub
-        if ref.alias and base.alias and base.alias != ref.alias:
-            return sub  # two names for one relation: leave it alone
+        if ref.alias and ref.alias != (base.alias or base.table_name):
+            return sub  # the base would answer to a name it did not before
+        if not ref.alias and base.alias:
+            return sub  # the inner alias would become visible to the parent
         sub = sub.model_copy(
             update={
                 "from_table": base.model_copy(
