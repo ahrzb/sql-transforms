@@ -80,6 +80,15 @@ printed by DuckDB itself (`json_serialize_sql`/`json_deserialize_sql`);
 interpreted node shapes are validated by pydantic views (drift fails as
 one named error), carried nodes pass through opaquely, and synthetic nodes
 are cloned from oracle-serialized templates.
+*Corollary — carrying is not optional.* Measured on 1.5.5,
+`json_deserialize_sql` requires exactly one field: dropping `BASE_TABLE.type`
+is rejected, and dropping `BASE_TABLE.table_name` is **accepted and prints
+different SQL**. A view that forgets a field therefore emits another query
+rather than an error, so every typed node carries every field DuckDB emits for
+its tag, and an unrecognised tag is carried whole — with its children still
+typed, or a `__FIT__` under a node we do not know would be invisible to
+freezing. In `sql_transform.model` this is `_nodes.py`, pinned per DuckDB
+version by `_shapes.json` (2026-08-08).
 *Corollary — an identifier means what the oracle binds.* DuckDB folds every
 identifier, quoted ones too (unlike Postgres), so wherever the walk compares
 one name to another it folds: CTE keys, the supplied connection's catalog,
