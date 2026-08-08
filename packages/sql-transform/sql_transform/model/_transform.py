@@ -250,6 +250,31 @@ def _resolve(
                     ref = _splice(v, scope, captured)
                     depth = max(depth, ref.pop("_depth"))
                     parent[key] = ref
+                # A qualified name is the connection's own, and the catalog
+                # listing is not the test for it: everything captured is
+                # registered under a bare name, so `side.main.far` can never
+                # mean a frame object however the listing is filtered. Without
+                # a connection there is no catalog for it to be in — `fit`
+                # makes a fresh one per call — so that refuses here rather than
+                # at fit in DuckDB's words.
+                case {"type": "BASE_TABLE", "table_name": name} if v.get(
+                    "schema_name"
+                ) or v.get("catalog_name"):
+                    if con is None:
+                        path = ".".join(
+                            p
+                            for p in (
+                                v.get("catalog_name"),
+                                v.get("schema_name"),
+                                name,
+                            )
+                            if p
+                        )
+                        raise UnknownName(
+                            f"{path} is qualified, so it names something in a "
+                            "catalog, and this transform has none of its own; "
+                            "pass connection= to say whose"
+                        )
                 # Folded against `ctes` and `catalog` because DuckDB binds
                 # those; *not* against `captured` and `scope`, which are
                 # Python's own namespace, where `codes` and `Codes` are two
