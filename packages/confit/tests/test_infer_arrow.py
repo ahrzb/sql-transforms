@@ -327,7 +327,14 @@ def test_unaligned_model_tables_at_construction():
         fn = DuckDBInferFn(
             "SELECT tree_predict('m', id, struct_pack(x := x)) AS p FROM __THIS__",
             row_tables={"__THIS__": T}, static_tables={}, output="dict",
-            models={"m": {"nodes": nodes, "models": headers, "features": ["x"]}},
+            models={
+                "m": {
+                    "nodes": nodes,
+                    "models": headers,
+                    "features": ["x"],
+                    "compare_grid": "float32",
+                }
+            },
         )
         got = fn.infer({"__THIS__": [T(id=0, x=0.0), T(id=0, x=1.0)]})
         assert [r["p"] for r in got] == [10.0, 20.0], got

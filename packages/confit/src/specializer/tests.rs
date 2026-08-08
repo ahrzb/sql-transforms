@@ -1016,9 +1016,20 @@ fn prep_udfs(
 // ------------------------------------------------------- tree_predict --
 
 fn model(name: &str, features: &[&str]) -> super::plan::ModelTable {
+    // sklearn's grid: the default for these tests because it is the only
+    // packer that exists, and the one whose integer narrowing is asserted.
+    model_on(name, features, super::plan::CompareGrid::F32)
+}
+
+fn model_on(
+    name: &str,
+    features: &[&str],
+    grid: super::plan::CompareGrid,
+) -> super::plan::ModelTable {
     super::plan::ModelTable {
         name: name.to_string(),
         features: features.iter().map(|s| s.to_string()).collect(),
+        grid,
     }
 }
 
@@ -1083,6 +1094,30 @@ fn tree_predict_resolves_struct_features_by_name() {
     .unwrap();
     let text = print(&p.program);
     assert_eq!(feature_position_of_itof(&text), 0, "sqft is declared first:\n{text}");
+}
+
+/// The declared grid, not the feature's type, decides how an integer reaches
+/// the comparison. On sklearn's float32 grid it narrows in one rounding
+/// (`itof.f32`); on a float64 grid it converts exactly (`itof`), because a
+/// library that compares in float64 keeps precision the narrowing would throw
+/// away. The IR text is the assertion because this is a LOWERING decision —
+/// the model id is a runtime value, so it cannot be made per row.
+#[test]
+fn compare_grid_selects_the_integer_conversion() {
+    let schema = cols(&[("id", Ty::I64, false), ("n", Ty::I64, false)]);
+    let sql = "SELECT tree_predict('trees', id, struct_pack(n := n)) AS z FROM __THIS__";
+    for (grid, want, unwanted) in [
+        (super::plan::CompareGrid::F32, "itof.f32 ", "= itof %"),
+        (super::plan::CompareGrid::F64, "= itof %", "itof.f32 "),
+    ] {
+        let p = prep_models(sql, &schema, &[], &[model_on("trees", &["n"], grid)]).unwrap();
+        let text = print(&p.program);
+        assert!(text.contains(want), "{grid:?} must emit `{want}`:\n{text}");
+        assert!(
+            !text.contains(unwanted),
+            "{grid:?} must NOT emit `{unwanted}`:\n{text}"
+        );
+    }
 }
 
 /// Which feature slot of the single `predict` carries the `itof.f32` result.

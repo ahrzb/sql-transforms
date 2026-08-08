@@ -116,3 +116,46 @@ that has its own test.
 
 TASK-65's resolution note claimed exactness without qualifying it to double
 features; corrected there and in `docs/serving-fitted-models.md`.
+
+## Follow-up (2026-08-08): the grid is DECLARED, not assumed
+
+The fix above put the narrowing in the ENGINE, where — unlike TASK-65's
+threshold rewrite, which lives in the packer and a packer can skip — it fired
+for every model. That quietly made the wire format sklearn-specific, undoing
+the property TASK-65 was careful to buy. Measured on a hand-built model with
+un-rewritten thresholds:
+
+```text
+threshold = 16777216.5     n = 16777217   (2**24+1, exact as a double)
+BIGINT feature -> 10.0     # narrowed to float32(n) = 16777216 -> left
+DOUBLE feature -> 20.0     # exact: 16777217 > 16777216.5      -> right
+```
+
+The SQL type of the feature changed the answer for a model no sklearn packer
+produced — and `docs/serving-fitted-models.md` explicitly anticipates such a
+packer, while the kernel docstring claims the layout covers XGBoost and
+LightGBM. So the trap was laid for whoever writes the second one.
+
+A `models=` entry now declares `compare_grid: "float32" | "float64"`, and the
+frontend picks the conversion from it. `pack_trees` emits `"float32"`.
+
+Three decisions worth keeping:
+
+- **Required, not defaulted.** The packer that would get this wrong is exactly
+  the one that never thought about it; a default is the same trap with an
+  extra step. It costs every existing caller one key — acceptable pre-1.0, and
+  much cheaper now than once model tables are persisted.
+- **Per SET, not per model.** `tree_predict('m', id, ..)` takes the id from a
+  row, so it is a runtime value, while the conversion is a lowering decision
+  made once. A per-model grid could only be honoured with a per-row branch.
+  (My first instinct was to put it beside `agg`/`link` in the models table.
+  That does not work.)
+- **The choice was A vs B and B won on re-examination.** The argument for
+  documenting instead ("a second packer is speculative") does not hold: the
+  library-agnostic wire format was a property that already existed and was
+  already documented, so restoring it is not speculative work. And the
+  mitigation A offered — a pin — asserts OUR behaviour and would not stop a
+  new packer falling in.
+
+Mutation-checked: making the `F64` arm narrow too fails the IR-text test and
+both end-to-end scoring tests, on both backends.

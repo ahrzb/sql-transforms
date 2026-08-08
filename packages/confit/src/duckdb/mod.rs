@@ -505,6 +505,7 @@ struct ModelSet {
     nodes: Py<PyAny>,
     headers: Py<PyAny>,
     features: Vec<String>,
+    grid: super::specializer::plan::CompareGrid,
 }
 
 /// `models={'trees': {'nodes': tbl, 'models': tbl, 'features': [...]}}`.
@@ -533,7 +534,7 @@ fn parse_model_sets(
                 entry.get_item(k).map_err(|_| {
                     build_err(format!(
                         "model set '{name}': expected a mapping with keys 'nodes', \
-                         'models' and 'features' — no '{k}'"
+                         'models', 'features' and 'compare_grid' — no '{k}'"
                     ))
                 })
             };
@@ -559,12 +560,33 @@ fn parse_model_sets(
                     w[0]
                 )));
             }
+            // REQUIRED, deliberately not defaulted: this says which
+            // floating-point grid the thresholds were fitted on, and the
+            // packer that would get it wrong is exactly the one that never
+            // thought about it. A default would be the same trap with an
+            // extra step. See `plan::CompareGrid`.
+            let grid: String = get("compare_grid")?.extract().map_err(|_| {
+                build_err(format!(
+                    "model set '{name}': 'compare_grid' must be 'float32' or 'float64'"
+                ))
+            })?;
+            let grid = match grid.as_str() {
+                "float32" => super::specializer::plan::CompareGrid::F32,
+                "float64" => super::specializer::plan::CompareGrid::F64,
+                other => {
+                    return Err(build_err(format!(
+                        "model set '{name}': compare_grid '{other}' is not \
+                         'float32' or 'float64'"
+                    )))
+                }
+            };
             Ok((
                 name,
                 ModelSet {
                     nodes,
                     headers,
                     features,
+                    grid,
                 },
             ))
         })
@@ -1251,6 +1273,7 @@ impl DuckDBInferFn {
             .map(|(name, set)| super::specializer::plan::ModelTable {
                 name: name.clone(),
                 features: set.features.clone(),
+                grid: set.grid,
             })
             .collect();
         model_catalog.sort_by(|a, b| a.name.cmp(&b.name));

@@ -76,15 +76,22 @@ def ensemble(
     nodes: list[dict[str, Any]],
     features: list[str],
     headers: list[dict[str, Any]] | None = None,
+    grid: str | None = "float32",
 ) -> dict[str, Any]:
+    """`grid=None` omits `compare_grid` entirely, which is how the
+    is-it-required test builds an entry — everything else declares sklearn's
+    grid, since that is what these fixtures' thresholds imitate."""
     headers = headers or [
         {"model_id": 0, "base": 0.0, "agg": "sum", "link": "identity"}
     ]
-    return {
+    entry = {
         "nodes": pa.Table.from_pylist(nodes, schema=NODE_SCHEMA),
         "models": pa.Table.from_pylist(headers, schema=MODEL_SCHEMA),
         "features": features,
     }
+    if grid is not None:
+        entry["compare_grid"] = grid
+    return entry
 
 
 # One model, one tree: x <= 0.5 -> 10.0, else 20.0. Missing goes left.
@@ -556,3 +563,87 @@ def test_split_after_the_call(backend):
         {"trees": FORK},
     )
     assert [r["p"] for r in got] == [21.0, 32.0]
+
+
+# ------------------------------------------------- the compare grid (B) --
+#
+# sklearn narrows a feature array to float32 before walking the tree, so its
+# real test at each node is `float32(x) <= t`. Reproducing that is a property
+# of the LIBRARY that packed the model, not of the engine — so the model set
+# declares which grid its thresholds live on, and the engine narrows integer
+# features only for a float32-grid set.
+#
+# Before this field existed, `itof.f32` fired for every model, which quietly
+# made the wire format sklearn-specific: a packer that skipped TASK-65's
+# threshold rewrite still got its integer features narrowed, silently losing
+# precision above 2**24 that it had every right to keep.
+#
+# `compare_grid` is REQUIRED, not defaulted. A default is the same trap with
+# extra steps: the packer that would get it wrong is exactly the one that
+# never thought about it.
+
+# threshold sits between 2**24 and 2**24 + 1, the first place float32 cannot
+# represent consecutive integers.
+_GRID_T = float(2**24) + 0.5
+_GRID_N = 2**24 + 1  # exact as a double; float32(n) == 2**24, which is <= T
+_GRID_NODES = [
+    split(0, 0, 0, feature=0, threshold=_GRID_T, left=1, right=2),
+    leaf(0, 0, 1, 10.0),  # n <= T
+    leaf(0, 0, 2, 20.0),  # n >  T
+]
+_GRID_SQL = "SELECT tree_predict('trees', id, struct_pack(n := n)) AS p FROM __THIS__"
+_GRID_SCHEMA = {"id": "int", "n": "int"}
+
+
+def _grid_entry(grid):
+    return ensemble(_GRID_NODES, features=["n"], grid=grid)
+
+
+@pytest.mark.parametrize(
+    ("grid", "want"),
+    [
+        # narrowed to float32(n) == 2**24, which is <= T -> left
+        ("float32", 10.0),
+        # the integer reaches the compare exactly: 2**24+1 > T -> right
+        ("float64", 20.0),
+    ],
+)
+def test_compare_grid_decides_whether_an_integer_feature_narrows(grid, want, backend):
+    got = run(
+        _GRID_SQL,
+        _GRID_SCHEMA,
+        [{"id": 0, "n": _GRID_N}],
+        {"trees": _grid_entry(grid)},
+    )
+    assert [r["p"] for r in got] == [want]
+
+
+def test_compare_grid_is_irrelevant_to_a_double_feature(backend):
+    """The grid governs the INTEGER conversion only. A float64-grid set with a
+    double feature compares the double it was handed, and a float32-grid set
+    relies on its thresholds already having been rewritten — neither narrows
+    here, so both see the same value."""
+    for grid in ("float32", "float64"):
+        got = run(
+            "SELECT tree_predict('trees', id, struct_pack(n := n)) AS p FROM __THIS__",
+            {"id": "int", "n": "float"},
+            [{"id": 0, "n": float(_GRID_N)}],
+            {"trees": _grid_entry(grid)},
+        )
+        assert [r["p"] for r in got] == [20.0], grid
+
+
+def test_compare_grid_is_required():
+    e = ensemble(_GRID_NODES, features=["n"], grid=None)
+    assert "compare_grid" not in e
+    with pytest.raises(Exception, match="compare_grid"):
+        build({"trees": e}, sql=_GRID_SQL, row_schema=_GRID_SCHEMA)
+
+
+def test_compare_grid_refuses_an_unknown_spelling():
+    with pytest.raises(Exception, match="compare_grid"):
+        build(
+            {"trees": _grid_entry("float16")},
+            sql=_GRID_SQL,
+            row_schema=_GRID_SCHEMA,
+        )

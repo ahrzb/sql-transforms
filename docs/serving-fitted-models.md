@@ -133,6 +133,35 @@ That opcode adds no float32 TYPE — its lane is f64 out, the same way
 computes in exactly `i64` / `f64` / string / bool, and no cast lands on the
 row path.
 
+### Which grid you are on is DECLARED, not assumed
+
+Both of the above are sklearn's semantics, and neither is universal — so a
+model set says which floating-point grid its comparisons live on:
+
+```python
+{"nodes": ..., "models": ..., "features": [...], "compare_grid": "float32"}
+```
+
+`pack_trees` rewrites its thresholds and declares `"float32"`. A packer for a
+library that compares in float64 skips the threshold rewrite and declares
+`"float64"`, and the engine then converts its integer features exactly rather
+than narrowing them.
+
+Without the field the narrowing would fire for every model, which would make
+the wire format quietly sklearn-specific: a float64-grid packer would get its
+integer features narrowed anyway, silently losing precision above `2**24` that
+it had every right to keep. The threshold rewrite is skippable by a packer;
+the conversion is not, so the engine has to be told.
+
+**It is required, not defaulted.** The packer that would get this wrong is
+exactly the one that never thought about it, and a default would be the same
+trap with an extra step.
+
+**It belongs to the SET, not to a model inside it.** `tree_predict('m', id, ..)`
+takes the model id from a row, so it is a runtime value, while the conversion
+is chosen once when the query is lowered. A per-model grid could only be
+honoured with a per-row branch.
+
 `test_threshold_rewrite_reproduces_the_f32_comparison` walks float64 ULPs
 across each rewritten boundary rather than sampling, because a rewrite that is
 off by a single ULP still passes an end-to-end parity test on 1500 rows —
@@ -181,7 +210,10 @@ For a library `pack_trees` does not know, emit these two tables directly. The en
 never sees sklearn.
 
 ```python
-models={"m": {"nodes": nodes_table, "models": header_table, "features": [...]}}
+models={"m": {
+    "nodes": nodes_table, "models": header_table, "features": [...],
+    "compare_grid": "float64",   # or "float32" if your thresholds were
+}}                               # rewritten onto sklearn's grid — see above
 ```
 
 **`nodes`** — one row per node, grouped by model then tree:
