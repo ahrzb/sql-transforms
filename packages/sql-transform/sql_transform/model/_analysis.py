@@ -43,13 +43,19 @@ def _reads(node: Node, ctes: dict[str, set[str]] | None = None) -> set[str]:
 
 
 def _names_in(node: Node) -> set[str]:
-    """Every name a column reference could be qualified by, anywhere inside."""
-    names = {e["key"] for e in node[_QUERY]["map"]}
+    """Every name a column reference could be qualified by, anywhere inside.
+
+    Folded, like every other identifier comparison here: DuckDB's binder is
+    case-insensitive — quoted names too, unlike Postgres — so an inner alias
+    ``T`` does shadow an outer ``t``, and comparing exact strings called that
+    a correlation and refused a query the oracle binds inward.
+    """
+    names = {e["key"].lower() for e in node[_QUERY]["map"]}
     for _, _, v in _under(node, deep=True):
         if _is_ref(v):
-            names.add(v.get("alias") or v.get("table_name") or "")
+            names.add((v.get("alias") or v.get("table_name") or "").lower())
         if _is_query(v):
-            names.update(e["key"] for e in v[_QUERY]["map"])
+            names.update(e["key"].lower() for e in v[_QUERY]["map"])
     names.discard("")
     return names
 
@@ -61,16 +67,19 @@ def _bindings_at(
 
     Which side a correlation lands on is what separates the one refusal from
     the case that merely costs params.
+
+    Keyed by the folded name, since ``_correlation`` looks a reference's
+    qualifier up in here and DuckDB would have matched it either way.
     """
     out = {
-        e["key"]: THIS in _reads(e["value"]["query"]["node"], ctes)
+        e["key"].lower(): THIS in _reads(e["value"]["query"]["node"], ctes)
         for e in node[_QUERY]["map"]
     }
     for _, _, v in _under(node, deep=False):
         if _is_ref(v):
             alias = v.get("alias") or v.get("table_name") or ""
             if alias:
-                out[alias] = THIS in _reads(v, ctes)
+                out[alias.lower()] = THIS in _reads(v, ctes)
     return out
 
 
@@ -80,6 +89,9 @@ def _correlation(node: Node, outer: dict[str, bool]) -> tuple[str, bool] | None:
 
     Only qualified references are checked. An unqualified one is ambiguous
     without a binder, and DuckDB resolves it inward whenever it can.
+
+    The qualifier is folded on both sides — the message keeps the author's own
+    spelling, since that is the text they have to go and fix.
     """
     inside = _names_in(node)
     found: tuple[str, bool] | None = None
@@ -87,8 +99,9 @@ def _correlation(node: Node, outer: dict[str, bool]) -> tuple[str, bool] | None:
         if v.get("class") != "COLUMN_REF":
             continue
         parts = v["column_names"]
-        if len(parts) >= 2 and parts[0] not in inside and parts[0] in outer:
-            if outer[parts[0]]:
+        qualifier = parts[0].lower()
+        if len(parts) >= 2 and qualifier not in inside and qualifier in outer:
+            if outer[qualifier]:
                 return ".".join(parts), True  # into __THIS__: the one refusal
             found = found or (".".join(parts), False)
     return found

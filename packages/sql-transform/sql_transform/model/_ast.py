@@ -155,20 +155,36 @@ def _functions(query: str, con: Connection | None) -> frozenset[str]:
     return frozenset(name.lower() for (name,) in con.execute(query).fetchall())
 
 
+# Names the connection can *bind*, which is narrower than names it can list.
+# Two exclusions, both measured: the 47 internal views on a fresh connection
+# (`information_schema.tables`, `duckdb_tables`, ...) are unreachable
+# unqualified, and so is a table in an ATTACHed database. Claiming either cost
+# the caller their own object of that name — a frame variable called `tables`
+# or `columns` is ordinary.
+_CATALOG = """
+SELECT table_name FROM duckdb_tables()
+ WHERE NOT internal AND database_name IN (current_database(), 'temp')
+UNION ALL
+SELECT view_name FROM duckdb_views()
+ WHERE NOT internal AND database_name IN (current_database(), 'temp')
+"""
+
+
 def _catalog(con: Connection | None) -> frozenset[str]:
     """Tables and views the supplied connection already owns.
 
     Passing a connection is how you say *use my catalog*, so a name it can
     already resolve is not a free reference and must not be looked for in
     the caller's frame — nor renamed when a shared connection is mangled.
+
+    Folded, because the binder is: a connection holding ``Customers`` resolves
+    ``customers``, and comparing exact strings both refused that as an unknown
+    name and — with a frame object of the folded spelling in reach — let the
+    frame quietly answer for the connection's own table.
     """
     if con is None:
         return frozenset()
-    rows = con.execute(
-        "SELECT table_name FROM duckdb_tables()"
-        " UNION ALL SELECT view_name FROM duckdb_views()"
-    ).fetchall()
-    return frozenset(name for (name,) in rows)
+    return frozenset(name.lower() for (name,) in con.execute(_CATALOG).fetchall())
 
 
 def normalize(sql: str) -> str:
