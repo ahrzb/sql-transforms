@@ -97,7 +97,20 @@ bool. Measured consequences:
 - Narrow integer widths don't exist: bitwise ops compute in i64, which
   matches DuckDB whenever either operand is BIGINT (always true for
   row-model ints). Explicit narrow CASTs are rejected rather than
-  risking DuckDB's narrow-width overflow behavior.
+  risking DuckDB's narrow-width overflow behavior. This is also visible
+  in `infer_arrow`'s OUTPUT schema — DuckDB types a bare integer literal
+  `INTEGER`, so `CASE WHEN .. THEN 1 ELSE 0 END` is `int32` for it and
+  `int64` for us. Values agree; the schemas don't stack. Pinned
+  xfail-strict in `test_known_divergences.py`, ticket pending.
+
+## 3a. `infer_arrow` refuses a supplied `output_model`
+
+`infer_arrow` exists to build no Python objects, so there is nothing for
+`output_model.model_validate` to run on — its validators, field defaults
+and coercions are per-row semantics. Rather than silently skip them (which
+made `infer` and `infer_arrow` disagree — TASK-71), it refuses by name when
+an `output_model` was supplied. The synthesized model, which is what you get
+by default and which carries none of those, keeps the columnar path.
 
 ## 4. Semantics descoped after measurement
 

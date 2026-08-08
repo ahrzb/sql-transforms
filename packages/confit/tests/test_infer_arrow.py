@@ -36,6 +36,20 @@ def _cmp(fn, rows, tbl):
     assert [dict(r) for r in got_rows] == got_arrow
 
 
+def _duck_arrow(mod, statics, rows_d):
+    """The same scenario run by DuckDB itself, as an arrow table — the oracle
+    for the OUTPUT schema, not just the values."""
+    import duckdb
+
+    con = duckdb.connect()
+    for name, table in statics.items():
+        con.register(f"__arrow_{name}", table)
+        con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')  # noqa: S608
+        con.unregister(f"__arrow_{name}")
+    con.register("__THIS__", sc.rows_table(mod, rows_d))
+    return con.execute(mod.SQL).fetch_arrow_table()
+
+
 def test_differential_basic_and_nulls():
     fn = DuckDBInferFn(
         "SELECT a + 1 AS b, upper(s) AS u, f * 2 AS d FROM __THIS__ WHERE a < 3",
@@ -117,6 +131,64 @@ def test_named_rejections():
     )
     with pytest.raises(ValueError, match="all-scalar"):
         fs.infer_arrow(pa.table({"a": [{"i": 1}]}))
+
+
+def test_every_scenario_refuses_a_supplied_output_model():
+    """TASK-71 survived because this differential only ever built fns WITHOUT
+    an `output_model` — so the one path that ignores it was never compared.
+
+    A supplied model can carry validators, defaults and coercion, and the
+    columnar path builds no rows to run them on, so it refuses. The model
+    supplied here is the fn's OWN synthesized one: identical shape, so the
+    only thing under test is that supplying it is what flips the behaviour.
+    """
+    for mod in sc.all_scenarios():
+        statics = mod.make_statics(sc.SEED)
+        plain = sc.build_spec_fn(mod, statics, output="model")
+        rows_d = mod.make_rows(sc.SEED + 7, 8)
+        model = sc.row_model(mod.ROW_SCHEMA)
+        rows = [model(**r) for r in rows_d]
+        tbl = sc.rows_table(mod, rows_d)
+
+        given = DuckDBInferFn(
+            mod.SQL,
+            row_tables={"__THIS__": model},
+            static_tables=statics,
+            output_model=plain.output_model,
+        )
+        # Same answers by row ...
+        assert [r.model_dump() for r in given.infer({"__THIS__": rows})] == [
+            r.model_dump() for r in plain.infer({"__THIS__": rows})
+        ]
+        # ... and a named refusal instead of a silently different one.
+        with pytest.raises(ValueError, match="output_model is not applied"):
+            given.infer_arrow(tbl)
+        # The synthesized-model fn is unaffected: that is the fast path.
+        plain.infer_arrow(tbl)
+
+
+# The one output-schema difference this suite ALLOWS, and only this one:
+# DuckDB types a bare integer literal INTEGER, so `CASE WHEN .. THEN 1 ELSE 0
+# END` is int32 for it and int64 for us. That is the arrow-visible face of the
+# documented "narrow integer widths don't exist" limitation, NOT part of
+# TASK-72, and it is pinned open in test_known_divergences.py.
+_WIDENED = (pa.int32(), pa.int64())
+
+
+def test_output_schema_matches_duckdb_for_every_scenario():
+    """TASK-72: values always agreed; the SCHEMA did not, and a schema that
+    does not match DuckDB's cannot be stacked with DuckDB's output."""
+    for mod in sc.all_scenarios():
+        statics = mod.make_statics(sc.SEED)
+        fn = sc.build_spec_fn(mod, statics, output="dict")
+        rows_d = mod.make_rows(sc.SEED + 7, 16)
+        got = fn.infer_arrow(sc.rows_table(mod, rows_d))
+        want = _duck_arrow(mod, statics, rows_d)
+        assert got.schema.names == want.schema.names, mod.__name__
+        for ours, theirs in zip(got.schema.types, want.schema.types, strict=True):
+            if (theirs, ours) == _WIDENED:
+                continue
+            assert ours == theirs, mod.__name__
 
 
 def test_sliced_and_recordbatch_inputs():

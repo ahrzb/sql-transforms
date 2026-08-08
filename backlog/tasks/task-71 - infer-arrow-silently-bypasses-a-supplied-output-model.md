@@ -2,7 +2,7 @@
 id: TASK-71
 title: >-
   infer_arrow silently bypasses a supplied output_model
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-08 03:00'
 labels:
@@ -46,10 +46,10 @@ for every finding is in the module docstring of
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 `infer_arrow` returns the same values as `infer` for any
+- [x] #1 `infer_arrow` returns the same values as `infer` for any
       `output_model`, or refuses by name when one is supplied
-- [ ] #2 Validators, field defaults and coercion all covered
-- [ ] #3 The differential in `test_infer_arrow.py` is extended to run WITH an
+- [x] #2 Validators, field defaults and coercion all covered
+- [x] #3 The differential in `test_infer_arrow.py` is extended to run WITH an
       `output_model`, not only without one
 <!-- AC:END -->
 
@@ -60,3 +60,24 @@ The existing infer_arrow differential only ever builds fns WITHOUT an
 `output_model`, which is exactly why this survived. Fixing the test shape
 matters as much as fixing the code.
 <!-- SECTION:NOTES:END -->
+
+## Resolution (2026-08-08): refuse by name
+
+AC #1 offered "same values, or refuse by name", and refusal is the honest
+answer here. `infer_arrow` exists to build no Python objects; running every
+output row through `model_validate` to honour the model would make it exactly
+as slow as `infer`, which is to say pointless. Silently skipping it was the
+third mode the contract says does not exist.
+
+The predicate is exact and already existed: `supplied`, at the constructor.
+A SYNTHESIZED output model — the default — has no validators, no defaults and
+no coercion, so the columnar path is equivalent for it and stays available.
+Only a model the caller handed us can change an answer, and only that refuses.
+It is now stored as `output_model_supplied` (both constructor sites, including
+the static-only `Engine::Constant` one).
+
+AC #3 mattered as much as the code, and is why this survived: the differential
+in `test_infer_arrow.py` only ever built fns WITHOUT an `output_model`, so the
+one path that ignored it was never compared. It now runs every serving
+scenario with one — supplying the fn's OWN synthesized model, so shape is held
+constant and the only variable is that it was supplied.

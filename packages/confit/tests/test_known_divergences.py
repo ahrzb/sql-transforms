@@ -211,19 +211,28 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
 # ------------------------------------------------- the infer_arrow path --
 #
 # Three documented entry points — infer, infer_rows, infer_arrow — are supposed
-# to be the same function behind different boundaries. Two ways they are not.
+# to be the same function behind different boundaries. Two ways they were not.
 #
-# Relayed from the sweep, not reproduced by hand. TASK-71, TASK-72.
+# FIXED 2026-08-08 (TASK-71, TASK-72).
+#
+# TASK-71 is resolved by REFUSAL, the other half of the contract. `infer_arrow`
+# builds no Python rows — that is its entire reason to exist — so there is
+# nothing to call `model_validate` on. Running the rows through pydantic anyway
+# would make the columnar path exactly as slow as `infer`, which is to say
+# pointless; silently skipping it gave two answers from one function. So it
+# now refuses when an `output_model` was SUPPLIED. A synthesized one (the
+# default) carries no validators, defaults or coercion, so the columnar path
+# stays available for it, which is the common case.
+#
+# TASK-72 is resolved by matching DuckDB: `pa.string()`, 32-bit offsets. The
+# 2 GiB-per-batch ceiling that comes with them is refused by name rather than
+# wrapped.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-71: run_rows pushes every output row through "
-    "`output_model.model_validate` (validators, coercion, defaulted fields); "
-    "infer_arrow goes straight from arrow::emit to a pa.Table and never "
-    "touches output_model. Same fn, same rows, different answers.",
-)
-def test_infer_arrow_honours_output_model():
+def test_infer_arrow_refuses_a_supplied_output_model():
+    """Each of the three things a supplied model can do — a validator, a
+    defaulted field, a coercion — silently did NOT happen on the columnar
+    path. The refusal names itself and points at the entry point that can."""
     from pydantic import field_validator
 
     In = create_model("In", x=(int, ...))
@@ -240,31 +249,106 @@ def test_infer_arrow_honours_output_model():
         static_tables={},
         output_model=Out,
     )
-    rows = [In(x=2), In(x=4)]
-    by_row = [r.model_dump() for r in fn.infer({"__THIS__": rows})]
-    by_arrow = fn.infer_arrow(pa.table({"x": [2, 4]})).to_pylist()
-    assert by_arrow == by_row
+    by_row = [r.model_dump() for r in fn.infer({"__THIS__": [In(x=2), In(x=4)]})]
+    # the validator capped 20 -> 15, and `tag` was defaulted in
+    assert by_row == [
+        {"x": 10, "tag": "constant"},
+        {"x": 15, "tag": "constant"},
+    ]
+    with pytest.raises(ValueError, match="output_model is not applied"):
+        fn.infer_arrow(pa.table({"x": [2, 4]}))
+
+
+def test_infer_arrow_without_an_output_model_still_works():
+    """The refusal keys on SUPPLIED, not on the field being populated — the
+    synthesized model is always there and must not block the fast path."""
+    In = create_model("In", x=(int, ...))
+    fn = DuckDBInferFn(
+        "SELECT x * 5 AS y FROM __THIS__", row_tables={"__THIS__": In}, static_tables={}
+    )
+    assert fn.infer_arrow(pa.table({"x": [2, 4]})).to_pylist() == [
+        {"y": 10},
+        {"y": 20},
+    ]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT upper(s) AS u FROM __THIS__",
+        # a NULL in the column, so the validity buffer is exercised too
+        "SELECT NULLIF(s, 'a') AS u FROM __THIS__",
+        # several string lanes at once
+        "SELECT s AS a, lower(s) AS b, s || s AS c FROM __THIS__",
+    ],
+)
+def test_infer_arrow_string_type_matches_duckdb(sql):
+    In = create_model("In", s=(str, ...))
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
+    )
+    got = fn.infer_arrow(pa.table({"s": ["a", "bb", "ccc"]}))
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES ('a'), ('bb'), ('ccc')")
+    want = con.execute(sql).fetch_arrow_table()
+    assert got.schema == want.schema
+    assert got.to_pylist() == want.to_pylist()
+    # The point of the schema agreeing: the two stack.
+    assert pa.concat_tables([want, got]).num_rows == 6
+
+
+# --------------------------- integer width in the arrow output schema --
+#
+# Found 2026-08-08 while fixing TASK-72, by widening its scenario sweep from
+# "the string column" to "the whole output schema". NOT part of TASK-72 —
+# a different type, a different cause — so it is pinned rather than folded in.
+#
+# DuckDB types a bare integer literal INTEGER, so `CASE WHEN .. THEN 1 ELSE 0
+# END` is int32 in its arrow output and int64 in ours. This is the
+# arrow-visible face of the documented "narrow integer widths don't exist"
+# limitation (docs/known-limitations.md), which until now was only ever
+# discussed as an arithmetic concern. It has the same consequence TASK-72 had:
+# `pa.concat_tables([duck_out, ours])` raises.
+#
+# It bites the `titanic` serving scenario, whose `multi_cabin` column is
+# exactly that CASE — so this is not hypothetical SQL.
+#
+# Reproduced by hand 2026-08-08. NEEDS A TICKET.
 
 
 @pytest.mark.xfail(
     strict=True,
-    reason="TASK-72: arrow::emit hard-codes pa.large_string() for every Str "
-    "output lane; DuckDB's own .arrow() returns pa.string() (32-bit offsets). "
-    "Values agree, schemas do not — pa.concat_tables([duck_out, confit_out]) "
-    "raises ArrowInvalid, and so does any pinned-schema writer.",
+    reason="A bare integer literal is INTEGER in DuckDB and BIGINT for us, so "
+    "an integer-literal CASE comes back int32 there and int64 here. Values "
+    "agree; the schemas do not stack.",
 )
-def test_infer_arrow_string_type_matches_duckdb():
-    In = create_model("In", s=(str, ...))
-    sql = "SELECT upper(s) AS u FROM __THIS__"
+def test_infer_arrow_integer_width_matches_duckdb():
+    In = create_model("In", k=(int, ...))
+    sql = "SELECT CASE WHEN k > 1 THEN 1 ELSE 0 END AS c FROM __THIS__"
     fn = DuckDBInferFn(
         sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
     )
-    got = fn.infer_arrow(pa.table({"s": ["a", "bb"]}))
+    got = fn.infer_arrow(pa.table({"k": [0, 2]}))
     con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES ('a'), ('bb')")
-    want = con.execute(sql).arrow()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (0), (2)")
+    want = con.execute(sql).fetch_arrow_table()
+    assert got.to_pylist() == want.to_pylist()  # values already agree
     assert got.schema == want.schema
+
+
+def test_infer_arrow_string_output_feeds_back_in():
+    """Our own output is a valid input — `ingest` takes 32-bit offsets."""
+    In = create_model("In", s=(str, ...))
+    fn = DuckDBInferFn(
+        "SELECT upper(s) AS s FROM __THIS__",
+        row_tables={"__THIS__": In},
+        static_tables={},
+        output="dict",
+    )
+    once = fn.infer_arrow(pa.table({"s": ["a", "bb"]}))
+    assert fn.infer_arrow(once).to_pylist() == [{"s": "A"}, {"s": "BB"}]
 
 
 # ------------------------------------- the join ON residual, three ways --

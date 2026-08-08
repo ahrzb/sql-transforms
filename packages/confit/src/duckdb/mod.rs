@@ -1060,6 +1060,12 @@ pub struct DuckDBInferFn {
     row_table: String,
     #[pyo3(get)]
     output_model: Py<PyAny>,
+    /// Whether the caller GAVE us `output_model`, as opposed to us
+    /// synthesizing one from the output columns. Only a supplied model can
+    /// carry validators, defaults and coercion, so only a supplied model
+    /// makes `model_validate` observable — and `infer_arrow`, which never
+    /// builds Python rows, cannot honour it (TASK-71).
+    output_model_supplied: bool,
     output_dicts: bool,
     /// 0 = filter, 1 = map, 2 = many (the declared row-shape contract).
     shape_kind: u8,
@@ -1280,6 +1286,7 @@ impl DuckDBInferFn {
                                  rows unrelated to the input rows",
                             ));
                         }
+                        let supplied = output_model.is_some();
                         let output_model = match output_model {
                             Some(m) => m,
                             None => model_from_fields(py, fields)?,
@@ -1288,6 +1295,7 @@ impl DuckDBInferFn {
                             engine: Engine::Constant { rows },
                             row_table,
                             output_model,
+                            output_model_supplied: supplied,
                             output_dicts,
                             shape_kind,
                         });
@@ -1367,6 +1375,7 @@ impl DuckDBInferFn {
             },
             row_table,
             output_model,
+            output_model_supplied: supplied,
             output_dicts,
             shape_kind,
         })
@@ -1447,7 +1456,20 @@ impl DuckDBInferFn {
     /// dtypes (int64 / double / string / bool; cast first otherwise).
     /// Values are byte-identical to infer(); under shape='map' the output
     /// aligns positionally with the input.
+    ///
+    /// Refuses when the caller supplied an `output_model`: this path never
+    /// builds Python rows, so it has nothing to run `model_validate` on, and
+    /// silently skipping it made three documented entry points to one
+    /// function give two different answers (TASK-71).
     fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        if self.output_model_supplied {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "infer_arrow: output_model is not applied on the columnar path \
+                 (its validators, defaults and coercion run per row, and this \
+                 path builds no rows) — use infer()/infer_rows(), or drop \
+                 output_model and take the synthesized one",
+            ));
+        }
         let (fun, in_cols, out_cols, plan) = match &self.engine {
             Engine::Compiled {
                 fun,
