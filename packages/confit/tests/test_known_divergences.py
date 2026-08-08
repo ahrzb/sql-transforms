@@ -92,30 +92,42 @@ def _run(sql: str, model, rows: list[dict]) -> list[tuple]:
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-69: QUALIFY is parsed and then silently discarded, so every "
-    "row is emitted. `QUALIFY row_number() OVER (PARTITION BY k ORDER BY ts "
-    "DESC) = 1` is the standard dedupe-to-latest-per-key idiom. LIMIT is "
-    "refused by name, so the refusal exists — QUALIFY just is not in it.",
-)
-def test_qualify_is_not_silently_dropped():
-    sql = (
-        "SELECT k, ts FROM __THIS__ "
-        "QUALIFY row_number() OVER (PARTITION BY k ORDER BY ts DESC) = 1"
-    )
-    got = _run(sql, QualRow, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
-    assert got == duck(sql, _QUAL_DDL, _QUAL_ROWS)
+# FIXED 2026-08-08 (TASK-69). The resolution is REFUSAL, which is half the
+# contract: match DuckDB or refuse by name. Ignoring the clause was the third
+# mode that is not supposed to exist.
+#
+# Fixed as a class, not as two instances: `refuse_unhandled_query` and
+# `refuse_unhandled_select` destructure their AST node EXHAUSTIVELY, with no
+# `..` pattern, so a clause added to sqlparser breaks the build instead of the
+# answers. That immediately caught `Select::flavor`, which this audit had
+# missed by hand.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-69: FETCH FIRST n ROWS ONLY is silently discarded while the "
-    "exactly equivalent LIMIT n is refused with 'unsupported: LIMIT/OFFSET'. "
-    "Same clause, two spellings, opposite behaviour.",
+@pytest.mark.parametrize(
+    ("sql", "match"),
+    [
+        (
+            "SELECT k, ts FROM __THIS__ "
+            "QUALIFY row_number() OVER (PARTITION BY k ORDER BY ts DESC) = 1",
+            "QUALIFY",
+        ),
+        ("SELECT k, ts FROM __THIS__ FETCH FIRST 1 ROWS ONLY", "FETCH"),
+        ("SELECT TOP 1 k, ts FROM __THIS__", "TOP"),
+        ("SELECT k, ts FROM __THIS__ LIMIT 1", "LIMIT"),
+        ("SELECT k, ts FROM __THIS__ QUALIFY k > 1", "QUALIFY"),
+    ],
 )
-def test_fetch_first_is_not_silently_dropped():
-    sql = "SELECT k, ts FROM __THIS__ FETCH FIRST 1 ROWS ONLY"
+def test_row_limiting_clauses_are_refused_not_dropped(sql, match):
+    """Each of these silently emitted every input row before TASK-69. LIMIT is
+    the control: it was always refused, and the others are its synonyms."""
+    with pytest.raises(ValueError, match=match):
+        _run(sql, QualRow, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
+
+
+def test_ordinary_query_still_builds():
+    """The audit refuses by exhaustive destructure, so the risk is refusing
+    something that used to work."""
+    sql = "SELECT k, ts FROM __THIS__ WHERE k = 1"
     got = _run(sql, QualRow, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
     assert got == duck(sql, _QUAL_DDL, _QUAL_ROWS)
 

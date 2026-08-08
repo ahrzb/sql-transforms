@@ -105,6 +105,133 @@ fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
+/// Refuse every `Query` clause this engine does not implement.
+///
+/// Destructured EXHAUSTIVELY on purpose — no `..` pattern. When sqlparser
+/// grows a clause this stops compiling, instead of silently ignoring it. That
+/// silence is how `FETCH FIRST n ROWS ONLY` came to be parsed and dropped
+/// while its synonym `LIMIT n` was refused by name (TASK-69): an ignored
+/// clause is a wrong ANSWER, not a missing feature.
+fn refuse_unhandled_query(query: &sqlparser::ast::Query) -> Result<(), PrepareError> {
+    let sqlparser::ast::Query {
+        // checked by the caller
+        with: _,
+        body: _,
+        order_by: _,
+        limit_clause: _,
+        // not implemented — each is a silent wrong answer if ignored
+        fetch,
+        locks,
+        for_clause,
+        settings,
+        format_clause,
+        pipe_operators,
+    } = query;
+    if fetch.is_some() {
+        return Err(unsup("FETCH FIRST/NEXT (row limit)"));
+    }
+    if !locks.is_empty() {
+        return Err(unsup("FOR UPDATE / FOR SHARE"));
+    }
+    if for_clause.is_some() {
+        return Err(unsup("FOR XML / FOR JSON"));
+    }
+    if settings.is_some() {
+        return Err(unsup("SETTINGS"));
+    }
+    if format_clause.is_some() {
+        return Err(unsup("FORMAT"));
+    }
+    if !pipe_operators.is_empty() {
+        return Err(unsup("pipe operators"));
+    }
+    Ok(())
+}
+
+/// Refuse every `Select` clause this engine does not implement. Exhaustively
+/// destructured for the same reason as [`refuse_unhandled_query`] — `QUALIFY`
+/// was parsed and dropped, so a dedupe-to-latest query emitted every row and
+/// `shape='map'` still certified it (TASK-69).
+fn refuse_unhandled_select(select: &sqlparser::ast::Select) -> Result<(), PrepareError> {
+    let sqlparser::ast::Select {
+        // checked by the caller
+        distinct: _,
+        projection: _,
+        from: _,
+        selection: _,
+        group_by: _,
+        having: _,
+        // positional markers, meaningless without the clause they order
+        select_token: _,
+        top_before_distinct: _,
+        window_before_qualify: _,
+        // not implemented — each is a silent wrong answer if ignored
+        optimizer_hints,
+        select_modifiers,
+        top,
+        exclude,
+        into,
+        lateral_views,
+        prewhere,
+        connect_by,
+        cluster_by,
+        distribute_by,
+        sort_by,
+        named_window,
+        qualify,
+        value_table_mode,
+        flavor,
+    } = select;
+    // FROM-first (`FROM t SELECT *`, `FROM t`) is only a spelling, but an
+    // untested spelling: refuse by name rather than assume it binds the same.
+    if !matches!(flavor, sqlparser::ast::SelectFlavor::Standard) {
+        return Err(unsup("FROM-first SELECT"));
+    }
+    if qualify.is_some() {
+        return Err(unsup("QUALIFY"));
+    }
+    if top.is_some() {
+        return Err(unsup("SELECT TOP (row limit)"));
+    }
+    if prewhere.is_some() {
+        return Err(unsup("PREWHERE"));
+    }
+    if exclude.is_some() {
+        return Err(unsup("EXCLUDE"));
+    }
+    if into.is_some() {
+        return Err(unsup("SELECT INTO"));
+    }
+    if !lateral_views.is_empty() {
+        return Err(unsup("LATERAL VIEW"));
+    }
+    if !connect_by.is_empty() {
+        return Err(unsup("CONNECT BY"));
+    }
+    if !cluster_by.is_empty() {
+        return Err(unsup("CLUSTER BY"));
+    }
+    if !distribute_by.is_empty() {
+        return Err(unsup("DISTRIBUTE BY"));
+    }
+    if !sort_by.is_empty() {
+        return Err(unsup("SORT BY"));
+    }
+    if !named_window.is_empty() {
+        return Err(unsup("WINDOW (named window definitions)"));
+    }
+    if !optimizer_hints.is_empty() {
+        return Err(unsup("optimizer hints"));
+    }
+    if select_modifiers.is_some() {
+        return Err(unsup("select modifiers"));
+    }
+    if value_table_mode.is_some() {
+        return Err(unsup("AS STRUCT / AS VALUE"));
+    }
+    Ok(())
+}
+
 /// SQL text + the dynamic table's name/schema + the static-table catalog
 /// (+ declared UDF externs) -> bound relational tree, the equi-joins in
 /// FROM order, the derived output schema, and the width-k UDF output
@@ -164,6 +291,11 @@ pub fn frontend(
         Statement::Query(q) => q,
         other => return Err(unsup(format!("statement kind: {other}"))),
     };
+    // Refusals below are a CLASS, not a list of features someone got round to.
+    // A clause sqlparser parses and we ignore is a wrong ANSWER — the contract
+    // is match-DuckDB-or-refuse, and dropping QUALIFY silently emitted every
+    // row (TASK-69). Both helpers walk every field of their AST node, so
+    // adding a clause to sqlparser breaks the build rather than the answers.
     if query.with.is_some() {
         return Err(unsup("WITH / common table expressions"));
     }
@@ -173,6 +305,7 @@ pub fn frontend(
     if query.limit_clause.is_some() {
         return Err(unsup("LIMIT/OFFSET"));
     }
+    refuse_unhandled_query(query)?;
     let select = match query.body.as_ref() {
         SetExpr::Select(s) => s.as_ref(),
         SetExpr::SetOperation { .. } => return Err(unsup("UNION/INTERSECT/EXCEPT")),
@@ -181,6 +314,7 @@ pub fn frontend(
     if select.distinct.is_some() {
         return Err(unsup("DISTINCT"));
     }
+    refuse_unhandled_select(select)?;
     let grouped = match &select.group_by {
         sqlparser::ast::GroupByExpr::Expressions(exprs, modifiers) => {
             !exprs.is_empty() || !modifiers.is_empty()
