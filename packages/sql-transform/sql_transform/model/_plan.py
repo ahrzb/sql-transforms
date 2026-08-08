@@ -93,7 +93,7 @@ def _refuse_whole_fit(node: Node, why: str, *, deep: bool) -> None:
             )
 
 
-def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
+def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node, set[str]]:
     """Rewrite ``doc`` into the residual, returning the fit steps.
 
     A step is ``(param_name, node)``, in dependency order: running them against
@@ -101,12 +101,18 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
     produces every table the residual needs. All the analysis — and every
     refusal — happens here, at construction, before any data exists.
 
+    The third return is the set of qualifiers a lifted correlation read as
+    *outer*. Whether one of those is instead a nested column of ``__FIT__``,
+    which DuckDB binds in preference, needs a schema; `refuse_if_shadowed`
+    settles it at fit.
+
     The step is kept as a node rather than printed SQL because ``fit`` has to
     rename its free references per execution, the same way serving does, and
     renaming a node is a walk while renaming text is a guess.
     """
     steps: list[tuple[str, Node]] = []
     taken: set[str] = set()
+    shadowable: set[str] = set()
 
     def name(hint: str | None) -> str:
         base = f"__param_{hint}" if hint else f"__param_{len(steps)}"
@@ -154,14 +160,22 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
                     return freeze(sub, ctes, hint)  # maximal: never refreezes
                 case (reference, _):
                     # `decorrelate` has already had its turn on the shapes it
-                    # claims — this is what it left. Which side the correlation
-                    # reaches no longer separates two outcomes: reaching a
-                    # `__FIT__`-only relation used to fall through and ship the
-                    # training set, and that is not an outcome any more.
+                    # claims — a scalar subquery or a derived table — so what
+                    # reaches here is a correlated subtree in neither position:
+                    # a CTE definition, or an arm of a set operation. There is
+                    # nowhere to put a lookup, because there is no subquery
+                    # body to replace.
+                    #
+                    # Which side the correlation reaches no longer separates two
+                    # outcomes: reaching a `__FIT__`-only relation used to fall
+                    # through and ship the training set, and that is not an
+                    # outcome any more.
                     raise CorrelatedFit(
-                        f"{FIT} subquery references {reference} from the "
-                        "outer query, so it cannot be evaluated once into "
-                        "a table"
+                        f"{FIT} subtree references {reference} from the outer "
+                        "query and is not a subquery — a CTE definition or a "
+                        "set-operation arm has no body to replace with a "
+                        "lookup, so it cannot be evaluated once into a table",
+                        "not-in-a-subquery",
                     )
         return descend(sub, ctes, outer, reading)
 
@@ -199,7 +213,9 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
         # `visit` would otherwise refuse. `_pin_derived_names` has run, so a
         # rewritten select item still carries the output column name it had.
         def lifted(v: AstNode) -> AstNode | None:
-            return decorrelate(v, outer, reading, lambda sub: freeze_into(sub, ctes))
+            return decorrelate(
+                v, outer, reading, lambda sub: freeze_into(sub, ctes), shadowable
+            )
 
         node = rebuild(node, lifted, deep=False)
 
@@ -211,4 +227,4 @@ def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
         return node
 
     residual = visit(doc.statements[0].node, [], {}, None, {})
-    return steps, residual
+    return steps, residual, shadowable

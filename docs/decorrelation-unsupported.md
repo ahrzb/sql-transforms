@@ -197,9 +197,14 @@ write a seeded one and the refusal will not fire on it.
 
 ```sql
 WHERE EXISTS (SELECT 1 FROM __FIT__ f WHERE f.cat = t.cat)
-WHERE t.cat IN (SELECT f.cat FROM __FIT__ f WHERE f.ok)
+WHERE t.cat IN (SELECT f.cat FROM __FIT__ f WHERE f.cat = t.cat)
 WHERE t.price > ALL (SELECT f.price FROM __FIT__ f WHERE f.cat = t.cat)
 ```
+
+All three must be *correlated* to reach this. An uncorrelated
+`t.cat IN (SELECT f.cat FROM __FIT__ f WHERE f.ok)` never reaches the rule at
+all — it is an ordinary maximal freeze, one params row per qualifying training
+row, and it answers correctly.
 
 `EXISTS`, `IN`, `ANY`, `ALL`. DuckDB compiles all of them to a `MARK` join with
 a `__FIT__`-only right-hand side, so they *look* materialisable — which is
@@ -232,6 +237,30 @@ written out and gated on measured cases:
 A set operation rather than a plain `SELECT`. No plan: the shape is vanishingly
 rare in a correlated position and the rewrite would have to key each arm and
 re-union them.
+
+### `not-in-a-subquery`
+
+```sql
+SELECT t.cat, (WITH z AS (SELECT avg(f.price) FROM __FIT__ f WHERE f.cat = t.cat)
+               SELECT * FROM z) AS m
+FROM __THIS__ t
+```
+
+The correlated subtree is a CTE definition or a set-operation arm rather than a
+subquery, so there is no body to replace with a lookup — the rewrite works by
+substituting the subquery's own `SELECT`, and here there isn't one in that
+position.
+
+This is the reason that used to be `CorrelatedFit`'s *default*, and therefore
+the one refusal in the system nobody had to name: reachable, undocumented, and
+structurally invisible to the gate below, which walks `REASONS` looking for
+missing rows and so could never see a reason that was not in `REASONS`. The
+default is gone; `reason` is now a required argument.
+
+**The plan.** Hoist the CTE's definition to where the lookup can go. For the
+shape above that is mechanical — the CTE is used once, so inlining it makes an
+ordinary type-JA — and for a CTE used twice it is the same params table read
+twice. Worth doing when a real query asks for it.
 
 ---
 
@@ -300,12 +329,37 @@ For contrast, since a page of refusals reads worse than the surface is:
   `GROUP BY`: only the subquery's body is rewritten, so the enclosing query is
   untouched by construction.
 
-## One hazard no AST check can see
+## Two hazards no AST check can see
 
-A cross-type correlation key — fitted `VARCHAR` `'1'` and `'01'`, served
-`INTEGER 1` — is two groups at fit and one key at serving, so the lookup
-matches twice. Predicting it needs `__THIS__`'s types, which construction does
-not have. It raises a named error at serving rather than answering quietly.
+Both are decided by a schema that does not exist at construction, so both are
+carve-outs from P7 — named and loud, but later than the rest.
+
+### `shadowed-by-a-nested-column` — at **fit**
+
+```sql
+-- __FIT__ has a STRUCT column called `t`
+SELECT t.cat, (SELECT avg(f.price) FROM __FIT__ f WHERE f.cat = t.cat) AS m
+FROM __THIS__ t
+```
+
+DuckDB binds `t.cat` to the nested column in preference to the outer relation,
+so this is field access and the subquery is **not correlated at all**. Lifted
+anyway, it builds a keyed table on a correlation nobody wrote and serves
+plausible numbers. Measured: a `STRUCT` or `MAP` column wins, a plain column of
+the same name does not, and a `STRUCT` without the field is a binder error — so
+the test is on nestedness, and it runs at fit, where `__FIT__` first has a
+schema.
+
+**The plan.** Nothing to lift: the refusal is correct, and the workaround is to
+rename the alias. What could improve is *when* — with a declared `__FIT__`
+schema at construction it becomes a P7-clean refusal.
+
+### The cross-type correlation key — at **serving**
+
+Fitted `VARCHAR` `'1'` and `'01'`, served `INTEGER 1`: two groups at fit and one
+key at serving, so the lookup matches twice. Predicting it needs `__THIS__`'s
+types, which construction does not have. It raises a named error at serving
+rather than answering quietly.
 
 **The plan.** With a declared `__THIS__` catalog the comparison type is
 decidable at construction, and the fix is to group by the *comparison-typed*

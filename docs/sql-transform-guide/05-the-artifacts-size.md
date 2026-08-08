@@ -59,4 +59,4 @@ training row:
 ```
 
 Two stores in six rows, so two rows of parameters — and the extra one holds
-the value the aggregate takes on an empty group, for a store fit never saw.
+what the subquery itself returns for a store fit never saw.

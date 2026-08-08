@@ -16,9 +16,13 @@ class CorrelatedFit(TransformError):
     (`_correlate`). What is left raises this, and ``reason`` says which of the
     named shapes it is — the set of reasons is the refusal list, kept short on
     purpose and written down in ``docs/decorrelation-unsupported.md``.
+
+    ``reason`` has no default on purpose. It had one, and the default was the
+    only refusal in the system nobody had to name — reachable, undocumented,
+    and invisible to the gate that walks ``REASONS`` looking for gaps.
     """
 
-    def __init__(self, message: str, reason: str = "correlated") -> None:
+    def __init__(self, message: str, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
 

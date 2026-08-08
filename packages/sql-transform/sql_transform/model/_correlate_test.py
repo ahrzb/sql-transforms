@@ -322,6 +322,159 @@ def test_every_refusal_reason_is_documented():
     assert not missing, f"undocumented refusal reasons: {missing}"
 
 
+# ------------------------------------------------- what the audit turned up
+# Four ways to be accepted and answered wrong, plus one over-refusal. Each is
+# the shortest shape that shows it.
+
+
+@pytest.mark.parametrize("agg", ["entropy(f.i)", "approx_count_distinct(f.i)"])
+def test_the_miss_value_is_duckdbs_own_not_the_aggregates_empty_input(agg):
+    """The probe was ``<agg> FROM __FIT__ WHERE false``, which is the value the
+    aggregate takes on an empty *input*. That is not what DuckDB gives for a
+    correlated *miss*: it repairs the count bug for ``count`` alone and yields
+    NULL for everything else, whatever the empty-input value would be. The two
+    coincide for 65 of DuckDB's 68 aggregates and part company for three.
+
+    P9 settles which one is right — DuckDB is the oracle, so the target is what
+    it does, not what the aggregate means. The probe is a guaranteed correlated
+    miss now, so it inherits both behaviours without knowing either.
+    """
+    fit = pa.table({"cat": ["a", "a", "b"], "i": [1, 2, 3]})
+    both(
+        f"SELECT t.cat, (SELECT {agg} FROM __FIT__ f WHERE f.cat = t.cat) AS m"
+        " FROM __THIS__ t ORDER BY t.cat",
+        fit,
+        pa.table({"cat": ["a", "zz"]}),
+    )
+
+
+def test_the_miss_value_keeps_freezing_faithful_on_a_null_key():
+    """The same defect with no external oracle. `=` rejects the NULL key, so a
+    NULL serving key is always a miss — and ``run``, which does no freezing at
+    all, disagreed with the frozen form on exactly that row."""
+    data = pa.table({"cat": ["a", "a", None], "i": [1, 2, 3]})
+    t = SQLTransform(
+        "SELECT t.cat, (SELECT entropy(f.i) FROM __FIT__ f WHERE f.cat = t.cat) AS m"
+        " FROM __THIS__ t ORDER BY t.cat NULLS LAST"
+    )
+    assert t.fit(data).transform(data).to_pylist() == run(t, data).to_pylist()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # The inner alias published to the parent, capturing a name the parent
+        # already bound. `f` is a CTE outside and `f.price > 20` is a constant
+        # filter on it; after the merge it silently filtered training rows.
+        "WITH f AS (SELECT 999.0 AS price)"
+        " SELECT t.cat, (SELECT avg(price) FROM (SELECT * FROM __FIT__ f"
+        " WHERE f.cat = t.cat) WHERE f.price > 20) AS m"
+        " FROM __THIS__ t, f ORDER BY t.cat",
+        # The same line in the other direction: the outer alias pushed onto the
+        # base, so `__FIT__.cat` inside no longer resolved and fit died on a
+        # query the oracle answers.
+        "SELECT t.cat, (SELECT avg(x.price) FROM"
+        " (SELECT * FROM __FIT__ WHERE __FIT__.cat = t.cat) x) AS m"
+        " FROM __THIS__ t ORDER BY t.cat",
+    ],
+)
+def test_flattening_never_changes_what_the_base_relation_is_called(sql):
+    """``_flatten`` merged with ``ref.alias or base.alias``, which renames the
+    base in one direction and leaks the inner alias in the other. Both are a
+    *different query*, not a refusal — one answered wrongly and one crashed.
+
+    Merging is allowed only when the set of names the base answers to is
+    unchanged; where it is not, the correlation stays where the author put it,
+    which is outside the WHERE clause, and that already has a name.
+    """
+    with pytest.raises(CorrelatedFit) as caught:
+        SQLTransform(sql)
+    assert caught.value.reason == "outside-where"
+
+
+def test_a_sample_on_the_table_reference_refuses_like_one_on_the_query():
+    """``USING SAMPLE`` lands on the SELECT node and was checked; ``TABLESAMPLE``
+    written after the table lands on the *ref* and was not, so fit froze one
+    draw and shipped it. Three fits of the same relation gave three different
+    models — exactly the harm the refusal exists to prevent."""
+    for sql in (
+        "SELECT t.cat, (SELECT avg(f.price) FROM __FIT__ f TABLESAMPLE bernoulli(10%)"
+        " WHERE f.cat = t.cat) AS m FROM __THIS__ t",
+        "SELECT t.cat, (SELECT avg(f.price) FROM __FIT__ f"
+        " WHERE f.cat = t.cat USING SAMPLE 10%) AS m FROM __THIS__ t",
+    ):
+        with pytest.raises(CorrelatedFit) as caught:
+            SQLTransform(sql)
+        assert caught.value.reason == "sample", sql
+
+
+def test_a_cte_inside_the_subquery_is_lifted_like_any_other_spelling():
+    """The lookup was copied from the subquery and kept its ``cte_map``, which
+    is dead — the lookup reads only the keyed table — but still named
+    ``__FIT__``, so the walk saw an unfrozen reference and refused. The same
+    query written as a derived table was accepted, which is the tell."""
+    both(
+        "SELECT t.cat, (WITH z AS (SELECT * FROM __FIT__)"
+        " SELECT avg(z.price) FROM z WHERE z.cat = t.cat) AS m"
+        " FROM __THIS__ t ORDER BY t.cat"
+    )
+
+
+def test_a_nested_column_that_shadows_the_outer_alias_refuses():
+    """The one classification the AST cannot make. DuckDB binds ``t.cat`` to a
+    nested column ``t`` of ``__FIT__`` in preference to the outer relation, so
+    what looks like the flagship type-JA is field access and the subquery is
+    not correlated at all. Lifted anyway, it built a keyed table on a
+    correlation nobody wrote and served plausible numbers.
+
+    Measured: STRUCT and MAP columns win, a plain column of the same name does
+    not, and a STRUCT without the field is a binder error. So the check is on
+    nestedness, and it is at fit because that is where the schema first exists.
+    """
+    fit = pa.table(
+        {
+            "cat": ["a", "a", "b"],
+            "price": [10.0, 30.0, 5.0],
+            "t": [{"cat": "b"}, {"cat": "b"}, {"cat": "b"}],
+        }
+    )
+    t = SQLTransform(
+        "SELECT t.cat, (SELECT avg(f.price) FROM __FIT__ f WHERE f.cat = t.cat) AS m"
+        " FROM __THIS__ t ORDER BY 1"
+    )
+    with pytest.raises(CorrelatedFit) as caught:
+        t.fit(fit)
+    assert caught.value.reason == "shadowed-by-a-nested-column"
+
+
+def test_a_plain_column_of_the_same_name_is_not_shadowing():
+    """The check must not fire on a name that DuckDB binds outward anyway —
+    only a nested column takes precedence."""
+    fit = pa.table(
+        {"cat": ["a", "a", "b"], "price": [10.0, 30.0, 5.0], "t": ["x", "x", "x"]}
+    )
+    both(
+        "SELECT t.cat, (SELECT avg(f.price) FROM __FIT__ f WHERE f.cat = t.cat) AS m"
+        " FROM __THIS__ t ORDER BY 1",
+        fit,
+        pa.table({"cat": ["a", "b", "zz"]}),
+    )
+
+
+def test_no_refusal_escapes_the_documented_list():
+    """The gate walks ``REASONS`` to the page and so cannot see a reason that
+    is not in ``REASONS``. ``CorrelatedFit``'s default reason was exactly that:
+    reachable, unnamed, and undocumented."""
+    import inspect
+
+    from sql_transform.model import _errors
+
+    signature = inspect.signature(_errors.CorrelatedFit.__init__)
+    assert signature.parameters["reason"].default is inspect.Parameter.empty, (
+        "a default reason is a refusal nobody has to name"
+    )
+
+
 def test_a_cross_type_key_is_a_named_error_not_a_quiet_answer():
     """The one hazard the AST cannot see: ``'1'`` and ``'01'`` are two groups
     at fit and one key at serving, so the lookup matches twice. Loud."""

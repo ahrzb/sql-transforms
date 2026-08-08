@@ -75,8 +75,9 @@ SELECT (f.cat) AS __key_0, (avg(f.price)) AS __value_0
 FROM __FIT__ f WHERE f.ok AND (f.cat) IS NOT NULL
 GROUP BY f.cat
 
--- fit step __param_1: the empty-input value, from F's schema and none of its rows
-SELECT (avg(f.price)) AS __value_0 FROM __FIT__ f WHERE false
+-- fit step __param_1: the miss value, from F's schema and none of its rows
+SELECT (SELECT avg(f.price) FROM __FIT__ f WHERE __miss.n IS NOT NULL) AS __value_0
+FROM (SELECT NULL AS n) __miss
 
 -- residual: only the subquery's body is replaced
 SELECT t.cat, t.price / (
@@ -107,11 +108,21 @@ miss. Measured, with `CASE WHEN count(*)=0 THEN -1 ELSE max(f.price) END` over
 an all-NULL group. `count(*)` cannot be confused this way and needs no extra
 column in params.
 
-**A zero-row probe, not a list of aggregates.** Four survey strands each
-produced a *different* list of "aggregates that are non-NULL on empty input".
-The category does not exist: `count_if(x)` is NULL and
-`count(x) FILTER (WHERE x)` is 0 — the same count spelled twice. The probe
-generalises to UDAFs and to aggregates DuckDB has not shipped, and cannot rot.
+**A probe, not a list of aggregates.** Four survey strands each produced a
+*different* list of "aggregates that are non-NULL on empty input". The category
+does not exist: `count_if(x)` is NULL and `count(x) FILTER (WHERE x)` is 0 —
+the same count spelled twice. The probe generalises to UDAFs and to aggregates
+DuckDB has not shipped, and cannot rot.
+
+**And the probe is a guaranteed miss, not an empty scan.** The first version
+read `<agg> FROM __FIT__ WHERE false`, which is the aggregate's value on an
+empty *input*. That is not DuckDB's value for a correlated *miss*: it repairs
+the count bug for `count`/`count_star` and returns NULL for everything else,
+whatever the empty-input value would be. Swept over all 68 of its aggregates,
+65 agree and three do not — `entropy` (0.0 vs NULL), `approx_count_distinct`,
+`regr_count`. P9 settles it: DuckDB is the oracle, so the target is what it
+does. Correlating the probe to a one-row relation whose only value is NULL puts
+it on DuckDB's own unnesting path, and it was exact on 68 of 68.
 
 ## The join predicate mirrors the operator
 

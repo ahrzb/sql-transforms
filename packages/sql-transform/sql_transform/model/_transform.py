@@ -50,6 +50,7 @@ from sql_transform.model._ast import (
     _subquery_ref,
     _table_function_ref,
 )
+from sql_transform.model._correlate import refuse_if_shadowed
 from sql_transform.model._errors import (
     NestingTooDeep,
     NotFitted,
@@ -660,7 +661,7 @@ class SQLTransform:
         self.sql = _deserialize(doc)
         # No copy: the models are frozen, so `_plan` cannot reach back into
         # `doc` and `self.node` stays the text the caller wrote.
-        self._steps, self._residual = _plan(doc)
+        self._steps, self._residual, self._shadowable = _plan(doc)
         self._own = connection is None
         self.fitted_: Fitted | None = None
         self.feature_names_out_: list[str] | None = None
@@ -697,6 +698,20 @@ class SQLTransform:
             rename=not self._own,
         )
         try:
+            # Before any step: a lifted correlation read some qualifier as
+            # *outer*, and if `__FIT__` turns out to have a nested column of
+            # that name DuckDB would have bound it inward instead. The AST
+            # cannot tell; the schema can, and this is the first place it
+            # exists.
+            refuse_if_shadowed(
+                lambda: [
+                    (name, kind)
+                    for name, kind, *_ in con.execute(
+                        f'DESCRIBE SELECT * FROM "{names[FIT]}"'  # noqa: S608
+                    ).fetchall()
+                ],
+                self._shadowable,
+            )
             for param, node in self._steps:
                 try:
                     params[param] = _execute(
