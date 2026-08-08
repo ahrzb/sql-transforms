@@ -47,7 +47,16 @@ class DuckDBInferFn:
                                   so `f(x).a` reads a lane off ONE call
             pa.list_(t, k)        width-k unnamed (the DRAFT-22 list
                                   boundary); FIXED size, because the width is
-                                  part of the declaration
+                                  part of the declaration, and k >= 2 — a
+                                  width-1 list is a scalar and refuses
+
+        Arguments bind against the DECLARED type, not their own: an argument
+        widens to it exactly as DuckDB's implicit cast would (BIGINT into a
+        declared DOUBLE), and anything else refuses by name. For a tree
+        transform that is load-bearing rather than cosmetic — a declared
+        BIGINT feature narrows to float32 in ONE step, while a declared DOUBLE
+        is cast first and narrows from the double, which is a different leaf
+        above 2**53.
 
         An object with an `instances` attribute is a fitted transformer: its
         implicit leading argument is a nullable BIGINT instance id (never

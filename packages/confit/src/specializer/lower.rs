@@ -55,7 +55,7 @@ pub fn lower(
     let model_statics: Vec<StaticTy> = model_refs
         .iter()
         .map(|r| StaticTy::Model {
-            n_features: models[*r as usize].n_features as u32,
+            n_features: models[*r as usize].takes.len() as u32,
         })
         .collect();
     let (exprs, filter_pred) = match rel {

@@ -147,10 +147,21 @@ feature it is not, because the value handed over is `float64(n)`, and above
 `float32(float64(n))` where sklearn, which narrows an int64 array to float32
 in a single step, computes `float32(n)`. A whole float32 ULP apart.
 
-An integer feature therefore converts with the IR's `itof.f32` rather than the
-ordinary promotion: `n as f32 as f64`, one rounding. Below `2**53`,
-`float64(n)` is exact and the two are identical, so this is a no-op for every
-ordinary integer feature rather than a trade (TASK-77).
+A feature **declared** `pa.int64()` therefore converts with the IR's
+`itof.f32` rather than the ordinary promotion: `n as f32 as f64`, one
+rounding. Below `2**53`, `float64(n)` is exact and the two are identical, so
+this is a no-op for every ordinary integer feature rather than a trade
+(TASK-77).
+
+**The declaration decides, not the column.** A BIGINT column passed into a
+lane declared `pa.float64()` is cast to a double by DuckDB before the call, so
+the model sees `float64(n)` and narrows from there — a different leaf above
+`2**53`, and the right one for that declaration. The class's own `__call__`
+follows the same rule, which is what makes it a usable oracle: it builds an
+int64 array and narrows it in one step for a declared BIGINT lane, and passes
+the double through for a declared DOUBLE one. (`np.float32(n)` is *not* that
+conversion — the scalar constructor rounds via float64. Only the array
+`astype` reproduces it.)
 
 That opcode adds no float32 TYPE — its lane is f64 out, the same way
 `ftoi.nearest` is a rounding mode and not an integer type. The engine still

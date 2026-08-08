@@ -1093,6 +1093,7 @@ fn builtin_names_match_the_catalogue() {
 
 // -------------------------------------------------- tree transforms --
 
+/// `n_features` DOUBLE features — the ordinary declaration.
 fn model(name: &str, n_features: usize) -> super::plan::ModelTable {
     // sklearn's grid: the default for these tests because it is the only
     // packer that exists, and the one whose integer narrowing is asserted.
@@ -1104,9 +1105,17 @@ fn model_on(
     n_features: usize,
     grid: super::plan::CompareGrid,
 ) -> super::plan::ModelTable {
+    model_takes(name, &vec![Ty::F64; n_features], grid)
+}
+
+fn model_takes(
+    name: &str,
+    takes: &[Ty],
+    grid: super::plan::CompareGrid,
+) -> super::plan::ModelTable {
     super::plan::ModelTable {
         name: name.to_string(),
-        n_features,
+        takes: takes.to_vec(),
         grid,
     }
 }
@@ -1136,7 +1145,7 @@ fn tree_call_binds_features_by_position() {
          FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
         &schema,
         &[params],
-        &[model("trees", 2)],
+        &[model_takes("trees", &[Ty::F64, Ty::I64], super::plan::CompareGrid::F32)],
     )
     .unwrap();
     assert_eq!(p.models, vec!["trees".to_string()]);
@@ -1151,8 +1160,8 @@ fn tree_call_binds_features_by_position() {
     assert_eq!(text.matches("predict @1,").count(), 1, "{text}");
     assert_eq!(feature_position_of_itof(&text), 1, "sqft is passed second:\n{text}");
 
-    // Swap the two arguments at the CALL SITE and the operand order follows:
-    // position is the contract, so a transposition is the caller's to avoid.
+    // Swap both the call site and the declaration: the operand order follows
+    // the call, and each lane is typed by the DECLARATION at its position.
     let schema = cols(&[
         ("g", Ty::Str, true),
         ("price", Ty::F64, false),
@@ -1164,11 +1173,39 @@ fn tree_call_binds_features_by_position() {
          FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
         &schema,
         &[params],
-        &[model("trees", 2)],
+        &[model_takes("trees", &[Ty::I64, Ty::F64], super::plan::CompareGrid::F32)],
     )
     .unwrap();
     let text = print(&p.program);
     assert_eq!(feature_position_of_itof(&text), 0, "sqft is passed first:\n{text}");
+}
+
+/// The DECLARED type types the lane, not the argument's. DuckDB casts an
+/// argument to the declaration before calling, so a BIGINT column in a
+/// declared-DOUBLE lane reaches the model as `float64(n)` and narrows from
+/// THERE — one rounding through the double, not the single int64 -> float32
+/// step a declared-BIGINT lane gets. Binding off the argument's own type
+/// (as this did) made the engine disagree with both DuckDB and the class's
+/// own `__call__` above 2**53.
+#[test]
+fn a_declared_double_lane_widens_an_integer_rather_than_narrowing_it() {
+    let schema = cols(&[("id", Ty::I64, false), ("n", Ty::I64, false)]);
+    let sql = "SELECT trees(id, n) AS z FROM __THIS__";
+    let grid = super::plan::CompareGrid::F32;
+
+    let dbl = prep_models(sql, &schema, &[], &[model_takes("trees", &[Ty::F64], grid)]).unwrap();
+    let text = print(&dbl.program);
+    assert!(
+        text.contains("= itof %") && !text.contains("itof.f32 "),
+        "a declared DOUBLE lane widens exactly, like every other udf:\n{text}"
+    );
+
+    let big = prep_models(sql, &schema, &[], &[model_takes("trees", &[Ty::I64], grid)]).unwrap();
+    let text = print(&big.program);
+    assert!(
+        text.contains("itof.f32 "),
+        "a declared BIGINT lane narrows in one step:\n{text}"
+    );
 }
 
 /// A tree transform and an ecall UDF share one call-site namespace, and the
@@ -1209,7 +1246,9 @@ fn compare_grid_selects_the_integer_conversion() {
         (super::plan::CompareGrid::F32, "itof.f32 ", "= itof %"),
         (super::plan::CompareGrid::F64, "= itof %", "itof.f32 "),
     ] {
-        let p = prep_models(sql, &schema, &[], &[model_on("trees", 1, grid)]).unwrap();
+        // A declared BIGINT lane: the only one that narrows in one step.
+        let p = prep_models(sql, &schema, &[], &[model_takes("trees", &[Ty::I64], grid)])
+            .unwrap();
         let text = print(&p.program);
         assert!(text.contains(want), "{grid:?} must emit `{want}`:\n{text}");
         assert!(
@@ -1321,7 +1360,7 @@ fn tree_call_refuses_by_name() {
             &one,
         ),
         (
-            "udf 'trees' argument 2 is str, declared a number",
+            "udf 'trees' argument 2 is str, declared f64",
             "SELECT trees(id, s) FROM __THIS__",
             &one,
         ),
