@@ -483,7 +483,9 @@ pub fn emit(
                     crate::specializer::ir::Ty::I1 => pa.call_method0("bool_"),
                     crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
                     crate::specializer::ir::Ty::F64 => pa.call_method0("float64"),
-                    crate::specializer::ir::Ty::Str => pa.call_method0("large_string"),
+                    // `string`, not `large_string` — see the scalar lane
+                    // below and TASK-72.
+                    crate::specializer::ir::Ty::Str => pa.call_method0("string"),
                 };
                 // Unnamed extern: list<elem>; named extern: struct keyed by
                 // the declared names (slice 5), matching DuckDB's output.
@@ -548,25 +550,41 @@ pub fn emit(
                             .unbind()],
                     )
                 }
+                // `pa.string()`, 32-bit offsets, because that is what
+                // DuckDB's own `.arrow()` returns for a VARCHAR column
+                // (TASK-72). Emitting `large_string` gave byte-identical
+                // VALUES under a schema that would not stack:
+                // `pa.concat_tables([duck_out, ours])` raised, and so did any
+                // pinned-schema writer.
                 OutCol::Str(v) => {
                     let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
-                    let mut offsets: Vec<i64> = Vec::with_capacity(n + 1);
+                    let mut offsets: Vec<i32> = Vec::with_capacity(n + 1);
                     let mut bytes: Vec<u8> = Vec::new();
                     offsets.push(0);
                     for (ok, r) in v.iter() {
                         if *ok {
                             bytes.extend_from_slice(st.arena.get(*r).as_bytes());
                         }
-                        offsets.push(bytes.len() as i64);
+                        // 32-bit offsets are the whole point, so the 2 GiB
+                        // ceiling is real. Refuse by name rather than wrap:
+                        // DuckDB splits such a result across record batches,
+                        // and we emit a single chunk.
+                        let end = i32::try_from(bytes.len()).map_err(|_| {
+                            err(
+                                "infer_arrow: string column exceeds 2 GiB in one \
+                                 batch — split the batch",
+                            )
+                        })?;
+                        offsets.push(end);
                     }
                     let off_raw = unsafe {
                         std::slice::from_raw_parts(
                             offsets.as_ptr() as *const u8,
-                            offsets.len() * 8,
+                            offsets.len() * 4,
                         )
                     };
                     (
-                        pa.call_method0("large_string")?,
+                        pa.call_method0("string")?,
                         vb,
                         vec![
                             py_buffer.call1((PyBytes::new(py, off_raw),))?.unbind(),
