@@ -165,13 +165,28 @@ impl TreeEnsemble {
         // Per tree: dense node ids, leaf/split consistency, in-range features,
         // and children that strictly follow their parent. That last rule is
         // what makes the traversal loop provably terminate without a depth
-        // counter — every library we target already emits nodes in that order.
+        // counter — every library we target already emits nodes in that order,
+        // and it rules out cycles by construction.
+        //
+        // `parented` counts parents, saturating at one, and the two ends of it
+        // together are a COMPLETE tree check: given children that strictly
+        // follow their parent, a table is a tree exactly when every non-root
+        // node has exactly one parent — one parent each makes the parent
+        // function total, and the ordering makes walking parents strictly
+        // decrease, so every node has a unique path back to node 0.
+        //
+        // Zero parents is "unreachable from the root" (checked after the
+        // loop); two is a shared child, a decision DAG rather than a tree
+        // (checked in it). A DAG scores perfectly well — one path, still
+        // terminating — but nothing we target emits one, so it means the
+        // table is malformed, and rejecting only the zero case would be an
+        // arbitrary place to stop (TASK-76).
         let mut left = vec![0u32; nn];
         let mut right = vec![0u32; nn];
         for &(lo, hi) in &tree_span {
             let (lo, hi) = (lo as usize, hi as usize);
             let len = hi - lo;
-            let mut reachable = vec![false; len];
+            let mut parented = vec![false; len];
             for k in 0..len {
                 let i = lo + k;
                 if nodes.node_id[i] != k as i64 {
@@ -208,12 +223,16 @@ impl TreeEnsemble {
                     if c <= k {
                         return Err(format!("node row {i}: child {c} must follow its parent {k}"));
                     }
-                    reachable[c] = true;
+                    if std::mem::replace(&mut parented[c], true) {
+                        return Err(format!(
+                            "node row {i}: child {c} already has a parent (not a tree)"
+                        ));
+                    }
                 }
                 left[i] = (lo + l as usize) as u32;
                 right[i] = (lo + r as usize) as u32;
             }
-            if let Some(k) = (1..len).find(|k| !reachable[*k]) {
+            if let Some(k) = (1..len).find(|k| !parented[*k]) {
                 return Err(format!(
                     "node row {}: unreachable from its tree's root",
                     lo + k
@@ -577,8 +596,27 @@ mod tests {
 
     #[test]
     fn refuses_an_unreachable_node() {
-        // Node 2 orphaned: the root's right child points back at node 1.
-        assert!(refusal(|n| n.right[0] = 1).contains("unreachable"));
+        // The root turned into a leaf, orphaning both of its children. NOT
+        // spelled as "point the root's right child back at node 1" any more:
+        // that makes node 1 a SHARED child, which trips its own refusal
+        // first, and this test would then pass for the wrong reason.
+        assert!(
+            refusal(|n| {
+                n.feature[0] = -1;
+                n.left[0] = -1;
+                n.right[0] = -1;
+            })
+            .contains("unreachable")
+        );
+    }
+
+    #[test]
+    fn refuses_a_shared_child() {
+        // Both of the root's children are node 2: a decision DAG, not a
+        // tree. It scores perfectly well — one path, terminating — but
+        // "exactly one parent per non-root node" is what MAKES the table a
+        // tree, and we check both ends of it rather than only zero (TASK-76).
+        assert!(refusal(|n| n.left[0] = 2).contains("already has a parent"));
     }
 
     #[test]
