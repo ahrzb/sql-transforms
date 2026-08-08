@@ -63,7 +63,15 @@ disagreement, a width-k call used inside an expression — are raised at
 moves to serve time.
 (The corpus's FAILED bucket pins the "never silently" half — control C5.)
 
-**P8 — `__cf_` is reserved.** The prefix (case-insensitive) is refused in
+**P8 — the `__` prefix is reserved.** In `sql_transform.model` every
+synthesized name lives under `__` (`__param_0`, `__param_fit`,
+`{name}__x{token}`), so an identifier there is refused at construction —
+relation, CTE or alias. `__FIT__` and `__THIS__` are the exception: they are
+the two parameters, and the only `__` names an author writes. Implemented
+2026-08-08 (TASK-75); before that the prefix was reserved in name only and a
+user relation called `__param_0` silently beat the frozen parameter.
+
+**P8 (old implementation) — `__cf_` is reserved.** The prefix (case-insensitive) is refused in
 input SQL and declared schemas; all synthesized names live under it, so
 generated and authored names cannot collide.
 
