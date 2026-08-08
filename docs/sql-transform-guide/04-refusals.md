@@ -24,18 +24,56 @@
 
 </details>
 
-One refusal: a `__FIT__` subtree may not correlate into `__THIS__`, because
-that is per-serving-row and cannot be evaluated once. It raises at
-**construction**, naming the column:
+**Not refused:** a `__FIT__` subquery correlated into `__THIS__` by an
+equality. It is per-serving-row, so it cannot be evaluated once as written —
+but the group it asks for can, one row per key:
+
+```
+>>> per_store = SQLTransform('''
+...     SELECT t.store, (SELECT avg(f.price) FROM __FIT__ f WHERE f.store = t.store) AS m
+...     FROM __THIS__ t ORDER BY t.store
+... ''')
+>>> fitted = per_store.fit(SALES)
+>>> {name: len(p) for name, p in fitted.params.items()}
+{'__param_0': 2, '__param_1': 1}
+
+```
+
+Two stores, two rows, whatever the size of the training set — plus one row
+holding what the aggregate returns on no rows at all, which is the answer for
+a store fit never saw:
+
+```
+>>> fitted(pa.table({"store": ["S1", "NEW"]})).to_pylist()
+[{'store': 'NEW', 'm': None}, {'store': 'S1', 'm': 20.0}]
+
+```
+
+**Refused**, at **construction**, when no `GROUP BY` reproduces the
+correlation — here an inequality, which is real and common and temporary:
 
 ```
 >>> SQLTransform('''
-...     SELECT (SELECT avg(price) FROM __FIT__ f WHERE f.store = t.store) AS m
+...     SELECT (SELECT avg(f.price) FROM __FIT__ f WHERE f.price <= t.price) AS m
 ...     FROM __THIS__ t
 ... ''')
 Traceback (most recent call last):
     ...
-sql_transform.model._transform.CorrelatedFit: __FIT__ subquery references t.store from the outer query, so it cannot be evaluated once into a table
+sql_transform.model._errors.CorrelatedFit: __FIT__ subquery correlates out of itself and the correlation is not a conjunction of equalities — t.price joins the two relations some other way, so it cannot be evaluated once into a keyed table
+
+```
+
+`docs/decorrelation-unsupported.md` lists every shape that refuses this way,
+each with what lifting it would take.
+
+**Refused** too: anything that would put the whole training set in the
+artifact without the text saying so.
+
+```
+>>> SQLTransform("SELECT t.price - f.price AS d FROM __THIS__ t, __FIT__ f")
+Traceback (most recent call last):
+    ...
+sql_transform.model._errors.WholeTrainingSet: a bare `FROM __FIT__` beside __THIS__ would put the whole training set in the artifact. Wrap the __FIT__ reference in a subquery selecting the rows and columns you need — `(SELECT ... FROM __FIT__) f` — so the artifact's size is visible in the text
 
 ```
 

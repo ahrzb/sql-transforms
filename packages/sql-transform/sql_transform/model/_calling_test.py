@@ -187,17 +187,20 @@ def test_per_group_is_faithful_under_run():
     assert sorted(approx(run(t, F), 4)) == _per_group_expected(F)
 
 
-def test_per_group_retains_the_training_set_and_says_so():
-    """A per-group fit cannot freeze once — it is the deferred marginalization.
+def test_per_group_costs_one_row_per_group_not_one_per_training_row():
+    """This used to retain the whole training set, and it is the shape the
+    guide teaches — so it was the loudest argument for marginalising.
 
-    Nothing is silently wrong: the residual reads no ``__FIT__``, the training
-    set is a *named parameter*, and ``len(params)`` reports |D| so the cost is
-    a measurement rather than a surprise. Marginalization turns this into one
-    row per group; that is the first thing it should buy.
+    The correlating predicate arrives a level below the aggregate, inside the
+    derived table the splice built out of the argument. Flattened, it is an
+    ordinary type-JA and Kim's temporary relation applies: two stores, two
+    means, one empty-input probe, and not a single training row.
     """
     fitted = SQLTransform(PER_GROUP).fit(F)
     assert not reads_fit(fitted.sql)
-    assert len(fitted.params["__param_fit"]) == len(F)
+    groups = len(set(F["store"].to_pylist()))
+    assert sum(len(p) for p in fitted.params.values()) == 2 * groups + 1
+    assert 2 * groups + 1 < len(F)
 
 
 def test_both_parameters_must_be_sliced():
