@@ -163,6 +163,21 @@ def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, 
                 f"model {mid} was fitted on {est.n_features_in_} features,"
                 f" {len(features)} names given"
             )
+        # Features bind by POSITION, so names in the wrong order pass every
+        # other check and score a plausible-looking wrong answer — the same
+        # failure shape BaggingRegressor and multi-output are refused for
+        # (TASK-78). `feature_names_in_` exists only when the estimator was
+        # fitted on something with column names, so the check is conditional
+        # and ndarray-fitted models — the common case — are unaffected.
+        fitted_names = getattr(est, "feature_names_in_", None)
+        if fitted_names is not None and list(fitted_names) != features:
+            raise TreePackError(
+                f"model {mid} was fitted on columns {list(fitted_names)}, but"
+                f" the names given are {features} — pass them in the fitted"
+                f" order. To expose a feature under a different name in SQL,"
+                f" rename at the call site instead:"
+                f" struct_pack({fitted_names[0]} := <expr>, ...)"
+            )
         trees, base, agg, scale = _stages(est)
         for tid, t in enumerate(trees):
             state = t.tree_.__getstate__()

@@ -47,7 +47,7 @@ def _duck_arrow(mod, statics, rows_d):
         con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')  # noqa: S608
         con.unregister(f"__arrow_{name}")
     con.register("__THIS__", sc.rows_table(mod, rows_d))
-    return con.execute(mod.SQL).fetch_arrow_table()
+    return con.execute(mod.SQL).to_arrow_table()
 
 
 def test_differential_basic_and_nulls():

@@ -2,7 +2,7 @@
 id: TASK-78
 title: >-
   pack_trees ignores feature_names_in_ so a DataFrame-fitted model can bind the wrong columns
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-08 03:00'
 labels:
@@ -39,10 +39,10 @@ for every finding is in the module docstring of
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 The claim is adjudicated by hand first
-- [ ] #2 If real: a mismatch between `feature_names_in_` and the given names is
+- [x] #1 The claim is adjudicated by hand first
+- [x] #2 If real: a mismatch between `feature_names_in_` and the given names is
       refused, naming both orders
-- [ ] #3 An estimator fitted on a bare ndarray (no `feature_names_in_`) still
+- [x] #3 An estimator fitted on a bare ndarray (no `feature_names_in_`) still
       packs - that is the common case and must not regress
 <!-- AC:END -->
 
@@ -54,3 +54,30 @@ column names, so the check has to be conditional. Refusing on mismatch is
 consistent with how the packer already treats every other silent-wrong-answer
 hazard.
 <!-- SECTION:NOTES:END -->
+
+## Adjudication (2026-08-08): CONFIRMED, and not subtle
+
+Reproduced by hand. A `RandomForestRegressor` fitted on a DataFrame with
+columns `['b', 'a']`, packed as `features=['a', 'b']`:
+
+```text
+engine   [-2.7217, -1.5920, -4.9149,  2.2374,  3.0037]
+sklearn  [ 0.8369,  0.2171,  3.4565, -0.9225, -2.4544]
+```
+
+It builds without complaint, every other check passes, and the numbers look
+entirely plausible. That is the failure shape `BaggingRegressor` and
+multi-output are already refused for.
+
+## Resolution
+
+`pack_trees` now requires `list(est.feature_names_in_) == features`, guarded by
+`getattr(..., None)` so an ndarray-fitted estimator — which has no
+`feature_names_in_` at all, and is the common case — packs exactly as before
+(tested).
+
+Strict equality rather than a permutation check, because renaming does not need
+this knob: `features` is the model's declared feature ORDER, and the call site
+already renames by keyword — `struct_pack(b := whatever_column, ...)`. So the
+list handed to the packer should always mirror the fitted one, and the error
+message says so.

@@ -563,13 +563,14 @@ def test_integer_feature_above_2_53_matches_sklearn():
     assert got == want, f"engine {got} vs sklearn {want} (int64 feature n={n})"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-78 (DISPUTED by the sweep's own verifiers, not adjudicated by "
-    "hand): pack_trees checks n_features_in_ but never feature_names_in_, so a "
-    "regressor fitted on a DataFrame binds by POSITION against whatever names "
-    "the caller passes. Same count, permuted names, silently wrong columns.",
-)
+# ADJUDICATED and CONFIRMED 2026-08-08 (TASK-78). The sweep's verifiers had
+# split on it; reproduced by hand, and the divergence is not subtle — a forest
+# fitted on columns ['b', 'a'] and packed as ['a', 'b'] built without complaint
+# and scored -2.72 where sklearn said 0.84. FIXED: the names must match the
+# fitted order, conditionally, since `feature_names_in_` exists only for an
+# estimator fitted on something with column names.
+
+
 def test_dataframe_fitted_model_refuses_mismatched_feature_names():
     pd = pytest.importorskip("pandas")
 
@@ -578,5 +579,22 @@ def test_dataframe_fitted_model_refuses_mismatched_feature_names():
     est = DecisionTreeRegressor(max_depth=4, random_state=90).fit(df, df["b"] * 3)
     assert list(est.feature_names_in_) == ["b", "a"]
     # the packer is handed the names in the OTHER order; the count still matches
-    with pytest.raises(TreePackError, match="feature_names_in_|name|order"):
+    with pytest.raises(TreePackError, match=r"fitted on columns \['b', 'a'\]"):
         pack_trees([est], ["a", "b"])
+    # a name that was never fitted is caught by the same check
+    with pytest.raises(TreePackError, match="fitted on columns"):
+        pack_trees([est], ["b", "zzz"])
+    # ... and the fitted order packs and scores exactly like sklearn
+    entry = pack_trees([est], ["b", "a"])
+    assert entry["features"] == ["b", "a"]
+
+
+def test_ndarray_fitted_model_still_packs():
+    """`feature_names_in_` is absent when the estimator saw a bare ndarray —
+    the common case, and it must not be caught by TASK-78's check."""
+    rng = np.random.RandomState(91)
+    x = rng.rand(80, 2) * 4 - 2
+    est = DecisionTreeRegressor(max_depth=4, random_state=91).fit(x, x[:, 0] * 3)
+    assert not hasattr(est, "feature_names_in_")
+    entry = pack_trees([est], ["anything", "at_all"])
+    assert entry["features"] == ["anything", "at_all"]

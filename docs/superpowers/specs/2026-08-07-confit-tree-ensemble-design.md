@@ -436,8 +436,10 @@ Independently swept after the fix: 4 estimator families × 6 quantisation grids
 
 Every one of these names the offending row or field, before any data flows:
 
-- a child index out of range, or a cycle: a node reachable from two parents,
-  or unreachable from its tree's root;
+- a child index out of range, or one that does not strictly follow its parent
+  — that ordering is what makes traversal provably terminate, and it rules
+  out cycles by construction;
+- a node unreachable from its tree's root;
 - a leaf (`feature = -1`) with children, or an internal node without both;
 - `feature >= n_features`;
 - unknown `agg` or `link` spelling;
@@ -446,6 +448,16 @@ Every one of these names the offending row or field, before any data flows:
 - call-site arity that disagrees with the declared `n_features`;
 - a model id in a *static* map's value column that names no model — the
   static case is fully known at build, so it refuses instead of trapping.
+
+A node with **two parents is accepted**, and that is deliberate. An earlier
+draft of this list called it "a cycle", which it is not: with children forced
+to strictly follow their parent, a shared child is a decision DAG, traversal
+from the root still takes exactly one path, still terminates, and still yields
+the value the table names. There is no wrong number to prevent, no library we
+target emits one, and checking it would cost a parent-count pass at build.
+Every other refusal above is exercised by construction in
+`test_known_divergences.py` (TASK-76 — adjudicated 2026-08-08; the finding was
+against the SPEC, not the code).
 
 ## Pinned runtime semantics
 

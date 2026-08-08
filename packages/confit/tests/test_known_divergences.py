@@ -1,21 +1,33 @@
-"""Known divergences from the 2026-08-08 adversarial sweep — each pinned xfail-strict.
-
-Every test here FAILS today and states exactly why. `strict=True` means none of
-them can silently start passing (a fix must delete the marker) or silently stop
-failing. This file is the durable record of the sweep; the tickets are
-TASK-69..TASK-78 in `backlog/tasks/`.
+"""The 2026-08-08 adversarial sweep — the durable record of every finding.
 
 The engine's contract is: **either it matches DuckDB bit-for-bit, or it refuses
-at build with a named error. There is no third mode.** Most of what follows is a
-breach of that contract rather than an exotic edge case — SQL that DuckDB runs
-and the engine silently answers differently.
+at build with a named error. There is no third mode.** Most of what follows was
+a breach of that contract rather than an exotic edge case — SQL that DuckDB
+runs and the engine silently answered differently.
+
+Started as nine xfail-strict pins. As each was fixed its marker came off and
+the section above it became the account of what the fix was and why, so this
+file reads as history rather than as a list of complaints. `strict=True` on
+what remains means it can neither silently start passing nor silently stop
+failing. Tickets are TASK-69..TASK-78 in `backlog/tasks/`.
+
+Still red, and honestly so:
+
+* the integer-WIDTH schema difference below, found while fixing TASK-72 and
+  deliberately not folded into it — it needs its own ticket;
+* TASK-77 (an integer feature above 2**53), pinned in
+  `sql_transform/_trees_test.py` because it is a packer-side question.
+
+Two of the findings were adjudicated by hand after the sweep's own verifiers
+split on them, and they went opposite ways: TASK-78 was real and is fixed;
+TASK-76 was a defect in the SPEC, not the code, and the spec was corrected —
+see the model-table section at the bottom, which now checks every OTHER
+refusal the spec claims by construction rather than assuming them.
 
 Provenance: 6 finder agents over distinct surfaces, then two independent
-refuters per finding, each required to build its own construction and to default
-to "refuted". 18 raw findings, 12 verified, 9 confirmed, 2 disputed, 1 refuted.
-Four of the nine were then reproduced by hand before being written down; those
-say so. The two DISPUTED ones are marked as such — one refuter each could not
-break them, one could, and neither has been adjudicated by hand yet.
+refuters per finding, each required to build its own construction and to
+default to "refuted". 18 raw findings, 12 verified, 9 confirmed, 2 disputed,
+1 refuted. Four of the nine were reproduced by hand before being written down.
 
 Two tests here run in a SUBPROCESS because the failure is a process death
 (stack overflow), not an exception: observed from inside the session it would
@@ -291,7 +303,7 @@ def test_infer_arrow_string_type_matches_duckdb(sql):
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
     con.execute("INSERT INTO __THIS__ VALUES ('a'), ('bb'), ('ccc')")
-    want = con.execute(sql).fetch_arrow_table()
+    want = con.execute(sql).to_arrow_table()
     assert got.schema == want.schema
     assert got.to_pylist() == want.to_pylist()
     # The point of the schema agreeing: the two stack.
@@ -333,7 +345,7 @@ def test_infer_arrow_integer_width_matches_duckdb():
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT)")
     con.execute("INSERT INTO __THIS__ VALUES (0), (2)")
-    want = con.execute(sql).fetch_arrow_table()
+    want = con.execute(sql).to_arrow_table()
     assert got.to_pylist() == want.to_pylist()  # values already agree
     assert got.schema == want.schema
 
@@ -648,36 +660,135 @@ def _node(nid, feature, threshold, left, right, value=0.0):
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-76 (DISPUTED, not adjudicated by hand): the spec lists 'a "
-    "node reachable from two parents' among the build-time refusals, but a "
-    "DAG-shaped node table builds and scores. Either the refusal is missing "
-    "or the spec overstates it.",
-)
-def test_dag_shaped_node_table_is_refused():
-    # nodes 1 and 2 both point their children at node 3 — a DAG, not a tree
-    nodes = [
-        _node(0, 0, 0.5, 1, 2),
-        _node(1, 0, 0.25, 3, 4),
-        _node(2, 0, 0.75, 3, 5),  # <- 3 has two parents
-        _node(3, -1, 0.0, -1, -1, value=10.0),
-        _node(4, -1, 0.0, -1, -1, value=20.0),
-        _node(5, -1, 0.0, -1, -1, value=30.0),
-    ]
+ModelRow = create_model("ModelRow", id=(int, ...), x=(float, ...))
+
+
+def _model_fn(nodes, agg="sum", link="identity", features=("x",)):
     entry = {
         "nodes": pa.Table.from_pylist(nodes, schema=NODE_SCHEMA),
         "models": pa.Table.from_pylist(
-            [{"model_id": 0, "base": 0.0, "agg": "sum", "link": "identity"}],
+            [{"model_id": 0, "base": 0.0, "agg": agg, "link": link}],
             schema=MODEL_SCHEMA,
         ),
-        "features": ["x"],
+        "features": list(features),
     }
-    Row = create_model("Row", id=(int, ...), x=(float, ...))
-    with pytest.raises(ValueError, match="two parents|reachable|not a tree"):
-        DuckDBInferFn(
-            "SELECT tree_predict('m', id, struct_pack(x := x)) AS p FROM __THIS__",
-            row_tables={"__THIS__": Row},
-            static_tables={},
-            models={"m": entry},
-        )
+    return DuckDBInferFn(
+        "SELECT tree_predict('m', id, struct_pack(x := x)) AS p FROM __THIS__",
+        row_tables={"__THIS__": ModelRow},
+        static_tables={},
+        output="dict",
+        models={"m": entry},
+    )
+
+
+# ADJUDICATED 2026-08-08 (TASK-76): the finding was against the SPEC, not the
+# code. A node with two parents is not a cycle. Children are already forced to
+# strictly follow their parent, which rules out cycles by construction and is
+# what makes traversal terminate without a depth counter; a shared child under
+# that rule is a decision DAG, the walk from the root still takes exactly one
+# path, and the answer is the one the table names. Nothing produces a wrong
+# number, and no library we target emits such a table.
+#
+# The spec's refusal list said "a cycle: a node reachable from two parents, or
+# unreachable from its tree's root", conflating three different properties.
+# Corrected in place; `unreachable` really is checked, and is below.
+
+
+def test_a_shared_child_is_accepted_and_scores_its_one_path():
+    """Not a refusal, a documented acceptance — so nobody re-derives it."""
+    fn = _model_fn(
+        [
+            _node(0, 0, 0.5, 1, 2),
+            _node(1, 0, 0.25, 3, 4),
+            _node(2, 0, 0.75, 3, 5),  # <- node 3 has two parents
+            _node(3, -1, 0.0, -1, -1, value=10.0),
+            _node(4, -1, 0.0, -1, -1, value=20.0),
+            _node(5, -1, 0.0, -1, -1, value=30.0),
+        ]
+    )
+    rows = [ModelRow(id=0, x=v) for v in (0.1, 0.4, 0.6, 0.9)]
+    # x<=.25 -> 3; .25<x<=.5 -> 4; .5<x<=.75 -> 3 again; else 5
+    assert [r["p"] for r in fn.infer({"__THIS__": rows})] == [10.0, 20.0, 10.0, 30.0]
+
+
+# TASK-76 AC #4: every OTHER refusal the spec claims, checked by construction
+# rather than assumed. All nine hold.
+@pytest.mark.parametrize(
+    ("what", "nodes", "kw", "match"),
+    [
+        (
+            "child index out of range",
+            [_node(0, 0, 0.5, 1, 9), _node(1, -1, 0.0, -1, -1, value=1.0)],
+            {},
+            "child 9 out of range",
+        ),
+        (
+            "child precedes its parent (how a cycle would have to be spelled)",
+            [
+                _node(0, 0, 0.5, 1, 2),
+                _node(1, 0, 0.5, 0, 2),
+                _node(2, -1, 0.0, -1, -1, value=1.0),
+            ],
+            {},
+            "must follow its parent",
+        ),
+        (
+            "node unreachable from its tree's root",
+            [
+                _node(0, 0, 0.5, 1, 2),
+                _node(1, -1, 0.0, -1, -1, value=1.0),
+                _node(2, -1, 0.0, -1, -1, value=2.0),
+                _node(3, -1, 0.0, -1, -1, value=3.0),
+            ],
+            {},
+            "unreachable from its tree's root",
+        ),
+        (
+            "leaf with children",
+            [_node(0, -1, 0.0, 1, 1), _node(1, -1, 0.0, -1, -1)],
+            {},
+            "leaf .* with children",
+        ),
+        (
+            "split node missing a child",
+            [_node(0, 0, 0.5, 1, -1), _node(1, -1, 0.0, -1, -1, value=1.0)],
+            {},
+            "split node missing a child",
+        ),
+        (
+            "feature beyond the declared width",
+            [
+                _node(0, 5, 0.5, 1, 2),
+                _node(1, -1, 0.0, -1, -1),
+                _node(2, -1, 0.0, -1, -1),
+            ],
+            {},
+            "beyond the declared width",
+        ),
+        (
+            "node id out of dense order",
+            [
+                _node(0, 0, 0.5, 1, 2),
+                _node(7, -1, 0.0, -1, -1),
+                _node(2, -1, 0.0, -1, -1),
+            ],
+            {},
+            "out of dense order",
+        ),
+        (
+            "unknown agg",
+            [_node(0, -1, 0.0, -1, -1, value=1.0)],
+            {"agg": "median"},
+            "unknown agg",
+        ),
+        (
+            "unknown link",
+            [_node(0, -1, 0.0, -1, -1, value=1.0)],
+            {"link": "probit"},
+            "unknown link",
+        ),
+    ],
+)
+def test_every_claimed_model_table_refusal_holds(what, nodes, kw, match):
+    with pytest.raises(ValueError, match=match):
+        _model_fn(nodes, **kw)
