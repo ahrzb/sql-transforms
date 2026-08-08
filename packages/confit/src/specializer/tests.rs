@@ -1013,6 +1013,84 @@ fn prep_udfs(
     super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs, &[])
 }
 
+// ------------------------------------------------- the builtin guard --
+
+/// `BUILTIN_NAMES` is hand-written beside a 90-name `match`, which is exactly
+/// the shape that rots. So derive the truth from the match itself: every
+/// string literal in an arm HEAD of `Binder::function`'s dispatch must be in
+/// the list. Add a builtin without listing it and this fails, rather than
+/// quietly re-opening the shadowing hole the list exists to close.
+#[test]
+fn builtin_names_match_the_catalogue() {
+    let src = include_str!("frontend.rs");
+    let lines: Vec<&str> = src.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim() == "match name.as_str() {")
+        .expect("the builtin dispatch");
+    // Arm heads sit at exactly 12 spaces inside this match; a head may wrap
+    // onto continuation lines at 16, and the match ends at the first `}` in
+    // column 8.
+    let mut derived: Vec<String> = Vec::new();
+    let mut head = String::new();
+    for l in &lines[start + 1..] {
+        if l.starts_with("        }") {
+            break;
+        }
+        if l.trim().is_empty() {
+            continue;
+        }
+        let indent = l.len() - l.trim_start().len();
+        if indent == 12 {
+            head = (*l).to_string();
+        } else if indent == 16 && !head.is_empty() && !head.contains("=>") {
+            head.push_str(l.trim());
+        } else {
+            continue;
+        }
+        let upto = head.split("=>").next().unwrap_or("");
+        let mut rest = upto;
+        while let Some(open) = rest.find('"') {
+            rest = &rest[open + 1..];
+            let Some(close) = rest.find('"') else { break };
+            let lit = &rest[..close];
+            rest = &rest[close + 1..];
+            if !lit.is_empty()
+                && lit
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !derived.iter().any(|d| d == lit)
+            {
+                derived.push(lit.to_string());
+            }
+        }
+    }
+    assert!(
+        derived.len() > 80,
+        "the scan found only {} names — it stopped matching the file's shape, \
+         so it is no longer guarding anything",
+        derived.len()
+    );
+    let missing: Vec<&String> = derived
+        .iter()
+        .filter(|d| !super::frontend::BUILTIN_NAMES.contains(&d.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "builtin(s) dispatched by `function()` but absent from BUILTIN_NAMES, \
+         so a udf could take the name and be silently shadowed: {missing:?}"
+    );
+    let stale: Vec<&&str> = super::frontend::BUILTIN_NAMES
+        .iter()
+        .filter(|b| !derived.iter().any(|d| d == *b))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "BUILTIN_NAMES claims name(s) `function()` no longer dispatches, so a \
+         legal udf name is being refused: {stale:?}"
+    );
+}
+
 // -------------------------------------------------- tree transforms --
 
 fn model(name: &str, n_features: usize) -> super::plan::ModelTable {

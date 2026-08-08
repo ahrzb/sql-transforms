@@ -294,6 +294,10 @@ Each names the offending row or field, before any data flows:
 - a call passing the wrong number of arguments, or a non-numeric one;
 - two declared UDFs whose names collide case-insensitively, whichever kinds
   they are;
+- a declared UDF whose name is a builtin (`least`, `round`, `upper`, …): the
+  binder matches the builtin catalogue before it consults the declared UDFs,
+  while DuckDB lets a registered function shadow its own builtin, so the two
+  engines would answer the same SQL differently;
 - a `tree_tables()` that raises or does not return
   `(nodes, models, compare_grid)`.
 
