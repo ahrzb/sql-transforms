@@ -521,6 +521,13 @@ def test_a_genuinely_trapping_one_sided_on_residual_is_still_refused(residual):
 #
 # "Can this trap" is `plan::may_trap`, the same predicate the JOIN ON residual
 # rule uses (TASK-74). One definition, so the two cannot drift apart.
+#
+# The branch carries a flag param only when the result is NULLABLE, exactly as
+# `FB::case` does. That is not bookkeeping: the null-lane discipline says a
+# non-nullable SExpr lowers to a bare payload with no flag anywhere, and
+# `emit_stores` asserts it. A first cut of this fix always carried one, which
+# passed the entire suite in RELEASE — `debug_assert!` compiles out — and
+# panicked on `BETWEEN` in debug. Run the suite against a debug build too.
 
 
 @pytest.mark.parametrize(

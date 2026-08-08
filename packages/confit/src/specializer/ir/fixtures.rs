@@ -138,21 +138,27 @@ entry:
 
 /// Per-group tree scoring: the group's model id comes from a params-map
 /// probe, the features come from nullable columns. Covers: model statics,
-/// predict, const.f64 nan, the NULL-to-NaN select.
+/// predict, const.f64 nan, the NULL-to-NaN select, itof.f32.
 ///
 /// Only the probe miss gates the output — a NULL *feature* is a value the
 /// model has a defined answer for (it takes the node's missing direction),
 /// while a missing *model* is not.
+///
+/// The second feature arrives as an INTEGER column, so it converts with
+/// `itof.f32` — one rounding, matching how sklearn narrows an integer
+/// feature array to float32 (TASK-77). This is the only place that opcode is
+/// produced, which is why it lives in this fixture and not the cast one.
 pub const TREE_SCORE: &str = r#"
 static @0: map(str) -> (i64)
 static @1: model<tree_ensemble(2)>
 
-fn score(in: batch{region: str, price: f64?, sqft: f64?}, out: batch{pred: f64?}) {
+fn score(in: batch{region: str, price: f64?, rooms: i64?}, out: batch{pred: f64?}) {
 entry:
   %region = load in.region
   %hit, %mid = probe @0, %region
   %pf, %pv = load.opt in.price
-  %sf, %sv = load.opt in.sqft
+  %sf, %si = load.opt in.rooms
+  %sv = itof.f32 %si
   %nan = const.f64 nan
   %f0 = select %pf, %pv, %nan
   %f1 = select %sf, %sv, %nan

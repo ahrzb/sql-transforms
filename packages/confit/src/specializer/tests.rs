@@ -1085,17 +1085,22 @@ fn tree_predict_resolves_struct_features_by_name() {
     assert_eq!(feature_position_of_itof(&text), 0, "sqft is declared first:\n{text}");
 }
 
-/// Which feature slot of the single `predict` carries the `itof` result.
-/// sqft is the only i64 feature, so the promotion identifies it positionally
+/// Which feature slot of the single `predict` carries the `itof.f32` result.
+/// sqft is the only i64 feature, so the conversion identifies it positionally
 /// without parsing the whole program.
+///
+/// It must be `itof.f32`, not a plain `itof`: a tree feature rounds through
+/// f32 ONCE, the way sklearn narrows an integer feature array (TASK-77). A
+/// plain `itof` here would be the two-rounding bug back again, so this
+/// helper deliberately does not accept one.
 fn feature_position_of_itof(text: &str) -> usize {
     let itof = text
         .lines()
         .find_map(|l| {
             let (dst, rest) = l.trim().split_once(" = ")?;
-            rest.starts_with("itof ").then(|| dst.trim().to_string())
+            rest.starts_with("itof.f32 ").then(|| dst.trim().to_string())
         })
-        .expect("an itof promoting the i64 feature");
+        .expect("an itof.f32 converting the i64 feature");
     let line = text
         .lines()
         .find(|l| l.contains("predict @1,"))

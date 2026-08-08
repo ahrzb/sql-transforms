@@ -95,3 +95,23 @@ were about.
 - Letting a NULL left decide (dropping the flag guard on `decides`) turns
   `NULL AND TRUE` into FALSE and fails the three-valued-logic test — so AC #3
   is guarded on the new path specifically, not only on the old one.
+
+### A bug this fix introduced, and what caught it
+
+The first cut of `kleene_shortcut` always carried a flag param with the
+result. That passed the whole suite in RELEASE and panicked in DEBUG on
+`BETWEEN int x double` and `IN` with NaN:
+
+```text
+lower.rs:198: non-nullable column with a flag lane
+```
+
+The null-lane discipline says an SExpr with `nullable == false` lowers to a
+bare payload register with no flag anywhere, and `emit_stores` asserts it —
+with `debug_assert!`, which release compiles out. So a release-only test cycle
+could not see it. The branch now carries a flag param only when the result is
+nullable, exactly as `FB::case` decides from its own `res_nullable`.
+
+**Run the Python suite against a debug build as well as a release one.** The
+invariants that hold this lowering together are debug assertions; a green
+release bar says nothing about them.

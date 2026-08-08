@@ -70,6 +70,7 @@ fn fixtures_cover_every_opcode() {
         "itof",
         "ftoi.trunc",
         "ftoi.nearest",
+        "itof.f32",
         "itos",
         "ftos",
         "stoi.opt",

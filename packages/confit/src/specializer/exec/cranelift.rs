@@ -1596,8 +1596,15 @@ fn translate_inst(
             };
             vals.insert(dst.0, v);
         }
-        Inst::Itof { dst, a } => {
-            let v = b.ins().fcvt_from_sint(types::F64, vals[&a.0].s());
+        Inst::Itof { narrow, dst, a } => {
+            // Mirrors interp: narrow converts straight to F32 — one rounding
+            // — and widens back exactly, rather than rounding twice.
+            let v = if *narrow {
+                let f = b.ins().fcvt_from_sint(types::F32, vals[&a.0].s());
+                b.ins().fpromote(types::F64, f)
+            } else {
+                b.ins().fcvt_from_sint(types::F64, vals[&a.0].s())
+            };
             vals.insert(dst.0, V::S(v));
         }
         Inst::Ftoi { mode, dst, a } => {

@@ -136,8 +136,9 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         Inst::Select { cond, a, b, .. } => {
             let _ = write!(s, "select {}, {}, {}", val(*cond), val(*a), val(*b));
         }
-        Inst::Itof { a, .. } => {
-            let _ = write!(s, "itof {}", val(*a));
+        Inst::Itof { narrow, a, .. } => {
+            let n = if *narrow { ".f32" } else { "" };
+            let _ = write!(s, "itof{n} {}", val(*a));
         }
         Inst::Ftoi { mode, a, .. } => {
             let m = match mode {

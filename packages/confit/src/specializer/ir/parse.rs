@@ -1137,10 +1137,14 @@ impl Parser {
                     b,
                 }
             }
-            "itof" => {
+            "itof" | "itof.f32" => {
                 want_dsts(1, self)?;
                 let a = self.use_value()?;
-                Inst::Itof { dst: def!(0), a }
+                Inst::Itof {
+                    narrow: opcode.ends_with("f32"),
+                    dst: def!(0),
+                    a,
+                }
             }
             "ftoi.trunc" | "ftoi.nearest" => {
                 want_dsts(1, self)?;
