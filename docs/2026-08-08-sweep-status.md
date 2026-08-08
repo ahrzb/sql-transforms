@@ -1,104 +1,111 @@
-# Adversarial sweep 2026-08-08 — status and handoff
+# Adversarial sweep 2026-08-08 — closed
 
-Where the nine confirmed findings stand, what is fixed, and what the next
-person needs to know that is not obvious from the tickets.
+All nine confirmed findings are resolved. TASK-69 through TASK-78 are `Done`.
+This is the account of what each turned out to be, kept because several of the
+conclusions are not what the tickets predicted.
 
-Everything here is pinned by a test. The tickets are `backlog/tasks/task-69`
-through `task-78`; the pins are `packages/confit/tests/test_known_divergences.py`
-(module docstring carries the sweep's provenance) and two in
-`packages/sql-transform/sql_transform/_trees_test.py`.
+The pins live in `packages/confit/tests/test_known_divergences.py` (whose
+module docstring carries the sweep's provenance) and
+`packages/sql-transform/sql_transform/_trees_test.py`. As each finding was
+fixed its `xfail` marker came off and the section above it became the account
+of the fix, so those files read as history rather than as a list of
+complaints.
 
-## Done
+## What each one was
 
-| ticket | what it was | resolution |
-|---|---|---|
-| **TASK-69** | `QUALIFY`, `FETCH FIRST`, `SELECT TOP` parsed and silently dropped — every row emitted, and `shape='map'` still certified it | refuse, as a **class** |
-| **TASK-73** | a CFG split inside a join's own ON residual recursed until the process died (`0xC00000FD`) | re-seed the scalar probe cache per block + re-entry guard |
+| ticket | resolution |
+|---|---|
+| **69** | `QUALIFY` / `FETCH FIRST` / `SELECT TOP` parsed and silently dropped — refused, as a **class** |
+| **70** | `CAST(DOUBLE AS BIGINT)` rounded half away from zero; DuckDB rounds half to even |
+| **71** | `infer_arrow` ignored a supplied `output_model` — now refuses by name |
+| **72** | `infer_arrow` emitted `large_string` where DuckDB emits `string` |
+| **73** | a CFG split inside a join's own ON residual recursed until the process died |
+| **74** | a trap-free `CASE` in a one-sided ON residual was refused for trapping ops it did not contain |
+| **75** | `WHERE`'s AND/OR was branchless, so a guarded trapping expression still trapped |
+| **76** | **not a code bug** — the SPEC overstated the refusal list; spec corrected |
+| **77** | an integer feature above `2**53` double-rounded against sklearn |
+| **78** | `pack_trees` ignored `feature_names_in_`, binding the wrong columns |
 
-TASK-69's fix is worth understanding before touching the frontend:
-`refuse_unhandled_query` and `refuse_unhandled_select` destructure their
-sqlparser AST node **exhaustively, with no `..` pattern**, so a clause added to
-sqlparser breaks the build rather than the answers. It caught `Select::flavor`
-during implementation, which a by-hand audit of the same field list had missed.
-Do not add `..` to those patterns to silence a future compile error — that
-reintroduces the entire bug class.
+## The four things worth carrying forward
 
-TASK-73 also **corrected TASK-68's resolution note**, which claimed the
-scalar-join cache hole was harmless. It was asserted without testing and was
-wrong.
+**Fix the class, not the instance.** TASK-69's `refuse_unhandled_query` and
+`refuse_unhandled_select` destructure their sqlparser AST node exhaustively,
+with **no `..` pattern**, so a clause added to sqlparser breaks the build
+rather than the answers. It caught `Select::flavor` during implementation,
+which a by-hand audit of the same field list had missed. Do not add `..` to
+those patterns to silence a future compile error — that reintroduces the whole
+bug class.
 
-## Open, in the order I would take them
+**One definition, or they drift.** TASK-74 and TASK-75 both needed "can this
+expression trap". It is `plan::may_trap`, called from `bind_residual` and from
+`FB::kleene`. `scan_residual` no longer answers that question at all; it keeps
+only the scope questions that are genuinely its own.
 
-### TASK-75 — WHERE's AND/OR is branchless (crash)
+**Measure a DOUBLE cast with a DOUBLE.** Two existing Rust pins asserted the
+wrong rounding for `CAST(DOUBLE AS BIGINT)`, and both were written from a
+DuckDB query on a bare `-2.5` literal — which DuckDB types `DECIMAL(2,1)`.
+They measured the decimal cast and pinned its answer onto the double one.
+Three roundings are reachable from this SQL and only one is the cast:
 
-`WHERE k = 0 AND <trapping expr>` evaluates the right side on every row even
-though the guard excludes all of them; DuckDB short-circuits and returns `[]`.
-`fn kleene` emits both operands unconditionally, `fn case` right below it
-branches.
+```text
+CAST(DOUBLE AS BIGINT)   half to even        -2.5 -> -2
+CAST(DECIMAL AS BIGINT)  half away from zero -2.5 -> -3
+round(DOUBLE)            half away from zero -2.5 -> -3.0
+```
 
-The tension is real and this is not a one-liner: branchless flag algebra is
-what makes Kleene three-valued NULL semantics cheap and correct, and
-short-circuiting only matters when an operand can TRAP. The likely shape is to
-branch only when the right operand contains a trapping op — and the frontend
-already computes a `total`-style property for residuals, which **TASK-74 is
-about to touch**. Do those two together or they will fight.
+**Run the Python suite against a DEBUG build too.** The TASK-75 fix passed the
+entire suite in release and panicked in debug on `BETWEEN` and `IN`:
+`non-nullable column with a flag lane`. The invariants holding the lowering
+together are `debug_assert!`s, which release compiles out, so a green release
+bar says nothing about them. `uv run maturin develop` (no `--release`), run
+`pytest`, then put the release build back.
 
-### TASK-77 — integer feature above 2**53 (wrong answer)
+## Two of the sweep's conclusions were wrong, in opposite directions
 
-A real gap in TASK-65. `tree_predict` binds an integer feature through
-`promote_f64`, so the f32-grid compare sees `float32(float64(n))` — two
-roundings — while sklearn narrows `int64 -> float32` in one.
+Both DISPUTED findings were adjudicated by hand before any code, and they went
+opposite ways — which is the argument for adjudicating rather than assuming.
 
-**The arithmetic, worked out, so nobody has to redo it:**
+**TASK-78 was real and not subtle.** A forest fitted on columns `['b','a']`
+and packed as `['a','b']` builds without complaint and scores `-2.72` where
+sklearn says `0.84`.
 
-- below `2**24`: f32 is exact, no divergence;
-- `2**24 .. 2**53`: `float64(n)` is exact, so `float32(float64(n)) ==
-  float32(n)` — the current code is already right here;
-- above `2**53`: `float64(n)` itself rounds, and the second rounding lands
-  elsewhere. Only this band is broken.
+**TASK-76 was a defect in the spec, not the code.** A node with two parents is
+not a cycle. Children are already forced to strictly follow their parent,
+which rules out cycles by construction and is what makes traversal terminate
+without a depth counter; under that rule a shared child is an ordinary
+decision DAG that yields exactly what the table names. The spec's bullet
+conflated three properties, and `unreachable` — one of them — really is
+checked. Every other refusal the spec claims is now exercised by construction
+rather than assumed; all nine hold.
 
-So the fix is to feed `float64(float32(n))` instead of `float64(n)`: widening
-f32->f64 is exact, so the kernel's narrowing becomes the identity and the
-compare is `float32(n) <= t`, which is sklearn's. It is provably a no-op below
-`2**53`, which is what makes it safe.
+## TASK-77's "design call" dissolved
 
-**The catch:** that needs an IR op that narrows through f32, and TASK-65's
-whole design point was "no float32 anywhere in the engine". Adding one is a
-real design decision (new opcode, both backends, verifier, text round-trip) —
-not a patch. The alternative, refusing integer features outright, would break
-the common small-integer case that is correct today. This needs a call, not a
-guess.
+The earlier handoff said TASK-77 needed a decision because the fix wants an IR
+op that narrows through float32, contradicting TASK-65's "no float32 anywhere
+in the engine". That premise is about the **type system** — the engine
+computes in exactly `i64` / `f64` / string / bool. `itof.f32` takes i64 and
+yields f64; no lane, column or static is ever f32, exactly as `ftoi.nearest`
+is a rounding mode and not an integer type. Nothing had to be traded.
 
-### TASK-74 — trap-free CASE in a one-sided ON residual (over-refusal)
+It is also provably a no-op below `2**53`, where `float64(n)` is exact — which
+is what made it a fix rather than a trade against the common small-integer
+case.
 
-`scan_residual` clears `total` for any `SKind::Case` without inspecting the
-arms, so a CASE whose every arm is an integer literal is refused naming a
-trapping op it does not contain. Loud, not wrong. Interacts with TASK-75 —
-both want "does this expression contain a trapping op".
+## Still open
 
-### TASK-70 / 71 / 72 — relayed, not personally reproduced
+**An integer-WIDTH divergence in `infer_arrow`'s output schema**, found while
+fixing TASK-72 by widening its scenario sweep from "the string column" to "the
+whole output schema". DuckDB types a bare integer literal `INTEGER`, so
+`CASE WHEN .. THEN 1 ELSE 0 END` comes back `int32` for it and `int64` for us;
+`pa.concat_tables` raises, exactly as it did for TASK-72. It hits the
+`titanic` serving scenario's `multi_cabin` column, so it is not hypothetical
+SQL.
 
-- **TASK-70** `CAST(DOUBLE AS BIGINT)` is half-away-from-zero, DuckDB is
-  half-to-even. Careful: the `round()` BUILTIN is *correctly* half-away-from-zero
-  and its wave-1 pin must not regress. Cranelift's `nearest` is already
-  half-to-even; the interpreter wants `f64::round_ties_even()`.
-- **TASK-71** `infer_arrow` never applies `output_model`. Note the ticket allows
-  refusing by name, which is much cheaper than pushing pydantic validation
-  through the columnar path and arguably more honest. The existing arrow
-  differential only ever builds fns *without* an `output_model` — fixing the
-  test shape matters as much as fixing the code.
-- **TASK-72** `arrow::emit` hard-codes `pa.large_string()` where DuckDB emits
-  `pa.string()`. Not cosmetic: `pa.concat_tables` against DuckDB output raises.
-  Changing it means 32-bit offsets, so it is not a one-line type swap.
-
-### TASK-76 / 78 — DISPUTED, adjudicate before writing code
-
-Both were split by the sweep's own verifiers. Reproduce or refute **in
-writing** first. TASK-76 (DAG-shaped node table not refused) may turn out to be
-a spec error rather than a code bug — in which case correct the spec. TASK-78
-(`pack_trees` ignores `feature_names_in_`) must stay conditional: the attribute
-only exists when the estimator was fitted on named data, and ndarray-fitted
-models must keep packing.
+Deliberately not folded into TASK-72 — different type, different cause. It is
+the arrow-visible face of the documented "narrow integer widths don't exist"
+limitation. Pinned xfail-strict, noted in `docs/known-limitations.md`, and it
+**needs a ticket**. The scenario sweep allows that one widening and nothing
+else, so it cannot quietly grow.
 
 ## Six findings were dropped over the verification cap
 
@@ -108,11 +115,10 @@ output if wanted; treat them as unproven.
 
 ## How to run things
 
-- `uv run pytest -q` from the repo root is the gate.
-- The venv holds a **release** build. Anything that depends on
-  `debug_assertions` (the alignment traps of TASK-67) needs
-  `uv run maturin develop` without `--release` first, and remember to put it back.
-- Two pins run in a subprocess on purpose: their failure mode is process death,
-  not an exception.
+- `uv run pytest -q` from the repo root is the gate: **879 passed, 3 xfailed**.
+- `cargo test --release` in `packages/confit`: **223 passed**.
+- Run the Python suite against both build profiles — see above.
+- Two pins run in a subprocess on purpose: their failure mode is process
+  death, not an exception.
 - Every scoring test must assert `fn.backend` — the cranelift compile error is
   discarded and the interpreter fallback is silent.
