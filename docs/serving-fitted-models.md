@@ -110,11 +110,28 @@ x = 0.15   ->  sklearn right, packed right   (raw f64 went left)
 ```
 
 So **the `threshold` column does not match `tree_.threshold`, deliberately**.
-Nothing else moves: no float32 appears anywhere in the engine, no cast lands
-on the row path, and a float64-trained library's packer would simply skip this
-step. The one threshold left untouched is `+inf`, which sklearn writes for
-"every non-missing value goes left" and which already admits every non-NaN
-double.
+The one threshold left untouched is `+inf`, which sklearn writes for "every
+non-missing value goes left" and which already admits every non-NaN double.
+A float64-trained library's packer would simply skip this step.
+
+### The rewrite is exact for a DOUBLE feature; an INTEGER one needs one more step
+
+The rewritten cutpoint answers `float32(x) <= t` for whatever double `x` it is
+handed. For a `DOUBLE` feature that is the whole story. For an **integer**
+feature it is not, because the value handed over is `float64(n)`, and above
+`2**53` that has already rounded once — so the comparison was
+`float32(float64(n))` where sklearn, which narrows an int64 array to float32
+in a single step, computes `float32(n)`. A whole float32 ULP apart.
+
+An integer feature therefore converts with the IR's `itof.f32` rather than the
+ordinary promotion: `n as f32 as f64`, one rounding. Below `2**53`,
+`float64(n)` is exact and the two are identical, so this is a no-op for every
+ordinary integer feature rather than a trade (TASK-77).
+
+That opcode adds no float32 TYPE — its lane is f64 out, the same way
+`ftoi.nearest` is a rounding mode and not an integer type. The engine still
+computes in exactly `i64` / `f64` / string / bool, and no cast lands on the
+row path.
 
 `test_threshold_rewrite_reproduces_the_f32_comparison` walks float64 ULPs
 across each rewritten boundary rather than sampling, because a rewrite that is

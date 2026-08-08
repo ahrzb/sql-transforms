@@ -1100,7 +1100,9 @@ fn tree_score_fixture_pins_null_and_unseen_group_on_both_backends() {
                 Some("west"),
             ]),
             c_f64(&[Some(50.0), None, None, Some(50.0)]),
-            c_f64(&[Some(1.0), Some(1.0), Some(1.0), Some(1.0)]),
+            // `rooms` is an INTEGER feature: it reaches predict through
+            // itof.f32, one rounding, matching sklearn (TASK-77).
+            c_i64(&[Some(1), Some(1), Some(1), Some(1)]),
         ],
     );
     let want = rows(&[

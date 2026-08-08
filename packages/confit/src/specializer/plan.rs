@@ -170,6 +170,13 @@ pub enum SKind {
     },
     /// i64 -> f64 promotion node, inserted by the frontend.
     IntToFloat(Box<SExpr>),
+    /// i64 -> f64 VIA f32 — `n as f32 as f64`, one rounding, not two.
+    /// Only ever wraps a `tree_predict` feature: sklearn narrows an integer
+    /// feature array to float32 in a single step, and above 2**53 that is a
+    /// different number from `float32(float64(n))` (TASK-77). Below 2**53
+    /// it is identical to [`SKind::IntToFloat`], which is what makes it safe
+    /// to apply unconditionally.
+    IntToFloat32(Box<SExpr>),
     /// 3VL NOT: value negates, NULL stays NULL.
     Not(Box<SExpr>),
     /// Kleene AND/OR over i1 operands.
@@ -385,7 +392,10 @@ pub fn may_trap(e: &SExpr) -> bool {
         SKind::Cmp { a, b, .. } | SKind::And { a, b } | SKind::Or { a, b } => {
             may_trap(a) || may_trap(b)
         }
-        SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => may_trap(a),
+        SKind::Not(a)
+        | SKind::IsNull { inner: a, .. }
+        | SKind::IntToFloat(a)
+        | SKind::IntToFloat32(a) => may_trap(a),
         SKind::Case { arms, default } => {
             arms.iter().any(|(c, r)| may_trap(c) || may_trap(r))
                 || default.as_deref().is_some_and(may_trap)

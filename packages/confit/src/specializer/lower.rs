@@ -581,10 +581,15 @@ impl<'a> FB<'a> {
                     val,
                 })
             }
-            SKind::IntToFloat(inner) => {
+            SKind::IntToFloat(inner) | SKind::IntToFloat32(inner) => {
+                let narrow = matches!(e.kind, SKind::IntToFloat32(_));
                 let l = self.emit(inner, live)?;
                 let dst = self.fresh();
-                self.inst(Inst::Itof { dst, a: l.val });
+                self.inst(Inst::Itof {
+                    narrow,
+                    dst,
+                    a: l.val,
+                });
                 Ok(Lane {
                     flag: l.flag,
                     val: dst,
@@ -658,8 +663,8 @@ impl<'a> FB<'a> {
                 let val = self.not(l.val);
                 Ok(Lane { flag: l.flag, val })
             }
-            SKind::And { a, b } => self.kleene(a, b, live, true),
-            SKind::Or { a, b } => self.kleene(a, b, live, false),
+            SKind::And { a, b } => self.kleene(a, b, live, true, e.nullable),
+            SKind::Or { a, b } => self.kleene(a, b, live, false, e.nullable),
             SKind::IsNull { negated, inner } => {
                 let l = self.emit(inner, live)?;
                 let val = match l.flag {
@@ -1809,10 +1814,11 @@ impl<'a> FB<'a> {
         b: &SExpr,
         live: &mut Live,
         is_and: bool,
+        res_nullable: bool,
     ) -> Result<Lane, PrepareError> {
         let la = self.emit(a, live)?;
         if may_trap(b) {
-            return self.kleene_shortcut(la, b, live, is_and);
+            return self.kleene_shortcut(la, b, live, is_and, res_nullable);
         }
         live.push((la, Ty::I1));
         let lb = self.emit(b, live)?;
@@ -1860,12 +1866,18 @@ impl<'a> FB<'a> {
     /// The left lane rides the branch as a live entry: it is computed in the
     /// predecessor block and read again in the arm that needs it, since
     /// values never cross blocks except as branch args.
+    ///
+    /// `res_nullable` decides whether a flag param rides with the result, the
+    /// same way [`FB::case`] uses its own. It is NOT optional bookkeeping:
+    /// the null-lane discipline says a non-nullable SExpr lowers to a bare
+    /// payload with no flag anywhere, and `emit_stores` asserts it.
     fn kleene_shortcut(
         &mut self,
         la: Lane,
         b: &SExpr,
         live: &mut Live,
         is_and: bool,
+        res_nullable: bool,
     ) -> Result<Lane, PrepareError> {
         let decides = {
             let d = if is_and { self.not(la.val) } else { la.val };
@@ -1878,7 +1890,9 @@ impl<'a> FB<'a> {
         live.push((la, Ty::I1));
         let live_width = Self::live_types(live).len();
         let mut join_tys = Self::live_types(live);
-        join_tys.push(Ty::I1); // flag
+        if res_nullable {
+            join_tys.push(Ty::I1); // flag
+        }
         join_tys.push(Ty::I1); // value
         let (join, join_p) = self.create_block(&join_tys);
         let shape = Self::live_types(live);
@@ -1897,10 +1911,12 @@ impl<'a> FB<'a> {
         // definite either way — never NULL.
         self.switch(short_b);
         self.enter_block(live, &short_p);
-        let flag = self.const_i1(true);
         let val = self.const_i1(!is_and);
         let mut args = Self::live_args(live);
-        args.push(flag);
+        if res_nullable {
+            let flag = self.const_i1(true);
+            args.push(flag);
+        }
         args.push(val);
         self.term(Term::Jump {
             to: BlockId(join as u32),
@@ -1913,12 +1929,14 @@ impl<'a> FB<'a> {
         let lb = self.emit(b, live)?;
         let (la, _) = *live.last().expect("pushed above");
         let res = self.kleene_combine(la, lb, is_and);
-        let flag = match res.flag {
-            Some(f) => f,
-            None => self.const_i1(true),
-        };
         let mut args = Self::live_args(live);
-        args.push(flag);
+        if res_nullable {
+            let flag = match res.flag {
+                Some(f) => f,
+                None => self.const_i1(true),
+            };
+            args.push(flag);
+        }
         args.push(res.val);
         self.term(Term::Jump {
             to: BlockId(join as u32),
@@ -1928,9 +1946,17 @@ impl<'a> FB<'a> {
         self.switch(join);
         self.enter_block(live, &join_p[..live_width]);
         live.pop().expect("pushed above");
-        Ok(Lane {
-            flag: Some(join_p[live_width]),
-            val: join_p[live_width + 1],
+        let tail = &join_p[live_width..];
+        Ok(if res_nullable {
+            Lane {
+                flag: Some(tail[0]),
+                val: tail[1],
+            }
+        } else {
+            Lane {
+                flag: None,
+                val: tail[0],
+            }
         })
     }
 
@@ -2043,7 +2069,11 @@ impl<'a> FB<'a> {
             (a, b) if a == b => Some(l),
             (Ty::I64, Ty::F64) => {
                 let dst = self.fresh();
-                self.inst(Inst::Itof { dst, a: l.val });
+                self.inst(Inst::Itof {
+                    narrow: false,
+                    dst,
+                    a: l.val,
+                });
                 Some(Lane {
                     flag: l.flag,
                     val: dst,

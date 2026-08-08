@@ -353,7 +353,11 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
             4 => {
                 let a = ensure(rng, b, scope, insts, Ty::I64);
                 let dst = b.fresh();
-                insts.push(Inst::Itof { dst, a });
+                insts.push(Inst::Itof {
+                    narrow: rng.chance(50),
+                    dst,
+                    a,
+                });
                 scope.add(dst, Ty::F64);
             }
             5 => {

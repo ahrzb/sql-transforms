@@ -528,28 +528,59 @@ def test_empty_refuses():
 # packages/confit/tests/test_known_divergences.py; tickets are TASK-77/78.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-77: an INTEGER feature is bound through `promote_f64`, so the "
-    "value reaching the f32-grid compare is float32(float64(n)) — TWO "
-    "roundings. sklearn's _validate_X_predict narrows the int64 array to "
-    "float32 in ONE step. Above 2**53 those land a whole float32 ULP apart, so "
-    "TASK-65's rewrite (exact for DOUBLE features) does not hold for integer "
-    "ones. Reproduced by hand 2026-08-08.",
-)
-def test_integer_feature_above_2_53_matches_sklearn():
-    from pydantic import create_model as _cm
+# FIXED 2026-08-08 (TASK-77). An integer `tree_predict` feature no longer
+# binds through the ordinary `promote_f64`: it converts with `itof.f32`, which
+# rounds i64 -> f32 -> f64 in ONE rounding, exactly as sklearn's
+# `_validate_X_predict` narrows an integer feature array. `promote_f64` gave
+# `float32(float64(n))` — TWO roundings — which above 2**53 lands a whole
+# float32 ULP away.
+#
+# Safe to apply to EVERY integer feature rather than only large ones: below
+# 2**53, `float64(n)` is exact, so `float32(float64(n)) == float32(n)` and the
+# new node is a no-op. That is what made this a fix rather than a trade.
+#
+# The IR gains an opcode but no TYPE: `itof.f32` is f64-out, the same way
+# `ftoi.nearest` is a rounding mode and not an integer type. The engine still
+# computes in exactly i64 / f64 / str / bool.
 
-    A, ulp = 1 << 53, 1 << 30  # float32 spacing at 2**53
-    B, mid = A + ulp, A + (ulp >> 1)
-    n = mid + 1  # just above the float32 midpoint, below the float64 one
-    Xtr = np.array([[A]] * 10 + [[B]] * 10, dtype=np.int64)
-    est = DecisionTreeRegressor(random_state=0).fit(
-        Xtr, np.array([1.0] * 10 + [9.0] * 10)
+
+def _int_split_model(seed=0):
+    """A tree whose single split sits exactly on a float32 midpoint above
+    2**53 — the only place the two roundings disagree."""
+    a, ulp = 1 << 53, 1 << 30  # float32 spacing at 2**53
+    b, mid = a + ulp, a + (ulp >> 1)
+    x = np.array([[a]] * 10 + [[b]] * 10, dtype=np.int64)
+    est = DecisionTreeRegressor(random_state=seed).fit(
+        x, np.array([1.0] * 10 + [9.0] * 10)
     )
     assert est.tree_.threshold[0] == float(mid), (
         "the split must sit on the f32 midpoint"
     )
+    return est, mid
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
+    from pydantic import create_model as _cm
+
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+
+    est, mid = _int_split_model()
+    # Walk the float32 ULP around the midpoint: the value just above it is
+    # where float32(n) and float32(float64(n)) part company.
+    probes = [
+        mid - 1,
+        mid,
+        mid + 1,
+        (1 << 53) + (1 << 30),
+        1 << 53,
+        1 << 62,
+        0,
+        -(1 << 55),
+    ]
 
     row = _cm("IntRow", id=(int, ...), n=(int, ...))
     fn = DuckDBInferFn(
@@ -558,9 +589,56 @@ def test_integer_feature_above_2_53_matches_sklearn():
         static_tables={},
         models={"m": pack_trees([est], ["n"])},
     )
-    got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n)]})]
+    assert fn.backend == backend
+    got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n) for n in probes]})]
+    want = list(est.predict(np.array([[n] for n in probes], dtype=np.int64)))
+    assert got == want, f"engine {got} vs sklearn {want} (int64 features)"
+
+
+def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
+    """AC #2: `float64(n)` is exact below 2**53, so the narrowing must be a
+    no-op there — the overwhelmingly common case must not move."""
+    from pydantic import create_model as _cm
+
+    rng = np.random.RandomState(77)
+    x = rng.randint(-100_000, 100_000, size=(300, 2)).astype(np.int64)
+    y = (x[:, 0] * 0.5 - x[:, 1] * 0.25).astype(np.float64)
+    est = DecisionTreeRegressor(max_depth=8, random_state=77).fit(x, y)
+
+    row = _cm("SmallRow", id=(int, ...), a=(int, ...), b=(int, ...))
+    fn = DuckDBInferFn(
+        "SELECT tree_predict('m', id, struct_pack(a := a, b := b)) AS p FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+        models={"m": pack_trees([est], ["a", "b"])},
+    )
+    probe = rng.randint(-100_000, 100_000, size=(200, 2)).astype(np.int64)
+    got = [
+        r.p
+        for r in fn.infer(
+            {"__THIS__": [row(id=0, a=int(a), b=int(b)) for a, b in probe]}
+        )
+    ]
+    assert got == list(est.predict(probe))
+
+
+def test_integer_feature_literal_is_narrowed_too():
+    """The constant folder collapses an integer literal feature at build
+    time, so it has to fold through f32 as well or the fix has a hole."""
+    from pydantic import create_model as _cm
+
+    est, mid = _int_split_model()
+    n = mid + 1
+    row = _cm("LitRow", id=(int, ...))
+    fn = DuckDBInferFn(
+        f"SELECT tree_predict('m', id, struct_pack(n := {n})) AS p FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+        models={"m": pack_trees([est], ["n"])},
+    )
+    got = [r.p for r in fn.infer({"__THIS__": [row(id=0)]})]
     want = list(est.predict(np.array([[n]], dtype=np.int64)))
-    assert got == want, f"engine {got} vs sklearn {want} (int64 feature n={n})"
+    assert got == want, f"engine {got} vs sklearn {want} (literal feature)"
 
 
 # ADJUDICATED and CONFIRMED 2026-08-08 (TASK-78). The sweep's verifiers had

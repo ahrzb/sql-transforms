@@ -1903,10 +1903,14 @@ fn compile_inst(
                 Ok(())
             })
         }
-        Inst::Itof { dst, a } => {
+        Inst::Itof { narrow, dst, a } => {
             let (dst, a) = (sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
-                ctx.regs[dst] = RegVal::F64(as_i64(ctx.regs[a]) as f64);
+                let n = as_i64(ctx.regs[a]);
+                // `n as f32 as f64` is NOT `n as f64` above 2**53 — one
+                // rounding versus two. That is the point (TASK-77).
+                let v = if narrow { n as f32 as f64 } else { n as f64 };
+                ctx.regs[dst] = RegVal::F64(v);
                 Ok(())
             })
         }

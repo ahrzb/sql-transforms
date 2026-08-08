@@ -111,3 +111,20 @@ reproduces the original defect at 69/1500.
 Post-fix sweep: 4 families × 6 quantisation grids × both backends × 3000 rows
 = 144000 rows, 0 mismatches.
 <!-- SECTION:NOTES:END -->
+
+## Correction (2026-08-08): the exactness claim above was under-qualified
+
+The rewrite is exact for a **DOUBLE** feature — it answers `float32(x) <= t`
+for whatever double it is handed, and the ~4.8M-probe ULP walk stands.
+
+It was not exact for an **INTEGER** feature, and the note above did not say
+so. An i64 bound through `promote_f64` reaches the compare as `float64(n)`,
+which above `2**53` has already rounded, so the engine computed
+`float32(float64(n))` where sklearn computes `float32(n)` — a whole float32
+ULP apart. Found and fixed as TASK-77: integer features now convert with the
+new `itof.f32` opcode, one rounding, and the claim of exactness holds for
+both feature types.
+
+Asserted without testing is how this got written. It is the second of two
+such notes from this session that a later finding falsified — see TASK-68's
+note, which TASK-73 corrected.

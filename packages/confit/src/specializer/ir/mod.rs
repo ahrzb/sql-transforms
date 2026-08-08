@@ -607,7 +607,15 @@ pub enum Inst {
         a: Value,
         b: Value,
     },
+    /// i64 -> f64. `narrow` rounds through f32 on the way (`itof.f32`),
+    /// which is a DIFFERENT number above 2**53 — `n as f32 as f64`, not
+    /// `n as f64`. It exists because sklearn narrows an integer feature
+    /// array to float32 in ONE step, and reproducing that bit-for-bit is
+    /// the whole contract (TASK-77). Introduces no f32 TYPE: the lane is
+    /// f64 in and f64 out, the same way `ftoi.nearest` is a rounding mode
+    /// rather than an integer type.
     Itof {
+        narrow: bool,
         dst: Value,
         a: Value,
     },
@@ -1022,7 +1030,7 @@ impl Inst {
             }
             Inst::Itos { dst, a }
             | Inst::Ftos { dst, a }
-            | Inst::Itof { dst, a }
+            | Inst::Itof { dst, a, .. }
             | Inst::Ftoi { dst, a, .. }
             | Inst::Str1 { dst, a, .. }
             | Inst::SLen { dst, a, .. }

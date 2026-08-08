@@ -85,6 +85,17 @@ pub fn fold(e: SExpr) -> SExpr {
                 _ => e(SKind::IntToFloat(Box::new(inner))),
             }
         }
+        // Same shape, but the constant folds through f32 — otherwise a
+        // LITERAL feature would keep the double rounding this node exists
+        // to remove (TASK-77).
+        SKind::IntToFloat32(inner) => {
+            let inner = fold(*inner);
+            match as_const(&inner) {
+                Some(K::Val(Lit::I64(i))) => lit(Lit::F64(i as f32 as f64), ty),
+                Some(K::Null) => null(ty),
+                _ => e(SKind::IntToFloat32(Box::new(inner))),
+            }
+        }
         // Wave-1 math: fold children only — the ops themselves stay
         // runtime so constant domain errors trap per row exactly like the
         // vectorized path we pin against (no fold/vector divergence).

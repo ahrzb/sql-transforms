@@ -1176,7 +1176,10 @@ fn scan_residual(e: &SExpr, j: u32, right: &mut bool, left: &mut bool, known: &m
             scan_residual(a, j, right, left, known);
             scan_residual(b, j, right, left, known);
         }
-        SKind::Not(a) | SKind::IsNull { inner: a, .. } | SKind::IntToFloat(a) => {
+        SKind::Not(a)
+        | SKind::IsNull { inner: a, .. }
+        | SKind::IntToFloat(a)
+        | SKind::IntToFloat32(a) => {
             scan_residual(a, j, right, left, known);
         }
         SKind::Case { arms, default } => {
@@ -4047,7 +4050,17 @@ impl Binder<'_> {
                 None => null_of(Ty::F64),
                 Some(e) => match e.ty {
                     Ty::F64 => e,
-                    Ty::I64 => promote_f64(e),
+                    // NOT the ordinary promotion. sklearn's
+                    // `_validate_X_predict` narrows an integer feature array
+                    // to float32 in ONE step; `promote_f64` here would make
+                    // the value reaching the f32-grid compare
+                    // `float32(float64(n))`, two roundings, which above
+                    // 2**53 is a whole float32 ULP away from `float32(n)`.
+                    // Below 2**53 `float64(n)` is exact and the two are
+                    // identical, which is what makes this safe to apply to
+                    // every integer feature rather than only large ones
+                    // (TASK-77).
+                    Ty::I64 => narrow_f32(promote_f64(e)),
                     other => {
                         return Err(PrepareError::Bind(format!(
                             "tree_predict feature '{fname}' is {}, want a number",
@@ -5625,5 +5638,20 @@ fn promote_f64(e: SExpr) -> SExpr {
         kind: SKind::IntToFloat(Box::new(e)),
         ty: Ty::F64,
         nullable,
+    }
+}
+
+/// Turn a just-built `promote_f64` node into the f32-narrowing one, so an
+/// integer `tree_predict` feature rounds ONCE the way sklearn does
+/// (TASK-77). Anything else — an f64 expression, a typed NULL, a folded
+/// literal — is already on the grid or has no integer to narrow, and passes
+/// through untouched.
+fn narrow_f32(e: SExpr) -> SExpr {
+    match e.kind {
+        SKind::IntToFloat(inner) => SExpr {
+            kind: SKind::IntToFloat32(inner),
+            ..e
+        },
+        _ => e,
     }
 }
