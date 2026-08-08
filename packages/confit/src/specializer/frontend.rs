@@ -61,6 +61,48 @@ fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
+/// Every name the builtin catalogue in [`Binder::function`] claims.
+///
+/// A declared UDF may not take one of these. `function()` matches the
+/// catalogue on `name.as_str()` BEFORE it ever consults `find_tree` /
+/// `find_udf` (they live in the `_` arm), so the builtin would win here
+/// silently — while DuckDB, which lets a registered function shadow its own
+/// builtin, binds the UDF. Same SQL, two engines, different answers: the
+/// contract's forbidden third mode.
+///
+/// Refusing is the only resolution that is right at every arity. Matching
+/// DuckDB by resolving UDFs first would fix the common case and break
+/// another: DuckDB overload-resolves, so `least(a, b, c)` against a
+/// two-argument UDF falls back to its builtin, where a UDF-first binder
+/// refuses on arity. One divergence traded for another.
+///
+/// `builtin_names_match_the_catalogue` re-derives this list from the match
+/// itself, so a new arm cannot silently escape the guard.
+pub const BUILTIN_NAMES: &[&str] = &[
+    "abs", "add", "any_value", "array_extract", "array_slice", "ascii", "avg",
+    "bit_length", "cbrt", "ceil", "ceiling", "char_length", "character_length",
+    "coalesce", "concat", "concat_ws", "contains", "cos", "count",
+    "damerau_levenshtein", "divide", "editdist3", "ends_with", "exp", "fdiv",
+    "first", "floor", "fmod", "geomean", "greatest", "hamming", "instr",
+    "jaccard", "last", "lcase", "least", "len", "length", "levenshtein",
+    "list_extract", "list_slice", "ln", "log", "log10", "log2", "lower",
+    "lpad", "ltrim", "max", "min", "mismatches", "mod", "multiply",
+    "nextafter", "nullif", "ord", "pi", "position", "pow", "power", "prefix",
+    "product", "regexp_extract", "regexp_extract_all", "regexp_full_match",
+    "regexp_matches", "regexp_replace", "regexp_split_to_array", "repeat",
+    "replace", "reverse", "round", "rpad", "rtrim", "sin", "sqrt",
+    "starts_with", "string_agg", "strip_accents", "strlen", "strpos",
+    "struct_extract", "subtract", "suffix", "sum", "tan", "translate",
+    "trunc", "ucase", "unicode", "upper", "xor",
+];
+
+/// Whether a call-site name is claimed by the builtin catalogue. Matching is
+/// ASCII-case-insensitive, like `function()`'s own lowercasing of the name.
+pub fn is_builtin(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    BUILTIN_NAMES.contains(&lower.as_str())
+}
+
 /// Refuse every `Query` clause this engine does not implement.
 ///
 /// Destructured EXHAUSTIVELY on purpose — no `..` pattern. When sqlparser

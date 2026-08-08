@@ -53,6 +53,12 @@ class DuckDBInferFn:
         implicit leading argument is a nullable BIGINT instance id (never
         written in `takes`).
 
+        A udf name may not be a builtin (`least`, `round`, `upper`, …) and may
+        not collide case-insensitively with another declared udf. The builtin
+        catalogue is matched before the declared udfs, while DuckDB lets a
+        registered function shadow its own builtin — so a collision is refused
+        rather than resolved, in either direction.
+
         An object that also exposes `tree_tables() -> (nodes, models,
         compare_grid)` is a fitted tree ensemble, scored by the native kernel
         instead of a callback — no Python on the row path, and no `__call__`

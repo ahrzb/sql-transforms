@@ -282,6 +282,17 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
                 "duplicate udf name '{other}' and '{name}'"
             )));
         }
+        // A third namespace, and the binder consults it FIRST: a UDF named
+        // after a builtin would be shadowed here while DuckDB binds the UDF.
+        // See `frontend::BUILTIN_NAMES` for why this refuses rather than
+        // letting either side win.
+        if super::specializer::frontend::is_builtin(&name) {
+            return Err(build_err(format!(
+                "udf '{name}' collides with the builtin function '{name}' — \
+                 rename it. The builtin binds first here, while DuckDB binds \
+                 the udf, so the two engines would answer differently."
+            )));
+        }
         names.push(name.clone());
         let (_take_names, take_tys) = parse_takes(&name, &b.getattr("takes").map_err(|_| {
             build_err(format!("udf '{name}': `takes` must be a pyarrow Schema"))

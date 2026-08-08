@@ -18,6 +18,37 @@ from confit import DuckDBInferFn
 from test_duckdb_interpreter import _row_model, static
 
 
+@pytest.mark.parametrize("name", ["least", "upper", "ROUND", "Coalesce", "abs"])
+def test_a_udf_may_not_take_a_builtin_name(name):
+    """`function()` matches the builtin catalogue before it ever consults the
+    declared UDFs, so a UDF named after a builtin would be silently shadowed —
+    while DuckDB, which lets a registered function shadow its own builtin,
+    binds the UDF. Two engines, one SQL, different answers: refuse instead.
+
+    Matching DuckDB by letting the UDF win is not the fix — DuckDB
+    overload-resolves by arity and we do not, so `least(a, b, c)` against a
+    two-argument UDF would fall back to its builtin and diverge the other way.
+    """
+
+    class Collide:
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.float64()
+
+        def __call__(self, x):
+            return (111.0,)
+
+    u = Collide()
+    u.name = name
+    model = _row_model({"x": "float"})
+    with pytest.raises(Exception, match=f"'{name}'.*builtin"):
+        DuckDBInferFn(
+            f"SELECT {name}(x) AS p FROM __THIS__",
+            row_tables={"__THIS__": model},
+            static_tables={},
+            udfs=[u],
+        )
+
+
 def test_the_schema_is_arrow():
     """`takes` is a `pa.Schema` and `returns` is the SQL return TYPE — one
     declaration each, names included. The three return shapes are three arrow
