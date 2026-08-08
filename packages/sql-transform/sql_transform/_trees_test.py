@@ -519,3 +519,64 @@ def test_feature_count_mismatch_refuses():
 def test_empty_refuses():
     with pytest.raises(TreePackError, match="no estimators"):
         pack_trees([], FEATURES)
+
+
+# ------------------------- known divergences, 2026-08-08 adversarial sweep --
+#
+# Both pinned xfail-strict: they fail today and cannot silently start passing.
+# Full context and the confit-side pins are in
+# packages/confit/tests/test_known_divergences.py; tickets are TASK-77/78.
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-77: an INTEGER feature is bound through `promote_f64`, so the "
+    "value reaching the f32-grid compare is float32(float64(n)) — TWO "
+    "roundings. sklearn's _validate_X_predict narrows the int64 array to "
+    "float32 in ONE step. Above 2**53 those land a whole float32 ULP apart, so "
+    "TASK-65's rewrite (exact for DOUBLE features) does not hold for integer "
+    "ones. Reproduced by hand 2026-08-08.",
+)
+def test_integer_feature_above_2_53_matches_sklearn():
+    from pydantic import create_model as _cm
+
+    A, ulp = 1 << 53, 1 << 30  # float32 spacing at 2**53
+    B, mid = A + ulp, A + (ulp >> 1)
+    n = mid + 1  # just above the float32 midpoint, below the float64 one
+    Xtr = np.array([[A]] * 10 + [[B]] * 10, dtype=np.int64)
+    est = DecisionTreeRegressor(random_state=0).fit(
+        Xtr, np.array([1.0] * 10 + [9.0] * 10)
+    )
+    assert est.tree_.threshold[0] == float(mid), (
+        "the split must sit on the f32 midpoint"
+    )
+
+    row = _cm("IntRow", id=(int, ...), n=(int, ...))
+    fn = DuckDBInferFn(
+        "SELECT tree_predict('m', id, struct_pack(n := n)) AS p FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+        models={"m": pack_trees([est], ["n"])},
+    )
+    got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n)]})]
+    want = list(est.predict(np.array([[n]], dtype=np.int64)))
+    assert got == want, f"engine {got} vs sklearn {want} (int64 feature n={n})"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-78 (DISPUTED by the sweep's own verifiers, not adjudicated by "
+    "hand): pack_trees checks n_features_in_ but never feature_names_in_, so a "
+    "regressor fitted on a DataFrame binds by POSITION against whatever names "
+    "the caller passes. Same count, permuted names, silently wrong columns.",
+)
+def test_dataframe_fitted_model_refuses_mismatched_feature_names():
+    pd = pytest.importorskip("pandas")
+
+    rng = np.random.RandomState(90)
+    df = pd.DataFrame(rng.rand(80, 2) * 4 - 2, columns=["b", "a"])
+    est = DecisionTreeRegressor(max_depth=4, random_state=90).fit(df, df["b"] * 3)
+    assert list(est.feature_names_in_) == ["b", "a"]
+    # the packer is handed the names in the OTHER order; the count still matches
+    with pytest.raises(TreePackError, match="feature_names_in_|name|order"):
+        pack_trees([est], ["a", "b"])
