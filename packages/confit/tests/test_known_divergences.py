@@ -663,8 +663,8 @@ class _TreeUDF:
 
     def __init__(self, nodes, headers, n_features):
         self.name = "m"
-        self.takes = ("f64",) * n_features
-        self.returns = ("f64",)
+        self.takes = pa.schema([(f"f{i}", pa.float64()) for i in range(n_features)])
+        self.returns = pa.float64()
         self.instances = {0: None}
         self._t = (nodes, headers, "float32")
 

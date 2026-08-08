@@ -35,7 +35,7 @@ import numpy as np
 import pyarrow as pa
 from sklearn.base import is_regressor
 
-from sql_transform._udf import UDF, UDFError, _check_types
+from sql_transform._udf import UDF, UDFError
 
 __all__ = ["TreeBasedTransform", "TreePackError"]
 
@@ -135,13 +135,14 @@ def _stages(est: Any) -> tuple[list[Any], float, str, float]:
 
 
 def _pack(
-    estimators: Sequence[Any], n_features: int, names: Sequence[str] | None
+    estimators: Sequence[Any], n_features: int, names: Sequence[str]
 ) -> tuple[pa.Table, pa.Table]:
     """Fitted regressors in, the engine's two Arrow tables out.
 
     Model ids are dense and follow the sequence order, so the params table's
-    instance-id column indexes straight into it. `names`, when the caller
-    declared them, is checked against what each estimator was fitted on.
+    instance-id column indexes straight into it. `names` — the declared
+    schema's field names — is checked against what each estimator was fitted
+    on.
     """
     estimators = list(estimators)
     if not estimators:
@@ -172,18 +173,17 @@ def _pack(
         # other check and score a plausible-looking wrong answer — the same
         # failure shape BaggingRegressor and multi-output are refused for
         # (TASK-78). `feature_names_in_` exists only when the estimator was
-        # fitted on something with column names, and `take_names` only when
-        # the caller declared them, so the check is doubly conditional and
-        # ndarray-fitted models — the common case — are unaffected.
+        # fitted on something with column names, so ndarray-fitted models —
+        # the common case — are unaffected. Since the schema always carries
+        # names, this check is no longer opt-in the way `take_names` was.
         fitted_names = getattr(est, "feature_names_in_", None)
-        if names is not None and fitted_names is not None:
-            if list(fitted_names) != list(names):
-                raise TreePackError(
-                    f"model {mid} was fitted on columns {list(fitted_names)},"
-                    f" but take_names is {list(names)} — declare them in the"
-                    f" fitted order. Arguments bind by position, so a SQL call"
-                    f" site may name its columns whatever it likes."
-                )
+        if fitted_names is not None and list(fitted_names) != list(names):
+            raise TreePackError(
+                f"model {mid} was fitted on columns {list(fitted_names)}, but"
+                f" the schema declares {list(names)} — name them in the fitted"
+                f" order. Arguments bind by position, so a SQL call site may"
+                f" name its columns whatever it likes."
+            )
         trees, base, agg, scale = _stages(est)
         for tid, t in enumerate(trees):
             state = t.tree_.__getstate__()
@@ -249,12 +249,17 @@ class TreeBasedTransform(UDF):
     scores it with a native kernel instead of calling back into Python:
 
         TreeBasedTransform("score", instances={0: fit_de, 1: fit_fr},
-                           takes=("f64", "f64"), returns=("f64",))
+                           takes=pa.schema([("price", pa.float64()),
+                                            ("sqft", pa.float64())]))
         -- SELECT score(p.est, t.price, t.sqft) FROM ...
 
     The implicit leading argument is the nullable instance id, exactly as in
     `PythonTransform`: NULL id = the LEFT JOIN missed = unseen group = NULL
     out, and an id that names no instance raises.
+
+    Feature names come from the schema, and they are a fit-time cross-check
+    against the estimator's `feature_names_in_` (TASK-78) — arguments bind by
+    POSITION, so a call site may name its columns anything.
 
     You hand over the FITTED ESTIMATOR. Turning it into the tables the engine
     walks happens here, at build, and no estimator object, pickle or live
@@ -272,28 +277,20 @@ class TreeBasedTransform(UDF):
 
     name: str
     instances: dict[int, Any] = field(hash=False)
-    takes: tuple[str, ...]
-    returns: tuple[str, ...] = ("f64",)
-    take_names: tuple[str, ...] = ()
-    return_names: tuple[str, ...] = ()
+    takes: pa.Schema = field(hash=False)
+    returns: pa.DataType = pa.float64()
 
     def __post_init__(self) -> None:
-        _check_types(self.name, "takes", self.takes)
-        _check_types(self.name, "returns", self.returns)
-        if self.returns != ("f64",):
+        self._check_schema()
+        if self.returns != pa.float64():
             raise UDFError(
-                f"UDF {self.name}: a tree ensemble scores one f64 per row,"
+                f"UDF {self.name}: a tree ensemble scores one double per row,"
                 f" declared returns {self.returns}"
             )
-        if any(t not in ("f64", "i64") for t in self.takes):
+        if any(t not in ("f64", "i64") for t in self.take_types):
             raise UDFError(
                 f"UDF {self.name}: tree features are numbers, declared"
                 f" takes {self.takes}"
-            )
-        if self.take_names and len(self.take_names) != len(self.takes):
-            raise UDFError(
-                f"UDF {self.name}: {len(self.take_names)} take_names for"
-                f" {len(self.takes)} takes"
             )
         if not self.instances:
             raise UDFError(f"UDF {self.name}: no fitted instances")
@@ -311,7 +308,7 @@ class TreeBasedTransform(UDF):
 
     def _pack_now(self) -> tuple[pa.Table, pa.Table]:
         ordered = [self.instances[i] for i in range(len(self.instances))]
-        return _pack(ordered, len(self.takes), self.take_names or None)
+        return _pack(ordered, len(self.takes), self.take_names)
 
     def tree_tables(self) -> tuple[pa.Table, pa.Table, str]:
         """The engine hook: `(nodes, models, compare_grid)`. Its presence is

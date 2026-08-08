@@ -95,7 +95,7 @@ def test_string_feature_keeps_its_type():
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     u = p.udfs["__cf_tf0"]
-    assert u.takes == ("str",) and u.take_names == ("color",)
+    assert u.takes == pa.schema([("color", pa.string())])
 
 
 def test_mixed_feature_types():
@@ -116,7 +116,10 @@ def test_mixed_feature_types():
         "SELECT w(struct_pack(c := color, f := fare)).f0 AS z, name FROM __THIS__",
         transformers={"w": Widths()},
     ).fit(ints)
-    assert p.udfs["__cf_tf0"].takes == ("str", "i64")
+    # S's field names are the bundle's own — the struct_pack aliases.
+    assert p.udfs["__cf_tf0"].takes == pa.schema(
+        [("c", pa.string()), ("f", pa.int64())]
+    )
     got = {r["name"]: r["z"] for r in p.transform(ints).to_pylist()}
     assert got["x"] == len("red") + 7.0
 

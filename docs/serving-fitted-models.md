@@ -27,8 +27,7 @@ fn = DuckDBInferFn(
         TreeBasedTransform(
             "price_model",
             instances={0: est},
-            takes=("f64", "f64"),
-            returns=("f64",),
+            takes=pa.schema([("price", pa.float64()), ("sqft", pa.float64())]),
         )
     ],
 )
@@ -52,10 +51,15 @@ Exactly the shape every other declared transform has:
   passing the wrong number refuses by name; so does a non-numeric argument.
   `INTEGER` features convert per the compare grid (below).
 
-Transposing two features is the caller's mistake to avoid — the same as for
-any positional call. `take_names`, if you declare it, is checked against the
-estimator's `feature_names_in_` at construction; it does not bind the call
-site.
+The schema is arrow: `takes` is a `pa.Schema` — names and types in one
+declaration — and `returns` is the SQL return type, `pa.float64()` for a tree
+(scored one number per row), which is the default.
+
+Transposing two features is the caller's mistake to avoid, the same as for any
+positional call. The schema's NAMES do not bind the call site; they are
+checked against the estimator's `feature_names_in_` at construction, so a
+DataFrame-fitted model whose columns you name in the wrong order refuses
+instead of scoring plausibly (TASK-78).
 
 ## One model per group
 
@@ -70,7 +74,8 @@ FROM __THIS__ AS t
 LEFT JOIN params AS p ON t.country = p.country
 """
 udfs = [TreeBasedTransform("score", instances={0: fit_de, 1: fit_fr},
-                           takes=("f64", "f64"), returns=("f64",))]
+                           takes=pa.schema([("price", pa.float64()),
+                                            ("sqft", pa.float64())]))]
 ```
 
 An unseen country misses the `LEFT JOIN`, so `p.est` is NULL and the output is
@@ -234,8 +239,9 @@ sees sklearn, and never calls `__call__` on a class that has `tree_tables`.
 ```python
 class XGBTransform:
     name = "score"
-    takes = ("f64", "f64")      # arity; the features bind by position
-    returns = ("f64",)
+    # names + types in one declaration; the features bind by position
+    takes = pa.schema([("price", pa.float64()), ("sqft", pa.float64())])
+    returns = pa.float64()
     instances = {0: booster}    # presence is what adds the leading id argument
 
     def tree_tables(self):

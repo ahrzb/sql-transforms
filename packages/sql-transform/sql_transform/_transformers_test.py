@@ -58,7 +58,7 @@ def test_global_scaler_from_scope_is_scalar_valued():
     p = SQLProjection("SELECT sc(age).age AS z, name FROM __THIS__").fit(TRAIN)
     (step,) = [s for s in p.plan if s.kind == "fit"]
     assert step.transformer == "sc" and step.keys == ()
-    assert p.udfs["__cf_tf0"].returns == ("f64",)
+    assert p.udfs["__cf_tf0"].returns == pa.struct([("age", pa.float64())])
     got = _by_name(p.transform(TRAIN), "z")
     assert all(isinstance(v, float) for v in got.values())  # width 1 -> DOUBLE
     feats = np.array([TRAIN.column("age").to_pylist()], dtype=float).T
@@ -209,7 +209,9 @@ def test_transformer_at_final_level_of_chain_with_renamed_feature():
 
 def test_author_udf_round_trips_exactly():
     halve = PythonUDF(
-        "halve", lambda x: None if x is None else x / 2.0, ("f64",), ("f64",)
+        "halve",
+        lambda x: None if x is None else x / 2.0,
+        pa.schema([("x", pa.float64())]),
     )
     p = SQLProjection(
         "SELECT halve(age) - avg(halve(age)) OVER () AS d, name FROM __THIS__",
@@ -231,7 +233,10 @@ def test_author_udf_round_trips_exactly():
 
 def test_author_udf_from_scope_in_identity_projection():
     shout = PythonUDF(
-        "shout", lambda s: None if s is None else s.upper(), ("str",), ("str",)
+        "shout",
+        lambda s: None if s is None else s.upper(),
+        pa.schema([("s", pa.string())]),
+        pa.string(),
     )
     assert shout is not None  # resolved from this scope by name
     p = SQLProjection("SELECT shout(name) AS n FROM __THIS__").fit(TRAIN)
@@ -249,7 +254,9 @@ def test_author_udf_from_scope_in_identity_projection():
 
 def test_author_udf_inside_transformer_bundle():
     halve = PythonUDF(
-        "halve", lambda x: None if x is None else x / 2.0, ("f64",), ("f64",)
+        "halve",
+        lambda x: None if x is None else x / 2.0,
+        pa.schema([("x", pa.float64())]),
     )
     sc = StandardScaler()
     p = SQLProjection(
@@ -276,14 +283,14 @@ def test_registry_beats_scope():
 def test_python_transform_missing_id_raises():
     from sql_transform import PythonTransform
 
-    t = PythonTransform("t", instances={}, takes=("f64",), returns=("f64",))
+    t = PythonTransform("t", instances={}, takes=pa.schema([("x", pa.float64())]))
     assert t(None, 1.0) is None
     with pytest.raises(UDFError, match="different fits"):
         t(0, 1.0)
 
 
 def test_udf_declaration_violation_traps():
-    liar = PythonUDF("liar", lambda x: "not a float", ("f64",), ("f64",))
+    liar = PythonUDF("liar", lambda x: "not a float", pa.schema([("x", pa.float64())]))
     p = SQLProjection(
         "SELECT liar(age) AS z FROM __THIS__", transformers={"liar": liar}
     ).fit(TRAIN)
@@ -326,12 +333,12 @@ def test_refusals(sql, match):
 
 
 def test_udf_arity_mismatch_refuses():
-    one = PythonUDF("one", lambda x: x, ("f64",), ("f64",))
+    one = PythonUDF("one", lambda x: x, pa.schema([("x", pa.float64())]))
     with pytest.raises(MarginalizeError, match="declares 1 arguments, called with 2"):
         SQLProjection("SELECT one(age, fare) FROM __THIS__", transformers={"one": one})
 
 
 def test_udf_name_mismatch_refuses():
-    other = PythonUDF("something_else", lambda x: x, ("f64",), ("f64",))
+    other = PythonUDF("something_else", lambda x: x, pa.schema([("x", pa.float64())]))
     with pytest.raises(MarginalizeError, match="resolves to an object named"):
         SQLProjection("SELECT one(age) FROM __THIS__", transformers={"one": other})

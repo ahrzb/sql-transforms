@@ -28,14 +28,30 @@ class DuckDBInferFn:
         shape: str | None = None,
     ) -> None:
         """`udfs`: declared opaque scalar functions the SQL may call
-        (DRAFT-22). Each object carries `name: str`, `takes: tuple[str, ...]`
-        and `returns: tuple[str, ...]` in the engine type vocabulary
-        ("i1" | "i64" | "f64" | "str"), and a scalar `__call__(*args)`
-        receiving one plain Python value per argument (None for NULL) and
-        returning a tuple matching `returns`, or None for an all-NULL
-        result. An object with an `instances` attribute is a fitted
-        transformer: its implicit leading argument is a nullable BIGINT
-        instance id (never written in `takes`).
+        (DRAFT-22). Each object carries `name: str`, a `takes: pa.Schema`
+        (one field per argument, names and types together, in call order) and
+        a `returns: pa.DataType`, plus a scalar `__call__(*args)` receiving
+        one plain Python value per argument (None for NULL) and returning a
+        tuple of the output lanes, or None for an all-NULL result.
+
+        The type vocabulary is exactly `bool` / `int64` / `double` / `string`
+        — the engine computes in those four, so a narrower arrow type refuses
+        rather than widening silently.
+
+        `returns` is the SQL return TYPE, which also says how wide the call is
+        and whether its lanes are addressable:
+
+            pa.float64()          an ordinary scalar expression
+            pa.struct([...])      width-k with addressable field names
+                                  (TASK-63) — struct-valued at EVERY width,
+                                  so `f(x).a` reads a lane off ONE call
+            pa.list_(t, k)        width-k unnamed (the DRAFT-22 list
+                                  boundary); FIXED size, because the width is
+                                  part of the declaration
+
+        An object with an `instances` attribute is a fitted transformer: its
+        implicit leading argument is a nullable BIGINT instance id (never
+        written in `takes`).
 
         An object that also exposes `tree_tables() -> (nodes, models,
         compare_grid)` is a fitted tree ensemble, scored by the native kernel
@@ -51,18 +67,14 @@ class DuckDBInferFn:
         therefore how an INTEGER feature reaches the comparison. Features bind
         by POSITION, in `takes` order, after the instance id.
 
-        Width-1 calls are scalar
-        expressions; width-k calls are bare SELECT items emitting one
-        `list | None` field — or, when the object declares
-        `return_names: tuple[str, ...]` (one per return, TASK-63), field
-        access over the call binds each addressed name to one lane of a
-        single evaluation (`(f(...)).a` or `struct_extract(f(...), 'a')`,
-        usable mid-expression; textually identical calls share the one
-        evaluation, mirroring DuckDB's CSE). The oracle statement is
-        parameterized, not
-        weakened: the engine matches DuckDB running the same SQL with these
-        same objects registered via `create_function`. UDFs must be
-        deterministic.
+        Width-k calls are bare SELECT items emitting one `list | None` field
+        — or, when `returns` is a struct, field access over the call binds
+        each addressed name to one lane of a single evaluation (`(f(...)).a`
+        or `struct_extract(f(...), 'a')`, usable mid-expression; textually
+        identical calls share the one evaluation, mirroring DuckDB's CSE).
+        The oracle statement is parameterized, not weakened: the engine
+        matches DuckDB running the same SQL with these same objects
+        registered via `create_function`. UDFs must be deterministic.
 
         `output`: "model" (typed, default) or "dict".
 

@@ -60,8 +60,7 @@ fn = DuckDBInferFn(
         TreeBasedTransform(
             "score",
             instances={0: fit_de, 1: fit_fr},
-            takes=("f64", "f64"),
-            returns=("f64",),
+            takes=pa.schema([("price", pa.float64()), ("sqft", pa.float64())]),
         )
     ],
 )
