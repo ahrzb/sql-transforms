@@ -5,28 +5,41 @@
 
 All the analysis — and every refusal freezing can raise — happens here, at
 construction, before any data exists.
+
+Nothing is mutated: each step returns a new subtree, so a node handed to
+``_reads`` is the node that was analysed rather than whatever a later pass
+turned it into.
 """
 
-import copy
+from collections.abc import Callable
 
 from sql_transform.model._analysis import _bindings_at, _correlation, _reads
 from sql_transform.model._ast import (
-    _QUERY,
-    _RECURSIVE_CTE,
     FIT,
     THIS,
-    Node,
     _deserialize,
-    _is_query,
+    _is_recursive_cte,
     _select_star,
     _statement,
     _template,
-    _under,
 )
 from sql_transform.model._errors import CorrelatedFit
+from sql_transform.model._nodes import (
+    AstNode,
+    BaseTable,
+    CteEntry,
+    Document,
+    Node,
+    cte_entries,
+    descendants,
+    field,
+    is_query,
+    rebuild,
+    with_cte_entries,
+)
 
 
-def _pin_derived_names(node: Node) -> None:
+def _pin_derived_names[N](node: N) -> N:
     """Freeze the output column names before the expressions move.
 
     DuckDB names an unaliased select item after its own printed text, so
@@ -38,25 +51,46 @@ def _pin_derived_names(node: Node) -> None:
     items that contain a query node are touched; a plain column reference is
     named after its last path part and is unaffected by any of this.
     """
-    for item in node.get("select_list", []):
-        if not isinstance(item, dict) or item.get("alias"):
+    items = field(node, "select_list")
+    if not items:
+        return node
+    pinned = []
+    for item in items:
+        if not isinstance(item, AstNode) or field(item, "alias"):
+            pinned.append(item)
             continue
-        if not any(_is_query(v) for _, _, v in _under(item, deep=True)):
+        if not any(is_query(v) for v in descendants(item, deep=True)):
+            pinned.append(item)
             continue
         printed = _deserialize(_statement(_one_item(item)))
-        item["alias"] = printed[len("SELECT ") :]
+        pinned.append(item.model_copy(update={"alias": printed[len("SELECT ") :]}))
+    return node.model_copy(update={"select_list": pinned})
 
 
 def _one_item(item: Node) -> Node:
     """``SELECT <item>`` as a query node, for asking the oracle what it would
     call that column."""
-    node = _template("SELECT 1")
-    node["select_list"] = [copy.deepcopy(item)]
-    return node
+    return _template("SELECT 1").model_copy(update={"select_list": [item]})
 
 
-def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
-    """Rewrite ``doc`` in place into the residual, returning the fit steps.
+def _rewrite_fit_refs(node: Node, mint: "Callable[[], str]", *, deep: bool) -> Node:
+    """Every bare ``FROM __FIT__`` under ``node``, pointed at ``mint()``.
+
+    ``mint`` is called only when a reference is actually found, and it is
+    idempotent — so a level with nothing to rewrite emits no step, which is
+    what the mutating version got from only calling it inside the loop.
+    """
+
+    def point(v: AstNode) -> AstNode | None:
+        if isinstance(v, BaseTable) and v.table_name == FIT:
+            return v.model_copy(update={"table_name": mint()})
+        return None
+
+    return rebuild(node, point, deep=deep)
+
+
+def _plan(doc: Document) -> tuple[list[tuple[str, Node]], Node]:
+    """Rewrite ``doc`` into the residual, returning the fit steps.
 
     A step is ``(param_name, node)``, in dependency order: running them against
     a connection with ``__FIT__`` bound, registering each result as it lands,
@@ -96,24 +130,21 @@ def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
             steps.append((whole, _select_star(FIT)))
         return whole
 
-    def freeze(sub: Node, ctes: list[Node], hint: str | None) -> Node:
-        frozen = copy.deepcopy(sub)
+    def freeze(sub: Node, ctes: list[CteEntry], hint: str | None) -> Node:
         # Carry the enclosing CTEs in: a frozen subtree may reference one, and
         # by now their own definitions have been rewritten to frozen tables.
-        frozen[_QUERY]["map"] = copy.deepcopy(ctes) + frozen[_QUERY]["map"]
+        frozen = with_cte_entries(sub, list(ctes) + list(cte_entries(sub)))
         param = name(hint)
         steps.append((param, frozen))
         return _select_star(param)
 
     def visit(
-        parent: Node,
-        key: str,
-        ctes: list[Node],
+        sub: Node,
+        ctes: list[CteEntry],
         outer: dict[str, bool],
         hint: str | None,
         reading: dict[str, set[str]],
-    ) -> None:
-        sub = parent[key]
+    ) -> Node:
         reads = _reads(sub, reading)
         # A recursive CTE's self-reference is bound by the enclosing entry key,
         # not by anything inside the body, so hoisting the body into a
@@ -121,20 +152,16 @@ def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
         # training set becomes the parameter, which costs params size and is
         # correct. Freezing it properly means reconstructing the WITH RECURSIVE
         # wrapper, which is worth doing only if it ever matters.
-        if sub.get("type") == _RECURSIVE_CTE:
-            # Nothing inside may be frozen, not just the body as a whole: the
-            # self-reference is visible to every arm but bound by none of them,
-            # so hoisting any part of it out leaves that name dangling. The
-            # training set becomes the parameter and the recursion stays live.
-            for _, _, v in _under(sub, deep=True):
-                if v.get("type") == "BASE_TABLE" and v.get("table_name") == FIT:
-                    v["table_name"] = whole_fit()
-            return
+        #
+        # Nothing inside may be frozen, not just the body as a whole: the
+        # self-reference is visible to every arm but bound by none of them, so
+        # hoisting any part of it out leaves that name dangling.
+        if _is_recursive_cte(sub):
+            return _rewrite_fit_refs(sub, whole_fit, deep=True)
         if FIT in reads and THIS not in reads:
             match _correlation(sub, outer):
                 case None:
-                    parent[key] = freeze(sub, ctes, hint)
-                    return  # maximal: a frozen subtree never refreezes
+                    return freeze(sub, ctes, hint)  # maximal: never refreezes
                 case (reference, True):
                     raise CorrelatedFit(
                         f"{FIT} subquery references {reference} from the "
@@ -148,33 +175,43 @@ def _plan(doc: Node) -> tuple[list[tuple[str, Node]], Node]:
                     # itself becomes the parameter; `len(params)` reports
                     # the cost. Marginalization makes it one row per group.
                     pass
-        descend(sub, ctes, outer, reading)
+        return descend(sub, ctes, outer, reading)
 
     def descend(
         node: Node,
-        ctes: list[Node],
+        ctes: list[CteEntry],
         outer: dict[str, bool],
         reading: dict[str, set[str]],
-    ) -> None:
-        _pin_derived_names(node)
+    ) -> Node:
+        node = _pin_derived_names(node)
         ctes = list(ctes)
         reading = dict(reading)
-        for entry in node[_QUERY]["map"]:
-            visit(entry["value"]["query"], "node", ctes, outer, entry["key"], reading)
+        rewritten: list[CteEntry] = []
+        for entry in cte_entries(node):
+            body = visit(entry.value.query.node, ctes, outer, entry.key, reading)
+            entry = entry.model_copy(
+                update={
+                    "value": entry.value.model_copy(
+                        update={
+                            "query": entry.value.query.model_copy(update={"node": body})
+                        }
+                    )
+                }
+            )
             # After visiting, not before: a frozen body reads nothing, and one
             # left live has had its `__FIT__` rewritten already. Either way this
             # is what a later reference to the name actually depends on.
-            reading[entry["key"].lower()] = _reads(
-                entry["value"]["query"]["node"], reading
-            )
+            reading[entry.key.lower()] = _reads(body, reading)
             ctes.append(entry)
+            rewritten.append(entry)
+        node = with_cte_entries(node, rewritten)
         outer = outer | _bindings_at(node, reading)
-        sites = [(p, k) for p, k, v in _under(node, deep=False) if _is_query(v)]
-        for parent, key in sites:
-            visit(parent, key, ctes, outer, None, reading)
-        for _, _, v in _under(node, deep=False):
-            if v.get("type") == "BASE_TABLE" and v.get("table_name") == FIT:
-                v["table_name"] = whole_fit()
 
-    visit(doc["statements"][0], "node", [], {}, None, {})
-    return steps, doc["statements"][0]["node"]
+        def nested(v: AstNode) -> AstNode | None:
+            return visit(v, ctes, outer, None, reading) if is_query(v) else None
+
+        node = rebuild(node, nested, deep=False)
+        return _rewrite_fit_refs(node, whole_fit, deep=False)
+
+    residual = visit(doc.statements[0].node, [], {}, None, {})
+    return steps, residual

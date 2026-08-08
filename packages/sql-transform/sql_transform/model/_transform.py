@@ -15,7 +15,6 @@ DuckDB is both the parser and the oracle — a construct means what DuckDB
 computes.
 """
 
-import copy
 import itertools
 import sys
 import weakref
@@ -28,8 +27,6 @@ import pyarrow as pa
 
 from sql_transform.model._ast import (
     _ALL_FUNCTIONS,
-    _QUERY,
-    _RECURSIVE_CTE,
     _TABLE_FUNCTIONS,
     FIT,
     THIS,
@@ -37,7 +34,6 @@ from sql_transform.model._ast import (
     Captured,
     Connection,
     LazyRelation,
-    Node,
     Params,
     Relation,
     _base_table,
@@ -45,16 +41,14 @@ from sql_transform.model._ast import (
     _catalog,
     _deserialize,
     _functions,
-    _is_query,
-    _is_ref,
+    _is_recursive_cte,
     _list_of,
+    _parse,
     _rename_free,
     _rename_functions,
-    _serialize,
     _statement,
     _subquery_ref,
     _table_function_ref,
-    _under,
 )
 from sql_transform.model._errors import (
     NestingTooDeep,
@@ -68,20 +62,39 @@ from sql_transform.model._foreign import (
     _execute,
     _Registry,
 )
+from sql_transform.model._nodes import (
+    AstNode,
+    BaseTable,
+    ColumnRef,
+    Document,
+    Function,
+    Node,
+    SubqueryExpr,
+    TableFunction,
+    cte_entries,
+    descendants,
+    is_query,
+    is_ref,
+    rebuild,
+    with_cte_entries,
+)
+from sql_transform.model._nodes import field as node_field
 from sql_transform.model._plan import _plan
 
 MAX_DEPTH = 8
 
 
-def _splice(call: Node, scope: dict[str, Any], captured: Captured) -> Node:
-    """A member call, as the spliced relation it denotes.
+def _splice(
+    call: TableFunction, scope: dict[str, Any], captured: Captured
+) -> tuple[Node, int]:
+    """A member call, as the spliced relation it denotes, and its depth.
 
     Splice, never emit a DuckDB macro: measured, a table macro invoked under
     ``LATERAL`` does not see the correlation and silently returns the
     whole-table answer for every group.
     """
-    function = call["function"]
-    name = function["function_name"]
+    function = call.function
+    name = function.function_name
     member = scope.get(name)
     if member is None:
         raise UnknownName(
@@ -92,7 +105,7 @@ def _splice(call: Node, scope: dict[str, Any], captured: Captured) -> Node:
         raise TransformError(
             f"{name} resolves to a {type(member).__name__}, not a transform"
         )
-    args = function["children"]
+    args = function.children
     if len(args) != 2:
         raise TransformError(
             f"a transform takes two arguments ({FIT}, {THIS}); "
@@ -112,36 +125,36 @@ def _splice(call: Node, scope: dict[str, Any], captured: Captured) -> Node:
 
     captured[name] = member  # spliced away, but a clone has to find it again
 
-    body = copy.deepcopy(member.node)
+    body = member.node
     renames = {}
     for free, obj in member.bindings.items():
         renames[free] = f"{name}__{free}"
         captured[f"{name}__{free}"] = obj
-    _rename_free(body, renames)
+    body = _rename_free(body, renames)
 
     function_renames = {}
     for stem, leaf in member.foreign.items():
         function_renames[stem] = f"{name}__{stem}"
         captured[f"{name}__{stem}"] = leaf
-    _rename_functions(body, function_renames)
+    body = _rename_functions(body, function_renames)
 
-    _bind_parameters(body, bound)
+    body = _bind_parameters(body, bound)
 
-    ref = _subquery_ref(body, call.get("alias", ""))
-    ref["_depth"] = depth + 1
-    return ref
+    # Returned rather than smuggled back on the node: the old version parked
+    # `_depth` on the ref dict for the caller to pop, which a typed node has
+    # nowhere to put and nothing should have relied on anyway.
+    return _subquery_ref(body, node_field(call, "alias", "") or ""), depth + 1
 
 
 def _argument(arg: Node, scope: dict[str, Any], captured: Captured) -> tuple[Node, int]:
     """An argument expression, as the relation it denotes."""
     match arg:
-        case {"class": "COLUMN_REF", "column_names": [name]}:
+        case ColumnRef(column_names=[name]):
             return _base_table(name), 0
-        case {"class": "SUBQUERY", "subquery": {"node": node}}:
-            return _subquery_ref(node, ""), 0
-        case {"class": "FUNCTION"}:
-            ref = _splice(_table_function_ref(arg, ""), scope, captured)
-            return ref, ref.pop("_depth")
+        case SubqueryExpr(subquery=box):
+            return _subquery_ref(box.node, ""), 0
+        case Function():
+            return _splice(_table_function_ref(arg, ""), scope, captured)
     raise TransformError(
         f"a transform argument is a relation — {FIT}, {THIS}, a parenthesised "
         "query, or another transform call"
@@ -174,22 +187,23 @@ def _reserve(name: str, what: str) -> None:
 
 
 def _resolve(
-    doc: Node,
+    doc: Document,
     scope: dict[str, Any],
     captured: Captured,
     catalog: frozenset[str] = frozenset(),
     con: Connection | None = None,
-) -> int:
-    """Splice every member call and resolve every free name, in place.
+) -> tuple[Document, int]:
+    """Splice every member call and resolve every free name.
 
-    Returns the nesting depth. Children are resolved before their parent, so a
-    splice at this level always grafts an already-resolved body.
+    Returns the rewritten document and the nesting depth. Children are resolved
+    before their parent, so a splice at this level always grafts an
+    already-resolved body.
     """
     depth = 0
 
-    def foreign_call(call: Node) -> None:
+    def foreign_call(call: Function) -> Function:
         """``x_fit``/``x_transform``: the stem resolves, the suffix says half."""
-        name = call["function_name"]
+        name = call.function_name
         stem, _, half = name.rpartition("_")
         member = scope.get(stem) if half in ("fit", "transform") else None
         if not isinstance(member, Transform):
@@ -203,53 +217,76 @@ def _resolve(
                 )
             )
         captured[stem] = member
-        if half == "fit":
-            # The UDAF half is a scalar function over a collected list.
-            call["children"] = [_list_of(child) for child in call["children"]]
+        if half != "fit":
+            return call
+        # The UDAF half is a scalar function over a collected list.
+        return call.model_copy(
+            update={"children": [_list_of(child) for child in call.children]}
+        )
 
-    def walk(node: Node, ctes: frozenset[str]) -> None:
+    def walk(node: Node, ctes: frozenset[str]) -> Node:
         nonlocal depth
-        for entry in node[_QUERY]["map"]:
+        rewritten = []
+        for entry in cte_entries(node):
             # DuckDB would let such a CTE win, and we would go on rewriting the
             # reference to the training set — two meanings for one name, and
             # the row count changed with no error. Refused where it is
             # defined, so `__FIT__` means the parameter everywhere or the text
             # does not compile.
-            if entry["key"].upper() in (FIT, THIS):
+            if entry.key.upper() in (FIT, THIS):
                 raise TransformError(
-                    f"a CTE may not be named {entry['key']!r}: {FIT} and "
+                    f"a CTE may not be named {entry.key!r}: {FIT} and "
                     f"{THIS} are the transform's two parameters"
                 )
-            _reserve(entry["key"], "a CTE named")
-            body = entry["value"]["query"]["node"]
+            _reserve(entry.key, "a CTE named")
+            body = entry.value.query.node
             # A RECURSIVE CTE is in scope inside its own body; a plain one is
             # not, where the same name means whatever the caller's frame binds.
             # The inner node type is the only thing that tells them apart.
             visible = ctes
-            if body["type"] == _RECURSIVE_CTE:
-                visible = ctes | {entry["key"].lower()}
-            walk(body, visible)
+            if _is_recursive_cte(body):
+                visible = ctes | {entry.key.lower()}
+            body = walk(body, visible)
+            rewritten.append(
+                entry.model_copy(
+                    update={
+                        "value": entry.value.model_copy(
+                            update={
+                                "query": entry.value.query.model_copy(
+                                    update={"node": body}
+                                )
+                            }
+                        )
+                    }
+                )
+            )
             # Folded, because DuckDB's binder is case-insensitive: `WITH Sales`
             # then `FROM sales` resolves for the oracle, and comparing exact
             # strings refused valid SQL as an unknown free name.
-            ctes = ctes | {entry["key"].lower()}
-        for _, _, v in list(_under(node, deep=False)):
-            if _is_query(v):
-                walk(v, ctes)
-        for _, _, v in list(_under(node, deep=False)):
-            if _is_ref(v):
-                if alias := v.get("alias"):
+            ctes = ctes | {entry.key.lower()}
+        node = with_cte_entries(node, rewritten)
+
+        node = rebuild(
+            node, lambda v: walk(v, ctes) if is_query(v) else None, deep=False
+        )
+
+        for v in descendants(node, deep=False):
+            if is_ref(v):
+                if alias := node_field(v, "alias"):
                     _reserve(alias, "an alias named")
-                if (named := v.get("table_name")) and named.lower() not in ctes:
+                named = node_field(v, "table_name")
+                if named and named.lower() not in ctes:
                     _reserve(named, "a relation named")
-        for parent, key, v in list(_under(node, deep=False)):
+
+        def resolve_ref(v: AstNode) -> AstNode | None:
+            nonlocal depth
             match v:
-                case {"type": "TABLE_FUNCTION", "function": {"function_name": call}}:
+                case TableFunction(function=Function(function_name=call)):
                     if call.lower() in _functions(_TABLE_FUNCTIONS, con):
-                        continue
-                    ref = _splice(v, scope, captured)
-                    depth = max(depth, ref.pop("_depth"))
-                    parent[key] = ref
+                        return None
+                    ref, at = _splice(v, scope, captured)
+                    depth = max(depth, at)
+                    return ref
                 # A qualified name is the connection's own, and the catalog
                 # listing is not the test for it: everything captured is
                 # registered under a bare name, so `side.main.far` can never
@@ -257,18 +294,10 @@ def _resolve(
                 # a connection there is no catalog for it to be in — `fit`
                 # makes a fresh one per call — so that refuses here rather than
                 # at fit in DuckDB's words.
-                case {"type": "BASE_TABLE", "table_name": name} if v.get(
-                    "schema_name"
-                ) or v.get("catalog_name"):
+                case BaseTable(table_name=name) if v.schema_name or v.catalog_name:
                     if con is None:
                         path = ".".join(
-                            p
-                            for p in (
-                                v.get("catalog_name"),
-                                v.get("schema_name"),
-                                name,
-                            )
-                            if p
+                            p for p in (v.catalog_name, v.schema_name, name) if p
                         )
                         raise UnknownName(
                             f"{path} is qualified, so it names something in a "
@@ -279,7 +308,7 @@ def _resolve(
                 # those; *not* against `captured` and `scope`, which are
                 # Python's own namespace, where `codes` and `Codes` are two
                 # different variables and folding would merge them.
-                case {"type": "BASE_TABLE", "table_name": name} if (
+                case BaseTable(table_name=name) if (
                     name not in (FIT, THIS)
                     and name.lower() not in ctes
                     and name not in captured
@@ -297,18 +326,28 @@ def _resolve(
                             )
                         case obj:
                             captured[name] = obj
+            return None
+
+        node = rebuild(node, resolve_ref, deep=False)
+
         # Member calls are gone by now, so every FUNCTION left at this level is
         # a scalar one — no need to tell the table call's own function apart.
-        for _, _, v in list(_under(node, deep=False)):
+        def scalar_call(v: AstNode) -> AstNode | None:
             if (
-                v.get("class") == "FUNCTION"
-                and not v.get("is_operator")
-                and v["function_name"].lower() not in _functions(_ALL_FUNCTIONS, con)
+                isinstance(v, Function)
+                and not v.is_operator
+                and v.function_name.lower() not in _functions(_ALL_FUNCTIONS, con)
             ):
-                foreign_call(v)
+                return foreign_call(v)
+            return None
 
-    walk(doc["statements"][0]["node"], frozenset())
-    return depth
+        return rebuild(node, scalar_call, deep=False)
+
+    box = doc.statements[0]
+    resolved = walk(box.node, frozenset())
+    return doc.model_copy(
+        update={"statements": [box.model_copy(update={"node": resolved})]}
+    ), depth
 
 
 def _give_back(leases: list[Callable[[], None]]) -> None:
@@ -488,10 +527,8 @@ def _lease(
 
 def _rendered(node: Node, names: dict[str, str], stems: dict[str, str]) -> str:
     """``node`` under the names this execution actually registered."""
-    doc = copy.deepcopy(_statement(node))
-    _rename_free(doc, names)
-    _rename_functions(doc, stems)
-    return _deserialize(doc)
+    doc = _rename_free(_statement(node), names)
+    return _deserialize(_rename_functions(doc, stems))
 
 
 def _as_output(
@@ -538,7 +575,7 @@ def _keeps_row_order(node: Node) -> bool:
     misaligns visibly) while attaching a wrong one is not, so where the two
     compete the doubt resolves toward dropping it.
     """
-    return not node.get("modifiers")
+    return not node_field(node, "modifiers")
 
 
 def _with_index(frame: Any, source: Relation, aligned: bool) -> Any:
@@ -580,10 +617,10 @@ class SQLTransform:
         connection: Connection | None = None,
         captured: Captured | None = None,
     ) -> None:
-        doc = _serialize(sql)
-        if len(doc["statements"]) != 1:
+        doc = _parse(sql)
+        if len(doc.statements) != 1:
             raise TransformError(
-                f"a transform is one statement, got {len(doc['statements'])}"
+                f"a transform is one statement, got {len(doc.statements)}"
             )
         # Resolution happens once, here, and captures by value: `scope` is a
         # local that dies with this call, so no caller frame is retained and
@@ -606,7 +643,7 @@ class SQLTransform:
         self.captured: Captured = {} if captured is None else captured
         scope = scope | self.captured
 
-        self.depth = _resolve(
+        doc, self.depth = _resolve(
             doc, scope, self.captured, _catalog(connection), connection
         )
         # Two runtime views. A member is spliced away, so it is neither.
@@ -618,10 +655,12 @@ class SQLTransform:
             for k, v in self.captured.items()
             if not isinstance(v, Transform | SQLTransform)
         }
-        self.node = doc["statements"][0]["node"]
+        self.node = doc.statements[0].node
         self.source = sql  # the exact object, so clone's identity check passes
         self.sql = _deserialize(doc)
-        self._steps, self._residual = _plan(copy.deepcopy(doc))
+        # No copy: the models are frozen, so `_plan` cannot reach back into
+        # `doc` and `self.node` stays the text the caller wrote.
+        self._steps, self._residual = _plan(doc)
         self._own = connection is None
         self.fitted_: Fitted | None = None
         self.feature_names_out_: list[str] | None = None
