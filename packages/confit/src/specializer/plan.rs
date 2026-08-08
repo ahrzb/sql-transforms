@@ -32,15 +32,15 @@ pub struct StaticTable {
     pub cols: Vec<Col>,
 }
 
-/// A fitted model set's schema, as given to `prepare` — like [`StaticTable`],
-/// this holds no data, only what the binder needs to check a call site.
-/// Feature NAMES live here and nowhere else: the frontend resolves a struct
-/// call site's fields to lane positions at build, so the lowered `predict`
-/// is positional and the IR never carries a name.
+/// A fitted tree transform's schema, as given to `prepare` — like
+/// [`StaticTable`], this holds no data, only what the binder needs to check a
+/// call site. `name` is the UDF's own name: a tree transform is called
+/// `name(id, feats...)` like any other declared transform, so the binder
+/// resolves it in the same namespace and the arguments bind by position.
 #[derive(Clone, Debug)]
 pub struct ModelTable {
     pub name: String,
-    pub features: Vec<String>,
+    pub n_features: usize,
     pub grid: CompareGrid,
 }
 
@@ -55,10 +55,10 @@ pub struct ModelTable {
 /// that compares in float64 declares `F64` and its integer features reach the
 /// compare exactly.
 ///
-/// It belongs to the SET, not to a model within it: the model id is a runtime
-/// value (`tree_predict('m', id, ..)`), while the narrowing is a lowering
-/// decision made once at build. A per-model flag could only be honoured with
-/// a per-row branch.
+/// It belongs to the TRANSFORM, not to an instance within it: the instance id
+/// is a runtime value (`score(id, ..)`), while the narrowing is a lowering
+/// decision made once at build. A per-instance flag could only be honoured
+/// with a per-row branch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CompareGrid {
     F32,

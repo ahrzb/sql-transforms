@@ -1,34 +1,10 @@
-from typing import Any, TypedDict
+from typing import Any
 
 import pyarrow as pa
 from pydantic import BaseModel
 
 BUILD_PROFILE: str
 """"debug" or "release" — benchmarks refuse a debug build."""
-
-class ModelSet(TypedDict):
-    """One fitted tree ensemble, as Arrow. Nothing else crosses — no
-    estimator object, no pickle, no live model reference.
-
-    `nodes` columns: `model_id` | `tree_id` | `node_id` | `feature` (-1 on a
-    leaf) | `threshold` | `left` | `right` | `missing_left` | `value`, grouped
-    by model then tree, node ids dense from 0 per tree, children after their
-    parent.
-
-    `models` columns: `model_id` (dense from 0) | `base` | `agg`
-    ("sum" | "mean") | `link` ("identity" | "sigmoid"). A boosted model seeds
-    the accumulator with `base`; a forest divides the sum by its tree count
-    and then adds it — matching each family's own summation order, which is
-    what makes scoring bit-exact with sklearn.
-
-    `features`: the feature names, in the order the `feature` column indexes
-    them. A `tree_predict(..., struct_pack(...))` call site is resolved
-    against these by NAME, so call-site order is free.
-    """
-
-    nodes: pa.Table
-    models: pa.Table
-    features: list[str]
 
 class DuckDBInferFn:
     """SQL specialized against frozen static tables, served bit-exact with DuckDB.
@@ -50,7 +26,6 @@ class DuckDBInferFn:
         output_model: type[BaseModel] | None = None,
         output: str | None = None,
         shape: str | None = None,
-        models: dict[str, ModelSet] | None = None,
     ) -> None:
         """`udfs`: declared opaque scalar functions the SQL may call
         (DRAFT-22). Each object carries `name: str`, `takes: tuple[str, ...]`
@@ -60,7 +35,23 @@ class DuckDBInferFn:
         returning a tuple matching `returns`, or None for an all-NULL
         result. An object with an `instances` attribute is a fitted
         transformer: its implicit leading argument is a nullable BIGINT
-        instance id (never written in `takes`). Width-1 calls are scalar
+        instance id (never written in `takes`).
+
+        An object that also exposes `tree_tables() -> (nodes, models,
+        compare_grid)` is a fitted tree ensemble, scored by the native kernel
+        instead of a callback — no Python on the row path, and no `__call__`
+        is ever made by the engine (it stays the DuckDB-side binding and the
+        semantic contract the kernel is gated against). `nodes` columns:
+        `model_id` | `tree_id` | `node_id` | `feature` (-1 on a leaf) |
+        `threshold` | `left` | `right` | `missing_left` | `value`, grouped by
+        model then tree, node ids dense from 0 per tree, children after their
+        parent. `models` columns: `model_id` (dense from 0) | `base` | `agg`
+        ("sum" | "mean") | `link` ("identity" | "sigmoid"). `compare_grid` is
+        "float32" or "float64": which grid the thresholds were fitted on, and
+        therefore how an INTEGER feature reaches the comparison. Features bind
+        by POSITION, in `takes` order, after the instance id.
+
+        Width-1 calls are scalar
         expressions; width-k calls are bare SELECT items emitting one
         `list | None` field — or, when the object declares
         `return_names: tuple[str, ...]` (one per return, TASK-63), field

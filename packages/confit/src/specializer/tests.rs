@@ -1013,22 +1013,22 @@ fn prep_udfs(
     super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs, &[])
 }
 
-// ------------------------------------------------------- tree_predict --
+// -------------------------------------------------- tree transforms --
 
-fn model(name: &str, features: &[&str]) -> super::plan::ModelTable {
+fn model(name: &str, n_features: usize) -> super::plan::ModelTable {
     // sklearn's grid: the default for these tests because it is the only
     // packer that exists, and the one whose integer narrowing is asserted.
-    model_on(name, features, super::plan::CompareGrid::F32)
+    model_on(name, n_features, super::plan::CompareGrid::F32)
 }
 
 fn model_on(
     name: &str,
-    features: &[&str],
+    n_features: usize,
     grid: super::plan::CompareGrid,
 ) -> super::plan::ModelTable {
     super::plan::ModelTable {
         name: name.to_string(),
-        features: features.iter().map(|s| s.to_string()).collect(),
+        n_features,
         grid,
     }
 }
@@ -1042,25 +1042,23 @@ fn prep_models(
     super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, &[], models)
 }
 
-/// The serving shape: the group's model id comes from a params join, the
-/// features from a struct whose field NAMES are checked and reordered into
-/// the model's declared order — the one mistake a fitted model cannot catch
-/// for itself.
+/// The serving shape: a tree transform is called like every other declared
+/// transform — its own name, the group's model id from a params join, then
+/// the features positionally.
 #[test]
-fn tree_predict_resolves_struct_features_by_name() {
+fn tree_call_binds_features_by_position() {
     let schema = cols(&[
         ("g", Ty::Str, true),
         ("price", Ty::F64, false),
         ("sqft", Ty::I64, false),
     ]);
     let params = stat("p0", &[("g", Ty::Str, true), ("est", Ty::I64, true)]);
-    // Fields deliberately given in the WRONG order, and sqft as an i64.
     let p = prep_models(
-        "SELECT tree_predict('trees', p.est, struct_pack(sqft := t.sqft, price := t.price)) AS z \
+        "SELECT trees(p.est, t.price, t.sqft) AS z \
          FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
         &schema,
         &[params],
-        &[model("trees", &["price", "sqft"])],
+        &[model("trees", 2)],
     )
     .unwrap();
     assert_eq!(p.models, vec!["trees".to_string()]);
@@ -1073,11 +1071,10 @@ fn tree_predict_resolves_struct_features_by_name() {
     );
     // Exactly one predict, against @1.
     assert_eq!(text.matches("predict @1,").count(), 1, "{text}");
-    assert_eq!(feature_position_of_itof(&text), 1, "sqft is declared second:\n{text}");
+    assert_eq!(feature_position_of_itof(&text), 1, "sqft is passed second:\n{text}");
 
-    // Same SQL, same struct, only the DECLARED order flipped: the operand
-    // order must follow the declaration, not the call site. That is the
-    // whole point of naming the features.
+    // Swap the two arguments at the CALL SITE and the operand order follows:
+    // position is the contract, so a transposition is the caller's to avoid.
     let schema = cols(&[
         ("g", Ty::Str, true),
         ("price", Ty::F64, false),
@@ -1085,15 +1082,39 @@ fn tree_predict_resolves_struct_features_by_name() {
     ]);
     let params = stat("p0", &[("g", Ty::Str, true), ("est", Ty::I64, true)]);
     let p = prep_models(
-        "SELECT tree_predict('trees', p.est, struct_pack(sqft := t.sqft, price := t.price)) AS z \
+        "SELECT trees(p.est, t.sqft, t.price) AS z \
          FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
         &schema,
         &[params],
-        &[model("trees", &["sqft", "price"])],
+        &[model("trees", 2)],
     )
     .unwrap();
     let text = print(&p.program);
-    assert_eq!(feature_position_of_itof(&text), 0, "sqft is declared first:\n{text}");
+    assert_eq!(feature_position_of_itof(&text), 0, "sqft is passed first:\n{text}");
+}
+
+/// A tree transform and an ecall UDF share one call-site namespace, and the
+/// tree wins — the same name must never reach the Python trampoline once it
+/// is served natively. (`parse_udfs` refuses the collision at construction;
+/// this pins which side the binder would take if one ever got through.)
+#[test]
+fn a_tree_transform_outranks_a_same_named_ecall() {
+    let schema = cols(&[("price", Ty::F64, false), ("id", Ty::I64, false)]);
+    let p = super::prepare_opaque(
+        "SELECT trees(id, price) AS z FROM __THIS__",
+        "__THIS__",
+        &schema,
+        &[],
+        &[],
+        &[],
+        false,
+        &[udf("trees", &[Ty::I64, Ty::F64], &[Ty::F64])],
+        &[model("trees", 1)],
+    )
+    .unwrap();
+    let text = print(&p.program);
+    assert!(text.contains("predict @0,"), "must lower to the kernel:\n{text}");
+    assert!(!text.contains("ecall"), "must not lower to an ecall:\n{text}");
 }
 
 /// The declared grid, not the feature's type, decides how an integer reaches
@@ -1105,12 +1126,12 @@ fn tree_predict_resolves_struct_features_by_name() {
 #[test]
 fn compare_grid_selects_the_integer_conversion() {
     let schema = cols(&[("id", Ty::I64, false), ("n", Ty::I64, false)]);
-    let sql = "SELECT tree_predict('trees', id, struct_pack(n := n)) AS z FROM __THIS__";
+    let sql = "SELECT trees(id, n) AS z FROM __THIS__";
     for (grid, want, unwanted) in [
         (super::plan::CompareGrid::F32, "itof.f32 ", "= itof %"),
         (super::plan::CompareGrid::F64, "= itof %", "itof.f32 "),
     ] {
-        let p = prep_models(sql, &schema, &[], &[model_on("trees", &["n"], grid)]).unwrap();
+        let p = prep_models(sql, &schema, &[], &[model_on("trees", 1, grid)]).unwrap();
         let text = print(&p.program);
         assert!(text.contains(want), "{grid:?} must emit `{want}`:\n{text}");
         assert!(
@@ -1160,10 +1181,10 @@ fn feature_position_of_itof(text: &str) -> usize {
 fn only_the_model_id_makes_a_prediction_null() {
     let schema = cols(&[("price", Ty::F64, true), ("id", Ty::I64, false)]);
     let p = prep_models(
-        "SELECT tree_predict('trees', id, struct_pack(price := price)) AS z FROM __THIS__",
+        "SELECT trees(id, price) AS z FROM __THIS__",
         &schema,
         &[],
-        &[model("trees", &["price"])],
+        &[model("trees", 1)],
     )
     .unwrap();
     // id is NOT NULL, price IS — the output column must still be non-null.
@@ -1178,10 +1199,10 @@ fn only_the_model_id_makes_a_prediction_null() {
 
     let schema = cols(&[("price", Ty::F64, false), ("id", Ty::I64, true)]);
     let p = prep_models(
-        "SELECT tree_predict('trees', id, struct_pack(price := price)) AS z FROM __THIS__",
+        "SELECT trees(id, price) AS z FROM __THIS__",
         &schema,
         &[],
-        &[model("trees", &["price"])],
+        &[model("trees", 1)],
     )
     .unwrap();
     assert!(
@@ -1192,51 +1213,43 @@ fn only_the_model_id_makes_a_prediction_null() {
     assert!(!print(&p.program).contains("const.f64 nan"));
 }
 
+/// Refusals read exactly like an ordinary UDF's, because a tree transform IS
+/// one: arity counts the implicit instance id, and both the id and the
+/// features are type-checked by position.
 #[test]
-fn tree_predict_refuses_by_name() {
+fn tree_call_refuses_by_name() {
     let schema = cols(&[("price", Ty::F64, false), ("s", Ty::Str, false), ("id", Ty::I64, false)]);
-    let models = [model("trees", &["price", "sqft"])];
-    let one = [model("trees", &["price"])];
+    let two = [model("trees", 2)];
+    let one = [model("trees", 1)];
     let cases: &[(&str, &str, &[super::plan::ModelTable])] = &[
         (
-            "was not provided to prepare",
-            "SELECT tree_predict('nope', id, struct_pack(price := price)) FROM __THIS__",
+            "not in the v0 catalogue",
+            "SELECT nope(id, price) FROM __THIS__",
             &one,
         ),
         (
-            "no feature 'weight'",
-            "SELECT tree_predict('trees', id, struct_pack(weight := price)) FROM __THIS__",
+            "udf 'trees' takes 3 argument(s), the call passes 2",
+            "SELECT trees(id, price) FROM __THIS__",
+            &two,
+        ),
+        (
+            "udf 'trees' takes 2 argument(s), the call passes 3",
+            "SELECT trees(id, price, price) FROM __THIS__",
             &one,
         ),
         (
-            "missing feature(s): sqft",
-            "SELECT tree_predict('trees', id, struct_pack(price := price)) FROM __THIS__",
-            &models,
-        ),
-        (
-            "given twice",
-            "SELECT tree_predict('trees', id, struct_pack(price := price, PRICE := price)) \
-             FROM __THIS__",
+            "udf 'trees' takes 2 argument(s), the call passes 0",
+            "SELECT trees() FROM __THIS__",
             &one,
         ),
         (
-            "want a number",
-            "SELECT tree_predict('trees', id, struct_pack(price := s)) FROM __THIS__",
+            "udf 'trees' argument 2 is str, declared a number",
+            "SELECT trees(id, s) FROM __THIS__",
             &one,
         ),
         (
-            "must be a struct_pack",
-            "SELECT tree_predict('trees', id, price) FROM __THIS__",
-            &one,
-        ),
-        (
-            "exactly 3 arguments",
-            "SELECT tree_predict('trees', id) FROM __THIS__",
-            &one,
-        ),
-        (
-            "non-constant tree_predict model set",
-            "SELECT tree_predict(s, id, struct_pack(price := price)) FROM __THIS__",
+            "udf 'trees' argument 1 is str, declared the instance id",
+            "SELECT trees(s, price) FROM __THIS__",
             &one,
         ),
     ];

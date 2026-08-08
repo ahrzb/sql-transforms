@@ -302,7 +302,7 @@ def test_unaligned_string_offset_buffer():
 
 
 def test_unaligned_model_tables_at_construction():
-    """The other path: the `models=` decode runs once at build, not per
+    """The other path: the tree-table decode runs once at build, not per
     request, but it reads the same way."""
     out = _probe(
         """
@@ -323,18 +323,16 @@ def test_unaligned_model_tables_at_construction():
             "agg": pa.array(["sum"], pa.string()),
             "link": pa.array(["identity"], pa.string()),
         })
+        class M:
+            name, takes, returns, instances = "m", ("f64",), ("f64",), {0: None}
+            def tree_tables(self):
+                return nodes, headers, "float32"
+
         T = create_model("T", id=(int, ...), x=(float, ...))
         fn = DuckDBInferFn(
-            "SELECT tree_predict('m', id, struct_pack(x := x)) AS p FROM __THIS__",
+            "SELECT m(id, x) AS p FROM __THIS__",
             row_tables={"__THIS__": T}, static_tables={}, output="dict",
-            models={
-                "m": {
-                    "nodes": nodes,
-                    "models": headers,
-                    "features": ["x"],
-                    "compare_grid": "float32",
-                }
-            },
+            udfs=[M()],
         )
         got = fn.infer({"__THIS__": [T(id=0, x=0.0), T(id=0, x=1.0)]})
         assert [r["p"] for r in got] == [10.0, 20.0], got
