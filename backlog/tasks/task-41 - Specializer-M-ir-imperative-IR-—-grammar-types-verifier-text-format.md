@@ -1,10 +1,10 @@
 ---
 id: TASK-41
 title: 'Specializer M-ir: imperative IR — grammar, types, verifier, text format'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-25 02:31'
-updated_date: '2026-07-25 13:46'
+updated_date: '2026-08-08 03:38'
 labels: []
 milestone: m-7
 dependencies: []

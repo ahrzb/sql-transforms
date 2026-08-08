@@ -3,9 +3,10 @@ id: TASK-60
 title: >-
   Pyarrow input/output: infer_arrow(pa.Table) -> pa.Table — the columnar
   boundary
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-07-28 03:14'
+updated_date: '2026-08-08 03:38'
 labels:
   - specializer
   - columnar
@@ -25,9 +26,33 @@ Scope (v1, per the proposal's copy-first recommendation): fn.infer_arrow(batch) 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 infer_arrow serves arrow-in/arrow-out for all-scalar models with values byte-identical to infer() (differential test: infer_rows == infer_arrow converted, every serving scenario)
-- [ ] #2 Validity round-trips: NULLs in, NULLs out, incl. LEFT-join null-extensions under shape='many'
-- [ ] #3 Named rejections: multi-chunk, missing column, wrong dtype, struct/opaque model, constant path
-- [ ] #4 Measured: infer_arrow vs spec_dict vs python_dict on the serving scenarios (numbers in the PR)
-- [ ] #5 Full gates green on release build; PR opened
+- [x] #1 infer_arrow serves arrow-in/arrow-out for all-scalar models with values byte-identical to infer() (differential test: infer_rows == infer_arrow converted, every serving scenario)
+- [x] #2 Validity round-trips: NULLs in, NULLs out, incl. LEFT-join null-extensions under shape='many'
+- [x] #3 Named rejections: multi-chunk, missing column, wrong dtype, struct/opaque model, constant path
+- [x] #4 Measured: infer_arrow vs spec_dict vs python_dict on the serving scenarios (numbers in the PR)
+- [x] #5 Full gates green on release build; PR opened
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged as PR #47; the status flag was never flipped. Closed as bookkeeping,
+against the tree as it stands:
+
+- `packages/confit/src/duckdb/arrow.rs` is the boundary, and
+  `packages/confit/src/duckdb/mod.rs:1340` the binding. Ingest walks pyarrow's
+  raw buffers, output builds one array per column — no `arrow-rs` dependency,
+  as scoped.
+- `tests/test_infer_arrow.py` (**passes**) carries each AC by name:
+  `test_differential_basic_and_nulls`, `test_differential_every_serving_scenario`,
+  `test_differential_shape_many_left_join` (the LEFT-join null-extension),
+  `test_named_rejections`, `test_sliced_and_recordbatch_inputs`.
+- The five rejections are all in the tree: missing column (`arrow.rs:82`),
+  multi-chunk (`:93`), struct/opaque model (`:108`), wrong dtype (`:126`),
+  constant path (`mod.rs:1351`).
+- Numbers are written up in `docs/reports/performance-report.md` §4 rather than
+  only in the PR: at n ≥ 1024 the Arrow lane beats the row path on every
+  scenario (house_prices 5.31 ms → 2.80 ms per call), with the honest caveat
+  that at n = 64 pyarrow's fixed ~150 µs per call exceeds the saving, so this
+  is a large-batch lane and not a replacement.
+<!-- SECTION:NOTES:END -->
