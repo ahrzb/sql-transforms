@@ -41,6 +41,28 @@ pub struct StaticTable {
 pub struct ModelTable {
     pub name: String,
     pub features: Vec<String>,
+    pub grid: CompareGrid,
+}
+
+/// Which floating-point grid a model set's thresholds were fitted on, and
+/// therefore how an INTEGER feature must reach the comparison.
+///
+/// sklearn narrows a feature array to float32 before walking the tree, so its
+/// real test at each node is `float32(x) <= t`. That is a property of the
+/// library that packed the model, not of the engine — hence a declared field
+/// rather than a hardcoded assumption. `pack_trees` rewrites its thresholds
+/// onto the float32 grid (TASK-65) and declares `F32`; a packer for a library
+/// that compares in float64 declares `F64` and its integer features reach the
+/// compare exactly.
+///
+/// It belongs to the SET, not to a model within it: the model id is a runtime
+/// value (`tree_predict('m', id, ..)`), while the narrowing is a lowering
+/// decision made once at build. A per-model flag could only be honoured with
+/// a per-row branch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CompareGrid {
+    F32,
+    F64,
 }
 
 /// A struct row column flattened to scalar LANES at build time (TASK-56,

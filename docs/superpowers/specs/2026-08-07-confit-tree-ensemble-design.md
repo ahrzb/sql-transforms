@@ -330,17 +330,23 @@ pickle, no live model reference reaches the engine.
 `model_id` values are dense indices assigned by the builder; the params map's
 value column holds them.
 
-**As built**, one model set is a three-key mapping, not a bare pair:
+**As built**, one model set is a four-key mapping, not a bare pair:
 
 ```python
 DuckDBInferFn(sql, ..., models={"trees": {
     "nodes": nodes_table, "models": header_table, "features": ["price", "sqft"],
+    "compare_grid": "float32",
 }})
 ```
 
-`features` is the third key because the names describe the SET, not a row of
+`features` is a key because the names describe the SET, not a row of
 either table — and the struct call site resolves against them by name, so
-they have to be somewhere. `sql_transform._trees.pack(estimators, features)`
+they have to be somewhere. `compare_grid` is there for the same reason and is
+REQUIRED: it says which floating-point grid the thresholds were fitted on, so
+the engine knows whether an INTEGER feature must narrow through float32 on its
+way to the comparison (sklearn) or reach it exactly (a float64 library). It
+cannot live per-model, because the model id is a runtime value while the
+conversion is chosen once at lowering (TASK-77). `sql_transform._trees.pack(estimators, features)`
 produces exactly this mapping from fitted sklearn regressors.
 
 Decoding reuses the pyarrow buffer walk in `duckdb/arrow.rs` rather than

@@ -603,6 +603,7 @@ def test_where_guard_skips_an_unknown_model_trap():
             schema=MODEL_SCHEMA,
         ),
         "features": ["x"],
+        "compare_grid": "float32",
     }
     Row = create_model("Row", k=(int, ...), mid=(int, ...), x=(float, ...))
     sql = (
@@ -678,6 +679,7 @@ def _model_fn(nodes, agg="sum", link="identity", features=("x",)):
             schema=MODEL_SCHEMA,
         ),
         "features": list(features),
+        "compare_grid": "float32",
     }
     return DuckDBInferFn(
         "SELECT tree_predict('m', id, struct_pack(x := x)) AS p FROM __THIS__",

@@ -31,7 +31,9 @@ use sqlparser::parser::Parser;
 
 use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
-use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap};
+use super::plan::{
+    ArithOp, CompareGrid, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrepareError {
@@ -4050,17 +4052,26 @@ impl Binder<'_> {
                 None => null_of(Ty::F64),
                 Some(e) => match e.ty {
                     Ty::F64 => e,
-                    // NOT the ordinary promotion. sklearn's
-                    // `_validate_X_predict` narrows an integer feature array
-                    // to float32 in ONE step; `promote_f64` here would make
-                    // the value reaching the f32-grid compare
-                    // `float32(float64(n))`, two roundings, which above
-                    // 2**53 is a whole float32 ULP away from `float32(n)`.
-                    // Below 2**53 `float64(n)` is exact and the two are
-                    // identical, which is what makes this safe to apply to
-                    // every integer feature rather than only large ones
-                    // (TASK-77).
-                    Ty::I64 => narrow_f32(promote_f64(e)),
+                    // How an integer reaches the compare depends on the grid
+                    // the model set declared.
+                    //
+                    // On a float32 grid (sklearn) it must narrow in ONE step:
+                    // `_validate_X_predict` does `int64 -> float32`, whereas
+                    // `promote_f64` would give `float32(float64(n))` — two
+                    // roundings, a whole float32 ULP off above 2**53. Below
+                    // 2**53 `float64(n)` is exact and the two agree, which is
+                    // what makes the narrowing safe for every integer feature
+                    // rather than only large ones (TASK-77).
+                    //
+                    // On a float64 grid the integer reaches the compare
+                    // exactly, and narrowing it would throw away precision
+                    // that library had every right to keep (TASK-77's
+                    // follow-up: the grid is the PACKER's property, so it is
+                    // declared, not assumed).
+                    Ty::I64 => match decl.grid {
+                        CompareGrid::F32 => narrow_f32(promote_f64(e)),
+                        CompareGrid::F64 => promote_f64(e),
+                    },
                     other => {
                         return Err(PrepareError::Bind(format!(
                             "tree_predict feature '{fname}' is {}, want a number",

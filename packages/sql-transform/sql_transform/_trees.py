@@ -232,4 +232,11 @@ def pack_trees(estimators: Sequence[Any], features: Sequence[str]) -> dict[str, 
             }
         ),
         "features": features,
+        # The thresholds above went through `_f32_grid_threshold`, so this
+        # set's comparisons live on sklearn's float32 grid — which is also
+        # how the engine must convert an INTEGER feature to reach them. It is
+        # declared rather than assumed because it is a property of the packer:
+        # a packer for a library that compares in float64 skips the rewrite
+        # and says "float64", and its integer features stay exact.
+        "compare_grid": "float32",
     }
