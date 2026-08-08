@@ -87,9 +87,10 @@ class TreeUDF:
     these fixtures' thresholds imitate.
     """
 
-    def __init__(self, name, nodes, headers, n_features, grid):
+    def __init__(self, name, nodes, headers, n_features, grid, lane=None):
         self.name = name
-        self.takes = pa.schema([(f"f{i}", pa.float64()) for i in range(n_features)])
+        lane = lane or pa.float64()
+        self.takes = pa.schema([(f"f{i}", lane) for i in range(n_features)])
         self.returns = pa.float64()
         self.instances = dict.fromkeys(range(headers.num_rows))
         self._tables = (nodes, headers)
@@ -106,9 +107,12 @@ def ensemble(
     features: list[str],
     headers: list[dict[str, Any]] | None = None,
     grid: str | None = "float32",
+    lane: pa.DataType | None = None,
 ):
     """A model set, not yet named — `run` names it from the call site so the
-    existing `{"trees": ...}` fixtures keep reading the same way."""
+    existing `{"trees": ...}` fixtures keep reading the same way. `lane` is
+    the DECLARED feature type, which is what decides how an argument reaches
+    the comparison; it defaults to DOUBLE."""
     headers = headers or [
         {"model_id": 0, "base": 0.0, "agg": "sum", "link": "identity"}
     ]
@@ -118,6 +122,7 @@ def ensemble(
         pa.Table.from_pylist(headers, schema=MODEL_SCHEMA),
         len(features),
         grid,
+        lane,
     )
 
 
@@ -680,8 +685,8 @@ _GRID_SQL = "SELECT trees(id, n) AS p FROM __THIS__"
 _GRID_SCHEMA = {"id": "int", "n": "int"}
 
 
-def _grid_entry(grid):
-    return ensemble(_GRID_NODES, features=["n"], grid=grid)
+def _grid_entry(grid, lane=None):
+    return ensemble(_GRID_NODES, features=["n"], grid=grid, lane=lane)
 
 
 @pytest.mark.parametrize(
@@ -694,13 +699,32 @@ def _grid_entry(grid):
     ],
 )
 def test_compare_grid_decides_whether_an_integer_feature_narrows(grid, want, backend):
+    """The lane is DECLARED BIGINT — that is what makes it the one-step
+    conversion the grid governs. A declared DOUBLE lane is widened first (the
+    cast DuckDB would insert) and never reaches this branch."""
     got = run(
         _GRID_SQL,
         _GRID_SCHEMA,
         [{"id": 0, "n": _GRID_N}],
-        {"trees": _grid_entry(grid)},
+        {"trees": _grid_entry(grid, lane=pa.int64())},
     )
     assert [r["p"] for r in got] == [want]
+
+
+@pytest.mark.parametrize("grid", ["float32", "float64"])
+def test_a_declared_double_lane_widens_an_integer_argument(grid, backend):
+    """DuckDB casts a BIGINT argument to a declared DOUBLE before calling, so
+    the model sees `float64(n)` and the grid's integer narrowing must not
+    fire. Binding off the ARGUMENT's type instead (as this did) made the
+    engine disagree with both DuckDB and the class's own `__call__`."""
+    got = run(
+        _GRID_SQL,
+        _GRID_SCHEMA,
+        [{"id": 0, "n": _GRID_N}],
+        {"trees": _grid_entry(grid, lane=pa.float64())},
+    )
+    # float64(2**24 + 1) is exact and > T, so it goes right on both grids.
+    assert [r["p"] for r in got] == [20.0], grid
 
 
 def test_compare_grid_is_irrelevant_to_a_double_feature(backend):

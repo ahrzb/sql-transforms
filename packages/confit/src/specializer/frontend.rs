@@ -3988,25 +3988,35 @@ impl Binder<'_> {
         let Some((id, feats)) = args.split_first() else {
             return Err(PrepareError::Bind(format!(
                 "udf '{name}' takes {} argument(s), the call passes 0",
-                decl.n_features + 1
+                decl.takes.len() + 1
             )));
         };
-        if feats.len() != decl.n_features {
+        if feats.len() != decl.takes.len() {
             return Err(PrepareError::Bind(format!(
                 "udf '{name}' takes {} argument(s), the call passes {}",
-                decl.n_features + 1,
+                decl.takes.len() + 1,
                 args.len()
             )));
         }
 
         let mut bound: Vec<SExpr> = Vec::with_capacity(feats.len());
         for (i, fexpr) in feats.iter().enumerate() {
+            let want = decl.takes[i];
             // A bare NULL feature is legal and means "missing" — the model
             // has an answer for that. It types as f64 like any other.
             let e = match self.expr_or_null(fexpr)? {
                 None => null_of(Ty::F64),
-                Some(e) => match e.ty {
-                    Ty::F64 => e,
+                // The DECLARED type decides, not the argument's: DuckDB casts
+                // the argument to the declaration before calling, so a BIGINT
+                // column in a declared-DOUBLE lane reaches the model as
+                // `float64(n)` and narrows from there. An i64 argument in a
+                // declared-BIGINT lane is the only one that narrows in one
+                // step, and only on a float32 grid.
+                Some(e) => match (e.ty, want) {
+                    (Ty::F64, Ty::F64) => e,
+                    // DuckDB's implicit widening, exactly as `bind_udf_args`
+                    // does it for every other UDF.
+                    (Ty::I64, Ty::F64) => promote_f64(e),
                     // How an integer reaches the compare depends on the grid
                     // the model set declared.
                     //
@@ -4023,15 +4033,16 @@ impl Binder<'_> {
                     // that library had every right to keep (TASK-77's
                     // follow-up: the grid is the PACKER's property, so it is
                     // declared, not assumed).
-                    Ty::I64 => match decl.grid {
+                    (Ty::I64, Ty::I64) => match decl.grid {
                         CompareGrid::F32 => narrow_f32(promote_f64(e)),
                         CompareGrid::F64 => promote_f64(e),
                     },
-                    other => {
+                    (a, b) => {
                         return Err(PrepareError::Bind(format!(
-                            "udf '{name}' argument {} is {}, declared a number",
+                            "udf '{name}' argument {} is {}, declared {}",
                             i + 2,
-                            other.name()
+                            a.name(),
+                            b.name()
                         )))
                     }
                 },

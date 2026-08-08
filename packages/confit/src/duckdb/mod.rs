@@ -248,9 +248,14 @@ fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, V
     }
     if s.starts_with("fixed_size_list<") {
         let k: i64 = obj.getattr("list_size")?.extract()?;
-        if k < 1 {
+        // k == 1 is the one shape where the lane COUNT and the arrow SHAPE
+        // disagree: width-1 unnamed binds as a plain scalar expression here
+        // and registers as a scalar on DuckDB, so a value declared as a list
+        // would cross as its element.
+        if k < 2 {
             return Err(build_err(format!(
-                "udf '{name}': `returns` list size must be at least 1"
+                "udf '{name}': a width-1 list return is a scalar — declare the \
+                 element type rather than pa.list_(t, {k})"
             )));
         }
         let ty = arrow_ty(name, "returns", &obj.getattr("value_type")?)?;
@@ -306,7 +311,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
                     "udf '{name}': a tree transform scores at least one feature"
                 )));
             }
-            trees.push(parse_tree_udf(py, name, take_tys.len(), &b)?);
+            trees.push(parse_tree_udf(py, name, take_tys, &b)?);
             continue;
         }
         let (ret_names, rets) = parse_returns(&name, &b.getattr("returns").map_err(|_| {
@@ -568,7 +573,7 @@ struct TreeDecl {
     name: String,
     nodes: Py<PyAny>,
     headers: Py<PyAny>,
-    n_features: usize,
+    takes: Vec<Ty>,
     grid: super::specializer::plan::CompareGrid,
 }
 
@@ -582,7 +587,7 @@ struct TreeDecl {
 fn parse_tree_udf(
     py: Python<'_>,
     name: String,
-    n_features: usize,
+    takes: Vec<Ty>,
     obj: &Bound<'_, PyAny>,
 ) -> PyResult<TreeDecl> {
     let got = obj
@@ -608,7 +613,7 @@ fn parse_tree_udf(
         name,
         nodes,
         headers,
-        n_features,
+        takes,
         grid,
     })
 }
@@ -1289,7 +1294,7 @@ impl DuckDBInferFn {
             .iter()
             .map(|t| super::specializer::plan::ModelTable {
                 name: t.name.clone(),
-                n_features: t.n_features,
+                takes: t.takes.clone(),
                 grid: t.grid,
             })
             .collect();

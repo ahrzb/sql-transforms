@@ -662,7 +662,7 @@ def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
         static_tables={},
         udfs=[
             TreeBasedTransform(
-                "m", instances={0: est}, takes=pa.schema([("n", pa.float64())])
+                "m", instances={0: est}, takes=pa.schema([("n", pa.int64())])
             )
         ],
     )
@@ -670,6 +670,44 @@ def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
     got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n) for n in probes]})]
     want = list(est.predict(np.array([[n] for n in probes], dtype=np.int64)))
     assert got == want, f"engine {got} vs sklearn {want} (int64 features)"
+
+
+@pytest.mark.parametrize("declared", [pa.int64(), pa.float64()])
+def test_call_and_kernel_agree_on_an_integer_feature_above_2_53(declared):
+    """`__call__` IS the DuckDB binding and the semantic contract the kernel is
+    gated against, so the two must agree — and the sweep found they did not.
+
+    `__call__` built its array with `float(f)`, so sklearn's own float32
+    narrowing became a SECOND rounding, while the kernel narrows once
+    (`itof.f32`, TASK-77). Above 2**53 that is a whole float32 ULP and a whole
+    leaf. Both declarations are checked because they are different right
+    answers, not one: a declared BIGINT reaches sklearn as an int64 and
+    narrows once, while a declared DOUBLE is cast by DuckDB first and narrows
+    from the double — the engine must follow the DECLARATION, not the column.
+    """
+    from pydantic import create_model as _cm
+
+    est, mid = _int_split_model()
+    n = mid + 1
+    u = TreeBasedTransform("m", instances={0: est}, takes=pa.schema([("n", declared)]))
+
+    as_int = est.predict(np.array([[n]], dtype=np.int64))[0]
+    as_dbl = est.predict(np.array([[n]], dtype=np.float64))[0]
+    assert as_int != as_dbl, "the probe must sit where the two roundings differ"
+    want = as_int if declared == pa.int64() else as_dbl
+
+    assert u(0, n) == (want,), "__call__ (the contract, and DuckDB's binding)"
+
+    row = _cm("IntRow", id=(int, ...), n=(int, ...))
+    fn = DuckDBInferFn(
+        "SELECT m(id, n) AS p FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+        udfs=[u],
+    )
+    assert fn.backend == "cranelift"
+    got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n)]})]
+    assert got == [want], f"kernel {got} vs contract {want}"
 
 
 def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
@@ -719,7 +757,7 @@ def test_integer_feature_literal_is_narrowed_too():
         static_tables={},
         udfs=[
             TreeBasedTransform(
-                "m", instances={0: est}, takes=pa.schema([("n", pa.float64())])
+                "m", instances={0: est}, takes=pa.schema([("n", pa.int64())])
             )
         ],
     )

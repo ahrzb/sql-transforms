@@ -40,7 +40,13 @@ pub struct StaticTable {
 #[derive(Clone, Debug)]
 pub struct ModelTable {
     pub name: String,
-    pub n_features: usize,
+    /// The DECLARED feature types, in call order — the same `takes` every
+    /// other UDF is bound against. Binding against the argument's own type
+    /// instead would make the engine disagree with both DuckDB (which casts
+    /// to the declaration) and the class's own `__call__` (which narrows an
+    /// integer lane in one step): a declared DOUBLE handed a BIGINT column
+    /// must reach the model as `float64(n)`, a declared BIGINT as `n`.
+    pub takes: Vec<Ty>,
     pub grid: CompareGrid,
 }
 

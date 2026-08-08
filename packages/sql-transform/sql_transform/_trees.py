@@ -240,6 +240,26 @@ def _pack(
     )
 
 
+def _as_grid_value(f: Any, declared: str) -> float:
+    """One feature value as the double the model will actually compare.
+
+    A BIGINT feature must reach float32 in ONE rounding — that is what
+    sklearn's `_validate_X_predict` does to an integer feature array, and
+    what the engine's `itof.f32` does (TASK-77). Going through `float(n)`
+    first rounds twice and lands a whole float32 ULP away above `2**53`,
+    which is a whole leaf.
+
+    `np.float32(n)` is NOT that conversion: the scalar constructor rounds via
+    float64, so only the array `astype` reproduces it. A DOUBLE feature is
+    already the double DuckDB would cast it to, and is passed through.
+    """
+    if f is None:
+        return np.nan
+    if declared == "i64":
+        return float(np.array([f], dtype=np.int64).astype(np.float32)[0])
+    return float(f)
+
+
 @dataclass(frozen=True)
 class TreeBasedTransform(UDF):
     """A fitted tree ensemble as a UDF — `PythonTransform`'s native sibling.
@@ -329,10 +349,10 @@ class TreeBasedTransform(UDF):
                 " instances — params table and instances are from"
                 " different fits"
             ) from None
-        x = np.array(
-            [[np.nan if f is None else float(f) for f in feats]], dtype=np.float64
-        )
-        return (float(est.predict(x)[0]),)
+        row = [
+            _as_grid_value(f, t) for f, t in zip(feats, self.take_types, strict=True)
+        ]
+        return (float(est.predict(np.array([row], dtype=np.float64))[0]),)
 
     def _duck_signature(self) -> tuple[list[str], str]:
         params, ret = super()._duck_signature()

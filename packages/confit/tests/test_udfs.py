@@ -15,6 +15,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from sql_transform._udf import UDF
 from test_duckdb_interpreter import _row_model, static
 
 
@@ -46,6 +47,65 @@ def test_a_udf_may_not_take_a_builtin_name(name):
             row_tables={"__THIS__": model},
             static_tables={},
             udfs=[u],
+        )
+
+
+@pytest.mark.parametrize(
+    ("lane", "vals"),
+    [
+        (pa.int64(), (2**53 + 1, 2**53 + 3)),  # two doubles cannot tell these apart
+        (pa.int64(), (2**60 + 1, 2**60 + 2)),
+        (pa.bool_(), (False, True)),
+        (pa.string(), ("s0", "s1")),
+        (pa.float64(), (1.5, -0.0)),
+    ],
+)
+def test_an_unnamed_width_k_return_honours_its_lane_type(lane, vals):
+    """`returns=pa.list_(t, k)` registered on DuckDB as `DOUBLE[]` whatever `t`
+    said, so an int64 lane came back rounded through a double while the engine
+    served the integer."""
+
+    class Pack(UDF):
+        name = "pk"
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.list_(lane, 2)
+
+        def __call__(self, x):
+            return vals
+
+    got = udf_check(
+        "SELECT pk(x) AS p FROM __THIS__",
+        {"x": "float"},
+        [{"x": 1.0}],
+        {},
+        [Pack()],
+        output="dict",
+    )
+    assert got == [{"p": list(vals)}], got
+
+
+def test_a_width_one_list_return_refuses():
+    """`pa.list_(t, 1)` is the one shape where the lane COUNT and the arrow
+    SHAPE disagree: the engine serves width-1 unnamed as a plain scalar
+    everywhere, and DuckDB was told a scalar too, so a value declared as a
+    list crossed as its element. There is no 1-element list boundary to serve
+    it on and no reason to build one — `pa.float64()` is what it means."""
+
+    class One(UDF):
+        name = "one"
+        takes = pa.schema([("x", pa.float64())])
+        returns = pa.list_(pa.float64(), 1)
+
+        def __call__(self, x):
+            return (x,)
+
+    model = _row_model({"x": "float"})
+    with pytest.raises(Exception, match="width-1 list.*scalar"):
+        DuckDBInferFn(
+            "SELECT one(x) AS p FROM __THIS__",
+            row_tables={"__THIS__": model},
+            static_tables={},
+            udfs=[One()],
         )
 
 
@@ -153,13 +213,14 @@ def _scalar_form(obj):
 
     names, types = _lanes(obj)
     rn = names if len(types) > 1 else None
+    listy = pa.types.is_fixed_size_list(obj.returns)
 
     def unwrap(out):
         if out is None:
             return None
-        if len(out) == 1:
-            return out[0]
-        return dict(zip(rn, out, strict=True)) if rn else list(out)
+        if rn:
+            return dict(zip(rn, out, strict=True))
+        return list(out) if listy else out[0]
 
     n = len(obj.takes) + (1 if hasattr(obj, "instances") else 0)
     args = ", ".join(f"a{i}" for i in range(n))
@@ -204,10 +265,13 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, output=None, after_engin
             ret = duckdb.struct_type(
                 {n: _DUCK_T[t] for n, t in zip(rn, rt, strict=True)}
             )
-        elif len(rt) == 1:
-            ret = _DUCK_T[rt[0]]
+        elif pa.types.is_fixed_size_list(u.returns):
+            # A LIST at every width including 1, with the DECLARED lane type
+            # — `DOUBLE[]` regardless would round an int64 lane through a
+            # double on this side only.
+            ret = f"{_DUCK_T[rt[0]]}[]"
         else:
-            ret = "DOUBLE[]"
+            ret = _DUCK_T[rt[0]]
         con.create_function(
             u.name, _scalar_form(u), params, ret, null_handling="special"
         )

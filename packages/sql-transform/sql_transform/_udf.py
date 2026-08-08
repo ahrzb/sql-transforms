@@ -68,8 +68,16 @@ def _lanes(name: str, returns: pa.DataType) -> tuple[tuple[str, ...], tuple[str,
             tuple(_code(name, "returns", f.type) for f in fields),
         )
     if pa.types.is_fixed_size_list(returns):
-        if returns.list_size < 1:
-            raise UDFError(f"UDF {name}: returns list size must be at least 1")
+        # k == 1 is the one shape where the lane COUNT and the arrow SHAPE
+        # disagree: width-1 unnamed is a plain scalar everywhere downstream
+        # (the engine serves it as one, DuckDB is registered for one), so a
+        # value declared as a list would cross as its element.
+        if returns.list_size < 2:
+            raise UDFError(
+                f"UDF {name}: a width-1 list return is a scalar — declare"
+                f" {returns.value_type} rather than pa.list_({returns.value_type},"
+                f" {returns.list_size})"
+            )
         return (), (_code(name, "returns", returns.value_type),) * returns.list_size
     if pa.types.is_list(returns) or pa.types.is_large_list(returns):
         raise UDFError(
@@ -206,9 +214,15 @@ class UDF:
             return params, duckdb.struct_type(
                 {n: _DUCK[t] for n, t in zip(names, rets, strict=True)}
             )
-        if len(rets) == 1:
-            return params, _DUCK[rets[0]]
-        return params, "DOUBLE[]"
+        if pa.types.is_fixed_size_list(self.returns):
+            # A LIST at every width including 1 — the declaration's SHAPE is
+            # what crosses, not its lane count, and the lane TYPE is the one
+            # declared. Registering this as `DOUBLE[]` regardless (as it was)
+            # rounds an int64 lane through a double on the DuckDB side while
+            # the engine serves the integer, and at k=1 leaves the two sides
+            # disagreeing about the shape as well.
+            return params, f"{_DUCK[rets[0]]}[]"
+        return params, _DUCK[rets[0]]
 
     def _arrow_ret(self) -> pa.DataType:
         """The return type as arrow, mirroring ``_duck_signature``.
