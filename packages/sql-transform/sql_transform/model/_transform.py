@@ -46,6 +46,7 @@ from sql_transform.model._ast import (
     _deserialize,
     _functions,
     _is_query,
+    _is_ref,
     _list_of,
     _rename_free,
     _rename_functions,
@@ -147,6 +148,31 @@ def _argument(arg: Node, scope: dict[str, Any], captured: Captured) -> tuple[Nod
     )
 
 
+RESERVED = "__"
+
+
+def _reserve(name: str, what: str) -> None:
+    """Refuse a name under the model's own prefix.
+
+    P8, finally implemented for this model: everything synthesized lives under
+    ``__`` — ``__param_0``, ``__param_fit``, ``{name}__x{token}`` — so an
+    authored name there can silently mean the model's relation instead of the
+    author's. It did: a captured binding called ``__param_0`` lost to the
+    frozen parameter with no error at all.
+
+    The whole prefix rather than ``__param_`` alone, so nothing has to be kept
+    in step as more names get synthesized. ``__FIT__`` and ``__THIS__`` are
+    the exception — they are the two parameters, and are the only ``__`` names
+    an author may write.
+    """
+    if name.startswith(RESERVED) and name.upper() not in (FIT, THIS):
+        raise TransformError(
+            f"{what} {name!r} starts with {RESERVED!r}, which is reserved: "
+            f"every name the model synthesizes lives there. Only {FIT} and "
+            f"{THIS} are yours to write."
+        )
+
+
 def _resolve(
     doc: Node,
     scope: dict[str, Any],
@@ -194,6 +220,7 @@ def _resolve(
                     f"a CTE may not be named {entry['key']!r}: {FIT} and "
                     f"{THIS} are the transform's two parameters"
                 )
+            _reserve(entry["key"], "a CTE named")
             body = entry["value"]["query"]["node"]
             # A RECURSIVE CTE is in scope inside its own body; a plain one is
             # not, where the same name means whatever the caller's frame binds.
@@ -209,6 +236,12 @@ def _resolve(
         for _, _, v in list(_under(node, deep=False)):
             if _is_query(v):
                 walk(v, ctes)
+        for _, _, v in list(_under(node, deep=False)):
+            if _is_ref(v):
+                if alias := v.get("alias"):
+                    _reserve(alias, "an alias named")
+                if (named := v.get("table_name")) and named not in ctes:
+                    _reserve(named, "a relation named")
         for parent, key, v in list(_under(node, deep=False)):
             match v:
                 case {"type": "TABLE_FUNCTION", "function": {"function_name": call}}:
