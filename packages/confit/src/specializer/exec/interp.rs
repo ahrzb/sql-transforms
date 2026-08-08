@@ -1916,7 +1916,8 @@ fn compile_inst(
                 let x = as_f64(ctx.regs[a]);
                 let r = match mode {
                     RoundMode::Trunc => x.trunc(),
-                    RoundMode::Round => x.round(), // half away from zero
+                    // half to EVEN — DuckDB's cast, not the round() builtin
+                    RoundMode::Nearest => x.round_ties_even(),
                 };
                 // 2^63 is exactly representable; anything in [-2^63, 2^63)
                 // fits i64 after rounding.

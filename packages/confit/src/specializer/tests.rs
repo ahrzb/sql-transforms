@@ -298,11 +298,17 @@ fn cast_matrix() {
         input(),
     )
     .unwrap();
-    // ' 5' trims (DuckDB CAST); -2.5 rounds half-away to -3; 2 -> true,
+    // ' 5' trims (DuckDB CAST); -2.5 rounds half-to-EVEN to -2; 2 -> true,
     // 0 -> false; TRY_CAST failures -> NULL.
+    //
+    // The -2 is measured, and the earlier -3 here was measured WRONG: a bare
+    // `CAST(-2.5 AS BIGINT)` in DuckDB is a DECIMAL cast (half away from
+    // zero, -3), while `f` is a DOUBLE column and DOUBLE->BIGINT is
+    // half-to-even (-2). Check DOUBLE casts with a DOUBLE, never a literal
+    // (TASK-70).
     assert_eq!(
         got,
-        rows(&[&["5", "-3", "true", "false", "true", "-2.5", "NULL", "NULL"]])
+        rows(&[&["5", "-2", "true", "false", "true", "-2.5", "NULL", "NULL"]])
     );
 }
 

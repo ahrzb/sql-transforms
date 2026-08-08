@@ -69,7 +69,7 @@ fn fixtures_cover_every_opcode() {
         "select",
         "itof",
         "ftoi.trunc",
-        "ftoi.round",
+        "ftoi.nearest",
         "itos",
         "ftos",
         "stoi.opt",

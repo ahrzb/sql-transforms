@@ -88,7 +88,12 @@ bool. Measured consequences:
 - **DECIMAL literals are f64** — a documented divergence: DuckDB types
   `1.5` as `DECIMAL(2,1)` and does decimal arithmetic; we map to f64.
   Values agree on every corpus case; exact-decimal accumulation semantics
-  are not reproduced.
+  are not reproduced. One visible consequence: `CAST(-2.5 AS BIGINT)` on
+  the bare literal is a DECIMAL cast in DuckDB (half away from zero, `-3`)
+  and a DOUBLE cast for us (half to even, `-2`). Casting a DOUBLE *column*
+  agrees exactly — measure DOUBLE cast behaviour with a DOUBLE column or an
+  explicit `::DOUBLE`, never with a literal, or you will pin the wrong
+  rounding mode (TASK-70 did).
 - Narrow integer widths don't exist: bitwise ops compute in i64, which
   matches DuckDB whenever either operand is BIGINT (always true for
   row-model ints). Explicit narrow CASTs are rejected rather than

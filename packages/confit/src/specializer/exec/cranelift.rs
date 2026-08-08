@@ -391,8 +391,13 @@ fn encode_pred(p: CmpPred) -> i64 {
     }
 }
 
-extern "C" fn h_ftoi(p: *mut Cx, x: f64, round: i64) -> i64 {
-    let r = if round != 0 { x.round() } else { x.trunc() };
+extern "C" fn h_ftoi(p: *mut Cx, x: f64, nearest: i64) -> i64 {
+    // Mirrors interp: `nearest` is half-to-even (DuckDB's cast rounding).
+    let r = if nearest != 0 {
+        x.round_ties_even()
+    } else {
+        x.trunc()
+    };
     // Mirrors interp: 2^63 is exactly representable; [-2^63, 2^63) fits.
     if r.is_finite() && r >= -(2f64.powi(63)) && r < 2f64.powi(63) {
         r as i64
@@ -1596,7 +1601,7 @@ fn translate_inst(
             vals.insert(dst.0, V::S(v));
         }
         Inst::Ftoi { mode, dst, a } => {
-            let r = icon(b, matches!(mode, RoundMode::Round) as i64);
+            let r = icon(b, matches!(mode, RoundMode::Nearest) as i64);
             let v = call_h(b, module, "h_ftoi", &[cxp, vals[&a.0].s(), r]).unwrap();
             trap_check(b);
             vals.insert(dst.0, V::S(v));

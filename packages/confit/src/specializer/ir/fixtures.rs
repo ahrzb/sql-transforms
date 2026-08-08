@@ -69,7 +69,7 @@ join(%label: str):
 
 /// The cast family and scalar statics; a failed parse traps (SQL CAST
 /// semantics — TRY_CAST lowers to a select instead).
-/// Covers: stoi.opt, sload, sload.opt, ftoi.round, ftoi.trunc, isub, ftos,
+/// Covers: stoi.opt, sload, sload.opt, ftoi.nearest, ftoi.trunc, isub, ftos,
 /// sconcat, scmp, trap.
 pub const CASTS: &str = r#"
 static @0: scalar<f64>
@@ -82,7 +82,7 @@ entry:
   brif %ok, good, bad
 good:
   %base = sload @0
-  %r1 = ftoi.round %base
+  %r1 = ftoi.nearest %base
   %t1 = ftoi.trunc %base
   %d = isub %r1, %t1
   %pf, %pv = sload.opt @1
