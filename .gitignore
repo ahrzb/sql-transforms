@@ -31,3 +31,6 @@ wheels/
 **/confit/_engine*.so
 **/confit/_engine*.pyd
 **/confit/_engine*.pdb
+
+# Differential fuzz harness scratch (candidate logs, repro probes)
+scripts/fuzz/output/
