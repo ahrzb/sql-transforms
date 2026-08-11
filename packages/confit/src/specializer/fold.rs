@@ -273,10 +273,49 @@ pub fn fold(e: SExpr) -> SExpr {
         }
         SKind::And { a, b } => kleene(true, *a, *b, ty, nullable),
         SKind::Or { a, b } => kleene(false, *a, *b, ty, nullable),
-        SKind::Case { arms, default } => e(SKind::Case {
-            arms: arms.into_iter().map(|(c, r)| (fold(c), fold(r))).collect(),
-            default: default.map(|d| Box::new(fold(*d))),
-        }),
+        SKind::Case { arms, default } => {
+            let arms: Vec<_> = arms
+                .into_iter()
+                .map(|(c, r)| (fold(c), fold(r)))
+                .collect();
+            let default = default.map(|d| Box::new(fold(*d)));
+            // TASK-87 face D: constant CONDITIONS select at fold time,
+            // exactly the runtime walk — a FALSE/NULL condition drops its
+            // arm, the first TRUE condition commits to its (already
+            // folded, never evaluated-early) arm. DuckDB folds this and
+            // then elides trapping siblings of a NULL result; leaving the
+            // CASE unfolded hid that NULL from the TASK-85 strict-op
+            // check. Arm VALUES still never fold themselves here — only
+            // the selection runs, which is what the runtime does anyway.
+            let mut kept = Vec::new();
+            for (c, r) in arms {
+                match &c.kind {
+                    SKind::Lit(Lit::I1(true)) => {
+                        if kept.is_empty() {
+                            return r; // first arm wins, whole CASE gone
+                        }
+                        // TRUE after dynamic arms: it IS the default now
+                        return e(SKind::Case {
+                            arms: kept,
+                            default: Some(Box::new(r)),
+                        });
+                    }
+                    SKind::Lit(Lit::I1(false)) | SKind::NullOf => continue,
+                    _ => kept.push((c, r)),
+                }
+            }
+            if kept.is_empty() {
+                // every arm dropped: the default, or SQL's implicit NULL
+                return match default {
+                    Some(d) => *d,
+                    None => null(ty),
+                };
+            }
+            e(SKind::Case {
+                arms: kept,
+                default,
+            })
+        }
         SKind::Cast { inner, trying } => e(SKind::Cast {
             inner: Box::new(fold(*inner)),
             trying,

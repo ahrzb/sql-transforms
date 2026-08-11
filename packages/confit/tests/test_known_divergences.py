@@ -1176,3 +1176,88 @@ def test_a_null_string_with_an_integer_count_still_serves():
     )
     got = [r.model_dump() for r in fn.infer({"__THIS__": [_PadRow(k=2, s="ab")]})]
     assert got == [{"o": None, "p": None}]
+
+
+# TASK-87 (fuzz round 2, 2026-08-11). DuckDB's constant folder decides
+# trap-or-serve at PLAN time; the engine decided per row. Four faces, each
+# re-measured directly (two first inferences were wrong -- the measurements
+# in the ticket are the authority): a trapping constant errors there over
+# ZERO rows; literal integer comparisons fold through wide arithmetic there;
+# a dead-range BETWEEN is eliminated in WHERE (and ONLY in WHERE); a folded
+# constant CASE landing on NULL joins the TASK-85 elision.
+
+_CfRow = create_model("_CfRow", s=(str, ...), x=(float, ...))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A: trapping constant -> duck errors on every execution
+        "SELECT nullif(CAST('one' AS DOUBLE), -1.5e0) AS o FROM __THIS__",
+        # B: literal i64 overflow reaching a non-comparison context
+        "SELECT (9223372036854775807 * -50) AS o FROM __THIS__",
+    ],
+)
+def test_a_trapping_constant_refuses_at_build(sql):
+    with pytest.raises(ValueError, match="constant|overflows"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _CfRow}, static_tables={})
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    ("sql", "rows", "want"),
+    [
+        # B: comparison over literal arithmetic folds like duck's wide math
+        (
+            "SELECT (9223372036854775807 > (9223372036854775807 * -50)) AS o"
+            " FROM __THIS__",
+            [{"s": "one", "x": -2.0}],
+            [{"o": True}],
+        ),
+        # C: dead-range BETWEEN in WHERE eliminates the trapping operand
+        (
+            "SELECT s AS o FROM __THIS__ WHERE (CAST(s AS BIGINT) BETWEEN 22 AND 10)",
+            [{"s": "one", "x": -2.0}],
+            [],
+        ),
+        # D: constant CASE folds to NULL, sqrt sibling eliminated (TASK-85)
+        (
+            "SELECT ((CASE WHEN TRUE THEN NULL WHEN FALSE THEN -2.5e0 END)"
+            " * sqrt(-83.025e0)) AS o FROM __THIS__",
+            [{"s": "one", "x": -2.0}],
+            [{"o": None}],
+        ),
+    ],
+)
+def test_plan_time_folds_match_duckdb(sql, rows, want, backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _CfRow}, static_tables={})
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_CfRow(**r) for r in rows]})]
+    assert got == want, got
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (s VARCHAR, x DOUBLE)")
+    con.executemany(
+        "INSERT INTO __THIS__ VALUES (?, ?)", [(r["s"], r["x"]) for r in rows]
+    )
+    assert con.execute(sql).to_arrow_table().to_pylist() == want
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
+    """MEASURED split: the dead-range elimination is FILTER-side only —
+    in a projection DuckDB evaluates the operand and traps, so must we."""
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    fn = DuckDBInferFn(
+        "SELECT (CAST(s AS BIGINT) BETWEEN 22 AND 10) AS o FROM __THIS__",
+        row_tables={"__THIS__": _CfRow},
+        static_tables={},
+    )
+    with pytest.raises(Exception, match="cast|convert"):
+        fn.infer({"__THIS__": [_CfRow(s="one", x=1.0)]})
