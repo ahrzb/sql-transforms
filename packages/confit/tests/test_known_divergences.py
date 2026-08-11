@@ -877,3 +877,62 @@ def test_unmodified_scalar_calls_still_build():
     )
     rows = fn.infer({"__THIS__": [_ModRow(k=-2, s="x")]})
     assert [r.model_dump() for r in rows] == [{"a": 2, "u": "X", "m": 1.0}]
+
+
+# TASK-85 (fuzz campaign 2026-08-11, ~20 findings). DuckDB constant-folds a
+# STRICT operator with a literal-NULL operand to NULL at optimize time, so a
+# trapping sibling under it simply never executes -- `ln(c) + (c - NULL)`
+# returns NULL rows where the engine eagerly evaluated ln(negative) and
+# trapped. Measured before fixing: the elimination is literal-NULL only; a
+# RUNTIME NULL operand does NOT elide the trap on DuckDB either (`ln(c) + d`
+# with d NULL still errors there), so eager evaluation already matches for
+# those and only the build-time fold was missing. AND/OR are untouched: they
+# are not strict (NULL AND FALSE is FALSE), and they never routed through the
+# folded sites.
+
+_NfRow = create_model("_NfRow", x=(float, ...), k=(int, ...), s=(str, ...))
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    ("sql", "want"),
+    [
+        ("SELECT (ln(x) + (x - NULL)) AS o FROM __THIS__", None),
+        ("SELECT ((9223372036854775807 + k) * (k - NULL)) AS o FROM __THIS__", None),
+        ("SELECT (ln(x) < NULL) AS o FROM __THIS__", None),
+        ("SELECT (lpad(s, 2147483647, s) = NULL) AS o FROM __THIS__", None),
+        # control: the trap itself is still live when nothing folds it away
+    ],
+)
+def test_a_null_operand_elides_a_trapping_sibling(sql, want, backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NfRow}, static_tables={})
+    rows = [{"x": -2.0, "k": 1, "s": "a"}]
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_NfRow(**r) for r in rows]})]
+    assert got == [{"o": want}], got
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (x DOUBLE, k BIGINT, s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES (-2.0, 1, 'a')")
+    assert con.execute(sql).fetchall() == [(want,)]
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_the_trap_stays_live_without_a_null_to_fold(backend, monkeypatch):
+    """The fold must not grow into lazy evaluation: a RUNTIME NULL does not
+    elide the trap on DuckDB, and must not here either."""
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    _NfRow2 = create_model("_NfRow2", x=(float, ...), d=(float | None, None))
+    fn = DuckDBInferFn(
+        "SELECT (ln(x) + d) AS o FROM __THIS__",
+        row_tables={"__THIS__": _NfRow2},
+        static_tables={},
+    )
+    with pytest.raises(Exception, match="logarithm"):
+        fn.infer({"__THIS__": [_NfRow2(x=-2.0, d=None)]})
