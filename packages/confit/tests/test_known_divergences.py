@@ -1144,3 +1144,35 @@ def test_negative_zero_keeps_its_sign(sql, rows, backend, monkeypatch):
     want = con.execute(sql).to_arrow_table().to_pylist()
     key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
     assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
+
+
+# TASK-82 follow-up (certification campaign 2026-08-11, seed 1589): the
+# count check ran AFTER the NULL short-circuit, so a bare-NULL string let a
+# BIGINT count slip through -- lpad(NULL, c1, 'x') served NULL where DuckDB
+# still binder-errors on the count. The count check now runs first. A NULL
+# string with an INTEGER-shaped count stays served: DuckDB types that
+# VARCHAR (measured -- lpad has no BLOB overload, unlike repeat).
+
+
+def test_a_null_string_does_not_smuggle_a_bigint_pad_count():
+    with pytest.raises(ValueError, match="lpad"):
+        DuckDBInferFn(
+            "SELECT lpad(NULL, k, 'x') AS o FROM __THIS__",
+            row_tables={"__THIS__": _PadRow},
+            static_tables={},
+        )
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
+    with pytest.raises(Exception, match="No function matches"):
+        con.execute("SELECT lpad(NULL, k, 'x') AS o FROM __THIS__")
+
+
+def test_a_null_string_with_an_integer_count_still_serves():
+    fn = DuckDBInferFn(
+        "SELECT lpad(NULL, 3, 'x') AS o, rpad(NULL, 3, 'x') AS p FROM __THIS__",
+        row_tables={"__THIS__": _PadRow},
+        static_tables={},
+    )
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_PadRow(k=2, s="ab")]})]
+    assert got == [{"o": None, "p": None}]
