@@ -936,3 +936,61 @@ def test_the_trap_stays_live_without_a_null_to_fold(backend, monkeypatch):
     )
     with pytest.raises(Exception, match="logarithm"):
         fn.infer({"__THIS__": [_NfRow2(x=-2.0, d=None)]})
+
+
+# TASK-82 (fuzz campaign 2026-08-11, 169 of 963 findings). DuckDB's lpad and
+# rpad take INTEGER, and its binder does NOT implicitly downcast: a BIGINT
+# count -- a row column, or even 2::BIGINT -- is a binder error there, while
+# this engine's single integer width bound it happily and served what the
+# oracle refuses. The count now binds only when it is spelled a way DuckDB
+# types INTEGER or narrower: an int32-range literal (possibly under
+# +,-,*,%,parens), or an EXPLICIT cast to INTEGER or narrower -- the
+# documented spelling for a column count. A bare column or a BIGINT cast
+# refuses. repeat and substr take BIGINT on DuckDB and are untouched.
+
+_PadRow = create_model("_PadRow", k=(int, ...), s=(str, ...))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT lpad(s, k, 'x') AS o FROM __THIS__",
+        "SELECT rpad(s, k, 'x') AS o FROM __THIS__",
+        "SELECT lpad(s, CAST(2 AS BIGINT), 'x') AS o FROM __THIS__",
+        "SELECT lpad(s, 3000000000, 'x') AS o FROM __THIS__",
+    ],
+)
+def test_a_bigint_pad_count_refuses_like_duckdb(sql):
+    with pytest.raises(ValueError, match="lpad|rpad"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _PadRow}, static_tables={})
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
+    with pytest.raises(Exception, match="No function matches|out of range"):
+        con.execute(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT lpad(s, 4, 'x') AS o FROM __THIS__",
+        "SELECT lpad(s, (1 + 3), 'x') AS o FROM __THIS__",
+        "SELECT rpad(s, -2, 'x') AS o FROM __THIS__",
+        "SELECT lpad(s, CAST(k AS INTEGER), 'x') AS o FROM __THIS__",
+        "SELECT repeat(s, k) AS o FROM __THIS__",
+    ],
+)
+def test_integer_shaped_counts_still_bind_and_match(sql):
+    """The spellings DuckDB types INTEGER keep building — and keep matching:
+    literals, constant arithmetic, negatives; repeat's count is BIGINT on
+    DuckDB and stays column-friendly."""
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _PadRow}, static_tables={})
+    rows = [{"k": 2, "s": "ab"}]
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_PadRow(**r) for r in rows]})]
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
+    want = con.execute(sql).to_arrow_table().to_pylist()
+    assert got == want, f"{got} != {want}"

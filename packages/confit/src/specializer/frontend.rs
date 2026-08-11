@@ -4690,6 +4690,22 @@ impl Binder<'_> {
                         bp.ty.name()
                     )));
                 }
+                // TASK-82: DuckDB's {l,r}pad count is INTEGER and its binder
+                // does NOT downcast — a BIGINT column or even 2::BIGINT is a
+                // binder error there, while our single integer width bound
+                // anything i64 and served what the oracle refuses (169 of
+                // the campaign's 963 findings). Bind only what DuckDB types
+                // INTEGER: an int32-range literal spelling, never a cast,
+                // never a column. Refusing spellings DuckDB happens to
+                // accept (k::INTEGER) is the contract-permitted direction.
+                if !int32_literal_shaped(l) {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches {name}(VARCHAR, BIGINT, \
+                         VARCHAR) — DuckDB's {name} count is INTEGER and a \
+                         BIGINT does not implicitly narrow; spell a constant \
+                         count as a plain literal"
+                    )));
+                }
                 let nullable = bs.nullable || bl.nullable || bp.nullable;
                 Ok(SExpr {
                     kind: SKind::Spad {
@@ -5567,6 +5583,47 @@ fn null_of(ty: Ty) -> SExpr {
         kind: SKind::NullOf,
         ty,
         nullable: true,
+    }
+}
+
+/// The spellings DuckDB types INTEGER-or-narrower: an int32-range number
+/// literal, possibly under unary +/-, parens, or +,-,*,% of the same
+/// (INTEGER op INTEGER stays INTEGER there; `/` yields DOUBLE and is
+/// excluded) — or an EXPLICIT cast to INTEGER or narrower, the documented
+/// spelling for a column count (`CAST(l AS INTEGER)`). A bare column or a
+/// cast to BIGINT is never INTEGER-shaped — that is exactly the TASK-82
+/// boundary DuckDB's binder draws.
+fn int32_literal_shaped(e: &SqlExpr) -> bool {
+    // BIGINT's aliases (INT8, LONG, HUGEINT...) are deliberately absent.
+    const NARROW_INTS: &[&str] = &[
+        "INTEGER", "INT", "INT4", "SIGNED", "SMALLINT", "INT2", "SHORT",
+        "TINYINT", "INT1", "UINTEGER", "USMALLINT", "UTINYINT",
+    ];
+    match e {
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(text, _) => text.parse::<i64>().is_ok_and(|n| {
+                i32::try_from(n).is_ok()
+            }),
+            _ => false,
+        },
+        SqlExpr::Nested(inner) => int32_literal_shaped(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus | UnaryOperator::Plus,
+            expr,
+        } => int32_literal_shaped(expr),
+        SqlExpr::BinaryOp {
+            left,
+            op:
+                BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Modulo,
+            right,
+        } => int32_literal_shaped(left) && int32_literal_shaped(right),
+        SqlExpr::Cast { data_type, .. } => {
+            NARROW_INTS.contains(&data_type.to_string().to_uppercase().as_str())
+        }
+        _ => false,
     }
 }
 
