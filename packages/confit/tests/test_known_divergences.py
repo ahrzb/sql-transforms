@@ -994,3 +994,58 @@ def test_integer_shaped_counts_still_bind_and_match(sql):
     con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
     want = con.execute(sql).to_arrow_table().to_pylist()
     assert got == want, f"{got} != {want}"
+
+
+# TASK-86 (fuzz campaign 2026-08-11, 11 schema findings + 5 downstream
+# binder splits). DuckDB types a bare NULL argument FIRST (INTEGER, or the
+# BLOB overload), and lets IT drive the signature -- so nullif(NULL, 84.7e0)
+# comes back int32 there and double here, and repeat(NULL, n) is BLOB there
+# and string here, which then splits every OUTER call binding a BLOB
+# (strpos/ltrim/lower/levenshtein/LIKE -- the campaign's five singleton
+# "No function matches" findings). Values all NULL, schemas apart, so
+# concat_tables against the oracle raises: the TASK-72/79 consequence
+# through a different door. The two divergent adopters now refuse by name;
+# CAST(NULL AS ...) stays the documented spelling, and adopters that agree
+# with DuckDB (upper(NULL), coalesce(NULL, x), nullif(x, NULL)) are
+# untouched.
+
+_BnRow = create_model("_BnRow", k=(int, ...), s=(str, ...))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT nullif(NULL, 84.754e0) AS o FROM __THIS__",
+        "SELECT repeat(NULL, 3) AS o FROM __THIS__",
+        "SELECT ltrim(repeat(NULL, k)) AS o FROM __THIS__",
+    ],
+)
+def test_a_divergently_typed_bare_null_argument_refuses(sql):
+    with pytest.raises(ValueError, match="NULL"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _BnRow}, static_tables={})
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT nullif(CAST(NULL AS DOUBLE), 84.754e0) AS o FROM __THIS__",
+        "SELECT nullif(84.754e0, NULL) AS o FROM __THIS__",
+        "SELECT upper(NULL) AS o FROM __THIS__",
+        "SELECT repeat('ab', NULL) AS o FROM __THIS__",
+        "SELECT coalesce(NULL, 2.5e0) AS o FROM __THIS__",
+    ],
+)
+def test_agreeing_null_adopters_still_bind_and_match(sql):
+    """Everywhere the adopted type EQUALS DuckDB's inference, bare NULL keeps
+    working -- schema compared too, that being the whole point."""
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _BnRow}, static_tables={})
+    got = fn.infer_arrow(
+        pa.table({"k": pa.array([2], pa.int64()), "s": pa.array(["ab"], pa.string())})
+    )
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
+    want = con.execute(sql).to_arrow_table()
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
