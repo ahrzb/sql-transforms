@@ -4850,6 +4850,7 @@ impl Binder<'_> {
                         bn.ty.name()
                     )));
                 }
+                refuse_budget_breaking_count(&name, &bn)?;
                 let nullable = bs.nullable || bn.nullable;
                 Ok(SExpr {
                     kind: SKind::Str2i {
@@ -4942,6 +4943,7 @@ impl Binder<'_> {
                          count as a plain literal"
                     )));
                 }
+                refuse_budget_breaking_count(&name, &bl)?;
                 let nullable = bs.nullable || bl.nullable || bp.nullable;
                 Ok(SExpr {
                     kind: SKind::Spad {
@@ -5820,6 +5822,29 @@ fn null_of(ty: Ty) -> SExpr {
         ty,
         nullable: true,
     }
+}
+
+/// TASK-88: a pad/repeat COUNT literal that can exceed the engine's 1 GiB
+/// string-builder budget refuses at build. DuckDB's behaviour past that
+/// size is a coin flip between serving the multi-GB string and its own
+/// builder error, so a giant literal count could never be a stable
+/// bit-for-bit answer; refusal is the sanctioned mode, and the judgement
+/// (no gigabyte allocations in a serving engine) is recorded on the
+/// ticket. Data-driven counts keep the runtime cap, documented in
+/// known-limitations.md.
+fn refuse_budget_breaking_count(name: &str, count: &SExpr) -> Result<(), PrepareError> {
+    const BUDGET: i64 = 1 << 30; // bytes; an n-char 1-byte result is n bytes
+    if let SKind::Lit(Lit::I64(n)) = fold(count.clone()).kind {
+        if n > BUDGET {
+            return Err(PrepareError::Bind(format!(
+                "{name} count {n} exceeds the 1 GiB string-builder budget — \
+                 the result could never serve; DuckDB's own behaviour past \
+                 this size is unstable (its builder error or a multi-GB \
+                 string, spelling-dependent)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The spellings DuckDB types INTEGER-or-narrower: an int32-range number

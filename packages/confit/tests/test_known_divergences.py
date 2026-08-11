@@ -900,7 +900,9 @@ _NfRow = create_model("_NfRow", x=(float, ...), k=(int, ...), s=(str, ...))
         ("SELECT (ln(x) + (x - NULL)) AS o FROM __THIS__", None),
         ("SELECT ((9223372036854775807 + k) * (k - NULL)) AS o FROM __THIS__", None),
         ("SELECT (ln(x) < NULL) AS o FROM __THIS__", None),
-        ("SELECT (lpad(s, 2147483647, s) = NULL) AS o FROM __THIS__", None),
+        # the giant count is DYNAMIC here: the literal spelling refuses at
+        # build since TASK-88, and this pin is about the ELISION
+        ("SELECT (lpad(s, CAST(k AS INTEGER), s) = NULL) AS o FROM __THIS__", None),
         # control: the trap itself is still live when nothing folds it away
     ],
 )
@@ -1261,3 +1263,41 @@ def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
     )
     with pytest.raises(Exception, match="cast|convert"):
         fn.infer({"__THIS__": [_CfRow(s="one", x=1.0)]})
+
+
+# TASK-88 (fuzz rounds 1+2, ~7 findings + the campaign timeouts). The
+# engine's string builder traps at 1 GiB; DuckDB sometimes serves the 2GB
+# result and sometimes errors its own builder message, so a giant literal
+# pad/repeat count is a run-time coin flip ACROSS engines. A literal count
+# that can exceed the budget now refuses at build by name. Data-driven
+# counts (a column, CAST(k AS INTEGER)) keep the documented runtime cap.
+
+_SbRow = create_model("_SbRow", k=(int, ...), s=(str, ...))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT lpad(s, 2000000000, 'x') AS o FROM __THIS__",
+        "SELECT rpad(s, 1500000000, 'x') AS o FROM __THIS__",
+        "SELECT repeat(s, 2000000000) AS o FROM __THIS__",
+    ],
+)
+def test_a_budget_breaking_literal_count_refuses(sql):
+    with pytest.raises(ValueError, match="builder|GiB"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _SbRow}, static_tables={})
+
+
+def test_a_large_but_bounded_count_still_serves_and_matches():
+    sql = (
+        "SELECT length(lpad(s, 100000, 'x')) AS o,"
+        " length(repeat(s, 50000)) AS p FROM __THIS__"
+    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _SbRow}, static_tables={})
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_SbRow(k=1, s="ab")]})]
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES (1, 'ab')")
+    want = con.execute(sql).to_arrow_table().to_pylist()
+    assert got == want, f"{got} != {want}"
