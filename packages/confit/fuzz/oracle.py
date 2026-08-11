@@ -165,7 +165,6 @@ def make_tree(spec: G.TreeSpec, seed: int):
     object confit routes to the native kernel and DuckDB calls as a python
     UDF, with `estimators[iid].predict` as the second ground truth."""
     import numpy as np
-
     from sql_transform import TreeBasedTransform
 
     rng = np.random.RandomState(seed % (2**31))
