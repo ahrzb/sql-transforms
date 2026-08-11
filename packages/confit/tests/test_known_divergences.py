@@ -1104,3 +1104,43 @@ def test_bigint_and_in_range_literal_arithmetic_still_matches(sql):
     want = con.execute(sql).to_arrow_table().to_pylist()
     key = lambda r: sorted((c, repr(v)) for c, v in r.items())  # noqa: E731
     assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
+
+
+# TASK-80 (fuzz campaign 2026-08-11, 113 of 963 findings). Unary minus was
+# lowered as `0 - x` -- the comment on that lowering even said so -- and IEEE
+# `0.0 - 0.0` is +0.0, so the sign of negative zero vanished everywhere it
+# could arise: the folded literal `-0.0e0`, runtime `(- x)` at x = 0.0, and
+# any product with a signed zero operand fed through the fold. Observable at
+# any magnitude through division (the sign of infinity) and as text through
+# CAST AS VARCHAR. The fix subtracts from -0.0 for FLOAT operands, which is
+# exact IEEE negation for every double; the integer path keeps 0 - x and its
+# i64::MIN trap, matching DuckDB.
+
+_NegRow = create_model("_NegRow", x=(float, ...))
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    ("sql", "rows"),
+    [
+        ("SELECT -0.0e0 AS o0 FROM __THIS__", [{"x": 1.0}]),
+        ("SELECT (- x) AS o0 FROM __THIS__", [{"x": 0.0}]),
+        ("SELECT (- (x * -1.5e0)) AS o0 FROM __THIS__", [{"x": -0.0}]),
+        ("SELECT (1.0e0 / (x * -0.0e0)) AS o0 FROM __THIS__", [{"x": 1.0}]),
+        ("SELECT CAST((- x) AS VARCHAR) AS o0 FROM __THIS__", [{"x": 0.0}]),
+    ],
+)
+def test_negative_zero_keeps_its_sign(sql, rows, backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NegRow}, static_tables={})
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_NegRow(**r) for r in rows]})]
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (x DOUBLE)")
+    con.executemany("INSERT INTO __THIS__ VALUES (?)", [(r["x"],) for r in rows])
+    want = con.execute(sql).to_arrow_table().to_pylist()
+    key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
+    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"

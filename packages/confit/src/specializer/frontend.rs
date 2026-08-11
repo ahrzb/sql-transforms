@@ -2111,13 +2111,29 @@ impl Binder<'_> {
                 op: UnaryOperator::Minus,
                 expr,
             } => {
-                // DuckDB `-x`: lower as 0 - x, reusing Sub's promotion.
-                let zero = SExpr {
-                    kind: SKind::Lit(Lit::I64(0)),
-                    ty: Ty::I64,
-                    nullable: false,
+                // DuckDB `-x`: lower as (zero) - x, reusing Sub's promotion.
+                // The zero must carry the SIGN BIT for floats: IEEE
+                // 0.0 - 0.0 is +0.0, so subtracting from +0 erased negative
+                // zero everywhere it could arise -- the literal -0.0e0, a
+                // runtime negate at x = 0.0, and the sign of infinity after
+                // dividing by the result (TASK-80). -0.0 - x is exact IEEE
+                // negation for every double. Integers keep 0 - x and its
+                // i64::MIN trap, which is DuckDB's own overflow behaviour.
+                let inner = self.expr(expr)?;
+                let zero = if inner.ty == Ty::F64 {
+                    SExpr {
+                        kind: SKind::Lit(Lit::F64(-0.0)),
+                        ty: Ty::F64,
+                        nullable: false,
+                    }
+                } else {
+                    SExpr {
+                        kind: SKind::Lit(Lit::I64(0)),
+                        ty: Ty::I64,
+                        nullable: false,
+                    }
                 };
-                self.arith(ArithOp::Sub, zero, self.expr(expr)?)
+                self.arith(ArithOp::Sub, zero, inner)
             }
             SqlExpr::UnaryOp {
                 op: UnaryOperator::Plus,
