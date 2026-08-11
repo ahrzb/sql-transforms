@@ -254,6 +254,24 @@ def test_a_recursive_cte_over_fit_refuses_instead_of_shipping_it():
 # reasons is the refusal list, and it is meant to stay short.
 
 
+def test_the_inequality_refusal_names_the_way_out():
+    """The one refusal that is not a weird case says what to write instead.
+
+    An inequality correlation has an exact hand-written form — aggregate
+    __FIT__ to one row per lookup coordinate in a CTE, then join it — so this
+    refusal is a redirect rather than a wall. Saying so is the difference
+    between a short refusal list and a short *usable* one.
+    """
+    with pytest.raises(CorrelatedFit) as caught:
+        SQLTransform(
+            "SELECT t.cat, (SELECT avg(f.price) FROM __FIT__ f"
+            " WHERE f.ts <= t.ts) AS m FROM __THIS__ t"
+        )
+    assert caught.value.reason == "not-an-equality"
+    assert "CTE" in str(caught.value)
+    assert "docs/decorrelation-unsupported.md" in str(caught.value)
+
+
 @pytest.mark.parametrize(
     "reason,sql",
     [

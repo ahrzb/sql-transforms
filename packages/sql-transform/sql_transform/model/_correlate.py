@@ -125,6 +125,21 @@ REASONS: dict[str, str] = {
 }
 
 
+# A refusal that has an exact hand-written form should say so. Marginalizing an
+# inequality correlation by hand is not a workaround for a missing feature: the
+# retained rows become a subquery the author wrote, which is the same reason a
+# bare `FROM __FIT__` refuses while `(SELECT ... FROM __FIT__)` does not. Only
+# reasons with a form worth writing get an entry.
+HINTS: dict[str, str] = {
+    "not-an-equality": (
+        "If you need it, marginalize it yourself: a CTE over __FIT__ that "
+        "aggregates to one row per lookup coordinate, joined to __THIS__ — "
+        "then the retained rows are a subquery you wrote. "
+        "See docs/decorrelation-unsupported.md"
+    ),
+}
+
+
 # DuckDB prefers field access over a correlated outer reference, but only for a
 # nested column: measured, a STRUCT or MAP column named `t` wins over an outer
 # alias `t`, a plain column does not, and a STRUCT without the field is a
@@ -199,10 +214,11 @@ def decorrelate(
         return None  # uncorrelated: the maximal freeze already has this one
 
     def refuse(reason: str, **fmt: str) -> NoReturn:
+        hint = HINTS.get(reason)
         raise CorrelatedFit(
             f"{FIT} subquery correlates out of itself and "
             f"{REASONS[reason].format(**fmt)}, so it cannot be evaluated once "
-            "into a keyed table",
+            "into a keyed table" + (f". {hint}" if hint else ""),
             reason,
         )
 
