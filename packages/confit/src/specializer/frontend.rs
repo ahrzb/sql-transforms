@@ -3405,6 +3405,18 @@ impl Binder<'_> {
     }
 
     fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
+        // TASK-85: a STRICT operator with a literal-NULL operand folds to
+        // NULL at build, exactly as DuckDB's optimizer folds it — which
+        // ELIMINATES the sibling subexpression, so a trapping ln/overflow/
+        // giant-string under it never executes there and must not here.
+        // Measured (2026-08-11): DuckDB's elision is literal-NULL only; a
+        // runtime NULL does not spare the trap on either engine, so eager
+        // per-row evaluation stays as it is. Checked BEFORE promotion —
+        // promote_f64 wraps NullOf in a cast, hiding it. Type errors still
+        // refuse first, below, exactly as DuckDB binder-errors before it
+        // folds.
+        let null_operand =
+            matches!(a.kind, SKind::NullOf) || matches!(b.kind, SKind::NullOf);
         if matches!(
             op,
             ArithOp::Shl | ArithOp::Shr | ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor
@@ -3422,6 +3434,9 @@ impl Binder<'_> {
                     )));
                 }
             }
+            if null_operand {
+                return Ok(null_of(Ty::I64));
+            }
             let nullable = a.nullable || b.nullable;
             return Ok(SExpr {
                 kind: SKind::Arith {
@@ -3434,6 +3449,9 @@ impl Binder<'_> {
             });
         }
         let (a, b, ty) = numeric_promote(op, a, b)?;
+        if null_operand {
+            return Ok(null_of(ty));
+        }
         let nullable = a.nullable || b.nullable;
         // DuckDB pins (2026-07-26, waves 1+3): integer % by zero is NULL,
         // and `//`/divide() by zero is NULL on BOTH ints and doubles —
@@ -3521,6 +3539,13 @@ impl Binder<'_> {
         };
         if a.ty == Ty::I1 {
             return Err(unsup("comparison on BOOLEAN"));
+        }
+        // TASK-85, same fold as `arith`: a comparison against a literal NULL
+        // is NULL on DuckDB's optimizer BEFORE the sides evaluate, so a
+        // trapping side must be eliminated here too. (promote_f64 retypes a
+        // NullOf in place, so the plain match still sees it after promotion.)
+        if matches!(a.kind, SKind::NullOf) || matches!(b.kind, SKind::NullOf) {
+            return Ok(null_of(Ty::I1));
         }
         let nullable = a.nullable || b.nullable;
         Ok(SExpr {
