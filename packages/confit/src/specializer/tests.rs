@@ -1969,13 +1969,22 @@ fn constant_arithmetic_folds_at_prepare() {
 #[test]
 fn dominating_constant_keeps_the_dynamic_side() {
     // fold() must not rewrite `false AND <dyn>` to false: the dynamic side
-    // may trap (a % 0) and folding it away would change behavior.
+    // may trap and folding it away would change behavior. The dynamic trap
+    // here is an i64 overflow reachable only through the COLUMN — the
+    // earlier `a % 0` spelling stopped serving the purpose once TASK-87's
+    // folds legitimately reduced it (rem-by-zero is NULL on both engines,
+    // never a trap, so `false AND NULL` folding to false IS DuckDB's
+    // answer).
     let schema = cols(&[("a", Ty::I64, false)]);
-    let p = prep("SELECT false AND a % 0 = 0 AS x FROM __THIS__", &schema).unwrap();
+    let p = prep(
+        "SELECT false AND (a + 9223372036854775807) > 0 AS x FROM __THIS__",
+        &schema,
+    )
+    .unwrap();
     let text = print(&p);
     assert!(
-        text.contains("irem"),
-        "the trapping rem was folded away:\n{text}"
+        text.contains("iadd"),
+        "the trapping add was folded away:\n{text}"
     );
 }
 

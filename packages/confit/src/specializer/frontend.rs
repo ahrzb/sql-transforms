@@ -496,7 +496,10 @@ pub fn frontend(
     // Project on the scan.
     let mut rel = Rel::Scan;
     if let Some(pred) = &leftover_where {
-        let pred = fold(bool_context(binder.expr(pred)?, "WHERE predicate")?);
+        binder.in_filter.set(true);
+        let bound = binder.expr(pred);
+        binder.in_filter.set(false);
+        let pred = fold(bool_context(bound?, "WHERE predicate")?);
         rel = Rel::Filter {
             input: Box::new(rel),
             pred,
@@ -630,6 +633,8 @@ fn bind_from<'a>(
         model_refs: std::cell::RefCell::new(Vec::new()),
         sites: std::cell::Cell::new(0),
         extern_sites: std::cell::RefCell::new(Vec::new()),
+        in_filter: std::cell::Cell::new(false),
+        in_guarded: std::cell::Cell::new(0),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -1330,6 +1335,27 @@ struct Binder<'a> {
     /// (TASK-63) — the confit twin of DuckDB's common-subexpression
     /// elimination, which is what keeps call counts equal on both paths.
     extern_sites: std::cell::RefCell<Vec<(sqlparser::ast::Function, u32)>>,
+    /// True while binding the WHERE predicate. DuckDB's FILTER optimizer
+    /// folds a constant dead range (`BETWEEN lo AND hi`, lo > hi) to FALSE
+    /// without evaluating the operand, but evaluates the same expression in
+    /// a projection — measured both ways (TASK-87 face C), so the fold is
+    /// context-gated on this flag.
+    in_filter: std::cell::Cell<bool>,
+    /// Depth of CASE/COALESCE arms being bound. DuckDB's plan-time constant
+    /// evaluation SKIPS guarded arms (the coalesce lazy-bind pin: an
+    /// untaken `CAST('nope' AS BIGINT)` must not fire), so the TASK-87
+    /// trapping-constant refusals only apply at depth 0 — a guarded
+    /// trapping constant stays a lazy runtime question on both engines.
+    in_guarded: std::cell::Cell<u32>,
+}
+
+/// Decrements `in_guarded` on scope exit, whatever the exit path.
+struct GuardScope<'x>(&'x std::cell::Cell<u32>);
+
+impl Drop for GuardScope<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
 }
 
 /// The bound subject of a regex op must be VARCHAR (no implicit casts —
@@ -2238,6 +2264,37 @@ impl Binder<'_> {
             } => {
                 let mut u = self.unify_family(&[expr, low, high])?;
                 let (e, lo, hi) = (u.remove(0), u.remove(0), u.remove(0));
+                // TASK-87 face C (measured both ways): DuckDB's FILTER
+                // optimizer folds a constant dead range (lo > hi) to FALSE
+                // without ever evaluating the operand — while a PROJECTION
+                // evaluates it and traps, on both engines alike. The probe
+                // binds lo/hi only when they are literal-shaped, so no call
+                // site is consumed twice (extern call-count parity).
+                if self.in_filter.get()
+                    && !*negated
+                    && const_number_shaped(&lo)
+                    && const_number_shaped(&hi)
+                {
+                    let (blo, bhi) = (fold(self.expr(&lo)?), fold(self.expr(&hi)?));
+                    let dead = match (&blo.kind, &bhi.kind) {
+                        (SKind::Lit(Lit::I64(a)), SKind::Lit(Lit::I64(b))) => a > b,
+                        (SKind::Lit(Lit::F64(a)), SKind::Lit(Lit::F64(b))) => a > b,
+                        (SKind::Lit(Lit::I64(a)), SKind::Lit(Lit::F64(b))) => {
+                            (*a as f64) > *b
+                        }
+                        (SKind::Lit(Lit::F64(a)), SKind::Lit(Lit::I64(b))) => {
+                            *a > (*b as f64)
+                        }
+                        _ => false,
+                    };
+                    if dead {
+                        return Ok(SExpr {
+                            kind: SKind::Lit(Lit::I1(false)),
+                            ty: Ty::I1,
+                            nullable: false,
+                        });
+                    }
+                }
                 let both = ast_bin(
                     BinaryOperator::And,
                     ast_bin(BinaryOperator::GtEq, e.clone(), lo),
@@ -3216,6 +3273,42 @@ impl Binder<'_> {
                 )));
             }
         }
+        // TASK-87 face B: DuckDB folds an all-literal integer COMPARISON
+        // through wide range analysis — `x > (huge * huge)` answers without
+        // ever overflowing — while binding the operand here trapped on the
+        // i64 multiply. Fold the comparison in i128, DuckDB's answer.
+        // Skipped when either side would trap in ITS int32 literal math
+        // (unmeasured whether DuckDB's analysis rescues those; the TASK-84
+        // refusal on the operand keeps that boundary loud instead).
+        if matches!(
+            op,
+            BinaryOperator::Gt
+                | BinaryOperator::Lt
+                | BinaryOperator::GtEq
+                | BinaryOperator::LtEq
+                | BinaryOperator::Eq
+                | BinaryOperator::NotEq
+        ) && !matches!(eval_i32_literal(left), I32Fold::Traps)
+            && !matches!(eval_i32_literal(right), I32Fold::Traps)
+        {
+            if let (Some(x), Some(y)) =
+                (eval_i128_literal(left), eval_i128_literal(right))
+            {
+                let v = match op {
+                    BinaryOperator::Gt => x > y,
+                    BinaryOperator::Lt => x < y,
+                    BinaryOperator::GtEq => x >= y,
+                    BinaryOperator::LtEq => x <= y,
+                    BinaryOperator::Eq => x == y,
+                    _ => x != y,
+                };
+                return Ok(SExpr {
+                    kind: SKind::Lit(Lit::I1(v)),
+                    ty: Ty::I1,
+                    nullable: false,
+                });
+            }
+        }
         let a = self.expr_or_null(left)?;
         let b = self.expr_or_null(right)?;
         // A NULL literal adopts the other side's type; the op itself is not
@@ -3345,6 +3438,10 @@ impl Binder<'_> {
         conditions: &[sqlparser::ast::CaseWhen],
         else_result: Option<&SqlExpr>,
     ) -> Result<SExpr, PrepareError> {
+        // CASE arms are guarded: plan-time trapping-constant refusals are
+        // suspended inside (see `in_guarded`).
+        self.in_guarded.set(self.in_guarded.get() + 1);
+        let _guard = GuardScope(&self.in_guarded);
         if conditions.is_empty() {
             return Err(PrepareError::Bind("CASE with no WHEN arms".to_string()));
         }
@@ -3440,6 +3537,30 @@ impl Binder<'_> {
         if inner.ty == Ty::Str && to == Ty::I1 {
             return Err(unsup("CAST VARCHAR -> BOOLEAN"));
         }
+        // TASK-87 face A: a constant cast that FAILS is a plan-time error
+        // on DuckDB — measured to fire even over zero rows and under a
+        // constant-false WHERE — while a row-driven engine never evaluates
+        // it. Evaluate the constant here with the interpreter's EXACT parse
+        // (trim_ascii + Rust parse; see Inst::StoiOpt / Inst::StofOpt) and
+        // refuse a failure by name. TRY_CAST stays lazy: it yields NULL.
+        let inner = fold(inner);
+        if !trying && self.in_guarded.get() == 0 {
+            if let SKind::Lit(Lit::Str(s)) = &inner.kind {
+                let ok = match to {
+                    Ty::I64 => s.trim_ascii().parse::<i64>().is_ok(),
+                    Ty::F64 => s.trim_ascii().parse::<f64>().is_ok(),
+                    _ => true,
+                };
+                if !ok {
+                    return Err(PrepareError::Bind(format!(
+                        "constant cast fails on every row: CAST('{s}' AS \
+                         {}) — DuckDB errors at plan time; TRY_CAST is the \
+                         NULL-yielding spelling",
+                        if to == Ty::I64 { "BIGINT" } else { "DOUBLE" }
+                    )));
+                }
+            }
+        }
         let nullable = trying || inner.nullable;
         Ok(SExpr {
             kind: SKind::Cast {
@@ -3462,6 +3583,11 @@ impl Binder<'_> {
         // promote_f64 wraps NullOf in a cast, hiding it. Type errors still
         // refuse first, below, exactly as DuckDB binder-errors before it
         // folds.
+        // TASK-87 face D: folding the operands first makes a NULL PRODUCED
+        // by constant folding (a constant-condition CASE landing on NULL)
+        // visible to the strict-op check below, exactly as DuckDB's folder
+        // sees it. fold() is pure and idempotent.
+        let (a, b) = (fold(a), fold(b));
         let null_operand =
             matches!(a.kind, SKind::NullOf) || matches!(b.kind, SKind::NullOf);
         if matches!(
@@ -3498,6 +3624,30 @@ impl Binder<'_> {
         let (a, b, ty) = numeric_promote(op, a, b)?;
         if null_operand {
             return Ok(null_of(ty));
+        }
+        // TASK-87 faces A/B: DuckDB evaluates constants at plan time, so an
+        // all-literal integer operation that TRAPS errors on every
+        // execution there — even over zero rows — while a row-driven
+        // engine would serve. Refuse by name. % and // are guarded below;
+        // float arithmetic is IEEE and always folds.
+        if let (SKind::Lit(Lit::I64(x)), SKind::Lit(Lit::I64(y))) =
+            (&a.kind, &b.kind)
+        {
+            let trapped = self.in_guarded.get() == 0
+                && match op {
+                    ArithOp::Add => x.checked_add(*y).is_none(),
+                    ArithOp::Sub => x.checked_sub(*y).is_none(),
+                    ArithOp::Mul => x.checked_mul(*y).is_none(),
+                    _ => false,
+                };
+            if trapped {
+                return Err(PrepareError::Bind(format!(
+                    "constant integer arithmetic overflows BIGINT \
+                     ({x} {op:?} {y}) — DuckDB evaluates constants at plan \
+                     time and errors on every execution; this engine \
+                     refuses instead of serving rows the oracle never would"
+                )));
+            }
         }
         let nullable = a.nullable || b.nullable;
         // DuckDB pins (2026-07-26, waves 1+3): integer % by zero is NULL,
@@ -3572,6 +3722,9 @@ impl Binder<'_> {
     }
 
     fn cmp(&self, pred: CmpPred, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
+        // TASK-87 face D — same reason as `arith`: a folded constant NULL
+        // must reach the strict-op elision below.
+        let (a, b) = (fold(a), fold(b));
         let (a, b) = match (a.ty, b.ty) {
             (x, y) if x == y => (a, b),
             (Ty::I64, Ty::F64) => (promote_f64(a), b),
@@ -4471,6 +4624,8 @@ impl Binder<'_> {
             "coalesce" => {
                 // Lazy per-row (measured: untaken erroring arms don't fire) —
                 // guaranteed here because CASE branches run only when taken.
+                self.in_guarded.set(self.in_guarded.get() + 1);
+                let _guard = GuardScope(&self.in_guarded);
                 let mut bound = Vec::with_capacity(args.len());
                 for arg in &args {
                     if let Some(e) = self.expr_or_null(arg)? {
@@ -5719,6 +5874,53 @@ enum I32Fold {
     NotShaped,
     Traps,
     Fine(Option<i32>),
+}
+
+/// All-literal integer subtree evaluated in i128 — the wide arithmetic
+/// DuckDB's range analysis folds comparisons through (TASK-87 face B).
+/// None = not literal-shaped, or a rem-by-zero (NULL at runtime, no fold).
+fn eval_i128_literal(e: &SqlExpr) -> Option<i128> {
+    match e {
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(text, _) => text.parse::<i128>().ok(),
+            _ => None,
+        },
+        SqlExpr::Nested(inner) => eval_i128_literal(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Plus,
+            expr,
+        } => eval_i128_literal(expr),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => eval_i128_literal(expr)?.checked_neg(),
+        SqlExpr::BinaryOp { left, op, right } => {
+            let (x, y) = (eval_i128_literal(left)?, eval_i128_literal(right)?);
+            match op {
+                BinaryOperator::Plus => x.checked_add(y),
+                BinaryOperator::Minus => x.checked_sub(y),
+                BinaryOperator::Multiply => x.checked_mul(y),
+                BinaryOperator::Modulo if y != 0 => x.checked_rem(y),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A literal-shaped numeric bound: a Number under parens/unary sign only —
+/// binding one consumes no call site, so the Between dead-range probe may
+/// bind it without breaking extern call-count parity (TASK-87 face C).
+fn const_number_shaped(e: &SqlExpr) -> bool {
+    match e {
+        SqlExpr::Value(v) => matches!(v.value, SqlValue::Number(..)),
+        SqlExpr::Nested(inner) => const_number_shaped(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus | UnaryOperator::Plus,
+            expr,
+        } => const_number_shaped(expr),
+        _ => false,
+    }
 }
 
 fn eval_i32_literal(e: &SqlExpr) -> I32Fold {
