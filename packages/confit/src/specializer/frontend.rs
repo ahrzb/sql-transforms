@@ -4746,6 +4746,20 @@ impl Binder<'_> {
                     self.expr_or_null(l)?,
                     self.expr_or_null(pad)?,
                 );
+                // TASK-82 follow-up (certification seed 1589): the NULL
+                // short-circuit below must not SKIP the count check — a
+                // bare-NULL string smuggled a BIGINT count past it, serving
+                // NULL where DuckDB still binder-errors on the count. A
+                // bare-NULL count itself is fine: DuckDB types it INTEGER.
+                let count_ok = bl.is_none() || int32_literal_shaped(l);
+                if !count_ok && (bs.is_none() || bp.is_none()) {
+                    return Err(PrepareError::Bind(format!(
+                        "no function matches {name}(VARCHAR, BIGINT, \
+                         VARCHAR) — DuckDB's {name} count is INTEGER and a \
+                         BIGINT does not implicitly narrow; spell a constant \
+                         count as a plain literal"
+                    )));
+                }
                 let (Some(bs), Some(bl), Some(bp)) = (bs, bl, bp) else {
                     return Ok(null_of(Ty::Str));
                 };
