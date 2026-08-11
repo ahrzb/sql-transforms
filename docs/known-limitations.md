@@ -129,6 +129,7 @@ wrong answer or require semantics we can't reproduce exactly:
 | `BETWEEN`/`IN` mixing non-numeric string literals with numbers | DuckDB converts at EXECUTION time (an empty input succeeds!); a bind-time conversion was measured to be over-eager. Numeric literals convert fine. |
 | `COLUMNS(...)` inside expressions, lambda/list forms | Only bare `COLUMNS('re')` / `COLUMNS(*)` as select items are served. |
 | Bare `NULL` with no typing context, `CASE` where every branch is NULL, `COALESCE`/`NULLIF` of only NULLs | DuckDB's SQLNULL type has no i64/f64/str/bool home. `NULL <op> NULL` IS served with the measured result types. |
+| Bare `NULL` as `nullif`'s FIRST argument or as `repeat`'s string (TASK-86) | DuckDB types the bare NULL first and lets it drive the signature: `nullif(NULL, 84.7e0)` is **int32** there (NULL → INTEGER, output takes the first argument's type) and `repeat(NULL, n)` picks the **BLOB** overload — two types this engine doesn't have, so adopting the parameter type answered with a different schema (all-NULL values, `concat_tables` against DuckDB raising). Spell it `CAST(NULL AS DOUBLE)` / `CAST(NULL AS VARCHAR)`, which both engines type identically. Adopters that agree with DuckDB — `upper(NULL)`, `coalesce(NULL, x)`, `nullif(x, NULL)`, a NULL `repeat` count — keep serving, pinned schema-equal. |
 
 ## 5. Deliberate contract choices (behavior differs from raw DuckDB surface)
 
