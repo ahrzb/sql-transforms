@@ -338,7 +338,15 @@ class TreeBasedTransform(UDF):
 
     def __call__(self, iid: int | None, *feats: Any) -> tuple | None:
         """The semantic contract, and the DuckDB-side binding: sklearn's own
-        `predict`. The native kernel is gated against this bit-for-bit."""
+        `predict`. The native kernel is gated against this bit-for-bit.
+
+        Rows with a NULL feature walk the PACKED tables instead (TASK-83):
+        `predict` REJECTS NaN on an estimator fitted without missing values
+        (GradientBoosting, RandomForest), while the kernel scores such rows
+        via `missing_left` — so sklearn has no answer there, and the packed
+        traversal, reading the same data the kernel reads, is the reference.
+        Where the estimator DOES accept NaN, `missing_go_to_left` came from
+        sklearn itself, so the walk and `predict` agree by construction."""
         if iid is None:
             return None
         try:
@@ -352,7 +360,46 @@ class TreeBasedTransform(UDF):
         row = [
             _as_grid_value(f, t) for f, t in zip(feats, self.take_types, strict=True)
         ]
+        if any(np.isnan(v) for v in row):
+            return (self._score_packed(iid, row),)
         return (float(est.predict(np.array([row], dtype=np.float64))[0]),)
+
+    def _score_packed(self, mid: int, row: list[float]) -> float:
+        """One row through the packed nodes — the kernel's traversal, spelled
+        in numpy: narrow the row to the float32 grid ONCE, then per tree from
+        node 0 go left on `x <= threshold` (NaN routes by `missing_left`),
+        and accumulate leaf values SEQUENTIALLY, the same IEEE adds sklearn
+        and the kernel both do; `base` and the mean/sum agg come from the
+        headers table."""
+        cached = getattr(self, "_walk_arrays", None)
+        if cached is None:
+            nodes, headers = self._tables
+            cached = (
+                {k: nodes[k].to_numpy() for k in nodes.column_names},
+                {k: headers[k].to_numpy() for k in headers.column_names},
+            )
+            object.__setattr__(self, "_walk_arrays", cached)
+        n, h = cached
+        x32 = np.asarray(row, dtype=np.float64).astype(np.float32)
+        sel = np.flatnonzero(n["model_id"] == mid)
+        feature, thr = n["feature"][sel], n["threshold"][sel]
+        left, right = n["left"][sel], n["right"][sel]
+        miss, value = n["missing_left"][sel], n["value"][sel]
+        starts = np.flatnonzero(np.r_[True, np.diff(n["tree_id"][sel]) != 0])
+        hid = int(np.flatnonzero(h["model_id"] == mid)[0])
+        base, mean = float(h["base"][hid]), h["agg"][hid] == "mean"
+        # Where base enters is NOT cosmetic (see tree_ensemble.rs): boosted
+        # SEEDS the accumulator with it (adding after diverges by hundreds of
+        # ULP); a forest sums from 0.0, divides, THEN adds base.
+        acc = 0.0 if mean else base
+        for s in starts:
+            i = int(s)
+            while feature[i] >= 0:
+                xv = x32[feature[i]]
+                go_left = bool(miss[i]) if np.isnan(xv) else float(xv) <= thr[i]
+                i = int(s) + int(left[i] if go_left else right[i])
+            acc += float(value[i])
+        return base + acc / len(starts) if mean else acc
 
     def _duck_signature(self) -> tuple[list[str], str]:
         params, ret = super()._duck_signature()

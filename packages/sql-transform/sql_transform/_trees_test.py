@@ -828,3 +828,33 @@ def test_schema_names_do_not_bind_the_call_site():
         )
     ]
     assert got == list(est.predict(probe))
+
+
+def test_call_answers_null_features_the_kernel_scores():
+    """TASK-83 (fuzz seed 3112): `__call__` fed None -> NaN straight into
+    `est.predict`, which REJECTS NaN on an estimator fitted without missing
+    values (GradientBoosting and RandomForest raise; DecisionTree >= 1.3
+    happens to accept). The kernel scored the same row via missing_left. One
+    declaration, three bindings, one of them crashing where another answers —
+    `__call__` now walks the PACKED tables for NaN rows, the same data the
+    kernel reads, so the two cannot drift."""
+    kinds = [
+        DecisionTreeRegressor(max_depth=3),
+        RandomForestRegressor(n_estimators=5, max_depth=4, random_state=9, n_jobs=1),
+        GradientBoostingRegressor(n_estimators=5, max_depth=3, random_state=9),
+    ]
+    rows = [
+        ROW(id=0, a=None, b=0.5, c=-1.0, d=2.0),
+        ROW(id=0, a=1.5, b=None, c=0.25, d=None),
+        ROW(id=0, a=None, b=None, c=None, d=None),
+        ROW(id=0, a=0.5, b=0.5, c=0.5, d=0.5),  # control: no NULLs
+    ]
+    for kind in kinds:
+        est = fit(kind, 90)  # fitted WITHOUT missing values
+        udf = tbt([est])
+        fn = DuckDBInferFn(
+            SQL, row_tables={"__THIS__": ROW}, static_tables={}, udfs=[udf]
+        )
+        kernel = [r.p for r in fn.infer({"__THIS__": rows})]
+        called = [udf(0, *(getattr(r, f) for f in FEATURES)) for r in rows]
+        assert [c[0] for c in called] == kernel, type(kind).__name__
