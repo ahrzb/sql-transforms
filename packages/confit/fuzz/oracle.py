@@ -321,15 +321,39 @@ def _schema_delta(duck: pa.Schema, ours: pa.Schema):
         return ("diff", f"names {duck.names} != {ours.names}")
     known = []
     for d, o in zip(duck, ours, strict=True):
-        if d.type == o.type:
-            continue
-        if d.type in _INT_WIDTHS and o.type == pa.int64():
-            known.append("KNOWN-TASK-79")
-        elif pa.types.is_decimal(d.type) and o.type == pa.float64():
-            known.append("decimal-literal")
-        else:
+        r = _type_delta(d.type, o.type)
+        if r == "diff":
             return ("diff", f"{d.name}: duck {d.type} != ours {o.type}")
+        if r is not None:
+            known.append(r)
     return ("known", known[0]) if known else None
+
+
+def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
+    """None = equal; a tag = a known open-ticket width class (recursing into
+    structs — an int32 lane inside struct_pack is still TASK-79); "diff"."""
+    if duck == ours:
+        return None
+    if duck in _INT_WIDTHS and ours == pa.int64():
+        return "KNOWN-TASK-79"
+    if pa.types.is_decimal(duck) and ours == pa.float64():
+        return "decimal-literal"
+    if (
+        pa.types.is_struct(duck)
+        and pa.types.is_struct(ours)
+        and duck.num_fields == ours.num_fields
+    ):
+        tag = None
+        for i in range(duck.num_fields):
+            df, of = duck.field(i), ours.field(i)
+            if df.name != of.name:
+                return "diff"
+            r = _type_delta(df.type, of.type)
+            if r == "diff":
+                return "diff"
+            tag = tag or r
+        return tag
+    return "diff"
 
 
 def _norm(table: pa.Table, to: pa.Schema | None = None) -> list[dict]:
