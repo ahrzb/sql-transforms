@@ -4568,7 +4568,16 @@ impl Binder<'_> {
                     ));
                 };
                 match (self.expr_or_null(a)?, self.expr_or_null(b)?) {
-                    (None, Some(b)) => Ok(null_of(b.ty)),
+                    // TASK-86: DuckDB types the bare NULL FIRST (INTEGER)
+                    // and nullif's output takes the first argument's type,
+                    // so its answer is int32 where adopting b's type here
+                    // answered double — same value, schemas apart. Refuse;
+                    // CAST(NULL AS DOUBLE) is the spelling that agrees.
+                    (None, Some(_)) => Err(unsup(
+                        "bare NULL as nullif's first argument (DuckDB types \
+                         it INTEGER and the output takes that type; spell \
+                         it CAST(NULL AS <type>))",
+                    )),
                     // a = NULL is never TRUE, so nullif(a, NULL) is a.
                     (Some(a), None) => Ok(a),
                     (None, None) => Err(unsup("NULLIF(NULL, NULL)")),
@@ -4612,7 +4621,18 @@ impl Binder<'_> {
                     )));
                 };
                 let (bs, bn) = (self.expr_or_null(s)?, self.expr_or_null(n)?);
-                let (Some(bs), Some(bn)) = (bs, bn) else {
+                // TASK-86: a bare NULL string picks DuckDB's BLOB overload,
+                // so the answer is BLOB there and string here — and every
+                // OUTER call binding the result splits (strpos/ltrim/lower/
+                // levenshtein/LIKE refuse BLOB on DuckDB while building
+                // here). A NULL COUNT stays: both engines type that VARCHAR.
+                let Some(bs) = bs else {
+                    return Err(unsup(
+                        "bare NULL as repeat's string (DuckDB picks the BLOB \
+                         overload; spell it CAST(NULL AS VARCHAR))",
+                    ));
+                };
+                let Some(bn) = bn else {
                     return Ok(null_of(Ty::Str));
                 };
                 if bs.ty != Ty::Str {
