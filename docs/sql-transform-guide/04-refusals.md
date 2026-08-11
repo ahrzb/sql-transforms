@@ -59,7 +59,7 @@ correlation — here an inequality, which is real and common and temporary:
 ... ''')
 Traceback (most recent call last):
     ...
-sql_transform.model._errors.CorrelatedFit: __FIT__ subquery correlates out of itself and the correlation is not a conjunction of equalities — t.price joins the two relations some other way, so it cannot be evaluated once into a keyed table
+sql_transform.model._errors.CorrelatedFit: __FIT__ subquery correlates out of itself and the correlation is not a conjunction of equalities — t.price joins the two relations some other way, so it cannot be evaluated once into a keyed table. If you need it, marginalize it yourself: a CTE over __FIT__ that aggregates to one row per lookup coordinate, joined to __THIS__ — then the retained rows are a subquery you wrote. See docs/decorrelation-unsupported.md
 
 ```
 
