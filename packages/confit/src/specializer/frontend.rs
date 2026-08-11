@@ -3640,12 +3640,13 @@ impl Binder<'_> {
         // (review round: IGNORE NULLS rode in on the INNER call of an
         // unnest item and expanded as if unadorned).
         if f.filter.is_some()
+            || f.over.is_some()
             || f.null_treatment.is_some()
             || !f.within_group.is_empty()
         {
             return Err(unsup(format!(
-                "modifier on udf call {} (FILTER, IGNORE NULLS and WITHIN \
-                 GROUP apply to aggregates)",
+                "modifier on udf call {} (FILTER, OVER, IGNORE NULLS and \
+                 WITHIN GROUP apply to aggregates and window functions)",
                 f.name
             )));
         }
@@ -4095,6 +4096,37 @@ impl Binder<'_> {
 
     fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        // TASK-81: DuckDB refuses every call-node modifier on a scalar call
+        // (OVER is a catalog error, FILTER invalid input, IGNORE NULLS a
+        // parser error) while these fields silently fell on the floor here,
+        // so the bare call was served where the oracle errors — the fuzz
+        // campaign's largest class. Destructured EXHAUSTIVELY (no `..`) for
+        // the TASK-69 reason: a modifier field added to sqlparser must break
+        // this build, not the answers.
+        let sqlparser::ast::Function {
+            name: _,
+            uses_odbc_syntax,
+            parameters,
+            args: _,
+            filter,
+            null_treatment,
+            over,
+            within_group,
+        } = f;
+        if *uses_odbc_syntax
+            || !matches!(parameters, FunctionArguments::None)
+            || filter.is_some()
+            || null_treatment.is_some()
+            || over.is_some()
+            || !within_group.is_empty()
+        {
+            return Err(unsup(format!(
+                "modifier on scalar call {} (FILTER, OVER, IGNORE NULLS and \
+                 WITHIN GROUP apply to aggregates and window functions, \
+                 which this engine does not serve)",
+                f.name
+            )));
+        }
         let name = f.name.to_string().to_lowercase();
         let FunctionArguments::List(list) = &f.args else {
             return Err(unsup(format!(

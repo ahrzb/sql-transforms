@@ -817,3 +817,63 @@ def test_a_shared_child_is_refused_as_not_a_tree():
 def test_every_claimed_model_table_refusal_holds(what, nodes, kw, match):
     with pytest.raises(ValueError, match=match):
         _model_fn(nodes, **kw)
+
+
+# TASK-81 (fuzz campaign 2026-08-11, ~570 of 963 findings). A call-node
+# modifier that DuckDB refuses -- OVER () on a scalar function, FILTER, IGNORE
+# NULLS -- was parsed and silently DROPPED on the builtin path, so the bare
+# call was served where the oracle errors. The udf path already screened
+# FILTER / IGNORE NULLS / WITHIN GROUP (frontend review round) but not OVER;
+# the builtin path screened nothing. One screen now runs where every scalar
+# call dispatches.
+
+_ModRow = create_model("_ModRow", k=(int, ...), s=(str, ...))
+
+
+class _ModUdf:
+    name = "mudf"
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.float64()
+
+    def __call__(self, x):
+        return (x,)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT abs(k) OVER () AS c FROM __THIS__",
+        "SELECT abs(k) FILTER (WHERE TRUE) AS c FROM __THIS__",
+        # both IGNORE NULLS spellings: in-paren parses to the argument
+        # list's clauses (already refused before this fix), post-paren to
+        # the call node's null_treatment (silently dropped before it)
+        "SELECT upper(s IGNORE NULLS) AS c FROM __THIS__",
+        "SELECT ltrim(lower(s) IGNORE NULLS) AS c FROM __THIS__",
+        "SELECT coalesce(k, 1) OVER () AS c FROM __THIS__",
+        "SELECT mudf(1.0e0) OVER () AS c FROM __THIS__",
+        "SELECT mudf(1.0e0) FILTER (WHERE TRUE) AS c FROM __THIS__",
+    ],
+)
+def test_scalar_call_modifiers_are_refused_not_dropped(sql):
+    """DuckDB refuses each of these (CatalogException for OVER on a scalar,
+    InvalidInput for FILTER, ParserException for IGNORE NULLS); before the
+    fix the engine built them and served the bare call."""
+    with pytest.raises(ValueError, match="modifier|argument clauses"):
+        DuckDBInferFn(
+            sql,
+            row_tables={"__THIS__": _ModRow},
+            static_tables={},
+            udfs=[_ModUdf()],
+        )
+
+
+def test_unmodified_scalar_calls_still_build():
+    """The screen must not catch the bare spellings of the same calls."""
+    fn = DuckDBInferFn(
+        "SELECT abs(k) AS a, upper(s) AS u, mudf(1.0e0) AS m FROM __THIS__",
+        row_tables={"__THIS__": _ModRow},
+        static_tables={},
+        udfs=[_ModUdf()],
+    )
+    rows = fn.infer({"__THIS__": [_ModRow(k=-2, s="x")]})
+    assert [r.model_dump() for r in rows] == [{"a": 2, "u": "X", "m": 1.0}]
