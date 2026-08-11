@@ -68,6 +68,61 @@ architecture. Per family:
   params table; exact hits read the stored rank.
 - `percent_rank`/`cume_dist`: derived from rank/cum_count and `n`.
 
+## The second consumer: correlated `__FIT__` subqueries (folded in 2026-08-11)
+
+The same mechanism answers a refusal that has nothing to do with windows.
+`docs/decorrelation-unsupported.md` refuses `not-an-equality` — and points
+here — because a `GROUP BY` reproduces the equivalence classes of `=` and
+nothing else:
+
+```sql
+(SELECT avg(f.price) FROM __FIT__ f WHERE f.cat = t.cat AND f.ts <= t.ts)
+```
+
+Measured exact against the author's text with `__FIT__` and `__THIS__` bound
+to two different relations — every row, including a serving `ts` before the
+training support, a NULL serving key, an unseen category, and ties on `ts`:
+
+```sql
+-- params: one row per distinct (partition key, order value)
+SELECT cat, ts,
+  sum(sum(price))   OVER w AS s,
+  sum(count(price)) OVER w AS c,
+  sum(count(*))     OVER w AS n
+FROM __FIT__ GROUP BY cat, ts WINDOW w AS (PARTITION BY cat ORDER BY ts)
+
+-- serve
+SELECT t.cat, t.ts, p.s / nullif(p.c, 0) AS m, coalesce(p.n, 0) AS n
+FROM __THIS__ t ASOF LEFT JOIN p ON t.cat = p.cat AND t.ts >= p.ts
+```
+
+**Keep the two consumers separable.** This one is not a semantics decision.
+`f.ts <= t.ts` already has an unambiguous meaning and the emission above
+reproduces it bit-for-bit; the transform is *refused* today, not silently
+wrong. Step semantics for `rank()` changes what a fitted transform means and
+needs adoption. One mechanism, two consumers — only one of them is a debate,
+and the aggregate case must not inherit a blocker it does not have.
+
+**Two pins below are already settled** by that measurement: ties collapse to
+one params row while a serving row at the tied coordinate still sees every
+tied training row, and a NULL serving order value misses the join and yields
+the empty-group answer (`NULL` for `avg`, `0` for `count`) — the same
+observable the peer-class rule predicts, reached by a different route.
+
+**What it costs.** The params table is one row per distinct *(key, order
+value)*. On a continuous order key nothing ties, so that is `|F|` rows with
+the columns renamed — the training set, shipped. Sound and disclosing are
+independent here, which is exactly the case `docs/decorrelation-unsupported.md`
+defers to DRAFT-20's declared byte budget. Admitting this shape is what makes
+that budget due.
+
+**Still refused after this lands:** two-sided ranges
+(`f.ts <= t.ts AND f.ts > t.ts - 3`). Prefix-differencing across two ASOF
+joins returns `0.0` where the oracle returns `NULL`, in the one place no join
+miss occurs, so no hit flag can fire — trap T6 in the reference. A parallel
+count prefix gated on `n_hi - n_lo = 0` reproduces it; sliding-window `max`
+is not recoverable from prefixes at all.
+
 ## Pins needed before believing anything
 
 - Tie boundaries: `<` vs `≤` per function, and DuckDB ASOF's strictness.
@@ -88,3 +143,9 @@ Direction agreed ("ah that's nice I like it"): adopt step semantics as THE
 meaning of order-keyed windows, in its own loop with its own pins and an
 off-support gate, sequenced after schema-aware resolution. Until that loop,
 NULL-off-support is the documented behavior.
+
+2026-08-11, AmirHossein: fold the correlated-`__FIT__` inequality lifting in
+here rather than spec it standalone, since the machinery is the same. Still
+parked — nothing is ticketed, and `not-an-equality` stays a live refusal
+meanwhile. It is the one refusal on the list that is not a weird case, which
+is the standing cost of the deferral.

@@ -68,11 +68,15 @@ optimizer has a reason to prefer a prefix scan; that silence is not evidence.
 
 ```sql
 -- fit: the prefix aggregate, one row per distinct fitted timestamp
-SELECT ts AS __key_0, sum(price) OVER (ORDER BY ts) AS __value FROM __FIT__
+SELECT ts AS __key_0, sum(sum(price)) OVER (ORDER BY ts) AS __value
+FROM __FIT__ GROUP BY ts
 
 -- serve
 ASOF LEFT JOIN p ON p.__key_0 <= t.ts
 ```
+
+The `GROUP BY` is what makes the row count claim true: without it, tied
+timestamps each keep a row and the table is one row per *training* row.
 
 It needs its own emptiness story, which is why it is a separate design: trap
 T6 in the reference is the count bug reappearing where **no join miss occurs
