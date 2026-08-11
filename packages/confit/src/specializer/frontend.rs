@@ -3169,6 +3169,37 @@ impl Binder<'_> {
         left: &SqlExpr,
         right: &SqlExpr,
     ) -> Result<SExpr, PrepareError> {
+        // TASK-84: DuckDB types integer literals INTEGER and computes their
+        // arithmetic in 32 bits, so `-6 * (- 2147483647)` ERRORS there while
+        // a single i64 width serves an answer. A literal-shaped integer
+        // subtree is re-evaluated here in checked int32 — DuckDB's own
+        // semantics — and refuses at build if any step would trap. A BIGINT
+        // operand anywhere (column, cast, out-of-int32 literal) makes the
+        // whole tree 64-bit on both engines and is untouched. The residual
+        // (`CAST(k AS INTEGER) * 2` trapping data-dependently at row time)
+        // needs the declared-width design and stays on TASK-79/84.
+        if matches!(
+            op,
+            BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Modulo
+        ) {
+            let probe = SqlExpr::BinaryOp {
+                left: Box::new(left.clone()),
+                op: op.clone(),
+                right: Box::new(right.clone()),
+            };
+            if let I32Fold::Traps = eval_i32_literal(&probe) {
+                return Err(PrepareError::Bind(format!(
+                    "integer literal arithmetic overflows INTEGER on DuckDB \
+                     ({} {op} {}) — int-literal math runs in 32 bits there; \
+                     make an operand BIGINT (CAST(.. AS BIGINT)) for 64-bit \
+                     arithmetic",
+                    left, right
+                )));
+            }
+        }
         let a = self.expr_or_null(left)?;
         let b = self.expr_or_null(right)?;
         // A NULL literal adopts the other side's type; the op itself is not
@@ -5644,6 +5675,68 @@ fn int32_literal_shaped(e: &SqlExpr) -> bool {
             NARROW_INTS.contains(&data_type.to_string().to_uppercase().as_str())
         }
         _ => false,
+    }
+}
+
+/// Checked-int32 evaluation of a LITERAL-shaped integer subtree, mirroring
+/// DuckDB's typing: an int32-range number literal is INTEGER there, INTEGER
+/// op INTEGER stays INTEGER, and overflow is a runtime ERROR. `NotShaped`
+/// means some leaf isn't an int32 literal (column, cast, big literal, `/`
+/// which is DOUBLE there) — 64-bit semantics apply and nothing refuses.
+/// `Fine(None)` is a NULL-valued but trap-free subtree (INTEGER % 0 is NULL
+/// on DuckDB, measured in the wave pins).
+enum I32Fold {
+    NotShaped,
+    Traps,
+    Fine(Option<i32>),
+}
+
+fn eval_i32_literal(e: &SqlExpr) -> I32Fold {
+    use I32Fold::{Fine, NotShaped, Traps};
+    match e {
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(text, _) => match text.parse::<i64>() {
+                Ok(n) => match i32::try_from(n) {
+                    Ok(n) => Fine(Some(n)),
+                    Err(_) => NotShaped, // BIGINT literal there too
+                },
+                Err(_) => NotShaped,
+            },
+            _ => NotShaped,
+        },
+        SqlExpr::Nested(inner) => eval_i32_literal(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Plus,
+            expr,
+        } => eval_i32_literal(expr),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => match eval_i32_literal(expr) {
+            Fine(Some(n)) => n.checked_neg().map_or(Traps, |n| Fine(Some(n))),
+            other => other,
+        },
+        SqlExpr::BinaryOp { left, op, right } => {
+            let f = match op {
+                BinaryOperator::Plus => i32::checked_add,
+                BinaryOperator::Minus => i32::checked_sub,
+                BinaryOperator::Multiply => i32::checked_mul,
+                BinaryOperator::Modulo => i32::checked_rem,
+                _ => return NotShaped,
+            };
+            match (eval_i32_literal(left), eval_i32_literal(right)) {
+                (Fine(x), Fine(y)) => match (x, y) {
+                    (Some(_), Some(0)) if matches!(op, BinaryOperator::Modulo) => {
+                        Fine(None) // INTEGER % 0 is NULL, not a trap
+                    }
+                    (Some(x), Some(y)) => f(x, y).map_or(Traps, |n| Fine(Some(n))),
+                    _ => Fine(None), // NULL propagates trap-free
+                },
+                (Traps, _) | (_, Traps) => Traps,
+                _ => NotShaped,
+            }
+        }
+        _ => NotShaped,
     }
 }
 

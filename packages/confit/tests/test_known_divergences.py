@@ -1049,3 +1049,58 @@ def test_agreeing_null_adopters_still_bind_and_match(sql):
     want = con.execute(sql).to_arrow_table()
     assert got.schema == want.schema, f"{got.schema} != {want.schema}"
     assert got.to_pylist() == want.to_pylist()
+
+
+# TASK-84 (fuzz campaign 2026-08-11, 16 DIVERGE_TRAP findings). DuckDB types
+# integer literals INTEGER and computes their arithmetic in 32 bits, so
+# `-6 * (- 2147483647)` ERRORS there -- while the engine's single i64 width
+# served 12884901882 where the oracle traps. Literal-shaped integer
+# arithmetic is now evaluated at build in checked int32, DuckDB's own
+# semantics, and a subtree that would trap refuses by name. The residual --
+# `CAST(k AS INTEGER) * 2` trapping data-dependently at row time -- needs
+# the declared-width design (TASK-79) and stays ticketed there; a BIGINT
+# operand anywhere in the expression keeps 64-bit math on both engines.
+
+_OvRow = create_model("_OvRow", k=(int, ...))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT (-6 * (- 2147483647)) AS o FROM __THIS__",
+        "SELECT ((2000000000 + 2000000000) - 2000000000) AS o FROM __THIS__",
+        "SELECT (2147483647 + 1) AS o FROM __THIS__",
+    ],
+)
+def test_int32_literal_overflow_refuses_where_duckdb_traps(sql):
+    with pytest.raises(ValueError, match="INTEGER|int32|32"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _OvRow}, static_tables={})
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    with pytest.raises(Exception, match="[Oo]verflow"):
+        con.execute(sql).fetchall()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT (-6 * CAST(-2147483647 AS BIGINT)) AS o FROM __THIS__",
+        "SELECT (k * 2147483647) AS o FROM __THIS__",
+        "SELECT (2 + 3) AS o FROM __THIS__",
+        "SELECT (2000000000 % 0 + 1) AS o FROM __THIS__",
+    ],
+)
+def test_bigint_and_in_range_literal_arithmetic_still_matches(sql):
+    """A BIGINT operand keeps 64-bit math on BOTH engines; in-range literal
+    arithmetic and the measured INTEGER%0->NULL stay served and matching."""
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _OvRow}, static_tables={})
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_OvRow(k=2)]})]
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (2)")
+    want = con.execute(sql).to_arrow_table().to_pylist()
+    key = lambda r: sorted((c, repr(v)) for c, v in r.items())  # noqa: E731
+    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
