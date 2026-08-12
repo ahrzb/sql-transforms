@@ -107,8 +107,11 @@ Notables: `abs` is width-POLYMORPHIC (follows its argument); the
 length-family is fixed int64 despite string inputs; CASE promotes across
 widths exactly like arithmetic.
 
-## Known divergences are scaffolding, not contract
+## Open-bug markers are scaffolding, not contract
 
+"Known divergence" is reserved for decided-and-unscheduled differences —
+the rows in known-limitations.md. Everything with an m-8 phase or a ticket
+is an OPEN BUG, and its markers (xfail pins, fuzzer tags) are scaffolding.
 Each phase's definition of done includes DELETING that phase's markers, in
 all three homes, in the same PR as the fix:
 
