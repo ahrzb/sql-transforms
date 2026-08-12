@@ -20,20 +20,25 @@ from sql_transform.model._errors import (
     CorrelatedFit,
     NestingTooDeep,
     NotFitted,
+    NotRowWise,
     TransformError,
     UnknownName,
     WholeTrainingSet,
 )
 from sql_transform.model._foreign import Transform
 from sql_transform.model._program import MAX_DEPTH, Fitted
+from sql_transform.model._projection import FittedProjection, SQLProjection
 from sql_transform.model._transform import SQLTransform, run
 
 __all__ = [
     "MAX_DEPTH",
     "CorrelatedFit",
     "Fitted",
+    "FittedProjection",
     "NestingTooDeep",
     "NotFitted",
+    "NotRowWise",
+    "SQLProjection",
     "SQLTransform",
     "Transform",
     "TransformError",

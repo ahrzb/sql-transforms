@@ -37,6 +37,24 @@ class WholeTrainingSet(TransformError):
     """
 
 
+class NotRowWise(TransformError):
+    """The text cannot serve one output row per ``__THIS__`` row.
+
+    A projection's whole promise, checked at construction against the residual
+    — the text that survives freezing, where only ``__THIS__`` and params
+    remain. ``reason`` names which of the closed set of shapes it is; the set
+    is the refusal list, kept short on purpose, and the projection test walks
+    it looking for gaps.
+
+    ``reason`` has no default, for the same reason ``CorrelatedFit``'s has
+    none: a default reason is a refusal nobody has to name.
+    """
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 class UnknownName(TransformError):
     """An identifier resolved to nothing in the caller's frame."""
 
