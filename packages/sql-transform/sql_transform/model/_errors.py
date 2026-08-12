@@ -55,6 +55,19 @@ class NotRowWise(TransformError):
         self.reason = reason
 
 
+class KeyNotUnique(TransformError):
+    """A relation the spine joins can answer one serving row with many rows.
+
+    Nothing static proves a join matches at most one row — ``SELECT DISTINCT``
+    and ``QUALIFY row_number() = 1`` are correct de-dup spellings a syntax
+    rule would refuse — so this is measured at fit, where the params exist:
+    the join's equality keys must be unique in the joined relation, and a
+    relation beside ``__THIS__`` with no key at all must have exactly one row.
+    The one refusal that cannot be hoisted to construction (P7's carve-out:
+    uniqueness is a fact about data).
+    """
+
+
 class UnknownName(TransformError):
     """An identifier resolved to nothing in the caller's frame."""
 

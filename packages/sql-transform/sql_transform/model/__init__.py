@@ -18,6 +18,7 @@ point one way:
 from sql_transform.model._ast import normalize
 from sql_transform.model._errors import (
     CorrelatedFit,
+    KeyNotUnique,
     NestingTooDeep,
     NotFitted,
     NotRowWise,
@@ -35,6 +36,7 @@ __all__ = [
     "CorrelatedFit",
     "Fitted",
     "FittedProjection",
+    "KeyNotUnique",
     "NestingTooDeep",
     "NotFitted",
     "NotRowWise",

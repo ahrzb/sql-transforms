@@ -219,6 +219,97 @@ def test_a_where_inside_a_params_relation_is_free():
     assert p.fit(F).transform(X).num_rows == X.num_rows
 
 
+# ------------------------------------------------- what refuses at fit
+
+
+def test_a_join_without_group_by_refuses_at_fit_naming_the_key():
+    """The measured case: four training rows in the artifact, one serving row
+    became three, no error — under SQLTransform. Here it refuses, with the
+    repeating key and its count straight out of the probe."""
+    from sql_transform.model import KeyNotUnique
+
+    p = SQLProjection("""
+        WITH s AS (SELECT store, price AS m FROM __FIT__)
+        SELECT t.price / s.m AS z FROM __THIS__ t LEFT JOIN s ON t.store = s.store
+    """)
+    with pytest.raises(KeyNotUnique, match=r"S1.*3 rows.*become 3"):
+        p.fit(F)
+
+
+def test_a_multi_row_relation_beside_this_refuses_at_fit():
+    from sql_transform.model import KeyNotUnique
+
+    p = SQLProjection("""
+        SELECT t.price - f.price AS d
+        FROM __THIS__ t, (SELECT store, price FROM __FIT__ WHERE price > 15) f
+    """)
+    with pytest.raises(KeyNotUnique, match=r"5 rows"):
+        p.fit(F)
+
+
+def test_an_empty_relation_beside_this_refuses_at_fit():
+    """Cross join to zero rows makes every serving row disappear — the other
+    way to break the row count, and quieter."""
+    from sql_transform.model import KeyNotUnique
+
+    p = SQLProjection("""
+        SELECT t.price - f.price AS d
+        FROM __THIS__ t, (SELECT store, price FROM __FIT__ WHERE price > 999) f
+    """)
+    with pytest.raises(KeyNotUnique, match=r"0 rows"):
+        p.fit(F)
+
+
+def test_de_dup_idioms_pass_the_measurement():
+    """DISTINCT and QUALIFY row_number are correct de-dup spellings; a syntax
+    rule would refuse them, the measurement does not."""
+    distinct = SQLProjection("""
+        SELECT t.price / f.price AS r
+        FROM __THIS__ t
+        LEFT JOIN (SELECT DISTINCT store, first(price) OVER (
+            PARTITION BY store ORDER BY price) AS price FROM __FIT__) f
+          ON t.store = f.store
+    """)
+    assert distinct.fit(F).transform(X).num_rows == X.num_rows
+
+    qualified = SQLProjection("""
+        SELECT t.price / f.price AS r
+        FROM __THIS__ t
+        LEFT JOIN (SELECT store, price FROM __FIT__
+                   QUALIFY row_number() OVER (PARTITION BY store ORDER BY price) = 1) f
+          ON t.store = f.store
+    """)
+    assert qualified.fit(F).transform(X).num_rows == X.num_rows
+
+
+def test_null_keyed_duplicates_refuse_conservatively():
+    """GROUP BY folds NULL keys into one group, which is exact for the INDF
+    joins the model emits and conservative for an author-written `=` join —
+    the safe direction (spec: the KeyNotUnique section)."""
+    from sql_transform.model import KeyNotUnique
+
+    nulls = pa.table({"store": ["S1", None, None], "price": [10.0, 5.0, 7.0]})
+    p = SQLProjection("""
+        SELECT t.price / f.m AS z
+        FROM __THIS__ t
+        LEFT JOIN (SELECT store, price AS m FROM __FIT__) f ON t.store = f.store
+    """)
+    with pytest.raises(KeyNotUnique, match=r"2 rows"):
+        p.fit(nulls)
+
+
+def test_a_unique_key_with_extra_conjuncts_passes():
+    """Extra non-equality conjuncts only filter matches further; uniqueness
+    over the equality keys already bounds them at one."""
+    p = SQLProjection("""
+        SELECT t.price / f.m AS z
+        FROM __THIS__ t
+        LEFT JOIN (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+          ON t.store = f.store AND f.m > 0
+    """)
+    assert p.fit(F).transform(X).num_rows == X.num_rows
+
+
 def test_the_reserved_row_name_is_already_unwritable():
     """P8 owns the threading column: an author cannot collide with it."""
     from sql_transform.model import TransformError
