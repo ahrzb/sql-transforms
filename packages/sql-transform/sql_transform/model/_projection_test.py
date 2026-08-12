@@ -310,6 +310,65 @@ def test_a_unique_key_with_extra_conjuncts_passes():
     assert p.fit(F).transform(X).num_rows == X.num_rows
 
 
+# ------------------------------------------------------- the compiled row path
+
+
+def test_compile_returns_confits_own_function():
+    from confit import DuckDBInferFn
+
+    fn = SQLProjection(KEYED).fit(F).compile()
+    assert isinstance(fn, DuckDBInferFn)
+    assert fn.shape == "map"
+
+
+def test_parity_batch_oracle_equals_row_path():
+    """The parity law: DuckDB batch and Confit row-at-a-time, bit-exact."""
+    fitted = SQLProjection(KEYED).fit(F)
+    batch = fitted.transform(X).to_pylist()
+    rows = [r.model_dump() for r in fitted.compile().infer_rows(X.to_pylist())]
+    assert batch == rows
+
+
+def test_one_row_inference():
+    fn = SQLProjection(GLOBAL).fit(F).compile()
+    (out,) = fn.infer_rows([{"store": "S1", "price": 16.0}])
+    assert out.z == 16.0 / 160.0
+
+
+def test_a_label_column_in_fit_is_optional_at_serving():
+    """The serving row model comes from the fit relation's schema, every
+    field Optional — a label present at fit and absent at serving is fine."""
+    labelled = F.append_column("y", pa.array([1.0] * 6))
+    fn = SQLProjection(GLOBAL).fit(labelled).compile()
+    (out,) = fn.infer_rows([{"store": "S1", "price": 16.0}])  # no y supplied
+    assert out.z == 16.0 / 160.0
+
+
+def test_a_foreign_leaf_serves_in_batch_but_refuses_to_compile_by_name():
+    """A Python leaf cannot cross into the row path (no Python there); the
+    refusal says so instead of failing inside Confit."""
+    import pyarrow.compute as pc
+
+    from sql_transform.model import Transform, TransformError
+
+    sc = Transform(
+        fit=lambda f: pa.table({"m": [pc.mean(f["v"]).as_py()]}),
+        transform=lambda p, t: pa.table({"v": pc.divide(t["v"], p["m"][0])}),
+        takes=("v",),
+        returns=("v",),
+    )
+    assert sc is not None
+    p = SQLProjection("""
+        SELECT sc_transform(f.theta, struct_pack(v := t.price)).v AS z
+        FROM __THIS__ t,
+             (SELECT sc_fit(struct_pack(v := price)) AS theta FROM __FIT__) f
+    """)
+    fitted = p.fit(F)
+    assert fitted.transform(X).num_rows == X.num_rows  # the batch path works
+    with pytest.raises(TransformError, match="row path"):
+        fitted.compile()
+
+
 def test_the_reserved_row_name_is_already_unwritable():
     """P8 owns the threading column: an author cannot collide with it."""
     from sql_transform.model import TransformError

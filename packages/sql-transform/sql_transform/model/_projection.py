@@ -26,6 +26,7 @@ from sql_transform.model._ast import (
     Captured,
     Connection,
     _aggregates,
+    _base_table,
     _deserialize,
     _print_expr,
     _statement,
@@ -428,6 +429,118 @@ def _measure(
         con.close()
 
 
+def _passthrough(node: Node) -> str | None:
+    """The base table behind ``SELECT * FROM <base>`` — the exact shape
+    freezing synthesizes for every frozen subtree — or None."""
+    if not isinstance(node, Select) or cte_entries(node) or node.modifiers:
+        return None
+    if node.where_clause is not None or node.qualify is not None:
+        return None
+    if node.group_expressions or node.group_sets or node.having is not None:
+        return None
+    if not isinstance(node.from_table, BaseTable):
+        return None
+    if len(node.select_list) != 1:
+        return None
+    (item,) = node.select_list
+    bare_star = (
+        isinstance(item, Opaque)
+        and item.fields.get("class") == "STAR"
+        and not field(item, "relation_name")
+        and not field(item, "exclude_list")
+        and not field(item, "replace_list")
+    )
+    return node.from_table.table_name if bare_star else None
+
+
+def _on_true() -> Node:
+    # `1 = 1`, not `TRUE`: the literal round-trips through the printer as
+    # CAST('t' AS BOOLEAN), a cast the row path's vocabulary refuses.
+    return _template("SELECT 1 FROM a LEFT JOIN b ON 1 = 1").from_table.condition
+
+
+def _flattened(
+    node: Node,
+    renames: dict[str, str] | None = None,
+    reading: dict[str, set[str]] | None = None,
+) -> Node:
+    """The residual, respelled for the row path. Two rewrites, both no-ops to
+    DuckDB and load-bearing to Confit's stricter surface.
+
+    Freezing's own passthroughs inline: ``(SELECT * FROM __param_0) f`` says
+    nothing ``__param_0 AS f`` does not, and Confit's FROM takes tables and
+    joins, not derived tables. Author-written params subqueries that do more
+    than pass through stay — Confit refuses those loudly by its own name.
+
+    A cross join beside the batch becomes ``LEFT JOIN ... ON TRUE``: Confit's
+    map shape statically refuses an INNER join (a miss drops rows), and it
+    cannot know what the fit-time probe measured — that the params side is
+    exactly one row, which makes the two spellings the same relation."""
+    renames = dict(renames or {})
+    reading = dict(reading or {})
+    kept = []
+    for entry in cte_entries(node):
+        body = _flattened(entry.value.query.node, renames, reading)
+        reading[entry.key.lower()] = _reads(body, reading)
+        if base := _passthrough(body):
+            renames[entry.key.lower()] = base
+            continue
+        kept.append(
+            entry.model_copy(
+                update={
+                    "value": entry.value.model_copy(
+                        update={
+                            "query": entry.value.query.model_copy(update={"node": body})
+                        }
+                    )
+                }
+            )
+        )
+    node = with_cte_entries(node, kept)
+    node = rebuild(
+        node,
+        lambda v: _flattened(v, renames, reading) if is_query(v) else None,
+        deep=False,
+    )
+
+    def flat_ref(v: Node) -> Node | None:
+        match v:
+            case SubqueryRef() if base := _passthrough(v.subquery.node):
+                return _base_table(base, v.alias)
+            case BaseTable(table_name=name) if name.lower() in renames:
+                # The author's name stays as the alias, so `s.store` still
+                # resolves after `s` becomes `__param_s`.
+                return _base_table(renames[name.lower()], v.alias or name)
+        return None
+
+    node = rebuild(node, flat_ref, deep=False)
+
+    def cross_to_left(v: Node) -> Node | None:
+        if (
+            isinstance(v, Join)
+            and v.join_type == "INNER"
+            and v.ref_type == "CROSS"
+            and v.condition is None
+            and not v.using_columns
+        ):
+            left = THIS in _reads(v.left, reading)
+            right = THIS in _reads(v.right, reading)
+            if left != right:
+                this_side, one_row = (v.left, v.right) if left else (v.right, v.left)
+                return v.model_copy(
+                    update={
+                        "join_type": "LEFT",
+                        "ref_type": "REGULAR",
+                        "condition": _on_true(),
+                        "left": this_side,
+                        "right": one_row,
+                    }
+                )
+        return None
+
+    return rebuild(node, cross_to_left, deep=False)
+
+
 # The threaded ordinal: harvested from the oracle's own serialization, so the
 # grafted nodes carry every field the deserializer expects (P9).
 def _row_item() -> Node:
@@ -487,6 +600,53 @@ def _threaded(residual: Node) -> Node:
     return ordered.model_copy(update={"modifiers": _row_order()})
 
 
+def _serving_columns(residual: Node, schema: pa.Schema) -> pa.Schema:
+    """The fit columns the residual can actually read — the serving contract.
+
+    A label column nothing references must not be in the row model at all:
+    Confit requires every declared attribute on every input row, so keeping it
+    would make serving demand a column training never served. Kept by name
+    against every column reference (and USING list) in the text; a star keeps
+    everything, because a star reads everything.
+    """
+    parts: set[str] = set()
+    for v in (residual, *descendants(residual, deep=True)):
+        if isinstance(v, ColumnRef):
+            parts.update(p.lower() for p in v.column_names)
+        if isinstance(v, Join):
+            parts.update(c.lower() for c in v.using_columns)
+        if isinstance(v, Opaque) and v.fields.get("class") == "STAR":
+            return schema
+    kept = [f for f in schema if f.name.lower() in parts]
+    return pa.schema(kept)
+
+
+def _model_from_arrow(schema: pa.Schema) -> type:
+    """The serving row model, derived from the fit relation's schema.
+
+    Every field is Optional with a ``None`` default. Unmappable types become
+    opaque fields: Confit accepts those unless the SQL references them.
+    Lifted from the marginalizing class, which retires with it.
+    """
+    import pydantic  # noqa: PLC0415
+
+    fields: dict[str, Any] = {}
+    for f in schema:
+        t = f.type
+        if pa.types.is_floating(t):
+            p: type = float
+        elif pa.types.is_integer(t):
+            p = int
+        elif pa.types.is_boolean(t):
+            p = bool
+        elif pa.types.is_string(t) or pa.types.is_large_string(t):
+            p = str
+        else:
+            p = object
+        fields[f.name] = (p | None if p is not object else Any, None)
+    return pydantic.create_model("Row", **fields)
+
+
 @dataclass(slots=True, eq=False, repr=False)
 class FittedProjection:
     """``T -> R``, one row out per row in — and the artifact you ship.
@@ -495,9 +655,15 @@ class FittedProjection:
     the input, runs the ordered residual, and drops the ordinal: SQL results
     are unordered and a params LEFT JOIN really does emit unmatched rows last,
     so input order is threaded through the text, never assumed.
+
+    ``compile`` hands back Confit's own serving function, unwrapped — its
+    surface is not re-exported here, and a fresh object per call means no
+    cached function for a refit to remember to invalidate.
     """
 
     _fitted: Fitted  # over the *ordered* residual
+    _residual: Node  # the unordered residual: what the row path executes
+    _row_model: type  # derived from the fit relation's schema
 
     def __repr__(self) -> str:
         return f"FittedProjection({self._fitted!r})"
@@ -526,6 +692,39 @@ class FittedProjection:
         return out.select([i for i, c in enumerate(out.column_names) if c != ROW])
 
     __call__ = transform
+
+    def compile(self) -> Any:
+        """The row path: Confit's ``DuckDBInferFn`` over the same residual and
+        the same params, ``shape="map"`` — forced, not chosen, it is the
+        scalar-UDF fact seen from the serving side. Confit's contract makes
+        this bit-exact with ``transform`` or refuses by name.
+
+        The *unordered* residual: the row path has no batch to reorder, and
+        the threaded ordinal would demand a column no serving row has.
+        """
+        if self._fitted.foreign:
+            raise TransformError(
+                "a projection calling a Python leaf ("
+                + ", ".join(sorted(self._fitted.foreign))
+                + ") cannot compile to the row path — there is no Python "
+                "there. Serve it in batch with transform(), or wait for "
+                "theta-as-data (D1), which makes an SQL leaf of it."
+            )
+        from confit import DuckDBInferFn  # noqa: PLC0415
+
+        statics = {
+            name: table if isinstance(table, pa.Table) else pa.table(table)
+            for name, table in {
+                **self._fitted.bindings,
+                **self._fitted.params,
+            }.items()
+        }
+        return DuckDBInferFn(
+            _deserialize(_statement(self._residual)),
+            row_tables={THIS: self._row_model},
+            static_tables=statics,
+            shape="map",
+        )
 
 
 class SQLProjection:
@@ -565,8 +764,14 @@ class SQLProjection:
         """Partial application: the params materialize, the measurement runs,
         the artifact serves. `KeyNotUnique` fires here — uniqueness is a fact
         about data, the one check construction cannot hoist."""
-        fitted = self._program.fit(data)
+        table = data if isinstance(data, pa.Table) else pa.table(data)
+        fitted = self._program.fit(table)
         _measure(self._probes, fitted, self._program.bindings, self._program.foreign)
-        return FittedProjection(replace(fitted, node=self._ordered))
+        flat = _flattened(self._program.residual)
+        return FittedProjection(
+            replace(fitted, node=self._ordered),
+            flat,
+            _model_from_arrow(_serving_columns(flat, table.schema)),
+        )
 
     __call__ = fit
