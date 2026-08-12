@@ -51,9 +51,10 @@ _DUCK_T = {
     pa.string(): "VARCHAR",
 }
 
-# Campaign-report filters for ALREADY-TICKETED divergences (one open ticket
-# = hundreds of random spellings per run, drowning new findings). Each has a
-# strict-xfail twin that rings on fix; tags never ring — delete the tag in
+# Campaign-report filters for OPEN BUGS (ticketed, scheduled — NOT "known
+# divergences": those are the decided-unscheduled rows in known-limitations).
+# One open ticket = hundreds of random spellings per run; each tag has a
+# strict-xfail twin that rings on fix, tags never ring — delete the tag in
 # the fix's own PR or it hides regressions. TASK-79 → m-8 ph2; DECIMAL → ph5.
 _INT_WIDTHS = {pa.int8(), pa.int16(), pa.int32()}
 
@@ -336,9 +337,9 @@ def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
         return None
     # One arm per open ticket; delete with its fix (see _INT_WIDTHS note).
     if duck in _INT_WIDTHS and ours == pa.int64():
-        return "KNOWN-TASK-79"
+        return "OPEN-TASK-79"
     if pa.types.is_decimal(duck) and ours == pa.float64():
-        return "decimal-literal"
+        return "OPEN-M8-DECIMAL"
     if (
         pa.types.is_struct(duck)
         and pa.types.is_struct(ours)
