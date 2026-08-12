@@ -288,6 +288,12 @@ def _resolve(
                 named = node_field(v, "table_name")
                 if named and named.lower() not in ctes:
                     _reserve(named, "a relation named")
+        # Output columns too: an authored `AS __cf_row` would collide with the
+        # ordinal a projection threads through the spine, silently — the same
+        # P8 hole `_reserve` already closes for relations and aliases.
+        for item in node_field(node, "select_list") or []:
+            if alias := node_field(item, "alias"):
+                _reserve(alias, "an output column named")
 
         def resolve_ref(v: AstNode) -> AstNode | None:
             nonlocal depth
