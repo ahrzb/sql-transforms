@@ -20,6 +20,13 @@ Two things need more than that:
    supplied Python pair (`_foreign.Transform`) can do this; an SQL-authored
    projection cannot.
 
+*Leaf*, throughout: a transform's text can call other transforms, so they form
+a tree, and a leaf is where it stops — a `(fit, transform)` pair with no SQL
+inside for the model to descend into. Today every leaf is opaque Python and θ
+is a pointer into a registry of fitted objects, which is what makes the second
+item worth having: `_foreign.py` already promises that *"an SQL leaf gives an
+inspectable params table; a fitted RandomForest gives a pointer."*
+
 Both need the same guarantee, so they are one class.
 
 ## The model
@@ -62,10 +69,22 @@ zips positions against values with `strict=True`. A leaf that changes
 cardinality does not produce a wrong answer, it produces a `ValueError` from
 inside a `zip`.
 
+**And it is why a filtering projection is not a thing.** `tfm_transform` is a
+*scalar UDF* — N values in, N values out, and no encoding for *no row here*. A
+row it wanted to drop would have to come back as a NULL struct, which already
+means something else (P14: an unseen group, the row stays and its output is
+NULL). So dropping rows is not a feature a projection has not been given yet;
+it is a feature the shape cannot hold. `WHERE` over a `__THIS__` column refuses,
+permanently, and the refusal says why rather than promising a later flag.
+
+Filtering is what a transform is for. `SQLTransform` may change cardinality
+freely, because a table function is under no such obligation — and it does not
+serve row-wise at all, so nothing in this design uses Confit's `shape="filter"`.
+
 This mirrors `docs/superpowers/specs/2026-08-05-fit-transform-split-design.md`,
 which already states the pair and the one sugar over it.
 
-## No marginalization
+## Marginalization is not the default
 
 The existing `sql_transform.SQLProjection` reads `__THIS__` only and decides on
 its own which window aggregates to freeze (`_marginalize`). That is what
@@ -89,8 +108,21 @@ LEFT JOIN (SELECT country, avg(age) m FROM __FIT__ GROUP BY country) f
 
 The trade is explicit: three more lines of SQL, and in exchange the two
 relations are named, the retained rows are a subquery the author wrote, and no
-rewrite has to guess. Marginalization is parked for now, not deleted —
-`sql_transform.SQLProjection` keeps it (see **Two classes, one name**).
+rewrite has to guess.
+
+Marginalization is not deleted, and it is not the default either. It comes back
+later as an opt-in helper that *produces* a projection from a `__THIS__`-only
+text:
+
+```python
+SQLProjection(sql)                 # you wrote the __FIT__ half
+SQLProjection.marginalize(sql)     # later: derive it from a __THIS__-only text
+```
+
+Same class, same guarantees, same refusals — the helper is a rewrite in front
+of the constructor, not a second mode inside it. Which is the point: whatever
+it derives is a text you can read, and everything downstream of the constructor
+cannot tell how the `__FIT__` half got there.
 
 ## What refuses
 
@@ -110,7 +142,7 @@ already gone and only `__THIS__` and params tables remain:
 | `ORDER BY` / `LIMIT` / `OFFSET` | destroys the row correspondence |
 | `__THIS__` referenced more than once | a self-join is cross-row |
 | a set operation with `__THIS__` in an arm | cross-row |
-| `WHERE` / `QUALIFY` reading a `__THIS__` column | drops rows (see **Deferred**) |
+| `WHERE` / `QUALIFY` reading a `__THIS__` column | drops rows, and a scalar UDF has no encoding for *no row here* |
 | a recursive CTE reading `__THIS__` | cross-row by construction |
 
 A `WHERE` that reads only params columns is fine — it is constant at serving.
@@ -195,6 +227,10 @@ is the same P7 carve-out DRAFT-24 already took for learned output shapes.
 `transform` is the oracle — DuckDB, batch. `infer`/`infer_batch` go through
 Confit's `DuckDBInferFn` with `shape="map"`, the same residual and the same
 params tables. Confit's contract makes the two bit-exact or refuses by name.
+
+`shape="map"` is forced, not chosen: it is the same fact as `tfm_transform`
+being a scalar UDF, seen from the serving side. `infer` returns a row, never
+`None`, and no caller downstream gains an optional case.
 
 ```python
 p = SQLProjection(sql)
@@ -314,12 +350,13 @@ level deeper would silently break every `FROM df` replacement-scan idiom.
 `sql_transform.SQLProjection` (marginalizing) stays where it is.
 `sql_transform.model.SQLProjection` (explicit `__FIT__`) is the new one. The
 old class still has the transformer registry, per-group fitting, named outputs,
-struct outputs and `unnest` — none of which the new one has on day one, and
-deleting `_marginalize.py` now would lose them.
+struct outputs and `unnest` — none of which the new one has on day one.
 
-This is real debt, recorded rather than pretended away. The deletion trigger is
-the port: when the new class covers the transformer registry, the old one and
-`_marginalize.py` go.
+This is real debt, recorded rather than pretended away, and it resolves in two
+moves rather than one. The old *class* goes when the new one covers the
+transformer registry. `_marginalize.py` does not go with it: it becomes the
+guts of `SQLProjection.marginalize`, demoted from the way projections are
+authored to a helper that writes the `__FIT__` half for you.
 
 ## Properties and gates
 
@@ -354,14 +391,11 @@ Each lands as its own PR off master, sequentially.
 
 ## Deferred
 
-- **A filtering projection.** `WHERE` over a `__THIS__` column refuses. Confit
-  already has `shape="filter"`, and the residual is analysed either way, so this
-  is a shape flag rather than a redesign — but `infer` would return `Row | None`
-  and every caller downstream would gain a `None` case. Not paid for until
-  something wants it.
-- **Marginalization.** Parked with the old class, not deleted.
-- **The port** — transformer registry, named outputs, struct outputs, `unnest`
-  — which is also the deletion trigger for `_marginalize.py`.
+- **`SQLProjection.marginalize`** — the opt-in helper that derives the `__FIT__`
+  half from a `__THIS__`-only text, built on `_marginalize.py`. A rewrite in
+  front of the constructor, so it inherits every guarantee below it.
+- **The port** — transformer registry, per-group fitting, named outputs, struct
+  outputs, `unnest` — which is the deletion trigger for the old *class*.
 - **Types beyond the leaf struct.** Widening `pa.Schema` support is per-field
   and complete for the leaf boundary; nothing here turns on the rest of arrow's
   type vocabulary.
