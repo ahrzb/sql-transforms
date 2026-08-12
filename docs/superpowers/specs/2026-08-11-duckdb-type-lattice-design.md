@@ -84,3 +84,25 @@ upgraded to exact serving when the Dec lanes land.
 Physical narrow storage (int32 arrays, SIMD lanes) — DuckDB needs it for
 columnar bandwidth; sub-5k row serving is boundary-bound (measured, the
 two-engine decision), and we ceded large-batch columnar to DuckDB.
+
+## Phase 2 groundwork: the measured width catalogue (2026-08-11)
+
+DuckDB's integer-width inference, probed directly — these become `Ty::I32`'s
+inference rules, and the fuzzer patrols the catalogue for drift:
+
+```text
+int32:  integer literals, literal-only arithmetic, ascii, unicode, ord,
+        abs(int32-typed arg), nullif(NULL, ..), coalesce(NULL, 1),
+        greatest(1, 2), CASE unifying int32-only arms
+int64:  BIGINT columns and anything they touch (k + 1), length, len,
+        strpos, instr, position, levenshtein, bit_length,
+        CASE unifying int32 with int64 (standard promotion)
+int8:   sign()  <-- a THIRD narrow width; same erase strategy, the enum
+        carries I8 (and I16 for completeness) from the start so the
+        catalogue never forces a second enum change
+double: round, floor (not integer-typed at all — no width question)
+```
+
+Notables: `abs` is width-POLYMORPHIC (follows its argument); the
+length-family is fixed int64 despite string inputs; CASE promotes across
+widths exactly like arithmetic.
