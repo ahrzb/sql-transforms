@@ -17,20 +17,26 @@ import sys
 from dataclasses import dataclass, replace
 from typing import Any, NoReturn
 
+import duckdb
 import pyarrow as pa
 
-from sql_transform.model._analysis import _reads
+from sql_transform.model._analysis import _names_in, _reads
 from sql_transform.model._ast import (
     THIS,
     Captured,
     Connection,
     _aggregates,
+    _deserialize,
     _print_expr,
+    _statement,
     _template,
 )
-from sql_transform.model._errors import NotRowWise, TransformError
+from sql_transform.model._errors import KeyNotUnique, NotRowWise, TransformError
+from sql_transform.model._foreign import _Registry
 from sql_transform.model._nodes import (
     BaseTable,
+    ColumnRef,
+    CteEntry,
     Function,
     Join,
     Node,
@@ -46,7 +52,7 @@ from sql_transform.model._nodes import (
     rebuild,
     with_cte_entries,
 )
-from sql_transform.model._program import Fitted, Program
+from sql_transform.model._program import Fitted, Program, _lease
 
 # One reason per refused shape. The projection test walks this dict looking
 # for gaps, the way the decorrelation test walks its REASONS — a reason
@@ -227,6 +233,201 @@ def _refuse_not_row_wise(residual: Node) -> None:
         _check_expressions(level, reading)
 
 
+_EQUALITIES = ("COMPARE_EQUAL", "COMPARE_NOT_DISTINCT_FROM")
+
+
+@dataclass(frozen=True, slots=True)
+class _Probe:
+    """One join the fit-time measurement has to clear.
+
+    ``keys`` are the joined side's columns from the equality conjuncts —
+    unique keys bound the matches at one, and extra non-equality conjuncts
+    only filter further. No keys at all means the relation sits beside
+    ``__THIS__`` whole, and must have exactly one row.
+    """
+
+    name: str  # the author's name for the side, for the message
+    node: Node  # SELECT <keys or *> FROM <side>, CTEs attached, renderable
+    keys: tuple[str, ...]  # the author's spelling of each key
+
+
+def _eq_keys(condition: Node, side_names: set[str]) -> list[ColumnRef] | None:
+    """The joined side's columns from the AND-tree of equality conjuncts.
+
+    ``None`` means the condition has a shape uniqueness cannot reason about —
+    an OR — so the caller falls back to the one-row rule. Conjuncts that are
+    not side-keyed equalities are ignored: they only filter matches, and a
+    LEFT join's filtered miss keeps the row.
+    """
+    keys: list[ColumnRef] = []
+    stack = [condition]
+    while stack:
+        v = stack.pop()
+        kind, cls = field(v, "type"), field(v, "class")
+        if cls == "CONJUNCTION":
+            if kind != "CONJUNCTION_AND":
+                return None
+            stack += list(field(v, "children") or [])
+            continue
+        if cls == "COMPARISON" and kind in _EQUALITIES:
+            for a, b in (
+                (field(v, "left"), field(v, "right")),
+                (field(v, "right"), field(v, "left")),
+            ):
+                mine = (
+                    isinstance(a, ColumnRef)
+                    and len(a.column_names) >= 2
+                    and a.column_names[0].lower() in side_names
+                )
+                other_mine = (
+                    isinstance(b, ColumnRef)
+                    and len(b.column_names) >= 2
+                    and b.column_names[0].lower() in side_names
+                )
+                if mine and not other_mine:
+                    keys.append(a)
+                    break
+    return keys
+
+
+def _side_names(side: Node) -> set[str]:
+    names = _names_in(side)
+    for f in ("alias", "table_name"):
+        if value := field(side, f):
+            names.add(str(value).lower())
+    return names
+
+
+def _probe_node(side: Node, keys: list[ColumnRef], ctes: list[CteEntry]) -> Node:
+    """``SELECT <keys> FROM <side>`` with every CTE in scope attached, so a
+    side that names one still resolves when rendered standalone."""
+    template = _template("SELECT * FROM __tpl__")
+    items: list[Node] = list(template.select_list)
+    if keys:
+        items = [k.model_copy(update={"alias": f"__k{i}"}) for i, k in enumerate(keys)]
+    node = template.model_copy(update={"select_list": items, "from_table": side})
+    return with_cte_entries(node, ctes)
+
+
+def _key_probes(residual: Node) -> list[_Probe]:
+    """Every spine join, as the measurement fit has to run.
+
+    ASOF is exempt by its own semantics: it matches at most one row per probe
+    row whatever the side holds.
+    """
+    probes: list[_Probe] = []
+
+    def walk(node: Node, reading: dict[str, set[str]], ctes: list[CteEntry]) -> None:
+        reading = dict(reading)
+        ctes = list(ctes)
+        for entry in cte_entries(node):
+            walk(entry.value.query.node, reading, ctes)
+            reading[entry.key.lower()] = _reads(entry.value.query.node, reading)
+            ctes.append(entry)
+        for v in descendants(node, deep=False):
+            if is_query(v):
+                walk(v, reading, ctes)
+        if not isinstance(node, Select) or THIS not in _reads(node, reading):
+            return
+        joins = [
+            v
+            for v in (node.from_table, *descendants(node.from_table, deep=False))
+            if isinstance(v, Join)
+        ]
+        for j in joins:
+            left = THIS in _reads(j.left, reading)
+            right = THIS in _reads(j.right, reading)
+            if left == right or j.ref_type == "ASOF":
+                continue  # params x params, or a join that matches at most one
+            side = j.right if left else j.left
+            if j.using_columns:
+                keys: list[ColumnRef] | None = [
+                    ColumnRef.model_construct(
+                        class_="COLUMN_REF",
+                        type="COLUMN_REF",
+                        alias="",
+                        query_location=0,
+                        column_names=[c],
+                    )
+                    for c in j.using_columns
+                ]
+            elif j.condition is not None:
+                keys = _eq_keys(j.condition, _side_names(side))
+            else:
+                keys = []
+            keys = keys or []  # an OR condition proves nothing: one-row rule
+            name = str(field(side, "alias") or field(side, "table_name") or "")
+            probes.append(
+                _Probe(
+                    name=name or "the joined relation",
+                    node=_probe_node(side, keys, ctes),
+                    keys=tuple(".".join(k.column_names) for k in keys),
+                )
+            )
+
+    walk(residual, {}, [])
+    return probes
+
+
+def _measure(
+    probes: list[_Probe], fitted: Fitted, bindings: dict, foreign: dict
+) -> None:
+    """Run every probe against the materialized params; refuse by name.
+
+    A fresh connection with the artifact's own tables — the same registration
+    ``Fitted._bind`` does, minus ``__THIS__``, which no probe reads.
+    """
+    if not probes:
+        return
+    con = duckdb.connect()
+    try:
+        _lease(
+            con,
+            dict(fitted.params) | dict(bindings),
+            foreign,
+            _Registry(fitted.instances),
+            rename=False,
+        )
+        for p in probes:
+            rel = _deserialize(_statement(p.node))
+            if p.keys:
+                cols = ", ".join(f"__k{i}" for i in range(len(p.keys)))
+                # The key tiebreak keeps the refusal deterministic: two keys
+                # tied on count made the message flap between runs.
+                hit = con.execute(
+                    f"SELECT {cols}, count(*) AS n FROM ({rel}) __cf_probe "  # noqa: S608
+                    f"GROUP BY {cols} HAVING count(*) > 1 "
+                    f"ORDER BY n DESC, {cols} LIMIT 1"
+                ).fetchone()
+                if hit:
+                    *values, n = hit
+                    shown = ", ".join(
+                        f"{k} = {v!r}" for k, v in zip(p.keys, values, strict=True)
+                    )
+                    raise KeyNotUnique(
+                        f"{p.name} joins {THIS} on ({', '.join(p.keys)}), but "
+                        f"({shown}) has {n} rows, so one serving row would "
+                        f"become {n}. Aggregate or de-duplicate it."
+                    )
+            else:
+                (n,) = con.execute(
+                    f"SELECT count(*) FROM ({rel}) __cf_probe"  # noqa: S608
+                ).fetchone()
+                if n != 1:
+                    became = (
+                        f"one serving row would become {n}"
+                        if n
+                        else "every serving row would disappear"
+                    )
+                    raise KeyNotUnique(
+                        f"{p.name} sits beside {THIS} with no join key and has "
+                        f"{n} rows, so {became}. Aggregate it to one row, or "
+                        "join it on a key."
+                    )
+    finally:
+        con.close()
+
+
 # The threaded ordinal: harvested from the oracle's own serialization, so the
 # grafted nodes carry every field the deserializer expects (P9).
 def _row_item() -> Node:
@@ -355,13 +556,17 @@ class SQLProjection:
         self.source = program.source
         self.sql = program.sql
         self._ordered = _threaded(program.residual)
+        self._probes = _key_probes(program.residual)
 
     def __repr__(self) -> str:
         return f"SQLProjection({self.sql!r})"
 
     def fit(self, data: Any) -> FittedProjection:
-        """Partial application: the params materialize, the artifact serves."""
+        """Partial application: the params materialize, the measurement runs,
+        the artifact serves. `KeyNotUnique` fires here — uniqueness is a fact
+        about data, the one check construction cannot hoist."""
         fitted = self._program.fit(data)
+        _measure(self._probes, fitted, self._program.bindings, self._program.foreign)
         return FittedProjection(replace(fitted, node=self._ordered))
 
     __call__ = fit
