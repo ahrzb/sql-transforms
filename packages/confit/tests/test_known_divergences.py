@@ -1303,13 +1303,17 @@ def test_a_large_but_bounded_count_still_serves_and_matches():
     assert got == want, f"{got} != {want}"
 
 
-# TASK-90 / m-8 phase 1 (the epic's phase-0 probe, 2026-08-11). A fitted
-# params table carrying sum(BIGINT) is decimal128(38,0) on the ordinary fit
-# path, and the static ingest narrowed it through f64 SILENTLY -- the value
-# 9007199254740993 (2^53+1) served as ...992.0, off by one, while
-# known-limitations claims out-of-range payloads reject. Exact-or-refuse:
-# a Decimal that round-trips f64 exactly keeps today's conversion; one that
-# does not refuses by name. Exact serving arrives with the m-8 Dec lanes.
+# m-8 phase-0 probe (2026-08-11). A fitted params table carrying sum(BIGINT)
+# is decimal128(38,0) on the ordinary fit path, and the static ingest
+# narrowed it through f64 SILENTLY -- the value 9007199254740993 (2^53+1)
+# served as ...992.0, off by one, while known-limitations claims
+# out-of-range payloads reject.
+#
+# INTERIM (decided with AmirHossein 2026-08-13): we refuse inexact decimal
+# statics for now -- a named no beats the silent off-by-one, and no
+# half-implementation of serving ships in the meantime. TASK-91 (the m-8
+# Dec lane's first slice) implements exact serving; the xfail below IS that
+# contract, and flips loudly when it lands.
 
 _DecRow = create_model("_DecRow", gid=(str, ...))
 
@@ -1325,13 +1329,25 @@ def _dec_static(val: str) -> pa.Table:
     )
 
 
-def test_an_inexact_decimal_static_refuses_instead_of_rounding():
-    with pytest.raises(ValueError, match="(?i)decimal.*exact"):
-        DuckDBInferFn(
-            "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
-            row_tables={"__THIS__": _DecRow},
-            static_tables={"p": _dec_static("9007199254740993")},
-        )
+@pytest.mark.xfail(
+    strict=True,
+    reason="we refuse inexact DECIMAL statics for now; TASK-91 (m-8 Dec"
+    " lane, first slice) implements exact serving",
+)
+def test_an_inexact_decimal_static_serves_exactly():
+    """The end state, not today's: 2^53+1 in a decimal static comes back as
+    ITSELF. Today the build refuses by name (interim — better than the
+    silent off-by-one it replaced), so this xfails until TASK-91 lands and
+    then flips loudly, taking the refusal and its wording out with it."""
+    import decimal
+
+    fn = DuckDBInferFn(
+        "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
+        row_tables={"__THIS__": _DecRow},
+        static_tables={"p": _dec_static("9007199254740993")},
+    )
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_DecRow(gid="a")]})]
+    assert got == [{"o": decimal.Decimal("9007199254740993")}]
 
 
 def test_an_exact_decimal_static_still_serves():
