@@ -11,7 +11,8 @@ point one way:
     _analysis   what a subtree reads, and what it correlates to
     _foreign    the supplied (fit, transform) pair, and θ
     _plan       freezing: params + residual
-    _transform  the surface — resolution, binding, SQLTransform, Fitted, run
+    _program    the compiled text — resolution, binding, Program, Fitted
+    _transform  the estimator surface — SQLTransform, output currencies, run
 """
 
 from sql_transform.model._ast import normalize
@@ -24,7 +25,8 @@ from sql_transform.model._errors import (
     WholeTrainingSet,
 )
 from sql_transform.model._foreign import Transform
-from sql_transform.model._transform import MAX_DEPTH, Fitted, SQLTransform, run
+from sql_transform.model._program import MAX_DEPTH, Fitted
+from sql_transform.model._transform import SQLTransform, run
 
 __all__ = [
     "MAX_DEPTH",
