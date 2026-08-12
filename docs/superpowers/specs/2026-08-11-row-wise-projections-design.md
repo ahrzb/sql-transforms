@@ -133,19 +133,35 @@ Two new refusals, and that is the entire budget.
 Read off the residual — the text that survives freezing, where `__FIT__` is
 already gone and only `__THIS__` and params tables remain:
 
+The rule the table falls out of: **the spine — every level that carries the
+batch's rows — must be a pure projection over row-keeping joins; a level that
+reads only params is free**, because it is a constant table at serving. Ten
+reasons, closed (`REASONS` in `_projection.py`; the test walks it for gaps):
+
 | Shape | Why |
 |---|---|
-| aggregate over a `__THIS__` column | the answer depends on the other rows in the batch |
-| window function over `__THIS__` | same |
+| aggregate on the spine | the answer depends on the other rows in the batch |
+| window function on the spine | same |
 | `GROUP BY` / `HAVING` | same |
-| `DISTINCT` | drops rows, and which rows depends on the batch |
-| `ORDER BY` / `LIMIT` / `OFFSET` | destroys the row correspondence |
-| `__THIS__` referenced more than once | a self-join is cross-row |
-| a set operation with `__THIS__` in an arm | cross-row |
-| `WHERE` / `QUALIFY` reading a `__THIS__` column | drops rows, and a scalar UDF has no encoding for *no row here* |
-| a recursive CTE reading `__THIS__` | cross-row by construction |
+| `DISTINCT` / `ORDER BY` / `LIMIT` (modifiers) | drops rows or destroys the row correspondence |
+| `WHERE` / `QUALIFY` on the spine | drops rows, and a scalar UDF has no encoding for *no row here* |
+| `__THIS__` entering the row stream twice | a self-join multiplies rows |
+| a set operation over the batch | stacks the batch onto something else |
+| a recursive CTE over the batch | iterates over the batch |
+| a join that can drop or duplicate the batch's rows | keyed `INNER` drops on a miss; `LEFT` with the batch on the right drops it; `FULL` adds rows |
+| off-spine (`spine`) | `__THIS__` read from an expression rather than FROM — a correlated subquery over the batch reads the batch's *other* rows even when it preserves cardinality; and a text that never reads `__THIS__` cannot track the batch at all |
 
-A `WHERE` that reads only params columns is fine — it is constant at serving.
+The earlier draft of this section said a `WHERE` reading only params columns
+was fine, "constant at serving". Implementation corrected it, twice over: a
+joined params column varies per row through its key, and even a genuinely
+constant false predicate zeroes every batch. Any spine `WHERE` refuses. The
+free spelling — pinned by a test — is the `WHERE` *inside* the params
+relation, where it filters training rows instead of serving rows.
+
+Allowed joins on the spine, exactly: `LEFT` with the batch on the left (ASOF
+included — it matches at most one row by its own semantics), `RIGHT` mirrored,
+and the unconditional cross join, whose one-row obligation the fit-time check
+owns.
 
 Everything on that list is provably not row-wise, so the list is closed rather
 than a matter of taste. It is also the list of things `SQLTransform` still
@@ -181,7 +197,13 @@ GROUP BY k1, … HAVING count(*) > 1 ORDER BY n DESC LIMIT 1
 A params table **cross-joined** (`FROM __THIS__ t, p` — no key at all) must
 instead have exactly one row. That is not an edge case: `FROM __THIS__ t,
 (SELECT avg(price) m FROM __FIT__) f` is the most common shape in the guide,
-and it is row-wise precisely because the subquery returns one row.
+and it is row-wise precisely because the subquery returns one row. **Zero rows
+refuses too**: a cross join to nothing deletes every serving row, more quietly
+than multiplying them. And the probe orders by count then keys — two keys tied
+on count made the refusal message flap between runs, measured the unpleasant
+way. An `OR` in the join condition proves nothing about match counts and falls
+back to the one-row rule; extra non-equality conjuncts pass, because they only
+filter matches uniqueness already bounds at one.
 
 The refusal names the offender, straight out of the query:
 
@@ -256,6 +278,17 @@ row per row, never `None`, and no caller downstream gains an optional case.
 Confit's contract makes the compiled path and the DuckDB path bit-exact or
 refuses by name.
 
+The row path gets the residual respelled — no-ops to DuckDB, load-bearing to
+Confit's stricter surface (all three measured 2026-08-12): freezing's own
+passthroughs inline (`(SELECT * FROM __param_0) f` → `__param_0 AS f`; Confit's
+FROM takes tables and joins, not derived tables); a cross join beside the
+batch becomes `LEFT JOIN ... ON 1 = 1`, because Confit's map shape statically
+refuses INNER and cannot know the fit probe measured the params side at one
+row — and `ON TRUE` fails in the door, printing back as `CAST('t' AS
+BOOLEAN)`; and the row model is trimmed to the columns the flattened residual
+can read, because Confit requires every declared attribute on every input row,
+so an unread label column must not be in the serving contract at all.
+
 **Row order is threaded, not assumed.** A `LEFT JOIN` to a params table emits
 unmatched rows last — measured in the 2026-08-05 review round, not here, and
 `_projection._row_ordered_sql` exists for exactly this. The batch path appends a
@@ -303,6 +336,20 @@ table, and `p_fit(…) OVER (PARTITION BY country)` becomes one θ per country:
 ```sql
 SELECT k, {'mean': avg(v), 'scale': stddev_pop(v)} AS th FROM __FIT__ GROUP BY k
 -- ('x', {'mean': 20.0, 'scale': 8.165}), ('y', {'mean': 200.0, 'scale': 100.0})
+```
+
+θ crosses joins **as a value** — it is a struct, not a registration — so the
+guide's train/serve pattern works unchanged (implemented and gated, 2026-08-12):
+
+```sql
+SELECT t.store, p_transform(f.theta, struct_pack(price := t.price)).z AS z
+FROM __THIS__ t
+LEFT JOIN (SELECT store, p_fit(struct_pack(price := price)) AS theta
+           FROM __FIT__ GROUP BY store) f
+  ON t.store = f.store
+-- the fit subquery freezes into a params table of readable θ structs,
+-- {__param_0: {m, s}} per store; a join miss is a NULL θ whose every read
+-- is NULL — P14 falls out of SQL instead of being implemented
 ```
 
 ## Decisions
@@ -389,15 +436,21 @@ and a binder error in it names nothing.
 2. **Name synthesized things after where they came from.** `_splice` already
    alpha-renames a member's free names to `{name}__{free}`, and `_reserve`
    keeps the `__` prefix clear so those cannot collide with an author's names.
-   The prefix is the attribution channel: an error mentioning `sc__…` names the
-   `sc` leaf. Every name a splice introduces — params, lifted keys, derived
-   columns — carries the same prefix.
 
-**Consequences.** The residual class of errors is small by construction: what
-survives (1) is name collision and correlation, and those are precisely what
-(2)'s prefixes make legible. This is a claim about coverage, not a proof, so it
-gets a gate — a spliced projection with a deliberate error must produce a
-message naming the projection.
+**How it landed (2026-08-12).** Mechanism 2 shrank to nothing for projection
+leaves, because the splice is a *substitution*: the leaf's aliases dissolve
+into the host's bundle expressions and its params reads into `struct_extract`
+over θ, so no name of the leaf's survives into the merged text — there is
+nothing left to prefix. What remained is mechanism 1 plus its extension: the
+leaf-shape refusals, which cannot fire at the projection's own construction
+(they depend on how the host uses it), fire at the *host's* construction and
+every one opens with the projection's name. The gate pins that: two deliberate
+errors, each producing `"{stem} is a projection used as a leaf, and …"`.
+
+**Consequences.** The residual unattributed class is DuckDB bind errors inside
+substituted expressions — a VARCHAR bundle field reaching `avg`, say — which
+carry DuckDB's message at fit. Loud, wrong-free, but host-attributed; living
+with that is the recorded trade.
 
 ### Prerequisite: typed leaf structs
 
@@ -531,18 +584,28 @@ served alone, on generated data.
 
 ## Slices
 
-1. **TASK-87** — extract `Program`. Behaviour-neutral; if a test needs editing
-   beyond an import line, the diff is wrong.
-2. `SQLProjection` + `NotRowWise` + the batch `transform` with threaded row
-   order. Gates: `rows`, `solo`, `faithful`, the refusal table.
-3. `KeyNotUnique` at fit, with the cross-join one-row case.
-4. `compile()` → `DuckDBInferFn`. Gate: `parity`.
-5. Splicing a projection as a leaf, θ as data (D1, D2). Gates: `leaf`,
-   `capture`.
-6. Attribution (D3) — origin prefixes on everything a splice introduces.
-   Gate: `attribution`.
+All six implemented 2026-08-12, as a stacked PR chain (AmirHossein's call for
+this loop; the no-stacking rule stands elsewhere):
 
-Each lands as its own PR off master, sequentially.
+1. **TASK-87** — extract `Program`. Behaviour-neutral; zero test edits. **#114**
+2. `SQLProjection` + `NotRowWise` + the batch `transform` with threaded row
+   order. Gates: `rows`, `solo`, `faithful`, the refusal table. **#115**
+3. `KeyNotUnique` at fit, with the cross-join one-row case. **#117**
+4. `compile()` → `DuckDBInferFn`. Gate: `parity`. **#118**
+5. Splicing a projection as a leaf, θ as data (D1, D2). Gates: `leaf`,
+   `capture`. **#119**
+6. Attribution (D3), shrunk to its surviving mechanism — see D3's *how it
+   landed*. Gate: `attribution`. **#120**
+
+Implementation corrections folded back into this spec: the spine `WHERE` rule
+(this file's own draft claim was wrong), the join rows of the refusal table,
+`KeyNotUnique`'s zero-row and tiebreak cases, the row path's respelling for
+Confit (passthrough inlining; cross join → `LEFT JOIN ON 1 = 1`, since `ON
+TRUE` prints back as `CAST('t' AS BOOLEAN)`, which Confit refuses; the row
+model trimmed to columns the residual reads), and D3's shrinkage. Two
+mechanical traps for the record: `case BaseTable(table_name=THIS)` *binds*
+`THIS` instead of comparing it, and struct_pack field aliases ride into a
+splice as named arguments (`avg(price := price)`) unless unaliased.
 
 `Transform.takes`/`returns` becoming `pa.Schema` is **not** in this list any
 more. D2 removed its projection-side justification: a spliced leaf declares no
