@@ -342,3 +342,28 @@ def test_udf_name_mismatch_refuses():
     other = PythonUDF("something_else", lambda x: x, pa.schema([("x", pa.float64())]))
     with pytest.raises(MarginalizeError, match="resolves to an object named"):
         SQLProjection("SELECT one(age) FROM __THIS__", transformers={"one": other})
+
+
+def test_a_udf_named_after_a_duckdb_function_refuses(recwarn):  # noqa: ARG001
+    """TASK-89. `_known_functions()` gated UDF resolution, so a declared UDF
+    named after any DuckDB function was never resolved, never recorded, and
+    the call planned as the BUILTIN — the user declared a callable and got
+    someone else's function, silently. confit refuses the same collision one
+    layer down (PR #95), but the dropped UDF never reaches it, so that guard
+    was unreachable from here."""
+    shout = PythonUDF(
+        "abs",
+        lambda x: 111.0,
+        pa.schema([("x", pa.float64())]),
+        pa.float64(),
+    )
+    with pytest.raises(MarginalizeError, match="abs.*builtin|builtin.*abs"):
+        SQLProjection(
+            "SELECT abs(age) AS a FROM __THIS__", transformers={"abs": shout}
+        ).fit(TRAIN)
+
+
+def test_a_builtin_call_without_a_colliding_udf_still_plans():
+    """Control: the refusal must not fire on ordinary builtin calls."""
+    p = SQLProjection("SELECT abs(age) AS a FROM __THIS__").fit(TRAIN)
+    assert p._marginalized.scalar_udfs == ()
