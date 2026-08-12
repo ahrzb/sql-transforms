@@ -122,6 +122,38 @@ def test_the_bundle_must_supply_what_the_leaf_reads():
         """)
 
 
+def test_leaf_refusals_are_attributed_to_the_projection_by_name():
+    """The attribution gate (D3). After the splice there is one merged text,
+    so whatever cannot splice must say which projection and why *before*
+    merging — every leaf refusal opens with the projection's own name."""
+    unqual = SQLProjection("SELECT price - 1 AS d FROM __THIS__")
+    filtered = SQLProjection("""
+        SELECT t.price / f.m AS z
+        FROM __THIS__ t,
+             (SELECT avg(price) AS m FROM __FIT__ WHERE price > 0) f
+    """)
+    assert (unqual, filtered) is not None
+    hosts = {
+        "unqual": """
+            SELECT unqual_transform(
+                unqual_fit(struct_pack(price := v)) OVER (),
+                struct_pack(price := v)).d AS d
+            FROM __THIS__
+        """,
+        "filtered": """
+            SELECT filtered_transform(
+                filtered_fit(struct_pack(price := v)) OVER (),
+                struct_pack(price := v)).z AS z
+            FROM __THIS__
+        """,
+    }
+    for stem, sql in hosts.items():
+        with pytest.raises(
+            TransformError, match=rf"{stem} is a projection used as a leaf"
+        ):
+            SQLTransform(sql)
+
+
 def test_a_keyed_projection_refuses_the_leaf_role_by_name():
     """A leaf fits per scope; keys inside it would need θ to carry tables.
     Refused with the projection's name, at the host's construction."""
