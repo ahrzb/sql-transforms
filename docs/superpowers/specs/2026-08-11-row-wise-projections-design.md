@@ -224,22 +224,37 @@ is the same P7 carve-out DRAFT-24 already took for learned output shapes.
 
 ## Serving
 
-`transform` is the oracle — DuckDB, batch. `infer`/`infer_batch` go through
-Confit's `DuckDBInferFn` with `shape="map"`, the same residual and the same
-params tables. Confit's contract makes the two bit-exact or refuses by name.
-
-`shape="map"` is forced, not chosen: it is the same fact as `tfm_transform`
-being a scalar UDF, seen from the serving side. `infer` returns a row, never
-`None`, and no caller downstream gains an optional case.
+Two things, and only two. `transform` is the oracle — DuckDB, batch. `compile`
+hands back a serving function and gets out of the way.
 
 ```python
 p = SQLProjection(sql)
 fitted = p.fit(TRAIN)
 
 fitted.transform(X)              # pa.Table, num_rows == X.num_rows
-fitted.infer({"age": 31})        # one typed row, never None
-fitted.infer_batch(rows)         # list of typed rows
+
+fn = fitted.compile()            # confit.DuckDBInferFn
+fn.infer({"age": 31})            # confit's own surface, not re-exported
+fn.infer_rows(rows)
+fn.infer_arrow(batch)
+fn.backend, fn.boundary, fn.output_model, fn.shape
 ```
+
+`compile()` builds the `DuckDBInferFn` from the same residual, the same params
+tables and the same `shape="map"`, and returns it. It is not wrapped. The
+existing `sql_transform.SQLProjection` wraps instead, and pays for it twice:
+six delegating members (`infer`, `infer_batch`, `backend`, `boundary`,
+`output_model`, and the lazily-cached `_serving_fn`), and a state coupling —
+`fit` has to remember `self._fn = None`, because a refit silently invalidates a
+prepared serving function. A `compile()` that returns a fresh object has no
+such invariant to forget.
+
+`shape="map"` is forced, not chosen: it is the same fact as `tfm_transform`
+being a scalar UDF, seen from the serving side. The compiled function returns a
+row per row, never `None`, and no caller downstream gains an optional case.
+
+Confit's contract makes the compiled path and the DuckDB path bit-exact or
+refuses by name.
 
 **Row order is threaded, not assumed.** A `LEFT JOIN` to a params table emits
 unmatched rows last — measured in the 2026-08-05 review round, not here, and
@@ -501,7 +516,7 @@ authored to a helper that writes the `__FIT__` half for you.
 |---|---|
 | **rows** | `p.transform(X).num_rows == X.num_rows`, for every fitted `p` and every `X` |
 | **solo** | `p.transform(X) == concat(p.transform(X[i:i+1]) for i in range(len(X)))`, as an *ordered* list — strict 1-1 plus threaded row order makes the multiset weakening unnecessary |
-| **parity** | `p.transform(X) == pa.Table.from_pylist(p.infer_batch(X))` |
+| **parity** | `p.transform(X) == pa.Table.from_pylist(p.compile().infer_rows(X))` |
 | **faithful** | `p.fit(D).transform(D) == run(p, D)` — inherited from the transform model, not restated |
 | **leaf** | a projection spliced into a host produces the same values as the same projection standalone |
 | **capture** | a projection whose free name collides with a host name resolves to its own — the alpha-renaming works |
@@ -521,7 +536,7 @@ served alone, on generated data.
 2. `SQLProjection` + `NotRowWise` + the batch `transform` with threaded row
    order. Gates: `rows`, `solo`, `faithful`, the refusal table.
 3. `KeyNotUnique` at fit, with the cross-join one-row case.
-4. `infer` / `infer_batch` through Confit. Gate: `parity`.
+4. `compile()` → `DuckDBInferFn`. Gate: `parity`.
 5. Splicing a projection as a leaf, θ as data (D1, D2). Gates: `leaf`,
    `capture`.
 6. Attribution (D3) — origin prefixes on everything a splice introduces.
