@@ -51,9 +51,27 @@ _DUCK_T = {
     pa.string(): "VARCHAR",
 }
 
-# Open-ticket divergences, matched by pattern and tagged rather than reported
+# Open-ticket divergences, matched by pattern and TAGGED rather than reported
 # as new findings. Today: TASK-79 (integer-literal expressions type int32 on
-# DuckDB, int64 here; values agree).
+# DuckDB, int64 here; values agree) — dies at m-8 phase 2 — and the DECIMAL
+# literal class below — dies at phase 5.
+#
+# Why a suppression tag and not just an xfail test: each tag HAS a strict
+# xfail twin in test_known_divergences.py, and the two do different jobs.
+# The pin is deterministic and LOUD-ON-FIX — one spelling, and strict xfail
+# flips to a failing XPASS the moment the divergence closes, forcing the
+# conversion to a real parity test. The fuzzer's inputs are random: one open
+# ticket surfaces as hundreds of spellings per campaign (1,230 in round 1
+# for TASK-79 alone), so without the tag every report would drown NEW
+# findings in one already-ticketed root cause. An xfail can't do that job —
+# you can't enumerate random spellings in advance — and the tag can't do the
+# pin's job, because a tag never fires loudly on anything: once the fix
+# lands it just quietly stops matching, and if a REGRESSION reintroduces the
+# divergence it would quietly swallow it. Hence the expiry rule (m-8 spec,
+# "known divergences are scaffolding"): the tag is DELETED in the same PR as
+# the fix, and the certification campaign after the removal is what proves
+# the class is gone rather than hidden. A tag with no open ticket, or one
+# that survives its fix, is a bug in this file.
 _INT_WIDTHS = {pa.int8(), pa.int16(), pa.int32()}
 
 
@@ -333,6 +351,11 @@ def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
     structs — an int32 lane inside struct_pack is still TASK-79); "diff"."""
     if duck == ours:
         return None
+    # Each arm below = one open ticket + one strict-xfail twin pin; see the
+    # _INT_WIDTHS comment for why both exist. DELETE the arm in the same PR
+    # as its fix (m-8 phase 2 and phase 5 respectively) — an arm that
+    # outlives its fix swallows regressions in exactly the code that fix
+    # changed.
     if duck in _INT_WIDTHS and ours == pa.int64():
         return "KNOWN-TASK-79"
     if pa.types.is_decimal(duck) and ours == pa.float64():
