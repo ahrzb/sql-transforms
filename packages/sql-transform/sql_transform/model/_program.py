@@ -38,6 +38,7 @@ from sql_transform.model._ast import (
     LazyRelation,
     Params,
     Relation,
+    _aliased,
     _base_table,
     _bind_parameters,
     _catalog,
@@ -71,6 +72,7 @@ from sql_transform.model._nodes import (
     Document,
     Function,
     Node,
+    Opaque,
     SubqueryExpr,
     TableFunction,
     cte_entries,
@@ -93,6 +95,14 @@ def _surface() -> type:
     from sql_transform.model._transform import SQLTransform  # noqa: PLC0415
 
     return SQLTransform
+
+
+def _projection_type() -> type:
+    """The projection class, late for the same circularity reason: a stem
+    resolving to one is spliced as a leaf (``_leaf``), never registered."""
+    from sql_transform.model._projection import SQLProjection  # noqa: PLC0415
+
+    return SQLProjection
 
 
 def _splice(
@@ -212,11 +222,23 @@ def _resolve(
     """
     depth = 0
 
-    def foreign_call(call: Function) -> Function:
+    def foreign_call(call: Function) -> Node:
         """``x_fit``/``x_transform``: the stem resolves, the suffix says half."""
         name = call.function_name
         stem, _, half = name.rpartition("_")
         member = scope.get(stem) if half in ("fit", "transform") else None
+        if isinstance(member, _projection_type()):
+            # A projection leaf is spliced, never registered (D2): both
+            # halves become ordinary SQL, and θ carries the parameters. The
+            # author's alias survives the rewrite — it names their column.
+            from sql_transform.model import _leaf  # noqa: PLC0415
+
+            captured[stem] = member
+            if half == "fit":
+                out = _leaf.fit_call(stem, member, list(call.children), None)
+            else:
+                out = _leaf.transform_call(stem, member, call)
+            return _aliased(out, call.alias) if call.alias else out
         if not isinstance(member, Transform):
             raise UnknownName(
                 f"{name} is not a DuckDB function, and "
@@ -341,6 +363,11 @@ def _resolve(
                                 f"{name} is a transform; call it as "
                                 f"{name}({FIT}, {THIS})"
                             )
+                        case obj if isinstance(obj, _projection_type()):
+                            raise TransformError(
+                                f"{name} is a projection; use its halves, "
+                                f"{name}_fit(...) and {name}_transform(...)"
+                            )
                         case obj:
                             captured[name] = obj
             return None
@@ -350,6 +377,22 @@ def _resolve(
         # Member calls are gone by now, so every FUNCTION left at this level is
         # a scalar one — no need to tell the table call's own function apart.
         def scalar_call(v: AstNode) -> AstNode | None:
+            # A projection's fit half under OVER parses as a window of an
+            # unknown aggregate — an Opaque, so the Function branch below
+            # never sees it. The author's window rides onto every θ field.
+            if isinstance(v, Opaque) and v.fields.get("class") == "WINDOW":
+                name = str(v.fields.get("function_name") or "")
+                stem, _, half = name.rpartition("_")
+                member = scope.get(stem) if half == "fit" else None
+                if isinstance(member, _projection_type()):
+                    from sql_transform.model import _leaf  # noqa: PLC0415
+
+                    captured[stem] = member
+                    out = _leaf.fit_call(
+                        stem, member, list(v.fields.get("children") or []), v
+                    )
+                    alias = str(v.fields.get("alias") or "")
+                    return _aliased(out, alias) if alias else out
             if (
                 isinstance(v, Function)
                 and not v.is_operator
@@ -595,14 +638,15 @@ class Program:
         scope = scope | captured
 
         doc, depth = _resolve(doc, scope, captured, _catalog(connection), connection)
-        # Two runtime views. A member is spliced away, so it is neither.
+        # Two runtime views. A member or a projection leaf is spliced away,
+        # so it is neither.
         foreign: Foreign = {
             k: v for k, v in captured.items() if isinstance(v, Transform)
         }
         bindings: Bindings = {
             k: v
             for k, v in captured.items()
-            if not isinstance(v, (Transform, _surface()))
+            if not isinstance(v, (Transform, _surface(), _projection_type()))
         }
         # No copy: the models are frozen, so `_plan` cannot reach back into
         # `doc` and `node` stays the text the caller wrote.
