@@ -258,22 +258,131 @@ have *and* the SQL reads it, which refuses at fit by name.
 
 ## The leaf role
 
-```python
-fitted.as_leaf() -> Transform
+A projection occupies the slot a `_foreign.Transform` occupies today. It does
+**not** fill in that dataclass: it is spliced, and both halves become ordinary
+SQL. The three decisions that shape this are stated as D1–D3 below.
+
+What the author writes, and what it becomes:
+
+```sql
+-- written
+SELECT t.k, sc_transform(sc_fit(struct_pack(v := t.v)) OVER (PARTITION BY t.k),
+                         struct_pack(v := t.v)).v AS z
+FROM __THIS__ t
+
+-- spliced, for a projection whose params are single-row aggregates
+SELECT t.k, (t.v - th.mean) / th.scale AS z
+FROM (SELECT k, v, {'mean': avg(v)          OVER (PARTITION BY k),
+                    'scale': stddev_pop(v)  OVER (PARTITION BY k)} AS th
+      FROM __THIS__) t
 ```
 
-`_foreign.Transform` already is the pair; a projection fills it in:
+Both forms were measured on 2026-08-11 and give the same values. Note the
+syntax: `{…} OVER (…)` is a `ParserException`, so the aggregate distributes
+over the struct's fields rather than wrapping it — each field carries its own
+`OVER`.
 
-- `fit(F)` runs the freeze steps against `F` and returns the params as the
-  instance — inspectable and shippable, which is what `_foreign.py`'s docstring
-  already promises an SQL leaf would give.
-- `transform(instance, T)` runs the residual with those params registered.
-- `takes` / `returns` are **computed from the projection's own text**, not
-  declared.
+Used against `__FIT__` rather than `__THIS__`, the same splice produces the fit
+table, and `p_fit(…) OVER (PARTITION BY country)` becomes one θ per country:
 
-Used under a window, `p_fit(…) OVER (PARTITION BY country)` fits one projection
-per country — `__FIT__` binds to the group's rows. That falls out of `x_fit`
-being a UDAF; nothing extra is needed for it.
+```sql
+SELECT k, {'mean': avg(v), 'scale': stddev_pop(v)} AS th FROM __FIT__ GROUP BY k
+-- ('x', {'mean': 20.0, 'scale': 8.165}), ('y', {'mean': 200.0, 'scale': 100.0})
+```
+
+## Decisions
+
+### D1 — θ carries the parameters as data, not a pointer
+
+**Status.** Proposed, 2026-08-11.
+
+**Context.** `_foreign` makes θ a `Struct<type, id>` — an integer into a Python
+registry of fitted objects. That makes `x_transform` a function of
+`(θ, row, registry)` rather than of its arguments: the SQL cannot be shipped
+without the Python, and nothing about θ says how big the fitted thing is.
+
+**Decision.** For a projection leaf, θ is a struct of the learned parameters.
+`Struct<type, id>` is retained only for leaves that are not SQL.
+
+**Evidence.** Six transformers, measured — θ, then the transform half it admits:
+
+| transformer | θ | `x_transform(θ, row)` |
+|---|---|---|
+| StandardScaler | `{mean: 20.0, scale: 8.165}` | `(v - θ.mean) / θ.scale` |
+| MinMaxScaler | `{lo: 10.0, hi: 30.0}` | `(v - θ.lo) / nullif(θ.hi - θ.lo, 0)` |
+| SimpleImputer | `{fill: 20.0}` | `coalesce(v, θ.fill)` |
+| OrdinalEncoder | `{cats: ['a','b','c']}` | `list_position(θ.cats, c) - 1` |
+| KBinsDiscretizer | `{edges: [16.6, 23.2]}` | `length(list_filter(θ.edges, e -> e <= v))` |
+| TargetEncoder | `{m: {'a':1.0,'b':0.0,'c':0.0}}` | `θ.m[c]` |
+
+None of those transform halves is a UDF. Each is a scalar SQL expression over
+`(θ, row)` — which is to say, each is a projection.
+
+**Consequences.** θ-as-data puts the artifact's size *in the text*, which is
+the same principle `_refuse_whole_fit` already enforces for retention: a
+`{cats: [...]}` holding 50k categories is visibly 50k, and a `TargetEncoder`
+over a high-cardinality key is visibly close to shipping the training set. A
+`Struct<type, id>` hides all of it behind an integer. Whether that visibility
+should eventually become a refusal is not decided here.
+
+Two θ shapes now coexist. They are not two spellings of one thing — they are
+the two leaf kinds, and the pointer is the fallback rather than the design.
+
+**What this does not solve.** θ's SQL type varies per projection and must be
+known before the function is registered. D2 dissolves that: nothing is
+registered.
+
+### D2 — the pair is spliced, not registered
+
+**Status.** Accepted by AmirHossein, 2026-08-11.
+
+**Context.** `_foreign.Transform.register` creates two DuckDB functions per
+leaf. That puts Python in the row path, which is exactly what a 1-1 serving
+pipeline cannot afford.
+
+**Decision.** A projection leaf is spliced into its host as SQL. No
+`create_function`, no Python in the row path.
+
+**Precedent.** This is already how member transforms compose, and the reason is
+recorded in `_splice`'s own docstring: *"Splice, never emit a DuckDB macro:
+measured, a table macro invoked under `LATERAL` does not see the correlation
+and silently returns the whole-table answer for every group."*
+
+**Consequences.** Confit can serve the whole pipeline with no Python callback.
+Capture-avoiding substitution stops being incidental and becomes load-bearing —
+see D3. And the `pa.Schema` widening loses its projection-side justification: a
+spliced leaf declares no struct types at all. It survives on the Python-leaf
+case alone (`from_estimator(OrdinalEncoder(), …)` dies at bind today), so it is
+still worth doing but is **no longer a prerequisite** for this work.
+
+### D3 — errors are attributed to the definition site
+
+**Status.** Proposed, 2026-08-11, in response to D2's cost.
+
+**Context.** A registered `sc_transform` attributes its own errors: the
+function name is in the message, and `_Registry.keep` already carries a leaf's
+own exception out through DuckDB's rewrapping so that *"a refusal keeps its
+name"*. Splicing throws that away — after inlining there is one merged text,
+and a binder error in it names nothing.
+
+**Decision.** Two mechanisms, in this order.
+
+1. **Refuse at the definition site.** `SQLProjection(sql)` parses, resolves,
+   plans and refuses at its own construction, against its own text, before any
+   host exists. Every refusal in this spec fires there. Only errors that come
+   into existence *by merging* can reach the host.
+2. **Name synthesized things after where they came from.** `_splice` already
+   alpha-renames a member's free names to `{name}__{free}`, and `_reserve`
+   keeps the `__` prefix clear so those cannot collide with an author's names.
+   The prefix is the attribution channel: an error mentioning `sc__…` names the
+   `sc` leaf. Every name a splice introduces — params, lifted keys, derived
+   columns — carries the same prefix.
+
+**Consequences.** The residual class of errors is small by construction: what
+survives (1) is name collision and correlation, and those are precisely what
+(2)'s prefixes make legible. This is a claim about coverage, not a proof, so it
+gets a gate — a spliced projection with a deliberate error must produce a
+message naming the projection.
 
 ### Prerequisite: typed leaf structs
 
@@ -345,6 +454,34 @@ class Program:
 class reads its own caller and passes the mapping in. Moving the frame read one
 level deeper would silently break every `FROM df` replacement-scan idiom.
 
+## Binding
+
+Names in a transform are **lexically bound**, and D2 makes that load-bearing
+rather than incidental: splicing is substitution, and substitution that
+captures is wrong.
+
+The discipline, all of it already implemented in `_transform.py`:
+
+| | |
+|---|---|
+| free names | resolved from `sys._getframe(1)` at construction and captured **by value**, so rebinding afterwards cannot change what was built |
+| CTE names | shadow, case-folded, because DuckDB's binder is case-insensitive and comparing exact strings refused valid SQL |
+| recursive CTEs | in scope inside their own body; plain ones are not |
+| the `__` prefix | reserved by `_reserve`, so nothing an author writes can collide with anything the model synthesizes |
+| `__FIT__`, `__THIS__` | the two parameters — the only names bound at fit/call rather than at construction, and the only `__` names an author may write |
+| splicing | `_splice` alpha-renames a member's free names to `{name}__{free}` and re-captures them, and does the same for foreign stems |
+
+A projection carries the same rules, and its leaf role adds nothing new: a
+spliced projection's free names are alpha-renamed into its host exactly as a
+member transform's are, so the host's frame cannot capture them. That renaming
+is also what D3 stands on — the prefix that prevents capture is the prefix that
+attributes the error.
+
+One consequence worth stating plainly, because it is the whole reason the
+parameters are spelled in capitals: `__FIT__` and `__THIS__` are *not* free
+variables with a convention attached. They are the two binders, and every other
+name in the text is lexical.
+
 ## Two classes, one name
 
 `sql_transform.SQLProjection` (marginalizing) stays where it is.
@@ -366,7 +503,9 @@ authored to a helper that writes the `__FIT__` half for you.
 | **solo** | `p.transform(X) == concat(p.transform(X[i:i+1]) for i in range(len(X)))`, as an *ordered* list — strict 1-1 plus threaded row order makes the multiset weakening unnecessary |
 | **parity** | `p.transform(X) == pa.Table.from_pylist(p.infer_batch(X))` |
 | **faithful** | `p.fit(D).transform(D) == run(p, D)` — inherited from the transform model, not restated |
-| **leaf** | a projection used as a leaf produces the same values as the same projection standalone |
+| **leaf** | a projection spliced into a host produces the same values as the same projection standalone |
+| **capture** | a projection whose free name collides with a host name resolves to its own — the alpha-renaming works |
+| **attribution** | a spliced projection with a deliberate error produces a message naming the projection (D3) |
 | **refusals** | every `NotRowWise` shape in the table above has a test; the gate walks the table looking for gaps, the way `_correlate`'s does for `REASONS` |
 
 `solo` is the one that catches a wrong premise rather than a wrong
@@ -379,15 +518,22 @@ served alone, on generated data.
 
 1. **TASK-87** — extract `Program`. Behaviour-neutral; if a test needs editing
    beyond an import line, the diff is wrong.
-2. `Transform.takes`/`returns` become `pa.Schema`. Eight edits, no behaviour
-   change.
-3. `SQLProjection` + `NotRowWise` + the batch `transform` with threaded row
+2. `SQLProjection` + `NotRowWise` + the batch `transform` with threaded row
    order. Gates: `rows`, `solo`, `faithful`, the refusal table.
-4. `KeyNotUnique` at fit, with the cross-join one-row case.
-5. `infer` / `infer_batch` through Confit. Gate: `parity`.
-6. `as_leaf()`. Gate: `leaf`.
+3. `KeyNotUnique` at fit, with the cross-join one-row case.
+4. `infer` / `infer_batch` through Confit. Gate: `parity`.
+5. Splicing a projection as a leaf, θ as data (D1, D2). Gates: `leaf`,
+   `capture`.
+6. Attribution (D3) — origin prefixes on everything a splice introduces.
+   Gate: `attribution`.
 
 Each lands as its own PR off master, sequentially.
+
+`Transform.takes`/`returns` becoming `pa.Schema` is **not** in this list any
+more. D2 removed its projection-side justification: a spliced leaf declares no
+struct types. It is still worth doing for supplied Python pairs — an
+`OrdinalEncoder` leaf dies at bind today — but it is an independent fix rather
+than a prerequisite, and nothing here waits on it.
 
 ## Deferred
 
