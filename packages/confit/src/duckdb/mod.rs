@@ -450,6 +450,30 @@ fn materialize_map(
     val_tys: &[Ty],
 ) -> PyResult<StaticData> {
     let rows = table.bind(py).call_method0("to_pylist")?;
+    // TASK-90 / m-8 phase 1: `to_pylist` hands decimal.Decimal for DECIMAL
+    // columns (the ordinary fit path — sum(BIGINT) params are
+    // decimal128(38,0)), and a bare f64 extract SILENTLY rounds them:
+    // 9007199254740993 served as ...992.0, off by one, violating "no third
+    // mode". Exact-or-refuse: a Decimal that round-trips f64 exactly keeps
+    // the conversion; one that does not refuses by name. Exact serving
+    // arrives with the m-8 Dec lanes.
+    let decimal_cls = PyModule::import(py, "decimal")?.getattr("Decimal")?;
+    let exact_f64 = |v: &pyo3::Bound<'_, PyAny>, name: &str| -> PyResult<f64> {
+        let f: f64 = v.extract()?;
+        if v.is_instance(&decimal_cls)? {
+            let back = decimal_cls.call1((f,))?;
+            if !back.eq(v)? {
+                return Err(build_err(format!(
+                    "unsupported: static table '{}' column '{name}' holds the \
+                     DECIMAL value {v} that f64 cannot represent exactly — \
+                     serving it would round silently. CAST the fit-time \
+                     aggregate to DOUBLE or BIGINT",
+                    spec.table
+                )));
+            }
+        }
+        Ok(f)
+    };
     let mut entries = Vec::new();
     'row: for item in rows.try_iter()? {
         let row = item?;
@@ -481,7 +505,7 @@ fn materialize_map(
                             spec.table
                         ))
                     })?),
-                    Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
+                    Ty::F64 => KeyBits::F64(exact_f64(v, name)?.to_bits()),
                     Ty::Str => KeyBits::Str(v.extract()?),
                 })
             };
@@ -525,7 +549,7 @@ fn materialize_map(
                             spec.table
                         ))
                     })?),
-                    Ty::F64 => ScalarVal::F64(v.extract()?),
+                    Ty::F64 => ScalarVal::F64(exact_f64(v, name)?),
                     Ty::Str => ScalarVal::Str(v.extract()?),
                 })
             };

@@ -1301,3 +1301,44 @@ def test_a_large_but_bounded_count_still_serves_and_matches():
     con.execute("INSERT INTO __THIS__ VALUES (1, 'ab')")
     want = con.execute(sql).to_arrow_table().to_pylist()
     assert got == want, f"{got} != {want}"
+
+
+# TASK-90 / m-8 phase 1 (the epic's phase-0 probe, 2026-08-11). A fitted
+# params table carrying sum(BIGINT) is decimal128(38,0) on the ordinary fit
+# path, and the static ingest narrowed it through f64 SILENTLY -- the value
+# 9007199254740993 (2^53+1) served as ...992.0, off by one, while
+# known-limitations claims out-of-range payloads reject. Exact-or-refuse:
+# a Decimal that round-trips f64 exactly keeps today's conversion; one that
+# does not refuses by name. Exact serving arrives with the m-8 Dec lanes.
+
+_DecRow = create_model("_DecRow", gid=(str, ...))
+
+
+def _dec_static(val: str) -> pa.Table:
+    import decimal
+
+    return pa.table(
+        {
+            "g": pa.array(["a"], pa.string()),
+            "sk": pa.array([decimal.Decimal(val)], pa.decimal128(38, 0)),
+        }
+    )
+
+
+def test_an_inexact_decimal_static_refuses_instead_of_rounding():
+    with pytest.raises(ValueError, match="(?i)decimal.*exact"):
+        DuckDBInferFn(
+            "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
+            row_tables={"__THIS__": _DecRow},
+            static_tables={"p": _dec_static("9007199254740993")},
+        )
+
+
+def test_an_exact_decimal_static_still_serves():
+    fn = DuckDBInferFn(
+        "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
+        row_tables={"__THIS__": _DecRow},
+        static_tables={"p": _dec_static("9007199254740992")},
+    )
+    got = [r.model_dump() for r in fn.infer({"__THIS__": [_DecRow(gid="a")]})]
+    assert got == [{"o": 9007199254740992.0}]
