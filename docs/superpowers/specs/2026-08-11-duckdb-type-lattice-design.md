@@ -106,3 +106,23 @@ double: round, floor (not integer-typed at all — no width question)
 Notables: `abs` is width-POLYMORPHIC (follows its argument); the
 length-family is fixed int64 despite string inputs; CASE promotes across
 widths exactly like arithmetic.
+
+## Known divergences are scaffolding, not contract
+
+Each phase's definition of done includes DELETING that phase's markers, in
+all three homes, in the same PR as the fix:
+
+1. the xfail-strict pin flips to a real parity test (enforced — strict
+   xfail turns XPASS-loud the moment the fix lands);
+2. the known-limitations row goes (enforced — its executable twin breaks
+   until doc and code agree);
+3. the fuzzer's suppression tag (`KNOWN-TASK-79`, `decimal-literal` in
+   `fuzz/oracle.py`) is REMOVED (unenforced — stated here because a tag
+   that outlives its phase would silently swallow regressions in exactly
+   the code the phase just changed; the certification campaign after the
+   tag removal is what proves the class is gone rather than hidden).
+
+What survives the whole epic is not a divergence list: refusals (named,
+tested), multiset row order under `shape='many'` (order is not part of the
+contract), and oracle-self-inconsistency corners (DuckDB disagreeing with
+its own constant fold) where refusal is the only well-defined answer.
