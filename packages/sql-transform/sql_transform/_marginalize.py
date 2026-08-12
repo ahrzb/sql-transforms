@@ -1079,10 +1079,33 @@ class _LevelRewriter:
                         f" {fit_scalar}_fit(bundle) OVER (...)",
                         x.get("query_location"),
                     )
-                if fname not in _known_functions() and not x.get("is_operator"):
-                    self.planner.scalar_udf(
-                        fname, len(x.get("children", [])), x.get("query_location")
+                if not x.get("is_operator"):
+                    # TASK-89: `fname not in _known_functions()` conflated
+                    # "is a builtin" with "is not a UDF", so a declared UDF
+                    # named after a DuckDB function was dropped here and the
+                    # call planned as the BUILTIN — silently serving someone
+                    # else's function. Resolve against the registry FIRST; a
+                    # name that resolves in BOTH places is the refusal, the
+                    # same rule confit enforces one layer down (PR #95),
+                    # whose guard was unreachable while the UDF never
+                    # reached it.
+                    known = fname in _known_functions()
+                    declared = (
+                        self.planner.lookup is not None
+                        and self.planner.lookup(fname) is not None
                     )
+                    if known and declared:
+                        _refuse(
+                            f"the UDF {fname} collides with the builtin"
+                            f" function {fname} — rename it. The builtin"
+                            f" binds first here, while DuckDB binds the UDF,"
+                            f" so the two engines would answer differently",
+                            x.get("query_location"),
+                        )
+                    if not known:
+                        self.planner.scalar_udf(
+                            fname, len(x.get("children", [])), x.get("query_location")
+                        )
                 if fname == "unnest" and _contains_tf(x, self.planner.lookup):
                     # Measured: DuckDB binds UNNEST over a struct only as a
                     # whole select item — anywhere else is a binder error.
