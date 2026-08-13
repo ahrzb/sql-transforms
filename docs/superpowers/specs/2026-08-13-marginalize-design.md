@@ -89,14 +89,21 @@ Every fit scope lowers to the same target shape:
 
 ```sql
 -- derived from the per-store z-score above:
-SELECT (t.price - f.__cf_w0) / f.__cf_w1 AS z
+SELECT (t.price - cf_m0.cf_w0) / cf_m0.cf_w1 AS z
 FROM __THIS__ t
-LEFT JOIN (SELECT store,
-                  avg(price)        AS __cf_w0,
-                  stddev_pop(price) AS __cf_w1
-           FROM __FIT__ GROUP BY store) f
-  ON t.store IS NOT DISTINCT FROM f.store
+LEFT JOIN (SELECT (store) AS cf_k0,
+                  avg(price)        AS cf_w0,
+                  stddev_pop(price) AS cf_w1
+           FROM __FIT__ GROUP BY (store)) AS cf_m0
+  ON (store) IS NOT DISTINCT FROM cf_m0.cf_k0
 ```
+
+- **Derived names live in author space** (measured 2026-08-13, slice 2): the
+  ordinary constructor *reserves* `__`, so `__cf_` spellings in the derived
+  text would refuse at its own gate. The rewrite gensyms a fresh prefix
+  against the author's identifiers (`cf_`, stepping aside to `cf1_` etc. on
+  collision) — which also sharpens M3: the derived text is an ordinary author
+  text, re-feedable to the constructor verbatim.
 
 - **Join predicate is `IS NOT DISTINCT FROM`, never `=`.** Window
   `PARTITION BY` groups NULL keys into one partition; an equality join would
@@ -106,8 +113,11 @@ LEFT JOIN (SELECT store,
   row joining its own partition's params. Both ends of the pipeline accept the
   derived shape as-is.
 - **Scopes sharing a key tuple share a subquery** (one join per distinct
-  partition spelling, one `__cf_wN` column per scope). Keyless scopes share
-  the one-row cross-join subquery.
+  partition spelling, one `cf_wN` column per scope). Keyless scopes share a
+  one-row subquery joined `LEFT JOIN ... ON 1 = 1` — never `CROSS JOIN`
+  (measured: the printer re-emits CROSS JOIN as a comma, which binds looser
+  than a following LEFT JOIN and regroups the tree into a correlated join);
+  the same respelling the row path's `_flattened` already does.
 - **Key expressions** (`PARTITION BY date_trunc('month', ts)`) are computed on
   both sides — as the `GROUP BY` expression in the params subquery and
   verbatim in the `ON` clause.
@@ -164,15 +174,16 @@ effective key  =  scope keys  ⊕  the projection's internal keys
 -- usage site:     tfm_fit(x) OVER (PARTITION BY city)
 
 -- flat lowering: one params table per (city, store), θ stays columns
-LEFT JOIN (SELECT city AS __cf_k0, store, avg(price) AS m
+LEFT JOIN (SELECT city AS cf_k0, store, avg(price) AS m
            FROM __FIT__ GROUP BY city, store) f
-  ON t.city IS NOT DISTINCT FROM f.__cf_k0    -- scope half: window discipline
+  ON t.city IS NOT DISTINCT FROM f.cf_k0      -- scope half: window discipline
  AND t.store = f.store                        -- internal half: verbatim
 
--- __cf_k0 is the scope-key EXPRESSION, computed over __FIT__ and frozen
--- under a reserved name (keys can be expressions — date_trunc('month', ts) —
--- and the author's name could collide with the projection's own columns);
--- the ON clause evaluates the same expression on the batch row.
+-- cf_k0 is the scope-key EXPRESSION, computed over __FIT__ and frozen under
+-- a derived name (keys can be expressions — date_trunc('month', ts) — and
+-- the author's name could collide with the projection's own columns); the
+-- ON clause evaluates the same expression on the batch row. Derived names
+-- are gensym'd in author space — see the naming rule under "The rewrite".
 ```
 
 The two halves keep **different equality disciplines**, deliberately:
