@@ -1403,7 +1403,7 @@ class _LevelRewriter:
                 _refuse(
                     f"private column {name} without a declared schema (lateral"
                     " resolution is undecidable against unknown table columns"
-                    " — declare one via this_model)",
+                    " — declare one via this_schema)",
                     raw_item.get("query_location"),
                 )
             if private:
@@ -1440,13 +1440,13 @@ class _LevelRewriter:
                     if star.columns or star.expr is not None:
                         _refuse(
                             "COLUMNS(...) without a schema (declare one via"
-                            " this_model)",
+                            " this_schema)",
                             star.query_location,
                         )
                     if has_mods and not is_final:
                         _refuse(
                             "* with EXCLUDE/REPLACE/RENAME in a non-final"
-                            " level (declare a schema via this_model)",
+                            " level (declare a schema via this_schema)",
                             star.query_location,
                         )
                     entries.append(("*", None))
@@ -1460,7 +1460,7 @@ class _LevelRewriter:
                 if has_mods or star.columns or star.expr is not None:
                     _refuse(
                         "* with modifiers over a CTE or derived table without"
-                        " a schema (declare one via this_model)",
+                        " a schema (declare one via this_schema)",
                         star.query_location,
                     )
                 for name, expr in self.env.entries:
