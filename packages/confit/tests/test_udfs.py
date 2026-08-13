@@ -16,7 +16,7 @@ import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 from sql_transform._udf import UDF
-from test_duckdb_interpreter import _row_model, static
+from test_duckdb_interpreter import _row_schema, static
 
 
 @pytest.mark.parametrize("name", ["least", "upper", "ROUND", "Coalesce", "abs"])
@@ -40,11 +40,11 @@ def test_a_udf_may_not_take_a_builtin_name(name):
 
     u = Collide()
     u.name = name
-    model = _row_model({"x": "float"})
+    schema = _row_schema({"x": "float"})
     with pytest.raises(Exception, match=f"'{name}'.*builtin"):
         DuckDBInferFn(
             f"SELECT {name}(x) AS p FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[u],
         )
@@ -79,7 +79,6 @@ def test_an_unnamed_width_k_return_honours_its_lane_type(lane, vals):
         [{"x": 1.0}],
         {},
         [Pack()],
-        output="dict",
     )
     assert got == [{"p": list(vals)}], got
 
@@ -99,11 +98,11 @@ def test_a_width_one_list_return_refuses():
         def __call__(self, x):
             return (x,)
 
-    model = _row_model({"x": "float"})
+    schema = _row_schema({"x": "float"})
     with pytest.raises(Exception, match="width-1 list.*scalar"):
         DuckDBInferFn(
             "SELECT one(x) AS p FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[One()],
         )
@@ -113,7 +112,7 @@ def test_the_schema_is_arrow():
     """`takes` is a `pa.Schema` and `returns` is the SQL return TYPE — one
     declaration each, names included. The three return shapes are three arrow
     types rather than a width plus an optional names tuple."""
-    model = _row_model({"id": "int", "x": "float"})
+    schema = _row_schema({"id": "int", "x": "float"})
 
     class Halve:
         name = "halve"
@@ -125,12 +124,12 @@ def test_the_schema_is_arrow():
 
     fn = DuckDBInferFn(
         "SELECT halve(x) AS p FROM __THIS__",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={},
         udfs=[Halve()],
     )
     assert fn.backend == "cranelift"
-    got = [r.p for r in fn.infer({"__THIS__": [model(id=0, x=5.0)]})]
+    got = [r["p"] for r in fn.infer_rows([{"id": 0, "x": 5.0}])]
     assert got == [2.5]
 
 
@@ -237,21 +236,18 @@ _DUCK_T = {
 }
 
 
-def udf_check(sql, row_schema, row_rows, statics, udfs, output=None, after_engine=None):
+def udf_check(sql, row_schema, row_rows, statics, udfs, after_engine=None):
     """Differential: engine with udfs= vs DuckDB with the same objects
     registered. Returns the engine rows (dicts) for extra assertions.
     ``after_engine`` runs between the two legs (call-count attribution)."""
-    model = _row_model(row_schema)
+    schema = _row_schema(row_schema)
     fn = DuckDBInferFn(
         sql,
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables=statics,
         udfs=udfs,
-        output=output,
     )
-    inputs = [model(**r) for r in row_rows]
-    res = fn.infer({"__THIS__": inputs})
-    got = res if output == "dict" else [r.model_dump() for r in res]
+    got = fn.infer_rows(row_rows)
     if after_engine is not None:
         after_engine()
 
@@ -361,11 +357,11 @@ def test_case_colliding_return_names_refuse_at_build():
         def __call__(self, x):
             return (x, x)
 
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     with pytest.raises(Exception, match="collide case-insensitively"):
         DuckDBInferFn(
             "SELECT (bad2(x)).x AS a FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[Bad2()],
         )
@@ -401,7 +397,6 @@ def test_wide_udf_dict_output():
         [{"x": 2.0}],
         {},
         [Embed2()],
-        output="dict",
     )
     assert got == [{"e": [2.0, 2.0]}]
 
@@ -409,10 +404,10 @@ def test_wide_udf_dict_output():
 def test_infer_arrow_wide_and_scalar():
     import pyarrow as pa
 
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     fn = DuckDBInferFn(
         "SELECT emb(0, x) AS e, x + 1.0 AS y FROM __THIS__",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={},
         udfs=[Embed2()],
     )
@@ -428,10 +423,10 @@ def test_infer_arrow_named_struct():
     # unpinned on the columnar boundary.
     import pyarrow as pa
 
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     fn = DuckDBInferFn(
         "SELECT emb(0, x) AS e FROM __THIS__",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={},
         udfs=[NamedEmbed2()],
     )
@@ -445,15 +440,15 @@ def test_infer_arrow_named_struct():
 
 def test_both_backends_agree(monkeypatch):
     def run():
-        model = _row_model({"x": "float?"})
+        schema = _row_schema({"x": "float?"})
         fn = DuckDBInferFn(
             "SELECT tf0(0, x) AS z, emb(0, x) AS e FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[Scale(), Embed2()],
         )
-        rows = [model(x=1.5), model(x=None)]
-        return fn.backend, [r.model_dump() for r in fn.infer_rows(rows)]
+        rows = [{"x": 1.5}, {"x": None}]
+        return fn.backend, fn.infer_rows(rows)
 
     b_default, got_default = run()
     monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
@@ -472,15 +467,15 @@ def test_udf_exception_traps():
         def __call__(self, x):
             raise RuntimeError("kapow")
 
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     fn = DuckDBInferFn(
         "SELECT boom(x) AS z FROM __THIS__",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={},
         udfs=[Boom()],
     )
     with pytest.raises(Exception, match="boom.*kapow"):
-        fn.infer_rows([model(x=1.0)])
+        fn.infer_rows([{"x": 1.0}])
 
 
 def test_wrong_return_shape_traps():
@@ -492,34 +487,34 @@ def test_wrong_return_shape_traps():
         def __call__(self, x):
             return (x,)  # declared 2, returns 1
 
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     fn = DuckDBInferFn(
         "SELECT liar(x) AS z FROM __THIS__",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={},
         udfs=[Liar()],
     )
     with pytest.raises(Exception, match="liar.*returned 1 values, declared 2"):
-        fn.infer_rows([model(x=1.0)])
+        fn.infer_rows([{"x": 1.0}])
 
 
 def test_unknown_function_still_refuses():
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     with pytest.raises(Exception, match="mystery"):
         DuckDBInferFn(
             "SELECT mystery(x) AS z FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[Scale()],
         )
 
 
 def test_wide_mid_expression_refuses():
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     with pytest.raises(Exception, match="width-2.*bare SELECT items"):
         DuckDBInferFn(
             "SELECT emb(0, x) + 1.0 AS z FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[Embed2()],
         )
@@ -546,7 +541,7 @@ def test_declaration_validation():
         takes = pa.schema([("x", pa.float64())])
         returns = pa.list_(pa.float64())
 
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     for cls, needle in (
         (BadTy, "float.*bool/int64/double/string"),
         (BadRet, "int32.*bool/int64/double/string"),
@@ -555,25 +550,25 @@ def test_declaration_validation():
         with pytest.raises(Exception, match=needle):
             DuckDBInferFn(
                 "SELECT bad(x) AS z FROM __THIS__",
-                row_tables={"__THIS__": model},
+                row_tables={"__THIS__": schema},
                 static_tables={},
                 udfs=[cls()],
             )
     with pytest.raises(Exception, match="duplicate udf name"):
         DuckDBInferFn(
             "SELECT tf0(0, x) AS z FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[Scale(), Scale()],
         )
 
 
 def test_arity_mismatch_refuses():
-    model = _row_model({"x": "float?"})
+    schema = _row_schema({"x": "float?"})
     with pytest.raises(Exception, match="tf0"):
         DuckDBInferFn(
             "SELECT tf0(0, x, x) AS z FROM __THIS__",
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[Scale()],
         )
