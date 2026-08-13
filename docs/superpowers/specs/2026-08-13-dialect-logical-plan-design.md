@@ -148,7 +148,8 @@ query, silently.
 Rel    := Scan(table, schema)                      -- __THIS__, statics, params
         | Project(input, [(name, Expr)])
         | Filter(input, Expr)
-        | Join(input, input, kind, [JoinKey])      -- JoinKey carries null_safe: bool
+        | Join(input, input, kind, on: Expr?)      -- on bound over left++right; None iff CROSS
+                                                   -- (2026-08-13-dialect-join-node-design.md)
         | Window(input, [WindowDef])               -- partition keys, ORDER (total, explicit), frame (explicit)
         | Aggregate(input, [key: Expr], [agg])     -- the fit plan's GROUP BY / DISTINCT steps
         | Distinct(input)
@@ -173,7 +174,7 @@ by construction (a `match`, not a lookup with a default).
 | surface construct | plan field (mandatory) | frontend fills (DuckDB default) | printers emit |
 |---|---|---|---|
 | sort key in window/agg `ORDER BY` | direction **and** null order | `ASC`, `NULLS LAST` *(to pin)* | both, always, every dialect |
-| join equality | `null_safe: bool` | `=` → false; `IS NOT DISTINCT FROM` → true | Spark `<=>`; BigQuery expansion *(spelling to pin)* |
+| join equality | explicit via expression node kind (`Eq` vs `IsDistinct`) | `=` → `Eq`; `IS NOT DISTINCT FROM` → `IsDistinct` | each dialect's pinned spelling of that node |
 | `CAST` | `strict` \| `try` + failure semantics | `CAST` → strict, `TRY_CAST` → try | dialect's checked/safe form *(to pin per dialect)* |
 | window frame | explicit frame bounds | DuckDB's default frame *(to pin)* | explicit frame, always |
 | numeric operators | resolved signature (int vs float division, overflow class) | registry | per-signature spelling *(to pin)* |
