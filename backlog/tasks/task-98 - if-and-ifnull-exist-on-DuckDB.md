@@ -26,3 +26,7 @@ have (CASE / coalesce). Approved 2026-08-13.
 - [ ] #1 if()/ifnull() serve with DuckDB-equal values and schema, live-oracle pinned
 - [ ] #2 signature-table rows + totality test cover both names
 <!-- AC:END -->
+
+## Notes
+
+2026-08-13: RFC 1 delivered in chat (measured facts, options, recommendation); its ASK block awaits AmirHossein's answers. Lands on the arrow schema surface (PR #144 merged).

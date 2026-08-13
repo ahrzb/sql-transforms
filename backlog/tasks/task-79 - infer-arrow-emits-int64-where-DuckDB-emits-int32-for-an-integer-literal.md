@@ -87,3 +87,7 @@ and came off, and the `_WIDENED` bypass was deleted from the every-scenario
 test in the same commit; the width catalogue lives in test_integer_widths.py.
 The row-time overflow trap is m-8 phase 3, out of this ticket's scope.
 <!-- SECTION:NOTES:END -->
+
+## Notes
+
+2026-08-13 hygiene: fixed by the phase-2 integer-width work. Probe on master 5e88d38: `SELECT 1 AS o` serves int32 via infer_arrow, matching DuckDB's INTEGER exactly.

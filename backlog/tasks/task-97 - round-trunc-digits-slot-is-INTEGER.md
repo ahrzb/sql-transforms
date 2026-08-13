@@ -26,3 +26,7 @@ fact: digits accept INTEGER-or-narrower. Approved 2026-08-13.
 - [ ] #1 round(d, k)/trunc(d, k) with a BIGINT digits expression refuses like DuckDB
 - [ ] #2 INTEGER-typed digits (literals, ::INTEGER) keep binding; live-oracle pins
 <!-- AC:END -->
+
+## Notes
+
+2026-08-13 hygiene: branch origin/task-97 exists UNMERGED. The corpus round(a, b)-INTEGER row (case 622) now serves and matches via PR #144's row widths, so re-check what of this ticket's expression-side scope remains before picking the branch up.

@@ -29,3 +29,7 @@ Approved 2026-08-13.
 - [ ] #1 gen.py carries no hand-written signature list; productions derive from the exported table
 - [ ] #2 a table row added in Rust is exercised by the next campaign without gen.py edits
 <!-- AC:END -->
+
+## Notes
+
+2026-08-13: RFC 2 delivered in chat (measured facts, options, recommendation); its ASK block awaits AmirHossein's answers. Lands on the arrow schema surface (PR #144 merged).

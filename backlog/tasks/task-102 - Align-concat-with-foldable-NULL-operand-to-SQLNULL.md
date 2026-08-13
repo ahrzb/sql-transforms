@@ -2,7 +2,7 @@
 id: TASK-102
 title: >-
   Align || with a foldable NULL operand to SQLNULL (int32)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-13 12:00'
 labels:
@@ -38,3 +38,7 @@ docs/superpowers/specs/2026-08-13-bind-fold-alignment-design.md.
 - [ ] #3 §5 known-limitations row deleted (RFC'd removal — this decision)
 - [ ] #4 20k campaign: no new classes
 <!-- AC:END -->
+
+## Notes
+
+2026-08-13 hygiene: merged to master (7240d4a); pin flipped, no || class in the 2026-08-13 20k campaign.
