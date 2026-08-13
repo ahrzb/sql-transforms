@@ -15,6 +15,7 @@
 
 use pyo3::prelude::*;
 
+pub mod dialect;
 mod duckdb;
 pub mod error;
 pub mod schema;
