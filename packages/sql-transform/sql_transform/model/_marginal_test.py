@@ -195,6 +195,23 @@ def test_an_arrow_hostile_partition_key_type_holds_the_law():
     assert _sorted(frozen) == _sorted(run(SQLTransform(text), Q).to_pylist())
 
 
+def test_theta_parks_in_a_lateral_alias_and_is_read_twice():
+    """θ of a keyless projection is a value (D1): park it `AS t`, then read
+    it from sibling items with two different bundles — one fit, many reads.
+    Works by composition (lateral aliases + the ordinary splice); pinned so
+    it stays working. Measured 2026-08-13."""
+    text = """
+        SELECT store,
+               zscore_fit(struct_pack(price := price))
+                   OVER (PARTITION BY store) AS t,
+               zscore_transform(t, struct_pack(price := price)).z AS z,
+               zscore_transform(t, struct_pack(price := price * 2)).z AS z2
+        FROM __THIS__
+    """
+    frozen = SQLProjection.marginalize(text).fit(F).transform(F).to_pylist()
+    assert _sorted(frozen) == _sorted(run(SQLTransform(text), F).to_pylist())
+
+
 # --- key composition (slice 4, RFC M5) --------------------------------------
 
 keyed = SQLProjection("""
