@@ -316,10 +316,27 @@ pub fn fold(e: SExpr) -> SExpr {
                 default,
             })
         }
-        SKind::Cast { inner, trying } => e(SKind::Cast {
-            inner: Box::new(fold(*inner)),
-            trying,
-        }),
+        SKind::Cast { inner, trying } => {
+            let inner = fold(*inner);
+            // A width-only cast of a folded integer constant collapses:
+            // the node existed as the NON-literal provenance mark for the
+            // value-fits promotion (frontend::int_literal_value), and by
+            // fold time the hints are already taken. Out-of-range
+            // constants were refused or NULLed at bind, so `fits` here is
+            // belt-and-braces.
+            if !trying && ty.is_int() && inner.ty.is_int() {
+                if let SKind::Lit(Lit::I64(v)) = inner.kind {
+                    let fits = ty.int_range().map_or(true, |(lo, hi)| (lo..=hi).contains(&v));
+                    if fits {
+                        return lit(Lit::I64(v), ty);
+                    }
+                }
+            }
+            e(SKind::Cast {
+                inner: Box::new(inner),
+                trying,
+            })
+        }
         // Builtin nodes fold children only (ponytail: constant upper('a')
         // etc. can fold later if a corpus query ever cares).
         SKind::StrCase { upper, a } => e(SKind::StrCase {

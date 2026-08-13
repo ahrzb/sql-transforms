@@ -284,23 +284,28 @@ _DUCK_BUILD_ERRS = (
 )
 
 
-def _duck_run(sql, case: G.Case, udf_objs):
+def _duck_con(case: G.Case, udf_objs):
     con = duckdb.connect()
+    for u in udf_objs:
+        params = [_DUCK_T[t] for t in u.takes.types]
+        if hasattr(u, "instances"):
+            params = ["BIGINT", *params]
+        con.create_function(
+            u.name, _scalar_form(u), params, _duck_ret(u), null_handling="special"
+        )
+    for name, (sch, rows) in case.statics.items():
+        con.register(f"__arrow_{name}", _arrow_table(sch, rows))
+        # our own generated table names, not user input
+        ddl = f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"'  # noqa: S608
+        con.execute(ddl)
+    con.register("__arrow_this", _arrow_table(case.row_schema, case.rows))
+    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
+    return con
+
+
+def _duck_run(sql, case: G.Case, udf_objs):
+    con = _duck_con(case, udf_objs)
     try:
-        for u in udf_objs:
-            params = [_DUCK_T[t] for t in u.takes.types]
-            if hasattr(u, "instances"):
-                params = ["BIGINT", *params]
-            con.create_function(
-                u.name, _scalar_form(u), params, _duck_ret(u), null_handling="special"
-            )
-        for name, (sch, rows) in case.statics.items():
-            con.register(f"__arrow_{name}", _arrow_table(sch, rows))
-            # our own generated table names, not user input
-            ddl = f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"'  # noqa: S608
-            con.execute(ddl)
-        con.register("__arrow_this", _arrow_table(case.row_schema, case.rows))
-        con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
         try:
             return con.execute(sql).to_arrow_table(), None, None
         except Exception as e:  # noqa: BLE001 — classify, don't die

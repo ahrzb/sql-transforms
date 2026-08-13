@@ -2156,6 +2156,30 @@ impl Binder<'_> {
                 // dividing by the result (TASK-80). -0.0 - x is exact IEEE
                 // negation for every double. Integers keep 0 - x and its
                 // i64::MIN trap, which is DuckDB's own overflow behaviour.
+                // sqlparser parses `-a % b` as `-(a % b)`; DuckDB binds
+                // `(-a) % b` (its unary minus is tighter than mul/div/mod).
+                // The minus distributes over these ops so VALUES agree, but
+                // INT32_MIN's literal type doesn't — mirror DuckDB's tree.
+                // Explicit parens arrive as Nested and are untouched.
+                if let SqlExpr::BinaryOp { left, op, right } = &**expr {
+                    if matches!(
+                        op,
+                        BinaryOperator::Multiply
+                            | BinaryOperator::Divide
+                            | BinaryOperator::Modulo
+                            | BinaryOperator::DuckIntegerDivide
+                    ) {
+                        let rewritten = SqlExpr::BinaryOp {
+                            left: Box::new(SqlExpr::UnaryOp {
+                                op: UnaryOperator::Minus,
+                                expr: left.clone(),
+                            }),
+                            op: op.clone(),
+                            right: right.clone(),
+                        };
+                        return self.expr(&rewritten);
+                    }
+                }
                 // Measured: unary +/- on a BARE NULL is BIGINT on DuckDB
                 // (the SQLNULL INTEGER default does not survive negation);
                 // a typed NULL — CAST(NULL AS INTEGER) — keeps its width.
@@ -3501,15 +3525,50 @@ impl Binder<'_> {
         let else_bound: Option<Option<SExpr>> =
             else_result.map(|e| self.expr_or_null(e)).transpose()?;
 
+        // Width unification, 9-probe matrix 2026-08-13: a NULL arm never
+        // widens (None here, adopts the unified type below); a wide-LITERAL
+        // arm value-narrows into the accumulator EXCEPT as the ELSE of a
+        // literal-carried accumulator; a wide-literal accumulator narrows
+        // to a non-literal arm in any position.
         let mut unified: Option<Ty> = None;
-        for r in results.iter().chain(else_bound.iter()).flatten() {
-            unified = Some(match unified {
-                None => r.ty,
-                Some(u) if u == r.ty => u,
-                // CASE promotes across integer widths exactly like
-                // arithmetic; a NULL arm never widens (it is None here and
-                // adopts the unified type below).
-                Some(u) if u.is_int() && r.ty.is_int() => wider_int(u, r.ty),
+        let mut acc_lit: Option<i64> = None;
+        let mut combine = |unified: &mut Option<Ty>,
+                           acc_lit: &mut Option<i64>,
+                           r: &SExpr,
+                           is_else: bool|
+         -> Result<(), PrepareError> {
+            let new_lit = int_literal_value(r);
+            *unified = Some(match *unified {
+                None => {
+                    *acc_lit = new_lit;
+                    r.ty
+                }
+                Some(u) if u == r.ty => {
+                    if new_lit.is_none() {
+                        *acc_lit = None;
+                    }
+                    u
+                }
+                Some(u) if u.is_int() && r.ty.is_int() => {
+                    let t = r.ty;
+                    if width_rank(t) > width_rank(u)
+                        && new_lit.is_some_and(|v| fits_width(u, v))
+                        && !(is_else && acc_lit.is_some())
+                    {
+                        u
+                    } else if width_rank(u) > width_rank(t)
+                        && new_lit.is_none()
+                        && acc_lit.is_some_and(|v| fits_width(t, v))
+                    {
+                        *acc_lit = None;
+                        t
+                    } else {
+                        if width_rank(t) > width_rank(u) {
+                            *acc_lit = new_lit;
+                        }
+                        wider_int(u, t)
+                    }
+                }
                 Some(u) if u.is_int() && r.ty == Ty::F64 => Ty::F64,
                 Some(Ty::F64) if r.ty.is_int() => Ty::F64,
                 Some(u) => {
@@ -3520,6 +3579,13 @@ impl Binder<'_> {
                     )))
                 }
             });
+            Ok(())
+        };
+        for r in results.iter().flatten() {
+            combine(&mut unified, &mut acc_lit, r, false)?;
+        }
+        if let Some(Some(r)) = &else_bound {
+            combine(&mut unified, &mut acc_lit, r, true)?;
         }
         let Some(unified) = unified else {
             return Err(unsup("CASE where every branch is NULL"));
@@ -3566,7 +3632,12 @@ impl Binder<'_> {
             // CAST(NULL AS T) is just a typed NULL, both forms.
             None => return Ok(null_of(to)),
         };
-        if inner.ty == to && !trying {
+        // The identity shortcut must NOT unwrap a literal-shaped inner:
+        // DuckDB's value-fits promotion treats CAST(-15 AS INTEGER) as
+        // NON-literal (measured: -2147483648 % CAST(-15 AS INTEGER) is
+        // INTEGER), so the Cast node is the provenance mark that blocks
+        // the literal hint; fold collapses it afterwards.
+        if inner.ty == to && !trying && int_literal_value(&inner).is_none() {
             return Ok(inner);
         }
         if inner.ty == Ty::Str && to == Ty::I1 {
@@ -3687,6 +3758,13 @@ impl Binder<'_> {
     }
 
     fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
+        // Captured BEFORE folding: DuckDB's value-fits promotion treats a
+        // bare or SIGN-PREFIXED literal as a literal, but a general folded
+        // constant keeps its structural width — after fold() both are Lit
+        // and the difference is gone (measured 2026-08-13: unicode(s) %
+        // -2147483648 is INTEGER, (49 % 9007199254740991) % unicode(s) is
+        // BIGINT).
+        let lits = (int_literal_value(&a), int_literal_value(&b));
         // TASK-85: a STRICT operator with a literal-NULL operand folds to
         // NULL at build, exactly as DuckDB's optimizer folds it — which
         // ELIMINATES the sibling subexpression, so a trapping ln/overflow/
@@ -3721,7 +3799,7 @@ impl Binder<'_> {
                     )));
                 }
             }
-            let ty = int_width_promote(&a, &b);
+            let ty = int_width_promote(&a, &b, lits);
             if null_operand {
                 return Ok(null_of(ty));
             }
@@ -3736,7 +3814,7 @@ impl Binder<'_> {
                 nullable,
             });
         }
-        let (a, b, ty) = numeric_promote(op, a, b)?;
+        let (a, b, ty) = numeric_promote(op, a, b, lits)?;
         if null_operand {
             return Ok(null_of(ty));
         }
@@ -4870,10 +4948,38 @@ impl Binder<'_> {
                     return Err(unsup("COALESCE of only NULL literals"));
                 }
                 let mut unified = bound[0].ty;
+                let mut acc_lit = int_literal_value(&bound[0]);
                 for e in &bound[1..] {
+                    let new_lit = int_literal_value(e);
                     unified = match (unified, e.ty) {
-                        (u, t) if u == t => u,
-                        (u, t) if u.is_int() && t.is_int() => wider_int(u, t),
+                        (u, t) if u == t => {
+                            if new_lit.is_none() {
+                                acc_lit = None;
+                            }
+                            u
+                        }
+                        (u, t) if u.is_int() && t.is_int() => {
+                            // Value-fits rules (measured 2026-08-13, the
+                            // -2147483648 corners): a wide-LITERAL arm
+                            // narrows into the accumulator; a wide-literal
+                            // accumulator narrows to a non-literal arm.
+                            if width_rank(t) > width_rank(u)
+                                && new_lit.is_some_and(|v| fits_width(u, v))
+                            {
+                                u
+                            } else if width_rank(u) > width_rank(t)
+                                && new_lit.is_none()
+                                && acc_lit.is_some_and(|v| fits_width(t, v))
+                            {
+                                acc_lit = None;
+                                t
+                            } else {
+                                if width_rank(t) > width_rank(u) {
+                                    acc_lit = new_lit;
+                                }
+                                wider_int(u, t)
+                            }
+                        }
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
                         (u, t) => {
@@ -4950,10 +5056,35 @@ impl Binder<'_> {
                     return Err(unsup(format!("{name} of only NULL literals")));
                 }
                 let mut unified = bound[0].ty;
+                let mut acc_lit = int_literal_value(&bound[0]);
                 for e in &bound[1..] {
+                    let new_lit = int_literal_value(e);
                     unified = match (unified, e.ty) {
-                        (u, t) if u == t => u,
-                        (u, t) if u.is_int() && t.is_int() => wider_int(u, t),
+                        (u, t) if u == t => {
+                            if new_lit.is_none() {
+                                acc_lit = None;
+                            }
+                            u
+                        }
+                        (u, t) if u.is_int() && t.is_int() => {
+                            // Same value-fits rules as COALESCE above.
+                            if width_rank(t) > width_rank(u)
+                                && new_lit.is_some_and(|v| fits_width(u, v))
+                            {
+                                u
+                            } else if width_rank(u) > width_rank(t)
+                                && new_lit.is_none()
+                                && acc_lit.is_some_and(|v| fits_width(t, v))
+                            {
+                                acc_lit = None;
+                                t
+                            } else {
+                                if width_rank(t) > width_rank(u) {
+                                    acc_lit = new_lit;
+                                }
+                                wider_int(u, t)
+                            }
+                        }
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
                         (u, t) => {
@@ -6257,7 +6388,12 @@ fn cmp_sym(pred: CmpPred) -> &'static str {
 /// `sig::OPS` row — `/` is Fixed(F64), everything else Widens across the
 /// integer width lattice (m-8 phase 2); this function is the rule's
 /// consumer and owns the promotion nodes.
-fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty), PrepareError> {
+fn numeric_promote(
+    op: ArithOp,
+    a: SExpr,
+    b: SExpr,
+    lits: (Option<i64>, Option<i64>),
+) -> Result<(SExpr, SExpr, Ty), PrepareError> {
     let numeric = |e: &SExpr| e.ty.is_int() || e.ty == Ty::F64;
     if !numeric(&a) || !numeric(&b) {
         return Err(PrepareError::Bind(format!(
@@ -6272,7 +6408,7 @@ fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty)
             if a.ty == Ty::F64 || b.ty == Ty::F64 {
                 Ty::F64
             } else {
-                int_width_promote(&a, &b)
+                int_width_promote(&a, &b, lits)
             }
         }
         Ret::Arg(_) | Ret::Unify => unreachable!("not an operator rule"),
@@ -6301,21 +6437,45 @@ fn width_rank(t: Ty) -> u8 {
 /// wider-side rule only; their literal-vs-narrower corner is reachable only
 /// through explicit ::TINYINT/::SMALLINT casts mixed into multi-arm
 /// unification.
-fn int_width_promote(a: &SExpr, b: &SExpr) -> Ty {
+fn int_width_promote(a: &SExpr, b: &SExpr, lits: (Option<i64>, Option<i64>)) -> Ty {
     if a.ty == b.ty {
         return a.ty;
     }
-    let (wide, narrow) = if width_rank(a.ty) >= width_rank(b.ty) {
-        (a, b.ty)
+    let (wide, narrow, wide_lit, narrow_lit) = if width_rank(a.ty) >= width_rank(b.ty) {
+        (a, b.ty, lits.0, lits.1)
     } else {
-        (b, a.ty)
+        (b, a.ty, lits.1, lits.0)
     };
-    if let (SKind::Lit(Lit::I64(v)), Some((lo, hi))) = (&wide.kind, narrow.int_range()) {
-        if (lo..=hi).contains(v) {
+    // The value rule, measured 2026-08-13: the WIDE side must be a literal
+    // (bare or sign-prefixed — the `lits` hint, captured pre-fold, since a
+    // general folded constant keeps its structural width) and the NARROW
+    // side must NOT be one. unicode(s) % -2147483648 is INTEGER;
+    // 2147483647 % -2147483648 and (49 % 9007199254740991) % unicode(s)
+    // are BIGINT.
+    if let (Some(v), None, Some((lo, hi))) = (wide_lit, narrow_lit, narrow.int_range()) {
+        if (lo..=hi).contains(&v) {
             return narrow;
         }
     }
     wide.ty
+}
+
+/// The value of a LITERAL-SHAPED integer expression at BIND time: a bare
+/// integer literal, or unary minus over one (bound as 0 - lit). Exactly
+/// the shapes DuckDB's value-fits promotion treats as literals.
+fn int_literal_value(e: &SExpr) -> Option<i64> {
+    match &e.kind {
+        SKind::Lit(Lit::I64(v)) => Some(*v),
+        SKind::Arith {
+            op: ArithOp::Sub,
+            a,
+            b,
+        } => match (&a.kind, &b.kind) {
+            (SKind::Lit(Lit::I64(0)), SKind::Lit(Lit::I64(v))) => v.checked_neg(),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The wider of two integer widths — family unification's promotion rule.
