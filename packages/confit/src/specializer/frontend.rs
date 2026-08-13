@@ -1144,7 +1144,9 @@ fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareE
     let col_ty = st.cols[col as usize].ty.ty;
     match (key.ty, col_ty) {
         (a, b) if a == b => Ok(key),
-        (Ty::I64, Ty::F64) => Ok(promote_f64(key)),
+        // Integer widths share the key lane; the map stores i64 bits.
+        (a, b) if a.is_int() && b.is_int() => Ok(key),
+        (a, Ty::F64) if a.is_int() => Ok(promote_f64(key)),
         // Static-side ints promote at materialization: the map key type
         // (the key expression's type) becomes F64 and the build side is
         // converted while the probe table is built.
@@ -1662,7 +1664,7 @@ impl Binder<'_> {
             if let Some(b) = self.expr_or_null(e)? {
                 match b.ty {
                     Ty::F64 => (any_f64, any_num) = (true, true),
-                    Ty::I64 => any_num = true,
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => any_num = true,
                     Ty::Str | Ty::I1 => {}
                 }
             }
@@ -2164,7 +2166,9 @@ impl Binder<'_> {
                 } else {
                     SExpr {
                         kind: SKind::Lit(Lit::I64(0)),
-                        ty: Ty::I64,
+                        // A zero literal's natural width; the value-fits
+                        // promotion hands -x its operand's own width.
+                        ty: Ty::I32,
                         nullable: false,
                     }
                 };
@@ -2752,7 +2756,7 @@ impl Binder<'_> {
         let Some(bn) = self.expr_or_null(n)? else {
             return Ok(null_of(Ty::Str));
         };
-        if bn.ty != Ty::I64 {
+        if !bn.ty.is_int() {
             return Err(PrepareError::Bind(format!(
                 "no function matches {name}(str, {})",
                 bn.ty.name()
@@ -2797,7 +2801,7 @@ impl Binder<'_> {
             return Ok(null_of(Ty::Str));
         };
         for e in [&blo, &bhi] {
-            if e.ty != Ty::I64 {
+            if !e.ty.is_int() {
                 return Err(PrepareError::Bind(format!(
                     "no function matches {name}(str, {}, {})",
                     blo.ty.name(),
@@ -3493,8 +3497,12 @@ impl Binder<'_> {
             unified = Some(match unified {
                 None => r.ty,
                 Some(u) if u == r.ty => u,
-                Some(Ty::I64) if r.ty == Ty::F64 => Ty::F64,
-                Some(Ty::F64) if r.ty == Ty::I64 => Ty::F64,
+                // CASE promotes across integer widths exactly like
+                // arithmetic; a NULL arm never widens (it is None here and
+                // adopts the unified type below).
+                Some(u) if u.is_int() && r.ty.is_int() => wider_int(u, r.ty),
+                Some(u) if u.is_int() && r.ty == Ty::F64 => Ty::F64,
+                Some(Ty::F64) if r.ty.is_int() => Ty::F64,
                 Some(u) => {
                     return Err(PrepareError::Bind(format!(
                         "CASE branches disagree: {} vs {}",
@@ -3511,7 +3519,12 @@ impl Binder<'_> {
         let coerce = |r: Option<SExpr>| -> SExpr {
             match r {
                 None => null_of(unified),
-                Some(e) if e.ty == Ty::I64 && unified == Ty::F64 => promote_f64(e),
+                Some(e) if e.ty.is_int() && unified == Ty::F64 => promote_f64(e),
+                Some(mut e) if e.ty.is_int() && unified.is_int() && e.ty != unified => {
+                    // Width-only retype; the payload lane is shared.
+                    e.ty = unified;
+                    e
+                }
                 Some(e) => e,
             }
         };
@@ -3560,7 +3573,10 @@ impl Binder<'_> {
         if !trying && self.in_guarded.get() == 0 {
             if let SKind::Lit(Lit::Str(s)) = &inner.kind {
                 let ok = match to {
-                    Ty::I64 => s.trim_ascii().parse::<i64>().is_ok(),
+                    t if t.is_int() => s
+                        .trim_ascii()
+                        .parse::<i64>()
+                        .is_ok_and(|v| fits_width(t, v)),
                     Ty::F64 => s.trim_ascii().parse::<f64>().is_ok(),
                     _ => true,
                 };
@@ -3569,9 +3585,85 @@ impl Binder<'_> {
                         "constant cast fails on every row: CAST('{s}' AS \
                          {}) — DuckDB errors at plan time; TRY_CAST is the \
                          NULL-yielding spelling",
-                        if to == Ty::I64 { "BIGINT" } else { "DOUBLE" }
+                        duck_int_name(to)
                     )));
                 }
+            }
+        }
+        // A constant that misses a NARROW target's range: TRY_CAST is NULL;
+        // CAST refuses — DuckDB's plan-time conversion error, and there is
+        // no i32-range runtime trap to fall back on before m-8 phase 3, so
+        // the refusal is NOT in_guarded-suspended (refusing a query DuckDB
+        // could run lazily beats serving a value it would never produce).
+        if let Some((lo, hi)) = to.int_range() {
+            let const_out = match &inner.kind {
+                SKind::Lit(Lit::I64(v)) => Some(!(lo..=hi).contains(v)),
+                SKind::Lit(Lit::F64(f)) => {
+                    let r = f.round_ties_even();
+                    Some(!(lo as f64..=hi as f64).contains(&r))
+                }
+                _ => None,
+            };
+            match const_out {
+                Some(true) if trying => return Ok(null_of(to)),
+                Some(true) => {
+                    return Err(PrepareError::Bind(format!(
+                        "constant cast overflows {}: DuckDB errors at plan \
+                         time; TRY_CAST is the NULL-yielding spelling",
+                        duck_int_name(to)
+                    )))
+                }
+                _ => {}
+            }
+            // TRY_CAST to a narrow width NULLs outside the range at row
+            // time. No trap machinery: convert on the lane (NULL on
+            // failure), then a range-guard CASE — pure re-evaluation
+            // clones, like the %-by-zero guard.
+            if trying && const_out.is_none() {
+                let wide = if inner.ty.is_int() {
+                    inner
+                } else {
+                    SExpr {
+                        kind: SKind::Cast {
+                            inner: Box::new(inner),
+                            trying: true,
+                        },
+                        ty: Ty::I64,
+                        nullable: true,
+                    }
+                };
+                let bound = |n: i64| SExpr {
+                    kind: SKind::Lit(Lit::I64(n)),
+                    ty: Ty::I64,
+                    nullable: false,
+                };
+                let ge = self.cmp(CmpPred::Ge, wide.clone(), bound(lo))?;
+                let le = self.cmp(CmpPred::Le, wide.clone(), bound(hi))?;
+                let nullable_cond = ge.nullable || le.nullable;
+                let cond = SExpr {
+                    kind: SKind::And {
+                        a: Box::new(ge),
+                        b: Box::new(le),
+                    },
+                    ty: Ty::I1,
+                    nullable: nullable_cond,
+                };
+                let val = SExpr {
+                    kind: SKind::Cast {
+                        inner: Box::new(wide.clone()),
+                        trying: false,
+                    },
+                    ty: to,
+                    nullable: wide.nullable,
+                };
+                return Ok(SExpr {
+                    kind: SKind::Case {
+                        arms: vec![(cond, val)],
+                        default: Some(Box::new(null_of(to))),
+                    },
+                    ty: to,
+                    nullable: true,
+                });
             }
         }
         let nullable = trying || inner.nullable;
@@ -3607,12 +3699,12 @@ impl Binder<'_> {
             op,
             ArithOp::Shl | ArithOp::Shr | ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor
         ) {
-            // Bitwise is BIGINT-only (wave-5 pins: non-integer operands are
-            // binder errors). Computing in i64 matches DuckDB whenever
-            // either operand is BIGINT — row-model ints always are; narrow
-            // CASTs are already unsupported upstream.
+            // Bitwise is integer-only (wave-5 pins: non-integer operands
+            // are binder errors) and width-polymorphic (1 & 2 is INTEGER,
+            // i & k is BIGINT — measured 2026-08-13); compute is i64 either
+            // way.
             for e in [&a, &b] {
-                if e.ty != Ty::I64 {
+                if !e.ty.is_int() {
                     return Err(PrepareError::Bind(format!(
                         "no function matches bitwise op on ({}, {})",
                         a.ty.name(),
@@ -3620,8 +3712,9 @@ impl Binder<'_> {
                     )));
                 }
             }
+            let ty = int_width_promote(&a, &b);
             if null_operand {
-                return Ok(null_of(Ty::I64));
+                return Ok(null_of(ty));
             }
             let nullable = a.nullable || b.nullable;
             return Ok(SExpr {
@@ -3630,7 +3723,7 @@ impl Binder<'_> {
                     a: Box::new(a),
                     b: Box::new(b),
                 },
-                ty: Ty::I64,
+                ty,
                 nullable,
             });
         }
@@ -3646,19 +3739,23 @@ impl Binder<'_> {
         if let (SKind::Lit(Lit::I64(x)), SKind::Lit(Lit::I64(y))) =
             (&a.kind, &b.kind)
         {
+            // Width-aware: the op traps in the RESULT's width (an i32 lane
+            // overflows at ±2^31 on DuckDB, not ±2^63).
+            let fits = |r: i64| fits_width(ty, r);
             let trapped = self.in_guarded.get() == 0
                 && match op {
-                    ArithOp::Add => x.checked_add(*y).is_none(),
-                    ArithOp::Sub => x.checked_sub(*y).is_none(),
-                    ArithOp::Mul => x.checked_mul(*y).is_none(),
+                    ArithOp::Add => !x.checked_add(*y).is_some_and(fits),
+                    ArithOp::Sub => !x.checked_sub(*y).is_some_and(fits),
+                    ArithOp::Mul => !x.checked_mul(*y).is_some_and(fits),
                     _ => false,
                 };
             if trapped {
                 return Err(PrepareError::Bind(format!(
-                    "constant integer arithmetic overflows BIGINT \
+                    "constant integer arithmetic overflows {} \
                      ({x} {op:?} {y}) — DuckDB evaluates constants at plan \
                      time and errors on every execution; this engine \
-                     refuses instead of serving rows the oracle never would"
+                     refuses instead of serving rows the oracle never would",
+                    if ty == Ty::I64 { "BIGINT" } else { "INTEGER" }
                 )));
             }
         }
@@ -3668,7 +3765,8 @@ impl Binder<'_> {
         // guard with a CASE unless the divisor is a provably non-zero
         // literal. The idiv/irem traps stay reachable only for MIN op -1,
         // where DuckDB traps too. Float % is IEEE (x % 0.0 = NaN), no guard.
-        let needs_guard = matches!((op, ty), (ArithOp::Rem, Ty::I64) | (ArithOp::IDiv, _));
+        let needs_guard =
+            (op == ArithOp::Rem && ty.is_int()) || op == ArithOp::IDiv;
         let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
             || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
         if needs_guard && !nonzero_lit {
@@ -3744,8 +3842,10 @@ impl Binder<'_> {
         let (a, b) = (fold(a), fold(b));
         let (a, b) = match (a.ty, b.ty) {
             (x, y) if x == y => (a, b),
-            (Ty::I64, Ty::F64) => (promote_f64(a), b),
-            (Ty::F64, Ty::I64) => (a, promote_f64(b)),
+            // Mixed integer widths compare in the shared i64 lane.
+            (x, y) if x.is_int() && y.is_int() => (a, b),
+            (x, Ty::F64) if x.is_int() => (promote_f64(a), b),
+            (Ty::F64, y) if y.is_int() => (a, promote_f64(b)),
             (x, y) => {
                 return Err(PrepareError::Bind(format!(
                     "cannot compare {} with {}",
@@ -3915,7 +4015,14 @@ impl Binder<'_> {
             };
             let bound = match (bound.ty, pt) {
                 (a, b) if a == b => bound,
-                (Ty::I64, Ty::F64) => promote_f64(bound),
+                // A narrow int upcasts into a declared int64 param (the
+                // lane is shared) — DuckDB's implicit INTEGER -> BIGINT.
+                (a, Ty::I64) if a.is_int() => {
+                    let mut e = bound;
+                    e.ty = Ty::I64;
+                    e
+                }
+                (a, Ty::F64) if a.is_int() => promote_f64(bound),
                 (a, b) => {
                     return Err(PrepareError::Bind(format!(
                         "udf '{}' argument {} is {}, declared {}",
@@ -4308,7 +4415,7 @@ impl Binder<'_> {
             return Ok(null_of(Ty::F64));
         };
         let bid = match bid.ty {
-            Ty::I64 => bid,
+            t if t.is_int() => bid,
             other => {
                 return Err(PrepareError::Bind(format!(
                     "udf '{name}' argument 1 is {}, declared the instance id (i64)",
@@ -4628,8 +4735,8 @@ impl Binder<'_> {
                         return Ok(null_of(Ty::I64));
                     };
                     match inner.ty {
-                        // Measured: integer trunc is identity, type preserved.
-                        Ty::I64 => Ok(inner),
+                        // Measured: integer trunc is identity, WIDTH preserved.
+                        t if t.is_int() => Ok(inner),
                         Ty::F64 => Ok(math1_node(NumOp1::Ftrunc, inner)),
                         other => Err(PrepareError::Bind(format!(
                             "no function matches trunc({})",
@@ -4649,6 +4756,8 @@ impl Binder<'_> {
                 let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
                     unreachable!("arity 1")
                 };
+                // Width-polymorphic via the Arg(0) row: abs follows its
+                // argument (measured).
                 let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::Abs(Box::new(inner)),
@@ -4662,8 +4771,8 @@ impl Binder<'_> {
                         return Ok(null_of(Ty::I64));
                     };
                     match inner.ty {
-                        // Measured: integer round is identity, type preserved.
-                        Ty::I64 => Ok(inner),
+                        // Measured: integer round is identity, WIDTH preserved.
+                        t if t.is_int() => Ok(inner),
                         Ty::F64 => {
                             let nullable = inner.nullable;
                             Ok(SExpr {
@@ -4756,7 +4865,9 @@ impl Binder<'_> {
                 for e in &bound[1..] {
                     unified = match (unified, e.ty) {
                         (u, t) if u == t => u,
-                        (Ty::I64, Ty::F64) | (Ty::F64, Ty::I64) => Ty::F64,
+                        (u, t) if u.is_int() && t.is_int() => wider_int(u, t),
+                        (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
+                        (Ty::F64, t) if t.is_int() => Ty::F64,
                         (u, t) => {
                             return Err(PrepareError::Bind(format!(
                                 "COALESCE arguments disagree: {} vs {}",
@@ -4768,10 +4879,13 @@ impl Binder<'_> {
                 }
                 let mut bound: Vec<SExpr> = bound
                     .into_iter()
-                    .map(|e| {
-                        if e.ty == Ty::I64 && unified == Ty::F64 {
+                    .map(|mut e| {
+                        if e.ty.is_int() && unified == Ty::F64 {
                             promote_f64(e)
                         } else {
+                            // Width-only retype: fold may select this arm
+                            // whole, and the OUTPUT width is the unified one.
+                            e.ty = unified;
                             e
                         }
                     })
@@ -4831,7 +4945,9 @@ impl Binder<'_> {
                 for e in &bound[1..] {
                     unified = match (unified, e.ty) {
                         (u, t) if u == t => u,
-                        (Ty::I64, Ty::F64) | (Ty::F64, Ty::I64) => Ty::F64,
+                        (u, t) if u.is_int() && t.is_int() => wider_int(u, t),
+                        (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
+                        (Ty::F64, t) if t.is_int() => Ty::F64,
                         (u, t) => {
                             return Err(PrepareError::Bind(format!(
                                 "{name} arguments disagree: {} vs {}",
@@ -4843,10 +4959,12 @@ impl Binder<'_> {
                 }
                 let bound: Vec<SExpr> = bound
                     .into_iter()
-                    .map(|e| {
-                        if e.ty == Ty::I64 && unified == Ty::F64 {
+                    .map(|mut e| {
+                        if e.ty.is_int() && unified == Ty::F64 {
                             promote_f64(e)
                         } else {
+                            // Width-only retype (see COALESCE above).
+                            e.ty = unified;
                             e
                         }
                     })
@@ -4977,7 +5095,7 @@ impl Binder<'_> {
                         bs.ty.name()
                     )));
                 }
-                if bn.ty != Ty::I64 {
+                if !bn.ty.is_int() {
                     return Err(PrepareError::Bind(format!(
                         "no function matches {name}(str, {})",
                         bn.ty.name()
@@ -5039,24 +5157,30 @@ impl Binder<'_> {
                     self.expr_or_null(l)?,
                     self.expr_or_null(pad)?,
                 );
-                // TASK-82 follow-up (certification seed 1589): the NULL
-                // short-circuit below must not SKIP the count check — a
-                // bare-NULL string smuggled a BIGINT count past it, serving
-                // NULL where DuckDB still binder-errors on the count. A
-                // bare-NULL count itself is fine: DuckDB types it INTEGER.
-                let count_ok = bl.is_none() || int32_literal_shaped(l);
-                if !count_ok && (bs.is_none() || bp.is_none()) {
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches {name}(VARCHAR, BIGINT, \
-                         VARCHAR) — DuckDB's {name} count is INTEGER and a \
-                         BIGINT does not implicitly narrow; spell a constant \
-                         count as a plain literal"
-                    )));
+                // TASK-82: DuckDB's {l,r}pad count is INTEGER and its binder
+                // does NOT downcast — a BIGINT count is a binder error there
+                // (169 of the first campaign's 963 findings). Now that
+                // widths are typed, the gate IS the type: INTEGER or
+                // narrower binds, BIGINT refuses. The NULL short-circuit
+                // below must not skip this check (certification seed 1589);
+                // a bare-NULL count itself is fine: DuckDB types it INTEGER.
+                let count_is_int32 =
+                    |e: &SExpr| e.ty.is_int() && e.ty != Ty::I64;
+                let bad_count = format!(
+                    "no function matches {name}(VARCHAR, BIGINT, VARCHAR) — \
+                     DuckDB's {name} count is INTEGER and a BIGINT does not \
+                     implicitly narrow; spell a constant count as a plain \
+                     literal or CAST(.. AS INTEGER)"
+                );
+                if bl.as_ref().is_some_and(|e| e.ty == Ty::I64)
+                    && (bs.is_none() || bp.is_none())
+                {
+                    return Err(PrepareError::Bind(bad_count));
                 }
                 let (Some(bs), Some(bl), Some(bp)) = (bs, bl, bp) else {
                     return Ok(null_of(Ty::Str));
                 };
-                if bs.ty != Ty::Str || bp.ty != Ty::Str || bl.ty != Ty::I64 {
+                if bs.ty != Ty::Str || bp.ty != Ty::Str || !bl.ty.is_int() {
                     return Err(PrepareError::Bind(format!(
                         "no function matches {name}({}, {}, {})",
                         bs.ty.name(),
@@ -5064,24 +5188,8 @@ impl Binder<'_> {
                         bp.ty.name()
                     )));
                 }
-                // TASK-82: DuckDB's {l,r}pad count is INTEGER and its binder
-                // does NOT downcast — a BIGINT column or even 2::BIGINT is a
-                // binder error there, while our single integer width bound
-                // anything i64 and served what the oracle refuses (169 of
-                // the campaign's 963 findings). Bind only what DuckDB types
-                // INTEGER: an int32-range literal spelling or an EXPLICIT
-                // narrow cast (CAST(l AS INTEGER), the documented spelling
-                // for a column count) — never a bare column, never ::BIGINT
-                // (audit 2026-08-13: comment trued to the helper, which
-                // accepts narrow casts). Refusing spellings DuckDB happens
-                // to accept is the contract-permitted direction.
-                if !int32_literal_shaped(l) {
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches {name}(VARCHAR, BIGINT, \
-                         VARCHAR) — DuckDB's {name} count is INTEGER and a \
-                         BIGINT does not implicitly narrow; spell a constant \
-                         count as a plain literal"
-                    )));
+                if !count_is_int32(&bl) {
+                    return Err(PrepareError::Bind(bad_count));
                 }
                 refuse_budget_breaking_count(&name, &bl)?;
                 let nullable = bs.nullable || bl.nullable || bp.nullable;
@@ -5131,6 +5239,8 @@ impl Binder<'_> {
                         empty_zero: name == "ascii",
                         a: Box::new(inner),
                     },
+                    // Fixed(I32) row: a codepoint is INTEGER on DuckDB (the
+                    // length family, by contrast, is BIGINT).
                     ty,
                     nullable,
                 })
@@ -5636,7 +5746,7 @@ impl Binder<'_> {
         let Some(subject) = self.expr_or_null(x)? else {
             return Ok(null_of(Ty::I64));
         };
-        if !matches!(subject.ty, Ty::I64 | Ty::F64) {
+        if !subject.ty.is_int() && subject.ty != Ty::F64 {
             return Err(PrepareError::Bind(format!(
                 "no function matches {name}({}, digits)",
                 subject.ty.name()
@@ -5646,7 +5756,7 @@ impl Binder<'_> {
         let Some(digits) = self.expr_or_null(n)? else {
             return Ok(null_of(ty));
         };
-        if digits.ty != Ty::I64 {
+        if !digits.ty.is_int() {
             return Err(PrepareError::Bind(format!(
                 "no function matches {name}({}, {})",
                 ty.name(),
@@ -5674,7 +5784,7 @@ impl Binder<'_> {
         };
         let inner = match inner.ty {
             Ty::F64 => inner,
-            Ty::I64 => promote_f64(inner),
+            t if t.is_int() => promote_f64(inner),
             other => {
                 return Err(PrepareError::Bind(format!(
                     "no function matches {name}({})",
@@ -5708,7 +5818,7 @@ impl Binder<'_> {
         let promote = |e: SExpr| -> Result<SExpr, PrepareError> {
             match e.ty {
                 Ty::F64 => Ok(e),
-                Ty::I64 => Ok(promote_f64(e)),
+                t if t.is_int() => Ok(promote_f64(e)),
                 other => Err(PrepareError::Bind(format!(
                     "no function matches {name}({})",
                     other.name()
@@ -5794,7 +5904,7 @@ impl Binder<'_> {
         let num = |e: &SqlExpr| -> Result<Option<SExpr>, PrepareError> {
             match self.expr_or_null(e)? {
                 None => Ok(None),
-                Some(x) if x.ty == Ty::I64 => Ok(Some(x)),
+                Some(x) if x.ty.is_int() => Ok(Some(x)),
                 Some(x) => Err(PrepareError::Bind(format!(
                     "substr position/length must be INTEGER, got {}",
                     x.ty.name()
@@ -5857,7 +5967,7 @@ fn lit_i64(n: i64) -> SExpr {
 fn bool_context(e: SExpr, what: &str) -> Result<SExpr, PrepareError> {
     match e.ty {
         Ty::I1 => Ok(e),
-        Ty::I64 | Ty::F64 => {
+        t if t.is_int() || t == Ty::F64 => {
             if matches!(e.kind, SKind::NullOf) {
                 return Ok(null_of(Ty::I1));
             }
@@ -5927,47 +6037,6 @@ fn refuse_budget_breaking_count(name: &str, count: &SExpr) -> Result<(), Prepare
         }
     }
     Ok(())
-}
-
-/// The spellings DuckDB types INTEGER-or-narrower: an int32-range number
-/// literal, possibly under unary +/-, parens, or +,-,*,% of the same
-/// (INTEGER op INTEGER stays INTEGER there; `/` yields DOUBLE and is
-/// excluded) — or an EXPLICIT cast to INTEGER or narrower, the documented
-/// spelling for a column count (`CAST(l AS INTEGER)`). A bare column or a
-/// cast to BIGINT is never INTEGER-shaped — that is exactly the TASK-82
-/// boundary DuckDB's binder draws.
-fn int32_literal_shaped(e: &SqlExpr) -> bool {
-    // BIGINT's aliases (INT8, LONG, HUGEINT...) are deliberately absent.
-    const NARROW_INTS: &[&str] = &[
-        "INTEGER", "INT", "INT4", "SIGNED", "SMALLINT", "INT2", "SHORT",
-        "TINYINT", "INT1", "UINTEGER", "USMALLINT", "UTINYINT",
-    ];
-    match e {
-        SqlExpr::Value(v) => match &v.value {
-            SqlValue::Number(text, _) => text.parse::<i64>().is_ok_and(|n| {
-                i32::try_from(n).is_ok()
-            }),
-            _ => false,
-        },
-        SqlExpr::Nested(inner) => int32_literal_shaped(inner),
-        SqlExpr::UnaryOp {
-            op: UnaryOperator::Minus | UnaryOperator::Plus,
-            expr,
-        } => int32_literal_shaped(expr),
-        SqlExpr::BinaryOp {
-            left,
-            op:
-                BinaryOperator::Plus
-                | BinaryOperator::Minus
-                | BinaryOperator::Multiply
-                | BinaryOperator::Modulo,
-            right,
-        } => int32_literal_shaped(left) && int32_literal_shaped(right),
-        SqlExpr::Cast { data_type, .. } => {
-            NARROW_INTS.contains(&data_type.to_string().to_uppercase().as_str())
-        }
-        _ => false,
-    }
 }
 
 /// Checked-int32 evaluation of a LITERAL-shaped integer subtree, mirroring
@@ -6090,9 +6159,15 @@ fn null_context_ty(op: &BinaryOperator, other: Ty) -> Ty {
 fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareError> {
     let name = dt.to_string().to_uppercase();
     if name.contains("INT") {
-        // BIGINT/INTEGER/SMALLINT/TINYINT/HUGEINT/U* all collapse to i64
-        // (range divergence for HUGEINT noted in the module docs).
-        Ok(Ty::I64)
+        // DuckDB's named widths. INT8 is BIGINT (eight BYTES); HUGEINT and
+        // the unsigned family still collapse to i64 (range divergence noted
+        // in the module docs; i128 is m-8 phase 4).
+        Ok(match name.as_str() {
+            "TINYINT" | "INT1" => Ty::I8,
+            "SMALLINT" | "INT2" | "SHORT" => Ty::I16,
+            "INTEGER" | "INT" | "INT4" | "SIGNED" => Ty::I32,
+            _ => Ty::I64,
+        })
     } else if name.starts_with("DOUBLE")
         || name.starts_with("FLOAT")
         || name.starts_with("REAL")
@@ -6126,7 +6201,12 @@ fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
                 let i = text
                     .parse::<i64>()
                     .map_err(|_| PrepareError::Bind(format!("bad integer literal '{text}'")))?;
-                (Lit::I64(i), Ty::I64)
+                // DuckDB types a bare integer literal by magnitude: INTEGER
+                // when it fits (never narrower), else BIGINT. `-2147483648`
+                // parses as -(2147483648) and stays BIGINT there too — that
+                // falls out of unary minus binding, not of this rule.
+                let ty = if i32::try_from(i).is_ok() { Ty::I32 } else { Ty::I64 };
+                (Lit::I64(i), ty)
             }
         }
         SqlValue::SingleQuotedString(s) => (Lit::Str(s.clone()), Ty::Str),
@@ -6171,12 +6251,12 @@ fn cmp_sym(pred: CmpPred) -> &'static str {
     }
 }
 
-/// DuckDB numeric promotion for the v0 type lattice. The result-type RULE
-/// is the operator's `sig::OPS` row — `/` is Fixed(F64), everything else
-/// widens (int op int stays int, anything touching f64 is f64); this
-/// function is the rule's consumer and owns the promotion nodes.
+/// DuckDB numeric promotion. The result-type RULE is the operator's
+/// `sig::OPS` row — `/` is Fixed(F64), everything else Widens across the
+/// integer width lattice (m-8 phase 2); this function is the rule's
+/// consumer and owns the promotion nodes.
 fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty), PrepareError> {
-    let numeric = |e: &SExpr| matches!(e.ty, Ty::I64 | Ty::F64);
+    let numeric = |e: &SExpr| e.ty.is_int() || e.ty == Ty::F64;
     if !numeric(&a) || !numeric(&b) {
         return Err(PrepareError::Bind(format!(
             "arithmetic needs numeric operands, got {} and {}",
@@ -6190,7 +6270,7 @@ fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty)
             if a.ty == Ty::F64 || b.ty == Ty::F64 {
                 Ty::F64
             } else {
-                Ty::I64
+                int_width_promote(&a, &b)
             }
         }
         Ret::Arg(_) | Ret::Unify => unreachable!("not an operator rule"),
@@ -6200,6 +6280,64 @@ fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty)
         Ok((promote_f64(a), promote_f64(b), Ty::F64))
     } else {
         Ok((a, b, ty))
+    }
+}
+
+fn width_rank(t: Ty) -> u8 {
+    match t {
+        Ty::I8 => 0,
+        Ty::I16 => 1,
+        Ty::I32 => 2,
+        _ => 3,
+    }
+}
+
+/// DuckDB's integer-width promotion (measured 2026-08-13): the wider side
+/// wins — except a constant literal whose VALUE fits the narrower operand's
+/// range adopts that width (c8 + 127 is TINYINT, c8 + 128 is INTEGER,
+/// skipping SMALLINT). Family constructs (CASE/COALESCE/greatest) apply the
+/// wider-side rule only; their literal-vs-narrower corner is reachable only
+/// through explicit ::TINYINT/::SMALLINT casts mixed into multi-arm
+/// unification.
+fn int_width_promote(a: &SExpr, b: &SExpr) -> Ty {
+    if a.ty == b.ty {
+        return a.ty;
+    }
+    let (wide, narrow) = if width_rank(a.ty) >= width_rank(b.ty) {
+        (a, b.ty)
+    } else {
+        (b, a.ty)
+    };
+    if let (SKind::Lit(Lit::I64(v)), Some((lo, hi))) = (&wide.kind, narrow.int_range()) {
+        if (lo..=hi).contains(v) {
+            return narrow;
+        }
+    }
+    wide.ty
+}
+
+/// The wider of two integer widths — family unification's promotion rule.
+fn wider_int(a: Ty, b: Ty) -> Ty {
+    if width_rank(a) >= width_rank(b) {
+        a
+    } else {
+        b
+    }
+}
+
+/// Whether `v` is representable at width `t` (always true for lane types).
+fn fits_width(t: Ty, v: i64) -> bool {
+    t.int_range().map_or(true, |(lo, hi)| (lo..=hi).contains(&v))
+}
+
+/// DuckDB's name for an integer width, for refusal messages.
+fn duck_int_name(t: Ty) -> &'static str {
+    match t {
+        Ty::I8 => "TINYINT",
+        Ty::I16 => "SMALLINT",
+        Ty::I32 => "INTEGER",
+        Ty::F64 => "DOUBLE",
+        _ => "BIGINT",
     }
 }
 

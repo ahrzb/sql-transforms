@@ -785,6 +785,10 @@ impl Parser {
         let name = self.ident("a type")?;
         match name.as_str() {
             "i1" => Ok(Ty::I1),
+            // Narrow widths appear in column HEADERS only (SSA stays lane).
+            "i8" => Ok(Ty::I8),
+            "i16" => Ok(Ty::I16),
+            "i32" => Ok(Ty::I32),
             "i64" => Ok(Ty::I64),
             "f64" => Ok(Ty::F64),
             "str" => Ok(Ty::Str),

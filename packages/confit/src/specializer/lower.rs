@@ -99,15 +99,16 @@ pub fn lower(
     }
     if many && joins.len() == 1 {
         fb.lower_many_loop(exprs, filter_pred, &out_cols)?;
+        // Static layouts are payload shapes: narrow widths erase to the lane.
         let flat = |cols: &[Col], val_cols: &[u32]| -> Vec<Ty> {
             val_cols
                 .iter()
                 .flat_map(|&c| {
                     let ct = cols[c as usize].ty;
                     if ct.nullable {
-                        vec![Ty::I1, ct.ty]
+                        vec![Ty::I1, ct.ty.lane()]
                     } else {
-                        vec![ct.ty]
+                        vec![ct.ty.lane()]
                     }
                 })
                 .collect()
@@ -118,7 +119,7 @@ pub fn lower(
             }
         } else {
             StaticTy::MultiMap {
-                keys: joins[0].keys.iter().map(|k| k.ty).collect(),
+                keys: joins[0].keys.iter().map(|k| k.ty.lane()).collect(),
                 values: flat(&catalog[joins[0].table].cols, &joins[0].val_cols),
             }
         }];
@@ -214,9 +215,9 @@ pub fn lower(
                 .zip(&spec.key_indf)
                 .flat_map(|(k, &indf)| {
                     if indf {
-                        vec![Ty::I1, k.ty]
+                        vec![Ty::I1, k.ty.lane()]
                     } else {
-                        vec![k.ty]
+                        vec![k.ty.lane()]
                     }
                 })
                 .collect(),
@@ -228,9 +229,9 @@ pub fn lower(
                 .flat_map(|&c| {
                     let ct = catalog[spec.table].cols[c as usize].ty;
                     if ct.nullable {
-                        vec![Ty::I1, ct.ty]
+                        vec![Ty::I1, ct.ty.lane()]
                     } else {
-                        vec![ct.ty]
+                        vec![ct.ty.lane()]
                     }
                 })
                 .collect(),
@@ -450,7 +451,7 @@ impl<'a> FB<'a> {
     fn default_of(&mut self, ty: Ty) -> Value {
         self.const_lit(match ty {
             Ty::I1 => Lit::I1(false),
-            Ty::I64 => Lit::I64(0),
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Lit::I64(0),
             Ty::F64 => Lit::F64(0.0),
             Ty::Str => Lit::Str(String::new()),
         })
@@ -486,7 +487,8 @@ impl<'a> FB<'a> {
             if lane.flag.is_some() {
                 tys.push(Ty::I1);
             }
-            tys.push(*ty);
+            // Block params are SSA values: narrow widths erase to the lane.
+            tys.push(ty.lane());
         }
         tys
     }
@@ -600,7 +602,7 @@ impl<'a> FB<'a> {
                 live.push((la, a.ty));
                 let lb = self.emit(b, live)?;
                 let (la, _) = live.pop().expect("pushed above");
-                let ir_op = match (op, e.ty) {
+                let ir_op = match (op, e.ty.lane()) {
                     (ArithOp::Add, Ty::I64) => BinOp::Iadd,
                     (ArithOp::Sub, Ty::I64) => BinOp::Isub,
                     (ArithOp::Mul, Ty::I64) => BinOp::Imul,
@@ -629,7 +631,7 @@ impl<'a> FB<'a> {
                 // Integer arithmetic traps (overflow, % edge cases): mask
                 // nullable payloads so garbage under a false flag can never
                 // fire the trap. Float ops are total — no masking needed.
-                let (va, vb) = if e.ty == Ty::I64 {
+                let (va, vb) = if e.ty.lane() == Ty::I64 {
                     (self.masked(la, Ty::I64), self.masked(lb, Ty::I64))
                 } else {
                     (la.val, lb.val)
@@ -648,7 +650,7 @@ impl<'a> FB<'a> {
                 let dst = self.fresh();
                 self.inst(Inst::Cmp {
                     pred: *pred,
-                    ty: a.ty,
+                    ty: a.ty.lane(),
                     dst,
                     a: la.val,
                     b: lb.val,
@@ -738,7 +740,7 @@ impl<'a> FB<'a> {
             SKind::Abs(a) => {
                 let l = self.emit(a, live)?;
                 // iabs traps on i64::MIN; mask the nullable payload.
-                let (op, av) = if e.ty == Ty::I64 {
+                let (op, av) = if e.ty.lane() == Ty::I64 {
                     (NumOp1::Iabs, self.masked(l, Ty::I64))
                 } else {
                     (NumOp1::Fabs, l.val)
@@ -1253,9 +1255,9 @@ impl<'a> FB<'a> {
             .flat_map(|&c| {
                 let ct = cols[c as usize].ty;
                 if ct.nullable {
-                    vec![Ty::I1, ct.ty]
+                    vec![Ty::I1, ct.ty.lane()]
                 } else {
-                    vec![ct.ty]
+                    vec![ct.ty.lane()]
                 }
             })
             .collect()
@@ -1969,7 +1971,7 @@ impl<'a> FB<'a> {
         default: Option<&SExpr>,
         live: &mut Live,
     ) -> Result<Lane, PrepareError> {
-        let res_ty = e.ty;
+        let res_ty = e.ty.lane();
         let res_nullable = e.nullable;
 
         let mut join_tys = Self::live_types(live);
@@ -2060,8 +2062,11 @@ impl<'a> FB<'a> {
         trying: bool,
         live: &mut Live,
     ) -> Result<Lane, PrepareError> {
-        let from = inner.ty;
-        let to = e.ty;
+        // Casts convert LANES; a width-only int cast is the (a == b) no-op
+        // below, its range semantics living in the frontend (guards) and at
+        // the emit boundary until phase-3 traps.
+        let from = inner.ty.lane();
+        let to = e.ty.lane();
         let l = self.emit(inner, live)?;
 
         // Branchless conversions first.

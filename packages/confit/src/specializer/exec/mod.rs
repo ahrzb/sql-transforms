@@ -77,7 +77,8 @@ impl ColData {
                 valid: Vec::new(),
                 data: Vec::new(),
             },
-            Ty::I64 => ColData::I64 {
+            // Narrow widths live in headers only; payloads are the i64 lane.
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ColData::I64 {
                 valid: Vec::new(),
                 data: Vec::new(),
             },

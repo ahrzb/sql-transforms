@@ -121,7 +121,7 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         }
         Inst::Cmp { pred, ty, a, b, .. } => {
             let prefix = match ty {
-                Ty::I64 => "icmp",
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => "icmp",
                 Ty::F64 => "fcmp",
                 Ty::Str => "scmp",
                 // Unreachable in verified programs; printed anyway so a bad

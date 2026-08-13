@@ -823,7 +823,7 @@ extern "C" fn h_sload(p: *mut Cx, sid: i64, valid_out: *mut u8, cell_out: *mut C
     } else {
         match val.ty() {
             Ty::I1 => ScalarVal::I1(false),
-            Ty::I64 => ScalarVal::I64(0),
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
             Ty::F64 => ScalarVal::F64(0.0),
             Ty::Str => ScalarVal::Str(String::new()),
         }
@@ -902,7 +902,7 @@ extern "C" fn h_probe(
         None => {
             for (i, ty) in desc.val_tys.iter().enumerate() {
                 let cell: Cell = match ty {
-                    Ty::I1 | Ty::I64 => [0, 0],
+                    Ty::I1 | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => [0, 0],
                     Ty::F64 => [0f64.to_bits(), 0],
                     Ty::Str => {
                         let r = arena.push_str("");
@@ -962,7 +962,7 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
             a.push(if valid {
                 Some(match ty {
                     Ty::I1 => ScalarVal::I1(cell[0] != 0),
-                    Ty::I64 => ScalarVal::I64(cell[0] as i64),
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(cell[0] as i64),
                     Ty::F64 => ScalarVal::F64(f64::from_bits(cell[0])),
                     Ty::Str => ScalarVal::Str(
                         arena.get(span(cell[0] as i64, cell[1] as i64)).to_string(),
@@ -1039,7 +1039,7 @@ impl V {
 fn clif_ty(ty: Ty) -> types::Type {
     match ty {
         Ty::I1 => types::I8,
-        Ty::I64 => types::I64,
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => types::I64,
         Ty::F64 => types::F64,
         Ty::Str => unreachable!("str values are two i64s, expanded at use sites"),
     }
@@ -1420,7 +1420,7 @@ fn translate_inst(
                         } else {
                             match spec.params[i / 2] {
                                 Ty::I1 => b.ins().uextend(types::I64, v),
-                                Ty::I64 => v,
+                                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => v,
                                 Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
                                 Ty::Str => unreachable!("str payload is a two-i64 V::Str"),
                             }
@@ -1459,7 +1459,9 @@ fn translate_inst(
                             let x = b.ins().stack_load(types::I64, slot_vals, base);
                             V::S(b.ins().ireduce(types::I8, x))
                         }
-                        Ty::I64 => V::S(b.ins().stack_load(types::I64, slot_vals, base)),
+                        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                            V::S(b.ins().stack_load(types::I64, slot_vals, base))
+                        }
                         Ty::F64 => {
                             let x = b.ins().stack_load(types::I64, slot_vals, base);
                             V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))
@@ -1547,7 +1549,7 @@ fn translate_inst(
             b: rhs,
         } => {
             let v = match ty {
-                Ty::I64 => {
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
                     let cc = match pred {
                         CmpPred::Eq => IntCC::Equal,
                         CmpPred::Ne => IntCC::NotEqual,
@@ -1912,7 +1914,9 @@ fn translate_inst(
             let cv = icon(b, *col as i64);
             let v = match ty {
                 Ty::I1 => V::S(call_h(b, module, "h_load_i1", &[cxp, cv]).unwrap()),
-                Ty::I64 => V::S(call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap()),
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                    V::S(call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap())
+                }
                 Ty::F64 => V::S(call_h(b, module, "h_load_f64", &[cxp, cv]).unwrap()),
                 Ty::Str => {
                     let lp = b.ins().stack_addr(types::I64, slot_out, 0);
@@ -1936,7 +1940,7 @@ fn translate_inst(
                     let zero = b.ins().iconst(types::I8, 0);
                     V::S(b.ins().select(f, raw, zero))
                 }
-                Ty::I64 => {
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
                     let raw = call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap();
                     let zero = icon(b, 0);
                     V::S(b.ins().select(f, raw, zero))
@@ -1987,7 +1991,7 @@ fn translate_inst(
                         let ty = key_tys[i];
                         let as64 = match ty {
                             Ty::I1 => b.ins().uextend(types::I64, v),
-                            Ty::I64 => v,
+                            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => v,
                             Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
                             Ty::Str => unreachable!(),
                         };
@@ -2018,7 +2022,9 @@ fn translate_inst(
                         let x = b.ins().stack_load(types::I64, slot_vals, base);
                         V::S(b.ins().ireduce(types::I8, x))
                     }
-                    Ty::I64 => V::S(b.ins().stack_load(types::I64, slot_vals, base)),
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                        V::S(b.ins().stack_load(types::I64, slot_vals, base))
+                    }
                     Ty::F64 => {
                         let x = b.ins().stack_load(types::I64, slot_vals, base);
                         V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))
@@ -2098,7 +2104,7 @@ fn store(
             let v = vals[&val.0].s();
             call_h(b, module, "h_store_i1", &[cxp, cv, valid, v]);
         }
-        Ty::I64 => {
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
             let v = vals[&val.0].s();
             call_h(b, module, "h_store_i64", &[cxp, cv, valid, v]);
         }
@@ -2143,7 +2149,7 @@ fn sload(
             let x = b.ins().stack_load(types::I64, slot_vals, 0);
             V::S(b.ins().ireduce(types::I8, x))
         }
-        Ty::I64 => V::S(b.ins().stack_load(types::I64, slot_vals, 0)),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => V::S(b.ins().stack_load(types::I64, slot_vals, 0)),
         Ty::F64 => {
             let x = b.ins().stack_load(types::I64, slot_vals, 0);
             V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))

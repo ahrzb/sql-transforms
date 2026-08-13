@@ -173,7 +173,7 @@ fn collect_defs(
 /// program is malformed (bad indices fall back so verification continues and
 /// the real error is reported at the site check).
 fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
-    let in_col = |c: u32| p.in_cols.get(c as usize).map(|c| c.ty.ty);
+    let in_col = |c: u32| p.in_cols.get(c as usize).map(|c| c.ty.ty.lane());
     let scalar_ty = |id: u32| match p.statics.get(id as usize) {
         Some(StaticTy::Scalar(ct)) => ct.ty,
         _ => Ty::I1,
@@ -522,7 +522,9 @@ fn check_block(
                     &in_scope,
                     def_types,
                     *val,
-                    c.ty.ty,
+                    // Narrow out columns store their lane; width is a
+                    // header/emit concern.
+                    c.ty.ty.lane(),
                     "stored value",
                     bi,
                     i,
@@ -552,7 +554,7 @@ fn check_block(
                         &in_scope,
                         def_types,
                         *val,
-                        c.ty.ty,
+                        c.ty.ty.lane(),
                         "stored value",
                         bi,
                         i,

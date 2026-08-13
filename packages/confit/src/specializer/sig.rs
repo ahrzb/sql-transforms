@@ -137,10 +137,8 @@ pub const SIGS: &[(&[&str], Sig)] = &[
     ),
     (&["jaccard"], whole(STR2, Ret::Fixed(Ty::F64))),
     (&["replace", "translate"], whole(STR3, Ret::Fixed(Ty::Str))),
-    // audit 2026-08-13: DuckDB types unicode/ord/ascii INTEGER, all three;
-    // the single-int-lane I64 here diverges on width (the m-8 phase-2
-    // catalogue owns the fix; ascii -> I32 is a task-79 change).
-    (&["unicode", "ord", "ascii"], whole(STR1, Ret::Fixed(Ty::I64))),
+    // m-8 phase 2: a codepoint is INTEGER on DuckDB, all three names.
+    (&["unicode", "ord", "ascii"], whole(STR1, Ret::Fixed(Ty::I32))),
     (&["bit_length"], whole(STR1, Ret::Fixed(Ty::I64))),
     (&["strip_accents"], whole(STR1, Ret::Fixed(Ty::Str))),
     (&["reverse"], whole(STR1, Ret::Fixed(Ty::Str))),
@@ -201,13 +199,13 @@ pub const CUSTOM_NAMES: &[&str] = &[
 ];
 
 /// The single place a bound argument type meets its declared [`ArgTy`].
-/// Today `Int` checks `== Ty::I64` exactly; the integer-width branch
-/// relaxes THIS function, nowhere else.
+/// m-8 phase 2: `Int` is any width of DuckDB's integer lattice — narrow
+/// widths upcast implicitly into a wider slot, never the reverse.
 pub fn arg_ok(want: ArgTy, got: Ty) -> bool {
     match want {
         ArgTy::Exact(t) => got == t,
-        ArgTy::Int => got == Ty::I64,
-        ArgTy::Num => matches!(got, Ty::I64 | Ty::F64),
+        ArgTy::Int => got.is_int(),
+        ArgTy::Num => got.is_int() || got == Ty::F64,
     }
 }
 
