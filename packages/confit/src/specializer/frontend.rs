@@ -2078,11 +2078,11 @@ impl Binder<'_> {
         Ok(cols.into_iter().map(|(_, n, l)| (n, l)).collect())
     }
 
-    /// Bind an expression that must have a definite type on its own — a bare
-    /// NULL literal here is unsupported (no context to type it).
+    /// Bind an expression that must have a definite type on its own. A bare
+    /// NULL with no adopting context takes DuckDB's SQLNULL default:
+    /// INTEGER (m-8 phase 2 — before widths there was no int32 to give it).
     fn expr(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {
-        self.expr_or_null(e)?
-            .ok_or_else(|| unsup("bare NULL literal without a typing context"))
+        Ok(self.expr_or_null(e)?.unwrap_or_else(|| null_of(Ty::I32)))
     }
 
     /// Like `expr`, but a bare NULL literal comes back as `None` for the
@@ -5013,19 +5013,13 @@ impl Binder<'_> {
                     ));
                 };
                 match (self.expr_or_null(a)?, self.expr_or_null(b)?) {
-                    // TASK-86: DuckDB types the bare NULL FIRST (INTEGER)
-                    // and nullif's output takes the first argument's type,
-                    // so its answer is int32 where adopting b's type here
-                    // answered double — same value, schemas apart. Refuse;
-                    // CAST(NULL AS DOUBLE) is the spelling that agrees.
-                    (None, Some(_)) => Err(unsup(
-                        "bare NULL as nullif's first argument (DuckDB types \
-                         it INTEGER and the output takes that type; spell \
-                         it CAST(NULL AS <type>))",
-                    )),
+                    // TASK-86 face closed by m-8 phase 2: DuckDB types the
+                    // bare NULL first argument INTEGER, nullif's output
+                    // takes the first argument's type, and NULL = b is
+                    // never TRUE — the whole call IS an int32 NULL.
+                    (None, _) => Ok(null_of(Ty::I32)),
                     // a = NULL is never TRUE, so nullif(a, NULL) is a.
                     (Some(a), None) => Ok(a),
-                    (None, None) => Err(unsup("NULLIF(NULL, NULL)")),
                     (Some(a), Some(b)) => {
                         // Comparison at the promoted type; result keeps a's
                         // ORIGINAL type (measured: nullif(1, 1.0) -> INTEGER).

@@ -978,7 +978,8 @@ _BnRow = create_model("_BnRow", k=(int, ...), s=(str, ...))
 @pytest.mark.parametrize(
     "sql",
     [
-        "SELECT nullif(NULL, 84.754e0) AS o FROM __THIS__",
+        # The nullif face closed with m-8 phase 2 (int32 is real; parity
+        # pinned in test_integer_widths.py). These two are the BLOB face.
         "SELECT repeat(NULL, 3) AS o FROM __THIS__",
         "SELECT ltrim(repeat(NULL, k)) AS o FROM __THIS__",
     ],
