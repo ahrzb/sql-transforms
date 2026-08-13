@@ -223,8 +223,17 @@ def _resolve(
     depth = 0
 
     def foreign_call(call: Function) -> Node:
-        """``x_fit``/``x_transform``: the stem resolves, the suffix says half."""
+        """``x_fit``/``x_transform``: the stem resolves, the suffix says half.
+        A bare ``x`` resolving to a projection is the ONE sugar —
+        ``x_transform(x_fit(...) OVER (), ...)``, the global fit scope."""
         name = call.function_name
+        whole = scope.get(name)
+        if isinstance(whole, _projection_type()):
+            from sql_transform.model import _leaf  # noqa: PLC0415
+
+            captured[name] = whole
+            out = _leaf.bare_call(name, whole, call)
+            return _aliased(out, call.alias) if call.alias else out
         stem, _, half = name.rpartition("_")
         member = scope.get(stem) if half in ("fit", "transform") else None
         if isinstance(member, _projection_type()):
@@ -393,6 +402,15 @@ def _resolve(
                     )
                     alias = str(v.fields.get("alias") or "")
                     return _aliased(out, alias) if alias else out
+                # `p(x) OVER w` — the deleted sugar (fit-transform-split
+                # spec: no oracle reading). Refused here by name, not left
+                # for DuckDB to reject as an unknown aggregate at fit.
+                if isinstance(scope.get(name), _projection_type()):
+                    raise TransformError(
+                        f"{name} is a projection, and a fit scope is spelled "
+                        f"on the fit half: "
+                        f"{name}_transform({name}_fit(...) OVER (...), ...)"
+                    )
             if (
                 isinstance(v, Function)
                 and not v.is_operator
