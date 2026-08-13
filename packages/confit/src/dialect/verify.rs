@@ -49,6 +49,7 @@ fn check_expr(e: &Expr, input: &[(String, DTy)]) -> Result<(), DialectError> {
     // Every carried type must re-derive — this is the whole check for
     // interior nodes, since they carry nothing.
     e.ty()?;
+    check_lexemes_and_types(e)?;
     each_col(e, &mut |ordinal, name, ty| {
         let Some((bound_name, bound_ty)) = input.get(ordinal) else {
             return Err(DialectError::Internal(format!(
@@ -91,6 +92,98 @@ fn each_col(
             }
             if let Some(el) = else_ {
                 each_col(el, f)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Printers splice numeric/bool LEXEMES into SQL verbatim (string lexemes
+/// are escaped, so they are safe as data). A lexeme that is not a plain
+/// number is therefore arbitrary SQL smuggled through a "verified" plan —
+/// refuse it here, not in every printer. Carried types must also be
+/// well-formed (Dec bounds, struct field names) or no text form can
+/// round-trip them.
+fn check_lexemes_and_types(e: &Expr) -> Result<(), DialectError> {
+    fn numeric_lexeme(s: &str) -> bool {
+        // digits [. digits] [e|E [+|-] digits] — the exact shape the
+        // frontend's number_type admits. No sign: negation is Un{Neg}.
+        let mut rest = s;
+        let digits = |r: &mut &str| {
+            let n = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+            *r = &r[n..];
+            n > 0
+        };
+        if !digits(&mut rest) {
+            return false;
+        }
+        if let Some(r) = rest.strip_prefix('.') {
+            rest = r;
+            if !digits(&mut rest) {
+                return false;
+            }
+        }
+        if let Some(r) = rest.strip_prefix(['e', 'E']) {
+            rest = r.strip_prefix(['+', '-']).unwrap_or(r);
+            if !digits(&mut rest) {
+                return false;
+            }
+        }
+        rest.is_empty()
+    }
+    match e {
+        Expr::Lit { lexeme, ty } => {
+            let ok = match ty {
+                DTy::Bool => lexeme == "true" || lexeme == "false",
+                DTy::Str => true, // escaped at print time
+                t if t.is_numeric() => numeric_lexeme(lexeme),
+                // Other types print as quoted-and-escaped strings + cast.
+                _ => true,
+            };
+            if !ok {
+                return Err(DialectError::Internal(format!(
+                    "lexeme {lexeme:?} is not a bare {} literal",
+                    ty.name()
+                )));
+            }
+            if !ty.is_well_formed() {
+                return Err(DialectError::Internal(format!(
+                    "malformed literal type {}",
+                    ty.name()
+                )));
+            }
+            Ok(())
+        }
+        Expr::Col { ty, .. } => {
+            if !ty.is_well_formed() {
+                return Err(DialectError::Internal(format!(
+                    "malformed column type {}",
+                    ty.name()
+                )));
+            }
+            Ok(())
+        }
+        Expr::Cast { e, target, .. } => {
+            if !target.is_well_formed() {
+                return Err(DialectError::Internal(format!(
+                    "malformed CAST target {}",
+                    target.name()
+                )));
+            }
+            check_lexemes_and_types(e)
+        }
+        Expr::Bin { l, r, .. } | Expr::IsDistinct { l, r, .. } => {
+            check_lexemes_and_types(l)?;
+            check_lexemes_and_types(r)
+        }
+        Expr::Un { e, .. } | Expr::IsNull { e, .. } => check_lexemes_and_types(e),
+        Expr::Case { whens, else_ } => {
+            for (c, v) in whens {
+                check_lexemes_and_types(c)?;
+                check_lexemes_and_types(v)?;
+            }
+            if let Some(el) = else_ {
+                check_lexemes_and_types(el)?;
             }
             Ok(())
         }

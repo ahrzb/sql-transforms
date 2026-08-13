@@ -243,12 +243,66 @@ def probe_strings_operators(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+# --- 5. Division, cast, and NaN edges (2026-08-13 adversarial review) --------
+
+
+def probe_division_cast_edges(con: duckdb.DuckDBPyConnection) -> None:
+    pins = [
+        {
+            "claim": "/ is IEEE on zero divisors: 1/0 = inf, 0/0 = NaN, 1/-0.0 = -inf (Spark ANSI and BigQuery's bare / both ERROR here - forced in the printers)",
+            "query": "SELECT 1/0, 0/0\nSELECT 1.0::DOUBLE / (-0.0)::DOUBLE",
+        },
+        {
+            "claim": "// and % return NULL on a zero divisor (Spark ANSI and BigQuery DIV/MOD error - guarded in the printers)",
+            "query": "SELECT 1//0, 1%0",
+        },
+        {
+            "claim": "INT_MIN % -1 is an overflow trap at every width (Spark and BigQuery MOD return 0 - forced back into an error in the printers)",
+            "query": "SELECT (-9223372036854775807 - 1) % (-1)\nSELECT (-2147483648)::INTEGER % (-1)::INTEGER",
+        },
+        {
+            "claim": "CAST DOUBLE -> INTEGER rounds half-even, never truncates (Spark truncates - forced via rint)",
+            "query": "SELECT CAST(2.7::DOUBLE AS INTEGER), CAST(2.5::DOUBLE AS INTEGER), CAST(1.5::DOUBLE AS INTEGER), CAST((-2.5)::DOUBLE AS INTEGER)",
+        },
+        {
+            "claim": "CAST DECIMAL -> INTEGER rounds half-AWAY-from-zero (Spark truncates - forced via round)",
+            "query": "SELECT CAST(2.5::DECIMAL(3,1) AS INTEGER), CAST((-2.5)::DECIMAL(3,1) AS INTEGER), CAST(2.4::DECIMAL(3,1) AS INTEGER)",
+        },
+        {
+            "claim": "CAST '1.5' (string) -> INTEGER parses and ROUNDS; Spark treats it as malformed (string-source casts refuse in the printers)",
+            "query": "SELECT CAST('1.5' AS INTEGER), TRY_CAST('1.5' AS INTEGER)",
+        },
+        {
+            "claim": "Floats order TOTALLY: NaN equals NaN and exceeds everything (BigQuery comparisons are IEEE - forced with IS_NAN cases)",
+            "query": "SELECT 'NaN'::DOUBLE = 'NaN'::DOUBLE, 5.0 < 'NaN'::DOUBLE, 'NaN'::DOUBLE < 5.0, 'NaN'::DOUBLE IS NOT DISTINCT FROM 'NaN'::DOUBLE",
+        },
+        {
+            "claim": "Decimal literal typing counts a bare-zero integer part as one digit: typeof(0.5) = DECIMAL(2,1)",
+            "query": "SELECT typeof(0.5), typeof(1.50), typeof(10.5)",
+        },
+        {
+            "claim": "FLOAT / FLOAT computes at FLOAT, not DOUBLE (the plan refuses f32 division rather than derive a wrong width)",
+            "query": "SELECT typeof(1.5::FLOAT / 2.0::FLOAT)",
+        },
+    ]
+    write(
+        "division-cast-edges.json",
+        {
+            "area": "division-cast-nan-edges",
+            "duckdb_version": VER,
+            "setup": "none  -- multi-statement pins as elsewhere; measured 2026-08-13 while verifying the adversarial review's findings",
+            "pins": [observe(con, p) for p in pins],
+        },
+    )
+
+
 def main() -> None:
     con = duckdb.connect()
     probe_arrow_export(con)
     probe_sort_window_defaults(con)
     probe_aggregate_tiers(con)
     probe_strings_operators(con)
+    probe_division_cast_edges(con)
 
 
 if __name__ == "__main__":

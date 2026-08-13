@@ -99,6 +99,26 @@ PINS = [
         "query": "SELECT typeof(sum(x)) FROM VALUES (1L) t(x)\nSELECT sum(x) FROM VALUES (9223372036854775807L),(1L) t(x)",
     },
     {
+        "claim": "ANSI: zero divisors ERROR for /, div and % (DuckDB: / is IEEE inf/NaN, // and % give NULL) - the printer guards every division",
+        "query": "SELECT 1/0\nSELECT 1 div 0\nSELECT 1 % 0",
+    },
+    {
+        "claim": "INT_MIN % -1 returns 0 (DuckDB traps) - the printer forces the error through the checked div spelling",
+        "query": "SELECT CAST(-9223372036854775808 AS BIGINT) % CAST(-1 AS BIGINT)",
+    },
+    {
+        "claim": "CAST DOUBLE -> INT truncates toward zero (DuckDB rounds half-even); rint is Spark's half-even rounding - the printer's forcing",
+        "query": "SELECT CAST(CAST(2.7 AS DOUBLE) AS INT), CAST(CAST(2.5 AS DOUBLE) AS INT)\nSELECT rint(CAST(2.7 AS DOUBLE)), rint(CAST(2.5 AS DOUBLE)), rint(CAST(1.5 AS DOUBLE))",
+    },
+    {
+        "claim": "round(dec, 0) is HALF_UP = half-away-from-zero, matching DuckDB's DECIMAL -> int rule - the printer's forcing",
+        "query": "SELECT round(CAST(2.5 AS DECIMAL(3,1)), 0), round(CAST(-2.5 AS DECIMAL(3,1)), 0)",
+    },
+    {
+        "claim": "Spark's NaN semantics are ALREADY DuckDB's total order: NaN = NaN is true and NaN exceeds everything - no forcing needed on comparisons",
+        "query": "SELECT double('NaN') = double('NaN'), 5.0D < double('NaN'), double('NaN') < 5.0D, double('NaN') <=> double('NaN')",
+    },
+    {
         "claim": "TIMESTAMP_NTZ is reachable from SQL by cast — the landing zone for DuckDB's wall-clock TIMESTAMP; plain TIMESTAMP is the session-tz instant type (landing zone for TIMESTAMPTZ under pinned UTC)",
         "query": "SELECT typeof(CAST('2026-08-13 11:30:00' AS TIMESTAMP_NTZ)), typeof(TIMESTAMP '2026-08-13 11:30:00')",
     },

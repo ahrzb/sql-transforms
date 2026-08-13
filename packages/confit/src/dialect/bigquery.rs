@@ -20,14 +20,30 @@
 //!   Narrow-int columns may still be selected, compared, filtered — no trap
 //!   exists on those paths. Guard expressions via `ERROR()` are the named
 //!   phase-4 upgrade path.
-//! * **`/` forces FLOAT64.** DuckDB `/` is double division whatever the
-//!   operands (pinned); BigQuery `NUMERIC / NUMERIC` stays NUMERIC, so
-//!   decimal operands are cast to FLOAT64 explicitly. INT64/INT64 already
-//!   yields FLOAT64 in BigQuery.
+//! * **`/` prints as `IEEE_DIVIDE`** over FLOAT64-cast operands: DuckDB `/`
+//!   is IEEE double division INCLUDING zero divisors (1/0 = inf, 0/0 =
+//!   NaN — review-confirmed), and BigQuery's bare `/` errors there while
+//!   IEEE_DIVIDE reproduces the IEEE answers exactly.
 //! * **`//` → `DIV()`, `%` → `MOD()`,** both INT64-only: BigQuery's DIV and
 //!   MOD truncate toward zero with sign-of-dividend remainders — the same
 //!   observed values as DuckDB's pinned ((-7)//2, (-7)%2, 7//(-2), 7%(-2))
-//!   = (-3, -1, -3, 1).
+//!   = (-3, -1, -3, 1). Zero divisors return NULL in DuckDB and error in
+//!   BigQuery — guarded with a CASE; `INT64_MIN % -1` traps in DuckDB and
+//!   is forced back into an error through DIV, which overflows there.
+//! * **Float comparisons are NaN-forced.** DuckDB orders floats totally
+//!   (NaN equals NaN and exceeds everything); BigQuery comparisons are
+//!   IEEE. Every comparison and IS [NOT] DISTINCT FROM over FLOAT64
+//!   prints a CASE on IS_NAN reproducing the total order.
+//! * **CAST pairs are an allow-list.** DECIMAL→INT64 rounds half-away on
+//!   both engines (documented) and prints bare; FLOAT64→INT64 rounds
+//!   half-even in DuckDB but half-away in BigQuery and REFUSES until a
+//!   forcing lands; string sources refuse (parse domains differ).
+//! * **Known unforced divergence, phase 4:** FLOAT64 `+ - *` that overflow
+//!   a finite operand pair to non-finite return inf in DuckDB but error in
+//!   BigQuery. No cheap post-hoc guard exists (the operation itself
+//!   errors); magnitude pre-guards via `ERROR()` are the named upgrade.
+//!   Until then this divergence exists only beyond ±1.8e308 intermediate
+//!   results and the module documents rather than hides it.
 //! * **Decimal literals print typed** (`NUMERIC '1.5'` / `BIGNUMERIC`):
 //!   a bare decimal-pointed literal is FLOAT64 in BigQuery but DECIMAL(p,s)
 //!   in DuckDB — printing the lexeme bare would silently change its type.
@@ -66,7 +82,7 @@ fn bq_name(ty: &DTy) -> Result<String, DialectError> {
         DTy::Dec(p, s) => {
             // NUMERIC: scale <= 9, integer digits <= 29. BIGNUMERIC:
             // scale <= 38, integer digits <= 38 — every DuckDB DECIMAL fits.
-            if *s <= 9 && p - s <= 29 {
+            if *s <= 9 && p.saturating_sub(*s) <= 29 {
                 format!("NUMERIC({p},{s})")
             } else {
                 format!("BIGNUMERIC({p},{s})")
@@ -150,35 +166,40 @@ impl ExprPrinter for BigQuery {
                         format!("({ls} {sym} {rs})")
                     }
                     BinOp::FDiv => {
-                        // Pinned DuckDB: / is double division, whatever the
-                        // operands. INT64/INT64 is already FLOAT64 in
-                        // BigQuery; decimals must be forced.
+                        // Pinned DuckDB: / is IEEE double division whatever
+                        // the operands, zero divisors included. IEEE_DIVIDE
+                        // reproduces that; bare / would error on zero.
                         let force = |t: &DTy, s: String| -> String {
-                            if matches!(t, DTy::Dec(..)) {
-                                format!("CAST({s} AS FLOAT64)")
-                            } else {
+                            if matches!(t, DTy::F64) {
                                 s
+                            } else {
+                                format!("CAST({s} AS FLOAT64)")
                             }
                         };
-                        format!("({} / {})", force(&lt, ls), force(&rt, rs))
+                        format!("IEEE_DIVIDE({}, {})", force(&lt, ls), force(&rt, rs))
                     }
                     BinOp::IDiv => {
                         require_i64_computation("//", &node_ty)?;
-                        format!("DIV({ls}, {rs})")
+                        // DuckDB: zero divisor -> NULL; BigQuery DIV errors.
+                        format!(
+                            "(CASE WHEN {rs} = 0 THEN CAST(NULL AS INT64) ELSE DIV({ls}, {rs}) END)"
+                        )
                     }
                     BinOp::Rem => {
                         require_i64_computation("%", &node_ty)?;
-                        format!("MOD({ls}, {rs})")
+                        // Zero divisor -> NULL (DuckDB); INT64_MIN % -1
+                        // traps in DuckDB but MOD returns 0 - DIV overflows
+                        // there and forces the matching error class.
+                        format!(
+                            "(CASE WHEN {rs} = 0 THEN CAST(NULL AS INT64)                              WHEN {ls} = (-9223372036854775807 - 1) AND {rs} = -1 THEN DIV({ls}, {rs})                              ELSE MOD({ls}, {rs}) END)"
+                        )
                     }
                     BinOp::Concat => format!("({ls} || {rs})"),
                     BinOp::And => format!("({ls} AND {rs})"),
                     BinOp::Or => format!("({ls} OR {rs})"),
-                    BinOp::Eq => format!("({ls} = {rs})"),
-                    BinOp::Neq => format!("({ls} <> {rs})"),
-                    BinOp::Lt => format!("({ls} < {rs})"),
-                    BinOp::Lte => format!("({ls} <= {rs})"),
-                    BinOp::Gt => format!("({ls} > {rs})"),
-                    BinOp::Gte => format!("({ls} >= {rs})"),
+                    BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Lte | BinOp::Gt | BinOp::Gte => {
+                        nan_forced_compare(*op, &lt, &rt, &ls, &rs)
+                    }
                 }
             }
             Expr::Un { op, e } => match op {
@@ -194,12 +215,11 @@ impl ExprPrinter for BigQuery {
                 }
                 UnOp::Not => format!("(NOT {})", self.expr(e, input)?),
             },
-            Expr::Cast { strict, e, target } => format!(
-                "{}({} AS {})",
-                if *strict { "CAST" } else { "SAFE_CAST" },
-                self.expr(e, input)?,
-                bq_name(target)?
-            ),
+            Expr::Cast { strict, e, target } => {
+                let src = e.ty()?;
+                let inner = self.expr(e, input)?;
+                bq_cast(*strict, &src, target, inner)?
+            }
             Expr::Case { whens, else_ } => {
                 let mut s = String::from("(CASE");
                 for (c, v) in whens {
@@ -220,12 +240,28 @@ impl ExprPrinter for BigQuery {
                 self.expr(e, input)?,
                 if *negated { "NOT " } else { "" }
             ),
-            Expr::IsDistinct { negated, l, r } => format!(
-                "({} IS {}DISTINCT FROM {})",
-                self.expr(l, input)?,
-                if *negated { "NOT " } else { "" },
-                self.expr(r, input)?
-            ),
+            Expr::IsDistinct { negated, l, r } => {
+                let (lt, rt) = (l.ty()?, r.ty()?);
+                let (ls, rs) = (self.expr(l, input)?, self.expr(r, input)?);
+                if involves_float(&lt, &rt) {
+                    // DuckDB's total order: NaN IS NOT DISTINCT FROM NaN is
+                    // true; BigQuery's IS DISTINCT uses IEEE equality.
+                    let both_null = format!("({ls} IS NULL AND {rs} IS NULL)");
+                    let both_present_equal = format!(
+                        "({ls} IS NOT NULL AND {rs} IS NOT NULL AND                          (CASE WHEN IS_NAN({ls}) THEN IS_NAN({rs})                          WHEN IS_NAN({rs}) THEN FALSE ELSE {ls} = {rs} END))"
+                    );
+                    if *negated {
+                        format!("({both_null} OR {both_present_equal})")
+                    } else {
+                        format!("(NOT ({both_null} OR {both_present_equal}))")
+                    }
+                } else {
+                    format!(
+                        "({ls} IS {}DISTINCT FROM {rs})",
+                        if *negated { "NOT " } else { "" }
+                    )
+                }
+            }
         })
     }
 }
@@ -243,4 +279,85 @@ fn escape_str(s: &str) -> String {
         }
     }
     out
+}
+
+fn involves_float(l: &DTy, r: &DTy) -> bool {
+    matches!(l, DTy::F64) || matches!(r, DTy::F64)
+}
+
+/// DuckDB orders floats TOTALLY: NaN equals NaN and exceeds every value.
+/// BigQuery comparisons are IEEE (everything with NaN is false except <>).
+/// Force the total order with IS_NAN cases; NULL stays NULL.
+fn nan_forced_compare(op: BinOp, lt: &DTy, rt: &DTy, ls: &str, rs: &str) -> String {
+    let sym = match op {
+        BinOp::Eq => "=",
+        BinOp::Neq => "<>",
+        BinOp::Lt => "<",
+        BinOp::Lte => "<=",
+        BinOp::Gt => ">",
+        BinOp::Gte => ">=",
+        _ => unreachable!("comparison ops only"),
+    };
+    if !involves_float(lt, rt) {
+        return format!("({ls} {sym} {rs})");
+    }
+    // Truth table for l NaN / r NaN under DuckDB's total order.
+    let (l_nan, r_nan) = match op {
+        BinOp::Eq => ("IS_NAN({r})", "FALSE"),
+        BinOp::Neq => ("NOT IS_NAN({r})", "TRUE"),
+        BinOp::Lt => ("FALSE", "TRUE"),
+        BinOp::Lte => ("IS_NAN({r})", "TRUE"),
+        BinOp::Gt => ("NOT IS_NAN({r})", "FALSE"),
+        BinOp::Gte => ("TRUE", "FALSE"),
+        _ => unreachable!(),
+    };
+    let l_nan = l_nan.replace("{r}", rs);
+    let r_nan = r_nan.replace("{r}", rs);
+    format!(
+        "(CASE WHEN {ls} IS NULL OR {rs} IS NULL THEN CAST(NULL AS BOOL)          WHEN IS_NAN({ls}) THEN {l_nan}          WHEN IS_NAN({rs}) THEN {r_nan}          ELSE {ls} {sym} {rs} END)"
+    )
+}
+
+/// CAST pairs the BigQuery printer has bought. DECIMAL→INT64 rounds
+/// half-away on both engines (documented) and prints bare; FLOAT64→int
+/// rounds half-even in DuckDB but half-away in BigQuery — REFUSED until a
+/// forcing lands; string sources refuse (parse domains differ, and
+/// SAFE_CAST/TRY_CAST NULL domains differ with them).
+fn bq_cast(strict: bool, src: &DTy, target: &DTy, inner: String) -> Result<String, DialectError> {
+    let kw = if strict { "CAST" } else { "SAFE_CAST" };
+    let t = bq_name(target)?;
+    let refuse = || {
+        Err(unsup(format!(
+            "bigquery: CAST {} -> {} (conversion domain not pinned)",
+            src.name(),
+            target.name()
+        )))
+    };
+    if src == target {
+        return Ok(format!("{kw}({inner} AS {t})"));
+    }
+    // Widening a signed int is value-exact everywhere; that source class
+    // is safe into every bought numeric/string landing zone.
+    let signed_int = matches!(src, DTy::I8 | DTy::I16 | DTy::I32 | DTy::I64);
+    Ok(match target {
+        DTy::I64 => match src {
+            _ if signed_int => format!("{kw}({inner} AS {t})"),
+            DTy::Dec(..) => format!("{kw}({inner} AS {t})"),
+            _ => return refuse(),
+        },
+        DTy::F64 => match src {
+            _ if signed_int => format!("{kw}({inner} AS {t})"),
+            DTy::Dec(..) => format!("{kw}({inner} AS {t})"),
+            _ => return refuse(),
+        },
+        DTy::Dec(..) => match src {
+            _ if signed_int => format!("{kw}({inner} AS {t})"),
+            _ => return refuse(),
+        },
+        DTy::Str => match src {
+            _ if signed_int => format!("{kw}({inner} AS {t})"),
+            _ => return refuse(),
+        },
+        _ => return refuse(),
+    })
 }

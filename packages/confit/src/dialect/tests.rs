@@ -376,7 +376,9 @@ fn literal_typing_follows_the_lattice() {
     let tys: Vec<DTy> = p.schema(&c).unwrap().into_iter().map(|(_, t)| t).collect();
     assert_eq!(
         tys,
-        vec![DTy::I32, DTy::I64, DTy::Dec(3, 2), DTy::Dec(1, 1), DTy::F64]
+        // 0.1 is DECIMAL(2,1): a bare zero integer part still counts one
+        // digit (review-confirmed measurement; typeof(0.5) = DECIMAL(2,1)).
+        vec![DTy::I32, DTy::I64, DTy::Dec(3, 2), DTy::Dec(2, 1), DTy::F64]
     );
 }
 
@@ -396,12 +398,15 @@ fn bigquery_prints_the_forced_spellings() {
     let sql = "SELECT CAST(a AS BIGINT) // 2 AS q, 1.5 / c AS d, b || 'x\\y' AS s FROM t WHERE b IS NOT DISTINCT FROM 'o''k'";
     let p = super::duckdb::parse_sql(sql, &c).unwrap();
     let printed = super::bigquery::print_sql(&p, &c).unwrap();
-    assert_eq!(
-        printed,
-        "SELECT DIV(CAST(`a` AS INT64), 2) AS `q`, \
-         (CAST(NUMERIC '1.5' AS FLOAT64) / `c`) AS `d`, \
-         (`b` || 'x\\\\y') AS `s` \
-         FROM `t` WHERE (`b` IS NOT DISTINCT FROM 'o\\'k')"
+    // DIV inside the zero-divisor guard; / as IEEE_DIVIDE; backslash
+    // string escaping; IS NOT DISTINCT FROM on non-floats prints direct.
+    assert!(
+        printed.contains("DIV(CAST(`a` AS INT64), 2)")
+            && printed.contains("WHEN 2 = 0 THEN CAST(NULL AS INT64)")
+            && printed.contains("IEEE_DIVIDE(CAST(NUMERIC '1.5' AS FLOAT64), `c`)")
+            && printed.contains("(`b` || 'x\\\\y')")
+            && printed.contains("(`b` IS NOT DISTINCT FROM 'o\\'k')"),
+        "{printed}"
     );
 }
 
@@ -411,8 +416,8 @@ fn bigquery_type_landing_zones() {
     let c = cat();
     for (sql, needle) in [
         (
-            "SELECT TRY_CAST(b AS DOUBLE) AS x FROM t",
-            "SAFE_CAST(`b` AS FLOAT64)",
+            "SELECT TRY_CAST(a AS DOUBLE) AS x FROM t",
+            "SAFE_CAST(`a` AS FLOAT64)",
         ),
         (
             "SELECT CAST(a AS DECIMAL(18,3)) AS x FROM t",
@@ -440,24 +445,50 @@ fn bigquery_type_landing_zones() {
 #[test]
 fn spark_prints_the_forced_spellings() {
     let c = cat();
-    // Narrow ints are native in Spark: i32 arithmetic prints plainly, and
-    // // re-narrows div's BIGINT through a checked CAST (trap class forced).
-    let sql = "SELECT a + 1 AS s, a // 2 AS q, 1.5 / c AS d, TRY_CAST(b AS BIGINT) AS w FROM t WHERE b IS NOT DISTINCT FROM 'o''k'";
-    let p = super::duckdb::parse_sql(sql, &c).unwrap();
-    let printed = super::spark::print_sql(&p, &c).unwrap();
+    // Narrow ints are native in Spark: i32 arithmetic prints plainly.
+    let p = super::duckdb::parse_sql("SELECT a + 1 AS s FROM t", &c).unwrap();
     assert_eq!(
-        printed,
-        "SELECT (`a` + 1) AS `s`, \
-         CAST((`a` div 2) AS INT) AS `q`, \
-         (CAST(1.5 AS DOUBLE) / `c`) AS `d`, \
-         try_cast(`b` AS BIGINT) AS `w` \
-         FROM `t` WHERE (`b` IS NOT DISTINCT FROM 'o\\'k')"
+        super::spark::print_sql(&p, &c).unwrap(),
+        "SELECT (`a` + 1) AS `s` FROM `t`"
     );
-    // i64 // stays plain div; unbought landing zones refuse by name.
-    let p = super::duckdb::parse_sql("SELECT CAST(a AS BIGINT) // 2 AS q FROM t", &c).unwrap();
+    // // re-narrows div's BIGINT through a checked CAST inside the
+    // zero-divisor guard (DuckDB: NULL on zero; trap class forced).
+    let p = super::duckdb::parse_sql("SELECT a // 2 AS q FROM t", &c).unwrap();
+    let printed = super::spark::print_sql(&p, &c).unwrap();
+    assert!(
+        printed.contains("WHEN 2 = 0 THEN CAST(NULL AS INT)")
+            && printed.contains("CAST((`a` div 2) AS INT)"),
+        "{printed}"
+    );
+    // / carries the IEEE zero-divisor CASE and casts decimal operands.
+    let p = super::duckdb::parse_sql("SELECT 1.5 / c AS d FROM t", &c).unwrap();
+    let printed = super::spark::print_sql(&p, &c).unwrap();
+    assert!(
+        printed.contains("CAST(1.5 AS DOUBLE) / `c`")
+            && printed.contains("CAST('NaN' AS DOUBLE)")
+            && printed.contains("CAST('-Infinity' AS DOUBLE)"),
+        "{printed}"
+    );
+    // % guards zero and the INT_MIN % -1 trap.
+    let p = super::duckdb::parse_sql("SELECT CAST(a AS BIGINT) % 3 AS r FROM t", &c).unwrap();
+    let printed = super::spark::print_sql(&p, &c).unwrap();
+    assert!(
+        printed.contains("WHEN 3 = 0 THEN CAST(NULL AS BIGINT)")
+            && printed.contains("(-9223372036854775807 - 1)"),
+        "{printed}"
+    );
+    // Cast forcing: DOUBLE->int via rint (half-even, DuckDB's rule);
+    // string sources refuse by name.
+    let p = super::duckdb::parse_sql("SELECT CAST(c AS INTEGER) AS i FROM t", &c).unwrap();
     assert!(super::spark::print_sql(&p, &c)
         .unwrap()
-        .contains("(CAST(`a` AS BIGINT) div 2) AS `q`"));
+        .contains("CAST(rint(`c`) AS INT)"));
+    let p = super::duckdb::parse_sql("SELECT TRY_CAST(b AS INTEGER) AS i FROM t", &c).unwrap();
+    assert!(matches!(
+        super::spark::print_sql(&p, &c),
+        Err(DialectError::Unsupported(ref m)) if m.contains("conversion domain")
+    ));
+    // Unbought landing zones refuse by name.
     let p = super::duckdb::parse_sql("SELECT CAST(b AS UUID) AS u FROM t", &c).unwrap();
     assert!(matches!(
         super::spark::print_sql(&p, &c),

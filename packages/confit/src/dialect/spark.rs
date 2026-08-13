@@ -19,9 +19,19 @@
 //! * `//` → `div`, which always computes at BIGINT in Spark (pinned:
 //!   typeof(1 div 2) = bigint), so a narrow-width result re-narrows
 //!   through a checked CAST: DuckDB's `int32min // -1` trap becomes
-//!   Spark's ANSI CAST_OVERFLOW — same error class, forced. `%` keeps the
-//!   operand width and cannot overflow; both engines pin the same
-//!   sign-of-dividend values.
+//!   Spark's ANSI CAST_OVERFLOW — same error class, forced.
+//! * **Zero divisors are forced** (review-confirmed divergences): DuckDB's
+//!   `/` is IEEE (inf/-inf/NaN) while Spark ANSI throws DIVIDE_BY_ZERO,
+//!   and DuckDB's `//` and `%` return NULL while Spark throws — every
+//!   division prints inside a CASE reproducing DuckDB's answer, including
+//!   the sign of a -0.0 divisor (read off CAST(r AS STRING)). `INT_MIN %
+//!   -1` traps in DuckDB but returns 0 in Spark — forced back into an
+//!   error through the checked div spelling.
+//! * **CAST pairs are an allow-list.** DuckDB rounds DOUBLE→int half-even
+//!   (forced via Spark's `rint`) and DECIMAL→int half-away-from-zero
+//!   (forced via `round`); Spark truncates both bare. String sources and
+//!   float→string round-trips have measured domain/format differences and
+//!   refuse by name.
 //! * `<=>` exists, but IS [NOT] DISTINCT FROM is accepted too (pinned) —
 //!   printed in the portable spelling.
 //! * try_cast / named-error CAST match DuckDB's strict|try split (pinned
@@ -109,25 +119,54 @@ impl ExprPrinter for Spark {
                     BinOp::Sub => format!("({ls} - {rs})"),
                     BinOp::Mul => format!("({ls} * {rs})"),
                     BinOp::FDiv => {
-                        let force = |t: &DTy, s: String| -> String {
+                        let force = |t: &DTy, s: &str| -> String {
                             if matches!(t, DTy::Dec(..)) {
                                 format!("CAST({s} AS DOUBLE)")
                             } else {
-                                s
+                                s.to_string()
                             }
                         };
-                        format!("({} / {})", force(&lt, ls), force(&rt, rs))
+                        // DuckDB / is IEEE on zero divisors (1/0 = inf,
+                        // 0/0 = NaN, 1/-0.0 = -inf); Spark ANSI throws.
+                        // Reproduce DuckDB's answer, reading the divisor's
+                        // zero sign off its string form.
+                        format!(
+                            "(CASE WHEN {ls} IS NULL OR {rs} IS NULL THEN CAST(NULL AS DOUBLE)                              WHEN NOT ({rs} = 0) THEN {} / {}                              WHEN {ls} = 0 OR isnan({ls}) THEN CAST('NaN' AS DOUBLE)                              WHEN ({ls} > 0) = (CAST({rs} AS STRING) LIKE '-%') THEN CAST('-Infinity' AS DOUBLE)                              ELSE CAST('Infinity' AS DOUBLE) END)",
+                            force(&lt, &ls),
+                            force(&rt, &rs)
+                        )
                     }
                     BinOp::IDiv => {
                         // div computes at BIGINT (pinned); re-narrow through
                         // a checked CAST so the width's trap class holds.
-                        if node_ty == DTy::I64 {
+                        // DuckDB returns NULL on a zero divisor; Spark ANSI
+                        // throws - guard it.
+                        let ty_name = spark_name(&node_ty)?;
+                        let divided = if node_ty == DTy::I64 {
                             format!("({ls} div {rs})")
                         } else {
-                            format!("CAST(({ls} div {rs}) AS {})", spark_name(&node_ty)?)
-                        }
+                            format!("CAST(({ls} div {rs}) AS {ty_name})")
+                        };
+                        format!(
+                            "(CASE WHEN {rs} = 0 THEN CAST(NULL AS {ty_name}) ELSE {divided} END)"
+                        )
                     }
-                    BinOp::Rem => format!("({ls} % {rs})"),
+                    BinOp::Rem => {
+                        // DuckDB: zero divisor -> NULL (Spark ANSI throws);
+                        // INT_MIN % -1 -> overflow trap (Spark returns 0).
+                        // The trap branch reuses the checked div spelling,
+                        // which errors at exactly those operands.
+                        let ty_name = spark_name(&node_ty)?;
+                        let min_lit = int_min_literal(&node_ty)?;
+                        let trap = if node_ty == DTy::I64 {
+                            format!("({ls} div {rs})")
+                        } else {
+                            format!("CAST(({ls} div {rs}) AS {ty_name})")
+                        };
+                        format!(
+                            "(CASE WHEN {rs} = 0 THEN CAST(NULL AS {ty_name})                              WHEN {ls} = {min_lit} AND {rs} = -1 THEN {trap}                              ELSE ({ls} % {rs}) END)"
+                        )
+                    }
                     BinOp::Concat => format!("({ls} || {rs})"),
                     BinOp::And => format!("({ls} AND {rs})"),
                     BinOp::Or => format!("({ls} OR {rs})"),
@@ -143,12 +182,11 @@ impl ExprPrinter for Spark {
                 UnOp::Neg => format!("(- {})", self.expr(e, input)?),
                 UnOp::Not => format!("(NOT {})", self.expr(e, input)?),
             },
-            Expr::Cast { strict, e, target } => format!(
-                "{}({} AS {})",
-                if *strict { "CAST" } else { "try_cast" },
-                self.expr(e, input)?,
-                spark_name(target)?
-            ),
+            Expr::Cast { strict, e, target } => {
+                let src = e.ty()?;
+                let inner = self.expr(e, input)?;
+                spark_cast(*strict, &src, target, inner)?
+            }
             Expr::Case { whens, else_ } => {
                 let mut s = String::from("(CASE");
                 for (c, v) in whens {
@@ -193,4 +231,71 @@ fn escape_str(s: &str) -> String {
         }
     }
     out
+}
+
+/// The literal spelling of an integer type's minimum, for the INT_MIN % -1
+/// trap guard. i64's minimum has no direct literal (the positive half
+/// overflows), so it is spelled arithmetically.
+fn int_min_literal(ty: &DTy) -> Result<String, DialectError> {
+    Ok(match ty {
+        DTy::I8 => "-128".into(),
+        DTy::I16 => "-32768".into(),
+        DTy::I32 => "-2147483648".into(),
+        DTy::I64 => "(-9223372036854775807 - 1)".into(),
+        t => {
+            return Err(unsup(format!(
+                "spark: % computing at {} (no pinned min)",
+                t.name()
+            )));
+        }
+    })
+}
+
+/// CAST pairs the Spark printer has bought, with DuckDB's rounding forced
+/// (review-confirmed: DuckDB rounds DOUBLE→int half-even and DECIMAL→int
+/// half-away-from-zero; Spark truncates both). Unbought pairs refuse by
+/// name — string-source parse domains and float→string formats measurably
+/// differ between the engines.
+fn spark_cast(
+    strict: bool,
+    src: &DTy,
+    target: &DTy,
+    inner: String,
+) -> Result<String, DialectError> {
+    let kw = if strict { "CAST" } else { "try_cast" };
+    let t = spark_name(target)?;
+    let refuse = || {
+        Err(unsup(format!(
+            "spark: CAST {} -> {} (conversion domain not pinned)",
+            src.name(),
+            target.name()
+        )))
+    };
+    if src == target {
+        return Ok(format!("{kw}({inner} AS {t})"));
+    }
+    Ok(match target {
+        DTy::I8 | DTy::I16 | DTy::I32 | DTy::I64 => match src {
+            s if s.is_integer() && int_signed(s) => format!("{kw}({inner} AS {t})"),
+            // rint: round-half-even on DOUBLE, then the ANSI range check.
+            DTy::F64 => format!("{kw}(rint({inner}) AS {t})"),
+            // round(dec, 0): HALF_UP = away from zero, DuckDB's rule.
+            DTy::Dec(..) => format!("{kw}(round({inner}, 0) AS {t})"),
+            _ => return refuse(),
+        },
+        DTy::F64 => match src {
+            s if s.is_integer() && int_signed(s) => format!("{kw}({inner} AS {t})"),
+            DTy::Dec(..) => format!("{kw}({inner} AS {t})"),
+            _ => return refuse(),
+        },
+        DTy::Str => match src {
+            s if s.is_integer() && int_signed(s) => format!("{kw}({inner} AS {t})"),
+            _ => return refuse(),
+        },
+        _ => return refuse(),
+    })
+}
+
+fn int_signed(t: &DTy) -> bool {
+    matches!(t, DTy::I8 | DTy::I16 | DTy::I32 | DTy::I64)
 }

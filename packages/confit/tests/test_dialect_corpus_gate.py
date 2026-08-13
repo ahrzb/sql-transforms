@@ -64,8 +64,11 @@ def catalog_of(con: duckdb.DuckDBPyConnection):
 def run(con: duckdb.DuckDBPyConnection, sql: str):
     cur = con.execute(sql)
     names = [d[0] for d in cur.description]
-    rows = cur.fetchall()
-    return names, sorted(rows, key=repr)
+    # repr keeps int/float/bool/Decimal apart and makes NaN self-equal —
+    # plain == would count 1 == 1.0 == True as a match (review-confirmed
+    # blind spot: a roundtrip changing result TYPES must FAIL).
+    rows = sorted(tuple(repr(v) for v in row) for row in cur.fetchall())
+    return names, rows
 
 
 def test_dialect_corpus_gate():

@@ -13,6 +13,20 @@ pub(crate) trait ExprPrinter {
     fn expr(&self, e: &Expr, input: &[(String, DTy)]) -> Result<String, DialectError>;
 }
 
+/// Any name-addressed pass-through of a schema (a Filter's SELECT list)
+/// silently rebinds duplicates to the FIRST occurrence downstream — refuse
+/// duplicate names wherever a printed list re-reads columns by name.
+pub(crate) fn refuse_dup_names(schema: &[(String, DTy)]) -> Result<(), DialectError> {
+    for (i, (n, _)) in schema.iter().enumerate() {
+        if schema[..i].iter().any(|(m, _)| m.eq_ignore_ascii_case(n)) {
+            return Err(unsup(format!(
+                "printing a pass-through over duplicate upstream names: {n}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A column reference prints as the input schema's bound spelling — but a
 /// name-addressed subquery boundary cannot express duplicates, so those
 /// refuse identically everywhere.
@@ -93,6 +107,7 @@ pub(crate) fn query<P: ExprPrinter>(
         Rel::Filter { input, pred } => {
             if let Rel::Scan { table } = input.as_ref() {
                 let in_schema = input.schema(cat)?;
+                refuse_dup_names(&in_schema)?;
                 let cols: Vec<String> = in_schema.iter().map(|(n, _)| p.quote_ident(n)).collect();
                 return Ok((
                     format!(
@@ -105,6 +120,7 @@ pub(crate) fn query<P: ExprPrinter>(
                 ));
             }
             let (inner, in_schema) = query(p, input, cat, depth + 1)?;
+            refuse_dup_names(&in_schema)?;
             let pred = p.expr(pred, &in_schema)?;
             let cols: Vec<String> = in_schema.iter().map(|(n, _)| p.quote_ident(n)).collect();
             Ok((
