@@ -169,7 +169,10 @@ fn lane_py(py: Python<'_>, st: &RunState, lane: usize, r: usize) -> PyResult<Py<
 /// A wide field's value at row `r`: None when the whole-call validity lane
 /// says NULL, else the k-element list (unnamed extern) or the dict keyed by
 /// the declared field names (named extern — DuckDB's struct value). Values
-/// may be None either way.
+/// may be None either way. `tys` are the children's declared types: a
+/// struct_pack child is an arbitrary expression, so it can carry a narrow
+/// width, and the width contract holds for children exactly as for scalar
+/// columns (see narrow_check) — on this boundary and the arrow one alike.
 pub(crate) fn wide_py(
     py: Python<'_>,
     st: &RunState,
@@ -177,6 +180,8 @@ pub(crate) fn wide_py(
     first: usize,
     width: usize,
     names: &[String],
+    tys: &[Ty],
+    field: &str,
     r: usize,
 ) -> PyResult<Py<PyAny>> {
     let OutCol::I1(vlane) = &st.out[valid] else {
@@ -187,7 +192,20 @@ pub(crate) fn wide_py(
         return Ok(py.None());
     }
     let items = (first..first + width)
-        .map(|l| lane_py(py, st, l, r))
+        .enumerate()
+        .map(|(j, l)| {
+            if let (OutCol::I64(v), Some(_)) = (&st.out[l], tys[j].int_range()) {
+                let (ok, x) = v[r];
+                if ok {
+                    let child = match names.get(j) {
+                        Some(n) => format!("{field}.{n}"),
+                        None => format!("{field}[{j}]"),
+                    };
+                    narrow_check(tys[j], &child, x)?;
+                }
+            }
+            lane_py(py, st, l, r)
+        })
         .collect::<PyResult<Vec<_>>>()?;
     if names.is_empty() {
         return Ok(pyo3::types::PyList::new(py, items)?.unbind().into_any());
@@ -1114,7 +1132,17 @@ impl Marshaller {
                     } => {
                         d.set_item(
                             k,
-                            wide_py(py, &self.state, *valid, *first, *width, names, r)?,
+                            wide_py(
+                                py,
+                                &self.state,
+                                *valid,
+                                *first,
+                                *width,
+                                names,
+                                &self.out_tys[*first..*first + *width],
+                                &k.to_string_lossy(),
+                                r,
+                            )?,
                         )?;
                     }
                 }
@@ -1772,9 +1800,13 @@ impl DuckDBInferFn {
                         names,
                         ..
                     } => {
+                        let tys: Vec<Ty> = out_cols[*first..*first + *width]
+                            .iter()
+                            .map(|c| c.ty.ty)
+                            .collect();
                         dict.set_item(
                             name,
-                            wide_py(py, &st, *valid, *first, *width, names, r)?,
+                            wide_py(py, &st, *valid, *first, *width, names, &tys, name, r)?,
                         )?;
                     }
                 }
