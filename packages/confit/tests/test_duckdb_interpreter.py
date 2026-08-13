@@ -15,9 +15,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
-_PY = {"int": int, "float": float, "str": str, "bool": bool}
 _ARROW = {
     "int": pa.int64(),
     "float": pa.float64(),
@@ -26,14 +24,11 @@ _ARROW = {
 }
 
 
-def _row_model(schema: dict[str, str]):
-    fields: dict[str, Any] = {}
-    for name, spec in schema.items():
-        if spec.endswith("?"):
-            fields[name] = (_PY[spec[:-1]] | None, None)
-        else:
-            fields[name] = (_PY[spec], ...)
-    return create_model("Row", **fields)
+def _row_schema(schema: dict[str, str]) -> pa.Schema:
+    return pa.schema(
+        pa.field(n, _ARROW[s.rstrip("?")], nullable=s.endswith("?"))
+        for n, s in schema.items()
+    )
 
 
 def static(schema: dict[str, str], rows: list[dict[str, Any]]) -> pa.Table:
@@ -44,6 +39,15 @@ def static(schema: dict[str, str], rows: list[dict[str, Any]]) -> pa.Table:
     return pa.Table.from_pylist(rows, schema=arrow)
 
 
+def _norm(spec: str, v: Any) -> Any:
+    # Pydantic used to coerce an int literal into a float field automatically;
+    # the arrow boundary refuses that coercion, so replicate it here at the
+    # test-data edge instead of rewriting every literal in the corpus.
+    if spec.rstrip("?") == "float" and isinstance(v, int) and not isinstance(v, bool):
+        return float(v)
+    return v
+
+
 def duck_check(
     sql: str,
     row_schema: dict[str, str],
@@ -51,10 +55,10 @@ def duck_check(
     statics: dict[str, pa.Table] | None = None,
 ) -> None:
     statics = statics or {}
-    model = _row_model(row_schema)
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": model}, static_tables=statics)
-    inputs = [model(**r) for r in row_rows]
-    got = [r.model_dump() for r in fn.infer({"__THIS__": inputs})]
+    schema = _row_schema(row_schema)
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables=statics)
+    inputs = [{k: _norm(row_schema[k], r.get(k)) for k in row_schema} for r in row_rows]
+    got = fn.infer_rows(inputs)
 
     con = duckdb.connect()
     # Materialize NATIVE tables: duckdb pushes constant filters into
@@ -139,7 +143,7 @@ def test_duplicate_build_keys_error():
     with pytest.raises(ValueError, match="duplicate map key"):
         DuckDBInferFn(
             "SELECT v FROM __THIS__ JOIN dim ON k = dim.id",
-            row_tables={"__THIS__": _row_model({"k": "int"})},
+            row_tables={"__THIS__": _row_schema({"k": "int"})},
             static_tables={"dim": dup},
         )
 
@@ -174,7 +178,7 @@ def test_unsupported_is_a_clean_value_error():
     with pytest.raises(ValueError, match="unsupported.*GROUP BY"):
         DuckDBInferFn(
             "SELECT a FROM __THIS__ GROUP BY a",
-            row_tables={"__THIS__": _row_model({"a": "int"})},
+            row_tables={"__THIS__": _row_schema({"a": "int"})},
             static_tables={},
         )
 
@@ -183,30 +187,39 @@ def test_bad_sql_is_a_build_error():
     with pytest.raises(ValueError, match="parse error"):
         DuckDBInferFn(
             "SELECT FROM",
-            row_tables={"__THIS__": _row_model({"a": "int"})},
+            row_tables={"__THIS__": _row_schema({"a": "int"})},
             static_tables={},
         )
 
 
 def test_unknown_infer_table_is_rejected():
-    model = _row_model({"a": "int"})
+    # MIGRATION-NOTE: infer(tables={...}) named-table dispatch is deleted;
+    # infer_rows(rows) takes no table-name argument at all, so the runtime
+    # "wrong table key" error this test used to pin can no longer be
+    # constructed. The remaining "unknown table" refusals are build-time
+    # (SQL referencing an undeclared table name) and stay covered by
+    # test_alias_shadows_original_name and
+    # test_unknown_driving_table_stays_clean_unsupported.
+    schema = _row_schema({"a": "int"})
     fn = DuckDBInferFn(
-        "SELECT a FROM __THIS__", row_tables={"__THIS__": model}, static_tables={}
+        "SELECT a FROM __THIS__", row_tables={"__THIS__": schema}, static_tables={}
     )
-    with pytest.raises(ValueError, match="unknown table"):
-        fn.infer({"wrong": [model(a=1)]})
+    assert fn.infer_rows([{"a": 1}]) == [{"a": 1}]
 
 
-def test_output_model_is_synthesized():
+def test_output_schema_is_synthesized():
+    # MIGRATION-NOTE: output_model= and the synthesized pydantic model are
+    # deleted; output_schema (a pa.Schema) is the replacement contract. The
+    # old assertions on pydantic field annotations have no equivalent, so
+    # this checks the same shape (names + types) through the new surface.
     fn = DuckDBInferFn(
         "SELECT a + 1 AS x, b AS y FROM __THIS__",
-        row_tables={"__THIS__": _row_model({"a": "int", "b": "float?"})},
+        row_tables={"__THIS__": _row_schema({"a": "int", "b": "float?"})},
         static_tables={},
     )
-    fields = fn.output_model.model_fields
-    assert list(fields) == ["x", "y"]
-    assert fields["x"].annotation is int
-    assert fields["y"].annotation == float | None
+    assert fn.output_schema.names == ["x", "y"]
+    assert fn.output_schema.field("x").type == pa.int64()
+    assert fn.output_schema.field("y").type == pa.float64()
 
 
 # ------------------------------------------------------------- stretch 4:
@@ -426,16 +439,16 @@ def test_static_only_query_is_a_constant_emitter():
             {"id": 3, "name": "three"},
         ],
     )
-    model = _row_model({"a": "int"})
+    schema = _row_schema({"a": "int"})
     fn = DuckDBInferFn(
         "SELECT name, id * 10 AS x FROM dim WHERE id <> 2 ORDER BY id DESC",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={"dim": dim},
     )
     # Input rows are irrelevant; the result is fixed at build time —
     # and constructs like ORDER BY work because DuckDB itself evaluated it.
-    for rows_in in ([], [model(a=1)], [model(a=1), model(a=2)]):
-        got = [r.model_dump() for r in fn.infer({"__THIS__": rows_in})]
+    for rows_in in ([], [{"a": 1}], [{"a": 1}, {"a": 2}]):
+        got = fn.infer_rows(rows_in)
         assert got == [
             {"name": "three", "x": 30},
             {"name": "one", "x": 10},
@@ -446,10 +459,10 @@ def test_static_only_aggregation_works_via_duckdb():
     dim = static({"v": "int"}, [{"v": 1}, {"v": 2}, {"v": 3}])
     fn = DuckDBInferFn(
         "SELECT sum(v) AS s FROM dim",
-        row_tables={"__THIS__": _row_model({"a": "int"})},
+        row_tables={"__THIS__": _row_schema({"a": "int"})},
         static_tables={"dim": dim},
     )
-    assert [r.model_dump() for r in fn.infer({"__THIS__": []})] == [{"s": 6}]
+    assert fn.infer_rows([]) == [{"s": 6}]
 
 
 def test_unknown_driving_table_stays_clean_unsupported():
@@ -457,7 +470,7 @@ def test_unknown_driving_table_stays_clean_unsupported():
     with pytest.raises(ValueError, match="driving relation"):
         DuckDBInferFn(
             "SELECT x FROM nope",
-            row_tables={"__THIS__": _row_model({"a": "int"})},
+            row_tables={"__THIS__": _row_schema({"a": "int"})},
             static_tables={},
         )
 
@@ -469,7 +482,7 @@ def test_unknown_driving_table_stays_clean_unsupported():
 def test_v0_queries_run_on_cranelift():
     fn = DuckDBInferFn(
         "SELECT k + 1 AS x, upper(s) AS u FROM __THIS__ JOIN dim ON k = dim.id",
-        row_tables={"__THIS__": _row_model({"k": "int", "s": "str"})},
+        row_tables={"__THIS__": _row_schema({"k": "int", "s": "str"})},
         static_tables={"dim": DIM},
     )
     assert fn.backend == "cranelift"
@@ -478,7 +491,7 @@ def test_v0_queries_run_on_cranelift():
 def test_static_only_backend_is_constant():
     fn = DuckDBInferFn(
         "SELECT sum(v) AS s FROM dim",
-        row_tables={"__THIS__": _row_model({"a": "int"})},
+        row_tables={"__THIS__": _row_schema({"a": "int"})},
         static_tables={"dim": static({"v": "int"}, [{"v": 1}, {"v": 2}])},
     )
     assert fn.backend == "constant"
@@ -486,51 +499,42 @@ def test_static_only_backend_is_constant():
 
 # --------------------------------------------------------- M-boundary:
 # the generated row marshaller. These pin the adversarial-review fixes
-# (2026-07-26): supplied output models keep full pydantic semantics, the
+# (2026-07-26): the default boundary is the generated marshaller, the
 # generic baseline accepts the same inputs, and reentrancy degrades to the
 # generic path instead of erroring.
 
 
-def test_supplied_output_model_keeps_validate_semantics():
-    from pydantic import BaseModel, field_validator
-
-    class Out(BaseModel):
-        x: float  # engine emits int; validate coerces
-        note: str = "default"  # not in the projection; validate fills
-
-        @field_validator("x")
-        @classmethod
-        def clamp(cls, v):
-            return min(v, 10.0)
-
+def test_default_boundary_is_the_marshaller():
+    # MIGRATION-NOTE: output_model= (and the pydantic-validate semantics it
+    # pinned — coercion, defaults, field_validator) is deleted along with the
+    # pydantic surface; dict-out has no per-field custom-validation hook.
+    # The generated marshaller is now simply the unconditional default
+    # boundary (see test_generic_boundary_accepts_dict_rows for the only
+    # other boundary, pinned by the SPECIALIZER_GENERIC_BOUNDARY env var).
     fn = DuckDBInferFn(
         "SELECT k + 1 AS x FROM __THIS__",
-        row_tables={"__THIS__": _row_model({"k": "int"})},
+        row_tables={"__THIS__": _row_schema({"k": "int"})},
         static_tables={},
-        output_model=Out,
     )
     assert fn.boundary == "marshaller"
-    (m,) = fn.infer_rows([{"k": 41}])
-    assert m.x == 10.0  # validator ran AND coerced to float
-    assert m.note == "default"  # default applied
-    assert m.model_dump() == {"x": 10.0, "note": "default"}
+    assert fn.infer_rows([{"k": 41}]) == [{"x": 42}]
 
 
 def test_generic_boundary_accepts_dict_rows(monkeypatch):
     monkeypatch.setenv("SPECIALIZER_GENERIC_BOUNDARY", "1")
     fn = DuckDBInferFn(
         "SELECT k * 2 AS d FROM __THIS__",
-        row_tables={"__THIS__": _row_model({"k": "int"})},
+        row_tables={"__THIS__": _row_schema({"k": "int"})},
         static_tables={},
     )
     assert fn.boundary == "generic"
-    assert fn.infer_rows([{"k": 21}])[0].d == 42
+    assert fn.infer_rows([{"k": 21}])[0]["d"] == 42
 
 
 def test_reentrant_infer_falls_back_instead_of_erroring():
     fn = DuckDBInferFn(
         "SELECT k * 2 AS d FROM __THIS__",
-        row_tables={"__THIS__": _row_model({"k": "int"})},
+        row_tables={"__THIS__": _row_schema({"k": "int"})},
         static_tables={},
     )
     inner: list = []
@@ -539,11 +543,11 @@ def test_reentrant_infer_falls_back_instead_of_erroring():
         @property
         def k(self):
             if not inner:
-                inner.append(fn.infer_rows([{"k": 5}])[0].d)
+                inner.append(fn.infer_rows([{"k": 5}])[0]["d"])
             return 7
 
     (m,) = fn.infer_rows([Row()])
-    assert m.d == 14
+    assert m["d"] == 14
     assert inner == [10]  # the nested call completed via the generic path
 
 
@@ -712,7 +716,7 @@ def test_in_strings_and_bools():
     with pytest.raises(ValueError, match="comparison on BOOLEAN"):
         DuckDBInferFn(
             "SELECT p IN (true) AS r FROM __THIS__",
-            row_tables={"__THIS__": _row_model({"p": "bool?"})},
+            row_tables={"__THIS__": _row_schema({"p": "bool?"})},
             static_tables={},
         )
 
@@ -910,10 +914,10 @@ def duck_check_ulp(sql, row_schema, row_rows, max_ulp=1):
     import math
     import struct
 
-    model = _row_model(row_schema)
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": model}, static_tables={})
-    inputs = [model(**r) for r in row_rows]
-    got = [r.model_dump() for r in fn.infer({"__THIS__": inputs})]
+    schema = _row_schema(row_schema)
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
+    inputs = [{k: _norm(row_schema[k], r.get(k)) for k in row_schema} for r in row_rows]
+    got = fn.infer_rows(inputs)
 
     con = duckdb.connect()
     con.register("__arrow_this", static(row_schema, row_rows))
@@ -1178,7 +1182,7 @@ def test_pow_operator_rejects_cleanly():
     with pytest.raises(ValueError, match="operator .*precedence differs"):
         DuckDBInferFn(
             "SELECT x ^ 2 AS r FROM __THIS__",
-            row_tables={"__THIS__": _row_model({"x": "float"})},
+            row_tables={"__THIS__": _row_schema({"x": "float"})},
             static_tables={},
         )
 
@@ -1453,7 +1457,7 @@ def test_alias_shadows_original_name():
     with pytest.raises(ValueError, match="unknown table"):
         DuckDBInferFn(
             "SELECT __THIS__.a FROM __THIS__ t",
-            row_tables={"__THIS__": _row_model({"a": "int"})},
+            row_tables={"__THIS__": _row_schema({"a": "int"})},
             static_tables={},
         )
     # t(y) column renaming serves since wave 5 (prefix rename, old name
@@ -1462,7 +1466,7 @@ def test_alias_shadows_original_name():
     with pytest.raises(ValueError, match="does not exist"):
         DuckDBInferFn(
             "SELECT a FROM __THIS__ t(y)",
-            row_tables={"__THIS__": _row_model({"a": "int"})},
+            row_tables={"__THIS__": _row_schema({"a": "int"})},
             static_tables={},
         )
 
@@ -1703,7 +1707,7 @@ def test_like_dangling_escape_is_data_dependent():
     with pytest.raises(ValueError, match="must not end with escape"):
         fn = DuckDBInferFn(
             "SELECT s LIKE 'a#' ESCAPE '#' AS d FROM __THIS__",
-            row_tables={"__THIS__": _row_model({"s": "str"})},
+            row_tables={"__THIS__": _row_schema({"s": "str"})},
             static_tables={},
         )
         fn.infer_rows([{"s": "ax"}])

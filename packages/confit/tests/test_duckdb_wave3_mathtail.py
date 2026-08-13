@@ -12,9 +12,9 @@ import re
 import struct
 
 import duckdb
+import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 from test_duckdb_interpreter import duck_check
 
 NAN = float("nan")
@@ -213,21 +213,26 @@ def test_computed_nan_bits_match_oracle():
     def bits(v: float) -> str:
         return format(struct.unpack("<Q", struct.pack("<d", v))[0], "016x")
 
-    row = create_model("Row", x=(float, ...), y=(float, ...))
+    schema = pa.schema(
+        [
+            pa.field("x", pa.float64(), nullable=False),
+            pa.field("y", pa.float64(), nullable=False),
+        ]
+    )
     fn = DuckDBInferFn(
         "SELECT fmod(x, y) AS f, x % y AS m FROM __THIS__",
-        row_tables={"__THIS__": row},
+        row_tables={"__THIS__": schema},
         static_tables={},
     )
-    (got,) = fn.infer({"__THIS__": [row(x=7.5, y=0.0)]})
-    assert bits(got.f) == "fff8000000000000"
+    (got,) = fn.infer_rows([{"x": 7.5, "y": 0.0}])
+    assert bits(got["f"]) == "fff8000000000000"
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (x DOUBLE, y DOUBLE)")
     con.execute("INSERT INTO __THIS__ VALUES (7.5, 0.0)")
     f, m = con.execute("SELECT fmod(x, y), x % y FROM __THIS__").fetchone()
     assert bits(f) == "fff8000000000000"
-    assert bits(got.m) == bits(m), f"{bits(got.m)} vs oracle {bits(m)}"
+    assert bits(got["m"]) == bits(m), f"{bits(got['m'])} vs oracle {bits(m)}"
 
 
 # ----------------------------------------------------------- nextafter:
