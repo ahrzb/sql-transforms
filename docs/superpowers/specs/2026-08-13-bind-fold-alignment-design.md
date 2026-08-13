@@ -42,9 +42,24 @@ Rules, in order:
 
 1. Build may execute a udf iff `getattr(u, "side_effects", False)` is
    False AND every SQL argument folds to a constant AND the call sits in
-   a fold context DuckDB folds (field access measured; probe `||`
-   operands / cmp / arith operands before coding — arith measured NOT
-   folding).
+   a fold context DuckDB folds. The context battery (measured 2026-08-13,
+   identical with and without a table in the query; "executes" = the
+   call counter moved during bind):
+
+   | context over a pure udf call | executes at bind | NULL result becomes |
+   |---|---|---|
+   | field access `.f1`, list index `[i]` | yes | SQLNULL → INTEGER |
+   | `\|\|` operand | yes | SQLNULL → INTEGER (the TASK-102 collapse) |
+   | `+`, `%`, unary `-` operand | yes | typed NULL of the declared type |
+   | function arg (`abs`) | yes | typed NULL |
+   | `=`, `<` operand | no | — |
+   | `CAST` operand | no | — |
+   | `coalesce` arg | no (lazy) | — |
+
+   (An earlier draft said arith does NOT fold — wrong: it executes but
+   keeps the typed NULL, so it is schema-invisible; only the SQLNULL
+   rows are campaign-visible. Executing in exactly the measured "yes"
+   contexts also keeps error PHASE parity for raising udfs.)
 2. The udf runs with the constant args as-is, `None` included (our
    protocol is special-style; `duckdb/mod.rs` passes `py.None()`
    through). Its real result is used: `None` → the SQLNULL channel
@@ -63,13 +78,17 @@ DuckDB ships; docs row it).
 
 ## TASK-102 — `||` with a foldable NULL operand
 
-Fold-pass arm: after folding a concat node's children, if any operand is
-a NULL literal, replace the node with `null_of(int32)` — value-correct
-(`||` propagates NULL to every row), and our fold's constant coverage is
-the same bottom-up closure as DuckDB's binder foldability (constant CASE,
-`nullif('a','a')`, cast-NULL all fold; column-bearing operands don't).
-Deletes the §5 "NULL || NULL types as VARCHAR" row (superseded by this
-decision; it also understated the divergence).
+SHIPPED (task-102 branch): a BINDER arm, not a fold-pass arm — the
+collapse must happen before enclosing expressions bind, or a retyped
+operand meets already-typed parents (lane mismatch; DuckDB's own rule is
+bind-time, DESCRIBE-visible). In `binary()`'s StringConcat case: an
+operand with `plan::bind_foldable` (no input refs, no user code) whose
+fold reduces to NullOf makes the whole `||` `null_of(int32)`. The gate
+is load-bearing: our fold is SMARTER than DuckDB's binder — it
+dead-arm-eliminates `CASE WHEN 1=0 THEN s END`, which DuckDB never
+folds (stays VARCHAR there, live-oracle boundary pin). Deletes the §5
+"NULL || NULL types as VARCHAR" row (superseded by this decision; it
+also understated the divergence).
 
 Interaction: once TASK-101 lands, a pure udf operand of `||` may fold to
 NULL and should collapse the same way iff DuckDB folds there — that is
