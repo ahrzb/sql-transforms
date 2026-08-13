@@ -26,14 +26,14 @@
 //! subquery boundary cannot express it unambiguously.
 
 use sqlparser::ast::{
-    BinaryOperator, CastKind, Expr as SqlExpr, GroupByExpr, Select, SelectItem, SetExpr, Statement,
-    TableFactor, UnaryOperator, Value as SqlValue,
+    BinaryOperator, CastKind, Expr as SqlExpr, GroupByExpr, JoinConstraint, JoinOperator, Select,
+    SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, UnaryOperator, Value as SqlValue,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
-use super::plan::{BinOp, Catalog, Expr, Rel, ScalarFn, UnOp};
+use super::plan::{BinOp, Catalog, Expr, JoinKind, Rel, ScalarFn, UnOp};
 use super::printer;
 use super::ty::DTy;
 use super::verify::verify;
@@ -128,12 +128,396 @@ fn refuse_unhandled_query(q: &sqlparser::ast::Query) -> Result<(), DialectError>
     Ok(())
 }
 
-struct Binder<'a> {
-    /// (bound spelling, type) per in-scope column, plus the relation name
-    /// and optional alias qualified references may use.
+/// What names mean inside one SELECT: the combined physical columns of
+/// every FROM source, which qualifier addresses which ordinal range, the
+/// USING-merged visible columns, and what `*` expands to. Built by
+/// [`bind_from`] while folding the FROM clause left-nested.
+struct Scope {
     cols: Vec<(String, DTy)>,
-    qualifiers: Vec<String>,
-    cat: &'a Catalog,
+    sources: Vec<(String, std::ops::Range<usize>)>,
+    /// USING-merged names: (name, resolution expr, covered ordinals).
+    /// Unqualified resolution prefers these (latest first); the covered
+    /// ordinals are excluded from ambiguity — anything else matching the
+    /// name keeps DuckDB's ambiguity error.
+    merged: Vec<(String, Expr, Vec<usize>)>,
+    /// `*` expansion, in order: USING-merged columns once at their
+    /// left-side position (probed 2026-08-13), everything else physical.
+    star: Vec<(String, Expr)>,
+}
+
+impl Scope {
+    fn source_range(&self, q: &str) -> Option<std::ops::Range<usize>> {
+        self.sources
+            .iter()
+            .find(|(s, _)| s.eq_ignore_ascii_case(q))
+            .map(|(_, r)| r.clone())
+    }
+
+    fn col(&self, ordinal: usize) -> Expr {
+        let (name, ty) = &self.cols[ordinal];
+        Expr::Col {
+            ordinal,
+            name: name.clone(),
+            ty: ty.clone(),
+        }
+    }
+
+    /// Resolve an unqualified name over the first `upto` physical columns
+    /// (the full scope for SELECT/WHERE; the left side only while binding
+    /// a USING list).
+    fn resolve_unqualified(&self, upto: usize, spelled: &str) -> Result<Expr, DialectError> {
+        let physical: Vec<usize> = self.cols[..upto]
+            .iter()
+            .enumerate()
+            .filter(|(_, (n, _))| n.eq_ignore_ascii_case(spelled))
+            .map(|(i, _)| i)
+            .collect();
+        if let Some((_, expr, covered)) = self
+            .merged
+            .iter()
+            .rev()
+            .find(|(n, _, _)| n.eq_ignore_ascii_case(spelled))
+        {
+            if physical.iter().any(|o| !covered.contains(o)) {
+                return Err(DialectError::Bind(format!("ambiguous column: {spelled}")));
+            }
+            return Ok(expr.clone());
+        }
+        match physical.as_slice() {
+            [o] => Ok(self.col(*o)),
+            [] if spelled.eq_ignore_ascii_case("rowid") => Err(unsup("rowid pseudo-column")),
+            [] => Err(DialectError::Bind(format!("unknown column: {spelled}"))),
+            _ => Err(DialectError::Bind(format!("ambiguous column: {spelled}"))),
+        }
+    }
+}
+
+/// Bind the FROM clause, folding left-nested: comma-separated relations
+/// are CROSS joins, each join clause wraps everything accumulated so far —
+/// so a later ON sees every earlier source (probed: DuckDB scopes
+/// `FROM t1, t3 JOIN t2 ON t1.a = t2.a` exactly this way).
+fn bind_from(from: &[TableWithJoins], cat: &Catalog) -> Result<(Rel, Scope), DialectError> {
+    let mut acc: Option<(Rel, Scope)> = None;
+    for twj in from {
+        let (r_rel, r_cols, r_qual) = bind_table_factor(&twj.relation, cat)?;
+        let mut cur = match acc.take() {
+            None => {
+                let star = r_cols
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (n, ty))| {
+                        (
+                            n.clone(),
+                            Expr::Col {
+                                ordinal: i,
+                                name: n.clone(),
+                                ty: ty.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                let scope = Scope {
+                    sources: vec![(r_qual, 0..r_cols.len())],
+                    merged: Vec::new(),
+                    star,
+                    cols: r_cols,
+                };
+                (r_rel, scope)
+            }
+            Some((l_rel, l_scope)) => fold_join(
+                l_rel,
+                l_scope,
+                r_rel,
+                r_cols,
+                r_qual,
+                JoinKind::Cross,
+                &JoinConstraint::None,
+            )?,
+        };
+        for j in &twj.joins {
+            if j.global {
+                return Err(unsup("GLOBAL join"));
+            }
+            let (kind, constraint) = match &j.join_operator {
+                JoinOperator::Join(c) | JoinOperator::Inner(c) => (JoinKind::Inner, c),
+                JoinOperator::Left(c) | JoinOperator::LeftOuter(c) => (JoinKind::Left, c),
+                JoinOperator::Right(c) | JoinOperator::RightOuter(c) => (JoinKind::Right, c),
+                JoinOperator::FullOuter(c) => (JoinKind::Full, c),
+                JoinOperator::CrossJoin(c) => (JoinKind::Cross, c),
+                JoinOperator::Semi(_)
+                | JoinOperator::LeftSemi(_)
+                | JoinOperator::RightSemi(_) => return Err(unsup("SEMI join")),
+                JoinOperator::Anti(_)
+                | JoinOperator::LeftAnti(_)
+                | JoinOperator::RightAnti(_) => return Err(unsup("ANTI join")),
+                JoinOperator::AsOf { .. } => return Err(unsup("ASOF join")),
+                JoinOperator::CrossApply | JoinOperator::OuterApply => {
+                    return Err(unsup("APPLY join"));
+                }
+                JoinOperator::StraightJoin(_) => return Err(unsup("STRAIGHT_JOIN")),
+                JoinOperator::ArrayJoin
+                | JoinOperator::LeftArrayJoin
+                | JoinOperator::InnerArrayJoin => return Err(unsup("ARRAY JOIN")),
+            };
+            let (jr_rel, jr_cols, jr_qual) = bind_table_factor(&j.relation, cat)?;
+            cur = fold_join(cur.0, cur.1, jr_rel, jr_cols, jr_qual, kind, constraint)?;
+        }
+        acc = Some(cur);
+    }
+    acc.ok_or_else(|| unsup("SELECT without FROM"))
+}
+
+/// Bind one FROM factor: a base table with an optional alias. The alias
+/// REPLACES the table name as the qualifier (DuckDB semantics).
+fn bind_table_factor(
+    factor: &TableFactor,
+    cat: &Catalog,
+) -> Result<(Rel, Vec<(String, DTy)>, String), DialectError> {
+    match factor {
+        TableFactor::Table {
+            name, alias, args, ..
+        } => {
+            if args.is_some() {
+                return Err(unsup("table function FROM"));
+            }
+            let [part] = name.0.as_slice() else {
+                return Err(unsup("schema-qualified table name"));
+            };
+            let Some(ident) = part.as_ident() else {
+                return Err(unsup(format!("table name form: {part}")));
+            };
+            let alias = match alias {
+                None => None,
+                Some(a) if a.columns.is_empty() => {
+                    let lower = a.name.value.to_ascii_lowercase();
+                    if a.name.quote_style.is_none()
+                        && matches!(lower.as_str(), "asof" | "positional" | "semi" | "anti")
+                    {
+                        // sqlparser reads DuckDB's `t ASOF JOIN ...` as the
+                        // alias `t AS asof` followed by a plain JOIN —
+                        // binding that would silently change the join's
+                        // semantics. Refuse the spelling outright.
+                        return Err(unsup(format!(
+                            "{} JOIN (or a table alias spelled {:?})",
+                            lower.to_ascii_uppercase(),
+                            a.name.value
+                        )));
+                    }
+                    Some(a.name.value.clone())
+                }
+                Some(_) => return Err(unsup("table alias with column list")),
+            };
+            let table = cat
+                .table(&ident.value)
+                .ok_or_else(|| DialectError::Bind(format!("unknown table: {}", ident.value)))?;
+            let qualifier = alias.unwrap_or_else(|| table.name.clone());
+            let cols: Vec<(String, DTy)> = table
+                .cols
+                .iter()
+                .map(|c| (c.name.clone(), c.ty.clone()))
+                .collect();
+            Ok((
+                Rel::Scan {
+                    table: table.name.clone(),
+                },
+                cols,
+                qualifier,
+            ))
+        }
+        other => Err(unsup(format!("FROM relation: {other}"))),
+    }
+}
+
+/// Join the accumulated left side with one bound table factor.
+fn fold_join(
+    l_rel: Rel,
+    l_scope: Scope,
+    r_rel: Rel,
+    r_cols: Vec<(String, DTy)>,
+    r_qualifier: String,
+    kind: JoinKind,
+    constraint: &JoinConstraint,
+) -> Result<(Rel, Scope), DialectError> {
+    if l_scope.source_range(&r_qualifier).is_some() {
+        // DuckDB: "duplicate alias" is a binder error.
+        return Err(DialectError::Bind(format!(
+            "duplicate table alias: {r_qualifier}"
+        )));
+    }
+    let offset = l_scope.cols.len();
+    let r_range = offset..offset + r_cols.len();
+    let mut scope = Scope {
+        cols: {
+            let mut c = l_scope.cols;
+            c.extend(r_cols);
+            c
+        },
+        sources: {
+            let mut s = l_scope.sources;
+            s.push((r_qualifier, r_range.clone()));
+            s
+        },
+        merged: l_scope.merged,
+        star: l_scope.star, // right side appended per constraint below
+    };
+    let r_star: Vec<(String, Expr)> = r_range
+        .clone()
+        .map(|o| (scope.cols[o].0.clone(), scope.col(o)))
+        .collect();
+
+    let on = match (kind, constraint) {
+        (JoinKind::Cross, JoinConstraint::None) => {
+            scope.star.extend(r_star);
+            None
+        }
+        (JoinKind::Cross, _) => return Err(unsup("CROSS JOIN with a join constraint")),
+        (_, JoinConstraint::None) => {
+            return Err(unsup("join without ON/USING (DuckDB rejects a bare JOIN)"));
+        }
+        (_, JoinConstraint::On(e)) => {
+            scope.star.extend(r_star);
+            let pred = Binder { scope: &scope }.expr(e)?;
+            if pred.ty()? != DTy::Bool {
+                return Err(unsup(format!(
+                    "non-boolean join ON (implicit cast unpinned): {}",
+                    pred.ty()?.name()
+                )));
+            }
+            Some(pred)
+        }
+        (_, JoinConstraint::Using(names)) => {
+            let names: Vec<String> = names
+                .iter()
+                .map(|o| match o.0.as_slice() {
+                    [p] => p
+                        .as_ident()
+                        .map(|i| i.value.clone())
+                        .ok_or_else(|| unsup(format!("USING column form: {p}"))),
+                    _ => Err(unsup("qualified USING column")),
+                })
+                .collect::<Result<_, _>>()?;
+            Some(bind_using(&mut scope, r_star, &r_range, kind, &names)?)
+        }
+        (_, JoinConstraint::Natural) => {
+            // NATURAL = USING(common visible names, left order); DuckDB's
+            // binder errors when there are none (probed).
+            let names: Vec<String> = scope
+                .star
+                .iter()
+                .map(|(n, _)| n.clone())
+                .filter(|n| {
+                    r_range
+                        .clone()
+                        .any(|i| scope.cols[i].0.eq_ignore_ascii_case(n))
+                })
+                .collect();
+            if names.is_empty() {
+                return Err(DialectError::Bind(
+                    "no columns found to join on in NATURAL JOIN".into(),
+                ));
+            }
+            Some(bind_using(&mut scope, r_star, &r_range, kind, &names)?)
+        }
+    };
+    Ok((
+        Rel::Join {
+            left: Box::new(l_rel),
+            right: Box::new(r_rel),
+            kind,
+            on,
+        },
+        scope,
+    ))
+}
+
+/// Bind a USING/NATURAL column list: build the equality conjunction, the
+/// per-kind merged-column resolution exprs (probed 2026-08-13: INNER/LEFT
+/// merge to the left column, RIGHT to the right, FULL to the null-preferring
+/// CASE), and the star expansion (merged once at the left position).
+fn bind_using(
+    scope: &mut Scope,
+    r_star: Vec<(String, Expr)>,
+    r_range: &std::ops::Range<usize>,
+    kind: JoinKind,
+    names: &[String],
+) -> Result<Expr, DialectError> {
+    if names.is_empty() {
+        return Err(unsup("USING with an empty column list"));
+    }
+    let l_len = r_range.start;
+    let mut on: Option<Expr> = None;
+    let mut used_right: Vec<usize> = Vec::new();
+    for name in names {
+        let l_expr = scope.resolve_unqualified(l_len, name)?;
+        let covered_l: Vec<usize> = (0..l_len)
+            .filter(|&i| scope.cols[i].0.eq_ignore_ascii_case(name))
+            .collect();
+        let r_matches: Vec<usize> = r_range
+            .clone()
+            .filter(|&i| scope.cols[i].0.eq_ignore_ascii_case(name))
+            .collect();
+        let [r_ord] = r_matches.as_slice() else {
+            return Err(DialectError::Bind(format!(
+                "USING column on the right side: {name}"
+            )));
+        };
+        let r_expr = scope.col(*r_ord);
+        let eq = Expr::Bin {
+            op: BinOp::Eq,
+            l: Box::new(l_expr.clone()),
+            r: Box::new(r_expr.clone()),
+        };
+        eq.ty()?; // comparability surfaces at the site
+        let merged_expr = match kind {
+            JoinKind::Inner | JoinKind::Left => l_expr.clone(),
+            JoinKind::Right => r_expr.clone(),
+            JoinKind::Full => Expr::Case {
+                whens: vec![(
+                    Expr::IsNull {
+                        negated: true,
+                        e: Box::new(l_expr.clone()),
+                    },
+                    l_expr.clone(),
+                )],
+                else_: Some(Box::new(r_expr.clone())),
+            },
+            JoinKind::Cross => {
+                return Err(DialectError::Internal("USING on a CROSS join".into()));
+            }
+        };
+        if let Some(entry) = scope
+            .star
+            .iter_mut()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+            entry.1 = merged_expr.clone();
+        }
+        used_right.push(*r_ord);
+        let mut covered = covered_l;
+        covered.push(*r_ord);
+        scope.merged.push((name.clone(), merged_expr, covered));
+        on = Some(match on {
+            None => eq,
+            Some(prev) => Expr::Bin {
+                op: BinOp::And,
+                l: Box::new(prev),
+                r: Box::new(eq),
+            },
+        });
+    }
+    for (n, e) in r_star {
+        let Expr::Col { ordinal, .. } = &e else {
+            return Err(DialectError::Internal("non-col in right star".into()));
+        };
+        if !used_right.contains(ordinal) {
+            scope.star.push((n, e));
+        }
+    }
+    on.ok_or_else(|| DialectError::Internal("USING built no predicate".into()))
+}
+
+struct Binder<'a> {
+    scope: &'a Scope,
 }
 
 fn bind_select(select: &Select, cat: &Catalog) -> Result<Rel, DialectError> {
@@ -210,60 +594,8 @@ fn bind_select(select: &Select, cat: &Catalog) -> Result<Rel, DialectError> {
         return Err(unsup("SELECT modifiers"));
     }
 
-    // FROM: exactly one base table, no joins (phase 2).
-    let [table_with_joins] = from.as_slice() else {
-        return Err(unsup(if from.is_empty() {
-            "SELECT without FROM".to_string()
-        } else {
-            "multiple FROM relations".to_string()
-        }));
-    };
-    if !table_with_joins.joins.is_empty() {
-        return Err(unsup("JOIN"));
-    }
-    let (table_name, alias) = match &table_with_joins.relation {
-        TableFactor::Table {
-            name, alias, args, ..
-        } => {
-            if args.is_some() {
-                return Err(unsup("table function FROM"));
-            }
-            let [part] = name.0.as_slice() else {
-                return Err(unsup("schema-qualified table name"));
-            };
-            let Some(ident) = part.as_ident() else {
-                return Err(unsup(format!("table name form: {part}")));
-            };
-            let alias = match alias {
-                None => None,
-                Some(a) if a.columns.is_empty() => Some(a.name.value.clone()),
-                Some(_) => return Err(unsup("table alias with column list")),
-            };
-            (ident.value.clone(), alias)
-        }
-        other => return Err(unsup(format!("FROM relation: {other}"))),
-    };
-    let table = cat
-        .table(&table_name)
-        .ok_or_else(|| DialectError::Bind(format!("unknown table: {table_name}")))?;
-    let mut qualifiers = vec![table.name.clone()];
-    if let Some(a) = &alias {
-        // An alias REPLACES the table name as a qualifier in DuckDB.
-        qualifiers = vec![a.clone()];
-    }
-    let binder = Binder {
-        cols: table
-            .cols
-            .iter()
-            .map(|c| (c.name.clone(), c.ty.clone()))
-            .collect(),
-        qualifiers,
-        cat,
-    };
-
-    let mut rel = Rel::Scan {
-        table: table.name.clone(),
-    };
+    let (mut rel, scope) = bind_from(from, cat)?;
+    let binder = Binder { scope: &scope };
     if let Some(pred) = selection {
         // DuckDB allows WHERE to reference SELECT aliases (lateral alias
         // references) — real semantics we don't lower yet, so an unknown
@@ -302,15 +634,10 @@ fn bind_select(select: &Select, cat: &Catalog) -> Result<Rel, DialectError> {
         match item {
             SelectItem::Wildcard(opts) => {
                 refuse_wildcard_opts(opts)?;
-                for (ordinal, (name, ty)) in binder.cols.iter().enumerate() {
-                    items.push((
-                        name.clone(),
-                        Expr::Col {
-                            ordinal,
-                            name: name.clone(),
-                            ty: ty.clone(),
-                        },
-                    ));
+                // `*` expands to the scope's star list — USING-merged
+                // columns appear once, at their left-side position (probed).
+                for (name, e) in &scope.star {
+                    items.push((name.clone(), e.clone()));
                 }
             }
             SelectItem::QualifiedWildcard(kind, opts) => {
@@ -327,22 +654,13 @@ fn bind_select(select: &Select, cat: &Catalog) -> Result<Rel, DialectError> {
                     }
                     other => return Err(unsup(format!("star qualifier: {other}"))),
                 };
-                if !binder
-                    .qualifiers
-                    .iter()
-                    .any(|known| known.eq_ignore_ascii_case(&q))
-                {
+                let Some(range) = scope.source_range(&q) else {
                     return Err(DialectError::Bind(format!("unknown qualifier: {q}")));
-                }
-                for (ordinal, (name, ty)) in binder.cols.iter().enumerate() {
-                    items.push((
-                        name.clone(),
-                        Expr::Col {
-                            ordinal,
-                            name: name.clone(),
-                            ty: ty.clone(),
-                        },
-                    ));
+                };
+                // A qualified star expands the source's PHYSICAL columns.
+                for ordinal in range {
+                    let (name, _) = &scope.cols[ordinal];
+                    items.push((name.clone(), scope.col(ordinal)));
                 }
             }
             SelectItem::UnnamedExpr(e) => {
@@ -405,26 +723,8 @@ fn refuse_wildcard_opts(
 
 impl Binder<'_> {
     fn resolve(&self, spelled: &str) -> Result<Expr, DialectError> {
-        let matches: Vec<usize> = self
-            .cols
-            .iter()
-            .enumerate()
-            .filter(|(_, (n, _))| n.eq_ignore_ascii_case(spelled))
-            .map(|(i, _)| i)
-            .collect();
-        match matches.as_slice() {
-            [ordinal] => {
-                let (name, ty) = &self.cols[*ordinal];
-                Ok(Expr::Col {
-                    ordinal: *ordinal,
-                    name: name.clone(),
-                    ty: ty.clone(),
-                })
-            }
-            [] if spelled.eq_ignore_ascii_case("rowid") => Err(unsup("rowid pseudo-column")),
-            [] => Err(DialectError::Bind(format!("unknown column: {spelled}"))),
-            _ => Err(DialectError::Bind(format!("ambiguous column: {spelled}"))),
-        }
+        self.scope
+            .resolve_unqualified(self.scope.cols.len(), spelled)
     }
 
     fn expr(&self, e: &SqlExpr) -> Result<Expr, DialectError> {
@@ -434,17 +734,26 @@ impl Binder<'_> {
                 let [q, col] = parts.as_slice() else {
                     return Err(unsup("deep compound identifier"));
                 };
-                if !self
-                    .qualifiers
-                    .iter()
-                    .any(|known| known.eq_ignore_ascii_case(&q.value))
-                {
+                let Some(range) = self.scope.source_range(&q.value) else {
                     return Err(DialectError::Bind(format!(
                         "unknown qualifier: {}",
                         q.value
                     )));
+                };
+                let matches: Vec<usize> = range
+                    .filter(|&i| self.scope.cols[i].0.eq_ignore_ascii_case(&col.value))
+                    .collect();
+                match matches.as_slice() {
+                    [o] => Ok(self.scope.col(*o)),
+                    [] if col.value.eq_ignore_ascii_case("rowid") => {
+                        Err(unsup("rowid pseudo-column"))
+                    }
+                    [] => Err(DialectError::Bind(format!("unknown column: {}", col.value))),
+                    _ => Err(DialectError::Bind(format!(
+                        "ambiguous column: {}",
+                        col.value
+                    ))),
                 }
-                self.resolve(&col.value)
             }
             SqlExpr::Nested(inner) => self.expr(inner),
             SqlExpr::Value(v) => literal(&v.value),
@@ -744,9 +1053,9 @@ impl printer::ExprPrinter for Duck {
         format!("\"{}\"", name.replace('"', "\"\""))
     }
 
-    fn expr(&self, e: &Expr, input: &[(String, DTy)]) -> Result<String, DialectError> {
+    fn expr(&self, e: &Expr, input: &[printer::ColRef]) -> Result<String, DialectError> {
         Ok(match e {
-            Expr::Col { ordinal, name, .. } => printer::col_ref(self, *ordinal, name, input)?,
+            Expr::Col { ordinal, name, .. } => printer::col_ref(*ordinal, name, input)?,
             Expr::Lit { lexeme, ty } => match ty {
                 DTy::Str => format!("'{}'", lexeme.replace('\'', "''")),
                 DTy::Bool | DTy::F64 => lexeme.clone(),

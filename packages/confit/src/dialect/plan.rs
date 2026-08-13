@@ -537,6 +537,40 @@ fn unify(a: &DTy, b: &DTy) -> Result<DTy, DialectError> {
     }
 }
 
+/// Join kinds (2026-08-13-dialect-join-node-design.md). SEMI/ANTI/ASOF/
+/// APPLY/positional refuse at the frontend by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinKind {
+    Inner,
+    Left,
+    Right,
+    Full,
+    Cross,
+}
+
+impl JoinKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            JoinKind::Inner => "inner",
+            JoinKind::Left => "left",
+            JoinKind::Right => "right",
+            JoinKind::Full => "full",
+            JoinKind::Cross => "cross",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<JoinKind> {
+        Some(match s {
+            "inner" => JoinKind::Inner,
+            "left" => JoinKind::Left,
+            "right" => JoinKind::Right,
+            "full" => JoinKind::Full,
+            "cross" => JoinKind::Cross,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rel {
     /// A base table scan, by bound spelling.
@@ -552,6 +586,17 @@ pub enum Rel {
     Project {
         input: Box<Rel>,
         items: Vec<(String, Expr)>,
+    },
+    /// Join. Output schema is left ++ right for EVERY kind (USING's merged
+    /// column is a binder concern that never reaches the plan). `on` is a
+    /// BOOLEAN expression bound over the combined schema; None iff Cross.
+    /// Null-safe equality stays explicit through the expression node kind
+    /// (Eq vs IsDistinct) — design D3 without a separate key list.
+    Join {
+        left: Box<Rel>,
+        right: Box<Rel>,
+        kind: JoinKind,
+        on: Option<Expr>,
     },
 }
 
@@ -573,6 +618,11 @@ impl Rel {
                 .iter()
                 .map(|(n, e)| Ok((n.clone(), e.ty()?)))
                 .collect(),
+            Rel::Join { left, right, .. } => {
+                let mut s = left.schema(cat)?;
+                s.extend(right.schema(cat)?);
+                Ok(s)
+            }
         }
     }
 }

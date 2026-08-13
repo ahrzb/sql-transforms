@@ -8,7 +8,7 @@
 //! verify after text-parsing — an unverifiable plan is [`DialectError::
 //! Internal`] out of a frontend and a fixture bug out of text.
 
-use super::plan::{Catalog, Expr, Rel};
+use super::plan::{Catalog, Expr, JoinKind, Rel};
 use super::ty::DTy;
 use super::DialectError;
 
@@ -41,6 +41,37 @@ fn walk(rel: &Rel, cat: &Catalog) -> Result<Vec<(String, DTy)>, DialectError> {
                 check_expr(e, &in_schema)?;
             }
             rel.schema(cat)
+        }
+        Rel::Join {
+            left,
+            right,
+            kind,
+            on,
+        } => {
+            let mut combined = walk(left, cat)?;
+            combined.extend(walk(right, cat)?);
+            match (kind, on) {
+                (JoinKind::Cross, Some(_)) => {
+                    return Err(DialectError::Internal("CROSS join carries an ON".into()));
+                }
+                (JoinKind::Cross, None) => {}
+                (_, None) => {
+                    return Err(DialectError::Internal(format!(
+                        "{} join without an ON",
+                        kind.name()
+                    )));
+                }
+                (_, Some(pred)) => {
+                    check_expr(pred, &combined)?;
+                    if pred.ty()? != DTy::Bool {
+                        return Err(DialectError::Internal(format!(
+                            "join ON is {}, not bool",
+                            pred.ty()?.name()
+                        )));
+                    }
+                }
+            }
+            Ok(combined)
         }
     }
 }

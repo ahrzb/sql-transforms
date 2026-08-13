@@ -337,7 +337,9 @@ fn frontend_named_refusals() {
         ("SELECT a FROM t ORDER BY a", "ORDER BY"),
         ("SELECT count(a) FROM t", "function: count"),
         ("SELECT 1e3 FROM t", "auto-name"),
-        ("SELECT a FROM t JOIN t AS u ON true", "JOIN"),
+        // sqlparser reads ASOF as Snowflake syntax and cleanly fails the
+        // parse (never misparsing it as a table alias).
+        ("SELECT a FROM t ASOF JOIN t AS u ON t.a >= u.a", "MATCH_CONDITION"),
         ("SELECT DISTINCT a FROM t", "DISTINCT"),
         ("SELECT NULL AS n FROM t", "NULL literal"),
     ] {
@@ -379,6 +381,183 @@ fn literal_typing_follows_the_lattice() {
         // 0.1 is DECIMAL(2,1): a bare zero integer part still counts one
         // digit (review-confirmed measurement; typeof(0.5) = DECIMAL(2,1)).
         vec![DTy::I32, DTy::I64, DTy::Dec(3, 2), DTy::Dec(2, 1), DTy::F64]
+    );
+}
+
+// --- Join (TASK-104; 2026-08-13-dialect-join-node-design.md) ----------------
+
+fn cat2() -> Catalog {
+    let t = |name: &str, cols: Vec<(&str, DTy)>| Table {
+        name: name.into(),
+        cols: cols
+            .into_iter()
+            .map(|(n, ty)| ColDef {
+                name: n.into(),
+                ty,
+                nullable: true,
+            })
+            .collect(),
+    };
+    Catalog {
+        tables: vec![
+            t("t1", vec![("a", DTy::I32), ("b", DTy::Str)]),
+            t("t2", vec![("a", DTy::I32), ("c", DTy::F64)]),
+            t("t3", vec![("d", DTy::I32)]),
+        ],
+    }
+}
+
+/// parse → plan-text round-trip → print → reparse must reach the SAME plan.
+fn assert_join_fixpoint(sql: &str, c: &Catalog) -> Rel {
+    let p = super::duckdb::parse_sql(sql, c).unwrap_or_else(|e| panic!("{sql}: {e:?}"));
+    assert_eq!(
+        super::text::parse(&super::text::print(&p)).unwrap(),
+        p,
+        "plan-text round trip: {sql}"
+    );
+    let printed = super::duckdb::print_sql(&p, c).unwrap();
+    assert_eq!(
+        super::duckdb::parse_sql(&printed, c).unwrap(),
+        p,
+        "fixpoint: {sql} -> {printed}"
+    );
+    p
+}
+
+#[test]
+fn join_on_inner_left_bind_and_fixpoint() {
+    let c = cat2();
+    let p = assert_join_fixpoint(
+        "SELECT t1.a AS x, t2.c AS y FROM t1 INNER JOIN t2 ON t1.a = t2.a WHERE t2.c > 1e0",
+        &c,
+    );
+    assert_eq!(
+        p.schema(&c).unwrap(),
+        vec![("x".into(), DTy::I32), ("y".into(), DTy::F64)]
+    );
+    assert_join_fixpoint(
+        "SELECT t1.b AS b FROM t1 LEFT JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.a",
+        &c,
+    );
+    // General ON predicates are admitted, not just equality conjunctions.
+    assert_join_fixpoint("SELECT t1.b AS b FROM t1 JOIN t2 ON t1.a > t2.a", &c);
+    assert_join_fixpoint(
+        "SELECT t1.b AS b FROM t1 JOIN t2 ON t1.a = t2.a AND t2.c < 5e0",
+        &c,
+    );
+}
+
+#[test]
+fn join_star_keeps_both_sides_on_on_joins() {
+    let c = cat2();
+    let p = assert_join_fixpoint("SELECT * FROM t1 INNER JOIN t2 ON t1.a = t2.a", &c);
+    let names: Vec<String> = p.schema(&c).unwrap().into_iter().map(|(n, _)| n).collect();
+    // ON joins keep both key columns — duplicate `a` included, printable
+    // through qualified refs.
+    assert_eq!(names, vec!["a", "b", "a", "c"]);
+}
+
+#[test]
+fn join_right_full_cross_comma_and_chains() {
+    let c = cat2();
+    assert_join_fixpoint("SELECT t2.c AS c FROM t1 RIGHT JOIN t2 ON t1.a = t2.a", &c);
+    assert_join_fixpoint("SELECT t1.a AS x, t2.a AS y FROM t1 FULL JOIN t2 ON t1.a = t2.a", &c);
+    assert_join_fixpoint("SELECT t1.a AS x, t3.d AS d FROM t1 CROSS JOIN t3", &c);
+    // Comma-joins are CROSS with keys staying in WHERE (author structure).
+    let p = assert_join_fixpoint("SELECT t1.b AS b FROM t1, t2 WHERE t1.a = t2.a", &c);
+    assert!(
+        matches!(&p, Rel::Project { input, .. } if matches!(input.as_ref(), Rel::Filter { .. })),
+        "comma-join keys stay in the Filter"
+    );
+    // Chains fold left-nested; later ON sees every earlier source.
+    assert_join_fixpoint(
+        "SELECT t3.d AS d FROM t1 JOIN t2 ON t1.a = t2.a JOIN t3 ON t3.d = t1.a",
+        &c,
+    );
+    assert_join_fixpoint(
+        "SELECT t3.d AS d FROM t1, t3 JOIN t2 ON t1.a = t2.a",
+        &c,
+    );
+}
+
+#[test]
+fn join_using_and_natural_follow_the_probe() {
+    // Measured 2026-08-13 (probe in the TASK-104 commit): USING merges the
+    // key column at its LEFT-side position; remaining left, then right.
+    let c = cat2();
+    let p = assert_join_fixpoint("SELECT * FROM t1 JOIN t2 USING (a)", &c);
+    let names: Vec<String> = p.schema(&c).unwrap().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, vec!["a", "b", "c"]);
+    // The merged name resolves unqualified even though both sides carry it.
+    assert_join_fixpoint("SELECT a AS k FROM t1 JOIN t2 USING (a) WHERE a > 0", &c);
+    // RIGHT: merged column is the right side's; LEFT/INNER: the left's.
+    assert_join_fixpoint("SELECT a AS k FROM t1 RIGHT JOIN t2 USING (a)", &c);
+    // FULL: merged column is the null-preferring CASE over both sides.
+    let p = assert_join_fixpoint("SELECT a AS k FROM t1 FULL JOIN t2 USING (a)", &c);
+    let text = super::text::print(&p);
+    assert!(text.contains("(case"), "FULL USING merge is a CASE:\n{text}");
+    // Qualified access to both underlying columns survives USING.
+    assert_join_fixpoint("SELECT t1.a AS l, t2.a AS r FROM t1 FULL JOIN t2 USING (a)", &c);
+    // NATURAL = USING(common columns).
+    let p = assert_join_fixpoint("SELECT * FROM t1 NATURAL JOIN t2", &c);
+    let names: Vec<String> = p.schema(&c).unwrap().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, vec!["a", "b", "c"]);
+    // NATURAL with no common columns is DuckDB's own binder error -> Bind.
+    assert!(matches!(
+        super::duckdb::parse_sql("SELECT 1 AS one FROM t1 NATURAL JOIN t3", &c),
+        Err(DialectError::Bind(_))
+    ));
+}
+
+#[test]
+fn join_named_refusals_and_bind_errors() {
+    let c = cat2();
+    for (sql, needle) in [
+        // sqlparser reads ASOF as Snowflake syntax and fails the parse
+        // cleanly rather than misparsing it as a table alias.
+        (
+            "SELECT t1.a AS x FROM t1 ASOF JOIN t2 ON t1.a >= t2.a",
+            "MATCH_CONDITION",
+        ),
+        ("SELECT t1.a AS x FROM t1 SEMI JOIN t2 ON t1.a = t2.a", "SEMI"),
+        ("SELECT t1.a AS x FROM t1 POSITIONAL JOIN t2", "POSITIONAL"),
+        ("SELECT 1 AS one FROM t1 JOIN t2", "join without ON"),
+    ] {
+        match super::duckdb::parse_sql(sql, &c) {
+            Err(DialectError::Unsupported(m)) => {
+                assert!(m.contains(needle), "{sql}: {m}");
+            }
+            other => panic!("{sql}: expected Unsupported, got {other:?}"),
+        }
+    }
+    // DuckDB itself rejects these — Bind, not Unsupported.
+    for sql in [
+        // `a` lives on both sides of an ON join: ambiguous.
+        "SELECT a FROM t1 JOIN t2 ON t1.a = t2.a",
+        // duplicate table alias
+        "SELECT 1 AS one FROM t1 AS x JOIN t2 AS x ON true",
+        // unknown qualifier
+        "SELECT zz.a FROM t1 JOIN t2 ON t1.a = t2.a",
+    ] {
+        assert!(
+            matches!(super::duckdb::parse_sql(sql, &c), Err(DialectError::Bind(_))),
+            "{sql}: expected Bind"
+        );
+    }
+}
+
+#[test]
+fn join_prints_on_spark_with_portable_spellings() {
+    let c = cat2();
+    let p = super::duckdb::parse_sql(
+        "SELECT t1.b AS b FROM t1 LEFT JOIN t2 ON t1.a IS NOT DISTINCT FROM t2.a",
+        &c,
+    )
+    .unwrap();
+    let spark = super::spark::print_sql(&p, &c).unwrap();
+    assert!(
+        spark.contains("LEFT JOIN") && spark.contains("IS NOT DISTINCT FROM"),
+        "{spark}"
     );
 }
 

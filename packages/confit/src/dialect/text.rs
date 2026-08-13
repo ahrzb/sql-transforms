@@ -14,6 +14,8 @@
 //! rel  := (scan "table")
 //!       | (filter rel expr)
 //!       | (project rel (item "name" expr)+)
+//!       | (join inner|left|right|full rel rel expr)
+//!       | (join cross rel rel)
 //! expr := (col N "name" "ty")
 //!       | (lit "ty" "lexeme")
 //!       | (bin OP expr expr)            OP: add sub mul fdiv idiv rem
@@ -25,7 +27,7 @@
 //!       | (isdistinct expr expr) | (isnotdistinct expr expr)
 //! ```
 
-use super::plan::{BinOp, Expr, Rel, ScalarFn, UnOp};
+use super::plan::{BinOp, Expr, JoinKind, Rel, ScalarFn, UnOp};
 use super::ty::DTy;
 use super::DialectError;
 
@@ -70,6 +72,23 @@ fn print_rel(rel: &Rel, depth: usize, out: &mut String) {
                 out.push(' ');
                 print_expr(e, out);
                 out.push(')');
+            }
+            out.push(')');
+        }
+        Rel::Join {
+            left,
+            right,
+            kind,
+            on,
+        } => {
+            out.push_str(&format!("(join {}", kind.name()));
+            indent(depth + 1, out);
+            print_rel(left, depth + 1, out);
+            indent(depth + 1, out);
+            print_rel(right, depth + 1, out);
+            if let Some(pred) = on {
+                indent(depth + 1, out);
+                print_expr(pred, out);
             }
             out.push(')');
         }
@@ -314,6 +333,24 @@ impl P {
                     items.push((name, e));
                 }
                 Rel::Project { input, items }
+            }
+            "join" => {
+                let kname = self.head()?;
+                let kind = JoinKind::parse(&kname)
+                    .ok_or_else(|| self.err(format!("unknown join kind: {kname}")))?;
+                let left = Box::new(self.rel()?);
+                let right = Box::new(self.rel()?);
+                let on = if kind == JoinKind::Cross {
+                    None
+                } else {
+                    Some(self.expr()?)
+                };
+                Rel::Join {
+                    left,
+                    right,
+                    kind,
+                    on,
+                }
             }
             h => return Err(self.err(format!("unknown rel head: {h}"))),
         };
