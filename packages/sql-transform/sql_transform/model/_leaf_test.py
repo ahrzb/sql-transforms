@@ -95,6 +95,32 @@ def test_transductive_window_fit():
     ]
 
 
+def test_bare_call_is_the_global_split():
+    """The ONE sugar: `tfm(x)` ≡ `tfm_transform(tfm_fit(x) OVER (), x)`."""
+    sugar = SQLTransform("""
+        SELECT store, zscore(struct_pack(price := price)).z AS z
+        FROM __THIS__ ORDER BY store, z
+    """)
+    split = SQLTransform("""
+        SELECT store, zscore_transform(
+                   zscore_fit(struct_pack(price := price)) OVER (),
+                   struct_pack(price := price)).z AS z
+        FROM __THIS__ ORDER BY store, z
+    """)
+    assert run(sugar, F).to_pylist() == run(split, F).to_pylist()
+
+
+def test_the_deleted_over_sugar_refuses_by_name():
+    """`tfm(x) OVER w` has no oracle reading (fit-transform-split spec) and
+    stays deleted: refused at construction, pointing at the split spelling —
+    not a DuckDB unknown-function error at fit time."""
+    with pytest.raises(TransformError, match=r"zscore.*zscore_fit"):
+        SQLTransform("""
+            SELECT zscore(struct_pack(price := v)) OVER (PARTITION BY k) AS s
+            FROM __THIS__
+        """)
+
+
 def test_host_names_do_not_capture_the_leafs_names():
     """The capture gate: the host reuses the leaf's own internal aliases
     (t, f) and its column name (m) — the spliced text still reads the

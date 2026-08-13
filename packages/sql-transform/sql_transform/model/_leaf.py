@@ -302,6 +302,18 @@ def fit_call(
     return _struct_pack(params)
 
 
+def bare_call(stem: str, projection, call: Function) -> Node:
+    """``p(bundle)`` — the ONE sugar: ``p_transform(p_fit(bundle) OVER (), bundle)``.
+
+    The split spelling is the meaning; the bundle checks, refusals and
+    attribution are the halves' own."""
+    over = _template("SELECT avg(1) OVER ()").select_list[0]
+    theta = fit_call(stem, projection, list(call.children), over)
+    return transform_call(
+        stem, projection, call.model_copy(update={"children": [theta, *call.children]})
+    )
+
+
 def transform_call(stem: str, projection, call: Function) -> Node:
     """``p_transform(θ, bundle)`` as the residual's outputs over struct reads.
 
