@@ -2,7 +2,7 @@
 id: TASK-101
 title: >-
   Pure-by-default UDF bind fold (decided: do what DuckDB does)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-14 03:30'
 updated_date: '2026-08-13 12:00'
@@ -53,3 +53,7 @@ docs/superpowers/specs/2026-08-13-bind-fold-alignment-design.md.
 - [ ] #5 fold contexts match DuckDB's, probed (field access measured; probe ||-operand, cmp, arith before coding)
 - [ ] #6 20k campaign: the seed-601418 class is gone, no new classes
 <!-- AC:END -->
+
+## Notes
+
+2026-08-13 hygiene: merged to master (c27ee16, PR #137/#138 lineage); the xfail-strict pin flipped and stays green post arrow-migration. AC #6 verified against the 2026-08-13 20k campaign: the bare-literal-args (seed-601418) class is gone. Seed 8352's `(udf0(NULL, upper('0'), ...)).f0` divergence is the SEPARATE TASK-103 family-2 composition gap (fold contexts whose constant args need builtin folding), already pinned in test_bind_fold_composition_gaps — see docs/2026-08-13-fuzz-triage.md.

@@ -2,7 +2,7 @@
 id: TASK-92
 title: >-
   Function signature registry replaces the dispatch maze
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-13 21:30'
 labels:
@@ -47,3 +47,7 @@ typing as table rows.
       and one builder
 - [ ] #4 task-79's function-width typing re-lands as table edits only
 <!-- AC:END -->
+
+## Notes
+
+2026-08-13 hygiene: shipped on master — src/specializer/sig.rs (20 rows/57 aliases, CUSTOM_NAMES, partition-totality test). Closed by status sweep after the arrow-schema migration (PR #144 era).

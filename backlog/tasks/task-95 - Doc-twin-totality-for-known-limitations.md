@@ -27,3 +27,7 @@ TASK-69 doctrine applied to prose. Approved 2026-08-13.
 - [ ] #1 a known-limitations row without a named twin test fails a unit test
 - [ ] #2 every existing row is linked to its twin (adding missing twins where none exist)
 <!-- AC:END -->
+
+## Notes
+
+2026-08-13: RFC 3 delivered in chat (measured facts, options, recommendation); its ASK block awaits AmirHossein's answers. Lands on the arrow schema surface (PR #144 merged).

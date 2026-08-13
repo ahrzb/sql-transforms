@@ -2,7 +2,7 @@
 id: TASK-79
 title: >-
   infer_arrow emits int64 where DuckDB emits int32 for an integer-literal expression
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-08 04:00'
 labels:
@@ -80,3 +80,7 @@ Pinned xfail-strict as `test_infer_arrow_integer_width_matches_duckdb`, and
 `test_output_schema_matches_duckdb_for_every_scenario` allows exactly this one
 widening and nothing else, so it cannot quietly grow.
 <!-- SECTION:NOTES:END -->
+
+## Notes
+
+2026-08-13 hygiene: fixed by the phase-2 integer-width work. Probe on master 5e88d38: `SELECT 1 AS o` serves int32 via infer_arrow, matching DuckDB's INTEGER exactly.
