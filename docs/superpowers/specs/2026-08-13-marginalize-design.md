@@ -140,7 +140,7 @@ cannot carry.
 | `tfm(x)` (bare sugar) | freeze, keyless |
 | `tfm_fit(x) OVER (PARTITION BY ...)` | freeze per key |
 | `tfm_fit(x) OVER (ORDER BY ...)` (any ordered frame) | refuse — running fit, exactly as the split spec already rules |
-| `tfm_fit(x) OVER (...)` where `tfm` is internally keyed (its own text joins `__FIT__` through a `GROUP BY`) | refuse by name — leaf eligibility is unchanged inside marginalize, and a keyed projection already refuses the leaf role (θ would have to carry a table per partition); both sides of the law refuse the same spelling |
+| `tfm_fit(x) OVER (PARTITION BY ...)` where `tfm` is internally keyed (its own text joins `__FIT__` through a `GROUP BY`) | freeze — keys compose; effective key = scope keys ⊕ internal keys (next section) |
 | scalar subquery over `__THIS__` | freeze (provably uncorrelated: `FROM __THIS__` has no alias in scope) |
 | top-level `WHERE` / `GROUP BY` / modifiers over `__THIS__` | refuse — same constructs the row-wise gate refuses, same reasons |
 
@@ -149,6 +149,56 @@ widened vocabulary (the fit plan reruns the original computation, so even
 order-sensitive aggregates freeze the value the text produced), while
 `tfm_fit` keeps the split spec's stricter rule (an ordered frame means per-row
 θ — a running fit, still a future feature).
+
+## Key composition (RFC M5)
+
+An internally keyed projection composes with a partitioned fit scope by
+**concatenating keys**:
+
+```
+effective key  =  scope keys  ⊕  the projection's internal keys
+```
+
+```sql
+-- tfm internally: ... FROM __FIT__ GROUP BY store ... ON t.store = f.store
+-- usage site:     tfm_fit(x) OVER (PARTITION BY city)
+
+-- flat lowering: one params table per (city, store), θ stays columns
+LEFT JOIN (SELECT __cf_k0, store, avg(price) AS m
+           FROM __FIT__ GROUP BY __cf_k0, store) f
+  ON t.city IS NOT DISTINCT FROM f.__cf_k0    -- scope half: window discipline
+ AND t.store = f.store                        -- internal half: verbatim
+```
+
+The two halves keep **different equality disciplines**, deliberately:
+
+- **Scope keys are window keys.** `PARTITION BY` groups NULL keys into one
+  partition, so the derived predicate is `IS NOT DISTINCT FROM` — same rule
+  as every other fit scope.
+- **Internal keys keep the author's spelling.** Under the UDF oracle reading,
+  θ for one scope of a keyed projection is a per-key *table*, and the
+  transform half looks the row's key up in it — the projection's own
+  `ON t.store = f.store` is that lookup, and a NULL store misses. Rewriting
+  its `=` would change the projection's meaning behind its author's back.
+
+This is also why the lowering is a join and never window-key concatenation:
+`avg(price) OVER (PARTITION BY city, store)` would hand NULL-store rows a θ
+that the projection's own text denies them. So keyed fit scopes lower to the
+flat join shape on *both* sides of the law — transductively the grouped
+subquery reads the batch, frozen it reads `__FIT__` — and the law forces the
+two widenings to land together: `run(SQLTransform(text), F)` must accept
+whatever marginalize accepts, so the leaf splice's keyed admission ships in
+the same slice.
+
+Corollaries: bare `tfm(x)` on a keyed projection has no scope keys — the
+effective key is the internal key alone, and the splice is just the
+projection's own join, once per scope. A scope key colliding with an internal
+key name needs no special case: both conjuncts apply and their conjunction is
+the meaning (the NULL-safe scope half and the `=` internal half agree
+everywhere except NULL keys, where the stricter `=` wins — exactly the
+lookup semantics). `fitted.params` carries one table keyed by the full
+effective key; uniqueness holds by construction (`GROUP BY` the effective
+key); a miss on *either* half is P14 NULL.
 
 ## What `marginalize` emits (RFC M3)
 
@@ -192,6 +242,7 @@ admission table above covers the rest.
 | **law** | `marginalize(text).fit(F).transform(F) == run(SQLTransform(text), F)`, content-compared, both sides sorted — differential against the shipped splice, per admitted construct |
 | **freeze** | on X with unseen partitions: NULL out (P14), where the transductive side refits — the divergence is *only* at misses |
 | **attribution** | every refusal fires pre-rewrite, in the author's spelling; accepted text ⇒ derived text constructs (fuzzable) |
+| **composition** | keyed leaf under a partitioned scope: effective key = scope ⊕ internal; the NULL-key rows pin the two disciplines (scope half matches its partition, internal half misses) |
 | **params** | frozen θs readable in `fitted.params`; `instances == {}` for pure-SQL scopes |
 | **serving** | derived projections compile like hand-written ones; the `IS NOT DISTINCT FROM` parity probe becomes a pinned test |
 | **ladder** | a COALESCE over fine→coarse scopes equals per-level marginalize with fallback-on-NULL (executable example, not machinery) |
@@ -213,23 +264,23 @@ admission table above covers the rest.
 3. **Projection scopes.** `tfm(x)` and `tfm_fit(x) OVER (PARTITION BY ...)`
    inside marginalize texts, freezing through the same lowering; the
    COALESCE-ladder executable example; `fitted.params` pins for θ-as-data.
-4. **The widened window vocabulary.** `RANGE`/`GROUPS` order-discriminating
+4. **Key composition.** Widen the leaf plan to internally keyed projections —
+   merged join predicates, exported key columns, the two equality
+   disciplines — on *both* sides of the law (the transductive splice and the
+   freeze share the lowering). The shipped keyed-leaf refusal
+   (`test_a_keyed_projection_refuses_the_leaf_role_by_name`) flips into
+   composition pins.
+5. **The widened window vocabulary.** `RANGE`/`GROUPS` order-discriminating
    frames (keys = partition + order values) and scalar subqueries, ported from
    old `_marginalize` with the law gate extended over them.
 
-Slices 1–3 deliver the feature; slice 4 completes parity with the old class's
+Slices 1–4 deliver the feature; slice 5 completes parity with the old class's
 vocabulary and can trail.
 
 ## Deferred
 
 - **Running fits** (`tfm_fit(x) OVER (ORDER BY ...)`) — refused here exactly
   as the split spec refuses them; a future feature with its own design.
-- **Key composition** — admitting an internally keyed projection under a
-  partitioned fit scope. The coherent semantics is concatenation: effective
-  key = scope keys ⊕ the projection's internal keys, lowered *flat* (scope
-  keys appended to the internal `GROUP BY`, the `ON` clause carrying both) so
-  θ stays columns and never carries tables. Refused by name today on both
-  sides of the law, so admitting it later is purely additive.
 - **The port and the old class's deletion** — unchanged from the row-wise
   spec. `marginalize` closes the *authoring* gap (`__THIS__`-only texts);
   the registry/unnest gaps remain the deletion trigger.
