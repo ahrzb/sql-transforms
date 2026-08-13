@@ -3423,6 +3423,22 @@ impl Binder<'_> {
         }
         let a = self.expr_or_null(left)?;
         let b = self.expr_or_null(right)?;
+        // DuckDB folds a strict op over a DECIMAL literal and a bare NULL
+        // to SQLNULL — INTEGER — discarding the decimal (measured:
+        // -2.681 + NULL and 2.5 * NULL are INTEGER; / stays DOUBLE). Our
+        // decimal literals are f64 (the documented v0 narrowing), so
+        // adoption would answer double.
+        if matches!(
+            op,
+            BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Modulo
+        ) && ((a.is_none() && b.is_some() && ast_decimal_literal(right))
+            || (b.is_none() && a.is_some() && ast_decimal_literal(left)))
+        {
+            return Ok(null_of(Ty::I32));
+        }
         // A NULL literal adopts the other side's type; the op itself is not
         // folded (NULL AND FALSE is FALSE, so folding would be wrong).
         let (a, b) = match (a, b) {
@@ -6462,6 +6478,27 @@ fn int_width_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>)
 /// family returns, `0 - N` user spellings, retyped degenerations), so the
 /// hint comes from the spelling alone. This is DuckDB's own notion for
 /// its value-fits promotion.
+/// Whether the SPELLING is a DECIMAL literal (a dot, no exponent —
+/// `2.5`, `-2.681`; `1.5e0` is DOUBLE), optionally under parens or unary
+/// minus. DuckDB folds a strict op over one of these and a bare NULL to
+/// SQLNULL (INTEGER), discarding the decimal entirely.
+fn ast_decimal_literal(e: &SqlExpr) -> bool {
+    match e {
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(text, _) => {
+                text.contains('.') && !text.to_ascii_lowercase().contains('e')
+            }
+            _ => false,
+        },
+        SqlExpr::Nested(inner) => ast_decimal_literal(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => ast_decimal_literal(expr),
+        _ => false,
+    }
+}
+
 fn ast_int_literal(e: &SqlExpr) -> Option<i64> {
     match e {
         SqlExpr::Value(v) => match &v.value {

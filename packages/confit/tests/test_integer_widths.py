@@ -103,6 +103,13 @@ CATALOGUE = [
     "SELECT - nullif(NULL, 1) AS o FROM __THIS__",
     "SELECT nullif(NULL, 1) * CAST(1 AS SMALLINT) AS o FROM __THIS__",
     "SELECT CAST(TRUE AS INTEGER) % coalesce(-2147483648, 7) AS o FROM __THIS__",
+    # DECIMAL literal (+|-|*|%) bare NULL folds to SQLNULL = INTEGER on
+    # DuckDB; division stays DOUBLE (campaign seed 617691).
+    "SELECT (-2.681 + NULL) AS o FROM __THIS__",
+    "SELECT 2.5 * NULL AS o FROM __THIS__",
+    "SELECT NULL - 2.681 AS o FROM __THIS__",
+    "SELECT 2.5 / NULL AS o FROM __THIS__",
+    "SELECT NULL + 1.5e0 AS o FROM __THIS__",
     "SELECT CAST(k AS INTEGER) AS o FROM __THIS__",
     "SELECT CAST(k AS SMALLINT) AS o FROM __THIS__",
     "SELECT CAST(1 AS TINYINT) AS o FROM __THIS__",
