@@ -16,7 +16,6 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 from sklearn.ensemble import (
     ExtraTreesRegressor,
     GradientBoostingRegressor,
@@ -33,10 +32,9 @@ from sql_transform import (
 from sql_transform._trees import _f32_grid_threshold
 
 FEATURES = ["a", "b", "c", "d"]
-ROW = create_model(
-    "Row",
-    id=(int, ...),
-    **dict.fromkeys(FEATURES, (float | None, None)),
+ROW = pa.schema(
+    [pa.field("id", pa.int64(), nullable=False)]
+    + [pa.field(f, pa.float64()) for f in FEATURES]
 )
 # One call shape for both lowerings: a transform is called by its own name,
 # instance id first. That the ecall path and the kernel path run the SAME SQL
@@ -88,10 +86,10 @@ def test_a_tree_based_transform_registers_like_every_other_transform():
     assert fn.backend == "cranelift"
     X = np.random.RandomState(43).rand(200, len(FEATURES)) * 5 - 2.5
     rows = [
-        ROW(id=i % 2, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)})
+        {"id": i % 2, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)}}
         for i, x in enumerate(X)
     ]
-    got = [r.p for r in fn.infer({"__THIS__": rows})]
+    got = [r["p"] for r in fn.infer_rows(rows)]
     want = [float(ests[i % 2].predict(x[None, :])[0]) for i, x in enumerate(X)]
     assert got == want
 
@@ -106,9 +104,9 @@ def score(estimators, X, backend=None):
     if backend is not None:
         assert fn.backend == backend
     rows = [
-        ROW(id=0, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)}) for x in X
+        {"id": 0, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)}} for x in X
     ]
-    return np.array([r.p for r in fn.infer({"__THIS__": rows})])
+    return np.array([r["p"] for r in fn.infer_rows(rows)])
 
 
 ESTIMATORS = [
@@ -190,20 +188,20 @@ def test_null_and_nan_are_the_same_input():
     )
     Xq = np.array([[np.nan, 0.5, np.nan, -1.0], [1.0, np.nan, 2.0, np.nan]])
     as_null = [
-        ROW(
-            id=0,
+        {
+            "id": 0,
             **{
                 f: (None if np.isnan(v) else float(v))
                 for f, v in zip(FEATURES, x, strict=True)
             },
-        )
+        }
         for x in Xq
     ]
     as_nan = [
-        ROW(id=0, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)}) for x in Xq
+        {"id": 0, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)}} for x in Xq
     ]
-    null_out = [r.p for r in fn.infer({"__THIS__": as_null})]
-    nan_out = [r.p for r in fn.infer({"__THIS__": as_nan})]
+    null_out = [r["p"] for r in fn.infer_rows(as_null)]
+    nan_out = [r["p"] for r in fn.infer_rows(as_nan)]
     assert null_out == nan_out == list(fitted.predict(Xq))
 
 
@@ -225,10 +223,10 @@ def test_per_group_models_score_by_id():
     )
     ids = np.arange(len(X)) % 3
     rows = [
-        ROW(id=int(g), **{f: float(v) for f, v in zip(FEATURES, x, strict=True)})
+        {"id": int(g), **{f: float(v) for f, v in zip(FEATURES, x, strict=True)}}
         for g, x in zip(ids, X, strict=True)
     ]
-    got = np.array([r.p for r in fn.infer({"__THIS__": rows})])
+    got = np.array([r["p"] for r in fn.infer_rows(rows)])
     want = np.array([fits[g].predict(x[None])[0] for g, x in zip(ids, X, strict=True)])
     assert np.array_equal(got, want)
 
@@ -284,8 +282,8 @@ def _both_paths(ests, rows, row_model=None):
         static_tables={},
         udfs=[tbt(ests)],
     )
-    ecall = [r.p for r in ecall_fn.infer({"__THIS__": rows})]
-    predict = [r.p for r in predict_fn.infer({"__THIS__": rows})]
+    ecall = [r["p"] for r in ecall_fn.infer_rows(rows)]
+    predict = [r["p"] for r in predict_fn.infer_rows(rows)]
     scored = sum(1 for v in ecall if v is not None)
     assert sum(s.calls for s in shims.values()) == scored, (
         "the ecall side did not run the Python trampoline once per scored row"
@@ -295,13 +293,13 @@ def _both_paths(ests, rows, row_model=None):
 
 def _rows(X, ids):
     return [
-        ROW(
-            id=int(g),
+        {
+            "id": int(g),
             **{
                 f: (None if np.isnan(v) else float(v))
                 for f, v in zip(FEATURES, x, strict=True)
             },
-        )
+        }
         for g, x in zip(ids, X, strict=True)
     ]
 
@@ -353,13 +351,11 @@ def test_ecall_and_predict_agree_on_a_null_id():
     """A NULL id is an unseen group on both paths: NULL out, no call."""
     est = fit(RandomForestRegressor(n_estimators=5, random_state=88, n_jobs=1), 88)
     X = np.random.RandomState(89).rand(4, len(FEATURES))
-    nullable_row = create_model(
-        "NRow",
-        id=(int | None, None),
-        **dict.fromkeys(FEATURES, (float | None, None)),
+    nullable_row = pa.schema(
+        [pa.field("id", pa.int64())] + [pa.field(f, pa.float64()) for f in FEATURES]
     )
     rows = [
-        nullable_row(id=None, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)})
+        {"id": None, **{f: float(v) for f, v in zip(FEATURES, x, strict=True)}}
         for x in X
     ]
     udf = PythonTransform(
@@ -377,8 +373,8 @@ def test_ecall_and_predict_agree_on_a_null_id():
         static_tables={},
         udfs=[tbt([est])],
     )
-    ecall = [r.p for r in ecall_fn.infer({"__THIS__": rows})]
-    predict = [r.p for r in predict_fn.infer({"__THIS__": rows})]
+    ecall = [r["p"] for r in ecall_fn.infer_rows(rows)]
+    predict = [r["p"] for r in predict_fn.infer_rows(rows)]
     assert ecall == predict == [None] * len(rows)
 
 
@@ -634,8 +630,6 @@ def _int_split_model(seed=0):
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
 def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
-    from pydantic import create_model as _cm
-
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
@@ -655,7 +649,12 @@ def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
         -(1 << 55),
     ]
 
-    row = _cm("IntRow", id=(int, ...), n=(int, ...))
+    row = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("n", pa.int64(), nullable=False),
+        ]
+    )
     fn = DuckDBInferFn(
         "SELECT m(id, n) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
@@ -667,7 +666,7 @@ def test_integer_feature_above_2_53_matches_sklearn(backend, monkeypatch):
         ],
     )
     assert fn.backend == backend
-    got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n) for n in probes]})]
+    got = [r["p"] for r in fn.infer_rows([{"id": 0, "n": n} for n in probes])]
     want = list(est.predict(np.array([[n] for n in probes], dtype=np.int64)))
     assert got == want, f"engine {got} vs sklearn {want} (int64 features)"
 
@@ -685,8 +684,6 @@ def test_call_and_kernel_agree_on_an_integer_feature_above_2_53(declared):
     narrows once, while a declared DOUBLE is cast by DuckDB first and narrows
     from the double — the engine must follow the DECLARATION, not the column.
     """
-    from pydantic import create_model as _cm
-
     est, mid = _int_split_model()
     n = mid + 1
     u = TreeBasedTransform("m", instances={0: est}, takes=pa.schema([("n", declared)]))
@@ -698,7 +695,12 @@ def test_call_and_kernel_agree_on_an_integer_feature_above_2_53(declared):
 
     assert u(0, n) == (want,), "__call__ (the contract, and DuckDB's binding)"
 
-    row = _cm("IntRow", id=(int, ...), n=(int, ...))
+    row = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("n", pa.int64(), nullable=False),
+        ]
+    )
     fn = DuckDBInferFn(
         "SELECT m(id, n) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
@@ -706,21 +708,25 @@ def test_call_and_kernel_agree_on_an_integer_feature_above_2_53(declared):
         udfs=[u],
     )
     assert fn.backend == "cranelift"
-    got = [r.p for r in fn.infer({"__THIS__": [row(id=0, n=n)]})]
+    got = [r["p"] for r in fn.infer_rows([{"id": 0, "n": n}])]
     assert got == [want], f"kernel {got} vs contract {want}"
 
 
 def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
     """AC #2: `float64(n)` is exact below 2**53, so the narrowing must be a
     no-op there — the overwhelmingly common case must not move."""
-    from pydantic import create_model as _cm
-
     rng = np.random.RandomState(77)
     x = rng.randint(-100_000, 100_000, size=(300, 2)).astype(np.int64)
     y = (x[:, 0] * 0.5 - x[:, 1] * 0.25).astype(np.float64)
     est = DecisionTreeRegressor(max_depth=8, random_state=77).fit(x, y)
 
-    row = _cm("SmallRow", id=(int, ...), a=(int, ...), b=(int, ...))
+    row = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("a", pa.int64(), nullable=False),
+            pa.field("b", pa.int64(), nullable=False),
+        ]
+    )
     fn = DuckDBInferFn(
         "SELECT m(id, a, b) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
@@ -735,10 +741,8 @@ def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
     )
     probe = rng.randint(-100_000, 100_000, size=(200, 2)).astype(np.int64)
     got = [
-        r.p
-        for r in fn.infer(
-            {"__THIS__": [row(id=0, a=int(a), b=int(b)) for a, b in probe]}
-        )
+        r["p"]
+        for r in fn.infer_rows([{"id": 0, "a": int(a), "b": int(b)} for a, b in probe])
     ]
     assert got == list(est.predict(probe))
 
@@ -746,11 +750,9 @@ def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
 def test_integer_feature_literal_is_narrowed_too():
     """The constant folder collapses an integer literal feature at build
     time, so it has to fold through f32 as well or the fix has a hole."""
-    from pydantic import create_model as _cm
-
     est, mid = _int_split_model()
     n = mid + 1
-    row = _cm("LitRow", id=(int, ...))
+    row = pa.schema([pa.field("id", pa.int64(), nullable=False)])
     fn = DuckDBInferFn(
         f"SELECT m(id, {n}) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
@@ -761,7 +763,7 @@ def test_integer_feature_literal_is_narrowed_too():
             )
         ],
     )
-    got = [r.p for r in fn.infer({"__THIS__": [row(id=0)]})]
+    got = [r["p"] for r in fn.infer_rows([{"id": 0}])]
     want = list(est.predict(np.array([[n]], dtype=np.int64)))
     assert got == want, f"engine {got} vs sklearn {want} (literal feature)"
 
@@ -811,9 +813,13 @@ def test_schema_names_do_not_bind_the_call_site():
     # no `feature_names_in_`: any naming is accepted
     assert _named(est, ["anything", "at_all"]).take_names == ("anything", "at_all")
 
-    from pydantic import create_model as _cm
-
-    row = _cm("PosRow", id=(int, ...), zzz=(float, ...), qqq=(float, ...))
+    row = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("zzz", pa.float64(), nullable=False),
+            pa.field("qqq", pa.float64(), nullable=False),
+        ]
+    )
     fn = DuckDBInferFn(
         "SELECT score(id, zzz, qqq) AS p FROM __THIS__",
         row_tables={"__THIS__": row},
@@ -822,9 +828,9 @@ def test_schema_names_do_not_bind_the_call_site():
     )
     probe = rng.rand(20, 2) * 4 - 2
     got = [
-        r.p
-        for r in fn.infer(
-            {"__THIS__": [row(id=0, zzz=float(a), qqq=float(b)) for a, b in probe]}
+        r["p"]
+        for r in fn.infer_rows(
+            [{"id": 0, "zzz": float(a), "qqq": float(b)} for a, b in probe]
         )
     ]
     assert got == list(est.predict(probe))
@@ -844,10 +850,10 @@ def test_call_answers_null_features_the_kernel_scores():
         GradientBoostingRegressor(n_estimators=5, max_depth=3, random_state=9),
     ]
     rows = [
-        ROW(id=0, a=None, b=0.5, c=-1.0, d=2.0),
-        ROW(id=0, a=1.5, b=None, c=0.25, d=None),
-        ROW(id=0, a=None, b=None, c=None, d=None),
-        ROW(id=0, a=0.5, b=0.5, c=0.5, d=0.5),  # control: no NULLs
+        {"id": 0, "a": None, "b": 0.5, "c": -1.0, "d": 2.0},
+        {"id": 0, "a": 1.5, "b": None, "c": 0.25, "d": None},
+        {"id": 0, "a": None, "b": None, "c": None, "d": None},
+        {"id": 0, "a": 0.5, "b": 0.5, "c": 0.5, "d": 0.5},  # control: no NULLs
     ]
     for kind in kinds:
         est = fit(kind, 90)  # fitted WITHOUT missing values
@@ -855,6 +861,6 @@ def test_call_answers_null_features_the_kernel_scores():
         fn = DuckDBInferFn(
             SQL, row_tables={"__THIS__": ROW}, static_tables={}, udfs=[udf]
         )
-        kernel = [r.p for r in fn.infer({"__THIS__": rows})]
-        called = [udf(0, *(getattr(r, f) for f in FEATURES)) for r in rows]
+        kernel = [r["p"] for r in fn.infer_rows(rows)]
+        called = [udf(0, *(r[f] for f in FEATURES)) for r in rows]
         assert [c[0] for c in called] == kernel, type(kind).__name__

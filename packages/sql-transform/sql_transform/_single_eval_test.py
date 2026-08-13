@@ -91,13 +91,13 @@ def test_two_fields_cost_one_call_per_row_on_the_batch_path():
 def test_two_fields_cost_one_call_per_row_on_the_row_path():
     p = _fitted_two_fields()
     rows = TRAIN.to_pylist()
-    got = [r.model_dump() for r in p.infer_batch(rows)]
+    got = p.infer_batch(rows)
     assert CountingPCA.calls == len(rows), (
         f"row path: {CountingPCA.calls} transform() calls for"
         f" {len(rows)} rows — k fields must share one call"
     )
     CountingPCA.calls = 0
-    one = p.infer(rows[0]).model_dump()
+    one = p.infer(rows[0])
     assert CountingPCA.calls == 1, "one row, two fields: exactly one call"
     assert one == got[0]
     # Interleaved groups: values must match the clone-per-group reference —
@@ -122,7 +122,7 @@ def test_whole_item_and_field_read_share_one_call_per_row():
     out = p.transform(TRAIN)
     assert CountingPCA.calls == TRAIN.num_rows
     CountingPCA.calls = 0
-    one = p.infer(TRAIN.to_pylist()[0]).model_dump()
+    one = p.infer(TRAIN.to_pylist()[0])
     assert CountingPCA.calls == 1, "whole item + field read: exactly one call"
     assert one["e"]["pca0"] == one["x"]
     assert out.column("e").to_pylist()[0]["pca0"] == out.column("x").to_pylist()[0]
@@ -149,7 +149,7 @@ def test_bare_wide_item_costs_one_call_per_row():
             [e["pca0"], e["pca1"]], ref[i], rtol=1e-9, atol=1e-12
         )
     CountingPCA.calls = 0
-    one = p.infer(TRAIN.to_pylist()[0]).model_dump()
+    one = p.infer(TRAIN.to_pylist()[0])
     assert CountingPCA.calls == 1, "one row, one bare item: exactly one call"
     np.testing.assert_allclose(
         [one["e"]["pca0"], one["e"]["pca1"]], ref[0], rtol=1e-9, atol=1e-12

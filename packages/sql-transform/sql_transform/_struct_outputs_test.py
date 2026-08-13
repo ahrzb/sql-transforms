@@ -11,7 +11,6 @@ row ≡ batch. Spec: docs/superpowers/specs/
 
 import numpy as np
 import pyarrow as pa
-import pydantic
 import pytest
 from sklearn.preprocessing import StandardScaler
 
@@ -19,12 +18,12 @@ from sql_transform import MarginalizeError, SQLProjection
 
 from ._transformers_test import TRAIN, _reference
 
-ROW = pydantic.create_model("Row", **dict.fromkeys(TRAIN.column_names, (object, None)))
+ROW = TRAIN.schema
 
 
 def _fit(sql: str) -> SQLProjection:
     return SQLProjection(
-        sql, this_model=ROW, transformers={"sc": StandardScaler()}
+        sql, this_schema=ROW, transformers={"sc": StandardScaler()}
     ).fit(TRAIN)
 
 
@@ -52,8 +51,7 @@ def test_bare_call_serves_struct_column_row_path():
     p = _fit("SELECT sc(struct_pack(a := age, f := fare)) AS s, name FROM __THIS__")
     want = _ref_struct()[0]
     row = p.infer({"country": "US", "age": 40.0, "fare": 7.0, "name": "x"})
-    got = row.s if not isinstance(row.s, dict) else row.s
-    got = dict(got) if not isinstance(got, dict) else got
+    got = row["s"]
     np.testing.assert_allclose(got["a"], want["a"], rtol=1e-12)
     np.testing.assert_allclose(got["f"], want["f"], rtol=1e-12)
 
@@ -104,16 +102,26 @@ def test_unseen_group_serves_null_whole_struct_both_paths():
     )
     unseen = pa.table({"country": ["JP"], "age": [33.0], "fare": [4.0], "name": ["q"]})
     assert p.transform(unseen).column("s").to_pylist() == [None]
-    assert p.infer({"country": "JP", "age": 33.0, "fare": 4.0, "name": "q"}).s is None
+    row = {"country": "JP", "age": 33.0, "fare": 4.0, "name": "q"}
+    assert p.infer(row)["s"] is None
 
 
-def test_underscore_fitted_field_refuses_at_fit_when_served_whole():
-    # pydantic silently reclassifies _-leading create_model kwargs as
-    # private attributes — the row path would drop the member the batch
-    # path serves (review round). Refuse by name at fit, where T is
-    # learned (the P7 carve-out).
-    with pytest.raises(MarginalizeError, match="row-path model boundary"):
-        _fit('SELECT sc(struct_pack("_a" := age, f := fare)) AS s, name FROM __THIS__')
+def test_underscore_fitted_field_serves_whole_struct():
+    # MIGRATION-NOTE: the old pydantic reserved-name refusal ("row-path model
+    # boundary" — pydantic silently reclassified _-leading create_model
+    # kwargs as private attributes) died with the pydantic output model. A
+    # learned field named "_a" is an ordinary dict/struct key now, on both
+    # engines, so the fit that used to refuse here now succeeds and serves.
+    p = _fit('SELECT sc(struct_pack("_a" := age, f := fare)) AS s, name FROM __THIS__')
+    ref = _ref_struct()
+    got = p.transform(TRAIN).column("s").to_pylist()
+    for row, want in zip(got, ref, strict=True):
+        assert set(row) == {"_a", "f"}
+        np.testing.assert_allclose(row["_a"], want["a"], rtol=1e-12)
+        np.testing.assert_allclose(row["f"], want["f"], rtol=1e-12)
+    row0 = p.infer({"country": "US", "age": 40.0, "fare": 7.0, "name": "x"})
+    np.testing.assert_allclose(row0["s"]["_a"], ref[0]["a"], rtol=1e-12)
+    np.testing.assert_allclose(row0["s"]["f"], ref[0]["f"], rtol=1e-12)
 
 
 def test_underscore_fitted_field_still_fits_for_field_reads():
@@ -125,16 +133,25 @@ def test_underscore_fitted_field_still_fits_for_field_reads():
     assert isinstance(p.transform(TRAIN).column("zf").to_pylist()[0], float)
 
 
-def test_pydantic_reserved_fitted_field_refuses_at_fit():
-    # Names pydantic reserves (config/protected namespaces, dunders) would
-    # raw-crash or silently vanish at first infer — the fit-time probe of
-    # the real model builder refuses them by name (review round).
+def test_previously_pydantic_reserved_fitted_field_serves():
+    # MIGRATION-NOTE: names pydantic used to reserve (config/protected
+    # namespaces, dunders) would raw-crash or silently vanish at first infer
+    # against the old output model, so the fit-time probe refused them by
+    # name. Dict-out and arrow structs don't reserve any name, so the fit
+    # now succeeds and serves correctly on both paths.
+    ref = _ref_struct()
     for member in ("model_config", "model_validate", "__init__"):
-        with pytest.raises(MarginalizeError, match="row-path model boundary"):
-            _fit(
-                f'SELECT sc(struct_pack("{member}" := age, f := fare)) AS s,'
-                " name FROM __THIS__"
-            )
+        p = _fit(
+            f'SELECT sc(struct_pack("{member}" := age, f := fare)) AS s,'
+            " name FROM __THIS__"
+        )
+        got = p.transform(TRAIN).column("s").to_pylist()
+        for row, want in zip(got, ref, strict=True):
+            assert set(row) == {member, "f"}
+            np.testing.assert_allclose(row[member], want["a"], rtol=1e-12)
+            np.testing.assert_allclose(row["f"], want["f"], rtol=1e-12)
+        row0 = p.infer({"country": "US", "age": 40.0, "fare": 7.0, "name": "x"})
+        np.testing.assert_allclose(row0["s"][member], ref[0]["a"], rtol=1e-12)
 
 
 def test_distinct_on_the_call_refuses_at_construction():
@@ -176,7 +193,7 @@ def test_unnest_expands_struct_output_row_path():
     """C3: the row path expands to the same columns, same values."""
     p = _fit("SELECT unnest(sc(struct_pack(a := age, f := fare))), name FROM __THIS__")
     want = p.transform(TRAIN).to_pylist()
-    got = [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())]
+    got = p.infer_batch(TRAIN.to_pylist())
     assert got == want
 
 

@@ -9,7 +9,6 @@ docs/superpowers/specs/2026-08-05-fit-transform-split-design.md, slice 6.
 """
 
 import pyarrow as pa
-import pydantic
 import pytest
 from sklearn.preprocessing import StandardScaler
 
@@ -17,13 +16,13 @@ from sql_transform import MarginalizeError, SQLProjection
 
 from ._transformers_test import TRAIN
 
-ROW = pydantic.create_model("Row", **dict.fromkeys(TRAIN.column_names, (object, None)))
+ROW = TRAIN.schema
 B = "struct_pack(a := age, f := fare)"
 
 
 def _fit(sql: str) -> SQLProjection:
     return SQLProjection(
-        sql, this_model=ROW, transformers={"sc": StandardScaler()}
+        sql, this_schema=ROW, transformers={"sc": StandardScaler()}
     ).fit(TRAIN)
 
 
@@ -51,7 +50,7 @@ def test_theta_export_row_path():
         " country, name FROM __THIS__"
     )
     want = p.transform(TRAIN).to_pylist()
-    got = [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())]
+    got = p.infer_batch(TRAIN.to_pylist())
     assert got == want
 
 
@@ -83,7 +82,8 @@ def test_unseen_group_theta_is_null_on_both_paths():
     unseen = pa.table({"country": ["JP"], "age": [33.0], "fare": [4.0], "name": ["q"]})
     assert p.transform(unseen).column("theta").to_pylist() == [None]
     assert (
-        p.infer({"country": "JP", "age": 33.0, "fare": 4.0, "name": "q"}).theta is None
+        p.infer({"country": "JP", "age": 33.0, "fare": 4.0, "name": "q"})["theta"]
+        is None
     )
 
 

@@ -10,7 +10,6 @@ docs/superpowers/specs/2026-08-05-fit-transform-split-design.md.
 
 import numpy as np
 import pyarrow as pa
-import pydantic
 import pytest
 from sklearn.preprocessing import StandardScaler
 
@@ -18,7 +17,7 @@ from sql_transform import MarginalizeError, OrderSensitive, SQLProjection
 
 from ._transformers_test import TRAIN, _by_name
 
-ROW = pydantic.create_model("Row", **dict.fromkeys(TRAIN.column_names, (object, None)))
+ROW = TRAIN.schema
 
 
 class SeqMean:
@@ -42,7 +41,7 @@ class SeqMean:
 def _fit(sql: str) -> SQLProjection:
     return SQLProjection(
         sql,
-        this_model=ROW,
+        this_schema=ROW,
         transformers={"sm": OrderSensitive(SeqMean()), "sc": StandardScaler()},
     ).fit(TRAIN)
 
@@ -74,7 +73,7 @@ def test_ordered_fit_global():
             strict=True,
         )
     )
-    np.testing.assert_allclose(p.infer(row).z, AGES[0] - w, rtol=1e-12)
+    np.testing.assert_allclose(p.infer(row)["z"], AGES[0] - w, rtol=1e-12)
 
 
 def test_ordered_fit_partitioned():
@@ -191,11 +190,11 @@ def test_collate_key_is_honored():
     import duckdb
 
     t = pa.table({"rid": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "s": list("bABaCc")})
-    model = pydantic.create_model("R", **dict.fromkeys(t.column_names, (object, None)))
+    model = t.schema
     p = SQLProjection(
         "SELECT sm_transform(sm_fit(rid ORDER BY s COLLATE NOCASE) OVER (), rid)"
         ".rid AS z, rid FROM __THIS__",
-        this_model=model,
+        this_schema=model,
         transformers={"sm": OrderSensitive(SeqMean())},
     ).fit(t)
     con = duckdb.connect()
@@ -218,7 +217,7 @@ def test_named_wrapping_order_sensitive_still_requires_order():
     with pytest.raises(MarginalizeError, match="order-sensitive"):
         SQLProjection(
             "SELECT sm_transform(sm_fit(age) OVER (), age).age AS z FROM __THIS__",
-            this_model=ROW,
+            this_schema=ROW,
             transformers={"sm": Named(OrderSensitive(SeqMean()), returns=("age",))},
         )
 
@@ -302,6 +301,6 @@ def test_ordered_refusals(sql, match):
     with pytest.raises(MarginalizeError, match=match):
         SQLProjection(
             sql,
-            this_model=ROW,
+            this_schema=ROW,
             transformers={"sm": OrderSensitive(SeqMean()), "sc": StandardScaler()},
         )

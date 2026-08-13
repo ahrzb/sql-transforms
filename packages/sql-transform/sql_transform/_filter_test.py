@@ -9,7 +9,6 @@ Spec: docs/superpowers/specs/2026-08-05-fit-transform-split-design.md.
 
 import numpy as np
 import pyarrow as pa
-import pydantic
 import pytest
 from sklearn.base import clone
 from sklearn.decomposition import PCA
@@ -19,13 +18,13 @@ from sql_transform import MarginalizeError, SQLProjection
 
 from ._transformers_test import TRAIN, _by_name
 
-ROW = pydantic.create_model("Row", **dict.fromkeys(TRAIN.column_names, (object, None)))
+ROW = TRAIN.schema
 
 
 def _fit(sql: str) -> SQLProjection:
     return SQLProjection(
         sql,
-        this_model=ROW,
+        this_schema=ROW,
         transformers={"sc": StandardScaler(), "pca": PCA(n_components=1)},
     ).fit(TRAIN)
 
@@ -58,7 +57,7 @@ def test_global_filtered_fit():
         np.testing.assert_allclose(got[n], ref[i], rtol=1e-12)
     # row path serves the same artifact (C3)
     row = {"country": "US", "age": 40.0, "fare": 7.0, "name": "x"}
-    np.testing.assert_allclose(p.infer(row).z, ref[0], rtol=1e-12)
+    np.testing.assert_allclose(p.infer(row)["z"], ref[0], rtol=1e-12)
 
 
 def test_partitioned_filtered_fit_unseen_group_is_null():
@@ -151,7 +150,7 @@ def test_author_udf_in_predicate_serves():
     p = SQLProjection(
         "SELECT sc_transform(sc_fit(age) FILTER (WHERE gt6(fare)) OVER (), age)"
         ".age AS z, name FROM __THIS__",
-        this_model=ROW,
+        this_schema=ROW,
         transformers={"sc": StandardScaler(), "gt6": gt6},
     ).fit(TRAIN)
     ref = _fit(
@@ -242,6 +241,6 @@ def test_filter_refusals(sql, match):
     with pytest.raises(MarginalizeError, match=match):
         SQLProjection(
             sql,
-            this_model=ROW,
+            this_schema=ROW,
             transformers={"sc": StandardScaler(), "pca": PCA(n_components=1)},
         )
