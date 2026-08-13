@@ -6198,15 +6198,15 @@ impl Binder<'_> {
         })
     }
 
-    /// round(x, n) / trunc(x, n): result type == subject type; digits must
-    /// be integer-typed. Total on both types (i64 wraps — pinned).
+    /// round(x, n) / trunc(x, n): result type == subject type; the digits
+    /// slot maxes at INTEGER — a BIGINT digits expression (column or wide
+    /// literal) is a binder error on DuckDB too (TASK-97, probe
+    /// 2026-08-13). Total on both types (i64 wraps — pinned).
     ///
-    /// audit 2026-08-13: looser than DuckDB twice — its digits slot maxes
-    /// at INTEGER (round(d, k::BIGINT) is a binder error there, any I64
-    /// binds here), and a bare-NULL subject returns before the digits slot
-    /// is even bound (round(NULL, s) is NULL here, a binder error there).
-    /// This interleaved order is also why round/trunc stay Custom rows.
-    /// Preserved.
+    /// audit 2026-08-13: looser than DuckDB once — a bare-NULL subject
+    /// returns before the digits slot is even bound (round(NULL, s) is
+    /// NULL here, a binder error there). This interleaved order is also
+    /// why round/trunc stay Custom rows. Preserved.
     fn round2(&self, trunc: bool, x: &SqlExpr, n: &SqlExpr) -> Result<SExpr, PrepareError> {
         let name = if trunc { "trunc" } else { "round" };
         let Some(subject) = self.expr_or_null(x)? else {
@@ -6222,7 +6222,7 @@ impl Binder<'_> {
         let Some(digits) = self.expr_or_null(n)? else {
             return Ok(null_of(ty));
         };
-        if !digits.ty.is_int() {
+        if !matches!(digits.ty, Ty::I8 | Ty::I16 | Ty::I32) {
             return Err(PrepareError::Bind(format!(
                 "no function matches {name}({}, {})",
                 ty.name(),

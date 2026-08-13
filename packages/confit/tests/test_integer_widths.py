@@ -61,6 +61,8 @@ CATALOGUE = [
     "SELECT round(1) AS o FROM __THIS__",
     "SELECT trunc(1) AS o FROM __THIS__",
     "SELECT round(1, 0) AS o FROM __THIS__",
+    "SELECT round(1.567e0, CAST(2 AS TINYINT)) AS o FROM __THIS__",
+    "SELECT trunc(1.567e0, CAST(k AS INTEGER)) AS o FROM __THIS__",
     "SELECT greatest(1, 2) AS o FROM __THIS__",
     "SELECT least(1, 2) AS o FROM __THIS__",
     "SELECT greatest(1, k) AS o FROM __THIS__",
@@ -514,3 +516,21 @@ def test_decimal_arith_over_foldable_null_collapses(sql):
     got, want = _ours(sql), _duck(sql)
     assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
     assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+
+
+# TASK-97: the round/trunc DIGITS slot accepts INTEGER-or-narrower on
+# DuckDB; a BIGINT digits expression (column or wide literal) is a binder
+# error there. Both sides live-oracle.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT round(1.567e0, k) AS o FROM __THIS__",
+        "SELECT trunc(1.567e0, k) AS o FROM __THIS__",
+        "SELECT round(1.567e0, 9007199254740993) AS o FROM __THIS__",
+    ],
+)
+def test_round_trunc_bigint_digits_refuse_like_duckdb(sql):
+    with pytest.raises(duckdb.BinderException, match="No function matches"):
+        _duck(sql)
+    with pytest.raises(ValueError, match="no function matches"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={})

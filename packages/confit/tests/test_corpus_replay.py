@@ -48,6 +48,19 @@ _KNOWN_DIVERGENT_SOURCES = {
     "test/sql/function/string/test_ilike_embedded_null.test",
 }
 
+# Corpus spellings whose DECLARED input schema our row surface cannot
+# express: pydantic `int` is width-less, so this corpus INTEGER column
+# binds as int64 — and round(f64, i64) then refuses HERE exactly as
+# round(DOUBLE, BIGINT) refuses on DuckDB (TASK-97, probe 2026-08-13).
+# Not a divergence: an input schema we cannot declare. Narrow ROW-input
+# types are an open API question (statics get widths in TASK-96).
+_INEXPRESSIBLE_INPUTS = {
+    (
+        "test/sql/function/numeric/test_round.test",
+        "select round(a, b) from roundme",
+    ),
+}
+
 _FROM_RE = re.compile(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 
 
@@ -132,6 +145,8 @@ def _replay(case: dict) -> tuple[str, str]:
                 return "FAIL", f"build error under shape='many': {msg2}"
         elif any(n in msg for n in _CLEAN):
             return "unsupported", msg
+        elif (case.get("source"), case["sql"]) in _INEXPRESSIBLE_INPUTS:
+            return "unsupported", f"inexpressible input schema: {msg}"
         else:
             return "FAIL", f"build error: {type(e).__name__}: {msg}"
 
