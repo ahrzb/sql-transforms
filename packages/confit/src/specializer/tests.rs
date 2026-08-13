@@ -517,7 +517,9 @@ fn unsupported_constructs_are_named_cleanly() {
         // Bare COLUMNS expands since wave B; expression forms stay named.
         ("SELECT COLUMNS('a') + 1 FROM __THIS__", "COLUMNS"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
-        ("SELECT NULL FROM __THIS__", "NULL literal"),
+        // Bare NULL serves since m-8 phase 2 (int32, DuckDB's SQLNULL
+        // surface); only the all-NULL family forms stay refused.
+        ("SELECT coalesce(NULL, NULL) FROM __THIS__", "NULL"),
         ("SELECT a FROM other_table", "must be the dynamic table"),
     ] {
         match prep(sql, &schema) {

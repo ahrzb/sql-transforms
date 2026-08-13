@@ -498,7 +498,8 @@ pub fn emit(
                     // struct_pack fields are arbitrary expressions, so the
                     // width is real here (m-8 phase-2 campaign, 423 schema
                     // findings: ord() inside a struct is int32 on DuckDB).
-                    // pa.array validates ranges when the values assemble.
+                    // wide_py refuses out-of-range children by name before
+                    // pa.array ever sees the values.
                     crate::specializer::ir::Ty::I8 => pa.call_method0("int8"),
                     crate::specializer::ir::Ty::I16 => pa.call_method0("int16"),
                     crate::specializer::ir::Ty::I32 => pa.call_method0("int32"),
@@ -522,9 +523,24 @@ pub fn emit(
                         .collect::<PyResult<Vec<_>>>()?;
                     pa.call_method1("struct", (PyList::new(py, members)?,))?
                 };
+                let child_tys: Vec<crate::specializer::ir::Ty> = out_cols
+                    [*first..*first + *width]
+                    .iter()
+                    .map(|c| c.ty.ty)
+                    .collect();
                 let mut values = Vec::with_capacity(n);
                 for r in 0..n {
-                    values.push(super::wide_py(py, st, *valid, *first, *width, field_names, r)?);
+                    values.push(super::wide_py(
+                        py,
+                        st,
+                        *valid,
+                        *first,
+                        *width,
+                        field_names,
+                        &child_tys,
+                        name,
+                        r,
+                    )?);
                 }
                 let vals = PyList::new(py, values)?;
                 let kw = pyo3::types::PyDict::new(py);

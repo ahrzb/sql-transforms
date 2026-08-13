@@ -173,6 +173,26 @@ def test_row_and_arrow_boundaries_agree_on_narrow_widths():
         fn.infer_arrow(pa.Table.from_pylist(bad))
 
 
+def test_struct_children_hold_narrow_widths_on_both_boundaries():
+    """A struct_pack child is an arbitrary expression, so it can carry a
+    narrow width (int32 here via ::INTEGER). The width contract holds for
+    struct children exactly as for scalar columns: BOTH boundaries refuse
+    an out-of-range value by name (the row path served it silently; the
+    arrow path refused with pyarrow's wording instead of ours)."""
+    sql = "SELECT struct_pack(v := CAST(k AS INTEGER)) AS o FROM __THIS__"
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
+    )
+    ok = [{"k": 5, "s": "a"}]
+    assert [r["o"] for r in fn.infer({"__THIS__": [In(**r) for r in ok]})] == [{"v": 5}]
+    assert fn.infer_arrow(pa.Table.from_pylist(ok)).to_pylist() == [{"o": {"v": 5}}]
+    bad = [{"k": 3000000000, "s": "a"}]
+    with pytest.raises(ValueError, match="INTEGER"):
+        fn.infer({"__THIS__": [In(**r) for r in bad]})
+    with pytest.raises(ValueError, match="INTEGER"):
+        fn.infer_arrow(pa.Table.from_pylist(bad))
+
+
 def test_unary_plus_refuses_non_numerics():
     """DuckDB's + is a real unary function over numerics; +'a' is a binder
     error there (fleet 2026-08-13 — we built and served it)."""
