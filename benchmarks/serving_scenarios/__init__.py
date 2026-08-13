@@ -20,16 +20,13 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from typing import Any
 
 import duckdb
 import pyarrow as pa
-from pydantic import create_model
 
 NAMES = ["titanic", "house_prices", "fraud_txn", "store_sales"]
 
 SEED = 20260726
-_PY = {"int": int, "float": float, "str": str, "bool": bool}
 _ARROW = {
     "int": pa.int64(),
     "float": pa.float64(),
@@ -46,16 +43,6 @@ def all_scenarios():
     return [load(n) for n in NAMES]
 
 
-def row_model(schema: dict[str, str]):
-    fields: dict[str, Any] = {}
-    for name, spec in schema.items():
-        if spec.endswith("?"):
-            fields[name] = (_PY[spec[:-1]] | None, None)
-        else:
-            fields[name] = (_PY[spec], ...)
-    return create_model("Row", **fields)
-
-
 def arrow_schema(schema: dict[str, str]) -> pa.Schema:
     return pa.schema(
         pa.field(n, _ARROW[s.rstrip("?")], nullable=s.endswith("?"))
@@ -67,15 +54,14 @@ def rows_table(mod, rows: list[dict]) -> pa.Table:
     return pa.Table.from_pylist(rows, schema=arrow_schema(mod.ROW_SCHEMA))
 
 
-def build_spec_fn(mod, statics: dict[str, pa.Table], output: str = "model"):
+def build_spec_fn(mod, statics: dict[str, pa.Table]):
     """The specializer serving fn (env knobs select backend/boundary)."""
     from confit import DuckDBInferFn
 
     return DuckDBInferFn(
         mod.SQL,
-        row_tables={"__THIS__": row_model(mod.ROW_SCHEMA)},
+        row_tables={"__THIS__": arrow_schema(mod.ROW_SCHEMA)},
         static_tables=statics,
-        output=output,
     )
 
 
@@ -111,7 +97,7 @@ def verify_parity(mod, n: int = 300) -> list[str]:
     rows = mod.make_rows(SEED + 1, n)
 
     fn = build_spec_fn(mod, statics)
-    got_spec = [m.model_dump() for m in fn.infer_rows(rows)]
+    got_spec = fn.infer_rows(rows)
     got_duck = duckdb_server(mod, statics)(rows)
     hand = mod.handcrafted(statics)
     got_hand = [hand(r) for r in rows]
@@ -120,11 +106,8 @@ def verify_parity(mod, n: int = 300) -> list[str]:
     if fn.backend != "cranelift":
         problems.append(f"{mod.NAME}: backend is {fn.backend}, not cranelift")
 
-    # The raw-dict mode must agree with the typed mode field-for-field
-    # (positional — same engine, same input order).
-    got_dict = build_spec_fn(mod, statics, output="dict").infer_rows(rows)
-    if got_dict != got_spec:
-        problems.append(f"{mod.NAME}: output='dict' differs from the typed mode")
+    # No more output='dict' vs typed-mode differential: dict-out is the only
+    # mode the arrow schema surface has (output= was deleted).
 
     def norm(row: dict) -> tuple:
         return tuple((k, repr(v)) for k, v in row.items())

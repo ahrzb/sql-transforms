@@ -14,11 +14,16 @@ import textwrap
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
 from benchmarks import serving_scenarios as sc
 
-T = create_model("T", a=(int, ...), s=(str | None, None), f=(float | None, None))
+T_SCHEMA = pa.schema(
+    [
+        pa.field("a", pa.int64(), nullable=False),
+        pa.field("s", pa.string()),
+        pa.field("f", pa.float64()),
+    ]
+)
 ROWS = [
     {"a": 1, "s": "héllo", "f": 1.5},
     {"a": 2, "s": None, "f": None},
@@ -31,9 +36,9 @@ def _table(rows, schema=None):
 
 
 def _cmp(fn, rows, tbl):
-    got_rows = fn.infer({"__THIS__": rows})
+    got_rows = fn.infer_rows(rows)
     got_arrow = fn.infer_arrow(tbl).to_pylist()
-    assert [dict(r) for r in got_rows] == got_arrow
+    assert got_rows == got_arrow
 
 
 def _duck_arrow(mod, statics, rows_d):
@@ -53,41 +58,37 @@ def _duck_arrow(mod, statics, rows_d):
 def test_differential_basic_and_nulls():
     fn = DuckDBInferFn(
         "SELECT a + 1 AS b, upper(s) AS u, f * 2 AS d FROM __THIS__ WHERE a < 3",
-        row_tables={"__THIS__": T},
+        row_tables={"__THIS__": T_SCHEMA},
         static_tables={},
-        output="dict",
     )
-    _cmp(fn, [T(**r) for r in ROWS], _table(ROWS))
+    _cmp(fn, ROWS, _table(ROWS))
 
 
 def test_differential_every_serving_scenario():
     for mod in sc.all_scenarios():
         statics = mod.make_statics(sc.SEED)
-        fn = sc.build_spec_fn(mod, statics, output="dict")
+        fn = sc.build_spec_fn(mod, statics)
         rows_d = mod.make_rows(sc.SEED + 7, 64)
-        model = sc.row_model(mod.ROW_SCHEMA)
         tbl = sc.rows_table(mod, rows_d)
-        _cmp(fn, [model(**r) for r in rows_d], tbl)
+        _cmp(fn, rows_d, tbl)
 
 
 def test_differential_shape_many_left_join():
     dup = pa.table({"id": [1, 1, 2], "v": [10, 11, 20]})
     fn = DuckDBInferFn(
         "SELECT a, v FROM __THIS__ LEFT JOIN d ON a = d.id",
-        row_tables={"__THIS__": T},
+        row_tables={"__THIS__": T_SCHEMA},
         static_tables={"d": dup},
-        output="dict",
         shape="many",
     )
-    _cmp(fn, [T(**r) for r in ROWS], _table(ROWS))
+    _cmp(fn, ROWS, _table(ROWS))
 
 
 def test_named_rejections():
     fn = DuckDBInferFn(
         "SELECT a FROM __THIS__",
-        row_tables={"__THIS__": T},
+        row_tables={"__THIS__": T_SCHEMA},
         static_tables={},
-        output="dict",
     )
     two_chunks = pa.Table.from_batches(
         [pa.record_batch({"a": [1]}), pa.record_batch({"a": [2]})]
@@ -123,48 +124,20 @@ def test_named_rejections():
                 ),
             )
         )
-    # Struct models use the row path.
-    Inner = create_model("Inner", i=(int | None, None))
-    M = create_model("M", a=(Inner | None, None))
+    # Struct schemas use the row path.
+    m_schema = pa.schema([pa.field("a", pa.struct([pa.field("i", pa.int64())]))])
     fs = DuckDBInferFn(
-        "SELECT a.i FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
+        "SELECT a.i FROM __THIS__", row_tables={"__THIS__": m_schema}, static_tables={}
     )
     with pytest.raises(ValueError, match="all-scalar"):
         fs.infer_arrow(pa.table({"a": [{"i": 1}]}))
 
 
-def test_every_scenario_refuses_a_supplied_output_model():
-    """TASK-71 survived because this differential only ever built fns WITHOUT
-    an `output_model` — so the one path that ignores it was never compared.
-
-    A supplied model can carry validators, defaults and coercion, and the
-    columnar path builds no rows to run them on, so it refuses. The model
-    supplied here is the fn's OWN synthesized one: identical shape, so the
-    only thing under test is that supplying it is what flips the behaviour.
-    """
-    for mod in sc.all_scenarios():
-        statics = mod.make_statics(sc.SEED)
-        plain = sc.build_spec_fn(mod, statics, output="model")
-        rows_d = mod.make_rows(sc.SEED + 7, 8)
-        model = sc.row_model(mod.ROW_SCHEMA)
-        rows = [model(**r) for r in rows_d]
-        tbl = sc.rows_table(mod, rows_d)
-
-        given = DuckDBInferFn(
-            mod.SQL,
-            row_tables={"__THIS__": model},
-            static_tables=statics,
-            output_model=plain.output_model,
-        )
-        # Same answers by row ...
-        assert [r.model_dump() for r in given.infer({"__THIS__": rows})] == [
-            r.model_dump() for r in plain.infer({"__THIS__": rows})
-        ]
-        # ... and a named refusal instead of a silently different one.
-        with pytest.raises(ValueError, match="output_model is not applied"):
-            given.infer_arrow(tbl)
-        # The synthesized-model fn is unaffected: that is the fast path.
-        plain.infer_arrow(tbl)
+# test_every_scenario_refuses_a_supplied_output_model (TASK-71) is gone with
+# output_model=: the kwarg itself no longer exists, so there is nothing left
+# to supply and no separate refusal path to differential-test. Its premise
+# ("a supplied model flips infer_arrow's behaviour") is now covered once, at
+# the constructor, by test_arrow_schema_api.py::test_infer_and_output_model_are_gone.
 
 
 # TASK-79 landed with m-8 phase 2: integer widths are typed for real, so the
@@ -173,11 +146,9 @@ def test_every_scenario_refuses_a_supplied_output_model():
 def test_infer_arrow_integer_width_matches_duckdb():
     import duckdb
 
-    In = create_model("In", k=(int, ...))
+    in_schema = pa.schema([pa.field("k", pa.int64(), nullable=False)])
     sql = "SELECT CASE WHEN k > 1 THEN 1 ELSE 0 END AS c FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": in_schema}, static_tables={})
     got = fn.infer_arrow(pa.table({"k": [0, 2]}))
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT)")
@@ -192,7 +163,7 @@ def test_output_schema_matches_duckdb_for_every_scenario():
     does not match DuckDB's cannot be stacked with DuckDB's output."""
     for mod in sc.all_scenarios():
         statics = mod.make_statics(sc.SEED)
-        fn = sc.build_spec_fn(mod, statics, output="dict")
+        fn = sc.build_spec_fn(mod, statics)
         rows_d = mod.make_rows(sc.SEED + 7, 16)
         got = fn.infer_arrow(sc.rows_table(mod, rows_d))
         want = _duck_arrow(mod, statics, rows_d)
@@ -204,9 +175,8 @@ def test_output_schema_matches_duckdb_for_every_scenario():
 def test_sliced_and_recordbatch_inputs():
     fn = DuckDBInferFn(
         "SELECT a, s, f FROM __THIS__",
-        row_tables={"__THIS__": T},
+        row_tables={"__THIS__": T_SCHEMA},
         static_tables={},
-        output="dict",
     )
     tbl = _table(ROWS * 3)
     sliced = tbl.slice(2, 4).combine_chunks()
@@ -232,7 +202,6 @@ def test_sliced_and_recordbatch_inputs():
 _PROBE_PRELUDE = """
 import numpy as np, pyarrow as pa
 from confit import DuckDBInferFn
-from pydantic import create_model
 
 def misaligned(values, dtype):
     "A pyarrow array whose value buffer is deliberately not naturally aligned."
@@ -265,10 +234,13 @@ def test_unaligned_input_buffers_on_the_request_path():
     """`infer_arrow`, per request — the one that a caller controls."""
     out = _probe(
         """
-        T = create_model("T", a=(int, ...), f=(float, ...))
+        schema = pa.schema([
+            pa.field("a", pa.int64(), nullable=False),
+            pa.field("f", pa.float64(), nullable=False),
+        ])
         fn = DuckDBInferFn(
             "SELECT a + 1 AS b, f * 2 AS d FROM __THIS__",
-            row_tables={"__THIS__": T}, static_tables={}, output="dict",
+            row_tables={"__THIS__": schema}, static_tables={},
         )
         tbl = pa.table({
             "a": misaligned([1, 2, 3], np.int64),
@@ -287,10 +259,10 @@ def test_unaligned_string_offset_buffer():
     caller is least likely to have thought about."""
     out = _probe(
         """
-        T = create_model("T", s=(str, ...))
+        schema = pa.schema([pa.field("s", pa.string(), nullable=False)])
         fn = DuckDBInferFn(
             "SELECT upper(s) AS u FROM __THIS__",
-            row_tables={"__THIS__": T}, static_tables={}, output="dict",
+            row_tables={"__THIS__": schema}, static_tables={},
         )
         vals = ["ab", "cde", "f"]
         offs = np.array([0, 2, 5, 6], dtype=np.int32)
@@ -339,13 +311,16 @@ def test_unaligned_model_tables_at_construction():
             def tree_tables(self):
                 return nodes, headers, "float32"
 
-        T = create_model("T", id=(int, ...), x=(float, ...))
+        schema = pa.schema([
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("x", pa.float64(), nullable=False),
+        ])
         fn = DuckDBInferFn(
             "SELECT m(id, x) AS p FROM __THIS__",
-            row_tables={"__THIS__": T}, static_tables={}, output="dict",
+            row_tables={"__THIS__": schema}, static_tables={},
             udfs=[M()],
         )
-        got = fn.infer({"__THIS__": [T(id=0, x=0.0), T(id=0, x=1.0)]})
+        got = fn.infer_rows([{"id": 0, "x": 0.0}, {"id": 0, "x": 1.0}])
         assert [r["p"] for r in got] == [10.0, 20.0], got
         print("ok")
         """

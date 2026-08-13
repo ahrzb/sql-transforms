@@ -2,7 +2,7 @@
 
 The contract under test: confit either matches DuckDB bit-for-bit — with the
 same UDFs registered — or refuses at build with a named ValueError. Anything
-else is a finding. Extra legs beyond the three-way comparison: infer vs
+else is a finding. Extra legs beyond the three-way comparison: infer_rows vs
 infer_arrow, hostile Arrow input (sliced / chunked / empty), single-row vs
 batch concatenation, rebuild determinism, and sklearn as a second ground
 truth on tree cases.
@@ -22,7 +22,6 @@ from dataclasses import field as dfield
 
 import duckdb
 import pyarrow as pa
-from pydantic import create_model
 
 from . import gen as G
 
@@ -37,7 +36,6 @@ KINDS = (
     "SKIP",
 )
 
-_PY = {"int": int, "float": float, "str": str, "bool": bool}
 _ARROW = {
     "int": pa.int64(),
     "float": pa.float64(),
@@ -77,22 +75,15 @@ class Verdict:
 # ------------------------------------------------------------- materialize
 
 
-def _row_model(schema: dict[str, str]):
-    fields = {}
-    for name, spec in schema.items():
-        if spec.endswith("?"):
-            fields[name] = (_PY[spec[:-1]] | None, None)
-        else:
-            fields[name] = (_PY[spec], ...)
-    return create_model("Row", **fields)
+def _arrow_schema(schema: dict[str, str]) -> pa.Schema:
+    return pa.schema(
+        pa.field(n, _ARROW[s.rstrip("?")], nullable=s.endswith("?"))
+        for n, s in schema.items()
+    )
 
 
 def _arrow_table(schema: dict[str, str], rows: list[dict]) -> pa.Table:
-    s = pa.schema(
-        pa.field(n, _ARROW[t.rstrip("?")], nullable=t.endswith("?"))
-        for n, t in schema.items()
-    )
-    return pa.Table.from_pylist(rows, schema=s)
+    return pa.Table.from_pylist(rows, schema=_arrow_schema(schema))
 
 
 def _mix(vals, tys):
@@ -250,9 +241,7 @@ def _duck_ret(obj):
 # ------------------------------------------------------------------ oracle
 
 
-def _build(
-    sql, model, statics, udf_objs, shape, output, force_interp, output_model=None
-):
+def _build(sql, schema, statics, udf_objs, shape, force_interp):
     from confit import DuckDBInferFn
 
     prev = os.environ.pop("SPECIALIZER_FORCE_INTERP", None)
@@ -261,11 +250,9 @@ def _build(
             os.environ["SPECIALIZER_FORCE_INTERP"] = "1"
         return DuckDBInferFn(
             sql,
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables=statics,
             udfs=udf_objs or None,
-            output_model=output_model,
-            output=output,
             shape=shape,
         )
     finally:
@@ -369,7 +356,7 @@ def _norm(table: pa.Table, to: pa.Schema | None = None) -> list[dict]:
 def run_case(case: G.Case) -> Verdict:
     sql = G.render(case.query)
     tags = list(case.tags)
-    model = _row_model(case.row_schema)
+    schema = _arrow_schema(case.row_schema)
     statics = {n: _arrow_table(sch, rows) for n, (sch, rows) in case.statics.items()}
     udf_objs = [make_udf(u) for u in case.udfs]
     ests = {}
@@ -377,11 +364,14 @@ def run_case(case: G.Case) -> Verdict:
         tree_obj, ests = make_tree(case.tree, case.seed)
         udf_objs.append(tree_obj)
 
+    # case.output (gen.py still generates None/"dict"/"model") exercised the
+    # deleted output= kwarg; dict-out is now the only mode, so it is not
+    # forwarded to _build.
     # --- build both backends -------------------------------------------
     def build(force):
         try:
             return (
-                _build(sql, model, statics, udf_objs, case.shape, case.output, force),
+                _build(sql, schema, statics, udf_objs, case.shape, force),
                 None,
                 None,
             )
@@ -438,10 +428,7 @@ def run_case(case: G.Case) -> Verdict:
     def run_fn(fn):
         try:
             if static_only:
-                return [
-                    dict(r) if isinstance(r, dict) else r.model_dump()
-                    for r in fn.infer({"__THIS__": []})
-                ], None
+                return fn.infer_rows([]), None
             return fn.infer_arrow(table), None
         except Exception as e:  # noqa: BLE001
             return None, f"{type(e).__name__}: {e}"
@@ -505,24 +492,23 @@ def run_case(case: G.Case) -> Verdict:
             "DIVERGE_VALUE", "values", f"{got_cl.to_pylist()[:4]} != {want[:4]}", tags
         )
 
-    v = _extra_legs(fn_cl, model, case, table, got_cl, want, ests, tags)
+    v = _extra_legs(fn_cl, case, table, got_cl, want, ests, tags)
     if v is not None:
         return v
     return Verdict("AGREE", "", "", tags)
 
 
-def _extra_legs(fn, model, case, table, got, want, ests, tags) -> Verdict | None:
+def _extra_legs(fn, case, table, got, want, ests, tags) -> Verdict | None:
     """The boundary checks a plain differential run misses."""
-    # infer (pydantic rows) agrees with infer_arrow
-    inputs = [model(**r) for r in case.rows]
+    # infer_rows (dict rows) agrees with infer_arrow -- case.rows is already
+    # a list of TOTAL dicts against case.row_schema (gen.py's own contract).
     try:
-        res = fn.infer({"__THIS__": inputs})
-        rows = [r if isinstance(r, dict) else r.model_dump() for r in res]
+        rows = fn.infer_rows(case.rows)
     except Exception as e:  # noqa: BLE001
         return Verdict(
             "DIVERGE_VALUE",
             "infer-vs-arrow",
-            f"infer() raised where infer_arrow ran: {e}",
+            f"infer_rows() raised where infer_arrow ran: {e}",
             tags,
         )
     if _key(rows) != _key(got.to_pylist()):

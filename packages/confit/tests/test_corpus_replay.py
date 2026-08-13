@@ -29,7 +29,6 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 from confit import DuckDBInferFn
-from pydantic import create_model
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
@@ -50,42 +49,6 @@ _KNOWN_DIVERGENT_SOURCES = {
 }
 
 _FROM_RE = re.compile(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
-
-_PY_OF_ARROW = [
-    (pa.types.is_boolean, bool),
-    (pa.types.is_integer, int),
-    (pa.types.is_floating, float),
-    (pa.types.is_string, str),
-    (pa.types.is_large_string, str),
-]
-
-
-def _py_type(t: pa.DataType):
-    for pred, py in _PY_OF_ARROW:
-        if pred(t):
-            return py
-    return None
-
-
-def _struct_model(t: pa.DataType, name: str):
-    """A nested pydantic model for an arrow struct type — the engine
-    flattens it to scalar lanes (TASK-56). Non-identifier field names
-    can't become model fields; the caller falls back to `object` (the
-    engine's clean opaque rejection)."""
-    fields = {}
-    for i in range(t.num_fields):
-        fld = t.field(i)
-        if not fld.name.isidentifier():
-            return None
-        if pa.types.is_struct(fld.type):
-            sub = _struct_model(fld.type, f"{name}_{fld.name}")
-            if sub is None:
-                return None
-            fields[fld.name] = (sub | None, None)
-        else:
-            py = _py_type(fld.type)
-            fields[fld.name] = (py | None, None) if py else (object, None)
-    return create_model(f"S_{name}", **fields)
 
 
 def _norm_row(row) -> tuple[str, ...]:
@@ -136,24 +99,16 @@ def _replay(case: dict) -> tuple[str, str]:
         if any(pa.types.is_float32(f.type) for f in t.schema):
             return "unsupported", "f32 base-table column (engine is f64-only)"
 
-    # Row model from the driving table's schema; unmappable column types are
-    # the engine's own clean rejection (it sees the same field as unsupported).
-    fields = {}
-    for f in arrow[driving].schema:
-        py = _py_type(f.type)
-        if py is None:
-            sub = _struct_model(f.type, f.name) if pa.types.is_struct(f.type) else None
-            # object = the engine's clean opaque rejection (on REFERENCE
-            # since TASK-56; unreferenced columns no longer block).
-            fields[f.name] = (sub | None, None) if sub else (object, None)
-        else:
-            fields[f.name] = (py | None, None)
-    model = create_model("Row", **fields)
+    # DuckDB's own arrow schema for the driving table, straight through: no
+    # synthesized model, no width loss. A field the engine can't bind is its
+    # own clean opaque rejection (unsupported if referenced by the SQL,
+    # ignored otherwise -- TASK-56).
+    row_schema = arrow[driving].schema
     statics = {t: a for t, a in arrow.items() if t != driving}
 
     try:
         fn = DuckDBInferFn(
-            case["sql"], row_tables={driving: model}, static_tables=statics
+            case["sql"], row_tables={driving: row_schema}, static_tables=statics
         )
     except Exception as e:  # noqa: BLE001 -- classification, not control flow
         msg = str(e)
@@ -166,7 +121,7 @@ def _replay(case: dict) -> tuple[str, str]:
             try:
                 fn = DuckDBInferFn(
                     case["sql"],
-                    row_tables={driving: model},
+                    row_tables={driving: row_schema},
                     static_tables=statics,
                     shape="many",
                 )
@@ -183,8 +138,8 @@ def _replay(case: dict) -> tuple[str, str]:
     if case.get("source") in _KNOWN_DIVERGENT_SOURCES:
         return "unsupported", "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
     try:
-        rows_in = [model(**r) for r in arrow[driving].to_pylist()]
-        got = [list(r.model_dump().values()) for r in fn.infer({driving: rows_in})]
+        rows_in = arrow[driving].to_pylist()  # already TOTAL against row_schema
+        got = [list(r.values()) for r in fn.infer_rows(rows_in)]
     except Exception as e:  # noqa: BLE001
         return "FAIL", f"run error: {type(e).__name__}: {e}"
 
