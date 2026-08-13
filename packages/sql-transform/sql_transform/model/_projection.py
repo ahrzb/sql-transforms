@@ -185,11 +185,22 @@ def _check_expressions(level: Select, reading: dict[str, set[str]]) -> None:
             if isinstance(v, Opaque) and v.fields.get("class") == "WINDOW":
                 _refuse("window", expr=_print_expr(v))
             if (
-                isinstance(v, Function)
-                and not v.is_operator
-                and v.function_name.lower() in _aggregates()
+                isinstance(v, Opaque)
+                and v.fields.get("class") == "POSITIONAL_REFERENCE"
             ):
-                _refuse("aggregate", expr=_print_expr(v))
+                _refuse(
+                    "spine",
+                    what="a positional reference resolves by position, which "
+                    "the model's own appended columns shift",
+                )
+            if isinstance(v, Function) and not v.is_operator:
+                if v.function_name.lower() == "unnest":
+                    _refuse(
+                        "spine",
+                        what=f"{_print_expr(v)} turns one row into none or many",
+                    )
+                if v.function_name.lower() in _aggregates():
+                    _refuse("aggregate", expr=_print_expr(v))
 
 
 def _refuse_not_row_wise(residual: Node) -> None:
