@@ -297,6 +297,14 @@ vocabulary and can trail.
 
 - **Running fits** (`tfm_fit(x) OVER (ORDER BY ...)`) — refused here exactly
   as the split spec refuses them; a future feature with its own design.
+- **Serving projection scopes** (measured 2026-08-13, slice 3): the frozen θ
+  crosses the derived join as a struct column, and the spliced residual reads
+  it with `struct_extract` — which confit's v0 catalogue lacks. Batch
+  transform is complete and lawful; `compile()` refuses with confit's own
+  message, by name, until the row path's vocabulary grows structs. (Plain
+  scopes serve fully — their frozen values are scalars.)
+- **`FILTER`/`DISTINCT` on a projection fit scope** — the split hooks pass
+  children only, so the clause would drop silently; refused by name instead.
 - **The port and the old class's deletion** — unchanged from the row-wise
   spec. `marginalize` closes the *authoring* gap (`__THIS__`-only texts);
   the registry/unnest gaps remain the deletion trigger.

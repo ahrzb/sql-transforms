@@ -166,19 +166,103 @@ def test_refusals_fire_pre_rewrite_in_the_authors_vocabulary(token, text):
         SQLProjection.marginalize(text)
 
 
-def test_projection_scopes_are_not_frozen_yet():
-    """Slice 3's admission; until then the refusal names the projection and
-    the way out, instead of a wrong-vocabulary window refusal downstream."""
-    ratio = SQLProjection("""
-        SELECT t.price / f.m AS r
-        FROM __THIS__ t, (SELECT avg(price) AS m FROM __FIT__) f
-    """)
-    assert ratio is not None
-    for text in (
-        "SELECT ratio(struct_pack(price := price)).r AS r FROM __THIS__",
-        """SELECT ratio_transform(
-               ratio_fit(struct_pack(price := price)) OVER (PARTITION BY store),
-               struct_pack(price := price)).r AS r FROM __THIS__""",
-    ):
-        with pytest.raises(TransformError, match=r"ratio.*__FIT__"):
-            SQLProjection.marginalize(text)
+# --- projection scopes (slice 3) -------------------------------------------
+
+zscore = SQLProjection("""
+    SELECT round((t.price - f.m) / f.s, 4) AS z
+    FROM __THIS__ t,
+         (SELECT avg(price) AS m, stddev_pop(price) AS s FROM __FIT__) f
+""")
+
+PROJECTION_LAWFUL = {
+    "bare_global": (
+        "SELECT store, zscore(struct_pack(price := price)).z AS z FROM __THIS__"
+    ),
+    "split_per_key": """
+        SELECT store,
+               zscore_transform(
+                   zscore_fit(struct_pack(price := price)) OVER (PARTITION BY store),
+                   struct_pack(price := price)).z AS z
+        FROM __THIS__
+    """,
+    "mixed_with_plain": """
+        SELECT store,
+               zscore_transform(
+                   zscore_fit(struct_pack(price := price)) OVER (PARTITION BY store),
+                   struct_pack(price := price)).z AS z,
+               price - avg(price) OVER (PARTITION BY store) AS d
+        FROM __THIS__
+    """,
+}
+
+
+@pytest.mark.parametrize(
+    "text", PROJECTION_LAWFUL.values(), ids=PROJECTION_LAWFUL.keys()
+)
+def test_the_law_holds_for_projection_scopes(text):
+    frozen = SQLProjection.marginalize(text).fit(F).transform(F).to_pylist()
+    transductive = run(SQLTransform(text), F).to_pylist()
+    assert _sorted(frozen) == _sorted(transductive)
+
+
+def test_a_projection_scope_shares_the_join_with_plain_scopes():
+    """One key tuple, one derived join — a θ column and a plain aggregate
+    column side by side in the same params table."""
+    p = SQLProjection.marginalize(PROJECTION_LAWFUL["mixed_with_plain"])
+    assert p.sql.count("JOIN") == 1
+
+
+def test_projection_theta_misses_are_null():
+    fitted = SQLProjection.marginalize(PROJECTION_LAWFUL["split_per_key"]).fit(F)
+    by = {r["store"]: r["z"] for r in fitted.transform(X).to_pylist()}
+    assert by["NEW"] is None  # P14, through the leaf: NULL θ in, NULL out
+
+
+def test_a_projection_scope_serves_in_batch_and_refuses_the_row_path_loudly():
+    """The frozen θ crosses the derived join as a struct, and the residual
+    reads it with struct_extract — which Confit's v0 catalogue lacks. Batch
+    is unaffected; compile() refuses with Confit's own message, by name
+    (recorded gap: spec Deferred)."""
+    fitted = SQLProjection.marginalize(PROJECTION_LAWFUL["split_per_key"]).fit(F)
+    assert fitted.transform(X).to_pylist()[1] == {"store": "NEW", "z": None}
+    with pytest.raises(ValueError, match="struct_extract"):
+        fitted.compile()
+
+
+PROJECTION_REFUSED = [
+    # the deleted sugar stays deleted: the OVER belongs on the fit half
+    (
+        r"zscore_fit",
+        "SELECT zscore(struct_pack(price := price)) OVER (PARTITION BY store) AS z"
+        " FROM __THIS__",
+    ),
+    # a fit call with no scope — even the global scope is spelled OVER ()
+    (
+        r"OVER",
+        """SELECT zscore_transform(
+               zscore_fit(struct_pack(price := price)),
+               struct_pack(price := price)).z AS z FROM __THIS__""",
+    ),
+    # FILTER on a projection fit scope has no frozen spelling yet
+    (
+        r"FILTER",
+        """SELECT zscore_transform(
+               zscore_fit(struct_pack(price := price))
+                   FILTER (WHERE price > 0) OVER (PARTITION BY store),
+               struct_pack(price := price)).z AS z FROM __THIS__""",
+    ),
+    # a fit scope inside a bare call's bundle
+    (
+        r"inside",
+        "SELECT zscore(struct_pack(price := price - avg(price) OVER ())).z AS z"
+        " FROM __THIS__",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("token", "text"), PROJECTION_REFUSED, ids=[t for t, _ in PROJECTION_REFUSED]
+)
+def test_projection_scope_refusals_in_the_authors_vocabulary(token, text):
+    with pytest.raises(TransformError, match=token):
+        SQLProjection.marginalize(text)

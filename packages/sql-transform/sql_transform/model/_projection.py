@@ -26,11 +26,13 @@ from sql_transform.model._ast import (
     Captured,
     Connection,
     _aggregates,
+    _aliased,
     _base_table,
     _deserialize,
     _print_expr,
     _statement,
     _template,
+    _unaliased,
 )
 from sql_transform.model._errors import KeyNotUnique, NotRowWise, TransformError
 from sql_transform.model._foreign import _Registry
@@ -464,8 +466,8 @@ def _flattened(
     renames: dict[str, str] | None = None,
     reading: dict[str, set[str]] | None = None,
 ) -> Node:
-    """The residual, respelled for the row path. Two rewrites, both no-ops to
-    DuckDB and load-bearing to Confit's stricter surface.
+    """The residual, respelled for the row path. Three rewrites, all no-ops
+    to DuckDB and load-bearing to Confit's stricter surface.
 
     Freezing's own passthroughs inline: ``(SELECT * FROM __param_0) f`` says
     nothing ``__param_0 AS f`` does not, and Confit's FROM takes tables and
@@ -538,7 +540,55 @@ def _flattened(
                 )
         return None
 
-    return rebuild(node, cross_to_left, deep=False)
+    node = rebuild(node, cross_to_left, deep=False)
+
+    def unwrap_extract(v: Node) -> Node | None:
+        # A field read of a struct_pack — `struct_extract(struct_pack(k :=
+        # e, ...), 'k')` or the `.k` operator spelling (measured: an Opaque,
+        # class OPERATOR, type STRUCT_EXTRACT) — becomes the field's own
+        # expression: struct_pack is pure, so this is a no-op to DuckDB, and
+        # it is exactly what the leaf splice writes for a field-addressed
+        # output, in a named-argument form Confit's row path refuses.
+        if (
+            isinstance(v, Function)
+            and v.function_name.lower() == "struct_extract"
+            and len(v.children) == 2
+        ):
+            pack, key = v.children
+        elif (
+            isinstance(v, Opaque)
+            and v.fields.get("class") == "OPERATOR"
+            and v.fields.get("type") == "STRUCT_EXTRACT"
+            and len(v.fields.get("children") or []) == 2
+        ):
+            pack, key = v.fields["children"]
+        else:
+            return None
+        if not (
+            isinstance(pack, Function) and pack.function_name.lower() == "struct_pack"
+        ):
+            return None
+        name = _constant_text(key)
+        if name is None:
+            return None
+        for child in pack.children:
+            if str(field(child, "alias") or "").lower() == name.lower():
+                expr = _unaliased(child)
+                alias = str(field(v, "alias") or "")
+                return _aliased(expr, alias) if alias else expr
+        return None
+
+    return rebuild(node, unwrap_extract, deep=True)
+
+
+def _constant_text(v: Node) -> str | None:
+    """The string a VALUE_CONSTANT carries, or None for any other shape."""
+    if not (isinstance(v, Opaque) and v.fields.get("class") == "CONSTANT"):
+        return None
+    inner = v.fields.get("value")
+    if isinstance(inner, Opaque) and isinstance(inner.fields.get("value"), str):
+        return inner.fields["value"]
+    return None
 
 
 # The threaded ordinal: harvested from the oracle's own serialization, so the
