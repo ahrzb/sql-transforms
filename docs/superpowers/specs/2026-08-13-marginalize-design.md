@@ -140,6 +140,7 @@ cannot carry.
 | `tfm(x)` (bare sugar) | freeze, keyless |
 | `tfm_fit(x) OVER (PARTITION BY ...)` | freeze per key |
 | `tfm_fit(x) OVER (ORDER BY ...)` (any ordered frame) | refuse — running fit, exactly as the split spec already rules |
+| `tfm_fit(x) OVER (...)` where `tfm` is internally keyed (its own text joins `__FIT__` through a `GROUP BY`) | refuse by name — leaf eligibility is unchanged inside marginalize, and a keyed projection already refuses the leaf role (θ would have to carry a table per partition); both sides of the law refuse the same spelling |
 | scalar subquery over `__THIS__` | freeze (provably uncorrelated: `FROM __THIS__` has no alias in scope) |
 | top-level `WHERE` / `GROUP BY` / modifiers over `__THIS__` | refuse — same constructs the row-wise gate refuses, same reasons |
 
@@ -223,6 +224,12 @@ vocabulary and can trail.
 
 - **Running fits** (`tfm_fit(x) OVER (ORDER BY ...)`) — refused here exactly
   as the split spec refuses them; a future feature with its own design.
+- **Key composition** — admitting an internally keyed projection under a
+  partitioned fit scope. The coherent semantics is concatenation: effective
+  key = scope keys ⊕ the projection's internal keys, lowered *flat* (scope
+  keys appended to the internal `GROUP BY`, the `ON` clause carrying both) so
+  θ stays columns and never carries tables. Refused by name today on both
+  sides of the law, so admitting it later is purely additive.
 - **The port and the old class's deletion** — unchanged from the row-wise
   spec. `marginalize` closes the *authoring* gap (`__THIS__`-only texts);
   the registry/unnest gaps remain the deletion trigger.
