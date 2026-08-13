@@ -33,7 +33,8 @@ use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
 use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
-    ArithOp, CompareGrid, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap,
+    ArithOp, CompareGrid, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, bind_foldable,
+    may_trap,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -3499,6 +3500,22 @@ impl Binder<'_> {
                 // true || true = 'truetrue'), NULL-propagating; operands
                 // implicitly cast to VARCHAR.
                 let (a, b) = (to_varchar(a), to_varchar(b));
+                // TASK-102: DuckDB's binder collapses || to an SQLNULL
+                // constant (int32 at the boundary) when an operand its
+                // binder can fold evaluates to NULL — any spelling, a
+                // column on the OTHER side notwithstanding, since ||
+                // propagates NULL to every row. Concat-specific: +, LIKE
+                // and function calls keep their promoted type, and
+                // concat() skips NULLs instead. The bind_foldable gate is
+                // load-bearing: our own fold dead-arm-eliminates a CASE
+                // whose column sits in an untaken arm, which DuckDB's
+                // binder never folds — that spelling stays Str.
+                let folds_null = |e: &SExpr| {
+                    bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
+                };
+                if folds_null(&a) || folds_null(&b) {
+                    return Ok(null_of(Ty::I32));
+                }
                 let nullable = a.nullable || b.nullable;
                 Ok(SExpr {
                     kind: SKind::Concat {
