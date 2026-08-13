@@ -31,7 +31,10 @@ pub enum Ret {
     /// Integer-width promotion across the args; f64 is contagious
     /// (operators: + - * // % and the bitwise family).
     Widen,
-    /// Full numeric unification incl. f64 (coalesce, least/greatest).
+    /// Full numeric unification incl. f64 — coalesce/least/greatest's
+    /// rule. Those stay CUSTOM_NAMES today (guarded lazy binding), so no
+    /// row constructs this yet; the width branch's Unify helper will.
+    #[allow(dead_code)]
     Unify,
 }
 
@@ -175,6 +178,8 @@ pub const SIGS: &[(&[&str], Sig)] = &[
 
 /// Builtins whose arm owns everything (variadic desugars, arity ranges,
 /// AST-shape gates, unconditional refusals) — no expressible fixed Sig.
+/// Consumed only by the totality test, which is its whole job.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const CUSTOM_NAMES: &[&str] = &[
     // arity-range rows (1-or-2 / 2-to-4 args)
     "ltrim", "rtrim", "log", "round", "trunc",
