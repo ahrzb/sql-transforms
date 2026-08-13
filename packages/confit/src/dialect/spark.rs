@@ -54,8 +54,36 @@ use super::{unsup, DialectError};
 /// Print a verified plan as Spark SQL (ANSI, UTC — see module doc).
 pub fn print_sql(rel: &Rel, cat: &Catalog) -> Result<String, DialectError> {
     verify(rel, cat)?;
+    refuse_unbought_scans(rel, cat)?;
     let (sql, _) = query(&Spark, rel, cat, 0)?;
     Ok(sql)
+}
+
+/// A scanned table must be REPRESENTABLE on Spark before any query over it
+/// can satisfy L3: the table itself is materialized on the target, so every
+/// column type needs a bought landing zone even when the query never touches
+/// it (HUGEINT's only candidate, DECIMAL(38,0), cannot hold -2^127 — the L3
+/// gate crashed on exactly that value). Refusal by type name, per the
+/// design's type table.
+fn refuse_unbought_scans(rel: &Rel, cat: &Catalog) -> Result<(), DialectError> {
+    match rel {
+        Rel::Scan { table } => {
+            for (name, ty) in rel.schema(cat)? {
+                spark_name(&ty).map_err(|_| {
+                    unsup(format!(
+                        "spark: no landing zone bought for {} yet (column {table}.{name})",
+                        ty.name()
+                    ))
+                })?;
+            }
+            Ok(())
+        }
+        Rel::Filter { input, .. } | Rel::Project { input, .. } => refuse_unbought_scans(input, cat),
+        Rel::Join { left, right, .. } => {
+            refuse_unbought_scans(left, cat)?;
+            refuse_unbought_scans(right, cat)
+        }
+    }
 }
 
 struct Spark;
