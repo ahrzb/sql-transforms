@@ -435,6 +435,69 @@ pub fn may_trap(e: &SExpr) -> bool {
     }
 }
 
+/// Could DuckDB's BINDER constant-fold this expression? True iff the
+/// subtree references no input (`Col`/`StaticCol`/`JoinHit`) and runs no
+/// user code (`ExternCall`/`TreePredict` — TASK-101 relaxes pure externs
+/// with constant args). This is a SPELLING test, deliberately weaker than
+/// our own `fold`: fold dead-arm-eliminates a CASE whose column sits in an
+/// untaken arm, while DuckDB's binder refuses to fold anything holding a
+/// column — and its bind-time typing rules (the TASK-102 || collapse) key
+/// on ITS notion, so the gate must too.
+pub fn bind_foldable(e: &SExpr) -> bool {
+    match &e.kind {
+        SKind::Col(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,
+        SKind::ExternCall { .. } | SKind::TreePredict { .. } => false,
+        SKind::Lit(_) | SKind::NullOf => true,
+        SKind::Arith { a, b, .. }
+        | SKind::Cmp { a, b, .. }
+        | SKind::And { a, b }
+        | SKind::Or { a, b }
+        | SKind::Concat { a, b }
+        | SKind::Str2 { a, b, .. }
+        | SKind::MathF2 { a, b, .. }
+        | SKind::Str2i { a, n: b, .. }
+        | SKind::Round2 { a, n: b, .. }
+        | SKind::Trim { a, chars: b, .. } => bind_foldable(a) && bind_foldable(b),
+        SKind::Not(a)
+        | SKind::IsNull { inner: a, .. }
+        | SKind::IntToFloat(a)
+        | SKind::IntToFloat32(a)
+        | SKind::Cast { inner: a, .. }
+        | SKind::StrCase { a, .. }
+        | SKind::Abs(a)
+        | SKind::Round(a)
+        | SKind::SLen { a, .. }
+        | SKind::ReMatch { a, .. }
+        | SKind::ReExtract { a, .. }
+        | SKind::ReReplace { a, .. }
+        | SKind::MathF1 { a, .. }
+        | SKind::Sord { a, .. }
+        | SKind::StripAccents(a)
+        | SKind::Reverse(a) => bind_foldable(a),
+        SKind::Substr { a, start, len } => {
+            bind_foldable(a)
+                && bind_foldable(start)
+                && len.as_deref().map_or(true, bind_foldable)
+        }
+        SKind::Like { a, p, esc, .. } => {
+            bind_foldable(a) && bind_foldable(p) && esc.as_deref().map_or(true, bind_foldable)
+        }
+        SKind::Str3 { a, b, c, .. } => {
+            bind_foldable(a) && bind_foldable(b) && bind_foldable(c)
+        }
+        SKind::Spad { a, len, pad, .. } => {
+            bind_foldable(a) && bind_foldable(len) && bind_foldable(pad)
+        }
+        SKind::Sslice { a, lo, hi } => {
+            bind_foldable(a) && bind_foldable(lo) && bind_foldable(hi)
+        }
+        SKind::Case { arms, default } => {
+            arms.iter().all(|(c, r)| bind_foldable(c) && bind_foldable(r))
+                && default.as_deref().map_or(true, bind_foldable)
+        }
+    }
+}
+
 /// SQL-level arithmetic. `Div` is DuckDB's `/` — ALWAYS float division
 /// (measured: `5/2 = 2.5 DOUBLE`); the frontend promotes both sides to f64.
 /// Integer `%` stays integral (measured: `5%2 -> INTEGER`). `IDiv` is

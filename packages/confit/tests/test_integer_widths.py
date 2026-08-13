@@ -265,16 +265,34 @@ def test_pure_udf_bind_fold_matches_duckdb_schema():
     assert ours == duck, f"{ours} != {duck}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-102 decided 2026-08-13: || with a bind-foldable "
-    "constant-NULL operand is SQLNULL/int32 on DuckDB (concat-specific; "
-    "+, LIKE, functions keep their promoted type). Ours types VARCHAR — "
-    "the old §5 contract row, now decided to align. Flips when the fold "
-    "arm lands.",
-)
-def test_concat_with_foldable_null_operand_is_sqlnull():
-    sql = "SELECT s || NULL AS o FROM __THIS__"
+# TASK-102 (decided 2026-08-13): || with an operand that FOLDS to NULL is
+# an SQLNULL constant on DuckDB — int32 at the boundary, the column side
+# notwithstanding (|| propagates NULL to every row). Concat-specific:
+# +, LIKE, unary minus and function calls keep their promoted type, and
+# concat() the function skips NULLs. Measured bind-time (DESCRIBE agrees).
+CONCAT_NULL_BATTERY = [
+    "SELECT s || NULL AS o FROM __THIS__",
+    "SELECT s || CAST(NULL AS VARCHAR) AS o FROM __THIS__",
+    "SELECT upper(NULL) || s AS o FROM __THIS__",
+    "SELECT nullif('a', 'a') || s AS o FROM __THIS__",
+    "SELECT (CASE WHEN 1 = 0 THEN 'x' END) || s AS o FROM __THIS__",
+    "SELECT (NULL || 'a') || s AS o FROM __THIS__",
+]
+
+
+@pytest.mark.parametrize("sql", CONCAT_NULL_BATTERY)
+def test_concat_with_foldable_null_operand_is_sqlnull(sql):
     got, want = _ours(sql), _duck(sql)
     assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
+    assert got.to_pylist() == want.to_pylist(), sql
+    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+
+
+def test_concat_with_unfoldable_null_operand_stays_varchar():
+    """The foldability boundary: a column inside the CASE blocks the fold,
+    so DuckDB keeps the bound VARCHAR type — and so must we."""
+    sql = "SELECT (CASE WHEN 1 = 0 THEN s END) || 'a' AS o FROM __THIS__"
+    got, want = _ours(sql), _duck(sql)
+    assert want.schema.field("o").type == pa.string(), "oracle moved — remeasure"
+    assert got.to_pylist() == want.to_pylist(), sql
     assert got.schema == want.schema, f"{got.schema} != {want.schema}"

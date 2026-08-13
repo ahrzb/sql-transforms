@@ -145,8 +145,6 @@ These are served, but with a consciously chosen surface — know them:
   top level, but a pydantic model or dict cannot — and this rename is
   bit-identical to what DuckDB itself does at every subquery/CTE/CTAS
   boundary and in `.df()`. Verified against `.df()` in tests.
-- **`NULL || NULL` types as VARCHAR** in the output model (value is NULL
-  either way; DuckDB's SQLNULL materializes as INTEGER).
 - **Error TEXTS are approximate where noted.** Runtime traps
   (overflow, shifts, substring range) reproduce DuckDB's message bodies
   verbatim; some bind-time rejections (star-filter zero-match, regex
