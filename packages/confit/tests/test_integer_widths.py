@@ -110,6 +110,8 @@ CATALOGUE = [
     "SELECT NULL - 2.681 AS o FROM __THIS__",
     "SELECT 2.5 / NULL AS o FROM __THIS__",
     "SELECT NULL + 1.5e0 AS o FROM __THIS__",
+    # DOUBLE-typed foldable NULL does NOT collapse (control for TASK-103).
+    "SELECT (- (CASE WHEN FALSE THEN 1.5e0 END)) AS o FROM __THIS__",
     "SELECT CAST(k AS INTEGER) AS o FROM __THIS__",
     "SELECT CAST(k AS SMALLINT) AS o FROM __THIS__",
     "SELECT CAST(1 AS TINYINT) AS o FROM __THIS__",
@@ -296,3 +298,24 @@ def test_concat_with_unfoldable_null_operand_stays_varchar():
     assert want.schema.field("o").type == pa.string(), "oracle moved — remeasure"
     assert got.to_pylist() == want.to_pylist(), sql
     assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-103 (campaign 2026-08-13, seed 20275804): the DECIMAL "
+    "(+|-|*|%) bare-NULL SQLNULL fold keys on literal SPELLING; DuckDB's "
+    "rule is operand FOLDABILITY - a constant CASE folding to NULL "
+    "collapses the same way, unary minus included. Generalize the arm "
+    "over bind_foldable.",
+)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT (- (CASE WHEN FALSE THEN 1.25 END)) AS o FROM __THIS__",
+        "SELECT (1.25 + (CASE WHEN FALSE THEN 1.25 END)) AS o FROM __THIS__",
+    ],
+)
+def test_decimal_arith_over_foldable_null_collapses(sql):
+    got, want = _ours(sql), _duck(sql)
+    assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
+    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
