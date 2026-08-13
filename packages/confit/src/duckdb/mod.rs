@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PySet, PyString};
+use pyo3::types::{PyDict, PyString};
 
 use crate::error::InterpError;
 use crate::schema;
@@ -24,7 +24,7 @@ use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::StaticTable;
 use crate::specializer::{prepare_opaque, StaticSpec, WideOut};
-use crate::types::{Base, FieldType};
+use crate::types::Base;
 
 /// The scalar slice of the type lattice the specializer handles. `None`
 /// means the column can't cross this boundary (struct/list/Other).
@@ -38,14 +38,98 @@ fn base_to_ty(b: &Base) -> Option<Ty> {
     }
 }
 
-fn ty_to_base(t: Ty) -> Base {
+/// The declared type's DuckDB spelling, for boundary refusals.
+fn duck_ty_name(t: Ty) -> &'static str {
     match t {
-        Ty::I1 => Base::Bool,
-        // Python ints have no width; every integer width is `int`.
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Base::Int,
-        Ty::F64 => Base::Float,
-        Ty::Str => Base::Str,
+        Ty::I1 => "BOOLEAN",
+        Ty::I8 => "TINYINT",
+        Ty::I16 => "SMALLINT",
+        Ty::I32 => "INTEGER",
+        Ty::I64 => "BIGINT",
+        Ty::F64 => "DOUBLE",
+        Ty::Str => "VARCHAR",
     }
+}
+
+/// One row value into its input lane, strictly: the right Python type
+/// category for the declared SQL type or a refusal naming the column — no
+/// coercion ("1" is not 1, 1 is not 1.0, and bool is not an int value even
+/// though Python subclasses it). Subclasses within a category pass
+/// (np.float64 IS a float); crossing categories never does. A narrow width
+/// checks its range on the way IN, mirroring `narrow_check` on the way out.
+fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bool) -> PyResult<()> {
+    use pyo3::types::{PyBool, PyFloat, PyInt};
+    let type_err = |want: &str| {
+        let got = attr
+            .get_type()
+            .name()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|_| "?".into());
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "column '{}' expects {want} for its {} type, got {got}",
+            c.name,
+            duck_ty_name(c.ty.ty)
+        ))
+    };
+    match col {
+        ColData::I1 { valid, data } => {
+            valid.push(!null);
+            data.push(if null {
+                false
+            } else {
+                if !attr.is_instance_of::<PyBool>() {
+                    return Err(type_err("bool"));
+                }
+                attr.extract()?
+            });
+        }
+        ColData::I64 { valid, data } => {
+            valid.push(!null);
+            data.push(if null {
+                0
+            } else {
+                if !attr.is_instance_of::<PyInt>() || attr.is_instance_of::<PyBool>() {
+                    return Err(type_err("int"));
+                }
+                let range_err = |v: &dyn std::fmt::Display| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "column '{}' value {v} is outside its {} range",
+                        c.name,
+                        duck_ty_name(c.ty.ty)
+                    ))
+                };
+                let v: i64 = attr.extract().map_err(|_| range_err(attr))?;
+                if let Some((lo, hi)) = c.ty.ty.int_range() {
+                    if !(lo..=hi).contains(&v) {
+                        return Err(range_err(&v));
+                    }
+                }
+                v
+            });
+        }
+        ColData::F64 { valid, data } => {
+            valid.push(!null);
+            data.push(if null {
+                0.0
+            } else {
+                if !attr.is_instance_of::<PyFloat>() {
+                    return Err(type_err("float"));
+                }
+                attr.extract()?
+            });
+        }
+        s @ ColData::Str { .. } => {
+            if null {
+                s.push_str_cell(false, "");
+            } else {
+                if !attr.is_instance_of::<PyString>() {
+                    return Err(type_err("str"));
+                }
+                s.push_str_cell(true, attr.extract()?);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A narrow out column's value must fit its declared width on EVERY
@@ -754,93 +838,6 @@ fn materialize_statics(
     Ok(data)
 }
 
-fn model_from_fields(py: Python<'_>, fields: Vec<(String, FieldType)>) -> PyResult<Py<PyAny>> {
-    let create_model = PyModule::import(py, "pydantic")?.getattr("create_model")?;
-    let ellipsis = PyModule::import(py, "builtins")?.getattr("Ellipsis")?;
-    let kwargs = PyDict::new(py);
-    for (name, ft) in fields {
-        kwargs.set_item(name, (schema::field_type_to_python(py, ft)?, &ellipsis))?;
-    }
-    Ok(create_model.call(("OutputRow",), Some(&kwargs))?.unbind())
-}
-
-fn synthesize_output_model(
-    py: Python<'_>,
-    out_cols: &[Col],
-    plan: &[EmitField],
-) -> PyResult<Py<PyAny>> {
-    let mut fields = Vec::with_capacity(plan.len());
-    for f in plan {
-        match f {
-            EmitField::Scalar(i) => {
-                let c = &out_cols[*i];
-                fields.push((
-                    c.name.clone(),
-                    FieldType {
-                        base: ty_to_base(c.ty.ty),
-                        nullable: c.ty.nullable,
-                    },
-                ));
-            }
-            EmitField::Wide {
-                name,
-                first,
-                width,
-                names,
-                ..
-            } => {
-                if !names.is_empty() {
-                    // Named extern: the field is a nullable struct whose
-                    // members carry the per-lane types (slice 5).
-                    let members = names
-                        .iter()
-                        .zip(&out_cols[*first..*first + *width])
-                        .map(|(n, c)| {
-                            (
-                                n.clone(),
-                                FieldType {
-                                    base: ty_to_base(c.ty.ty),
-                                    nullable: true,
-                                },
-                            )
-                        })
-                        .collect();
-                    fields.push((
-                        name.clone(),
-                        FieldType {
-                            base: Base::Struct(members),
-                            nullable: true,
-                        },
-                    ));
-                    continue;
-                }
-                // Elements share one declared type (the frontend refuses
-                // mixed-return UDFs as bare items today; the guard stays).
-                let elem = out_cols[*first].ty.ty;
-                if out_cols[*first..*first + *width]
-                    .iter()
-                    .any(|c| c.ty.ty != elem)
-                {
-                    return Err(build_err(format!(
-                        "unsupported: udf output field '{name}' mixes return types"
-                    )));
-                }
-                fields.push((
-                    name.clone(),
-                    FieldType {
-                        base: Base::List(Box::new(FieldType {
-                            base: ty_to_base(elem),
-                            nullable: true,
-                        })),
-                        nullable: true,
-                    },
-                ));
-            }
-        }
-    }
-    model_from_fields(py, fields)
-}
-
 /// AC #2's constant emitter: a static-tables-only query is evaluated ONCE,
 /// here at build time, by DuckDB itself — nothing dynamic remains and no IR
 /// is built at all. Statics materialize as native tables (duckdb's
@@ -850,7 +847,7 @@ fn eval_static_only(
     py: Python<'_>,
     sql: &str,
     static_tables: &HashMap<String, Py<PyAny>>,
-) -> PyResult<(Vec<Py<PyAny>>, Vec<(String, FieldType)>)> {
+) -> PyResult<(Vec<Py<PyAny>>, Py<PyAny>)> {
     let duckdb = PyModule::import(py, "duckdb")?;
     let con = duckdb.call_method0("connect")?;
     for (name, table) in static_tables {
@@ -866,12 +863,11 @@ fn eval_static_only(
         .call_method1("execute", (sql,))?
         .call_method0("to_arrow_table")?;
     let schema_obj = arrow.getattr("schema")?.unbind();
-    let fields = schema::arrow_schema_to_ordered_fields(py, &schema_obj)?;
     let mut rows = Vec::new();
     for r in arrow.call_method0("to_pylist")?.try_iter()? {
         rows.push(r?.unbind());
     }
-    Ok((rows, fields))
+    Ok((rows, schema_obj))
 }
 
 /// The execution backend: cranelift when it compiles, the interpreter as
@@ -919,29 +915,6 @@ struct Marshaller {
     /// the row path enforces narrow widths with these (see narrow_check).
     out_tys: Vec<Ty>,
     out_names: Vec<Py<PyString>>,
-    /// Output rows for the SYNTHESIZED model are built by filling pydantic
-    /// v2's instance slots directly (`object.__new__` + `object.__setattr__`
-    /// of `__dict__`, `__pydantic_fields_set__`, `__pydantic_extra__`,
-    /// `__pydantic_private__`) — what `model_construct` does, minus its
-    /// pure-Python per-field loop (measured 2026-07-26 on pydantic 2.13:
-    /// construct 1432ns > validate 882ns > slot fill 491ns per row). The
-    /// slot fill is sound only for that plain model (required scalar
-    /// fields, no validators/defaults/extra/private) — so a user-SUPPLIED
-    /// output model goes through `validate` below instead and keeps full
-    /// pydantic semantics (adversarial-review finding, 2026-07-26).
-    model: Py<PyAny>,
-    /// `output_model.model_validate`, present iff the model was supplied.
-    validate: Option<Py<PyAny>>,
-    /// output="dict": emit the row dict itself — no model at all. The
-    /// dict is exactly what validate/slot-fill would have consumed, so
-    /// the modes agree field-for-field by construction.
-    emit_dicts: bool,
-    object_new: Py<PyAny>,
-    object_setattr: Py<PyAny>,
-    s_dict: Py<PyString>,
-    s_fields_set: Py<PyString>,
-    s_extra: Py<PyString>,
-    s_private: Py<PyString>,
     cols: Vec<ColData>,
     state: RunState,
 }
@@ -952,12 +925,8 @@ impl Marshaller {
         in_cols: &[Col],
         out_cols: &[Col],
         plan: &[EmitField],
-        output_model: &Py<PyAny>,
-        supplied: bool,
-        emit_dicts: bool,
         fun: &Backend,
     ) -> PyResult<Marshaller> {
-        let object = PyModule::import(py, "builtins")?.getattr("object")?;
         Ok(Marshaller {
             in_names: in_cols
                 .iter()
@@ -974,27 +943,6 @@ impl Marshaller {
                 .iter()
                 .map(|f| PyString::intern(py, f.name(out_cols)).unbind())
                 .collect(),
-            model: output_model.clone_ref(py),
-            // The slot fill below is sound only for plain scalar fields; a
-            // named wide field is a NESTED MODEL in the synthesized output
-            // model, so a raw dict in its slot would serialize with warnings
-            // and break attribute access — those plans validate per row.
-            validate: if supplied
-                || plan
-                    .iter()
-                    .any(|f| matches!(f, EmitField::Wide { names, .. } if !names.is_empty()))
-            {
-                Some(output_model.bind(py).getattr("model_validate")?.unbind())
-            } else {
-                None
-            },
-            emit_dicts,
-            object_new: object.getattr("__new__")?.unbind(),
-            object_setattr: object.getattr("__setattr__")?.unbind(),
-            s_dict: PyString::intern(py, "__dict__").unbind(),
-            s_fields_set: PyString::intern(py, "__pydantic_fields_set__").unbind(),
-            s_extra: PyString::intern(py, "__pydantic_extra__").unbind(),
-            s_private: PyString::intern(py, "__pydantic_private__").unbind(),
             cols: in_cols.iter().map(|c| ColData::new(c.ty.ty)).collect(),
             state: fun.new_state(),
         })
@@ -1060,27 +1008,7 @@ impl Marshaller {
                         c.name
                     )));
                 }
-                match col {
-                    ColData::I1 { valid, data } => {
-                        valid.push(!null);
-                        data.push(if null { false } else { attr.extract()? });
-                    }
-                    ColData::I64 { valid, data } => {
-                        valid.push(!null);
-                        data.push(if null { 0 } else { attr.extract()? });
-                    }
-                    ColData::F64 { valid, data } => {
-                        valid.push(!null);
-                        data.push(if null { 0.0 } else { attr.extract()? });
-                    }
-                    s @ ColData::Str { .. } => {
-                        if null {
-                            s.push_str_cell(false, "");
-                        } else {
-                            s.push_str_cell(true, attr.extract()?);
-                        }
-                    }
-                }
+                push_input_cell(col, c, &attr, null)?;
             }
         }
 
@@ -1095,14 +1023,6 @@ impl Marshaller {
         self.cols = batch.cols;
         res.map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
 
-        let model = self.model.bind(py);
-        let object_new = self.object_new.bind(py);
-        let object_setattr = self.object_setattr.bind(py);
-        let s_dict = self.s_dict.bind(py);
-        let s_fields_set = self.s_fields_set.bind(py);
-        let s_extra = self.s_extra.bind(py);
-        let s_private = self.s_private.bind(py);
-        let none = py.None();
         let mut out = Vec::with_capacity(self.state.emitted);
         for r in 0..self.state.emitted {
             let d = PyDict::new(py);
@@ -1158,23 +1078,7 @@ impl Marshaller {
                     }
                 }
             }
-            if self.emit_dicts {
-                out.push(d.unbind().into_any());
-                continue;
-            }
-            if let Some(v) = &self.validate {
-                // Supplied model: full pydantic semantics (validators,
-                // defaults, coercion, extra/private) — master parity.
-                out.push(v.bind(py).call1((&d,))?.unbind());
-                continue;
-            }
-            let fields_set = PySet::new(py, self.out_names.iter().map(|n| n.bind(py)))?;
-            let inst = object_new.call1((model,))?;
-            object_setattr.call1((&inst, s_dict, &d))?;
-            object_setattr.call1((&inst, s_fields_set, fields_set))?;
-            object_setattr.call1((&inst, s_extra, &none))?;
-            object_setattr.call1((&inst, s_private, &none))?;
-            out.push(inst.unbind());
+            out.push(d.unbind().into_any());
         }
         Ok(out)
     }
@@ -1196,24 +1100,18 @@ enum Engine {
         /// pyclass is unsendable, so single-threaded RefCell suffices.
         marsh: Option<RefCell<Marshaller>>,
     },
-    /// Fixed row dicts from a static-only query, re-validated through the
-    /// output model on every `infer` call.
-    Constant { rows: Vec<Py<PyAny>> },
+    /// Fixed row dicts from a static-only query (already dict-shaped), plus
+    /// the result's `pa.Schema` for `output_schema`.
+    Constant {
+        rows: Vec<Py<PyAny>>,
+        schema: Py<PyAny>,
+    },
 }
 
 #[pyclass(unsendable)]
 pub struct DuckDBInferFn {
     engine: Engine,
     row_table: String,
-    #[pyo3(get)]
-    output_model: Py<PyAny>,
-    /// Whether the caller GAVE us `output_model`, as opposed to us
-    /// synthesizing one from the output columns. Only a supplied model can
-    /// carry validators, defaults and coercion, so only a supplied model
-    /// makes `model_validate` observable — and `infer_arrow`, which never
-    /// builds Python rows, cannot honour it (TASK-71).
-    output_model_supplied: bool,
-    output_dicts: bool,
     /// 0 = filter, 1 = map, 2 = many (the declared row-shape contract).
     shape_kind: u8,
 }
@@ -1221,16 +1119,13 @@ pub struct DuckDBInferFn {
 #[pymethods]
 impl DuckDBInferFn {
     #[new]
-    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, output_model=None, output=None, shape=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (sql, row_tables, static_tables, udfs=None, shape=None))]
     fn new(
         py: Python<'_>,
         sql: String,
         row_tables: HashMap<String, Py<PyAny>>,
         static_tables: HashMap<String, Py<PyAny>>,
         udfs: Option<Vec<Py<PyAny>>>,
-        output_model: Option<Py<PyAny>>,
-        output: Option<String>,
         shape: Option<String>,
     ) -> PyResult<Self> {
         let (udf_decls, tree_decls) = parse_udfs(py, udfs.unwrap_or_default())?;
@@ -1256,24 +1151,7 @@ impl DuckDBInferFn {
                 )))
             }
         };
-        // output="dict" is the opt-in raw-dict mode: same engine, same
-        // lanes, the marshaller just skips model construction. The typed
-        // default is untouched.
-        let output_dicts = match output.as_deref() {
-            None | Some("model") => false,
-            Some("dict") => true,
-            Some(other) => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "output must be 'model' or 'dict', got '{other}'"
-                )))
-            }
-        };
-        if output_dicts && output_model.is_some() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "output='dict' and output_model are mutually exclusive",
-            ));
-        }
-        let (row_table, model) = match row_tables.len() {
+        let (row_table, row_schema) = match row_tables.len() {
             1 => row_tables.into_iter().next().unwrap(),
             n => {
                 return Err(build_err(format!(
@@ -1281,65 +1159,65 @@ impl DuckDBInferFn {
                 )))
             }
         };
-        // Unmappable row-column types reject only when REFERENCED (the
-        // binder knows them as opaque, star expansion included) — an
+        // Out-of-vocabulary row-column types reject only when REFERENCED
+        // (the binder knows them as opaque, star expansion included) — an
         // unreferenced timestamp field must not block a scalar query.
-        // Struct columns (nested pydantic models) flatten to scalar leaf
-        // LANES appended after every plain column (TASK-56); the dotted
-        // lane name doubles as the ingest path (segments are python
-        // identifiers, so '.' is unambiguous).
+        // Struct columns flatten to scalar leaf LANES appended after every
+        // plain column (TASK-56); the dotted lane name doubles as the
+        // ingest path (segments are field names without dots, so '.' is
+        // unambiguous).
         let mut in_cols = Vec::new();
         let mut opaque: Vec<(usize, String)> = Vec::new();
-        let mut struct_defs: Vec<(usize, String, bool, Vec<(String, FieldType)>)> = Vec::new();
-        for (pos, (name, ft)) in schema::pydantic_model_fields_ordered(py, &model)?
+        let mut struct_defs: Vec<(usize, String, bool, Vec<(String, schema::RowField)>)> =
+            Vec::new();
+        for (pos, (name, rf)) in schema::arrow_row_schema(py, &row_table, &row_schema)?
             .into_iter()
             .enumerate()
         {
-            match (base_to_ty(&ft.base), ft.base) {
-                (Some(ty), _) => in_cols.push(Col {
+            match rf {
+                schema::RowField::Scalar { ty, nullable } => in_cols.push(Col {
                     name,
-                    ty: ColTy {
-                        ty,
-                        nullable: ft.nullable,
-                    },
+                    ty: ColTy { ty, nullable },
                 }),
-                (None, Base::Struct(fields)) => {
-                    struct_defs.push((pos, name, ft.nullable, fields))
+                schema::RowField::Struct { nullable, fields } => {
+                    struct_defs.push((pos, name, nullable, fields))
                 }
-                (None, _) => opaque.push((pos, name)),
+                schema::RowField::Opaque => opaque.push((pos, name)),
             }
         }
         fn build_fields(
             in_cols: &mut Vec<Col>,
             prefix: &str,
-            fields: &[(String, FieldType)],
+            fields: &[(String, schema::RowField)],
             parent_nullable: bool,
         ) -> Vec<crate::specializer::plan::StructField> {
             use crate::specializer::plan::{StructField, StructNode};
             fields
                 .iter()
-                .map(|(fname, ft)| {
-                    let nullable = parent_nullable || ft.nullable;
+                .map(|(fname, rf)| {
                     let node = if fname.contains('.') {
                         StructNode::Opaque // would break the path encoding
                     } else {
-                        match &ft.base {
-                            Base::Struct(nested) => StructNode::Nested(build_fields(
-                                in_cols,
-                                &format!("{prefix}.{fname}"),
-                                nested,
-                                nullable,
-                            )),
-                            b => match base_to_ty(b) {
-                                Some(ty) => {
-                                    in_cols.push(Col {
-                                        name: format!("{prefix}.{fname}"),
-                                        ty: ColTy { ty, nullable },
-                                    });
-                                    StructNode::Leaf((in_cols.len() - 1) as u32)
-                                }
-                                None => StructNode::Opaque,
-                            },
+                        match rf {
+                            schema::RowField::Struct { nullable, fields } => {
+                                StructNode::Nested(build_fields(
+                                    in_cols,
+                                    &format!("{prefix}.{fname}"),
+                                    fields,
+                                    parent_nullable || *nullable,
+                                ))
+                            }
+                            schema::RowField::Scalar { ty, nullable } => {
+                                in_cols.push(Col {
+                                    name: format!("{prefix}.{fname}"),
+                                    ty: ColTy {
+                                        ty: *ty,
+                                        nullable: parent_nullable || *nullable,
+                                    },
+                                });
+                                StructNode::Leaf((in_cols.len() - 1) as u32)
+                            }
+                            schema::RowField::Opaque => StructNode::Opaque,
                         }
                     };
                     StructField {
@@ -1426,7 +1304,7 @@ impl DuckDBInferFn {
             // original clean error surfaces unchanged. Bind errors stay hard.
             Err(e @ (PrepareError::Unsupported(_) | PrepareError::Parse(_))) => {
                 match eval_static_only(py, &sql, &static_tables) {
-                    Ok((rows, fields)) => {
+                    Ok((rows, schema)) => {
                         if strict_map {
                             // Fixed rows regardless of input — the exact
                             // opposite of out[i] <-> in[i].
@@ -1435,17 +1313,9 @@ impl DuckDBInferFn {
                                  rows unrelated to the input rows",
                             ));
                         }
-                        let supplied = output_model.is_some();
-                        let output_model = match output_model {
-                            Some(m) => m,
-                            None => model_from_fields(py, fields)?,
-                        };
                         return Ok(DuckDBInferFn {
-                            engine: Engine::Constant { rows },
+                            engine: Engine::Constant { rows, schema },
                             row_table,
-                            output_model,
-                            output_model_supplied: supplied,
-                            output_dicts,
                             shape_kind,
                         });
                     }
@@ -1491,13 +1361,6 @@ impl DuckDBInferFn {
             }
         };
         let plan = emit_plan(&prepared.program.out_cols, &prepared.wide_outputs);
-        let supplied = output_model.is_some();
-        let output_model = match output_model {
-            // Supplied models are trusted as-is in v0 (no shape validation)
-            // and keep full model_validate semantics per row.
-            Some(m) => m,
-            None => synthesize_output_model(py, &prepared.program.out_cols, &plan)?,
-        };
         // SPECIALIZER_GENERIC_BOUNDARY pins the pre-marshaller boundary —
         // the bench baseline, mirroring SPECIALIZER_FORCE_INTERP.
         let marsh = if std::env::var_os("SPECIALIZER_GENERIC_BOUNDARY").is_some() {
@@ -1508,9 +1371,6 @@ impl DuckDBInferFn {
                 &in_cols,
                 &prepared.program.out_cols,
                 &plan,
-                &output_model,
-                supplied,
-                output_dicts,
                 &fun,
             )?))
         };
@@ -1523,9 +1383,6 @@ impl DuckDBInferFn {
                 marsh,
             },
             row_table,
-            output_model,
-            output_model_supplied: supplied,
-            output_dicts,
             shape_kind,
         })
     }
@@ -1540,13 +1397,14 @@ impl DuckDBInferFn {
         }
     }
 
-    /// The output mode: "model" (typed, default) or "dict" (opt-in).
+    /// The output contract as a `pa.Schema`: field names, arrow types and
+    /// order, exactly what `infer_arrow`'s output table carries (and the
+    /// keys of every `infer_rows` dict).
     #[getter]
-    fn output(&self) -> &'static str {
-        if self.output_dicts {
-            "dict"
-        } else {
-            "model"
+    fn output_schema(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match &self.engine {
+            Engine::Compiled { out_cols, plan, .. } => arrow::output_schema(py, out_cols, plan),
+            Engine::Constant { schema, .. } => Ok(schema.clone_ref(py)),
         }
     }
 
@@ -1570,31 +1428,9 @@ impl DuckDBInferFn {
         }
     }
 
-    #[pyo3(signature = (tables=None, **kwargs))]
-    fn infer(
-        &self,
-        py: Python<'_>,
-        tables: Option<HashMap<String, Vec<Py<PyAny>>>>,
-        kwargs: Option<Bound<'_, PyDict>>,
-    ) -> PyResult<Vec<Py<PyAny>>> {
-        let mut merged: HashMap<String, Vec<Py<PyAny>>> = tables.unwrap_or_default();
-        if let Some(kwargs) = kwargs {
-            for (k, v) in kwargs.iter() {
-                merged.insert(k.extract()?, v.extract()?);
-            }
-        }
-        if let Some(bad) = merged.keys().find(|k| **k != self.row_table) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown table '{bad}' (the row table is '{}')",
-                self.row_table
-            )));
-        }
-        let rows = merged.remove(&self.row_table).unwrap_or_default();
-        self.run_rows(py, &rows)
-    }
-
-    /// The direct hot entry: the row table's rows, no table-dict plumbing.
-    /// `SpecializedTransform.infer_batch` calls this.
+    /// The row path: dict-or-object rows in, dict rows out. A
+    /// static-tables-only build ignores the input and emits its fixed rows
+    /// (`infer_rows([])`).
     fn infer_rows(&self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
         self.run_rows(py, &rows)
     }
@@ -1611,14 +1447,6 @@ impl DuckDBInferFn {
     /// silently skipping it made three documented entry points to one
     /// function give two different answers (TASK-71).
     fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        if self.output_model_supplied {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "infer_arrow: output_model is not applied on the columnar path \
-                 (its validators, defaults and coercion run per row, and this \
-                 path builds no rows) — use infer()/infer_rows(), or drop \
-                 output_model and take the synthesized one",
-            ));
-        }
         let (fun, in_cols, out_cols, plan) = match &self.engine {
             Engine::Compiled {
                 fun,
@@ -1629,7 +1457,8 @@ impl DuckDBInferFn {
             } => (fun, in_cols, out_cols, plan),
             Engine::Constant { .. } => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
-                    "infer_arrow: a static-tables-only query emits fixed rows — use infer()",
+                    "infer_arrow: a static-tables-only query emits fixed rows — \
+                     use infer_rows([])",
                 ))
             }
         };
@@ -1651,21 +1480,16 @@ impl DuckDBInferFn {
                 plan,
                 marsh,
             } => (fun, in_cols, out_cols, plan, marsh),
-            Engine::Constant { rows: fixed } => {
-                let model = self.output_model.bind(py);
+            Engine::Constant { rows: fixed, .. } => {
                 let mut out = Vec::with_capacity(fixed.len());
                 for r in fixed.iter() {
-                    if self.output_dicts {
-                        // A fresh copy per call: callers may mutate.
-                        let d = r.bind(py).cast::<PyDict>().map_err(|_| {
-                            pyo3::exceptions::PyValueError::new_err(
-                                "internal: constant rows are dicts",
-                            )
-                        })?;
-                        out.push(d.copy()?.unbind().into_any());
-                    } else {
-                        out.push(model.call_method1("model_validate", (r,))?.unbind());
-                    }
+                    // A fresh copy per call: callers may mutate.
+                    let d = r.bind(py).cast::<PyDict>().map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "internal: constant rows are dicts",
+                        )
+                    })?;
+                    out.push(d.copy()?.unbind().into_any());
                 }
                 return Ok(out);
             }
@@ -1751,27 +1575,7 @@ impl DuckDBInferFn {
                         c.name
                     )));
                 }
-                match col {
-                    ColData::I1 { valid, data } => {
-                        valid.push(!null);
-                        data.push(if null { false } else { attr.extract()? });
-                    }
-                    ColData::I64 { valid, data } => {
-                        valid.push(!null);
-                        data.push(if null { 0 } else { attr.extract()? });
-                    }
-                    ColData::F64 { valid, data } => {
-                        valid.push(!null);
-                        data.push(if null { 0.0 } else { attr.extract()? });
-                    }
-                    s @ ColData::Str { .. } => {
-                        if null {
-                            s.push_str_cell(false, "");
-                        } else {
-                            s.push_str_cell(true, attr.extract()?);
-                        }
-                    }
-                }
+                push_input_cell(col, c, &attr, null)?;
             }
         }
 
@@ -1780,7 +1584,6 @@ impl DuckDBInferFn {
         fun.run(&batch, &mut st)
             .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
 
-        let model = self.output_model.bind(py);
         let mut out = Vec::with_capacity(st.emitted);
         for r in 0..st.emitted {
             let dict = PyDict::new(py);
@@ -1826,11 +1629,7 @@ impl DuckDBInferFn {
                     }
                 }
             }
-            if self.output_dicts {
-                out.push(dict.unbind().into_any());
-            } else {
-                out.push(model.call_method1("model_validate", (dict,))?.unbind());
-            }
+            out.push(dict.unbind().into_any());
         }
         Ok(out)
     }
