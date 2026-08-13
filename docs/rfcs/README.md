@@ -8,22 +8,22 @@ explicit. If there is only one sensible way, write a spec, not an RFC.
 
 ## Format
 
-One file: `docs/rfcs/rfc-N-<slug>.md`, numbered in creation order. Four
+One file: `docs/rfcs/rfc-N-<slug>.md`, numbered in creation order. Three
 mandatory sections, in this order:
 
 1. **Context** — what exists today, with file paths and measured numbers.
    No aspiration; the reader must be able to verify every sentence.
 2. **Problem(s)** — what the current state cannot do, or forces us to do
    badly. Numbered, so choices can reference them.
-3. **Choices** — the genuinely viable options. **Each choice is shown as
-   code**: a signature, a node form, a pseudo-code lowering, a
-   before/after usage pair — with at most a line or two of prose per
-   block. Prose descriptions of designs hide small nuances; a reader must
-   be able to disagree with a specific line. Include the do-nothing
-   option when it is viable.
-4. **Trade-offs** — what each choice costs and buys, against the problems
-   by number and against the project's KPIs (docs/kpis.md: never trade a
-   control for a drive gain).
+3. **Choices** — the genuinely viable options, do-nothing included when
+   viable. **Each choice is shown as code** (a signature, a node form, a
+   pseudo-code lowering, a before/after pair) **with its trade-offs
+   immediately under it** — what it costs and buys, against the problems
+   by number and the project's KPIs (docs/kpis.md: never trade a control
+   for a drive gain). Prose descriptions of designs hide small nuances: a
+   reader must be able to disagree with a specific line, and a trade-off
+   separated from its choice gets skimmed past. No collected trade-off
+   section at the end.
 
 Decisions the author cannot make alone appear inline as ASK blocks:
 

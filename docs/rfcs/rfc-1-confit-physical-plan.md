@@ -60,6 +60,13 @@ sql --specializer::frontend--> ir::Program  sql --dialect::parse--> Rel
 // gate: for all corpus stmts: replay(old path) == replay(new path), bit-identical
 ```
 
+*Buys:* solves problems 1 and 2 with zero new representations; the
+refusal boundary is one function with the same three-outcome discipline
+as a printer. *Costs:* does NOT address problem 3 — the fit split later
+wedges into either the logical plan (an optimizer pass the epic forswore)
+or a bolted-on layer, i.e. B arrives anyway, later and under pressure.
+Migration risk is real but gated by the bit-identical replay above.
+
 **B. A confit-owned physical plan.** A middle layer that also owns the
 fit/serve split (problem 3); SSA IR becomes the backend of `serve` only:
 
@@ -74,35 +81,26 @@ pub fn lower_serve(p: &PhysPlan) -> Result<ir::Program, DialectError>;
 // PhysPlan = a third representation: verifier + canonical text + round-trip owed (ir/ recipe)
 ```
 
+*Buys:* problem 3 gets its home before it is urgent; A's lowering becomes
+a two-step (logical -> phys -> SSA) whose middle is testable. *Costs:* a
+third representation to verify, print, and round-trip, designed now
+against a fit surface (Aggregate/Window) the logical plan only gains in
+TASK-105/106 — high risk of designing against guesses. KPI risk: serving
+latency is a control; the extra layer must compile away to nothing
+measurable.
+
 **C. Coexistence (status quo).** No new code; the shared corpus is the
 only bridge:
 
 ```text
 sql --dialect::parse--> Rel --print--> spark/bq        (m-9, universal)
 sql --specializer::frontend--> ir::Program --> serve   (untouched)
-// problem 1 compounds: every pin (scalar fn, width rule, auto-name) lands twice
 ```
 
-## Trade-offs
-
-- **A** solves 1 and 2 with zero new representations; the refusal
-  boundary is one function with the same three-outcome discipline as a
-  printer. It does NOT address 3 — the fit split would later wedge into
-  either the logical plan (an optimizer pass the epic forswore) or a
-  bolted-on layer, i.e. B arrives anyway, later and under pressure.
-  Migration risk is real but gated: corpus replay must stay bit-identical
-  (550/678, no outcome changes class) before the old frontend dies.
-- **B** gives problem 3 its home before it is urgent, and makes A's
-  lowering a two-step (logical -> phys -> SSA) whose middle is testable.
-  Cost: a third representation to verify, print, and round-trip (the ir/
-  recipe's three properties, again), designed now against a fit surface
-  (Aggregate/Window) the logical plan only gains in TASK-105/106 — high
-  risk of designing against guesses. KPI risk: serving latency is a
-  control; an extra layer must compile away to nothing measurable.
-- **C** costs nothing now and starves nothing; but problem 1 compounds
-  with every pin (each new scalar function, width rule, and auto-name
-  case lands twice), and problem 2 arrives regardless the moment any
-  confit consumer reads dialect plans.
+*Buys:* costs nothing now, starves nothing. *Costs:* problem 1 compounds
+with every pin (each new scalar function, width rule, and auto-name case
+lands twice), and problem 2 arrives regardless the moment any confit
+consumer reads dialect plans.
 
 > **ASK(shape):** A now (with B's interface sketched but unbuilt), B now,
 > or C until TASK-106 lands? Recommendation: **A after TASK-105/106**
