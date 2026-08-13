@@ -15,9 +15,8 @@ import decimal
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
-_DecRow = create_model("_DecRow", gid=(str, ...))
+_DEC_SCHEMA = pa.schema([pa.field("gid", pa.string(), nullable=False)])
 
 
 def _dec_static(val: str) -> pa.Table:
@@ -38,18 +37,18 @@ def test_an_inexact_decimal_static_serves_exactly():
     """2^53+1 in a decimal static comes back as ITSELF."""
     fn = DuckDBInferFn(
         "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
-        row_tables={"__THIS__": _DecRow},
+        row_tables={"__THIS__": _DEC_SCHEMA},
         static_tables={"p": _dec_static("9007199254740993")},
     )
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_DecRow(gid="a")]})]
+    got = fn.infer_rows([{"gid": "a"}])
     assert got == [{"o": decimal.Decimal("9007199254740993")}]
 
 
 def test_an_exact_decimal_static_still_serves():
     fn = DuckDBInferFn(
         "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
-        row_tables={"__THIS__": _DecRow},
+        row_tables={"__THIS__": _DEC_SCHEMA},
         static_tables={"p": _dec_static("9007199254740992")},
     )
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_DecRow(gid="a")]})]
+    got = fn.infer_rows([{"gid": "a"}])
     assert got == [{"o": 9007199254740992.0}]

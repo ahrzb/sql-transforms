@@ -42,14 +42,12 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
 # --------------------------------------------------------------- helpers --
 
 PROBE_PRELUDE = """
 import pyarrow as pa
 from confit import DuckDBInferFn
-from pydantic import create_model
 """
 
 
@@ -90,16 +88,17 @@ def duck(sql: str, ddl: str, rows: list[tuple]) -> list[tuple]:
 
 _QUAL_DDL = "CREATE TABLE __THIS__ (k BIGINT, ts BIGINT)"
 _QUAL_ROWS = [(1, 1), (1, 2), (2, 5)]
-QualRow = create_model("QualRow", k=(int, ...), ts=(int, ...))
-
-
-def _run(sql: str, model, rows: list[dict]) -> list[tuple]:
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": model}, static_tables={}, output="dict"
-    )
-    return [
-        tuple(r.values()) for r in fn.infer({"__THIS__": [model(**r) for r in rows]})
+QUAL_SCHEMA = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("ts", pa.int64(), nullable=False),
     ]
+)
+
+
+def _run(sql: str, schema: pa.Schema, rows: list[dict]) -> list[tuple]:
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
+    return [tuple(r.values()) for r in fn.infer_rows(rows)]
 
 
 # FIXED 2026-08-08 (TASK-69). The resolution is REFUSAL, which is half the
@@ -131,14 +130,14 @@ def test_row_limiting_clauses_are_refused_not_dropped(sql, match):
     """Each of these silently emitted every input row before TASK-69. LIMIT is
     the control: it was always refused, and the others are its synonyms."""
     with pytest.raises(ValueError, match=match):
-        _run(sql, QualRow, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
+        _run(sql, QUAL_SCHEMA, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
 
 
 def test_ordinary_query_still_builds():
     """The audit refuses by exhaustive destructure, so the risk is refusing
     something that used to work."""
     sql = "SELECT k, ts FROM __THIS__ WHERE k = 1"
-    got = _run(sql, QualRow, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
+    got = _run(sql, QUAL_SCHEMA, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
     assert got == duck(sql, _QUAL_DDL, _QUAL_ROWS)
 
 
@@ -166,7 +165,7 @@ def test_ordinary_query_still_builds():
 # (Decimal literals binding as f64 is a separate, deliberate v0 divergence;
 # see docs/known-limitations.md.)
 
-CastRow = create_model("CastRow", f=(float, ...))
+CAST_SCHEMA = pa.schema([pa.field("f", pa.float64(), nullable=False)])
 _CAST_F = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 2.6, -2.6, 1e19]
 
 
@@ -180,14 +179,9 @@ def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch):
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
     sql = "SELECT TRY_CAST(f AS BIGINT) AS i, round(f) AS r FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": CastRow}, static_tables={}, output="dict"
-    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": CAST_SCHEMA}, static_tables={})
     assert fn.backend == backend
-    got = [
-        (r["i"], r["r"])
-        for r in fn.infer({"__THIS__": [CastRow(f=v) for v in _CAST_F]})
-    ]
+    got = [(r["i"], r["r"]) for r in fn.infer_rows([{"f": v} for v in _CAST_F])]
     want = duck(sql, "CREATE TABLE __THIS__ (f DOUBLE)", [(v,) for v in _CAST_F])
     assert got == want
     # And the contrast, stated rather than implied: the two columns disagree
@@ -203,19 +197,17 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
     sql = "SELECT CAST(f AS BIGINT) AS i FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": CastRow}, static_tables={}, output="dict"
-    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": CAST_SCHEMA}, static_tables={})
     assert fn.backend == backend
     fine = [v for v in _CAST_F if v != 1e19]
-    got = [r["i"] for r in fn.infer({"__THIS__": [CastRow(f=v) for v in fine]})]
+    got = [r["i"] for r in fn.infer_rows([{"f": v} for v in fine])]
     want = [
         r[0]
         for r in duck(sql, "CREATE TABLE __THIS__ (f DOUBLE)", [(v,) for v in fine])
     ]
     assert got == want
     with pytest.raises(ValueError, match="range"):
-        fn.infer({"__THIS__": [CastRow(f=1e19)]})
+        fn.infer_rows([{"f": 1e19}])
 
 
 # ------------------------------------------------- the infer_arrow path --
@@ -237,44 +229,28 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
 # TASK-72 is resolved by matching DuckDB: `pa.string()`, 32-bit offsets. The
 # 2 GiB-per-batch ceiling that comes with them is refused by name rather than
 # wrapped.
-
-
-def test_infer_arrow_refuses_a_supplied_output_model():
-    """Each of the three things a supplied model can do — a validator, a
-    defaulted field, a coercion — silently did NOT happen on the columnar
-    path. The refusal names itself and points at the entry point that can."""
-    from pydantic import field_validator
-
-    In = create_model("In", x=(int, ...))
-
-    class Out(create_model("OutBase", x=(int, ...), tag=(str, "constant"))):
-        @field_validator("x")
-        @classmethod
-        def _cap(cls, v: int) -> int:
-            return min(v, 15)
-
-    fn = DuckDBInferFn(
-        "SELECT x * 5 AS x FROM __THIS__",
-        row_tables={"__THIS__": In},
-        static_tables={},
-        output_model=Out,
-    )
-    by_row = [r.model_dump() for r in fn.infer({"__THIS__": [In(x=2), In(x=4)]})]
-    # the validator capped 20 -> 15, and `tag` was defaulted in
-    assert by_row == [
-        {"x": 10, "tag": "constant"},
-        {"x": 15, "tag": "constant"},
-    ]
-    with pytest.raises(ValueError, match="output_model is not applied"):
-        fn.infer_arrow(pa.table({"x": [2, 4]}))
+#
+# MIGRATION-NOTE (2026-08-13, arrow-schema-api): TASK-71's refusal fired only
+# when an `output_model` was SUPPLIED to a pydantic-surface build — that whole
+# kwarg, and the synthesized-model machinery it stood next to, is deleted by
+# this migration (spec 2026-08-13-arrow-schema-api-design.md: "the
+# `output_model` refusal on `infer_arrow` ... exist[s] only to serve pydantic
+# out. Dict-out deletes the machinery and the limitation."). The test that
+# pinned it (`test_infer_arrow_refuses_a_supplied_output_model`) has no
+# construction left to express — `output_model=` now raises TypeError at
+# `DuckDBInferFn.__init__` itself, for every entry point, which is already
+# covered by `test_arrow_schema_api.py::test_infer_and_output_model_are_gone`.
+# Removed rather than mistranslated.
 
 
 def test_infer_arrow_without_an_output_model_still_works():
-    """The refusal keys on SUPPLIED, not on the field being populated — the
-    synthesized model is always there and must not block the fast path."""
-    In = create_model("In", x=(int, ...))
+    """infer_arrow needs nothing extra supplied to serve — the fast path
+    that TASK-71/72 protected is exercised directly here."""
+    schema = pa.schema([pa.field("x", pa.int64(), nullable=False)])
     fn = DuckDBInferFn(
-        "SELECT x * 5 AS y FROM __THIS__", row_tables={"__THIS__": In}, static_tables={}
+        "SELECT x * 5 AS y FROM __THIS__",
+        row_tables={"__THIS__": schema},
+        static_tables={},
     )
     assert fn.infer_arrow(pa.table({"x": [2, 4]})).to_pylist() == [
         {"y": 10},
@@ -293,10 +269,8 @@ def test_infer_arrow_without_an_output_model_still_works():
     ],
 )
 def test_infer_arrow_string_type_matches_duckdb(sql):
-    In = create_model("In", s=(str, ...))
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
+    schema = pa.schema([pa.field("s", pa.string(), nullable=False)])
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
     got = fn.infer_arrow(pa.table({"s": ["a", "bb", "ccc"]}))
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
@@ -313,12 +287,11 @@ def test_infer_arrow_string_type_matches_duckdb(sql):
 
 def test_infer_arrow_string_output_feeds_back_in():
     """Our own output is a valid input — `ingest` takes 32-bit offsets."""
-    In = create_model("In", s=(str, ...))
+    schema = pa.schema([pa.field("s", pa.string(), nullable=False)])
     fn = DuckDBInferFn(
         "SELECT upper(s) AS s FROM __THIS__",
-        row_tables={"__THIS__": In},
+        row_tables={"__THIS__": schema},
         static_tables={},
-        output="dict",
     )
     once = fn.infer_arrow(pa.table({"s": ["a", "bb"]}))
     assert fn.infer_arrow(once).to_pylist() == [{"s": "A"}, {"s": "BB"}]
@@ -341,11 +314,12 @@ def test_infer_arrow_string_output_feeds_back_in():
 # TASK-74 relayed from the sweep.
 
 _ONRES_BODY = """
-Row = create_model("Row", k=(int, ...), n=(int, ...))
+schema = pa.schema([pa.field("k", pa.int64(), nullable=False),
+                    pa.field("n", pa.int64(), nullable=False)])
 r = pa.table({{"id": pa.array([0], pa.int64()), "bud": pa.array([100], pa.int64())}})
-fn = DuckDBInferFn({sql!r}, row_tables={{"__THIS__": Row}},
-                   static_tables={{"r": r}}, output="dict")
-print("BUILT", [tuple(x.values()) for x in fn.infer({{"__THIS__": [Row(k=0, n=1)]}})])
+fn = DuckDBInferFn({sql!r}, row_tables={{"__THIS__": schema}},
+                   static_tables={{"r": r}})
+print("BUILT", [tuple(x.values()) for x in fn.infer_rows([{{"k": 0, "n": 1}}])])
 """
 
 
@@ -405,14 +379,18 @@ def _one_sided(residual: str, rows: list[tuple[int, int]]) -> list[tuple]:
     rule guards: DuckDB scan-pushes a single-side residual, so trap TIMING
     would differ from our hit-guarded lowering if it could trap at all.
     """
-    Row = create_model("Row", k=(int, ...), n=(int, ...))
+    schema = pa.schema(
+        [
+            pa.field("k", pa.int64(), nullable=False),
+            pa.field("n", pa.int64(), nullable=False),
+        ]
+    )
     sql = f"SELECT n, r.cat AS c FROM __THIS__ AS t JOIN r ON t.k = r.id AND {residual}"
     fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": Row}, static_tables={"r": _ONESIDED}, output="dict"
+        sql, row_tables={"__THIS__": schema}, static_tables={"r": _ONESIDED}
     )
     got = [
-        tuple(x.values())
-        for x in fn.infer({"__THIS__": [Row(k=k, n=n) for k, n in rows]})
+        tuple(x.values()) for x in fn.infer_rows([{"k": k, "n": n} for k, n in rows])
     ]
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT, n BIGINT)")
@@ -508,12 +486,10 @@ def test_where_and_or_short_circuits_like_duckdb(sql, backend, monkeypatch):
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
-    Row = create_model("Row", k=(int, ...))
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": Row}, static_tables={}, output="dict"
-    )
+    schema = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
     assert fn.backend == backend
-    got = [tuple(r.values()) for r in fn.infer({"__THIS__": [Row(k=1), Row(k=2)]})]
+    got = [tuple(r.values()) for r in fn.infer_rows([{"k": 1}, {"k": 2}])]
     assert got == duck(sql, "CREATE TABLE __THIS__ (k BIGINT)", [(1,), (2,)])
 
 
@@ -535,14 +511,14 @@ def test_short_circuit_preserves_three_valued_logic(right):
     is FALSE and TRUE — evaluated both ways and checked against DuckDB. The
     two parametrisations differ ONLY in which lowering path they take.
     """
-    Row = create_model("Row", k=(int | None, None), x=(float, ...))
-    sql = f"SELECT k, (k > 0 AND {right}) AS aa, (k > 0 OR {right}) AS oo FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": Row}, static_tables={}, output="dict"
+    schema = pa.schema(
+        [pa.field("k", pa.int64()), pa.field("x", pa.float64(), nullable=False)]
     )
+    sql = f"SELECT k, (k > 0 AND {right}) AS aa, (k > 0 OR {right}) AS oo FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
     got = [
         tuple(r.values())
-        for r in fn.infer({"__THIS__": [Row(k=k, x=x) for k, x in _3VL_ROWS]})
+        for r in fn.infer_rows([{"k": k, "x": x} for k, x in _3VL_ROWS])
     ]
     want = duck(sql, "CREATE TABLE __THIS__ (k BIGINT, x DOUBLE)", _3VL_ROWS)
     assert got == want
@@ -555,20 +531,25 @@ def test_where_guard_skips_an_unknown_model_trap():
     that excludes every row must stop it from ever being called. DuckDB
     cannot be the oracle here — it has no native tree scoring — so the
     assertion is the empty result the guard implies."""
-    Row = create_model("Row", k=(int, ...), mid=(int, ...), x=(float, ...))
+    schema = pa.schema(
+        [
+            pa.field("k", pa.int64(), nullable=False),
+            pa.field("mid", pa.int64(), nullable=False),
+            pa.field("x", pa.float64(), nullable=False),
+        ]
+    )
     sql = "SELECT k FROM __THIS__ WHERE k = 0 AND m(mid, x) > 0"
     fn = DuckDBInferFn(
         sql,
-        row_tables={"__THIS__": Row},
+        row_tables={"__THIS__": schema},
         static_tables={},
-        output="dict",
         udfs=[_tree_udf([_node(0, -1, 0.0, -1, -1, value=1.0)])],
     )
-    rows = [Row(k=1, mid=999, x=0.0), Row(k=2, mid=999, x=0.0)]
-    assert list(fn.infer({"__THIS__": rows})) == []
+    rows = [{"k": 1, "mid": 999, "x": 0.0}, {"k": 2, "mid": 999, "x": 0.0}]
+    assert fn.infer_rows(rows) == []
     # ... and the trap is still real for a row the guard lets through.
     with pytest.raises(ValueError, match="model"):
-        fn.infer({"__THIS__": [Row(k=0, mid=999, x=0.0)]})
+        fn.infer_rows([{"k": 0, "mid": 999, "x": 0.0}])
 
 
 # ------------------------------------------ model-table structure checks --
@@ -615,7 +596,12 @@ def _node(nid, feature, threshold, left, right, value=0.0):
     }
 
 
-ModelRow = create_model("ModelRow", id=(int, ...), x=(float, ...))
+MODEL_ROW_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("x", pa.float64(), nullable=False),
+    ]
+)
 
 
 class _TreeUDF:
@@ -647,9 +633,8 @@ def _tree_udf(nodes, agg="sum", link="identity", n_features=1):
 def _model_fn(nodes, agg="sum", link="identity", features=("x",)):
     return DuckDBInferFn(
         "SELECT m(id, x) AS p FROM __THIS__",
-        row_tables={"__THIS__": ModelRow},
+        row_tables={"__THIS__": MODEL_ROW_SCHEMA},
         static_tables={},
-        output="dict",
         udfs=[_tree_udf(nodes, agg, link, len(features))],
     )
 
@@ -693,8 +678,8 @@ def test_a_shared_child_is_refused_as_not_a_tree():
     nodes[2] = _node(2, 0, 0.75, 6, 5)
     nodes.append(_node(6, -1, 0.0, -1, -1, value=10.0))
     fn = _model_fn(nodes)
-    rows = [ModelRow(id=0, x=v) for v in (0.1, 0.4, 0.6, 0.9)]
-    assert [r["p"] for r in fn.infer({"__THIS__": rows})] == [10.0, 20.0, 10.0, 30.0]
+    rows = [{"id": 0, "x": v} for v in (0.1, 0.4, 0.6, 0.9)]
+    assert [r["p"] for r in fn.infer_rows(rows)] == [10.0, 20.0, 10.0, 30.0]
 
 
 # TASK-76 AC #4: every OTHER refusal the spec claims, checked by construction
@@ -788,7 +773,12 @@ def test_every_claimed_model_table_refusal_holds(what, nodes, kw, match):
 # the builtin path screened nothing. One screen now runs where every scalar
 # call dispatches.
 
-_ModRow = create_model("_ModRow", k=(int, ...), s=(str, ...))
+_MOD_SCHEMA = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
 
 
 class _ModUdf:
@@ -822,7 +812,7 @@ def test_scalar_call_modifiers_are_refused_not_dropped(sql):
     with pytest.raises(ValueError, match="modifier|argument clauses"):
         DuckDBInferFn(
             sql,
-            row_tables={"__THIS__": _ModRow},
+            row_tables={"__THIS__": _MOD_SCHEMA},
             static_tables={},
             udfs=[_ModUdf()],
         )
@@ -832,12 +822,12 @@ def test_unmodified_scalar_calls_still_build():
     """The screen must not catch the bare spellings of the same calls."""
     fn = DuckDBInferFn(
         "SELECT abs(k) AS a, upper(s) AS u, mudf(1.0e0) AS m FROM __THIS__",
-        row_tables={"__THIS__": _ModRow},
+        row_tables={"__THIS__": _MOD_SCHEMA},
         static_tables={},
         udfs=[_ModUdf()],
     )
-    rows = fn.infer({"__THIS__": [_ModRow(k=-2, s="x")]})
-    assert [r.model_dump() for r in rows] == [{"a": 2, "u": "X", "m": 1.0}]
+    rows = fn.infer_rows([{"k": -2, "s": "x"}])
+    assert rows == [{"a": 2, "u": "X", "m": 1.0}]
 
 
 # TASK-85 (fuzz campaign 2026-08-11, ~20 findings). DuckDB constant-folds a
@@ -851,7 +841,13 @@ def test_unmodified_scalar_calls_still_build():
 # are not strict (NULL AND FALSE is FALSE), and they never routed through the
 # folded sites.
 
-_NfRow = create_model("_NfRow", x=(float, ...), k=(int, ...), s=(str, ...))
+_NF_SCHEMA = pa.schema(
+    [
+        pa.field("x", pa.float64(), nullable=False),
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
@@ -872,9 +868,9 @@ def test_a_null_operand_elides_a_trapping_sibling(sql, want, backend, monkeypatc
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NfRow}, static_tables={})
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NF_SCHEMA}, static_tables={})
     rows = [{"x": -2.0, "k": 1, "s": "a"}]
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_NfRow(**r) for r in rows]})]
+    got = fn.infer_rows(rows)
     assert got == [{"o": want}], got
 
     con = duckdb.connect()
@@ -891,14 +887,16 @@ def test_the_trap_stays_live_without_a_null_to_fold(backend, monkeypatch):
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
-    _NfRow2 = create_model("_NfRow2", x=(float, ...), d=(float | None, None))
+    schema = pa.schema(
+        [pa.field("x", pa.float64(), nullable=False), pa.field("d", pa.float64())]
+    )
     fn = DuckDBInferFn(
         "SELECT (ln(x) + d) AS o FROM __THIS__",
-        row_tables={"__THIS__": _NfRow2},
+        row_tables={"__THIS__": schema},
         static_tables={},
     )
     with pytest.raises(Exception, match="logarithm"):
-        fn.infer({"__THIS__": [_NfRow2(x=-2.0, d=None)]})
+        fn.infer_rows([{"x": -2.0, "d": None}])
 
 
 # TASK-82 (fuzz campaign 2026-08-11, 169 of 963 findings). DuckDB's lpad and
@@ -911,7 +909,12 @@ def test_the_trap_stays_live_without_a_null_to_fold(backend, monkeypatch):
 # documented spelling for a column count. A bare column or a BIGINT cast
 # refuses. repeat and substr take BIGINT on DuckDB and are untouched.
 
-_PadRow = create_model("_PadRow", k=(int, ...), s=(str, ...))
+_PAD_SCHEMA = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
 
 
 @pytest.mark.parametrize(
@@ -925,7 +928,7 @@ _PadRow = create_model("_PadRow", k=(int, ...), s=(str, ...))
 )
 def test_a_bigint_pad_count_refuses_like_duckdb(sql):
     with pytest.raises(ValueError, match="lpad|rpad"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": _PadRow}, static_tables={})
+        DuckDBInferFn(sql, row_tables={"__THIS__": _PAD_SCHEMA}, static_tables={})
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
@@ -948,9 +951,9 @@ def test_integer_shaped_counts_still_bind_and_match(sql):
     """The spellings DuckDB types INTEGER keep building — and keep matching:
     literals, constant arithmetic, negatives; repeat's count is BIGINT on
     DuckDB and stays column-friendly."""
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _PadRow}, static_tables={})
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _PAD_SCHEMA}, static_tables={})
     rows = [{"k": 2, "s": "ab"}]
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_PadRow(**r) for r in rows]})]
+    got = fn.infer_rows(rows)
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
@@ -972,7 +975,12 @@ def test_integer_shaped_counts_still_bind_and_match(sql):
 # with DuckDB (upper(NULL), coalesce(NULL, x), nullif(x, NULL)) are
 # untouched.
 
-_BnRow = create_model("_BnRow", k=(int, ...), s=(str, ...))
+_BN_SCHEMA = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
 
 
 @pytest.mark.parametrize(
@@ -986,7 +994,7 @@ _BnRow = create_model("_BnRow", k=(int, ...), s=(str, ...))
 )
 def test_a_divergently_typed_bare_null_argument_refuses(sql):
     with pytest.raises(ValueError, match="NULL"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": _BnRow}, static_tables={})
+        DuckDBInferFn(sql, row_tables={"__THIS__": _BN_SCHEMA}, static_tables={})
 
 
 @pytest.mark.parametrize(
@@ -1002,7 +1010,7 @@ def test_a_divergently_typed_bare_null_argument_refuses(sql):
 def test_agreeing_null_adopters_still_bind_and_match(sql):
     """Everywhere the adopted type EQUALS DuckDB's inference, bare NULL keeps
     working -- schema compared too, that being the whole point."""
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _BnRow}, static_tables={})
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _BN_SCHEMA}, static_tables={})
     got = fn.infer_arrow(
         pa.table({"k": pa.array([2], pa.int64()), "s": pa.array(["ab"], pa.string())})
     )
@@ -1025,7 +1033,7 @@ def test_agreeing_null_adopters_still_bind_and_match(sql):
 # the declared-width design (TASK-79) and stays ticketed there; a BIGINT
 # operand anywhere in the expression keeps 64-bit math on both engines.
 
-_OvRow = create_model("_OvRow", k=(int, ...))
+_OV_SCHEMA = pa.schema([pa.field("k", pa.int64(), nullable=False)])
 
 
 @pytest.mark.parametrize(
@@ -1038,7 +1046,7 @@ _OvRow = create_model("_OvRow", k=(int, ...))
 )
 def test_int32_literal_overflow_refuses_where_duckdb_traps(sql):
     with pytest.raises(ValueError, match="INTEGER|int32|32"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": _OvRow}, static_tables={})
+        DuckDBInferFn(sql, row_tables={"__THIS__": _OV_SCHEMA}, static_tables={})
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT)")
@@ -1059,8 +1067,8 @@ def test_int32_literal_overflow_refuses_where_duckdb_traps(sql):
 def test_bigint_and_in_range_literal_arithmetic_still_matches(sql):
     """A BIGINT operand keeps 64-bit math on BOTH engines; in-range literal
     arithmetic and the measured INTEGER%0->NULL stay served and matching."""
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _OvRow}, static_tables={})
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_OvRow(k=2)]})]
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _OV_SCHEMA}, static_tables={})
+    got = fn.infer_rows([{"k": 2}])
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT)")
@@ -1080,7 +1088,7 @@ def test_bigint_and_in_range_literal_arithmetic_still_matches(sql):
 # exact IEEE negation for every double; the integer path keeps 0 - x and its
 # i64::MIN trap, matching DuckDB.
 
-_NegRow = create_model("_NegRow", x=(float, ...))
+_NEG_SCHEMA = pa.schema([pa.field("x", pa.float64(), nullable=False)])
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
@@ -1099,8 +1107,8 @@ def test_negative_zero_keeps_its_sign(sql, rows, backend, monkeypatch):
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NegRow}, static_tables={})
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_NegRow(**r) for r in rows]})]
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NEG_SCHEMA}, static_tables={})
+    got = fn.infer_rows(rows)
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (x DOUBLE)")
@@ -1122,7 +1130,7 @@ def test_a_null_string_does_not_smuggle_a_bigint_pad_count():
     with pytest.raises(ValueError, match="lpad"):
         DuckDBInferFn(
             "SELECT lpad(NULL, k, 'x') AS o FROM __THIS__",
-            row_tables={"__THIS__": _PadRow},
+            row_tables={"__THIS__": _PAD_SCHEMA},
             static_tables={},
         )
     con = duckdb.connect()
@@ -1135,10 +1143,10 @@ def test_a_null_string_does_not_smuggle_a_bigint_pad_count():
 def test_a_null_string_with_an_integer_count_still_serves():
     fn = DuckDBInferFn(
         "SELECT lpad(NULL, 3, 'x') AS o, rpad(NULL, 3, 'x') AS p FROM __THIS__",
-        row_tables={"__THIS__": _PadRow},
+        row_tables={"__THIS__": _PAD_SCHEMA},
         static_tables={},
     )
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_PadRow(k=2, s="ab")]})]
+    got = fn.infer_rows([{"k": 2, "s": "ab"}])
     assert got == [{"o": None, "p": None}]
 
 
@@ -1150,7 +1158,12 @@ def test_a_null_string_with_an_integer_count_still_serves():
 # a dead-range BETWEEN is eliminated in WHERE (and ONLY in WHERE); a folded
 # constant CASE landing on NULL joins the TASK-85 elision.
 
-_CfRow = create_model("_CfRow", s=(str, ...), x=(float, ...))
+_CF_SCHEMA = pa.schema(
+    [
+        pa.field("s", pa.string(), nullable=False),
+        pa.field("x", pa.float64(), nullable=False),
+    ]
+)
 
 
 @pytest.mark.parametrize(
@@ -1164,7 +1177,7 @@ _CfRow = create_model("_CfRow", s=(str, ...), x=(float, ...))
 )
 def test_a_trapping_constant_refuses_at_build(sql):
     with pytest.raises(ValueError, match="constant|overflows"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": _CfRow}, static_tables={})
+        DuckDBInferFn(sql, row_tables={"__THIS__": _CF_SCHEMA}, static_tables={})
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
@@ -1198,8 +1211,8 @@ def test_plan_time_folds_match_duckdb(sql, rows, want, backend, monkeypatch):
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _CfRow}, static_tables={})
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_CfRow(**r) for r in rows]})]
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _CF_SCHEMA}, static_tables={})
+    got = fn.infer_rows(rows)
     assert got == want, got
 
     con = duckdb.connect()
@@ -1220,11 +1233,11 @@ def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
     fn = DuckDBInferFn(
         "SELECT (CAST(s AS BIGINT) BETWEEN 22 AND 10) AS o FROM __THIS__",
-        row_tables={"__THIS__": _CfRow},
+        row_tables={"__THIS__": _CF_SCHEMA},
         static_tables={},
     )
     with pytest.raises(Exception, match="cast|convert"):
-        fn.infer({"__THIS__": [_CfRow(s="one", x=1.0)]})
+        fn.infer_rows([{"s": "one", "x": 1.0}])
 
 
 # TASK-88 (fuzz rounds 1+2, ~7 findings + the campaign timeouts). The
@@ -1234,7 +1247,12 @@ def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
 # that can exceed the budget now refuses at build by name. Data-driven
 # counts (a column, CAST(k AS INTEGER)) keep the documented runtime cap.
 
-_SbRow = create_model("_SbRow", k=(int, ...), s=(str, ...))
+_SB_SCHEMA = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
 
 
 @pytest.mark.parametrize(
@@ -1247,7 +1265,7 @@ _SbRow = create_model("_SbRow", k=(int, ...), s=(str, ...))
 )
 def test_a_budget_breaking_literal_count_refuses(sql):
     with pytest.raises(ValueError, match="builder|GiB"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": _SbRow}, static_tables={})
+        DuckDBInferFn(sql, row_tables={"__THIS__": _SB_SCHEMA}, static_tables={})
 
 
 def test_a_large_but_bounded_count_still_serves_and_matches():
@@ -1255,8 +1273,8 @@ def test_a_large_but_bounded_count_still_serves_and_matches():
         "SELECT length(lpad(s, 100000, 'x')) AS o,"
         " length(repeat(s, 50000)) AS p FROM __THIS__"
     )
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _SbRow}, static_tables={})
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_SbRow(k=1, s="ab")]})]
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _SB_SCHEMA}, static_tables={})
+    got = fn.infer_rows([{"k": 1, "s": "ab"}])
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")

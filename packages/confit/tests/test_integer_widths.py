@@ -17,9 +17,13 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
-In = create_model("In", k=(int, ...), s=(str, ...))
+IN_SCHEMA = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
 ROWS = [{"k": 0, "s": "ab"}, {"k": 2, "s": "Z"}, {"k": 30000, "s": "!"}]
 
 # The measured catalogue (spec 2026-08-11 + probe 2026-08-13). Mix of rows
@@ -132,9 +136,7 @@ def _duck(sql: str) -> pa.Table:
 
 
 def _ours(sql: str) -> pa.Table:
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
     return fn.infer_arrow(pa.Table.from_pylist(ROWS))
 
 
@@ -150,10 +152,8 @@ def test_try_cast_to_integer_nulls_out_of_range():
     it is phase-2 value semantics, not phase-3 trap work."""
     sql = "SELECT TRY_CAST(k AS INTEGER) AS o FROM __THIS__"
     big = [{"k": 9007199254740993, "s": "x"}, {"k": 5, "s": "y"}]
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
-    got = fn.infer({"__THIS__": [In(**r) for r in big]})
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
+    got = fn.infer_rows(big)
     assert [r["o"] for r in got] == [None, 5]
 
 
@@ -162,15 +162,13 @@ def test_row_and_arrow_boundaries_agree_on_narrow_widths():
     width contract holds on EVERY boundary — both refuse an out-of-range
     narrow value (DuckDB traps the same input; our trap is phase 3)."""
     sql = "SELECT CAST(k AS TINYINT) AS o FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
     ok = [{"k": 5, "s": "a"}]
-    assert [r["o"] for r in fn.infer({"__THIS__": [In(**r) for r in ok]})] == [5]
+    assert [r["o"] for r in fn.infer_rows(ok)] == [5]
     assert fn.infer_arrow(pa.Table.from_pylist(ok)).to_pylist() == [{"o": 5}]
     bad = [{"k": 300, "s": "a"}]
     with pytest.raises(ValueError, match="TINYINT"):
-        fn.infer({"__THIS__": [In(**r) for r in bad]})
+        fn.infer_rows(bad)
     with pytest.raises(ValueError, match="TINYINT"):
         fn.infer_arrow(pa.Table.from_pylist(bad))
 
@@ -182,15 +180,13 @@ def test_struct_children_hold_narrow_widths_on_both_boundaries():
     an out-of-range value by name (the row path served it silently; the
     arrow path refused with pyarrow's wording instead of ours)."""
     sql = "SELECT struct_pack(v := CAST(k AS INTEGER)) AS o FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
     ok = [{"k": 5, "s": "a"}]
-    assert [r["o"] for r in fn.infer({"__THIS__": [In(**r) for r in ok]})] == [{"v": 5}]
+    assert [r["o"] for r in fn.infer_rows(ok)] == [{"v": 5}]
     assert fn.infer_arrow(pa.Table.from_pylist(ok)).to_pylist() == [{"o": {"v": 5}}]
     bad = [{"k": 3000000000, "s": "a"}]
     with pytest.raises(ValueError, match="INTEGER"):
-        fn.infer({"__THIS__": [In(**r) for r in bad]})
+        fn.infer_rows(bad)
     with pytest.raises(ValueError, match="INTEGER"):
         fn.infer_arrow(pa.Table.from_pylist(bad))
 
@@ -203,7 +199,7 @@ def test_unary_plus_refuses_non_numerics():
         "SELECT +('a') AS o FROM __THIS__",
     ]:
         with pytest.raises(ValueError, match=r"\+\("):
-            DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={})
+            DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
 
 
 def test_out_of_range_dynamic_int32_refuses_at_emit_not_wraps():
@@ -211,9 +207,7 @@ def test_out_of_range_dynamic_int32_refuses_at_emit_not_wraps():
     trap is phase 3; until then the int32 EMIT must refuse by name rather
     than wrap — every input this refuses is an input DuckDB errors on too."""
     sql = "SELECT CAST(k AS INTEGER) AS o FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
     with pytest.raises(Exception, match="int32|INT32|INTEGER"):
         fn.infer_arrow(pa.Table.from_pylist([{"k": 9007199254740993, "s": "x"}]))
 
@@ -251,7 +245,7 @@ class _StructUdf:
 
 def _ours_udf(sql, *udfs):
     fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, udfs=list(udfs)
+        sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={}, udfs=list(udfs)
     )
     return fn.infer_arrow(pa.Table.from_pylist(ROWS))
 
@@ -327,7 +321,9 @@ def test_side_effects_udf_is_never_executed_at_build():
     u = _StructUdf()
     u.side_effects = True
     sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={}, udfs=[u]
+    )
     assert u.calls == 0, "a side-effectful udf must never run at build"
     ours = fn.infer_arrow(pa.Table.from_pylist(ROWS))
     assert ours.schema.field("o").type == pa.int64()
@@ -347,7 +343,9 @@ def test_raising_pure_udf_keeps_the_runtime_call():
 
     u = Boom()
     sql = "SELECT (udf9(1, 2)).f1 AS o FROM __THIS__"
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={}, udfs=[u]
+    )
     assert u.calls == 1, "the fold TRIED (and swallowed the raise)"
     empty = pa.Table.from_pylist(
         [], schema=pa.schema([("k", pa.int64()), ("s", pa.string())])
@@ -415,7 +413,9 @@ def test_raising_pure_udf_under_concat_stays_runtime():
     raise is swallowed, the runtime call stays and errors at RUN."""
     u = _ScalarStrUdf(result="raise")
     sql = "SELECT us9(1, 2) || s AS o FROM __THIS__"
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={}, udfs=[u]
+    )
     assert u.calls == 1, "the fold tried once and swallowed"
     with pytest.raises(Exception, match="boom"):
         fn.infer_arrow(pa.Table.from_pylist(ROWS))
@@ -426,7 +426,9 @@ def test_pure_scalar_udf_value_under_concat_bakes_once():
     at bind and never per row — matching call counts and values."""
     u = _ScalarStrUdf(result=("x",))
     sql = "SELECT us9(1, 2) || s AS o FROM __THIS__"
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={}, udfs=[u]
+    )
     assert u.calls == 1
     ours = fn.infer_arrow(pa.Table.from_pylist(ROWS))
     assert u.calls == 1, "the baked literal never re-executes the udf"
