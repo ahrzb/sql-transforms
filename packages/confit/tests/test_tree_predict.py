@@ -23,7 +23,7 @@ from typing import Any
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from test_duckdb_interpreter import _row_model
+from test_duckdb_interpreter import _row_schema
 
 NODE_SCHEMA = pa.schema(
     [
@@ -170,16 +170,16 @@ def check_backend(fn):
 
 
 def run(sql, row_schema, rows, models, **kw):
-    model = _row_model(row_schema)
+    schema = _row_schema(row_schema)
     fn = DuckDBInferFn(
         sql,
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={},
         udfs=[make(name) for name, make in models.items()],
         **kw,
     )
     check_backend(fn)
-    return [r.model_dump() for r in fn.infer({"__THIS__": [model(**r) for r in rows]})]
+    return fn.infer_rows(rows)
 
 
 SQL = "SELECT trees(id, x) AS p FROM __THIS__"
@@ -347,10 +347,10 @@ def test_int_feature_promotes_to_double(backend):
 
 
 def build(models, sql=SQL, row_schema=None):
-    model = _row_model(row_schema or {"id": "int", "x": "float"})
+    schema = _row_schema(row_schema or {"id": "int", "x": "float"})
     return DuckDBInferFn(
         sql,
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={},
         udfs=[make(name) for name, make in models.items()],
     )
@@ -460,11 +460,11 @@ def test_a_tree_transform_and_an_ecall_udf_cannot_share_a_name():
         def __call__(self, x):
             return (x * 2.0,)
 
-    model = _row_model({"id": "int", "x": "float"})
+    schema = _row_schema({"id": "int", "x": "float"})
     with pytest.raises(Exception, match="duplicate udf name"):
         DuckDBInferFn(
             SQL,
-            row_tables={"__THIS__": model},
+            row_tables={"__THIS__": schema},
             static_tables={},
             udfs=[STUMP("trees"), Scale()],
         )
@@ -501,11 +501,11 @@ def test_malformed_tree_tables_refuses():
         def tree_tables(self):
             raise RuntimeError("boom")
 
-    model = _row_model({"id": "int", "x": "float"})
+    schema = _row_schema({"id": "int", "x": "float"})
     for cls, needle in ((Wrong, "must return"), (Raises, "raised")):
         with pytest.raises(Exception, match=needle):
             DuckDBInferFn(
-                SQL, row_tables={"__THIS__": model}, static_tables={}, udfs=[cls()]
+                SQL, row_tables={"__THIS__": schema}, static_tables={}, udfs=[cls()]
             )
 
 
@@ -520,17 +520,17 @@ def test_model_set_alongside_a_static_join(backend):
     params = pa.table(
         {"k": pa.array([1], pa.int64()), "est": pa.array([0], pa.int64())}
     )
-    model = _row_model({"k": "int", "x": "float"})
+    schema = _row_schema({"k": "int", "x": "float"})
     fn = DuckDBInferFn(
         "SELECT trees(p.est, t.x) AS p "
         "FROM __THIS__ AS t LEFT JOIN params AS p ON t.k = p.k",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={"params": params},
         udfs=[STUMP("trees")],
     )
     check_backend(fn)
     rows = [{"k": 1, "x": 0.0}, {"k": 1, "x": 1.0}, {"k": 2, "x": 0.0}]
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [model(**r) for r in rows]})]
+    got = fn.infer_rows(rows)
     assert [r["p"] for r in got] == [10.0, 20.0, None]
 
 

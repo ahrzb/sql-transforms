@@ -12,14 +12,13 @@ from __future__ import annotations
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
-T = create_model("T", a=(int, ...), s=(str | None, None))
+T = pa.schema([pa.field("a", pa.int64(), nullable=False), pa.field("s", pa.string())])
 DIM = pa.table({"id": [1, 2], "v": [10, 20]})
 
 
 def build(sql, shape=None, statics=None):
-    kwargs = {"output": "dict"}
+    kwargs = {}
     if shape is not None:
         kwargs["shape"] = shape
     return DuckDBInferFn(
@@ -30,7 +29,7 @@ def build(sql, shape=None, statics=None):
 def test_map_serves_projections_and_left_joins():
     fn = build("SELECT a + 1 AS b, upper(s) AS u FROM __THIS__", shape="map")
     assert fn.shape == "map"
-    got = fn.infer({"__THIS__": [T(a=1, s="x"), T(a=2, s=None)]})
+    got = fn.infer_rows([{"a": 1, "s": "x"}, {"a": 2, "s": None}])
     assert [r["b"] for r in got] == [2, 3]  # exactly one out per in, in order
 
     fn = build(
@@ -38,7 +37,7 @@ def test_map_serves_projections_and_left_joins():
         shape="map",
         statics={"d": DIM},
     )
-    got = fn.infer({"__THIS__": [T(a=1), T(a=99)]})
+    got = fn.infer_rows([{"a": 1, "s": None}, {"a": 99, "s": None}])
     assert [r["v"] for r in got] == [10, None]  # a miss maps, never drops
 
 
@@ -60,7 +59,7 @@ def test_filter_default_unchanged():
     for kwargs in [{}, {"shape": "filter"}]:
         fn = build("SELECT a FROM __THIS__ WHERE a > 1", **kwargs)
         assert fn.shape == "filter"
-        got = fn.infer({"__THIS__": [T(a=1), T(a=2)]})
+        got = fn.infer_rows([{"a": 1, "s": None}, {"a": 2, "s": None}])
         assert [r["a"] for r in got] == [2]
 
 
@@ -75,7 +74,7 @@ def test_many_enables_multiplicity_and_bad_values_are_named():
         statics={"d": dup},
     )
     assert fn.shape == "many"
-    got = fn.infer({"__THIS__": [T(a=1), T(a=2)]})
+    got = fn.infer_rows([{"a": 1, "s": None}, {"a": 2, "s": None}])
     assert sorted(r["v"] for r in got) == [10, 11]
     with pytest.raises(ValueError, match="must be 'map', 'filter', or 'many'"):
         build("SELECT a FROM __THIS__", shape="projection")
