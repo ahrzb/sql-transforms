@@ -587,11 +587,16 @@ impl Parser {
                 }
             }
             self.expect(Tok::RParen)?;
+            // TASK-101: the purity flag round-trips so parse(print(p))
+            // stays lossless; a parsed program never bind-folds again,
+            // but the text must not silently launder impurity.
+            let side_effects = self.keyword("impure").is_ok();
             externs.push(super::ExternSpec {
                 name,
                 params,
                 rets,
                 ret_names,
+                side_effects,
             });
         }
 

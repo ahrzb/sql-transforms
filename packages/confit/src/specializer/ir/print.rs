@@ -56,9 +56,10 @@ pub fn print(p: &Program) -> String {
         };
         let _ = writeln!(
             s,
-            "extern @{i}: {} ({}) -> ({rets})",
+            "extern @{i}: {} ({}) -> ({rets}){}",
             quote(&ex.name),
             tys(&ex.params),
+            if ex.side_effects { " impure" } else { "" },
         );
     }
     if !p.statics.is_empty() || !p.regexes.is_empty() || !p.externs.is_empty() {

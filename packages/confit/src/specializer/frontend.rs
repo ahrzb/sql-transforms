@@ -29,6 +29,7 @@ use sqlparser::ast::{
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
+use super::exec::{ExternImpl, ScalarVal};
 use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
 use super::sig::{self, ArgTy, NullArg, Ret, Sig};
@@ -255,6 +256,7 @@ pub fn frontend(
     many: bool,
     udfs: &[super::ir::ExternSpec],
     models: &[super::plan::ModelTable],
+    bind_eval: &[ExternImpl],
 ) -> Result<
     (
         Rel,
@@ -333,8 +335,9 @@ pub fn frontend(
         return Err(unsup("GROUP BY / HAVING / aggregation"));
     }
 
-    let (binder, joins, leftover_where) =
-        bind_from(select, this_name, in_cols, opaque, structs, statics, many, udfs, models)?;
+    let (binder, joins, leftover_where) = bind_from(
+        select, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
+    )?;
 
     let mut out_cols = Vec::new();
     let mut exprs = Vec::new();
@@ -548,6 +551,9 @@ fn bind_from<'a>(
     many: bool,
     udfs: &'a [super::ir::ExternSpec],
     models: &'a [super::plan::ModelTable],
+    // TASK-101: installed at construction so JOIN keys and residuals,
+    // which bind in here, fold pure externs exactly like the projection.
+    bind_eval: &'a [ExternImpl],
 ) -> Result<(Binder<'a>, Vec<JoinSpec>, Option<SqlExpr>), PrepareError> {
     // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
     // follow and are addressable ONLY through their struct paths.
@@ -639,6 +645,7 @@ fn bind_from<'a>(
         bound_aliases: std::cell::RefCell::new(Vec::new()),
         regexes: std::cell::RefCell::new(Vec::new()),
         udfs,
+        bind_eval,
         models,
         model_refs: std::cell::RefCell::new(Vec::new()),
         sites: std::cell::Cell::new(0),
@@ -1333,6 +1340,11 @@ struct Binder<'a> {
     /// Declared UDF externs (DRAFT-22): an unknown function matching one
     /// binds as an opaque ecall instead of the named refusal.
     udfs: &'a [super::ir::ExternSpec],
+    /// TASK-101: the callables themselves, decl-order-aligned with `udfs`,
+    /// for the bind-time fold of pure externs over constant args. Empty
+    /// (every pure-rust caller) disables the fold — specs alone cannot
+    /// execute python.
+    bind_eval: &'a [ExternImpl],
     /// Declared tree transforms, by name — the same call-site namespace as
     /// `udfs`, resolved first because they lower to the native kernel.
     models: &'a [super::plan::ModelTable],
@@ -2096,9 +2108,52 @@ impl Binder<'_> {
                 if self.nullif_sqlnull(f)? {
                     return Ok(None);
                 }
-                self.bind(e).map(Some)
+                self.bind_or_sqlnull(e)
             }
-            other => self.bind(other).map(Some),
+            other => self.bind_or_sqlnull(other),
+        }
+    }
+
+    /// Bind `e`; if the result is DuckDB's SQLNULL surface — the || collapse
+    /// (TASK-102) or a pure-udf field fold to whole-call NULL (TASK-101) —
+    /// answer the ADOPTABLE channel instead: `- ((udf(1, NULL)).f1)` is
+    /// BIGINT on DuckDB, `abs(s || NULL)` BIGINT too, because SQLNULL
+    /// re-promotes by signature. The gate is the SPELLING, not the bound
+    /// type: a builtin's whole-call NULL is a COMMITTED int32 there
+    /// (measured: `-(ascii(NULL))` is INTEGER and `upper(ascii(NULL))` a
+    /// binder error), and within the gated shapes NullOf(int32) has no
+    /// other producer (a udf cannot declare an int32 field; || otherwise
+    /// types Str).
+    fn bind_or_sqlnull(&self, e: &SqlExpr) -> Result<Option<SExpr>, PrepareError> {
+        let bound = self.bind(e)?;
+        let sqlnull = matches!(bound.kind, SKind::NullOf)
+            && bound.ty == Ty::I32
+            && self.sqlnull_capable_shape(e);
+        Ok((!sqlnull).then_some(bound))
+    }
+
+    /// The spellings whose bind may yield the SQLNULL surface: `||`, and
+    /// field access over a DECLARED udf (dot form and struct_extract).
+    fn sqlnull_capable_shape(&self, e: &SqlExpr) -> bool {
+        let over_udf = |root: &SqlExpr| {
+            let mut b = root;
+            while let SqlExpr::Nested(i) = b {
+                b = i;
+            }
+            matches!(b, SqlExpr::Function(f) if self.find_udf(&f.name.to_string()).is_some())
+        };
+        match e {
+            SqlExpr::BinaryOp {
+                op: BinaryOperator::StringConcat,
+                ..
+            } => true,
+            SqlExpr::CompoundFieldAccess { root, access_chain } => {
+                matches!(access_chain.as_slice(), [AccessExpr::Dot(_)]) && over_udf(root)
+            }
+            SqlExpr::Function(f) => {
+                f.name.to_string().eq_ignore_ascii_case("struct_extract")
+            }
+            _ => false,
         }
     }
 
@@ -3501,7 +3556,8 @@ impl Binder<'_> {
                 // implicitly cast to VARCHAR.
                 let (a, b) = (to_varchar(a), to_varchar(b));
                 // TASK-102: DuckDB's binder collapses || to an SQLNULL
-                // constant (int32 at the boundary) when an operand its
+                // constant (int32 at the boundary, ADOPTABLE upstream —
+                // see expr_or_null's shape gate) when an operand its
                 // binder can fold evaluates to NULL — any spelling, a
                 // column on the OTHER side notwithstanding, since ||
                 // propagates NULL to every row. Concat-specific: +, LIKE
@@ -3509,11 +3565,12 @@ impl Binder<'_> {
                 // concat() skips NULLs instead. The bind_foldable gate is
                 // load-bearing: our own fold dead-arm-eliminates a CASE
                 // whose column sits in an untaken arm, which DuckDB's
-                // binder never folds — that spelling stays Str.
-                let folds_null = |e: &SExpr| {
-                    bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
-                };
-                if folds_null(&a) || folds_null(&b) {
+                // binder never folds — that spelling stays Str. Pure
+                // extern operands TRY-fold by execution (TASK-101), a
+                // folded VALUE baking in as a literal.
+                let (a, a_null) = self.bind_fold_concat_operand(a);
+                let (b, b_null) = self.bind_fold_concat_operand(b);
+                if a_null || b_null {
                     return Ok(null_of(Ty::I32));
                 }
                 let nullable = a.nullable || b.nullable;
@@ -4061,6 +4118,100 @@ impl Binder<'_> {
         }
     }
 
+    /// TASK-101: try to execute a pure extern at BIND, DuckDB's bind fold
+    /// (spec 2026-08-13-bind-fold-alignment). `None` = not foldable here
+    /// (side_effects declared, no evaluator, or a non-constant argument);
+    /// `Some(Err(msg))` = the callable raised, and the CONTEXT decides
+    /// (field access fails the build, || swallows — both measured);
+    /// `Some(Ok(..))` = the folded result (`None` = whole-call NULL).
+    #[allow(clippy::type_complexity)]
+    fn try_extern_bind_fold(
+        &self,
+        ext: usize,
+        spec: &super::ir::ExternSpec,
+        args: &[SExpr],
+    ) -> Option<Result<Option<Vec<Option<ScalarVal>>>, String>> {
+        if spec.side_effects {
+            return None;
+        }
+        let eval = self.bind_eval.get(ext)?;
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            if !bind_foldable(a) {
+                return None;
+            }
+            vals.push(match fold(a.clone()).kind {
+                SKind::NullOf => None,
+                SKind::Lit(Lit::I1(v)) => Some(ScalarVal::I1(v)),
+                SKind::Lit(Lit::I64(v)) => Some(ScalarVal::I64(v)),
+                SKind::Lit(Lit::F64(v)) => Some(ScalarVal::F64(v)),
+                SKind::Lit(Lit::Str(s)) => Some(ScalarVal::Str(s)),
+                // A constant spelling our fold cannot finish (runtime-only
+                // ops over literals) — DuckDB would fold; we pass. The
+                // campaign owns finding any schema-visible residue.
+                _ => return None,
+            });
+        }
+        Some((eval.fun)(&vals))
+    }
+
+    /// TASK-102 gate, reading through TASK-101: bind-fold one || operand.
+    /// `(_, true)` = the operand folds to NULL, so the whole || collapses
+    /// to SQLNULL. Otherwise the (possibly rewritten) operand comes back:
+    /// a pure extern's folded VALUE is baked as a literal — DuckDB
+    /// executes once at bind, never per row, and a non-deterministic
+    /// "pure" udf gets one baked sample there too — while a raising
+    /// callable keeps the runtime call (DuckDB's fold swallows
+    /// exceptions uniformly; review 2026-08-13).
+    fn bind_fold_concat_operand(&self, e: SExpr) -> (SExpr, bool) {
+        if bind_foldable(&e) && matches!(fold(e.clone()).kind, SKind::NullOf) {
+            return (e, true);
+        }
+        // to_varchar wraps a non-Str operand in one Cast — look through.
+        let (inner, wrap) = match &e.kind {
+            SKind::Cast { inner, trying } => ((**inner).clone(), Some((e.ty, *trying))),
+            _ => (e.clone(), None),
+        };
+        if let SKind::ExternCall {
+            ext,
+            ref args,
+            whole: false,
+            ..
+        } = inner.kind
+        {
+            if let Some(spec) = self.udfs.get(ext as usize) {
+                if spec.rets.len() == 1 {
+                    match self.try_extern_bind_fold(ext as usize, spec, args) {
+                        Some(Ok(None)) => return (e, true),
+                        Some(Ok(Some(lanes))) => match lanes.into_iter().next() {
+                            Some(Some(v)) => {
+                                let lit = scalar_lit(v, inner.ty);
+                                let rebuilt = match wrap {
+                                    Some((ty, trying)) => SExpr {
+                                        nullable: false,
+                                        kind: SKind::Cast {
+                                            inner: Box::new(lit),
+                                            trying,
+                                        },
+                                        ty,
+                                    },
+                                    None => lit,
+                                };
+                                return (rebuilt, false);
+                            }
+                            // A NULL-valued fold result collapses exactly
+                            // like any constant NULL operand (measured:
+                            // s || CAST(NULL AS VARCHAR) is INTEGER).
+                            _ => return (e, true),
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+        (e, false)
+    }
+
     /// Field access over a declared width-k extern call: bind the named
     /// lane of ONE shared ecall (TASK-63). `Ok(None)` when this isn't
     /// that shape — callers fall through to their own handling.
@@ -4095,6 +4246,29 @@ impl Binder<'_> {
             )));
         };
         let args = self.bind_udf_args(f, spec)?;
+        // TASK-101: field access is a fold context — a pure udf with
+        // constant args EXECUTES here at bind, special null handling
+        // honored (the real result is used, never assumed). Whole-call
+        // None is DuckDB's SQLNULL (surfaced int32, ADOPTED by consumers
+        // via expr_or_null's shape gate); a real struct keeps its
+        // declared field types, NULL fields included. A raised exception
+        // is SWALLOWED and the runtime call stays — DuckDB's fold gives
+        // up uniformly (review 2026-08-13: DESCRIBE succeeds, the error
+        // fires at RUN with rows, a zero-row batch answers empty; an
+        // earlier FROM-less probe that seemed to error at bind was eager
+        // constant evaluation, not the binder).
+        match self.try_extern_bind_fold(ext as usize, spec, &args) {
+            Some(Err(_)) => {}
+            Some(Ok(None)) => return Ok(Some(null_of(Ty::I32))),
+            Some(Ok(Some(lanes))) => {
+                let ty = spec.rets[ret];
+                return Ok(Some(match lanes.into_iter().nth(ret) {
+                    Some(Some(v)) => scalar_lit(v, ty),
+                    _ => null_of(ty),
+                }));
+            }
+            None => {}
+        }
         let site = self.site_for(f);
         Ok(Some(SExpr {
             kind: SKind::ExternCall {
@@ -6166,6 +6340,21 @@ fn to_varchar(e: SExpr) -> SExpr {
         },
         ty: Ty::Str,
         nullable,
+    }
+}
+
+/// A bind-fold result value as a literal of the declared type (TASK-101).
+fn scalar_lit(v: ScalarVal, ty: Ty) -> SExpr {
+    let lit = match v {
+        ScalarVal::I1(x) => Lit::I1(x),
+        ScalarVal::I64(x) => Lit::I64(x),
+        ScalarVal::F64(x) => Lit::F64(x),
+        ScalarVal::Str(x) => Lit::Str(x),
+    };
+    SExpr {
+        kind: SKind::Lit(lit),
+        ty,
+        nullable: false,
     }
 }
 

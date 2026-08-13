@@ -31,7 +31,10 @@ plan time") was wrong; the measured mechanism (probe battery
   and its real result is used (a udf returning 99 for NULL input
   folds to 99/BIGINT — measured, never assumed NULL). None -> SQLNULL
   -> INTEGER; non-NULL -> constant of the declared type.
-- A udf that raises during the fold fails the query at bind.
+- A udf that raises during the fold is SWALLOWED — the runtime call
+  stays, DESCRIBE types by the declaration, rows error at RUN
+  (adversarial review 2026-08-13 corrected the earlier bind-error
+  claim: that probe was FROM-less eager evaluation, not the binder).
 
 We mirror: protocol objects gain `side_effects: bool = False`
 (same name and default as DuckDB); build may execute a pure udf when
@@ -46,7 +49,7 @@ docs/superpowers/specs/2026-08-13-bind-fold-alignment-design.md.
 - [ ] #1 the TASK-101 xfail-strict pin in test_integer_widths.py flips to passing
 - [ ] #2 a pure udf returning non-NULL for NULL args folds to that value (contract pin)
 - [ ] #3 side_effects=True udf is never executed at build; schema matches DuckDB's same flag
-- [ ] #4 a raising pure udf under a fold context is a BUILD error (error-phase parity)
+- [ ] #4 a raising pure udf builds, answers empty on zero rows, errors at RUN (uniform swallow)
 - [ ] #5 fold contexts match DuckDB's, probed (field access measured; probe ||-operand, cmp, arith before coding)
 - [ ] #6 20k campaign: the seed-601418 class is gone, no new classes
 <!-- AC:END -->

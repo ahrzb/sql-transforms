@@ -953,6 +953,7 @@ fn indf_under_shape_many_refuses_by_name() {
 
         &[],
         &[],
+        &[],
     ) {
         Err(PrepareError::Unsupported(m)) => {
             assert!(m.contains("IS NOT DISTINCT FROM"), "got: {m}")
@@ -993,6 +994,7 @@ fn udf(name: &str, params: &[Ty], rets: &[Ty]) -> super::ir::ExternSpec {
         params: params.to_vec(),
         rets: rets.to_vec(),
         ret_names: Vec::new(),
+        side_effects: false,
     }
 }
 
@@ -1012,7 +1014,7 @@ fn prep_udfs(
     statics: &[StaticTable],
     udfs: &[super::ir::ExternSpec],
 ) -> Result<super::Prepared, PrepareError> {
-    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs, &[])
+    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs, &[], &[])
 }
 
 // ------------------------------------------------- the builtin guard --
@@ -1128,7 +1130,7 @@ fn prep_models(
     statics: &[StaticTable],
     models: &[super::plan::ModelTable],
 ) -> Result<super::Prepared, PrepareError> {
-    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, &[], models)
+    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, &[], models, &[])
 }
 
 /// The serving shape: a tree transform is called like every other declared
@@ -1227,6 +1229,7 @@ fn a_tree_transform_outranks_a_same_named_ecall() {
         false,
         &[udf("trees", &[Ty::I64, Ty::F64], &[Ty::F64])],
         &[model("trees", 1)],
+        &[],
     )
     .unwrap();
     let text = print(&p.program);
@@ -1545,6 +1548,7 @@ fn udf_named(name: &str, params: &[Ty], rets: &[(&str, Ty)]) -> super::ir::Exter
         params: params.to_vec(),
         rets: rets.iter().map(|(_, t)| *t).collect(),
         ret_names: rets.iter().map(|(n, _)| n.to_string()).collect(),
+        side_effects: false,
     }
 }
 
@@ -2929,7 +2933,7 @@ fn opaque_row_columns_reject_only_on_reference() {
     let schema = cols(&[("a", Ty::I64, false), ("s", Ty::Str, true)]);
     let opaque = vec![(1usize, "d".to_string())];
     let prep_o = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false, &[], &[])
+        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false, &[], &[], &[])
             .map(|p| p.program)
     };
 
@@ -3241,7 +3245,7 @@ fn structs_flatten_to_lanes() {
         ],
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false, &[], &[])
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false, &[], &[], &[])
             .map(|p| p.program)
     };
     let run = |sql: &str| -> Result<Vec<Vec<String>>, String> {
@@ -3351,7 +3355,7 @@ fn nested_struct_resolution_matches_pins() {
         ))))),
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false, &[], &[])
+        super::prepare_opaque(sql, "t", &schema, &[], &structs, &[], false, &[], &[], &[])
             .map(|p| p.program)
     };
     // 8 parts = schema.table.column + 5 field extracts (corpus verbatim).
@@ -3394,6 +3398,7 @@ fn many_shape_dup_key_joins_fan_out() {
             &[],
             std::slice::from_ref(&dim),
             true,
+            &[],
             &[],
             &[],
         )
@@ -3480,6 +3485,7 @@ fn many_shape_dup_key_joins_fan_out() {
 
         &[],
         &[],
+        &[],
     ) {
         Err(e) => e.to_string(),
         Ok(_) => panic!("multi-join under many must be the named restriction"),
@@ -3503,6 +3509,7 @@ fn many_shape_keyless_and_inequality_joins() {
             &[],
             std::slice::from_ref(&dim),
             true,
+            &[],
             &[],
             &[],
         )
@@ -3560,7 +3567,7 @@ fn many_shape_self_joins() {
     // bit-identical under multiplicity; pins-stageB).
     let schema = cols(&[("i", Ty::I64, false), ("j", Ty::I64, false)]);
     let prep_many = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &[], &[], true, &[], &[])
+        super::prepare_opaque(sql, "__THIS__", &schema, &[], &[], &[], true, &[], &[], &[])
     };
     let input = || {
         batch(

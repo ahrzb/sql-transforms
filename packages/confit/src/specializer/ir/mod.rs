@@ -972,6 +972,12 @@ pub struct ExternSpec {
     /// empty (unnamed — field access over the call refuses by name) or
     /// exactly one name per return.
     pub ret_names: Vec<String>,
+    /// TASK-101, DuckDB's own `create_function` flag with its default:
+    /// false declares the callable PURE — safe for the binder to execute
+    /// at build when a fold context asks for its constant-args value.
+    /// True keeps the call opaque until run. Bind-time-only fact: not
+    /// serialized in program text (parse defaults it false).
+    pub side_effects: bool,
 }
 
 /// One entry of [`Program::regexes`]; `rewrite` is a rust replacement

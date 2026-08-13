@@ -93,7 +93,7 @@ pub fn prepare(
     in_cols: &[ir::Col],
     statics: &[plan::StaticTable],
 ) -> Result<Prepared, PrepareError> {
-    prepare_opaque(sql, this_name, in_cols, &[], &[], statics, false, &[], &[])
+    prepare_opaque(sql, this_name, in_cols, &[], &[], statics, false, &[], &[], &[])
 }
 
 /// [`prepare`] plus the row-model columns that have no plain scalar lane:
@@ -114,9 +114,12 @@ pub fn prepare_opaque(
     many: bool,
     udfs: &[ir::ExternSpec],
     models: &[plan::ModelTable],
+    // TASK-101: the udf callables, decl-order-aligned with `udfs`, for
+    // the bind-time fold of pure externs. Empty disables the fold.
+    bind_eval: &[exec::ExternImpl],
 ) -> Result<Prepared, PrepareError> {
     let (rel, joins, out_cols, regexes, wide_outputs, model_refs) = frontend::frontend(
-        sql, this_name, in_cols, opaque, structs, statics, many, udfs, models,
+        sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
     )?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
     let mut program = lower::lower(
