@@ -374,12 +374,23 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
                 )));
             }
         }
+        // TASK-101: DuckDB's own flag, its default. Absent means false =
+        // pure = bind-foldable; a PRESENT non-bool refuses rather than
+        // failing open into executing user code at build (DuckDB's own
+        // create_function rejects non-bools too).
+        let side_effects = match b.getattr("side_effects") {
+            Err(_) => false,
+            Ok(v) => v.extract::<bool>().map_err(|_| {
+                build_err(format!("udf '{name}': `side_effects` must be a bool"))
+            })?,
+        };
         out.push(UdfDecl {
             spec: ExternSpec {
                 name,
                 params,
                 rets,
                 ret_names,
+                side_effects,
             },
             obj: obj.clone_ref(py),
         });
@@ -1386,6 +1397,9 @@ impl DuckDBInferFn {
                 grid: t.grid,
             })
             .collect();
+        // TASK-101: the same closures the runtime uses, handed to the
+        // binder so a pure udf can constant-fold at build.
+        let bind_impls = make_externs(py, &udf_decls);
         let prepared = match prepare_opaque(
             &sql,
             &row_table,
@@ -1396,6 +1410,7 @@ impl DuckDBInferFn {
             many,
             &extern_specs,
             &model_catalog,
+            &bind_impls,
         ) {
             Ok(p) => p,
             // With declared UDFs the constant-emitter fallback is off: DuckDB

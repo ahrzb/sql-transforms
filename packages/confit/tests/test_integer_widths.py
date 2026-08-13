@@ -222,49 +222,242 @@ def test_out_of_range_dynamic_int32_refuses_at_emit_not_wraps():
 # (AmirHossein 2026-08-13: "do what duckdb does" — bug-for-bug.)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-101 decided 2026-08-13: DuckDB executes a pure "
-    "(side_effects=False, its default) UDF at bind when a fold context "
-    "asks for its constant-args value — field access is one — and a None "
-    "result is SQLNULL/int32. We mirror: pure-by-default UDF bind fold, "
-    "side_effects=True opt-out. Flips when the fold lands.",
-)
-def test_pure_udf_bind_fold_matches_duckdb_schema():
-    """Seed 601418, the last width finding: `(udf(1, NULL)).f1` types int32
-    on DuckDB (the bind fold RUNS the udf — special null handling honored —
-    and this udf returns None for NULL args) but int64 here (declared field
-    type; we never execute user code at build yet)."""
+# TASK-101 (decided 2026-08-13, spec 2026-08-13-bind-fold-alignment):
+# DuckDB executes a pure (side_effects=False, its default) UDF at BIND when
+# a fold context asks for its constant-args value, honoring special null
+# handling — the real result is used, never assumed. A whole-call-None
+# result is SQLNULL/int32 under field access and ||; a real struct keeps
+# its declared field types (NULL fields included); a raising callable
+# fails the BUILD under field access but is swallowed under || (measured).
 
-    class U:
-        name = "udf9"
-        takes = pa.schema([("a", pa.int64()), ("b", pa.int64())])
-        returns = pa.struct([("f1", pa.int64())])
 
-        def __call__(self, a, b):
-            if a is None or b is None:
-                return None
-            return (a + b,)
+class _StructUdf:
+    """The seed-601418 family: None on any NULL arg, else a real struct."""
 
-    sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[U()])
-    ours = fn.infer_arrow(pa.Table.from_pylist(ROWS)).schema
+    name = "udf9"
+    takes = pa.schema([("a", pa.int64()), ("b", pa.int64())])
+    returns = pa.struct([("f1", pa.int64())])
 
-    con = duckdb.connect()
-    u = U()
-    con.create_function(
-        "udf9",
-        lambda a, b: None if (r := u(a, b)) is None else {"f1": r[0]},
-        ["BIGINT", "BIGINT"],
-        "STRUCT(f1 BIGINT)",
-        null_handling="special",
+    def __init__(self, on_null=None):
+        self.calls = 0
+        self.on_null = on_null
+
+    def __call__(self, a, b):
+        self.calls += 1
+        if a is None or b is None:
+            return self.on_null
+        return (a + b,)
+
+
+def _ours_udf(sql, *udfs):
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": In}, static_tables={}, udfs=list(udfs)
     )
+    return fn.infer_arrow(pa.Table.from_pylist(ROWS))
+
+
+def _duck_udf(sql, *udfs):
+    con = duckdb.connect()
+    for u in udfs:
+        names = [f.name for f in u.returns] if pa.types.is_struct(u.returns) else None
+        duck_ret = (
+            "STRUCT(" + ", ".join(f"{n} BIGINT" for n in names) + ")"
+            if names
+            else "VARCHAR"
+        )
+        con.create_function(
+            u.name,
+            (
+                lambda uu, nn: (
+                    lambda a, b: (
+                        None
+                        if (r := uu(a, b)) is None
+                        else dict(zip(nn, r, strict=True))
+                        if nn
+                        else r[0]
+                    )
+                )
+            )(u, names),
+            ["BIGINT"] * len(u.takes),
+            duck_ret,
+            null_handling="special",
+        )
     con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
     for r in ROWS:
         con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["k"], r["s"]])
-    duck = con.execute(sql).to_arrow_table().schema
-    assert duck.field("o").type == pa.int32(), "oracle moved — remeasure"
-    assert ours == duck, f"{ours} != {duck}"
+    return con.execute(sql).to_arrow_table()
+
+
+def test_pure_udf_bind_fold_matches_duckdb_schema():
+    """Whole-call None under field access is SQLNULL/int32 — both engines."""
+    sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
+    ours, duck = _ours_udf(sql, _StructUdf()), _duck_udf(sql, _StructUdf())
+    assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
+    assert ours.to_pylist() == duck.to_pylist()
+    assert ours.schema == duck.schema, f"{ours.schema} != {duck.schema}"
+
+
+def test_pure_udf_fold_uses_the_real_result():
+    """Special null handling holds through the fold: a udf answering 99 for
+    NULL args folds to 99/BIGINT — executed once at build, never assumed."""
+    u = _StructUdf(on_null=(99,))
+    sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
+    ours = _ours_udf(sql, u)
+    assert u.calls == 1, "the bind fold runs the callable exactly once"
+    duck = _duck_udf(sql, _StructUdf(on_null=(99,)))
+    assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
+    assert ours.to_pylist() == duck.to_pylist() == [{"o": 99}] * len(ROWS)
+    assert ours.schema == duck.schema
+
+
+def test_pure_udf_fold_keeps_declared_type_for_null_fields():
+    """A valid call whose FIELD is None keeps the declared BIGINT (measured:
+    the SQLNULL collapse is whole-call-None only)."""
+    sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
+    ours = _ours_udf(sql, _StructUdf(on_null=(None,)))
+    duck = _duck_udf(sql, _StructUdf(on_null=(None,)))
+    assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
+    assert ours.schema == duck.schema
+    assert ours.to_pylist() == duck.to_pylist()
+
+
+def test_side_effects_udf_is_never_executed_at_build():
+    """side_effects=True (DuckDB's own flag and default-False semantics)
+    opts out of the fold entirely: no build-time call, declared schema."""
+    u = _StructUdf()
+    u.side_effects = True
+    sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    assert u.calls == 0, "a side-effectful udf must never run at build"
+    ours = fn.infer_arrow(pa.Table.from_pylist(ROWS))
+    assert ours.schema.field("o").type == pa.int64()
+
+
+def test_raising_pure_udf_keeps_the_runtime_call():
+    """DuckDB's fold SWALLOWS a raising callable UNIFORMLY (review
+    2026-08-13: DESCRIBE succeeds typed by the declaration, a zero-row
+    batch answers empty, the error fires at RUN with rows — an earlier
+    'errors at bind' probe was FROM-less eager evaluation, not the
+    binder). So: build succeeds, schema stays int64, rows raise at run."""
+
+    class Boom(_StructUdf):
+        def __call__(self, a, b):
+            self.calls += 1
+            raise ValueError("user code exploded")
+
+    u = Boom()
+    sql = "SELECT (udf9(1, 2)).f1 AS o FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    assert u.calls == 1, "the fold TRIED (and swallowed the raise)"
+    empty = pa.Table.from_pylist(
+        [], schema=pa.schema([("k", pa.int64()), ("s", pa.string())])
+    )
+    ours_schema = fn.infer_arrow(empty).schema
+    # The non-raising twin folds args (1, 2) to the VALUE 3 — BIGINT; our
+    # unfolded runtime call types the declared int64. Same schema.
+    duck = _duck_udf(sql, _StructUdf())
+    assert duck.schema.field("o").type == pa.int64(), "oracle moved"
+    assert ours_schema.field("o").type == pa.int64()  # unfolded, declared
+    with pytest.raises(Exception, match="user code exploded"):
+        fn.infer_arrow(pa.Table.from_pylist(ROWS))
+
+
+ADOPTION_BATTERY = [
+    # SQLNULL re-promotes by signature on DuckDB: these are BIGINT there,
+    # NOT int32 — the fold result must ride the adoptable-NULL channel
+    # (review 2026-08-13; `abs(CAST(NULL AS INTEGER))` is the int32
+    # control, a genuinely TYPED null).
+    "SELECT abs((udf9(1, NULL)).f1) AS o FROM __THIS__",
+    "SELECT - ((udf9(1, NULL)).f1) AS o FROM __THIS__",
+    "SELECT + ((udf9(1, NULL)).f1) AS o FROM __THIS__",
+    "SELECT abs(s || NULL) AS o FROM __THIS__",
+    "SELECT - (s || NULL) AS o FROM __THIS__",
+]
+
+
+@pytest.mark.parametrize("sql", ADOPTION_BATTERY)
+def test_sqlnull_fold_results_adopt_like_bare_null(sql):
+    ours, duck = _ours_udf(sql, _StructUdf()), _duck_udf(sql, _StructUdf())
+    assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
+    assert ours.to_pylist() == duck.to_pylist(), sql
+    assert ours.schema == duck.schema, f"{sql}: {ours.schema} != {duck.schema}"
+
+
+class _ScalarStrUdf:
+    name = "us9"
+    takes = pa.schema([("a", pa.int64()), ("b", pa.int64())])
+    returns = pa.string()
+
+    def __init__(self, result=None):
+        self.result = result
+        self.calls = 0
+
+    def __call__(self, a, b):
+        self.calls += 1
+        if self.result == "raise":
+            raise ValueError("boom")
+        return self.result
+
+
+def test_pure_scalar_udf_null_under_concat_collapses():
+    """A pure scalar udf operand folding to None makes || SQLNULL/int32 —
+    the TASK-102 collapse reads through the TASK-101 fold."""
+    sql = "SELECT us9(1, 2) || s AS o FROM __THIS__"
+    ours = _ours_udf(sql, _ScalarStrUdf(result=None))
+    duck = _duck_udf(sql, _ScalarStrUdf(result=None))
+    assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
+    assert ours.to_pylist() == duck.to_pylist()
+    assert ours.schema == duck.schema
+
+
+def test_raising_pure_udf_under_concat_stays_runtime():
+    """The uniform swallow, || spelling: the fold TRIES (one call), the
+    raise is swallowed, the runtime call stays and errors at RUN."""
+    u = _ScalarStrUdf(result="raise")
+    sql = "SELECT us9(1, 2) || s AS o FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    assert u.calls == 1, "the fold tried once and swallowed"
+    with pytest.raises(Exception, match="boom"):
+        fn.infer_arrow(pa.Table.from_pylist(ROWS))
+
+
+def test_pure_scalar_udf_value_under_concat_bakes_once():
+    """A folded VALUE bakes in as a literal: DuckDB executes the udf once
+    at bind and never per row — matching call counts and values."""
+    u = _ScalarStrUdf(result=("x",))
+    sql = "SELECT us9(1, 2) || s AS o FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[u])
+    assert u.calls == 1
+    ours = fn.infer_arrow(pa.Table.from_pylist(ROWS))
+    assert u.calls == 1, "the baked literal never re-executes the udf"
+    duck = _duck_udf(sql, _ScalarStrUdf(result=("x",)))
+    assert ours.to_pylist() == duck.to_pylist() == [{"o": "x" + r["s"]} for r in ROWS]
+    assert ours.schema == duck.schema
+
+
+# The bind-fold evaluates strictly LESS than DuckDB's — our fold keeps
+# runtime-only ops runtime and composition stops at the || operand
+# itself. Same family as the DECIMAL foldability gap: TASK-103.
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-103 (widened by the 2026-08-13 review): DuckDB folds the "
+    "WHOLE constant operand subtree — a pure udf under upper()/arith/CASE "
+    "still collapses || there, and an argument like abs(-3) still folds "
+    "before the udf executes. Our bind fold stops at spellings fold.rs "
+    "can finish.",
+)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT upper(us9(1, 2)) || s AS o FROM __THIS__",
+        "SELECT (udf9(abs(-3), NULL)).f1 AS o FROM __THIS__",
+    ],
+)
+def test_bind_fold_composition_gaps(sql):
+    ours = _ours_udf(sql, _StructUdf(), _ScalarStrUdf(result=None))
+    duck = _duck_udf(sql, _StructUdf(), _ScalarStrUdf(result=None))
+    assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
+    assert ours.schema == duck.schema, f"{sql}: {ours.schema} != {duck.schema}"
 
 
 # TASK-102 (decided 2026-08-13): || with an operand that FOLDS to NULL is
