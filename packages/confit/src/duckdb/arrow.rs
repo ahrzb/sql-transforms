@@ -495,12 +495,14 @@ pub fn emit(
                 names.push(name.clone());
                 let lane_ty = |t: crate::specializer::ir::Ty| match t {
                     crate::specializer::ir::Ty::I1 => pa.call_method0("bool_"),
-                    // Wide fields are UDF returns, whose vocabulary is
-                    // lane-typed; narrow can't occur but maps to its lane.
-                    crate::specializer::ir::Ty::I8
-                    | crate::specializer::ir::Ty::I16
-                    | crate::specializer::ir::Ty::I32
-                    | crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
+                    // struct_pack fields are arbitrary expressions, so the
+                    // width is real here (m-8 phase-2 campaign, 423 schema
+                    // findings: ord() inside a struct is int32 on DuckDB).
+                    // pa.array validates ranges when the values assemble.
+                    crate::specializer::ir::Ty::I8 => pa.call_method0("int8"),
+                    crate::specializer::ir::Ty::I16 => pa.call_method0("int16"),
+                    crate::specializer::ir::Ty::I32 => pa.call_method0("int32"),
+                    crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
                     crate::specializer::ir::Ty::F64 => pa.call_method0("float64"),
                     // `string`, not `large_string` — see the scalar lane
                     // below and TASK-72.
