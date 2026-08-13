@@ -25,6 +25,8 @@ pub mod types;
 #[pymodule]
 fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<duckdb::DuckDBInferFn>()?;
+    m.add_function(pyo3::wrap_pyfunction!(dialect::py::dialect_parse, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(dialect::py::dialect_print, m)?)?;
     // Lets benchmarks refuse an unoptimized build (a `maturin develop` debug
     // .pyd shadowing the release wheel once inflated engine rows ~5x).
     m.add(

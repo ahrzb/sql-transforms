@@ -207,14 +207,20 @@ impl Expr {
             Expr::Cast { target, .. } => Ok(target.clone()),
             Expr::Un { op: UnOp::Not, e } => match e.ty()? {
                 DTy::Bool => Ok(DTy::Bool),
-                t => Err(DialectError::Bind(format!("NOT over {}", t.name()))),
+                t => Err(unsup(format!(
+                    "implicit boolean coercion: NOT over {}",
+                    t.name()
+                ))),
             },
             Expr::Un { op: UnOp::Neg, e } => {
                 let t = e.ty()?;
                 if t.is_numeric() {
                     Ok(t)
                 } else {
-                    Err(DialectError::Bind(format!("unary - over {}", t.name())))
+                    Err(unsup(format!(
+                        "implicit coercion: unary - over {}",
+                        t.name()
+                    )))
                 }
             }
             Expr::Bin { op, l, r } => derive_bin(*op, &l.ty()?, &r.ty()?),
@@ -280,8 +286,9 @@ fn derive_bin(op: BinOp, l: &DTy, r: &DTy) -> Result<DTy, DialectError> {
     match op {
         And | Or => match (l, r) {
             (DTy::Bool, DTy::Bool) => Ok(DTy::Bool),
-            _ => Err(DialectError::Bind(format!(
-                "{} over {} and {}",
+            // DuckDB coerces (1 AND 1 is valid); the coercion is unpinned.
+            _ => Err(unsup(format!(
+                "implicit boolean coercion: {} over {} and {}",
                 op.name(),
                 l.name(),
                 r.name()
@@ -324,8 +331,9 @@ fn derive_bin(op: BinOp, l: &DTy, r: &DTy) -> Result<DTy, DialectError> {
                 r.name()
             ))),
             _ if l.is_integer() && r.is_integer() => wider_int(l, r),
-            _ => Err(DialectError::Bind(format!(
-                "{} over {} and {}",
+            // DuckDB coerces further (bool, strings, temporals); unpinned.
+            _ => Err(unsup(format!(
+                "implicit coercion: {} over {} and {}",
                 op.name(),
                 l.name(),
                 r.name()
@@ -353,8 +361,10 @@ fn comparable(l: &DTy, r: &DTy) -> Result<(), DialectError> {
         }
         return Ok(());
     }
-    Err(DialectError::Bind(format!(
-        "comparison over {} and {}",
+    // DuckDB compares across classes via implicit casts (1 = '1' is
+    // valid); the cast lattice is unpinned, so refuse rather than reject.
+    Err(unsup(format!(
+        "comparison coercion over {} and {}",
         l.name(),
         r.name()
     )))
