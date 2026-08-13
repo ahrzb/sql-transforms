@@ -2156,7 +2156,12 @@ impl Binder<'_> {
                 // dividing by the result (TASK-80). -0.0 - x is exact IEEE
                 // negation for every double. Integers keep 0 - x and its
                 // i64::MIN trap, which is DuckDB's own overflow behaviour.
-                let inner = self.expr(expr)?;
+                // Measured: unary +/- on a BARE NULL is BIGINT on DuckDB
+                // (the SQLNULL INTEGER default does not survive negation);
+                // a typed NULL — CAST(NULL AS INTEGER) — keeps its width.
+                let Some(inner) = self.expr_or_null(expr)? else {
+                    return Ok(null_of(Ty::I64));
+                };
                 let zero = if inner.ty == Ty::F64 {
                     SExpr {
                         kind: SKind::Lit(Lit::F64(-0.0)),
@@ -2177,7 +2182,11 @@ impl Binder<'_> {
             SqlExpr::UnaryOp {
                 op: UnaryOperator::Plus,
                 expr,
-            } => self.expr(expr),
+            } => match self.expr_or_null(expr)? {
+                // Same BIGINT rule as unary minus (measured: +NULL).
+                None => Ok(null_of(Ty::I64)),
+                Some(e) => Ok(e),
+            },
             SqlExpr::UnaryOp {
                 op: UnaryOperator::Not,
                 expr,
@@ -4183,11 +4192,10 @@ impl Binder<'_> {
         let mut lanes = Vec::with_capacity(1 + values.len());
         lanes.push((format!("{base}\u{1}valid"), valid));
         for (j, v) in values.iter().enumerate() {
-            // audit 2026-08-13: DuckDB types struct_pack(a := NULL) as
-            // STRUCT(a INTEGER); this I64 lane diverges on width only (the
-            // single int lane). Preserved.
+            // struct_pack(a := NULL) is STRUCT(a INTEGER) on DuckDB —
+            // SQLNULL's int32 home (m-8 phase 2).
             let bound = match self.expr_or_null(v)? {
-                None => null_of(Ty::I64),
+                None => null_of(Ty::I32),
                 Some(x) => fold(x),
             };
             lanes.push((format!("{base}\u{1}{j}"), bound));
