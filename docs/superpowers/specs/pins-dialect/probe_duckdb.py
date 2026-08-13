@@ -296,6 +296,107 @@ def probe_division_cast_edges(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+# --- 6. Scalar functions + auto-naming (2026-08-13 function loop) ------------
+
+
+def probe_scalar_functions(con: duckdb.DuckDBPyConnection) -> None:
+    pins = [
+        {
+            "claim": "String basics: upper/lower/reverse/length/bit_length/trim are character-based and NULL-propagating (measured identical in Spark)",
+            "query": "SELECT upper('héllo'), lower('HÉLLO'), reverse('ab☃'), length('é☃'), bit_length('é☃'), trim('  x  ')",
+        },
+        {
+            "claim": "contains/starts_with/instr: empty needle matches, 1-based positions, 0 on miss, NULL propagates (identical in Spark; starts_with spells startswith there)",
+            "query": "SELECT contains('abc',''), contains('abc','z'), starts_with('abc','ab'), instr('abcb','b'), instr('abc','z'), instr('abc','')",
+        },
+        {
+            "claim": "replace/repeat/translate: empty-from is a no-op, non-positive repeat is '', NULL propagates (identical in Spark)",
+            "query": "SELECT replace('aXbXc','X','-'), replace('abc','','-'), repeat('ab',3), repeat('ab',-1), translate('abcba','abc','xy')",
+        },
+        {
+            "claim": "concat SKIPS NULL arguments (Spark propagates - its printer wraps each argument in coalesce(x, '')); concat_ws skips NULL args but a NULL separator is NULL on both",
+            "query": "SELECT concat('a',NULL::VARCHAR,'c'), concat_ws('-','a',NULL::VARCHAR,'c'), concat_ws(NULL::VARCHAR,'a','b')",
+        },
+        {
+            "claim": "Edit distances count BYTES: levenshtein('é','e') = 2 (Spark counts characters = 1; its printer refuses levenshtein and damerau_levenshtein by name)",
+            "query": "SELECT levenshtein('é','e'), levenshtein('kitten','sitting'), damerau_levenshtein('é','e')",
+        },
+    ]
+    write(
+        "scalar-functions.json",
+        {
+            "area": "scalar-functions",
+            "duckdb_version": VER,
+            "setup": "none  -- multi-statement pins as elsewhere; Spark agreement measured in spark-ansi.json",
+            "pins": [observe(con, p) for p in pins],
+        },
+    )
+
+
+def probe_auto_naming(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute('CREATE TABLE an(a INTEGER, b VARCHAR, "yes" INTEGER)')
+
+    def colname(sql: str) -> str:
+        try:
+            return repr(con.execute(sql).description[0][0])
+        except Exception as e:
+            return f"ERROR: {str(e).splitlines()[0]}"
+
+    pins = []
+    for claim, sql in [
+        (
+            "Operators render as (l op r) with source spellings; NOT-pushed <> renders !=",
+            "SELECT A + 1 * 2 FROM an",
+        ),
+        (
+            "Function names render LOWERCASED with comma-space args",
+            "SELECT INSTR(b, 'x') FROM an",
+        ),
+        (
+            "Keyword identifiers render QUOTED (every duckdb_keywords() category - the pinned table in dialect/duckdb_keywords.rs)",
+            "SELECT yes + 1 FROM an",
+        ),
+        (
+            "Keyword function names render quoted lowercase",
+            "SELECT REPLACE(b, 'l', '-') FROM an",
+        ),
+        (
+            "trim (the grammar form) renders schema-qualified and quoted",
+            "SELECT trim(b) FROM an",
+        ),
+        (
+            "CAST renders canonical type names, DECIMAL with a space after the comma; :: becomes CAST",
+            "SELECT a::DECIMAL(3,1) FROM an",
+        ),
+        (
+            "CASE renders with two spaces after CASE, one extra paren on cond and value, ELSE NULL appended",
+            "SELECT CASE WHEN a=1 THEN 'x' END FROM an",
+        ),
+        ("Source parens strip; unary minus renders -(e)", "SELECT ((-a)) FROM an"),
+        (
+            "Float literals RE-FORMAT (1e3 -> 1000.0) - the frontend refuses auto-naming them rather than reimplement float printing",
+            "SELECT 1e3 FROM an",
+        ),
+        ("Boolean literals render as CAST('t' AS BOOLEAN)", "SELECT true FROM an"),
+    ]:
+        pins.append(
+            {
+                "claim": claim,
+                "query": f"{sql}  -- observed = cursor.description[0][0]",
+                "observed": colname(sql),
+            }
+        )
+    write(
+        "auto-naming.json",
+        {
+            "area": "unaliased-select-item-auto-naming",
+            "duckdb_version": VER,
+            "setup": 'CREATE TABLE an(a INTEGER, b VARCHAR, "yes" INTEGER)  -- observed segments are the result COLUMN NAME, not rows',
+            "pins": pins,
+        },
+    )
+
+
 def main() -> None:
     con = duckdb.connect()
     probe_arrow_export(con)
@@ -303,6 +404,8 @@ def main() -> None:
     probe_aggregate_tiers(con)
     probe_strings_operators(con)
     probe_division_cast_edges(con)
+    probe_scalar_functions(con)
+    probe_auto_naming(con)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Token, Tokenizer};
 
-use super::plan::{BinOp, Catalog, Expr, Rel, UnOp};
+use super::plan::{BinOp, Catalog, Expr, Rel, ScalarFn, UnOp};
 use super::printer;
 use super::ty::DTy;
 use super::verify::verify;
@@ -355,11 +355,7 @@ fn bind_select(select: &Select, cat: &Catalog) -> Result<Rel, DialectError> {
                     SqlExpr::CompoundIdentifier(parts) => {
                         parts.last().map(|p| p.value.clone()).unwrap_or_default()
                     }
-                    _ => {
-                        return Err(unsup(
-                            "unaliased expression SELECT item (auto-naming unpinned)",
-                        ));
-                    }
+                    _ => auto_name(e)?,
                 };
                 items.push((name, bound));
             }
@@ -569,8 +565,104 @@ impl Binder<'_> {
                 bound.ty()?;
                 Ok(bound)
             }
+            SqlExpr::Function(f) => self.function(f),
+            SqlExpr::Trim {
+                expr,
+                trim_where,
+                trim_what,
+                trim_characters,
+            } => {
+                if trim_where.is_some() || trim_what.is_some() || trim_characters.is_some() {
+                    return Err(unsup("TRIM with position or characters"));
+                }
+                let bound = Expr::Call {
+                    func: ScalarFn::Trim,
+                    args: vec![self.expr(expr)?],
+                };
+                bound.ty()?;
+                Ok(bound)
+            }
             other => Err(unsup(format!("expression: {other}"))),
         }
+    }
+
+    /// Bind a function call against the bought scalar set. Every modifier
+    /// sqlparser can attach is refused by walking all fields — an ignored
+    /// clause would be a wrong answer (OVER, FILTER, DISTINCT, ...).
+    fn function(&self, f: &sqlparser::ast::Function) -> Result<Expr, DialectError> {
+        let sqlparser::ast::Function {
+            name,
+            uses_odbc_syntax,
+            parameters,
+            args,
+            filter,
+            null_treatment,
+            over,
+            within_group,
+        } = f;
+        if *uses_odbc_syntax {
+            return Err(unsup("ODBC function syntax"));
+        }
+        if !matches!(parameters, sqlparser::ast::FunctionArguments::None) {
+            return Err(unsup("parameterized function call"));
+        }
+        if filter.is_some() {
+            return Err(unsup("FILTER clause"));
+        }
+        if null_treatment.is_some() {
+            return Err(unsup("IGNORE/RESPECT NULLS"));
+        }
+        if over.is_some() {
+            return Err(unsup("window function (OVER)"));
+        }
+        if !within_group.is_empty() {
+            return Err(unsup("WITHIN GROUP"));
+        }
+        let [part] = name.0.as_slice() else {
+            return Err(unsup("qualified function name"));
+        };
+        let Some(ident) = part.as_ident() else {
+            return Err(unsup(format!("function name form: {part}")));
+        };
+        let fname = ident.value.to_ascii_lowercase();
+        let Some(func) = ScalarFn::parse(&fname) else {
+            return Err(unsup(format!("function: {fname}")));
+        };
+        let arg_list = match args {
+            sqlparser::ast::FunctionArguments::List(l) => l,
+            sqlparser::ast::FunctionArguments::None => {
+                return Err(unsup(format!("function without argument list: {fname}")));
+            }
+            sqlparser::ast::FunctionArguments::Subquery(_) => {
+                return Err(unsup("subquery function argument"));
+            }
+        };
+        let sqlparser::ast::FunctionArgumentList {
+            duplicate_treatment,
+            args,
+            clauses,
+        } = arg_list;
+        if duplicate_treatment.is_some() {
+            return Err(unsup("DISTINCT/ALL in function arguments"));
+        }
+        if !clauses.is_empty() {
+            return Err(unsup("function argument clauses (ORDER BY/LIMIT/...)"));
+        }
+        let mut bound_args = Vec::new();
+        for a in args {
+            match a {
+                sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Expr(e)) => {
+                    bound_args.push(self.expr(e)?)
+                }
+                other => return Err(unsup(format!("function argument form: {other}"))),
+            }
+        }
+        let bound = Expr::Call {
+            func,
+            args: bound_args,
+        };
+        bound.ty()?; // surface signature mismatches at the call site
+        Ok(bound)
     }
 }
 
@@ -717,6 +809,187 @@ impl printer::ExprPrinter for Duck {
                 if *negated { "NOT " } else { "" },
                 self.expr(r, input)?
             ),
+            Expr::Call { func, args } => {
+                let printed: Vec<String> = args
+                    .iter()
+                    .map(|a| self.expr(a, input))
+                    .collect::<Result<_, _>>()?;
+                format!("{}({})", func.name(), printed.join(", "))
+            }
         })
+    }
+}
+
+/// DuckDB's auto-name for an unaliased SELECT item: the engine's own
+/// rendering of the parsed expression, with SOURCE identifier spellings
+/// (measured 2026-08-13, pins-dialect/auto-naming.json). Only the bound
+/// surface is rendered; anything whose display was not measured refuses
+/// by name — and every rendering is live-verified by the L2/L3 gates,
+/// which compare column names against the real engine.
+fn auto_name(e: &SqlExpr) -> Result<String, DialectError> {
+    let unpinned = |what: &str| {
+        Err(unsup(format!(
+            "auto-name for unaliased {what} (rendering unpinned)"
+        )))
+    };
+    Ok(match e {
+        SqlExpr::Identifier(id) => render_ident(&id.value),
+        SqlExpr::CompoundIdentifier(parts) => parts
+            .iter()
+            .map(|p| render_ident(&p.value))
+            .collect::<Vec<_>>()
+            .join("."),
+        SqlExpr::Nested(inner) => auto_name(inner)?, // parens are stripped
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(lexeme, _) => {
+                if lexeme.contains(['e', 'E']) {
+                    // DuckDB re-formats float literals (1e3 -> "1000.0").
+                    return unpinned("float literal");
+                }
+                lexeme.clone()
+            }
+            SqlValue::SingleQuotedString(s) => format!("'{}'", s.replace('\'', "''")),
+            SqlValue::Boolean(b) => {
+                format!("CAST('{}' AS BOOLEAN)", if *b { "t" } else { "f" })
+            }
+            other => return unpinned(&format!("literal {other}")),
+        },
+        SqlExpr::BinaryOp { left, op, right } => {
+            let sym = match op {
+                BinaryOperator::Plus => "+",
+                BinaryOperator::Minus => "-",
+                BinaryOperator::Multiply => "*",
+                BinaryOperator::Divide => "/",
+                BinaryOperator::DuckIntegerDivide => "//",
+                BinaryOperator::Modulo => "%",
+                BinaryOperator::StringConcat => "||",
+                BinaryOperator::And => "AND",
+                BinaryOperator::Or => "OR",
+                BinaryOperator::Eq => "=",
+                BinaryOperator::NotEq => "!=",
+                BinaryOperator::Lt => "<",
+                BinaryOperator::LtEq => "<=",
+                BinaryOperator::Gt => ">",
+                BinaryOperator::GtEq => ">=",
+                other => return unpinned(&format!("operator {other}")),
+            };
+            format!("({} {sym} {})", auto_name(left)?, auto_name(right)?)
+        }
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => format!("-({})", auto_name(expr)?),
+        SqlExpr::IsNull(inner) => format!("({} IS NULL)", auto_name(inner)?),
+        SqlExpr::IsNotNull(inner) => format!("({} IS NOT NULL)", auto_name(inner)?),
+        SqlExpr::IsDistinctFrom(l, r) => {
+            format!("({} IS DISTINCT FROM {})", auto_name(l)?, auto_name(r)?)
+        }
+        SqlExpr::IsNotDistinctFrom(l, r) => {
+            format!("({} IS NOT DISTINCT FROM {})", auto_name(l)?, auto_name(r)?)
+        }
+        SqlExpr::Cast {
+            kind,
+            expr,
+            data_type,
+            format: _,
+            array,
+        } => {
+            if *array {
+                return unpinned("CAST ... ARRAY form");
+            }
+            let kw = match kind {
+                CastKind::Cast | CastKind::DoubleColon => "CAST",
+                CastKind::TryCast => "TRY_CAST",
+                CastKind::SafeCast => return unpinned("SAFE_CAST"),
+            };
+            format!(
+                "{kw}({} AS {})",
+                auto_name(expr)?,
+                auto_name_type(&data_type.to_string())?
+            )
+        }
+        SqlExpr::Case {
+            case_token: _,
+            end_token: _,
+            operand,
+            conditions,
+            else_result,
+        } => {
+            if operand.is_some() {
+                return unpinned("simple CASE");
+            }
+            // Measured: "CASE  WHEN ((cond)) THEN (val) ... ELSE e END" -
+            // two spaces after CASE, one extra paren wrap on cond and val.
+            let mut out = String::from("CASE ");
+            for w in conditions {
+                out.push_str(&format!(
+                    " WHEN ({}) THEN ({})",
+                    auto_name(&w.condition)?,
+                    auto_name(&w.result)?
+                ));
+            }
+            match else_result {
+                Some(el) => out.push_str(&format!(" ELSE {} END", auto_name(el)?)),
+                None => out.push_str(" ELSE NULL END"),
+            }
+            out
+        }
+        SqlExpr::Trim { expr, .. } => {
+            // Measured quirk: trim renders schema-qualified and quoted.
+            format!("main.\"trim\"({})", auto_name(expr)?)
+        }
+        SqlExpr::Function(f) => {
+            let [part] = f.name.0.as_slice() else {
+                return unpinned("qualified function");
+            };
+            let Some(ident) = part.as_ident() else {
+                return unpinned("function name form");
+            };
+            let sqlparser::ast::FunctionArguments::List(list) = &f.args else {
+                return unpinned("function argument form");
+            };
+            let mut args = Vec::new();
+            for a in &list.args {
+                match a {
+                    sqlparser::ast::FunctionArg::Unnamed(
+                        sqlparser::ast::FunctionArgExpr::Expr(e),
+                    ) => args.push(auto_name(e)?),
+                    _ => return unpinned("function argument form"),
+                }
+            }
+            // Measured: regular function names render LOWERCASED, quoted
+            // when the name is a keyword ("replace"(...)).
+            format!(
+                "{}({})",
+                render_ident(&ident.value.to_ascii_lowercase()),
+                args.join(", ")
+            )
+        }
+        other => return unpinned(&format!("expression {other}")),
+    })
+}
+
+/// Type spelling inside a rendered CAST: canonical DuckDB names, with the
+/// measured "DECIMAL(p, s)" space after the comma.
+fn auto_name_type(written: &str) -> Result<String, DialectError> {
+    let ty = DTy::from_duckdb(written)?;
+    Ok(match &ty {
+        DTy::Dec(p, s) => format!("DECIMAL({p}, {s})"),
+        t => t.duckdb_name()?,
+    })
+}
+
+/// DuckDB's optionally-quoted identifier rendering: quoted when the
+/// lowercase form is a keyword (pinned table, every category) or the
+/// spelling needs quoting; bare otherwise (uppercase does NOT force
+/// quoting - measured: `SELECT A + 1` renders `(A + 1)`).
+fn render_ident(v: &str) -> String {
+    let plain = !v.is_empty()
+        && !v.starts_with(|c: char| c.is_ascii_digit())
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if plain && !super::duckdb_keywords::is_keyword(&v.to_ascii_lowercase()) {
+        v.to_string()
+    } else {
+        format!("\"{}\"", v.replace('"', "\"\""))
     }
 }

@@ -1,0 +1,32 @@
+{
+  "area": "scalar-functions",
+  "duckdb_version": "v1.5.5",
+  "setup": "none  -- multi-statement pins as elsewhere; Spark agreement measured in spark-ansi.json",
+  "pins": [
+    {
+      "claim": "String basics: upper/lower/reverse/length/bit_length/trim are character-based and NULL-propagating (measured identical in Spark)",
+      "query": "SELECT upper('héllo'), lower('HÉLLO'), reverse('ab☃'), length('é☃'), bit_length('é☃'), trim('  x  ')",
+      "observed": "[('HÉLLO', 'héllo', '☃ba', 2, 40, 'x')]"
+    },
+    {
+      "claim": "contains/starts_with/instr: empty needle matches, 1-based positions, 0 on miss, NULL propagates (identical in Spark; starts_with spells startswith there)",
+      "query": "SELECT contains('abc',''), contains('abc','z'), starts_with('abc','ab'), instr('abcb','b'), instr('abc','z'), instr('abc','')",
+      "observed": "[(True, False, True, 2, 0, 1)]"
+    },
+    {
+      "claim": "replace/repeat/translate: empty-from is a no-op, non-positive repeat is '', NULL propagates (identical in Spark)",
+      "query": "SELECT replace('aXbXc','X','-'), replace('abc','','-'), repeat('ab',3), repeat('ab',-1), translate('abcba','abc','xy')",
+      "observed": "[('a-b-c', 'abc', 'ababab', '', 'xyyx')]"
+    },
+    {
+      "claim": "concat SKIPS NULL arguments (Spark propagates - its printer wraps each argument in coalesce(x, '')); concat_ws skips NULL args but a NULL separator is NULL on both",
+      "query": "SELECT concat('a',NULL::VARCHAR,'c'), concat_ws('-','a',NULL::VARCHAR,'c'), concat_ws(NULL::VARCHAR,'a','b')",
+      "observed": "[('ac', 'a-c', None)]"
+    },
+    {
+      "claim": "Edit distances count BYTES: levenshtein('é','e') = 2 (Spark counts characters = 1; its printer refuses levenshtein and damerau_levenshtein by name)",
+      "query": "SELECT levenshtein('é','e'), levenshtein('kitten','sitting'), damerau_levenshtein('é','e')",
+      "observed": "[(2, 3, 2)]"
+    }
+  ]
+}

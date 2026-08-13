@@ -335,8 +335,8 @@ fn frontend_named_refusals() {
     let c = cat();
     for (sql, needle) in [
         ("SELECT a FROM t ORDER BY a", "ORDER BY"),
-        ("SELECT count(a) FROM t", "expression"),
-        ("SELECT a + 1 FROM t", "unaliased"),
+        ("SELECT count(a) FROM t", "function: count"),
+        ("SELECT 1e3 FROM t", "auto-name"),
         ("SELECT a FROM t JOIN t AS u ON true", "JOIN"),
         ("SELECT DISTINCT a FROM t", "DISTINCT"),
         ("SELECT NULL AS n FROM t", "NULL literal"),

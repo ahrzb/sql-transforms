@@ -119,6 +119,10 @@ PINS = [
         "query": "SELECT double('NaN') = double('NaN'), 5.0D < double('NaN'), double('NaN') < 5.0D, double('NaN') <=> double('NaN')",
     },
     {
+        "claim": "Bought scalar functions agree with DuckDB, NULL propagation included; starts_with spells startswith; concat propagates NULL (DuckDB skips - forced via coalesce); levenshtein counts CHARACTERS (DuckDB: bytes - refused)",
+        "query": "SELECT upper('héllo'), length('é☃'), contains('abc',''), startswith('abc','ab'), instr('abcb','b'), repeat('ab',-1), translate('abcba','abc','xy'), concat_ws('-','a',CAST(NULL AS STRING),'c')\nSELECT concat('a',CAST(NULL AS STRING),'c'), concat(coalesce('a',''),coalesce(CAST(NULL AS STRING),''),coalesce('c',''))\nSELECT levenshtein('é','e')",
+    },
+    {
         "claim": "TIMESTAMP_NTZ is reachable from SQL by cast — the landing zone for DuckDB's wall-clock TIMESTAMP; plain TIMESTAMP is the session-tz instant type (landing zone for TIMESTAMPTZ under pinned UTC)",
         "query": "SELECT typeof(CAST('2026-08-13 11:30:00' AS TIMESTAMP_NTZ)), typeof(TIMESTAMP '2026-08-13 11:30:00')",
     },
