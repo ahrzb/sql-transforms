@@ -71,15 +71,23 @@ else                                   { call_h(.., "h_iadd", ..); trap_check(b)
 // consumer 2: legality gate for EVERYTHING in B and C below
 ```
 
-*Buys:* attacks problems 1 and (via the gate) 2; removes a call+load+branch
-per integer op per row from a measured memory-bound walk; benefits the
-interpreter and the JIT because it runs before the split, so the
-cranelift≡interp differential still holds by construction. The inputs
-already exist (m-8 phase 2 made widths real). *Costs:* a new analysis pass
-to verify; rules need validation against DuckDB at guard boundaries
-(Ruler-style fuzzing — nobody in the literature validates rewrites against
-an *executable* oracle including error text; Alive2/WeTune verify against
-written-down models, so this part is ours to build).
+**Pros**
+- Solves problem 1, and is the legality gate that makes B possible at all.
+- Removes a call + load + branch per integer op per row from a walk we
+  measured as memory-bound. Standalone win: no new concepts, no new layer.
+- Runs before the interp/codegen split, so BOTH engines benefit and the
+  cranelift ≡ interpreter differential still holds by construction.
+- Inputs already exist: `Ty::int_range()` [verified], and 15 TOTAL doc
+  comments to transcribe. m-8 phase 2 made the widths real; nothing
+  consumes them yet.
+
+**Cons**
+- A new analysis pass is new surface to verify — and a wrong interval is a
+  silently missing trap, i.e. a C2 violation, the worst failure class here.
+- Rule validation has no prior art to copy: nobody validates rewrites
+  against an *executable* oracle including error text (Alive2, WeTune and
+  SQLSolver all verify against written-down models). We would build it.
+- Pays nothing on string-shaped or float-shaped workloads.
 
 ### B. A schedule side-table (Halide's split, 1-D)
 
@@ -95,15 +103,26 @@ pub enum Engine { Interp, Jit }
         for s in [batch(1), batch(1024), jit_all()] { assert_bits_eq!(run(p, s), gold) } } }
 ```
 
-*Buys:* problems 2 and 4. The oracle is the sweeps' best find: all
-schedules of one program must agree bit-for-bit, so the existing fuzzer
-gains a differential gate **without a second engine**. Precedent: Vectorwise
-micro-adaptivity (SIGMOD 2013), Weld adaptive predication (up to 3.75x over
-rule-based, VLDB 2018), InkFuse (ICDE 2024). *Costs:* legality is entirely
-A's `is_total`, so this is worthless before A; every knob is a place for
-the two engines to diverge, which is exactly what the oracle then catches.
-Strings (`StrOp*`, `Slike`, regex) do not widen — expect the win on the
-numeric + i1 + CASE subset only.
+**Pros**
+- Solves problem 4 for free, and it is the sweeps' best single find: all
+  schedules of one program must agree bit-for-bit, so the fuzzer gains a
+  differential gate **without a second engine**.
+- Solves problem 2: the interp/JIT choice becomes data, picked per call
+  from the batch size actually seen.
+- Batched, the null lane is ONE mask word per 64 rows instead of 64
+  branches — nullability is already pure i1 algebra, so this falls out.
+- The IR never changes; a schedule is annotation. Cheap to revert.
+- Precedent: Vectorwise micro-adaptivity (SIGMOD 2013), Weld adaptive
+  predication (up to 3.75x over rule-based, VLDB 2018), InkFuse (ICDE 2024).
+
+**Cons**
+- Worthless before A — every legality guard is A's `is_total`.
+- Every knob is a new way for the two engines to diverge. (The oracle
+  catches it, but only if the corpus covers that shape.)
+- Strings (`StrOp*`, `Slike`, regex) do not widen: the win is confined to
+  the numeric + i1 + CASE subset.
+- Grain/engine thresholds are machine-specific numbers that will rot; they
+  need a benchmark to defend them, not a constant someone once measured.
 
 ### C. Batch the FFI boundary (not an optimizer at all)
 
@@ -113,17 +132,30 @@ h1 = t.transform_lazy(rows_a); h2 = t.transform_lazy(rows_b)
 evaluate([h1, h2])          # ONE crossing
 ```
 
-*Buys:* problem 3 — the cost this repo's own measurements call dominant.
-Highest value per line in the whole RFC and needs no IR change. *Costs:*
-it is an API change (RED LINE: needs explicit approval with before/after
-cases); it competes for attention with the Arrow-everywhere migration's
-batch tickets, and may already be covered by them.
+**Pros**
+- Attacks problem 3 — the cost this repo's own measurements call dominant.
+- Highest value per line in this RFC; needs no IR change and no analysis.
+- Independent of A and B: it can land in any order.
+
+**Cons**
+- It is a user-facing API change: RED LINE, needs explicit approval with
+  concrete before/after usage cases before anything is written.
+- May already be covered by the Arrow-everywhere migration's batch
+  tickets — check before scheduling, or two people build one thing.
+- Deferred execution makes errors surface at `evaluate()` rather than at
+  the call that caused them; the trap message must still name the row.
 
 ### D. Do nothing new; keep folding constants
 
-*Buys:* zero risk, zero work. *Costs:* problems 1-4 stand; the JIT keeps
-paying a call+load+branch per integer op forever, which is measurable
-today.
+**Pros**
+- Zero risk, zero work, zero new surface to keep bit-identical.
+- The engine is correct today; none of problems 1-4 is a correctness bug.
+
+**Cons**
+- The JIT keeps paying a call + load + branch per integer op, per row,
+  forever — and that is measurable today, not a hypothetical.
+- Problem 4 stands: every future fast path needs a second engine to test
+  against, which is what makes fast paths expensive to add.
 
 ### Rejected, with reasons (so nobody re-proposes them)
 

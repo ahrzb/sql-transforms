@@ -16,14 +16,27 @@ mandatory sections, in this order:
 2. **Problem(s)** — what the current state cannot do, or forces us to do
    badly. Numbered, so choices can reference them.
 3. **Choices** — the genuinely viable options, do-nothing included when
-   viable. **Each choice is shown as code** (a signature, a node form, a
-   pseudo-code lowering, a before/after pair) **with its trade-offs
-   immediately under it** — what it costs and buys, against the problems
-   by number and the project's KPIs (docs/kpis.md: never trade a control
-   for a drive gain). Prose descriptions of designs hide small nuances: a
-   reader must be able to disagree with a specific line, and a trade-off
-   separated from its choice gets skimmed past. No collected trade-off
-   section at the end.
+   viable. Each choice is one block, in this exact shape:
+
+   ```markdown
+   ### A. <name>
+
+   <code: a signature, a node form, a pseudo-code lowering, a before/after pair>
+
+   **Pros**
+   - one claim per bullet, tied to a problem number or a KPI
+
+   **Cons**
+   - one claim per bullet; include the cost you would regret ignoring
+   ```
+
+   Two rules, both learned the hard way. **Show code, not prose** — prose
+   descriptions of designs hide small nuances; a reader must be able to
+   disagree with a specific line. **Keep Pros/Cons attached to their
+   choice** — a trade-off in a collected section at the end gets skimmed
+   past. Bullets, not paragraphs: one claim each, scannable side by side.
+   Tie claims to the problems by number and to the project's KPIs
+   (docs/kpis.md: never trade a control for a drive gain).
 
 Decisions the author cannot make alone appear inline as ASK blocks:
 

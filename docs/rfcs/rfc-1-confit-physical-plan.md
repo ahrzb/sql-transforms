@@ -60,12 +60,20 @@ sql --specializer::frontend--> ir::Program  sql --dialect::parse--> Rel
 // gate: for all corpus stmts: replay(old path) == replay(new path), bit-identical
 ```
 
-*Buys:* solves problems 1 and 2 with zero new representations; the
-refusal boundary is one function with the same three-outcome discipline
-as a printer. *Costs:* does NOT address problem 3 — the fit split later
-wedges into either the logical plan (an optimizer pass the epic forswore)
-or a bolted-on layer, i.e. B arrives anyway, later and under pressure.
-Migration risk is real but gated by the bit-identical replay above.
+**Pros**
+- Solves problems 1 and 2 with zero new representations.
+- The refusal boundary is ONE function with the same three-outcome
+  discipline as a printer — a shape the repo already knows how to gate.
+- Supported by RFC-2's research: DBLAB's many-IR case needs a pass
+  cross-product confit lacks; Umbra (the only live branch of that
+  lineage) landed on exactly this architecture.
+
+**Cons**
+- Does NOT address problem 3. The fit split later wedges into either the
+  logical plan (an optimizer pass the epic forswore) or a bolted-on
+  layer — i.e. B arrives anyway, later and under pressure.
+- Migrating the frontend is real risk; it is gated by bit-identical
+  replay, but the gate only proves what the corpus covers.
 
 **B. A confit-owned physical plan.** A middle layer that also owns the
 fit/serve split (problem 3); SSA IR becomes the backend of `serve` only:
@@ -81,13 +89,22 @@ pub fn lower_serve(p: &PhysPlan) -> Result<ir::Program, DialectError>;
 // PhysPlan = a third representation: verifier + canonical text + round-trip owed (ir/ recipe)
 ```
 
-*Buys:* problem 3 gets its home before it is urgent; A's lowering becomes
-a two-step (logical -> phys -> SSA) whose middle is testable. *Costs:* a
-third representation to verify, print, and round-trip, designed now
-against a fit surface (Aggregate/Window) the logical plan only gains in
-TASK-105/106 — high risk of designing against guesses. KPI risk: serving
-latency is a control; the extra layer must compile away to nothing
-measurable.
+**Pros**
+- Problem 3 gets its home before it is urgent, instead of being wedged in
+  later under deadline pressure.
+- A's lowering becomes a two-step (logical -> phys -> SSA) whose middle is
+  independently testable.
+- One place owns "what runs on the warehouse vs the row kernel", which is
+  the epic's actual goal.
+
+**Cons**
+- A third representation owing the full ir/ recipe: verifier, canonical
+  text, round-trip. That is the expensive part, and it is all new surface.
+- Designed NOW against a fit surface (Window/Aggregate) the logical plan
+  does not have until TASK-105/106 — high risk of designing against guesses.
+- KPI risk: serving latency is a control, so the extra layer must compile
+  away to nothing measurable, and that has to be proven, not assumed.
+- RFC-2's research argues against extra IR levels for an engine this size.
 
 **C. Coexistence (status quo).** No new code; the shared corpus is the
 only bridge:
@@ -97,10 +114,16 @@ sql --dialect::parse--> Rel --print--> spark/bq        (m-9, universal)
 sql --specializer::frontend--> ir::Program --> serve   (untouched)
 ```
 
-*Buys:* costs nothing now, starves nothing. *Costs:* problem 1 compounds
-with every pin (each new scalar function, width rule, and auto-name case
-lands twice), and problem 2 arrives regardless the moment any confit
-consumer reads dialect plans.
+**Pros**
+- Costs nothing now and starves nothing; both paths are gated today.
+- Keeps the m-9 epic and the serving engine fully decoupled while the
+  logical plan is still growing fast.
+
+**Cons**
+- Problem 1 compounds with every pin: each new scalar function, width
+  rule, and auto-name case lands twice or diverges silently.
+- Problem 2 arrives anyway the moment any confit consumer reads dialect
+  plans — deferring the decision does not remove it.
 
 > **ASK(shape):** A now (with B's interface sketched but unbuilt), B now,
 > or C until TASK-106 lands? Recommendation: **A after TASK-105/106**
