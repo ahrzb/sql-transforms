@@ -2108,9 +2108,19 @@ impl Binder<'_> {
                 if self.nullif_sqlnull(f)? {
                     return Ok(None);
                 }
+                // TASK-93: struct_extract over struct_pack desugars HERE
+                // too, so a bare-NULL field keeps its adopting context.
+                if let Some(sub) = self.desugar_struct_extract(f)? {
+                    return self.expr_or_null(&sub);
+                }
                 self.bind_or_sqlnull(e)
             }
-            other => self.bind_or_sqlnull(other),
+            other => {
+                if let Some(sub) = self.desugar_struct_field(other)? {
+                    return self.expr_or_null(&sub);
+                }
+                self.bind_or_sqlnull(other)
+            }
         }
     }
 
@@ -2600,6 +2610,11 @@ impl Binder<'_> {
             // array_slice in DuckDB (one shared implementation, measured:
             // pins-wave5/{subscripts-extended,slices}.json).
             SqlExpr::CompoundFieldAccess { root, access_chain } => {
+                // Field read over struct_pack: the bind-time desugar
+                // (TASK-93) — the field's own expression binds in place.
+                if let Some(sub) = self.desugar_struct_field(e)? {
+                    return self.expr(&sub);
+                }
                 // Field read over a declared wide extern: a lane off one
                 // shared ecall (TASK-63).
                 if let [AccessExpr::Dot(SqlExpr::Identifier(id))] = access_chain.as_slice() {
@@ -4212,6 +4227,117 @@ impl Binder<'_> {
         (e, false)
     }
 
+    /// TASK-93: field access over struct_pack is a pure bind-time desugar —
+    /// extracting a field of a just-packed struct IS binding that field's
+    /// expression. Handles the dot form `(struct_pack(a := e)).a` (chains
+    /// peel one Dot per pass; re-entry desugars the rest) and returns the
+    /// SUBSTITUTE AST. `Ok(None)` when the shape isn't
+    /// field-access-over-struct-pack; the missing-key refusal uses DuckDB's
+    /// wording. A bare-NULL field rides the adoptable-SQLNULL channel by
+    /// construction — the substitute AST re-binds wherever the ORIGINAL
+    /// stood (`- (struct_pack(a := NULL)).a` is BIGINT on DuckDB, the bare
+    /// field INTEGER; measured 2026-08-13).
+    fn desugar_struct_field(
+        &self,
+        e: &SqlExpr,
+    ) -> Result<Option<SqlExpr>, PrepareError> {
+        let SqlExpr::CompoundFieldAccess { root, access_chain } = e else {
+            return Ok(None);
+        };
+        let Some((AccessExpr::Dot(SqlExpr::Identifier(id)), rest)) =
+            access_chain.split_first()
+        else {
+            return Ok(None);
+        };
+        let mut base: &SqlExpr = root;
+        while let SqlExpr::Nested(i) = base {
+            base = i;
+        }
+        let SqlExpr::Function(f) = base else {
+            return Ok(None);
+        };
+        let Some(field) = self.struct_pack_field(f, &id.value)? else {
+            return Ok(None);
+        };
+        if rest.is_empty() {
+            return Ok(Some(field.clone()));
+        }
+        Ok(Some(SqlExpr::CompoundFieldAccess {
+            root: Box::new(SqlExpr::Nested(Box::new(field.clone()))),
+            access_chain: rest.to_vec(),
+        }))
+    }
+
+    /// The struct_extract SPELLING of the same desugar (TASK-93):
+    /// `struct_extract(struct_pack(a := e), 'a')` -> the field's AST.
+    fn desugar_struct_extract(
+        &self,
+        f: &sqlparser::ast::Function,
+    ) -> Result<Option<SqlExpr>, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        if !f.name.to_string().eq_ignore_ascii_case("struct_extract") {
+            return Ok(None);
+        }
+        let FunctionArguments::List(list) = &f.args else {
+            return Ok(None);
+        };
+        let [
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(target)),
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(SqlExpr::Value(v))),
+        ] = list.args.as_slice()
+        else {
+            return Ok(None);
+        };
+        let SqlValue::SingleQuotedString(field) = &v.value else {
+            return Ok(None);
+        };
+        let mut base: &SqlExpr = target;
+        while let SqlExpr::Nested(i) = base {
+            base = i;
+        }
+        let SqlExpr::Function(inner) = base else {
+            return Ok(None);
+        };
+        Ok(self.struct_pack_field(inner, field)?.cloned())
+    }
+
+    /// The named field of a plain `struct_pack(...)` call, ASCII-case-
+    /// insensitively (DuckDB's struct key matching). `Ok(None)` when `f`
+    /// isn't a plain struct_pack; a struct_pack MISSING the key refuses
+    /// with DuckDB's wording.
+    fn struct_pack_field<'e>(
+        &self,
+        f: &'e sqlparser::ast::Function,
+        field: &str,
+    ) -> Result<Option<&'e SqlExpr>, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        if !f.name.to_string().eq_ignore_ascii_case("struct_pack")
+            || f.uses_odbc_syntax
+            || !matches!(f.parameters, FunctionArguments::None)
+            || f.filter.is_some()
+            || f.null_treatment.is_some()
+            || f.over.is_some()
+        {
+            return Ok(None);
+        }
+        let FunctionArguments::List(list) = &f.args else {
+            return Ok(None);
+        };
+        for a in &list.args {
+            if let FunctionArg::Named { name, arg, .. } = a {
+                if name.value.eq_ignore_ascii_case(field) {
+                    let FunctionArgExpr::Expr(v) = arg else {
+                        return Ok(None);
+                    };
+                    return Ok(Some(v));
+                }
+            }
+        }
+        Err(PrepareError::Bind(format!(
+            "Could not find key \"{field}\" in struct"
+        )))
+    }
+
     /// Field access over a declared width-k extern call: bind the named
     /// lane of ONE shared ecall (TASK-63). `Ok(None)` when this isn't
     /// that shape — callers fall through to their own handling.
@@ -4379,11 +4505,12 @@ impl Binder<'_> {
     /// a struct of NULLs) plus one component lane per field. `None` when
     /// this isn't that shape.
     ///
-    /// audit 2026-08-13: stricter than DuckDB throughout — unnamed args
-    /// (`struct_pack(i)` infers the field name there), mid-expression use
-    /// (`(struct_pack(a := i)).a` binds there) and leading-underscore
-    /// fields all bind on the oracle; the recognizer refuses each
-    /// (projection-loop-only, pydantic model boundary). Preserved.
+    /// audit 2026-08-13: stricter than DuckDB — unnamed args
+    /// (`struct_pack(i)` infers the field name there) and
+    /// leading-underscore fields bind on the oracle; the recognizer
+    /// refuses both (projection-loop-only, pydantic model boundary).
+    /// Preserved. Field ACCESS over struct_pack serves since TASK-93
+    /// (`desugar_struct_field` — never reaches this recognizer).
     fn struct_pack_lanes(
         &self,
         e: &SqlExpr,
@@ -5942,7 +6069,11 @@ impl Binder<'_> {
             }
             // The FUNCTION spelling of field access over a wide extern
             // (TASK-63) — DuckDB serializes it distinct from the dot form.
+            // Over struct_pack it is the TASK-93 desugar instead.
             "struct_extract" => {
+                if let Some(sub) = self.desugar_struct_extract(f)? {
+                    return self.expr(&sub);
+                }
                 if let [target, SqlExpr::Value(v)] = args[..] {
                     if let SqlValue::SingleQuotedString(field) = &v.value {
                         let mut base = target;
