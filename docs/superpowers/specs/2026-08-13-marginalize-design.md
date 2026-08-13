@@ -214,7 +214,10 @@ standalone on that scope's rows.* Consequences:
 - Keyed scopes are admitted **in one piece only** — the bare sugar or
   `tfm_transform(tfm_fit(bundle) OVER (PARTITION BY ...), bundle)` — because
   θ never exists as a value to pass around; a keyed fit scope anywhere else
-  refuses by name.
+  refuses by name. A *keyless* θ needs no such rule, because it is a value
+  (D1): `tfm_fit(x) OVER (...) AS t` then `tfm_transform(t, x)`,
+  `tfm_transform(t, y)` — one fit, many reads, any bundles — is lawful and
+  pinned (measured 2026-08-13).
 - The admitted keyed shape, v1: exactly one grouped fit step joined once
   onto `__THIS__` through an AND-tree of column equalities; anything wider
   refuses naming the stem.
