@@ -94,14 +94,17 @@ bool. Measured consequences:
   agrees exactly — measure DOUBLE cast behaviour with a DOUBLE column or an
   explicit `::DOUBLE`, never with a literal, or you will pin the wrong
   rounding mode (TASK-70 did).
-- Narrow integer widths don't exist: bitwise ops compute in i64, which
-  matches DuckDB whenever either operand is BIGINT (always true for
-  row-model ints). Explicit narrow CASTs are rejected rather than
-  risking DuckDB's narrow-width overflow behavior. This is also visible
-  in `infer_arrow`'s OUTPUT schema — DuckDB types a bare integer literal
-  `INTEGER`, so `CASE WHEN .. THEN 1 ELSE 0 END` is `int32` for it and
-  `int64` for us. Values agree; the schemas don't stack. Pinned
-  xfail-strict in `test_known_divergences.py`; ticket TASK-79.
+- Integer widths: the engine TYPES in DuckDB's lattice (TINYINT..BIGINT —
+  literals are INTEGER by magnitude, `::SMALLINT` is real, `ascii` returns
+  INTEGER, `infer_arrow` emits int8/int16/int32 from the type) but
+  COMPUTES in two machine widths, i64 and f64. The width is observable
+  exactly where DuckDB's is: the Arrow schema (shipped, TASK-79/m-8
+  phase 2, catalogue pinned in `test_integer_widths.py`) and the overflow
+  trap threshold — the trap half is m-8 phase 3, so until it lands a
+  narrow lane that overflows serves the i64 value on the row path and
+  refuses by name at the `infer_arrow` boundary; every input this refuses
+  is one DuckDB itself errors on. HUGEINT and the unsigned family still
+  collapse to i64 (m-8 phase 4).
 
 ## 3a. `infer_arrow` refuses a supplied `output_model`
 

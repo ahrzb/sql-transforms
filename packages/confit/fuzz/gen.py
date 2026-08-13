@@ -129,7 +129,8 @@ SIGS = {
     "sin": (("float",), "float"),
     "cos": (("float",), "float"),
     "pow": (("float", "float"), "float"),
-    "greatest": (("float", "float"), "float"),
+    # greatest patrols the int width lane, least the float lane.
+    "greatest": (("int", "int"), "int"),
     "least": (("float", "float"), "float"),
     "upper": (("str",), "str"),
     "lower": (("str",), "str"),
@@ -141,6 +142,9 @@ SIGS = {
     "length": (("str",), "int"),
     "strpos": (("str", "str"), "int"),
     "ascii": (("str",), "int"),
+    # m-8 phase 2: INTEGER-returning names patrol the width catalogue.
+    "ord": (("str",), "int"),
+    "unicode": (("str",), "int"),
     "repeat": (("str", "int"), "str"),
     "lpad": (("str", "int", "str"), "str"),
     "contains": (("str", "str"), "bool"),
@@ -552,7 +556,10 @@ def _num(rng, env, ty, depth):
         return CaseW(whens, els)
     if r < 0.70:
         src = rng.choice(TYPES)
-        return Cast(expr(rng, env, src, depth - 1), ty, try_=rng.random() < 0.3)
+        # m-8 phase 2: narrow targets are real; CAST/TRY_CAST AS INTEGER
+        # exercises the typed-width lane and its range semantics.
+        to = "int32" if ty == "int" and rng.random() < 0.4 else ty
+        return Cast(expr(rng, env, src, depth - 1), to, try_=rng.random() < 0.3)
     if r < 0.78:
         name = rng.choice(["coalesce", "nullif"])
         return Call(
@@ -702,9 +709,13 @@ def rexpr(e: Node) -> str:
         els = f" ELSE {rexpr(e.els)}" if e.els is not None else ""
         return f"(CASE {w}{els} END)"
     if isinstance(e, Cast):
-        to = {"int": "BIGINT", "float": "DOUBLE", "str": "VARCHAR", "bool": "BOOLEAN"}[
-            e.to
-        ]
+        to = {
+            "int": "BIGINT",
+            "int32": "INTEGER",
+            "float": "DOUBLE",
+            "str": "VARCHAR",
+            "bool": "BOOLEAN",
+        }[e.to]
         f = "TRY_CAST" if e.try_ else "CAST"
         return f"{f}({rexpr(e.e)} AS {to})"
     if isinstance(e, Call):
