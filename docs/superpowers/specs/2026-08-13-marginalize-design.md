@@ -164,10 +164,15 @@ effective key  =  scope keys  ⊕  the projection's internal keys
 -- usage site:     tfm_fit(x) OVER (PARTITION BY city)
 
 -- flat lowering: one params table per (city, store), θ stays columns
-LEFT JOIN (SELECT __cf_k0, store, avg(price) AS m
-           FROM __FIT__ GROUP BY __cf_k0, store) f
+LEFT JOIN (SELECT city AS __cf_k0, store, avg(price) AS m
+           FROM __FIT__ GROUP BY city, store) f
   ON t.city IS NOT DISTINCT FROM f.__cf_k0    -- scope half: window discipline
  AND t.store = f.store                        -- internal half: verbatim
+
+-- __cf_k0 is the scope-key EXPRESSION, computed over __FIT__ and frozen
+-- under a reserved name (keys can be expressions — date_trunc('month', ts) —
+-- and the author's name could collide with the projection's own columns);
+-- the ON clause evaluates the same expression on the batch row.
 ```
 
 The two halves keep **different equality disciplines**, deliberately:
