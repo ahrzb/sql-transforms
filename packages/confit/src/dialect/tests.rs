@@ -379,3 +379,58 @@ fn literal_typing_follows_the_lattice() {
         vec![DTy::I32, DTy::I64, DTy::Dec(3, 2), DTy::Dec(1, 1), DTy::F64]
     );
 }
+
+// --- BigQuery printer (documented-semantics; phase-4 remote gate owed) ------
+
+#[test]
+fn bigquery_prints_the_forced_spellings() {
+    let c = cat();
+    // a is i32: arithmetic computes at i32 (trap at 2^31) — refuses by name.
+    let p = super::duckdb::parse_sql("SELECT a // 2 AS q FROM t", &c).unwrap();
+    assert!(matches!(
+        super::bigquery::print_sql(&p, &c),
+        Err(DialectError::Unsupported(ref m)) if m.contains("INT64")
+    ));
+
+    // Widened to i64 the computation matches BigQuery's overflow class.
+    let sql = "SELECT CAST(a AS BIGINT) // 2 AS q, 1.5 / c AS d, b || 'x\\y' AS s FROM t WHERE b IS NOT DISTINCT FROM 'o''k'";
+    let p = super::duckdb::parse_sql(sql, &c).unwrap();
+    let printed = super::bigquery::print_sql(&p, &c).unwrap();
+    assert_eq!(
+        printed,
+        "SELECT DIV(CAST(`a` AS INT64), 2) AS `q`, \
+         (CAST(NUMERIC '1.5' AS FLOAT64) / `c`) AS `d`, \
+         (`b` || 'x\\\\y') AS `s` \
+         FROM `t` WHERE (`b` IS NOT DISTINCT FROM 'o\\'k')"
+    );
+}
+
+#[test]
+fn bigquery_type_landing_zones() {
+    use super::bigquery;
+    let c = cat();
+    for (sql, needle) in [
+        (
+            "SELECT TRY_CAST(b AS DOUBLE) AS x FROM t",
+            "SAFE_CAST(`b` AS FLOAT64)",
+        ),
+        (
+            "SELECT CAST(a AS DECIMAL(18,3)) AS x FROM t",
+            "CAST(`a` AS NUMERIC(18,3))",
+        ),
+        (
+            "SELECT CAST(a AS DECIMAL(38,20)) AS x FROM t",
+            "CAST(`a` AS BIGNUMERIC(38,20))",
+        ),
+    ] {
+        let p = super::duckdb::parse_sql(sql, &c).unwrap();
+        let printed = bigquery::print_sql(&p, &c).unwrap();
+        assert!(printed.contains(needle), "{sql}: {printed}");
+    }
+    // Named refusals: narrow-int CAST targets stay unforced.
+    let p = super::duckdb::parse_sql("SELECT CAST(a AS INTEGER) AS x FROM t", &c).unwrap();
+    assert!(matches!(
+        bigquery::print_sql(&p, &c),
+        Err(DialectError::Unsupported(_))
+    ));
+}

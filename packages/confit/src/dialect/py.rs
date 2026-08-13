@@ -50,8 +50,9 @@ pub fn dialect_print(plan_text: &str, target: &str, tables: PyCatalog) -> PyResu
     let rel = text::parse(plan_text).map_err(err)?;
     match target {
         "duckdb" => duckdb::print_sql(&rel, &cat).map_err(err),
+        "bigquery" => super::bigquery::print_sql(&rel, &cat).map_err(err),
         other => Err(PyValueError::new_err(format!(
-            "unsupported: print target {other} (phase 3+: spark, bigquery)"
+            "unsupported: print target {other} (phase 3: spark)"
         ))),
     }
 }

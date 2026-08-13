@@ -32,6 +32,7 @@
 //! nullability is not tracked (columns carry it; expressions will when
 //! confit lowers from this plan).
 
+pub mod bigquery;
 pub mod duckdb;
 pub mod plan;
 pub mod py;
