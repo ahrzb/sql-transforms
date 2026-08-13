@@ -4560,28 +4560,44 @@ impl Binder<'_> {
                     "floor" => NumOp1::Ffloor,
                     _ => NumOp1::Fceil,
                 };
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(format!(
-                        "{name} takes exactly 1 argument"
-                    )));
+                let (bound, _ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                self.math1(&name, op, arg)
+                Ok(math1_node(op, inner))
             }
             "log" => match args[..] {
                 [x] => self.math1("log", NumOp1::Log10, x),
                 [b, x] => self.math2("log", BinOp::Flogb, b, x),
                 _ => Err(PrepareError::Bind("log takes 1 or 2 arguments".to_string())),
             },
-            "pow" | "power" => match args[..] {
-                [x, y] => self.math2(&name, BinOp::Fpow, x, y),
-                _ => Err(PrepareError::Bind(format!(
-                    "{name} takes exactly 2 arguments"
-                ))),
-            },
+            // One table row: the binary DOUBLE lane (math2's audited NULL
+            // ordering now lives in the resolution head). fdiv/fmod are
+            // the FLOOR pair — always DOUBLE, even for two int args.
+            "pow" | "power" | "fdiv" | "fmod" | "nextafter" => {
+                let op = match name.as_str() {
+                    "pow" | "power" => BinOp::Fpow,
+                    "fdiv" => BinOp::Ffloordiv,
+                    "fmod" => BinOp::Ffloormod,
+                    _ => BinOp::Fnextafter,
+                };
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([a, b]) = <[SExpr; 2]>::try_from(bound) else {
+                    unreachable!("arity 2")
+                };
+                let nullable = a.nullable || b.nullable;
+                Ok(SExpr {
+                    kind: SKind::MathF2 {
+                        op,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    },
+                    ty,
+                    nullable,
+                })
+            }
             "pi" => {
-                if !args.is_empty() {
-                    return Err(PrepareError::Bind("pi takes no arguments".to_string()));
-                }
+                let _ = resolved.expect("signature row"); // arity 0 checked
                 // Bit-equal to DuckDB's pi() (measured 0x400921FB54442D18).
                 Ok(SExpr {
                     kind: SKind::Lit(Lit::F64(std::f64::consts::PI)),
@@ -4610,22 +4626,13 @@ impl Binder<'_> {
                 )),
             },
             "abs" => {
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(
-                        "abs takes exactly 1 argument".to_string(),
-                    ));
+                // abs(NULL) binds to abs(BIGINT) in DuckDB — the head's
+                // Arg(0)-row NULL rule.
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                // abs(NULL) binds to abs(BIGINT) in DuckDB.
-                let Some(inner) = self.expr_or_null(arg)? else {
-                    return Ok(null_of(Ty::I64));
-                };
-                if !matches!(inner.ty, Ty::I64 | Ty::F64) {
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches abs({})",
-                        inner.ty.name()
-                    )));
-                }
-                let (ty, nullable) = (inner.ty, inner.nullable);
+                let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::Abs(Box::new(inner)),
                     ty,
@@ -5297,24 +5304,6 @@ impl Binder<'_> {
                 };
                 self.arith(op, bx, by)
             }
-            "fdiv" => match args[..] {
-                [x, y] => self.math2("fdiv", BinOp::Ffloordiv, x, y),
-                _ => Err(PrepareError::Bind(
-                    "fdiv takes exactly 2 arguments".to_string(),
-                )),
-            },
-            "fmod" => match args[..] {
-                [x, y] => self.math2("fmod", BinOp::Ffloormod, x, y),
-                _ => Err(PrepareError::Bind(
-                    "fmod takes exactly 2 arguments".to_string(),
-                )),
-            },
-            "nextafter" => match args[..] {
-                [x, y] => self.math2("nextafter", BinOp::Fnextafter, x, y),
-                _ => Err(PrepareError::Bind(
-                    "nextafter takes exactly 2 arguments".to_string(),
-                )),
-            },
             // Named rejects (wave-3 AC #3): each states WHY, not just what.
             "sum" | "count" | "avg" | "min" | "max" | "geomean" | "product" | "string_agg"
             | "first" | "last" | "any_value" => Err(unsup(format!(
