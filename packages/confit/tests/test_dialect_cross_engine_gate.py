@@ -47,7 +47,8 @@ from confit import _engine
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
 # Measured at introduction (see PR); a drop is a regression.
-SPARK_MATCH_FLOOR = 213
+# Measured in CI (TASK-104 joins: 213 -> 260); a drop is a regression.
+SPARK_MATCH_FLOOR = 260
 
 PINNED_SPARK_CONFIG = {
     "spark.sql.ansi.enabled": "true",
