@@ -16,6 +16,7 @@ pub mod lower;
 pub mod plan;
 mod retrans;
 mod rewrite;
+mod sig;
 
 #[cfg(test)]
 mod tests;
