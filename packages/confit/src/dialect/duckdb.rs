@@ -32,6 +32,7 @@ use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Tokenizer;
 
 use super::plan::{BinOp, Catalog, Expr, Rel, UnOp};
+use super::printer;
 use super::ty::DTy;
 use super::verify::verify;
 use super::{unsup, DialectError};
@@ -610,209 +611,82 @@ fn number_type(lexeme: &str) -> Result<DTy, DialectError> {
 /// Print a verified plan as DuckDB SQL. `cat` supplies scan schemas.
 pub fn print_sql(rel: &Rel, cat: &Catalog) -> Result<String, DialectError> {
     verify(rel, cat)?;
-    let (sql, _) = print_query(rel, cat, 0)?;
+    let (sql, _) = printer::query(&Duck, rel, cat, 0)?;
     Ok(sql)
 }
 
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
+struct Duck;
 
-fn print_query(
-    rel: &Rel,
-    cat: &Catalog,
-    depth: usize,
-) -> Result<(String, Vec<(String, DTy)>), DialectError> {
-    // Flatten the ribbon shapes the frontend produces — project(filter?(scan))
-    // and filter(scan) — into one SELECT, so frontend∘printer is a fixpoint
-    // on them (no derived-table support needed to re-parse our own output).
-    match rel {
-        Rel::Project { input, items } => {
-            if let Some((table, pred)) = as_ribbon(input) {
-                let in_schema = Rel::Scan {
-                    table: table.clone(),
-                }
-                .schema(cat)?;
-                let mut outs = Vec::new();
-                for (name, e) in items {
-                    outs.push(format!(
-                        "{} AS {}",
-                        print_expr(e, &in_schema)?,
-                        quote_ident(name)
+impl printer::ExprPrinter for Duck {
+    fn quote_ident(&self, name: &str) -> String {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+
+    fn expr(&self, e: &Expr, input: &[(String, DTy)]) -> Result<String, DialectError> {
+        Ok(match e {
+            Expr::Col { ordinal, name, .. } => printer::col_ref(self, *ordinal, name, input)?,
+            Expr::Lit { lexeme, ty } => match ty {
+                DTy::Str => format!("'{}'", lexeme.replace('\'', "''")),
+                DTy::Bool | DTy::F64 => lexeme.clone(),
+                t if t.is_numeric() => lexeme.clone(),
+                t => format!("'{}'::{}", lexeme.replace('\'', "''"), t.duckdb_name()?),
+            },
+            Expr::Bin { op, l, r } => {
+                let sym = match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::FDiv => "/",
+                    BinOp::IDiv => "//",
+                    BinOp::Rem => "%",
+                    BinOp::Concat => "||",
+                    BinOp::And => "AND",
+                    BinOp::Or => "OR",
+                    BinOp::Eq => "=",
+                    BinOp::Neq => "<>",
+                    BinOp::Lt => "<",
+                    BinOp::Lte => "<=",
+                    BinOp::Gt => ">",
+                    BinOp::Gte => ">=",
+                };
+                format!("({} {sym} {})", self.expr(l, input)?, self.expr(r, input)?)
+            }
+            Expr::Un { op, e } => match op {
+                UnOp::Neg => format!("(- {})", self.expr(e, input)?),
+                UnOp::Not => format!("(NOT {})", self.expr(e, input)?),
+            },
+            Expr::Cast { strict, e, target } => format!(
+                "{}({} AS {})",
+                if *strict { "CAST" } else { "TRY_CAST" },
+                self.expr(e, input)?,
+                target.duckdb_name()?
+            ),
+            Expr::Case { whens, else_ } => {
+                let mut s = String::from("(CASE");
+                for (c, v) in whens {
+                    s.push_str(&format!(
+                        " WHEN {} THEN {}",
+                        self.expr(c, input)?,
+                        self.expr(v, input)?
                     ));
                 }
-                let where_ = match pred {
-                    Some(p) => format!(" WHERE {}", print_expr(p, &in_schema)?),
-                    None => String::new(),
-                };
-                return Ok((
-                    format!(
-                        "SELECT {} FROM {}{where_}",
-                        outs.join(", "),
-                        quote_ident(&table)
-                    ),
-                    rel.schema(cat)?,
-                ));
+                if let Some(el) = else_ {
+                    s.push_str(&format!(" ELSE {}", self.expr(el, input)?));
+                }
+                s.push_str(" END)");
+                s
             }
-        }
-        Rel::Filter { input, pred } => {
-            if let Rel::Scan { table } = input.as_ref() {
-                let in_schema = input.schema(cat)?;
-                let cols: Vec<String> = in_schema.iter().map(|(n, _)| quote_ident(n)).collect();
-                return Ok((
-                    format!(
-                        "SELECT {} FROM {} WHERE {}",
-                        cols.join(", "),
-                        quote_ident(table),
-                        print_expr(pred, &in_schema)?
-                    ),
-                    rel.schema(cat)?,
-                ));
-            }
-        }
-        Rel::Scan { .. } => {}
-    }
-    match rel {
-        Rel::Scan { table } => {
-            let schema = rel.schema(cat)?;
-            let cols: Vec<String> = schema.iter().map(|(n, _)| quote_ident(n)).collect();
-            Ok((
-                format!("SELECT {} FROM {}", cols.join(", "), quote_ident(table)),
-                schema,
-            ))
-        }
-        Rel::Filter { input, pred } => {
-            let (inner, in_schema) = print_query(input, cat, depth + 1)?;
-            let pred = print_expr(pred, &in_schema)?;
-            let schema = rel.schema(cat)?;
-            let cols: Vec<String> = in_schema.iter().map(|(n, _)| quote_ident(n)).collect();
-            Ok((
-                format!(
-                    "SELECT {} FROM ({inner}) AS {} WHERE {pred}",
-                    cols.join(", "),
-                    quote_ident(&format!("__cf_q{depth}"))
-                ),
-                schema,
-            ))
-        }
-        Rel::Project { input, items } => {
-            let (inner, in_schema) = print_query(input, cat, depth + 1)?;
-            let mut outs = Vec::new();
-            for (name, e) in items {
-                outs.push(format!(
-                    "{} AS {}",
-                    print_expr(e, &in_schema)?,
-                    quote_ident(name)
-                ));
-            }
-            let schema = rel.schema(cat)?;
-            Ok((
-                format!(
-                    "SELECT {} FROM ({inner}) AS {}",
-                    outs.join(", "),
-                    quote_ident(&format!("__cf_q{depth}"))
-                ),
-                schema,
-            ))
-        }
-    }
-}
-
-fn print_expr(e: &Expr, input: &[(String, DTy)]) -> Result<String, DialectError> {
-    Ok(match e {
-        Expr::Col { ordinal, name, .. } => {
-            // Name-addressed across the subquery boundary: duplicates in
-            // the input schema make the reference ambiguous — refuse.
-            let dups = input
-                .iter()
-                .filter(|(n, _)| n.eq_ignore_ascii_case(name))
-                .count();
-            if dups != 1 {
-                return Err(unsup(format!(
-                    "printing a column reference over duplicate upstream names: {name}"
-                )));
-            }
-            let (bound_name, _) = &input[*ordinal];
-            quote_ident(bound_name)
-        }
-        Expr::Lit { lexeme, ty } => match ty {
-            DTy::Str => format!("'{}'", lexeme.replace('\'', "''")),
-            DTy::Bool | DTy::F64 => lexeme.clone(),
-            t if t.is_numeric() => lexeme.clone(),
-            t => format!("'{}'::{}", lexeme.replace('\'', "''"), t.duckdb_name()?),
-        },
-        Expr::Bin { op, l, r } => {
-            let sym = match op {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::FDiv => "/",
-                BinOp::IDiv => "//",
-                BinOp::Rem => "%",
-                BinOp::Concat => "||",
-                BinOp::And => "AND",
-                BinOp::Or => "OR",
-                BinOp::Eq => "=",
-                BinOp::Neq => "<>",
-                BinOp::Lt => "<",
-                BinOp::Lte => "<=",
-                BinOp::Gt => ">",
-                BinOp::Gte => ">=",
-            };
-            format!(
-                "({} {sym} {})",
-                print_expr(l, input)?,
-                print_expr(r, input)?
-            )
-        }
-        Expr::Un { op, e } => match op {
-            UnOp::Neg => format!("(- {})", print_expr(e, input)?),
-            UnOp::Not => format!("(NOT {})", print_expr(e, input)?),
-        },
-        Expr::Cast { strict, e, target } => format!(
-            "{}({} AS {})",
-            if *strict { "CAST" } else { "TRY_CAST" },
-            print_expr(e, input)?,
-            target.duckdb_name()?
-        ),
-        Expr::Case { whens, else_ } => {
-            let mut s = String::from("(CASE");
-            for (c, v) in whens {
-                s.push_str(&format!(
-                    " WHEN {} THEN {}",
-                    print_expr(c, input)?,
-                    print_expr(v, input)?
-                ));
-            }
-            if let Some(el) = else_ {
-                s.push_str(&format!(" ELSE {}", print_expr(el, input)?));
-            }
-            s.push_str(" END)");
-            s
-        }
-        Expr::IsNull { negated, e } => format!(
-            "({} IS {}NULL)",
-            print_expr(e, input)?,
-            if *negated { "NOT " } else { "" }
-        ),
-        Expr::IsDistinct { negated, l, r } => format!(
-            "({} IS {}DISTINCT FROM {})",
-            print_expr(l, input)?,
-            if *negated { "NOT " } else { "" },
-            print_expr(r, input)?
-        ),
-    })
-}
-
-/// project(filter?(scan)) — the flattenable ribbon. Returns the scanned
-/// table and the optional predicate.
-fn as_ribbon(input: &Rel) -> Option<(String, Option<&Expr>)> {
-    match input {
-        Rel::Scan { table } => Some((table.clone(), None)),
-        Rel::Filter { input, pred } => match input.as_ref() {
-            Rel::Scan { table } => Some((table.clone(), Some(pred))),
-            _ => None,
-        },
-        _ => None,
+            Expr::IsNull { negated, e } => format!(
+                "({} IS {}NULL)",
+                self.expr(e, input)?,
+                if *negated { "NOT " } else { "" }
+            ),
+            Expr::IsDistinct { negated, l, r } => format!(
+                "({} IS {}DISTINCT FROM {})",
+                self.expr(l, input)?,
+                if *negated { "NOT " } else { "" },
+                self.expr(r, input)?
+            ),
+        })
     }
 }

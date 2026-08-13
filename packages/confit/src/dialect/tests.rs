@@ -434,3 +434,33 @@ fn bigquery_type_landing_zones() {
         Err(DialectError::Unsupported(_))
     ));
 }
+
+// --- Spark printer (pinned config; live gate in test_dialect_cross_engine_gate.py) --
+
+#[test]
+fn spark_prints_the_forced_spellings() {
+    let c = cat();
+    // Narrow ints are native in Spark: i32 arithmetic prints plainly, and
+    // // re-narrows div's BIGINT through a checked CAST (trap class forced).
+    let sql = "SELECT a + 1 AS s, a // 2 AS q, 1.5 / c AS d, TRY_CAST(b AS BIGINT) AS w FROM t WHERE b IS NOT DISTINCT FROM 'o''k'";
+    let p = super::duckdb::parse_sql(sql, &c).unwrap();
+    let printed = super::spark::print_sql(&p, &c).unwrap();
+    assert_eq!(
+        printed,
+        "SELECT (`a` + 1) AS `s`, \
+         CAST((`a` div 2) AS INT) AS `q`, \
+         (CAST(1.5 AS DOUBLE) / `c`) AS `d`, \
+         try_cast(`b` AS BIGINT) AS `w` \
+         FROM `t` WHERE (`b` IS NOT DISTINCT FROM 'o\\'k')"
+    );
+    // i64 // stays plain div; unbought landing zones refuse by name.
+    let p = super::duckdb::parse_sql("SELECT CAST(a AS BIGINT) // 2 AS q FROM t", &c).unwrap();
+    assert!(super::spark::print_sql(&p, &c)
+        .unwrap()
+        .contains("(CAST(`a` AS BIGINT) div 2) AS `q`"));
+    let p = super::duckdb::parse_sql("SELECT CAST(b AS UUID) AS u FROM t", &c).unwrap();
+    assert!(matches!(
+        super::spark::print_sql(&p, &c),
+        Err(DialectError::Unsupported(_))
+    ));
+}
