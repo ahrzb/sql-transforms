@@ -1,0 +1,42 @@
+{
+  "area": "aggregate-order-sensitivity",
+  "duckdb_version": "v1.5.5",
+  "setup": "none  -- small VALUES lists execute single-threaded in literal order, so permuting literals permutes accumulation order; multi-statement pins as elsewhere",
+  "pins": [
+    {
+      "claim": "sum(DOUBLE) is order-sensitive: permuting the same four values changes the answer (1e16 absorbs 1.0) — the epsilon tier exists",
+      "query": "SELECT sum(x) FROM (VALUES (1e16),(1.0),(1.0),(-1e16)) t(x)\nSELECT sum(x) FROM (VALUES (1e16),(-1e16),(1.0),(1.0)) t(x)",
+      "observed": "[(0.0,)] | [(2.0,)]"
+    },
+    {
+      "claim": "avg(DOUBLE) inherits the same order sensitivity",
+      "query": "SELECT avg(x) FROM (VALUES (1e16),(1.0),(1.0),(-1e16)) t(x)\nSELECT avg(x) FROM (VALUES (1e16),(-1e16),(1.0),(1.0)) t(x)",
+      "observed": "[(0.0,)] | [(0.5,)]"
+    },
+    {
+      "claim": "sum(BIGINT) is exact and order-insensitive (integer algebra; result is decimal128(38,0) at the Arrow boundary per arrow-export.json)",
+      "query": "SELECT sum(x) FROM (VALUES (9007199254740993::BIGINT),(1::BIGINT),(-9007199254740993::BIGINT)) t(x)\nSELECT sum(x) FROM (VALUES (1::BIGINT),(9007199254740993::BIGINT),(-9007199254740993::BIGINT)) t(x)",
+      "observed": "[(1,)] | [(1,)]"
+    },
+    {
+      "claim": "min/max/count over DOUBLE are order-insensitive (selection, not accumulation) — exact tier",
+      "query": "SELECT min(x), max(x), count(x) FROM (VALUES (1e16),(1.0),(-1e16)) t(x)\nSELECT min(x), max(x), count(x) FROM (VALUES (-1e16),(1e16),(1.0)) t(x)",
+      "observed": "[(-1e+16, 1e+16, 3)] | [(-1e+16, 1e+16, 3)]"
+    },
+    {
+      "claim": "stddev_pop(DOUBLE) permutation probe: this permutation did NOT expose order sensitivity — insufficient to move stddev out of the epsilon tier (accumulation is still floating-point; absence of a counterexample here is not a proof)",
+      "query": "SELECT stddev_pop(x) FROM (VALUES (1e16),(1.0),(1.0),(-1e16)) t(x)\nSELECT stddev_pop(x) FROM (VALUES (1e16),(-1e16),(1.0),(1.0)) t(x)",
+      "observed": "[(7071067811865475.0,)] | [(7071067811865475.0,)]"
+    },
+    {
+      "claim": "Bare decimal literals make 0.1 + 0.2 = 0.3 TRUE in DuckDB (DECIMAL arithmetic); the same comparison over DOUBLE is FALSE — the classic float identity needs explicit casts to observe",
+      "query": "SELECT 0.1 + 0.2 = 0.3, typeof(0.1 + 0.2)\nSELECT 0.1::DOUBLE + 0.2::DOUBLE = 0.3::DOUBLE",
+      "observed": "[(True, 'DECIMAL(3,1)')] | [(False,)]"
+    },
+    {
+      "claim": "quantize via the f32 grid: CAST(CAST(x AS FLOAT) AS DOUBLE) collapses epsilon-different DOUBLE inputs to one value (the pack_trees trick as a plan node)",
+      "query": "SELECT CAST(CAST(0.1::DOUBLE + 0.2::DOUBLE AS FLOAT) AS DOUBLE) = CAST(CAST(0.3::DOUBLE AS FLOAT) AS DOUBLE)",
+      "observed": "[(True,)]"
+    }
+  ]
+}

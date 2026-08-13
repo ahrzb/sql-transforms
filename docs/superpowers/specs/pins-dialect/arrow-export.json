@@ -1,0 +1,192 @@
+{
+  "area": "duckdb-arrow-export",
+  "duckdb_version": "v1.5.5",
+  "setup": "CREATE TYPE mood AS ENUM ('sad','happy')  -- observed segments are str(pyarrow type) of the result column, not fetchall()",
+  "pins": [
+    {
+      "claim": "DuckDB BOOLEAN exports to Arrow as recorded",
+      "query": "SELECT true::BOOLEAN AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "bool"
+    },
+    {
+      "claim": "DuckDB TINYINT exports to Arrow as recorded",
+      "query": "SELECT 1::TINYINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "int8"
+    },
+    {
+      "claim": "DuckDB SMALLINT exports to Arrow as recorded",
+      "query": "SELECT 1::SMALLINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "int16"
+    },
+    {
+      "claim": "DuckDB INTEGER exports to Arrow as recorded",
+      "query": "SELECT 1::INTEGER AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "int32"
+    },
+    {
+      "claim": "DuckDB BIGINT exports to Arrow as recorded",
+      "query": "SELECT 1::BIGINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "int64"
+    },
+    {
+      "claim": "DuckDB HUGEINT exports to Arrow as recorded",
+      "query": "SELECT 1::HUGEINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "decimal128(38, 0)"
+    },
+    {
+      "claim": "DuckDB UTINYINT exports to Arrow as recorded",
+      "query": "SELECT 1::UTINYINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "uint8"
+    },
+    {
+      "claim": "DuckDB USMALLINT exports to Arrow as recorded",
+      "query": "SELECT 1::USMALLINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "uint16"
+    },
+    {
+      "claim": "DuckDB UINTEGER exports to Arrow as recorded",
+      "query": "SELECT 1::UINTEGER AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "uint32"
+    },
+    {
+      "claim": "DuckDB UBIGINT exports to Arrow as recorded",
+      "query": "SELECT 1::UBIGINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "uint64"
+    },
+    {
+      "claim": "DuckDB UHUGEINT exports to Arrow as recorded",
+      "query": "SELECT 1::UHUGEINT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "decimal128(38, 0)"
+    },
+    {
+      "claim": "DuckDB FLOAT exports to Arrow as recorded",
+      "query": "SELECT 1.5::FLOAT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "float"
+    },
+    {
+      "claim": "DuckDB DOUBLE exports to Arrow as recorded",
+      "query": "SELECT 1.5::DOUBLE AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "double"
+    },
+    {
+      "claim": "DuckDB DECIMAL(18,3) exports to Arrow as recorded",
+      "query": "SELECT 1.234::DECIMAL(18,3) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "decimal128(18, 3)"
+    },
+    {
+      "claim": "DuckDB DECIMAL(38,9) exports to Arrow as recorded",
+      "query": "SELECT 1.234::DECIMAL(38,9) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "decimal128(38, 9)"
+    },
+    {
+      "claim": "DuckDB VARCHAR exports to Arrow as recorded",
+      "query": "SELECT 'x'::VARCHAR AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "string"
+    },
+    {
+      "claim": "DuckDB BLOB exports to Arrow as recorded",
+      "query": "SELECT '\\xAA'::BLOB AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "binary"
+    },
+    {
+      "claim": "DuckDB DATE exports to Arrow as recorded",
+      "query": "SELECT DATE '2026-08-13' AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "date32[day]"
+    },
+    {
+      "claim": "DuckDB TIME exports to Arrow as recorded",
+      "query": "SELECT TIME '11:30:00' AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "time64[us]"
+    },
+    {
+      "claim": "DuckDB TIMETZ exports to Arrow as recorded",
+      "query": "SELECT TIMETZ '11:30:00+02' AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "time64[us]"
+    },
+    {
+      "claim": "DuckDB TIMESTAMP exports to Arrow as recorded",
+      "query": "SELECT TIMESTAMP '2026-08-13 11:30:00' AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "timestamp[us]"
+    },
+    {
+      "claim": "DuckDB TIMESTAMP_S exports to Arrow as recorded",
+      "query": "SELECT '2026-08-13 11:30:00'::TIMESTAMP_S AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "timestamp[s]"
+    },
+    {
+      "claim": "DuckDB TIMESTAMP_MS exports to Arrow as recorded",
+      "query": "SELECT '2026-08-13 11:30:00'::TIMESTAMP_MS AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "timestamp[ms]"
+    },
+    {
+      "claim": "DuckDB TIMESTAMP_NS exports to Arrow as recorded",
+      "query": "SELECT '2026-08-13 11:30:00'::TIMESTAMP_NS AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "timestamp[ns]"
+    },
+    {
+      "claim": "DuckDB TIMESTAMPTZ exports to Arrow as recorded",
+      "query": "SELECT TIMESTAMPTZ '2026-08-13 11:30:00+00' AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "timestamp[us, tz=Etc/UTC]"
+    },
+    {
+      "claim": "DuckDB INTERVAL exports to Arrow as recorded",
+      "query": "SELECT INTERVAL 3 MONTH + INTERVAL 4 DAY + INTERVAL 5 SECOND AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "month_day_nano_interval"
+    },
+    {
+      "claim": "DuckDB UUID exports to Arrow as recorded",
+      "query": "SELECT uuid() AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "string"
+    },
+    {
+      "claim": "DuckDB ENUM exports to Arrow as recorded",
+      "query": "SELECT 'happy'::mood AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "dictionary<values=string, indices=uint8, ordered=0>"
+    },
+    {
+      "claim": "DuckDB BIT exports to Arrow as recorded",
+      "query": "SELECT '101'::BIT AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "binary"
+    },
+    {
+      "claim": "DuckDB LIST(INTEGER) exports to Arrow as recorded",
+      "query": "SELECT [1, 2] AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "list<l: int32>"
+    },
+    {
+      "claim": "DuckDB STRUCT(a INTEGER) exports to Arrow as recorded",
+      "query": "SELECT {'a': 1} AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "struct<a: int32>"
+    },
+    {
+      "claim": "DuckDB MAP(INTEGER,INTEGER) exports to Arrow as recorded",
+      "query": "SELECT map([1], [2]) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "map<int32, int32>"
+    },
+    {
+      "claim": "DuckDB UNION(num INTEGER, s VARCHAR) exports to Arrow as recorded",
+      "query": "SELECT union_value(num := 2) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "sparse_union<num: int32=0>"
+    },
+    {
+      "claim": "DuckDB sum(BIGINT) exports to Arrow as recorded",
+      "query": "SELECT (SELECT sum(x) FROM (VALUES (1::BIGINT)) t(x)) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "decimal128(38, 0)"
+    },
+    {
+      "claim": "DuckDB sum(DOUBLE) exports to Arrow as recorded",
+      "query": "SELECT (SELECT sum(x) FROM (VALUES (1.5::DOUBLE)) t(x)) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "double"
+    },
+    {
+      "claim": "DuckDB avg(BIGINT) exports to Arrow as recorded",
+      "query": "SELECT (SELECT avg(x) FROM (VALUES (1::BIGINT)) t(x)) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "double"
+    },
+    {
+      "claim": "DuckDB count(*) exports to Arrow as recorded",
+      "query": "SELECT (SELECT count(*) FROM (VALUES (1)) t(x)) AS v  -- observed = str(rel.arrow().schema.field('v').type)",
+      "observed": "int64"
+    }
+  ]
+}
