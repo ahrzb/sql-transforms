@@ -214,3 +214,67 @@ def test_out_of_range_dynamic_int32_refuses_at_emit_not_wraps():
     )
     with pytest.raises(Exception, match="int32|INT32|INTEGER"):
         fn.infer_arrow(pa.Table.from_pylist([{"k": 9007199254740993, "s": "x"}]))
+
+
+# ---- Decided divergences, pinned xfail-strict until their PRs land ----
+# (AmirHossein 2026-08-13: "do what duckdb does" — bug-for-bug.)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-101 decided 2026-08-13: DuckDB executes a pure "
+    "(side_effects=False, its default) UDF at bind when a fold context "
+    "asks for its constant-args value — field access is one — and a None "
+    "result is SQLNULL/int32. We mirror: pure-by-default UDF bind fold, "
+    "side_effects=True opt-out. Flips when the fold lands.",
+)
+def test_pure_udf_bind_fold_matches_duckdb_schema():
+    """Seed 601418, the last width finding: `(udf(1, NULL)).f1` types int32
+    on DuckDB (the bind fold RUNS the udf — special null handling honored —
+    and this udf returns None for NULL args) but int64 here (declared field
+    type; we never execute user code at build yet)."""
+
+    class U:
+        name = "udf9"
+        takes = pa.schema([("a", pa.int64()), ("b", pa.int64())])
+        returns = pa.struct([("f1", pa.int64())])
+
+        def __call__(self, a, b):
+            if a is None or b is None:
+                return None
+            return (a + b,)
+
+    sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={}, udfs=[U()])
+    ours = fn.infer_arrow(pa.Table.from_pylist(ROWS)).schema
+
+    con = duckdb.connect()
+    u = U()
+    con.create_function(
+        "udf9",
+        lambda a, b: None if (r := u(a, b)) is None else {"f1": r[0]},
+        ["BIGINT", "BIGINT"],
+        "STRUCT(f1 BIGINT)",
+        null_handling="special",
+    )
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    for r in ROWS:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["k"], r["s"]])
+    duck = con.execute(sql).to_arrow_table().schema
+    assert duck.field("o").type == pa.int32(), "oracle moved — remeasure"
+    assert ours == duck, f"{ours} != {duck}"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-102 decided 2026-08-13: || with a bind-foldable "
+    "constant-NULL operand is SQLNULL/int32 on DuckDB (concat-specific; "
+    "+, LIKE, functions keep their promoted type). Ours types VARCHAR — "
+    "the old §5 contract row, now decided to align. Flips when the fold "
+    "arm lands.",
+)
+def test_concat_with_foldable_null_operand_is_sqlnull():
+    sql = "SELECT s || NULL AS o FROM __THIS__"
+    got, want = _ours(sql), _duck(sql)
+    assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
