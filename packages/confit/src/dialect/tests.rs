@@ -547,6 +547,50 @@ fn join_named_refusals_and_bind_errors() {
 }
 
 #[test]
+fn spark_refuses_scans_over_unbought_types() {
+    // The type table says HUGEINT -> Spark refuse: its only landing zone,
+    // DECIMAL(38,0), cannot even represent -2^127 (CI caught the L3 gate
+    // crashing on exactly that value once joins made such statements
+    // printable). A scan whose table carries an unbought type refuses at
+    // print time, by name — even when the query never touches the column.
+    let mut c = cat2();
+    c.tables.push(Table {
+        name: "th".into(),
+        cols: vec![
+            ColDef {
+                name: "h".into(),
+                ty: DTy::I128,
+                nullable: true,
+            },
+            ColDef {
+                name: "k".into(),
+                ty: DTy::I32,
+                nullable: true,
+            },
+        ],
+    });
+    for sql in [
+        "SELECT h AS h FROM th",
+        "SELECT k AS k FROM th",
+        "SELECT t1.a AS a FROM t1 JOIN th ON t1.a = th.k",
+    ] {
+        let p = super::duckdb::parse_sql(sql, &c).unwrap();
+        assert!(
+            matches!(
+                super::spark::print_sql(&p, &c),
+                // The lattice short name (i128 = HUGEINT), the module's
+                // refusal-naming convention.
+                Err(DialectError::Unsupported(ref m)) if m.contains("i128") && m.contains("th.h")
+            ),
+            "{sql}: expected an i128 scan refusal"
+        );
+    }
+    // DuckDB itself still prints these (HUGEINT is native there).
+    let p = super::duckdb::parse_sql("SELECT k AS k FROM th", &c).unwrap();
+    super::duckdb::print_sql(&p, &c).unwrap();
+}
+
+#[test]
 fn join_prints_on_spark_with_portable_spellings() {
     let c = cat2();
     let p = super::duckdb::parse_sql(
