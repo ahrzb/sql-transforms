@@ -47,19 +47,41 @@ subset of it, and that boundary needs a home.
 
 ## Choices
 
-**A. Lower to the existing SSA IR.** `confit_lower(p: LogicalPlan) ->
-Result<ir::Program, Unsupported>` with named refusals; the specializer's
-frontend retires once replay is bit-identical. No new representation —
-the SSA IR *is* confit's physical plan.
+**A. Lower to the existing SSA IR.** The SSA IR *is* confit's physical
+plan; refusal is one function with printer discipline:
 
-**B. A confit-owned physical plan.** A new layer between logical plan and
-SSA IR: serve-side operator choices AND the fit/serve split (problem 3) —
-`plan_fit(p) -> {remote: LogicalPlan, statics: Schema, serve: PhysPlan}`.
-The SSA IR becomes the backend of `serve` only.
+```rust
+// dialect plan in, specializer program out; Unsupported is a named refusal
+pub fn confit_lower(p: &Rel, cat: &Catalog) -> Result<ir::Program, DialectError>;
 
-**C. Coexistence (status quo).** The dialect plan grows universal;
-the specializer keeps its own frontend; the shared corpus is the only
-bridge. Decoupling re-opens when the re-hosting epic starts.
+// today                                   // after A
+sql --specializer::frontend--> ir::Program  sql --dialect::parse--> Rel
+                                            Rel --confit_lower----> ir::Program
+// gate: for all corpus stmts: replay(old path) == replay(new path), bit-identical
+```
+
+**B. A confit-owned physical plan.** A middle layer that also owns the
+fit/serve split (problem 3); SSA IR becomes the backend of `serve` only:
+
+```rust
+pub struct FitPlan {
+    pub remote:  Rel,          // runs on the warehouse at fit (printed via a dialect printer)
+    pub statics: Vec<Table>,   // what fit materializes (params tables)
+    pub serve:   PhysPlan,     // row-kernel side, lowered to ir::Program
+}
+pub fn plan_fit(p: &Rel, cat: &Catalog) -> Result<FitPlan, DialectError>;
+pub fn lower_serve(p: &PhysPlan) -> Result<ir::Program, DialectError>;
+// PhysPlan = a third representation: verifier + canonical text + round-trip owed (ir/ recipe)
+```
+
+**C. Coexistence (status quo).** No new code; the shared corpus is the
+only bridge:
+
+```text
+sql --dialect::parse--> Rel --print--> spark/bq        (m-9, universal)
+sql --specializer::frontend--> ir::Program --> serve   (untouched)
+// problem 1 compounds: every pin (scalar fn, width rule, auto-name) lands twice
+```
 
 ## Trade-offs
 

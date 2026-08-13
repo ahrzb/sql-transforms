@@ -15,9 +15,12 @@ mandatory sections, in this order:
    No aspiration; the reader must be able to verify every sentence.
 2. **Problem(s)** — what the current state cannot do, or forces us to do
    badly. Numbered, so choices can reference them.
-3. **Choices** — the genuinely viable options, each with enough concrete
-   shape (signatures, node forms, gate names) to be criticized. Include
-   the do-nothing option when it is viable.
+3. **Choices** — the genuinely viable options. **Each choice is shown as
+   code**: a signature, a node form, a pseudo-code lowering, a
+   before/after usage pair — with at most a line or two of prose per
+   block. Prose descriptions of designs hide small nuances; a reader must
+   be able to disagree with a specific line. Include the do-nothing
+   option when it is viable.
 4. **Trade-offs** — what each choice costs and buys, against the problems
    by number and against the project's KPIs (docs/kpis.md: never trade a
    control for a drive gain).
