@@ -12,9 +12,8 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
-T = create_model("T", pid=(int | None, None))
+T = pa.schema([pa.field("pid", pa.int64())])
 ROWS = [{"pid": 1}, {"pid": 2}, {"pid": 3}, {"pid": None}]
 DIM = pa.table({"id": [1, 2, 1, 2, 1], "v": ["a", "b", "c", "d", "e"]})
 
@@ -25,10 +24,9 @@ def _many_check(sql: str):
         sql.replace("__THIS__", "__THIS__"),
         row_tables={"__THIS__": T},
         static_tables={"d": DIM},
-        output="dict",
         shape="many",
     )
-    got = [tuple(r.values()) for r in fn.infer({"__THIS__": [T(**r) for r in ROWS]})]
+    got = [tuple(r.values()) for r in fn.infer_rows(ROWS)]
 
     con = duckdb.connect()
     con.execute("CREATE TABLE __THIS__ (pid BIGINT)")
@@ -65,10 +63,9 @@ def test_engine_order_contract():
         "SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id",
         row_tables={"__THIS__": T},
         static_tables={"d": DIM},
-        output="dict",
         shape="many",
     )
-    got = [tuple(r.values()) for r in fn.infer({"__THIS__": [T(**r) for r in ROWS]})]
+    got = [tuple(r.values()) for r in fn.infer_rows(ROWS)]
     assert got == [
         (1, "a"),
         (1, "c"),

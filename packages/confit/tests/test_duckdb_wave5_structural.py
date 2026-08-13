@@ -9,8 +9,8 @@ grows stage by stage with TASK-52.
 from __future__ import annotations
 
 import duckdb
+import pyarrow as pa
 from confit import DuckDBInferFn
-from pydantic import create_model
 from test_duckdb_interpreter import duck_check, static
 
 T = {"a": "int", "s": "str?"}
@@ -111,14 +111,13 @@ def test_dup_names_match_duckdb_df_contract():
         {"id": "int", "v": "int"},
         [{"id": 1, "v": 10}, {"id": 2, "v": 20}],
     )
-    K = create_model("K", id=(int, ...))
+    schema = pa.schema([pa.field("id", pa.int64(), nullable=False)])
     fn = DuckDBInferFn(
         "SELECT * FROM __THIS__ JOIN dim ON __THIS__.id = dim.id",
-        row_tables={"__THIS__": K},
+        row_tables={"__THIS__": schema},
         static_tables={"dim": dim},
-        output="dict",
     )
-    got = fn.infer({"__THIS__": [K(id=1)]})
+    got = fn.infer_rows([{"id": 1}])
     con.execute("CREATE TABLE t (id BIGINT); INSERT INTO t VALUES (1)")
     con.execute("CREATE TABLE dim (id BIGINT, v BIGINT)")
     con.execute("INSERT INTO dim VALUES (1, 10), (2, 20)")
