@@ -1,11 +1,11 @@
 //! The DuckDB-semantics engine: `DuckDBInferFn`.
 //!
-//! Same Python API as `InferFn` minus the transformer callout: SQL +
-//! pydantic row model + pyarrow static tables in the constructor, then
-//! `infer()` maps row objects through the specializer's compiled program.
-//! `prepare()` does the SQL work (frontend -> lower -> verify); this module
-//! is only the Python boundary — schema extraction on the way in, map
-//! materialization for the join probes, output-model rows on the way out.
+//! SQL + arrow row schema + pyarrow static tables in the constructor, then
+//! `infer_rows()` maps dict-or-object rows through the specializer's
+//! compiled program. `prepare()` does the SQL work (frontend -> lower ->
+//! verify); this module is only the Python boundary — schema extraction on
+//! the way in, map materialization for the join probes, dict rows on the
+//! way out.
 
 mod arrow;
 
