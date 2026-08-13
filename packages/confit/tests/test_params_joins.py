@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 from confit import DuckDBInferFn
-from test_duckdb_interpreter import _row_model, duck_check, static
+from test_duckdb_interpreter import _row_schema, duck_check, static
 
 DIM = static(
     {"id": "int?", "v": "int"},
@@ -132,16 +132,16 @@ def test_chained_indf_and_keyless_joins_under_shape_map():
         [{"id": 1, "est": 0}, {"id": None, "est": 1}],
     )
     params1 = static({"w": "int"}, [{"w": 100}])
-    model = _row_model({"k": "int?"})
+    schema = _row_schema({"k": "int?"})
     fn = DuckDBInferFn(
         "SELECT (p0.est + p1.w) AS z FROM __THIS__ AS t "
         "LEFT JOIN p0 ON ((t.k IS NOT DISTINCT FROM p0.id)) "
         "LEFT JOIN p1 ON ((1 = 1))",
-        row_tables={"__THIS__": model},
+        row_tables={"__THIS__": schema},
         static_tables={"p0": params0, "p1": params1},
         shape="map",
     )
-    got = [r.z for r in fn.infer({"__THIS__": [model(k=k) for k in (1, None, 2)]})]
+    got = [r["z"] for r in fn.infer_rows([{"k": k} for k in (1, None, 2)])]
     assert got == [100, 101, None]
 
 
@@ -150,7 +150,7 @@ def test_keyless_join_multi_row_params_refuses():
     with pytest.raises(ValueError, match="duplicate map key"):
         DuckDBInferFn(
             "SELECT k, w FROM __THIS__ LEFT JOIN p ON ((1 = 1))",
-            row_tables={"__THIS__": _row_model({"k": "int"})},
+            row_tables={"__THIS__": _row_schema({"k": "int"})},
             static_tables={"p": params},
         )
 
@@ -163,7 +163,7 @@ def test_indf_duplicate_null_build_keys_refuse():
     with pytest.raises(ValueError, match="duplicate map key"):
         DuckDBInferFn(
             "SELECT v FROM __THIS__ LEFT JOIN dim ON k IS NOT DISTINCT FROM dim.id",
-            row_tables={"__THIS__": _row_model({"k": "int?"})},
+            row_tables={"__THIS__": _row_schema({"k": "int?"})},
             static_tables={"dim": dup},
         )
 

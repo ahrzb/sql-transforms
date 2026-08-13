@@ -21,10 +21,16 @@ to support, and the damage surfaces weeks later as model skew. A build-time
 refusal costs one engineer one minute.
 
 ```python
+import pyarrow as pa
 from confit import DuckDBInferFn
 
-fn = DuckDBInferFn(sql, row_model, statics={"dim": arrow_table}, shape="map")
-fn.infer_rows(rows)     # row objects in, row objects out
+fn = DuckDBInferFn(
+    sql,
+    row_tables={"__THIS__": pa.schema([("a", pa.float64()), ("b", pa.int32())])},
+    static_tables={"dim": arrow_table},
+    shape="map",
+)
+fn.infer_rows(rows)     # dict-or-object rows in, dict rows out
 fn.infer_arrow(table)   # pa.Table in, pa.Table out
 ```
 
@@ -54,7 +60,9 @@ from sql_transform import TreeBasedTransform
 fn = DuckDBInferFn(
     "SELECT score(p.est, t.price, t.sqft) AS p "
     "FROM __THIS__ AS t LEFT JOIN params AS p ON t.country = p.country",
-    row_tables={"__THIS__": Row},
+    row_tables={
+        "__THIS__": pa.schema([("price", pa.float64()), ("sqft", pa.float64())])
+    },
     static_tables={"params": params},
     udfs=[
         TreeBasedTransform(

@@ -8,12 +8,12 @@ the same commit. Section numbers mirror the document.
 
 from __future__ import annotations
 
+import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 from test_duckdb_interpreter import duck_check, static
 
-T = create_model("T", a=(int, ...), s=(str | None, None))
+T = pa.schema([pa.field("a", pa.int64(), nullable=False), pa.field("s", pa.string())])
 
 
 def build(sql, statics=None):
@@ -51,10 +51,9 @@ def test_static_tables_are_frozen_unique_key_maps():
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
         row_tables={"__THIS__": T},
         static_tables={"d": dup},
-        output="dict",
         shape="many",
     )
-    got = sorted(r["v"] for r in fn.infer({"__THIS__": [T(a=1)]}))
+    got = sorted(r["v"] for r in fn.infer_rows([{"a": 1, "s": None}]))
     assert got == [1, 2]
     # NULL VALUES serve since TASK-55 (they ride as validity+payload pairs);
     # only NULL keys keep the drop rule (a NULL never equi-matches).
@@ -78,10 +77,11 @@ def test_dynamic_self_join_rejects():
         "SELECT t2.a FROM __THIS__ JOIN __THIS__ t2 ON __THIS__.a = t2.a",
         row_tables={"__THIS__": T},
         static_tables={},
-        output="dict",
         shape="many",
     )
-    got = sorted(r["a"] for r in fn.infer({"__THIS__": [T(a=1), T(a=2)]}))
+    got = sorted(
+        r["a"] for r in fn.infer_rows([{"a": 1, "s": None}, {"a": 2, "s": None}])
+    )
     assert got == [1, 2]
     # USING/NATURAL self-joins stay a named follow-up rejection.
     with pytest.raises(ValueError, match="USING/NATURAL"):
@@ -121,7 +121,7 @@ def test_whole_relation_constructs_reject(sql, needle):
 
 
 def test_non_scalar_row_columns_reject():
-    L = create_model("L", xs=(list[int], ...))
+    L = pa.schema([pa.field("xs", pa.list_(pa.int64()), nullable=False)])
     with pytest.raises(ValueError, match="non-scalar"):
         DuckDBInferFn(
             "SELECT xs FROM __THIS__", row_tables={"__THIS__": L}, static_tables={}
@@ -133,7 +133,12 @@ def test_non_scalar_rejection_is_reference_time():
     # unreferenced list/timestamp field no longer blocks a scalar query,
     # and star modifiers can remove one. Referenced (incl. via *) keeps
     # the named error.
-    L = create_model("L", a=(int, ...), xs=(list[int] | None, None))
+    L = pa.schema(
+        [
+            pa.field("a", pa.int64(), nullable=False),
+            pa.field("xs", pa.list_(pa.int64())),
+        ]
+    )
     DuckDBInferFn(
         "SELECT a FROM __THIS__", row_tables={"__THIS__": L}, static_tables={}
     )
@@ -150,15 +155,13 @@ def test_non_scalar_rejection_is_reference_time():
 def test_struct_whole_value_rejects_but_fields_serve():
     # TASK-56: structs of scalars serve AS FIELDS (flattened to lanes);
     # the struct as a whole value stays a named non-scalar rejection.
-    Inner = create_model("Inner", i=(int | None, None))
-    M = create_model("M", a=(Inner | None, None))
+    M = pa.schema([pa.field("a", pa.struct([pa.field("i", pa.int64())]))])
     fn = DuckDBInferFn(
         "SELECT a.i FROM __THIS__",
         row_tables={"__THIS__": M},
         static_tables={},
-        output="dict",
     )
-    assert fn.infer({"__THIS__": [M(a=Inner(i=5))]}) == [{"i": 5}]
+    assert fn.infer_rows([{"a": {"i": 5}}]) == [{"i": 5}]
     with pytest.raises(ValueError, match="whole value"):
         DuckDBInferFn(
             "SELECT a FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
@@ -176,8 +179,6 @@ def test_list_valued_regexp_forms_reject():
 
 
 def test_ubigint_static_payloads_reject():
-    import pyarrow as pa
-
     big = pa.table({"id": pa.array([2**64 - 1], pa.uint64()), "v": [1]})
     rejects(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
@@ -247,15 +248,14 @@ def test_using_unmerge_exclude_rejects():
 
 
 def test_duplicate_names_use_duckdbs_boundary_rename():
-    # Raw DuckDB keeps top-level duplicates; a typed model cannot. We apply
+    # Raw DuckDB keeps top-level duplicates; a dict cannot. We apply
     # DuckDB's OWN subquery/CTAS/.df() rename — not an invention.
     fn = DuckDBInferFn(
         "SELECT a, a AS a, a AS a_1 FROM __THIS__",
         row_tables={"__THIS__": T},
         static_tables={},
-        output="dict",
     )
-    got = fn.infer({"__THIS__": [T(a=7)]})
+    got = fn.infer_rows([{"a": 7, "s": None}])
     assert list(got[0].keys()) == ["a", "a_1", "a_1_1"]
 
 

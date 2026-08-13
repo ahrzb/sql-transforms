@@ -78,11 +78,12 @@ bool. Measured consequences:
   WHOLE value (`SELECT a` — non-scalar output), bracket field access
   (`a['i']` — DuckDB names such outputs by full expression text, not
   modeled), and struct fields whose own types are non-scalar.
-- **Lists reject** (`row column 'x' has a non-scalar type`) — and a
-  non-scalar row-model column rejects only when REFERENCED (star
-  expansion included); since TASK-56 an unreferenced timestamp/list
-  field no longer blocks a scalar-only query, and `EXCLUDE`/name
-  filters/`REPLACE` can remove one from a star. Lists also still gate
+- **Lists reject** (`row column 'x' has a non-scalar type`) — list types
+  are out of the row-schema vocabulary and stay opaque: unreferenced
+  (star expansion included) they cost nothing to declare; since TASK-56
+  an unreferenced timestamp/list field no longer blocks a scalar-only
+  query, and `EXCLUDE`/name filters/`REPLACE` can remove one from a
+  star. Referenced, they refuse by name. Lists also still gate
   `regexp_extract_all` / `regexp_split_to_array` / the STRUCT form of
   `regexp_extract` (`list-valued — non-scalar in v0`).
 - **DECIMAL literals are f64** — a documented divergence: DuckDB types
@@ -105,15 +106,6 @@ bool. Measured consequences:
   refuses by name at the `infer_arrow` boundary; every input this refuses
   is one DuckDB itself errors on. HUGEINT and the unsigned family still
   collapse to i64 (m-8 phase 4).
-
-## 3a. `infer_arrow` refuses a supplied `output_model`
-
-`infer_arrow` exists to build no Python objects, so there is nothing for
-`output_model.model_validate` to run on — its validators, field defaults
-and coercions are per-row semantics. Rather than silently skip them (which
-made `infer` and `infer_arrow` disagree — TASK-71), it refuses by name when
-an `output_model` was supplied. The synthesized model, which is what you get
-by default and which carries none of those, keeps the columnar path.
 
 ## 4. Semantics descoped after measurement
 
@@ -142,7 +134,7 @@ These are served, but with a consciously chosen surface — know them:
 - **Duplicate output column names are renamed**, using DuckDB's own
   boundary-rename algorithm (`id, id, id_1` → `id, id_1, id_1_1`;
   case-insensitive collision check). Raw DuckDB keeps duplicates at the
-  top level, but a pydantic model or dict cannot — and this rename is
+  top level, but a dict cannot — and this rename is
   bit-identical to what DuckDB itself does at every subquery/CTE/CTAS
   boundary and in `.df()`. Verified against `.df()` in tests.
 - **Error TEXTS are approximate where noted.** Runtime traps
