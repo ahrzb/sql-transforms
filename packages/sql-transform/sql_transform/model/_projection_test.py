@@ -330,14 +330,14 @@ def test_parity_batch_oracle_equals_row_path():
     """The parity law: DuckDB batch and Confit row-at-a-time, bit-exact."""
     fitted = SQLProjection(KEYED).fit(F)
     batch = fitted.transform(X).to_pylist()
-    rows = [r.model_dump() for r in fitted.compile().infer_rows(X.to_pylist())]
+    rows = fitted.compile().infer_rows(X.to_pylist())
     assert batch == rows
 
 
 def test_one_row_inference():
     fn = SQLProjection(GLOBAL).fit(F).compile()
     (out,) = fn.infer_rows([{"store": "S1", "price": 16.0}])
-    assert out.z == 16.0 / 160.0
+    assert out["z"] == 16.0 / 160.0
 
 
 def test_a_label_column_in_fit_is_optional_at_serving():
@@ -346,7 +346,7 @@ def test_a_label_column_in_fit_is_optional_at_serving():
     labelled = F.append_column("y", pa.array([1.0] * 6))
     fn = SQLProjection(GLOBAL).fit(labelled).compile()
     (out,) = fn.infer_rows([{"store": "S1", "price": 16.0}])  # no y supplied
-    assert out.z == 16.0 / 160.0
+    assert out["z"] == 16.0 / 160.0
 
 
 def test_a_foreign_leaf_serves_in_batch_but_refuses_to_compile_by_name():

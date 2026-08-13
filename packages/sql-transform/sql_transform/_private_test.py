@@ -10,7 +10,6 @@ ergonomic split spelling. Spec: docs/superpowers/specs/
 import duckdb
 import numpy as np
 import pyarrow as pa
-import pydantic
 import pytest
 from sklearn.preprocessing import StandardScaler
 
@@ -18,12 +17,12 @@ from sql_transform import MarginalizeError, SQLProjection
 
 from ._transformers_test import TRAIN, _by_name, _reference
 
-ROW = pydantic.create_model("Row", **dict.fromkeys(TRAIN.column_names, (object, None)))
+ROW = TRAIN.schema
 
 
 def _fit(sql: str) -> SQLProjection:
     return SQLProjection(
-        sql, this_model=ROW, transformers={"sc": StandardScaler()}
+        sql, this_schema=ROW, transformers={"sc": StandardScaler()}
     ).fit(TRAIN)
 
 
@@ -150,11 +149,11 @@ def test_private_window_value_consumed_by_scalar():
         np.testing.assert_allclose(got[n], c, rtol=1e-12)
 
 
-def test_output_model_excludes_privates():
+def test_output_schema_excludes_privates():
     p = _fit("SELECT age * 2 AS _d, _d + 1 AS out, name FROM __THIS__")
-    assert list(p.output_model.model_fields) == ["out", "name"]
+    assert p.output_schema.names == ["out", "name"]
     row = p.infer({"country": "US", "age": 40.0, "fare": 7.0, "name": "x"})
-    assert row.out == 81.0
+    assert row["out"] == 81.0
 
 
 # --- public laterals on the new mechanism -------------------------------------
@@ -214,7 +213,7 @@ def test_plain_lambda_still_refuses_by_name():
         SQLProjection(
             "SELECT age AS _d, list_transform([1.0], _d -> _d + 1) AS l,"
             " _d + 1 AS out, name FROM __THIS__",
-            this_model=ROW,
+            this_schema=ROW,
         )
 
 
@@ -276,7 +275,7 @@ def test_nested_struct_bundle_refuses_at_construction():
     with pytest.raises(MarginalizeError, match="must be a scalar"):
         SQLProjection(
             "SELECT sc(struct_pack(v := struct_pack(a := age))).v AS z FROM __THIS__",
-            this_model=ROW,
+            this_schema=ROW,
             transformers={"sc": StandardScaler()},
         )
 
@@ -300,11 +299,11 @@ def test_struct_typed_feature_refuses_at_fit_by_name():
 
 
 def test_declared_schema_cannot_express_a_private_column():
-    """Pydantic drops ``_``-leading names from model_fields, so the model
-    canonicalization already excludes a ``_meta`` table column."""
+    """A declared this_schema is authoritative: naming only "age" already
+    excludes the table's "_meta" column from canonicalization."""
     t = pa.table({"age": [1.0, 2.0], "_meta": ["a", "b"]})
-    model = pydantic.create_model("Row", age=(object, None))
-    p = SQLProjection("SELECT * FROM __THIS__", this_model=model).fit(t)
+    model = pa.schema([pa.field("age", pa.float64())])
+    p = SQLProjection("SELECT * FROM __THIS__", this_schema=model).fit(t)
     assert p.transform(t).column_names == ["age"]
 
 
@@ -381,9 +380,9 @@ REFUSALS = [
 @pytest.mark.parametrize("sql,match", REFUSALS)
 def test_private_refusals(sql, match):
     with pytest.raises(MarginalizeError, match=match):
-        SQLProjection(sql, this_model=ROW, transformers={"sc": StandardScaler()})
+        SQLProjection(sql, this_schema=ROW, transformers={"sc": StandardScaler()})
 
 
 def test_private_without_schema_refuses():
-    with pytest.raises(MarginalizeError, match="this_model"):
+    with pytest.raises(MarginalizeError, match="this_schema"):
         SQLProjection("SELECT age * 2 AS _d, _d + 1 AS out FROM __THIS__")

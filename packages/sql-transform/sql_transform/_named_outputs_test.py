@@ -188,7 +188,7 @@ def test_field_access_serves_row_at_a_time():
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     want = p.transform(TRAIN).to_pylist()
-    got = [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())]
+    got = p.infer_batch(TRAIN.to_pylist())
     assert got == want
 
 
@@ -204,7 +204,7 @@ def test_field_access_under_partition_unseen_group_is_null():
     out = p.infer(
         {"color": "red", "country": "JP", "age": 1.0, "fare": 1.0, "name": "q"}
     )
-    assert out.z is None
+    assert out["z"] is None
 
 
 # --- struct-valued calls: whole items serve; embedded positions refuse ---------
@@ -256,7 +256,7 @@ def test_width1_field_read_survives_to_serving_uniformly():
     assert "(__cf_tf0(__cf_p0.__cf_est, __cf_t.age)).a" in p.serving_sql
     assert isinstance(p.transform(TRAIN).to_pylist()[0]["z"], float)
     want = p.transform(TRAIN).to_pylist()
-    got = [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())]
+    got = p.infer_batch(TRAIN.to_pylist())
     assert got == want
 
 
@@ -284,7 +284,7 @@ def test_two_field_reads_serve_row_at_a_time():
     ).fit(TRAIN)
     want = p.transform(TRAIN)
     assert want.column_names == ["oh_color_blue", "oh_color_red", "name"]
-    got = [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())]
+    got = p.infer_batch(TRAIN.to_pylist())
     assert got == want.to_pylist()
 
 
@@ -314,7 +314,7 @@ def test_unseen_group_nulls_every_field_read():
     )
     # Field reads of a NULL struct: an unseen group is k NULL columns
     # (the struct-level NULL returns with DRAFT-25's nested outputs).
-    assert out.e_pca0 is None and out.e_pca1 is None
+    assert out["e_pca0"] is None and out["e_pca1"] is None
 
 
 def test_unknown_field_name_refuses_at_fit():
@@ -351,9 +351,7 @@ def test_named_override_serves_row_at_a_time():
         "SELECT pca(struct_pack(a := age, f := fare)).size AS s, name FROM __THIS__",
         transformers={"pca": Named(PCA(n_components=2), returns=("size", "cost"))},
     ).fit(TRAIN)
-    assert [r.model_dump() for r in p.infer_batch(TRAIN.to_pylist())] == (
-        p.transform(TRAIN).to_pylist()
-    )
+    assert p.infer_batch(TRAIN.to_pylist()) == p.transform(TRAIN).to_pylist()
 
 
 def test_named_override_clones_per_group():

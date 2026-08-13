@@ -106,7 +106,7 @@ def test_frozen_thetas_are_ordinary_params():
 
 def test_a_marginalized_projection_serves():
     fitted = SQLProjection.marginalize(LAWFUL["per_key"]).fit(F)
-    rows = [r.model_dump() for r in fitted.compile().infer_rows(X.to_pylist())]
+    rows = fitted.compile().infer_rows(X.to_pylist())
     assert rows == fitted.transform(X).to_pylist()
 
 
@@ -253,7 +253,7 @@ def test_an_unseen_order_value_is_a_miss():
 
 def test_an_ordered_scope_serves():
     fitted = SQLProjection.marginalize(ORDERED_LAWFUL["cumulative"]).fit(ORD)
-    rows = [r.model_dump() for r in fitted.compile().infer_rows(ORD.to_pylist())]
+    rows = fitted.compile().infer_rows(ORD.to_pylist())
     assert rows == fitted.transform(ORD).to_pylist()
 
 
@@ -286,7 +286,7 @@ def test_the_law_holds_for_scalar_subqueries(text):
 
 def test_a_frozen_subquery_serves():
     fitted = SQLProjection.marginalize(SUBQUERY_LAWFUL["global_max"]).fit(F)
-    rows = [r.model_dump() for r in fitted.compile().infer_rows(X.to_pylist())]
+    rows = fitted.compile().infer_rows(X.to_pylist())
     assert rows == fitted.transform(X).to_pylist()
 
 
@@ -365,7 +365,7 @@ def test_key_composition_serves():
     """A keyed scope's params are flat columns — no struct θ — so unlike the
     keyless projection scope, the row path works."""
     fitted = SQLProjection.marginalize(KEYED_TEXT).fit(CITY)
-    rows = [r.model_dump() for r in fitted.compile().infer_rows(CITY.to_pylist())]
+    rows = fitted.compile().infer_rows(CITY.to_pylist())
     assert rows == fitted.transform(CITY).to_pylist()
 
 

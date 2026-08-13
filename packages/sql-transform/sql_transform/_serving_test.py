@@ -30,7 +30,7 @@ def serve_gate(sql: str, table: pa.Table = TRAIN, **kwargs) -> SQLProjection:
     """Fit, then assert the Confit row path equals the DuckDB batch path."""
     p = SQLProjection(sql, **kwargs).fit(table)
     want = p.transform(table).to_pylist()
-    got = [r.model_dump() for r in p.infer_batch(table.to_pylist())]
+    got = p.infer_batch(table.to_pylist())
     assert got == want, f"\n{got}\n!=\n{want}"
     return p
 
@@ -55,7 +55,7 @@ def test_transformer_partitioned_width1():
         transformers={"sc": sc},
     )
     out = p.infer({"country": "US", "age": 33.0, "fare": 1, "name": "q"})
-    assert isinstance(out.z, float)
+    assert isinstance(out["z"], float)
 
 
 def test_transformer_global_width2_two_field_reads():
@@ -69,7 +69,7 @@ def test_transformer_global_width2_two_field_reads():
     out = p.infer({"country": "US", "age": 33.0, "fare": 4, "name": "q"})
     # Two field reads of one call (struct-valued calls; counted in
     # _single_eval_test.py).
-    assert isinstance(out.e_pca0, float) and isinstance(out.e_pca1, float)
+    assert isinstance(out["e_pca0"], float) and isinstance(out["e_pca1"], float)
 
 
 def test_unseen_group_is_null_row_at_a_time():
@@ -80,7 +80,7 @@ def test_unseen_group_is_null_row_at_a_time():
         transformers={"sc": sc},
     )
     out = p.infer({"country": "JP", "age": 1.0, "fare": 1, "name": "q"})
-    assert out.z is None
+    assert out["z"] is None
 
 
 def test_author_udf_serves():
@@ -105,11 +105,19 @@ def test_chain_with_transformer():
     )
 
 
-def test_model_rows_and_dict_rows_agree():
+def test_dict_rows_and_object_rows_agree():
+    # MIGRATION-NOTE: the old pydantic ``_row_model`` synthesized-model
+    # constructor is gone (no output/row model to build). The equivalent
+    # property in the arrow surface is dict-or-object marshalling
+    # (docs/superpowers/specs/2026-08-13-arrow-schema-api-design.md):
+    # infer() accepts a dict or an attribute-bearing object and must serve
+    # the same row either way.
+    from types import SimpleNamespace
+
     p = serve_gate("SELECT age - avg(age) OVER () AS d FROM __THIS__")
     row = {"country": "US", "age": 33.0, "fare": 1, "name": "q"}
-    model_row = p._row_model(**row)
-    assert p.infer(row).model_dump() == p.infer(model_row).model_dump()
+    obj_row = SimpleNamespace(**row)
+    assert p.infer(row) == p.infer(obj_row)
 
 
 def test_not_fitted_refuses():
@@ -165,6 +173,6 @@ def test_null_feature_serves_nan_on_both_paths():
         }
     )
     batch = p.transform(frame).column("z").to_pylist()[0]
-    row = p.infer({"country": "US", "age": 10.0, "fare": None, "name": "p"}).z
+    row = p.infer({"country": "US", "age": 10.0, "fare": None, "name": "p"})["z"]
     assert batch is not None and math.isnan(batch)
     assert row is not None and math.isnan(row)
