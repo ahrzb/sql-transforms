@@ -1,7 +1,6 @@
 from typing import Any
 
 import pyarrow as pa
-from pydantic import BaseModel
 
 BUILD_PROFILE: str
 """"debug" or "release" — benchmarks refuse a debug build."""
@@ -15,28 +14,36 @@ class DuckDBInferFn:
     third mode.
     """
 
-    output_model: type[BaseModel] | None
-
     def __init__(
         self,
         sql: str,
-        row_tables: dict[str, type[BaseModel]],
+        row_tables: dict[str, pa.Schema],
         static_tables: dict[str, pa.Table],
         udfs: list[Any] | None = None,
-        output_model: type[BaseModel] | None = None,
-        output: str | None = None,
         shape: str | None = None,
     ) -> None:
-        """`udfs`: declared opaque scalar functions the SQL may call
+        """`row_tables`: the driving table's declared schema (the specializer
+        takes exactly one row table today; the dict key is the table name the
+        SQL references). Every schema is arrow — a column's width is real:
+        `pa.int32()` binds INTEGER, exactly like DuckDB DDL, and reaches the
+        type lattice at that width. The v0 vocabulary is `bool_` / `int8` /
+        `int16` / `int32` / `int64` / `float64` / `string`, plus structs of
+        these (flattened to `parent.leaf` lanes, TASK-56). A field outside
+        the vocabulary stays opaque: unreferenced it costs nothing,
+        referenced it refuses by name. Nullability is the arrow field flag
+        (`pa.field(name, t, nullable=False)` binds NOT NULL; arrow's default
+        is nullable).
+
+        `udfs`: declared opaque scalar functions the SQL may call
         (DRAFT-22). Each object carries `name: str`, a `takes: pa.Schema`
         (one field per argument, names and types together, in call order) and
         a `returns: pa.DataType`, plus a scalar `__call__(*args)` receiving
         one plain Python value per argument (None for NULL) and returning a
         tuple of the output lanes, or None for an all-NULL result.
 
-        The type vocabulary is exactly `bool` / `int64` / `double` / `string`
-        — the engine computes in those four, so a narrower arrow type refuses
-        rather than widening silently.
+        The udf type vocabulary is exactly `bool` / `int64` / `double` /
+        `string` — the engine computes in those four, so a narrower arrow
+        type refuses rather than widening silently.
 
         `returns` is the SQL return TYPE, which also says how wide the call is
         and whether its lanes are addressable:
@@ -91,8 +98,6 @@ class DuckDBInferFn:
         matches DuckDB running the same SQL with these same objects
         registered via `create_function`. UDFs must be deterministic.
 
-        `output`: "model" (typed, default) or "dict".
-
         `shape`: the output-multiplicity contract, proven at build time --
         "map" (exactly one row out per row in; rejects WHERE and inner joins),
         "filter" (0 or 1, the default), or "many" (0..N; the only shape under
@@ -104,10 +109,6 @@ class DuckDBInferFn:
         """The declared row-shape contract: "map", "filter", or "many"."""
 
     @property
-    def output(self) -> str:
-        """The output mode: "model" (typed, default) or "dict"."""
-
-    @property
     def backend(self) -> str:
         """Which engine executes: "cranelift", "interpreter", or "constant"."""
 
@@ -116,17 +117,30 @@ class DuckDBInferFn:
         """How rows cross the Python boundary: "marshaller" (generated at
         prepare), "generic" (env-pinned baseline), or "constant"."""
 
-    def infer(
-        self,
-        tables: dict[str, list[Any]] | None = None,
-        **kwargs: list[Any],
-    ) -> list[BaseModel]: ...
-    def infer_rows(self, rows: list[Any]) -> list[Any]:
-        """Row objects in, row objects out -- the low-latency serving path."""
+    @property
+    def output_schema(self) -> pa.Schema:
+        """The output contract: field names, arrow types and order — exactly
+        the schema of `infer_arrow`'s output table, and the keys of every
+        `infer_rows` dict."""
+
+    def infer_rows(self, rows: list[Any]) -> list[dict[str, Any]]:
+        """The row path: dict-or-object rows in, dict rows out.
+
+        Each row supplies every schema field, as a dict key or an object
+        attribute — a missing field refuses by name (NULL is an explicit
+        `None`; extra dict keys are ignored). Values cross the boundary
+        exactly: the right Python type category for the declared arrow type
+        or a refusal naming the column — no coercion ("1" is not 1, 1 is not
+        1.0, bool is not an int value), and a narrow integer checks its
+        range on the way in. A static-tables-only build ignores the input
+        and emits its fixed rows (`infer_rows([])`).
+        """
 
     def infer_arrow(self, batch: pa.Table) -> pa.Table:
         """`pa.Table` in, `pa.Table` out, with no per-value Python objects.
 
-        Faster than `infer_rows` from roughly 1k rows per call; below that the
-        fixed pyarrow API cost dominates and the row path wins.
+        Input columns match the declared row schema by name at their exact
+        declared types (cast first otherwise). Faster than `infer_rows` from
+        roughly 1k rows per call; below that the fixed pyarrow API cost
+        dominates and the row path wins.
         """

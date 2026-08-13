@@ -168,7 +168,10 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
         let dtype: String = arr.getattr("type")?.str()?.extract()?;
         let ok = matches!(
             (c.ty.ty, dtype.as_str()),
-            (Ty::I64, "int64")
+            (Ty::I8, "int8")
+                | (Ty::I16, "int16")
+                | (Ty::I32, "int32")
+                | (Ty::I64, "int64")
                 | (Ty::F64, "double")
                 | (Ty::I1, "bool")
                 | (Ty::Str, "string")
@@ -176,7 +179,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
         );
         if !ok {
             return Err(err(format!(
-                "infer_arrow: column '{}' is {dtype}, the model wants {} — cast first",
+                "infer_arrow: column '{}' is {dtype}, the schema declares {} — cast first",
                 c.name,
                 c.ty.ty.name()
             )));
@@ -191,24 +194,25 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
         }
         let mut null_seen = false;
         let col_data = match c.ty.ty {
-            // Row models type every int BIGINT; narrow widths are
-            // expression-side only and never name an input column.
-            Ty::I8 | Ty::I16 | Ty::I32 => {
-                return Err(err(format!(
-                    "infer_arrow: internal — input column '{}' has a narrow \
-                     integer type",
-                    c.name
-                )))
-            }
-            Ty::I64 => {
+            // Narrow widths widen into the engine's i64 lane; the declared
+            // arrow type already proved every value fits.
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
                 let mut valid = Vec::with_capacity(rows);
                 let mut data = Vec::with_capacity(rows);
-                let p = unsafe { raw.data::<i64>(1) };
                 for i in 0..rows {
                     let v = raw.valid(i);
                     null_seen |= !v;
                     valid.push(v);
-                    data.push(if v { unsafe { p.get(i) } } else { 0 });
+                    data.push(if v {
+                        match c.ty.ty {
+                            Ty::I8 => unsafe { raw.data::<i8>(1).get(i) as i64 },
+                            Ty::I16 => unsafe { raw.data::<i16>(1).get(i) as i64 },
+                            Ty::I32 => unsafe { raw.data::<i32>(1).get(i) as i64 },
+                            _ => unsafe { raw.data::<i64>(1).get(i) },
+                        }
+                    } else {
+                        0
+                    });
                 }
                 ColData::I64 { valid, data }
             }
@@ -464,6 +468,63 @@ fn bitmap(oks: impl Iterator<Item = bool>, n: usize) -> (Vec<u8>, usize) {
 /// The raw little-endian bytes of a numeric buffer, for `pa.py_buffer`.
 fn cast_bytes<T>(data: &[T], size: usize) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * size) }.to_vec()
+}
+
+fn pa_ty<'py>(pa: &Bound<'py, PyModule>, t: Ty) -> PyResult<Bound<'py, PyAny>> {
+    match t {
+        Ty::I1 => pa.call_method0("bool_"),
+        Ty::I8 => pa.call_method0("int8"),
+        Ty::I16 => pa.call_method0("int16"),
+        Ty::I32 => pa.call_method0("int32"),
+        Ty::I64 => pa.call_method0("int64"),
+        Ty::F64 => pa.call_method0("float64"),
+        Ty::Str => pa.call_method0("string"),
+    }
+}
+
+/// The output contract as a `pa.Schema` — field for field what [`emit`]'s
+/// `from_arrays` table carries (same declared widths, `list_`/`struct` for
+/// wide UDF fields, default-nullable like DuckDB's own `.arrow()` export).
+pub fn output_schema(
+    py: Python<'_>,
+    out_cols: &[Col],
+    plan: &[super::EmitField],
+) -> PyResult<Py<PyAny>> {
+    let pa = PyModule::import(py, "pyarrow")?;
+    let mut fields = Vec::with_capacity(plan.len());
+    for field in plan {
+        let (name, ty) = match field {
+            super::EmitField::Scalar(i) => {
+                let c = &out_cols[*i];
+                (c.name.clone(), pa_ty(&pa, c.ty.ty)?)
+            }
+            super::EmitField::Wide {
+                name,
+                first,
+                width,
+                names: field_names,
+                ..
+            } => {
+                let ty = if field_names.is_empty() {
+                    pa.call_method1("list_", (pa_ty(&pa, out_cols[*first].ty.ty)?,))?
+                } else {
+                    let members = field_names
+                        .iter()
+                        .zip(&out_cols[*first..*first + *width])
+                        .map(|(fname, c)| {
+                            pa.call_method1("field", (fname.as_str(), pa_ty(&pa, c.ty.ty)?))
+                        })
+                        .collect::<PyResult<Vec<_>>>()?;
+                    pa.call_method1("struct", (PyList::new(py, members)?,))?
+                };
+                (name.clone(), ty)
+            }
+        };
+        fields.push(pa.call_method1("field", (name, ty))?);
+    }
+    Ok(pa
+        .call_method1("schema", (PyList::new(py, fields)?,))?
+        .unbind())
 }
 
 /// Engine output -> pa.Table, one `Array.from_buffers` per scalar field; a
