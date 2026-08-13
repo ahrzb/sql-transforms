@@ -71,16 +71,21 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
             duck_ty_name(c.ty.ty)
         ))
     };
+    // Fast path per arm: `downcast_exact` is one type-object pointer compare
+    // (and already excludes bool from int — bool is never exactly PyInt);
+    // only subclass values (np.float64, str subclasses) take the isinstance
+    // fallback. Keeps the strict boundary at the old unchecked-extract cost.
     match col {
         ColData::I1 { valid, data } => {
             valid.push(!null);
             data.push(if null {
                 false
             } else {
-                if !attr.is_instance_of::<PyBool>() {
-                    return Err(type_err("bool"));
+                // bool is final in Python: exact or wrong.
+                match attr.cast_exact::<PyBool>() {
+                    Ok(b) => b.is_true(),
+                    Err(_) => return Err(type_err("bool")),
                 }
-                attr.extract()?
             });
         }
         ColData::I64 { valid, data } => {
@@ -88,9 +93,6 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
             data.push(if null {
                 0
             } else {
-                if !attr.is_instance_of::<PyInt>() || attr.is_instance_of::<PyBool>() {
-                    return Err(type_err("int"));
-                }
                 let range_err = |v: &dyn std::fmt::Display| {
                     pyo3::exceptions::PyValueError::new_err(format!(
                         "column '{}' value {v} is outside its {} range",
@@ -98,7 +100,15 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
                         duck_ty_name(c.ty.ty)
                     ))
                 };
-                let v: i64 = attr.extract().map_err(|_| range_err(attr))?;
+                let v: i64 = match attr.cast_exact::<PyInt>() {
+                    Ok(i) => i.extract().map_err(|_| range_err(attr))?,
+                    Err(_) => {
+                        if !attr.is_instance_of::<PyInt>() || attr.is_instance_of::<PyBool>() {
+                            return Err(type_err("int"));
+                        }
+                        attr.extract().map_err(|_| range_err(attr))?
+                    }
+                };
                 if let Some((lo, hi)) = c.ty.ty.int_range() {
                     if !(lo..=hi).contains(&v) {
                         return Err(range_err(&v));
@@ -112,20 +122,30 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
             data.push(if null {
                 0.0
             } else {
-                if !attr.is_instance_of::<PyFloat>() {
-                    return Err(type_err("float"));
+                match attr.cast_exact::<PyFloat>() {
+                    Ok(f) => f.value(),
+                    Err(_) => {
+                        if !attr.is_instance_of::<PyFloat>() {
+                            return Err(type_err("float"));
+                        }
+                        attr.extract()?
+                    }
                 }
-                attr.extract()?
             });
         }
         s @ ColData::Str { .. } => {
             if null {
                 s.push_str_cell(false, "");
             } else {
-                if !attr.is_instance_of::<PyString>() {
-                    return Err(type_err("str"));
+                match attr.cast_exact::<PyString>() {
+                    Ok(st) => s.push_str_cell(true, st.to_str()?),
+                    Err(_) => {
+                        if !attr.is_instance_of::<PyString>() {
+                            return Err(type_err("str"));
+                        }
+                        s.push_str_cell(true, attr.extract()?);
+                    }
                 }
-                s.push_str_cell(true, attr.extract()?);
             }
         }
     }
