@@ -740,14 +740,18 @@ class SQLProjection:
         sql: str,
         connection: Connection | None = None,
         captured: Captured | None = None,
+        *,
+        _scope: dict[str, Any] | None = None,
     ) -> None:
         # The frame is read *here*, not inside `compile` — one level deeper
-        # would capture from the wrong caller.
-        frame = sys._getframe(1)
-        scope = frame.f_globals | frame.f_locals
-        del frame
+        # would capture from the wrong caller. `marginalize` passes the scope
+        # it already read instead.
+        if _scope is None:
+            frame = sys._getframe(1)
+            _scope = frame.f_globals | frame.f_locals
+            del frame
 
-        program = Program.compile(sql, scope, connection=connection, captured=captured)
+        program = Program.compile(sql, _scope, connection=connection, captured=captured)
         _refuse_not_row_wise(program.residual)
         self._program = program
         self.connection = program.connection
@@ -756,6 +760,25 @@ class SQLProjection:
         self.sql = program.sql
         self._ordered = _threaded(program.residual)
         self._probes = _key_probes(program.residual)
+
+    @classmethod
+    def marginalize(
+        cls,
+        sql: str,
+        connection: Connection | None = None,
+        captured: Captured | None = None,
+    ) -> "SQLProjection":
+        """The projection a ``__THIS__``-only text means: every fit scope
+        (a window aggregate over the spine) frozen over ``__FIT__`` per
+        partition and joined back NULL-safe. A rewrite in front of the
+        ordinary constructor — one code path below the derived text
+        (`docs/superpowers/specs/2026-08-13-marginalize-design.md`)."""
+        frame = sys._getframe(1)
+        scope = frame.f_globals | frame.f_locals
+        del frame
+        from sql_transform.model import _marginal  # noqa: PLC0415
+
+        return cls(_marginal.derive(sql, scope), connection, captured, _scope=scope)
 
     def __repr__(self) -> str:
         return f"SQLProjection({self.sql!r})"
