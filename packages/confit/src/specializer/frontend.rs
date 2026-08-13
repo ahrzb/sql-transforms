@@ -2458,6 +2458,10 @@ impl Binder<'_> {
                         }
                     }
                 }
+                // audit 2026-08-13: a bare-NULL root types Str here and the
+                // chain still applies; DuckDB agrees for (NULL)[2] (VARCHAR)
+                // but types (NULL)[1:2] INTEGER (its SQLNULL fallback) —
+                // value parity holds (NULL either way). Preserved.
                 let mut cur = match self.expr_or_null(root)? {
                     Some(b) => b,
                     None => null_of(Ty::Str),
@@ -3942,6 +3946,12 @@ impl Binder<'_> {
     /// whole-validity lane (false = the whole struct is NULL, distinct from
     /// a struct of NULLs) plus one component lane per field. `None` when
     /// this isn't that shape.
+    ///
+    /// audit 2026-08-13: stricter than DuckDB throughout — unnamed args
+    /// (`struct_pack(i)` infers the field name there), mid-expression use
+    /// (`(struct_pack(a := i)).a` binds there) and leading-underscore
+    /// fields all bind on the oracle; the recognizer refuses each
+    /// (projection-loop-only, pydantic model boundary). Preserved.
     fn struct_pack_lanes(
         &self,
         e: &SqlExpr,
@@ -4066,6 +4076,9 @@ impl Binder<'_> {
         let mut lanes = Vec::with_capacity(1 + values.len());
         lanes.push((format!("{base}\u{1}valid"), valid));
         for (j, v) in values.iter().enumerate() {
+            // audit 2026-08-13: DuckDB types struct_pack(a := NULL) as
+            // STRUCT(a INTEGER); this I64 lane diverges on width only (the
+            // single int lane). Preserved.
             let bound = match self.expr_or_null(v)? {
                 None => null_of(Ty::I64),
                 Some(x) => fold(x),
@@ -4724,6 +4737,10 @@ impl Binder<'_> {
             "coalesce" => {
                 // Lazy per-row (measured: untaken erroring arms don't fire) —
                 // guaranteed here because CASE branches run only when taken.
+                // audit 2026-08-13: stricter than DuckDB twice — it binds
+                // coalesce(NULL, NULL) as INTEGER and unifies BOOLEAN with
+                // ints (coalesce(b, i) -> INTEGER); both refuse here
+                // (BOOLEAN+DOUBLE refuses on both engines). Preserved.
                 self.in_guarded.set(self.in_guarded.get() + 1);
                 let _guard = GuardScope(&self.in_guarded);
                 let mut bound = Vec::with_capacity(args.len());
@@ -4790,6 +4807,10 @@ impl Binder<'_> {
             // arg is), ties return the FIRST argument, NaN sorts above
             // +inf — all of which the CASE + duck-order-cmp composition
             // reproduces exactly (wave-1 pins), so no IR op exists.
+            // audit 2026-08-13: stricter than DuckDB twice — it binds
+            // least(NULL, NULL) as INTEGER and unifies BOOLEAN with ints
+            // (least(b, k) -> BIGINT); both refuse here (BOOLEAN+DOUBLE
+            // refuses on both engines). Preserved.
             "least" | "greatest" => {
                 if args.is_empty() {
                     return Err(PrepareError::Bind(format!(
@@ -4864,6 +4885,10 @@ impl Binder<'_> {
                 Ok(acc)
             }
             "nullif" => {
+                // audit 2026-08-13: stricter than DuckDB wherever cmp(Eq)
+                // refuses a mix — nullif(s, i) -> VARCHAR and nullif(b, b)
+                // -> BOOLEAN both bind there (compare at the promoted type,
+                // result keeps arg 1's type). Preserved.
                 let [a, b] = args[..] else {
                     return Err(PrepareError::Bind(
                         "nullif takes exactly 2 arguments".to_string(),
@@ -4994,6 +5019,10 @@ impl Binder<'_> {
                         "{name} takes exactly 3 arguments"
                     )));
                 };
+                // audit 2026-08-13: a bare-NULL subject types Str here;
+                // DuckDB's SQLNULL fallback types the slice INTEGER (while
+                // array_extract(NULL, 2) agrees at VARCHAR). Value parity
+                // holds. Preserved.
                 let Some(bs) = self.expr_or_null(s)? else {
                     return Ok(null_of(Ty::Str));
                 };
@@ -5040,9 +5069,12 @@ impl Binder<'_> {
                 // binder error there, while our single integer width bound
                 // anything i64 and served what the oracle refuses (169 of
                 // the campaign's 963 findings). Bind only what DuckDB types
-                // INTEGER: an int32-range literal spelling, never a cast,
-                // never a column. Refusing spellings DuckDB happens to
-                // accept (k::INTEGER) is the contract-permitted direction.
+                // INTEGER: an int32-range literal spelling or an EXPLICIT
+                // narrow cast (CAST(l AS INTEGER), the documented spelling
+                // for a column count) — never a bare column, never ::BIGINT
+                // (audit 2026-08-13: comment trued to the helper, which
+                // accepts narrow casts). Refusing spellings DuckDB happens
+                // to accept is the contract-permitted direction.
                 if !int32_literal_shaped(l) {
                     return Err(PrepareError::Bind(format!(
                         "no function matches {name}(VARCHAR, BIGINT, \
@@ -5343,6 +5375,9 @@ impl Binder<'_> {
                 }
             }
             "regexp_extract" => {
+                // audit 2026-08-13: stricter than DuckDB — its third arg
+                // also accepts a constant NAME-LIST returning a STRUCT
+                // (regexp_extract(s, '(a)(b)', ['x','y'])); absent here.
                 let (s, p, group, opts) = match args[..] {
                     [s, p] => (s, p, None, None),
                     [s, p, g] => (s, p, Some(g), None),
@@ -5482,6 +5517,10 @@ impl Binder<'_> {
                 )))
             }
             _ => {
+                // audit 2026-08-13: DuckDB 1.5.5 HAS if() and ifnull()
+                // (iif/nvl are absent there too); neither is in the
+                // catalogue, so a UDF/tree may claim those two names and
+                // silently diverge from oracle semantics. Preserved.
                 // A declared tree transform: same namespace as the ecall
                 // UDFs, but it lowers to the native kernel rather than a
                 // callback, so it is resolved before them.
@@ -5585,6 +5624,13 @@ impl Binder<'_> {
 
     /// round(x, n) / trunc(x, n): result type == subject type; digits must
     /// be integer-typed. Total on both types (i64 wraps — pinned).
+    ///
+    /// audit 2026-08-13: looser than DuckDB twice — its digits slot maxes
+    /// at INTEGER (round(d, k::BIGINT) is a binder error there, any I64
+    /// binds here), and a bare-NULL subject returns before the digits slot
+    /// is even bound (round(NULL, s) is NULL here, a binder error there).
+    /// This interleaved order is also why round/trunc stay Custom rows.
+    /// Preserved.
     fn round2(&self, trunc: bool, x: &SqlExpr, n: &SqlExpr) -> Result<SExpr, PrepareError> {
         let name = if trunc { "trunc" } else { "round" };
         let Some(subject) = self.expr_or_null(x)? else {
@@ -5639,9 +5685,15 @@ impl Binder<'_> {
         Ok(math1_node(op, inner))
     }
 
-    /// Wave-1 binary f64 math (pow / log(base, x)); same argument typing
-    /// rules as `math1`. A literal NULL in either slot pre-empts every
-    /// domain check (measured: log(-2.0, NULL) is NULL, not an error).
+    /// Wave-1 binary f64 math (now just log(base, x); the fixed-arity
+    /// members read the signature table). A literal NULL in either slot
+    /// pre-empts every domain check (measured: log(-2.0, NULL) is NULL,
+    /// not an error).
+    ///
+    /// audit 2026-08-13: the NULL short-circuit preceding the type checks
+    /// is looser than DuckDB — log(s, NULL) binds NULL::DOUBLE here where
+    /// it refuses the VARCHAR sibling. Preserved (the head reproduces the
+    /// same order for the table rows).
     fn math2(
         &self,
         name: &str,
