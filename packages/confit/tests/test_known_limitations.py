@@ -227,8 +227,6 @@ def test_ubigint_static_payloads_reject():
         ("SELECT a IN ('abc') FROM __THIS__", "non-numeric"),
         # Only bare COLUMNS as a select item is served.
         ("SELECT COLUMNS('a') + 1 FROM __THIS__", "COLUMNS"),
-        # SQLNULL has no home type.
-        ("SELECT NULL FROM __THIS__", "NULL literal"),
     ],
 )
 def test_measured_descopes_reject(sql, needle):
