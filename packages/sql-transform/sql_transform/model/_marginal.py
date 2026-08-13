@@ -12,11 +12,13 @@ the rewrite emits. That is the attribution gate: every refusal here fires
 against the author's own spelling, before the rewrite, and a refusal escaping
 from the derived text is our bug.
 
-Implements slices 2–3 of
-`docs/superpowers/specs/2026-08-13-marginalize-design.md` (plain aggregates,
-``PARTITION BY`` scopes, projection scopes — windowed ``tfm_fit`` and the
-bare ``tfm(x)`` sugar, frozen keyless). Key composition is slice 4, the
-widened window vocabulary (``RANGE``/``GROUPS``, subqueries) slice 5.
+Implements slices 2–5 of
+`docs/superpowers/specs/2026-08-13-marginalize-design.md`: plain aggregates
+and ``PARTITION BY`` scopes; projection scopes (windowed ``tfm_fit``, the
+bare ``tfm(x)`` sugar, keyed composition per RFC M5); order-discriminating
+``RANGE``/``GROUPS`` scopes (keys = partitions ⊕ order values, DISTINCT
+lowering); and uncorrelated scalar subqueries, frozen verbatim over
+``__FIT__``.
 """
 
 import itertools
@@ -40,6 +42,7 @@ from sql_transform.model._nodes import (
     Node,
     Opaque,
     Select,
+    SubqueryExpr,
     cte_entries,
     descendants,
     field,
@@ -67,6 +70,7 @@ _CARRIED = frozenset(
     {"class", "type", "alias", "query_location", "function_name"}
     | {"children", "partitions", "filter_expr", "distinct"}
     | {"schema", "catalog"}  # a qualified spelling of the same aggregate
+    | {"orders", "start_expr", "end_expr"}  # value frames, checked in _admit
     | set(_PLAIN_FRAME)
 )
 
@@ -102,6 +106,8 @@ def _pure(
         for d in (c, *descendants(c, deep=True)):
             if _is_window(d):
                 _refuse(f"{what} nests {_print_expr(d)} inside a fit scope")
+            if is_query(d) or isinstance(d, SubqueryExpr):
+                _refuse(f"{what} nests a subquery inside a fit scope")
             if isinstance(d, Opaque) and d.fields.get("class") == "LAMBDA":
                 _refuse(
                     f"{what} carries a lambda, whose parameter the rewrite "
@@ -163,16 +169,35 @@ def _admit(w: Opaque, scope: dict[str, Any], keyed_ok: bool = False) -> list[Nod
             "which a join key cannot carry"
         )
     if f.get("orders"):
-        _refuse(
-            f"{what} has an ORDER BY: a running scope is per-row, "
-            "not per-partition — no join key carries it"
-        )
-    for key, expected in _PLAIN_FRAME.items():
-        if f.get(key) != expected:
+        # Order-discriminating scopes: RANGE/GROUPS peers share order values,
+        # so the value is a function of (partition keys ⊕ order values) —
+        # exactly what the frozen join can carry. ROWS is physical position.
+        if leaf is not None:
             _refuse(
-                f"{what} names a frame, and a frame is positional — "
-                "only a whole-partition scope freezes"
+                f"{what}: an ordered fit scope is a running fit — "
+                "per-row θ, still a future feature"
             )
+        for key in ("start", "end"):
+            bound = str(f.get(key) or "")
+            if not (
+                bound.startswith("UNBOUNDED") or bound.endswith(("_RANGE", "_GROUPS"))
+            ):
+                _refuse(
+                    f"{what}: a ROWS frame is positional — only value peers "
+                    "(RANGE/GROUPS) freeze"
+                )
+        if f.get("exclude_clause") != "NO_OTHER":
+            _refuse(
+                f"{what}: EXCLUDE splits value peers, so the value is no "
+                "longer a function of the keys"
+            )
+    else:
+        for key, expected in _PLAIN_FRAME.items():
+            if f.get(key) != expected:
+                _refuse(
+                    f"{what} names a frame, and a frame is positional — "
+                    "only a whole-partition scope freezes"
+                )
     for key, value in f.items():
         if key not in _CARRIED and value not in (None, [], "", False):
             _refuse(f"{what}: its {key.upper()} has no frozen spelling")
@@ -184,6 +209,53 @@ def _admit(w: Opaque, scope: dict[str, Any], keyed_ok: bool = False) -> list[Nod
     if leaf is None and name.lower() not in _aggregates():
         _refuse(f"{what}: {name} is not an aggregate the oracle knows")
     return list(f.get("partitions") or [])
+
+
+def _admit_subquery(v: SubqueryExpr, spine: frozenset[str]) -> str:
+    """The frozen text of a scalar subquery — ``__THIS__`` re-bound to
+    ``__FIT__``, everything else verbatim — or the refusal in the author's
+    spelling. Admitted, v1: one SELECT over ``__THIS__``, uncorrelated."""
+    node = v.subquery.node
+    what = _print_expr(v)
+    if str(v.subquery_type).upper() != "SCALAR":
+        _refuse(
+            f"{what}: only a scalar subquery is one frozen value — "
+            f"{v.subquery_type} has no frozen spelling yet"
+        )
+    if not isinstance(node, Select) or cte_entries(node):
+        _refuse(
+            f"{what}: a subquery freezes only as one SELECT over {THIS} — "
+            "anything wider has no frozen spelling yet"
+        )
+    inner = node.from_table
+    if not (isinstance(inner, BaseTable) and inner.table_name.upper() == THIS):
+        _refuse(
+            f"{what}: a subquery freezes only as one SELECT over {THIS} — "
+            "anything wider has no frozen spelling yet"
+        )
+    if inner.alias and inner.alias.lower() in spine:
+        _refuse(f"{what} shadows the spine alias {inner.alias} — rename one")
+    for d in descendants(node, deep=False):
+        if is_query(d) or isinstance(d, SubqueryExpr):
+            _refuse(f"{what} nests another subquery — no frozen spelling yet")
+    bound = {inner.alias.lower()} if inner.alias else {THIS.lower()}
+    for d in descendants(node, deep=True):
+        if isinstance(d, ColumnRef) and len(d.column_names) > 1:
+            q = d.column_names[0].lower()
+            if q in spine and q not in bound:
+                _refuse(
+                    f"{what} is correlated: {'.'.join(d.column_names)} reads "
+                    "the outer row, and a frozen subquery is one value for "
+                    "every row"
+                )
+    renamed = node.model_copy(
+        update={"from_table": inner.model_copy(update={"table_name": FIT})}
+    )
+    return _print_expr(
+        v.model_copy(
+            update={"subquery": v.subquery.model_copy(update={"node": renamed})}
+        )
+    )
 
 
 def _stripped(expr: Node, spine: frozenset[str]) -> Node:
@@ -335,6 +407,10 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
     )
     # key texts (stripped, printed) -> (join alias, [(column, aggregate text)])
     scopes: dict[tuple[str, ...], tuple[str, list[tuple[str, str]]]] = {}
+    # (partition ⊕ order) texts -> (join alias, [(column, window text)])
+    ordered: dict[tuple[str, ...], tuple[str, list[tuple[str, str]]]] = {}
+    subs: list[tuple[str, str]] = []  # (column, frozen subquery text), one join
+    sub_alias: list[str] = []  # allocated on first frozen subquery
     keyed_joins: list[str] = []  # one self-contained LEFT JOIN per keyed scope
     m_names = itertools.count()
     w_numbers = itertools.count()
@@ -343,8 +419,10 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
     for item in node.select_list:
         # Purity runs on the author's tree, before any swap: a bottom-up
         # rebuild would replace an inner scope first, and the nesting the
-        # refusal names would no longer be there to see.
-        for v in (item, *descendants(item, deep=True)):
+        # refusal names would no longer be there to see. The spine-side walk
+        # is deep=False — an admitted subquery freezes wholesale and keeps
+        # its own inner scoping (its stars and aggregates are its own).
+        for v in (item, *descendants(item, deep=False)):
             if isinstance(v, Opaque) and v.fields.get("class") == "STAR":
                 _refuse(
                     "a * would read the derived params tables too — name the columns"
@@ -357,8 +435,6 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
                     "a positional reference (#N) resolves by position, which "
                     "the derived joins shift — name the column"
                 )
-            if is_query(v):
-                _refuse("a subquery expression has no frozen spelling yet")
             if _is_window(v):
                 fw = v.fields
                 _pure(
@@ -366,7 +442,10 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
                     [
                         *(fw.get("children") or []),
                         *(fw.get("partitions") or []),
+                        *[o.fields["expression"] for o in (fw.get("orders") or [])],
                         *([fw["filter_expr"]] if fw.get("filter_expr") else []),
+                        *([fw["start_expr"]] if fw.get("start_expr") else []),
+                        *([fw["end_expr"]] if fw.get("end_expr") else []),
                     ],
                     scope,
                     spine,
@@ -379,7 +458,27 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
             ):
                 _pure(_print_expr(v), list(v.children), scope, spine, laterals)
 
+        # Subqueries validate against the author's tree too, before any
+        # rebuild could replace an inner one and blind the nesting check.
+        for v in (item, *descendants(item, deep=True)):
+            if isinstance(v, SubqueryExpr):
+                _admit_subquery(v, spine)
+
         swapped_any = False
+
+        def sub_swap(v: Node) -> Node | None:
+            nonlocal swapped_any
+            if not isinstance(v, SubqueryExpr):
+                return None
+            swapped_any = True
+            if not sub_alias:
+                sub_alias.append(f"{prefix}m{next(m_names)}")
+            column = f"{prefix}w{next(w_numbers)}"
+            subs.append((column, _admit_subquery(v, spine)))
+            ref = _template("SELECT a.b").select_list[0]
+            return ref.model_copy(
+                update={"column_names": [sub_alias[0], column], "alias": v.alias}
+            )
 
         def frozen_ref(key_texts: tuple[str, ...], agg_text: str, alias: str) -> Node:
             nonlocal swapped_any
@@ -389,6 +488,17 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
             m, columns = scopes[key_texts]
             column = f"{prefix}w{next(w_numbers)}"
             columns.append((column, agg_text))
+            ref = _template("SELECT a.b").select_list[0]
+            return ref.model_copy(update={"column_names": [m, column], "alias": alias})
+
+        def ordered_ref(key_texts: tuple[str, ...], w_text: str, alias: str) -> Node:
+            nonlocal swapped_any
+            swapped_any = True
+            if key_texts not in ordered:
+                ordered[key_texts] = (f"{prefix}m{next(m_names)}", [])
+            m, columns = ordered[key_texts]
+            column = f"{prefix}w{next(w_numbers)}"
+            columns.append((column, w_text))
             ref = _template("SELECT a.b").select_list[0]
             return ref.model_copy(update={"column_names": [m, column], "alias": alias})
 
@@ -539,15 +649,31 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
             if not _is_window(v):
                 return None
             keys = _admit(v, scope)
+            order_keys = [
+                o.fields["expression"] for o in (v.fields.get("orders") or [])
+            ]
+            if order_keys:
+                # An order-discriminating scope: keys = partitions ⊕ order
+                # values, and the window itself reruns over __FIT__ — the
+                # DISTINCT rows are unique per key by the value-peer rule.
+                key_texts = tuple(
+                    _print_expr(_stripped(k, spine)) for k in (*keys, *order_keys)
+                )
+                return ordered_ref(
+                    key_texts,
+                    _print_expr(_stripped(v, spine)),
+                    str(v.fields.get("alias") or ""),
+                )
             key_texts = tuple(_print_expr(_stripped(k, spine)) for k in keys)
             return frozen_ref(
                 key_texts, _call_text(v, spine), str(v.fields.get("alias") or "")
             )
 
-        # Keyed scopes first: their lowering consumes the whole
-        # transform(fit OVER w, bundle) call, which the generic swap would
-        # otherwise pick apart from the inside out.
-        item_k = keyed_swap(item) or rebuild(item, keyed_swap, deep=True)
+        # Subqueries first (frozen wholesale, so nothing walks into them),
+        # then keyed scopes (their lowering consumes the whole
+        # transform(fit OVER w, bundle) call), then the generic swap.
+        item_s = sub_swap(item) or rebuild(item, sub_swap, deep=True)
+        item_k = keyed_swap(item_s) or rebuild(item_s, keyed_swap, deep=True)
         swapped = swap(item_k) or rebuild(item_k, swap, deep=True)
         for v in (swapped, *descendants(swapped, deep=True)):
             if not isinstance(v, Function) or v.is_operator:
@@ -596,6 +722,23 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
             # the same respelling the row path does (`_flattened`).
             on = "1 = 1"
         joins.append(f"LEFT JOIN ({inner}) AS {alias} ON {on}")
+
+    for key_texts, (alias, columns) in ordered.items():
+        cols = [f"({k}) AS {prefix}k{i}" for i, k in enumerate(key_texts)]
+        cols += [f"{w} AS {column}" for column, w in columns]
+        # DISTINCT, not GROUP BY: the windows rerun verbatim over __FIT__,
+        # and every column is a function of the key tuple, so DISTINCT
+        # collapses to exactly one row per key — uniqueness by construction.
+        inner = f"SELECT DISTINCT {', '.join(cols)} FROM {FIT}"  # noqa: S608
+        on = " AND ".join(
+            f"({k}) IS NOT DISTINCT FROM {alias}.{prefix}k{i}"
+            for i, k in enumerate(key_texts)
+        )
+        joins.append(f"LEFT JOIN ({inner}) AS {alias} ON {on}")
+
+    if subs:
+        cols = ", ".join(f"{text} AS {column}" for column, text in subs)
+        joins.append(f"LEFT JOIN (SELECT {cols}) AS {sub_alias[0]} ON 1 = 1")  # noqa: S608
 
     spine_text = THIS + (f" AS {_quoted(spine_ref.alias)}" if spine_ref.alias else "")
     return " ".join(

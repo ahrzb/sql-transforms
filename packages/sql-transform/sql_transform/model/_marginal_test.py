@@ -1,8 +1,8 @@
-"""``SQLProjection.marginalize`` — the ``__FIT__`` half derived from a
+"""``SQLProjection.marginalize`` â€” the ``__FIT__`` half derived from a
 ``__THIS__``-only text.
 
 The law (spec M2): ``marginalize(text).fit(F).transform(F)`` equals
-``run(SQLTransform(text), F)`` — freezing is invisible on the fit data, and
+``run(SQLTransform(text), F)`` â€” freezing is invisible on the fit data, and
 divergence exists only at unseen-partition misses (P14 NULL). Gates ``law``,
 ``freeze``, ``params``, ``serving`` and ``attribution`` of
 `docs/superpowers/specs/2026-08-13-marginalize-design.md`.
@@ -79,13 +79,13 @@ def test_the_law_frozen_equals_transductive_on_the_fit_data(text):
 
 
 def test_divergence_is_only_at_misses():
-    """On new data: seen partitions answer from frozen θ, the unseen partition
-    is NULL (P14), and a NULL key joins its own partition — window semantics."""
+    """On new data: seen partitions answer from frozen Î¸, the unseen partition
+    is NULL (P14), and a NULL key joins its own partition â€” window semantics."""
     fitted = SQLProjection.marginalize(LAWFUL["per_key"]).fit(F)
     assert fitted.transform(X).to_pylist() == [
-        {"store": "S2", "d": 0.0},  # θ(S2) = 200.0, frozen
-        {"store": "NEW", "d": None},  # no θ: NULL out, where transductive refits
-        {"store": None, "d": 7.0},  # NULL key → the NULL partition's θ (7.0)
+        {"store": "S2", "d": 0.0},  # Î¸(S2) = 200.0, frozen
+        {"store": "NEW", "d": None},  # no Î¸: NULL out, where transductive refits
+        {"store": None, "d": 7.0},  # NULL key â†’ the NULL partition's Î¸ (7.0)
         {"store": "S1", "d": -10.0},
     ]
 
@@ -123,7 +123,7 @@ def test_the_fresh_prefix_dodges_the_authors_names():
 
 
 def test_struct_paths_survive_the_spine_qualifier():
-    """`t.p.v` strips to `p.v`, never to bare `v` — a decoy column named `v`
+    """`t.p.v` strips to `p.v`, never to bare `v` â€” a decoy column named `v`
     makes truncation a law violation instead of a bind error."""
     S = pa.table(
         {
@@ -195,9 +195,104 @@ def test_an_arrow_hostile_partition_key_type_holds_the_law():
     assert _sorted(frozen) == _sorted(run(SQLTransform(text), Q).to_pylist())
 
 
+# --- the widened window vocabulary (slice 5) --------------------------------
+
+ORD = pa.table(
+    {
+        "store": ["S1", "S1", "S1", "S1", "S2", "S2", None],
+        "d": [1, 1, 2, None, 1, 2, 1],
+        "price": [10.0, 20.0, 30.0, 5.0, 100.0, 300.0, 7.0],
+    }
+)
+
+ORDERED_LAWFUL = {
+    "cumulative": (
+        "SELECT store, d, sum(price) OVER (PARTITION BY store ORDER BY d) AS s"
+        " FROM __THIS__"
+    ),
+    "range_offset": (
+        "SELECT store, d, sum(price) OVER (PARTITION BY store ORDER BY d"
+        " RANGE BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM __THIS__"
+    ),
+    "groups": (
+        "SELECT store, d, sum(price) OVER (PARTITION BY store ORDER BY d"
+        " GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM __THIS__"
+    ),
+    "desc_nulls_first": (
+        "SELECT store, d, sum(price) OVER (PARTITION BY store"
+        " ORDER BY d DESC NULLS FIRST) AS s FROM __THIS__"
+    ),
+    "two_orders": (
+        "SELECT store, d, sum(price) OVER (PARTITION BY store ORDER BY d, price)"
+        " AS s FROM __THIS__"
+    ),
+    "no_partition": "SELECT d, sum(price) OVER (ORDER BY d) AS s FROM __THIS__",
+}
+
+
+@pytest.mark.parametrize("text", ORDERED_LAWFUL.values(), ids=ORDERED_LAWFUL.keys())
+def test_the_law_holds_for_order_discriminating_frames(text):
+    """RANGE/GROUPS peers share order values, so the window's value is a
+    function of (partition keys âŠ• order values) â€” the frozen join carries
+    exactly that key. Ties and a NULL order value are in the fixture."""
+    frozen = SQLProjection.marginalize(text).fit(ORD).transform(ORD).to_pylist()
+    transductive = run(SQLTransform(text), ORD).to_pylist()
+    assert _sorted(frozen) == _sorted(transductive)
+
+
+def test_an_unseen_order_value_is_a_miss():
+    """Frozen keys are the fit data's (store, d) pairs: a new d is NULL where
+    true RANGE semantics would refit â€” the same divergence-only-at-misses."""
+    fitted = SQLProjection.marginalize(ORDERED_LAWFUL["cumulative"]).fit(ORD)
+    X3 = pa.table({"store": ["S1", "S1"], "d": [2, 3], "price": [1.0, 1.0]})
+    assert fitted.transform(X3).to_pylist() == [
+        {"store": "S1", "d": 2, "s": 60.0},  # frozen cumulative at d=2
+        {"store": "S1", "d": 3, "s": None},  # unseen order value
+    ]
+
+
+def test_an_ordered_scope_serves():
+    fitted = SQLProjection.marginalize(ORDERED_LAWFUL["cumulative"]).fit(ORD)
+    rows = [r.model_dump() for r in fitted.compile().infer_rows(ORD.to_pylist())]
+    assert rows == fitted.transform(ORD).to_pylist()
+
+
+SUBQUERY_LAWFUL = {
+    "global_max": (
+        "SELECT store, price / (SELECT max(price) FROM __THIS__) AS r FROM __THIS__"
+    ),
+    "aliased_where": (
+        "SELECT store, price - (SELECT avg(i.price) FROM __THIS__ i"
+        " WHERE i.price > 8) AS d FROM __THIS__"
+    ),
+    "order_limit": (
+        "SELECT store, price - (SELECT price FROM __THIS__ ORDER BY price LIMIT 1)"
+        " AS d FROM __THIS__"
+    ),
+    "count_star": (
+        "SELECT store, price * (SELECT count(*) FROM __THIS__) AS n FROM __THIS__"
+    ),
+}
+
+
+@pytest.mark.parametrize("text", SUBQUERY_LAWFUL.values(), ids=SUBQUERY_LAWFUL.keys())
+def test_the_law_holds_for_scalar_subqueries(text):
+    """An uncorrelated single-level subquery over __THIS__ freezes verbatim
+    over __FIT__ â€” one value, joined one-row."""
+    frozen = SQLProjection.marginalize(text).fit(F).transform(F).to_pylist()
+    transductive = run(SQLTransform(text), F).to_pylist()
+    assert _sorted(frozen) == _sorted(transductive)
+
+
+def test_a_frozen_subquery_serves():
+    fitted = SQLProjection.marginalize(SUBQUERY_LAWFUL["global_max"]).fit(F)
+    rows = [r.model_dump() for r in fitted.compile().infer_rows(X.to_pylist())]
+    assert rows == fitted.transform(X).to_pylist()
+
+
 def test_theta_parks_in_a_lateral_alias_and_is_read_twice():
-    """θ of a keyless projection is a value (D1): park it `AS t`, then read
-    it from sibling items with two different bundles — one fit, many reads.
+    """Î¸ of a keyless projection is a value (D1): park it `AS t`, then read
+    it from sibling items with two different bundles â€” one fit, many reads.
     Works by composition (lateral aliases + the ordinary splice); pinned so
     it stays working. Measured 2026-08-13."""
     text = """
@@ -241,7 +336,7 @@ KEYED_TEXT = """
 
 def test_key_composition_equals_per_scope_standalone_fits():
     """The definitional gate: each scope's answer is the keyed projection
-    fitted standalone on that scope's rows. Effective key = city ⊕ store;
+    fitted standalone on that scope's rows. Effective key = city âŠ• store;
     the internal `=` keeps its lookup semantics (NULL store misses)."""
     out = SQLProjection.marginalize(KEYED_TEXT).fit(CITY).transform(CITY).to_pylist()
     for i, row in enumerate(out):
@@ -267,7 +362,7 @@ def test_key_composition_misses_are_null_on_either_half():
 
 
 def test_key_composition_serves():
-    """A keyed scope's params are flat columns — no struct θ — so unlike the
+    """A keyed scope's params are flat columns â€” no struct Î¸ â€” so unlike the
     keyless projection scope, the row path works."""
     fitted = SQLProjection.marginalize(KEYED_TEXT).fit(CITY)
     rows = [r.model_dump() for r in fitted.compile().infer_rows(CITY.to_pylist())]
@@ -326,8 +421,29 @@ REFUSED = [
     ("subquery", "SELECT (SELECT 1) AS one, price FROM __THIS__"),
     (r"OVER \(\)", "SELECT avg(price) AS m FROM __THIS__"),  # bare aggregate
     (
-        "ORDER BY",
-        "SELECT sum(price) OVER (PARTITION BY store ORDER BY price) AS s FROM __THIS__",
+        "ROWS",
+        "SELECT sum(price) OVER (PARTITION BY store ORDER BY price"
+        " ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM __THIS__",
+    ),
+    (
+        "EXCLUDE",
+        "SELECT sum(price) OVER (PARTITION BY store ORDER BY price"
+        " RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+        " EXCLUDE CURRENT ROW) AS s FROM __THIS__",
+    ),
+    (
+        "correlat",
+        "SELECT (SELECT max(i.price) FROM __THIS__ i WHERE i.store = t.store) AS m"
+        " FROM __THIS__ t",
+    ),
+    (
+        "shadow",
+        "SELECT (SELECT max(t.price) FROM __THIS__ t) AS m FROM __THIS__ t",
+    ),
+    (
+        "nest",
+        "SELECT (SELECT max(price) + (SELECT min(price) FROM __THIS__)"
+        " FROM __THIS__) AS m FROM __THIS__",
     ),
     ("positional", "SELECT row_number() OVER (PARTITION BY store) AS n FROM __THIS__"),
     (
@@ -415,7 +531,7 @@ def test_the_law_holds_for_projection_scopes(text):
 
 
 def test_a_projection_scope_shares_the_join_with_plain_scopes():
-    """One key tuple, one derived join — a θ column and a plain aggregate
+    """One key tuple, one derived join â€” a Î¸ column and a plain aggregate
     column side by side in the same params table."""
     p = SQLProjection.marginalize(PROJECTION_LAWFUL["mixed_with_plain"])
     assert p.sql.count("JOIN") == 1
@@ -424,12 +540,12 @@ def test_a_projection_scope_shares_the_join_with_plain_scopes():
 def test_projection_theta_misses_are_null():
     fitted = SQLProjection.marginalize(PROJECTION_LAWFUL["split_per_key"]).fit(F)
     by = {r["store"]: r["z"] for r in fitted.transform(X).to_pylist()}
-    assert by["NEW"] is None  # P14, through the leaf: NULL θ in, NULL out
+    assert by["NEW"] is None  # P14, through the leaf: NULL Î¸ in, NULL out
 
 
 def test_a_projection_scope_serves_in_batch_and_refuses_the_row_path_loudly():
-    """The frozen θ crosses the derived join as a struct, and the residual
-    reads it with struct_extract — which Confit's v0 catalogue lacks. Batch
+    """The frozen Î¸ crosses the derived join as a struct, and the residual
+    reads it with struct_extract â€” which Confit's v0 catalogue lacks. Batch
     is unaffected; compile() refuses with Confit's own message, by name
     (recorded gap: spec Deferred)."""
     fitted = SQLProjection.marginalize(PROJECTION_LAWFUL["split_per_key"]).fit(F)
@@ -445,11 +561,18 @@ PROJECTION_REFUSED = [
         "SELECT zscore(struct_pack(price := price)) OVER (PARTITION BY store) AS z"
         " FROM __THIS__",
     ),
-    # a fit call with no scope — even the global scope is spelled OVER ()
+    # a fit call with no scope â€” even the global scope is spelled OVER ()
     (
         r"OVER",
         """SELECT zscore_transform(
                zscore_fit(struct_pack(price := price)),
+               struct_pack(price := price)).z AS z FROM __THIS__""",
+    ),
+    # an ordered fit scope is a running fit â€” per-row Î¸, still deferred
+    (
+        r"running",
+        """SELECT zscore_transform(
+               zscore_fit(struct_pack(price := price)) OVER (ORDER BY price),
                struct_pack(price := price)).z AS z FROM __THIS__""",
     ),
     # FILTER on a projection fit scope has no frozen spelling yet
