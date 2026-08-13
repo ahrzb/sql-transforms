@@ -4496,20 +4496,37 @@ impl Binder<'_> {
             // Wave-1 string search (pins): instr/strpos/2-arg position are
             // one op with (haystack, needle) order; prefix/suffix alias
             // starts_with/ends_with; positions are 1-based codepoints.
-            "instr" | "strpos" | "position" | "contains" | "starts_with" | "prefix"
-            | "ends_with" | "suffix" => {
+            "instr" | "strpos" | "position" | "starts_with" | "prefix" | "ends_with"
+            | "suffix" => {
                 let op = match name.as_str() {
                     "instr" | "strpos" | "position" => StrOp2::Find,
-                    "contains" => StrOp2::Contains,
                     "starts_with" | "prefix" => StrOp2::Starts,
                     _ => StrOp2::Ends,
                 };
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([h, n]) = <[SExpr; 2]>::try_from(bound) else {
+                    unreachable!("arity 2")
+                };
+                let nullable = h.nullable || n.nullable;
+                Ok(SExpr {
+                    kind: SKind::Str2 {
+                        op,
+                        a: Box::new(h),
+                        b: Box::new(n),
+                    },
+                    ty,
+                    nullable,
+                })
+            }
+            // Custom row: the bare-NULL-needle ambiguity gate (MAP/LIST
+            // overloads) lives in str2 and must see the raw args.
+            "contains" => {
                 let [h, n] = args[..] else {
                     return Err(PrepareError::Bind(format!(
                         "{name} takes exactly 2 arguments"
                     )));
                 };
-                self.str2(&name, op, h, n)
+                self.str2(&name, StrOp2::Contains, h, n)
             }
             "length" | "len" | "char_length" | "character_length" | "strlen" => {
                 let (bound, ty) = resolved.expect("signature row");
@@ -4881,12 +4898,20 @@ impl Binder<'_> {
                     "jaccard" => StrOp2::Jaccard,
                     _ => StrOp2::Hamming,
                 };
-                let [a, b] = args[..] else {
-                    return Err(PrepareError::Bind(format!(
-                        "{name} takes exactly 2 arguments"
-                    )));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([a, b]) = <[SExpr; 2]>::try_from(bound) else {
+                    unreachable!("arity 2")
                 };
-                self.str2(&name, op, a, b)
+                let nullable = a.nullable || b.nullable;
+                Ok(SExpr {
+                    kind: SKind::Str2 {
+                        op,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    },
+                    ty,
+                    nullable,
+                })
             }
             "repeat" => {
                 let [s, n] = args[..] else {
