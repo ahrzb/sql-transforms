@@ -195,6 +195,107 @@ def test_an_arrow_hostile_partition_key_type_holds_the_law():
     assert _sorted(frozen) == _sorted(run(SQLTransform(text), Q).to_pylist())
 
 
+# --- key composition (slice 4, RFC M5) --------------------------------------
+
+keyed = SQLProjection("""
+    SELECT t.price / f.m AS r
+    FROM __THIS__ t
+    LEFT JOIN (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+      ON t.store = f.store
+""")
+
+CITY = pa.table(
+    {
+        "city": ["C1", "C1", "C1", "C2", "C2"],
+        "store": ["S1", "S1", "S2", "S1", None],
+        "price": [10.0, 30.0, 100.0, 4.0, 9.0],
+    }
+)
+
+KEYED_TEXT = """
+    SELECT city, store,
+           keyed_transform(
+               keyed_fit(struct_pack(store := store, price := price))
+                   OVER (PARTITION BY city),
+               struct_pack(store := store, price := price)).r AS r
+    FROM __THIS__
+"""
+
+
+def test_key_composition_equals_per_scope_standalone_fits():
+    """The definitional gate: each scope's answer is the keyed projection
+    fitted standalone on that scope's rows. Effective key = city ⊕ store;
+    the internal `=` keeps its lookup semantics (NULL store misses)."""
+    out = SQLProjection.marginalize(KEYED_TEXT).fit(CITY).transform(CITY).to_pylist()
+    for i, row in enumerate(out):
+        group = CITY.filter(pa.compute.equal(CITY["city"], row["city"]))
+        expected = keyed.fit(group).transform(CITY.slice(i, 1)).to_pylist()[0]["r"]
+        assert row["r"] == expected, (i, row)
+
+
+def test_key_composition_misses_are_null_on_either_half():
+    fitted = SQLProjection.marginalize(KEYED_TEXT).fit(CITY)
+    X2 = pa.table(
+        {
+            "city": ["C9", "C1", "C1"],
+            "store": ["S1", "S9", "S1"],
+            "price": [10.0, 10.0, 40.0],
+        }
+    )
+    assert fitted.transform(X2).to_pylist() == [
+        {"city": "C9", "store": "S1", "r": None},  # scope-key miss
+        {"city": "C1", "store": "S9", "r": None},  # internal-key miss
+        {"city": "C1", "store": "S1", "r": 40.0 / 20.0},
+    ]
+
+
+def test_key_composition_serves():
+    """A keyed scope's params are flat columns — no struct θ — so unlike the
+    keyless projection scope, the row path works."""
+    fitted = SQLProjection.marginalize(KEYED_TEXT).fit(CITY)
+    rows = [r.model_dump() for r in fitted.compile().infer_rows(CITY.to_pylist())]
+    assert rows == fitted.transform(CITY).to_pylist()
+
+
+def test_bare_sugar_on_a_keyed_projection_is_the_internal_key_alone():
+    """`keyed(bundle)` has no scope keys: one global fit, per-store lookup."""
+    text = (
+        "SELECT store, keyed(struct_pack(store := store, price := price)).r AS r"
+        " FROM __THIS__"
+    )
+    out = SQLProjection.marginalize(text).fit(CITY).transform(CITY).to_pylist()
+    expected = keyed.fit(CITY).transform(CITY).to_pylist()
+    assert [r["r"] for r in out] == [r["r"] for r in expected]
+
+
+def test_a_keyed_fit_scope_outside_its_transform_refuses_by_name():
+    with pytest.raises(TransformError, match=r"keyed.*transform"):
+        SQLProjection.marginalize("""
+            SELECT keyed_fit(struct_pack(store := store, price := price))
+                       OVER (PARTITION BY city) AS th
+            FROM __THIS__
+        """)
+
+
+def test_a_keyed_projection_beyond_one_grouped_step_refuses_by_name():
+    twostep = SQLProjection("""
+        SELECT t.price / f.m + g.a AS r
+        FROM __THIS__ t
+        LEFT JOIN (SELECT store, avg(price) AS m FROM __FIT__ GROUP BY store) f
+          ON t.store = f.store
+        LEFT JOIN (SELECT avg(price) AS a FROM __FIT__) g ON 1 = 1
+    """)
+    assert twostep is not None
+    with pytest.raises(TransformError, match=r"twostep"):
+        SQLProjection.marginalize("""
+            SELECT twostep_transform(
+                twostep_fit(struct_pack(store := store, price := price))
+                    OVER (PARTITION BY city),
+                struct_pack(store := store, price := price)).r AS r
+            FROM __THIS__
+        """)
+
+
 REFUSED = [
     ("WHERE", "SELECT price FROM __THIS__ WHERE price > 0"),
     ("GROUP BY", "SELECT avg(price) AS m FROM __THIS__ GROUP BY store"),

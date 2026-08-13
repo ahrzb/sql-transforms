@@ -199,12 +199,30 @@ The two halves keep **different equality disciplines**, deliberately:
 
 This is also why the lowering is a join and never window-key concatenation:
 `avg(price) OVER (PARTITION BY city, store)` would hand NULL-store rows a θ
-that the projection's own text denies them. So keyed fit scopes lower to the
-flat join shape on *both* sides of the law — transductively the grouped
-subquery reads the batch, frozen it reads `__FIT__` — and the law forces the
-two widenings to land together: `run(SQLTransform(text), F)` must accept
-whatever marginalize accepts, so the leaf splice's keyed admission ships in
-the same slice.
+that the projection's own text denies them.
+
+**How it landed (2026-08-13, slice 4) — an amendment.** The paragraph this
+replaces claimed the transductive splice and the freeze would share the
+lowering. They cannot: the lowering is *structural* (it adds a join), and a
+window expression cannot nest grouping, so θ-as-table has no expression-level
+splice. The host-side keyed-leaf refusal therefore **stays**
+(`test_a_keyed_projection_refuses_the_leaf_role_by_name`), and the M2 law
+does not extend to keyed scopes — their gate is the definition itself, pinned
+executable: *each scope's answer equals the keyed projection fitted
+standalone on that scope's rows.* Consequences:
+
+- Keyed scopes are admitted **in one piece only** — the bare sugar or
+  `tfm_transform(tfm_fit(bundle) OVER (PARTITION BY ...), bundle)` — because
+  θ never exists as a value to pass around; a keyed fit scope anywhere else
+  refuses by name.
+- The admitted keyed shape, v1: exactly one grouped fit step joined once
+  onto `__THIS__` through an AND-tree of column equalities; anything wider
+  refuses naming the stem.
+- Exported params columns wear derived names (the leaf's own names would be
+  ambiguous against the spine in the ON clause).
+- A bonus the struct-θ path lacks: keyed params are flat columns, so keyed
+  scopes **serve** — `compile()` works where the keyless projection scope
+  still refuses on struct reads.
 
 Corollaries: bare `tfm(x)` on a keyed projection has no scope keys — the
 effective key is the internal key alone, and the splice is just the
@@ -280,12 +298,11 @@ admission table above covers the rest.
 3. **Projection scopes.** `tfm(x)` and `tfm_fit(x) OVER (PARTITION BY ...)`
    inside marginalize texts, freezing through the same lowering; the
    COALESCE-ladder executable example; `fitted.params` pins for θ-as-data.
-4. **Key composition.** Widen the leaf plan to internally keyed projections —
-   merged join predicates, exported key columns, the two equality
-   disciplines — on *both* sides of the law (the transductive splice and the
-   freeze share the lowering). The shipped keyed-leaf refusal
-   (`test_a_keyed_projection_refuses_the_leaf_role_by_name`) flips into
-   composition pins.
+4. **Key composition.** The flat keyed lowering inside marginalize — merged
+   join predicates, the two equality disciplines, exported columns under
+   derived names — gated definitionally (per-scope standalone fits) plus
+   miss and serving pins. The host splice keeps its keyed refusal; see the
+   amendment under RFC M5 for why the law cannot reach here.
 5. **The widened window vocabulary.** `RANGE`/`GROUPS` order-discriminating
    frames (keys = partition + order values) and scalar subqueries, ported from
    old `_marginalize` with the law gate extended over them.

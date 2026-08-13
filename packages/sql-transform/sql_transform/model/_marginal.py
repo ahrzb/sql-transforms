@@ -27,6 +27,7 @@ from sql_transform.model._ast import (
     FIT,
     THIS,
     _aggregates,
+    _aliased,
     _parse,
     _print_expr,
     _template,
@@ -131,7 +132,12 @@ def _pure(
                     )
 
 
-def _admit(w: Opaque, scope: dict[str, Any]) -> list[Node]:
+def _keyed(projection: Any) -> bool:
+    """Whether the projection's own text joins ``__FIT__`` through keys."""
+    return any(probe.keys for probe in projection._probes)
+
+
+def _admit(w: Opaque, scope: dict[str, Any], keyed_ok: bool = False) -> list[Node]:
     """The scope's partition keys, or the refusal in the author's spelling."""
     f = w.fields
     name = str(f.get("function_name") or "")
@@ -145,6 +151,12 @@ def _admit(w: Opaque, scope: dict[str, Any]) -> list[Node]:
     leaf = _projection(stem, scope) if half == "fit" else None
     if half == "transform" and _projection(stem, scope):
         _refuse(f"{name} is the scalar half — the OVER belongs on {stem}_fit")
+    if leaf is not None and _keyed(leaf) and not keyed_ok:
+        _refuse(
+            f"{stem} is keyed, so its θ is a table — only "
+            f"{stem}_transform({stem}_fit(...) OVER (...), ...) can read it "
+            "as one scope"
+        )
     if f.get("type") != "WINDOW_AGGREGATE":
         _refuse(
             f"{what} is positional: its value is a row position, "
@@ -321,8 +333,10 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
         for item in node.select_list
         if (alias := str(field(item, "alias") or ""))
     )
-    # key texts (stripped, printed) -> [(column name, aggregate text)]
-    scopes: dict[tuple[str, ...], list[tuple[str, str]]] = {}
+    # key texts (stripped, printed) -> (join alias, [(column, aggregate text)])
+    scopes: dict[tuple[str, ...], tuple[str, list[tuple[str, str]]]] = {}
+    keyed_joins: list[str] = []  # one self-contained LEFT JOIN per keyed scope
+    m_names = itertools.count()
     w_numbers = itertools.count()
     items_text: list[str] = []
 
@@ -370,12 +384,137 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
         def frozen_ref(key_texts: tuple[str, ...], agg_text: str, alias: str) -> Node:
             nonlocal swapped_any
             swapped_any = True
-            columns = scopes.setdefault(key_texts, [])
+            if key_texts not in scopes:
+                scopes[key_texts] = (f"{prefix}m{next(m_names)}", [])
+            m, columns = scopes[key_texts]
             column = f"{prefix}w{next(w_numbers)}"
             columns.append((column, agg_text))
             ref = _template("SELECT a.b").select_list[0]
-            m = f"{prefix}m{list(scopes).index(key_texts)}"
             return ref.model_copy(update={"column_names": [m, column], "alias": alias})
+
+        def keyed_call(
+            stem: str,
+            projection: Any,
+            fit_children: list[Node],
+            this_children: list[Node],
+            window: Opaque | None,
+            alias: str,
+        ) -> Node:
+            """The flat keyed lowering (spec M5): effective key = scope keys
+            ⊕ internal keys, the scope half NULL-safe, the internal half in
+            the author's own operator — θ never carries a table."""
+            nonlocal swapped_any
+            from sql_transform.model import _leaf  # noqa: PLC0415
+
+            kp = _leaf.keyed_plan(stem, projection)
+            fit_fields = _leaf._bundle_fields(stem, fit_children, kp.fit_columns, "fit")
+            this_fields = _leaf._bundle_fields(
+                stem, this_children, kp.this_columns, "transform"
+            )
+            stripped_fit = {k: _stripped(v, spine) for k, v in fit_fields.items()}
+            keys = _admit(window, scope, keyed_ok=True) if window is not None else []
+            key_texts = [_print_expr(_stripped(k, spine)) for k in keys]
+
+            m = f"{prefix}m{next(m_names)}"
+            # Exported columns wear derived names: the leaf's own names
+            # (store, m, ...) would be ambiguous against the spine's columns
+            # in the ON clause and the outputs.
+            rename = {
+                name.lower(): f"{prefix}c{j}"
+                for j, (name, _) in enumerate((*kp.key_items, *kp.agg_items))
+            }
+            cols = [f"({k}) AS {prefix}k{i}" for i, k in enumerate(key_texts)]
+            cols += [
+                f"({_print_expr(_leaf._substituted(expr, stripped_fit))})"
+                f" AS {rename[name.lower()]}"
+                for name, expr in kp.key_items
+            ]
+            cols += [
+                _print_expr(
+                    agg.model_copy(
+                        update={
+                            "children": [
+                                _leaf._substituted(c, stripped_fit)
+                                for c in agg.children
+                            ],
+                            "alias": "",
+                        }
+                    )
+                )
+                + f" AS {rename[name.lower()]}"
+                for name, agg in kp.agg_items
+            ]
+            by = [f"{prefix}k{i}" for i in range(len(key_texts))]
+            by += [rename[name.lower()] for name, _ in kp.key_items]
+            inner = f"SELECT {', '.join(cols)} FROM {FIT} GROUP BY {', '.join(by)}"  # noqa: S608
+            on = [
+                f"({k}) IS NOT DISTINCT FROM {m}.{prefix}k{i}"
+                for i, k in enumerate(key_texts)
+            ]
+            on += [
+                f"({_print_expr(this_fields[tc])}) {op} {m}.{rename[pc]}"
+                for tc, op, pc in kp.on_pairs
+            ]
+            keyed_joins.append(f"LEFT JOIN ({inner}) AS {m} ON {' AND '.join(on)}")
+
+            def value(ref: ColumnRef) -> Node:
+                if ref.column_names[0].lower() == kp.this_alias:
+                    return this_fields[ref.column_names[-1].lower()]
+                return ref.model_copy(
+                    update={
+                        "column_names": [m, rename[ref.column_names[-1].lower()]],
+                        "alias": "",
+                    }
+                )
+
+            def remap(v: Node) -> Node | None:
+                return value(v) if isinstance(v, ColumnRef) else None
+
+            packed = []
+            for name, expr in kp.outputs:
+                replaced = (
+                    value(expr)
+                    if isinstance(expr, ColumnRef)
+                    else rebuild(expr, remap, deep=True)
+                )
+                packed.append(_aliased(replaced, name))
+            swapped_any = True
+            out = _leaf._struct_pack(packed)
+            return _aliased(out, alias) if alias else out
+
+        def keyed_swap(v: Node) -> Node | None:
+            if not (isinstance(v, Function) and not v.is_operator):
+                return None
+            name = v.function_name
+            alias = str(field(v, "alias") or "")
+            if (bare := _projection(name, scope)) is not None and _keyed(bare):
+                return keyed_call(
+                    name, bare, list(v.children), list(v.children), None, alias
+                )
+            stem, _, half = name.rpartition("_")
+            if half != "transform":
+                return None
+            proj = _projection(stem, scope)
+            if proj is None or not _keyed(proj):
+                return None
+            c0 = v.children[0] if len(v.children) == 2 else None
+            if (
+                c0 is not None
+                and _is_window(c0)
+                and str(c0.fields.get("function_name") or "") == f"{stem}_fit"
+            ):
+                return keyed_call(
+                    stem,
+                    proj,
+                    list(c0.fields.get("children") or []),
+                    [v.children[1]],
+                    c0,
+                    alias,
+                )
+            _refuse(
+                f"{stem} is keyed, so its θ is a table — spell the scope as "
+                f"{stem}_transform({stem}_fit(...) OVER (...), ...) in one piece"
+            )
 
         def swap(v: Node) -> Node | None:
             if (
@@ -405,7 +544,11 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
                 key_texts, _call_text(v, spine), str(v.fields.get("alias") or "")
             )
 
-        swapped = swap(item) or rebuild(item, swap, deep=True)
+        # Keyed scopes first: their lowering consumes the whole
+        # transform(fit OVER w, bundle) call, which the generic swap would
+        # otherwise pick apart from the inside out.
+        item_k = keyed_swap(item) or rebuild(item, keyed_swap, deep=True)
+        swapped = swap(item_k) or rebuild(item_k, swap, deep=True)
         for v in (swapped, *descendants(swapped, deep=True)):
             if not isinstance(v, Function) or v.is_operator:
                 continue
@@ -429,13 +572,12 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
         )
 
     joins = []
-    for m, (key_texts, columns) in enumerate(scopes.items()):
+    for key_texts, (alias, columns) in scopes.items():
         cols = [f"({k}) AS {prefix}k{i}" for i, k in enumerate(key_texts)]
         cols += [f"{agg} AS {column}" for column, agg in columns]
         # Not injectable: every fragment is either a constant, a gensym'd
         # name, or an expression the oracle itself printed (P9).
         inner = f"SELECT {', '.join(cols)} FROM {FIT}"  # noqa: S608
-        alias = f"{prefix}m{m}"
         if key_texts:
             # GROUP BY the derived alias, never the raw expression: the text
             # is re-printed with redundant parens dropped, and a bare integer
@@ -456,4 +598,6 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
         joins.append(f"LEFT JOIN ({inner}) AS {alias} ON {on}")
 
     spine_text = THIS + (f" AS {_quoted(spine_ref.alias)}" if spine_ref.alias else "")
-    return " ".join([f"SELECT {', '.join(items_text)}", f"FROM {spine_text}", *joins])
+    return " ".join(
+        [f"SELECT {', '.join(items_text)}", f"FROM {spine_text}", *joins, *keyed_joins]
+    )

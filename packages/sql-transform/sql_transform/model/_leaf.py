@@ -28,6 +28,7 @@ from sql_transform.model._ast import (
     FIT,
     THIS,
     _aliased,
+    _print_expr,
     _template,
     _unaliased,
 )
@@ -42,6 +43,7 @@ from sql_transform.model._nodes import (
     Select,
     cte_entries,
     descendants,
+    field,
     is_query,
     rebuild,
 )
@@ -214,6 +216,184 @@ def plan(stem: str, projection) -> _LeafPlan:
     return _LeafPlan(
         steps=tuple(steps),
         fit_columns=tuple(sorted(fit_columns)),
+        outputs=tuple(outputs),
+        this_columns=tuple(sorted(this_columns)),
+        this_alias=this_alias,
+        params_alias=params_alias,
+    )
+
+
+_OPS = {"COMPARE_EQUAL": "=", "COMPARE_NOT_DISTINCT_FROM": "IS NOT DISTINCT FROM"}
+
+
+@dataclass(frozen=True, slots=True)
+class _KeyedPlan:
+    """A one-grouped-step projection, reshaped for the flat keyed lowering
+    (spec M5): its params become plain columns beside the scope keys, and
+    the internal join predicate keeps the author's own operator."""
+
+    key_items: tuple[tuple[str, Node], ...]  # (params column name, step expr)
+    agg_items: tuple[tuple[str, Function], ...]  # (params column name, aggregate)
+    fit_columns: tuple[str, ...]  # __FIT__ columns the step reads, folded
+    on_pairs: tuple[tuple[str, str, str], ...]  # (this column, op, params column)
+    outputs: tuple[tuple[str, Node], ...]
+    this_columns: tuple[str, ...]
+    this_alias: str
+    params_alias: str
+
+
+def keyed_plan(stem: str, projection) -> _KeyedPlan:  # noqa: C901
+    """The keyed plan, or the refusal naming what disqualifies the projection.
+
+    The admitted shape, v1: exactly one fit step — a grouped SELECT over
+    ``__FIT__`` whose non-aggregate items are its group keys — and a residual
+    that LEFT JOINs ``__THIS__`` onto that one params table through an
+    AND-tree of column equalities.
+    """
+    program = projection._program
+    if program.bindings or program.foreign:
+        raise _refuse(
+            stem,
+            "it captures relations or Python leaves of its own, which the "
+            "splice cannot carry — a leaf is self-contained SQL over "
+            f"{FIT} and {THIS}",
+        )
+    for what, node in (*program.steps, ("residual", program.residual)):
+        for v in (node, *descendants(node, deep=True)):
+            if isinstance(v, Opaque) and v.fields.get("class") == "LAMBDA":
+                raise _refuse(
+                    stem,
+                    f"its {what} contains a lambda, whose parameter the "
+                    "splice cannot tell from a column — serve it standalone",
+                )
+
+    bad = _refuse(
+        stem,
+        "its keyed shape is not one grouped step joined once onto "
+        f"{THIS} — serve it standalone",
+    )
+    if len(program.steps) != 1:
+        raise bad
+    ((param, step),) = program.steps
+    if not isinstance(step, Select) or cte_entries(step) or step.modifiers:
+        raise bad
+    if step.where_clause is not None or step.qualify is not None:
+        raise bad
+    if step.having is not None or len(step.group_sets or []) > 1:
+        raise bad
+    if not (
+        isinstance(step.from_table, BaseTable) and step.from_table.table_name == FIT
+    ):
+        raise bad
+    if not step.group_expressions:
+        raise bad
+
+    from sql_transform.model._ast import _aggregates  # noqa: PLC0415
+
+    group_texts = {_print_expr(g) for g in step.group_expressions}
+    key_items: list[tuple[str, Node]] = []
+    agg_items: list[tuple[str, Function]] = []
+    fit_columns: set[str] = set()
+    for item in step.select_list:
+        name = getattr(item, "alias", "") or (
+            item.column_names[-1] if isinstance(item, ColumnRef) else ""
+        )
+        if not name:
+            raise _refuse(
+                stem, f"its fit half ({param}) has an unnamed item — alias it"
+            )
+        if (
+            isinstance(item, Function)
+            and not item.is_operator
+            and item.function_name.lower() in _aggregates()
+        ):
+            agg_items.append((name, item))
+        elif _print_expr(item) in group_texts:
+            key_items.append((name, _unaliased(item)))
+        else:
+            raise bad
+        for v in (item, *descendants(item, deep=True)):
+            if isinstance(v, ColumnRef):
+                fit_columns.add(v.column_names[-1].lower())
+
+    from sql_transform.model._projection import _flattened  # noqa: PLC0415
+
+    residual = _flattened(program.residual)
+    if not isinstance(residual, Select) or cte_entries(residual):
+        raise _refuse(stem, "its residual is not a single SELECT level")
+    join = residual.from_table
+    if not (
+        isinstance(join, Join)
+        and join.join_type == "LEFT"
+        and isinstance(join.left, BaseTable)
+        and join.left.table_name == THIS
+        and isinstance(join.right, BaseTable)
+        and join.right.table_name == param
+        and join.condition is not None
+        and not join.using_columns
+    ):
+        raise bad
+    this_alias = (join.left.alias or THIS).lower()
+    params_alias = (join.right.alias or param).lower()
+    columns = {name.lower() for name, _ in (*key_items, *agg_items)}
+
+    on_pairs: list[tuple[str, str, str]] = []
+    stack: list[Node] = [join.condition]
+    while stack:
+        v = stack.pop()
+        kind = str(field(v, "type") or "")
+        if kind == "CONJUNCTION_AND":
+            stack += list(field(v, "children") or [])
+            continue
+        sides = (field(v, "left"), field(v, "right"))
+        if kind not in _OPS or not all(isinstance(s, ColumnRef) for s in sides):
+            raise bad
+        by = {s.column_names[0].lower(): s.column_names[-1].lower() for s in sides}
+        if set(by) != {this_alias, params_alias}:
+            raise bad
+        if by[params_alias] not in columns:
+            raise bad
+        on_pairs.append((by[this_alias], _OPS[kind], by[params_alias]))
+
+    outputs: list[tuple[str, Node]] = []
+    this_columns: set[str] = {c for c, _, _ in on_pairs}
+    for item in residual.select_list:
+        for v in (item, *descendants(item, deep=True)):
+            if is_query(v):
+                raise _refuse(
+                    stem, "its residual nests a subquery, which has no splice"
+                )
+            if isinstance(v, ColumnRef):
+                if len(v.column_names) < 2:
+                    raise _refuse(
+                        stem,
+                        f"the column {v.column_names[0]} in its residual is "
+                        "unqualified — qualify it to say which relation it "
+                        "reads",
+                    )
+                qualifier = v.column_names[0].lower()
+                if qualifier == this_alias:
+                    this_columns.add(v.column_names[-1].lower())
+                elif qualifier != params_alias:
+                    raise _refuse(
+                        stem,
+                        f"{'.'.join(v.column_names)} in its residual reads "
+                        "neither the batch nor a params table",
+                    )
+                elif v.column_names[-1].lower() not in columns:
+                    raise bad
+        name = getattr(item, "alias", "") or (
+            item.column_names[-1] if isinstance(item, ColumnRef) else ""
+        )
+        if not name:
+            raise _refuse(stem, "an output of its residual is unnamed — alias it")
+        outputs.append((name, item))
+
+    return _KeyedPlan(
+        key_items=tuple(key_items),
+        agg_items=tuple(agg_items),
+        fit_columns=tuple(sorted(fit_columns)),
+        on_pairs=tuple(on_pairs),
         outputs=tuple(outputs),
         this_columns=tuple(sorted(this_columns)),
         this_alias=this_alias,
