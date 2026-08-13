@@ -51,11 +51,11 @@ _DUCK_T = {
     pa.string(): "VARCHAR",
 }
 
-# Campaign-report filters for OPEN BUGS (ticketed, scheduled — NOT "known
-# divergences": those are the decided-unscheduled rows in known-limitations).
-# One open ticket = hundreds of random spellings per run; each tag has a
-# strict-xfail twin that rings on fix, tags never ring — delete the tag in
-# the fix's own PR or it hides regressions. TASK-79 → m-8 ph2; DECIMAL → ph5.
+# Campaign-report filters for features not yet shipped: int widths (TASK-79,
+# m-8 ph2) and decimals (m-8 ph5). One unshipped feature = hundreds of random
+# spellings per run; each tag has a strict-xfail twin that rings when the
+# feature lands, tags never ring — delete the tag in the feature's own PR or
+# it hides regressions.
 _INT_WIDTHS = {pa.int8(), pa.int16(), pa.int32()}
 
 
@@ -331,15 +331,16 @@ def _schema_delta(duck: pa.Schema, ours: pa.Schema):
 
 
 def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
-    """None = equal; a tag = a known open-ticket width class (recursing into
-    structs — an int32 lane inside struct_pack is still TASK-79); "diff"."""
+    """None = equal; a tag = an unshipped feature's width class (recursing
+    into structs — an int32 lane inside struct_pack is still int widths);
+    "diff"."""
     if duck == ours:
         return None
-    # One arm per open ticket; delete with its fix (see _INT_WIDTHS note).
+    # One arm per unshipped feature; delete when it ships (_INT_WIDTHS note).
     if duck in _INT_WIDTHS and ours == pa.int64():
-        return "OPEN-TASK-79"
+        return "int-widths"
     if pa.types.is_decimal(duck) and ours == pa.float64():
-        return "OPEN-M8-DECIMAL"
+        return "decimals"
     if (
         pa.types.is_struct(duck)
         and pa.types.is_struct(ours)
