@@ -70,10 +70,16 @@ the fixed rows; this replaces the old `infer()` no-args call.
 | `pa.int8()` / `int16()` / `int32()` / `int64()` | TINYINT / SMALLINT / INTEGER / BIGINT | `int` in range (never `bool`) |
 | `pa.float64()` | DOUBLE | `float` |
 | `pa.string()` | VARCHAR | `str` |
+| `pa.struct([...])` of the above | flattened `parent.leaf` lanes (TASK-56) | nested dict / object |
 
 Anything else — `float32` (engine computes in f64), `uint*`, `decimal`,
-date/time, nested, `large_string` — refuses at build naming the field and
-type. No third mode: a schema either binds fully or construction raises.
+date/time, list, `large_string` — stays OPAQUE, matching the engine's
+existing philosophy: an unreferenced foreign column never blocks a build,
+and any reference refuses by name. Nothing silently widens (the old prefix
+match rode `float32` onto the f64 grid; the arrow parse matches exact type
+names). *(Amended from "refuses at build" during implementation: hard-refusing
+unreferenced columns would break schema pass-through callers like
+sql-transform for no safety gain — every USE still refuses by name.)*
 
 Nullability is the arrow field flag: `pa.field("k", pa.int64(),
 nullable=False)` binds NOT NULL (what pydantic's non-`| None` field meant);
@@ -86,9 +92,12 @@ arrow's default is nullable, matching `| None = None`.
   always leaves a schema field missing). NULL is an explicit `None`.
 - **Extra dict keys are ignored.** The totality check already catches every
   typo, and object input can't enumerate extras anyway — symmetric.
-- **No coercion.** Exact Python type per the table above or refuse by name.
-  `"1"` is not 1; `1` is not `1.0`; and `True` is not an `int` value even
-  though Python subclasses it — the bool/int split is checked explicitly.
+- **No coercion.** The right Python type CATEGORY per the table above or
+  refuse by name. `"1"` is not 1; `1` is not `1.0`; and `True` is not an
+  `int` value even though Python subclasses it — the bool/int split is
+  checked explicitly. Subclasses within a category pass (`np.float64` IS a
+  float and crosses exactly); crossing categories never does (`np.int64` is
+  not a Python int and refuses).
 - **Range.** An `int` outside the declared width refuses naming the column,
   the value, and the SQL type — the input mirror of the narrow-output check.
 - **Nullability.** `None` into a `nullable=False` field refuses by name.
