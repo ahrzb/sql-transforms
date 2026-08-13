@@ -34,7 +34,7 @@ from confit import _engine
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
 # Measured at introduction (see PR); a drop is a regression.
-SUPPORTED_FLOOR = 130
+SUPPORTED_FLOOR = 235
 
 
 def cases():

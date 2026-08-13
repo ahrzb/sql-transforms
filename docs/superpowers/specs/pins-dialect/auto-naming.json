@@ -1,0 +1,57 @@
+{
+  "area": "unaliased-select-item-auto-naming",
+  "duckdb_version": "v1.5.5",
+  "setup": "CREATE TABLE an(a INTEGER, b VARCHAR, \"yes\" INTEGER)  -- observed segments are the result COLUMN NAME, not rows",
+  "pins": [
+    {
+      "claim": "Operators render as (l op r) with source spellings; NOT-pushed <> renders !=",
+      "query": "SELECT A + 1 * 2 FROM an  -- observed = cursor.description[0][0]",
+      "observed": "'(A + (1 * 2))'"
+    },
+    {
+      "claim": "Function names render LOWERCASED with comma-space args",
+      "query": "SELECT INSTR(b, 'x') FROM an  -- observed = cursor.description[0][0]",
+      "observed": "\"instr(b, 'x')\""
+    },
+    {
+      "claim": "Keyword identifiers render QUOTED (every duckdb_keywords() category - the pinned table in dialect/duckdb_keywords.rs)",
+      "query": "SELECT yes + 1 FROM an  -- observed = cursor.description[0][0]",
+      "observed": "'(\"yes\" + 1)'"
+    },
+    {
+      "claim": "Keyword function names render quoted lowercase",
+      "query": "SELECT REPLACE(b, 'l', '-') FROM an  -- observed = cursor.description[0][0]",
+      "observed": "'\"replace\"(b, \\'l\\', \\'-\\')'"
+    },
+    {
+      "claim": "trim (the grammar form) renders schema-qualified and quoted",
+      "query": "SELECT trim(b) FROM an  -- observed = cursor.description[0][0]",
+      "observed": "'main.\"trim\"(b)'"
+    },
+    {
+      "claim": "CAST renders canonical type names, DECIMAL with a space after the comma; :: becomes CAST",
+      "query": "SELECT a::DECIMAL(3,1) FROM an  -- observed = cursor.description[0][0]",
+      "observed": "'CAST(a AS DECIMAL(3, 1))'"
+    },
+    {
+      "claim": "CASE renders with two spaces after CASE, one extra paren on cond and value, ELSE NULL appended",
+      "query": "SELECT CASE WHEN a=1 THEN 'x' END FROM an  -- observed = cursor.description[0][0]",
+      "observed": "\"CASE  WHEN ((a = 1)) THEN ('x') ELSE NULL END\""
+    },
+    {
+      "claim": "Source parens strip; unary minus renders -(e)",
+      "query": "SELECT ((-a)) FROM an  -- observed = cursor.description[0][0]",
+      "observed": "'-(a)'"
+    },
+    {
+      "claim": "Float literals RE-FORMAT (1e3 -> 1000.0) - the frontend refuses auto-naming them rather than reimplement float printing",
+      "query": "SELECT 1e3 FROM an  -- observed = cursor.description[0][0]",
+      "observed": "'1000.0'"
+    },
+    {
+      "claim": "Boolean literals render as CAST('t' AS BOOLEAN)",
+      "query": "SELECT true FROM an  -- observed = cursor.description[0][0]",
+      "observed": "\"CAST('t' AS BOOLEAN)\""
+    }
+  ]
+}

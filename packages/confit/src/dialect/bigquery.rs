@@ -240,6 +240,12 @@ impl ExprPrinter for BigQuery {
                 self.expr(e, input)?,
                 if *negated { "NOT " } else { "" }
             ),
+            Expr::Call { func, .. } => {
+                return Err(unsup(format!(
+                    "bigquery: function {} (scalar calls await the phase-4 remote gate)",
+                    func.name()
+                )));
+            }
             Expr::IsDistinct { negated, l, r } => {
                 let (lt, rt) = (l.ty()?, r.ty()?);
                 let (ls, rs) = (self.expr(l, input)?, self.expr(r, input)?);

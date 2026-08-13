@@ -45,7 +45,7 @@
 //!
 //! Print-only, like BigQuery: the "from Spark" frontend is design phase 5.
 
-use super::plan::{BinOp, Catalog, Expr, Rel, UnOp};
+use super::plan::{BinOp, Catalog, Expr, Rel, ScalarFn, UnOp};
 use super::printer::{col_ref, query, ExprPrinter};
 use super::ty::DTy;
 use super::verify::verify;
@@ -213,6 +213,51 @@ impl ExprPrinter for Spark {
                 if *negated { "NOT " } else { "" },
                 self.expr(r, input)?
             ),
+            Expr::Call { func, args } => {
+                let printed: Vec<String> = args
+                    .iter()
+                    .map(|a| self.expr(a, input))
+                    .collect::<Result<_, _>>()?;
+                match func {
+                    // Measured identical, NULL propagation included
+                    // (pins-dialect scalar-function probes).
+                    ScalarFn::Upper
+                    | ScalarFn::Lower
+                    | ScalarFn::Reverse
+                    | ScalarFn::Length
+                    | ScalarFn::BitLength
+                    | ScalarFn::Trim
+                    | ScalarFn::Ltrim
+                    | ScalarFn::Rtrim
+                    | ScalarFn::Contains
+                    | ScalarFn::Instr
+                    | ScalarFn::Replace
+                    | ScalarFn::Repeat
+                    | ScalarFn::Translate
+                    | ScalarFn::ConcatWs => {
+                        format!("{}({})", func.name(), printed.join(", "))
+                    }
+                    // Same semantics, different spelling.
+                    ScalarFn::StartsWith => format!("startswith({})", printed.join(", ")),
+                    // DuckDB concat SKIPS NULL arguments; Spark propagates.
+                    // Forced: each argument wrapped in coalesce(x, '').
+                    ScalarFn::Concat => {
+                        let wrapped: Vec<String> = printed
+                            .into_iter()
+                            .map(|a| format!("coalesce({a}, '')"))
+                            .collect();
+                        format!("concat({})", wrapped.join(", "))
+                    }
+                    // Measured divergence: DuckDB edit distances count
+                    // BYTES (levenshtein('é','e') = 2), Spark counts chars.
+                    ScalarFn::Levenshtein | ScalarFn::DamerauLevenshtein => {
+                        return Err(unsup(format!(
+                            "spark: {} (DuckDB counts bytes, Spark counts characters)",
+                            func.name()
+                        )));
+                    }
+                }
+            }
         })
     }
 }

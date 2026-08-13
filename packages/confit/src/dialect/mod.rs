@@ -34,6 +34,7 @@
 
 pub mod bigquery;
 pub mod duckdb;
+pub(crate) mod duckdb_keywords;
 pub mod plan;
 pub(crate) mod printer;
 pub mod py;

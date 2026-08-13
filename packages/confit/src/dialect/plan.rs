@@ -129,6 +129,140 @@ pub enum UnOp {
     Not,
 }
 
+/// The scalar functions the plan has bought — each with a pinned
+/// signature and, per printer, either a measured-identical spelling, a
+/// forced one, or a named refusal (pins-dialect/scalar-functions probes,
+/// 2026-08-13). Growth is corpus-first: a function enters with its
+/// DuckDB semantics measured (NULL propagation included) and each
+/// printer buys it separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarFn {
+    Upper,
+    Lower,
+    Reverse,
+    Length,
+    BitLength,
+    Trim,
+    Ltrim,
+    Rtrim,
+    Contains,
+    StartsWith,
+    Instr,
+    Replace,
+    Repeat,
+    Translate,
+    Concat,
+    ConcatWs,
+    /// BYTE-based edit distances in DuckDB (measured: levenshtein('é','e')
+    /// = 2); Spark counts characters — Spark printer refuses these two.
+    Levenshtein,
+    DamerauLevenshtein,
+}
+
+impl ScalarFn {
+    /// The canonical (DuckDB) spelling, also the plan-text head.
+    pub fn name(self) -> &'static str {
+        match self {
+            ScalarFn::Upper => "upper",
+            ScalarFn::Lower => "lower",
+            ScalarFn::Reverse => "reverse",
+            ScalarFn::Length => "length",
+            ScalarFn::BitLength => "bit_length",
+            ScalarFn::Trim => "trim",
+            ScalarFn::Ltrim => "ltrim",
+            ScalarFn::Rtrim => "rtrim",
+            ScalarFn::Contains => "contains",
+            ScalarFn::StartsWith => "starts_with",
+            ScalarFn::Instr => "instr",
+            ScalarFn::Replace => "replace",
+            ScalarFn::Repeat => "repeat",
+            ScalarFn::Translate => "translate",
+            ScalarFn::Concat => "concat",
+            ScalarFn::ConcatWs => "concat_ws",
+            ScalarFn::Levenshtein => "levenshtein",
+            ScalarFn::DamerauLevenshtein => "damerau_levenshtein",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ScalarFn> {
+        Some(match s {
+            "upper" => ScalarFn::Upper,
+            "lower" => ScalarFn::Lower,
+            "reverse" => ScalarFn::Reverse,
+            "length" => ScalarFn::Length,
+            "bit_length" => ScalarFn::BitLength,
+            "trim" => ScalarFn::Trim,
+            "ltrim" => ScalarFn::Ltrim,
+            "rtrim" => ScalarFn::Rtrim,
+            "contains" => ScalarFn::Contains,
+            "starts_with" => ScalarFn::StartsWith,
+            "instr" => ScalarFn::Instr,
+            "replace" => ScalarFn::Replace,
+            "repeat" => ScalarFn::Repeat,
+            "translate" => ScalarFn::Translate,
+            "concat" => ScalarFn::Concat,
+            "concat_ws" => ScalarFn::ConcatWs,
+            "levenshtein" => ScalarFn::Levenshtein,
+            "damerau_levenshtein" => ScalarFn::DamerauLevenshtein,
+            _ => return None,
+        })
+    }
+
+    /// Check the argument types and derive the return type — the one
+    /// signature rule, used at bind and verify time.
+    pub fn ret(self, args: &[DTy]) -> Result<DTy, DialectError> {
+        use ScalarFn::*;
+        let sig_err = || {
+            Err(unsup(format!(
+                "function signature: {}({})",
+                self.name(),
+                args.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+            )))
+        };
+        let all_str = |ts: &[DTy]| ts.iter().all(|t| matches!(t, DTy::Str));
+        match self {
+            Upper | Lower | Reverse | Trim | Ltrim | Rtrim => match args {
+                [DTy::Str] => Ok(DTy::Str),
+                _ => sig_err(),
+            },
+            Length | BitLength => match args {
+                [DTy::Str] => Ok(DTy::I64),
+                _ => sig_err(),
+            },
+            Contains | StartsWith => match args {
+                [DTy::Str, DTy::Str] => Ok(DTy::Bool),
+                _ => sig_err(),
+            },
+            Instr | Levenshtein | DamerauLevenshtein => match args {
+                [DTy::Str, DTy::Str] => Ok(DTy::I64),
+                _ => sig_err(),
+            },
+            Replace | Translate => match args {
+                [DTy::Str, DTy::Str, DTy::Str] => Ok(DTy::Str),
+                _ => sig_err(),
+            },
+            Repeat => match args {
+                [DTy::Str, n] if int_rank(n).is_some() => Ok(DTy::Str),
+                _ => sig_err(),
+            },
+            Concat => {
+                if !args.is_empty() && all_str(args) {
+                    Ok(DTy::Str)
+                } else {
+                    sig_err()
+                }
+            }
+            ConcatWs => {
+                if args.len() >= 2 && all_str(args) {
+                    Ok(DTy::Str)
+                } else {
+                    sig_err()
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     /// A bound input column: ordinal into the input relation's schema, plus
@@ -182,6 +316,11 @@ pub enum Expr {
         negated: bool,
         l: Box<Expr>,
         r: Box<Expr>,
+    },
+    /// A bought scalar function call — the signature lives on [`ScalarFn`].
+    Call {
+        func: ScalarFn,
+        args: Vec<Expr>,
     },
 }
 
@@ -255,6 +394,10 @@ impl Expr {
             Expr::IsDistinct { l, r, .. } => {
                 comparable(&l.ty()?, &r.ty()?)?;
                 Ok(DTy::Bool)
+            }
+            Expr::Call { func, args } => {
+                let tys: Vec<DTy> = args.iter().map(|a| a.ty()).collect::<Result<_, _>>()?;
+                func.ret(&tys)
             }
         }
     }

@@ -95,6 +95,12 @@ fn each_col(
             }
             Ok(())
         }
+        Expr::Call { args, .. } => {
+            for a in args {
+                each_col(a, f)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -184,6 +190,12 @@ fn check_lexemes_and_types(e: &Expr) -> Result<(), DialectError> {
             }
             if let Some(el) = else_ {
                 check_lexemes_and_types(el)?;
+            }
+            Ok(())
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                check_lexemes_and_types(a)?;
             }
             Ok(())
         }

@@ -25,7 +25,7 @@
 //!       | (isdistinct expr expr) | (isnotdistinct expr expr)
 //! ```
 
-use super::plan::{BinOp, Expr, Rel, UnOp};
+use super::plan::{BinOp, Expr, Rel, ScalarFn, UnOp};
 use super::ty::DTy;
 use super::DialectError;
 
@@ -148,6 +148,14 @@ fn print_expr(e: &Expr, out: &mut String) {
             print_expr(l, out);
             out.push(' ');
             print_expr(r, out);
+            out.push(')');
+        }
+        Expr::Call { func, args } => {
+            out.push_str(&format!("(call {}", func.name()));
+            for a in args {
+                out.push(' ');
+                print_expr(a, out);
+            }
             out.push(')');
         }
     }
@@ -409,6 +417,16 @@ impl P {
                 l: Box::new(self.expr()?),
                 r: Box::new(self.expr()?),
             },
+            "call" => {
+                let fname = self.head()?;
+                let func = ScalarFn::parse(&fname)
+                    .ok_or_else(|| self.err(format!("unknown function: {fname}")))?;
+                let mut args = Vec::new();
+                while matches!(self.peek(), Some(Tok::Open)) {
+                    args.push(self.expr()?);
+                }
+                Expr::Call { func, args }
+            }
             h => return Err(self.err(format!("unknown expr head: {h}"))),
         };
         self.expect_close()?;
