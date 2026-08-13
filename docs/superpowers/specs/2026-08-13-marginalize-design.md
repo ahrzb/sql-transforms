@@ -151,7 +151,7 @@ cannot carry.
 | `tfm_fit(x) OVER (PARTITION BY ...)` | freeze per key |
 | `tfm_fit(x) OVER (ORDER BY ...)` (any ordered frame) | refuse — running fit, exactly as the split spec already rules |
 | `tfm_fit(x) OVER (PARTITION BY ...)` where `tfm` is internally keyed (its own text joins `__FIT__` through a `GROUP BY`) | freeze — keys compose; effective key = scope keys ⊕ internal keys (next section) |
-| scalar subquery over `__THIS__` | freeze (provably uncorrelated: `FROM __THIS__` has no alias in scope) |
+| scalar subquery over `__THIS__` | freeze, verbatim over `__FIT__` (one SELECT level, uncorrelated — a read of the outer row or a spine-alias shadow refuses by name; EXISTS/IN forms deferred) |
 | top-level `WHERE` / `GROUP BY` / modifiers over `__THIS__` | refuse — same constructs the row-wise gate refuses, same reasons |
 
 Note the asymmetry is inherited, not invented: plain aggregates get the
