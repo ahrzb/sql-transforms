@@ -46,7 +46,7 @@
 //! Print-only, like BigQuery: the "from Spark" frontend is design phase 5.
 
 use super::plan::{BinOp, Catalog, Expr, Rel, ScalarFn, UnOp};
-use super::printer::{col_ref, query, ExprPrinter};
+use super::printer::{col_ref, query, ColRef, ExprPrinter};
 use super::ty::DTy;
 use super::verify::verify;
 use super::{unsup, DialectError};
@@ -92,9 +92,9 @@ impl ExprPrinter for Spark {
         format!("`{}`", name.replace('`', "``"))
     }
 
-    fn expr(&self, e: &Expr, input: &[(String, DTy)]) -> Result<String, DialectError> {
+    fn expr(&self, e: &Expr, input: &[ColRef]) -> Result<String, DialectError> {
         Ok(match e {
-            Expr::Col { ordinal, name, .. } => col_ref(self, *ordinal, name, input)?,
+            Expr::Col { ordinal, name, .. } => col_ref(*ordinal, name, input)?,
             Expr::Lit { lexeme, ty } => match ty {
                 DTy::Str => format!("'{}'", escape_str(lexeme)),
                 // Integer literal width rules agree (32-bit if it fits,

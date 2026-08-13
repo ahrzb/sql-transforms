@@ -51,7 +51,7 @@
 //!   GoogleSQL.
 
 use super::plan::{BinOp, Catalog, Expr, Rel, UnOp};
-use super::printer::{col_ref, query, ExprPrinter};
+use super::printer::{col_ref, query, ColRef, ExprPrinter};
 use super::ty::DTy;
 use super::verify::verify;
 use super::{unsup, DialectError};
@@ -123,9 +123,9 @@ impl ExprPrinter for BigQuery {
         format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`"))
     }
 
-    fn expr(&self, e: &Expr, input: &[(String, DTy)]) -> Result<String, DialectError> {
+    fn expr(&self, e: &Expr, input: &[ColRef]) -> Result<String, DialectError> {
         Ok(match e {
-            Expr::Col { ordinal, name, .. } => col_ref(self, *ordinal, name, input)?,
+            Expr::Col { ordinal, name, .. } => col_ref(*ordinal, name, input)?,
             Expr::Lit { lexeme, ty } => match ty {
                 DTy::Str => format!("'{}'", escape_str(lexeme)),
                 DTy::Bool | DTy::F64 | DTy::I32 | DTy::I64 => lexeme.clone(),
