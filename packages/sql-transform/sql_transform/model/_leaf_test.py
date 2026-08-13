@@ -180,6 +180,25 @@ def test_leaf_refusals_are_attributed_to_the_projection_by_name():
             SQLTransform(sql)
 
 
+def test_a_lambda_projection_refuses_the_leaf_role_by_name():
+    """A lambda's parameter is an ordinary ColumnRef the splice cannot tell
+    from a batch column; refused by the projection's name instead of
+    misattributed as a missing bundle field or an unqualified column."""
+    lam = SQLProjection("""
+        SELECT t.price / f.m AS r
+        FROM __THIS__ t,
+             (SELECT avg(list_sum(list_transform(arr, x -> x.v))) AS m
+              FROM __FIT__) f
+    """)
+    assert lam is not None
+    with pytest.raises(TransformError, match=r"lam.*lambda"):
+        SQLTransform("""
+            SELECT lam_transform(lam_fit(struct_pack(arr := arr)) OVER (),
+                                 struct_pack(price := price)).r AS r
+            FROM __THIS__
+        """)
+
+
 def test_a_keyed_projection_refuses_the_leaf_role_by_name():
     """A leaf fits per scope; keys inside it would need θ to carry tables.
     Refused with the projection's name, at the host's construction."""

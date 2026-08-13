@@ -122,6 +122,79 @@ def test_the_fresh_prefix_dodges_the_authors_names():
     assert _sorted(frozen) == _sorted(transductive)
 
 
+def test_struct_paths_survive_the_spine_qualifier():
+    """`t.p.v` strips to `p.v`, never to bare `v` — a decoy column named `v`
+    makes truncation a law violation instead of a bind error."""
+    S = pa.table(
+        {
+            "store": ["S1", "S1", "S2"],
+            "v": [1.0, 1.0, 1.0],
+            "p": pa.array(
+                [{"v": 10.0}, {"v": 20.0}, {"v": 100.0}],
+                type=pa.struct([("v", pa.float64())]),
+            ),
+        }
+    )
+    text = (
+        "SELECT t.store, t.p.v - avg(t.p.v) OVER (PARTITION BY t.store) AS d"
+        " FROM __THIS__ t"
+    )
+    frozen = SQLProjection.marginalize(text).fit(S).transform(S).to_pylist()
+    assert _sorted(frozen) == _sorted(run(SQLTransform(text), S).to_pylist())
+
+
+def test_struct_paths_survive_as_partition_keys():
+    S = pa.table(
+        {
+            "k": ["A", "A", "B"],
+            "x": [1.0, 2.0, 40.0],
+            "g": pa.array(
+                [{"k": "A"}, {"k": "B"}, {"k": "B"}],
+                type=pa.struct([("k", pa.string())]),
+            ),
+        }
+    )
+    text = "SELECT t.x, avg(t.x) OVER (PARTITION BY t.g.k) AS m FROM __THIS__ t"
+    frozen = SQLProjection.marginalize(text).fit(S).transform(S).to_pylist()
+    assert _sorted(frozen) == _sorted(run(SQLTransform(text), S).to_pylist())
+
+
+def test_an_integer_literal_partition_key_is_a_constant_not_an_ordinal():
+    """In a window, `PARTITION BY 2` is the constant; the derived GROUP BY
+    must not let it decay into a positional ordinal."""
+    text = "SELECT store, price - avg(price) OVER (PARTITION BY 2) AS d FROM __THIS__"
+    frozen = SQLProjection.marginalize(text).fit(F).transform(F).to_pylist()
+    assert _sorted(frozen) == _sorted(run(SQLTransform(text), F).to_pylist())
+
+
+def test_a_schema_qualified_aggregate_freezes():
+    text = (
+        "SELECT store, price - main.avg(price) OVER (PARTITION BY store) AS d"
+        " FROM __THIS__"
+    )
+    frozen = SQLProjection.marginalize(text).fit(F).transform(F).to_pylist()
+    assert _sorted(frozen) == _sorted(run(SQLTransform(text), F).to_pylist())
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Arrow cannot carry a BIT (nor TIMETZ/UNION) key faithfully through "
+    "the params table; the frozen key misses its own row. Recorded gap, "
+    "spec Deferred.",
+)
+def test_an_arrow_hostile_partition_key_type_holds_the_law():
+    Q = pa.table(
+        {
+            "store": ["S1", "S1", "S2"],
+            "qty": [1, 1, 2],
+            "price": [10.0, 20.0, 100.0],
+        }
+    )
+    text = "SELECT store, avg(price) OVER (PARTITION BY qty::BIT) AS v FROM __THIS__"
+    frozen = SQLProjection.marginalize(text).fit(Q).transform(Q).to_pylist()
+    assert _sorted(frozen) == _sorted(run(SQLTransform(text), Q).to_pylist())
+
+
 REFUSED = [
     ("WHERE", "SELECT price FROM __THIS__ WHERE price > 0"),
     ("GROUP BY", "SELECT avg(price) AS m FROM __THIS__ GROUP BY store"),
@@ -156,7 +229,25 @@ REFUSED = [
     ),
     ("ORDER BY", "SELECT price FROM __THIS__ ORDER BY price"),
     ("inside", "SELECT avg(sum(price)) OVER (PARTITION BY store) AS a FROM __THIS__"),
+    (
+        "inside",
+        "SELECT avg(price - avg(price) OVER ()) OVER (PARTITION BY store) AS a"
+        " FROM __THIS__",
+    ),
     ("alias", "SELECT price - avg(price) OVER () FROM __THIS__"),  # unnamed scope
+    ("whole", "SELECT store, max(t) OVER () AS m FROM __THIS__ t"),
+    (
+        "lambda",
+        "SELECT avg(list_sum(list_transform(arr, x -> x.v))) OVER () AS s"
+        " FROM __THIS__",
+    ),
+    ("positional", "SELECT #1 AS a, avg(price) OVER () AS m FROM __THIS__"),
+    ("column-alias list", "SELECT a FROM __THIS__ t(a, b)"),
+    ("SAMPLE", "SELECT price FROM __THIS__ TABLESAMPLE reservoir(2 ROWS)"),
+    (
+        "sibling",
+        "SELECT price AS p, avg(p) OVER (PARTITION BY store) AS m FROM __THIS__",
+    ),
 ]
 
 

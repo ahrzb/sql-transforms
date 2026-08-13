@@ -168,6 +168,11 @@ REFUSED = [
         "SELECT (SELECT max(t.price) FROM __THIS__ t) AS m"
         " FROM (SELECT avg(price) AS m0 FROM __FIT__) f",
     ),
+    # unnest turns one row into none or many — the row count is no longer 1-1.
+    ("spine", "SELECT unnest(t.tags) AS tag, t.price FROM __THIS__ t"),
+    # a positional reference resolves by position, which the model's own
+    # appended columns (the ordinal, derived params) silently shift.
+    ("spine", "SELECT #1 AS a FROM __THIS__ t"),
     # __THIS__ never read at all: one row out whatever the batch is.
     ("spine", "SELECT f.m FROM (SELECT avg(price) AS m FROM __FIT__) f"),
     # a correlated subquery over __THIS__ reads the *other* rows of the batch.

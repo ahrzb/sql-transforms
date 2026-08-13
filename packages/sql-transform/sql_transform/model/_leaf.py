@@ -131,6 +131,15 @@ def plan(stem: str, projection) -> _LeafPlan:
             "or let the host's GROUP BY be the key",
         )
 
+    for what, node in (*program.steps, ("residual", program.residual)):
+        for v in (node, *descendants(node, deep=True)):
+            if isinstance(v, Opaque) and v.fields.get("class") == "LAMBDA":
+                raise _refuse(
+                    stem,
+                    f"its {what} contains a lambda, whose parameter the "
+                    "splice cannot tell from a column — serve it standalone",
+                )
+
     steps = []
     fit_columns: set[str] = set()
     for param, node in program.steps:

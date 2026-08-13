@@ -65,6 +65,7 @@ _PLAIN_FRAME = {
 _CARRIED = frozenset(
     {"class", "type", "alias", "query_location", "function_name"}
     | {"children", "partitions", "filter_expr", "distinct"}
+    | {"schema", "catalog"}  # a qualified spelling of the same aggregate
     | set(_PLAIN_FRAME)
 )
 
@@ -86,13 +87,37 @@ def _projection(name: str, scope: dict[str, Any]) -> Any | None:
     return obj if isinstance(obj, SQLProjection) else None
 
 
-def _pure(what: str, parts: list[Node], scope: dict[str, Any]) -> None:
-    """No fit scope may nest inside another's arguments: the inner one would
-    freeze into a column the derived subquery cannot see."""
+def _pure(
+    what: str,
+    parts: list[Node],
+    scope: dict[str, Any],
+    spine: frozenset[str],
+    laterals: frozenset[str],
+) -> None:
+    """A fit scope's arguments must move intact into ``SELECT ... FROM
+    __FIT__``: no nested scope (it would freeze into a column the subquery
+    cannot see), no name that only resolves in the spine's own SELECT."""
     for c in parts:
         for d in (c, *descendants(c, deep=True)):
             if _is_window(d):
                 _refuse(f"{what} nests {_print_expr(d)} inside a fit scope")
+            if isinstance(d, Opaque) and d.fields.get("class") == "LAMBDA":
+                _refuse(
+                    f"{what} carries a lambda, whose parameter the rewrite "
+                    "cannot tell from a batch column — no frozen spelling yet"
+                )
+            if isinstance(d, ColumnRef) and len(d.column_names) == 1:
+                name = d.column_names[0]
+                if name.lower() in spine:
+                    _refuse(
+                        f"{what} reads the whole {name} row, "
+                        "which has no frozen spelling yet"
+                    )
+                if name.lower() in laterals:
+                    _refuse(
+                        f"{what}: {name} is a sibling select item's alias, "
+                        f"which {FIT} does not have — inline the expression"
+                    )
             if isinstance(d, Function) and not d.is_operator:
                 if d.function_name.lower() in _aggregates():
                     _refuse(
@@ -159,7 +184,9 @@ def _stripped(expr: Node, spine: frozenset[str]) -> Node:
             and len(v.column_names) > 1
             and v.column_names[0].lower() in spine
         ):
-            return v.model_copy(update={"column_names": [v.column_names[-1]]})
+            # Drop exactly the qualifier: `t.p.v` is the struct path `p.v`,
+            # and keeping only the last part would read a different column.
+            return v.model_copy(update={"column_names": v.column_names[1:]})
         return None
 
     return strip(expr) or rebuild(expr, strip, deep=True)
@@ -171,6 +198,8 @@ def _printed_call(
     spine: frozenset[str],
     distinct: bool = False,
     filter_expr: Node | None = None,
+    schema: str = "",
+    catalog: str = "",
 ) -> str:
     """A call with spine qualifiers stripped, printed by the oracle."""
     tpl = _template("SELECT count(1)").select_list[0]
@@ -180,6 +209,8 @@ def _printed_call(
             "children": [_stripped(c, spine) for c in children],
             "distinct": distinct,
             "filter_": _stripped(filter_expr, spine) if filter_expr else None,
+            "schema_": schema,
+            "catalog": catalog,
             "alias": "",
         }
     )
@@ -187,8 +218,9 @@ def _printed_call(
 
 
 def _call_text(w: Opaque, spine: frozenset[str]) -> str:
-    """The scope's aggregate as a grouped call — the OVER removed, FILTER and
-    DISTINCT carried, spine qualifiers stripped — printed by the oracle."""
+    """The scope's aggregate as a grouped call — the OVER removed, FILTER,
+    DISTINCT and any schema/catalog qualification carried, spine qualifiers
+    stripped — printed by the oracle."""
     f = w.fields
     return _printed_call(
         str(f["function_name"]),
@@ -196,6 +228,8 @@ def _call_text(w: Opaque, spine: frozenset[str]) -> str:
         spine,
         distinct=bool(f.get("distinct")),
         filter_expr=f.get("filter_expr"),
+        schema=str(f.get("schema") or ""),
+        catalog=str(f.get("catalog") or ""),
     )
 
 
@@ -240,6 +274,17 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
             f"its FROM reads more than {THIS} — a marginalize text is "
             f"{THIS}-only, and the derived joins are marginalize's to write"
         )
+    # The spine is re-emitted from table_name + alias alone, so every other
+    # clause the ref could carry must refuse rather than silently vanish.
+    if spine_ref.column_name_alias:
+        _refuse(
+            f"a column-alias list on {THIS} has no frozen spelling yet — "
+            "alias in the select list instead"
+        )
+    if spine_ref.sample is not None:
+        _refuse(f"a SAMPLE over {THIS} drops rows — a projection cannot")
+    if spine_ref.at_clause is not None:
+        _refuse(f"an AT clause on {THIS} has no frozen spelling")
     if node.where_clause is not None:
         _refuse(
             f"a WHERE over {THIS} filters the batch — a projection cannot drop rows"
@@ -271,6 +316,11 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
     spine = frozenset(
         {THIS.lower()} | ({spine_ref.alias.lower()} if spine_ref.alias else set())
     )
+    laterals = frozenset(
+        alias.lower()
+        for item in node.select_list
+        if (alias := str(field(item, "alias") or ""))
+    )
     # key texts (stripped, printed) -> [(column name, aggregate text)]
     scopes: dict[tuple[str, ...], list[tuple[str, str]]] = {}
     w_numbers = itertools.count()
@@ -285,6 +335,14 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
                 _refuse(
                     "a * would read the derived params tables too — name the columns"
                 )
+            if (
+                isinstance(v, Opaque)
+                and v.fields.get("class") == "POSITIONAL_REFERENCE"
+            ):
+                _refuse(
+                    "a positional reference (#N) resolves by position, which "
+                    "the derived joins shift — name the column"
+                )
             if is_query(v):
                 _refuse("a subquery expression has no frozen spelling yet")
             if _is_window(v):
@@ -297,13 +355,15 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
                         *([fw["filter_expr"]] if fw.get("filter_expr") else []),
                     ],
                     scope,
+                    spine,
+                    laterals,
                 )
             if (
                 isinstance(v, Function)
                 and not v.is_operator
                 and _projection(v.function_name, scope)
             ):
-                _pure(_print_expr(v), list(v.children), scope)
+                _pure(_print_expr(v), list(v.children), scope, spine, laterals)
 
         swapped_any = False
 
@@ -377,7 +437,12 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
         inner = f"SELECT {', '.join(cols)} FROM {FIT}"  # noqa: S608
         alias = f"{prefix}m{m}"
         if key_texts:
-            inner += " GROUP BY " + ", ".join(f"({k})" for k in key_texts)
+            # GROUP BY the derived alias, never the raw expression: the text
+            # is re-printed with redundant parens dropped, and a bare integer
+            # literal would decay into a positional ordinal.
+            inner += " GROUP BY " + ", ".join(
+                f"{prefix}k{i}" for i in range(len(key_texts))
+            )
             on = " AND ".join(
                 f"({k}) IS NOT DISTINCT FROM {alias}.{prefix}k{i}"
                 for i, k in enumerate(key_texts)
