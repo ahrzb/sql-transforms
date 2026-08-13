@@ -171,7 +171,7 @@ CURATED_REFUSED = [
 ]
 
 
-# --- curated, schema-aware (loop 4): replayed with a declared this_model -----
+# --- curated, schema-aware (loop 4): replayed with a declared this_schema ----
 
 CURATED_SCHEMA = [
     "SELECT COLUMNS('.*name') FROM __THIS__",

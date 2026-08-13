@@ -31,18 +31,9 @@ TRAIN = pa.table(
 )
 
 
-def _model_for(table: pa.Table):
-    import pydantic
-
-    return pydantic.create_model(
-        "Row", **dict.fromkeys(table.column_names, (object, None))
-    )
-
-
 def gate(sql: str, table: pa.Table = TRAIN, schema: bool = False) -> SQLProjection:
     """Assert original == marginalized under the oracle; returns the fitted p."""
-    model = _model_for(table) if schema else None
-    p = SQLProjection(sql, this_model=model).fit(table)
+    p = SQLProjection(sql, this_schema=table.schema if schema else None).fit(table)
     con = duckdb.connect()
     try:
         # Both sides single-threaded: DuckDB's parallel window aggregation is
@@ -320,16 +311,14 @@ def test_schema_mode_windows_over_columns_expansion():
     )
 
 
-def test_model_is_authoritative_at_fit():
-    import pydantic
-
-    model = pydantic.create_model("Row", age=(object, None), country=(object, None))
-    p = SQLProjection("SELECT * FROM __THIS__", this_model=model).fit(TRAIN)
-    # Extra table columns drop; order follows the model.
+def test_schema_is_authoritative_at_fit():
+    schema = pa.schema([("age", pa.float64()), ("country", pa.string())])
+    p = SQLProjection("SELECT * FROM __THIS__", this_schema=schema).fit(TRAIN)
+    # Extra table columns drop; order follows the declared schema.
     (out_names) = p.serving_sql
     assert "__cf_t.age AS age, __cf_t.country AS country" in out_names
-    with pytest.raises(MarginalizeError, match="missing model column"):
-        SQLProjection("SELECT * FROM __THIS__", this_model=model).fit(
+    with pytest.raises(MarginalizeError, match="missing schema column"):
+        SQLProjection("SELECT * FROM __THIS__", this_schema=schema).fit(
             pa.table({"age": [1.0]})
         )
 
@@ -516,8 +505,8 @@ def test_signatures_are_stable():
         "(self, table: 'pa.Table', /) -> 'SQLProjection'"
     )
     assert str(inspect.signature(SQLProjection.infer)) == (
-        "(self, row: 'dict[str, Any] | BaseModel', /) -> 'BaseModel'"
+        "(self, row: 'dict[str, Any] | Any', /) -> 'dict[str, Any]'"
     )
     assert str(inspect.signature(SQLProjection.infer_batch)) == (
-        "(self, rows: 'list[dict[str, Any] | BaseModel]', /) -> 'list[BaseModel]'"
+        "(self, rows: 'list[dict[str, Any] | Any]', /) -> 'list[dict[str, Any]]'"
     )
