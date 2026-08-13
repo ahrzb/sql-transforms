@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from pathlib import Path
 
 import duckdb
@@ -122,6 +123,9 @@ def test_dialect_corpus_gate():
         f"{counts['clean-unsupported']} clean-unsupported, {len(fails)} FAIL"
     )
     print(summary)
+    # A warning survives `pytest -q` on green runs, so CI logs always carry
+    # the measured count (the growth ladder needs it to ratchet floors).
+    warnings.warn(summary, stacklevel=1)
     assert not fails, summary + "\n" + "\n".join(fails[:20])
     assert counts["match"] >= SUPPORTED_FLOOR, summary
 
