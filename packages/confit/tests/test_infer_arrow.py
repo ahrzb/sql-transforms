@@ -169,10 +169,32 @@ def test_every_scenario_refuses_a_supplied_output_model():
 
 # The one output-schema difference this suite ALLOWS, and only this one:
 # DuckDB types a bare integer literal INTEGER, so `CASE WHEN .. THEN 1 ELSE 0
-# END` is int32 for it and int64 for us. That is the arrow-visible face of the
-# documented "narrow integer widths don't exist" limitation, NOT part of
-# TASK-72, and it is pinned open in test_known_divergences.py.
+# END` is int32 for it and int64 for us. Pinned by the xfail below; TASK-79
+# (m-8 phase 2, integer widths) removes both the allowance and the pin.
 _WIDENED = (pa.int32(), pa.int64())
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="A bare integer literal is INTEGER in DuckDB and BIGINT for us, so "
+    "an integer-literal CASE comes back int32 there and int64 here. Values "
+    "agree; the schemas do not stack. TASK-79 (m-8 phase 2) types it INTEGER.",
+)
+def test_infer_arrow_integer_width_matches_duckdb():
+    import duckdb
+
+    In = create_model("In", k=(int, ...))
+    sql = "SELECT CASE WHEN k > 1 THEN 1 ELSE 0 END AS c FROM __THIS__"
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
+    )
+    got = fn.infer_arrow(pa.table({"k": [0, 2]}))
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (0), (2)")
+    want = con.execute(sql).to_arrow_table()
+    assert got.to_pylist() == want.to_pylist()  # values already agree
+    assert got.schema == want.schema
 
 
 def test_output_schema_matches_duckdb_for_every_scenario():

@@ -107,19 +107,20 @@ Notables: `abs` is width-POLYMORPHIC (follows its argument); the
 length-family is fixed int64 despite string inputs; CASE promotes across
 widths exactly like arithmetic.
 
-## Open-bug markers are scaffolding, not contract
+## Feature markers are scaffolding, not contract
 
 "Known divergence" is reserved for decided-and-unscheduled differences —
 the rows in known-limitations.md. Everything with an m-8 phase or a ticket
-is an OPEN BUG, and its markers (xfail pins, fuzzer tags) are scaffolding.
-Each phase's definition of done includes DELETING that phase's markers, in
-all three homes, in the same PR as the fix:
+is a feature in flight; its tests live with the feature (`test_decimals.py`,
+the width pin in `test_infer_arrow.py`) and its markers (xfail pins, fuzzer
+tags) are scaffolding. Each phase's definition of done includes DELETING
+that phase's markers, in all three homes, in the same PR as the feature:
 
 1. the xfail-strict pin flips to a real parity test (enforced — strict
-   xfail turns XPASS-loud the moment the fix lands);
+   xfail turns XPASS-loud the moment the feature lands);
 2. the known-limitations row goes (enforced — its executable twin breaks
    until doc and code agree);
-3. the fuzzer's suppression tag (`KNOWN-TASK-79`, `decimal-literal` in
+3. the fuzzer's suppression tag (`int-widths`, `decimals` in
    `fuzz/oracle.py`) is REMOVED (unenforced — stated here because a tag
    that outlives its phase would silently swallow regressions in exactly
    the code the phase just changed; the certification campaign after the

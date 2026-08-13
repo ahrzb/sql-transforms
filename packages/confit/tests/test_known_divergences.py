@@ -11,12 +11,10 @@ file reads as history rather than as a list of complaints. `strict=True` on
 what remains means it can neither silently start passing nor silently stop
 failing. Tickets are TASK-69..TASK-78 in `backlog/tasks/`.
 
-Still red, and honestly so:
-
-* the integer-WIDTH schema difference below, found while fixing TASK-72 and
-  deliberately not folded into it — it needs its own ticket;
-* TASK-77 (an integer feature above 2**53), pinned in
-  `sql_transform/_trees_test.py` because it is a packer-side question.
+Feature pins do NOT live here — they live with their feature's tests
+(`test_decimals.py`, the width pin in `test_infer_arrow.py`). TASK-77 (an
+integer feature above 2**53) is pinned in `sql_transform/_trees_test.py`
+as a packer-side question.
 
 Two of the findings were adjudicated by hand after the sweep's own verifiers
 split on them, and they went opposite ways: TASK-78 was real and is fixed;
@@ -310,44 +308,7 @@ def test_infer_arrow_string_type_matches_duckdb(sql):
     assert pa.concat_tables([want, got]).num_rows == 6
 
 
-# --------------------------- integer width in the arrow output schema --
-#
-# Found 2026-08-08 while fixing TASK-72, by widening its scenario sweep from
-# "the string column" to "the whole output schema". NOT part of TASK-72 —
-# a different type, a different cause — so it is pinned rather than folded in.
-#
-# DuckDB types a bare integer literal INTEGER, so `CASE WHEN .. THEN 1 ELSE 0
-# END` is int32 in its arrow output and int64 in ours. This is the
-# arrow-visible face of the documented "narrow integer widths don't exist"
-# limitation (docs/known-limitations.md), which until now was only ever
-# discussed as an arithmetic concern. It has the same consequence TASK-72 had:
-# `pa.concat_tables([duck_out, ours])` raises.
-#
-# It bites the `titanic` serving scenario, whose `multi_cabin` column is
-# exactly that CASE — so this is not hypothetical SQL.
-#
-# Reproduced by hand 2026-08-08. TASK-79.
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="A bare integer literal is INTEGER in DuckDB and BIGINT for us, so "
-    "an integer-literal CASE comes back int32 there and int64 here. Values "
-    "agree; the schemas do not stack.",
-)
-def test_infer_arrow_integer_width_matches_duckdb():
-    In = create_model("In", k=(int, ...))
-    sql = "SELECT CASE WHEN k > 1 THEN 1 ELSE 0 END AS c FROM __THIS__"
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
-    got = fn.infer_arrow(pa.table({"k": [0, 2]}))
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (0), (2)")
-    want = con.execute(sql).to_arrow_table()
-    assert got.to_pylist() == want.to_pylist()  # values already agree
-    assert got.schema == want.schema
+# ---------------------------------------- arrow output round-trips --
 
 
 def test_infer_arrow_string_output_feeds_back_in():
@@ -1301,60 +1262,3 @@ def test_a_large_but_bounded_count_still_serves_and_matches():
     con.execute("INSERT INTO __THIS__ VALUES (1, 'ab')")
     want = con.execute(sql).to_arrow_table().to_pylist()
     assert got == want, f"{got} != {want}"
-
-
-# m-8 phase-0 probe (2026-08-11). A fitted params table carrying sum(BIGINT)
-# is decimal128(38,0) on the ordinary fit path, and the static ingest
-# narrowed it through f64 SILENTLY -- the value 9007199254740993 (2^53+1)
-# served as ...992.0, off by one, while known-limitations claims
-# out-of-range payloads reject.
-#
-# INTERIM (decided with AmirHossein 2026-08-13): we refuse inexact decimal
-# statics for now -- a named no beats the silent off-by-one, and no
-# half-implementation of serving ships in the meantime. TASK-91 (the m-8
-# Dec lane's first slice) implements exact serving; the xfail below IS that
-# contract, and flips loudly when it lands.
-
-_DecRow = create_model("_DecRow", gid=(str, ...))
-
-
-def _dec_static(val: str) -> pa.Table:
-    import decimal
-
-    return pa.table(
-        {
-            "g": pa.array(["a"], pa.string()),
-            "sk": pa.array([decimal.Decimal(val)], pa.decimal128(38, 0)),
-        }
-    )
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="we refuse inexact DECIMAL statics for now; TASK-91 (m-8 Dec"
-    " lane, first slice) implements exact serving",
-)
-def test_an_inexact_decimal_static_serves_exactly():
-    """The end state, not today's: 2^53+1 in a decimal static comes back as
-    ITSELF. Today the build refuses by name (interim — better than the
-    silent off-by-one it replaced), so this xfails until TASK-91 lands and
-    then flips loudly, taking the refusal and its wording out with it."""
-    import decimal
-
-    fn = DuckDBInferFn(
-        "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
-        row_tables={"__THIS__": _DecRow},
-        static_tables={"p": _dec_static("9007199254740993")},
-    )
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_DecRow(gid="a")]})]
-    assert got == [{"o": decimal.Decimal("9007199254740993")}]
-
-
-def test_an_exact_decimal_static_still_serves():
-    fn = DuckDBInferFn(
-        "SELECT sk AS o FROM __THIS__ LEFT JOIN p ON gid = p.g",
-        row_tables={"__THIS__": _DecRow},
-        static_tables={"p": _dec_static("9007199254740992")},
-    )
-    got = [r.model_dump() for r in fn.infer({"__THIS__": [_DecRow(gid="a")]})]
-    assert got == [{"o": 9007199254740992.0}]
