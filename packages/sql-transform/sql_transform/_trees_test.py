@@ -864,3 +864,41 @@ def test_call_answers_null_features_the_kernel_scores():
         kernel = [r["p"] for r in fn.infer_rows(rows)]
         called = [udf(0, *(r[f] for f in FEATURES)) for r in rows]
         assert [c[0] for c in called] == kernel, type(kind).__name__
+
+
+def test_registered_duckdb_udf_answers_null_features_like_the_other_two():
+    """TASK-83 AC #2's third binding, executed rather than argued: the
+    DuckDB-REGISTERED function (register -> _arrow_scalar_batch -> _scalar ->
+    __call__) actually run by duckdb over rows with NULL features — the exact
+    leg fuzz seed 3112 crashed. Three-way `==`: registered UDF, kernel,
+    direct `__call__`."""
+    import duckdb
+
+    rows = [
+        {"id": 0, "a": None, "b": 0.5, "c": -1.0, "d": 2.0},
+        {"id": 0, "a": 1.5, "b": None, "c": 0.25, "d": None},
+        {"id": 0, "a": None, "b": None, "c": None, "d": None},
+        {"id": 0, "a": 0.5, "b": 0.5, "c": 0.5, "d": 0.5},  # control: no NULLs
+    ]
+    kinds = [
+        DecisionTreeRegressor(max_depth=3),
+        RandomForestRegressor(n_estimators=5, max_depth=4, random_state=9, n_jobs=1),
+        GradientBoostingRegressor(n_estimators=5, max_depth=3, random_state=9),
+    ]
+    for kind in kinds:
+        est = fit(kind, 90)  # fitted WITHOUT missing values
+        udf = tbt([est])
+        fn = DuckDBInferFn(
+            SQL, row_tables={"__THIS__": ROW}, static_tables={}, udfs=[udf]
+        )
+        kernel = [r["p"] for r in fn.infer_rows(rows)]
+        called = [udf(0, *(r[f] for f in FEATURES))[0] for r in rows]
+        con = duckdb.connect()
+        try:
+            con.execute("SET threads = 1")
+            con.register("__THIS__", pa.Table.from_pylist(rows, schema=ROW))
+            udf.register(con)
+            duck = [r[0] for r in con.execute(SQL).fetchall()]
+        finally:
+            con.close()
+        assert duck == kernel == called, type(kind).__name__
