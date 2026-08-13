@@ -1,0 +1,42 @@
+{
+  "area": "sort-and-window-defaults",
+  "duckdb_version": "v1.5.5",
+  "setup": "none  -- multi-statement pins: query lines map 1:1 to ' | '-separated observed segments",
+  "pins": [
+    {
+      "claim": "Bare ORDER BY x is ASC with NULLS LAST",
+      "query": "SELECT x FROM (VALUES (2),(NULL),(1)) t(x) ORDER BY x",
+      "observed": "[(1,), (2,), (None,)]"
+    },
+    {
+      "claim": "ORDER BY x DESC also puts NULLS LAST — DuckDB's default null order is a setting (nulls_last), not tied to direction like PostgreSQL",
+      "query": "SELECT x FROM (VALUES (2),(NULL),(1)) t(x) ORDER BY x DESC",
+      "observed": "[(2,), (1,), (None,)]"
+    },
+    {
+      "claim": "Explicit NULLS FIRST/LAST spellings are accepted in both directions",
+      "query": "SELECT x FROM (VALUES (2),(NULL),(1)) t(x) ORDER BY x ASC NULLS FIRST\nSELECT x FROM (VALUES (2),(NULL),(1)) t(x) ORDER BY x DESC NULLS FIRST",
+      "observed": "[(None,), (1,), (2,)] | [(None,), (2,), (1,)]"
+    },
+    {
+      "claim": "Window ORDER BY has the same default null placement as top-level ORDER BY",
+      "query": "SELECT x, row_number() OVER (ORDER BY x) AS rn FROM (VALUES (2),(NULL),(1)) t(x) ORDER BY rn",
+      "observed": "[(1, 1), (2, 2), (None, 3)]"
+    },
+    {
+      "claim": "Default window frame with ORDER BY is RANGE UNBOUNDED PRECEDING .. CURRENT ROW: peer rows (tied order key) share the running value",
+      "query": "SELECT k, v, sum(v) OVER (ORDER BY k) AS s FROM (VALUES (1,10),(1,20),(2,5)) t(k,v) ORDER BY k, v",
+      "observed": "[(1, 10, 30), (1, 20, 30), (2, 5, 35)]"
+    },
+    {
+      "claim": "Explicit ROWS frame distinguishes the peers — proves the previous pin measured RANGE, not ROWS",
+      "query": "SELECT k, v, sum(v) OVER (ORDER BY k, v ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM (VALUES (1,10),(1,20),(2,5)) t(k,v) ORDER BY k, v",
+      "observed": "[(1, 10, 10), (1, 20, 30), (2, 5, 35)]"
+    },
+    {
+      "claim": "Window aggregate with PARTITION BY and no ORDER BY spans the whole partition",
+      "query": "SELECT k, sum(v) OVER (PARTITION BY k) AS s FROM (VALUES (1,10),(1,20),(2,5)) t(k,v) ORDER BY k, v",
+      "observed": "[(1, 30), (1, 30), (2, 5)]"
+    }
+  ]
+}
