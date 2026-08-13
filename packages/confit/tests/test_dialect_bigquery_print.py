@@ -33,16 +33,18 @@ def to_bq(sql: str, catalog) -> str:
 
 def test_forced_spellings(catalog):
     printed = to_bq(
-        "SELECT big // 2 AS q, 1.5 / c AS d, TRY_CAST(b AS DOUBLE) AS w FROM t "
+        "SELECT big // 2 AS q, 1.5 / c AS d, TRY_CAST(a AS DOUBLE) AS w FROM t "
         "WHERE b IS NOT DISTINCT FROM 'o''k'",
         catalog,
     )
-    assert printed == (
-        "SELECT DIV(`big`, 2) AS `q`, "
-        "(CAST(NUMERIC '1.5' AS FLOAT64) / `c`) AS `d`, "
-        "SAFE_CAST(`b` AS FLOAT64) AS `w` "
-        "FROM `t` WHERE (`b` IS NOT DISTINCT FROM 'o\\'k')"
-    )
+    # Forced spellings after the adversarial review: DIV inside the
+    # zero-divisor guard (DuckDB gives NULL where BigQuery DIV errors),
+    # / as IEEE_DIVIDE (DuckDB's zero divisors are IEEE inf/NaN).
+    guarded_div = "(CASE WHEN 2 = 0 THEN CAST(NULL AS INT64) ELSE DIV(`big`, 2) END)"
+    assert f"{guarded_div} AS `q`" in printed
+    assert "IEEE_DIVIDE(CAST(NUMERIC '1.5' AS FLOAT64), `c`) AS `d`" in printed
+    assert "SAFE_CAST(`a` AS FLOAT64) AS `w`" in printed
+    assert "(`b` IS NOT DISTINCT FROM 'o\\'k')" in printed
 
 
 def test_named_refusals(catalog):

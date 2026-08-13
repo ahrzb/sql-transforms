@@ -31,3 +31,4 @@ wheels/
 **/confit/_engine*.so
 **/confit/_engine*.pyd
 **/confit/_engine*.pdb
+spark-warehouse/

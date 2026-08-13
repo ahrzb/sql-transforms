@@ -225,6 +225,9 @@ impl Expr {
             }
             Expr::Bin { op, l, r } => derive_bin(*op, &l.ty()?, &r.ty()?),
             Expr::Case { whens, else_ } => {
+                if whens.is_empty() {
+                    return Err(DialectError::Internal("CASE with no WHEN arms".into()));
+                }
                 for (c, _) in whens {
                     if c.ty()? != DTy::Bool {
                         return Err(DialectError::Bind(
@@ -303,8 +306,18 @@ fn derive_bin(op: BinOp, l: &DTy, r: &DTy) -> Result<DTy, DialectError> {
             _ => Err(unsup(format!("|| over {} and {}", l.name(), r.name()))),
         },
         FDiv => {
+            if matches!(l, DTy::F32) || matches!(r, DTy::F32) {
+                // Measured: FLOAT/FLOAT computes at FLOAT in DuckDB, not
+                // DOUBLE - refusing beats a silently wrong width.
+                return Err(unsup(format!(
+                    "/ over {} and {} (f32 division width not lowered)",
+                    l.name(),
+                    r.name()
+                )));
+            }
             if l.is_numeric() && r.is_numeric() {
-                // Pinned: / is DOUBLE even on integers (strings-operators.json).
+                // Pinned: / is DOUBLE on integers/decimals/doubles
+                // (strings-operators.json).
                 Ok(DTy::F64)
             } else {
                 Err(DialectError::Bind(format!(
@@ -343,28 +356,23 @@ fn derive_bin(op: BinOp, l: &DTy, r: &DTy) -> Result<DTy, DialectError> {
 }
 
 /// May these two types meet in a comparison / IS DISTINCT FROM?
+/// Only pinned-safe combinations pass. The review-confirmed hazards:
+/// integer-vs-DECIMAL casts the integer to the decimal type in DuckDB and
+/// ERRORS when it does not fit (value-vs-error against printed engines);
+/// F32 mixed comparisons compare at FLOAT in DuckDB but DOUBLE downstream.
 fn comparable(l: &DTy, r: &DTy) -> Result<(), DialectError> {
     if l == r {
         return Ok(());
     }
-    if l.is_numeric() && r.is_numeric() {
-        // Mixed signed/unsigned comparison is unpinned; everything else
-        // numeric compares by value in DuckDB.
-        let mixed_sign =
-            (l.is_integer() && r.is_integer()) && (int_rank(l).is_none() != int_rank(r).is_none());
-        if mixed_sign {
-            return Err(unsup(format!(
-                "signed/unsigned comparison: {} vs {}",
-                l.name(),
-                r.name()
-            )));
-        }
+    let both_signed_int = int_rank(l).is_some() && int_rank(r).is_some();
+    let f64_vs_numeric = (matches!(l, DTy::F64) && r.is_numeric() && !matches!(r, DTy::F32))
+        || (matches!(r, DTy::F64) && l.is_numeric() && !matches!(l, DTy::F32));
+    let dec_vs_dec = matches!(l, DTy::Dec(..)) && matches!(r, DTy::Dec(..));
+    if both_signed_int || f64_vs_numeric || dec_vs_dec {
         return Ok(());
     }
-    // DuckDB compares across classes via implicit casts (1 = '1' is
-    // valid); the cast lattice is unpinned, so refuse rather than reject.
     Err(unsup(format!(
-        "comparison coercion over {} and {}",
+        "comparison coercion over {} and {} (cross-class comparison semantics unpinned)",
         l.name(),
         r.name()
     )))

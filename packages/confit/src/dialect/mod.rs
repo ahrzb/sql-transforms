@@ -35,7 +35,9 @@
 pub mod bigquery;
 pub mod duckdb;
 pub mod plan;
+pub(crate) mod printer;
 pub mod py;
+pub mod spark;
 pub mod text;
 pub mod ty;
 pub mod verify;

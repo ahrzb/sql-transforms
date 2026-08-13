@@ -53,6 +53,24 @@ pub enum DTy {
 }
 
 impl DTy {
+    /// A type every text form can round-trip: Dec params in range, struct
+    /// field names free of the type grammar's delimiters. verify() refuses
+    /// plans carrying anything else - API-built plans get the same bounds
+    /// as text-built ones.
+    pub fn is_well_formed(&self) -> bool {
+        match self {
+            DTy::Dec(p, s) => *p != 0 && *p <= 38 && s <= p,
+            DTy::List(e) => e.is_well_formed(),
+            DTy::Struct(fs) => fs.iter().all(|(n, t)| {
+                !n.is_empty()
+                    && !n.contains([':', ',', '<', '>'])
+                    && !n.contains(char::is_whitespace)
+                    && t.is_well_formed()
+            }),
+            _ => true,
+        }
+    }
+
     pub fn is_integer(&self) -> bool {
         matches!(
             self,
@@ -148,7 +166,14 @@ impl DTy {
         }
         if let Some(rest) = s.strip_prefix("dec(").and_then(|r| r.strip_suffix(')')) {
             let (p, sc) = rest.split_once(',')?;
-            return Some(DTy::Dec(p.trim().parse().ok()?, sc.trim().parse().ok()?));
+            let (p, sc): (u8, u8) = (p.trim().parse().ok()?, sc.trim().parse().ok()?);
+            // Same bounds as from_duckdb - an invalid Dec must not exist,
+            // whichever door it comes through (review: u8 underflow in the
+            // BigQuery NUMERIC/BIGNUMERIC split for s > p).
+            if p == 0 || p > 38 || sc > p {
+                return None;
+            }
+            return Some(DTy::Dec(p, sc));
         }
         if let Some(rest) = s.strip_prefix("list<").and_then(|r| r.strip_suffix('>')) {
             return Some(DTy::List(Box::new(DTy::parse(rest)?)));
@@ -157,7 +182,16 @@ impl DTy {
             let mut fields = Vec::new();
             for part in split_top_level(rest) {
                 let (n, t) = part.split_once(':')?;
-                fields.push((n.trim().to_string(), DTy::parse(t.trim())?));
+                let n = n.trim();
+                // Names carrying the grammar's own delimiters cannot
+                // round-trip; reject here so print∘parse stays identity.
+                if n.is_empty()
+                    || n.contains([':', ',', '<', '>'])
+                    || n.contains(char::is_whitespace)
+                {
+                    return None;
+                }
+                fields.push((n.to_string(), DTy::parse(t.trim())?));
             }
             return Some(DTy::Struct(fields));
         }
