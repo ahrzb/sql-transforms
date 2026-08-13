@@ -65,10 +65,26 @@ Resolution, once, in `Binder::function`'s head:
    `coalesce`/`greatest` lazy CASE construction (they use the same `Unify`
    helper for their type), regex constant-pattern gates.
 
+## Operators are rows too
+
+Their RESULT-TYPE rules join the same table — that is what makes m-8
+phase 5 a data change (DECIMAL scale propagation is a per-operator table:
+`+` -> max scale, `*` -> s1+s2). `numeric_promote`/`cmp` become the
+CONSUMERS of these rows instead of owning the rules:
+
+```rust
+("+", Sig { params: &[Num, Num], ret: Widen      }),
+("/", Sig { params: &[Num, Num], ret: Fixed(F64) }),
+("&", Sig { params: &[Int, Int], ret: Widen      }),
+("<", Sig { params: &[Num, Num], ret: Fixed(I1)  }),
+```
+
+What stays code for operators: the constant machinery (TASK-84/87 probes
+and folds), NULL-op-NULL, strict-op elision, the zero-divisor guards,
+`-x` = 0-x, `||`'s to-varchar coercion, the `^` precedence refusal.
+
 ## What does NOT migrate
 
-- Operators (`binary`/`cmp`/`arith`) — already centralized through
-  `numeric_promote`/`int_width_promote`; a second home would drift.
 - CASE / COALESCE binding order and `in_guarded` — control flow, not
   signatures; they share the unification helpers only.
 - The UDF path (`bind_udf_args`) — its vocabulary is the user-facing API
