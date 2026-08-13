@@ -3731,6 +3731,10 @@ impl Binder<'_> {
     }
 
     fn cmp(&self, pred: CmpPred, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
+        // TASK-92: the comparison result type is the operator table's rule.
+        let Ret::Fixed(ret) = sig::op_ret(cmp_sym(pred)) else {
+            unreachable!("comparisons are Fixed rows")
+        };
         // TASK-87 face D — same reason as `arith`: a folded constant NULL
         // must reach the strict-op elision below.
         let (a, b) = (fold(a), fold(b));
@@ -3754,7 +3758,7 @@ impl Binder<'_> {
         // trapping side must be eliminated here too. (promote_f64 retypes a
         // NullOf in place, so the plain match still sees it after promotion.)
         if matches!(a.kind, SKind::NullOf) || matches!(b.kind, SKind::NullOf) {
-            return Ok(null_of(Ty::I1));
+            return Ok(null_of(ret));
         }
         let nullable = a.nullable || b.nullable;
         Ok(SExpr {
@@ -3763,7 +3767,7 @@ impl Binder<'_> {
                 a: Box::new(a),
                 b: Box::new(b),
             },
-            ty: Ty::I1,
+            ty: ret,
             nullable,
         })
     }
@@ -6085,8 +6089,40 @@ fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
     })
 }
 
-/// DuckDB numeric promotion for the v0 type lattice: `/` is always float
-/// division; otherwise int op int stays int, anything touching f64 is f64.
+/// The operator-table symbol for an [`ArithOp`] (TASK-92): the key into
+/// `sig::OPS`, where the RESULT-TYPE rules live.
+fn arith_sym(op: ArithOp) -> &'static str {
+    match op {
+        ArithOp::Add => "+",
+        ArithOp::Sub => "-",
+        ArithOp::Mul => "*",
+        ArithOp::Div => "/",
+        ArithOp::IDiv => "//",
+        ArithOp::Rem => "%",
+        ArithOp::Shl => "<<",
+        ArithOp::Shr => ">>",
+        ArithOp::BitAnd => "&",
+        ArithOp::BitOr => "|",
+        ArithOp::BitXor => "xor",
+    }
+}
+
+/// The operator-table symbol for a [`CmpPred`] (TASK-92).
+fn cmp_sym(pred: CmpPred) -> &'static str {
+    match pred {
+        CmpPred::Eq => "=",
+        CmpPred::Ne => "<>",
+        CmpPred::Lt => "<",
+        CmpPred::Le => "<=",
+        CmpPred::Gt => ">",
+        CmpPred::Ge => ">=",
+    }
+}
+
+/// DuckDB numeric promotion for the v0 type lattice. The result-type RULE
+/// is the operator's `sig::OPS` row — `/` is Fixed(F64), everything else
+/// widens (int op int stays int, anything touching f64 is f64); this
+/// function is the rule's consumer and owns the promotion nodes.
 fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty), PrepareError> {
     let numeric = |e: &SExpr| matches!(e.ty, Ty::I64 | Ty::F64);
     if !numeric(&a) || !numeric(&b) {
@@ -6096,15 +6132,22 @@ fn numeric_promote(op: ArithOp, a: SExpr, b: SExpr) -> Result<(SExpr, SExpr, Ty)
             b.ty.name()
         )));
     }
-    if op == ArithOp::Div {
-        return Ok((promote_f64(a), promote_f64(b), Ty::F64));
-    }
-    match (a.ty, b.ty) {
-        (Ty::I64, Ty::I64) => Ok((a, b, Ty::I64)),
-        (Ty::F64, Ty::F64) => Ok((a, b, Ty::F64)),
-        (Ty::I64, Ty::F64) => Ok((promote_f64(a), b, Ty::F64)),
-        (Ty::F64, Ty::I64) => Ok((a, promote_f64(b), Ty::F64)),
-        _ => unreachable!("guarded numeric above"),
+    let ty = match sig::op_ret(arith_sym(op)) {
+        Ret::Fixed(t) => t,
+        Ret::Widen => {
+            if a.ty == Ty::F64 || b.ty == Ty::F64 {
+                Ty::F64
+            } else {
+                Ty::I64
+            }
+        }
+        Ret::Arg(_) | Ret::Unify => unreachable!("not an operator rule"),
+    };
+    if ty == Ty::F64 {
+        // promote_f64 is identity on an already-F64 operand.
+        Ok((promote_f64(a), promote_f64(b), Ty::F64))
+    } else {
+        Ok((a, b, ty))
     }
 }
 
