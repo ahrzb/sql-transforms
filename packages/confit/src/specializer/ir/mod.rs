@@ -145,9 +145,19 @@ mod tests;
 
 /// Bare scalar type of an SSA value. There is deliberately no nullable
 /// variant — see the module docs.
+///
+/// I8/I16/I32 are DuckDB's narrow integer widths (m-8 phase 2): real in the
+/// frontend and in column headers, ERASED to the i64 lane for SSA values and
+/// payloads — DuckDB's narrow ints are checked-never-wrapping, so i64
+/// compute + range trap (phase 3) + narrow emit is bit-identical. An SSA
+/// value or payload with a narrow type is a verifier error; `lane()` is the
+/// erasure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Ty {
     I1,
+    I8,
+    I16,
+    I32,
     I64,
     F64,
     Str,
@@ -157,10 +167,35 @@ impl Ty {
     pub fn name(self) -> &'static str {
         match self {
             Ty::I1 => "i1",
+            Ty::I8 => "i8",
+            Ty::I16 => "i16",
+            Ty::I32 => "i32",
             Ty::I64 => "i64",
             Ty::F64 => "f64",
             Ty::Str => "str",
         }
+    }
+
+    /// The machine lane values of this type compute and store in.
+    pub fn lane(self) -> Ty {
+        match self {
+            Ty::I8 | Ty::I16 | Ty::I32 => Ty::I64,
+            t => t,
+        }
+    }
+
+    /// Inclusive value range of a narrow integer width; None for lane types.
+    pub fn int_range(self) -> Option<(i64, i64)> {
+        match self {
+            Ty::I8 => Some((i8::MIN as i64, i8::MAX as i64)),
+            Ty::I16 => Some((i16::MIN as i64, i16::MAX as i64)),
+            Ty::I32 => Some((i32::MIN as i64, i32::MAX as i64)),
+            _ => None,
+        }
+    }
+
+    pub fn is_int(self) -> bool {
+        matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
     }
 }
 

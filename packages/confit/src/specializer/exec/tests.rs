@@ -786,7 +786,7 @@ entry:
 fn gen_scalar(rng: &mut gen::Rng, ty: Ty) -> ScalarVal {
     match ty {
         Ty::I1 => ScalarVal::I1(rng.chance(50)),
-        Ty::I64 => ScalarVal::I64(rng.next() as i64 % 1000),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(rng.next() as i64 % 1000),
         Ty::F64 => ScalarVal::F64((rng.next() as i64 % 1000) as f64 / 4.0),
         Ty::Str => ScalarVal::Str(format!("s{}", rng.below(5))),
     }
@@ -813,7 +813,7 @@ fn gen_statics(rng: &mut gen::Rng, p: &Program) -> Vec<StaticData> {
                         let key: Vec<KeyBits> = keys
                             .iter()
                             .enumerate()
-                            .map(|(pos, kt)| match (pos, kt) {
+                            .map(|(pos, kt)| match (pos, kt.lane()) {
                                 (0, Ty::I1) => KeyBits::I1(j % 2 == 1),
                                 (0, Ty::I64) => KeyBits::I64(j as i64),
                                 (0, Ty::F64) => KeyBits::F64((j as f64).to_bits()),
@@ -821,7 +821,7 @@ fn gen_statics(rng: &mut gen::Rng, p: &Program) -> Vec<StaticData> {
                                 (_, Ty::I1) => KeyBits::I1(true),
                                 (_, Ty::I64) => KeyBits::I64(7),
                                 (_, Ty::F64) => KeyBits::F64(1.5f64.to_bits()),
-                                (_, Ty::Str) => KeyBits::Str("fix".into()),
+                                _ => KeyBits::Str("fix".into()),
                             })
                             .collect();
                         let vals = values.iter().map(|vt| gen_scalar(rng, *vt)).collect();
@@ -905,7 +905,7 @@ fn gen_input(rng: &mut gen::Rng, p: &Program) -> Batch {
         .iter()
         .map(|c| {
             let mk_valid = |rng: &mut gen::Rng| !c.ty.nullable || rng.chance(70);
-            match c.ty.ty {
+            match c.ty.ty.lane() {
                 Ty::I1 => c_i1(
                     &(0..rows)
                         .map(|_| mk_valid(rng).then(|| rng.chance(50)))
@@ -940,6 +940,9 @@ fn gen_input(rng: &mut gen::Rng, p: &Program) -> Batch {
                         .collect();
                     let refs: Vec<Option<&str>> = opts.iter().map(|o| o.as_deref()).collect();
                     c_str(&refs)
+                }
+                Ty::I8 | Ty::I16 | Ty::I32 => {
+                    unreachable!("lane() never returns a narrow width")
                 }
             }
         })

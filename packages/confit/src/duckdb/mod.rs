@@ -41,7 +41,8 @@ fn base_to_ty(b: &Base) -> Option<Ty> {
 fn ty_to_base(t: Ty) -> Base {
     match t {
         Ty::I1 => Base::Bool,
-        Ty::I64 => Base::Int,
+        // Python ints have no width; every integer width is `int`.
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Base::Int,
         Ty::F64 => Base::Float,
         Ty::Str => Base::Str,
     }
@@ -423,7 +424,9 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                             };
                             vals.push(Some(match ty {
                                 Ty::I1 => ScalarVal::I1(item.extract().map_err(bad)?),
-                                Ty::I64 => ScalarVal::I64(item.extract().map_err(bad)?),
+                                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                                    ScalarVal::I64(item.extract().map_err(bad)?)
+                                }
                                 Ty::F64 => ScalarVal::F64(item.extract().map_err(bad)?),
                                 Ty::Str => ScalarVal::Str(item.extract().map_err(bad)?),
                             }));
@@ -498,7 +501,7 @@ fn materialize_map(
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<KeyBits> {
                 Ok(match ty {
                     Ty::I1 => KeyBits::I1(v.extract()?),
-                    Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
                         build_err(format!(
                             "unsupported: static table '{}' key column '{name}' value \
                              outside BIGINT range (UBIGINT/HUGEINT payloads)",
@@ -519,7 +522,7 @@ fn materialize_map(
                     keys.push(KeyBits::I1(false));
                     keys.push(match ty {
                         Ty::I1 => KeyBits::I1(false),
-                        Ty::I64 => KeyBits::I64(0),
+                        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(0),
                         Ty::F64 => KeyBits::F64(0f64.to_bits()),
                         Ty::Str => KeyBits::Str(String::new()),
                     });
@@ -542,7 +545,8 @@ fn materialize_map(
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<ScalarVal> {
                 Ok(match ty {
                     Ty::I1 => ScalarVal::I1(v.extract()?),
-                    Ty::I64 => ScalarVal::I64(v.extract().map_err(|_| {
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(v.extract().map_err(
+                        |_| {
                         build_err(format!(
                             "unsupported: static table '{}' value column '{name}' value \
                              outside BIGINT range (UBIGINT/HUGEINT payloads)",
@@ -562,7 +566,7 @@ fn materialize_map(
                     vals.push(ScalarVal::I1(false));
                     vals.push(match ty {
                         Ty::I1 => ScalarVal::I1(false),
-                        Ty::I64 => ScalarVal::I64(0),
+                        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
                         Ty::F64 => ScalarVal::F64(0.0),
                         Ty::Str => ScalarVal::Str(String::new()),
                     });
@@ -1607,7 +1611,7 @@ impl DuckDBInferFn {
                     valid: Vec::with_capacity(n),
                     data: Vec::with_capacity(n),
                 },
-                Ty::I64 => ColData::I64 {
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ColData::I64 {
                     valid: Vec::with_capacity(n),
                     data: Vec::with_capacity(n),
                 },

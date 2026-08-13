@@ -191,6 +191,15 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
         }
         let mut null_seen = false;
         let col_data = match c.ty.ty {
+            // Row models type every int BIGINT; narrow widths are
+            // expression-side only and never name an input column.
+            Ty::I8 | Ty::I16 | Ty::I32 => {
+                return Err(err(format!(
+                    "infer_arrow: internal — input column '{}' has a narrow \
+                     integer type",
+                    c.name
+                )))
+            }
             Ty::I64 => {
                 let mut valid = Vec::with_capacity(rows);
                 let mut data = Vec::with_capacity(rows);
@@ -452,6 +461,11 @@ fn bitmap(oks: impl Iterator<Item = bool>, n: usize) -> (Vec<u8>, usize) {
     (bits, nulls)
 }
 
+/// The raw little-endian bytes of a numeric buffer, for `pa.py_buffer`.
+fn cast_bytes<T>(data: &[T], size: usize) -> Vec<u8> {
+    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * size) }.to_vec()
+}
+
 /// Engine output -> pa.Table, one `Array.from_buffers` per scalar field; a
 /// wide UDF field assembles as `pa.array` of `None | [components]` (the
 /// python-list path — the wide boundary is transformer output, not the
@@ -481,7 +495,12 @@ pub fn emit(
                 names.push(name.clone());
                 let lane_ty = |t: crate::specializer::ir::Ty| match t {
                     crate::specializer::ir::Ty::I1 => pa.call_method0("bool_"),
-                    crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
+                    // Wide fields are UDF returns, whose vocabulary is
+                    // lane-typed; narrow can't occur but maps to its lane.
+                    crate::specializer::ir::Ty::I8
+                    | crate::specializer::ir::Ty::I16
+                    | crate::specializer::ir::Ty::I32
+                    | crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
                     crate::specializer::ir::Ty::F64 => pa.call_method0("float64"),
                     // `string`, not `large_string` — see the scalar lane
                     // below and TASK-72.
@@ -516,15 +535,67 @@ pub fn emit(
         let (dtype, validity, bufs): (Bound<'_, PyAny>, (Vec<u8>, usize), Vec<Py<PyAny>>) =
             match oc {
                 OutCol::I64(v) => {
+                    // The column's declared width narrows the emitted buffer
+                    // (values compute in the i64 lane). Out of range refuses
+                    // by name: every such input DuckDB itself traps on, and
+                    // our matching runtime trap is m-8 phase 3.
                     let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
-                    let data: Vec<i64> = v.iter().map(|(_, x)| *x).collect();
-                    let raw = unsafe {
-                        std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 8)
+                    let ty = c.ty.ty;
+                    let narrow_err = |x: i64| {
+                        let duck = match ty {
+                            Ty::I8 => "TINYINT",
+                            Ty::I16 => "SMALLINT",
+                            _ => "INTEGER",
+                        };
+                        err(format!(
+                            "infer_arrow: column '{}' value {x} does not fit its \
+                             {duck} type — DuckDB traps on this query (m-8 phase 3)",
+                            c.name,
+                        ))
+                    };
+                    let (dtype, raw): (_, Vec<u8>) = match ty {
+                        Ty::I32 => {
+                            let mut data: Vec<i32> = Vec::with_capacity(v.len());
+                            for (ok, x) in v.iter() {
+                                data.push(if *ok {
+                                    i32::try_from(*x).map_err(|_| narrow_err(*x))?
+                                } else {
+                                    0
+                                });
+                            }
+                            (pa.call_method0("int32")?, cast_bytes(&data, 4))
+                        }
+                        Ty::I16 => {
+                            let mut data: Vec<i16> = Vec::with_capacity(v.len());
+                            for (ok, x) in v.iter() {
+                                data.push(if *ok {
+                                    i16::try_from(*x).map_err(|_| narrow_err(*x))?
+                                } else {
+                                    0
+                                });
+                            }
+                            (pa.call_method0("int16")?, cast_bytes(&data, 2))
+                        }
+                        Ty::I8 => {
+                            let mut data: Vec<i8> = Vec::with_capacity(v.len());
+                            for (ok, x) in v.iter() {
+                                data.push(if *ok {
+                                    i8::try_from(*x).map_err(|_| narrow_err(*x))?
+                                } else {
+                                    0
+                                });
+                            }
+                            (pa.call_method0("int8")?, cast_bytes(&data, 1))
+                        }
+                        _ => {
+                            let data: Vec<i64> = v.iter().map(|(_, x)| *x).collect();
+                            (pa.call_method0("int64")?, cast_bytes(&data, 8))
+                        }
                     };
                     (
-                        pa.call_method0("int64")?,
+                        dtype,
                         vb,
-                        vec![py_buffer.call1((PyBytes::new(py, raw),))?.unbind()],
+                        vec![py_buffer.call1((PyBytes::new(py, &raw),))?.unbind()],
                     )
                 }
                 OutCol::F64(v) => {

@@ -247,7 +247,9 @@ impl InterpFn {
                 .iter()
                 .map(|ty| match ty {
                     Ty::I1 => OutCol::I1(Vec::new()),
-                    Ty::I64 => OutCol::I64(Vec::new()),
+                    // Narrow out columns compute and land in the i64 lane;
+                    // the width is applied at the arrow emit boundary.
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => OutCol::I64(Vec::new()),
                     Ty::F64 => OutCol::F64(Vec::new()),
                     Ty::Str => OutCol::Str(Vec::new()),
                 })
@@ -365,7 +367,8 @@ impl InterpFn {
                 OutCol::F64(_) => Ty::F64,
                 OutCol::Str(_) => Ty::Str,
             };
-            if col_ty != *ty {
+            // Narrow declarations run in their lane; width applies at emit.
+            if col_ty != ty.lane() {
                 return Err(Trap(format!(
                     "RunState out column {ci} is {}, this function declares {}",
                     col_ty.name(),
@@ -385,7 +388,7 @@ impl InterpFn {
             )));
         }
         for (ci, (col, (ty, _))) in input.cols.iter().zip(self.in_decl.iter()).enumerate() {
-            if col.ty() != *ty {
+            if col.ty() != ty.lane() {
                 return Err(Trap(format!(
                     "input column {ci} is {}, the program declares {}",
                     col.ty().name(),
@@ -459,7 +462,7 @@ fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>
             } else {
                 match ty {
                     Ty::I1 => ScalarVal::I1(false),
-                    Ty::I64 => ScalarVal::I64(0),
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
                     Ty::F64 => ScalarVal::F64(0.0),
                     Ty::Str => ScalarVal::Str(String::new()),
                 }
@@ -484,7 +487,7 @@ pub(super) fn call_extern(
 ) -> Result<(bool, Vec<(bool, ScalarVal)>), Trap> {
     let default = |ty: Ty| match ty {
         Ty::I1 => ScalarVal::I1(false),
-        Ty::I64 => ScalarVal::I64(0),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
         Ty::F64 => ScalarVal::F64(0.0),
         Ty::Str => ScalarVal::Str(String::new()),
     };
@@ -693,7 +696,7 @@ fn scalar_to_reg(v: &ScalarVal, arena: &mut Arena) -> RegVal {
 fn default_reg(ty: Ty) -> RegVal {
     match ty {
         Ty::I1 => RegVal::I1(false),
-        Ty::I64 => RegVal::I64(0),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => RegVal::I64(0),
         Ty::F64 => RegVal::F64(0.0),
         Ty::Str => RegVal::Str(StrRef { off: 0, len: 0 }),
     }
@@ -1868,7 +1871,9 @@ fn compile_inst(
             let (dst, a, b) = (sl(slots, dst), sl(slots, a), sl(slots, b));
             Box::new(move |ctx| {
                 let v = match ty {
-                    Ty::I64 => apply_ord(pred, as_i64(ctx.regs[a]).cmp(&as_i64(ctx.regs[b]))),
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                        apply_ord(pred, as_i64(ctx.regs[a]).cmp(&as_i64(ctx.regs[b])))
+                    }
                     Ty::F64 => {
                         // DuckDB DOUBLE order, not IEEE: NaN = NaN, NaN above
                         // everything, zeros equal (see exec::duck_fcmp).
@@ -2439,7 +2444,9 @@ fn compile_inst(
                     a.push(if valid {
                         Some(match ty {
                             Ty::I1 => ScalarVal::I1(as_i1(ctx.regs[args[2 * j + 1]])),
-                            Ty::I64 => ScalarVal::I64(as_i64(ctx.regs[args[2 * j + 1]])),
+                            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                                ScalarVal::I64(as_i64(ctx.regs[args[2 * j + 1]]))
+                            }
                             Ty::F64 => ScalarVal::F64(as_f64(ctx.regs[args[2 * j + 1]])),
                             Ty::Str => ScalarVal::Str(
                                 ctx.arena.get(as_str(ctx.regs[args[2 * j + 1]])).to_string(),
