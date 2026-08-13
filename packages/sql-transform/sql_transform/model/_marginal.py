@@ -12,9 +12,11 @@ the rewrite emits. That is the attribution gate: every refusal here fires
 against the author's own spelling, before the rewrite, and a refusal escaping
 from the derived text is our bug.
 
-Implements slice 2 of `docs/superpowers/specs/2026-08-13-marginalize-design.md`
-(plain aggregates, ``PARTITION BY`` scopes). Projection scopes are slice 3,
-the widened window vocabulary (``RANGE``/``GROUPS``, subqueries) slice 5.
+Implements slices 2–3 of
+`docs/superpowers/specs/2026-08-13-marginalize-design.md` (plain aggregates,
+``PARTITION BY`` scopes, projection scopes — windowed ``tfm_fit`` and the
+bare ``tfm(x)`` sugar, frozen keyless). Key composition is slice 4, the
+widened window vocabulary (``RANGE``/``GROUPS``, subqueries) slice 5.
 """
 
 import itertools
@@ -75,16 +77,33 @@ def _is_window(v: Any) -> bool:
     return isinstance(v, Opaque) and v.fields.get("class") == "WINDOW"
 
 
-def _projection_stem(name: str, scope: dict[str, Any]) -> str | None:
-    """The projection a call name means — the name itself or its split-half
-    stem — or None. Late import: ``_projection`` imports this module."""
+def _projection(name: str, scope: dict[str, Any]) -> Any | None:
+    """The projection ``name`` resolves to, or None. Late import:
+    ``_projection`` imports this module."""
     from sql_transform.model._projection import SQLProjection  # noqa: PLC0415
 
-    stem, _, half = name.rpartition("_")
-    for candidate in (name, stem if half in ("fit", "transform") else None):
-        if candidate and isinstance(scope.get(candidate), SQLProjection):
-            return candidate
-    return None
+    obj = scope.get(name)
+    return obj if isinstance(obj, SQLProjection) else None
+
+
+def _pure(what: str, parts: list[Node], scope: dict[str, Any]) -> None:
+    """No fit scope may nest inside another's arguments: the inner one would
+    freeze into a column the derived subquery cannot see."""
+    for c in parts:
+        for d in (c, *descendants(c, deep=True)):
+            if _is_window(d):
+                _refuse(f"{what} nests {_print_expr(d)} inside a fit scope")
+            if isinstance(d, Function) and not d.is_operator:
+                if d.function_name.lower() in _aggregates():
+                    _refuse(
+                        f"{what} nests the aggregate {d.function_name} "
+                        "inside a fit scope"
+                    )
+                if _projection(d.function_name, scope):
+                    _refuse(
+                        f"{what} nests the projection call {d.function_name} "
+                        "inside a fit scope"
+                    )
 
 
 def _admit(w: Opaque, scope: dict[str, Any]) -> list[Node]:
@@ -92,12 +111,15 @@ def _admit(w: Opaque, scope: dict[str, Any]) -> list[Node]:
     f = w.fields
     name = str(f.get("function_name") or "")
     what = _print_expr(w)
-    if stem := _projection_stem(name, scope):
+    stem, _, half = name.rpartition("_")
+    if _projection(name, scope):
         _refuse(
-            f"{stem} is a projection, and marginalize does not freeze "
-            f"projection scopes yet — write the {FIT} half yourself "
-            "(SQLProjection(...))"
+            f"{name} is a projection, and a fit scope is spelled on the fit "
+            f"half: {name}_transform({name}_fit(...) OVER (...), ...)"
         )
+    leaf = _projection(stem, scope) if half == "fit" else None
+    if half == "transform" and _projection(stem, scope):
+        _refuse(f"{name} is the scalar half — the OVER belongs on {stem}_fit")
     if f.get("type") != "WINDOW_AGGREGATE":
         _refuse(
             f"{what} is positional: its value is a row position, "
@@ -117,25 +139,13 @@ def _admit(w: Opaque, scope: dict[str, Any]) -> list[Node]:
     for key, value in f.items():
         if key not in _CARRIED and value not in (None, [], "", False):
             _refuse(f"{what}: its {key.upper()} has no frozen spelling")
-    if name.lower() not in _aggregates():
+    if leaf is not None and (f.get("filter_expr") or f.get("distinct")):
+        _refuse(
+            f"{what}: FILTER and DISTINCT on a projection fit scope have "
+            "no frozen spelling yet"
+        )
+    if leaf is None and name.lower() not in _aggregates():
         _refuse(f"{what}: {name} is not an aggregate the oracle knows")
-    inner = [
-        *(f.get("children") or []),
-        *(f.get("partitions") or []),
-        *([f["filter_expr"]] if f.get("filter_expr") else []),
-    ]
-    for c in inner:
-        for d in (c, *descendants(c, deep=True)):
-            if _is_window(d):
-                _refuse(f"{what} nests {_print_expr(d)} inside a fit scope")
-            if (
-                isinstance(d, Function)
-                and not d.is_operator
-                and d.function_name.lower() in _aggregates()
-            ):
-                _refuse(
-                    f"{what} nests the aggregate {d.function_name} inside a fit scope"
-                )
     return list(f.get("partitions") or [])
 
 
@@ -155,23 +165,38 @@ def _stripped(expr: Node, spine: frozenset[str]) -> Node:
     return strip(expr) or rebuild(expr, strip, deep=True)
 
 
-def _call_text(w: Opaque, spine: frozenset[str]) -> str:
-    """The scope's aggregate as a grouped call — the OVER removed, FILTER and
-    DISTINCT carried, spine qualifiers stripped — printed by the oracle."""
-    f = w.fields
+def _printed_call(
+    name: str,
+    children: list[Node],
+    spine: frozenset[str],
+    distinct: bool = False,
+    filter_expr: Node | None = None,
+) -> str:
+    """A call with spine qualifiers stripped, printed by the oracle."""
     tpl = _template("SELECT count(1)").select_list[0]
     call = tpl.model_copy(
         update={
-            "function_name": str(f["function_name"]),
-            "children": [_stripped(c, spine) for c in f.get("children") or []],
-            "distinct": bool(f.get("distinct")),
-            "filter_": _stripped(f["filter_expr"], spine)
-            if f.get("filter_expr")
-            else None,
+            "function_name": name,
+            "children": [_stripped(c, spine) for c in children],
+            "distinct": distinct,
+            "filter_": _stripped(filter_expr, spine) if filter_expr else None,
             "alias": "",
         }
     )
     return _print_expr(call)
+
+
+def _call_text(w: Opaque, spine: frozenset[str]) -> str:
+    """The scope's aggregate as a grouped call — the OVER removed, FILTER and
+    DISTINCT carried, spine qualifiers stripped — printed by the oracle."""
+    f = w.fields
+    return _printed_call(
+        str(f["function_name"]),
+        list(f.get("children") or []),
+        spine,
+        distinct=bool(f.get("distinct")),
+        filter_expr=f.get("filter_expr"),
+    )
 
 
 def _fresh_prefix(sql: str) -> str:
@@ -252,6 +277,9 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
     items_text: list[str] = []
 
     for item in node.select_list:
+        # Purity runs on the author's tree, before any swap: a bottom-up
+        # rebuild would replace an inner scope first, and the nesting the
+        # refusal names would no longer be there to see.
         for v in (item, *descendants(item, deep=True)):
             if isinstance(v, Opaque) and v.fields.get("class") == "STAR":
                 _refuse(
@@ -259,42 +287,79 @@ def derive(sql: str, scope: dict[str, Any]) -> str:  # noqa: C901
                 )
             if is_query(v):
                 _refuse("a subquery expression has no frozen spelling yet")
-            if isinstance(v, Function) and (
-                stem := _projection_stem(v.function_name, scope)
-            ):
-                _refuse(
-                    f"{stem} is a projection, and marginalize does not freeze "
-                    f"projection scopes yet — write the {FIT} half yourself "
-                    "(SQLProjection(...))"
+            if _is_window(v):
+                fw = v.fields
+                _pure(
+                    _print_expr(v),
+                    [
+                        *(fw.get("children") or []),
+                        *(fw.get("partitions") or []),
+                        *([fw["filter_expr"]] if fw.get("filter_expr") else []),
+                    ],
+                    scope,
                 )
+            if (
+                isinstance(v, Function)
+                and not v.is_operator
+                and _projection(v.function_name, scope)
+            ):
+                _pure(_print_expr(v), list(v.children), scope)
 
         swapped_any = False
 
-        def swap(v: Node) -> Node | None:
+        def frozen_ref(key_texts: tuple[str, ...], agg_text: str, alias: str) -> Node:
             nonlocal swapped_any
+            swapped_any = True
+            columns = scopes.setdefault(key_texts, [])
+            column = f"{prefix}w{next(w_numbers)}"
+            columns.append((column, agg_text))
+            ref = _template("SELECT a.b").select_list[0]
+            m = f"{prefix}m{list(scopes).index(key_texts)}"
+            return ref.model_copy(update={"column_names": [m, column], "alias": alias})
+
+        def swap(v: Node) -> Node | None:
+            if (
+                isinstance(v, Function)
+                and not v.is_operator
+                and _projection(v.function_name, scope)
+            ):
+                # The ONE sugar inside a marginalize text: a bare projection
+                # call is the global fit scope, frozen keyless — θ crosses
+                # the derived join as a value, the transform half stays.
+                theta = frozen_ref(
+                    (),
+                    _printed_call(f"{v.function_name}_fit", list(v.children), spine),
+                    "",
+                )
+                return v.model_copy(
+                    update={
+                        "function_name": f"{v.function_name}_transform",
+                        "children": [theta, *v.children],
+                    }
+                )
             if not _is_window(v):
                 return None
             keys = _admit(v, scope)
             key_texts = tuple(_print_expr(_stripped(k, spine)) for k in keys)
-            columns = scopes.setdefault(key_texts, [])
-            column = f"{prefix}w{next(w_numbers)}"
-            columns.append((column, _call_text(v, spine)))
-            swapped_any = True
-            ref = _template("SELECT a.b").select_list[0]
-            m = f"{prefix}m{list(scopes).index(key_texts)}"
-            return ref.model_copy(update={"column_names": [m, column], "alias": ""})
+            return frozen_ref(
+                key_texts, _call_text(v, spine), str(v.fields.get("alias") or "")
+            )
 
         swapped = swap(item) or rebuild(item, swap, deep=True)
         for v in (swapped, *descendants(swapped, deep=True)):
-            if (
-                isinstance(v, Function)
-                and not v.is_operator
-                and v.function_name.lower() in _aggregates()
-            ):
+            if not isinstance(v, Function) or v.is_operator:
+                continue
+            if v.function_name.lower() in _aggregates():
                 _refuse(
                     f"{_print_expr(v)} has no OVER: without a scope it is one "
                     "value per batch, not one per row — spell the fit scope: "
                     f"{v.function_name}(...) OVER ()"
+                )
+            fstem, _, fhalf = v.function_name.rpartition("_")
+            if fhalf == "fit" and _projection(fstem, scope):
+                _refuse(
+                    f"{_print_expr(v)} has no OVER: a fit scope needs one — "
+                    "even the global scope is spelled OVER ()"
                 )
         alias = str(field(item, "alias") or "")
         if swapped_any and not alias:
