@@ -2,7 +2,7 @@
 id: TASK-82
 title: >-
   Builtin argument binding accepts what DuckDB's overloads refuse (lpad with a BIGINT count)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 13:00'
 labels:
@@ -56,4 +56,14 @@ Note DuckDB *does* downcast for some functions and not others — the oracle
 decides, per name. The fuzzer's builtin-catalogue wildcard will keep finding
 these; after the fix, re-run seeds 38 and 1224 and grep the campaign output
 for `No function matches`.
+
+Closed by the 2026-08-13 grooming pass: the headline lpad/rpad BIGINT count
+refuses (cf6284c, plus aa5f9a5's ordering fix so a NULL string cannot smuggle
+the count past the check; both survive the later width refactor as a real
+type check on the bound count). The four NULL-typed singletons were
+root-caused to bare-NULL typing and fixed under TASK-86 (7f5acdb), per this
+ticket's own fold-in-or-ticket clause. Pins live in test_known_divergences.py.
+The one remaining instance of this class found by the TASK-92 audit -
+round/trunc's digits slot binding any I64 - is ticketed as TASK-97, with a
+fix in flight on branch task-97.
 <!-- SECTION:NOTES:END -->

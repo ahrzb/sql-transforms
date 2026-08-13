@@ -2,7 +2,7 @@
 id: TASK-81
 title: >-
   OVER, FILTER and IGNORE NULLS are accepted and silently dropped on every builtin call
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 13:00'
 labels:
@@ -65,4 +65,11 @@ where `function()` dispatches builtins, and to add `f.over`. Consider
 destructuring the `Function` node exhaustively (no `..`), the same move
 `refuse_unhandled_select` made, so the next sqlparser field breaks the build
 instead of the answers.
+
+Closed by the 2026-08-13 grooming pass: fixed in 8943b43 - one
+exhaustive-destructure screen at the top of `function()` refuses
+OVER/FILTER/IGNORE-RESPECT NULLS/WITHIN GROUP on every call path (builtins,
+udfs, tree calls), per the class-check AC. Pinned by
+test_scalar_call_modifiers_are_refused_not_dropped plus controls, and the
+fuzz smoke's planted-OVER assertion.
 <!-- SECTION:NOTES:END -->
