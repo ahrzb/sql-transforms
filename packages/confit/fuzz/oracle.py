@@ -51,12 +51,11 @@ _DUCK_T = {
     pa.string(): "VARCHAR",
 }
 
-# Campaign-report filters for features not yet shipped: int widths (TASK-79,
-# m-8 ph2) and decimals (m-8 ph5). One unshipped feature = hundreds of random
-# spellings per run; each tag has a strict-xfail twin that rings when the
-# feature lands, tags never ring — delete the tag in the feature's own PR or
-# it hides regressions.
-_INT_WIDTHS = {pa.int8(), pa.int16(), pa.int32()}
+# Campaign-report filter for the one feature not yet shipped: decimals
+# (m-8 ph5). One unshipped feature = hundreds of random spellings per run;
+# the tag has a strict-xfail twin that rings when the feature lands, tags
+# never ring — delete the tag in the feature's own PR or it hides
+# regressions. (int-widths deleted with TASK-79/m-8 phase 2.)
 
 
 @dataclass
@@ -332,13 +331,10 @@ def _schema_delta(duck: pa.Schema, ours: pa.Schema):
 
 def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
     """None = equal; a tag = an unshipped feature's width class (recursing
-    into structs — an int32 lane inside struct_pack is still int widths);
-    "diff"."""
+    into structs — a decimal lane inside struct_pack still tags); "diff"."""
     if duck == ours:
         return None
-    # One arm per unshipped feature; delete when it ships (_INT_WIDTHS note).
-    if duck in _INT_WIDTHS and ours == pa.int64():
-        return "int-widths"
+    # One arm per unshipped feature; delete when it ships (see note above).
     if pa.types.is_decimal(duck) and ours == pa.float64():
         return "decimals"
     if (
