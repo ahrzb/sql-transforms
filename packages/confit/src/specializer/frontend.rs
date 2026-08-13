@@ -31,6 +31,7 @@ use sqlparser::parser::Parser;
 
 use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
+use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
     ArithOp, CompareGrid, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap,
 };
@@ -59,6 +60,14 @@ impl std::fmt::Display for PrepareError {
 
 fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
+}
+
+/// What the TASK-92 resolution head hands a table-resolved arm.
+enum SigArgs {
+    /// A bare-NULL argument made the whole call NULL of the result type.
+    Null(SExpr),
+    /// Typed (checked, promoted) arguments plus the resolved result type.
+    Bound(Vec<SExpr>, Ty),
 }
 
 /// Every name the builtin catalogue in [`Binder::function`] claims.
@@ -4319,6 +4328,78 @@ impl Binder<'_> {
             .position(|m| m.name.eq_ignore_ascii_case(name))
     }
 
+    /// TASK-92 resolution head for `WholeCallNull` table rows: arity,
+    /// eager argument binding, the bare-NULL whole-call short-circuit,
+    /// per-arg type checks (byte-identical error strings), promotion into
+    /// the f64 lane for the DOUBLE-returning math rows, and the result
+    /// type. The arm then only builds its node.
+    ///
+    /// audit 2026-08-13: the NULL short-circuit running BEFORE the type
+    /// checks is the audited dominant pattern — replace(NULL, 1, 2) binds
+    /// NULL::VARCHAR and pow(s, NULL) binds NULL::DOUBLE (the latter is
+    /// looser than DuckDB, which refuses the VARCHAR sibling). Preserved.
+    fn sig_resolve(
+        &self,
+        name: &str,
+        sig: &Sig,
+        args: &[&SqlExpr],
+    ) -> Result<SigArgs, PrepareError> {
+        let n = sig.params.len();
+        if (!sig.variadic && args.len() != n) || (sig.variadic && args.len() < n) {
+            // audit 2026-08-13: reverse alone spells its arity error
+            // "takes one argument"; every sibling says "exactly 1".
+            return Err(PrepareError::Bind(if name == "reverse" {
+                format!("{name} takes one argument")
+            } else {
+                match n {
+                    0 => format!("{name} takes no arguments"),
+                    1 => format!("{name} takes exactly 1 argument"),
+                    _ => format!("{name} takes exactly {n} arguments"),
+                }
+            }));
+        }
+        let mut bound: Vec<Option<SExpr>> = Vec::with_capacity(args.len());
+        for a in args {
+            bound.push(self.expr_or_null(a)?);
+        }
+        if bound.iter().any(Option::is_none) {
+            // A bare NULL adopts the result type; Arg(_) rows adopt BIGINT
+            // (measured: abs(NULL) binds abs(BIGINT) in DuckDB).
+            let ty = match sig.ret {
+                Ret::Fixed(t) => t,
+                _ => Ty::I64,
+            };
+            return Ok(SigArgs::Null(null_of(ty)));
+        }
+        let mut out = Vec::with_capacity(bound.len());
+        for (p, e) in sig.params.iter().zip(bound) {
+            let e = e.expect("checked above");
+            if !sig::arg_ok(*p, e.ty) {
+                return Err(PrepareError::Bind(format!(
+                    "no function matches {name}({})",
+                    e.ty.name()
+                )));
+            }
+            // Num args feed the f64 lane when the row returns DOUBLE (the
+            // math1/math2 families); Arg(0) rows (abs) keep their type.
+            out.push(
+                if matches!(p, ArgTy::Num) && sig.ret == Ret::Fixed(Ty::F64) {
+                    promote_f64(e)
+                } else {
+                    e
+                },
+            );
+        }
+        let ret = match sig.ret {
+            Ret::Fixed(t) => t,
+            Ret::Arg(i) => out[i].ty,
+            Ret::Widen | Ret::Unify => {
+                unreachable!("no WholeCallNull table row uses these")
+            }
+        };
+        Ok(SigArgs::Bound(out, ret))
+    }
+
     fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         // TASK-81: DuckDB refuses every call-node modifier on a scalar call
@@ -4369,32 +4450,34 @@ impl Binder<'_> {
                 _ => return Err(unsup(format!("function {} argument form", f.name))),
             }
         }
+        // TASK-92: names with a WholeCallNull signature row resolve here
+        // (sig.rs is the catalogue of what they accept and return); their
+        // arms below only build nodes. Custom rows and CUSTOM_NAMES keep
+        // every gate in their arm, verbatim.
+        let resolved: Option<(Vec<SExpr>, Ty)> = match sig::lookup(&name) {
+            Some(s) if s.null_arg == NullArg::WholeCallNull => {
+                match self.sig_resolve(&name, s, &args)? {
+                    SigArgs::Null(e) => return Ok(e),
+                    SigArgs::Bound(bound, ret) => Some((bound, ret)),
+                }
+            }
+            _ => None,
+        };
         match name.as_str() {
             // ucase/lcase are alias-identical to upper/lower (wave-3 pins:
             // exhaustive all-codepoint sweep, zero mismatches).
             "upper" | "lower" | "ucase" | "lcase" => {
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(format!(
-                        "{name} takes exactly 1 argument"
-                    )));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                let Some(inner) = self.expr_or_null(arg)? else {
-                    return Ok(null_of(Ty::Str));
-                };
-                if inner.ty != Ty::Str {
-                    // DuckDB has no implicit numeric->VARCHAR coercion here.
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches {name}({})",
-                        inner.ty.name()
-                    )));
-                }
                 let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::StrCase {
                         upper: matches!(name.as_str(), "upper" | "ucase"),
                         a: Box::new(inner),
                     },
-                    ty: Ty::Str,
+                    ty,
                     nullable,
                 })
             }
@@ -4429,28 +4512,17 @@ impl Binder<'_> {
                 self.str2(&name, op, h, n)
             }
             "length" | "len" | "char_length" | "character_length" | "strlen" => {
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(format!(
-                        "{name} takes exactly 1 argument"
-                    )));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                let Some(inner) = self.expr_or_null(arg)? else {
-                    return Ok(null_of(Ty::I64));
-                };
-                if inner.ty != Ty::Str {
-                    // No implicit numeric->VARCHAR casts here (measured).
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches {name}({})",
-                        inner.ty.name()
-                    )));
-                }
                 let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::SLen {
                         bytes: name == "strlen",
                         a: Box::new(inner),
                     },
-                    ty: Ty::I64,
+                    ty,
                     nullable,
                 })
             }
@@ -4962,27 +5034,10 @@ impl Binder<'_> {
                 } else {
                     StrOp3::Translate
                 };
-                let [s, x, y] = args[..] else {
-                    return Err(PrepareError::Bind(format!(
-                        "{name} takes exactly 3 arguments"
-                    )));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([bs, bx, by]) = <[SExpr; 3]>::try_from(bound) else {
+                    unreachable!("arity 3")
                 };
-                let (bs, bx, by) = (
-                    self.expr_or_null(s)?,
-                    self.expr_or_null(x)?,
-                    self.expr_or_null(y)?,
-                );
-                let (Some(bs), Some(bx), Some(by)) = (bs, bx, by) else {
-                    return Ok(null_of(Ty::Str));
-                };
-                for e in [&bs, &bx, &by] {
-                    if e.ty != Ty::Str {
-                        return Err(PrepareError::Bind(format!(
-                            "no function matches {name}({})",
-                            e.ty.name()
-                        )));
-                    }
-                }
                 let nullable = bs.nullable || bx.nullable || by.nullable;
                 Ok(SExpr {
                     kind: SKind::Str3 {
@@ -4991,88 +5046,53 @@ impl Binder<'_> {
                         b: Box::new(bx),
                         c: Box::new(by),
                     },
-                    ty: Ty::Str,
+                    ty,
                     nullable,
                 })
             }
             // unicode('') = ord('') = -1, but ascii('') = 0 — the measured
             // sole divergence; all return the FIRST codepoint otherwise.
             "unicode" | "ord" | "ascii" => {
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(format!(
-                        "{name} takes exactly 1 argument"
-                    )));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                let Some(inner) = self.expr_or_null(arg)? else {
-                    return Ok(null_of(Ty::I64));
-                };
-                if inner.ty != Ty::Str {
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches {name}({})",
-                        inner.ty.name()
-                    )));
-                }
                 let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::Sord {
                         empty_zero: name == "ascii",
                         a: Box::new(inner),
                     },
-                    ty: Ty::I64,
+                    ty,
                     nullable,
                 })
             }
             // bit_length = 8 * strlen exactly (measured) — pure desugar.
             "bit_length" => {
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(
-                        "bit_length takes exactly 1 argument".to_string(),
-                    ));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                let Some(inner) = self.expr_or_null(arg)? else {
-                    return Ok(null_of(Ty::I64));
-                };
-                if inner.ty != Ty::Str {
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches bit_length({})",
-                        inner.ty.name()
-                    )));
-                }
                 let nullable = inner.nullable;
                 let slen = SExpr {
                     kind: SKind::SLen {
                         bytes: true,
                         a: Box::new(inner),
                     },
-                    ty: Ty::I64,
+                    ty,
                     nullable,
                 };
-                let eight = SExpr {
-                    kind: SKind::Lit(Lit::I64(8)),
-                    ty: Ty::I64,
-                    nullable: false,
-                };
-                self.arith(ArithOp::Mul, eight, slen)
+                self.arith(ArithOp::Mul, lit_i64(8), slen)
             }
             "strip_accents" => {
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(
-                        "strip_accents takes exactly 1 argument".to_string(),
-                    ));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                let Some(inner) = self.expr_or_null(arg)? else {
-                    return Ok(null_of(Ty::Str));
-                };
-                if inner.ty != Ty::Str {
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches strip_accents({})",
-                        inner.ty.name()
-                    )));
-                }
                 let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::StripAccents(Box::new(inner)),
-                    ty: Ty::Str,
+                    ty,
                     nullable,
                 })
             }
@@ -5411,22 +5431,14 @@ impl Binder<'_> {
                 // TASK-56 lifts the wave-3 descope: ASCII byte path +
                 // UAX-29 extended grapheme path (pins-waveA). No implicit
                 // casts — reverse(123) is a DuckDB binder error.
-                let [arg] = args[..] else {
-                    return Err(PrepareError::Bind(format!("{name} takes one argument")));
+                let (bound, ty) = resolved.expect("signature row");
+                let Ok([inner]) = <[SExpr; 1]>::try_from(bound) else {
+                    unreachable!("arity 1")
                 };
-                let Some(inner) = self.expr_or_null(arg)? else {
-                    return Ok(null_of(Ty::Str));
-                };
-                if inner.ty != Ty::Str {
-                    return Err(PrepareError::Bind(format!(
-                        "no function matches reverse({})",
-                        inner.ty.name()
-                    )));
-                }
                 let nullable = inner.nullable;
                 Ok(SExpr {
                     kind: SKind::Reverse(Box::new(inner)),
-                    ty: Ty::Str,
+                    ty,
                     nullable,
                 })
             }
