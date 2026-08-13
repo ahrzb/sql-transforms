@@ -91,6 +91,18 @@ CATALOGUE = [
     "SELECT CASE WHEN NULL THEN -2147483648 ELSE (14 - -13) END AS o FROM __THIS__",
     "SELECT CASE WHEN NULL THEN (14 - -13) ELSE -2147483648 END AS o FROM __THIS__",
     "SELECT CASE WHEN k > 1 THEN unicode(s) ELSE -2147483648 END AS o FROM __THIS__",
+    # Adversarial-fleet pins (2026-08-13): the CASE fold seeds from the
+    # ELSE; hints are syntactic-only; SQLNULL propagates through nullif.
+    "SELECT CASE WHEN k > 1 THEN -2147483648 WHEN k > 0 THEN (2147483647 + -13)"
+    " END AS o FROM __THIS__",
+    "SELECT coalesce(CASE WHEN k > 9 THEN 5 ELSE 44 END, 9007199254740993)"
+    " AS o FROM __THIS__",
+    "SELECT greatest(-2147483648, 9007199254740993, unicode(s)) AS o FROM __THIS__",
+    "SELECT CAST(k AS SMALLINT) * (0 - 1000) AS o FROM __THIS__",
+    "SELECT CAST(k AS SMALLINT) * +2 AS o FROM __THIS__",
+    "SELECT - nullif(NULL, 1) AS o FROM __THIS__",
+    "SELECT nullif(NULL, 1) * CAST(1 AS SMALLINT) AS o FROM __THIS__",
+    "SELECT CAST(TRUE AS INTEGER) % coalesce(-2147483648, 7) AS o FROM __THIS__",
     "SELECT CAST(k AS INTEGER) AS o FROM __THIS__",
     "SELECT CAST(k AS SMALLINT) AS o FROM __THIS__",
     "SELECT CAST(1 AS TINYINT) AS o FROM __THIS__",
@@ -134,6 +146,35 @@ def test_try_cast_to_integer_nulls_out_of_range():
     )
     got = fn.infer({"__THIS__": [In(**r) for r in big]})
     assert [r["o"] for r in got] == [None, 5]
+
+
+def test_row_and_arrow_boundaries_agree_on_narrow_widths():
+    """Fleet 2026-08-13: infer() served a value infer_arrow refused. The
+    width contract holds on EVERY boundary — both refuse an out-of-range
+    narrow value (DuckDB traps the same input; our trap is phase 3)."""
+    sql = "SELECT CAST(k AS TINYINT) AS o FROM __THIS__"
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
+    )
+    ok = [{"k": 5, "s": "a"}]
+    assert [r["o"] for r in fn.infer({"__THIS__": [In(**r) for r in ok]})] == [5]
+    assert fn.infer_arrow(pa.Table.from_pylist(ok)).to_pylist() == [{"o": 5}]
+    bad = [{"k": 300, "s": "a"}]
+    with pytest.raises(ValueError, match="TINYINT"):
+        fn.infer({"__THIS__": [In(**r) for r in bad]})
+    with pytest.raises(ValueError, match="TINYINT"):
+        fn.infer_arrow(pa.Table.from_pylist(bad))
+
+
+def test_unary_plus_refuses_non_numerics():
+    """DuckDB's + is a real unary function over numerics; +'a' is a binder
+    error there (fleet 2026-08-13 — we built and served it)."""
+    for sql in [
+        "SELECT + s AS o FROM __THIS__",
+        "SELECT +('a') AS o FROM __THIS__",
+    ]:
+        with pytest.raises(ValueError, match=r"\+\("):
+            DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={})
 
 
 def test_out_of_range_dynamic_int32_refuses_at_emit_not_wraps():

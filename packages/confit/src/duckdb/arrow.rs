@@ -550,8 +550,9 @@ pub fn emit(
                             _ => "INTEGER",
                         };
                         err(format!(
-                            "infer_arrow: column '{}' value {x} does not fit its \
-                             {duck} type — DuckDB traps on this query (m-8 phase 3)",
+                            "infer_arrow: column '{}' value {x} is outside its \
+                             {duck} range — the {duck} overflow trap lands with \
+                             m-8 phase 3",
                             c.name,
                         ))
                     };

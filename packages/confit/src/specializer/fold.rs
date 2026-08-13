@@ -287,12 +287,20 @@ pub fn fold(e: SExpr) -> SExpr {
             // CASE unfolded hid that NULL from the TASK-85 strict-op
             // check. Arm VALUES still never fold themselves here — only
             // the selection runs, which is what the runtime does anyway.
+            // An arm escaping the CASE carries the node's unified width
+            // (fleet 2026-08-13: the arm's own ty re-narrowed enclosers).
+            let retype = |mut r: SExpr| {
+                if r.ty != ty && r.ty.is_int() && ty.is_int() {
+                    r.ty = ty;
+                }
+                r
+            };
             let mut kept = Vec::new();
             for (c, r) in arms {
                 match &c.kind {
                     SKind::Lit(Lit::I1(true)) => {
                         if kept.is_empty() {
-                            return r; // first arm wins, whole CASE gone
+                            return retype(r); // first arm wins, CASE gone
                         }
                         // TRUE after dynamic arms: it IS the default now
                         return e(SKind::Case {
@@ -307,7 +315,7 @@ pub fn fold(e: SExpr) -> SExpr {
             if kept.is_empty() {
                 // every arm dropped: the default, or SQL's implicit NULL
                 return match default {
-                    Some(d) => *d,
+                    Some(d) => retype(*d),
                     None => null(ty),
                 };
             }
