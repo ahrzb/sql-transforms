@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import datetime
 
+import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 from test_duckdb_interpreter import duck_check
 
-Inner = create_model("Inner", i=(int | None, None), j=(int | None, None))
-S = create_model("S", x=(int, ...), a=(Inner | None, None))
+Inner = pa.struct([pa.field("i", pa.int64()), pa.field("j", pa.int64())])
+S = pa.schema([pa.field("x", pa.int64(), nullable=False), pa.field("a", Inner)])
 S_ROWS = [
     {"x": 9, "a": {"i": 1, "j": 2}},
     {"x": 8, "a": None},
@@ -27,8 +27,8 @@ S_ROWS = [
 def _struct_check(sql: str, want_cols: list[str], want_rows: list[tuple]):
     """Engine output vs hand-pinned DuckDB values (the oracle rows come
     from the pins run; duck_check's schema DSL has no struct spelling)."""
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": S}, static_tables={}, output="dict")
-    got = fn.infer({"__THIS__": [S(**r) for r in S_ROWS]})
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": S}, static_tables={})
+    got = fn.infer_rows(S_ROWS)
     assert [list(r.keys()) for r in got] == [want_cols] * len(want_rows)
     assert [tuple(r.values()) for r in got] == want_rows
 
@@ -74,13 +74,8 @@ def test_struct_rejections_are_named():
         "SELECT * EXCLUDE (a) FROM __THIS__",
         row_tables={"__THIS__": S},
         static_tables={},
-        output="dict",
     )
-    assert [r["x"] for r in fn.infer({"__THIS__": [S(**r) for r in S_ROWS]})] == [
-        9,
-        8,
-        7,
-    ]
+    assert [r["x"] for r in fn.infer_rows(S_ROWS)] == [9, 8, 7]
 
 
 T = {"a": "int", "s": "str?"}
@@ -126,24 +121,29 @@ def test_null_regex_pattern_vs_oracle():
 def test_unreferenced_nonscalar_column_serves():
     # TASK-56 lazy rejection: a datetime field blocks nothing unless
     # referenced (including via *).
-    D = create_model(
-        "D", a=(int, ...), d=(datetime.datetime | None, None), s=(str | None, None)
+    D = pa.schema(
+        [
+            pa.field("a", pa.int64(), nullable=False),
+            pa.field("d", pa.timestamp("us")),
+            pa.field("s", pa.string()),
+        ]
     )
-    rows = [D(a=1, d=datetime.datetime(2020, 1, 1), s="x"), D(a=2, d=None, s=None)]
+    rows = [
+        {"a": 1, "d": datetime.datetime(2020, 1, 1), "s": "x"},
+        {"a": 2, "d": None, "s": None},
+    ]
     fn = DuckDBInferFn(
         "SELECT a + 1 AS b, s FROM __THIS__",
         row_tables={"__THIS__": D},
         static_tables={},
-        output="dict",
     )
-    assert [r["b"] for r in fn.infer({"__THIS__": rows})] == [2, 3]
+    assert [r["b"] for r in fn.infer_rows(rows)] == [2, 3]
     fn = DuckDBInferFn(
         "SELECT * EXCLUDE (d) FROM __THIS__",
         row_tables={"__THIS__": D},
         static_tables={},
-        output="dict",
     )
-    assert [list(r.keys()) for r in fn.infer({"__THIS__": rows})] == [["a", "s"]] * 2
+    assert [list(r.keys()) for r in fn.infer_rows(rows)] == [["a", "s"]] * 2
     for sql in ["SELECT d FROM __THIS__", "SELECT * FROM __THIS__"]:
         with pytest.raises(ValueError, match="non-scalar"):
             DuckDBInferFn(sql, row_tables={"__THIS__": D}, static_tables={})

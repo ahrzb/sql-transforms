@@ -30,7 +30,7 @@ from collections import Counter
 
 import duckdb
 from confit import DuckDBInferFn
-from test_duckdb_interpreter import _row_model, static
+from test_duckdb_interpreter import _row_schema, static
 
 SEED = int(os.environ.get("REGEXP_FUZZ_SEED", "20260727"))
 # ~15ms/case (engine bind dominates); 250 lands in the ~2-5s budget.
@@ -220,8 +220,8 @@ def _rows_key(rows: list[dict]) -> list:
 
 def test_regexp_differential_fuzz():
     rng = random.Random(SEED)  # noqa: S311 - deterministic fuzzing, not crypto
-    model = _row_model(SCHEMA)
-    inputs = [model(**r) for r in ROWS]
+    schema = _row_schema(SCHEMA)
+    inputs = ROWS
     con = duckdb.connect()
     con.register("__arrow_this", static(SCHEMA, ROWS))
     con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
@@ -242,11 +242,11 @@ def test_regexp_differential_fuzz():
             want = None
 
         try:
-            fn = DuckDBInferFn(sql, row_tables={"__THIS__": model}, static_tables={})
+            fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
         except ValueError:
             stats["duck_err both_reject" if want is None else "reject"] += 1
             continue
-        got = [r.model_dump() for r in fn.infer({"__THIS__": inputs})]
+        got = fn.infer_rows(inputs)
 
         assert want is not None, f"duckdb errored but the engine served rows: {ctx}"
         assert _rows_key(got) == _rows_key(want), f"{ctx}\n got={got}\nwant={want}"
