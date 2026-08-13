@@ -1,7 +1,7 @@
 ---
 id: TASK-104
 title: >-
-  Join node — static joins bound, verified, printed (closes the v0 node set)
+  Join node — general joins bound, verified, printed (closes the v0 node set)
 status: To Do
 assignee: []
 created_date: '2026-08-13 20:30'
@@ -15,26 +15,22 @@ ordinal: 96000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The spec's v0 node set includes `Join(input, input, kind, [JoinKey])` with
-`JoinKey.null_safe: bool` mandatory (D3); the plan today has only
-Scan/Filter/Project (`packages/confit/src/dialect/plan.rs`). The corpus's
-static-join statements (the specializer's current surface) are all
-clean-unsupported at the L2 gate because of this.
-
-Frontend fills null_safe from the source spelling (`=` → false,
-`IS NOT DISTINCT FROM` → true); DuckDB printer round-trips both; Spark
-prints `<=>` for null-safe (pinned in `pins-dialect/spark-ansi.json`);
-BigQuery refuses null-safe until its expansion spelling is probed in the
-phase-4 gate. Exhaustive matches everywhere — a printer that cannot answer
-for Join must fail to compile, not default.
+Design: `docs/superpowers/specs/2026-08-13-dialect-join-node-design.md`
+(approved 2026-08-13). The general case in one slice: INNER/LEFT/RIGHT/
+FULL/CROSS, ON as a bound boolean expression (`Join{left, right, kind,
+on: Option<Expr>}` — supersedes the epic spec's JoinKey sketch), USING/
+NATURAL desugared in the binder, comma-joins as CROSS, chained joins
+left-nested. Printers move to qualified ordinal refs (approach A) so
+dup-named join outputs print; SEMI/ANTI/ASOF/APPLY/positional refuse by
+name. ~90 of 678 corpus statements contain a join form.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 Join in the node set: kind (inner/left at minimum, corpus-driven), keys with mandatory null_safe; verifier checks key types unify and ordinals resolve
-- [ ] #2 canonical plan text + text round-trip cover Join
-- [ ] #3 DuckDB frontend binds the corpus's join statements; L2 gate floor rises (record old → new in the commit message)
-- [ ] #4 Spark printer emits `<=>` for null-safe keys; L3 gate floor rises
-- [ ] #5 three-outcome accounting: no statement changes class downward, zero wrong answers
+- [ ] #1 Join node + verifier rules (on XOR Cross, BOOLEAN predicate, combined-schema ordinals); canonical text round-trips
+- [ ] #2 frontend binds ON/USING/NATURAL/comma/chained joins per the spec's binder rules; ambiguity and duplicate qualifiers are Bind errors
+- [ ] #3 printers emit qualified ordinal refs; frontend∘printer fixpoint holds on SQL-derived join plans
+- [ ] #4 L2 gate floor rises from 235 (record old → new in the commit message); L3 spark floor rises from 213
+- [ ] #5 three-outcome accounting: no statement changes class downward, zero wrong answers; divergences become xfail pins + findings
 <!-- AC:END -->
