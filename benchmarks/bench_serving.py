@@ -4,8 +4,8 @@ The scenarios (benchmarks/serving_scenarios/) reproduce the inference paths
 of famous tabular-ML problems. Engines compared, p50/p99 ns per call at
 n in {1, 8, 64, 1024}:
 
-  spec     — the specializer: cranelift + generated marshaller (ours)
-  spec_dict — the same fn built with output="dict" (raw-dict opt-in mode)
+  spec     — the specializer: cranelift + generated marshaller (ours; dict
+             rows out — the only output mode since the arrow schema API)
   interp   — interpreter backend, same marshaller (backend control;
              SPECIALIZER_FORCE_INTERP=1)
   generic  — cranelift behind the pre-marshaller boundary (previous
@@ -13,9 +13,10 @@ n in {1, 8, 64, 1024}:
   duckdb   — DuckDB itself per call (statics pre-materialized as native
              tables; per call: Arrow batch from row dicts -> register ->
              execute -> fetch)
-  python   — the handcrafted twin: what an engineer would hand-write for a
-             microservice, returning the same typed output models
-  python_dict — same, returning plain dicts (the absolute floor; JSON only)
+  python_dict — the handcrafted twin: what an engineer would hand-write
+             for a microservice, returning plain dicts (the floor; the
+             old typed-model "python" and "spec_dict" rows retired with
+             the pydantic surface — dict IS the output now)
 
 A three-way parity gate (specializer == DuckDB == handcrafted) runs before
 any timing; a scenario that disagrees aborts the bench.
@@ -85,22 +86,14 @@ def build_callers(mod, engines):
         for e in ("spec", "interp", "generic"):
             if e in engines:
                 callers[e] = fn.infer_rows
-    if "spec_dict" in engines:
-        # The raw-dict output mode: same engine, marshaller skips model
-        # construction — python_dict's fair opponent.
-        callers["spec_dict"] = sc.build_spec_fn(mod, statics, output="dict").infer_rows
 
     if "duckdb" in engines:
         duck = sc.duckdb_server(mod, statics)
         callers["duckdb"] = duck
 
-    if "python" in engines or "python_dict" in engines:
+    if "python_dict" in engines:
         hand = mod.handcrafted(statics)
-        out_model = sc.build_spec_fn(mod, statics).output_model
-        if "python" in engines:
-            callers["python"] = lambda rows: [out_model(**hand(r)) for r in rows]
-        if "python_dict" in engines:
-            callers["python_dict"] = lambda rows: [hand(r) for r in rows]
+        callers["python_dict"] = lambda rows: [hand(r) for r in rows]
 
     return callers
 
@@ -154,9 +147,7 @@ def orchestrate():
     groups = {
         "main": [
             "spec",
-            "spec_dict",
             "duckdb",
-            "python",
             "python_dict",
         ],
         "interp": ["interp"],
@@ -179,11 +170,10 @@ def orchestrate():
 
     order = [
         "spec",
-        "spec_dict",
         "interp",
         "generic",
         "duckdb",
-        "python",
+        "python_dict",
     ]
     hdr = f"{'scenario':<14} {'engine':<9}" + "".join(f"{f'n={n}':>15}" for n in NS)
     print("\n" + hdr)
