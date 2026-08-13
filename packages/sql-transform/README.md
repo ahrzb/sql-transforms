@@ -46,8 +46,8 @@ named windows — plus scalar and `EXISTS` subqueries over `__THIS__`, which
 are provably uncorrelated (there is no syntax to reach the outer row) and run
 verbatim at fit time.
 
-Declaring a schema unlocks more: `SQLProjection(sql, this_model=Row)` (the
-pydantic model is the authoritative `__THIS__` schema) makes unknown columns
+Declaring a schema unlocks more: `SQLProjection(sql, this_schema=pa.schema(...))`
+(the arrow schema is the authoritative `__THIS__` schema) makes unknown columns
 refuse at construction, expands `COLUMNS('regex')` (matched by DuckDB's own
 regex engine) and `* EXCLUDE/REPLACE/RENAME` at any level, and resolves
 lateral aliases by DuckDB's column-wins rule. Schema-free construction keeps

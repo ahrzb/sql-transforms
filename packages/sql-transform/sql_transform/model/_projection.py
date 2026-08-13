@@ -682,30 +682,15 @@ def _serving_columns(residual: Node, schema: pa.Schema) -> pa.Schema:
     return pa.schema(kept)
 
 
-def _model_from_arrow(schema: pa.Schema) -> type:
-    """The serving row model, derived from the fit relation's schema.
+def _serving_schema(schema: pa.Schema) -> pa.Schema:
+    """The serving row schema, derived from the fit relation's schema.
 
-    Every field is Optional with a ``None`` default. Unmappable types become
-    opaque fields: Confit accepts those unless the SQL references them.
-    Lifted from the marginalizing class, which retires with it.
+    Every field is nullable (serving rows may carry NULLs the fit data never
+    did), widths are real (an int32 fit column binds INTEGER on the row
+    path), and out-of-vocabulary types pass through unchanged: Confit keeps
+    them opaque unless the SQL references them.
     """
-    import pydantic  # noqa: PLC0415
-
-    fields: dict[str, Any] = {}
-    for f in schema:
-        t = f.type
-        if pa.types.is_floating(t):
-            p: type = float
-        elif pa.types.is_integer(t):
-            p = int
-        elif pa.types.is_boolean(t):
-            p = bool
-        elif pa.types.is_string(t) or pa.types.is_large_string(t):
-            p = str
-        else:
-            p = object
-        fields[f.name] = (p | None if p is not object else Any, None)
-    return pydantic.create_model("Row", **fields)
+    return pa.schema([pa.field(f.name, f.type) for f in schema])
 
 
 @dataclass(slots=True, eq=False, repr=False)
@@ -724,7 +709,7 @@ class FittedProjection:
 
     _fitted: Fitted  # over the *ordered* residual
     _residual: Node  # the unordered residual: what the row path executes
-    _row_model: type  # derived from the fit relation's schema
+    _row_schema: pa.Schema  # derived from the fit relation's schema
 
     def __repr__(self) -> str:
         return f"FittedProjection({self._fitted!r})"
@@ -782,7 +767,7 @@ class FittedProjection:
         }
         return DuckDBInferFn(
             _deserialize(_statement(self._residual)),
-            row_tables={THIS: self._row_model},
+            row_tables={THIS: self._row_schema},
             static_tables=statics,
             shape="map",
         )
@@ -855,7 +840,7 @@ class SQLProjection:
         return FittedProjection(
             replace(fitted, node=self._ordered),
             flat,
-            _model_from_arrow(_serving_columns(flat, table.schema)),
+            _serving_schema(_serving_columns(flat, table.schema)),
         )
 
     __call__ = fit

@@ -16,7 +16,6 @@ from string.templatelib import Template
 from typing import Any
 
 import pyarrow as pa
-from pydantic import BaseModel
 
 from sql_transform._marginalize import (
     MarginalizeError,
@@ -54,28 +53,14 @@ def _engine_ty(t: pa.DataType, where: str) -> str:
     )
 
 
-def _model_from_arrow(schema: pa.Schema) -> type[BaseModel]:
-    """The serving row model, derived from the training table's schema (real
-    types, guaranteed — a declared ``this_model`` may carry ``object``
-    fields). Unmappable types become opaque ``object`` fields: Confit
-    accepts those unless the SQL references them."""
-    import pydantic
-
-    fields: dict[str, Any] = {}
-    for f in schema:
-        t = f.type
-        if pa.types.is_floating(t):
-            p: type = float
-        elif pa.types.is_integer(t):
-            p = int
-        elif pa.types.is_boolean(t):
-            p = bool
-        elif pa.types.is_string(t) or pa.types.is_large_string(t):
-            p = str
-        else:
-            p = object
-        fields[f.name] = (p | None if p is not object else Any, None)
-    return pydantic.create_model("Row", **fields)
+def _serving_schema(schema: pa.Schema) -> pa.Schema:
+    """The serving row schema: the training table's own arrow schema with
+    nullability stripped (serving rows may carry NULLs the training data
+    never did — an unseen group is exactly that). Widths are REAL now:
+    an int32 training column binds INTEGER on the row path, matching what
+    DuckDB sees on the batch path. Out-of-vocabulary types pass through
+    unchanged: Confit keeps them opaque unless the SQL references them."""
+    return pa.schema([pa.field(f.name, f.type) for f in schema])
 
 
 def _row_ordered_sql(con: Any, sql: str) -> str:
@@ -121,15 +106,15 @@ class SQLProjection:
         self,
         sql: str | Template,
         /,
-        this_model: type[BaseModel] | None = None,
+        this_schema: pa.Schema | None = None,
         transformers: dict[str, Any] | None = None,
     ) -> None:
-        """``this_model`` declares the ``__THIS__`` schema (pydantic field
-        names, in definition order — the model is authoritative). With it,
-        unknown columns refuse here, stars/COLUMNS expand with modifiers at
-        any level, and lateral aliases resolve by DuckDB's column-wins rule.
-        Without it, marginalization is schema-free and the ambiguous cases
-        refuse with a hint.
+        """``this_schema`` declares the ``__THIS__`` schema (a ``pa.Schema``;
+        field names in declaration order — the schema is authoritative).
+        With it, unknown columns refuse here, stars/COLUMNS expand with
+        modifiers at any level, and lateral aliases resolve by DuckDB's
+        column-wins rule. Without it, marginalization is schema-free and the
+        ambiguous cases refuse with a hint.
 
         ``transformers`` is the explicit registry for transformers (objects
         with fit/transform — bare ``tfm(bundle).field`` is a global
@@ -141,9 +126,7 @@ class SQLProjection:
         scope."""
         if isinstance(sql, Template):
             raise NotImplementedError("t-string templates are a later loop")
-        self._columns = (
-            list(this_model.model_fields) if this_model is not None else None
-        )
+        self._columns = list(this_schema.names) if this_schema is not None else None
         # Resolution: explicit registry first, then the caller's scope (the
         # `FROM df` replacement-scan idiom). Captured objects are snapshotted
         # into `self.transformers` at construction.
@@ -165,7 +148,7 @@ class SQLProjection:
         self._marginalized = marginalize(sql, self._columns, _resolve)
         self._params: dict[str, pa.Table] | None = None
         self._udfs: dict[str, PythonTransform] | None = None
-        self._row_model: type[BaseModel] | None = None
+        self._row_schema: pa.Schema | None = None
         self._fn: Any = None  # confit.DuckDBInferFn, built lazily post-fit
         self._serving_sql: str | None = None  # finalized at fit (wide items)
 
@@ -182,9 +165,9 @@ class SQLProjection:
     def fit(self, table: pa.Table, /) -> SQLProjection:
         """Materialize every params table over the training data; returns self.
 
-        When a ``this_model`` was declared, it is authoritative: the table is
-        canonicalized to the model's columns in model order (extra table
-        columns drop; missing ones refuse by name).
+        When a ``this_schema`` was declared, it is authoritative: the table
+        is canonicalized to the schema's columns in declaration order (extra
+        table columns drop; missing ones refuse by name).
         """
         import duckdb
 
@@ -243,8 +226,8 @@ class SQLProjection:
                 con.register(step.name, materialized[step.name])
             # unnest expands to the LEARNED field names, so its collision
             # check waits for fit. DuckDB would emit duplicate result
-            # columns (measured: a, b, a); the row path's output model
-            # cannot carry them, so a collision refuses by name (P7's
+            # columns (measured: a, b, a); a dict row cannot carry
+            # duplicate keys, so a collision refuses by name (P7's
             # learned-T carve-out).
             used = {n.lower() for n in m.unnest_siblings}
             for step_name in m.unnest_items:
@@ -266,7 +249,7 @@ class SQLProjection:
         # every transformer mention is a field read over the one call, at
         # every width. Nothing left to rewrite at fit.
         self._serving_sql = m.serving_sql
-        self._row_model = _model_from_arrow(table.schema)
+        self._row_schema = _serving_schema(table.schema)
         self._fn = None  # refit invalidates the prepared serving function
         return self
 
@@ -390,33 +373,9 @@ class SQLProjection:
                     f" (group {key})"
                 )
         assert shape is not None  # groups is non-empty: the table has rows
-        # Served WHOLE (a spec with field=None), the learned names become
-        # pydantic fields of the synthesized nested output model — and
-        # pydantic silently reclassifies _-leading create_model kwargs as
-        # private attributes and reserves config/protected/dunder names.
-        # Probe the real model builder so the refusal tracks pydantic, not
-        # a blocklist (review round 2026-08-05). Field-read-only fits skip
-        # this: their learned names never become pydantic fields.
-        if any(s.whole for s in specs):
-            import warnings
-
-            import pydantic
-
-            for n in shape:
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        probe = pydantic.create_model("Probe", **{n: (float, None)})
-                    ok = n in probe.model_fields
-                except Exception:
-                    ok = False
-                if not ok:
-                    raise MarginalizeError(
-                        f"transformer {step.transformer} fits to output field"
-                        f" {n!r}, which cannot cross the row-path model"
-                        " boundary (pydantic drops or reserves the name) —"
-                        " rename it or address the other fields directly"
-                    )
+        # (The old pydantic reserved-name probe died with the output model:
+        # learned names are dict keys and arrow struct fields now, which
+        # carry any name. Case COLLISIONS still refuse above.)
         cols: dict[str, pa.Array] = {}
         for pos, colname in enumerate(params_spec.keys):
             cols[colname] = pa.array(
@@ -464,8 +423,7 @@ class SQLProjection:
             out = con.execute(_row_ordered_sql(con, self.serving_sql)).to_arrow_table()
             # Only a schema-free * can smuggle a _-named column this far
             # (authored ones refuse at construction); privates never cross
-            # the output boundary. The row path cannot express one at all —
-            # the row model drops _-leading fields.
+            # the output boundary, batch and row path alike.
             leaked = [
                 c
                 for c in out.column_names
@@ -475,7 +433,7 @@ class SQLProjection:
                 raise MarginalizeError(
                     f"column {leaked[0]} crossed the output boundary via *"
                     " (output fields starting with _ are private) — declare a"
-                    " this_model or rename it"
+                    " this_schema or rename it"
                 )
             return out.select(
                 [i for i, c in enumerate(out.column_names) if c != "__cf_row"]
@@ -523,7 +481,7 @@ class SQLProjection:
         """The Confit binding of the fitted artifact, prepared once: the same
         ``serving_sql``, params tables, and UDF objects the DuckDB path uses —
         Confit's contract makes the two bit-exact or refuses by name."""
-        if self._params is None or self._udfs is None or self._row_model is None:
+        if self._params is None or self._udfs is None or self._row_schema is None:
             raise MarginalizeError("not fitted: call fit(table) first")
         if self._fn is None:
             from confit import DuckDBInferFn
@@ -533,7 +491,7 @@ class SQLProjection:
             udfs += list(self._udfs.values())
             self._fn = DuckDBInferFn(
                 self.serving_sql,
-                row_tables={"__THIS__": self._row_model},
+                row_tables={"__THIS__": self._row_schema},
                 static_tables=dict(self._params),
                 udfs=udfs,
                 shape="map",
@@ -551,15 +509,16 @@ class SQLProjection:
         return self._serving_fn().boundary
 
     @property
-    def output_model(self) -> type[BaseModel]:
-        """The typed output row model ``infer`` returns instances of."""
-        return self._serving_fn().output_model
+    def output_schema(self) -> pa.Schema:
+        """The output contract ``infer`` rows follow: names, arrow types,
+        order — exactly ``infer_arrow``'s table schema."""
+        return self._serving_fn().output_schema
 
-    def infer(self, row: dict[str, Any] | BaseModel, /) -> BaseModel:
-        """Single-row inference; returns the typed output model instance."""
+    def infer(self, row: dict[str, Any] | Any, /) -> dict[str, Any]:
+        """Single-row inference; dict-or-object in, dict out."""
         (out,) = self._serving_fn().infer_rows([row])  # shape="map": exactly one
         return out
 
-    def infer_batch(self, rows: list[dict[str, Any] | BaseModel], /) -> list[BaseModel]:
-        """Many-rows inference; returns typed output model instances."""
+    def infer_batch(self, rows: list[dict[str, Any] | Any], /) -> list[dict[str, Any]]:
+        """Many-rows inference; dict-or-object rows in, dict rows out."""
         return self._serving_fn().infer_rows(rows)
