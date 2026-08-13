@@ -2,7 +2,7 @@
 id: TASK-104
 title: >-
   Join node — general joins bound, verified, printed (closes the v0 node set)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-08-13 20:30'
 labels:

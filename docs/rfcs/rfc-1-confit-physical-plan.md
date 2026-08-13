@@ -1,0 +1,102 @@
+# RFC-1: Where confit meets the dialect logical plan
+
+**Status:** proposed. **Date:** 2026-08-13. **Author:** the m-9 session,
+from AmirHossein's question: "confit might reject many of these — should
+we decouple the two? For example introduce a physical plan for confit."
+
+## Context
+
+Two representations of SQL coexist, each behind its own gate:
+
+- **The dialect logical plan** (`packages/confit/src/dialect/`, milestone
+  m-9): bound, typed, verified, multiset-semantics; DuckDB frontend and
+  DuckDB/Spark/BigQuery printers. Gates: L2 oracle-invisibility 288/678
+  corpus match, L3 live-Spark 260/678, both zero-FAIL. Direction decided
+  2026-08-13: representation goes **universal** — almost any DuckDB query
+  gets a plan; determinism becomes a verifier *verdict* (represent + mark),
+  and every consumer enforces its own policy by named refusal.
+- **The specializer** (`packages/confit/src/specializer/`): confit's
+  serving frontend — its own sqlparser binding, lowering to an owned SSA
+  IR (`specializer/ir/`: verifier, canonical text, round-trip), then
+  interpreter/Cranelift execution. Gate: corpus replay 550/678 prepared,
+  three-outcome, plus the differential fuzzer.
+- The JSON-AST marginalizer is a third consumer, out of scope here (its
+  re-hosting is separately gated on the marginalize law).
+
+The epic spec deliberately kept `specializer/` untouched and named its
+re-hosting a future epic. Universal coverage forces the question now:
+once the logical plan admits nearly everything, confit accepts a small
+subset of it, and that boundary needs a home.
+
+## Problems
+
+1. **Two frontends drift.** The dialect binder and the specializer binder
+   answer the same questions (auto-naming, literal typing, coercions)
+   twice; every pin lands twice or diverges silently. The 288 vs 550
+   corpus numbers are not comparable because the frontends differ.
+2. **Confit's refusals have no principled seat.** Today they are frontend
+   refusals. Under universal representation the frontend stops refusing,
+   so confit's "I don't serve this" must live somewhere explicit — or it
+   degenerates into crashes past the boundary (the C5 class).
+3. **The fit plan has no home.** The epic's goal is pushing fit-time
+   computation to the warehouse. Somewhere, one query's plan must split:
+   which part runs remotely at fit (printed via a dialect printer), which
+   part lowers to the row kernel for serving, and where the fitted
+   statics (params tables) materialize between them. No current layer
+   owns that split.
+
+## Choices
+
+**A. Lower to the existing SSA IR.** `confit_lower(p: LogicalPlan) ->
+Result<ir::Program, Unsupported>` with named refusals; the specializer's
+frontend retires once replay is bit-identical. No new representation —
+the SSA IR *is* confit's physical plan.
+
+**B. A confit-owned physical plan.** A new layer between logical plan and
+SSA IR: serve-side operator choices AND the fit/serve split (problem 3) —
+`plan_fit(p) -> {remote: LogicalPlan, statics: Schema, serve: PhysPlan}`.
+The SSA IR becomes the backend of `serve` only.
+
+**C. Coexistence (status quo).** The dialect plan grows universal;
+the specializer keeps its own frontend; the shared corpus is the only
+bridge. Decoupling re-opens when the re-hosting epic starts.
+
+## Trade-offs
+
+- **A** solves 1 and 2 with zero new representations; the refusal
+  boundary is one function with the same three-outcome discipline as a
+  printer. It does NOT address 3 — the fit split would later wedge into
+  either the logical plan (an optimizer pass the epic forswore) or a
+  bolted-on layer, i.e. B arrives anyway, later and under pressure.
+  Migration risk is real but gated: corpus replay must stay bit-identical
+  (550/678, no outcome changes class) before the old frontend dies.
+- **B** gives problem 3 its home before it is urgent, and makes A's
+  lowering a two-step (logical -> phys -> SSA) whose middle is testable.
+  Cost: a third representation to verify, print, and round-trip (the ir/
+  recipe's three properties, again), designed now against a fit surface
+  (Aggregate/Window) the logical plan only gains in TASK-105/106 — high
+  risk of designing against guesses. KPI risk: serving latency is a
+  control; an extra layer must compile away to nothing measurable.
+- **C** costs nothing now and starves nothing; but problem 1 compounds
+  with every pin (each new scalar function, width rule, and auto-name
+  case lands twice), and problem 2 arrives regardless the moment any
+  confit consumer reads dialect plans.
+
+> **ASK(shape):** A now (with B's interface sketched but unbuilt), B now,
+> or C until TASK-106 lands? Recommendation: **A after TASK-105/106**
+> — lower from a logical plan that already has Window/Aggregate, so the
+> lowering is designed once against the real fit surface; sketch B's
+> `plan_fit` signature in the spec as the named future seam, build it
+> when warehouse pushdown is scheduled.
+
+> **ASK(gates):** is corpus-replay bit-identity (550/678, no class
+> changes) sufficient to retire the specializer frontend, or must the
+> differential fuzzer certify the lowering with a fresh 20k campaign
+> first? Recommendation: both — the fuzzer found what replay could not,
+> every time it ran.
+
+> **ASK(statics):** when the fit split lands, do fitted statics
+> materialize as catalog tables the logical plan Scans (statics are just
+> tables; printers need nothing new), or as a dedicated plan node?
+> Recommendation: catalog tables — the marginalizer already treats them
+> that way, and Scan is the one node every consumer supports.
