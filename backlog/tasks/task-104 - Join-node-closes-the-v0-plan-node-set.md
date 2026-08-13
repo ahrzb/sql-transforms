@@ -2,7 +2,7 @@
 id: TASK-104
 title: >-
   Join node — general joins bound, verified, printed (closes the v0 node set)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-08-13 20:30'
 labels:
@@ -28,9 +28,9 @@ name. ~90 of 678 corpus statements contain a join form.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 Join node + verifier rules (on XOR Cross, BOOLEAN predicate, combined-schema ordinals); canonical text round-trips
-- [ ] #2 frontend binds ON/USING/NATURAL/comma/chained joins per the spec's binder rules; ambiguity and duplicate qualifiers are Bind errors
-- [ ] #3 printers emit qualified ordinal refs; frontend∘printer fixpoint holds on SQL-derived join plans
-- [ ] #4 L2 gate floor rises from 235 (record old → new in the commit message); L3 spark floor rises from 213
-- [ ] #5 three-outcome accounting: no statement changes class downward, zero wrong answers; divergences become xfail pins + findings
+- [x] #1 Join node + verifier rules (on XOR Cross, BOOLEAN predicate, combined-schema ordinals); canonical text round-trips
+- [x] #2 frontend binds ON/USING/NATURAL/comma/chained joins per the spec's binder rules; ambiguity and duplicate qualifiers are Bind errors
+- [x] #3 printers emit qualified ordinal refs; frontend∘printer fixpoint holds on SQL-derived join plans
+- [x] #4 L2 gate floor rises from 235 (record old → new in the commit message); L3 spark floor rises from 213
+- [x] #5 three-outcome accounting: no statement changes class downward, zero wrong answers; divergences become xfail pins + findings
 <!-- AC:END -->
