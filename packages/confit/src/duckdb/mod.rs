@@ -48,6 +48,27 @@ fn ty_to_base(t: Ty) -> Base {
     }
 }
 
+/// A narrow out column's value must fit its declared width on EVERY
+/// boundary — infer and infer_arrow answer identically or not at all
+/// (fleet 2026-08-13: the row path served what the arrow path refused).
+/// The matching runtime trap is m-8 phase 3.
+fn narrow_check(ty: Ty, name: &str, v: i64) -> PyResult<()> {
+    if let Some((lo, hi)) = ty.int_range() {
+        if !(lo..=hi).contains(&v) {
+            let duck = match ty {
+                Ty::I8 => "TINYINT",
+                Ty::I16 => "SMALLINT",
+                _ => "INTEGER",
+            };
+            return Err(InterpError::Eval(format!(
+                "column '{name}' value {v} is outside its {duck} range —                  the {duck} overflow trap lands with m-8 phase 3"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn build_err(msg: impl Into<String>) -> PyErr {
     InterpError::Build(msg.into()).into()
 }
@@ -865,6 +886,9 @@ struct Marshaller {
     in_names: Vec<Vec<Py<PyString>>>,
     /// One entry per OUTPUT FIELD (not lane): plan + interned name.
     plan: Vec<EmitField>,
+    /// Declared out-column types, indexed like the engine's out lanes —
+    /// the row path enforces narrow widths with these (see narrow_check).
+    out_tys: Vec<Ty>,
     out_names: Vec<Py<PyString>>,
     /// Output rows for the SYNTHESIZED model are built by filling pydantic
     /// v2's instance slots directly (`object.__new__` + `object.__setattr__`
@@ -916,6 +940,7 @@ impl Marshaller {
                 })
                 .collect(),
             plan: plan.to_vec(),
+            out_tys: out_cols.iter().map(|c| c.ty.ty).collect(),
             out_names: plan
                 .iter()
                 .map(|f| PyString::intern(py, f.name(out_cols)).unbind())
@@ -1062,6 +1087,13 @@ impl Marshaller {
                         }
                         OutCol::I64(v) => {
                             let (ok, x) = v[r];
+                            if ok {
+                                narrow_check(
+                                    self.out_tys[*i],
+                                    &k.to_string_lossy(),
+                                    x,
+                                )?;
+                            }
                             d.set_item(k, ok.then_some(x))?;
                         }
                         OutCol::F64(v) => {
@@ -1719,6 +1751,9 @@ impl DuckDBInferFn {
                         }
                         OutCol::I64(v) => {
                             let (ok, x) = v[r];
+                            if ok {
+                                narrow_check(out_cols[*i].ty.ty, name, x)?;
+                            }
                             dict.set_item(name, ok.then_some(x))?;
                         }
                         OutCol::F64(v) => {

@@ -2091,8 +2091,59 @@ impl Binder<'_> {
         match e {
             SqlExpr::Value(v) if matches!(v.value, SqlValue::Null) => Ok(None),
             SqlExpr::Nested(inner) => self.expr_or_null(inner),
+            SqlExpr::Function(f) => {
+                if self.nullif_sqlnull(f)? {
+                    return Ok(None);
+                }
+                self.bind(e).map(Some)
+            }
             other => self.bind(other).map(Some),
         }
+    }
+
+    /// Whether `f` is `nullif(NULL, x)` — which propagates DuckDB's
+    /// SQLNULL: the whole call is an ADOPTABLE bare NULL, not a committed
+    /// int32 (`- nullif(NULL, 1)` is BIGINT there, `nullif(NULL, 1) *
+    /// 1::SMALLINT` SMALLINT; fleet 2026-08-13). The second argument still
+    /// binds so its own errors fire. Builtin names cannot be UDF-shadowed
+    /// (TASK-89), so the name test is enough.
+    fn nullif_sqlnull(
+        &self,
+        f: &sqlparser::ast::Function,
+    ) -> Result<bool, PrepareError> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        if !f.name.to_string().eq_ignore_ascii_case("nullif")
+            || f.uses_odbc_syntax
+            || !matches!(f.parameters, FunctionArguments::None)
+            || f.filter.is_some()
+            || f.null_treatment.is_some()
+            || f.over.is_some()
+            || !f.within_group.is_empty()
+        {
+            return Ok(false);
+        }
+        let FunctionArguments::List(list) = &f.args else {
+            return Ok(false);
+        };
+        if !list.clauses.is_empty() || list.duplicate_treatment.is_some() {
+            return Ok(false);
+        }
+        let plain: Vec<&SqlExpr> = list
+            .args
+            .iter()
+            .filter_map(|a| match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => Some(e),
+                _ => None,
+            })
+            .collect();
+        if plain.len() != 2 || plain.len() != list.args.len() {
+            return Ok(false);
+        }
+        if self.expr_or_null(plain[0])?.is_some() {
+            return Ok(false);
+        }
+        let _second_binds = self.expr_or_null(plain[1])?;
+        Ok(true)
     }
 
     fn bind(&self, e: &SqlExpr) -> Result<SExpr, PrepareError> {
@@ -2139,7 +2190,7 @@ impl Binder<'_> {
                             return Err(unsup("NULL <op> NULL without a typing context"))
                         }
                     };
-                    acc = Some(self.arith(flat_bitop(o), av, bv)?);
+                    acc = Some(self.arith(flat_bitop(o), av, bv, (None, None))?);
                 }
                 Ok(acc.expect("a flat-bitop run has at least one operator"))
             }
@@ -2201,7 +2252,12 @@ impl Binder<'_> {
                         nullable: false,
                     }
                 };
-                self.arith(ArithOp::Sub, zero, inner)
+                self.arith(
+                    ArithOp::Sub,
+                    zero,
+                    inner,
+                    (Some(0), ast_int_literal(expr)),
+                )
             }
             SqlExpr::UnaryOp {
                 op: UnaryOperator::Plus,
@@ -2209,7 +2265,13 @@ impl Binder<'_> {
             } => match self.expr_or_null(expr)? {
                 // Same BIGINT rule as unary minus (measured: +NULL).
                 None => Ok(null_of(Ty::I64)),
-                Some(e) => Ok(e),
+                // DuckDB's + is a real unary function over numerics only:
+                // +'a' / +TRUE are binder errors there (fleet 2026-08-13).
+                Some(e) if e.ty.is_int() || e.ty == Ty::F64 => Ok(e),
+                Some(e) => Err(PrepareError::Bind(format!(
+                    "no function matches +({})",
+                    e.ty.name()
+                ))),
             },
             SqlExpr::UnaryOp {
                 op: UnaryOperator::Not,
@@ -3386,13 +3448,14 @@ impl Binder<'_> {
                 (null_of(ty), null_of(ty))
             }
         };
+        let lits = (ast_int_literal(left), ast_int_literal(right));
         match op {
-            BinaryOperator::Plus => self.arith(ArithOp::Add, a, b),
-            BinaryOperator::Minus => self.arith(ArithOp::Sub, a, b),
-            BinaryOperator::Multiply => self.arith(ArithOp::Mul, a, b),
-            BinaryOperator::Divide => self.arith(ArithOp::Div, a, b),
-            BinaryOperator::DuckIntegerDivide => self.arith(ArithOp::IDiv, a, b),
-            BinaryOperator::Modulo => self.arith(ArithOp::Rem, a, b),
+            BinaryOperator::Plus => self.arith(ArithOp::Add, a, b, lits),
+            BinaryOperator::Minus => self.arith(ArithOp::Sub, a, b, lits),
+            BinaryOperator::Multiply => self.arith(ArithOp::Mul, a, b, lits),
+            BinaryOperator::Divide => self.arith(ArithOp::Div, a, b, lits),
+            BinaryOperator::DuckIntegerDivide => self.arith(ArithOp::IDiv, a, b, lits),
+            BinaryOperator::Modulo => self.arith(ArithOp::Rem, a, b, lits),
             BinaryOperator::Eq => self.cmp(CmpPred::Eq, a, b),
             BinaryOperator::NotEq => self.cmp(CmpPred::Ne, a, b),
             BinaryOperator::Lt => self.cmp(CmpPred::Lt, a, b),
@@ -3525,49 +3588,26 @@ impl Binder<'_> {
         let else_bound: Option<Option<SExpr>> =
             else_result.map(|e| self.expr_or_null(e)).transpose()?;
 
-        // Width unification, 9-probe matrix 2026-08-13: a NULL arm never
-        // widens (None here, adopts the unified type below); a wide-LITERAL
-        // arm value-narrows into the accumulator EXCEPT as the ELSE of a
-        // literal-carried accumulator; a wide-literal accumulator narrows
-        // to a non-literal arm in any position.
+        // Width unification — DuckDB's fold (2026-08-13 fleet, 0 errors on
+        // 19k probes): SEED from the ELSE (its syntactic-literal hint
+        // intact); no ELSE — or ELSE NULL — seeds as an implicit non-
+        // literal NULL. Then combine WHEN arms in order; every combine
+        // makes the accumulator computed, so only the seed's literal-ness
+        // ever survives. A NULL arm never widens (None; adopts below).
         let mut unified: Option<Ty> = None;
         let mut acc_lit: Option<i64> = None;
-        let mut combine = |unified: &mut Option<Ty>,
-                           acc_lit: &mut Option<i64>,
-                           r: &SExpr,
-                           is_else: bool|
-         -> Result<(), PrepareError> {
-            let new_lit = int_literal_value(r);
-            *unified = Some(match *unified {
-                None => {
-                    *acc_lit = new_lit;
-                    r.ty
-                }
-                Some(u) if u == r.ty => {
-                    if new_lit.is_none() {
-                        *acc_lit = None;
-                    }
-                    u
-                }
+        if let Some(Some(r)) = &else_bound {
+            unified = Some(r.ty);
+            acc_lit = else_result.and_then(ast_int_literal);
+        }
+        for (r, when) in results.iter().zip(conditions) {
+            let Some(r) = r else { continue };
+            let new_lit = ast_int_literal(&when.result);
+            unified = Some(match unified {
+                None => r.ty,
+                Some(u) if u == r.ty => u,
                 Some(u) if u.is_int() && r.ty.is_int() => {
-                    let t = r.ty;
-                    if width_rank(t) > width_rank(u)
-                        && new_lit.is_some_and(|v| fits_width(u, v))
-                        && !(is_else && acc_lit.is_some())
-                    {
-                        u
-                    } else if width_rank(u) > width_rank(t)
-                        && new_lit.is_none()
-                        && acc_lit.is_some_and(|v| fits_width(t, v))
-                    {
-                        *acc_lit = None;
-                        t
-                    } else {
-                        if width_rank(t) > width_rank(u) {
-                            *acc_lit = new_lit;
-                        }
-                        wider_int(u, t)
-                    }
+                    int_width_promote(u, acc_lit, r.ty, new_lit)
                 }
                 Some(u) if u.is_int() && r.ty == Ty::F64 => Ty::F64,
                 Some(Ty::F64) if r.ty.is_int() => Ty::F64,
@@ -3579,13 +3619,7 @@ impl Binder<'_> {
                     )))
                 }
             });
-            Ok(())
-        };
-        for r in results.iter().flatten() {
-            combine(&mut unified, &mut acc_lit, r, false)?;
-        }
-        if let Some(Some(r)) = &else_bound {
-            combine(&mut unified, &mut acc_lit, r, true)?;
+            acc_lit = None;
         }
         let Some(unified) = unified else {
             return Err(unsup("CASE where every branch is NULL"));
@@ -3632,12 +3666,7 @@ impl Binder<'_> {
             // CAST(NULL AS T) is just a typed NULL, both forms.
             None => return Ok(null_of(to)),
         };
-        // The identity shortcut must NOT unwrap a literal-shaped inner:
-        // DuckDB's value-fits promotion treats CAST(-15 AS INTEGER) as
-        // NON-literal (measured: -2147483648 % CAST(-15 AS INTEGER) is
-        // INTEGER), so the Cast node is the provenance mark that blocks
-        // the literal hint; fold collapses it afterwards.
-        if inner.ty == to && !trying && int_literal_value(&inner).is_none() {
+        if inner.ty == to && !trying {
             return Ok(inner);
         }
         if inner.ty == Ty::Str && to == Ty::I1 {
@@ -3757,14 +3786,16 @@ impl Binder<'_> {
         })
     }
 
-    fn arith(&self, op: ArithOp, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
-        // Captured BEFORE folding: DuckDB's value-fits promotion treats a
-        // bare or SIGN-PREFIXED literal as a literal, but a general folded
-        // constant keeps its structural width — after fold() both are Lit
-        // and the difference is gone (measured 2026-08-13: unicode(s) %
-        // -2147483648 is INTEGER, (49 % 9007199254740991) % unicode(s) is
-        // BIGINT).
-        let lits = (int_literal_value(&a), int_literal_value(&b));
+    /// `lits` are the operands' SYNTACTIC-literal hints, computed by the
+    /// caller from the SQL AST (`ast_int_literal`) — never from bound
+    /// nodes (fleet 2026-08-13: every SExpr-shape heuristic leaks).
+    fn arith(
+        &self,
+        op: ArithOp,
+        a: SExpr,
+        b: SExpr,
+        lits: (Option<i64>, Option<i64>),
+    ) -> Result<SExpr, PrepareError> {
         // TASK-85: a STRICT operator with a literal-NULL operand folds to
         // NULL at build, exactly as DuckDB's optimizer folds it — which
         // ELIMINATES the sibling subexpression, so a trapping ln/overflow/
@@ -3799,7 +3830,7 @@ impl Binder<'_> {
                     )));
                 }
             }
-            let ty = int_width_promote(&a, &b, lits);
+            let ty = int_width_promote(a.ty, lits.0, b.ty, lits.1);
             if null_operand {
                 return Ok(null_of(ty));
             }
@@ -4941,48 +4972,24 @@ impl Binder<'_> {
                 let mut bound = Vec::with_capacity(args.len());
                 for arg in &args {
                     if let Some(e) = self.expr_or_null(arg)? {
-                        bound.push(e);
+                        // The hint rides with the arg's own SPELLING (never
+                        // the bound node — fleet 2026-08-13).
+                        bound.push((e, ast_int_literal(arg)));
                     } // literal NULL args never produce a value: drop them
                 }
                 if bound.is_empty() {
                     return Err(unsup("COALESCE of only NULL literals"));
                 }
-                let mut unified = bound[0].ty;
-                let mut acc_lit = int_literal_value(&bound[0]);
-                for e in &bound[1..] {
-                    let new_lit = int_literal_value(e);
+                // Seed-then-combine (DuckDB's fold, 0 errors on 19k
+                // probes): the seed keeps its literal hint; every combine
+                // makes the accumulator computed.
+                let mut unified = bound[0].0.ty;
+                let mut acc_lit = bound[0].1;
+                for (e, new_lit) in &bound[1..] {
                     unified = match (unified, e.ty) {
-                        (u, t) if u == t => {
-                            if new_lit.is_none() {
-                                acc_lit = None;
-                            }
-                            u
-                        }
+                        (u, t) if u == t => u,
                         (u, t) if u.is_int() && t.is_int() => {
-                            // Value-fits rules (measured 2026-08-13, the
-                            // -2147483648 corners): binary semantics — a
-                            // wide LITERAL narrows only against a
-                            // NON-literal side, in either direction
-                            // (coalesce(11, MIN) is BIGINT on DuckDB,
-                            // coalesce(unicode(s), MIN) is INTEGER; only
-                            // CASE's WHEN chain narrows into a literal).
-                            if width_rank(t) > width_rank(u)
-                                && new_lit.is_some_and(|v| fits_width(u, v))
-                                && acc_lit.is_none()
-                            {
-                                u
-                            } else if width_rank(u) > width_rank(t)
-                                && new_lit.is_none()
-                                && acc_lit.is_some_and(|v| fits_width(t, v))
-                            {
-                                acc_lit = None;
-                                t
-                            } else {
-                                if width_rank(t) > width_rank(u) {
-                                    acc_lit = new_lit;
-                                }
-                                wider_int(u, t)
-                            }
+                            int_width_promote(u, acc_lit, t, *new_lit)
                         }
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
@@ -4994,7 +5001,9 @@ impl Binder<'_> {
                             )))
                         }
                     };
+                    acc_lit = None;
                 }
+                let bound: Vec<SExpr> = bound.into_iter().map(|(e, _)| e).collect();
                 let mut bound: Vec<SExpr> = bound
                     .into_iter()
                     .map(|mut e| {
@@ -5051,46 +5060,23 @@ impl Binder<'_> {
                 }
                 let mut bound = Vec::new();
                 for arg in &args {
-                    // Literal NULL args contribute nothing (NULL-ignoring).
+                    // Literal NULL args contribute nothing (NULL-ignoring);
+                    // hints ride with the SPELLING (fleet 2026-08-13).
                     if let Some(e) = self.expr_or_null(arg)? {
-                        bound.push(e);
+                        bound.push((e, ast_int_literal(arg)));
                     }
                 }
                 if bound.is_empty() {
                     return Err(unsup(format!("{name} of only NULL literals")));
                 }
-                let mut unified = bound[0].ty;
-                let mut acc_lit = int_literal_value(&bound[0]);
-                for e in &bound[1..] {
-                    let new_lit = int_literal_value(e);
+                // Seed-then-combine, same fold as COALESCE above.
+                let mut unified = bound[0].0.ty;
+                let mut acc_lit = bound[0].1;
+                for (e, new_lit) in &bound[1..] {
                     unified = match (unified, e.ty) {
-                        (u, t) if u == t => {
-                            if new_lit.is_none() {
-                                acc_lit = None;
-                            }
-                            u
-                        }
+                        (u, t) if u == t => u,
                         (u, t) if u.is_int() && t.is_int() => {
-                            // Same value-fits rules as COALESCE above
-                            // (binary semantics; measured greatest(4, MIN)
-                            // is BIGINT, greatest(unicode(s), MIN) INTEGER).
-                            if width_rank(t) > width_rank(u)
-                                && new_lit.is_some_and(|v| fits_width(u, v))
-                                && acc_lit.is_none()
-                            {
-                                u
-                            } else if width_rank(u) > width_rank(t)
-                                && new_lit.is_none()
-                                && acc_lit.is_some_and(|v| fits_width(t, v))
-                            {
-                                acc_lit = None;
-                                t
-                            } else {
-                                if width_rank(t) > width_rank(u) {
-                                    acc_lit = new_lit;
-                                }
-                                wider_int(u, t)
-                            }
+                            int_width_promote(u, acc_lit, t, *new_lit)
                         }
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
@@ -5102,9 +5088,11 @@ impl Binder<'_> {
                             )))
                         }
                     };
+                    acc_lit = None;
                 }
                 let bound: Vec<SExpr> = bound
                     .into_iter()
+                    .map(|(e, _)| e)
                     .map(|mut e| {
                         if e.ty.is_int() && unified == Ty::F64 {
                             promote_f64(e)
@@ -5400,7 +5388,7 @@ impl Binder<'_> {
                     ty,
                     nullable,
                 };
-                self.arith(ArithOp::Mul, lit_i64(8), slen)
+                self.arith(ArithOp::Mul, lit_i64(8), slen, (None, None))
             }
             "strip_accents" => {
                 let (bound, ty) = resolved.expect("signature row");
@@ -5588,7 +5576,7 @@ impl Binder<'_> {
                     }
                     (None, None) => (null_of(Ty::I64), null_of(Ty::I64)),
                 };
-                self.arith(op, bx, by)
+                self.arith(op, bx, by, (ast_int_literal(x), ast_int_literal(y)))
             }
             // Named rejects (wave-3 AC #3): each states WHY, not just what.
             "sum" | "count" | "avg" | "min" | "max" | "geomean" | "product" | "string_agg"
@@ -6415,7 +6403,7 @@ fn numeric_promote(
             if a.ty == Ty::F64 || b.ty == Ty::F64 {
                 Ty::F64
             } else {
-                int_width_promote(&a, &b, lits)
+                int_width_promote(a.ty, lits.0, b.ty, lits.1)
             }
         }
         Ret::Arg(_) | Ret::Unify => unreachable!("not an operator rule"),
@@ -6444,53 +6432,47 @@ fn width_rank(t: Ty) -> u8 {
 /// wider-side rule only; their literal-vs-narrower corner is reachable only
 /// through explicit ::TINYINT/::SMALLINT casts mixed into multi-arm
 /// unification.
-fn int_width_promote(a: &SExpr, b: &SExpr, lits: (Option<i64>, Option<i64>)) -> Ty {
-    if a.ty == b.ty {
-        return a.ty;
+/// One width-combine step — DuckDB's measured rule (2026-08-13 fleet,
+/// scored over 19k queries): equal widths keep; a WIDER side that is a
+/// syntactic literal narrows to a narrower NON-literal side, when its
+/// value fits; otherwise the wider width wins. `unicode(s) % -2147483648`
+/// is INTEGER; `2147483647 % -2147483648` is BIGINT.
+fn int_width_promote(a_ty: Ty, a_lit: Option<i64>, b_ty: Ty, b_lit: Option<i64>) -> Ty {
+    if a_ty == b_ty {
+        return a_ty;
     }
-    let (wide, narrow, wide_lit, narrow_lit) = if width_rank(a.ty) >= width_rank(b.ty) {
-        (a, b.ty, lits.0, lits.1)
+    let (wide, narrow, wide_lit, narrow_lit) = if width_rank(a_ty) >= width_rank(b_ty) {
+        (a_ty, b_ty, a_lit, b_lit)
     } else {
-        (b, a.ty, lits.1, lits.0)
+        (b_ty, a_ty, b_lit, a_lit)
     };
-    // The value rule, measured 2026-08-13: the WIDE side must be a literal
-    // (bare or sign-prefixed — the `lits` hint, captured pre-fold, since a
-    // general folded constant keeps its structural width) and the NARROW
-    // side must NOT be one. unicode(s) % -2147483648 is INTEGER;
-    // 2147483647 % -2147483648 and (49 % 9007199254740991) % unicode(s)
-    // are BIGINT.
     if let (Some(v), None, Some((lo, hi))) = (wide_lit, narrow_lit, narrow.int_range()) {
         if (lo..=hi).contains(&v) {
             return narrow;
         }
     }
-    wide.ty
+    wide
 }
 
-/// The value of a LITERAL-SHAPED integer expression at BIND time: a bare
-/// integer literal, or unary minus over one (bound as 0 - lit). Exactly
-/// the shapes DuckDB's value-fits promotion treats as literals — so a Lit
-/// counts only at its value's NATURAL width: a retyped one (a coalesce
-/// degenerated by lazy truncation, a collapsed narrow cast) was COMPUTED
-/// and keeps its structural width on DuckDB.
-fn int_literal_value(e: &SExpr) -> Option<i64> {
-    match &e.kind {
-        SKind::Lit(Lit::I64(v)) => {
-            let natural = if i32::try_from(*v).is_ok() {
-                Ty::I32
-            } else {
-                Ty::I64
-            };
-            (e.ty == natural).then_some(*v)
-        }
-        SKind::Arith {
-            op: ArithOp::Sub,
-            a,
-            b,
-        } => match (&a.kind, &b.kind) {
-            (SKind::Lit(Lit::I64(0)), SKind::Lit(Lit::I64(v))) => v.checked_neg(),
+/// The value of a SYNTACTIC integer literal, from the SQL AST: a bare
+/// Number, optionally under parentheses or unary MINUS. Never unary plus
+/// (DuckDB's `+` is a real function that erases literal-ness), never a
+/// function call, never a cast, never anything bound — the 2026-08-13
+/// adversarial fleet proved every SExpr-shape heuristic leaks (verbatim
+/// family returns, `0 - N` user spellings, retyped degenerations), so the
+/// hint comes from the spelling alone. This is DuckDB's own notion for
+/// its value-fits promotion.
+fn ast_int_literal(e: &SqlExpr) -> Option<i64> {
+    match e {
+        SqlExpr::Value(v) => match &v.value {
+            SqlValue::Number(text, _) => text.parse::<i64>().ok(),
             _ => None,
         },
+        SqlExpr::Nested(inner) => ast_int_literal(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => ast_int_literal(expr).and_then(i64::checked_neg),
         _ => None,
     }
 }
