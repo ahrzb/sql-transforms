@@ -32,7 +32,9 @@
 //! nullability is not tracked (columns carry it; expressions will when
 //! confit lowers from this plan).
 
+pub mod duckdb;
 pub mod plan;
+pub mod py;
 pub mod text;
 pub mod ty;
 pub mod verify;

@@ -226,13 +226,14 @@ fn derivation_follows_the_pins() {
         r: Box::new(lit(DTy::Dec(3, 1), "0.5")),
     };
     assert_eq!(dec_cmp.ty().unwrap(), DTy::Bool);
-    // Bind errors are Bind, not Unsupported: bool arithmetic is WRONG.
-    let bad = Expr::Bin {
+    // Type mismatches DuckDB would coerce refuse as Unsupported — Bind is
+    // reserved for what the oracle itself rejects (unknown names).
+    let coerced = Expr::Bin {
         op: BinOp::Add,
         l: Box::new(lit(DTy::Bool, "true")),
         r: Box::new(i()),
     };
-    assert!(matches!(bad.ty(), Err(DialectError::Bind(_))));
+    assert!(matches!(coerced.ty(), Err(DialectError::Unsupported(_))));
 }
 
 #[test]
@@ -301,4 +302,80 @@ fn duckdb_type_names_ingest_and_print() {
         DTy::from_duckdb("MAP(INTEGER, INTEGER)"),
         Err(DialectError::Unsupported(_))
     ));
+}
+
+// --- DuckDB frontend + printer (L1 on SQL-derived plans) --------------------
+
+#[test]
+fn frontend_binds_and_round_trips() {
+    let c = cat();
+    let sql = "SELECT a, t.b AS label, (a + 1) * 2 AS scaled, CASE WHEN a IS NOT NULL THEN 'y' ELSE b END AS f FROM t WHERE c > 1.5e3";
+    let p = super::duckdb::parse_sql(sql, &c).unwrap();
+    // L1 through the plan text.
+    assert_eq!(super::text::parse(&super::text::print(&p)).unwrap(), p);
+    // The printed SQL parses back to the SAME plan (frontend∘printer fixpoint).
+    let printed = super::duckdb::print_sql(&p, &c).unwrap();
+    let reparsed = super::duckdb::parse_sql(&printed, &c).unwrap();
+    // On ribbon shapes the fixpoint is exact: the same plan comes back.
+    assert_eq!(reparsed, p, "printed: {printed}");
+}
+
+#[test]
+fn frontend_star_and_spelling() {
+    let c = cat();
+    let p = super::duckdb::parse_sql("SELECT *, A FROM t", &c).unwrap();
+    let schema = p.schema(&c).unwrap();
+    // * expands to catalog spellings; bare `A` preserves the QUERY spelling.
+    let names: Vec<&str> = schema.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["a", "b", "c", "A"]);
+}
+
+#[test]
+fn frontend_named_refusals() {
+    let c = cat();
+    for (sql, needle) in [
+        ("SELECT a FROM t ORDER BY a", "ORDER BY"),
+        ("SELECT count(a) FROM t", "expression"),
+        ("SELECT a + 1 FROM t", "unaliased"),
+        ("SELECT a FROM t JOIN t AS u ON true", "JOIN"),
+        ("SELECT DISTINCT a FROM t", "DISTINCT"),
+        ("SELECT NULL AS n FROM t", "NULL literal"),
+    ] {
+        match super::duckdb::parse_sql(sql, &c) {
+            Err(DialectError::Unsupported(m)) => {
+                assert!(m.contains(needle), "{sql}: {m}");
+            }
+            other => panic!("{sql}: expected Unsupported, got {other:?}"),
+        }
+    }
+    assert!(matches!(
+        super::duckdb::parse_sql("SELECT zzz FROM t", &c),
+        Err(DialectError::Bind(_))
+    ));
+}
+
+#[test]
+fn printer_quotes_and_parenthesizes() {
+    let c = cat();
+    let p = super::duckdb::parse_sql("SELECT a // 2 + 1 AS q FROM t WHERE NOT (b = 'x''y')", &c)
+        .unwrap();
+    let printed = super::duckdb::print_sql(&p, &c).unwrap();
+    assert!(printed.contains("\"a\""), "{printed}");
+    assert!(printed.contains("'x''y'"), "{printed}");
+    assert!(printed.contains("//"), "{printed}");
+}
+
+#[test]
+fn literal_typing_follows_the_lattice() {
+    // typeof(1)=INTEGER, typeof(3000000000)=BIGINT, decimal by digits,
+    // exponent = DOUBLE (2026-08-11-duckdb-type-lattice-design.md +
+    // pins-dialect).
+    let c = cat();
+    let sql = "SELECT 1 AS a, 3000000000 AS b, 1.50 AS c, 0.1 AS d, 1e3 AS e FROM t";
+    let p = super::duckdb::parse_sql(sql, &c).unwrap();
+    let tys: Vec<DTy> = p.schema(&c).unwrap().into_iter().map(|(_, t)| t).collect();
+    assert_eq!(
+        tys,
+        vec![DTy::I32, DTy::I64, DTy::Dec(3, 2), DTy::Dec(1, 1), DTy::F64]
+    );
 }
