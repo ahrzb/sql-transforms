@@ -2,7 +2,7 @@
 id: TASK-85
 title: >-
   DuckDB's NULL-folding removes trapping subexpressions the engine still evaluates
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 13:00'
 labels:
@@ -62,4 +62,14 @@ first: probe whether DuckDB's elimination is optimizer-time only (literal
 NULL) or row-wise. The fuzzer's campaign cases are all literal-NULL, so start
 there; if row-wise NULLs also elide traps on DuckDB, that is the flag-lane
 guard machinery from TASK-75 extended to strict operators.
+
+Closed by the 2026-08-13 grooming pass: fixed in e940520 (a strict op with a
+literal-NULL operand folds to NULL at build, both backends, eliding the
+trapping sibling exactly where DuckDB does) and strengthened by e09f038 so
+folder-PRODUCED NULLs collapse the same way. Pinned by
+test_a_null_operand_elides_a_trapping_sibling (ln, i64 overflow, giant
+string builder; both backends) and
+test_the_trap_stays_live_without_a_null_to_fold. Scope note: the campaign's
+cases were all literal-NULL and that is what this ticket's ACs pinned;
+foldability-vs-spelling generalization continues as TASK-101/102/103.
 <!-- SECTION:NOTES:END -->

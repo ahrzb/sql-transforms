@@ -2,7 +2,7 @@
 id: TASK-88
 title: >-
   The string-builder cap fires where DuckDB serves a 2GB pad
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 16:00'
 labels:
@@ -56,4 +56,11 @@ slowly — matching it means gigabyte allocations in a serving engine, which
 is the wrong trade for sub-5k-row serving; that judgement is recorded here
 rather than silently embedded). The TASK-82 count machinery already parses
 the literal spelling, so the budget check is a bound on the same number.
+
+Closed by the 2026-08-13 grooming pass: fixed in 44676c9
+(refuse_budget_breaking_count in the frontend, riding the TASK-82 count
+machinery from cf6284c). Pinned by
+test_a_budget_breaking_literal_count_refuses (lpad/rpad/repeat) and
+test_a_large_but_bounded_count_still_serves_and_matches; the data-driven
+residual is documented in known-limitations with the cap stated, per AC #2.
 <!-- SECTION:NOTES:END -->

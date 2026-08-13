@@ -2,7 +2,7 @@
 id: TASK-80
 title: >-
   Negative zero loses its sign in constant folding and unary minus
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 13:00'
 labels:
@@ -66,4 +66,11 @@ Two sites: the frontend's constant folder (fold of the `-` unary and of
 literal `-0.0` itself) and the lowering of unary minus (needs an `fneg`, not
 `sub(0, x)` — cranelift has `fneg`; the interpreter needs the same). Keep the
 integer path as-is: `-0` has no sign bit in i64.
+
+Closed by the 2026-08-13 grooming pass: fixed in 2b7866f. One site sufficed,
+not two - the unary-minus zero literal becomes `-0.0` for F64 operands, and
+`-0.0 - x` is exact IEEE negation, so no fneg lowering was needed; the fold
+path routes through the same subtraction. Pinned by
+test_negative_zero_keeps_its_sign (5 cases x 2 backends); the follow-up
+2026-08-13 fuzz campaign (963 -> 1 findings) shows the -0.0 class empty.
 <!-- SECTION:NOTES:END -->

@@ -2,7 +2,7 @@
 id: TASK-79
 title: >-
   infer_arrow emits int64 where DuckDB emits int32 for an integer-literal expression
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-08 04:00'
 labels:
@@ -79,4 +79,11 @@ width, so this is purely an Arrow-schema question.
 Pinned xfail-strict as `test_infer_arrow_integer_width_matches_duckdb`, and
 `test_output_schema_matches_duckdb_for_every_scenario` allows exactly this one
 widening and nothing else, so it cannot quietly grow.
+
+Closed by the 2026-08-13 grooming pass: option 1 landed as m-8 phase 2
+(393c204 - real I8/I16/I32 frontend types, infer_arrow emits the narrow
+width; struct lanes hardened in 9ea07df/3199c37). The xfail pin rang XPASS
+and came off, and the `_WIDENED` bypass was deleted from the every-scenario
+test in the same commit; the width catalogue lives in test_integer_widths.py.
+The row-time overflow trap is m-8 phase 3, out of this ticket's scope.
 <!-- SECTION:NOTES:END -->

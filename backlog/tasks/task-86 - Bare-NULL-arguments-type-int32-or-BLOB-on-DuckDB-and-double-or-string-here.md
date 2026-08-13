@@ -2,7 +2,7 @@
 id: TASK-86
 title: >-
   Bare NULL arguments type int32 or BLOB on DuckDB and double or string here
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 13:00'
 labels:
@@ -61,4 +61,12 @@ and BLOB (a fifth type). Recommend: refuse bare NULL wherever its adopted
 type would differ from DuckDB's inference — which in practice means refusing
 bare NULL as a direct argument of any function unless cast (`CAST(NULL AS
 DOUBLE)` already works and is the documented spelling).
+
+Closed by the 2026-08-13 grooming pass, in two waves: 7f5acdb refuses a
+divergently-typed bare NULL argument by name (recorded in known-limitations
+by aab2995), then e1c62ae upgraded nullif to real DuckDB-matching int32
+typing once the TASK-79 width work landed - schema-parity-pinned in
+test_integer_widths.py::test_output_width_matches_duckdb. repeat's BLOB face
+stays a documented refusal (known-limitations line on the residual). Pins
+for both shapes per AC #3 live in test_known_divergences.py.
 <!-- SECTION:NOTES:END -->

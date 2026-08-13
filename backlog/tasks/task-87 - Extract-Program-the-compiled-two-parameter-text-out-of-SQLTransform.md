@@ -1,7 +1,7 @@
 ---
 id: TASK-87
 title: 'Extract Program: the compiled two-parameter text, out of SQLTransform'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 18:07'
 updated_date: '2026-08-11 18:07'
@@ -86,4 +86,11 @@ diff is wrong.
 
 Blocks the new `SQLProjection` (row-wise projections over explicit `__FIT__`,
 serving 1-1, usable as a `tfm_fit`/`tfm_transform` leaf).
+
+Closed by the 2026-08-13 grooming pass: landed in bb60533 - Program
+(compile/fit/run + Fitted) lives in model/_program.py, SQLTransform keeps the
+sklearn estimator surface and delegates. The frame-depth, clone-identity and
+Fitted.connection traps above are each pinned (_calling_test, _sklearn_test,
+_connection_test). It unblocked SQLProjection (f157c16) and later
+marginalize, both shipped on top of it.
 <!-- SECTION:NOTES:END -->
