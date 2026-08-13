@@ -175,7 +175,7 @@ class SQLProjection:
             missing = [c for c in self._columns if c not in table.column_names]
             if missing:
                 raise MarginalizeError(
-                    f"training table is missing model column {missing[0]}"
+                    f"training table is missing schema column {missing[0]}"
                 )
             table = table.select(self._columns)
         m = self._marginalized
