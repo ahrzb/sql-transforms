@@ -533,4 +533,4 @@ def test_round_trunc_bigint_digits_refuse_like_duckdb(sql):
     with pytest.raises(duckdb.BinderException, match="No function matches"):
         _duck(sql)
     with pytest.raises(ValueError, match="no function matches"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={})
+        DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
