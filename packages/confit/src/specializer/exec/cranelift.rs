@@ -36,10 +36,8 @@ use super::super::ir::{
     BinOp, CmpPred, Inst, Lit, NumOp1, Program, RoundMode, StaticTy, StrOp1, StrOp2, Term,
     TrimSide, Ty,
 };
-use super::interp::{
-    self, apply_ord, col_valid, substr_range_ok, substr_window, trim_bounds, CompileError, DuckF64,
-    InterpFn, PreparedStatic,
-};
+use super::interp::{self, apply_ord, col_valid, CompileError, InterpFn, PreparedStatic};
+use super::kernels::{self, substr_range_ok, substr_window, trim_bounds, DuckF64};
 use super::{casemap, Arena, Batch, ColData, KeyBits, OutCol, RunState, ScalarVal, StrRef, Trap};
 
 // ------------------------------------------------------- runtime context --
@@ -174,7 +172,7 @@ macro_rules! checked_bin {
                 Some(v) => v,
                 None => {
                     // Same DuckDB-verbatim text as the interpreter arm.
-                    unsafe { cx(p) }.set_trap(interp::overflow_msg($op, a, b));
+                    unsafe { cx(p) }.set_trap(kernels::overflow_msg($op, a, b));
                     0
                 }
             }
@@ -195,7 +193,7 @@ macro_rules! checked_div {
             match a.$method(b) {
                 Some(v) => v,
                 None => {
-                    unsafe { cx(p) }.set_trap(interp::overflow_msg($op, a, b));
+                    unsafe { cx(p) }.set_trap(kernels::overflow_msg($op, a, b));
                     0
                 }
             }
@@ -224,13 +222,13 @@ macro_rules! math1_h {
         }
     };
 }
-math1_h!(h_ln, interp::duck_ln);
-math1_h!(h_log2, interp::duck_log2);
-math1_h!(h_log10, interp::duck_log10);
-math1_h!(h_fsqrt, interp::duck_sqrt);
-math1_h!(h_fsin, interp::duck_sin);
-math1_h!(h_fcos, interp::duck_cos);
-math1_h!(h_ftan, interp::duck_tan);
+math1_h!(h_ln, kernels::duck_ln);
+math1_h!(h_log2, kernels::duck_log2);
+math1_h!(h_log10, kernels::duck_log10);
+math1_h!(h_fsqrt, kernels::duck_sqrt);
+math1_h!(h_fsin, kernels::duck_sin);
+math1_h!(h_fcos, kernels::duck_cos);
+math1_h!(h_ftan, kernels::duck_tan);
 
 extern "C" fn h_slike(
     cxp: *mut Cx,
@@ -247,7 +245,7 @@ extern "C" fn h_slike(
     let arena = unsafe { &mut *c.arena };
     let r = (|| -> Result<bool, Trap> {
         let e = if has_esc != 0 {
-            interp::like_escape_of(arena.get(span(eo, el)))?
+            kernels::like_escape_of(arena.get(span(eo, el)))?
         } else {
             None
         };
@@ -258,7 +256,7 @@ extern "C" fn h_slike(
         }
         let sv = arena.get(sr).as_bytes();
         let pv = arena.get(pr).as_bytes();
-        interp::like_match(sv, pv, e)
+        kernels::like_match(sv, pv, e)
     })();
     match r {
         Ok(v) => v as u8,
@@ -272,7 +270,7 @@ extern "C" fn h_slike(
 extern "C" fn h_sfind(p: *mut Cx, ao: i64, al: i64, bo: i64, bl: i64) -> i64 {
     let c = unsafe { cx(p) };
     let arena = unsafe { &*c.arena };
-    interp::str_find(arena.get(span(ao, al)), arena.get(span(bo, bl)))
+    kernels::str_find(arena.get(span(ao, al)), arena.get(span(bo, bl)))
 }
 
 extern "C" fn h_spred(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64) -> u8 {
@@ -284,7 +282,7 @@ extern "C" fn h_spred(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64
         2 => StrOp2::Ends,
         _ => StrOp2::Glob,
     };
-    interp::str_pred(op, arena.get(span(ao, al)), arena.get(span(bo, bl))) as u8
+    kernels::str_pred(op, arena.get(span(ao, al)), arena.get(span(bo, bl))) as u8
 }
 
 extern "C" fn h_slen(p: *mut Cx, bytes: i64, ao: i64, al: i64) -> i64 {
@@ -299,34 +297,34 @@ extern "C" fn h_slen(p: *mut Cx, bytes: i64, ao: i64, al: i64) -> i64 {
 
 extern "C" fn h_round2f(x: f64, n: i64, trunc: i64) -> f64 {
     if trunc != 0 {
-        interp::trunc_prec_f64(x, n)
+        kernels::trunc_prec_f64(x, n)
     } else {
-        interp::round_prec_f64(x, n)
+        kernels::round_prec_f64(x, n)
     }
 }
 
 extern "C" fn h_round2i(x: i64, n: i64, trunc: i64) -> i64 {
     if trunc != 0 {
-        interp::trunc_prec_i64(x, n)
+        kernels::trunc_prec_i64(x, n)
     } else {
-        interp::round_prec_i64(x, n)
+        kernels::round_prec_i64(x, n)
     }
 }
 
 extern "C" fn h_fexp(x: f64) -> f64 {
-    interp::duck_exp(x).expect("exp is total")
+    kernels::duck_exp(x).expect("exp is total")
 }
 
 extern "C" fn h_fcbrt(x: f64) -> f64 {
-    interp::duck_cbrt(x).expect("cbrt is total")
+    kernels::duck_cbrt(x).expect("cbrt is total")
 }
 
 extern "C" fn h_fpow(x: f64, y: f64) -> f64 {
-    interp::duck_pow(x, y).expect("pow is total")
+    kernels::duck_pow(x, y).expect("pow is total")
 }
 
 extern "C" fn h_flogb(p: *mut Cx, base: f64, x: f64) -> f64 {
-    match interp::duck_logb(base, x) {
+    match kernels::duck_logb(base, x) {
         Ok(v) => v,
         Err(t) => {
             unsafe { cx(p) }.set_trap(t.0);
@@ -343,7 +341,7 @@ extern "C" fn h_iabs(p: *mut Cx, a: i64) -> i64 {
     match a.checked_abs() {
         Some(v) => v,
         None => {
-            unsafe { cx(p) }.set_trap(interp::abs_overflow_msg(a));
+            unsafe { cx(p) }.set_trap(kernels::abs_overflow_msg(a));
             0
         }
     }
@@ -541,9 +539,9 @@ extern "C" fn h_ssim(p: *mut Cx, which: i64, ao: i64, al: i64, bo: i64, bl: i64)
     let a = arena.get(span(ao, al)).as_bytes();
     let b = arena.get(span(bo, bl)).as_bytes();
     match which {
-        0 => interp::duck_levenshtein(a, b),
-        1 => interp::duck_damerau(a, b),
-        _ => match interp::duck_hamming(a, b) {
+        0 => kernels::duck_levenshtein(a, b),
+        1 => kernels::duck_damerau(a, b),
+        _ => match kernels::duck_hamming(a, b) {
             Ok(v) => v,
             Err(t) => {
                 c.set_trap(t.0);
@@ -558,7 +556,7 @@ extern "C" fn h_sjaccard(p: *mut Cx, ao: i64, al: i64, bo: i64, bl: i64) -> f64 
     let arena = unsafe { &*c.arena };
     let a = arena.get(span(ao, al)).as_bytes();
     let b = arena.get(span(bo, bl)).as_bytes();
-    match interp::duck_jaccard(a, b) {
+    match kernels::duck_jaccard(a, b) {
         Ok(v) => v,
         Err(t) => {
             c.set_trap(t.0);
@@ -585,8 +583,8 @@ extern "C" fn h_str3(
         let x = arena.get(span(bo, bl));
         let y = arena.get(span(co, cl));
         match which {
-            0 => interp::duck_replace(s, x, y),
-            _ => interp::duck_translate(s, x, y),
+            0 => kernels::duck_replace(s, x, y),
+            _ => kernels::duck_translate(s, x, y),
         }
     };
     let r = arena.push_str(&out);
@@ -599,7 +597,7 @@ extern "C" fn h_srepeat(p: *mut Cx, ao: i64, al: i64, n: i64, len_out: *mut i64)
     let arena = unsafe { &mut *c.arena };
     let out = {
         let s = arena.get(span(ao, al));
-        interp::duck_repeat(s, n)
+        kernels::duck_repeat(s, n)
     };
     match out {
         Ok(s) => {
@@ -673,7 +671,7 @@ extern "C" fn h_rereplace(
 }
 
 extern "C" fn h_ishl(p: *mut Cx, x: i64, y: i64) -> i64 {
-    match interp::duck_shl(x, y) {
+    match kernels::duck_shl(x, y) {
         Ok(v) => v,
         Err(t) => {
             unsafe { cx(p) }.set_trap(t.0);
@@ -685,13 +683,13 @@ extern "C" fn h_ishl(p: *mut Cx, x: i64, y: i64) -> i64 {
 extern "C" fn h_sextract(p: *mut Cx, ao: i64, al: i64, i: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
     // Same +-2^32 window and trap as substr (pins-wave5).
-    if !interp::substr_range_ok(i) {
+    if !kernels::substr_range_ok(i) {
         c.set_trap("substring offset outside of supported range".to_string());
         unsafe { *len_out = 0 };
         return 0;
     }
     let arena = unsafe { &*c.arena };
-    let rng = interp::extract_window(arena.get(span(ao, al)), i);
+    let rng = kernels::extract_window(arena.get(span(ao, al)), i);
     // The extracted char is a subview of the input span — no copy.
     unsafe { *len_out = (rng.end - rng.start) as i64 };
     (ao as usize + rng.start) as i64
@@ -712,7 +710,7 @@ extern "C" fn h_spad(
     let out = {
         let s = arena.get(span(ao, al));
         let pad = arena.get(span(po, pl));
-        interp::duck_pad(left != 0, s, l, pad)
+        kernels::duck_pad(left != 0, s, l, pad)
     };
     match out {
         Ok(s) => {
@@ -731,7 +729,7 @@ extern "C" fn h_spad(
 extern "C" fn h_sslice(p: *mut Cx, ao: i64, al: i64, lo: i64, hi: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
     let arena = unsafe { &*c.arena };
-    let rng = interp::slice_window(arena.get(span(ao, al)), lo, hi);
+    let rng = kernels::slice_window(arena.get(span(ao, al)), lo, hi);
     // The slice is a subview of the input span — no copy.
     unsafe { *len_out = (rng.end - rng.start) as i64 };
     (ao as usize + rng.start) as i64
@@ -740,13 +738,13 @@ extern "C" fn h_sslice(p: *mut Cx, ao: i64, al: i64, lo: i64, hi: i64, len_out: 
 extern "C" fn h_sord(p: *mut Cx, empty_zero: i64, ao: i64, al: i64) -> i64 {
     let c = unsafe { cx(p) };
     let arena = unsafe { &*c.arena };
-    interp::duck_ord(arena.get(span(ao, al)), empty_zero != 0)
+    kernels::duck_ord(arena.get(span(ao, al)), empty_zero != 0)
 }
 
 extern "C" fn h_sstrip(p: *mut Cx, ao: i64, al: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
     let arena = unsafe { &mut *c.arena };
-    let out = interp::duck_strip_accents(arena.get(span(ao, al)));
+    let out = kernels::duck_strip_accents(arena.get(span(ao, al)));
     match out {
         None => {
             // ASCII fast path: the input span verbatim.
@@ -764,22 +762,22 @@ extern "C" fn h_sstrip(p: *mut Cx, ao: i64, al: i64, len_out: *mut i64) -> i64 {
 extern "C" fn h_srev(p: *mut Cx, ao: i64, al: i64, len_out: *mut i64) -> i64 {
     let c = unsafe { cx(p) };
     let arena = unsafe { &mut *c.arena };
-    let out = interp::duck_reverse(arena.get(span(ao, al)));
+    let out = kernels::duck_reverse(arena.get(span(ao, al)));
     let r = arena.push_str(&out);
     unsafe { *len_out = r.len as i64 };
     r.off as i64
 }
 
 extern "C" fn h_ffloordiv(x: f64, y: f64) -> f64 {
-    interp::duck_fdiv(x, y)
+    kernels::duck_fdiv(x, y)
 }
 
 extern "C" fn h_ffloormod(x: f64, y: f64) -> f64 {
-    interp::duck_fmod(x, y)
+    kernels::duck_fmod(x, y)
 }
 
 extern "C" fn h_fnextafter(x: f64, y: f64) -> f64 {
-    interp::duck_nextafter(x, y)
+    kernels::duck_nextafter(x, y)
 }
 
 macro_rules! store_h {
@@ -946,7 +944,7 @@ extern "C" fn h_predict(
 }
 
 /// Extern (UDF) call: gather `Option<ScalarVal>` args from the arg cells,
-/// delegate to the SAME [`interp::call_extern`] the interpreter uses, and
+/// delegate to the SAME [`kernels::call_extern`] the interpreter uses, and
 /// write the whole-call validity plus (validity, payload) pairs to the out
 /// cells. A callable error or declaration violation sets the trap flag.
 extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, outs: *mut Cell) {
@@ -974,7 +972,7 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
         }
     }
     let imps = unsafe { std::slice::from_raw_parts(c.externs, c.externs_len) };
-    match interp::call_extern(&imps[desc.ext_id], &desc.ret_tys, &a) {
+    match kernels::call_extern(&imps[desc.ext_id], &desc.ret_tys, &a) {
         Err(t) => c.set_trap(t.0),
         Ok((whole, comps)) => {
             unsafe { *outs = [whole as u64, 0] };
@@ -1057,9 +1055,11 @@ pub fn compile_ext(
     externs: Vec<super::ExternImpl>,
 ) -> Result<CraneliftFn, CompileError> {
     // Stage-B multiplicity programs (EmitTo loops / multimap probes) are
-    // interpreter-only for now: rejecting here makes the caller's existing
-    // interp fallback the documented 'many' path. The match arms below can
-    // then treat these constructs as unreachable.
+    // interpreter-only: rejecting here makes the caller's interp fallback
+    // the documented 'many' path, and lets the match arms below treat
+    // these constructs as unreachable. This is the ONLY thing the
+    // interpreter's eval loop is load-bearing for (TASK-111 lowers it) —
+    // every other program compiles here.
     let has_multiplicity = p
         .statics
         .iter()
@@ -1341,7 +1341,7 @@ impl CraneliftFn {
         for col in st.out.iter_mut() {
             col.clear();
         }
-        interp::reserve_out(&mut st.out, input.rows);
+        kernels::reserve_out(&mut st.out, input.rows);
 
         let statics = self.interp.statics();
         let externs = self.interp.externs();

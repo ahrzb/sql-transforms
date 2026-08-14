@@ -2078,7 +2078,7 @@ impl Binder<'_> {
             };
             cols.retain(|(_, cn, _)| match (op, &similar) {
                 (StarFilter::Like { ci, neg }, _) => like_match(cn, pat, *ci) != *neg,
-                (StarFilter::Glob, _) => super::exec::interp::duck_glob(cn, pat),
+                (StarFilter::Glob, _) => super::exec::kernels::duck_glob(cn, pat),
                 (StarFilter::Similar { neg }, Some(rx)) => rx.is_match(cn) != *neg,
                 (StarFilter::Similar { .. }, None) => unreachable!(),
             });

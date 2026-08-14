@@ -421,8 +421,8 @@ fn arith(op: ArithOp, a: &Lit, b: &Lit) -> Option<Lit> {
             ArithOp::Div => unreachable!("/ is promoted to f64 by the frontend"),
             // Trapping shifts stay unfolded (None) exactly when the
             // interpreter would trap — same kernel decides both.
-            ArithOp::Shl => super::exec::interp::duck_shl(*x, *y).ok().map(Lit::I64),
-            ArithOp::Shr => Some(Lit::I64(super::exec::interp::duck_shr(*x, *y))),
+            ArithOp::Shl => super::exec::kernels::duck_shl(*x, *y).ok().map(Lit::I64),
+            ArithOp::Shr => Some(Lit::I64(super::exec::kernels::duck_shr(*x, *y))),
             ArithOp::BitAnd => Some(Lit::I64(x & y)),
             ArithOp::BitOr => Some(Lit::I64(x | y)),
             ArithOp::BitXor => Some(Lit::I64(x ^ y)),
