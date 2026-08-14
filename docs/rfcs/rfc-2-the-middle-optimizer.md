@@ -27,6 +27,17 @@ large-batch columnar was ceded to DuckDB. Correctness is C2: bit-identical
 to DuckDB or a named refusal, no third behavior — including trap message
 text, which embeds operands in source order (`interp.rs:1655`).
 
+**Execution model (the frame everything below must fit):** confit compiles
+ONCE at pack time and serves many. Every optimization in this RFC runs
+once, at build, with an effectively unlimited budget; the serve path makes
+ZERO optimization decisions. The only input that varies per serve call is
+the batch size `n`, and the ceiling for reacting to it is one compiled-in
+dispatch branch (or a strip loop that handles any `n`) — never a runtime
+policy. Per-query compile-latency economics from the DB literature
+(Umbra/HyPer tiering, Vectorwise bandits, InkFuse) do NOT apply here.
+*(Amended 2026-08-13 — the first draft imported exactly that mistake;
+caught by AmirHossein.)*
+
 **[verified] The JIT's integer core is invisible to Cranelift's optimizer.**
 Float and bitwise ops are native CLIF; every integer arithmetic op is an
 opaque side-effecting libcall plus a load-and-branch, per op, per row:
@@ -44,22 +55,42 @@ b.ins().brif(flag, trap_exit, &[], cont, &[]);
 `fold.rs`/`frontend.rs` consume it, for literal fitting. `ir/mod.rs`
 documents op totality in **prose** (15 TOTAL annotations); no code reads it.
 
+**[verified] Nobody does CSE.** Confit has no common-subexpression or
+value-numbering pass (the only "dedup" in the specializer is output-NAME
+deduping). Cranelift's GVN covers only the pure native-CLIF slice (floats,
+bools, compares); integer arithmetic and extern calls are opaque calls it
+must not merge — even externs confit KNOWS are pure, because CLIF has no
+way to say so. The interpreter optimizes nothing. So a repeated
+`input.x + 1` is computed (and trap-checked) once per occurrence per row,
+on both engines, forever.
+
 ## Problems
 
-1. **Nothing proves trap-freedom**, so every integer op pays a call + load
-   + branch it usually does not need, and no batching/vectorization is
-   legal (a trap must fire on the first offending row, in row order, with
-   DuckDB's exact message).
-2. **Nothing chooses the execution strategy.** Two engines exist; the
-   choice is static. Compile cost is unamortizable at small batches
-   (Umbra: "not a lot of time spent in execution to amortize... code").
+1. **Nothing proves trap-freedom, and nothing does the textbook cleanups.**
+   Every integer op pays a call + load + branch it usually does not need;
+   repeated subexpressions and known-pure extern calls are recomputed per
+   occurrence (no CSE on either engine — see Context); and no
+   batching/vectorization is legal until totality is proven (a trap must
+   fire on the first offending row, in row order, with DuckDB's exact
+   message).
+2. **The execution contract is implicit.** Two engines exist, but nothing
+   states or tests the contract between them: the interpreter is de facto
+   the reference the JIT must match, the only engine the WASM serving
+   path can run (a sandbox cannot allocate executable pages), and the
+   only engine covering multiplicity programs (`cranelift.rs:1406`
+   rejects them) — none of that is written down or gated. This is NOT a
+   compile-latency problem; a static choice made once at pack time is
+   exactly right.
 3. **The dominant cost is the FFI boundary, and no optimizer touches it.**
 4. **No cheap correctness oracle for fast paths.** New execution paths
    need a second engine to differentially test against.
 
 ## Choices
 
-### A. Totality + interval analysis over the SSA IR (the keystone)
+### A. A build-time mid-end over the SSA IR (the keystone)
+
+One pack-time pass: totality/interval analysis plus the textbook cleanups
+the engines cannot do for themselves.
 
 ```rust
 impl Inst { pub fn is_total(&self) -> bool { /* transcribe the 15 TOTAL doc comments */ } }
@@ -68,7 +99,11 @@ fn interval(v: Value) -> Interval;   // seeded from Ty::int_range(), which alrea
 // consumer 1: emit native CLIF and delete the guard
 if fits_i64(interval(a) + interval(b)) { b.ins().iadd(x, y) }   // no call, no load, no brif
 else                                   { call_h(.., "h_iadd", ..); trap_check(b) }
-// consumer 2: legality gate for EVERYTHING in B and C below
+// consumer 2: CSE/DCE, legal where the analysis says so — Cranelift cannot
+// merge these (opaque calls), but confit can, BEFORE the engine split:
+//   x1 = iadd(input.x, 1); ...; x2 = iadd(input.x, 1)   =>  x2 = x1   when is_total-or-same-trap
+//   y1 = f(x); ...; y2 = f(x)                           =>  y2 = y1   when extern f is pure (TASK-101 knows)
+// consumer 3: legality gate for EVERYTHING in B and C below
 ```
 
 **Pros**
@@ -92,13 +127,19 @@ else                                   { call_h(.., "h_iadd", ..); trap_check(b)
 ### B. A schedule side-table (Halide's split, 1-D)
 
 ```rust
+// DECIDED ONCE AT PACK TIME, recorded in the packed artifact. Not adaptive.
 pub struct Sched { grain: Grain, engine: Engine, nulls: NullRep }
 pub enum Grain  { Row, Batch(u16) }          // fused per-row | vectorized per-op
 pub enum Engine { Interp, Jit }
 // the IR never changes; the schedule is annotation. Nullability is already
 // pure i1 algebra, so batched it is ONE mask word per 64 rows, not a vector.
+// Runtime's ONLY variable is n; its ceiling is one compiled dispatch:
+//    if n < SMALL { row_path(rows) } else { strip_path(rows) }   // both compiled at pack
+// The fit data is a free PGO profile: selectivity/domain statistics the DB
+// world samples adaptively at runtime, confit measures ONCE on the training
+// set and bakes into the schedule.
 
-#[test] fn schedules_agree() {              // <- the free oracle
+#[test] fn schedules_agree() {              // <- the free oracle (build/test-time)
     for p in corpus() { let gold = run(p, Sched::reference());
         for s in [batch(1), batch(1024), jit_all()] { assert_bits_eq!(run(p, s), gold) } } }
 ```
@@ -107,13 +148,15 @@ pub enum Engine { Interp, Jit }
 - Solves problem 4 for free, and it is the sweeps' best single find: all
   schedules of one program must agree bit-for-bit, so the fuzzer gains a
   differential gate **without a second engine**.
-- Solves problem 2: the interp/JIT choice becomes data, picked per call
-  from the batch size actually seen.
+- Solves problem 2 by making the contract explicit: which engine serves,
+  what the reference schedule is, what the WASM path runs — decided at
+  pack time, recorded, and gated.
 - Batched, the null lane is ONE mask word per 64 rows instead of 64
   branches — nullability is already pure i1 algebra, so this falls out.
+- Fit-data-as-profile is a lever the adaptive-DB literature cannot have:
+  Weld's selectivity-adaptive predication (up to 3.75x over rule-based,
+  VLDB 2018) samples at runtime; confit gets the same numbers at build.
 - The IR never changes; a schedule is annotation. Cheap to revert.
-- Precedent: Vectorwise micro-adaptivity (SIGMOD 2013), Weld adaptive
-  predication (up to 3.75x over rule-based, VLDB 2018), InkFuse (ICDE 2024).
 
 **Cons**
 - Worthless before A — every legality guard is A's `is_total`.
@@ -121,8 +164,11 @@ pub enum Engine { Interp, Jit }
   catches it, but only if the corpus covers that shape.)
 - Strings (`StrOp*`, `Slike`, regex) do not widen: the win is confined to
   the numeric + i1 + CASE subset.
-- Grain/engine thresholds are machine-specific numbers that will rot; they
-  need a benchmark to defend them, not a constant someone once measured.
+- Thresholds baked at pack time are machine-specific: a schedule tuned on
+  the packing machine may be wrong on the serving machine, and re-tuning
+  means re-packing. Needs a benchmark to defend the defaults.
+- A schedule tuned to the training distribution can be wrong for serve
+  traffic that drifts from it (the profile is free, not guaranteed).
 
 ### C. Batch the FFI boundary (not an optimizer at all)
 
@@ -176,6 +222,11 @@ Lift/RISE         headline rules reassociate reductions: illegal against DuckDB.
 Weld/Voodoo       dormant 2020 / dead 2016. Read the source, do not depend.
 LegoBase/DBLAB/   Scala + a modified compiler (Rep[T] staging does not exist in Rust),
 LB2               all dead, and all assume 0.3-2.7 s compile budgets per query.
+runtime           Vectorwise bandits, InkFuse interpret-then-swap, Umbra/HyPer
+adaptivity        tiering: all exist because a DB meets its query for the first
+                  time at runtime. Confit meets its program at pack time with an
+                  unlimited budget; the fit set is the profile. The only runtime
+                  variable is n, and its ceiling is one compiled dispatch branch.
 ```
 
 ## What the research says about RFC-1
