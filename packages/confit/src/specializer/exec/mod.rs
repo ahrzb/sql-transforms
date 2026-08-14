@@ -13,6 +13,7 @@
 pub mod casemap;
 pub mod cranelift;
 pub mod interp;
+pub mod kernels;
 mod pow10;
 mod strip_accents;
 pub mod tree_ensemble;
