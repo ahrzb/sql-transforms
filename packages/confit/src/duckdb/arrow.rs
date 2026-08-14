@@ -158,7 +158,8 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
     let _ = py;
     if in_cols.iter().any(|c| c.name.contains('.')) {
         return Err(err(
-            "infer_arrow requires an all-scalar row model (struct columns: use infer())",
+            "infer_arrow requires an all-scalar row schema (struct columns: \
+             use infer_rows())",
         ));
     }
     let rows: usize = batch.call_method0("__len__")?.extract()?;

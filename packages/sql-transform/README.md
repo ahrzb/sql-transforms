@@ -31,8 +31,9 @@ steps (nested aggregations across CTE levels genuinely depend on each other).
 Every intermediate is inspectable by name and every step is plain SQL you can
 run by hand.
 
-The serving half (`infer`/`infer_batch` through [Confit](../confit)) is a later
-loop and still raises `NotImplementedError`.
+The serving half is live: `infer`/`infer_batch` run the same artifact through
+[Confit](../confit) row-at-a-time — dict-or-object rows in, dict rows out,
+bit-exact with `transform` by Confit's contract or refused by name.
 
 ## The contract
 

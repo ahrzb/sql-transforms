@@ -96,6 +96,36 @@ def test_no_coercion(col, value, sql_type):
         fn.infer_rows([{**ROW, col: value}])
 
 
+def test_numpy_scalars_cross_the_boundary():
+    """Fixed-width numpy scalars are the natural Python spelling of a narrow
+    column, so an integer-like (`__index__`) value crosses — np.bool_ has no
+    `__index__` and stays out of the int lane, exactly like a Python bool."""
+    np = pytest.importorskip("numpy")
+    fn = build("SELECT a + 1.0 AS d, b + b AS n, k AS big FROM __THIS__")
+    row = {**ROW, "a": np.float64(1.5), "b": np.int32(2), "k": np.int64(3)}
+    assert fn.infer_rows([row]) == [{"d": 2.5, "n": 4, "big": 3}]
+    # np.uint8 is integer-like too; range is still checked against the column.
+    assert fn.infer_rows([{**row, "b": np.uint8(7)}])[0]["n"] == 14
+    with pytest.raises(ValueError, match="column 'b'.*INTEGER"):
+        fn.infer_rows([{**row, "b": np.bool_(True)}])
+    with pytest.raises(ValueError, match="column 'b' value 3000000000"):
+        fn.infer_rows([{**row, "b": np.int64(3_000_000_000)}])
+
+
+def test_numpy_bool_crosses_the_bool_lane():
+    np = pytest.importorskip("numpy")
+    fn = build("SELECT NOT f AS o FROM __THIS__", schema=pa.schema([("f", pa.bool_())]))
+    assert fn.infer_rows([{"f": np.bool_(True)}]) == [{"o": False}]
+
+
+def test_infer_arrow_struct_refusal_names_a_live_method():
+    schema = pa.schema([pa.field("st", pa.struct([pa.field("x", pa.int64())]))])
+    fn = build("SELECT st.x AS o FROM __THIS__", schema=schema)
+    with pytest.raises(ValueError, match="infer_rows") as e:
+        fn.infer_arrow(pa.Table.from_pylist([{"st": {"x": 1}}], schema=schema))
+    assert "row model" not in str(e.value) and "infer()" not in str(e.value)
+
+
 def test_input_range_refuses_by_name():
     fn = build("SELECT b AS o FROM __THIS__")
     with pytest.raises(
