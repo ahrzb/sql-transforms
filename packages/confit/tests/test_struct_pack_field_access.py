@@ -13,9 +13,13 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from pydantic import create_model
 
-In = create_model("In", k=(int, ...), s=(str, ...))
+IN = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
 ROWS = [{"k": 5, "s": "ab"}, {"k": -3, "s": "Z"}]
 
 BATTERY = [
@@ -40,10 +44,8 @@ def _duck(sql: str) -> pa.Table:
 
 
 def _ours(sql: str) -> pa.Table:
-    fn = DuckDBInferFn(
-        sql, row_tables={"__THIS__": In}, static_tables={}, output="dict"
-    )
-    return fn.infer_arrow(pa.Table.from_pylist(ROWS))
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN}, static_tables={})
+    return fn.infer_arrow(pa.Table.from_pylist(ROWS, schema=IN))
 
 
 @pytest.mark.parametrize("sql", BATTERY)
@@ -62,4 +64,4 @@ def test_struct_pack_field_access_matches_duckdb(sql):
 )
 def test_missing_key_refuses_with_duckdb_wording(sql):
     with pytest.raises(Exception, match='Could not find key "z" in struct'):
-        DuckDBInferFn(sql, row_tables={"__THIS__": In}, static_tables={})
+        DuckDBInferFn(sql, row_tables={"__THIS__": IN}, static_tables={})
