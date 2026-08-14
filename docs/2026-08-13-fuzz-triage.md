@@ -86,13 +86,31 @@ emitter's DuckDB run and the oracle's DuckDB run lawfully pick different
 groups. Fuzzer QoL for the TASK-94 rework: either generate an ORDER BY
 with every FETCH or teach the classifier that both answers are lawful.
 
-### 9. Timeouts — 4 seeds
+### 9. Timeouts — 4 seeds — the ORACLE is slow, not the engine
 
-4395 reproduces on a quiet machine AND on master, with an empty `sql`
-field — the case hangs before the runner records the text. Two problems:
-whatever hangs, and a runner defect (record the SQL before executing).
-**Needs investigation on his word.** 7422, 12229, 13269 do not reproduce
-anywhere — machine-load flakes from the 8-worker campaign.
+Investigated 2026-08-14 (the runner loses the SQL on a timeout, so the
+case was recovered from the generator by seed). Seed 4395 is:
+
+```sql
+SELECT (lpad(c1, 2147483647, 'NULL') LIKE 'O''Brien') AS o FROM __THIS__
+```
+
+Measured both sides: **we refuse in 0.00s at bind** ("lpad count
+2147483647 exceeds the 1 GiB string-builder budget"); **DuckDB takes 9.0s**
+to actually build the 2 GiB pad and answer `false`. Under 8 workers that
+comfortably exceeds the per-case timeout, which is the whole finding — no
+engine hang, and no liveness bug. 7422, 12229, 13269 are the same story
+without the reproduction.
+
+Two follow-ups, both fuzzer QoL (fold into TASK-94):
+- record the SQL BEFORE executing, so a timeout is diagnosable in place
+  rather than by seed archaeology;
+- either bound generated pad/repeat lengths or classify an oracle-side
+  timeout apart from an engine-side one — they mean opposite things.
+
+Note the underlying VALUE divergence here is real but already known: we
+refuse where DuckDB serves a giant pad (the TASK-88 family, §4). Refusing
+at bind rather than at run is the better half of that behaviour.
 
 ## Scoreboard
 
@@ -106,4 +124,7 @@ anywhere — machine-load flakes from the 8-worker campaign.
 | negative zero | 3 | TASK-80 (To Do) |
 | fold composition | 1 | TASK-103 family, pinned |
 | harness nondeterminism | 2 | fuzzer QoL (TASK-94) |
-| timeouts | 4 | 1 real (**ask**) + 3 load flakes |
+| timeouts | 4 | oracle-slow, not engine — fuzzer QoL (TASK-94) |
+
+One item still needs a decision: the VARCHAR->integer cast-rounding class
+(§3). Everything else is mapped to an existing ticket.
