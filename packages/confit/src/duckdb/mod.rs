@@ -54,10 +54,16 @@ fn duck_ty_name(t: Ty) -> &'static str {
 /// One row value into its input lane, strictly: the right Python type
 /// category for the declared SQL type or a refusal naming the column — no
 /// coercion ("1" is not 1, 1 is not 1.0, and bool is not an int value even
-/// though Python subclasses it). Subclasses within a category pass
-/// (np.float64 IS a float); crossing categories never does. A narrow width
-/// checks its range on the way IN, mirroring `narrow_check` on the way out.
+/// though Python subclasses it). The int lane takes anything INTEGER-LIKE
+/// (`__index__`, which is what `operator.index()` means) so the fixed-width
+/// numpy scalars that are Python's natural spelling of a narrow column
+/// cross exactly — `np.int32(2)` into an INTEGER column, range still
+/// checked. `np.bool_` has no `__index__` and stays out of the int lane,
+/// exactly like a Python bool; the DOUBLE lane stays float-only (np.float64
+/// IS a float, np.float32 refuses — the engine computes in f64). A narrow
+/// width checks its range on the way IN, mirroring `narrow_check` out.
 fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bool) -> PyResult<()> {
+    use pyo3::exceptions::PyOverflowError;
     use pyo3::types::{PyBool, PyFloat, PyInt};
     let type_err = |want: &str| {
         let got = attr
@@ -81,10 +87,11 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
             data.push(if null {
                 false
             } else {
-                // bool is final in Python: exact or wrong.
                 match attr.cast_exact::<PyBool>() {
                     Ok(b) => b.is_true(),
-                    Err(_) => return Err(type_err("bool")),
+                    // pyo3's bool extraction covers the rest: numpy's
+                    // `bool_`, and it refuses ints and strings.
+                    Err(_) => attr.extract().map_err(|_| type_err("bool"))?,
                 }
             });
         }
@@ -103,10 +110,23 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
                 let v: i64 = match attr.cast_exact::<PyInt>() {
                     Ok(i) => i.extract().map_err(|_| range_err(attr))?,
                     Err(_) => {
-                        if !attr.is_instance_of::<PyInt>() || attr.is_instance_of::<PyBool>() {
+                        // A Python bool IS an int and HAS __index__, so it
+                        // must be rejected before the integer-like
+                        // extraction below.
+                        if attr.is_instance_of::<PyBool>() {
                             return Err(type_err("int"));
                         }
-                        attr.extract().map_err(|_| range_err(attr))?
+                        // Wrong TYPE and out-of-i64 RANGE both fail here;
+                        // the exception says which (OverflowError = a real
+                        // integer that does not fit; anything else = not
+                        // integer-like at all).
+                        attr.extract::<i64>().map_err(|e| {
+                            if e.is_instance_of::<PyOverflowError>(attr.py()) {
+                                range_err(attr)
+                            } else {
+                                type_err("int")
+                            }
+                        })?
                     }
                 };
                 if let Some((lo, hi)) = c.ty.ty.int_range() {
