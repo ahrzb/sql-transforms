@@ -62,10 +62,16 @@ _DUCK_T = {
 }
 
 # Campaign-report filter for the one feature not yet shipped: decimals
-# (m-8 ph5). One unshipped feature = hundreds of random spellings per run;
-# the tag has a strict-xfail twin that rings when the feature lands, tags
-# never ring — delete the tag in the feature's own PR or it hides
-# regressions. (int-widths deleted with TASK-79/m-8 phase 2.)
+# (lattice-spec phase 5, Dec(p,s) arithmetic). One unshipped feature =
+# hundreds of random spellings per run; delete the tag in the feature's own
+# PR or it hides regressions. (int-widths deleted with TASK-79/phase 2.)
+#
+# This tag has NO strict-xfail twin, contrary to what this comment claimed
+# until 2026-08-15. The bare-literal 1-ulp class is documented instead, in
+# docs/known-limitations.md — and TASK-95 (doc-twin totality) is still To
+# Do, so nothing rings when phase 5 lands. test_decimals.py's only pin is
+# TASK-91, which is phase 1 (decimal STATIC ingest), a different member.
+# Until one of those closes, this tag is a report filter and nothing more.
 
 
 @dataclass
