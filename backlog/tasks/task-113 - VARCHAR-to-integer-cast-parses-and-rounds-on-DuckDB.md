@@ -73,6 +73,18 @@ correct for genuinely unparseable input and only wrong for parseable ones.
 
 Pre-existing; reproduces on pre-migration master `217799d`. Not caused by
 the arrow schema API.
+
+**Start from the pins that already exist.** `origin/fuzz-round4-20260810`
+(`c0dca1f`, PR #98, CLOSED not merged) adds
+`packages/confit/tests/test_round4_findings.py` — 277 lines, and one of the
+four families it pins is this one (`TRY_CAST(s AS BIGINT)` over decimal
+strings, seeds 0..4). Harvest that file rather than rewriting it; it
+predates PR #144 and uses the deleted pydantic surface in 9 places, so it
+needs the same migration the two suites in `1874b2b` did. The other three
+families it pins (traps lost under composition, NaN sign in CAST,
+unary-minus zero sign) are worth checking against TASK-85 / TASK-80 while
+the file is open — some may already be covered, and whatever is not is
+free coverage.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
