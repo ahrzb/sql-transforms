@@ -2,7 +2,7 @@
 id: TASK-97
 title: >-
   round/trunc digits slot is INTEGER
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-14 03:30'
 labels:
@@ -23,8 +23,8 @@ fact: digits accept INTEGER-or-narrower. Approved 2026-08-13.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 round(d, k)/trunc(d, k) with a BIGINT digits expression refuses like DuckDB
-- [ ] #2 INTEGER-typed digits (literals, ::INTEGER) keep binding; live-oracle pins
+- [x] #1 round(d, k)/trunc(d, k) with a BIGINT digits expression refuses like DuckDB
+- [x] #2 INTEGER-typed digits (literals, ::INTEGER) keep binding; live-oracle pins
 <!-- AC:END -->
 
 ## Notes
