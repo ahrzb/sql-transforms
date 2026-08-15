@@ -179,10 +179,16 @@ def test_list_valued_regexp_forms_reject():
 
 
 def test_ubigint_static_payloads_reject():
+    """Refused at the TYPE now, not at the value's range (2026-08-15).
+
+    A uint64 static used to ride the i64 lane, so only a payload past i64
+    was caught — while every in-range one emitted int64 where DuckDB emits
+    UINT64, a schema divergence with no refusal. Refusing the type refuses
+    both, and names it."""
     big = pa.table({"id": pa.array([2**64 - 1], pa.uint64()), "v": [1]})
     rejects(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
-        "outside int64 range",
+        "has type uint64",
         {"d": big},
     )
 

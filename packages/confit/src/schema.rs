@@ -17,7 +17,10 @@ pub enum RowField {
         nullable: bool,
         fields: Vec<(String, RowField)>,
     },
-    Opaque,
+    /// A type this engine does not serve, carrying its ARROW spelling so a
+    /// refusal can name it. Unreferenced it costs nothing; referenced it
+    /// refuses.
+    Opaque(String),
 }
 
 /// Which acceptance policy a schema is read under.
@@ -27,12 +30,10 @@ pub enum RowField {
 /// parsers in two files) and is now deliberate.
 ///
 /// `Row` is exact: a type is served at its declared width or it is opaque.
-/// `Static` additionally takes types the catalogue has always taken by
-/// widening them — unsigned ints into the i64 lane, float32 and
-/// `decimal128(p,s)` into the f64 lane. That widening is lossy (an exact
-/// decimal beyond 2^53 is TASK-91's whole subject) and narrowing it to the
-/// row policy would break builds that work today, so it stays until that
-/// is decided on purpose rather than as a side effect of this refactor.
+/// `Static` additionally takes `large_string`/`utf8` and `decimal128(p,s)`,
+/// and ONLY those — both measured against DuckDB rather than assumed. The
+/// difference is the remaining gap between the two, not a design; closing
+/// it needs TASK-91 (exact decimal serving) first.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     Row,
@@ -131,17 +132,28 @@ fn arrow_field_to_row_field(
         "int64" => Ty::I64,
         "double" => Ty::F64,
         "string" => Ty::Str,
-        // The catalogue's historical extras, preserved exactly. Widening,
-        // and lossy where it widens — an unsigned payload past i64 refuses
-        // downstream by range, and a decimal past 2^53 is TASK-91.
+        // Two catalogue extras survive, because both are MEASURED
+        // equivalent rather than merely convenient:
+        //
+        //   large_string/utf8  DuckDB normalises these to VARCHAR, so the
+        //                      value and the output type both match.
+        //   decimal128(p,s)    an ordinary fit-path output (sum(BIGINT) is
+        //                      decimal128(38,0)). Rides the f64 lane behind
+        //                      an exactness guard that refuses any payload
+        //                      f64 cannot hold; TASK-91 lands exact serving.
+        //
+        // float32 and the unsigned widths used to ride here too and were
+        // removed 2026-08-15: both DIVERGE. float32 in value AND type
+        // (s.v * 3.0 is 0.30000001192092896/FLOAT on DuckDB, f64 arithmetic
+        // here), unsigned in type (uint64 stays UINT64 there, int64 here).
+        // The row path always refused them; the catalogue widened them
+        // silently, which is the third mode the contract forbids.
         _ if policy == Policy::Static => match name.as_str() {
-            "uint8" | "uint16" | "uint32" | "uint64" => Ty::I64,
-            "float" => Ty::F64,
             "large_string" | "utf8" | "large_utf8" => Ty::Str,
             n if n.starts_with("decimal") => Ty::F64,
-            _ => return Ok(RowField::Opaque),
+            _ => return Ok(RowField::Opaque(name)),
         },
-        _ => return Ok(RowField::Opaque),
+        _ => return Ok(RowField::Opaque(name)),
     };
     Ok(RowField::Scalar { ty: t, nullable })
 }

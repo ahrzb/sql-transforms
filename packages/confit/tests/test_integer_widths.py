@@ -583,3 +583,70 @@ def test_static_column_types_at_its_arrow_width(arrow_ty, name):
     assert want.schema.field("o").type == arrow_ty, "oracle moved — remeasure"
     assert got.schema == want.schema, f"{name}: {got.schema} != {want.schema}"
     assert got.to_pylist() == want.to_pylist()
+
+
+# A static column whose arrow type the engine does not serve at that type
+# must REFUSE BY NAME, not get widened into a neighbouring lane. Measured
+# 2026-08-15, the widening was a live divergence in both directions:
+#
+#   float32 static, s.v * 3.0   duck 0.30000001192092896 FLOAT
+#                               ours 0.30000000447034836 DOUBLE
+#   uint64  static, s.v         duck 7 UINT64   ours 7 INT64
+#
+# The ROW path already refuses both for exactly this reason; only the
+# catalogue widened them, because it used to run its own parser.
+_STATIC_ROW = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+
+
+def _static_fn(arrow_ty, val, expr="s.v"):
+    static = pa.table({"id": pa.array([5], pa.int64()), "v": pa.array([val], arrow_ty)})
+    return DuckDBInferFn(
+        f"SELECT {expr} AS o FROM __THIS__ JOIN s ON k = s.id",
+        row_tables={"__THIS__": _STATIC_ROW},
+        static_tables={"s": static},
+    )
+
+
+@pytest.mark.parametrize(
+    ("arrow_ty", "val"),
+    [
+        (pa.float32(), 0.1),
+        (pa.uint8(), 7),
+        (pa.uint16(), 7),
+        (pa.uint32(), 7),
+        (pa.uint64(), 7),
+    ],
+)
+def test_unserved_static_type_refuses_by_name(arrow_ty, val):
+    with pytest.raises(ValueError, match="'v'") as e:
+        _static_fn(arrow_ty, val)
+    msg = str(e.value)
+    # "does not exist" is the lie the catalogue used to tell: it dropped the
+    # column, so the binder truthfully could not find a column that IS there.
+    assert "does not exist" not in msg, msg
+    assert str(arrow_ty) in msg, msg
+
+
+def test_unserved_static_type_unreferenced_still_builds():
+    """Opaque-unless-referenced, the same rule the row path follows."""
+    static = pa.table(
+        {
+            "id": pa.array([5], pa.int64()),
+            "v": pa.array([0.1], pa.float32()),
+            "ok": pa.array([2], pa.int32()),
+        }
+    )
+    fn = DuckDBInferFn(
+        "SELECT s.ok AS o FROM __THIS__ JOIN s ON k = s.id",
+        row_tables={"__THIS__": _STATIC_ROW},
+        static_tables={"s": static},
+    )
+    assert fn.infer_rows([{"k": 5}]) == [{"o": 2}]
+
+
+def test_large_string_static_still_serves():
+    """Measured equivalent — DuckDB normalises large_string to VARCHAR, so
+    this one is NOT a divergence and stays served."""
+    assert _static_fn(pa.large_string(), "x", "upper(s.v)").infer_rows([{"k": 5}]) == [
+        {"o": "X"}
+    ]
