@@ -2,11 +2,21 @@
 
 The AST — not the SQL string — is what the shrinker edits, so every node is a
 mutable dataclass with a `kids`/`swap` protocol. Generation is type-directed
-(`expr(rng, env, ty, depth)`) over the duck_check type vocabulary
-(int/float/str/bool, `?` marks nullable) and weighted toward the expression
-spine; exotic productions (refused clauses, hostile identifiers, bare decimal
-literals) run at low weight so a divergence in one of them surfaces as one
-deduped class instead of drowning the campaign.
+(`expr(rng, env, ty, depth)`) over the SEMANTIC vocabulary
+(int/float/str/bool) and weighted toward the expression spine; exotic
+productions (refused clauses, hostile identifiers, bare decimal literals) run
+at low weight so a divergence in one of them surfaces as one deduped class
+instead of drowning the campaign.
+
+Two axes, deliberately separate. A column's SEMANTIC type picks the
+operators; its STORAGE type (`SCALARS`, plus `Struct`, plus `OPAQUE`) is what
+the table actually declares. They were fused once — every generated column
+was int64/double/string/bool — and the cost was invisible: narrow widths and
+struct columns were unreachable by ANY seed, so whole families of live bugs
+could not be found no matter how long a campaign ran. `leaves()` is the
+bridge: it flattens a storage schema to the referenceable lanes the
+expression layer binds. test_fuzz_smoke.py's parity tests keep the two axes
+from drifting apart again.
 """
 
 from __future__ import annotations
@@ -15,6 +25,69 @@ import random
 from dataclasses import dataclass, field
 
 TYPES = ("int", "float", "str", "bool")
+"""The SEMANTIC vocabulary — what the expression layer reasons about when it
+picks operators and builtin overloads. Deliberately four-wide; a column's
+storage width is a separate axis (below) so widening storage does not
+multiply the expression grammar."""
+
+# The STORAGE vocabulary: exactly what schema.rs::arrow_field_to_row_field
+# serves, at exactly its width. int32 IS Ty::I32, never a collapse to i64 —
+# so `a + a` over an int32 column is INTEGER arithmetic on DuckDB and traps
+# at INT32, which is a different program from the int64 one.
+SCALARS = ("bool", "int8", "int16", "int32", "int64", "double", "string")
+
+# Outside the vocabulary on purpose. The boundary rule is opaque-unless-
+# referenced: an unreferenced foreign column must never block a build.
+OPAQUE = ("float32", "timestamp")
+
+SEMANTIC = {
+    "bool": "bool",
+    "int8": "int",
+    "int16": "int",
+    "int32": "int",
+    "int64": "int",
+    "double": "float",
+    "string": "str",
+}
+
+# Inclusive value range per integer width, so generated data actually fits
+# the column it is declared in.
+INT_RANGE = {
+    "int8": (-(2**7), 2**7 - 1),
+    "int16": (-(2**15), 2**15 - 1),
+    "int32": (-(2**31), 2**31 - 1),
+    "int64": (-(2**63), 2**63 - 1),
+}
+
+
+@dataclass(frozen=True)
+class Struct:
+    """A struct-typed table column. Its leaves are lanes: `w.mean` binds
+    exactly like a top-level double column, in a row table AND in a static
+    one. `fields` is a tuple so a Case stays hashable/comparable."""
+
+    fields: tuple[tuple[str, object], ...]  # (name, spec) — spec is str | Struct
+    nullable: bool = False
+
+
+def leaves(schema: dict, prefix: str = "") -> list[tuple[str, str, bool]]:
+    """(dotted path, semantic type, nullable) for every REFERENCEABLE leaf.
+
+    Opaque columns are omitted: they exist in the table and must not break
+    the build, but nothing may bind them. A struct's nullability flows down
+    to its leaves — a null parent nulls every lane under it."""
+    out: list[tuple[str, str, bool]] = []
+    for name, spec in schema.items():
+        path = f"{prefix}{name}"
+        if isinstance(spec, Struct):
+            out += [
+                (p, t, spec.nullable or n)
+                for p, t, n in leaves(dict(spec.fields), f"{path}.")
+            ]
+        elif spec.rstrip("?") in SEMANTIC:
+            out.append((path, SEMANTIC[spec.rstrip("?")], spec.endswith("?")))
+    return out
+
 
 # The engine's builtin catalogue (frontend.rs BUILTIN_NAMES). Signatures are
 # hand-written for the common core below; the rest are called through the
@@ -461,11 +534,18 @@ STRS = [
 QUANT = [i / 4 for i in range(-8, 9)]  # quantised grid — the sklearn lesson
 
 
-def value(rng: random.Random, ty: str, nullable: bool) -> object:
+def value(rng: random.Random, ty: str, nullable: bool, storage: str = "") -> object:
     if nullable and rng.random() < 0.3:
         return None
     if ty == "int":
-        return rng.choice(INTS) if rng.random() < 0.5 else rng.randrange(-50, 50)
+        # Clamped to the declared width, and biased to that width's OWN
+        # boundary values — an int8 column whose extremes are +-127 is what
+        # makes a narrow-width overflow reachable at all.
+        lo, hi = INT_RANGE.get(storage, INT_RANGE["int64"])
+        pool = [v for v in INTS if lo <= v <= hi] + [lo, hi]
+        if rng.random() < 0.5:
+            return rng.choice(pool)
+        return rng.randrange(max(lo, -50), min(hi, 50) + 1)
     if ty == "float":
         r = rng.random()
         if r < 0.35:
@@ -698,7 +778,9 @@ def rexpr(e: Node) -> str:
     if isinstance(e, Lit):
         return _rlit(e.val, e.ty, e.bare_decimal)
     if isinstance(e, Col):
-        q = _ident(e.name)
+        # A lane name is a dotted path (`w.mean`); each segment quotes on its
+        # own, or the whole path becomes one identifier that exists nowhere.
+        q = ".".join(_ident(p) for p in e.name.split("."))
         return f"{_ident(e.table)}.{q}" if e.table else q
     if isinstance(e, Bin):
         return f"({rexpr(e.lhs)} {e.op} {rexpr(e.rhs)})"
@@ -811,34 +893,59 @@ def render(q: Q) -> str:
 HOSTILE_NAMES = ["Weird Name", "sélect", "from", "__param_0", "K", 'a"b']
 
 
-def _schema(rng: random.Random, n: int, hostile: bool = False) -> dict[str, str]:
-    out: dict[str, str] = {}
+def _colspec(rng: random.Random, depth: int = 0):
+    """One column's STORAGE type. Structs nest (a lane is addressed by its
+    full ordered path, so depth is part of the surface, not decoration) and
+    opaque columns appear at low weight — they must never block a build."""
+    r = rng.random()
+    if depth < 2 and r < (0.16 if depth == 0 else 0.25):
+        k = rng.randrange(1, 4)
+        return Struct(
+            tuple((f"f{j}", _colspec(rng, depth + 1)) for j in range(k)),
+            nullable=rng.random() < 0.5,
+        )
+    if depth == 0 and r < 0.20:
+        return rng.choice(OPAQUE)
+    return rng.choice(SCALARS) + ("?" if rng.random() < 0.5 else "")
+
+
+def _schema(rng: random.Random, n: int, hostile: bool = False) -> dict:
+    out: dict = {}
     for i in range(n):
-        ty = rng.choice(TYPES)
         name = f"c{i}"
         if hostile and rng.random() < 0.5:
             cand = rng.choice(HOSTILE_NAMES)
             if cand not in out:
                 name = cand
-        out[name] = ty + ("?" if rng.random() < 0.5 else "")
+        out[name] = _colspec(rng)
     return out
 
 
-def _rows(rng: random.Random, schema: dict[str, str], n: int) -> list[dict]:
-    return [
-        {c: value(rng, s.rstrip("?"), s.endswith("?")) for c, s in schema.items()}
-        for _ in range(n)
-    ]
+def _cell(rng: random.Random, spec) -> object:
+    if isinstance(spec, Struct):
+        if spec.nullable and rng.random() < 0.3:
+            return None
+        return {n: _cell(rng, s) for n, s in spec.fields}
+    storage = spec.rstrip("?")
+    if storage not in SEMANTIC:  # opaque: pyarrow fills these, not us
+        return None
+    return value(rng, SEMANTIC[storage], spec.endswith("?"), storage)
 
 
-def _equi_on(rng, env: Env, table: str, tschema: dict[str, str]) -> Node | None:
+def _rows(rng: random.Random, schema: dict, n: int) -> list[dict]:
+    return [{c: _cell(rng, s) for c, s in schema.items()} for _ in range(n)]
+
+
+def _equi_on(rng, env: Env, table: str, tschema: dict) -> Node | None:
     """key = table.col [AND residual] — the residual may carry CASE/AND/OR
-    (the TASK-73/74/75 ON-residual class)."""
+    (the TASK-73/74/75 ON-residual class). Joins on a struct LANE too: a
+    lane is a column, so `w.mean = c0` is an ordinary equi-key."""
+    tleaves = leaves(tschema)
     pairs = [
         (rc, tc)
         for _, rc, rt in env.cols
-        for tc, ts in tschema.items()
-        if ts.rstrip("?") == rt and rt in ("int", "float", "str")
+        for tc, tt, _ in tleaves
+        if tt == rt and rt in ("int", "float", "str")
     ]
     if not pairs:
         return None
@@ -846,7 +953,7 @@ def _equi_on(rng, env: Env, table: str, tschema: dict[str, str]) -> Node | None:
     on: Node = Bin("=", Col(rc, None, "float"), Col(tc, table, "float"))
     if rng.random() < 0.4:
         resid_env = Env(
-            env.cols + [(table, c, s.rstrip("?")) for c, s in tschema.items()],
+            env.cols + [(table, c, t) for c, t, _ in tleaves],
             env.udfs,
             env.tree,
         )
@@ -900,7 +1007,7 @@ def gen(seed: int) -> Case:
         )
         tags.append("tree")
 
-    env = Env([(None, c, s.rstrip("?")) for c, s in row_schema.items()], udfs, tree)
+    env = Env([(None, c, t) for c, t, _ in leaves(row_schema)], udfs, tree)
     query = _query(rng, env, statics, tags, hostile_ids)
 
     shape = rng.choice([None] * 6 + ["map", "filter", "many"])
@@ -939,7 +1046,7 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
                 continue
             body.joins.append(Join(kind, name, on))
             jenv = Env(
-                jenv.cols + [(name, c, s.rstrip("?")) for c, s in sch.items()],
+                jenv.cols + [(name, c, t) for c, t, _ in leaves(sch)],
                 env.udfs,
                 env.tree,
             )
@@ -949,10 +1056,13 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
         tags.append("star")
         star = Star()
         m = rng.random()
-        if m < 0.3 and env.cols:
-            star.exclude = [rng.choice(env.cols)[1]]
-        elif m < 0.6 and env.cols:
-            _, name, ty = rng.choice(env.cols)
+        # EXCLUDE/REPLACE name a top-level output column, so a lane path is
+        # not a legal target — pick from the undotted names only.
+        flat = [c for c in env.cols if "." not in c[1]]
+        if m < 0.3 and flat:
+            star.exclude = [rng.choice(flat)[1]]
+        elif m < 0.6 and flat:
+            _, name, ty = rng.choice(flat)
             star.replace = [(expr(rng, env, ty, 1), name)]
         elif m < 0.8:
             star.columns_re = rng.choice(["c.*", "^c", "0$"])
@@ -962,26 +1072,29 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
         sname = rng.choice(list(statics))
         sch, _ = statics[sname]
         cname = rng.choice(["agg", "Agg", "AGG"])  # case-varied (TASK-76 class)
-        if rng.random() < 0.5 and any(
-            s.rstrip("?") in ("int", "float") for s in sch.values()
-        ):
-            nums = [c for c, s in sch.items() if s.rstrip("?") in ("int", "float")]
-            gcol = rng.choice(list(sch))
+        sleaves = leaves(sch)
+        if not sleaves:
+            return _query(rng, env, {}, tags, hostile_ids)  # opaque-only static
+        nums = [c for c, t, _ in sleaves if t in ("int", "float")]
+        if rng.random() < 0.5 and nums:
+            gname, gty, _ = rng.choice(sleaves)
             agg, aty = rng.choice(list(AGGS.items()))
             csel = Sel(
                 [
-                    (Col(gcol, None, "float"), "g"),
+                    (Col(gname, None, "float"), "g"),
                     (Call(agg, [Col(rng.choice(nums), None, "float")]), "v"),
                 ],
                 sname,
-                group_by=[Col(gcol, None, "float")],
+                group_by=[Col(gname, None, "float")],
             )
-            cschema = {"g": sch[gcol].rstrip("?"), "v": aty}
+            cschema = {"g": gty, "v": aty}
         else:
+            # A lane projects out of a CTE under an alias, which is how a
+            # struct column reaches code that only ever sees flat columns.
             csel = Sel(
-                [(Col(c, None, s.rstrip("?")), c) for c, s in sch.items()], sname
+                [(Col(c, None, t), c.replace(".", "_")) for c, t, _ in sleaves], sname
             )
-            cschema = {c: s.rstrip("?") for c, s in sch.items()}
+            cschema = {c.replace(".", "_"): t for c, t, _ in sleaves}
         ctes.append((cname, csel))
         body = Sel([], "__THIS__")
         on = _equi_on(rng, env, cname.lower() if rng.random() < 0.3 else cname, cschema)
@@ -1018,12 +1131,15 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
         tags.append("static_agg")
         sname = rng.choice(list(statics))
         sch, _ = statics[sname]
-        nums = [c for c, s in sch.items() if s.rstrip("?") in ("int", "float")]
-        col = rng.choice(nums) if nums else list(sch)[0]
+        sleaves = leaves(sch)
+        if not sleaves:
+            return _query(rng, env, {}, tags, hostile_ids)  # opaque-only static
+        nums = [c for c, t, _ in sleaves if t in ("int", "float")]
+        col = rng.choice(nums) if nums else sleaves[0][0]
         agg, _ = rng.choice(list(AGGS.items()))
         body = Sel([(Call(agg, [Col(col, None, "float")]), "v")], sname)
         if rng.random() < 0.5:
-            g = rng.choice(list(sch))
+            g = rng.choice(sleaves)[0]
             body.items.insert(0, (Col(g, None, "float"), "g"))
             body.group_by = [Col(g, None, "float")]
     else:  # struct_pack projection
