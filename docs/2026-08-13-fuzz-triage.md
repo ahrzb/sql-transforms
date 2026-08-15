@@ -70,8 +70,21 @@ builder result exceeds 1 GiB", DuckDB serves the pad. Exactly TASK-88
 
 982 (`76.853`), 10062 (`-47.907`), 10783 (`8.793`), 18913 (`65.195`):
 DuckDB types the literal DECIMAL and its DOUBLE conversion lands 1 ulp off
-our direct double parse. The known phase-5 decimals family (xfail pins in
-test_decimals.py; TASK-91 is the statics member). No new information.
+our direct double parse. No new information about the divergence itself.
+
+**Corrected 2026-08-15 — this class is NOT pinned.** The first draft said
+"xfail pins in test_decimals.py; TASK-91 is the statics member", and both
+halves were wrong. Phase 5 in the lattice spec is `Dec(p,s)` arithmetic;
+TASK-91 is phase **1** (decimal STATIC ingest), a different member, and its
+pin is the only xfail in test_decimals.py. Checking all six strict-xfail
+pins in the suite: none covers the bare-literal 1-ulp class. The one other
+DECIMAL pin (test_integer_widths.py, TASK-103) is the foldable-NULL
+collapse.
+
+What actually holds this class is `docs/known-limitations.md` — prose, and
+TASK-95 (doc-twin totality) is still To Do, so nothing rings when phase 5
+lands. The `decimals` campaign tag in fuzz/oracle.py claimed a strict-xfail
+twin for the same reason; corrected there too.
 
 ### 6. Negative zero — 3 seeds
 
@@ -132,7 +145,7 @@ at bind rather than at run is the better half of that behaviour.
 | we-trap-duck-serves | 3 | TASK-85 (To Do) |
 | VARCHAR->int cast rounding | 2 | TASK-113 (To Do) |
 | string-builder cap | 1 | TASK-88 (To Do) |
-| decimal-literal 1 ulp | 4 | phase-5 family, pinned |
+| decimal-literal 1 ulp | 4 | phase-5 family, documented only — NOT pinned |
 | negative zero | 3 | TASK-80 (To Do) |
 | fold composition | 1 | TASK-103 family, pinned |
 | harness nondeterminism | 2 | fuzzer QoL (TASK-94) |
