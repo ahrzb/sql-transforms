@@ -30,6 +30,12 @@ pub enum Rel {
 pub struct StaticTable {
     pub name: String,
     pub cols: Vec<Col>,
+    /// Columns present in the arrow schema whose type this engine does not
+    /// serve. Carried rather than dropped: a dropped column makes the binder
+    /// say "does not exist" about a column that plainly does, and sends the
+    /// reader hunting a typo in a correct query. Unreferenced they cost
+    /// nothing; referenced they refuse by name. `(column, arrow type)`.
+    pub opaque: Vec<(String, String)>,
 }
 
 /// A fitted tree transform's schema, as given to `prepare` — like
