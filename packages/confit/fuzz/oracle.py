@@ -37,10 +37,22 @@ KINDS = (
 )
 
 _ARROW = {
+    # semantic names, for UDF signatures and tree features
     "int": pa.int64(),
     "float": pa.float64(),
     "str": pa.string(),
     "bool": pa.bool_(),
+    # storage names, for table columns — the width IS the declaration
+    # ("bool" is spelled the same on both axes)
+    "int8": pa.int8(),
+    "int16": pa.int16(),
+    "int32": pa.int32(),
+    "int64": pa.int64(),
+    "double": pa.float64(),
+    "string": pa.string(),
+    # out of vocabulary on purpose: unreferenced, these must not block a build
+    "float32": pa.float32(),
+    "timestamp": pa.timestamp("us"),
 }
 _DUCK_T = {
     pa.bool_(): "BOOLEAN",
@@ -75,14 +87,21 @@ class Verdict:
 # ------------------------------------------------------------- materialize
 
 
-def _arrow_schema(schema: dict[str, str]) -> pa.Schema:
-    return pa.schema(
-        pa.field(n, _ARROW[s.rstrip("?")], nullable=s.endswith("?"))
-        for n, s in schema.items()
-    )
+def _arrow_field(name: str, spec) -> pa.Field:
+    if isinstance(spec, G.Struct):
+        return pa.field(
+            name,
+            pa.struct([_arrow_field(n, s) for n, s in spec.fields]),
+            nullable=spec.nullable,
+        )
+    return pa.field(name, _ARROW[spec.rstrip("?")], nullable=spec.endswith("?"))
 
 
-def _arrow_table(schema: dict[str, str], rows: list[dict]) -> pa.Table:
+def _arrow_schema(schema: dict) -> pa.Schema:
+    return pa.schema([_arrow_field(n, s) for n, s in schema.items()])
+
+
+def _arrow_table(schema: dict, rows: list[dict]) -> pa.Table:
     return pa.Table.from_pylist(rows, schema=_arrow_schema(schema))
 
 
@@ -425,16 +444,31 @@ def run_case(case: G.Case) -> Verdict:
         case.query.body.frm not in (None, "__THIS__") and not case.query.body.joins
     )
 
+    # infer_arrow cannot take a struct row schema yet (TASK-114), so a
+    # struct-bearing case runs through infer_rows instead of being scored as
+    # a divergence against our own boundary. Values are still fully compared;
+    # only the ARROW leg is unavailable, and the tag says so rather than the
+    # case quietly counting as covered.
+    rows_only = not static_only and any(
+        isinstance(s, G.Struct) for s in case.row_schema.values()
+    )
+    if rows_only:
+        tags.append("rows_only")
+
     def run_fn(fn):
+        """(rows, output schema, error) — one shape whichever entry point."""
         try:
             if static_only:
-                return fn.infer_rows([]), None
-            return fn.infer_arrow(table), None
+                return fn.infer_rows([]), fn.output_schema, None
+            if rows_only:
+                return fn.infer_rows(case.rows), fn.output_schema, None
+            out = fn.infer_arrow(table)
+            return out.to_pylist(), out.schema, None
         except Exception as e:  # noqa: BLE001
-            return None, f"{type(e).__name__}: {e}"
+            return None, None, f"{type(e).__name__}: {e}"
 
-    got_cl, trap_cl = run_fn(fn_cl)
-    got_in, trap_in = run_fn(fn_in)
+    got_cl, sch_cl, trap_cl = run_fn(fn_cl)
+    got_in, sch_in, trap_in = run_fn(fn_in)
 
     if (trap_cl is None) != (trap_in is None):
         return Verdict(
@@ -469,37 +503,44 @@ def run_case(case: G.Case) -> Verdict:
             )
         return Verdict("AGREE", "", "", tags)
 
-    delta = _schema_delta(duck_out.schema, got_cl.schema)
+    delta = _schema_delta(duck_out.schema, sch_cl)
     cast_to = None
     if delta is not None:
         if delta[0] == "diff":
             return Verdict("DIVERGE_VALUE", "schema", delta[1], tags)
         tags.append(delta[1])
-        cast_to = got_cl.schema
+        cast_to = sch_cl
     try:
         want = _norm(duck_out, cast_to)
     except Exception as e:  # noqa: BLE001 — cast refuses: widths lied
         return Verdict("DIVERGE_VALUE", "schema-cast", str(e), tags)
 
-    if got_cl.schema != got_in.schema or _key(got_cl.to_pylist()) != _key(
-        got_in.to_pylist()
-    ):
+    if sch_cl != sch_in or _key(got_cl) != _key(got_in):
         return Verdict(
             "DIVERGE_VALUE", "backend-values", "cranelift != interpreter", tags
         )
-    if _key(got_cl.to_pylist()) != _key(want):
-        return Verdict(
-            "DIVERGE_VALUE", "values", f"{got_cl.to_pylist()[:4]} != {want[:4]}", tags
-        )
+    if _key(got_cl) != _key(want):
+        return Verdict("DIVERGE_VALUE", "values", f"{got_cl[:4]} != {want[:4]}", tags)
 
-    v = _extra_legs(fn_cl, case, table, got_cl, want, ests, tags)
+    v = _extra_legs(fn_cl, case, table, got_cl, want, ests, tags, rows_only)
     if v is not None:
         return v
     return Verdict("AGREE", "", "", tags)
 
 
-def _extra_legs(fn, case, table, got, want, ests, tags) -> Verdict | None:
-    """The boundary checks a plain differential run misses."""
+def _extra_legs(
+    fn, case, table, got, want, ests, tags, rows_only=False
+) -> Verdict | None:
+    """The boundary checks a plain differential run misses.
+
+    `got` is the primary run's rows. Under `rows_only` the primary run WAS
+    infer_rows, so every leg here needs infer_arrow and none of them can
+    run; the case keeps its value comparison and loses the boundary legs.
+    That is the honest shape of TASK-114 — not silence, and not a finding.
+    """
+    if rows_only:
+        return None
+
     # infer_rows (dict rows) agrees with infer_arrow -- case.rows is already
     # a list of TOTAL dicts against case.row_schema (gen.py's own contract).
     try:
@@ -511,11 +552,11 @@ def _extra_legs(fn, case, table, got, want, ests, tags) -> Verdict | None:
             f"infer_rows() raised where infer_arrow ran: {e}",
             tags,
         )
-    if _key(rows) != _key(got.to_pylist()):
+    if _key(rows) != _key(got):
         return Verdict(
             "DIVERGE_VALUE",
             "infer-vs-arrow",
-            f"{rows[:4]} != {got.to_pylist()[:4]}",
+            f"{rows[:4]} != {got[:4]}",
             tags,
         )
 
@@ -550,7 +591,7 @@ def _extra_legs(fn, case, table, got, want, ests, tags) -> Verdict | None:
     if 2 <= len(table) <= 6:
         singles = [fn.infer_arrow(table.slice(i, 1)) for i in range(len(table))]
         cat = pa.concat_tables(singles).to_pylist()
-        if _key(cat) != _key(got.to_pylist()):
+        if _key(cat) != _key(got):
             return Verdict(
                 "DIVERGE_VALUE",
                 "batch-vs-single",
@@ -563,7 +604,7 @@ def _extra_legs(fn, case, table, got, want, ests, tags) -> Verdict | None:
         import numpy as np
 
         cols = list(case.row_schema)
-        out = got.to_pylist()
+        out = got
         for i, r in enumerate(case.rows):
             iid = r[cols[0]]
             feats = [r[c] for c in cols[1 : 1 + case.tree.n_features]]
