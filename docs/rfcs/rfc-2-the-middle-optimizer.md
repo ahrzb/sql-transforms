@@ -21,11 +21,12 @@ today:  SQL --specializer::frontend--> SExpr --> SSA IR --> { interp | cranelift
 ```
 
 Measured, from this repo's own reports: inference is **boundary-bound**
-(FFI/pydantic dominates); the expression kernel is **memory-bound** as
-trees grow (3.2 -> 19.4 ns/node); serving batches are **< 5k rows**;
-large-batch columnar was ceded to DuckDB. Correctness is C2: bit-identical
-to DuckDB or a named refusal, no third behavior — including trap message
-text, which embeds operands in source order (`interp.rs:1655`).
+(row marshalling across the FFI dominates); the expression kernel is
+**memory-bound** as trees grow (3.2 -> 19.4 ns/node); serving batches are
+**< 5k rows**; large-batch columnar was ceded to DuckDB. Correctness is C2:
+bit-identical to DuckDB or a named refusal, no third behavior — including
+trap message text, which embeds operands in source order
+(`kernels.rs:826`).
 
 **Execution model (the frame everything below must fit):** confit compiles
 ONCE at pack time and serves many. Every optimization in this RFC runs
@@ -43,10 +44,10 @@ Float and bitwise ops are native CLIF; every integer arithmetic op is an
 opaque side-effecting libcall plus a load-and-branch, per op, per row:
 
 ```rust
-// cranelift.rs:1500-1504          — opaque: no fold, no GVN, no DCE, no strength-reduction
+// cranelift.rs:1397-1402          — opaque: no fold, no GVN, no DCE, no strength-reduction
 BinOp::Iadd => call_h(b, module, "h_iadd", &[cxp, x, y]).unwrap(),
 BinOp::Fadd => b.ins().fadd(x, y),                    // native: full ægraph mid-end
-// cranelift.rs:1397-1402          — emitted after every Iadd|Isub|Imul|Idiv|Irem|Ishl|Flogb
+// cranelift.rs:1500-1504          — emitted after every Iadd|Isub|Imul|Idiv|Irem|Ishl|Flogb
 let flag = b.ins().load(types::I8, MemFlags::trusted(), cxp, 0);
 b.ins().brif(flag, trap_exit, &[], cont, &[]);
 ```
