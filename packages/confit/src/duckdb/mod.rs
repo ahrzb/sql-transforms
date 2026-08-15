@@ -28,6 +28,14 @@ use crate::types::Base;
 
 /// The scalar slice of the type lattice the specializer handles. `None`
 /// means the column can't cross this boundary (struct/list/Other).
+///
+/// NOTE this is the STATIC-table path and it is narrower than the row path:
+/// `Base::Int` collapses every width to `Ty::I64` (TASK-96) and a struct
+/// column is dropped from the catalogue entirely, which is why a referenced
+/// struct static reports as a column that does not exist. The row path
+/// (`schema::arrow_row_schema`) reads the Arrow field directly and keeps
+/// both. Two parsers for one physical vocabulary is the drift itself; the
+/// fix is to make this one read Arrow the way that one does.
 fn base_to_ty(b: &Base) -> Option<Ty> {
     match b {
         Base::Bool => Some(Ty::I1),
@@ -38,7 +46,12 @@ fn base_to_ty(b: &Base) -> Option<Ty> {
     }
 }
 
-/// The declared type's DuckDB spelling, for boundary refusals.
+/// The declared type's SQL-side spelling, for boundary refusals.
+///
+/// The declaration the caller actually wrote is Arrow (`pa.int32()`), so
+/// this deliberately answers in the other vocabulary — see `Ty`'s docs for
+/// the mapping. Whether refusal text should say `int32` instead of
+/// `INTEGER` is a user-facing format question, not settled here.
 fn duck_ty_name(t: Ty) -> &'static str {
     match t {
         Ty::I1 => "BOOLEAN",
