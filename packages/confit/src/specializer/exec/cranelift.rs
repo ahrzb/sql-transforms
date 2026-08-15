@@ -2351,4 +2351,88 @@ mod tests {
         let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(code) };
         assert_eq!(f(40, 2), 42);
     }
+
+    /// TASK-100, the lattice spec's hard dependency for the i128 lane:
+    /// does cranelift legalize i128 arithmetic on x64, through the same JIT
+    /// harness the engine uses? Answered here rather than assumed, because
+    /// the phase was scheduled behind it.
+    ///
+    /// i128 is passed and returned INDIRECTLY (a pointer to caller memory) —
+    /// cranelift's I128 is a value type in the IR but not in the C ABI, so
+    /// the spike takes the shape a real kernel would: pointers in, pointer
+    /// out, loads and stores around native i128 ops.
+    #[test]
+    fn cranelift_legalizes_i128_add_mul_cmp_on_the_host() {
+        let mut flags = settings::builder();
+        flags.set("use_colocated_libcalls", "false").unwrap();
+        flags.set("is_pic", "false").unwrap();
+        flags.set("opt_level", "speed").unwrap();
+        let isa = cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
+            .unwrap()
+            .finish(settings::Flags::new(flags))
+            .unwrap();
+        let mut module = JITModule::new(JITBuilder::with_isa(
+            isa,
+            cranelift_module::default_libcall_names(),
+        ));
+        let ptr = module.target_config().pointer_type();
+
+        // fn(out: *mut i128, a: *const i128, b: *const i128) -> i64
+        //   *out = a * b + a;  return (a < b) as i64
+        let mut ctx = module.make_context();
+        for _ in 0..3 {
+            ctx.func.signature.params.push(AbiParam::new(ptr));
+        }
+        ctx.func.signature.returns.push(AbiParam::new(types::I64));
+
+        let mut fb_ctx = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let (o, pa, pb) = (
+            b.block_params(entry)[0],
+            b.block_params(entry)[1],
+            b.block_params(entry)[2],
+        );
+        let mf = cranelift_codegen::ir::MemFlags::trusted();
+        let x = b.ins().load(types::I128, mf, pa, 0);
+        let y = b.ins().load(types::I128, mf, pb, 0);
+        let prod = b.ins().imul(x, y);
+        let sum = b.ins().iadd(prod, x);
+        b.ins().store(mf, sum, o, 0);
+        let lt = b
+            .ins()
+            .icmp(cranelift_codegen::ir::condcodes::IntCC::SignedLessThan, x, y);
+        let lt64 = b.ins().uextend(types::I64, lt);
+        b.ins().return_(&[lt64]);
+        b.finalize();
+
+        let id = module
+            .declare_function("i128_probe", Linkage::Export, &ctx.func.signature)
+            .unwrap();
+        module.define_function(id, &mut ctx).unwrap();
+        module.clear_context(&mut ctx);
+        module.finalize_definitions().unwrap();
+
+        let code = module.get_finalized_function(id);
+        let f: extern "C" fn(*mut i128, *const i128, *const i128) -> i64 =
+            unsafe { std::mem::transmute(code) };
+
+        // A DECIMAL(38,x) payload is what this lane exists for, so probe at
+        // that magnitude rather than with toy values.
+        let a: i128 = 99_999_999_999_999_999_999_999_999_999_999_999_999;
+        let bb: i128 = 3;
+        let mut out: i128 = 0;
+        let lt = f(&mut out, &a, &bb);
+        assert_eq!(out, a.wrapping_mul(bb).wrapping_add(a));
+        assert_eq!(lt, 0, "a < b is false");
+
+        let a2: i128 = -170_141_183_460_469_231_731_687_303_715_884_105_728; // i128::MIN
+        let b2: i128 = 1;
+        let mut out2: i128 = 0;
+        assert_eq!(f(&mut out2, &a2, &b2), 1, "i128::MIN < 1");
+        assert_eq!(out2, a2.wrapping_mul(b2).wrapping_add(a2));
+    }
 }
