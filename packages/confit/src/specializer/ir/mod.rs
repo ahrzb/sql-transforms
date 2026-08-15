@@ -146,12 +146,48 @@ mod tests;
 /// Bare scalar type of an SSA value. There is deliberately no nullable
 /// variant — see the module docs.
 ///
-/// I8/I16/I32 are DuckDB's narrow integer widths (m-8 phase 2): real in the
-/// frontend and in column headers, ERASED to the i64 lane for SSA values and
-/// payloads — DuckDB's narrow ints are checked-never-wrapping, so i64
-/// compute + range trap (phase 3) + narrow emit is bit-identical. An SSA
-/// value or payload with a narrow type is a verifier error; `lane()` is the
-/// erasure.
+/// # The physical vocabulary is Arrow's
+///
+/// Every variant here is an Arrow type, because Arrow is what the boundary
+/// speaks in both directions: a row table is a `pa.Schema`, a static table
+/// is a `pa.Table`, and `output_schema` is a `pa.Schema`. DuckDB's type
+/// lattice is the SQL-side *view* of these — the thing expression typing
+/// reasons in — and it only has to be materialized where a value crosses
+/// the boundary.
+///
+/// | `Ty` | Arrow | SQL view |
+/// |---|---|---|
+/// | `I1` | `bool` | `BOOLEAN` |
+/// | `I8` | `int8` | `TINYINT` |
+/// | `I16` | `int16` | `SMALLINT` |
+/// | `I32` | `int32` | `INTEGER` |
+/// | `I64` | `int64` | `BIGINT` |
+/// | `F64` | `double` | `DOUBLE` |
+/// | `Str` | `string` | `VARCHAR` |
+///
+/// A SQL type with no Arrow spelling never needs one as long as it stays
+/// internal: measured 2026-08-15, `('12:00:00+02'::TIMETZ)::VARCHAR` serves
+/// the offset back intact, because the loss is in Arrow *materialization*,
+/// not in the type. So an internal-only type can stay virtual — a
+/// compile-time tag with no lane — and only a type that reaches the
+/// boundary needs a variant here.
+///
+/// Three types cannot cross faithfully in either direction and must refuse
+/// AT THE BOUNDARY rather than get a variant: `TIMETZ` (Arrow drops the
+/// offset), `BIT` (becomes its internal byte encoding), and `UHUGEINT`
+/// (does not survive the trip). `HUGEINT`, `UUID`, `ENUM` and `JSON` keep
+/// their value but lose their logical type, so they are refusals of a
+/// milder kind. Everything else in DuckDB's type list — including
+/// `DECIMAL(p,s)` at every precision, which is `decimal128(p,s)` exactly —
+/// round-trips bit-for-bit.
+///
+/// # Narrow widths erase
+///
+/// I8/I16/I32 are real in the frontend and in column headers, ERASED to the
+/// i64 lane for SSA values and payloads — DuckDB's narrow ints are
+/// checked-never-wrapping, so i64 compute + range trap + narrow emit is
+/// bit-identical. An SSA value or payload with a narrow type is a verifier
+/// error; `lane()` is the erasure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Ty {
     I1,
