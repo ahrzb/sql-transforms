@@ -69,8 +69,18 @@ The engine computes in exactly four types: `i64`, `f64`, UTF-8 string,
 bool. Measured consequences:
 
 - **f32 base tables reject** (`engine is f64-only`).
-- **Static-table key/value columns must fit BIGINT** — `UBIGINT`/`HUGEINT`
-  payloads outside i64 reject with a named message.
+- **A static column is served at its declared arrow type or refused by
+  name** — never widened into a neighbouring lane. Corrected 2026-08-15:
+  the catalogue used to widen `float32` and the unsigned widths, and both
+  diverged silently. `float32` in value AND type (`s.v * 3.0` over `0.1`
+  is `0.30000001192092896`/FLOAT on DuckDB; f64 arithmetic here gave
+  `0.30000000447034836`/DOUBLE), unsigned in type (`uint64` stays UINT64
+  there, became int64 here). The row path had always refused both. The two
+  exceptions that stay served are measured equivalent, not convenient:
+  `large_string`/`utf8` (DuckDB normalises them to VARCHAR) and
+  `decimal128(p,s)`, which rides the f64 lane behind an exactness guard —
+  any payload f64 cannot hold refuses by name, and TASK-91 lands exact
+  serving.
 - **Structs of scalars SERVE** (since TASK-56): struct row columns are
   flattened to scalar lanes at build time — field access (`a.i`, deep
   `t.t.t.t` paths) and struct-star (`a.*` incl. EXCLUDE/REPLACE) are
@@ -104,8 +114,10 @@ bool. Measured consequences:
   trap threshold — the trap half is m-8 phase 3, so until it lands a
   narrow lane that overflows serves the i64 value on the row path and
   refuses by name at the `infer_arrow` boundary; every input this refuses
-  is one DuckDB itself errors on. HUGEINT and the unsigned family still
-  collapse to i64 (m-8 phase 4).
+  is one DuckDB itself errors on. HUGEINT and the unsigned family are not
+  served at all — they refuse by name rather than collapse to i64 (see the
+  static-column entry above); serving them is the i128 lane, whose
+  cranelift dependency was verified GO on 2026-08-15 (TASK-100).
 
 ## 4. Semantics descoped after measurement
 

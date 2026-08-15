@@ -174,7 +174,8 @@ fn narrow_check(ty: Ty, name: &str, v: i64) -> PyResult<()> {
         if !(lo..=hi).contains(&v) {
             let ty_name = arrow_ty_name(ty);
             return Err(InterpError::Eval(format!(
-                "column '{name}' value {v} is outside its {ty_name} range —                  the {ty_name} overflow trap lands with m-8 phase 3"
+                "column '{name}' value {v} is outside its {ty_name} range — \
+                 the {ty_name} overflow trap lands with m-8 phase 3"
             ))
             .into());
         }
@@ -1211,7 +1212,7 @@ impl DuckDBInferFn {
                 schema::RowField::Struct { nullable, fields } => {
                     struct_defs.push((pos, name, nullable, fields))
                 }
-                schema::RowField::Opaque => opaque.push((pos, name)),
+                schema::RowField::Opaque(_) => opaque.push((pos, name)),
             }
         }
         fn build_fields(
@@ -1246,7 +1247,7 @@ impl DuckDBInferFn {
                                 });
                                 StructNode::Leaf((in_cols.len() - 1) as u32)
                             }
-                            schema::RowField::Opaque => StructNode::Opaque,
+                            schema::RowField::Opaque(_) => StructNode::Opaque,
                         }
                     };
                     StructField {
@@ -1281,17 +1282,24 @@ impl DuckDBInferFn {
             // integer to int64. A non-scalar column is still omitted rather
             // than rejected — unreferenced ones cost nothing.
             let mut cols = Vec::new();
+            let mut opaque = Vec::new();
             for (cname, rf) in schema::arrow_static_schema(py, name, &schema_obj)? {
-                if let schema::RowField::Scalar { ty, nullable } = rf {
-                    cols.push(Col {
+                match rf {
+                    schema::RowField::Scalar { ty, nullable } => cols.push(Col {
                         name: cname,
                         ty: ColTy { ty, nullable },
-                    });
+                    }),
+                    // Kept, not dropped — see StaticTable::opaque.
+                    schema::RowField::Opaque(aty) => opaque.push((cname, aty)),
+                    schema::RowField::Struct { .. } => {
+                        opaque.push((cname, "struct".to_string()))
+                    }
                 }
             }
             catalog.push(StaticTable {
                 name: name.clone(),
                 cols,
+                opaque,
             });
         }
 

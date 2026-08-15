@@ -708,6 +708,7 @@ fn bind_from<'a>(
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
                 table: std::borrow::Cow::Owned(StaticTable {
+                    opaque: Vec::new(),
                     name: scope_name,
                     cols: in_cols[..binder.n_plain].to_vec(),
                 }),
@@ -894,6 +895,7 @@ fn bind_from<'a>(
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
                 table: std::borrow::Cow::Owned(StaticTable {
+                    opaque: Vec::new(),
                     name: scope_name,
                     cols: in_cols[..binder.n_plain].to_vec(),
                 }),
@@ -1015,6 +1017,25 @@ fn bind_from<'a>(
         acc
     };
     Ok((binder, specs, leftover))
+}
+
+/// A static column the catalogue could not serve is PRESENT but unusable.
+/// Saying "does not exist" about it sends the reader hunting a typo in a
+/// correct query; name the type instead, the way the row path does.
+fn opaque_static_refusal(
+    st: &StaticTable,
+    name: &str,
+    table: &str,
+) -> Option<PrepareError> {
+    st.opaque
+        .iter()
+        .find(|(c, _)| c.eq_ignore_ascii_case(name))
+        .map(|(c, aty)| {
+            PrepareError::Unsupported(format!(
+                "static table '{table}' column '{c}' has type {aty}, which \
+                 this engine does not serve — project a served column instead"
+            ))
+        })
 }
 
 fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, PrepareError> {
@@ -1264,8 +1285,14 @@ fn static_col_of(
         }
     }
     // Qualified misses are errors; bare misses just mean "not the static
-    // side" — the caller will try binding it dynamically.
+    // side" — the caller will try binding it dynamically. Either way, a
+    // column the catalogue could not SERVE is present and must say so: a
+    // join key is the likeliest place to meet one, since ids are exactly
+    // where UBIGINT and friends show up.
     if hit.is_none() {
+        if let Some(err) = opaque_static_refusal(st, name, scope_name) {
+            return Err(err);
+        }
         if let SqlExpr::CompoundIdentifier(_) = e {
             return Err(PrepareError::Bind(format!(
                 "column '{name}' does not exist in '{scope_name}'"
@@ -3411,6 +3438,9 @@ impl Binder<'_> {
             }
             if name.eq_ignore_ascii_case("rowid") {
                 return Err(unsup("rowid pseudo-column"));
+            }
+            if let Some(e) = opaque_static_refusal(&sj.table, name, table) {
+                return Err(e);
             }
             return Err(PrepareError::Bind(format!(
                 "column '{name}' does not exist in '{table}'"
