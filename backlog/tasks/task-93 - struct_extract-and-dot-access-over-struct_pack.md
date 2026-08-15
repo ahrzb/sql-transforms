@@ -2,7 +2,7 @@
 id: TASK-93
 title: >-
   struct_extract and dot access over struct_pack
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-13 23:55'
 labels:
@@ -31,9 +31,9 @@ over a wide EXTERN keeps its existing arm.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 Both spellings serve with DuckDB-equal values and schema (live
+- [x] #1 Both spellings serve with DuckDB-equal values and schema (live
       oracle test), including a NULL field and nested struct_pack
-- [ ] #2 Missing / ambiguous field names refuse with DuckDB's error class
-- [ ] #3 The audit comments claiming engine-stricter behavior for these
+- [x] #2 Missing / ambiguous field names refuse with DuckDB's error class
+- [x] #3 The audit comments claiming engine-stricter behavior for these
       shapes come out in the same PR
 <!-- AC:END -->
