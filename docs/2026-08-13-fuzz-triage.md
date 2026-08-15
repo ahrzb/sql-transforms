@@ -40,13 +40,25 @@ BETWEEN-NULL and filtered-row variants it did not cover.
 | 7560 | `(c2 * c2) <= c2` under `AND (FALSE AND ...)` | INT64 mult overflow |
 | 11473 | `(-16 * c0)` vs `length('%_')` in WHERE | INT64 mult overflow |
 
-### 3. VARCHAR-to-integer cast semantics — 2 seeds — NO TICKET YET
+### 3. VARCHAR-to-integer cast semantics — 2 seeds — TASK-113
 
 DuckDB casts a decimal-looking string to BIGINT by parsing and rounding
 (`'1.5' -> 2`); we refuse ("could not cast VARCHAR to BIGINT"). Seeds
 12626 (`CAST(CAST(1.5e0 AS VARCHAR) AS BIGINT)`), 13560 (same with
-`63.699`). Pre-existing, reproduces on master. **New-class candidate:
-needs a pin + ticket on his word.**
+`63.699`). Pre-existing, reproduces on master.
+
+Re-measured 2026-08-15 while ticketing it, and the class is wider than the
+two seeds showed. The rounding is **half away from zero** (`'2.5' -> 3`),
+which is NOT the half-to-even the DOUBLE path uses (`2.5e0 -> 2`,
+TASK-70) — so the two casts need different rounding modes. Parsing is
+exact decimal, not an f64 round-trip: `'9223372036854775807.4'` serves
+INT64_MAX without overflowing, and `'1.4999999999999999999'` serves 1.
+Scientific notation, leading `+`, and a bare `.5` all parse.
+
+And our refusal text is itself wrong about the oracle — it says "DuckDB
+errors at plan time; TRY_CAST is the NULL-yielding spelling", while DuckDB
+serves 2 and `TRY_CAST('1.5' AS BIGINT)` is also 2. TASK-113 fixes that
+message first, as its own commit, independent of the cast work.
 
 ### 4. String-builder cap — 1 seed
 
@@ -118,7 +130,7 @@ at bind rather than at run is the better half of that behaviour.
 |---|---|---|
 | duck-traps-we-serve | 4 | TASK-99 / TASK-84 (To Do) |
 | we-trap-duck-serves | 3 | TASK-85 (To Do) |
-| VARCHAR->int cast rounding | 2 | **no ticket — ask** |
+| VARCHAR->int cast rounding | 2 | TASK-113 (To Do) |
 | string-builder cap | 1 | TASK-88 (To Do) |
 | decimal-literal 1 ulp | 4 | phase-5 family, pinned |
 | negative zero | 3 | TASK-80 (To Do) |
@@ -126,5 +138,5 @@ at bind rather than at run is the better half of that behaviour.
 | harness nondeterminism | 2 | fuzzer QoL (TASK-94) |
 | timeouts | 4 | oracle-slow, not engine — fuzzer QoL (TASK-94) |
 
-One item still needs a decision: the VARCHAR->integer cast-rounding class
-(§3). Everything else is mapped to an existing ticket.
+Every family is now mapped to a ticket. §3 was the last unticketed one;
+TASK-113 closes the gap.
