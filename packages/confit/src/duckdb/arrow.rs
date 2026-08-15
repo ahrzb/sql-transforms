@@ -622,15 +622,11 @@ pub fn emit(
                     let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
                     let ty = c.ty.ty;
                     let narrow_err = |x: i64| {
-                        let duck = match ty {
-                            Ty::I8 => "TINYINT",
-                            Ty::I16 => "SMALLINT",
-                            _ => "INTEGER",
-                        };
+                        let ty_name = super::arrow_ty_name(ty);
                         err(format!(
                             "infer_arrow: column '{}' value {x} is outside its \
-                             {duck} range — the {duck} overflow trap lands with \
-                             m-8 phase 3",
+                             {ty_name} range — the {ty_name} overflow trap lands \
+                             with m-8 phase 3",
                             c.name,
                         ))
                     };

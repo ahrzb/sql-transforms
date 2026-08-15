@@ -46,21 +46,22 @@ fn base_to_ty(b: &Base) -> Option<Ty> {
     }
 }
 
-/// The declared type's SQL-side spelling, for boundary refusals.
+/// The declared type's spelling for boundary refusals — Arrow's, because
+/// Arrow is what the caller wrote.
 ///
-/// The declaration the caller actually wrote is Arrow (`pa.int32()`), so
-/// this deliberately answers in the other vocabulary — see `Ty`'s docs for
-/// the mapping. Whether refusal text should say `int32` instead of
-/// `INTEGER` is a user-facing format question, not settled here.
-fn duck_ty_name(t: Ty) -> &'static str {
+/// A refusal about a column the caller declared `pa.int32()` says `int32`,
+/// not `INTEGER`, so the message quotes the declaration back instead of
+/// making them translate it. Decided 2026-08-15. The DuckDB spellings live
+/// on in `dialect/`, where they belong: that module emits SQL text.
+pub(super) fn arrow_ty_name(t: Ty) -> &'static str {
     match t {
-        Ty::I1 => "BOOLEAN",
-        Ty::I8 => "TINYINT",
-        Ty::I16 => "SMALLINT",
-        Ty::I32 => "INTEGER",
-        Ty::I64 => "BIGINT",
-        Ty::F64 => "DOUBLE",
-        Ty::Str => "VARCHAR",
+        Ty::I1 => "bool",
+        Ty::I8 => "int8",
+        Ty::I16 => "int16",
+        Ty::I32 => "int32",
+        Ty::I64 => "int64",
+        Ty::F64 => "double",
+        Ty::Str => "string",
     }
 }
 
@@ -87,7 +88,7 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
         pyo3::exceptions::PyValueError::new_err(format!(
             "column '{}' expects {want} for its {} type, got {got}",
             c.name,
-            duck_ty_name(c.ty.ty)
+            arrow_ty_name(c.ty.ty)
         ))
     };
     // Fast path per arm: `downcast_exact` is one type-object pointer compare
@@ -117,7 +118,7 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
                     pyo3::exceptions::PyValueError::new_err(format!(
                         "column '{}' value {v} is outside its {} range",
                         c.name,
-                        duck_ty_name(c.ty.ty)
+                        arrow_ty_name(c.ty.ty)
                     ))
                 };
                 let v: i64 = match attr.cast_exact::<PyInt>() {
@@ -192,13 +193,9 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
 fn narrow_check(ty: Ty, name: &str, v: i64) -> PyResult<()> {
     if let Some((lo, hi)) = ty.int_range() {
         if !(lo..=hi).contains(&v) {
-            let duck = match ty {
-                Ty::I8 => "TINYINT",
-                Ty::I16 => "SMALLINT",
-                _ => "INTEGER",
-            };
+            let ty_name = arrow_ty_name(ty);
             return Err(InterpError::Eval(format!(
-                "column '{name}' value {v} is outside its {duck} range —                  the {duck} overflow trap lands with m-8 phase 3"
+                "column '{name}' value {v} is outside its {ty_name} range —                  the {ty_name} overflow trap lands with m-8 phase 3"
             ))
             .into());
         }
@@ -691,7 +688,7 @@ fn materialize_map(
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
                         build_err(format!(
                             "unsupported: static table '{}' key column '{name}' value \
-                             outside BIGINT range (UBIGINT/HUGEINT payloads)",
+                             outside int64 range (uint64/decimal128 payloads)",
                             spec.table
                         ))
                     })?),
@@ -736,7 +733,7 @@ fn materialize_map(
                         |_| {
                         build_err(format!(
                             "unsupported: static table '{}' value column '{name}' value \
-                             outside BIGINT range (UBIGINT/HUGEINT payloads)",
+                             outside int64 range (uint64/decimal128 payloads)",
                             spec.table
                         ))
                     })?),
