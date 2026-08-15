@@ -169,9 +169,9 @@ def test_row_and_arrow_boundaries_agree_on_narrow_widths():
     assert [r["o"] for r in fn.infer_rows(ok)] == [5]
     assert fn.infer_arrow(pa.Table.from_pylist(ok)).to_pylist() == [{"o": 5}]
     bad = [{"k": 300, "s": "a"}]
-    with pytest.raises(ValueError, match="TINYINT"):
+    with pytest.raises(ValueError, match="int8"):
         fn.infer_rows(bad)
-    with pytest.raises(ValueError, match="TINYINT"):
+    with pytest.raises(ValueError, match="int8"):
         fn.infer_arrow(pa.Table.from_pylist(bad))
 
 
@@ -187,9 +187,9 @@ def test_struct_children_hold_narrow_widths_on_both_boundaries():
     assert [r["o"] for r in fn.infer_rows(ok)] == [{"v": 5}]
     assert fn.infer_arrow(pa.Table.from_pylist(ok)).to_pylist() == [{"o": {"v": 5}}]
     bad = [{"k": 3000000000, "s": "a"}]
-    with pytest.raises(ValueError, match="INTEGER"):
+    with pytest.raises(ValueError, match="int32"):
         fn.infer_rows(bad)
-    with pytest.raises(ValueError, match="INTEGER"):
+    with pytest.raises(ValueError, match="int32"):
         fn.infer_arrow(pa.Table.from_pylist(bad))
 
 

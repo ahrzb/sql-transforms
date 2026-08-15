@@ -182,7 +182,7 @@ def test_ubigint_static_payloads_reject():
     big = pa.table({"id": pa.array([2**64 - 1], pa.uint64()), "v": [1]})
     rejects(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
-        "outside BIGINT range",
+        "outside int64 range",
         {"d": big},
     )
 

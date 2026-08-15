@@ -80,19 +80,21 @@ def test_extra_dict_keys_are_ignored():
 
 
 @pytest.mark.parametrize(
-    ("col", "value", "sql_type"),
+    ("col", "value", "arrow_type"),
     [
-        ("b", True, "INTEGER"),  # bool is not an int value
-        ("b", "1", "INTEGER"),
-        ("b", 1.0, "INTEGER"),
-        ("a", 1, "DOUBLE"),  # no int -> float coercion
-        ("s", 1, "VARCHAR"),
-        ("k", True, "BIGINT"),
+        ("b", True, "int32"),  # bool is not an int value
+        ("b", "1", "int32"),
+        ("b", 1.0, "int32"),
+        ("a", 1, "double"),  # no int -> float coercion
+        ("s", 1, "string"),
+        ("k", True, "int64"),
     ],
 )
-def test_no_coercion(col, value, sql_type):
+def test_no_coercion(col, value, arrow_type):
+    """The refusal names the ARROW type the caller declared, not DuckDB's
+    spelling of it (decided 2026-08-15)."""
     fn = build("SELECT a AS o FROM __THIS__")
-    with pytest.raises(ValueError, match=f"column '{col}'.*{sql_type}"):
+    with pytest.raises(ValueError, match=f"column '{col}'.*{arrow_type}"):
         fn.infer_rows([{**ROW, col: value}])
 
 
@@ -106,7 +108,7 @@ def test_numpy_scalars_cross_the_boundary():
     assert fn.infer_rows([row]) == [{"d": 2.5, "n": 4, "big": 3}]
     # np.uint8 is integer-like too; range is still checked against the column.
     assert fn.infer_rows([{**row, "b": np.uint8(7)}])[0]["n"] == 14
-    with pytest.raises(ValueError, match="column 'b'.*INTEGER"):
+    with pytest.raises(ValueError, match="column 'b'.*int32"):
         fn.infer_rows([{**row, "b": np.bool_(True)}])
     with pytest.raises(ValueError, match="column 'b' value 3000000000"):
         fn.infer_rows([{**row, "b": np.int64(3_000_000_000)}])
@@ -127,9 +129,13 @@ def test_infer_arrow_struct_refusal_names_a_live_method():
 
 
 def test_input_range_refuses_by_name():
+    """The message quotes the DECLARATION back — the caller wrote
+    `pa.int32()`, so the refusal says `int32`, not DuckDB's `INTEGER`
+    (decided 2026-08-15). Arrow is the physical vocabulary at this boundary;
+    DuckDB spellings stay in dialect/, which emits SQL text."""
     fn = build("SELECT b AS o FROM __THIS__")
     with pytest.raises(
-        ValueError, match="column 'b' value 3000000000 is outside its INTEGER range"
+        ValueError, match="column 'b' value 3000000000 is outside its int32 range"
     ):
         fn.infer_rows([{**ROW, "b": 3_000_000_000}])
 
