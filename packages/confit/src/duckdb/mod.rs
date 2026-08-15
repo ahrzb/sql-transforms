@@ -24,27 +24,6 @@ use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::StaticTable;
 use crate::specializer::{prepare_opaque, StaticSpec, WideOut};
-use crate::types::Base;
-
-/// The scalar slice of the type lattice the specializer handles. `None`
-/// means the column can't cross this boundary (struct/list/Other).
-///
-/// NOTE this is the STATIC-table path and it is narrower than the row path:
-/// `Base::Int` collapses every width to `Ty::I64` (TASK-96) and a struct
-/// column is dropped from the catalogue entirely, which is why a referenced
-/// struct static reports as a column that does not exist. The row path
-/// (`schema::arrow_row_schema`) reads the Arrow field directly and keeps
-/// both. Two parsers for one physical vocabulary is the drift itself; the
-/// fix is to make this one read Arrow the way that one does.
-fn base_to_ty(b: &Base) -> Option<Ty> {
-    match b {
-        Base::Bool => Some(Ty::I1),
-        Base::Int => Some(Ty::I64),
-        Base::Float => Some(Ty::F64),
-        Base::Str => Some(Ty::Str),
-        _ => None,
-    }
-}
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
 /// Arrow is what the caller wrote.
@@ -1297,15 +1276,16 @@ impl DuckDBInferFn {
                     build_err(format!("static table '{name}' is not a pyarrow.Table: {e}"))
                 })?
                 .unbind();
+            // TASK-96: the SAME parser the row path uses, so a static column
+            // types at its declared arrow width instead of collapsing every
+            // integer to int64. A non-scalar column is still omitted rather
+            // than rejected — unreferenced ones cost nothing.
             let mut cols = Vec::new();
-            for (cname, ft) in schema::arrow_schema_to_ordered_fields(py, &schema_obj)? {
-                if let Some(ty) = base_to_ty(&ft.base) {
+            for (cname, rf) in schema::arrow_static_schema(py, name, &schema_obj)? {
+                if let schema::RowField::Scalar { ty, nullable } = rf {
                     cols.push(Col {
                         name: cname,
-                        ty: ColTy {
-                            ty,
-                            nullable: ft.nullable,
-                        },
+                        ty: ColTy { ty, nullable },
                     });
                 }
             }

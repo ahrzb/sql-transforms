@@ -534,3 +534,52 @@ def test_round_trunc_bigint_digits_refuse_like_duckdb(sql):
         _duck(sql)
     with pytest.raises(ValueError, match="no function matches"):
         DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
+
+
+# TASK-96: a STATIC column's width is its arrow declaration, exactly as a row
+# column's is. The row half shipped with the arrow schema API (PR #144); the
+# catalogue path kept its own parser, which collapsed every integer width to
+# int64 — so a joined int32 payload emitted int64 where DuckDB emits int32.
+# Two parsers for one physical vocabulary was the whole defect.
+@pytest.mark.parametrize(
+    ("arrow_ty", "name"),
+    [
+        (pa.int8(), "int8"),
+        (pa.int16(), "int16"),
+        (pa.int32(), "int32"),
+        (pa.int64(), "int64"),
+        (pa.float64(), "double"),
+        (pa.string(), "string"),
+        (pa.bool_(), "bool"),
+    ],
+)
+def test_static_column_types_at_its_arrow_width(arrow_ty, name):
+    payload = {
+        "int8": 7,
+        "int16": 7,
+        "int32": 7,
+        "int64": 7,
+        "double": 7.5,
+        "string": "x",
+        "bool": True,
+    }[name]
+    static = pa.table(
+        {"id": pa.array([5], pa.int64()), "v": pa.array([payload], arrow_ty)}
+    )
+    sql = "SELECT s.v AS o FROM __THIS__ JOIN s ON k = s.id"
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    for r in ROWS:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["k"], r["s"]])
+    con.register("s_arrow", static)
+    con.execute("CREATE TABLE s AS SELECT * FROM s_arrow")
+    want = con.execute(sql).to_arrow_table()
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={"s": static}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist(ROWS))
+    assert want.schema.field("o").type == arrow_ty, "oracle moved — remeasure"
+    assert got.schema == want.schema, f"{name}: {got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
