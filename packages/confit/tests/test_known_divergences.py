@@ -1342,3 +1342,60 @@ def test_struct_static_column_serves_its_lanes():
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
     assert fn.infer_rows([{"k": 5}]) == want
+
+
+# TASK-113 AC #1: the refusal text must not assert DuckDB errors on an input
+# where DuckDB serves a value. Measured 2026-08-15: a numeric string that
+# fits the target is parsed and ROUNDED by DuckDB (both CAST and TRY_CAST);
+# only a non-numeric string, or one whose value misses the target's range,
+# actually errors there. The cast itself is still refused — this is about
+# the message telling the truth, not about implementing the cast.
+# ---------------------------------------------------------------------------
+_CAST_ROW = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+
+
+def _cast_refusal(expr: str) -> str:
+    with pytest.raises(ValueError) as e:
+        DuckDBInferFn(
+            f"SELECT {expr} AS o FROM __THIS__",
+            row_tables={"__THIS__": _CAST_ROW},
+            static_tables={},
+        )
+    return str(e.value)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "CAST('1.5' AS BIGINT)",
+        "CAST('2.5' AS BIGINT)",
+        "CAST('-1.5' AS BIGINT)",
+        "CAST('1e2' AS BIGINT)",
+        "CAST('.5' AS BIGINT)",
+        "CAST('1.5' AS TINYINT)",
+    ],
+)
+def test_refusal_does_not_claim_duckdb_errors_when_it_serves(expr):
+    """DuckDB answers a value for every one of these."""
+    msg = _cast_refusal(expr)
+    assert "errors at plan time" not in msg, msg
+    # TRY_CAST is not the escape hatch here either — it returns the same
+    # rounded value, so pointing at it would be a second false claim.
+    assert "TRY_CAST is the NULL-yielding spelling" not in msg, msg
+    assert "round" in msg.lower(), msg
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "CAST('abc' AS BIGINT)",
+        "CAST('' AS BIGINT)",
+        "CAST('99999999999999999999' AS BIGINT)",
+        "CAST('300' AS TINYINT)",
+    ],
+)
+def test_refusal_keeps_the_true_claim_where_duckdb_really_errors(expr):
+    """Non-numeric, or numeric but outside the target — DuckDB's CAST errors
+    and TRY_CAST yields NULL, so the original wording is accurate."""
+    msg = _cast_refusal(expr)
+    assert "TRY_CAST" in msg, msg
