@@ -1467,8 +1467,9 @@ impl DuckDBInferFn {
     }
 
     /// The row path: dict-or-object rows in, dict rows out. A
-    /// static-tables-only build ignores the input and emits its fixed rows
-    /// (`infer_rows([])`).
+    /// static-tables-only build emits fixed rows and cannot read input, so
+    /// it REFUSES anything but `infer_rows([])` (TASK-110) rather than
+    /// dropping what it was handed.
     fn infer_rows(&self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
         self.run_rows(py, &rows)
     }
@@ -1519,6 +1520,22 @@ impl DuckDBInferFn {
                 marsh,
             } => (fun, in_cols, out_cols, plan, marsh),
             Engine::Constant { rows: fixed, .. } => {
+                // TASK-110. This build reads only static tables, so it cannot
+                // see input rows at all — and silently dropping them was the
+                // one mistake at this boundary that did not refuse by name.
+                // It hides a real caller bug: N request rows through a
+                // function that structurally cannot read them returns 1 fixed
+                // row, and the caller's positional assumption breaks
+                // somewhere downstream instead of here.
+                if !rows.is_empty() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "this query reads only static tables, so it emits {} \
+                         fixed row(s) and cannot see the {} row(s) given — \
+                         call infer_rows([])",
+                        fixed.len(),
+                        rows.len(),
+                    )));
+                }
                 let mut out = Vec::with_capacity(fixed.len());
                 for r in fixed.iter() {
                     // A fresh copy per call: callers may mutate.

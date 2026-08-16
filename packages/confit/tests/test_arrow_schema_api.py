@@ -207,3 +207,60 @@ def test_non_arrow_schema_refuses_by_name():
 
     with pytest.raises(ValueError, match="pyarrow.Schema"):
         build("SELECT a AS o FROM __THIS__", schema=Row)
+
+
+# TASK-110: a static-tables-only query compiles to a fixed answer, so it
+# structurally cannot see input rows. It used to DROP them without a word —
+# the one input mistake at this boundary that did not refuse by name, and
+# the one that hides a real caller bug: serving N request rows through a
+# function that cannot read them returns 1 fixed row, and the caller's
+# zip/positional assumption breaks somewhere downstream instead of here.
+def _constant_fn(shape=None):
+    statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
+    kw = {"shape": shape} if shape else {}
+    return DuckDBInferFn(
+        "SELECT sum(v) AS o FROM s",
+        row_tables={"__THIS__": SCHEMA},
+        static_tables=statics,
+        **kw,
+    )
+
+
+def test_constant_build_refuses_rows_it_cannot_read():
+    fn = _constant_fn()
+    assert fn.backend == "constant"
+    with pytest.raises(ValueError, match="infer_rows"):
+        fn.infer_rows([ROW])
+    with pytest.raises(ValueError, match="infer_rows"):
+        fn.infer_rows([ROW] * 3)
+
+
+def test_constant_build_still_serves_on_empty_rows():
+    fn = _constant_fn()
+    assert fn.infer_rows([]) == [{"o": 6}]
+    assert fn.infer_rows([]) == [{"o": 6}]  # repeatable, fresh dict each call
+
+
+def test_constant_refusal_names_the_query_shape():
+    fn = _constant_fn()
+    with pytest.raises(ValueError) as e:
+        fn.infer_rows([ROW])
+    msg = str(e.value)
+    assert "static" in msg and "infer_rows([])" in msg, msg
+
+
+def test_constant_refusal_holds_under_shape_many():
+    """shape='map' already refuses to BUILD a constant engine (fixed rows
+    cannot be one-out-per-row-in), so only the default and 'many' shapes
+    reach this boundary at all."""
+    fn = _constant_fn(shape="many")
+    assert fn.backend == "constant"
+    with pytest.raises(ValueError, match="infer_rows"):
+        fn.infer_rows([ROW])
+    assert fn.infer_rows([]) == [{"o": 6}]
+
+
+def test_compiled_build_is_untouched_by_the_constant_guard():
+    fn = build("SELECT a + 1.0 AS o FROM __THIS__")
+    assert fn.backend != "constant"
+    assert fn.infer_rows([ROW, ROW]) == [{"o": 2.5}, {"o": 2.5}]

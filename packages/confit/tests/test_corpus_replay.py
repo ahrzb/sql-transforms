@@ -153,7 +153,14 @@ def _replay(case: dict) -> tuple[str, str]:
     if case.get("source") in _KNOWN_DIVERGENT_SOURCES:
         return "unsupported", "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
     try:
-        rows_in = arrow[driving].to_pylist()  # already TOTAL against row_schema
+        # A constant build reads only static tables and refuses rows it
+        # cannot see (TASK-110), so the replay hands it the empty call it
+        # documents rather than the driving table.
+        rows_in = (
+            []
+            if fn.backend == "constant"
+            else arrow[driving].to_pylist()  # already TOTAL against row_schema
+        )
         got = [list(r.values()) for r in fn.infer_rows(rows_in)]
     except Exception as e:  # noqa: BLE001
         return "FAIL", f"run error: {type(e).__name__}: {e}"

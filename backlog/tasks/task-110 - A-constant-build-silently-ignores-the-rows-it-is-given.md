@@ -2,7 +2,7 @@
 id: TASK-110
 title: >-
   A constant build silently ignores the rows it is given
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-14 10:00'
 labels:
@@ -52,8 +52,16 @@ and "many" shapes.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 a constant build refuses non-empty rows by name, mentioning infer_rows([])
-- [ ] #2 infer_rows([]) on a constant build still serves the fixed rows unchanged
-- [ ] #3 the refusal is a ValueError, consistent with every other boundary refusal
-- [ ] #4 a compiled (non-constant) build is untouched — no cost on the hot path
+- [x] #1 a constant build refuses non-empty rows by name, mentioning infer_rows([])
+- [x] #2 infer_rows([]) on a constant build still serves the fixed rows unchanged
+- [x] #3 the refusal is a ValueError, consistent with every other boundary refusal
+- [x] #4 a compiled (non-constant) build is untouched — no cost on the hot path
 <!-- AC:END -->
+
+2026-08-15 done. Two callers in this repo were relying on the silent drop
+and both are now explicit: `test_static_only_query_is_a_constant_emitter`
+asserted "input rows are irrelevant" in prose and in code, and the corpus
+replay harness fed every case its driving table's rows. The harness now
+checks `fn.backend == "constant"` and makes the empty call the ticket
+documents. That both existed is the argument for the ticket, not against
+it — each was a caller quietly getting an answer unrelated to its input.
