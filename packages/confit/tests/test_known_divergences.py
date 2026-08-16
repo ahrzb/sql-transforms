@@ -1401,11 +1401,61 @@ def test_refusal_keeps_the_true_claim_where_duckdb_really_errors(expr):
     assert "TRY_CAST" in msg, msg
 
 
-# ---------------------------------------------------------------------------
-# TASK-117: a predicate that folds to NULL must elide its SUBJECT too, not
-# only the NULL's siblings. TASK-85 closed the sibling case; this is the
-# residual its ACs did not cover, still live after it (2026-08-16).
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# TRAP ELISION IS NOT A SEMANTIC RULE, SO IT CANNOT BE MATCHED SEMANTICALLY
+#
+# This pin and its ticket (TASK-117) are bounded by a result worth stating
+# once, here, rather than re-deriving per ticket: DuckDB's decision to
+# evaluate or skip a trapping subexpression is not a function of what the
+# query MEANS. Proof, all lines measured against DuckDB 1.5.5 on 2026-08-16.
+#
+# Take two queries over the same table (s='abc' uncastable, n IS NULL):
+#
+#   P1  WHERE CAST(s AS DOUBLE) BETWEEN 61.591 AND NULL   -> rows=[]
+#   P2  WHERE CAST(s AS DOUBLE) BETWEEN 61.591 AND n      -> TRAP
+#
+# The two predicates have the same value on every row (NULL), therefore
+# select the same rows (none), therefore denote the same relation. P1 and P2
+# are semantically identical. Suppose some rule R decides "evaluate the
+# subject or not" as a function of the query's meaning. Then R(P1) = R(P2),
+# so both trap or neither does. DuckDB traps on exactly one. Therefore no
+# such R exists: the decision reads the SYNTAX — whether the operand is a
+# literal the constant folder can see — not the semantics.
+#
+# The same fact from the other side, showing it is about fold visibility and
+# evaluation ORDER rather than about NULL:
+#
+#   WHERE FALSE AND trap      -> rows=[]      folded away at plan time
+#   WHERE keep  AND trap      -> rows=[(1,)]  per-row short-circuit, L-to-R
+#   WHERE trap  AND keep      -> TRAP         same operands, other order
+#
+# We already match the second and third (TASK-75's flag lanes): those ARE
+# semantic — left-to-right short-circuit is in the language. Only the
+# fold-visible rows differ.
+#
+# WHAT MATCHING WOULD COST. Since the rule is syntactic, agreement is not
+# "implement NULL propagation correctly" but "make our constant folder's
+# reachable set EQUAL DuckDB's". Equal, not merely correct, and in both
+# directions: a folder weaker than theirs traps where they serve (this pin);
+# a folder stronger than theirs serves where they trap. That target is
+# undocumented, is an optimizer's internals rather than an answer, and moves
+# whenever their rewriter improves. Our contract names DuckDB's ANSWERS; it
+# cannot name this.
+#
+# WHY WE STILL FIX THIS ONE. The unmatchable part is the folder-equality
+# class, not this instance. TASK-85 already built the fold-to-NULL machinery
+# for a strict op whose SIBLING is NULL; TASK-117 extends the same mechanism
+# to the operand being compared. That is bounded work on a mechanism we own.
+#
+# WHEN TO STOP FIXING. Instance-fixing a class we cannot close is unbounded,
+# so it gets a stopping rule rather than a habit: if a campaign turns up a
+# SECOND fold-visibility mismatch that TASK-117's mechanism does not cover,
+# stop matching folds and refuse at build instead — "a trapping expression
+# whose reachability depends on constant folding" is decidable from our side
+# alone, needs no knowledge of theirs, and turns an open-ended chase into one
+# named refusal. Trapping at RUNTIME where DuckDB serves is the only outcome
+# the contract has no room for; a build-time no is always available.
+# ===========================================================================
 @pytest.mark.xfail(
     strict=True,
     reason="TASK-117: `trapping_expr BETWEEN lit AND NULL` is statically NULL, "
@@ -1427,3 +1477,35 @@ def test_a_null_folded_predicate_elides_its_subject_too():
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
     assert [tuple(r.values()) for r in fn.infer_rows(rows)] == want
+
+
+def test_duckdbs_trap_elision_is_syntactic_not_semantic():
+    """The premises of the proof above, executable.
+
+    If DuckDB ever makes these two agree, the argument for bounding TASK-117
+    (and for the stopping rule) has lost its basis and must be re-derived —
+    so this fails loudly rather than the reasoning quietly going stale. It
+    asserts DuckDB alone; confit is not involved.
+    """
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t (s VARCHAR, n DOUBLE, keep BOOLEAN)")
+    con.execute("INSERT INTO t VALUES ('abc', NULL, false), ('1.5', 2.0, true)")
+
+    def duck(sql):
+        try:
+            return ("rows", con.execute(sql).fetchall())
+        except duckdb.Error:
+            return ("trap", None)
+
+    # P1 and P2 denote the same relation: the predicate is NULL on every row,
+    # so both select nothing. Only the SPELLING of the upper bound differs.
+    p1 = duck("SELECT 1 FROM t WHERE CAST(s AS DOUBLE) BETWEEN 61.591 AND NULL")
+    p2 = duck("SELECT 1 FROM t WHERE CAST(s AS DOUBLE) BETWEEN 61.591 AND n")
+    assert p1 == ("rows", []), p1
+    assert p2 == ("trap", None), p2
+    assert p1 != p2, "same meaning, same behaviour — the proof no longer holds"
+
+    # And the ordering half: identical operands, opposite outcomes by position.
+    assert duck("SELECT 1 FROM t WHERE FALSE AND CAST(s AS DOUBLE) > 1")[0] == "rows"
+    assert duck("SELECT 1 FROM t WHERE keep AND CAST(s AS DOUBLE) > 1")[0] == "rows"
+    assert duck("SELECT 1 FROM t WHERE CAST(s AS DOUBLE) > 1 AND keep")[0] == "trap"
