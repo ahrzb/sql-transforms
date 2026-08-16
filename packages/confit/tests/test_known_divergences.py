@@ -1509,3 +1509,60 @@ def test_duckdbs_trap_elision_is_syntactic_not_semantic():
     assert duck("SELECT 1 FROM t WHERE FALSE AND CAST(s AS DOUBLE) > 1")[0] == "rows"
     assert duck("SELECT 1 FROM t WHERE keep AND CAST(s AS DOUBLE) > 1")[0] == "rows"
     assert duck("SELECT 1 FROM t WHERE CAST(s AS DOUBLE) > 1 AND keep")[0] == "trap"
+
+
+# ---------------------------------------------------------------------------
+# TASK-118: an INT32 overflow consumed by a WIDENING CAST serves a wrong value.
+# TASK-84's block names `CAST(k AS INTEGER) * 2` as its residual; that case is
+# caught now. This one is not, and it is worse than a missed trap - we return a
+# number DuckDB never produces, with no refusal anywhere.
+# ---------------------------------------------------------------------------
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-118: (i + 1) over INT32_MAX overflows INT32 on DuckDB and "
+    "traps. Widening the result to BIGINT hides it here: we compute in the i64 "
+    "lane and serve 2147483648, a value DuckDB never returns.",
+)
+def test_int32_overflow_under_a_widening_cast_does_not_serve_a_wrong_value():
+    row = pa.schema([pa.field("i", pa.int32(), nullable=False)])
+    rows = [{"i": 2147483647}]
+    sql = "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__"
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (i INTEGER)")
+    con.execute("INSERT INTO __THIS__ VALUES (2147483647)")
+    with pytest.raises(duckdb.Error):
+        con.execute(sql).fetchall()  # oracle traps; if this stops, remeasure
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
+    with pytest.raises(ValueError, match="int32|INT32|[Oo]verflow"):
+        fn.infer_rows(rows)
+
+
+# ---------------------------------------------------------------------------
+# TASK-119: TABLESAMPLE is parsed and silently dropped. The TASK-69 block above
+# claims that class was closed by destructuring without `..`; that holds for
+# Query and Select, but TableFactor::Table { name, alias, .. } still swallows
+# `sample`. Worse than a dropped clause: it builds under shape="map", where we
+# certify one output row per input row.
+# ---------------------------------------------------------------------------
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-119: TABLESAMPLE n ROWS is parsed and dropped. DuckDB returns "
+    "n rows; we return the whole batch, and shape='map' certifies that as "
+    "one-out-per-row-in.",
+)
+def test_tablesample_is_refused_not_dropped():
+    row = pa.schema([pa.field("a", pa.int64(), nullable=False)])
+    rows = [{"a": i} for i in range(20)]
+    sql = "SELECT a FROM __THIS__ TABLESAMPLE 3 ROWS"
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (a BIGINT)")
+    for r in rows:
+        con.execute("INSERT INTO __THIS__ VALUES (?)", [r["a"]])
+    assert len(con.execute(sql).fetchall()) == 3, "oracle moved — remeasure"
+
+    # Refusing by name is the contract-compliant answer; serving 20 is not.
+    with pytest.raises(ValueError, match="TABLESAMPLE|sample"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
