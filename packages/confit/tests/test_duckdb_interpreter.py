@@ -445,14 +445,17 @@ def test_static_only_query_is_a_constant_emitter():
         row_tables={"__THIS__": schema},
         static_tables={"dim": dim},
     )
-    # Input rows are irrelevant; the result is fixed at build time —
-    # and constructs like ORDER BY work because DuckDB itself evaluated it.
-    for rows_in in ([], [{"a": 1}], [{"a": 1}, {"a": 2}]):
-        got = fn.infer_rows(rows_in)
-        assert got == [
-            {"name": "three", "x": 30},
-            {"name": "one", "x": 10},
-        ]
+    # The result is fixed at build time — constructs like ORDER BY work
+    # because DuckDB itself evaluated it. Input rows are not "irrelevant"
+    # though: this build cannot READ them, so handing it any is a refusal
+    # rather than a silent drop (TASK-110).
+    assert fn.infer_rows([]) == [
+        {"name": "three", "x": 30},
+        {"name": "one", "x": 10},
+    ]
+    for rows_in in ([{"a": 1}], [{"a": 1}, {"a": 2}]):
+        with pytest.raises(ValueError, match="infer_rows"):
+            fn.infer_rows(rows_in)
 
 
 def test_static_only_aggregation_works_via_duckdb():
