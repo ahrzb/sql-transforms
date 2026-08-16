@@ -1399,3 +1399,31 @@ def test_refusal_keeps_the_true_claim_where_duckdb_really_errors(expr):
     and TRY_CAST yields NULL, so the original wording is accurate."""
     msg = _cast_refusal(expr)
     assert "TRY_CAST" in msg, msg
+
+
+# ---------------------------------------------------------------------------
+# TASK-117: a predicate that folds to NULL must elide its SUBJECT too, not
+# only the NULL's siblings. TASK-85 closed the sibling case; this is the
+# residual its ACs did not cover, still live after it (2026-08-16).
+# ---------------------------------------------------------------------------
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-117: `trapping_expr BETWEEN lit AND NULL` is statically NULL, "
+    "so DuckDB never evaluates the subject and the row simply filters. We "
+    "evaluate the subject first and trap. TASK-85 folds a strict op whose "
+    "SIBLING is NULL; here the trap is the thing being compared.",
+)
+def test_a_null_folded_predicate_elides_its_subject_too():
+    row = pa.schema([pa.field("s", pa.string(), nullable=False)])
+    rows = [{"s": "abc"}]  # not castable to DOUBLE — the trap
+    sql = (
+        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) BETWEEN 61.591e0 AND NULL"
+    )
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES ('abc')")
+    want = con.execute(sql).fetchall()
+    assert want == [], "oracle moved — remeasure"
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
+    assert [tuple(r.values()) for r in fn.infer_rows(rows)] == want

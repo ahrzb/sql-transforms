@@ -29,6 +29,10 @@ literal-arithmetic member.
 
 ### 2. Engine traps where DuckDB serves (evaluation order) — 3 seeds
 
+**Re-measured 2026-08-16.** 7560 and 11473 now match; 1667 is still live and
+became TASK-117. TASK-85 (Done) folds a strict op whose SIBLING is a literal
+NULL; in 1667 the trap is the BETWEEN's SUBJECT, which its ACs did not cover.
+
 Our loop evaluates what DuckDB's plan short-circuits away. TASK-85's family
 (DuckDB's NULL folding / filter ordering removes trapping subexpressions we
 still evaluate). TASK-75 (WHERE AND/OR guards) is Done; these are the
@@ -60,7 +64,9 @@ errors at plan time; TRY_CAST is the NULL-yielding spelling", while DuckDB
 serves 2 and `TRY_CAST('1.5' AS BIGINT)` is also 2. TASK-113 fixes that
 message first, as its own commit, independent of the cast work.
 
-### 4. String-builder cap — 1 seed
+### 4. String-builder cap — 1 seed — CLOSED
+
+**Re-measured 2026-08-16: matches.** TASK-88 is Done; the row was stale.
 
 19788: `rtrim(repeat('a', c0))` under a filtering LIKE — we trap "string
 builder result exceeds 1 GiB", DuckDB serves the pad. Exactly TASK-88
@@ -86,7 +92,11 @@ TASK-95 (doc-twin totality) is still To Do, so nothing rings when phase 5
 lands. The `decimals` campaign tag in fuzz/oracle.py claimed a strict-xfail
 twin for the same reason; corrected there too.
 
-### 6. Negative zero — 3 seeds
+### 6. Negative zero — 3 seeds — CLOSED
+
+**Re-measured 2026-08-16: all three match.** TASK-80 was already Done when
+this triage was written (the fix, 2b7866f, predates the campaign base) and
+the row below was stale, not the engine.
 
 1675 (`* REPLACE (-0.0 AS c0)`: we keep -0.0, DuckDB serves 0.0),
 8168 (`ceil(-0.25)`: we -0.0, DuckDB 0.0), 15634 (`-0.0 / -67.764e0`: we
@@ -142,11 +152,11 @@ at bind rather than at run is the better half of that behaviour.
 | family | seeds | status |
 |---|---|---|
 | duck-traps-we-serve | 4 | TASK-99 / TASK-84 (To Do) |
-| we-trap-duck-serves | 3 | TASK-85 (To Do) |
+| we-trap-duck-serves | 3 | TASK-85 **Done**; 1 residual -> TASK-117 |
 | VARCHAR->int cast rounding | 2 | TASK-113 (To Do) |
-| string-builder cap | 1 | TASK-88 (To Do) |
+| string-builder cap | 1 | TASK-88 **Done**, re-verified 2026-08-16 |
 | decimal-literal 1 ulp | 4 | phase-5 family, documented only — NOT pinned |
-| negative zero | 3 | TASK-80 (To Do) |
+| negative zero | 3 | TASK-80 **Done**, re-verified 2026-08-16 |
 | fold composition | 1 | TASK-103 family, pinned |
 | harness nondeterminism | 2 | fuzzer QoL (TASK-94) |
 | timeouts | 4 | oracle-slow, not engine — fuzzer QoL (TASK-94) |

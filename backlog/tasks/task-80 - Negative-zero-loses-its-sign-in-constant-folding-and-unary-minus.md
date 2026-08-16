@@ -52,10 +52,10 @@ the one-liner above.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 `SELECT -0.0e0` serves bit-identical to DuckDB (sign bit included)
-- [ ] #2 Runtime `(- x)` with `x = 0.0` yields `-0.0` on both backends
-- [ ] #3 The derived cases (division to ±inf, VARCHAR cast) agree with DuckDB
-- [ ] #4 A fuzz re-run over the campaign's diverging seeds shows the
+- [x] #1 `SELECT -0.0e0` serves bit-identical to DuckDB (sign bit included)
+- [x] #2 Runtime `(- x)` with `x = 0.0` yields `-0.0` on both backends
+- [x] #3 The derived cases (division to ±inf, VARCHAR cast) agree with DuckDB
+- [x] #4 A fuzz re-run over the campaign's diverging seeds shows the
       `DIVERGE_VALUE values` class empty of -0.0 cases
 <!-- AC:END -->
 
@@ -74,3 +74,9 @@ path routes through the same subtraction. Pinned by
 test_negative_zero_keeps_its_sign (5 cases x 2 backends); the follow-up
 2026-08-13 fuzz campaign (963 -> 1 findings) shows the -0.0 class empty.
 <!-- SECTION:NOTES:END -->
+
+2026-08-16 re-verified rather than assumed, since the triage still listed
+this as To Do. All three of the campaign's recorded expressions match today
+(`ceil(-0.25)`, `-0.0 / -67.764e0`, `* REPLACE (-0.0 AS c0)`), as do the
+literal, runtime unary minus, round/trunc/sqrt, division to -inf, VARCHAR
+cast and multiply-by-minus-one. Zero divergences across the surface.
