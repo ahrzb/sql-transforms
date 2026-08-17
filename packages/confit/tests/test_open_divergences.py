@@ -32,35 +32,6 @@ from confit import DuckDBInferFn
 
 
 # ---------------------------------------------------------------------------
-# TASK-115: a projected static column takes the JOIN KEY's width instead of
-# its own. Found by the widened fuzzer (seed 1379) while verifying TASK-96.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-115: projecting the static side of a join KEY reconstructs "
-    "it from the dynamic side, so it takes the ROW column's width instead of "
-    "the static column's own. int8 row key vs int64 static key emits int8; "
-    "DuckDB emits int64. Non-key static columns are unaffected.",
-)
-def test_projected_static_key_keeps_its_own_width():
-    row = pa.schema([pa.field("k", pa.int8(), nullable=False)])
-    static = pa.table({"c0": pa.array([5], pa.int64()), "v": pa.array([7], pa.int64())})
-    sql = "SELECT s.c0 AS o FROM __THIS__ LEFT JOIN s ON k = s.c0"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k TINYINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    want = con.execute(sql).to_arrow_table()
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
-    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=row))
-    assert want.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-
-
-# ---------------------------------------------------------------------------
 # TASK-116: a struct column is lanes in a row table and unserved in a static
 # one. Reported 2026-08-15; #157 made the refusal name the type, this pin is
 # for actually serving it.

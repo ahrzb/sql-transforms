@@ -1994,7 +1994,7 @@ impl Binder<'_> {
                         cols.push((
                             sj.name.clone(),
                             c.name.clone(),
-                            StarLane::Real(self.key_lane(j, kp)),
+                            StarLane::Real(self.key_lane(j, kp)?),
                         ));
                     } else if exclude.iter().any(|(t, e)| {
                         t.as_deref()
@@ -3102,11 +3102,43 @@ impl Binder<'_> {
     /// on a LEFT miss it is NULL): INNER rows all matched, so the key
     /// expression itself is exact; LEFT wraps it in CASE match THEN key
     /// ELSE NULL.
-    fn key_lane(&self, j: usize, key_pos: usize) -> SExpr {
+    ///
+    /// TASK-115: the reconstruction is sound about the VALUE and used to be
+    /// wrong about the TYPE — it adopted the row column's declaration, so
+    /// `int8 row key = int64 static key` projected int8 where DuckDB
+    /// projects int64, and the reverse pairing projected int64 where DuckDB
+    /// projects int8. The static column's own declaration is the answer;
+    /// between two integer widths that is a pure re-declaration, because
+    /// DuckDB compares across widths NUMERICALLY, so a match already proves
+    /// the value fits both.
+    fn key_lane(&self, j: usize, key_pos: usize) -> Result<SExpr, PrepareError> {
         let sj = &self.joins[j];
         let key = sj.keys[key_pos].clone();
+        let col = &sj.table.cols[sj.key_cols[key_pos] as usize];
+        let key = match (key.ty, col.ty.ty) {
+            (a, b) if a == b => key,
+            (a, b) if a.is_int() && b.is_int() => SExpr { ty: b, ..key },
+            // The remaining pairing is `promote_key`'s F64-probe-against-
+            // integer-column arm: the comparison happens in double space, so
+            // the reconstruction holds a double, and a double does not name
+            // one i64 (two build rows can collide on it). Refusing is the
+            // only sound answer available here — recovering the real value
+            // means materialising the key as a probe VALUE lane, which is
+            // TASK-120.
+            (a, b) => {
+                return Err(unsup(format!(
+                    "projecting join key column '{}.{}': it is declared {} \
+                     but the join compares it as {}, and the original value \
+                     is not recoverable from the comparison",
+                    sj.name,
+                    col.name,
+                    b.name(),
+                    a.name()
+                )))
+            }
+        };
         if sj.kind == JoinKind::Inner {
-            return key;
+            return Ok(key);
         }
         let ty = key.ty;
         let hit = SExpr {
@@ -3114,14 +3146,14 @@ impl Binder<'_> {
             ty: Ty::I1,
             nullable: false,
         };
-        SExpr {
+        Ok(SExpr {
             kind: SKind::Case {
                 arms: vec![(hit, key)],
                 default: None,
             },
             ty,
             nullable: true,
-        }
+        })
     }
 
     /// n-part dotted reference (pins-waveA/struct-nested.json): qualifier
@@ -3375,7 +3407,7 @@ impl Binder<'_> {
             if !sj.using {
                 for (kp, &ci) in sj.key_cols.iter().enumerate() {
                     if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
-                        hits.push(self.key_lane(j, kp));
+                        hits.push(self.key_lane(j, kp)?);
                     }
                 }
             }
@@ -3497,7 +3529,7 @@ impl Binder<'_> {
             // LEFT miss, never coalesced).
             for (kp, &ci) in sj.key_cols.iter().enumerate() {
                 if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
-                    return Ok(self.key_lane(j, kp));
+                    return self.key_lane(j, kp);
                 }
             }
             if name.eq_ignore_ascii_case("rowid") {

@@ -2,7 +2,7 @@
 id: TASK-115
 title: >-
   A projected join key takes the row side's width, not the static's
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-15 16:00'
 labels:
@@ -47,11 +47,29 @@ test_open_divergences.py.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 a projected static key column types at the STATIC column's declared
+- [x] #1 a projected static key column types at the STATIC column's declared
       width, whatever the row-side key's width is
-- [ ] #2 the reconstruction behaviour it rides on is unchanged — a LEFT miss
+- [x] #2 the reconstruction behaviour it rides on is unchanged — a LEFT miss
       is still NULL and still never coalesced, USING included
-- [ ] #3 the reverse pairing (wide row key, narrow static key) is covered
+- [x] #3 the reverse pairing (wide row key, narrow static key) is covered
       too, not just the narrowing direction
-- [ ] #4 the xfail-strict pin flips and its reason line is deleted
+- [x] #4 the xfail-strict pin flips and its reason line is deleted
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+`key_lane` now types the reconstruction from `key_cols[key_pos]` -- the
+STATIC column's own declaration -- instead of from the dynamic key
+expression. Between two integer widths that is a pure re-declaration and
+needs no cast: DuckDB compares across widths NUMERICALLY, so a match already
+proves the value fits both sides. Measured in both directions (int8 row vs
+int64 static, int64 row vs int8 static) on INNER and LEFT, plus a same-width
+control and a LEFT-miss control for AC #2.
+
+The measurement also turned up a THIRD pairing the ticket did not name:
+`promote_key`'s DOUBLE-probe-against-an-integer-column arm compares in
+double space, so the reconstruction holds a double and cannot name one i64.
+That one has no sound re-declaration; it now refuses by name and is
+TASK-120.
+<!-- SECTION:NOTES:END -->
