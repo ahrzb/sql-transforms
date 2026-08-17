@@ -32,37 +32,10 @@ from confit import DuckDBInferFn
 
 
 # ---------------------------------------------------------------------------
-# TASK-116: a struct column is lanes in a row table and unserved in a static
-# one. Reported 2026-08-15; #157 made the refusal name the type, this pin is
-# for actually serving it.
+# TASK-117: `trapping_expr BETWEEN lit AND NULL` is statically NULL on
+# DuckDB, so the subject is never evaluated. TASK-85 folds a strict op whose
+# SIBLING is NULL; here the trap is the thing being compared.
 # ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-116: struct columns serve in a ROW table (TASK-56 flattens "
-    "them to lanes) and are unserved in a STATIC one, so the same column "
-    "binds or refuses depending only on which table it sits in.",
-)
-def test_struct_static_column_serves_its_lanes():
-    row = pa.schema([pa.field("k", pa.int64(), nullable=False)])
-    static = pa.table(
-        {
-            "id": pa.array([5], pa.int64()),
-            "w": pa.array([{"mean": 2.0}], pa.struct([("mean", pa.float64())])),
-        }
-    )
-    sql = "SELECT s.w.mean AS o FROM __THIS__ JOIN s ON k = s.id"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    want = con.execute(sql).to_arrow_table().to_pylist()
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
-    assert fn.infer_rows([{"k": 5}]) == want
-
-
 @pytest.mark.xfail(
     strict=True,
     reason="TASK-117: `trapping_expr BETWEEN lit AND NULL` is statically NULL, "

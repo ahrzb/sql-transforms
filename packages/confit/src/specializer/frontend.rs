@@ -1084,6 +1084,15 @@ fn opaque_static_refusal(
         .iter()
         .find(|(c, _)| c.eq_ignore_ascii_case(name))
         .map(|(c, aty)| {
+            // TASK-116 serves a struct's LEAVES, so the struct name is
+            // opaque for a different reason than a timestamp is: the fields
+            // are right there, only the whole value is unserved.
+            if aty == "struct" {
+                return PrepareError::Unsupported(format!(
+                    "static table '{table}' column '{c}' is a struct — \
+                     project its fields instead"
+                ));
+            }
             PrepareError::Unsupported(format!(
                 "static table '{table}' column '{c}' has type {aty}, which \
                  this engine does not serve — project a served column instead"
@@ -3165,30 +3174,27 @@ impl Binder<'_> {
     /// a hard error (measured). The schema part follows the registry-noise
     /// rule (known-limitations §5).
     fn compound(&self, parts: &[sqlparser::ast::Ident]) -> Result<SExpr, PrepareError> {
-        let not_a_struct = |field: &str, col: &str| {
-            PrepareError::Bind(format!(
-                "Cannot extract field '{field}' from expression \"{col}\" \
-                 because it is not a struct"
-            ))
-        };
         // R1: schema.(this|join).column[.fields...]
         if parts.len() >= 3 {
             if parts[1].value.eq_ignore_ascii_case(&self.this_name) {
                 if let Some(r) = self.this_col_with_fields(&parts[2].value, &parts[3..]) {
                     return r;
                 }
-            } else if self
-                .joins
-                .iter()
-                .any(|sj| sj.name.eq_ignore_ascii_case(&parts[1].value))
+            } else if
+            // parts[0] must be a SCHEMA here, not a relation. `__THIS__.w.mean`
+            // reads as (this).w.mean, never as (schema __THIS__).(table w).mean
+            // — otherwise a static table sharing a struct column's name would
+            // make the qualified spelling unable to reach the struct, and that
+            // spelling is the one DuckDB gives you to force it (TASK-116 AC
+            // #3). Only this branch is guarded: `t.t.t.t FROM t.t` is a real
+            // schema-qualified corpus case and it lands in the branch above.
+            !parts[0].value.eq_ignore_ascii_case(&self.this_name)
+                && self
+                    .joins
+                    .iter()
+                    .any(|sj| sj.name.eq_ignore_ascii_case(&parts[1].value))
             {
-                let col = self.qualified(&parts[1].value, &parts[2].value);
-                return match (col, parts.len()) {
-                    (Ok(c), 3) => Ok(c),
-                    // Statics have no struct columns.
-                    (Ok(_), _) => Err(not_a_struct(&parts[3].value, &parts[2].value)),
-                    (Err(e), _) => Err(e),
-                };
+                return self.qualified_path(&parts[1].value, &parts[2..]);
             }
         }
         // R2: this.column[.fields...] / join.column
@@ -3202,12 +3208,7 @@ impl Binder<'_> {
                 .iter()
                 .any(|sj| sj.name.eq_ignore_ascii_case(&parts[0].value))
             {
-                let col = self.qualified(&parts[0].value, &parts[1].value);
-                return match (col, parts.len()) {
-                    (Ok(c), 2) => Ok(c),
-                    (Ok(_), _) => Err(not_a_struct(&parts[2].value, &parts[1].value)),
-                    (Err(e), _) => Err(e),
-                };
+                return self.qualified_path(&parts[0].value, &parts[1..]);
             }
         }
         // R3: bare column[.fields...]
@@ -3227,6 +3228,73 @@ impl Binder<'_> {
             };
         }
         self.column(&parts[0].value)
+    }
+
+    /// A static table's column addressed by `parts`, which may be a struct
+    /// lane's FULL ORDERED PATH (TASK-116): `s.w.mean` is column "w.mean" of
+    /// `s`, because the catalogue flattens a struct's leaves under exactly
+    /// that name. The path either matches a lane exactly or misses — no
+    /// suffix match, no name-set match, so `w.x.y.z.a` and `w.z.y.x.a` are
+    /// different lanes and `w.a` finds nothing.
+    fn qualified_path(
+        &self,
+        table: &str,
+        parts: &[sqlparser::ast::Ident],
+    ) -> Result<SExpr, PrepareError> {
+        let head = &parts[0].value;
+        if parts.len() == 1 {
+            return self.qualified(table, head);
+        }
+        let path = parts
+            .iter()
+            .map(|p| p.value.as_str())
+            .collect::<Vec<_>>()
+            .join(".");
+        if let Ok(c) = self.qualified(table, &path) {
+            return Ok(c);
+        }
+        // The path missed. Which error depends on what it missed BY.
+        let sj = self
+            .joins
+            .iter()
+            .find(|sj| sj.name.eq_ignore_ascii_case(table));
+        if let Some(sj) = sj {
+            // An INTERMEDIATE node of the tree: every lane below it exists,
+            // so the path is real and only its VALUE is a struct. Same
+            // refusal as the whole column, not a "no such key" lie.
+            let prefix = format!("{path}.");
+            if sj
+                .table
+                .cols
+                .iter()
+                .any(|c| c.name.len() > prefix.len() && c.name[..prefix.len()].eq_ignore_ascii_case(&prefix))
+            {
+                return Err(unsup(format!(
+                    "static table '{table}' column '{path}' is a struct — \
+                     project its fields instead"
+                )));
+            }
+            // `head` is a struct we could not walk: the path is wrong.
+            if sj
+                .table
+                .opaque
+                .iter()
+                .any(|(c, aty)| aty == "struct" && c.eq_ignore_ascii_case(head))
+            {
+                return Err(PrepareError::Bind(format!(
+                    "Could not find key \"{}\" in struct",
+                    parts[parts.len() - 1].value
+                )));
+            }
+        }
+        match self.qualified(table, head) {
+            Ok(_) => Err(PrepareError::Bind(format!(
+                "Cannot extract field '{}' from expression \"{head}\" \
+                 because it is not a struct",
+                parts[1].value
+            ))),
+            Err(e) => Err(e),
+        }
     }
 
     /// The driving table's column `name` followed by struct-field `fields`.
