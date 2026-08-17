@@ -231,6 +231,7 @@ pub fn lower(
         flatten_and(pred, &mut conjuncts);
         let (drop, _) = fb.create_block(&[]);
         let mut keep = None;
+        fb.in_filter = true;
         for c in conjuncts {
             let mut live = Vec::new();
             let pl = fb.emit(c, &mut live)?;
@@ -246,6 +247,7 @@ pub fn lower(
             fb.switch(k);
             keep = Some(k);
         }
+        fb.in_filter = false;
         fb.switch(drop);
         fb.term(Term::Skip);
         fb.switch(keep.expect("a predicate has at least one conjunct"));
@@ -389,6 +391,20 @@ struct FB<'a> {
     /// raising (TASK-73). A stack, not an Option: a residual may probe
     /// another join.
     probe_seeds: Vec<ProbeSeed>,
+    /// Are we lowering a FILTER predicate rather than a projection?
+    ///
+    /// It decides whether AND/OR may short-circuit, and the split is the
+    /// oracle's. Measured 2026-08-17 with a trapping right operand:
+    ///
+    ///   SELECT (f AND trap)          TRAP   projection: BOTH operands run
+    ///   SELECT (TRUE OR trap)        TRAP   even a constant left operand
+    ///   WHERE  (f AND trap)          []     filter: short-circuits
+    ///   WHERE  (TRUE OR trap)        1 row
+    ///
+    /// A filter has a row to drop, so it narrows and never needs the value; a
+    /// projection has to produce one for every row. An untaken CASE arm is
+    /// unevaluated in both, which is `Case`'s own branching and not this flag.
+    in_filter: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -425,6 +441,7 @@ impl<'a> FB<'a> {
             model_base,
             many: None,
             probe_seeds: Vec::new(),
+            in_filter: false,
         }
     }
 
@@ -1607,7 +1624,9 @@ impl<'a> FB<'a> {
             live.push((Lane { flag: None, val: d }, ty));
         }
         if let Some(pred) = filter_pred {
+            self.in_filter = true;
             let pl = self.emit_many(pred, &mut live, j, true, nd)?;
+            self.in_filter = false;
             let pv = self.truthy(pl);
             let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
             let (keep, kp) = {
@@ -1663,7 +1682,9 @@ impl<'a> FB<'a> {
             }
             if let Some(pred) = filter_pred {
                 // WHERE sees the null-extended row too (measured).
+                self.in_filter = true;
                 let pl = self.emit_many(pred, &mut live, j, false, nd)?;
+                self.in_filter = false;
                 let pv = self.truthy(pl);
                 let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
                 let (keep, kp) = self.create_block(&dst_tys);
@@ -2005,7 +2026,7 @@ impl<'a> FB<'a> {
         res_nullable: bool,
     ) -> Result<Lane, PrepareError> {
         let la = self.emit(a, live)?;
-        if may_trap(b) {
+        if self.in_filter && may_trap(b) {
             return self.kleene_shortcut(la, b, live, is_and, res_nullable);
         }
         live.push((la, Ty::I1));

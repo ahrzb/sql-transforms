@@ -70,3 +70,43 @@ Unchanged in both runs, all pre-existing and none touched by the sweep:
 The 16-seed ambiguous-reference class is now the largest single thing the
 fuzzer sees and it has no ticket. It is a `DIVERGE_BUILD` (we build what
 DuckDB refuses), so it is the mild direction, but it is 64% of the findings.
+
+
+---
+
+## Addendum, same day: the oracle changed, and so did the engine
+
+`PRAGMA disable_optimizer` DuckDB became the oracle, the engine stopped
+reproducing plan rewrites, and the campaign was re-run at the same 4000 seeds.
+
+| | before the sweep | after the sweep | after the oracle change |
+|---|---|---|---|
+| raw findings | 26 | 25 | 28 |
+| confit traps, DuckDB serves | 2 | 0 | 0 |
+| DIVERGE_OPT (we match the oracle, opt-on differs) | n/a | 2 | 8 |
+| OPT_EMULATED (a pass we still reproduce) | n/a | 6 | 0 |
+
+The headline is the last row. Six optimizer emulations were being exercised by
+the campaign; after conforming the engine there are none. The single remaining
+`OPT_EMULATED` line is seed 1784's `FETCH FIRST 1 ROWS ONLY` without an
+`ORDER BY`, where the two DuckDB reads lawfully pick different groups -- the
+harness nondeterminism §8 already records, mislabelled by this category
+because the readings disagree with each other.
+
+`DIVERGE_OPT` rising from 2 to 8 is not a regression. It is the same
+behaviour, now named: these are the cases where we match the oracle and a user
+running DuckDB with the optimizer on would see something else. That price was
+always being paid; before the oracle change it was invisible, and before the
+conformance work it was partly hidden behind emulations.
+
+Seeds: 312, 812, 1196, 1563, 1564. Two engine bugs found ALONGSIDE this, both
+by the oracle rather than by reasoning, and both fixed:
+
+* `substr` with a negative start clamped before applying the length window.
+* a filter did not short-circuit on a NULL conjunct, and AND/OR
+  short-circuited in a PROJECTION where DuckDB evaluates both operands (that
+  second half diverged from BOTH readings, so it was never an oracle artifact).
+
+Still open and unchanged: the 16-seed ambiguous-reference class (57% of
+findings now), seed 2668's `-2147483648 / -1` overflow where we serve and both
+readings error, and the four `values` seeds.
