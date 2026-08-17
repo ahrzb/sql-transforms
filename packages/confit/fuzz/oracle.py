@@ -7,6 +7,43 @@ infer_arrow, hostile Arrow input (sliced / chunked / empty), single-row vs
 batch concatenation, rebuild determinism, and sklearn as a second ground
 truth on tree cases.
 
+# TWO DuckDB readings, and the BASELINE is the optimizer-off one
+
+Every case is run against DuckDB twice, on one connection:
+
+    PRAGMA disable_optimizer   the BASELINE — eager evaluation, and a
+                               function of the QUERY alone
+    PRAGMA enable_optimizer    what a user actually sees
+
+Measured 2026-08-17: every trap-elision divergence in the record collapses to
+a TRAP with the optimizer off, which is what this engine does natively. The
+two readings therefore bracket the answer, and a finding classifies itself
+instead of needing a human to reason about fold visibility:
+
+  ours == off == on        AGREE.
+  ours != off, ours != on  a real bug, and the baseline says so with the
+                           optimizer out of the picture.
+  ours == off, off != on   DIVERGE_OPT. We match eager semantics; an optimizer
+                           pass makes the user's DuckDB answer differently, so
+                           this is user-visible and needs a decision.
+  ours == on, off != on    OPT_EMULATED. We deliberately reproduce a pass
+                           (TASK-85/87/117's folds, TASK-118's comparison
+                           shift, the IS NULL nullness rewrite). Not a
+                           finding — but counted, so a campaign shows which
+                           emulations are actually exercised.
+
+Why the optimizer-off run is the BASELINE and not merely a second opinion: it
+is the only one of the two whose answer is a function of the query. The
+optimizer's is not — `statistics_propagation` reads the column's null
+statistic, so the same query over the same rows answers differently depending
+on the table's insert history (see
+tests/known_divergences/test_trap_elision.py). A baseline you cannot compute
+from the query is not a baseline.
+
+Note this does NOT restate the user-facing contract, which still names what a
+user's DuckDB returns — optimizer on. `DIVERGE_OPT` is exactly the gap
+between the two, which is why it stays a finding.
+
 DuckDB setup mirrors tests/test_udfs.py `udf_check` (native tables, repr-keyed
 multiset compare) — duplicated here on purpose: fuzz/ must not import from
 tests/, and the duplication is itself a check that the registration recipe is
@@ -29,9 +66,15 @@ KINDS = (
     "DIVERGE_VALUE",
     "DIVERGE_BUILD",
     "DIVERGE_TRAP",
+    # we match the eager baseline, an optimizer pass makes the user's DuckDB
+    # answer differently — user-visible, so a finding
+    "DIVERGE_OPT",
     "BUILD_EXC",
     "AGREE",
     "AGREE_TRAP",
+    # we match optimizer-ON against an eager baseline that disagrees: a pass
+    # we reproduce on purpose. Not a finding, but counted.
+    "OPT_EMULATED",
     "REFUSED",
     "SKIP",
 )
@@ -315,14 +358,30 @@ def _duck_con(case: G.Case, udf_objs):
     return con
 
 
+def _exec(con, sql):
+    try:
+        return con.execute(sql).to_arrow_table(), None, None
+    except Exception as e:  # noqa: BLE001 — classify, don't die
+        phase = "build" if type(e).__name__ in _DUCK_BUILD_ERRS else "run"
+        return None, phase, f"{type(e).__name__}: {e}"
+
+
 def _duck_run(sql, case: G.Case, udf_objs):
+    """Both readings, on ONE connection: `(optimizer_off, optimizer_on)`.
+
+    Sharing the connection is not just a saving (the tables materialise once,
+    so the second execute is nearly free) — it is also what makes the pair
+    comparable. `statistics_propagation` reads per-column statistics, so two
+    separate connections could differ for reasons that have nothing to do
+    with the optimizer.
+    """
     con = _duck_con(case, udf_objs)
     try:
-        try:
-            return con.execute(sql).to_arrow_table(), None, None
-        except Exception as e:  # noqa: BLE001 — classify, don't die
-            phase = "build" if type(e).__name__ in _DUCK_BUILD_ERRS else "run"
-            return None, phase, f"{type(e).__name__}: {e}"
+        con.execute("PRAGMA disable_optimizer")
+        off = _exec(con, sql)
+        con.execute("PRAGMA enable_optimizer")
+        on = _exec(con, sql)
+        return off, on
     finally:
         con.close()
 
@@ -419,7 +478,7 @@ def run_case(case: G.Case) -> Verdict:
             tags,
         )
 
-    duck_out, duck_phase, duck_err = _duck_run(sql, case, udf_objs)
+    duck_off, duck_on = _duck_run(sql, case, udf_objs)
 
     if fn_cl is None:
         klass = _refusal_class(cl_err)
@@ -433,14 +492,6 @@ def run_case(case: G.Case) -> Verdict:
             "DIVERGE_VALUE",
             "force-interp-ignored",
             f"forced interpreter, got {fn_in.backend}",
-            tags,
-        )
-
-    if duck_out is None and duck_phase == "build":
-        return Verdict(
-            "DIVERGE_BUILD",
-            _first_words(duck_err),
-            f"confit builds what DuckDB refuses: {duck_err}",
             tags,
         )
 
@@ -483,60 +534,101 @@ def run_case(case: G.Case) -> Verdict:
             f"cranelift: {trap_cl or 'rows'} / interp: {trap_in or 'rows'}",
             tags,
         )
-    if trap_cl is not None:
-        if duck_out is None:  # both sides error at run time
-            return Verdict("AGREE_TRAP", _first_words(duck_err), trap_cl, tags)
-        return Verdict(
-            "DIVERGE_TRAP",
-            _first_words(trap_cl),
-            f"confit traps, DuckDB returns rows: {trap_cl}",
-            tags,
-        )
-    if duck_out is None:
-        return Verdict(
-            "DIVERGE_TRAP",
-            _first_words(duck_err),
-            f"DuckDB errors, confit returns rows: {duck_err}",
-            tags,
-        )
-
-    # --- compare --------------------------------------------------------
-    if static_only:
-        want = duck_out.to_pylist()
-        if _key(got_cl) != _key(want) or _key(got_in) != _key(want):
-            return Verdict(
-                "DIVERGE_VALUE", "static-only-values", f"{got_cl} != {want}", tags
-            )
-        return Verdict("AGREE", "", "", tags)
-
-    delta = _schema_delta(duck_out.schema, sch_cl)
-    cast_to = None
-    if delta is not None:
-        if delta[0] == "diff":
-            return Verdict("DIVERGE_VALUE", "schema", delta[1], tags)
-        tags.append(delta[1])
-        cast_to = sch_cl
-    try:
-        want = _norm(duck_out, cast_to)
-    except Exception as e:  # noqa: BLE001 — cast refuses: widths lied
-        return Verdict("DIVERGE_VALUE", "schema-cast", str(e), tags)
-
-    if sch_cl != sch_in or _key(got_cl) != _key(got_in):
+    # Backend agreement is a question about US and does not involve DuckDB, so
+    # it is settled once, before either reading.
+    if sch_cl != sch_in or (
+        got_cl is not None and got_in is not None and _key(got_cl) != _key(got_in)
+    ):
         return Verdict(
             "DIVERGE_VALUE", "backend-values", "cranelift != interpreter", tags
         )
-    if _key(got_cl) != _key(want):
-        return Verdict("DIVERGE_VALUE", "values", f"{got_cl[:4]} != {want[:4]}", tags)
 
-    v = _extra_legs(fn_cl, case, table, got_cl, want, ests, tags, rows_only)
-    if v is not None:
+    # --- compare, against each reading -----------------------------------
+    def against(duck) -> Verdict:
+        """Our one result versus ONE DuckDB reading. Pure comparison — every
+        side has already been executed, so calling it twice costs nothing."""
+        duck_out, duck_phase, duck_err = duck
+        t = list(tags)
+        if duck_out is None and duck_phase == "build":
+            return Verdict(
+                "DIVERGE_BUILD",
+                _first_words(duck_err),
+                f"confit builds what DuckDB refuses: {duck_err}",
+                t,
+            )
+        if trap_cl is not None:
+            if duck_out is None:  # both sides error at run time
+                return Verdict("AGREE_TRAP", _first_words(duck_err), trap_cl, t)
+            return Verdict(
+                "DIVERGE_TRAP",
+                _first_words(trap_cl),
+                f"confit traps, DuckDB returns rows: {trap_cl}",
+                t,
+            )
+        if duck_out is None:
+            return Verdict(
+                "DIVERGE_TRAP",
+                _first_words(duck_err),
+                f"DuckDB errors, confit returns rows: {duck_err}",
+                t,
+            )
+        if static_only:
+            want = duck_out.to_pylist()
+            if _key(got_cl) != _key(want):
+                return Verdict(
+                    "DIVERGE_VALUE", "static-only-values", f"{got_cl} != {want}", t
+                )
+            return Verdict("AGREE", "", "", t)
+
+        delta = _schema_delta(duck_out.schema, sch_cl)
+        cast_to = None
+        if delta is not None:
+            if delta[0] == "diff":
+                return Verdict("DIVERGE_VALUE", "schema", delta[1], t)
+            t.append(delta[1])
+            cast_to = sch_cl
+        try:
+            want = _norm(duck_out, cast_to)
+        except Exception as e:  # noqa: BLE001 — cast refuses: widths lied
+            return Verdict("DIVERGE_VALUE", "schema-cast", str(e), t)
+        if _key(got_cl) != _key(want):
+            return Verdict("DIVERGE_VALUE", "values", f"{got_cl[:4]} != {want[:4]}", t)
+        return Verdict("AGREE", "", "", t)
+
+    v_off, v_on = against(duck_off), against(duck_on)
+    agreed = ("AGREE", "AGREE_TRAP")
+    if v_off.kind in agreed and v_on.kind not in agreed:
+        # Eager semantics agree with us; a pass changes what the USER sees.
+        v = Verdict(
+            "DIVERGE_OPT",
+            v_on.klass,
+            f"agrees with optimizer-off DuckDB, not with optimizer-on: {v_on.detail}",
+            v_on.tags,
+        )
+    elif v_on.kind in agreed and v_off.kind not in agreed:
+        # A pass we reproduce on purpose. Expected, and counted.
+        v = Verdict(
+            "OPT_EMULATED",
+            v_off.klass,
+            f"agrees with the user-visible optimizer-on answer; the eager "
+            f"baseline differs: {v_off.detail}",
+            v_off.tags,
+        )
+    else:
+        # Either both agree, or neither does — and when neither does, the
+        # baseline is the one to report, because it names the bug without an
+        # optimizer in the way.
+        v = v_off
+
+    if v.kind not in ("AGREE", "OPT_EMULATED"):
         return v
-    return Verdict("AGREE", "", "", tags)
+    if trap_cl is not None or static_only:
+        return v  # the boundary legs all need a non-trapping row run
+    extra = _extra_legs(fn_cl, case, table, got_cl, ests, v.tags, rows_only)
+    return extra if extra is not None else v
 
 
-def _extra_legs(
-    fn, case, table, got, want, ests, tags, rows_only=False
-) -> Verdict | None:
+def _extra_legs(fn, case, table, got, ests, tags, rows_only=False) -> Verdict | None:
     """The boundary checks a plain differential run misses.
 
     `got` is the primary run's rows. Under `rows_only` the primary run WAS

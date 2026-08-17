@@ -25,11 +25,18 @@ INTERESTING = (
     "DIVERGE_VALUE",
     "DIVERGE_BUILD",
     "DIVERGE_TRAP",
+    # we match eager DuckDB, its optimizer makes the user's answer differ
+    "DIVERGE_OPT",
     "BUILD_EXC",
     "PANIC",
     "TIMEOUT",
     "SKIP",
 )
+
+# Agreement, for the coverage histogram: OPT_EMULATED is agreement with the
+# user-visible answer via a pass we reproduce deliberately, so its constructs
+# ARE covered and must not be dropped from coverage.
+COVERED = ("AGREE", "OPT_EMULATED")
 
 
 def _spawn():
@@ -135,11 +142,22 @@ def report(results: list[dict], out: Path):
         print(f"  {c:6}  {k}")
 
     cover = collections.Counter(
-        t for r in results if r["kind"] == "AGREE" for t in r["tags"]
+        t for r in results if r["kind"] in COVERED for t in r["tags"]
     )
     print("\n== AGREE coverage by construct ==")
     for k, c in cover.most_common():
         print(f"  {c:6}  {k}")
+
+    # The passes we reproduce on purpose, by the eager-baseline disagreement
+    # they resolve. Empty here means no emulation was exercised at all, which
+    # is a coverage hole rather than good news.
+    emul = collections.Counter(
+        r["klass"] for r in results if r["kind"] == "OPT_EMULATED"
+    )
+    if emul:
+        print("\n== optimizer passes we reproduce (vs the eager baseline) ==")
+        for k, c in emul.most_common(15):
+            print(f"  {c:6}  {k}")
 
     findings = [r for r in results if r["kind"] in INTERESTING]
     dedup: dict[tuple, dict] = {}
