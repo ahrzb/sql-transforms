@@ -46,6 +46,15 @@ Confit serves **bit-for-bit identical to DuckDB** — with the same declared
 UDFs registered via `create_function`, when there are any — **or refuses at
 build with a named error**. No third behavior.
 
+**Which DuckDB** (2026-08-17): the oracle is DuckDB with its query optimizer
+off (`PRAGMA disable_optimizer`). Same binder, so same types and same
+constant folding; same execution model, so same laziness; what is excluded is
+the 33 plan-rewrite passes. The reason is that the optimizer-on reading is
+not a function of the query — `statistics_propagation` answers from a
+column's stored null statistic, so the same query over the same rows differs
+by the table's insert history. The user-visible cost of the choice is one
+named divergence class in `docs/known-limitations.md` §5.
+
 - Enforced: `packages/confit/tests/test_duckdb_*.py` (the wave suites),
   `test_params_joins.py`, `test_udfs.py` (`udf_check` — the parameterized
   form of the contract), `docs/known-limitations.md` (each refusal has an
