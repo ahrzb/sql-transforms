@@ -385,9 +385,15 @@ def test_field_access_shares_one_call_per_row():
     assert by_g[None] == (6.0, 4.0)  # NULL g joins the NULL-key row: id 1
     assert by_g["de"] == (2.0, 2.0)  # id 0, d = 0
     assert by_g["fr"] == (None, None)  # unseen group: NULL id -> NULL fields
-    # One call per ROW per path — attributed, not just a cross-path total.
+    # One call per ROW on OUR path — the TASK-63 single-evaluation guarantee,
+    # and the assertion that matters here.
     assert engine_calls == [3], f"engine leg: {engine_calls} calls for 3 rows"
-    assert u.calls == 6, f"DuckDB leg: {u.calls - 3} calls for 3 rows"
+    # DuckDB's leg makes TWO per row, one per field read. Sharing them is its
+    # `common_subexpressions` pass, and the oracle runs with the optimizer off
+    # (see conftest), so there is nothing to share. Still pinned rather than
+    # dropped, because the number is what attributes calls to a leg: if our
+    # side ever leaked a call into DuckDB's, this moves.
+    assert u.calls == 3 + 6, f"DuckDB leg: {u.calls - 3} calls for 3 rows"
 
 
 def test_wide_udf_dict_output():

@@ -151,13 +151,19 @@ def report(results: list[dict], out: Path):
     # The passes we reproduce on purpose, by the eager-baseline disagreement
     # they resolve. Empty here means no emulation was exercised at all, which
     # is a coverage hole rather than good news.
-    emul = collections.Counter(
-        r["klass"] for r in results if r["kind"] == "OPT_EMULATED"
-    )
+    emul = [r for r in results if r["kind"] == "OPT_EMULATED"]
     if emul:
-        print("\n== optimizer passes we reproduce (vs the eager baseline) ==")
-        for k, c in emul.most_common(15):
-            print(f"  {c:6}  {k}")
+        # Since the oracle became optimizer-off DuckDB these are BUGS, not
+        # notes: an emulation means we answer like the optimizer and unlike the
+        # oracle. Print a seed with each so it is reproducible, the way the
+        # findings section does.
+        print("\n== optimizer passes we still reproduce (each one is a bug) ==")
+        seen: dict[str, dict] = {}
+        for r in emul:
+            seen.setdefault(r["klass"], r)
+        for k, r in seen.items():
+            n = sum(1 for x in emul if x["klass"] == k)
+            print(f"  {n:6}  {k}   e.g. seed {r['seed']}: {r['sql'][:80]}")
 
     findings = [r for r in results if r["kind"] in INTERESTING]
     dedup: dict[tuple, dict] = {}
