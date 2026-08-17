@@ -585,6 +585,88 @@ def test_static_column_types_at_its_arrow_width(arrow_ty, name):
     assert got.to_pylist() == want.to_pylist()
 
 
+# TASK-115: the same rule for a KEY column, which TASK-96 did not reach. A
+# projected static key is reconstructed from the DYNAMIC side (measured: on a
+# match the two are equal; on a LEFT miss it is NULL, never coalesced), and
+# the reconstruction used to adopt the ROW column's declaration. Both
+# directions were wrong, which is why both are parametrized here: DuckDB
+# compares across widths NUMERICALLY, so a match already proves the value
+# fits both declarations and only the declared width was ever in question.
+_KEY_DDL = {pa.int8(): "TINYINT", pa.int32(): "INTEGER", pa.int64(): "BIGINT"}
+
+
+@pytest.mark.parametrize("kind", ["JOIN", "LEFT JOIN"])
+@pytest.mark.parametrize(
+    ("row_ty", "static_ty"),
+    [
+        (pa.int8(), pa.int64()),  # narrow row key, wide static
+        (pa.int64(), pa.int8()),  # wide row key, narrow static
+        (pa.int32(), pa.int32()),  # control: same width, unchanged
+    ],
+)
+def test_projected_static_key_takes_the_static_columns_width(row_ty, static_ty, kind):
+    row = pa.schema([pa.field("k", row_ty, nullable=False)])
+    static = pa.table({"c0": pa.array([5], static_ty), "v": pa.array([7], pa.int64())})
+    sql = f"SELECT s.c0 AS o FROM __THIS__ {kind} s ON k = s.c0"
+
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE __THIS__ (k {_KEY_DDL[row_ty]})")
+    con.execute("INSERT INTO __THIS__ VALUES (5)")
+    con.register("sa", static)
+    con.execute("CREATE TABLE s AS SELECT * FROM sa")
+    want = con.execute(sql).to_arrow_table()
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=row))
+    assert want.schema.field("o").type == static_ty, "oracle moved — remeasure"
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
+
+
+def test_a_left_miss_on_the_key_is_still_null():
+    """The re-declaration must not disturb what it rides on: a LEFT miss is
+    NULL on the key column, never coalesced to the probe's value."""
+    row = pa.schema([pa.field("k", pa.int8(), nullable=False)])
+    static = pa.table({"c0": pa.array([5], pa.int64()), "v": pa.array([7], pa.int64())})
+    sql = "SELECT s.c0 AS o FROM __THIS__ LEFT JOIN s ON k = s.c0"
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k TINYINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (5), (6)")
+    con.register("sa", static)
+    con.execute("CREATE TABLE s AS SELECT * FROM sa")
+    want = con.execute(sql).to_arrow_table()
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}, {"k": 6}], schema=row))
+    assert want.to_pylist() == [{"o": 5}, {"o": None}], "oracle moved — remeasure"
+    assert got.to_pylist() == want.to_pylist()
+    assert got.schema == want.schema
+
+
+def test_a_double_probe_against_an_integer_key_refuses_to_project_it():
+    """The one pairing re-declaration cannot fix (TASK-120). `promote_key`
+    compares a DOUBLE probe against an integer column in double space, so the
+    reconstruction holds a double and a double does not name one i64 — two
+    build rows can collide on it. Refusing beats emitting the probe's value
+    under the column's name; only the PROJECTION refuses, the join itself is
+    unaffected."""
+    row = pa.schema([pa.field("k", pa.float64(), nullable=False)])
+    static = pa.table({"c0": pa.array([5], pa.int64()), "v": pa.array([7], pa.int64())})
+    with pytest.raises(ValueError, match="join key column 's.c0'"):
+        DuckDBInferFn(
+            "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0",
+            row_tables={"__THIS__": row},
+            static_tables={"s": static},
+        )
+    fn = DuckDBInferFn(
+        "SELECT s.v AS o FROM __THIS__ JOIN s ON k = s.c0",
+        row_tables={"__THIS__": row},
+        static_tables={"s": static},
+    )
+    assert fn.infer_rows([{"k": 5.0}]) == [{"o": 7}]
+
+
 # A static column whose arrow type the engine does not serve at that type
 # must REFUSE BY NAME, not get widened into a neighbouring lane. Measured
 # 2026-08-15, the widening was a live divergence in both directions:
