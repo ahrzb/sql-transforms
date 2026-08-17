@@ -7,6 +7,7 @@ the arrow field flag. The pydantic surface is deleted.
 
 from types import SimpleNamespace
 
+import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
@@ -162,6 +163,139 @@ def test_struct_row_column_serves():
     fn = build("SELECT st.x + 1 AS o FROM __THIS__", schema=schema)
     assert fn.infer_rows([{"st": {"x": 41}}]) == [{"o": 42}]
     assert fn.infer_rows([{"st": None}]) == [{"o": None}]
+
+
+# TASK-116. The same column used to bind or refuse depending only on which
+# table it sat in: served in a ROW table (above), unserved in a STATIC one.
+# A static table is already `map(keys) -> value lanes`, and a struct's scalar
+# leaves ARE a lane set, so they flatten under their FULL ORDERED PATH.
+#
+# Full ordered path is the load-bearing part. Keying by leaf name, by name
+# set, or by suffix would collapse `w.x.y.z.a` and `w.z.y.x.a` into one lane
+# and make `w.a` start finding something instead of erroring. The lookup
+# walks the path exactly or misses.
+_S116 = pa.struct(
+    [
+        ("x", pa.struct([("y", pa.struct([("z", pa.struct([("a", pa.int64())]))]))])),
+        ("z", pa.struct([("y", pa.struct([("x", pa.struct([("a", pa.int64())]))]))])),
+        ("mean", pa.float64()),
+    ]
+)
+_STATIC116 = pa.table(
+    {
+        "id": pa.array([5], pa.int64()),
+        "w": pa.array(
+            [{"x": {"y": {"z": {"a": 1}}}, "z": {"y": {"x": {"a": 2}}}, "mean": 2.5}],
+            _S116,
+        ),
+        "v": pa.array([7], pa.int64()),
+    }
+)
+_ROW116 = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+
+
+def _duck116(sql):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (5)")
+    con.register("sa", _STATIC116)
+    con.execute("CREATE TABLE s AS SELECT * FROM sa")
+    return con.execute(sql).to_arrow_table()
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "s.w.mean",  # a leaf one hop down
+        "s.w.x.y.z.a",  # a deep leaf, and its mirror below
+        "s.w.z.y.x.a",
+        "s.w.mean + 1",  # a lane is an ordinary operand
+        "main.s.w.mean",  # the schema-qualified spelling
+    ],
+)
+def test_struct_static_column_serves_its_lanes(expr):
+    sql = f"SELECT {expr} AS o FROM __THIS__ JOIN s ON k = s.id"
+    want = _duck116(sql)
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC116}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
+    assert got.to_pylist() == want.to_pylist()
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+
+
+def test_a_static_struct_lane_is_null_on_a_left_miss():
+    """A lane inherits the join's nullability like any other value column."""
+    sql = "SELECT s.w.mean AS o FROM __THIS__ LEFT JOIN s ON k = s.id"
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC116}
+    )
+    assert fn.infer_rows([{"k": 5}, {"k": 6}]) == [{"o": 2.5}, {"o": None}]
+
+
+@pytest.mark.parametrize(
+    ("expr", "match"),
+    [
+        # a wrong path finds nothing -- it is not resolved by name or suffix
+        ("s.w.a", 'Could not find key "a"'),
+        ("s.w.x.a", 'Could not find key "a"'),
+        # a field asked of a scalar is the pre-struct error, unchanged
+        ("s.v.bad", "not a struct"),
+        # a struct VALUE is still unserved (so is the row path's); the
+        # refusal names it as a struct rather than claiming it is missing
+        ("s.w", "is a struct"),
+        ("s.w.x", "is a struct"),
+    ],
+)
+def test_a_static_struct_path_that_is_not_a_lane_refuses_by_name(expr, match):
+    with pytest.raises(ValueError, match=match) as e:
+        DuckDBInferFn(
+            f"SELECT {expr} AS o FROM __THIS__ JOIN s ON k = s.id",
+            row_tables={"__THIS__": _ROW116},
+            static_tables={"s": _STATIC116},
+        )
+    assert "does not exist" not in str(e.value), str(e.value)
+
+
+def test_an_unreferenced_static_struct_still_builds():
+    fn = DuckDBInferFn(
+        "SELECT s.v AS o FROM __THIS__ JOIN s ON k = s.id",
+        row_tables={"__THIS__": _ROW116},
+        static_tables={"s": _STATIC116},
+    )
+    assert fn.infer_rows([{"k": 5}]) == [{"o": 7}]
+
+
+def test_a_static_table_beats_a_row_struct_column_of_the_same_name():
+    """Measured on DuckDB: with a TABLE named `w` in scope, `w.mean` is that
+    table's column, not the struct's field. Qualifying forces the struct."""
+    row = pa.schema(
+        [
+            pa.field("k", pa.int64(), nullable=False),
+            pa.field("w", pa.struct([("mean", pa.float64())])),
+        ]
+    )
+    static = pa.table(
+        {"id": pa.array([5], pa.int64()), "mean": pa.array([99.0], pa.float64())}
+    )
+    rows = [{"k": 5, "w": {"mean": 2.0}}]
+    tbl = {"__THIS__": row}
+    st = {"w": static}
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, w STRUCT(mean DOUBLE))")
+    con.execute("INSERT INTO __THIS__ VALUES (5, {'mean': 2.0})")
+    con.register("wa", static)
+    con.execute("CREATE TABLE w AS SELECT * FROM wa")
+
+    for expr in ["w.mean", "__THIS__.w.mean"]:
+        sql = f"SELECT {expr} AS o FROM __THIS__ JOIN w ON k = w.id"
+        want = con.execute(sql).to_arrow_table().to_pylist()
+        got = DuckDBInferFn(sql, row_tables=tbl, static_tables=st).infer_rows(rows)
+        assert got == want, f"{expr}: {got} != {want}"
+    assert con.execute(
+        "SELECT w.mean AS o FROM __THIS__ JOIN w ON k = w.id"
+    ).fetchall() == [(99.0,)], "oracle moved — the table no longer wins"
 
 
 def test_foreign_type_unreferenced_builds_referenced_refuses():

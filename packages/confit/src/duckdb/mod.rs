@@ -165,6 +165,38 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
     Ok(())
 }
 
+/// Append a static struct column's scalar leaves as lanes named by their
+/// FULL ORDERED PATH (TASK-116), so `w.x.y.z.a` and `w.z.y.x.a` stay
+/// distinct names and a lookup either walks the path exactly or misses. A
+/// field name holding a '.' would make that encoding ambiguous, so its
+/// subtree is skipped — the same rule the row path follows.
+fn flatten_static(
+    cols: &mut Vec<Col>,
+    prefix: &str,
+    fields: &[(String, schema::RowField)],
+    parent_nullable: bool,
+) {
+    for (fname, rf) in fields {
+        if fname.contains('.') {
+            continue;
+        }
+        let path = format!("{prefix}.{fname}");
+        match rf {
+            schema::RowField::Scalar { ty, nullable } => cols.push(Col {
+                name: path,
+                ty: ColTy {
+                    ty: *ty,
+                    nullable: parent_nullable || *nullable,
+                },
+            }),
+            schema::RowField::Struct { nullable, fields } => {
+                flatten_static(cols, &path, fields, parent_nullable || *nullable)
+            }
+            schema::RowField::Opaque(_) => {}
+        }
+    }
+}
+
 /// A narrow out column's value must fit its declared width on EVERY
 /// boundary — infer and infer_arrow answer identically or not at all
 /// (fleet 2026-08-13: the row path served what the arrow path refused).
@@ -650,13 +682,30 @@ fn materialize_map(
                 spec.table
             ))
         })?;
-        let get = |name: &str| {
-            row.get_item(name)?.ok_or_else(|| {
+        // TASK-116: a struct column's lanes are named by their full ordered
+        // path, so a dotted name walks the row's nested dicts. A NULL struct
+        // anywhere on the way down makes every lane below it NULL, which is
+        // exactly the nullability the catalogue derived for those leaves.
+        let get = |name: &str| -> PyResult<pyo3::Bound<'_, PyAny>> {
+            let missing = || {
                 build_err(format!(
                     "static table '{}' row is missing column '{name}'",
                     spec.table
                 ))
-            })
+            };
+            let mut cur = row.get_item(name.split('.').next().expect("non-empty"))?
+                .ok_or_else(missing)?;
+            for seg in name.split('.').skip(1) {
+                if cur.is_none() {
+                    return Ok(cur);
+                }
+                cur = cur
+                    .cast::<PyDict>()
+                    .map_err(|_| missing())?
+                    .get_item(seg)?
+                    .ok_or_else(missing)?;
+            }
+            Ok(cur)
         };
         let mut keys = Vec::with_capacity(key_tys.len());
         let mut kt = key_tys.iter();
@@ -1291,8 +1340,14 @@ impl DuckDBInferFn {
                     }),
                     // Kept, not dropped — see StaticTable::opaque.
                     schema::RowField::Opaque(aty) => opaque.push((cname, aty)),
-                    schema::RowField::Struct { .. } => {
-                        opaque.push((cname, "struct".to_string()))
+                    // TASK-116: a struct's scalar leaves ARE the lane set a
+                    // static table already stores, so flatten them under
+                    // their FULL ORDERED PATH ('w.mean', 'w.x.y.z.a') the
+                    // way the row path does. The struct NAME stays opaque —
+                    // `s.w` as a whole value, and `s.*`, are still unserved.
+                    schema::RowField::Struct { nullable, fields } => {
+                        flatten_static(&mut cols, &cname, &fields, nullable);
+                        opaque.push((cname, "struct".to_string()));
                     }
                 }
             }
