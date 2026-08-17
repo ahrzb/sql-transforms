@@ -1,0 +1,1 @@
+{"seed": 19788, "sql": "SELECT TRUE AS o0, 0.0e0 AS o1, (1.0e0 = NULL) AS o2 FROM __THIS__ WHERE (rtrim(repeat('a', c0)) NOT LIKE '%')", "kind": "DIVERGE_TRAP", "klass": "ValueError: string builder result exceeds 1", "detail": "confit traps, DuckDB returns rows: ValueError: string builder result exceeds 1 GiB", "tags": ["spine"]}

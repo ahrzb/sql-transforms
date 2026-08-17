@@ -80,6 +80,74 @@ def test_ordinary_query_still_builds():
     assert got == duck(sql, _QUAL_DDL, _QUAL_ROWS)
 
 
+# TASK-119 (2026-08-16). The SAME class, leaking through the one struct the
+# doctrine above was never applied to. `TableFactor::Table { name, alias, .. }`
+# sat at three sites and swallowed every modifier sqlparser can hang off a
+# table name, so `TABLESAMPLE 3 ROWS` was parsed and dropped: DuckDB returned
+# 3 rows, we returned all 20 — again under shape='map', whose
+# one-row-out-per-row-in certificate the dropped clause satisfied.
+#
+# Fixed the way TASK-69 was, not as one field: `plain_table` is now the only
+# `TableFactor::Table` pattern in the frontend, it destructures exhaustively,
+# and all three relation positions call it. There is nothing left to forget.
+#
+# The audit AC #2 asked for (every remaining `..` in a sqlparser destructure)
+# turned up exactly one more pair of real modifiers — CAST's `array` and
+# `format`, both refused below. The rest drop formatting-only fields
+# (`Case`'s attached tokens, `Substring`'s `special`/`shorthand`) or sit in
+# arms that already refuse the whole node.
+
+_SAMPLE_ROW = pa.schema([pa.field("a", pa.int64(), nullable=False)])
+_SAMPLE_STATIC = pa.table(
+    {"c0": pa.array([1], pa.int64()), "v": pa.array([9], pa.int64())}
+)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # the driving relation, a JOINed relation, and a comma-joined one:
+        # three separate destructure sites, one shared refusal
+        "SELECT a FROM __THIS__ TABLESAMPLE 3 ROWS",
+        "SELECT s.v AS o FROM __THIS__ JOIN s TABLESAMPLE 1 ROWS ON a = s.c0",
+        "SELECT s.v AS o FROM __THIS__, s TABLESAMPLE 1 ROWS WHERE a = s.c0",
+    ],
+)
+def test_tablesample_is_refused_at_every_relation_position(sql):
+    with pytest.raises(ValueError, match="TABLESAMPLE"):
+        DuckDBInferFn(
+            sql,
+            row_tables={"__THIS__": _SAMPLE_ROW},
+            static_tables={"s": _SAMPLE_STATIC},
+        )
+
+
+@pytest.mark.parametrize(
+    ("sql", "match"),
+    [
+        ("SELECT a FROM __THIS__ WITH ORDINALITY", "WITH ORDINALITY"),
+        ("SELECT CAST(a AS BIGINT ARRAY) AS o FROM __THIS__", "ARRAY"),
+        ("SELECT CAST(a AS BIGINT FORMAT 'x') AS o FROM __THIS__", "FORMAT"),
+    ],
+)
+def test_the_rest_of_the_audit_refuses_by_name(sql, match):
+    """The other modifiers the two exhaustive destructures now see. Each was
+    silently dropped before; none is DuckDB syntax we serve."""
+    with pytest.raises(ValueError, match=match):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _SAMPLE_ROW}, static_tables={})
+
+
+def test_unmodified_relations_still_build():
+    """Control for the exhaustive destructure: the bare spellings of all three
+    relation positions still bind."""
+    fn = DuckDBInferFn(
+        "SELECT s.v AS o FROM __THIS__ JOIN s ON a = s.c0",
+        row_tables={"__THIS__": _SAMPLE_ROW},
+        static_tables={"s": _SAMPLE_STATIC},
+    )
+    assert fn.infer_rows([{"a": 1}]) == [{"o": 9}]
+
+
 # TASK-81 (fuzz campaign 2026-08-11, ~570 of 963 findings). A call-node
 # modifier that DuckDB refuses -- OVER () on a scalar function, FILTER, IGNORE
 # NULLS -- was parsed and silently DROPPED on the builtin path, so the bare

@@ -2,7 +2,7 @@
 id: TASK-119
 title: >-
   TABLESAMPLE is parsed and silently dropped
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-16 02:00'
 labels:
@@ -45,11 +45,33 @@ file; reproduced by hand before filing. Pinned xfail-strict as
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 TABLESAMPLE refuses by name on every shape, including the default
-- [ ] #2 every remaining `..` in a sqlparser AST destructure in frontend.rs is
+- [x] #1 TABLESAMPLE refuses by name on every shape, including the default
+- [x] #2 every remaining `..` in a sqlparser AST destructure in frontend.rs is
       audited, not just TableFactor::Table - the doctrine is the deliverable,
       not this clause
-- [ ] #3 whatever else that audit turns up is refused or ticketed, with the
+- [x] #3 whatever else that audit turns up is refused or ticketed, with the
       list recorded
-- [ ] #4 the xfail-strict pin flips and its reason line is deleted
+- [x] #4 the xfail-strict pin flips and its reason line is deleted
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed as the CLASS, like TASK-69: `plain_table` in frontend.rs is now the
+only `TableFactor::Table` pattern in the file, it destructures exhaustively
+(name, alias, args, with_hints, version, with_ordinality, partitions,
+json_path, sample, index_hints), and all three relation positions -- driving
+relation, JOIN, comma-join -- call it. A field added to sqlparser breaks the
+build at one site instead of changing answers at three.
+
+The AC #2 audit of every remaining `..` in a sqlparser destructure found one
+more real pair: `SqlExpr::Cast`'s `array` and `format`, both silently dropped.
+Refused by name. Everything else drops formatting-only fields (`Case`'s
+attached tokens, `Substring`'s `special`/`shorthand`) or sits in an arm that
+already refuses the whole node.
+
+Pin moved to known_divergences/test_dropped_clauses.py, next to TASK-69's --
+same class, same file. Measured refusals now cover TABLESAMPLE at all three
+relation positions plus WITH ORDINALITY and the two CAST modifiers, with a
+control that the bare spellings still build.
+<!-- SECTION:NOTES:END -->
