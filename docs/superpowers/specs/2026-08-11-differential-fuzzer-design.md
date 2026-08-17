@@ -112,7 +112,7 @@ Greedy passes over the Case AST, re-running the oracle after each cut, keeping
 any edit that preserves the verdict: drop select items → drop WHERE/joins/CTEs
 → drop statics/UDFs → shrink rows toward one → replace expression nodes with a
 child or a literal. Emits the minimal SQL + data + verdict and a ready-to-paste
-`test_known_divergences.py` pin snippet.
+`known_divergences/` pin snippet (then a single `test_known_divergences.py`).
 
 ## CI smoke (`test_fuzz_smoke.py`)
 

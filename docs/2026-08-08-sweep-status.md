@@ -4,7 +4,8 @@ All nine confirmed findings are resolved. TASK-69 through TASK-78 are `Done`.
 This is the account of what each turned out to be, kept because several of the
 conclusions are not what the tickets predicted.
 
-The pins live in `packages/confit/tests/test_known_divergences.py` (whose
+The pins live in `packages/confit/tests/known_divergences/` (split out of the
+single `test_known_divergences.py` on 2026-08-16, one subject per file; whose
 module docstring carries the sweep's provenance) and
 `packages/sql-transform/sql_transform/_trees_test.py`. As each finding was
 fixed its `xfail` marker came off and the section above it became the account

@@ -489,7 +489,7 @@ while allowing two was an arbitrary place to stop, and the other end is the
 same array — so the full check costs one line and no extra pass.
 
 Every refusal above is exercised by construction in
-`test_known_divergences.py`, not assumed.
+`known_divergences/` (then a single `test_known_divergences.py`), not assumed.
 
 ## Pinned runtime semantics
 

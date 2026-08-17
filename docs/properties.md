@@ -232,6 +232,11 @@ narrowing to referenced columns is a known future widening.)
 DuckDB — with the declared udfs registered, when any — or refuse at build
 with a named error. There is no third mode. (Control C2 measures this.)
 
+*Which DuckDB*: the optimizer-off reading (`PRAGMA disable_optimizer`),
+decided 2026-08-17 — it is the only one of the two that is a function of the
+query. See C2 in kpis.md for why, and known-limitations.md §5 for what it
+costs.
+
 **P19 — The backends cannot drift where they share code.** Everything with
 nontrivial semantics executes through helpers shared by the interpreter
 and cranelift (extern calls included: one `call_extern` enforces the
