@@ -2,7 +2,7 @@
 id: TASK-116
 title: >-
   A struct column serves in a row table and not in a static one
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-15 16:00'
 labels:
@@ -78,13 +78,48 @@ refusing a struct ROW schema). Neither blocks the other.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 a struct static column's leaves bind as lanes, matching DuckDB
+- [x] #1 a struct static column's leaves bind as lanes, matching DuckDB
       value-for-value and type-for-type
-- [ ] #2 a lane is addressed by its full ordered path — `w.x.y.z.a` and
+- [x] #2 a lane is addressed by its full ordered path — `w.x.y.z.a` and
       `w.z.y.x.a` stay distinct, and `w.a` still errors
-- [ ] #3 a TABLE named `w` beats a COLUMN named `w`; qualifying or
+- [x] #3 a TABLE named `w` beats a COLUMN named `w`; qualifying or
       parenthesising forces the struct read
-- [ ] #4 a struct static column that is never referenced still builds
-- [ ] #5 nested structs work to the depth the row path allows
-- [ ] #6 the xfail-strict pin flips and its reason line is deleted
+- [x] #4 a struct static column that is never referenced still builds
+- [x] #5 nested structs work to the depth the row path allows
+- [x] #6 the xfail-strict pin flips and its reason line is deleted
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+As cheap as the ticket predicted, in three places:
+
+* catalogue (duckdb/mod.rs) -- `flatten_static` appends a struct's scalar
+  leaves as ordinary static columns named by their FULL ORDERED PATH
+  ('w.mean', 'w.x.y.z.a'), recursing for nested structs. A field name holding
+  a '.' is skipped, the same rule the row path follows.
+* ingest -- the per-row `get` walks a dotted name through the to_pylist
+  dicts. A NULL struct on the way down makes every lane below it NULL, which
+  is the nullability the catalogue already derived for those leaves.
+* binder -- `qualified_path` joins the remaining parts and looks up that one
+  name. Exact-path matching is the whole point (AC #2): no suffix match, no
+  name-set match, so `w.x.y.z.a` and `w.z.y.x.a` stay distinct and `w.a`
+  finds nothing.
+
+The struct NAME stays in `opaque`, so `s.w` and `s.*` still refuse -- we do
+not serve struct VALUES, exactly as the row path does not. Both that refusal
+and the intermediate-node one ('s.w.x') now say "is a struct - project its
+fields instead" rather than claiming a missing key, which was the lie the
+first cut told.
+
+AC #3 needed one more change than expected. `__THIS__.w.mean` was being read
+as (schema __THIS__).(table w).(column mean) by rule R1, so a static table
+sharing a struct column's name made the qualified spelling -- DuckDB's one
+way to force the struct read -- unreachable. R1's JOIN branch is now guarded
+on parts[0] not being the driving relation. The guard is on that branch only:
+`SELECT t.t.t.t FROM t.t` is a real schema-qualified corpus case and it lands
+in R1's other branch. The corpus replay caught the first, blunter guard.
+
+Everything asserted against the live oracle. TASK-114 (the same shape on the
+infer_arrow boundary) is untouched.
+<!-- SECTION:NOTES:END -->
