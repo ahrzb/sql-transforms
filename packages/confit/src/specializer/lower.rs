@@ -35,6 +35,47 @@ use super::ir::{
 };
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap};
 
+/// Can this kind's NARROW result sit outside its width's range?
+///
+/// The exempt list is an allowlist, and each entry earns it: `Col` and
+/// `StaticCol` are range-checked on the way IN (the ingest boundary mirrors
+/// `narrow_check`); a `Lit` outside its type's range refuses at build;
+/// `NullOf` is a typed default; `JoinHit` is i1; and `Case` only forwards a
+/// value one of its arms already produced and checked. Everything else —
+/// arithmetic, casts, abs, extern returns, anything added later — is checked.
+fn narrow_result_can_escape(k: &SKind) -> bool {
+    !matches!(
+        k,
+        SKind::Col(_)
+            | SKind::StaticCol { .. }
+            | SKind::Lit(_)
+            | SKind::NullOf
+            | SKind::JoinHit(_)
+            | SKind::Case { .. }
+    )
+}
+
+/// DuckDB's spelling of a narrow width, for the trap message.
+fn duck_narrow_name(ty: Ty) -> &'static str {
+    match ty {
+        Ty::I8 => "TINYINT",
+        Ty::I16 => "SMALLINT",
+        Ty::I32 => "INTEGER",
+        _ => "BIGINT",
+    }
+}
+
+/// The arrow spelling of the same width — the vocabulary the schemas and the
+/// boundary refusals use, so a reader greps one word for both.
+fn arrow_narrow_name(ty: Ty) -> &'static str {
+    match ty {
+        Ty::I8 => "int8",
+        Ty::I16 => "int16",
+        Ty::I32 => "int32",
+        _ => "int64",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn lower(
     rel: &Rel,
@@ -521,7 +562,112 @@ impl<'a> FB<'a> {
 
     // ------------------------------------------------------- expressions --
 
+    /// Every expression, plus the NARROW-WIDTH RANGE TRAP its type implies.
+    ///
+    /// I8/I16/I32 erase to the i64 lane, and that erasure is only sound
+    /// because DuckDB's narrow ints are checked-never-wrapping: i64 compute
+    /// is bit-identical to real int32 exactly when the range trap fires
+    /// wherever DuckDB's would. Checking at the OUTPUT boundary is not that.
+    /// `CAST((i + 1) AS BIGINT)` over INT32_MAX served 2147483648, a value
+    /// DuckDB never produces, because the widening cast consumed the i32
+    /// result before any boundary saw it (TASK-118); a comparison, a
+    /// function argument, or a float promotion hid it the same way.
+    ///
+    /// So the check lands on the RESULT, at the point of production. The
+    /// opt-out is an ALLOWLIST rather than a denylist, so an operator added
+    /// later is checked by default and only what provably cannot leave the
+    /// range is exempt.
     fn emit(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
+        let lane = self.emit_kind(e, live)?;
+        match e.ty.int_range() {
+            Some((lo, hi)) if narrow_result_can_escape(&e.kind) => {
+                self.narrow_trap(lane, lo, hi, e.ty, live)
+            }
+            _ => Ok(lane),
+        }
+    }
+
+    /// Trap unless the lane's payload fits `[lo, hi]`. A NULL row never
+    /// traps: its payload is a masked default, and DuckDB has no value there
+    /// to overflow either.
+    fn narrow_trap(
+        &mut self,
+        l: Lane,
+        lo: i64,
+        hi: i64,
+        ty: Ty,
+        live: &mut Live,
+    ) -> Result<Lane, PrepareError> {
+        let lo_v = self.const_lit(Lit::I64(lo));
+        let hi_v = self.const_lit(Lit::I64(hi));
+        let ge = self.fresh();
+        self.inst(Inst::Cmp {
+            pred: CmpPred::Ge,
+            ty: Ty::I64,
+            dst: ge,
+            a: l.val,
+            b: lo_v,
+        });
+        let le = self.fresh();
+        self.inst(Inst::Cmp {
+            pred: CmpPred::Le,
+            ty: Ty::I64,
+            dst: le,
+            a: l.val,
+            b: hi_v,
+        });
+        let in_range = self.bin(BinOp::And, ge, le);
+        let out = self.not(in_range);
+        let bad = match l.flag {
+            Some(f) => self.bin(BinOp::And, f, out),
+            None => out,
+        };
+        let (trap_b, _) = self.create_block(&[]);
+        let live_width = Self::live_types(live).len();
+        let mut cont_tys = Self::live_types(live);
+        let flag_in_shape = l.flag.is_some();
+        if flag_in_shape {
+            cont_tys.push(Ty::I1);
+        }
+        cont_tys.push(ty.lane());
+        let (cont_b, cont_p) = self.create_block(&cont_tys);
+        let mut args = Self::live_args(live);
+        if let Some(f) = l.flag {
+            args.push(f);
+        }
+        args.push(l.val);
+        self.term(Term::Brif {
+            cond: bad,
+            then_to: BlockId(trap_b as u32),
+            then_args: vec![],
+            else_to: BlockId(cont_b as u32),
+            else_args: args,
+        });
+        self.switch(trap_b);
+        self.term(Term::Trap {
+            msg: format!(
+                "Out of Range Error: value out of range for {} (arrow {})",
+                duck_narrow_name(ty),
+                arrow_narrow_name(ty)
+            ),
+        });
+        self.switch(cont_b);
+        self.enter_block(live, &cont_p[..live_width]);
+        let tail = &cont_p[live_width..];
+        Ok(if flag_in_shape {
+            Lane {
+                flag: Some(tail[0]),
+                val: tail[1],
+            }
+        } else {
+            Lane {
+                flag: None,
+                val: tail[0],
+            }
+        })
+    }
+
+    fn emit_kind(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
         match &e.kind {
             SKind::Col(idx) => {
                 if let Some(lane) = self.blocks[self.cur].cache.get(idx) {

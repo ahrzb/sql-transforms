@@ -26,6 +26,16 @@ DuckDB; (e) DuckDB's optimizer pushes fitting constants through TRY_CAST
 eval_i32_literal/eval_i128_literal AST evaluators (subsumed) and the
 narrow-emit interim refusals, and re-run a 20k campaign expecting the
 DIVERGE_TRAP classes to close.
+
+**2026-08-17 (TASK-118): (a) has LANDED.** INT32/16/8 overflow now traps at
+the point of production, on every consumer, with DuckDB's comparison
+simplification reproduced so the trap stays invisible exactly where DuckDB's
+is. What remains here is (b) DOUBLE->narrow CAST truncation, (c) TRY_CAST
+checking the RAW double, (d) TRY_CAST(VARCHAR AS int) accepting
+fractional/exponent strings, and (e) the constant-through-TRY_CAST push. The
+narrow-emit interim refusals are deliberately NOT deleted yet -- with the
+production-site trap in front of them they now only fire where nothing
+produced the value, so they are a cheap backstop rather than the mechanism.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

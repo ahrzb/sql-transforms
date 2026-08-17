@@ -1,19 +1,24 @@
 """Divergences we intend to CLOSE — one xfail-strict pin each, ticket named.
 
-The split from `test_known_divergences.py` is by INTENT, not by severity:
+**This file is currently EMPTY, and that is the finding, not an oversight.**
+Every pin it held (TASK-115, 116, 117, 118, 119) was closed on 2026-08-17;
+each fix moved its pin to the suite that owns the subject, where it now
+PASSES against the live oracle. Adding one here is how a new divergence gets
+recorded, and emptying it again is what closing one looks like.
 
-    test_known_divergences.py   behaviour we have decided to KEEP. Every
-                                entry states the ground for keeping it, and
-                                its tests PASS - they are regression pins on
-                                a settled answer.
+The split from `known_divergences/` is by INTENT, not by severity:
 
-    this file                   behaviour we have decided to CHANGE. Every
-                                entry is xfail(strict=True) and names the
-                                task that closes it. When the fix lands the
-                                pin flips loudly, and the entry is deleted
-                                rather than edited.
+    known_divergences/   behaviour we have decided to KEEP. Every entry
+                         states the ground for keeping it, and its tests
+                         PASS — they are regression pins on a settled
+                         answer.
 
-Why the separation is worth the file: mixing the two makes "is this on
+    this file            behaviour we have decided to CHANGE. Every entry is
+                         xfail(strict=True) and names the task that closes
+                         it. When the fix lands the pin flips loudly, and
+                         the entry is deleted rather than edited.
+
+Why the separation is worth a second file: mixing the two makes "is this on
 purpose?" unanswerable at a glance, and a reader who assumes the wrong one
 either implements something we chose not to have, or leaves a real bug
 sitting under a paragraph explaining why it is fine. The census on
@@ -57,31 +62,3 @@ def test_a_null_folded_predicate_elides_its_subject_too():
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
     assert [tuple(r.values()) for r in fn.infer_rows(rows)] == want
-
-
-# ---------------------------------------------------------------------------
-# TASK-118: an INT32 overflow consumed by a WIDENING CAST serves a wrong value.
-# TASK-84's block names `CAST(k AS INTEGER) * 2` as its residual; that case is
-# caught now. This one is not, and it is worse than a missed trap - we return a
-# number DuckDB never produces, with no refusal anywhere.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-118: (i + 1) over INT32_MAX overflows INT32 on DuckDB and "
-    "traps. Widening the result to BIGINT hides it here: we compute in the i64 "
-    "lane and serve 2147483648, a value DuckDB never returns.",
-)
-def test_int32_overflow_under_a_widening_cast_does_not_serve_a_wrong_value():
-    row = pa.schema([pa.field("i", pa.int32(), nullable=False)])
-    rows = [{"i": 2147483647}]
-    sql = "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (i INTEGER)")
-    con.execute("INSERT INTO __THIS__ VALUES (2147483647)")
-    with pytest.raises(duckdb.Error):
-        con.execute(sql).fetchall()  # oracle traps; if this stops, remeasure
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
-    with pytest.raises(ValueError, match="int32|INT32|[Oo]verflow"):
-        fn.infer_rows(rows)
