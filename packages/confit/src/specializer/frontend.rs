@@ -708,6 +708,7 @@ fn bind_from<'a>(
         sites: std::cell::Cell::new(0),
         extern_sites: std::cell::RefCell::new(Vec::new()),
         in_filter: std::cell::Cell::new(false),
+        in_inlist: std::cell::Cell::new(false),
         in_guarded: std::cell::Cell::new(0),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
@@ -1454,6 +1455,9 @@ struct Binder<'a> {
     /// a projection — measured both ways (TASK-87 face C), so the fold is
     /// context-gated on this flag.
     in_filter: std::cell::Cell<bool>,
+    /// Inside an IN list's desugared `=` chain — see the TASK-118 note in
+    /// `cmp`.
+    in_inlist: std::cell::Cell<bool>,
     /// Depth of CASE/COALESCE arms being bound. DuckDB's plan-time constant
     /// evaluation SKIPS guarded arms (the coalesce lazy-bind pin: an
     /// untaken `CAST('nope' AS BIGINT)` must not fire), so the TASK-87
@@ -2594,7 +2598,13 @@ impl Binder<'_> {
                     });
                 }
                 let chain = chain.ok_or_else(|| unsup("empty IN list"))?;
-                self.bind(&ast_not_if(*negated, chain))
+                // TASK-118: the `=` chain is OUR spelling of IN, not DuckDB's
+                // — its optimizer does not shift constants through IN, so
+                // neither do we while this chain binds.
+                let outer = self.in_inlist.replace(true);
+                let r = self.bind(&ast_not_if(*negated, chain));
+                self.in_inlist.set(outer);
+                r
             }
             SqlExpr::Like {
                 negated,
@@ -4310,6 +4320,33 @@ impl Binder<'_> {
         };
         if a.ty == Ty::I1 {
             return Err(unsup("comparison on BOOLEAN"));
+        }
+        // TASK-118. DuckDB's optimizer simplifies `x ± c <cmp> k` (both
+        // constants) to `x <cmp> k∓c`, so the arithmetic never runs and
+        // never overflows: over INT32_MAX, `(i + 1) > 5` SERVES true there
+        // while `(i + 1)` alone traps. Reproducing the rewrite is how the
+        // overflow trap stays invisible in exactly the places DuckDB's is.
+        //
+        // Measured 2026-08-17 on DuckDB 1.5.5, i = INT32_MAX, k = INT64_MAX:
+        //
+        //   (i + 1) > 5          true     all six predicates rewrite
+        //   (i - 1) > 5          true     and both operand orders
+        //   (1 - i) > 5          false    reversed subject flips the pred
+        //   (k + 1) > 5          true     BIGINT too, not just narrow widths
+        //   (i + 2) > -2147483648  TRAP   shifted constant leaves the range
+        //   (i * 2) > 5            TRAP   multiplication is not rewritten
+        //   (i + j) > 5            TRAP   nor a non-constant operand
+        //
+        // The rewrite is EXACT, not an approximation: `x + c cmp k` and
+        // `x cmp k-c` are the same predicate over the integers, and the
+        // representability guard is what keeps the shifted constant honest.
+        // ... but NOT through IN, which desugars to the same `=` chain here
+        // and is left alone there: `(i + 1) IN (5, 6)` traps on DuckDB while
+        // `(i + 1) = 5` and `(i + 1) BETWEEN 5 AND 9` both serve.
+        if !self.in_inlist.get() {
+            if let Some((pred, x, k)) = shift_cmp_constant(pred, &a, &b) {
+                return self.cmp(pred, x, k);
+            }
         }
         // TASK-85, same fold as `arith`: a comparison against a literal NULL
         // is NULL on DuckDB's optimizer BEFORE the sides evaluate, so a
@@ -6802,6 +6839,87 @@ fn eval_i128_literal(e: &SqlExpr) -> Option<i128> {
         _ => None,
     }
 }
+
+/// The same comparison with the operands swapped (TASK-118's rewrite has to
+/// flip when it moves the subject across the operator).
+fn flip_cmp(p: CmpPred) -> CmpPred {
+    match p {
+        CmpPred::Lt => CmpPred::Gt,
+        CmpPred::Gt => CmpPred::Lt,
+        CmpPred::Le => CmpPred::Ge,
+        CmpPred::Ge => CmpPred::Le,
+        p => p,
+    }
+}
+
+fn int_lit(e: &SExpr) -> Option<i64> {
+    match &e.kind {
+        SKind::Lit(Lit::I64(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+/// One step of DuckDB's comparison simplification: `x ± c <cmp> k` becomes
+/// `x <cmp'> k∓c` when both `c` and `k` are integer constants and the
+/// shifted constant is representable in the subject's own width. `None`
+/// means DuckDB would not have rewritten it either, so the arithmetic runs
+/// and may trap on both engines.
+///
+/// The caller re-enters `cmp`, so a chain (`(i + 1 - 1) > 5`) peels one term
+/// per pass, which is what DuckDB does with it.
+fn shift_cmp_constant(pred: CmpPred, a: &SExpr, b: &SExpr) -> Option<(CmpPred, SExpr, SExpr)> {
+    // Normalise to `subject <pred> k`.
+    let (pred, subject, k) = match (int_lit(a), int_lit(b)) {
+        (None, Some(k)) => (pred, a, k),
+        (Some(k), None) => (flip_cmp(pred), b, k),
+        _ => return None,
+    };
+    let (lo, hi) = match subject.ty {
+        Ty::I64 => (i64::MIN, i64::MAX),
+        t => t.int_range()?,
+    };
+    // `k` must fit the SUBJECT's width, or DuckDB compares at the wider type
+    // instead and leaves the arithmetic alone: `(i + 1) = 2147483648` traps
+    // there because the literal is BIGINT, while `(i + 1) > CAST(5 AS
+    // BIGINT)` serves — 5 fits INTEGER, so its value-fits promotion keeps the
+    // comparison narrow. Testing the VALUE, not the spelling, gets both.
+    if !(lo..=hi).contains(&k) {
+        return None;
+    }
+    let SKind::Arith { op, a: x, b: y } = &subject.kind else {
+        return None;
+    };
+    let (pred, inner, shifted) = match (op, int_lit(x), int_lit(y)) {
+        // x + c  cmp k   ->   x cmp k - c        (either operand order)
+        (ArithOp::Add, None, Some(c)) => (pred, x, k.checked_sub(c)?),
+        (ArithOp::Add, Some(c), None) => (pred, y, k.checked_sub(c)?),
+        // x - c  cmp k   ->   x cmp k + c
+        (ArithOp::Sub, None, Some(c)) => (pred, x, k.checked_add(c)?),
+        // c - x  cmp k   ->   x cmp' c - k       (the subject changes sides)
+        (ArithOp::Sub, Some(c), None) => (flip_cmp(pred), y, c.checked_sub(k)?),
+        _ => return None,
+    };
+    if !(lo..=hi).contains(&shifted) {
+        return None;
+    }
+    Some((
+        pred,
+        (**inner).clone(),
+        SExpr {
+            kind: SKind::Lit(Lit::I64(shifted)),
+            ty: subject.ty,
+            nullable: false,
+        },
+    ))
+}
+
+/// Does this bound predicate carry a statically-NULL TOP-LEVEL conjunct?
+///
+/// Top-level is the whole rule: `A AND NULL` selects nothing, but
+/// `(A AND NULL) OR B` selects on B, so the recursion stops at anything that
+/// is not an AND. `NullOf` is the only spelling a constant NULL reaches here
+/// under — `cmp`/`arith` already fold a strict operator with a NULL operand
+/// to it (TASK-85), so `x > (1.0 - NULL)` counts as well as `x > NULL`.
 
 /// A literal-shaped numeric bound: a Number under parens/unary sign only —
 /// binding one consumes no call site, so the Between dead-range probe may

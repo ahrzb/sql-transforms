@@ -1,8 +1,8 @@
 """Model-table structure refusals (TASK-76).
 
-Split out of test_known_divergences.py 2026-08-16; see that file's docstring
-for what belongs here (kept behaviour + its ground) versus in
-test_open_divergences.py (behaviour we intend to change).
+Split out of test_known_divergences.py 2026-08-16; see README.md for what
+belongs here (kept behaviour + its ground) versus in
+../test_open_divergences.py (behaviour we intend to change).
 """
 
 from __future__ import annotations
