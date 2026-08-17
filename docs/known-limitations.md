@@ -17,6 +17,27 @@ forces this document to change with it.
 There is no third mode. Every limitation here is a *measured decision*
 recorded in a pins spec (`docs/superpowers/specs/`), not an accident.
 
+**Which DuckDB** (decided 2026-08-17, and it has a user-visible cost — see
+§5). "Identical to DuckDB" means DuckDB with its query optimizer off:
+
+```sql
+PRAGMA disable_optimizer;
+```
+
+That is not a smaller DuckDB. The binder is untouched, so types, constant
+folding and bind-time errors are the same; execution-level laziness — an
+untaken `CASE` arm, `AND`/`OR` short-circuit in a filter — is the same. What
+it removes is the 33 plan-rewrite passes.
+
+The reason is that the optimizer-on reading is not a function of the query.
+`statistics_propagation` decides from a column's stored null statistic, so
+DuckDB answers the *same query over the same rows* differently depending on
+the table's insert history — measured: a table built as `[-128, NULL]` and
+then having the NULL deleted answers differently from one built as `[-128]`,
+with identical contents. Confit compiles once against a *schema* and serves
+many batches; it never sees a table, let alone its history. A target you
+cannot compute from the query is not a target.
+
 ---
 
 ## 1. The specialization bargain (inherent to the engine model)
@@ -161,6 +182,33 @@ These are served, but with a consciously chosen surface — know them:
   selects a different kernel depending on *sibling rows*). A row-at-a-time
   engine cannot reproduce statistics-dependent semantics even in
   principle; the engine is NUL-transparent (the ASCII-kernel behavior).
+- **A trapping subexpression DuckDB's OPTIMIZER deletes, we still
+  evaluate** — the standing cost of running the oracle with the optimizer
+  off (see "Which DuckDB" above). This is the one place where a query you
+  can run in your own DuckDB session may raise here:
+
+  ```sql
+  SELECT (i + 1) > 5 FROM t              -- i INTEGER = 2147483647
+  -- your DuckDB (optimizer on): true   -- it rewrites this to i > 4
+  -- confit:                     Out of Range Error, overflow in INT32
+  ```
+
+  The shape is always the same: a subexpression that would trap, in a
+  position where a plan rewrite removes it before it ever runs. The passes
+  measured doing this are `expression_rewriter` (constant shifting, folding
+  a trapping constant, dead-range elimination) and
+  `statistics_propagation` (proving `IS NOT NULL` from a column's null
+  statistic, and pruning a filter from a value range). A 4000-seed
+  differential campaign puts it at 8 seeds in 28 findings; all eight are
+  labelled `DIVERGE_OPT` by the campaign and enumerated in
+  `docs/2026-08-17-fuzz-triage.md`.
+
+  The trade is deliberate: matching the optimizer means matching an
+  undocumented moving target that is not a function of the query, and in
+  the other direction it would mean *serving* where your DuckDB raises.
+  This way the divergence is always a loud trap or refusal, never a
+  different served value. If it bites you, `PRAGMA disable_optimizer` in
+  your DuckDB session reproduces exactly what confit does.
 - **`%`-by-zero NaN bit pattern is platform-libm** — pinned as
   engine==oracle bit agreement per platform, not a constant.
 - **Schema qualifiers are registry-noise** (TASK-55): the engine's table
@@ -204,3 +252,10 @@ Three mechanisms, all in the normal test gate:
    (seed/size overridable for deep runs) — new divergences fail with the
    reproducing seed and SQL, and their fix lands as a reject-list entry
    plus a row in this document.
+4. **The campaign fuzzer reads DuckDB TWICE** (`packages/confit/fuzz/`),
+   once with the optimizer off and once on, so a finding says which kind it
+   is instead of needing a human to reason about it: a disagreement with the
+   optimizer-off reading is a bug, a disagreement only with the optimizer-on
+   one is the §5 cost above, and an agreement with optimizer-on *against*
+   the oracle means the engine is reproducing a pass it should not — that
+   last category is reported as a bug and is currently empty.
