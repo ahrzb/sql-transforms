@@ -35,6 +35,19 @@ use super::ir::{
 };
 use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap};
 
+/// The top-level AND spine of a filter predicate, left to right. Stops at
+/// anything that is not an AND: the conjuncts of `(a AND b) OR c` are not
+/// top-level, and skipping one of them would change the answer.
+fn flatten_and<'e>(e: &'e SExpr, out: &mut Vec<&'e SExpr>) {
+    match &e.kind {
+        SKind::And { a, b } => {
+            flatten_and(a, out);
+            flatten_and(b, out);
+        }
+        _ => out.push(e),
+    }
+}
+
 /// Can this kind's NARROW result sit outside its width's range?
 ///
 /// The exempt list is an allowlist, and each entry earns it: `Col` and
@@ -194,21 +207,48 @@ pub fn lower(
     }
 
     if let Some(pred) = filter_pred {
-        let mut live = Vec::new();
-        let pl = fb.emit(pred, &mut live)?;
-        let cond = fb.truthy(pl);
-        let (keep, _) = fb.create_block(&[]);
+        // The top-level AND spine is lowered ONE CONJUNCT AT A TIME, dropping
+        // the row the moment a conjunct is not TRUE — so a later conjunct
+        // never evaluates, and never traps.
+        //
+        // This is not an optimisation, it is the oracle's semantics, and the
+        // NULL case is why it has to live here rather than in `kleene`. A
+        // filter asks `pred IS TRUE`, and `NULL AND anything` is never TRUE,
+        // so the right operand cannot change the outcome. `kleene` must NOT
+        // short-circuit on a NULL left operand, because as a VALUE
+        // `NULL AND FALSE` is FALSE and needs the right side — which is why
+        // `kleene_shortcut` skips only when the left DECIDES. Measured
+        // 2026-08-17 against the oracle, `s = 'abc'` uncastable and `b` NULL:
+        //
+        //   WHERE NULL AND (CAST(s AS DOUBLE) > 1)  -> []      no trap
+        //   WHERE b    AND (CAST(s AS DOUBLE) > 1)  -> 1 row   per ROW, not a
+        //                                              constant fold
+        //   WHERE (CAST(s AS DOUBLE) > 1) AND b     -> TRAP    order matters
+        //   SELECT (NULL AND (CAST(s AS DOUBLE) > 1))  -> TRAP  projection
+        //                                              evaluates, so no
+        //                                              spine treatment there
+        let mut conjuncts = Vec::new();
+        flatten_and(pred, &mut conjuncts);
         let (drop, _) = fb.create_block(&[]);
-        fb.term(Term::Brif {
-            cond,
-            then_to: BlockId(keep as u32),
-            then_args: vec![],
-            else_to: BlockId(drop as u32),
-            else_args: vec![],
-        });
+        let mut keep = None;
+        for c in conjuncts {
+            let mut live = Vec::new();
+            let pl = fb.emit(c, &mut live)?;
+            let cond = fb.truthy(pl);
+            let (k, _) = fb.create_block(&[]);
+            fb.term(Term::Brif {
+                cond,
+                then_to: BlockId(k as u32),
+                then_args: vec![],
+                else_to: BlockId(drop as u32),
+                else_args: vec![],
+            });
+            fb.switch(k);
+            keep = Some(k);
+        }
         fb.switch(drop);
         fb.term(Term::Skip);
-        fb.switch(keep);
+        fb.switch(keep.expect("a predicate has at least one conjunct"));
     }
 
     let mut live = Vec::new();
