@@ -341,3 +341,89 @@ def test_duckdbs_trap_elision_is_syntactic_not_semantic():
     assert duck("SELECT 1 FROM t WHERE FALSE AND CAST(s AS DOUBLE) > 1")[0] == "rows"
     assert duck("SELECT 1 FROM t WHERE keep AND CAST(s AS DOUBLE) > 1")[0] == "rows"
     assert duck("SELECT 1 FROM t WHERE CAST(s AS DOUBLE) > 1 AND keep")[0] == "trap"
+
+
+# ===========================================================================
+# AND ONE DISCRIMINANT WEAKER THAN SYNTAX: THE DATA ITSELF
+#
+# The proof above shows DuckDB's trap-or-serve decision is not a function of
+# the query's MEANING. This one is sharper and lands on the same class from
+# below: for `<arithmetic> IS [NOT] NULL` it is not a function of the QUERY at
+# all. Measured 2026-08-17 on DuckDB 1.5.5, one table, one query, `c0` a
+# nullable TINYINT:
+#
+#   rows = [-128]            -> [True]        no NULL in the column
+#   rows = [-128, 7]         -> [True, True]  still no NULL
+#   rows = [-128, NULL]      -> TRAP          Overflow in multiplication
+#   rows = [NULL, -128]      -> TRAP          order does not matter
+#   c0 declared NOT NULL     -> [True, True]  the declaration is enough
+#
+# `c0 * 32` overflows TINYINT on the -128 row in every one of those. Same
+# query, same schema, same overflowing row — the answer turns on whether some
+# OTHER row holds a NULL. DuckDB's statistics prove "this column has no
+# NULLs", which proves the predicate TRUE, which deletes the expression; a
+# single NULL anywhere in the column withdraws the proof and the arithmetic
+# runs.
+#
+# WHY THIS ONE IS STRUCTURAL AND NOT MERELY UNDOCUMENTED. confit compiles ONCE
+# against a schema and serves many batches. There is no "the table" to compute
+# statistics over at build time, so the compiled artifact would have to decide
+# per batch — and then an input row's answer would depend on its NEIGHBOURS in
+# the batch, with the identical row trapping or serving according to who it
+# was sent with. For a serving engine that is worse than the divergence: it
+# breaks the one property callers actually rely on, that a row's answer is a
+# function of the row.
+#
+# SO WE ELIDE, ALWAYS. `IS [NOT] NULL` over arithmetic reads the operands'
+# nullness and never evaluates. That agrees with DuckDB on every batch DuckDB
+# does not trap on, and answers where it errors — the direction the contract
+# can live with, since trapping where DuckDB serves is the one it cannot.
+_IS_NN = "SELECT (c0 * 32) IS NOT NULL AS o FROM t"
+
+
+def test_duckdbs_is_null_elision_is_a_function_of_the_data_not_the_query():
+    """The premises above, executable. If DuckDB ever makes these agree, the
+    ground for eliding unconditionally has gone and must be re-derived."""
+
+    def duck(values, decl="TINYINT"):
+        con = duckdb.connect()
+        con.execute(f"CREATE TABLE t (c0 {decl})")
+        for v in values:
+            con.execute("INSERT INTO t VALUES (?)", [v])
+        try:
+            return (
+                "rows",
+                con.execute("SELECT (c0 * 32) IS NOT NULL AS o FROM t").fetchall(),
+            )
+        except duckdb.Error:
+            return ("trap", None)
+
+    assert duck([-128]) == ("rows", [(True,)])
+    assert duck([-128, 7]) == ("rows", [(True,), (True,)])
+    assert duck([-128, None]) == ("trap", None)
+    assert duck([None, -128]) == ("trap", None)
+    # the DECLARATION is enough on its own — which is the part a compile-once
+    # engine could have matched, and the nullable case is the part it cannot
+    assert duck([-128, 7], decl="TINYINT NOT NULL") == ("rows", [(True,), (True,)])
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_we_elide_on_every_batch_including_the_one_duckdb_traps_on(
+    backend, monkeypatch
+):
+    """Our side of the divergence, stated rather than implied: the same
+    compiled function answers for both batches, and answers the same way."""
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    schema = pa.schema([pa.field("c0", pa.int8())])
+    fn = DuckDBInferFn(
+        "SELECT (c0 * 32) IS NOT NULL AS o FROM __THIS__",
+        row_tables={"__THIS__": schema},
+        static_tables={},
+    )
+    # the batch DuckDB serves
+    assert fn.infer_rows([{"c0": -128}, {"c0": 7}]) == [{"o": True}, {"o": True}]
+    # and the batch it traps on -- same function, same answer for the same row
+    assert fn.infer_rows([{"c0": -128}, {"c0": None}]) == [{"o": True}, {"o": False}]

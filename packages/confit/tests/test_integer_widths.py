@@ -875,3 +875,81 @@ def test_a_null_narrow_value_does_not_trap():
     sql = "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__"
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
     assert fn.infer_rows([{"i": None}]) == [{"o": None}]
+
+
+# The trap TASK-118 added had to be made invisible in one more place, found
+# by a 4000-seed differential campaign the same day (seeds 1564, 2174):
+# `<arithmetic> IS [NOT] NULL` reads only the OPERANDS' nullness on DuckDB,
+# so the arithmetic never runs and never overflows. Rewriting it as the
+# disjunction of the leaves' nullness is exact for a strict operator — "the
+# result is NULL" and "some operand is NULL" are the same statement — and it
+# also closes a divergence that predates the trap, since DuckDB elides an
+# i64 overflow under IS NULL too.
+#
+# The rows here are deliberately NULL-FREE. DuckDB's elision is driven by the
+# column's null STATISTICS, so a batch containing a NULL makes it evaluate and
+# trap instead; that split is data-dependent, unrepresentable in a
+# compile-once artifact, and pinned as a kept divergence in
+# known_divergences/test_trap_elision.py.
+_NULLNESS_ROW = pa.schema(
+    [
+        pa.field("c0", pa.int8()),  # declared nullable, but no NULLs below
+        pa.field("h", pa.int16(), nullable=False),
+        pa.field("b", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
+_NULLNESS_ROWS = [
+    {"c0": -128, "h": -32768, "b": 9223372036854775807, "s": "abc"},
+    {"c0": 7, "h": 1, "b": 1, "s": "2.5"},
+]
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # elided: the operand overflows its width and is never evaluated
+        "SELECT (c0 * 32) IS NOT NULL AS o FROM __THIS__",
+        "SELECT (c0 * 32) IS NULL AS o FROM __THIS__",
+        "SELECT ((c0 * 32) + 1) IS NOT NULL AS o FROM __THIS__",  # nested
+        "SELECT (- h) IS NOT NULL AS o FROM __THIS__",  # int16 MIN negation
+        "SELECT abs(c0 * 32) IS NOT NULL AS o FROM __THIS__",
+        "SELECT (c0 * 1.5e0) IS NOT NULL AS o FROM __THIS__",  # through promotion
+        "SELECT (b + 1) IS NOT NULL AS o FROM __THIS__",  # BIGINT, predates TASK-118
+        "SELECT (c0 / 0) IS NOT NULL AS o FROM __THIS__",  # not even a zero divisor
+        "SELECT 1 AS o FROM __THIS__ WHERE ((c0 * 32) IS NOT NULL)",
+        # NOT elided — outside the measured vocabulary, so it evaluates and
+        # traps on both engines
+        "SELECT nullif(c0 * 32, 3) IS NOT NULL AS o FROM __THIS__",
+        "SELECT CAST(s AS DOUBLE) IS NOT NULL AS o FROM __THIS__",
+        # and the plain forms still answer about nullness, elision or not
+        "SELECT c0 IS NULL AS o FROM __THIS__",
+        "SELECT c0 IS NOT NULL AS o FROM __THIS__",
+        "SELECT NULL IS NULL AS o FROM __THIS__",
+        "SELECT s IS NOT NULL AS o FROM __THIS__",
+    ],
+)
+def test_is_null_over_arithmetic_reads_the_operands_not_the_result(
+    sql, backend, monkeypatch
+):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (c0 TINYINT, h SMALLINT, b BIGINT, s VARCHAR)")
+    for r in _NULLNESS_ROWS:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?, ?, ?)", list(r.values()))
+    try:
+        want = ("rows", con.execute(sql).to_arrow_table().to_pylist())
+    except duckdb.Error:
+        want = ("trap", None)
+    try:
+        fn = DuckDBInferFn(
+            sql, row_tables={"__THIS__": _NULLNESS_ROW}, static_tables={}
+        )
+        got = ("rows", fn.infer_rows(_NULLNESS_ROWS))
+    except Exception:  # noqa: BLE001 — refusal and trap are both "no answer"
+        got = ("trap", None)
+    assert got == want, sql

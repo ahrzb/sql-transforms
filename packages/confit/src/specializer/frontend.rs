@@ -3873,6 +3873,35 @@ impl Binder<'_> {
             Some(e) => e,
             None => null_of(Ty::I64),
         };
+        // TASK-118 follow-up (fuzz seeds 1564, 2174). `<arithmetic> IS [NOT]
+        // NULL` reads only the OPERANDS' nullness on DuckDB — the arithmetic
+        // itself never runs, so it never traps:
+        //
+        //   (c0 * 32) IS NOT NULL      true   c0 = TINYINT_MIN, no overflow
+        //   ((c0 * 32) + 1) IS NOT NULL  true nested, still elided
+        //   (- c0) IS NOT NULL         true   int16 MIN, no negation trap
+        //   (b + 1) IS NOT NULL        true   BIGINT too
+        //   (c0 / 0) IS NOT NULL       true   not even division by zero
+        //   nullif(c0 * 32, 3) IS NOT NULL   TRAP — nullif needs the VALUE
+        //   CAST(s AS DOUBLE) IS NOT NULL    TRAP — a cast is not elided
+        //
+        // Rewriting it as the disjunction of the leaves' nullness is exact,
+        // and it is what keeps the narrow range trap invisible in the same
+        // places DuckDB's overflow trap is. The vocabulary is deliberately
+        // the measured one: anything outside it (CAST above all) keeps its
+        // evaluation, because DuckDB keeps its.
+        if let Some(n) = arith_nullness(&inner) {
+            let n = fold(n);
+            return Ok(if negated {
+                SExpr {
+                    kind: SKind::Not(Box::new(n)),
+                    ty: Ty::I1,
+                    nullable: false,
+                }
+            } else {
+                n
+            });
+        }
         Ok(SExpr {
             kind: SKind::IsNull {
                 negated,
@@ -6865,6 +6894,44 @@ fn eval_i128_literal(e: &SqlExpr) -> Option<i128> {
                 _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+/// "Is this arithmetic expression NULL?", answered from its LEAVES.
+///
+/// `None` means the subtree leaves the measured vocabulary — arithmetic,
+/// ABS, the frontend's int-to-float promotions, and the leaves themselves —
+/// and the caller keeps the ordinary `IsNull` node, which evaluates. That is
+/// what DuckDB does outside the same vocabulary (a CAST is the case that
+/// matters: `CAST(s AS DOUBLE) IS NOT NULL` traps there).
+///
+/// Only reached for a strict operator, where "the result is NULL" and "some
+/// operand is NULL" are the same statement — so this is a re-association,
+/// not an approximation, and the answer is identical with the traps removed.
+fn arith_nullness(e: &SExpr) -> Option<SExpr> {
+    let leaf = |x: &SExpr| SExpr {
+        kind: SKind::IsNull {
+            negated: false,
+            inner: Box::new(x.clone()),
+        },
+        ty: Ty::I1,
+        nullable: false,
+    };
+    match &e.kind {
+        SKind::Arith { a, b, .. } => {
+            let (x, y) = (arith_nullness(a)?, arith_nullness(b)?);
+            Some(SExpr {
+                kind: SKind::Or {
+                    a: Box::new(x),
+                    b: Box::new(y),
+                },
+                ty: Ty::I1,
+                nullable: false,
+            })
+        }
+        SKind::Abs(a) | SKind::IntToFloat(a) => arith_nullness(a),
+        SKind::Col(_) | SKind::StaticCol { .. } | SKind::Lit(_) | SKind::NullOf => Some(leaf(e)),
         _ => None,
     }
 }
