@@ -732,3 +732,146 @@ def test_large_string_static_still_serves():
     assert _static_fn(pa.large_string(), "x", "upper(s.v)").infer_rows([{"k": 5}]) == [
         {"o": "X"}
     ]
+
+
+# ===========================================================================
+# TASK-118 (m-8 phase 3, the trap half of the width feature)
+#
+# The erase strategy — narrow widths compute in the i64 lane — is sound
+# exactly while the range trap fires wherever DuckDB's does. It was only
+# checked at the OUTPUT boundary, so a narrow result that left through a
+# WIDER type was never checked at all: `CAST((i + 1) AS BIGINT)` over
+# INT32_MAX served 2147483648, a value DuckDB never produces, with no
+# refusal anywhere. A comparison, a function argument and a float promotion
+# hid it the same way.
+#
+# The check now lands on the RESULT, at the point of production, which
+# immediately raises the harder half: DuckDB's optimizer SIMPLIFIES
+# `x ± c <cmp> k` to `x <cmp> k∓c`, so the addition never runs there and
+# `(i + 1) > 5` serves where `(i + 1)` alone traps. That rewrite is
+# reproduced in the frontend — it is exact arithmetic, not an approximation,
+# and its guard (the shifted constant must stay in the subject's width) is
+# what DuckDB's is.
+#
+# Every row below is `ours == DuckDB`, trap included, so there is no
+# hardcoded expectation to go stale.
+_W_ROW = pa.schema(
+    [
+        pa.field("i", pa.int32(), nullable=False),
+        pa.field("j", pa.int32(), nullable=False),
+        pa.field("t", pa.int8(), nullable=False),
+        pa.field("h", pa.int16(), nullable=False),
+        pa.field("b", pa.int64(), nullable=False),
+    ]
+)
+_W_DDL = "CREATE TABLE __THIS__ (i INTEGER, j INTEGER, t TINYINT, h SMALLINT, b BIGINT)"
+_W_ROWS = [{"i": 2147483647, "j": 3, "t": 127, "h": 32767, "b": 9223372036854775807}]
+
+
+def _width_duck(sql):
+    con = duckdb.connect()
+    con.execute(_W_DDL)
+    con.execute(
+        "INSERT INTO __THIS__ VALUES (?, ?, ?, ?, ?)",
+        list(_W_ROWS[0].values()),
+    )
+    try:
+        return ("rows", con.execute(sql).to_arrow_table().to_pylist())
+    except duckdb.Error:
+        return ("trap", None)
+
+
+def _width_ours(sql):
+    try:
+        fn = DuckDBInferFn(sql, row_tables={"__THIS__": _W_ROW}, static_tables={})
+        return ("rows", fn.infer_rows(_W_ROWS))
+    except Exception:  # noqa: BLE001 — refusal and trap are both "no answer"
+        return ("trap", None)
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # ---- the trap must survive every consumer (AC #1) ----
+        "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__",  # the reported one
+        "SELECT (i + 1) AS o FROM __THIS__",
+        "SELECT abs(i + 1) AS o FROM __THIS__",
+        "SELECT nullif(i + 1, 5) AS o FROM __THIS__",
+        "SELECT (i + 1) * 1.0e0 AS o FROM __THIS__",
+        "SELECT (i + j) > 5 AS o FROM __THIS__",  # non-constant: no rewrite
+        "SELECT (i * 2) > 5 AS o FROM __THIS__",  # multiplication: no rewrite
+        "SELECT (i + 1) IN (5, 6) AS o FROM __THIS__",  # IN: no rewrite
+        # DuckDB materialises `i + 1` for the second item, so the first one
+        # traps with it -- our per-item evaluation lands in the same place
+        "SELECT (i + 1) > 5 AS a, (i + 1) AS b FROM __THIS__",
+        # ---- int8 and int16 by the same rule, not just int32 (AC #3) ----
+        "SELECT CAST((t + 1) AS BIGINT) AS o FROM __THIS__",
+        "SELECT CAST((t * 2) AS BIGINT) AS o FROM __THIS__",
+        "SELECT CAST((h + 1) AS BIGINT) AS o FROM __THIS__",
+        "SELECT (t + 1) > 5 AS o FROM __THIS__",
+        "SELECT (h + 1) > 5 AS o FROM __THIS__",
+        # ---- the comparison rewrite, every predicate and both orders ----
+        "SELECT (i + 1) > 5 AS o FROM __THIS__",
+        "SELECT (i + 1) >= 5 AS o FROM __THIS__",
+        "SELECT (i + 1) < 5 AS o FROM __THIS__",
+        "SELECT (i + 1) <= 5 AS o FROM __THIS__",
+        "SELECT (i + 1) = 5 AS o FROM __THIS__",
+        "SELECT (i + 1) <> 5 AS o FROM __THIS__",
+        "SELECT (i - 1) > 5 AS o FROM __THIS__",
+        "SELECT (1 + i) > 5 AS o FROM __THIS__",
+        "SELECT (1 - i) > 5 AS o FROM __THIS__",  # subject swaps sides
+        "SELECT 5 < (i + 1) AS o FROM __THIS__",  # constant on the left
+        "SELECT (i + 1 - 1) > 5 AS o FROM __THIS__",  # peels one term a pass
+        "SELECT ((i + 1) + 1) > 5 AS o FROM __THIS__",
+        "SELECT (i + 1) BETWEEN 5 AND 9 AS o FROM __THIS__",  # through BETWEEN
+        "SELECT (b + 1) > 5 AS o FROM __THIS__",  # BIGINT too, not just narrow
+        "SELECT (b * 2) > 5 AS o FROM __THIS__",
+        # ---- the rewrite's own guards ----
+        # shifted constant leaves the width: the addition runs and traps
+        "SELECT (i + 2) > -2147483648 AS o FROM __THIS__",
+        # the constant does not fit INTEGER, so the comparison is at BIGINT
+        # and the INT32 addition is left alone
+        "SELECT (i + 1) = 2147483648 AS o FROM __THIS__",
+        # ... but a BIGINT SPELLING whose value fits does rewrite
+        "SELECT (i + 1) > CAST(5 AS BIGINT) AS o FROM __THIS__",
+        # ---- in-range arithmetic still serves, on every consumer (AC #4) ----
+        "SELECT CAST((i - 1) AS BIGINT) AS o FROM __THIS__",
+        "SELECT CAST((t - 1) AS BIGINT) AS o FROM __THIS__",
+        "SELECT (i - 1) AS o FROM __THIS__",
+        "SELECT (i - 1) + 1 AS o FROM __THIS__",
+        "SELECT (j + 1) AS o FROM __THIS__",
+        "SELECT (j + 1) > 5 AS o FROM __THIS__",
+        "SELECT abs(j + 1) AS o FROM __THIS__",
+        "SELECT i AS o FROM __THIS__",
+        "SELECT CASE WHEN j > 1 THEN 1 ELSE 0 END AS o FROM __THIS__",
+    ],
+)
+def test_narrow_overflow_traps_exactly_where_duckdbs_does(sql, backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    assert _width_ours(sql) == _width_duck(sql), sql
+
+
+def test_the_narrow_trap_names_the_width():
+    """A refusal has to be usable: name the width both ways a reader might
+    know it (DuckDB's spelling and the arrow one they passed in)."""
+    fn = DuckDBInferFn(
+        "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__",
+        row_tables={"__THIS__": _W_ROW},
+        static_tables={},
+    )
+    with pytest.raises(ValueError, match="INTEGER") as e:
+        fn.infer_rows(_W_ROWS)
+    assert "int32" in str(e.value), str(e.value)
+
+
+def test_a_null_narrow_value_does_not_trap():
+    """The range check is flag-gated: a NULL row has a masked default payload
+    and DuckDB has no value there to overflow either."""
+    row = pa.schema([pa.field("i", pa.int32())])
+    sql = "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
+    assert fn.infer_rows([{"i": None}]) == [{"o": None}]
