@@ -63,29 +63,6 @@ def test_struct_static_column_serves_its_lanes():
     assert fn.infer_rows([{"k": 5}]) == want
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-117: `trapping_expr BETWEEN lit AND NULL` is statically NULL, "
-    "so DuckDB never evaluates the subject and the row simply filters. We "
-    "evaluate the subject first and trap. TASK-85 folds a strict op whose "
-    "SIBLING is NULL; here the trap is the thing being compared.",
-)
-def test_a_null_folded_predicate_elides_its_subject_too():
-    row = pa.schema([pa.field("s", pa.string(), nullable=False)])
-    rows = [{"s": "abc"}]  # not castable to DOUBLE — the trap
-    sql = (
-        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) BETWEEN 61.591e0 AND NULL"
-    )
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES ('abc')")
-    want = con.execute(sql).fetchall()
-    assert want == [], "oracle moved — remeasure"
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
-    assert [tuple(r.values()) for r in fn.infer_rows(rows)] == want
-
-
 # ---------------------------------------------------------------------------
 # TASK-118: an INT32 overflow consumed by a WIDENING CAST serves a wrong value.
 # TASK-84's block names `CAST(k AS INTEGER) * 2` as its residual; that case is

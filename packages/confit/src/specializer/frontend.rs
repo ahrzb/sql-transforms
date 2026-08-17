@@ -570,7 +570,36 @@ pub fn frontend(
         binder.in_filter.set(true);
         let bound = binder.expr(pred);
         binder.in_filter.set(false);
-        let pred = fold(bool_context(bound?, "WHERE predicate")?);
+        let mut pred = fold(bool_context(bound?, "WHERE predicate")?);
+        // TASK-117. A conjunction with a statically-NULL conjunct is NULL
+        // whenever it is not FALSE, so as a FILTER it selects nothing no
+        // matter what the other conjuncts say — and DuckDB, having proved
+        // that, deletes the filter without evaluating them. Measured
+        // 2026-08-16 on DuckDB 1.5.5, `s = 'abc'` uncastable:
+        //
+        //   WHERE CAST(s AS DOUBLE) BETWEEN 61.591 AND NULL   rows=[]
+        //   WHERE (CAST(s AS DOUBLE) > 1) AND NULL            rows=[]
+        //   WHERE NULL AND (CAST(s AS DOUBLE) > 1)            rows=[]
+        //   WHERE (CAST(s AS DOUBLE) > 1) OR NULL             TRAP
+        //   SELECT (CAST(s AS DOUBLE) > 1) AND NULL           TRAP
+        //
+        // So the elision is AND-only (an OR with a NULL side can still be
+        // TRUE, so the side has to run) and FILTER-only (a projection has to
+        // produce a value, so it runs) — the same split TASK-87 face C found
+        // for the dead-range BETWEEN, which is why this lands next to it.
+        //
+        // BETWEEN is the case that made this a bug rather than an
+        // optimisation: it desugars to `x >= lo AND x <= hi`, so a NULL bound
+        // folds ONE of the two comparisons to NULL (TASK-85's rule, already
+        // ours) and leaves the other holding the trapping subject. TASK-85
+        // elides a NULL's SIBLING; nothing elided the subject until here.
+        if null_conjunct(&pred) {
+            pred = SExpr {
+                kind: SKind::Lit(Lit::I1(false)),
+                ty: Ty::I1,
+                nullable: false,
+            };
+        }
         rel = Rel::Filter {
             input: Box::new(rel),
             pred,
@@ -6732,6 +6761,21 @@ fn eval_i128_literal(e: &SqlExpr) -> Option<i128> {
             }
         }
         _ => None,
+    }
+}
+
+/// Does this bound predicate carry a statically-NULL TOP-LEVEL conjunct?
+///
+/// Top-level is the whole rule: `A AND NULL` selects nothing, but
+/// `(A AND NULL) OR B` selects on B, so the recursion stops at anything that
+/// is not an AND. `NullOf` is the only spelling a constant NULL reaches here
+/// under — `cmp`/`arith` already fold a strict operator with a NULL operand
+/// to it (TASK-85), so `x > (1.0 - NULL)` counts as well as `x > NULL`.
+fn null_conjunct(e: &SExpr) -> bool {
+    match &e.kind {
+        SKind::NullOf => true,
+        SKind::And { a, b } => null_conjunct(a) || null_conjunct(b),
+        _ => false,
     }
 }
 

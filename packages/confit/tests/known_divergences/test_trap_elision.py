@@ -172,6 +172,87 @@ def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
         fn.infer_rows([{"s": "one", "x": 1.0}])
 
 
+# TASK-117 (fuzz seed 1667, fixed 2026-08-17). The last live member of the
+# 2026-08-13 triage's §2. TASK-85 elides a NULL's SIBLING; here the trapping
+# expression is the SUBJECT being compared, which nothing elided:
+# `x BETWEEN lo AND NULL` desugars to `x >= lo AND x <= NULL`, so the NULL
+# folds one comparison and leaves the other holding the trap.
+#
+# The rule, measured below in both directions: a conjunction with a
+# statically-NULL conjunct is NULL whenever it is not FALSE, so as a FILTER it
+# selects nothing whatever the other conjuncts say — and DuckDB, having proved
+# that, deletes the filter without evaluating them. AND-only (an OR with a
+# NULL side can still be TRUE) and FILTER-only (a projection must produce a
+# value), which is the same split TASK-87 face C found for the dead range.
+
+_S117 = pa.schema(
+    [
+        pa.field("s", pa.string(), nullable=False),
+        pa.field("x", pa.float64(), nullable=False),
+    ]
+)
+_R117 = [{"s": "abc", "x": -2.0}]  # 'abc' is uncastable, ln(-2.0) is a domain trap
+_DDL117 = "CREATE TABLE __THIS__ (s VARCHAR, x DOUBLE)"
+
+
+def _duck117(sql):
+    con = duckdb.connect()
+    con.execute(_DDL117)
+    con.execute("INSERT INTO __THIS__ VALUES ('abc', -2.0)")
+    try:
+        return ("rows", con.execute(sql).fetchall())
+    except duckdb.Error:
+        return ("trap", None)
+
+
+def _ours117(sql):
+    try:
+        fn = DuckDBInferFn(sql, row_tables={"__THIS__": _S117}, static_tables={})
+        return ("rows", [tuple(r.values()) for r in fn.infer_rows(_R117)])
+    except Exception:
+        return ("trap", None)
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # the reported case, and its mirror on the low bound
+        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) BETWEEN 61.591e0 AND NULL",
+        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) BETWEEN NULL AND 61.591e0",
+        "SELECT 1 AS o FROM __THIS__ WHERE ln(x) BETWEEN 1 AND NULL",
+        # the same rule without BETWEEN, both conjunct positions
+        "SELECT 1 AS o FROM __THIS__ WHERE (CAST(s AS DOUBLE) > 1) AND NULL",
+        "SELECT 1 AS o FROM __THIS__ WHERE NULL AND (CAST(s AS DOUBLE) > 1)",
+        "SELECT 1 AS o FROM __THIS__ WHERE ln(x) > 0 AND CAST(s AS DOUBLE) > NULL",
+        # a bare comparison against NULL is already a NULL conjunct
+        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) > NULL",
+        # the NULL may be FOLDED rather than spelled (TASK-85's strict-op rule
+        # produces it), and the elision must see it either way
+        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) > (1e0 - NULL)",
+        "SELECT 1 AS o FROM __THIS__ "
+        "WHERE CAST(s AS DOUBLE) BETWEEN 61.591e0 AND (1e0 - NULL)",
+        # --- the guard must not become a blanket suppression (AC #4) ---
+        # OR, not AND: a NULL side can still let the other side be TRUE
+        "SELECT 1 AS o FROM __THIS__ WHERE (CAST(s AS DOUBLE) > 1) OR NULL",
+        # a live range with no NULL in it still evaluates the subject
+        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) BETWEEN 1e0 AND 99e0",
+        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) > 1",
+        # a PROJECTION has to produce a value, so it evaluates and traps
+        "SELECT (CAST(s AS DOUBLE) > 1) AND NULL AS o FROM __THIS__",
+        # and an ordinary predicate still selects
+        "SELECT 1 AS o FROM __THIS__ WHERE x < 1",
+        "SELECT 1 AS o FROM __THIS__ WHERE x > 1 AND NULL",
+    ],
+)
+def test_a_null_conjunct_elides_the_whole_filter(sql, backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    assert _ours117(sql) == _duck117(sql), sql
+
+
 # ===========================================================================
 # TRAP ELISION IS NOT A SEMANTIC RULE, SO IT CANNOT BE MATCHED SEMANTICALLY
 #
@@ -213,10 +294,13 @@ def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
 # whenever their rewriter improves. Our contract names DuckDB's ANSWERS; it
 # cannot name this.
 #
-# WHY WE STILL FIX THIS ONE. The unmatchable part is the folder-equality
+# WHY WE STILL FIXED THIS ONE. The unmatchable part is the folder-equality
 # class, not this instance. TASK-85 already built the fold-to-NULL machinery
-# for a strict op whose SIBLING is NULL; TASK-117 extends the same mechanism
-# to the operand being compared. That is bounded work on a mechanism we own.
+# for a strict op whose SIBLING is NULL; TASK-117 (landed 2026-08-17, pinned
+# above) extended the same mechanism to the operand being compared, by
+# deciding it at the FILTER instead of at the operator. That was bounded work
+# on a mechanism we own — one predicate-level rule, no knowledge of DuckDB's
+# folder required.
 #
 # WHEN TO STOP FIXING. Instance-fixing a class we cannot close is unbounded,
 # so it gets a stopping rule rather than a habit: if a campaign turns up a
