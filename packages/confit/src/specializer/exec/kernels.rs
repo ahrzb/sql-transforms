@@ -91,11 +91,25 @@ pub(super) fn call_extern(
 /// form.
 pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> std::ops::Range<usize> {
     let n = s.chars().count() as i64;
-    let rs = if start < 0 {
-        (n + start + 1).max(1)
-    } else {
-        start
-    };
+    // A negative start is END-RELATIVE, and the mapped position is NOT clamped
+    // to 1 here: clamping before the window is applied would drop the window's
+    // END reduction, so `substr('hello', -10, 8)` would answer 'hello' instead
+    // of 'hel'. The intersection below is what clamps, exactly as it does for
+    // the `start = 0` case which shares this rule.
+    //
+    // This used to clamp (`.max(1)`), pinned as builtin-pins §4 "negative start
+    // clamps to 1 BEFORE the length window". That pin measured the one DuckDB
+    // path that disagrees with its own other three. Measured 2026-08-17,
+    // `substr(s, -10, 8)` over 'hello':
+    //
+    //   optimizer ON,  literal args   'hel'
+    //   optimizer ON,  column args    'hello'   <- the outlier, and the pin
+    //   optimizer OFF, literal args   'hel'
+    //   optimizer OFF, column args    'hel'
+    //
+    // so the clamp reproduced a DuckDB self-inconsistency. The window rule
+    // agrees with three of its four paths, including its own constant folder.
+    let rs = if start < 0 { n + start + 1 } else { start };
     let (lo, hi) = match len {
         Some(l) if l >= 0 => (rs, rs.saturating_add(l)),
         Some(l) => (rs.saturating_add(l), rs),

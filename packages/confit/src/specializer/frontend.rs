@@ -571,6 +571,15 @@ pub fn frontend(
         let bound = binder.expr(pred);
         binder.in_filter.set(false);
         let pred = fold(bool_context(bound?, "WHERE predicate")?);
+        // NO statically-NULL-conjunct elision here, deliberately (TASK-117
+        // added one on 2026-08-16 and the oracle change retired it the next
+        // day). Optimizer-ON DuckDB proves such a filter selects nothing and
+        // deletes it along with its operands; the ORACLE evaluates it:
+        //
+        //   SELECT 1 FROM t WHERE CAST(s AS DOUBLE) BETWEEN 61.591 AND NULL
+        //   oracle: Conversion Error: Could not convert string 'abc' to DOUBLE
+        //
+        // so the filter keeps its operands and its traps.
         rel = Rel::Filter {
             input: Box::new(rel),
             pred,
@@ -708,7 +717,6 @@ fn bind_from<'a>(
         sites: std::cell::Cell::new(0),
         extern_sites: std::cell::RefCell::new(Vec::new()),
         in_filter: std::cell::Cell::new(false),
-        in_inlist: std::cell::Cell::new(false),
         in_guarded: std::cell::Cell::new(0),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
@@ -1455,9 +1463,6 @@ struct Binder<'a> {
     /// a projection — measured both ways (TASK-87 face C), so the fold is
     /// context-gated on this flag.
     in_filter: std::cell::Cell<bool>,
-    /// Inside an IN list's desugared `=` chain — see the TASK-118 note in
-    /// `cmp`.
-    in_inlist: std::cell::Cell<bool>,
     /// Depth of CASE/COALESCE arms being bound. DuckDB's plan-time constant
     /// evaluation SKIPS guarded arms (the coalesce lazy-bind pin: an
     /// untaken `CAST('nope' AS BIGINT)` must not fire), so the TASK-87
@@ -2542,37 +2547,16 @@ impl Binder<'_> {
             } => {
                 let mut u = self.unify_family(&[expr, low, high])?;
                 let (e, lo, hi) = (u.remove(0), u.remove(0), u.remove(0));
-                // TASK-87 face C (measured both ways): DuckDB's FILTER
-                // optimizer folds a constant dead range (lo > hi) to FALSE
-                // without ever evaluating the operand — while a PROJECTION
-                // evaluates it and traps, on both engines alike. The probe
-                // binds lo/hi only when they are literal-shaped, so no call
-                // site is consumed twice (extern call-count parity).
-                if self.in_filter.get()
-                    && !*negated
-                    && const_number_shaped(&lo)
-                    && const_number_shaped(&hi)
-                {
-                    let (blo, bhi) = (fold(self.expr(&lo)?), fold(self.expr(&hi)?));
-                    let dead = match (&blo.kind, &bhi.kind) {
-                        (SKind::Lit(Lit::I64(a)), SKind::Lit(Lit::I64(b))) => a > b,
-                        (SKind::Lit(Lit::F64(a)), SKind::Lit(Lit::F64(b))) => a > b,
-                        (SKind::Lit(Lit::I64(a)), SKind::Lit(Lit::F64(b))) => {
-                            (*a as f64) > *b
-                        }
-                        (SKind::Lit(Lit::F64(a)), SKind::Lit(Lit::I64(b))) => {
-                            *a > (*b as f64)
-                        }
-                        _ => false,
-                    };
-                    if dead {
-                        return Ok(SExpr {
-                            kind: SKind::Lit(Lit::I1(false)),
-                            ty: Ty::I1,
-                            nullable: false,
-                        });
-                    }
-                }
+                // NO dead-range short circuit here, deliberately. TASK-87 face
+                // C added one because optimizer-ON DuckDB folds a constant
+                // dead range (lo > hi) to FALSE in a FILTER and never
+                // evaluates the subject. The ORACLE evaluates it:
+                //
+                //   SELECT s FROM t WHERE CAST(s AS BIGINT) BETWEEN 22 AND 10
+                //   oracle: Conversion Error: Could not convert string 'one'
+                //
+                // The PROJECTION form evaluated under BOTH readings and still
+                // does, which is why only the filter half went away.
                 let both = ast_bin(
                     BinaryOperator::And,
                     ast_bin(BinaryOperator::GtEq, e.clone(), lo),
@@ -2598,13 +2582,7 @@ impl Binder<'_> {
                     });
                 }
                 let chain = chain.ok_or_else(|| unsup("empty IN list"))?;
-                // TASK-118: the `=` chain is OUR spelling of IN, not DuckDB's
-                // — its optimizer does not shift constants through IN, so
-                // neither do we while this chain binds.
-                let outer = self.in_inlist.replace(true);
-                let r = self.bind(&ast_not_if(*negated, chain));
-                self.in_inlist.set(outer);
-                r
+                self.bind(&ast_not_if(*negated, chain))
             }
             SqlExpr::Like {
                 negated,
@@ -3660,42 +3638,18 @@ impl Binder<'_> {
                 )));
             }
         }
-        // TASK-87 face B: DuckDB folds an all-literal integer COMPARISON
-        // through wide range analysis — `x > (huge * huge)` answers without
-        // ever overflowing — while binding the operand here trapped on the
-        // i64 multiply. Fold the comparison in i128, DuckDB's answer.
-        // Skipped when either side would trap in ITS int32 literal math
-        // (unmeasured whether DuckDB's analysis rescues those; the TASK-84
-        // refusal on the operand keeps that boundary loud instead).
-        if matches!(
-            op,
-            BinaryOperator::Gt
-                | BinaryOperator::Lt
-                | BinaryOperator::GtEq
-                | BinaryOperator::LtEq
-                | BinaryOperator::Eq
-                | BinaryOperator::NotEq
-        ) && !matches!(eval_i32_literal(left), I32Fold::Traps)
-            && !matches!(eval_i32_literal(right), I32Fold::Traps)
-        {
-            if let (Some(x), Some(y)) =
-                (eval_i128_literal(left), eval_i128_literal(right))
-            {
-                let v = match op {
-                    BinaryOperator::Gt => x > y,
-                    BinaryOperator::Lt => x < y,
-                    BinaryOperator::GtEq => x >= y,
-                    BinaryOperator::LtEq => x <= y,
-                    BinaryOperator::Eq => x == y,
-                    _ => x != y,
-                };
-                return Ok(SExpr {
-                    kind: SKind::Lit(Lit::I1(v)),
-                    ty: Ty::I1,
-                    nullable: false,
-                });
-            }
-        }
+        // NO i128 comparison fold here, deliberately. TASK-87 face B added
+        // one because optimizer-ON DuckDB answers an all-literal integer
+        // comparison through wide range analysis, without ever performing the
+        // overflowing multiply. The ORACLE does not:
+        //
+        //   SELECT 9223372036854775807 > (9223372036854775807 * -50)
+        //   oracle:  Out of Range Error: Overflow in multiplication of INT64
+        //   opt-on:  true
+        //
+        // The operand on its own errors at BIND under both readings, so this
+        // was the whole of face B: only the comparison wrapper differed, and
+        // only because of the optimizer.
         let a = self.expr_or_null(left)?;
         let b = self.expr_or_null(right)?;
         // DuckDB folds a strict op over a DECIMAL literal and a bare NULL
@@ -3844,6 +3798,21 @@ impl Binder<'_> {
             Some(e) => e,
             None => null_of(Ty::I64),
         };
+        // NO nullness rewrite here, deliberately. `<arithmetic> IS [NOT] NULL`
+        // answers without evaluating the arithmetic on optimizer-ON DuckDB —
+        // `statistics_propagation` proves the predicate from the column's null
+        // statistic and deletes the expression — and this engine reproduced
+        // that for a day (2026-08-17). The ORACLE is optimizer-OFF DuckDB,
+        // which evaluates and traps:
+        //
+        //   SELECT (c0 * 32) IS NOT NULL FROM t   -- c0 TINYINT, one row -128
+        //   oracle: Out of Range Error: Overflow in multiplication of INT8
+        //
+        // so we evaluate and trap too. The rewrite was emulation of a pass
+        // whose answer is not a function of the query at all (it changes with
+        // the table's insert history — see
+        // known_divergences/test_trap_elision.py), which is exactly why the
+        // oracle excludes it.
         Ok(SExpr {
             kind: SKind::IsNull {
                 negated,
@@ -4321,40 +4290,27 @@ impl Binder<'_> {
         if a.ty == Ty::I1 {
             return Err(unsup("comparison on BOOLEAN"));
         }
-        // TASK-118. DuckDB's optimizer simplifies `x ± c <cmp> k` (both
-        // constants) to `x <cmp> k∓c`, so the arithmetic never runs and
-        // never overflows: over INT32_MAX, `(i + 1) > 5` SERVES true there
-        // while `(i + 1)` alone traps. Reproducing the rewrite is how the
-        // overflow trap stays invisible in exactly the places DuckDB's is.
+        // NO constant shift and NO NULL-operand elision here, both
+        // deliberately, and both were here until 2026-08-17.
         //
-        // Measured 2026-08-17 on DuckDB 1.5.5, i = INT32_MAX, k = INT64_MAX:
+        // `x ± c <cmp> k` is simplified to `x <cmp> k∓c` by
+        // `expression_rewriter`, so on optimizer-ON DuckDB `(i + 1) > 5`
+        // serves TRUE over INT32_MAX while `(i + 1)` alone traps. And a
+        // comparison against a literal NULL folds to NULL there before either
+        // side runs, so `ln(-2.0) < NULL` serves NULL.
         //
-        //   (i + 1) > 5          true     all six predicates rewrite
-        //   (i - 1) > 5          true     and both operand orders
-        //   (1 - i) > 5          false    reversed subject flips the pred
-        //   (k + 1) > 5          true     BIGINT too, not just narrow widths
-        //   (i + 2) > -2147483648  TRAP   shifted constant leaves the range
-        //   (i * 2) > 5            TRAP   multiplication is not rewritten
-        //   (i + j) > 5            TRAP   nor a non-constant operand
+        // The ORACLE is optimizer-OFF DuckDB, and it does neither:
         //
-        // The rewrite is EXACT, not an approximation: `x + c cmp k` and
-        // `x cmp k-c` are the same predicate over the integers, and the
-        // representability guard is what keeps the shifted constant honest.
-        // ... but NOT through IN, which desugars to the same `=` chain here
-        // and is left alone there: `(i + 1) IN (5, 6)` traps on DuckDB while
-        // `(i + 1) = 5` and `(i + 1) BETWEEN 5 AND 9` both serve.
-        if !self.in_inlist.get() {
-            if let Some((pred, x, k)) = shift_cmp_constant(pred, &a, &b) {
-                return self.cmp(pred, x, k);
-            }
-        }
-        // TASK-85, same fold as `arith`: a comparison against a literal NULL
-        // is NULL on DuckDB's optimizer BEFORE the sides evaluate, so a
-        // trapping side must be eliminated here too. (promote_f64 retypes a
-        // NullOf in place, so the plain match still sees it after promotion.)
-        if matches!(a.kind, SKind::NullOf) || matches!(b.kind, SKind::NullOf) {
-            return Ok(null_of(ret));
-        }
+        //   SELECT (i + 1) > 5 FROM t        -- i INTEGER = 2147483647
+        //   oracle: Out of Range Error: Overflow in addition of INT32
+        //   SELECT ln(x) < NULL FROM t       -- x DOUBLE = -2.0
+        //   oracle: Out of Range Error: cannot take logarithm of a negative
+        //
+        // so neither do we. Note the ASYMMETRY this leaves, which is measured
+        // rather than chosen: `arith` still folds a literal-NULL operand,
+        // because THAT one is the binder's own constant folding and survives
+        // the optimizer being off (`ln(x) + (x - NULL)` is NULL on the oracle).
+        // Comparison folding does not. Same-looking rules, different layers.
         let nullable = a.nullable || b.nullable;
         Ok(SExpr {
             kind: SKind::Cmp {
@@ -6806,134 +6762,6 @@ enum I32Fold {
     NotShaped,
     Traps,
     Fine(Option<i32>),
-}
-
-/// All-literal integer subtree evaluated in i128 — the wide arithmetic
-/// DuckDB's range analysis folds comparisons through (TASK-87 face B).
-/// None = not literal-shaped, or a rem-by-zero (NULL at runtime, no fold).
-fn eval_i128_literal(e: &SqlExpr) -> Option<i128> {
-    match e {
-        SqlExpr::Value(v) => match &v.value {
-            SqlValue::Number(text, _) => text.parse::<i128>().ok(),
-            _ => None,
-        },
-        SqlExpr::Nested(inner) => eval_i128_literal(inner),
-        SqlExpr::UnaryOp {
-            op: UnaryOperator::Plus,
-            expr,
-        } => eval_i128_literal(expr),
-        SqlExpr::UnaryOp {
-            op: UnaryOperator::Minus,
-            expr,
-        } => eval_i128_literal(expr)?.checked_neg(),
-        SqlExpr::BinaryOp { left, op, right } => {
-            let (x, y) = (eval_i128_literal(left)?, eval_i128_literal(right)?);
-            match op {
-                BinaryOperator::Plus => x.checked_add(y),
-                BinaryOperator::Minus => x.checked_sub(y),
-                BinaryOperator::Multiply => x.checked_mul(y),
-                BinaryOperator::Modulo if y != 0 => x.checked_rem(y),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// The same comparison with the operands swapped (TASK-118's rewrite has to
-/// flip when it moves the subject across the operator).
-fn flip_cmp(p: CmpPred) -> CmpPred {
-    match p {
-        CmpPred::Lt => CmpPred::Gt,
-        CmpPred::Gt => CmpPred::Lt,
-        CmpPred::Le => CmpPred::Ge,
-        CmpPred::Ge => CmpPred::Le,
-        p => p,
-    }
-}
-
-fn int_lit(e: &SExpr) -> Option<i64> {
-    match &e.kind {
-        SKind::Lit(Lit::I64(v)) => Some(*v),
-        _ => None,
-    }
-}
-
-/// One step of DuckDB's comparison simplification: `x ± c <cmp> k` becomes
-/// `x <cmp'> k∓c` when both `c` and `k` are integer constants and the
-/// shifted constant is representable in the subject's own width. `None`
-/// means DuckDB would not have rewritten it either, so the arithmetic runs
-/// and may trap on both engines.
-///
-/// The caller re-enters `cmp`, so a chain (`(i + 1 - 1) > 5`) peels one term
-/// per pass, which is what DuckDB does with it.
-fn shift_cmp_constant(pred: CmpPred, a: &SExpr, b: &SExpr) -> Option<(CmpPred, SExpr, SExpr)> {
-    // Normalise to `subject <pred> k`.
-    let (pred, subject, k) = match (int_lit(a), int_lit(b)) {
-        (None, Some(k)) => (pred, a, k),
-        (Some(k), None) => (flip_cmp(pred), b, k),
-        _ => return None,
-    };
-    let (lo, hi) = match subject.ty {
-        Ty::I64 => (i64::MIN, i64::MAX),
-        t => t.int_range()?,
-    };
-    // `k` must fit the SUBJECT's width, or DuckDB compares at the wider type
-    // instead and leaves the arithmetic alone: `(i + 1) = 2147483648` traps
-    // there because the literal is BIGINT, while `(i + 1) > CAST(5 AS
-    // BIGINT)` serves — 5 fits INTEGER, so its value-fits promotion keeps the
-    // comparison narrow. Testing the VALUE, not the spelling, gets both.
-    if !(lo..=hi).contains(&k) {
-        return None;
-    }
-    let SKind::Arith { op, a: x, b: y } = &subject.kind else {
-        return None;
-    };
-    let (pred, inner, shifted) = match (op, int_lit(x), int_lit(y)) {
-        // x + c  cmp k   ->   x cmp k - c        (either operand order)
-        (ArithOp::Add, None, Some(c)) => (pred, x, k.checked_sub(c)?),
-        (ArithOp::Add, Some(c), None) => (pred, y, k.checked_sub(c)?),
-        // x - c  cmp k   ->   x cmp k + c
-        (ArithOp::Sub, None, Some(c)) => (pred, x, k.checked_add(c)?),
-        // c - x  cmp k   ->   x cmp' c - k       (the subject changes sides)
-        (ArithOp::Sub, Some(c), None) => (flip_cmp(pred), y, c.checked_sub(k)?),
-        _ => return None,
-    };
-    if !(lo..=hi).contains(&shifted) {
-        return None;
-    }
-    Some((
-        pred,
-        (**inner).clone(),
-        SExpr {
-            kind: SKind::Lit(Lit::I64(shifted)),
-            ty: subject.ty,
-            nullable: false,
-        },
-    ))
-}
-
-/// Does this bound predicate carry a statically-NULL TOP-LEVEL conjunct?
-///
-/// Top-level is the whole rule: `A AND NULL` selects nothing, but
-/// `(A AND NULL) OR B` selects on B, so the recursion stops at anything that
-/// is not an AND. `NullOf` is the only spelling a constant NULL reaches here
-/// under — `cmp`/`arith` already fold a strict operator with a NULL operand
-/// to it (TASK-85), so `x > (1.0 - NULL)` counts as well as `x > NULL`.
-
-/// A literal-shaped numeric bound: a Number under parens/unary sign only —
-/// binding one consumes no call site, so the Between dead-range probe may
-/// bind it without breaking extern call-count parity (TASK-87 face C).
-fn const_number_shaped(e: &SqlExpr) -> bool {
-    match e {
-        SqlExpr::Value(v) => matches!(v.value, SqlValue::Number(..)),
-        SqlExpr::Nested(inner) => const_number_shaped(inner),
-        SqlExpr::UnaryOp {
-            op: UnaryOperator::Minus | UnaryOperator::Plus,
-            expr,
-        } => const_number_shaped(expr),
-        _ => false,
-    }
 }
 
 fn eval_i32_literal(e: &SqlExpr) -> I32Fold {

@@ -358,8 +358,12 @@ def test_substr_negative_length_differential():
 
 def test_substr_negative_start_column_path_differential():
     # The TASK-45-review "parity bug" triples, through the path real queries
-    # take (column input -> DuckDB's vectorized substr). Both engines agree:
-    # negative start clamps to 1 BEFORE the length window (builtin-pins \u00a74).
+    # take (column input -> DuckDB's vectorized substr). builtin-pins \u00a74 read
+    # these as "negative start clamps to 1 BEFORE the length window"; that was
+    # measured on the one DuckDB path which disagrees with its own other three
+    # (see test_substr_constant_fold_divergence below). The rule is the WINDOW:
+    # map a negative start end-relative, then intersect [pos, pos+len) with the
+    # string -- so ('ab', -4, 2) is '' here, not 'ab'.
     duck_check(
         "SELECT substr(s, st, ln) AS r FROM __THIS__",
         {"s": "str", "st": "int", "ln": "int"},
@@ -371,13 +375,20 @@ def test_substr_negative_start_column_path_differential():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DuckDB's constant-fold substr disagrees with its own vectorized "
-    "path on negative starts (const substr('ab',-4,2)='', vectorized='ab'; "
-    "measured 1.5.5). The engine pins the vectorized path, so pure-literal "
-    "negative-start substr diverges \u2014 known residual, builtin-pins spec \u00a74",
-)
+# CLOSED 2026-08-17 by the oracle change, and it closed by itself. DuckDB's
+# constant-fold substr disagrees with its own OPTIMIZED vectorized path on
+# negative starts, and this engine used to pin the vectorized one, so the
+# pure-literal spelling diverged (xfail-strict, "known residual, builtin-pins
+# spec \u00a74"). Measured across all four paths for `substr('hello', -10, 8)`:
+#
+#   optimizer ON,  literal args   'hel'
+#   optimizer ON,  column args    'hello'   <- the outlier we used to pin
+#   optimizer OFF, literal args   'hel'
+#   optimizer OFF, column args    'hel'
+#
+# The window rule the engine now implements agrees with three of the four,
+# including DuckDB's own constant folder, so the literal and column spellings
+# finally answer the same thing and the residual is gone.
 def test_substr_constant_fold_divergence():
     duck_check(
         "SELECT substr('ab', -4, 2) AS a, substr('ab', -3, 2) AS b, "

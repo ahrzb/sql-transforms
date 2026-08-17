@@ -142,30 +142,26 @@ def test_trap_free_case_in_a_one_sided_on_residual_builds(residual):
     [
         # an arm that really can overflow
         "(CASE WHEN n > 1 THEN 9223372036854775807 + n ELSE 0 END) = 1",
+        # ... and one in the CONDITION rather than the result
+        "(CASE WHEN 9223372036854775807 + n > 1 THEN 1 ELSE 0 END) = 1",
         # ... and in the ELSE
         "(CASE WHEN n > 1 THEN 0 ELSE 9223372036854775807 + n END) = 1",
+        # bare arithmetic, the case that always was refused
+        "9223372036854775807 + n > 1",
     ],
 )
 def test_a_genuinely_trapping_one_sided_on_residual_is_still_refused(residual):
     """The guard exists for a real reason. Widening it to trap-free CASEs must
-    not widen it to CASEs that trap."""
+    not widen it to CASEs that trap.
+
+    The last two spent one day (2026-08-17) out of this list, on the grounds
+    that `c + n > 1` cannot overflow because DuckDB rewrites it to
+    `n > 1 - c`. That rewrite is `expression_rewriter`, and the ORACLE is
+    DuckDB with the optimizer off, which performs the addition and overflows:
+
+        SELECT 9223372036854775807 + n > 1 FROM t   -- n = 5
+        oracle: Out of Range Error: Overflow in addition of INT64
+
+    so they can trap after all, and refusing them is right."""
     with pytest.raises(ValueError, match="single-side residual with trapping ops"):
         _one_sided(residual, [(0, 5)])
-
-
-@pytest.mark.parametrize(
-    "residual",
-    [
-        # bare arithmetic under a comparison against a constant
-        "9223372036854775807 + n > 1",
-        # ... and the same shape as a CASE CONDITION
-        "(CASE WHEN 9223372036854775807 + n > 1 THEN 1 ELSE 0 END) = 1",
-    ],
-)
-def test_a_residual_duckdb_simplifies_away_is_no_longer_refused(residual):
-    """These two used to sit in the list above, and the list was wrong about
-    them: `c + n > 1` cannot overflow on DuckDB because its optimizer rewrites
-    it to `n > 1 - c` and the addition never runs (TASK-118's rewrite, which
-    we now do too). Refusing them was refusing a query with no trap in it.
-    Measured: DuckDB serves both, and the ELSE variant above still traps."""
-    assert _one_sided(residual, [(0, 5)]) == [(5, 1)]
