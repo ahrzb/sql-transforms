@@ -7,9 +7,21 @@ runs and the engine silently answered differently.
 
 Started as nine xfail-strict pins. As each was fixed its marker came off and
 the section above it became the account of what the fix was and why, so this
-file reads as history rather than as a list of complaints. `strict=True` on
-what remains means it can neither silently start passing nor silently stop
-failing. Tickets are TASK-69..TASK-78 in `backlog/tasks/`.
+file reads as history rather than as a list of complaints. Tickets are
+TASK-69..TASK-78 in `backlog/tasks/`.
+
+**Everything here PASSES.** Divergences still OPEN moved to
+`test_open_divergences.py` on 2026-08-16, one xfail-strict pin each, ticket
+named. The split is by INTENT: this file is behaviour we decided to KEEP and
+the ground for keeping it; that file is behaviour we decided to CHANGE. A
+reader who cannot tell the two apart at a glance either implements something
+we chose not to have, or walks past a real bug because the paragraph above it
+sounded like a rationale — the census that prompted the split found both
+mistakes already present in this file.
+
+So: an entry here owes a REASON, not just a description. Where a reason is a
+claim about DuckDB it has to be measured, and it has to stay true — one below
+had gone false and was propagating into a user-facing message.
 
 Feature pins do NOT live here — they live with their feature's tests
 (`test_decimals.py`, the width pin in `test_infer_arrow.py`). TASK-77 (an
@@ -1240,12 +1252,31 @@ def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
         fn.infer_rows([{"s": "one", "x": 1.0}])
 
 
-# TASK-88 (fuzz rounds 1+2, ~7 findings + the campaign timeouts). The
-# engine's string builder traps at 1 GiB; DuckDB sometimes serves the 2GB
-# result and sometimes errors its own builder message, so a giant literal
-# pad/repeat count is a run-time coin flip ACROSS engines. A literal count
-# that can exceed the budget now refuses at build by name. Data-driven
-# counts (a column, CAST(k AS INTEGER)) keep the documented runtime cap.
+# TASK-88 (fuzz rounds 1+2, ~7 findings + the campaign timeouts). A literal
+# pad/repeat count that can exceed the engine's 1 GiB string-builder budget
+# refuses at build by name. Data-driven counts (a column, CAST(k AS INTEGER))
+# keep the documented runtime cap.
+#
+# THE GROUND, restated 2026-08-16 because the old one was false. This block
+# used to say DuckDB "sometimes serves the 2GB result and sometimes errors",
+# making the refusal sound forced by their instability. Measured, DuckDB is
+# entirely deterministic:
+#
+#   repeat('a', n)   n <= 4294967295   serves (2 GiB took 9.0s)
+#                    n >  4294967295   Out of Range Error, every time, 0.00s
+#   lpad/rpad        n >  2147483647   Binder Error - their count parameter
+#                                      is declared INTEGER (that is TASK-82,
+#                                      a different fact entirely)
+#
+# Two deterministic errors for two unrelated reasons; no coin flip, no
+# spelling-dependence. So the honest ground is OURS and it is a judgement, not
+# a forced hand: a serving engine does not allocate a gigabyte per row. We
+# refuse where DuckDB would serve, which the match-or-refuse contract permits
+# — and a build-time refusal beats discovering it per-row in production.
+#
+# Stating it accurately matters beyond tidiness: the same false claim was
+# baked into the user-facing refusal text at frontend.rs, telling authors
+# DuckDB was unreliable when it is not.
 
 _SB_SCHEMA = pa.schema(
     [
@@ -1281,67 +1312,6 @@ def test_a_large_but_bounded_count_still_serves_and_matches():
     con.execute("INSERT INTO __THIS__ VALUES (1, 'ab')")
     want = con.execute(sql).to_arrow_table().to_pylist()
     assert got == want, f"{got} != {want}"
-
-
-# ---------------------------------------------------------------------------
-# TASK-115: a projected static column takes the JOIN KEY's width instead of
-# its own. Found by the widened fuzzer (seed 1379) while verifying TASK-96.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-115: projecting the static side of a join KEY reconstructs "
-    "it from the dynamic side, so it takes the ROW column's width instead of "
-    "the static column's own. int8 row key vs int64 static key emits int8; "
-    "DuckDB emits int64. Non-key static columns are unaffected.",
-)
-def test_projected_static_key_keeps_its_own_width():
-    row = pa.schema([pa.field("k", pa.int8(), nullable=False)])
-    static = pa.table({"c0": pa.array([5], pa.int64()), "v": pa.array([7], pa.int64())})
-    sql = "SELECT s.c0 AS o FROM __THIS__ LEFT JOIN s ON k = s.c0"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k TINYINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    want = con.execute(sql).to_arrow_table()
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
-    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=row))
-    assert want.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-
-
-# ---------------------------------------------------------------------------
-# TASK-116: a struct column is lanes in a row table and unserved in a static
-# one. Reported 2026-08-15; #157 made the refusal name the type, this pin is
-# for actually serving it.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-116: struct columns serve in a ROW table (TASK-56 flattens "
-    "them to lanes) and are unserved in a STATIC one, so the same column "
-    "binds or refuses depending only on which table it sits in.",
-)
-def test_struct_static_column_serves_its_lanes():
-    row = pa.schema([pa.field("k", pa.int64(), nullable=False)])
-    static = pa.table(
-        {
-            "id": pa.array([5], pa.int64()),
-            "w": pa.array([{"mean": 2.0}], pa.struct([("mean", pa.float64())])),
-        }
-    )
-    sql = "SELECT s.w.mean AS o FROM __THIS__ JOIN s ON k = s.id"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    want = con.execute(sql).to_arrow_table().to_pylist()
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
-    assert fn.infer_rows([{"k": 5}]) == want
 
 
 # TASK-113 AC #1: the refusal text must not assert DuckDB errors on an input
@@ -1456,29 +1426,6 @@ def test_refusal_keeps_the_true_claim_where_duckdb_really_errors(expr):
 # named refusal. Trapping at RUNTIME where DuckDB serves is the only outcome
 # the contract has no room for; a build-time no is always available.
 # ===========================================================================
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-117: `trapping_expr BETWEEN lit AND NULL` is statically NULL, "
-    "so DuckDB never evaluates the subject and the row simply filters. We "
-    "evaluate the subject first and trap. TASK-85 folds a strict op whose "
-    "SIBLING is NULL; here the trap is the thing being compared.",
-)
-def test_a_null_folded_predicate_elides_its_subject_too():
-    row = pa.schema([pa.field("s", pa.string(), nullable=False)])
-    rows = [{"s": "abc"}]  # not castable to DOUBLE — the trap
-    sql = (
-        "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) BETWEEN 61.591e0 AND NULL"
-    )
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES ('abc')")
-    want = con.execute(sql).fetchall()
-    assert want == [], "oracle moved — remeasure"
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
-    assert [tuple(r.values()) for r in fn.infer_rows(rows)] == want
-
-
 def test_duckdbs_trap_elision_is_syntactic_not_semantic():
     """The premises of the proof above, executable.
 
@@ -1509,60 +1456,3 @@ def test_duckdbs_trap_elision_is_syntactic_not_semantic():
     assert duck("SELECT 1 FROM t WHERE FALSE AND CAST(s AS DOUBLE) > 1")[0] == "rows"
     assert duck("SELECT 1 FROM t WHERE keep AND CAST(s AS DOUBLE) > 1")[0] == "rows"
     assert duck("SELECT 1 FROM t WHERE CAST(s AS DOUBLE) > 1 AND keep")[0] == "trap"
-
-
-# ---------------------------------------------------------------------------
-# TASK-118: an INT32 overflow consumed by a WIDENING CAST serves a wrong value.
-# TASK-84's block names `CAST(k AS INTEGER) * 2` as its residual; that case is
-# caught now. This one is not, and it is worse than a missed trap - we return a
-# number DuckDB never produces, with no refusal anywhere.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-118: (i + 1) over INT32_MAX overflows INT32 on DuckDB and "
-    "traps. Widening the result to BIGINT hides it here: we compute in the i64 "
-    "lane and serve 2147483648, a value DuckDB never returns.",
-)
-def test_int32_overflow_under_a_widening_cast_does_not_serve_a_wrong_value():
-    row = pa.schema([pa.field("i", pa.int32(), nullable=False)])
-    rows = [{"i": 2147483647}]
-    sql = "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (i INTEGER)")
-    con.execute("INSERT INTO __THIS__ VALUES (2147483647)")
-    with pytest.raises(duckdb.Error):
-        con.execute(sql).fetchall()  # oracle traps; if this stops, remeasure
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
-    with pytest.raises(ValueError, match="int32|INT32|[Oo]verflow"):
-        fn.infer_rows(rows)
-
-
-# ---------------------------------------------------------------------------
-# TASK-119: TABLESAMPLE is parsed and silently dropped. The TASK-69 block above
-# claims that class was closed by destructuring without `..`; that holds for
-# Query and Select, but TableFactor::Table { name, alias, .. } still swallows
-# `sample`. Worse than a dropped clause: it builds under shape="map", where we
-# certify one output row per input row.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-119: TABLESAMPLE n ROWS is parsed and dropped. DuckDB returns "
-    "n rows; we return the whole batch, and shape='map' certifies that as "
-    "one-out-per-row-in.",
-)
-def test_tablesample_is_refused_not_dropped():
-    row = pa.schema([pa.field("a", pa.int64(), nullable=False)])
-    rows = [{"a": i} for i in range(20)]
-    sql = "SELECT a FROM __THIS__ TABLESAMPLE 3 ROWS"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (a BIGINT)")
-    for r in rows:
-        con.execute("INSERT INTO __THIS__ VALUES (?)", [r["a"]])
-    assert len(con.execute(sql).fetchall()) == 3, "oracle moved — remeasure"
-
-    # Refusing by name is the contract-compliant answer; serving 20 is not.
-    with pytest.raises(ValueError, match="TABLESAMPLE|sample"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})

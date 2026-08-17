@@ -6565,22 +6565,29 @@ fn null_of(ty: Ty) -> SExpr {
 }
 
 /// TASK-88: a pad/repeat COUNT literal that can exceed the engine's 1 GiB
-/// string-builder budget refuses at build. DuckDB's behaviour past that
-/// size is a coin flip between serving the multi-GB string and its own
-/// builder error, so a giant literal count could never be a stable
-/// bit-for-bit answer; refusal is the sanctioned mode, and the judgement
-/// (no gigabyte allocations in a serving engine) is recorded on the
-/// ticket. Data-driven counts keep the runtime cap, documented in
+/// string-builder budget refuses at build.
+///
+/// The ground is OURS and it is a judgement: a serving engine does not
+/// allocate a gigabyte per row. Refusing where DuckDB serves is the
+/// sanctioned mode, and a build-time no beats meeting it per-row in
+/// production. Data-driven counts keep the runtime cap, documented in
 /// known-limitations.md.
+///
+/// This used to claim DuckDB's behaviour past the budget was "a coin flip"
+/// between serving and erroring. Measured 2026-08-16, that is false: repeat
+/// serves deterministically to 4294967295 bytes and errors deterministically
+/// above it, while lpad/rpad refuse past INTEGER at the binder because their
+/// count parameter is declared INTEGER (TASK-82, unrelated). We do not get to
+/// borrow their instability as a reason, because they have none.
 fn refuse_budget_breaking_count(name: &str, count: &SExpr) -> Result<(), PrepareError> {
     const BUDGET: i64 = 1 << 30; // bytes; an n-char 1-byte result is n bytes
     if let SKind::Lit(Lit::I64(n)) = fold(count.clone()).kind {
         if n > BUDGET {
             return Err(PrepareError::Bind(format!(
                 "{name} count {n} exceeds the 1 GiB string-builder budget — \
-                 the result could never serve; DuckDB's own behaviour past \
-                 this size is unstable (its builder error or a multi-GB \
-                 string, spelling-dependent)"
+                 this engine will not allocate a gigabyte per row, so the \
+                 result could never serve. DuckDB does serve it; refusing at \
+                 build is our deliberate limit, not a DuckDB restriction"
             )));
         }
     }
