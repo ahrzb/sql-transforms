@@ -11,7 +11,7 @@ labels:
   - parity
 dependencies: []
 documentation:
-  - packages/confit/tests/test_known_divergences.py
+  - packages/confit/tests/known_divergences/
 type: bug
 ordinal: 72000
 ---

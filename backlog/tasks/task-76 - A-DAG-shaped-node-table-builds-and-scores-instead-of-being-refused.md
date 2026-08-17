@@ -10,7 +10,7 @@ labels:
   - validation
 dependencies: []
 documentation:
-  - packages/confit/tests/test_known_divergences.py
+  - packages/confit/tests/known_divergences/test_model_tables.py
 type: bug
 ordinal: 69000
 ---
@@ -35,7 +35,7 @@ verified, 9 confirmed, 2 disputed, 1 refuted).
 
 Pinned xfail-strict, so it cannot silently start or stop failing. Full context
 for every finding is in the module docstring of
-`packages/confit/tests/test_known_divergences.py`.
+`packages/confit/tests/known_divergences/test_model_tables.py`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -81,7 +81,7 @@ lumped the two together, and only one half was ever missing.
 ### AC #4 done properly
 
 Every other refusal the spec claims is now exercised by construction rather
-than assumed, parametrised in `test_known_divergences.py`. All nine hold:
+than assumed, parametrised in `test_model_tables.py`. All nine hold:
 child index out of range; child preceding its parent (how a cycle would have
 to be spelled); node unreachable from the root; leaf with children; split node
 missing a child; feature beyond the declared width; node id out of dense

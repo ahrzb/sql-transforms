@@ -37,7 +37,7 @@ triage's scoreboard simply listed three tickets as To Do that were Done, and
 this one residual hid behind that.
 
 Pinned xfail-strict as `test_a_null_folded_predicate_elides_its_subject_too`
-in test_known_divergences.py.
+in test_open_divergences.py.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

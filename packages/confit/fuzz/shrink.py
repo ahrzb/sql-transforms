@@ -180,7 +180,10 @@ def main():
     print(f"  rows       = {small.rows}")
     for n, (sch, rows) in small.statics.items():
         print(f"  static {n}: {sch} {rows}")
-    print("\n-- pin sketch (tests/test_known_divergences.py) --")
+    # A fresh finding is a divergence we intend to CLOSE, so it belongs in the
+    # open file with a ticket - not in known_divergences/, which is behaviour
+    # we decided to keep.
+    print("\n-- pin sketch (tests/test_open_divergences.py, xfail-strict) --")
     print(f"""
 def test_fuzz_seed_{seed}():
     duck_check(

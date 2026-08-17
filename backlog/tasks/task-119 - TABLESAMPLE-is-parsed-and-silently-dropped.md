@@ -27,7 +27,7 @@ row - so the shape contract is satisfied by the very fact that the clause was
 ignored.
 
 TASK-69 closed the silently-dropped-clause class and its block in
-test_known_divergences.py explains the fix as destructuring without `..`, so a
+test_open_divergences.py explains the fix as destructuring without `..`, so a
 new clause breaks the build instead of being ignored. That holds for `Query`
 and `Select`. It does not hold at `TableFactor::Table { name, alias, .. }`
 (frontend.rs:565, 665, 862), which swallows `sample`.

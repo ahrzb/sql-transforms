@@ -68,5 +68,5 @@ by aab2995), then e1c62ae upgraded nullif to real DuckDB-matching int32
 typing once the TASK-79 width work landed - schema-parity-pinned in
 test_integer_widths.py::test_output_width_matches_duckdb. repeat's BLOB face
 stays a documented refusal (known-limitations line on the residual). Pins
-for both shapes per AC #3 live in test_known_divergences.py.
+for both shapes per AC #3 live in test_literal_typing.py.
 <!-- SECTION:NOTES:END -->

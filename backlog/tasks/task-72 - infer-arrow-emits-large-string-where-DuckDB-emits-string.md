@@ -11,7 +11,7 @@ labels:
   - parity
 dependencies: []
 documentation:
-  - packages/confit/tests/test_known_divergences.py
+  - packages/confit/tests/known_divergences/test_arrow_boundary.py
 type: bug
 ordinal: 65000
 ---
@@ -33,7 +33,7 @@ verified, 9 confirmed, 2 disputed, 1 refuted).
 
 Pinned xfail-strict, so it cannot silently start or stop failing. Full context
 for every finding is in the module docstring of
-`packages/confit/tests/test_known_divergences.py`.
+`packages/confit/tests/known_divergences/test_arrow_boundary.py`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -77,6 +77,6 @@ output is `int32` where ours is `int64`. Same consequence — `concat_tables`
 raises — but a different type and a different cause: it is the arrow-visible
 face of the documented "narrow integer widths don't exist" limitation.
 
-Pinned xfail-strict in `test_known_divergences.py` and noted in
+Pinned xfail-strict in `test_arrow_boundary.py` and noted in
 `docs/known-limitations.md`. It needs its own ticket. The scenario sweep
 allows exactly this one widening and nothing else, so it cannot quietly grow.

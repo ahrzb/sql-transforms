@@ -27,7 +27,7 @@ is INT32 arithmetic on DuckDB and overflows; we compute the narrow lane in i64
 (the deliberate erase strategy) and the widening cast then consumes the i64
 result before any range check sees it.
 
-TASK-84's block in test_known_divergences.py names `CAST(k AS INTEGER) * 2` as
+TASK-84's block in test_open_divergences.py names `CAST(k AS INTEGER) * 2` as
 its residual. That case is caught today. This one is not, and the difference
 matters: the caught case refuses, this one answers.
 
