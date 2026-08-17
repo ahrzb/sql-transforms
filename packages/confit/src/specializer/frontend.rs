@@ -24,7 +24,8 @@
 
 use sqlparser::ast::{
     AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator,
-    SelectItem, SetExpr, Statement, Subscript, TableFactor, UnaryOperator, Value as SqlValue,
+    SelectItem, SetExpr, Statement, Subscript, TableAlias, TableFactor, UnaryOperator,
+    Value as SqlValue,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -62,6 +63,63 @@ impl std::fmt::Display for PrepareError {
 
 fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
+}
+
+/// The ONLY place `TableFactor::Table` is destructured, and it is
+/// destructured EXHAUSTIVELY.
+///
+/// TASK-69 established the doctrine — no `..` in a sqlparser AST pattern, so
+/// a clause we have never seen breaks the build instead of being silently
+/// dropped — and applied it to `Query` and `Select`. It never reached the
+/// relation, where three separate `TableFactor::Table { name, alias, .. }`
+/// sites swallowed every modifier sqlparser can hang off a table name. That
+/// is how `TABLESAMPLE 3 ROWS` was parsed and ignored for a milestone
+/// (TASK-119): DuckDB served 3 rows, we served all 20, under `shape="map"`,
+/// whose one-row-out-per-row-in certificate the dropped clause satisfied.
+///
+/// Every field other than `name`/`alias` refuses by name. Returns `None` for
+/// a non-`Table` relation so each caller keeps its own wording for that.
+fn plain_table(
+    tf: &TableFactor,
+) -> Result<Option<(String, Option<&TableAlias>)>, PrepareError> {
+    let TableFactor::Table {
+        name,
+        alias,
+        args,
+        with_hints,
+        version,
+        with_ordinality,
+        partitions,
+        json_path,
+        sample,
+        index_hints,
+    } = tf
+    else {
+        return Ok(None);
+    };
+    let modifier = if args.is_some() {
+        Some("table-valued function arguments")
+    } else if !with_hints.is_empty() {
+        Some("WITH (...) table hints")
+    } else if version.is_some() {
+        Some("a table version qualifier")
+    } else if *with_ordinality {
+        Some("WITH ORDINALITY")
+    } else if !partitions.is_empty() {
+        Some("PARTITION (...) selection")
+    } else if json_path.is_some() {
+        Some("a JSON path on a relation")
+    } else if sample.is_some() {
+        Some("TABLESAMPLE")
+    } else if !index_hints.is_empty() {
+        Some("index hints")
+    } else {
+        None
+    };
+    if let Some(m) = modifier {
+        return Err(unsup(format!("{m} on relation '{name}'")));
+    }
+    Ok(Some((name.to_string(), alias.as_ref())))
 }
 
 /// What the TASK-92 resolution head hands a table-resolved arm.
@@ -561,9 +619,8 @@ fn bind_from<'a>(
     let Some((table, comma_rels)) = select.from.split_first() else {
         return Err(unsup("FROM-less SELECT"));
     };
-    let dyn_name = match &table.relation {
-        TableFactor::Table { name, alias, .. } => {
-            let n = name.to_string();
+    let dyn_name = match plain_table(&table.relation)? {
+        Some((n, alias)) => {
             // The engine's registry is SCHEMA-LESS: a single schema
             // qualifier is accepted when the table part matches the
             // registered bare name (TASK-55, amends the wave-5 main.-only
@@ -620,7 +677,7 @@ fn bind_from<'a>(
                 None => (n, None),
             }
         }
-        other => return Err(unsup(format!("FROM {other}"))),
+        None => return Err(unsup(format!("FROM {}", table.relation))),
     };
     let (dyn_name, renamed_cols) = dyn_name;
 
@@ -661,16 +718,14 @@ fn bind_from<'a>(
             JoinOperator::Left(c) | JoinOperator::LeftOuter(c) => (JoinKind::Left, c),
             other => return Err(unsup(format!("join type {other:?}"))),
         };
-        let (raw_name, scope_name) = match &join.relation {
-            TableFactor::Table { name, alias, .. } => {
-                let n = name.to_string();
+        let (raw_name, scope_name) = match plain_table(&join.relation)? {
+            Some((n, alias)) => {
                 let s = alias
-                    .as_ref()
                     .map(|a| a.name.value.clone())
                     .unwrap_or_else(|| n.clone());
                 (n, s)
             }
-            other => return Err(unsup(format!("JOIN {other}"))),
+            None => return Err(unsup(format!("JOIN {}", join.relation))),
         };
         if raw_name.eq_ignore_ascii_case(this_name) {
             if !many {
@@ -858,16 +913,14 @@ fn bind_from<'a>(
         if !rel.joins.is_empty() {
             return Err(unsup("JOIN attached to a comma-joined relation"));
         }
-        let (raw_name, scope_name) = match &rel.relation {
-            TableFactor::Table { name, alias, .. } => {
-                let n = name.to_string();
+        let (raw_name, scope_name) = match plain_table(&rel.relation)? {
+            Some((n, alias)) => {
                 let s = alias
-                    .as_ref()
                     .map(|a| a.name.value.clone())
                     .unwrap_or_else(|| n.clone());
                 (n, s)
             }
-            other => return Err(unsup(format!("FROM {other}"))),
+            None => return Err(unsup(format!("FROM {}", rel.relation))),
         };
         if raw_name.eq_ignore_ascii_case(this_name) {
             if !many {
@@ -2393,12 +2446,23 @@ impl Binder<'_> {
                 else_result,
                 ..
             } => self.case(operand.as_deref(), conditions, else_result.as_deref()),
+            // Exhaustive on purpose (TASK-119's audit): `array` and `format`
+            // are real modifiers, not spelling flags, and the `..` that used
+            // to sit here dropped both. Same class as the swallowed
+            // TABLESAMPLE — refuse rather than answer a different query.
             SqlExpr::Cast {
                 kind,
                 expr,
                 data_type,
-                ..
+                array,
+                format,
             } => {
+                if *array {
+                    return Err(unsup("CAST(... AS <type> ARRAY)"));
+                }
+                if format.is_some() {
+                    return Err(unsup("CAST(... FORMAT ...)"));
+                }
                 let trying = match kind {
                     CastKind::Cast | CastKind::DoubleColon => false,
                     CastKind::TryCast | CastKind::SafeCast => true,

@@ -141,32 +141,3 @@ def test_int32_overflow_under_a_widening_cast_does_not_serve_a_wrong_value():
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
     with pytest.raises(ValueError, match="int32|INT32|[Oo]verflow"):
         fn.infer_rows(rows)
-
-
-# ---------------------------------------------------------------------------
-# TASK-119: TABLESAMPLE is parsed and silently dropped. The TASK-69 block above
-# claims that class was closed by destructuring without `..`; that holds for
-# Query and Select, but TableFactor::Table { name, alias, .. } still swallows
-# `sample`. Worse than a dropped clause: it builds under shape="map", where we
-# certify one output row per input row.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-119: TABLESAMPLE n ROWS is parsed and dropped. DuckDB returns "
-    "n rows; we return the whole batch, and shape='map' certifies that as "
-    "one-out-per-row-in.",
-)
-def test_tablesample_is_refused_not_dropped():
-    row = pa.schema([pa.field("a", pa.int64(), nullable=False)])
-    rows = [{"a": i} for i in range(20)]
-    sql = "SELECT a FROM __THIS__ TABLESAMPLE 3 ROWS"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (a BIGINT)")
-    for r in rows:
-        con.execute("INSERT INTO __THIS__ VALUES (?)", [r["a"]])
-    assert len(con.execute(sql).fetchall()) == 3, "oracle moved — remeasure"
-
-    # Refusing by name is the contract-compliant answer; serving 20 is not.
-    with pytest.raises(ValueError, match="TABLESAMPLE|sample"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
