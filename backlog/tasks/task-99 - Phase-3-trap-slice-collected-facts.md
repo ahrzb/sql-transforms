@@ -36,6 +36,12 @@ fractional/exponent strings, and (e) the constant-through-TRY_CAST push. The
 narrow-emit interim refusals are deliberately NOT deleted yet -- with the
 production-site trap in front of them they now only fire where nothing
 produced the value, so they are a cheap backstop rather than the mechanism.
+
+**2026-08-18 (AmirHossein's call): do the REMAINDER next, and do all of it.**
+Asked whether to keep the interim narrow-emit refusals as a backstop or obey
+AC #2 and delete them, the answer was the full remainder -- so AC #2 stands as
+written and the interim refusals go when (b)-(e) land. Sequenced after the
+current divergence batch, not before it.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

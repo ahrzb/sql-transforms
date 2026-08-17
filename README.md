@@ -9,7 +9,7 @@ This repository is a workspace of two packages:
 
 | package | what it is |
 |---|---|
-| [`packages/confit`](packages/confit) | **Confit** — the serving engine. SQL plus static tables frozen at fit time are partially evaluated, once, into a native function. Serves bit-exact with DuckDB or refuses at build time. Usable on its own. |
+| [`packages/confit`](packages/confit) | **Confit** — the serving engine. SQL plus static tables frozen at fit time are partially evaluated, once, into a native function. Serves bit-exact with DuckDB (optimizer-off reading) or refuses at build time. Usable on its own. |
 | [`packages/sql-transform`](packages/sql-transform) | The authoring surface: `SQLProjection`. The **fit half works**: window aggregates over `__THIS__` are marginalized into materialized params tables plus a rewritten serving SQL. The serving half (through Confit) is a later loop. |
 
 ## Installation
@@ -99,8 +99,10 @@ SQL over __THIS__
 ```
 
 Confit's contract: SQL plus frozen tables either specialize into a function
-bit-exact with DuckDB, or construction raises and names the construct it will
-not serve — see [Confit's known limitations](docs/known-limitations.md).
+bit-exact with DuckDB (the optimizer-off reading — `PRAGMA
+disable_optimizer`, and [why](docs/known-limitations.md)), or construction
+raises and names the construct it will not serve — see
+[Confit's known limitations](docs/known-limitations.md).
 
 ## What Confit supports
 
