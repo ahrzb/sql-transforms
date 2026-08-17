@@ -1,10 +1,9 @@
 """Divergences we intend to CLOSE — one xfail-strict pin each, ticket named.
 
-**This file is currently EMPTY, and that is the finding, not an oversight.**
-Every pin it held (TASK-115, 116, 117, 118, 119) was closed on 2026-08-17;
-each fix moved its pin to the suite that owns the subject, where it now
-PASSES against the live oracle. Adding one here is how a new divergence gets
-recorded, and emptying it again is what closing one looks like.
+It emptied on 2026-08-17 when TASK-115, 116, 117, 118 and 119 all closed, and
+refilled the same day from the campaign that followed the oracle change --
+which is the intended rhythm, not churn. Adding a pin here is how a new
+divergence gets recorded; emptying it again is what closing one looks like.
 
 The split from `known_divergences/` is by INTENT, not by severity:
 
@@ -29,3 +28,77 @@ worse than no pin: it certifies work nobody did.
 """
 
 from __future__ import annotations
+
+import duckdb
+import pyarrow as pa
+import pytest
+from confit import DuckDBInferFn
+
+
+# ---------------------------------------------------------------------------
+# TASK-121: a bare struct path whose HEAD name also binds in a join scope is
+# ambiguous on DuckDB and binds here. 16 of the 28 findings in the 2026-08-17
+# campaign, and the largest single class the fuzzer sees.
+# ---------------------------------------------------------------------------
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-121: `ON (c0.f0 = s0.c0)` where __THIS__.c0 is a struct and "
+    "s0.c0 is a column -- DuckDB refuses as ambiguous before it looks at .f0; "
+    "we resolve to the struct and answer. The BARE-column case already refuses; "
+    "the struct-path route does not consult the join scopes.",
+)
+def test_an_ambiguous_struct_path_refuses():
+    row = pa.schema(
+        [
+            pa.field("c0", pa.struct([("f0", pa.int64())])),
+            pa.field("v", pa.int64(), nullable=False),
+        ]
+    )
+    static = pa.table({"c0": pa.array([1], pa.int64()), "w": pa.array([9], pa.int64())})
+    sql = "SELECT v AS o FROM __THIS__ LEFT JOIN s0 ON (c0.f0 = s0.c0)"
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (c0 STRUCT(f0 BIGINT), v BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES ({'f0': 1}, 2)")
+    con.register("sa", static)
+    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
+    with pytest.raises(duckdb.Error, match="[Aa]mbiguous"):
+        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+
+    with pytest.raises(ValueError, match="[Aa]mbiguous"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
+
+
+# ---------------------------------------------------------------------------
+# TASK-122: narrow `%` by -1 at the width's MIN. The one narrow overflow
+# TASK-118's result-range check structurally cannot see, because the overflow
+# is in the OPERATION and the result (0) is in range.
+# ---------------------------------------------------------------------------
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-122: `i % -1` over INT32_MIN overflows the checked division "
+    "on DuckDB. We compute in the i64 lane, where it is 0, and the range check "
+    "on the result sees nothing wrong with 0. `i // -1` already traps because "
+    "its result leaves the width.",
+)
+@pytest.mark.parametrize(
+    ("arrow_ty", "ddl", "lo"),
+    [
+        (pa.int8(), "TINYINT", -128),
+        (pa.int16(), "SMALLINT", -32768),
+        (pa.int32(), "INTEGER", -2147483648),
+    ],
+)
+def test_narrow_modulo_by_minus_one_at_min_overflows(arrow_ty, ddl, lo):
+    row = pa.schema([pa.field("i", arrow_ty, nullable=False)])
+    sql = "SELECT (i % -1) AS o FROM __THIS__"
+
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE __THIS__ (i {ddl})")
+    con.execute("INSERT INTO __THIS__ VALUES (?)", [lo])
+    with pytest.raises(duckdb.Error, match="Overflow"):
+        con.execute(sql).fetchall()  # oracle overflows; if this stops, remeasure
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
+    with pytest.raises(Exception, match="[Oo]verflow|range"):
+        fn.infer_rows([{"i": lo}])
