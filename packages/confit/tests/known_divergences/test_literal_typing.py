@@ -1,0 +1,169 @@
+"""Literal and NULL typing: bare NULLs, INT32 overflow, signed zero
+(TASK-86, TASK-84, TASK-80).
+
+Split out of test_known_divergences.py 2026-08-16; see that file's docstring
+for what belongs here (kept behaviour + its ground) versus in
+test_open_divergences.py (behaviour we intend to change).
+"""
+
+from __future__ import annotations
+
+import duckdb
+import pyarrow as pa
+import pytest
+from confit import DuckDBInferFn
+
+# TASK-86 (fuzz campaign 2026-08-11, 11 schema findings + 5 downstream
+# binder splits). DuckDB types a bare NULL argument FIRST (INTEGER, or the
+# BLOB overload), and lets IT drive the signature -- so nullif(NULL, 84.7e0)
+# comes back int32 there and double here, and repeat(NULL, n) is BLOB there
+# and string here, which then splits every OUTER call binding a BLOB
+# (strpos/ltrim/lower/levenshtein/LIKE -- the campaign's five singleton
+# "No function matches" findings). Values all NULL, schemas apart, so
+# concat_tables against the oracle raises: the TASK-72/79 consequence
+# through a different door. The two divergent adopters now refuse by name;
+# CAST(NULL AS ...) stays the documented spelling, and adopters that agree
+# with DuckDB (upper(NULL), coalesce(NULL, x), nullif(x, NULL)) are
+# untouched.
+
+_BN_SCHEMA = pa.schema(
+    [
+        pa.field("k", pa.int64(), nullable=False),
+        pa.field("s", pa.string(), nullable=False),
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # The nullif face closed with m-8 phase 2 (int32 is real; parity
+        # pinned in test_integer_widths.py). These two are the BLOB face.
+        "SELECT repeat(NULL, 3) AS o FROM __THIS__",
+        "SELECT ltrim(repeat(NULL, k)) AS o FROM __THIS__",
+    ],
+)
+def test_a_divergently_typed_bare_null_argument_refuses(sql):
+    with pytest.raises(ValueError, match="NULL"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _BN_SCHEMA}, static_tables={})
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT nullif(CAST(NULL AS DOUBLE), 84.754e0) AS o FROM __THIS__",
+        "SELECT nullif(84.754e0, NULL) AS o FROM __THIS__",
+        "SELECT upper(NULL) AS o FROM __THIS__",
+        "SELECT repeat('ab', NULL) AS o FROM __THIS__",
+        "SELECT coalesce(NULL, 2.5e0) AS o FROM __THIS__",
+    ],
+)
+def test_agreeing_null_adopters_still_bind_and_match(sql):
+    """Everywhere the adopted type EQUALS DuckDB's inference, bare NULL keeps
+    working -- schema compared too, that being the whole point."""
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _BN_SCHEMA}, static_tables={})
+    got = fn.infer_arrow(
+        pa.table({"k": pa.array([2], pa.int64()), "s": pa.array(["ab"], pa.string())})
+    )
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
+    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
+    want = con.execute(sql).to_arrow_table()
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
+
+
+# TASK-84 (fuzz campaign 2026-08-11, 16 DIVERGE_TRAP findings). DuckDB types
+# integer literals INTEGER and computes their arithmetic in 32 bits, so
+# `-6 * (- 2147483647)` ERRORS there -- while the engine's single i64 width
+# served 12884901882 where the oracle traps. Literal-shaped integer
+# arithmetic is now evaluated at build in checked int32, DuckDB's own
+# semantics, and a subtree that would trap refuses by name. The residual --
+# `CAST(k AS INTEGER) * 2` trapping data-dependently at row time -- needs
+# the declared-width design (TASK-79) and stays ticketed there; a BIGINT
+# operand anywhere in the expression keeps 64-bit math on both engines.
+
+_OV_SCHEMA = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT (-6 * (- 2147483647)) AS o FROM __THIS__",
+        "SELECT ((2000000000 + 2000000000) - 2000000000) AS o FROM __THIS__",
+        "SELECT (2147483647 + 1) AS o FROM __THIS__",
+    ],
+)
+def test_int32_literal_overflow_refuses_where_duckdb_traps(sql):
+    with pytest.raises(ValueError, match="INTEGER|int32|32"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": _OV_SCHEMA}, static_tables={})
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    with pytest.raises(Exception, match="[Oo]verflow"):
+        con.execute(sql).fetchall()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT (-6 * CAST(-2147483647 AS BIGINT)) AS o FROM __THIS__",
+        "SELECT (k * 2147483647) AS o FROM __THIS__",
+        "SELECT (2 + 3) AS o FROM __THIS__",
+        "SELECT (2000000000 % 0 + 1) AS o FROM __THIS__",
+    ],
+)
+def test_bigint_and_in_range_literal_arithmetic_still_matches(sql):
+    """A BIGINT operand keeps 64-bit math on BOTH engines; in-range literal
+    arithmetic and the measured INTEGER%0->NULL stay served and matching."""
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _OV_SCHEMA}, static_tables={})
+    got = fn.infer_rows([{"k": 2}])
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (2)")
+    want = con.execute(sql).to_arrow_table().to_pylist()
+    key = lambda r: sorted((c, repr(v)) for c, v in r.items())  # noqa: E731
+    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
+
+
+# TASK-80 (fuzz campaign 2026-08-11, 113 of 963 findings). Unary minus was
+# lowered as `0 - x` -- the comment on that lowering even said so -- and IEEE
+# `0.0 - 0.0` is +0.0, so the sign of negative zero vanished everywhere it
+# could arise: the folded literal `-0.0e0`, runtime `(- x)` at x = 0.0, and
+# any product with a signed zero operand fed through the fold. Observable at
+# any magnitude through division (the sign of infinity) and as text through
+# CAST AS VARCHAR. The fix subtracts from -0.0 for FLOAT operands, which is
+# exact IEEE negation for every double; the integer path keeps 0 - x and its
+# i64::MIN trap, matching DuckDB.
+
+_NEG_SCHEMA = pa.schema([pa.field("x", pa.float64(), nullable=False)])
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    ("sql", "rows"),
+    [
+        ("SELECT -0.0e0 AS o0 FROM __THIS__", [{"x": 1.0}]),
+        ("SELECT (- x) AS o0 FROM __THIS__", [{"x": 0.0}]),
+        ("SELECT (- (x * -1.5e0)) AS o0 FROM __THIS__", [{"x": -0.0}]),
+        ("SELECT (1.0e0 / (x * -0.0e0)) AS o0 FROM __THIS__", [{"x": 1.0}]),
+        ("SELECT CAST((- x) AS VARCHAR) AS o0 FROM __THIS__", [{"x": 0.0}]),
+    ],
+)
+def test_negative_zero_keeps_its_sign(sql, rows, backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NEG_SCHEMA}, static_tables={})
+    got = fn.infer_rows(rows)
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (x DOUBLE)")
+    con.executemany("INSERT INTO __THIS__ VALUES (?)", [(r["x"],) for r in rows])
+    want = con.execute(sql).to_arrow_table().to_pylist()
+    key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
+    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"

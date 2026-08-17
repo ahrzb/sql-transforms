@@ -42,7 +42,7 @@ DIVERGE_TRAP findings in the 20k campaign (seed 1547 is the sample above).
       oracle errors
 - [ ] #2 The decision is written into docs/known-limitations.md alongside the
       TASK-79 width note, since they are one design question
-- [ ] #3 Executable pin(s) in test_known_divergences.py
+- [ ] #3 Executable pin(s) in test_literal_typing.py
 <!-- AC:END -->
 
 ## Implementation Notes

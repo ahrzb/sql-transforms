@@ -41,7 +41,7 @@ reachable at all because that campaign now generates narrow static columns.
 Pre-exists TASK-96 — identical count in campaigns before and after it.
 
 Pinned xfail-strict as `test_projected_static_key_keeps_its_own_width` in
-test_known_divergences.py.
+test_open_divergences.py.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

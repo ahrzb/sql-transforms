@@ -10,7 +10,7 @@ labels:
   - parity
 dependencies: []
 documentation:
-  - packages/confit/tests/test_known_divergences.py
+  - packages/confit/tests/known_divergences/test_cast_semantics.py
 type: bug
 ordinal: 63000
 ---
@@ -42,7 +42,7 @@ verified, 9 confirmed, 2 disputed, 1 refuted).
 
 Pinned xfail-strict, so it cannot silently start or stop failing. Full context
 for every finding is in the module docstring of
-`packages/confit/tests/test_known_divergences.py`.
+`packages/confit/tests/known_divergences/test_cast_semantics.py`.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

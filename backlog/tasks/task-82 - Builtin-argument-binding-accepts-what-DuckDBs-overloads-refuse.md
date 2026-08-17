@@ -62,7 +62,7 @@ refuses (cf6284c, plus aa5f9a5's ordering fix so a NULL string cannot smuggle
 the count past the check; both survive the later width refactor as a real
 type check on the bound count). The four NULL-typed singletons were
 root-caused to bare-NULL typing and fixed under TASK-86 (7f5acdb), per this
-ticket's own fold-in-or-ticket clause. Pins live in test_known_divergences.py.
+ticket's own fold-in-or-ticket clause. Pins live in test_string_budget.py.
 The one remaining instance of this class found by the TASK-92 audit -
 round/trunc's digits slot binding any I64 - is ticketed as TASK-97, with a
 fix in flight on branch task-97.

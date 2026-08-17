@@ -69,7 +69,7 @@ Also undecided: a flat arrow column literally named `"w.x.y.z.a"` sitting
 beside a struct `w`.
 
 Pinned xfail-strict as `test_struct_static_column_serves_its_lanes` in
-test_known_divergences.py.
+test_open_divergences.py.
 
 Related: TASK-114 is the same shape on the OTHER boundary (`infer_arrow`
 refusing a struct ROW schema). Neither blocks the other.
