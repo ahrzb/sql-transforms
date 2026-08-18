@@ -102,3 +102,122 @@ def test_narrow_modulo_by_minus_one_at_min_overflows(arrow_ty, ddl, lo):
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
     with pytest.raises(Exception, match="[Oo]verflow|range"):
         fn.infer_rows([{"i": lo}])
+
+
+# ---------------------------------------------------------------------------
+# TASK-124: `in_filter` is a STATEMENT-level flag, but DuckDB's laziness is a
+# property of the CONTEXT a boolean sits in, and that context recurses. Four
+# divergences, both directions, all one nesting level below the top-level AND
+# spine that `dfb3a99` measured and got right.
+# ---------------------------------------------------------------------------
+_SC_SCHEMA = pa.schema([pa.field("b", pa.bool_()), pa.field("s", pa.string())])
+_SC_ROWS = [
+    {"b": None, "s": "abc"},
+    {"b": True, "s": "1.5"},
+    {"b": False, "s": "abc"},
+]
+_SC_TRAP = "CAST(s AS DOUBLE) > 1"
+
+
+def _sc_duck(sql: str, rows: list[dict]) -> list[tuple]:
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (b BOOLEAN, s VARCHAR)")
+    for r in rows:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["b"], r["s"]])
+    return con.execute(sql).fetchall()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-124: selection context stops at the top-level AND spine. A "
+    "conjunction nested under OR, or used as a CASE condition (in a PROJECTION, "
+    "where `in_filter` is false), loses its laziness and evaluates a trapping "
+    "operand DuckDB never reaches. We trap at runtime where BOTH readings serve.",
+)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # nested one level under OR
+        f"SELECT s AS o FROM __THIS__ WHERE (b AND {_SC_TRAP}) OR TRUE",
+        # a CASE condition in a projection -- `in_filter` reports false here
+        f"SELECT CASE WHEN (b AND {_SC_TRAP}) THEN 1 ELSE 2 END AS o FROM __THIS__",
+        # ... and a CASE condition under a filter, which is still not the spine
+        f"SELECT s AS o FROM __THIS__ WHERE CASE WHEN (b AND {_SC_TRAP}) "
+        "THEN TRUE ELSE TRUE END",
+    ],
+)
+def test_a_nested_conjunct_keeps_its_laziness(sql):
+    want = _sc_duck(sql, _SC_ROWS)  # oracle serves; if this raises, remeasure
+    assert len(want) == 3
+
+    shape = "filter" if " WHERE " in sql else None
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _SC_SCHEMA}, static_tables={}, shape=shape
+    )
+    assert [tuple(x.values()) for x in fn.infer_rows(_SC_ROWS)] == want
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-124: the mirror. NOT and IS NULL read their operand as a "
+    "VALUE, so DuckDB evaluates the conjunction eagerly and overflows even "
+    "though the left operand is FALSE. `in_filter` blankets the whole predicate "
+    "tree, so we short-circuit and ANSWER a query DuckDB refuses.",
+)
+@pytest.mark.parametrize(
+    "pred", [f"NOT (b AND {_SC_TRAP})", f"(b AND {_SC_TRAP}) IS NULL"]
+)
+def test_a_boolean_in_value_context_is_eager(pred):
+    sql = f"SELECT s AS o FROM __THIS__ WHERE {pred}"
+    rows = [{"b": False, "s": "abc"}]
+
+    with pytest.raises(duckdb.Error, match="Conversion Error"):
+        _sc_duck(sql, rows)  # oracle refuses; if this stops, remeasure
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _SC_SCHEMA}, static_tables={}, shape="filter"
+    )
+    with pytest.raises(Exception, match="[Cc]onversion|cast"):
+        fn.infer_rows(rows)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-124, the many path: `flatten_and` runs only on the scalar "
+    "route, so the join filter lowers its predicate whole and `kleene_shortcut` "
+    "drops only on a DECIDING operand, never on a NULL one. The identical "
+    "predicate without the join serves correctly.",
+)
+@pytest.mark.parametrize("join", ["JOIN", "LEFT JOIN"])
+def test_a_null_conjunct_in_a_many_join_filter_drops_the_row(join):
+    row = pa.schema(
+        [
+            pa.field("c0", pa.int64()),
+            pa.field("b", pa.bool_()),
+            pa.field("s", pa.string()),
+        ]
+    )
+    static = pa.table(
+        {"k": pa.array([1, 1], pa.int64()), "v": pa.array([10, 20], pa.int64())}
+    )
+    rows = [{"c0": 1, "b": None, "s": "abc"}, {"c0": 1, "b": True, "s": "1.5"}]
+    sql = (
+        f"SELECT s0.v AS o FROM __THIS__ {join} s0 ON c0 = s0.k "
+        f"WHERE (b AND {_SC_TRAP})"
+    )
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, b BOOLEAN, s VARCHAR)")
+    for r in rows:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?, ?)", [r["c0"], r["b"], r["s"]])
+    con.execute("CREATE TABLE s0 (k BIGINT, v BIGINT)")
+    con.execute("INSERT INTO s0 VALUES (1, 10), (1, 20)")
+    want = con.execute(sql).fetchall()  # oracle serves; if this raises, remeasure
+    # sorted: the two READINGS disagree on row order here, so order is not what
+    # this pin is about -- the trap is.
+    assert sorted(want) == [(10,), (20,)]
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": row}, static_tables={"s0": static}, shape="many"
+    )
+    assert sorted(tuple(x.values()) for x in fn.infer_rows(rows)) == sorted(want)

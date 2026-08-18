@@ -38,6 +38,27 @@ with identical contents. Confit compiles once against a *schema* and serves
 many batches; it never sees a table, let alone its history. A target you
 cannot compute from the query is not a target.
 
+**One place the contract is currently BROKEN** (found 2026-08-18, tracked as
+TASK-124, pinned in
+[`packages/confit/tests/test_open_divergences.py`](../packages/confit/tests/test_open_divergences.py)).
+Boolean short-circuit is decided per *statement* rather than per *context*, and
+DuckDB decides it per context. One nesting level below a top-level `AND`, both
+outcomes above can fail:
+
+```sql
+-- we TRAP at runtime; DuckDB serves 3 rows, optimizer on OR off
+SELECT s FROM t WHERE (b AND CAST(s AS DOUBLE) > 1) OR TRUE
+
+-- we SERVE []; DuckDB refuses the query, optimizer on or off
+SELECT s FROM t WHERE (b AND CAST(s AS DOUBLE) > 1) IS NULL
+```
+
+The first is the failure this document says cannot happen: a runtime error on
+a query DuckDB answers. It needs `b` to be NULL for some row, a trapping
+sibling conjunct, and a surrounding `OR`, `CASE WHEN`, `NOT` or `IS NULL` --
+not a top-level `AND`, which is correct. Until TASK-124 lands, treat a
+conjunction that is not at the top of a `WHERE` as unverified.
+
 ---
 
 ## 1. The specialization bargain (inherent to the engine model)
@@ -240,7 +261,7 @@ our bookkeeping — file it.
 
 ## 7. How this document stays honest
 
-Three mechanisms, all in the normal test gate:
+Four mechanisms, all in the normal test gate:
 
 1. **The corpus replay** (678 statements mined from DuckDB's test suite):
    every statement must match bit-for-bit, reject cleanly, or be a named
