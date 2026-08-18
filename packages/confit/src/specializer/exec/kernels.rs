@@ -84,8 +84,9 @@ pub(super) fn call_extern(
 /// (and therefore every real query and the mined corpus) take; DuckDB's own
 /// constant-fold path disagrees with it on negative starts (measured
 /// 2026-07-26, see the builtin-pins spec). Codepoints, NOT grapheme
-/// clusters. 1-based positions: a negative start counts from the end and
-/// clamps to 1 (`rs = max(n + start + 1, 1)`) while start 0 stays virtual;
+/// clusters. 1-based positions: a negative start counts from the end
+/// (`rs = n + start + 1`, NOT clamped -- see the body) while start 0 stays
+/// virtual;
 /// a non-negative length runs forward `[rs, rs+len)`, a NEGATIVE length
 /// slices BACKWARDS `[rs+len, rs)`; `len: None` is the 2-arg rest-of-string
 /// form.

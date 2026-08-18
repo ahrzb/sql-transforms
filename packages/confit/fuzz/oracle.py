@@ -26,11 +26,12 @@ instead of needing a human to reason about fold visibility:
   ours == off, off != on   DIVERGE_OPT. We match eager semantics; an optimizer
                            pass makes the user's DuckDB answer differently, so
                            this is user-visible and needs a decision.
-  ours == on, off != on    OPT_EMULATED. We deliberately reproduce a pass
-                           (TASK-85/87/117's folds, TASK-118's comparison
-                           shift, the IS NULL nullness rewrite). Not a
-                           finding — but counted, so a campaign shows which
-                           emulations are actually exercised.
+  ours == on, off != on    OPT_EMULATED. We answer like the optimizer and
+                           unlike the oracle, which means we are reproducing
+                           a plan-rewrite pass. Since 2026-08-17 that is a
+                           BUG, not a note: the emulations this docstring used
+                           to list were all deleted that day, and the class is
+                           empty. If it refills, something reintroduced one.
 
 Why the optimizer-off run is the BASELINE and not merely a second opinion: it
 is the only one of the two whose answer is a function of the query. The
