@@ -32,3 +32,6 @@ wheels/
 **/confit/_engine*.pyd
 **/confit/_engine*.pdb
 spark-warehouse/
+
+# fuzz runner default --out, when launched from the repo root
+/findings.jsonl
