@@ -74,7 +74,7 @@ KINDS = (
     "AGREE",
     "AGREE_TRAP",
     # we match optimizer-ON against an eager baseline that disagrees: a pass
-    # we reproduce on purpose. Not a finding, but counted.
+    # we are reproducing. Since the oracle moved, that is a FINDING.
     "OPT_EMULATED",
     "REFUSED",
     "SKIP",

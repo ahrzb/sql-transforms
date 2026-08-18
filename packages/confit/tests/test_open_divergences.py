@@ -221,3 +221,163 @@ def test_a_null_conjunct_in_a_many_join_filter_drops_the_row(join):
         sql, row_tables={"__THIS__": row}, static_tables={"s0": static}, shape="many"
     )
     assert sorted(tuple(x.values()) for x in fn.infer_rows(rows)) == sorted(want)
+
+
+# ---------------------------------------------------------------------------
+# TASK-125/126/127: the relation, again. `972fd72` made the DESTRUCTURE of
+# `TableFactor::Table` exhaustive; these are the three places the clause is
+# still lost one level below that -- in the star, in the alias's consumer, and
+# in the name lookup.
+# ---------------------------------------------------------------------------
+_REL_ROW = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+_REL_ROWS = [{"k": 1}]
+_S_STRUCT = pa.table(
+    {
+        "id": pa.array([1], pa.int64()),
+        "w": pa.array(
+            [{"mean": 1.5, "sd": 0.25}],
+            pa.struct([("mean", pa.float64()), ("sd", pa.float64())]),
+        ),
+        "z": pa.array([7], pa.int64()),
+    }
+)
+_S_OPAQUE = pa.table(
+    {
+        "id": pa.array([1], pa.int64()),
+        "ts": pa.array([0], pa.timestamp("us")),
+        "z": pa.array([7], pa.int64()),
+    }
+)
+
+
+def _rel_duck(sql: str, ddl: str, insert: str):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    con.execute(ddl)
+    con.execute(insert)
+    res = con.execute(sql)
+    return [d[0] for d in res.description], res.fetchall()
+
+
+_STRUCT_DDL = "CREATE TABLE s (id BIGINT, w STRUCT(mean DOUBLE, sd DOUBLE), z BIGINT)"
+_STRUCT_INS = "INSERT INTO s VALUES (1, {'mean': 1.5, 'sd': 0.25}, 7)"
+_OPAQUE_DDL = "CREATE TABLE s (id BIGINT, ts TIMESTAMP, z BIGINT)"
+_OPAQUE_INS = "INSERT INTO s VALUES (1, TIMESTAMP '1970-01-01', 7)"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-125: the STATIC star iterates the table's lanes with no "
+    "StarLane::Opaque interleave (the row star at frontend.rs:1952 has one). A "
+    "struct column expands into `w.mean`/`w.sd` phantom columns; an opaque one "
+    "is dropped from the output with no refusal at all.",
+)
+@pytest.mark.parametrize("star", ["s.*", "*"])
+@pytest.mark.parametrize(
+    ("static", "ddl", "insert", "unservable"),
+    [
+        (_S_STRUCT, _STRUCT_DDL, _STRUCT_INS, "w"),
+        (_S_OPAQUE, _OPAQUE_DDL, _OPAQUE_INS, "ts"),
+    ],
+    ids=["struct", "opaque"],
+)
+def test_a_static_star_refuses_a_column_it_cannot_serve(
+    star, static, ddl, insert, unservable
+):
+    sql = f"SELECT {star} FROM __THIS__ JOIN s ON s.id = __THIS__.k"
+    names, _ = _rel_duck(sql, ddl, insert)  # oracle serves; if it raises, remeasure
+    assert unservable in names
+
+    # We serve no struct and no TIMESTAMP value, so the only contract-legal
+    # answer is a refusal that NAMES the column -- never a different column set.
+    with pytest.raises(ValueError, match=unservable):
+        fn = DuckDBInferFn(
+            sql, row_tables={"__THIS__": _REL_ROW}, static_tables={"s": static}
+        )
+        fn.infer_rows(_REL_ROWS)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-126: the JOIN arm (frontend.rs:730) and the comma arm (:925) "
+    "take `alias.name.value` and drop `alias.columns`. The driving-table arm "
+    "consumes it properly, so the rename works there and nowhere else.",
+)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT x.p AS o FROM __THIS__ JOIN s AS x(p, q) ON x.p = __THIS__.k",
+        "SELECT x.p AS o FROM __THIS__, s AS x(p, q) WHERE x.p = __THIS__.k",
+    ],
+    ids=["join", "comma"],
+)
+def test_a_relation_column_list_alias_renames_positionally(sql):
+    static = pa.table({"a": pa.array([1], pa.int64()), "b": pa.array([99], pa.int64())})
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    con.execute("CREATE TABLE s (a BIGINT, b BIGINT)")
+    con.execute("INSERT INTO s VALUES (1, 99)")
+    want = con.execute(sql).fetchall()  # oracle serves; if this raises, remeasure
+    assert want == [(1,)]
+
+    shape = "filter" if " WHERE " in sql else None
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _REL_ROW}, static_tables={"s": static}, shape=shape
+    )
+    assert [tuple(x.values()) for x in fn.infer_rows(_REL_ROWS)] == want
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-126: the dropped column list also makes us ANSWER two queries "
+    "DuckDB rejects -- an arity mismatch, and a reference to a name the rename "
+    "took away.",
+)
+@pytest.mark.parametrize(
+    ("sql", "oracle_msg"),
+    [
+        (
+            "SELECT x.a AS o FROM __THIS__ JOIN s AS x(p, q, r) ON x.a = __THIS__.k",
+            "columns specified",
+        ),
+        (
+            "SELECT x.b AS o FROM __THIS__ JOIN s AS x(p, q) ON x.b = __THIS__.k",
+            "does not have a column named",
+        ),
+    ],
+    ids=["too-many-names", "renamed-away"],
+)
+def test_a_bad_relation_column_list_alias_refuses(sql, oracle_msg):
+    static = pa.table({"a": pa.array([1], pa.int64()), "b": pa.array([99], pa.int64())})
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    con.execute("CREATE TABLE s (a BIGINT, b BIGINT)")
+    con.execute("INSERT INTO s VALUES (1, 99)")
+    with pytest.raises(duckdb.Error, match=oracle_msg):
+        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+
+    with pytest.raises(ValueError):
+        fn = DuckDBInferFn(
+            sql, row_tables={"__THIS__": _REL_ROW}, static_tables={"s": static}
+        )
+        fn.infer_rows(_REL_ROWS)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="TASK-127: flattening a static struct to `w.mean`/`w.sd` lanes takes "
+    "`w` out of the name space, so EXCLUDE cannot name the column it is meant "
+    "to remove. Severity 4 -- a refusal, not a wrong answer.",
+)
+def test_exclude_can_name_a_static_struct_column():
+    sql = "SELECT s.* EXCLUDE (w) FROM __THIS__ JOIN s ON s.id = __THIS__.k"
+    names, want = _rel_duck(sql, _STRUCT_DDL, _STRUCT_INS)
+    assert names == ["id", "z"] and want == [(1, 7)]
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _REL_ROW}, static_tables={"s": _S_STRUCT}
+    )
+    assert [tuple(x.values()) for x in fn.infer_rows(_REL_ROWS)] == want
