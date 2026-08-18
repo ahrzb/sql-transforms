@@ -1343,8 +1343,12 @@ impl DuckDBInferFn {
                     // TASK-116: a struct's scalar leaves ARE the lane set a
                     // static table already stores, so flatten them under
                     // their FULL ORDERED PATH ('w.mean', 'w.x.y.z.a') the
-                    // way the row path does. The struct NAME stays opaque —
-                    // `s.w` as a whole value, and `s.*`, are still unserved.
+                    // way the row path does. The struct NAME stays opaque, so
+                    // `s.w` as a whole value refuses.
+                    //
+                    // `s.*` does NOT, and should: the static star reads these
+                    // lanes directly and answers with 'w.mean'/'w.sd' where
+                    // DuckDB answers with 'w'. TASK-125.
                     schema::RowField::Struct { nullable, fields } => {
                         flatten_static(&mut cols, &cname, &fields, nullable);
                         opaque.push((cname, "struct".to_string()));
