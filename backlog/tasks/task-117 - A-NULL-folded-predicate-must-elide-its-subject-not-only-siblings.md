@@ -2,7 +2,7 @@
 id: TASK-117
 title: >-
   A NULL-folded predicate must elide its subject, not only the NULL's siblings
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-16 00:00'
 labels:
@@ -53,3 +53,27 @@ in test_open_divergences.py.
       become a blanket suppression
 - [ ] #5 the xfail-strict pin flips and its reason line is deleted
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+RETIRED, not implemented. The fold this ticket asked for was written on
+2026-08-16 and deleted the next day, because it reproduces DuckDB's
+`statistics_propagation` optimizer pass rather than DuckDB.
+
+The oracle is now DuckDB with `PRAGMA disable_optimizer`, and there the
+subject IS evaluated:
+
+    WHERE CAST(s AS DOUBLE) BETWEEN 61.591e0 AND NULL   -- s = 'abc'
+    optimizer off: Conversion Error
+    optimizer on:  []
+
+So the divergence this ticket recorded does not exist against the oracle, and
+eliding the filter would have been the bug. The measurement that made the
+optimizer-on reading unusable is pinned in
+known_divergences/test_trap_elision.py: its answer depends on the column's
+stored null statistics, so the same query over the same visible rows answers
+differently by insert history.
+
+Nothing to build. The xfail pin is deleted with this ticket.
+<!-- SECTION:NOTES:END -->
