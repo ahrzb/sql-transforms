@@ -567,9 +567,7 @@ pub fn frontend(
     // Project on the scan.
     let mut rel = Rel::Scan;
     if let Some(pred) = &leftover_where {
-        binder.in_filter.set(true);
         let bound = binder.expr(pred);
-        binder.in_filter.set(false);
         let pred = fold(bool_context(bound?, "WHERE predicate")?);
         // NO statically-NULL-conjunct elision here, deliberately (TASK-117
         // added one on 2026-08-16 and the oracle change retired it the next
@@ -716,7 +714,6 @@ fn bind_from<'a>(
         model_refs: std::cell::RefCell::new(Vec::new()),
         sites: std::cell::Cell::new(0),
         extern_sites: std::cell::RefCell::new(Vec::new()),
-        in_filter: std::cell::Cell::new(false),
         in_guarded: std::cell::Cell::new(0),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
@@ -1457,12 +1454,6 @@ struct Binder<'a> {
     /// (TASK-63) — the confit twin of DuckDB's common-subexpression
     /// elimination, which is what keeps call counts equal on both paths.
     extern_sites: std::cell::RefCell<Vec<(sqlparser::ast::Function, u32)>>,
-    /// True while binding the WHERE predicate. DuckDB's FILTER optimizer
-    /// folds a constant dead range (`BETWEEN lo AND hi`, lo > hi) to FALSE
-    /// without evaluating the operand, but evaluates the same expression in
-    /// a projection — measured both ways (TASK-87 face C), so the fold is
-    /// context-gated on this flag.
-    in_filter: std::cell::Cell<bool>,
     /// Depth of CASE/COALESCE arms being bound. DuckDB's plan-time constant
     /// evaluation SKIPS guarded arms (the coalesce lazy-bind pin: an
     /// untaken `CAST('nope' AS BIGINT)` must not fire), so the TASK-87
@@ -4016,9 +4007,11 @@ impl Binder<'_> {
         }
         // A constant that misses a NARROW target's range: TRY_CAST is NULL;
         // CAST refuses — DuckDB's plan-time conversion error, and there is
-        // no i32-range runtime trap to fall back on before m-8 phase 3, so
-        // the refusal is NOT in_guarded-suspended (refusing a query DuckDB
-        // could run lazily beats serving a value it would never produce).
+        // no CONSTANT-fold path to the narrow runtime trap TASK-118 added
+        // (that trap fires on emitted lanes, not on a folded literal), so the
+        // refusal is NOT in_guarded-suspended (refusing a query DuckDB could
+        // run lazily beats serving a value it would never produce). TASK-99
+        // AC #2 retires this interim refusal once the phase-3 slice lands.
         if let Some((lo, hi)) = to.int_range() {
             let const_out = match &inner.kind {
                 SKind::Lit(Lit::I64(v)) => Some(!(lo..=hi).contains(v)),

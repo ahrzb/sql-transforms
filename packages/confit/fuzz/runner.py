@@ -27,16 +27,18 @@ INTERESTING = (
     "DIVERGE_TRAP",
     # we match eager DuckDB, its optimizer makes the user's answer differ
     "DIVERGE_OPT",
+    # we match the OPTIMIZER against the oracle: an emulation, and a bug
+    "OPT_EMULATED",
     "BUILD_EXC",
     "PANIC",
     "TIMEOUT",
     "SKIP",
 )
 
-# Agreement, for the coverage histogram: OPT_EMULATED is agreement with the
-# user-visible answer via a pass we reproduce deliberately, so its constructs
-# ARE covered and must not be dropped from coverage.
-COVERED = ("AGREE", "OPT_EMULATED")
+# Agreement, for the coverage histogram. OPT_EMULATED is NOT agreement: since
+# the oracle became optimizer-off DuckDB it means we answer unlike the oracle,
+# so it is a finding, and counting it as coverage would hide it twice.
+COVERED = ("AGREE",)
 
 
 def _spawn():
