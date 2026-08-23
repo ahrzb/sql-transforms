@@ -724,16 +724,20 @@ fn bind_from<'a>(
             JoinOperator::Left(c) | JoinOperator::LeftOuter(c) => (JoinKind::Left, c),
             other => return Err(unsup(format!("join type {other:?}"))),
         };
-        let (raw_name, scope_name) = match plain_table(&join.relation)? {
-            Some((n, alias)) => {
-                let s = alias
-                    .map(|a| a.name.value.clone())
-                    .unwrap_or_else(|| n.clone());
-                (n, s)
-            }
+        let (raw_name, rel_alias) = match plain_table(&join.relation)? {
+            Some((n, alias)) => (n, alias),
             None => return Err(unsup(format!("JOIN {}", join.relation))),
         };
+        let scope_name = rel_alias
+            .as_ref()
+            .map(|a| a.name.value.clone())
+            .unwrap_or_else(|| raw_name.clone());
         if raw_name.eq_ignore_ascii_case(this_name) {
+            if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
+                // Dropping it answered a query with the WRONG names in scope
+                // (TASK-126); serving the rename on a self-join is unpinned.
+                return Err(unsup("column-list alias on a self-join"));
+            }
             if !many {
                 return Err(unsup("joining the dynamic table to itself"));
             }
@@ -806,7 +810,8 @@ fn bind_from<'a>(
             )));
         }
 
-        let st = &statics[table_idx];
+        let renamed = apply_column_alias(&statics[table_idx], rel_alias)?;
+        let st = renamed.as_ref().unwrap_or(&statics[table_idx]);
         let (keys, key_cols, key_indf, residual_raw, using) = match constraint {
             JoinConstraint::On(e) => {
                 let (keys, key_cols, key_indf, res) = bind_on(&binder, st, &scope_name, e)?;
@@ -879,7 +884,10 @@ fn bind_from<'a>(
 
         binder.joins.push(ScopeJoin {
             name: scope_name,
-            table: std::borrow::Cow::Borrowed(st),
+            table: match renamed {
+                Some(t) => std::borrow::Cow::Owned(t),
+                None => std::borrow::Cow::Borrowed(&statics[table_idx]),
+            },
             kind,
             key_cols: key_cols.clone(),
             val_cols: val_cols.clone(),
@@ -918,16 +926,20 @@ fn bind_from<'a>(
         if !rel.joins.is_empty() {
             return Err(unsup("JOIN attached to a comma-joined relation"));
         }
-        let (raw_name, scope_name) = match plain_table(&rel.relation)? {
-            Some((n, alias)) => {
-                let s = alias
-                    .map(|a| a.name.value.clone())
-                    .unwrap_or_else(|| n.clone());
-                (n, s)
-            }
+        let (raw_name, rel_alias) = match plain_table(&rel.relation)? {
+            Some((n, alias)) => (n, alias),
             None => return Err(unsup(format!("FROM {}", rel.relation))),
         };
+        let scope_name = rel_alias
+            .as_ref()
+            .map(|a| a.name.value.clone())
+            .unwrap_or_else(|| raw_name.clone());
         if raw_name.eq_ignore_ascii_case(this_name) {
+            if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
+                // Dropping it answered a query with the WRONG names in scope
+                // (TASK-126); serving the rename on a self-join is unpinned.
+                return Err(unsup("column-list alias on a self-join"));
+            }
             if !many {
                 return Err(unsup("joining the dynamic table to itself"));
             }
@@ -991,7 +1003,8 @@ fn bind_from<'a>(
                 "duplicate table name '{scope_name}' in FROM"
             )));
         }
-        let st = &statics[table_idx];
+        let renamed = apply_column_alias(&statics[table_idx], rel_alias)?;
+        let st = renamed.as_ref().unwrap_or(&statics[table_idx]);
         let mut keys = Vec::new();
         let mut key_cols = Vec::new();
         for (ci, c) in conjuncts.iter().enumerate() {
@@ -1036,7 +1049,10 @@ fn bind_from<'a>(
             .collect();
         binder.joins.push(ScopeJoin {
             name: scope_name,
-            table: std::borrow::Cow::Borrowed(st),
+            table: match renamed {
+                Some(t) => std::borrow::Cow::Owned(t),
+                None => std::borrow::Cow::Borrowed(&statics[table_idx]),
+            },
             kind: JoinKind::Inner,
             key_cols: key_cols.clone(),
             val_cols: val_cols.clone(),
@@ -1549,6 +1565,44 @@ fn dedup_output_names(cols: &mut [Col]) {
 enum StarLane {
     Real(SExpr),
     Opaque(String),
+}
+
+/// `AS x(p, q)` on a joined relation: a positional rename over the DECLARED
+/// columns (the star list), the same rule the driving-table arm applies. A
+/// PARTIAL list is legal (prefix rename); more names than declared columns is
+/// DuckDB's arity bind error; a name landing on a struct or non-vocabulary
+/// column has no plain lane to rename and refuses. Returns None when there is
+/// no column list (plain `AS x` renames only the scope, handled by callers).
+fn apply_column_alias(
+    st: &StaticTable,
+    alias: Option<&sqlparser::ast::TableAlias>,
+) -> Result<Option<StaticTable>, PrepareError> {
+    let Some(a) = alias else { return Ok(None) };
+    if a.columns.is_empty() {
+        return Ok(None);
+    }
+    if a.columns.len() > st.star.len() {
+        return Err(PrepareError::Bind(format!(
+            "table \"{}\" has {} columns available but {} columns specified",
+            st.name,
+            st.star.len(),
+            a.columns.len()
+        )));
+    }
+    let mut t = st.clone();
+    for (def, sc) in a.columns.iter().zip(&t.star) {
+        match sc {
+            super::plan::StarCol::Real(ci) => {
+                t.cols[*ci as usize].name = def.name.value.clone()
+            }
+            super::plan::StarCol::Opaque(oname) => {
+                return Err(unsup(format!(
+                    "column-list alias over non-scalar column '{oname}'"
+                )))
+            }
+        }
+    }
+    Ok(Some(t))
 }
 
 fn finalize_star(cols: Vec<(String, StarLane)>) -> Result<Vec<(String, SExpr)>, PrepareError> {
