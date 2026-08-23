@@ -503,3 +503,43 @@ def test_a_scalar_only_static_star_expands_in_declared_order():
     rows = fn.infer_rows([{"k": 1}])
     assert list(rows[0].keys()) == names
     assert [tuple(x.values()) for x in rows] == want
+
+
+# ------------------------------------------- row limits on the constant path --
+#
+# TASK-128. A static-tables-only query is evaluated ONCE at build by DuckDB
+# and frozen. A row limit picks WHICH rows survive, and without a total order
+# that pick is not a function of the query: measured 2026-08-19, the same
+# `GROUP BY ... FETCH FIRST 1 ROWS ONLY` over the same four rows returned
+# FOUR distinct answers across twelve fresh connections -- and ORDER BY does
+# not fix it in general (a tie fed from a GROUP BY flipped in 20 runs). So
+# the constant path refuses EVERY row limit, ORDER BY or not (decision (a),
+# 2026-08-19); the provably-total case can be layered on if ever needed.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT v AS o FROM s LIMIT 1",
+        "SELECT v AS o FROM s LIMIT 1 OFFSET 1",
+        "SELECT v AS o FROM s OFFSET 1",
+        "SELECT v AS o FROM s FETCH FIRST 1 ROWS ONLY",
+        "SELECT TOP 1 v AS o FROM s",
+        "SELECT v AS o, sum(v) AS t FROM s GROUP BY v FETCH FIRST 1 ROWS ONLY",
+        # ORDER BY does NOT lift the refusal -- decision (a)
+        "SELECT v AS o FROM s ORDER BY v LIMIT 1",
+    ],
+)
+def test_a_row_limit_on_the_constant_path_refuses(sql):
+    statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
+    with pytest.raises(ValueError, match="row limit"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": SCHEMA}, static_tables=statics)
+
+
+def test_the_constant_path_without_a_limit_is_untouched():
+    statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
+    fn = DuckDBInferFn(
+        "SELECT sum(v) AS o FROM s ORDER BY 1",
+        row_tables={"__THIS__": SCHEMA},
+        static_tables=statics,
+    )
+    assert fn.backend == "constant"
+    assert fn.infer_rows([]) == [{"o": 6}]

@@ -2,7 +2,7 @@
 id: TASK-128
 title: >-
   A row limit without ORDER BY freezes an answer DuckDB itself cannot repeat
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-19 00:00'
 labels:
@@ -49,10 +49,10 @@ row-limit spelling sqlparser knows does parse).
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 a static-tables-only query with a row limit (`LIMIT`/`OFFSET`/
+- [x] #1 a static-tables-only query with a row limit (`LIMIT`/`OFFSET`/
       `FETCH`/`TOP`) and no `ORDER BY` refuses at build, naming the clause
       and the reason (result depends on scan order, not the query)
-- [ ] #2 MEASURED 2026-08-19, ORDER BY alone is NOT the cure: a tie fed
+- [x] #2 MEASURED 2026-08-19, ORDER BY alone is NOT the cure: a tie fed
       from a GROUP BY returned 2 distinct answers over 20 fresh connections
       (`GROUP BY g ORDER BY avg(v) LIMIT 1`, tied averages), while a unique
       sort key was stable at 1/20. Base-table ties looked stable (1/20) but
@@ -60,12 +60,44 @@ row-limit spelling sqlparser knows does parse).
       is NOT "has an ORDER BY" -- pending AmirHossein's pick between
       (a) refuse row limits on the constant path entirely, or (b) allow only
       when ORDER BY covers the full GROUP BY key (the provable-total case)
-- [ ] #3 probe the disease WITHOUT a limit: does the ROW ORDER of a
+- [x] #3 probe the disease WITHOUT a limit: does the ROW ORDER of a
       multi-row constant `GROUP BY` result vary across fresh connections /
       builds? If yes, that is a separate hole in every unordered multi-row
       constant result -- ticket it, do not widen this fix silently
-- [ ] #4 seed 1784 classifies clean (REFUSED) in the campaign, and the
+- [x] #4 seed 1784 classifies clean (REFUSED) in the campaign, and the
       fuzzer's hostile-clause arm counts the refusal as the expected outcome
-- [ ] #5 known-limitations.md gains the rule under the constant-emitter
+- [x] #5 known-limitations.md gains the rule under the constant-emitter
       section, with the twelve-connection measurement as its ground
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-08-19, decision (a): EVERY row limit on the constant path refuses,
+ORDER BY or not.
+
+`row_limit_clause` (frontend.rs) re-parses the SQL the fallback already
+holds and walks the statement -- top-level `limit_clause` and `fetch`,
+`SELECT TOP`, CTEs, derived tables, and both sides of a set operation -- so
+a limit one nesting level down cannot slip through the way the star and the
+alias did in their tickets. An unparseable query cannot be inspected and
+falls through to DuckDB exactly as before (the residual hole the ticket
+named; every limit spelling sqlparser knows does parse).
+
+The gate sits in duckdb/mod.rs immediately before `eval_static_only`, so
+nothing else changes: the constant path still serves aggregation, ORDER BY
+and DuckDB dialect. Error: `row limit ({clause}) on a static-tables-only
+query -- which rows survive depends on scan order, not the query`.
+
+AC #2 was already measured on the ticket (ORDER BY does not fix ties fed
+from a GROUP BY: 2 answers / 20 runs), which is what made (a) the pick.
+AC #3's probe found the disease WITHOUT a limit -- raw DuckDB: 12 distinct
+row orders / 12 connections on an unordered 200-group GROUP BY; our arrow
+materialization looked stable over 6 builds, which is luck, not contract --
+ticketed as TASK-129 with three options for AmirHossein, not widened here.
+AC #4: seed 1784 now classifies clean (0 findings). AC #5: the rule and the
+twelve-connection measurement are in known-limitations.md section 2.
+
+Tests: 7 refusal spellings + an untouched-path control in
+test_arrow_schema_api.py, written red-first.
+<!-- SECTION:NOTES:END -->
