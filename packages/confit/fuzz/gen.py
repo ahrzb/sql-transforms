@@ -976,7 +976,21 @@ def gen(seed: int) -> Case:
         if name.lower() in {k.lower() for k in statics}:
             continue  # DuckDB resolves table names case-insensitively
         sch = _schema(rng, rng.randrange(1, 4), hostile=hostile_ids)
-        statics[name] = (sch, _rows(rng, sch, rng.randrange(0, 6)))
+        # TASK-129: 8% of statics are WIDE (50-200 rows, spread int values)
+        # -- an unordered GROUP BY over 4 groups cannot show hash-order
+        # variance; over 50+ it measurably does (12 orders / 12 connections).
+        # %97 keeps every width honest (96 fits int8) and still gives ~97
+        # distinct groups. Names are hygienic on purpose: this branch sits
+        # inside gen(), whose own `rows` is the ROW TABLE.
+        if rng.random() < 0.08:
+            srows = _rows(rng, sch, rng.randrange(50, 201))
+            for i, r in enumerate(srows):
+                for c, s in sch.items():
+                    if isinstance(s, str) and s.rstrip("?").startswith("int"):
+                        r[c] = (i * 7919) % 97
+            statics[name] = (sch, srows)
+        else:
+            statics[name] = (sch, _rows(rng, sch, rng.randrange(0, 6)))
 
     udfs: list[UdfSpec] = []
     if rng.random() < 0.30:
