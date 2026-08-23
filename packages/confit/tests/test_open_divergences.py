@@ -70,41 +70,6 @@ def test_an_ambiguous_struct_path_refuses():
 
 
 # ---------------------------------------------------------------------------
-# TASK-122: narrow `%` by -1 at the width's MIN. The one narrow overflow
-# TASK-118's result-range check structurally cannot see, because the overflow
-# is in the OPERATION and the result (0) is in range.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-122: `i % -1` over INT32_MIN overflows the checked division "
-    "on DuckDB. We compute in the i64 lane, where it is 0, and the range check "
-    "on the result sees nothing wrong with 0. `i // -1` already traps because "
-    "its result leaves the width.",
-)
-@pytest.mark.parametrize(
-    ("arrow_ty", "ddl", "lo"),
-    [
-        (pa.int8(), "TINYINT", -128),
-        (pa.int16(), "SMALLINT", -32768),
-        (pa.int32(), "INTEGER", -2147483648),
-    ],
-)
-def test_narrow_modulo_by_minus_one_at_min_overflows(arrow_ty, ddl, lo):
-    row = pa.schema([pa.field("i", arrow_ty, nullable=False)])
-    sql = "SELECT (i % -1) AS o FROM __THIS__"
-
-    con = duckdb.connect()
-    con.execute(f"CREATE TABLE __THIS__ (i {ddl})")
-    con.execute("INSERT INTO __THIS__ VALUES (?)", [lo])
-    with pytest.raises(duckdb.Error, match="Overflow"):
-        con.execute(sql).fetchall()  # oracle overflows; if this stops, remeasure
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
-    with pytest.raises(Exception, match="[Oo]verflow|range"):
-        fn.infer_rows([{"i": lo}])
-
-
-# ---------------------------------------------------------------------------
 # TASK-124: `in_filter` is a STATEMENT-level flag, but DuckDB's laziness is a
 # property of the CONTEXT a boolean sits in, and that context recurses. Four
 # divergences, both directions, all one nesting level below the top-level AND

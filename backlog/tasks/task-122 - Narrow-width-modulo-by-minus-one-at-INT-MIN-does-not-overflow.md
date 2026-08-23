@@ -2,7 +2,7 @@
 id: TASK-122
 title: >-
   Narrow-width modulo by -1 at INT_MIN does not overflow
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-17 00:00'
 labels:
@@ -54,11 +54,39 @@ Found by seed 2668 of the 2026-08-17 campaign (`c1 % ord('')`, where
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 narrow `%` by -1 at the width's MIN traps, at int8, int16 and int32
-- [ ] #2 the guard is on the OPERATION, not the result range, since the result
+- [x] #1 narrow `%` by -1 at the width's MIN traps, at int8, int16 and int32
+- [x] #2 the guard is on the OPERATION, not the result range, since the result
       is in range — TASK-118's check cannot be extended to cover this
-- [ ] #3 `%` by any other divisor, and any dividend other than MIN, still
+- [x] #3 `%` by any other divisor, and any dividend other than MIN, still
       serves and still matches
-- [ ] #4 int64 is untouched — it already traps through the lane's own guard
-- [ ] #5 the campaign's seed 2668 class is gone at 4000 seeds
+- [x] #4 int64 is untouched — it already traps through the lane's own guard
+- [x] #5 the campaign's seed 2668 class is gone at 4000 seeds
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed 2026-08-19, exactly along the ticket's analysis: the guard is on the
+OPERATION. In the Arith arm of `emit_kind`, a narrow-typed `%` gets a
+runtime check `dividend == width_MIN && divisor == -1` -> trap, sharing the
+block machinery TASK-118's range trap already had (factored to `trap_if`).
+Masked payloads are defaults, so a NULL row structurally cannot fire it.
+The message is DuckDB's own: `Out of Range Error: Overflow in division of
+{MIN} / -1`.
+
+The fold had the same blind spot one layer up: `checked_rem` in i64 folds
+`MIN % -1` to 0, hiding the constant spelling from the runtime guard. The
+fold now declines exactly that shape (the fold's contract is "None = the
+runtime would trap"), so `(-128)::TINYINT % (-1)::TINYINT` traps
+identically to the column form.
+
+Swept 120 cases (4 widths x {MIN, MIN+1, -1, 0, 7, NULL} x {-2, -1, 1, 3,
+NULL}) against optimizer-off DuckDB: 0 mismatches, including the
+mixed-width control `TINYINT % SMALLINT` where -128/-1 = 128 FITS the
+result width and serves 0 on both engines. i64 untouched (its lane guard
+already fires). AC #5: the 4000-seed campaign no longer contains seed
+2668's class.
+
+Pins flipped strict and moved to `test_integer_widths.py`, with the
+constant-spelling and mixed-width controls added.
+<!-- SECTION:NOTES:END -->

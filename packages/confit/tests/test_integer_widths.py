@@ -953,3 +953,62 @@ def test_is_null_over_arithmetic_reads_the_operands_not_the_result(
     except Exception:  # noqa: BLE001 — refusal and trap are both "no answer"
         got = ("trap", None)
     assert got == want, sql
+
+
+# TASK-122, closed 2026-08-19. `MIN % -1` is the one narrow overflow a
+# RESULT-range check structurally cannot see: the mathematical result (0) is
+# in range, but DuckDB computes the modulo through the checked division,
+# which overflows at the width. The guard is on the OPERATION -- dividend at
+# the width's MIN and divisor -1 -- and the fold declines to fold exactly
+# that shape, so the constant spelling traps identically.
+@pytest.mark.parametrize(
+    ("arrow_ty", "ddl", "lo"),
+    [
+        (pa.int8(), "TINYINT", -128),
+        (pa.int16(), "SMALLINT", -32768),
+        (pa.int32(), "INTEGER", -2147483648),
+    ],
+)
+def test_narrow_modulo_by_minus_one_at_min_overflows(arrow_ty, ddl, lo):
+    row = pa.schema([pa.field("i", arrow_ty, nullable=False)])
+    sql = "SELECT (i % -1) AS o FROM __THIS__"
+
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE __THIS__ (i {ddl})")
+    con.execute("INSERT INTO __THIS__ VALUES (?)", [lo])
+    with pytest.raises(duckdb.Error, match="Overflow"):
+        con.execute(sql).fetchall()  # oracle overflows; if this stops, remeasure
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
+    with pytest.raises(ValueError, match="Overflow in division"):
+        fn.infer_rows([{"i": lo}])
+
+    # the guard is exact: MIN+1, and any other divisor, still serve
+    assert fn.infer_rows([{"i": lo + 1}]) == [{"o": 0}]
+    fn2 = DuckDBInferFn(
+        "SELECT (i % -2) AS o FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+    )
+    assert fn2.infer_rows([{"i": lo}]) == [{"o": 0}]
+
+
+def test_constant_narrow_modulo_at_min_traps_like_the_column():
+    """The fold declines this shape, so both spellings reach the same trap."""
+    row = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+    fn = DuckDBInferFn(
+        "SELECT (-128)::TINYINT % (-1)::TINYINT AS o FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+    )
+    with pytest.raises(ValueError, match="Overflow in division of -128 / -1"):
+        fn.infer_rows([{"k": 1}])
+
+    # the mixed-width CONTROL: TINYINT % SMALLINT computes at SMALLINT,
+    # where -128 / -1 = 128 fits -- serves 0 on both engines (measured)
+    fn2 = DuckDBInferFn(
+        "SELECT (-128)::TINYINT % (-1)::SMALLINT AS o FROM __THIS__",
+        row_tables={"__THIS__": row},
+        static_tables={},
+    )
+    assert fn2.infer_rows([{"k": 1}]) == [{"o": 0}]
