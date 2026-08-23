@@ -418,6 +418,7 @@ class Star(Node):
     exclude: list[str] = field(default_factory=list)
     replace: list[tuple[Node, str]] = field(default_factory=list)
     columns_re: str | None = None  # COLUMNS('re')
+    qualifier: str | None = None  # `t.*` (TASK-125: statics under a star)
 
 
 @dataclass
@@ -834,7 +835,7 @@ def _ritem(item: tuple[Node, str | None]) -> str:
     if isinstance(e, Star):
         if e.columns_re is not None:
             return f"COLUMNS('{e.columns_re}')"
-        s = "*"
+        s = "*" if e.qualifier is None else f"{_ident(e.qualifier)}.*"
         if e.exclude:
             s += f" EXCLUDE ({', '.join(_ident(c) for c in e.exclude)})"
         if e.replace:
@@ -1056,17 +1057,34 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
         tags.append("star")
         star = Star()
         m = rng.random()
+        body = Sel([(star, None)], "__THIS__")
+        if statics and m < 0.35:
+            # a star over a JOINED STATIC (TASK-125): struct and opaque
+            # columns must refuse by name under `s.*`/`*`, never expand as
+            # leaves or drop -- unreachable before this arm existed.
+            sname = rng.choice(list(statics))
+            sch = statics[sname][0]
+            on = _equi_on(rng, env, sname, sch)
+            if on is not None:
+                tags.append("static-star")
+                body.joins.append(Join(rng.choice(["INNER", "LEFT"]), sname, on))
+                if rng.random() < 0.6:
+                    star.qualifier = sname
+                if rng.random() < 0.4:
+                    # EXCLUDE a random static column -- struct/opaque ones
+                    # exercise the take-it-out-before-the-refusal path
+                    star.exclude = [rng.choice(list(sch))]
         # EXCLUDE/REPLACE name a top-level output column, so a lane path is
         # not a legal target — pick from the undotted names only.
         flat = [c for c in env.cols if "." not in c[1]]
-        if m < 0.3 and flat:
-            star.exclude = [rng.choice(flat)[1]]
-        elif m < 0.6 and flat:
-            _, name, ty = rng.choice(flat)
-            star.replace = [(expr(rng, env, ty, 1), name)]
-        elif m < 0.8:
-            star.columns_re = rng.choice(["c.*", "^c", "0$"])
-        body = Sel([(star, None)], "__THIS__")
+        if not star.exclude and not body.joins:
+            if m < 0.3 and flat:
+                star.exclude = [rng.choice(flat)[1]]
+            elif m < 0.6 and flat:
+                _, name, ty = rng.choice(flat)
+                star.replace = [(expr(rng, env, ty, 1), name)]
+            elif m < 0.8:
+                star.columns_re = rng.choice(["c.*", "^c", "0$"])
     elif r < 0.73 and statics:  # CTE over a static, joined back
         tags.append("cte")
         sname = rng.choice(list(statics))

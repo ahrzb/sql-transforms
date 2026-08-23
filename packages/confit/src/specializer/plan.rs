@@ -36,6 +36,37 @@ pub struct StaticTable {
     /// reader hunting a typo in a correct query. Unreferenced they cost
     /// nothing; referenced they refuse by name. `(column, arrow type)`.
     pub opaque: Vec<(String, String)>,
+    /// The DECLARED column list, in declaration order, as a star must see it
+    /// (TASK-125): one entry per schema column. A struct column is ONE
+    /// opaque entry here even though its flattened leaves live in `cols` —
+    /// a star answers with the column, never with its leaves.
+    pub star: Vec<StarCol>,
+}
+
+/// One declared column of a [`StaticTable`], as star expansion sees it.
+#[derive(Clone)]
+pub enum StarCol {
+    /// Servable: an index into [`StaticTable::cols`].
+    Real(u32),
+    /// A struct or non-vocabulary column, by declared name. Under a star it
+    /// must be EXCLUDEd or the query refuses naming it — expanding its
+    /// leaves, or dropping it, would emit a column set DuckDB never
+    /// produces.
+    Opaque(String),
+}
+
+impl StaticTable {
+    /// A table of only servable scalar columns (self-joins against the
+    /// batch, tests): every column is Real, in order.
+    pub fn all_scalar(name: String, cols: Vec<Col>) -> Self {
+        let star = (0..cols.len() as u32).map(StarCol::Real).collect();
+        StaticTable {
+            name,
+            cols,
+            opaque: Vec::new(),
+            star,
+        }
+    }
 }
 
 /// A fitted tree transform's schema, as given to `prepare` — like

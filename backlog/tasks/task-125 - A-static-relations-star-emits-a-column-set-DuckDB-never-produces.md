@@ -2,7 +2,7 @@
 id: TASK-125
 title: >-
   A static relation's star emits a column set DuckDB never produces
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-18 00:00'
 labels:
@@ -61,17 +61,46 @@ and reproduced by hand before ticketing.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 the static star interleaves `StarLane::Opaque` exactly as the row
+- [x] #1 the static star interleaves `StarLane::Opaque` exactly as the row
       star does, so an unservable column REFUSES by name instead of being
       dropped or expanded into leaves
-- [ ] #2 a struct column under `s.*` or `*` refuses, naming the struct --
+- [x] #2 a struct column under `s.*` or `*` refuses, naming the struct --
       it must never appear as `w.mean` / `w.sd` phantom columns
-- [ ] #3 an opaque column (TIMESTAMP and friends) under a star refuses,
+- [x] #3 an opaque column (TIMESTAMP and friends) under a star refuses,
       naming the column; no output row is ever short a column silently
-- [ ] #4 a static relation of only servable scalar columns still expands,
+- [x] #4 a static relation of only servable scalar columns still expands,
       in declaration order, unchanged
-- [ ] #5 the `duckdb/mod.rs:1347` comment is corrected -- it currently
+- [x] #5 the `duckdb/mod.rs:1347` comment is corrected -- it currently
       states the bug's absence
-- [ ] #6 the fuzz grammar emits `s.*` and `*` over a static relation
+- [x] #6 the fuzz grammar emits `s.*` and `*` over a static relation
       carrying a struct and an opaque column, so the class is reachable
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed 2026-08-19. `StaticTable` now carries `star: Vec<StarCol>` -- the
+DECLARED column list in declared order, one entry per schema column, built in
+the same catalog loop that flattens struct leaves. A struct is ONE
+`StarCol::Opaque(name)` entry (its leaves stay addressable by path but never
+expand under a star); a non-vocabulary column likewise. The static star
+expansion walks `star` instead of `cols`, pushing `StarLane::Opaque` exactly
+as the row star does -- so EXCLUDE takes the column out beforehand, and a
+survivor refuses by name through the same `finalize_star` everyone else uses.
+
+That EXCLUDE behaviour closed TASK-127's AC #1 for free (`s.* EXCLUDE (w)`
+now serves and matches the oracle) -- same root cause, the name coming back
+into the star's namespace.
+
+AC #6: the fuzz grammar gained a static-star arm (a joined static under
+`s.*`/`*`, optionally EXCLUDEd; ~1.7% of seeds) plus a `qualifier` field on
+`Star`. A 2000-seed campaign after the fix: zero traps-where-DuckDB-serves,
+zero emulations, and the surviving classes are the known pinned residue.
+The campaign also surfaced seed 1784 (`GROUP BY c1 FETCH FIRST 1 ROWS ONLY`
+over a static: cranelift and interpreter disagree) -- PRE-EXISTING, verified
+byte-identical generation under master's grammar, reported separately.
+
+The five xfail pins flipped strict and moved to `test_arrow_schema_api.py`
+as passing tests (the star refusals, the EXCLUDE serving, and a
+declared-order scalar star control).
+<!-- SECTION:NOTES:END -->
