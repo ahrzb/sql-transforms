@@ -192,3 +192,67 @@ def test_bracket_slices_vs_oracle():
         S_ROWS,
     )
     duck_check("SELECT s[2:4][1] FROM __THIS__", T, S_ROWS)
+
+
+def test_joined_relation_column_list_alias_vs_oracle():
+    # TASK-126: `AS x(p, q)` on a JOINED or comma relation renames
+    # positionally over the DECLARED columns, exactly like the driving arm
+    # (t AS u(x, y) above). The clause was silently DROPPED before, which
+    # answered with the wrong names in scope in all three directions.
+    dim = static({"a": "int", "b": "int"}, [{"a": 3, "b": 30}, {"a": 7, "b": 70}])
+    for sql in [
+        # the rename works, old spellings below refuse
+        "SELECT x.p + x.q AS o FROM __THIS__ JOIN s AS x(p, q) ON x.p = a",
+        # comma form
+        "SELECT x.q AS o FROM __THIS__, s AS x(p, q) WHERE x.p = a",
+        # PARTIAL list: prefix renames, the rest keep their names
+        "SELECT x.b AS o FROM __THIS__ JOIN s AS x(p) ON x.p = a",
+        # star and EXCLUDE see the NEW names
+        "SELECT x.* FROM __THIS__ JOIN s AS x(p, q) ON x.p = a",
+        "SELECT x.* EXCLUDE (q) FROM __THIS__ JOIN s AS x(p, q) ON x.p = a",
+        # USING pairs through the new name
+        "SELECT x.q AS o FROM __THIS__ JOIN s AS x(a, q) USING (a)",
+    ]:
+        duck_check(sql, T, T_ROWS, {"s": dim})
+
+
+def test_joined_relation_column_list_alias_refusals():
+    # Two directions DuckDB refuses and we must refuse too (they SERVED
+    # before TASK-126), plus one deliberate cost.
+    row = pa.schema([pa.field("a", pa.int64(), nullable=False)])
+    stat = pa.table({"a": pa.array([3], pa.int64()), "b": pa.array([30], pa.int64())})
+
+    def refuses(sql, match):
+        con = duckdb.connect()
+        con.execute("CREATE TABLE __THIS__ (a BIGINT)")
+        con.execute("INSERT INTO __THIS__ VALUES (3)")
+        con.execute("CREATE TABLE s (a BIGINT, b BIGINT)")
+        con.execute("INSERT INTO s VALUES (3, 30)")
+        try:
+            con.execute(sql).fetchall()
+            oracle_served = True
+        except duckdb.Error:
+            oracle_served = False
+        try:
+            DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": stat})
+            raise AssertionError(f"built: {sql}")
+        except ValueError as e:
+            assert match in str(e), f"{sql}: {e}"
+        return oracle_served
+
+    # arity: DuckDB's own bind error, same wording
+    assert not refuses(
+        "SELECT x.a AS o FROM __THIS__ JOIN s AS x(p, q, r) ON x.p = __THIS__.a",
+        "columns specified",
+    )
+    # a renamed-away original name
+    assert not refuses(
+        "SELECT x.b AS o FROM __THIS__ JOIN s AS x(p, q) ON x.p = __THIS__.a",
+        "does not exist",
+    )
+    # DELIBERATE COST (severity 4): duplicate names in the list -- DuckDB
+    # serves the first match, we refuse as ambiguous. Measured 2026-08-19.
+    assert refuses(
+        "SELECT x.p AS o FROM __THIS__ JOIN s AS x(p, p) ON x.p = __THIS__.a",
+        "ambiguous",
+    )
