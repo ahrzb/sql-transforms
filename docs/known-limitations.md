@@ -38,6 +38,18 @@ with identical contents. Confit compiles once against a *schema* and serves
 many batches; it never sees a table, let alone its history. A target you
 cannot compute from the query is not a target.
 
+**What "identical" means for ROW ORDER** (TASK-129, 2026-08-19). Values are
+bit-for-bit. A *sequence* is only promised where one is defined: on the row
+path by the serving contract (output rows follow input rows -- `map` exactly,
+`filter` as a subsequence, `many` as per-input-row blocks in input order,
+join order within a block being the documented multiset), and on a
+static-tables-only result by a total `ORDER BY`. Anywhere else SQL defines no
+order and neither do we -- DuckDB itself returns the same unordered
+`GROUP BY` in twelve different row orders over twelve connections (measured).
+The campaign fuzzer compares per this rule: sequence-strict self-legs on the
+row path (a reversed batch must reverse), sortedness-plus-multiset under
+`ORDER BY` (ties are free), multiset otherwise.
+
 **One place the contract is currently BROKEN** (found 2026-08-18, tracked as
 TASK-124, pinned in
 [`packages/confit/tests/test_open_divergences.py`](../packages/confit/tests/test_open_divergences.py)).

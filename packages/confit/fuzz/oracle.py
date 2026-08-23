@@ -391,6 +391,47 @@ def _key(rows: list[dict]):
     return sorted(sorted((k, repr(v)) for k, v in r.items()) for r in rows)
 
 
+def _seq(rows: list[dict]):
+    """Row-order-PRESERVING canonical form, for the legs where order is part
+    of the contract. `_key` above is the multiset form."""
+    return [sorted((k, repr(v)) for k, v in r.items()) for r in rows]
+
+
+def compare_mode(case, static_only: bool) -> str:
+    """TASK-129: which comparison the ORACLE owes this case.
+
+    row-path             order is defined by the SERVING contract (output
+                         follows input rows), not by SQL -- so DuckDB legs
+                         stay multiset (DuckDB's own order is not a function
+                         of the query), and the order half is checked by the
+                         batch-vs-single and reversal SELF-legs instead.
+    constant-ordered     static-only with a top-level ORDER BY. Ties make
+                         DuckDB's sequence one of several valid answers, so
+                         the check is multiset equality PLUS our-side
+                         sortedness on the key -- never byte-equality.
+    constant-unordered   static-only, no ORDER BY: SQL defines no order at
+                         all. Multiset, and known-limitations.md says so.
+    """
+    if not static_only:
+        return "row-path"
+    return "constant-ordered" if case.query.body.order_by else "constant-unordered"
+
+
+def _sorted_by(rows: list[dict], col: str) -> bool:
+    """Non-decreasing on `col`, DuckDB defaults: ASC, NULLS LAST, NaN last
+    but before NULL is not a thing -- DuckDB sorts NaN ABOVE every number."""
+
+    def k(v):
+        if v is None:
+            return (2, 0)
+        if isinstance(v, float) and v != v:
+            return (1, 0)
+        return (0, v)
+
+    vals = [k(r[col]) for r in rows if col in r]
+    return all(a <= b for a, b in zip(vals, vals[1:], strict=False))
+
+
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):
     """None if schemas agree; ("known", tag) for open-ticket width classes;
     ("diff", detail) otherwise."""
@@ -501,6 +542,7 @@ def run_case(case: G.Case) -> Verdict:
     static_only = (
         case.query.body.frm not in (None, "__THIS__") and not case.query.body.joins
     )
+    tags.append(f"cmp={compare_mode(case, static_only)}")
 
     # infer_arrow cannot take a struct row schema yet (TASK-114), so a
     # struct-bearing case runs through infer_rows instead of being scored as
@@ -579,6 +621,22 @@ def run_case(case: G.Case) -> Verdict:
                 return Verdict(
                     "DIVERGE_VALUE", "static-only-values", f"{got_cl} != {want}", t
                 )
+            # constant-ordered (TASK-129): the multiset matched; the sequence
+            # must SATISFY the ORDER BY, not equal DuckDB's (ties make its
+            # sequence one of several valid answers).
+            ob = case.query.body.order_by
+            if ob is not None:
+                if got_cl and ob not in got_cl[0]:
+                    # not an output column -- cannot evaluate the key here;
+                    # multiset stands, and the fallback is LOGGED, not silent
+                    t.append("order-by-unevaluated")
+                elif not _sorted_by(got_cl, ob):
+                    return Verdict(
+                        "DIVERGE_VALUE",
+                        "constant-order",
+                        f"rows do not satisfy ORDER BY {ob}: {got_cl[:4]}",
+                        t,
+                    )
             return Verdict("AGREE", "", "", t)
 
         delta = _schema_delta(duck_out.schema, sch_cl)
@@ -686,15 +744,43 @@ def _extra_legs(fn, case, table, got, ests, tags, rows_only=False) -> Verdict | 
                     tags,
                 )
 
-    # single-row concatenation == batch (cross-row state leak)
+    # single-row concatenation == batch, AS A SEQUENCE (TASK-129): the
+    # serving contract is that output rows follow input rows -- map exactly,
+    # filter as a subsequence, many as per-input-row blocks in input order.
+    # Comparing through `_key` here accepted any permutation, so an order bug
+    # on the row path was invisible. (Also still catches cross-row state
+    # leaks, which is what this leg was originally for.)
     if 2 <= len(table) <= 6:
         singles = [fn.infer_arrow(table.slice(i, 1)) for i in range(len(table))]
         cat = pa.concat_tables(singles).to_pylist()
-        if _key(cat) != _key(got):
+        if _seq(cat) != _seq(got):
+            kind = (
+                "batch-vs-single-order" if _key(cat) == _key(got) else "batch-vs-single"
+            )
             return Verdict(
                 "DIVERGE_VALUE",
-                "batch-vs-single",
-                "row-at-a-time disagrees with the batch",
+                kind,
+                "row-at-a-time disagrees with the batch"
+                + (" (order only)" if kind.endswith("order") else ""),
+                tags,
+            )
+        # reversal: feeding the rows backwards must reverse the BLOCKS.
+        # Self-contained -- no DuckDB involved, because DuckDB's own row
+        # order is not a function of the query even on the row path.
+        try:
+            rev = fn.infer_arrow(
+                table.take(list(range(len(table) - 1, -1, -1)))
+            ).to_pylist()
+        except Exception as e:  # noqa: BLE001
+            return Verdict(
+                "DIVERGE_VALUE", "reversal", f"reversed input raised: {e}", tags
+            )
+        want_rev = [r for s in reversed(singles) for r in s.to_pylist()]
+        if _seq(rev) != _seq(want_rev):
+            return Verdict(
+                "DIVERGE_VALUE",
+                "reversal",
+                "reversed input did not reverse the output blocks",
                 tags,
             )
 

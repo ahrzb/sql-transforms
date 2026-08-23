@@ -2,7 +2,7 @@
 id: TASK-129
 title: >-
   Define order-sensitivity per query, and make the oracle comparison honor it
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-19 00:00'
 labels:
@@ -88,24 +88,66 @@ unreachable) carry over as the ground.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 the oracle states each case's comparison MODE explicitly (an enum
+- [x] #1 the oracle states each case's comparison MODE explicitly (an enum
       derived from the case: row-path / constant-ordered / constant-unordered),
       instead of one implicit `_key` for everything
-- [ ] #2 the row-path reversal leg exists and FAILS if output order stops
+- [x] #2 the row-path reversal leg exists and FAILS if output order stops
       following input order -- prove it red by scrambling output order in a
       scratch build before trusting it green; shape='many' reverses blocks,
       multiset within a block
-- [ ] #3 the constant-ordered mode checks multiset equality plus our-side
+- [x] #3 the constant-ordered mode checks multiset equality plus our-side
       sortedness on the ORDER BY keys; a tie must NOT fail when the multiset
       matches and sortedness holds
-- [ ] #4 an ORDER BY the checker cannot evaluate (expression over non-output
+- [x] #4 an ORDER BY the checker cannot evaluate (expression over non-output
       columns) falls back to multiset WITH a logged note -- never silently
-- [ ] #5 the fuzz grammar generates a static with enough groups (>= 50) for
+- [x] #5 the fuzz grammar generates a static with enough groups (>= 50) for
       hash order to actually vary, so mode 3 is exercised for real, and a
       campaign stays clean after
-- [ ] #6 known-limitations.md states the order contract in one place: values
+- [x] #6 known-limitations.md states the order contract in one place: values
       bit-for-bit; sequence where the serving contract or a total ORDER BY
       defines one; otherwise unspecified
-- [ ] #7 nothing in TASK-128 reopens: every row-limit refusal test still
+- [x] #7 nothing in TASK-128 reopens: every row-limit refusal test still
       passes unchanged
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-08-19. `compare_mode` (oracle.py) states the three modes; every
+case is tagged `cmp=<mode>` so coverage shows which mode ran.
+
+Mode 1 (row path): the existing batch-vs-single leg now compares SEQUENCES
+(`_seq`, order-preserving) instead of `_key`, splitting its verdict into
+`batch-vs-single` (values) vs `batch-vs-single-order` (order only); a new
+reversal leg feeds the batch backwards and requires the per-row blocks to
+reverse. Both self-legs, no DuckDB involved. AC #2's red proof is a
+PERMANENT capability test (`test_fuzz_order_legs.py`): a real engine wrapped
+in a batch-reversing scrambler must be caught, and a mutation check
+(re-routing the legs through `_key`, then restoring by re-edit) showed the
+test fail and recover.
+
+Mode 2: the static-only branch of `against()` adds our-side sortedness on
+the ORDER BY column (DuckDB defaults: ASC, NULLS LAST, NaN above numbers)
+on top of the multiset; an unevaluatable ORDER BY appends an
+`order-by-unevaluated` tag -- logged, never silent.
+
+Mode 3: unchanged multiset, now stated in known-limitations.md alongside
+the oracle definition (AC #6).
+
+AC #5: 8% of generated statics are wide (50-200 rows, ints spread mod 97 so
+every width fits and ~97 groups exist). The FIRST attempt at this leaked
+its loop variables over gen()'s own `rows`, shipping static rows as the row
+table -- caught by the campaign (212 bogus SKIPs), not by my own generation
+diff, whose module-cache shadowing made old and new gen look identical.
+Fixed with hygienic names; the campaign after: 24 raw / 8 classes, all
+known residue (TASK-121 ambiguous, documented DIVERGE_OPT, decimal-literal
+family, TASK-123 timeout, TASK-113's cast class -- noted: that one is a
+trap-where-DuckDB-serves, already ticketed, now fuzzer-reachable). Zero
+findings from the new order legs: the engine's row path is order-faithful.
+
+Note: the 8% draw shifts rng for static-bearing seeds, so residue seed IDs
+moved; classes are what stayed comparable. The committed findings.jsonl
+baseline is a historical artifact and was not regenerated here.
+
+AC #7: all TASK-128 refusal tests pass unchanged in the full suite.
+<!-- SECTION:NOTES:END -->
