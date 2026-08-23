@@ -679,6 +679,17 @@ impl<'a> FB<'a> {
             Some(f) => self.bin(BinOp::And, f, out),
             None => out,
         };
+        let msg = format!(
+            "Out of Range Error: value out of range for {} (arrow {})",
+            duck_narrow_name(ty),
+            arrow_narrow_name(ty)
+        );
+        Ok(self.trap_if(bad, msg, l, ty, live))
+    }
+
+    /// Branch to a trap when `bad` (already flag-masked) is set; otherwise
+    /// thread `l` and the live set through a continuation block.
+    fn trap_if(&mut self, bad: Value, msg: String, l: Lane, ty: Ty, live: &mut Live) -> Lane {
         let (trap_b, _) = self.create_block(&[]);
         let live_width = Self::live_types(live).len();
         let mut cont_tys = Self::live_types(live);
@@ -701,17 +712,11 @@ impl<'a> FB<'a> {
             else_args: args,
         });
         self.switch(trap_b);
-        self.term(Term::Trap {
-            msg: format!(
-                "Out of Range Error: value out of range for {} (arrow {})",
-                duck_narrow_name(ty),
-                arrow_narrow_name(ty)
-            ),
-        });
+        self.term(Term::Trap { msg });
         self.switch(cont_b);
         self.enter_block(live, &cont_p[..live_width]);
         let tail = &cont_p[live_width..];
-        Ok(if flag_in_shape {
+        if flag_in_shape {
             Lane {
                 flag: Some(tail[0]),
                 val: tail[1],
@@ -721,7 +726,7 @@ impl<'a> FB<'a> {
                 flag: None,
                 val: tail[0],
             }
-        })
+        }
     }
 
     fn emit_kind(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
@@ -840,10 +845,40 @@ impl<'a> FB<'a> {
                     (la.val, lb.val)
                 };
                 let val = self.bin(ir_op, va, vb);
-                Ok(Lane {
+                let lane = Lane {
                     flag: self.combine_flags(la.flag, lb.flag),
                     val,
-                })
+                };
+                // TASK-122: MIN % -1 at a NARROW width. DuckDB computes the
+                // modulo through the checked division, which overflows at the
+                // width even though the mathematical result (0) is in range —
+                // the one narrow overflow a RESULT-range check cannot see.
+                // Masked payloads (defaults) can never equal a negative MIN,
+                // so a NULL row cannot fire this.
+                if let (ArithOp::Rem, Some((lo, _))) = (op, e.ty.int_range()) {
+                    let lo_v = self.const_lit(Lit::I64(lo));
+                    let m1 = self.const_lit(Lit::I64(-1));
+                    let at_min = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred: CmpPred::Eq,
+                        ty: Ty::I64,
+                        dst: at_min,
+                        a: va,
+                        b: lo_v,
+                    });
+                    let div_m1 = self.fresh();
+                    self.inst(Inst::Cmp {
+                        pred: CmpPred::Eq,
+                        ty: Ty::I64,
+                        dst: div_m1,
+                        a: vb,
+                        b: m1,
+                    });
+                    let bad = self.bin(BinOp::And, at_min, div_m1);
+                    let msg = format!("Out of Range Error: Overflow in division of {lo} / -1");
+                    return Ok(self.trap_if(bad, msg, lane, e.ty, live));
+                }
+                Ok(lane)
             }
             SKind::Cmp { pred, a, b } => {
                 let la = self.emit(a, live)?;

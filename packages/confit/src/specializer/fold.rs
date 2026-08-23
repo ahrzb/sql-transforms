@@ -243,6 +243,20 @@ pub fn fold(e: SExpr) -> SExpr {
             let (a, b) = (fold(*a), fold(*b));
             match (as_const(&a), as_const(&b)) {
                 (Some(K::Null), Some(_)) | (Some(_), Some(K::Null)) => null(ty),
+                // TASK-122: MIN % -1 at a NARROW width overflows DuckDB's
+                // checked division even though the i64 value (0) is fine, so
+                // the fold must not hide it from the runtime guard.
+                (Some(K::Val(Lit::I64(x))), Some(K::Val(Lit::I64(y))))
+                    if op == ArithOp::Rem
+                        && y == -1
+                        && ty.int_range().is_some_and(|(lo, _)| x == lo) =>
+                {
+                    e(SKind::Arith {
+                        op,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                    })
+                }
                 (Some(K::Val(x)), Some(K::Val(y))) => match arith(op, &x, &y) {
                     Some(l) => lit(l, ty),
                     // Would trap at run time — keep the node, keep the trap.
