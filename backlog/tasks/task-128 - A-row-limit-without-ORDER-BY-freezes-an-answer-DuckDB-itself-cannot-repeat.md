@@ -52,11 +52,14 @@ row-limit spelling sqlparser knows does parse).
 - [ ] #1 a static-tables-only query with a row limit (`LIMIT`/`OFFSET`/
       `FETCH`/`TOP`) and no `ORDER BY` refuses at build, naming the clause
       and the reason (result depends on scan order, not the query)
-- [ ] #2 with `ORDER BY` it still serves -- and MEASURE the ties case first:
-      `ORDER BY v LIMIT 1` over duplicate `v` values, many fresh
-      connections. If DuckDB is unstable there too, tighten the rule to
-      refuse unless the order is provably total (e.g. ORDER BY the full
-      GROUP BY key), and record the measurement either way
+- [ ] #2 MEASURED 2026-08-19, ORDER BY alone is NOT the cure: a tie fed
+      from a GROUP BY returned 2 distinct answers over 20 fresh connections
+      (`GROUP BY g ORDER BY avg(v) LIMIT 1`, tied averages), while a unique
+      sort key was stable at 1/20. Base-table ties looked stable (1/20) but
+      that is accidental scan-order stability, not a guarantee. So the rule
+      is NOT "has an ORDER BY" -- pending AmirHossein's pick between
+      (a) refuse row limits on the constant path entirely, or (b) allow only
+      when ORDER BY covers the full GROUP BY key (the provable-total case)
 - [ ] #3 probe the disease WITHOUT a limit: does the ROW ORDER of a
       multi-row constant `GROUP BY` result vary across fresh connections /
       builds? If yes, that is a separate hole in every unordered multi-row
