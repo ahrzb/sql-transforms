@@ -768,11 +768,10 @@ fn bind_from<'a>(
             let n_batch = binder.n_plain as u32;
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
-                table: std::borrow::Cow::Owned(StaticTable {
-                    opaque: Vec::new(),
-                    name: scope_name,
-                    cols: in_cols[..binder.n_plain].to_vec(),
-                }),
+                table: std::borrow::Cow::Owned(StaticTable::all_scalar(
+                    scope_name,
+                    in_cols[..binder.n_plain].to_vec(),
+                )),
                 kind,
                 key_cols: Vec::new(),
                 val_cols: (0..n_batch).collect(),
@@ -953,11 +952,10 @@ fn bind_from<'a>(
             let n_batch = binder.n_plain as u32;
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
-                table: std::borrow::Cow::Owned(StaticTable {
-                    opaque: Vec::new(),
-                    name: scope_name,
-                    cols: in_cols[..binder.n_plain].to_vec(),
-                }),
+                table: std::borrow::Cow::Owned(StaticTable::all_scalar(
+                    scope_name,
+                    in_cols[..binder.n_plain].to_vec(),
+                )),
                 kind: JoinKind::Inner,
                 key_cols: Vec::new(),
                 val_cols: (0..n_batch).collect(),
@@ -1558,7 +1556,7 @@ fn finalize_star(cols: Vec<(String, StarLane)>) -> Result<Vec<(String, SExpr)>, 
         .map(|(n, l)| match l {
             StarLane::Real(e) => Ok((n, e)),
             StarLane::Opaque(orig) => Err(unsup(format!(
-                "row column '{orig}' has a non-scalar type"
+                "column '{orig}' has a non-scalar type"
             ))),
         })
         .collect()
@@ -1985,8 +1983,25 @@ impl Binder<'_> {
                 continue;
             }
             matched = true;
-            for (ci, c) in sj.table.cols.iter().enumerate() {
-                let ci = ci as u32;
+            // Declared order (TASK-125): a struct or non-vocabulary column
+            // expands as ONE opaque entry, exactly like the row star above —
+            // EXCLUDE removes it, surviving is the named refusal. Iterating
+            // `cols` here would expand a struct's flattened leaves as
+            // phantom columns and silently DROP an opaque column, a column
+            // set DuckDB never produces.
+            for sc in sj.table.star.iter() {
+                let ci = match sc {
+                    super::plan::StarCol::Opaque(oname) => {
+                        cols.push((
+                            sj.name.clone(),
+                            oname.clone(),
+                            StarLane::Opaque(oname.clone()),
+                        ));
+                        continue;
+                    }
+                    super::plan::StarCol::Real(ci) => *ci,
+                };
+                let c = &sj.table.cols[ci as usize];
                 if let Some(pos) = sj.val_cols.iter().position(|&v| v == ci) {
                     cols.push((
                         sj.name.clone(),

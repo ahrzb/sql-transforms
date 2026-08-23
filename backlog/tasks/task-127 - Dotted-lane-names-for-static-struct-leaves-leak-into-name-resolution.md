@@ -58,8 +58,11 @@ review and NOT independently re-measured.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 `EXCLUDE (w)` over a static struct column works, or refuses naming
+- [x] #1 `EXCLUDE (w)` over a static struct column works, or refuses naming
       the struct rather than claiming the column does not exist
+      (CLOSED BY TASK-125, 2026-08-19: the star's Opaque entry restores the
+      name, so EXCLUDE takes it out and the rest serves -- pinned passing in
+      test_arrow_schema_api.py)
 - [ ] #2 an unqualified `w.mean` resolves like DuckDB, or refuses with a
       message that names the real problem
 - [ ] #3 a flattened leaf colliding with a real sibling column name is

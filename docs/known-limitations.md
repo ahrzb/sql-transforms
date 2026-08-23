@@ -38,32 +38,17 @@ with identical contents. Confit compiles once against a *schema* and serves
 many batches; it never sees a table, let alone its history. A target you
 cannot compute from the query is not a target.
 
-**Two places the contract is currently BROKEN**, both found 2026-08-18 and
-both pinned in
-[`packages/confit/tests/test_open_divergences.py`](../packages/confit/tests/test_open_divergences.py).
+**One place the contract is currently BROKEN** (found 2026-08-18, tracked as
+TASK-124, pinned in
+[`packages/confit/tests/test_open_divergences.py`](../packages/confit/tests/test_open_divergences.py)).
+(A second break found the same day — a star over a static relation emitting a
+column set DuckDB never produces — closed 2026-08-19 as TASK-125: such a star
+now refuses the struct or non-vocabulary column BY NAME unless EXCLUDE takes
+it out.)
 
-**TASK-125 — a star over a static relation.** The expansion reads the
-relation's servable lanes directly instead of refusing a column it cannot
-serve, so the result carries a column set DuckDB never produces:
-
-```sql
--- static s(id BIGINT, w STRUCT(mean DOUBLE, sd DOUBLE), z BIGINT)
-SELECT s.* FROM ...
--- DuckDB: id, w, z          ours: id, w.mean, w.sd, z
-
--- static s(id BIGINT, ts TIMESTAMP, z BIGINT)
-SELECT s.* FROM ...
--- DuckDB: id, ts, z         ours: id, z
-```
-
-The second is a column *silently dropped from the output*, which is precisely
-what the paragraph above says never happens. Until TASK-125 lands, do not use
-`*` or `s.*` over a static relation holding a struct or a non-vocabulary
-column; name the columns you want and each one is checked.
-
-**TASK-124 — boolean short-circuit.** It is decided per *statement* rather
-than per *context*, and DuckDB decides it per context. One nesting level below
-a top-level `AND`, both outcomes above can fail:
+Boolean short-circuit is decided per *statement* rather than per *context*,
+and DuckDB decides it per context. One nesting level below a top-level `AND`,
+both outcomes above can fail:
 
 ```sql
 -- we TRAP at runtime; DuckDB serves 3 rows, optimizer on OR off

@@ -27,11 +27,7 @@ fn prep(sql: &str, in_cols: &[Col]) -> Result<super::ir::Program, PrepareError> 
 }
 
 fn stat(name: &str, spec: &[(&str, Ty, bool)]) -> StaticTable {
-    StaticTable {
-        opaque: Vec::new(),
-        name: name.to_string(),
-        cols: cols(spec),
-    }
+    StaticTable::all_scalar(name.to_string(), cols(spec))
 }
 
 /// prepare + compile + run with static-table map data.

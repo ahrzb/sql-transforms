@@ -1332,24 +1332,33 @@ impl DuckDBInferFn {
             // than rejected — unreferenced ones cost nothing.
             let mut cols = Vec::new();
             let mut opaque = Vec::new();
+            // Declared order, one entry per schema column: what a star sees
+            // (TASK-125). A struct is ONE opaque star entry; its flattened
+            // leaves are addressable by path but never expand under a star.
+            let mut star = Vec::new();
             for (cname, rf) in schema::arrow_static_schema(py, name, &schema_obj)? {
                 match rf {
-                    schema::RowField::Scalar { ty, nullable } => cols.push(Col {
-                        name: cname,
-                        ty: ColTy { ty, nullable },
-                    }),
+                    schema::RowField::Scalar { ty, nullable } => {
+                        star.push(crate::specializer::plan::StarCol::Real(cols.len() as u32));
+                        cols.push(Col {
+                            name: cname,
+                            ty: ColTy { ty, nullable },
+                        })
+                    }
                     // Kept, not dropped — see StaticTable::opaque.
-                    schema::RowField::Opaque(aty) => opaque.push((cname, aty)),
+                    schema::RowField::Opaque(aty) => {
+                        star.push(crate::specializer::plan::StarCol::Opaque(cname.clone()));
+                        opaque.push((cname, aty))
+                    }
                     // TASK-116: a struct's scalar leaves ARE the lane set a
                     // static table already stores, so flatten them under
                     // their FULL ORDERED PATH ('w.mean', 'w.x.y.z.a') the
                     // way the row path does. The struct NAME stays opaque, so
-                    // `s.w` as a whole value refuses.
-                    //
-                    // `s.*` does NOT, and should: the static star reads these
-                    // lanes directly and answers with 'w.mean'/'w.sd' where
-                    // DuckDB answers with 'w'. TASK-125.
+                    // `s.w` as a whole value refuses, and under a star the
+                    // struct is one opaque entry: EXCLUDE it or the query
+                    // refuses by name (TASK-125).
                     schema::RowField::Struct { nullable, fields } => {
+                        star.push(crate::specializer::plan::StarCol::Opaque(cname.clone()));
                         flatten_static(&mut cols, &cname, &fields, nullable);
                         opaque.push((cname, "struct".to_string()));
                     }
@@ -1359,6 +1368,7 @@ impl DuckDBInferFn {
                 name: name.clone(),
                 cols,
                 opaque,
+                star,
             });
         }
 

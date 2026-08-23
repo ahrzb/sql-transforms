@@ -398,3 +398,108 @@ def test_compiled_build_is_untouched_by_the_constant_guard():
     fn = build("SELECT a + 1.0 AS o FROM __THIS__")
     assert fn.backend != "constant"
     assert fn.infer_rows([ROW, ROW]) == [{"o": 2.5}, {"o": 2.5}]
+
+
+# --------------------------------------------------------- the static star --
+#
+# TASK-125. A star over a static relation expands the DECLARED column list, in
+# declared order. We serve no struct and no non-vocabulary value, so a star
+# that covers one refuses NAMING it -- never a different column set: expanding
+# a struct's leaves invents columns DuckDB does not output, and dropping an
+# opaque column removes one it does. EXCLUDE takes the column out of the star
+# before that check, exactly as it does on the row path.
+_ROW125 = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+_STAR125 = {
+    "struct": pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "w": pa.array(
+                [{"mean": 1.5, "sd": 0.25}],
+                pa.struct([("mean", pa.float64()), ("sd", pa.float64())]),
+            ),
+            "z": pa.array([7], pa.int64()),
+        }
+    ),
+    "opaque": pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "ts": pa.array([0], pa.timestamp("us")),
+            "z": pa.array([7], pa.int64()),
+        }
+    ),
+}
+_STAR125_DDL = {
+    "struct": (
+        "CREATE TABLE s (id BIGINT, w STRUCT(mean DOUBLE, sd DOUBLE), z BIGINT)",
+        "INSERT INTO s VALUES (1, {'mean': 1.5, 'sd': 0.25}, 7)",
+    ),
+    "opaque": (
+        "CREATE TABLE s (id BIGINT, ts TIMESTAMP, z BIGINT)",
+        "INSERT INTO s VALUES (1, TIMESTAMP '1970-01-01', 7)",
+    ),
+}
+
+
+def _duck125(sql: str, kind: str):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    ddl, ins = _STAR125_DDL[kind]
+    con.execute(ddl)
+    con.execute(ins)
+    res = con.execute(sql)
+    return [d[0] for d in res.description], res.fetchall()
+
+
+@pytest.mark.parametrize("star", ["s.*", "*"])
+@pytest.mark.parametrize(("kind", "unservable"), [("struct", "w"), ("opaque", "ts")])
+def test_a_static_star_refuses_a_column_it_cannot_serve(star, kind, unservable):
+    sql = f"SELECT {star} FROM __THIS__ JOIN s ON s.id = __THIS__.k"
+    names, _ = _duck125(sql, kind)  # oracle serves the column whole
+    assert unservable in names
+
+    with pytest.raises(ValueError, match=unservable) as e:
+        DuckDBInferFn(
+            sql, row_tables={"__THIS__": _ROW125}, static_tables={"s": _STAR125[kind]}
+        )
+    assert "does not exist" not in str(e.value), str(e.value)
+
+
+@pytest.mark.parametrize(("kind", "unservable"), [("struct", "w"), ("opaque", "ts")])
+def test_exclude_lets_a_static_star_drop_what_it_cannot_serve(kind, unservable):
+    """TASK-127 AC #1: the star entry restores the NAME, so EXCLUDE can take
+    the column out before the refusal fires -- and the rest serves."""
+    sql = f"SELECT s.* EXCLUDE ({unservable}) FROM __THIS__ JOIN s ON s.id = __THIS__.k"
+    names, want = _duck125(sql, kind)
+    assert names == ["id", "z"] and want == [(1, 7)]
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW125}, static_tables={"s": _STAR125[kind]}
+    )
+    assert [tuple(x.values()) for x in fn.infer_rows([{"k": 1}])] == want
+
+
+def test_a_scalar_only_static_star_expands_in_declared_order():
+    static = pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "b": pa.array([2.5], pa.float64()),
+            "a": pa.array([9], pa.int64()),
+        }
+    )
+    sql = "SELECT s.* FROM __THIS__ JOIN s ON s.id = __THIS__.k"
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    con.execute("CREATE TABLE s (id BIGINT, b DOUBLE, a BIGINT)")
+    con.execute("INSERT INTO s VALUES (1, 2.5, 9)")
+    res = con.execute(sql)
+    names, want = [d[0] for d in res.description], res.fetchall()
+    assert names == ["id", "b", "a"]
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW125}, static_tables={"s": static}
+    )
+    rows = fn.infer_rows([{"k": 1}])
+    assert list(rows[0].keys()) == names
+    assert [tuple(x.values()) for x in rows] == want
