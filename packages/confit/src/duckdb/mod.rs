@@ -1410,6 +1410,19 @@ impl DuckDBInferFn {
             // which DuckDB does not know, so evaluation fails and the
             // original clean error surfaces unchanged. Bind errors stay hard.
             Err(e @ (PrepareError::Unsupported(_) | PrepareError::Parse(_))) => {
+                // TASK-128: a row limit picks which rows survive, and that
+                // pick is not a function of the query (four answers over
+                // twelve connections, measured; ORDER BY does not fix
+                // ties). Refused WHOLESALE -- decision (a), 2026-08-19 --
+                // rather than frozen from whichever evaluation the build
+                // happened to run.
+                if let Some(clause) =
+                    crate::specializer::frontend::row_limit_clause(&sql)
+                {
+                    return Err(build_err(format!(
+                        "unsupported: row limit ({clause}) on a                          static-tables-only query -- which rows survive                          depends on scan order, not the query"
+                    )));
+                }
                 match eval_static_only(py, &sql, &static_tables) {
                     Ok((rows, schema)) => {
                         if strict_map {

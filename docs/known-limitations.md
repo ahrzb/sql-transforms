@@ -110,6 +110,19 @@ one-row-in/one-row-out:
 - `rowid` pseudo-column — rows have no stable identity in a stream.
 - `FULL OUTER JOIN` — emits rows that no input row produced.
 
+The exception is a **static-tables-only query** (nothing dynamic remains):
+it is evaluated once at build by DuckDB itself and frozen, so aggregation,
+`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. One carve-out
+(TASK-128, decided 2026-08-19): a **row limit refuses** — `LIMIT`, `OFFSET`,
+`FETCH`, `TOP`, anywhere in the statement, `ORDER BY` or not. Which rows
+survive a limit is not a function of the query: measured, the same
+`GROUP BY … FETCH FIRST 1 ROWS ONLY` over the same four rows answered
+**four different ways across twelve fresh connections**, and `ORDER BY` does
+not fix ties (a tie fed from a `GROUP BY` flipped in 20 runs). Freezing
+whichever answer the build-time run happened to get would make two builds of
+the same function disagree with each other. You'll see:
+`row limit (LIMIT/OFFSET) on a static-tables-only query`.
+
 ## 3. Type-system boundaries
 
 The engine computes in exactly four types: `i64`, `f64`, UTF-8 string,
