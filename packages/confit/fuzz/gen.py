@@ -1067,6 +1067,41 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
             )
         body.items = _items(rng, jenv, rng.randrange(1, 4))
         env = jenv
+    elif r < 0.60:  # selection-context forms (TASK-124)
+        # a nullable-bool conjunct with a sibling that can trap, nested under
+        # OR / NOT or used as a CASE condition -- the class the 4000-seed
+        # gate could not see when TASK-124 was found by review instead.
+        bools = [c for _, c, tt in env.cols if tt == "bool" and "." not in c]
+        ints = [c for _, c, tt in env.cols if tt == "int" and "." not in c]
+        if not bools or not ints:
+            return _query(rng, env, statics, tags, hostile_ids)
+        tags.append("selctx")
+        trap = Bin(
+            ">",
+            Bin("+", Lit(2**63 - 1, "int"), Col(rng.choice(ints), None, "int")),
+            Lit(0, "int"),
+        )
+        conj = Bin("AND", Col(rng.choice(bools), None, "bool"), trap)
+        true = Lit(True, "bool")
+        m = rng.random()
+        if m < 0.30:
+            pred = Bin("OR", conj, true)
+        elif m < 0.45:
+            pred = Bin("AND", Bin("OR", conj, true), true)
+        elif m < 0.60:
+            pred = CaseW([(conj, true)], true)
+        elif m < 0.80:
+            # projection CASE: the condition is selection ctx there too
+            body = Sel(
+                [(CaseW([(conj, Lit(1, "int"))], Lit(2, "int")), "o0")], "__THIS__"
+            )
+            return Q([], body)
+        else:
+            pred = Un("NOT", conj)
+        body = Sel(
+            [(Col(rng.choice(bools), None, "bool"), "o0")], "__THIS__", where=pred
+        )
+        return Q([], body)
     elif r < 0.63:  # star forms
         tags.append("star")
         star = Star()

@@ -121,3 +121,119 @@ def test_where_guard_skips_an_unknown_model_trap():
     # ... and the trap is still real for a row the guard lets through.
     with pytest.raises(ValueError, match="model"):
         fn.infer_rows([{"k": 0, "mid": 999, "x": 0.0}])
+
+
+# ===========================================================================
+# TASK-124: selection context, the full measured matrix (2026-08-19 spec,
+# docs/superpowers/specs/2026-08-19-selection-context-design.md).
+#
+# The model: AND is the ONLY lazy operator -- its LEFT always runs, its RIGHT
+# is skipped when the left is not TRUE, recursively. OR always evaluates both
+# sides but passes the context through. Selection context enters at exactly
+# two places -- the WHERE root and every CASE WHEN condition (projections
+# included) -- and exits at NOT / IS NULL / comparisons / function arguments
+# and at CASE ARMS (a taken arm is eager, even under WHERE). Everything below
+# is checked against the LIVE oracle, so if DuckDB moves, this remeasures.
+# ===========================================================================
+_SC124_SCHEMA = pa.schema([pa.field("b", pa.bool_()), pa.field("s", pa.string())])
+_SC124_ROWS = [
+    {"b": None, "s": "abc"},
+    {"b": True, "s": "1.5"},
+    {"b": False, "s": "abc"},
+]
+_T124 = "CAST(s AS DOUBLE) > 1"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # --- the lazy side: AND's right is skipped on a not-TRUE left ---
+        f"SELECT s AS o FROM __THIS__ WHERE b AND {_T124}",
+        f"SELECT s AS o FROM __THIS__ WHERE (b AND {_T124}) OR TRUE",
+        f"SELECT s AS o FROM __THIS__ WHERE (b AND {_T124}) AND TRUE",
+        f"SELECT s AS o FROM __THIS__ WHERE ((b AND {_T124}) OR TRUE) AND TRUE",
+        f"SELECT s AS o FROM __THIS__ WHERE ((b OR TRUE) AND (b AND {_T124})) OR TRUE",
+        # ... and through a CASE condition, filter and projection
+        f"SELECT s AS o FROM __THIS__ WHERE CASE WHEN (b AND {_T124}) "
+        "THEN TRUE ELSE TRUE END",
+        f"SELECT CASE WHEN (b AND {_T124}) THEN 1 ELSE 2 END AS o FROM __THIS__",
+        f"SELECT s AS o FROM __THIS__ WHERE CASE WHEN ((b AND {_T124}) OR TRUE) "
+        "THEN TRUE ELSE TRUE END",
+        f"SELECT CASE WHEN ((b AND {_T124}) OR TRUE) THEN 1 ELSE 2 END AS o "
+        "FROM __THIS__",
+        # --- the eager side: everything else traps exactly like DuckDB ---
+        f"SELECT s AS o FROM __THIS__ WHERE {_T124} AND b",
+        f"SELECT s AS o FROM __THIS__ WHERE coalesce(b, TRUE) OR {_T124}",
+        f"SELECT s AS o FROM __THIS__ WHERE b OR {_T124}",
+        f"SELECT s AS o FROM __THIS__ WHERE NOT (b AND {_T124})",
+        f"SELECT s AS o FROM __THIS__ WHERE (b AND {_T124}) IS NULL",
+        f"SELECT s AS o FROM __THIS__ WHERE (b AND {_T124}) = TRUE",
+        f"SELECT s AS o FROM __THIS__ WHERE coalesce((b AND {_T124}), TRUE)",
+        f"SELECT s AS o FROM __THIS__ WHERE nullif((b AND {_T124}), FALSE)",
+        f"SELECT s AS o FROM __THIS__ WHERE CASE WHEN TRUE THEN (b AND {_T124}) "
+        "ELSE TRUE END",
+        f"SELECT s AS o FROM __THIS__ WHERE CASE WHEN FALSE THEN TRUE "
+        f"ELSE (b AND {_T124}) END",
+        f"SELECT (b AND {_T124}) AS o FROM __THIS__",
+        f"SELECT ((b AND {_T124}) OR TRUE) AS o FROM __THIS__",
+    ],
+)
+def test_selection_context_matches_the_oracle(sql):
+    import duckdb as _duck
+
+    con = _duck.connect()
+    con.execute("CREATE TABLE __THIS__ (b BOOLEAN, s VARCHAR)")
+    for r in _SC124_ROWS:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["b"], r["s"]])
+    try:
+        want = ("S", con.execute(sql).fetchall())
+    except _duck.Error:
+        want = ("T", None)
+
+    shape = "filter" if " WHERE " in sql else None
+    try:
+        fn = DuckDBInferFn(
+            sql, row_tables={"__THIS__": _SC124_SCHEMA}, static_tables={}, shape=shape
+        )
+    except ValueError:
+        # A named BUILD refusal is contract-legal exactly where the oracle
+        # does not serve either ((b AND t) = TRUE and the nullif spelling
+        # refuse "comparison on BOOLEAN" today). Where the oracle SERVES, a
+        # refusal is a cost this matrix must show, so only "T" absorbs it.
+        assert want[0] == "T", f"{sql}: refused where the oracle serves"
+        return
+    try:
+        got = ("S", [tuple(x.values()) for x in fn.infer_rows(_SC124_ROWS)])
+    except ValueError:
+        got = ("T", None)
+    assert got == want, f"{sql}: {got} != {want}"
+
+
+@pytest.mark.parametrize("join", ["JOIN", "LEFT JOIN"])
+def test_selection_context_reaches_the_many_join_filter(join):
+    row = pa.schema(
+        [
+            pa.field("c0", pa.int64()),
+            pa.field("b", pa.bool_()),
+            pa.field("s", pa.string()),
+        ]
+    )
+    static = pa.table(
+        {"k": pa.array([1, 1], pa.int64()), "v": pa.array([10, 20], pa.int64())}
+    )
+    rows = [{"c0": 1, "b": None, "s": "abc"}, {"c0": 1, "b": True, "s": "1.5"}]
+    sql = f"SELECT s0.v AS o FROM __THIS__ {join} s0 ON c0 = s0.k WHERE (b AND {_T124})"
+    import duckdb as _duck
+
+    con = _duck.connect()
+    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, b BOOLEAN, s VARCHAR)")
+    for r in rows:
+        con.execute("INSERT INTO __THIS__ VALUES (?, ?, ?)", [r["c0"], r["b"], r["s"]])
+    con.execute("CREATE TABLE s0 (k BIGINT, v BIGINT)")
+    con.execute("INSERT INTO s0 VALUES (1, 10), (1, 20)")
+    want = con.execute(sql).fetchall()
+    # order under 'many' is the documented multiset (join-order accident)
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": row}, static_tables={"s0": static}, shape="many"
+    )
+    assert sorted(tuple(x.values()) for x in fn.infer_rows(rows)) == sorted(want)

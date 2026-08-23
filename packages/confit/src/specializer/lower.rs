@@ -33,20 +33,8 @@ use super::ir::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
     StrOp2, Term, Ty, Value,
 };
-use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable, may_trap};
+use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
 
-/// The top-level AND spine of a filter predicate, left to right. Stops at
-/// anything that is not an AND: the conjuncts of `(a AND b) OR c` are not
-/// top-level, and skipping one of them would change the answer.
-fn flatten_and<'e>(e: &'e SExpr, out: &mut Vec<&'e SExpr>) {
-    match &e.kind {
-        SKind::And { a, b } => {
-            flatten_and(a, out);
-            flatten_and(b, out);
-        }
-        _ => out.push(e),
-    }
-}
 
 /// Can this kind's NARROW result sit outside its width's range?
 ///
@@ -207,50 +195,25 @@ pub fn lower(
     }
 
     if let Some(pred) = filter_pred {
-        // The top-level AND spine is lowered ONE CONJUNCT AT A TIME, dropping
-        // the row the moment a conjunct is not TRUE — so a later conjunct
-        // never evaluates, and never traps.
-        //
-        // This is not an optimisation, it is the oracle's semantics, and the
-        // NULL case is why it has to live here rather than in `kleene`. A
-        // filter asks `pred IS TRUE`, and `NULL AND anything` is never TRUE,
-        // so the right operand cannot change the outcome. `kleene` must NOT
-        // short-circuit on a NULL left operand, because as a VALUE
-        // `NULL AND FALSE` is FALSE and needs the right side — which is why
-        // `kleene_shortcut` skips only when the left DECIDES. Measured
-        // 2026-08-17 against the oracle, `s = 'abc'` uncastable and `b` NULL:
-        //
-        //   WHERE NULL AND (CAST(s AS DOUBLE) > 1)  -> []      no trap
-        //   WHERE b    AND (CAST(s AS DOUBLE) > 1)  -> 1 row   per ROW, not a
-        //                                              constant fold
-        //   WHERE (CAST(s AS DOUBLE) > 1) AND b     -> TRAP    order matters
-        //   SELECT (NULL AND (CAST(s AS DOUBLE) > 1))  -> TRAP  projection
-        //                                              evaluates, so no
-        //                                              spine treatment there
-        let mut conjuncts = Vec::new();
-        flatten_and(pred, &mut conjuncts);
+        // The WHERE root is SELECTION context (TASK-124): emit_truth is
+        // where AND's left-to-right laziness lives, recursively -- the old
+        // one-conjunct-at-a-time spine was the top-level special case of
+        // it. A filter asks `pred IS TRUE`, and FALSE and NULL answer that
+        // question alike, so the bare i1 is the whole story.
+        let mut live = Vec::new();
+        let cond = fb.emit_truth(pred, &mut live)?;
+        let (keep, _) = fb.create_block(&[]);
         let (drop, _) = fb.create_block(&[]);
-        let mut keep = None;
-        fb.in_filter = true;
-        for c in conjuncts {
-            let mut live = Vec::new();
-            let pl = fb.emit(c, &mut live)?;
-            let cond = fb.truthy(pl);
-            let (k, _) = fb.create_block(&[]);
-            fb.term(Term::Brif {
-                cond,
-                then_to: BlockId(k as u32),
-                then_args: vec![],
-                else_to: BlockId(drop as u32),
-                else_args: vec![],
-            });
-            fb.switch(k);
-            keep = Some(k);
-        }
-        fb.in_filter = false;
+        fb.term(Term::Brif {
+            cond,
+            then_to: BlockId(keep as u32),
+            then_args: vec![],
+            else_to: BlockId(drop as u32),
+            else_args: vec![],
+        });
         fb.switch(drop);
         fb.term(Term::Skip);
-        fb.switch(keep.expect("a predicate has at least one conjunct"));
+        fb.switch(keep);
     }
 
     let mut live = Vec::new();
@@ -391,20 +354,6 @@ struct FB<'a> {
     /// raising (TASK-73). A stack, not an Option: a residual may probe
     /// another join.
     probe_seeds: Vec<ProbeSeed>,
-    /// Are we lowering a FILTER predicate rather than a projection?
-    ///
-    /// It decides whether AND/OR may short-circuit, and the split is the
-    /// oracle's. Measured 2026-08-17 with a trapping right operand:
-    ///
-    ///   SELECT (f AND trap)          TRAP   projection: BOTH operands run
-    ///   SELECT (TRUE OR trap)        TRAP   even a constant left operand
-    ///   WHERE  (f AND trap)          []     filter: short-circuits
-    ///   WHERE  (TRUE OR trap)        1 row
-    ///
-    /// A filter has a row to drop, so it narrows and never needs the value; a
-    /// projection has to produce one for every row. An untaken CASE arm is
-    /// unevaluated in both, which is `Case`'s own branching and not this flag.
-    in_filter: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -441,7 +390,6 @@ impl<'a> FB<'a> {
             model_base,
             many: None,
             probe_seeds: Vec::new(),
-            in_filter: false,
         }
     }
 
@@ -573,6 +521,123 @@ impl<'a> FB<'a> {
             None => lane.val,
             Some(f) => self.bin(BinOp::And, f, lane.val),
         }
+    }
+
+    /// SELECTION context (TASK-124): the value is consumed only for
+    /// TRUE-ness, so the result is a bare i1 with no null flag. Entered from
+    /// the WHERE root (scalar and many paths) and from every CASE condition;
+    /// exits to `emit` at every operator that can tell NULL from FALSE.
+    ///
+    /// The measured model (the 2026-08-19 spec): AND is the ONLY lazy
+    /// operator -- its LEFT always runs, its RIGHT is skipped when the left
+    /// is not TRUE, recursively through both children. OR always evaluates
+    /// both sides but passes the context through, which is how a conjunction
+    /// under `OR TRUE` keeps its laziness. A CASE's condition is selection
+    /// context wherever the CASE sits; its ARMS are value context (a taken
+    /// arm traps on DuckDB even under WHERE), which is why there is no Case
+    /// arm here -- the default `emit` route is the measured behaviour.
+    ///
+    /// Skipping the right on a not-TRUE left yields FALSE where Kleene may
+    /// say NULL (`NULL AND FALSE`), and that is sound HERE because the
+    /// consumer only asks "is it TRUE" -- FALSE and NULL answer alike, and
+    /// OR-of-truths preserves the answer. `NOT` tells the two apart, which
+    /// is exactly where DuckDB reverts to value context, and so do we.
+    fn emit_truth(&mut self, e: &SExpr, live: &mut Live) -> Result<Value, PrepareError> {
+        match &e.kind {
+            SKind::And { a, b } => {
+                let at = self.emit_truth(a, live)?;
+                let shape = Self::live_types(live);
+                let mut join_tys = shape.clone();
+                join_tys.push(Ty::I1);
+                let (join, jp) = self.create_block(&join_tys);
+                let (rhs, rp) = self.create_block(&shape);
+                let mut skip_args = Self::live_args(live);
+                let f = self.const_i1(false);
+                skip_args.push(f);
+                self.term(Term::Brif {
+                    cond: at,
+                    then_to: BlockId(rhs as u32),
+                    then_args: Self::live_args(live),
+                    else_to: BlockId(join as u32),
+                    else_args: skip_args,
+                });
+                self.switch(rhs);
+                self.enter_block(live, &rp);
+                let bt = self.emit_truth(b, live)?;
+                let mut args = Self::live_args(live);
+                args.push(bt);
+                self.term(Term::Jump {
+                    to: BlockId(join as u32),
+                    args,
+                });
+                self.switch(join);
+                let lw = shape.len();
+                self.enter_block(live, &jp[..lw]);
+                Ok(jp[lw])
+            }
+            SKind::Or { a, b } => {
+                // The exact dual of And: a TRUE left decides TRUE and the
+                // right is SKIPPED (measured: `WHERE TRUE OR trap` and
+                // `WHERE b OR trap` with b true both serve; b NULL or FALSE
+                // evaluates the right and traps -- NULL OR x is TRUE exactly
+                // when x is).
+                let at = self.emit_truth(a, live)?;
+                let shape = Self::live_types(live);
+                let mut join_tys = shape.clone();
+                join_tys.push(Ty::I1);
+                let (join, jp) = self.create_block(&join_tys);
+                let (rhs, rp) = self.create_block(&shape);
+                let mut skip_args = Self::live_args(live);
+                let tr = self.const_i1(true);
+                skip_args.push(tr);
+                self.term(Term::Brif {
+                    cond: at,
+                    then_to: BlockId(join as u32),
+                    then_args: skip_args,
+                    else_to: BlockId(rhs as u32),
+                    else_args: Self::live_args(live),
+                });
+                self.switch(rhs);
+                self.enter_block(live, &rp);
+                let bt = self.emit_truth(b, live)?;
+                let mut args = Self::live_args(live);
+                args.push(bt);
+                self.term(Term::Jump {
+                    to: BlockId(join as u32),
+                    args,
+                });
+                self.switch(join);
+                let lw = shape.len();
+                self.enter_block(live, &jp[..lw]);
+                Ok(jp[lw])
+            }
+            _ => {
+                let l = self.emit(e, live)?;
+                Ok(self.truthy(l))
+            }
+        }
+    }
+
+    /// [`Self::emit_truth`] under a many-join probe context -- the same
+    /// wrapper shape as [`Self::emit_many`].
+    fn emit_truth_many(
+        &mut self,
+        e: &SExpr,
+        live: &mut Live,
+        j: u32,
+        hit: bool,
+        nd: usize,
+    ) -> Result<Value, PrepareError> {
+        self.many = Some(ManySeed {
+            join: j,
+            hit,
+            base: live.len() - nd,
+            nd,
+        });
+        self.seed_many(live);
+        let out = self.emit_truth(e, live);
+        self.many = None;
+        out
     }
 
     // -------------------------------------------------- live threading --
@@ -1659,10 +1724,8 @@ impl<'a> FB<'a> {
             live.push((Lane { flag: None, val: d }, ty));
         }
         if let Some(pred) = filter_pred {
-            self.in_filter = true;
-            let pl = self.emit_many(pred, &mut live, j, true, nd)?;
-            self.in_filter = false;
-            let pv = self.truthy(pl);
+            // SELECTION context (TASK-124), same as the scalar WHERE.
+            let pv = self.emit_truth_many(pred, &mut live, j, true, nd)?;
             let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
             let (keep, kp) = {
                 let mut tys = vec![Ty::I64, Ty::I64];
@@ -1716,11 +1779,9 @@ impl<'a> FB<'a> {
                 live.push((Lane { flag: None, val: d }, ty));
             }
             if let Some(pred) = filter_pred {
-                // WHERE sees the null-extended row too (measured).
-                self.in_filter = true;
-                let pl = self.emit_many(pred, &mut live, j, false, nd)?;
-                self.in_filter = false;
-                let pv = self.truthy(pl);
+                // WHERE sees the null-extended row too (measured), and it
+                // is SELECTION context (TASK-124), same as the scalar path.
+                let pv = self.emit_truth_many(pred, &mut live, j, false, nd)?;
                 let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
                 let (keep, kp) = self.create_block(&dst_tys);
                 let (drop, _) = self.create_block(&[]);
@@ -2060,10 +2121,10 @@ impl<'a> FB<'a> {
         is_and: bool,
         res_nullable: bool,
     ) -> Result<Lane, PrepareError> {
+        // VALUE context is ALWAYS eager (TASK-124): both operands run and
+        // Kleene combines them. Laziness lives only in `emit_truth`.
         let la = self.emit(a, live)?;
-        if self.in_filter && may_trap(b) {
-            return self.kleene_shortcut(la, b, live, is_and, res_nullable);
-        }
+        let _ = res_nullable;
         live.push((la, Ty::I1));
         let lb = self.emit(b, live)?;
         let (la, _) = live.pop().expect("pushed above");
@@ -2101,108 +2162,6 @@ impl<'a> FB<'a> {
         Lane { flag, val }
     }
 
-    /// Short-circuiting AND/OR: evaluate the right operand only on the rows
-    /// the left one does not already decide. AND is decided by a definite
-    /// FALSE, OR by a definite TRUE; a NULL left decides nothing, so the
-    /// right operand still runs there — and still traps there, exactly as
-    /// DuckDB does.
-    ///
-    /// The left lane rides the branch as a live entry: it is computed in the
-    /// predecessor block and read again in the arm that needs it, since
-    /// values never cross blocks except as branch args.
-    ///
-    /// `res_nullable` decides whether a flag param rides with the result, the
-    /// same way [`FB::case`] uses its own. It is NOT optional bookkeeping:
-    /// the null-lane discipline says a non-nullable SExpr lowers to a bare
-    /// payload with no flag anywhere, and `emit_stores` asserts it.
-    fn kleene_shortcut(
-        &mut self,
-        la: Lane,
-        b: &SExpr,
-        live: &mut Live,
-        is_and: bool,
-        res_nullable: bool,
-    ) -> Result<Lane, PrepareError> {
-        let decides = {
-            let d = if is_and { self.not(la.val) } else { la.val };
-            match la.flag {
-                Some(f) => self.bin(BinOp::And, f, d),
-                None => d,
-            }
-        };
-
-        live.push((la, Ty::I1));
-        let live_width = Self::live_types(live).len();
-        let mut join_tys = Self::live_types(live);
-        if res_nullable {
-            join_tys.push(Ty::I1); // flag
-        }
-        join_tys.push(Ty::I1); // value
-        let (join, join_p) = self.create_block(&join_tys);
-        let shape = Self::live_types(live);
-        let (short_b, short_p) = self.create_block(&shape);
-        let (eval_b, eval_p) = self.create_block(&shape);
-        let args = Self::live_args(live);
-        self.term(Term::Brif {
-            cond: decides,
-            then_to: BlockId(short_b as u32),
-            then_args: args.clone(),
-            else_to: BlockId(eval_b as u32),
-            else_args: args,
-        });
-
-        // Decided by the left operand: FALSE for AND, TRUE for OR, and
-        // definite either way — never NULL.
-        self.switch(short_b);
-        self.enter_block(live, &short_p);
-        let val = self.const_i1(!is_and);
-        let mut args = Self::live_args(live);
-        if res_nullable {
-            let flag = self.const_i1(true);
-            args.push(flag);
-        }
-        args.push(val);
-        self.term(Term::Jump {
-            to: BlockId(join as u32),
-            args,
-        });
-
-        // Undecided: the answer is whatever the ordinary flag algebra says.
-        self.switch(eval_b);
-        self.enter_block(live, &eval_p);
-        let lb = self.emit(b, live)?;
-        let (la, _) = *live.last().expect("pushed above");
-        let res = self.kleene_combine(la, lb, is_and);
-        let mut args = Self::live_args(live);
-        if res_nullable {
-            let flag = match res.flag {
-                Some(f) => f,
-                None => self.const_i1(true),
-            };
-            args.push(flag);
-        }
-        args.push(res.val);
-        self.term(Term::Jump {
-            to: BlockId(join as u32),
-            args,
-        });
-
-        self.switch(join);
-        self.enter_block(live, &join_p[..live_width]);
-        live.pop().expect("pushed above");
-        let tail = &join_p[live_width..];
-        Ok(if res_nullable {
-            Lane {
-                flag: Some(tail[0]),
-                val: tail[1],
-            }
-        } else {
-            Lane {
-                flag: None,
-                val: tail[0],
-            }
-        })
-    }
 
     /// CASE chain: one condition block per arm, results evaluated only on
     /// their taken path, all paths joining with the result lane as params.
@@ -2241,8 +2200,10 @@ impl<'a> FB<'a> {
         };
 
         for (cond, result) in arms {
-            let cl = self.emit(cond, live)?;
-            let keep = self.truthy(cl);
+            // A CASE condition is SELECTION context wherever the CASE sits
+            // (TASK-124, measured in a projection too); the ARMS below stay
+            // value context -- a taken arm traps on DuckDB even under WHERE.
+            let keep = self.emit_truth(cond, live)?;
             let shape = Self::live_types(live);
             let (then_b, then_p) = self.create_block(&shape);
             let (else_b, else_p) = self.create_block(&shape);

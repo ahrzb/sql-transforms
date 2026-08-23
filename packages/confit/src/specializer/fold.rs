@@ -309,12 +309,35 @@ pub fn fold(e: SExpr) -> SExpr {
                 }
                 r
             };
+            // TASK-124: an arm is VALUE context and the CASE's surroundings
+            // may be SELECTION context (`WHERE CASE WHEN TRUE THEN (b AND
+            // trap) END` traps on DuckDB -- the taken arm is eager). Letting
+            // a non-constant arm escape the CASE bare would move it across
+            // that boundary and lend it a laziness DuckDB never gives it, so
+            // only context-independent expressions escape; anything else
+            // keeps a one-arm CASE as its value-context wrapper (the
+            // condition is constant TRUE, so the branch costs nothing after
+            // lowering).
+            let escape = |r: SExpr| -> SExpr {
+                if matches!(r.kind, SKind::Lit(_) | SKind::NullOf | SKind::Col(_)) {
+                    return retype(r);
+                }
+                let cond = SExpr {
+                    kind: SKind::Lit(Lit::I1(true)),
+                    ty: Ty::I1,
+                    nullable: false,
+                };
+                e(SKind::Case {
+                    arms: vec![(cond, retype(r))],
+                    default: None,
+                })
+            };
             let mut kept = Vec::new();
             for (c, r) in arms {
                 match &c.kind {
                     SKind::Lit(Lit::I1(true)) => {
                         if kept.is_empty() {
-                            return retype(r); // first arm wins, CASE gone
+                            return escape(r); // first arm wins
                         }
                         // TRUE after dynamic arms: it IS the default now
                         return e(SKind::Case {
@@ -327,9 +350,11 @@ pub fn fold(e: SExpr) -> SExpr {
                 }
             }
             if kept.is_empty() {
-                // every arm dropped: the default, or SQL's implicit NULL
+                // every arm dropped: the default, or SQL's implicit NULL.
+                // The default is an ARM for context purposes -- same
+                // boundary, same wrapper (TASK-124).
                 return match default {
-                    Some(d) => retype(*d),
+                    Some(d) => escape(*d),
                     None => null(ty),
                 };
             }

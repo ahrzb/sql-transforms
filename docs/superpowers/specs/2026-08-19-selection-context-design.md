@@ -34,7 +34,7 @@ SELECT ((b AND T) OR TRUE) FROM t    -- TRAP  (ctx does NOT blanket projections)
 | node | children's ctx | evaluation in selection ctx |
 |---|---|---|
 | `AND` | both selection | LEFT always evaluated (`WHERE T AND b` traps, even `b` false); RIGHT skipped when left is not TRUE (`WHERE b AND T` serves on b NULL/false) |
-| `OR` | both selection | BOTH always evaluated — `WHERE coalesce(b,TRUE) OR T` TRAPS; laziness reaches only ANDs inside (`WHERE (b AND T) OR TRUE` serves) |
+| `OR` | both selection | the exact DUAL of AND (corrected during implementation — the first probe's `coalesce(b,TRUE)` left was FALSE on the discriminating row, a bad discriminator caught by TASK-75's own pin): a TRUE left decides TRUE and the right is SKIPPED (`WHERE TRUE OR T` and `WHERE b OR T` with b true both serve); a NULL or FALSE left evaluates the right (`WHERE b OR T` with b NULL/false traps) |
 | `CASE` | condition selection; ARMS VALUE | `WHERE CASE WHEN ((b AND T) OR TRUE) THEN ...` serves; `WHERE CASE WHEN TRUE THEN (b AND T) ELSE TRUE END` TRAPS — a taken arm is eager |
 | `NOT`, `IS [NOT] NULL`, comparisons, function args, `coalesce`/`nullif`/`IN` operands | value | all measured TRAP: `NOT (b AND T)`, `(b AND T) IS NULL`, `(b AND T) = TRUE`, `coalesce((b AND T), TRUE)`, `nullif((b AND T), FALSE)`, `(b AND T) IN (TRUE, NULL)` |
 
@@ -42,12 +42,13 @@ Nesting recurses arbitrarily: `((b AND T) OR TRUE) AND TRUE` and
 `((b OR TRUE) AND (b AND T)) OR TRUE` both serve 3/3; `(b AND T) AND TRUE`
 serves in a filter (left child keeps ctx) and traps in a projection.
 
-Why AND may skip its right on a not-TRUE left without computing Kleene
-exactly: the consumer of a selection-context boolean asks only "is it TRUE".
-`NULL AND FALSE` is FALSE while our skip yields NULL — but FALSE and NULL are
-the same answer to that question, and `OR` of two truths preserves it
-(NULL-as-false OR x is TRUE exactly when Kleene's is). `NOT` would tell the
-two apart, which is exactly where DuckDB reverts to value context.
+Why the skips are sound without computing Kleene exactly: the consumer of a
+selection-context boolean asks only "is it TRUE". For AND, a not-TRUE left
+means the conjunction is not TRUE regardless of the right (`NULL AND FALSE`
+is FALSE while the skip says NULL — the same answer to that question). For
+OR, a TRUE left decides TRUE, and a NULL/FALSE left means the disjunction is
+TRUE exactly when the right is. `NOT` would tell NULL from FALSE, which is
+exactly where DuckDB reverts to value context.
 
 ## 2. The design
 
@@ -67,9 +68,9 @@ fn emit_truth(&mut self, e: &SExpr, live: &mut Live) -> Result<Value, PrepareErr
             ...skip-right block split...
         }
         SKind::Or { a, b } => {
-            let at = self.emit_truth(a, live)?;   // both sides ALWAYS run
-            let bt = self.emit_truth(b, live)?;
-            Ok(self.bin(BinOp::Or, at, bt))
+            let at = self.emit_truth(a, live)?;
+            // dual of And: TRUE left -> merge(true) WITHOUT touching b
+            ...skip-right block split...
         }
         SKind::Case { .. } => ...condition via emit_truth, arms via emit
                               (value), each arm's Lane reduced to truth at
@@ -114,10 +115,12 @@ measurements, all currently WRONG in the engine in the mirror direction
 (we short-circuit where DuckDB is eager — we ANSWER what it refuses):
 
 ```sql
-WHERE coalesce(b, TRUE) OR T          -- oracle TRAP, we serve today
 WHERE T AND b                         -- oracle TRAP (left always runs)
 WHERE CASE WHEN TRUE THEN (b AND T) ELSE TRUE END   -- oracle TRAP (arm eager)
 SELECT ((b AND T) OR TRUE)            -- oracle TRAP (no ctx in projections)
+-- (the spec first listed `WHERE coalesce(b,TRUE) OR T` here as an OR-eager
+--  witness; that measurement was a bad discriminator -- coalesce(false,TRUE)
+--  is false -- and the corrected model above replaces it)
 ```
 
 plus serving controls: `(b AND T) AND TRUE` filter serves, cond→OR→AND

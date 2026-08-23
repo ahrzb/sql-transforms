@@ -50,31 +50,15 @@ The campaign fuzzer compares per this rule: sequence-strict self-legs on the
 row path (a reversed batch must reverse), sortedness-plus-multiset under
 `ORDER BY` (ties are free), multiset otherwise.
 
-**One place the contract is currently BROKEN** (found 2026-08-18, tracked as
-TASK-124, pinned in
-[`packages/confit/tests/test_open_divergences.py`](../packages/confit/tests/test_open_divergences.py)).
-(A second break found the same day — a star over a static relation emitting a
-column set DuckDB never produces — closed 2026-08-19 as TASK-125: such a star
-now refuses the struct or non-vocabulary column BY NAME unless EXCLUDE takes
-it out.)
-
-Boolean short-circuit is decided per *statement* rather than per *context*,
-and DuckDB decides it per context. One nesting level below a top-level `AND`,
-both outcomes above can fail:
-
-```sql
--- we TRAP at runtime; DuckDB serves 3 rows, optimizer on OR off
-SELECT s FROM t WHERE (b AND CAST(s AS DOUBLE) > 1) OR TRUE
-
--- we SERVE []; DuckDB refuses the query, optimizer on or off
-SELECT s FROM t WHERE (b AND CAST(s AS DOUBLE) > 1) IS NULL
-```
-
-The first is the failure this document says cannot happen: a runtime error on
-a query DuckDB answers. It needs `b` to be NULL for some row, a trapping
-sibling conjunct, and a surrounding `OR`, `CASE WHEN`, `NOT` or `IS NULL` --
-not a top-level `AND`, which is correct. Until TASK-124 lands, treat a
-conjunction that is not at the top of a `WHERE` as unverified.
+**The break is CLOSED** (TASK-124, fixed 2026-08-19). Boolean short-circuit
+is now decided per CONTEXT, as DuckDB decides it: selection context (the
+WHERE root and every `CASE WHEN` condition, projections included) makes
+`AND` lazy left-to-right and `OR` its exact dual, and exits to eager value
+context at `NOT`/`IS NULL`/comparisons/function arguments and CASE arms. The
+model, its measurements and the design are in
+`docs/superpowers/specs/2026-08-19-selection-context-design.md`; the full
+measured matrix runs against the live oracle in
+`known_divergences/test_short_circuit.py`.
 
 ---
 
