@@ -432,10 +432,34 @@ def _sorted_by(rows: list[dict], col: str) -> bool:
     return all(a <= b for a, b in zip(vals, vals[1:], strict=False))
 
 
+def _dedup_names(names: list[str]) -> list[str]:
+    """The wave-5 client contract (pins-wave5/dup-names-client-contract.json,
+    mirrored from frontend.rs::dedup_output_names): duplicate OUTPUT names
+    rename left-to-right to `<name>_N`, smallest free N, case-insensitive,
+    generated candidates included. DuckDB itself applies exactly this at
+    every subquery/CTE/CTAS boundary and in .df(); its TOP-LEVEL arrow
+    export keeps the duplicates instead, so the oracle leg normalizes
+    DuckDB's names through the same rule before comparing -- the engine's
+    deduped names are the DECIDED contract, not a divergence (TASK-130)."""
+    seen: set[str] = set()
+    out = []
+    for n in names:
+        if n.lower() not in seen:
+            seen.add(n.lower())
+            out.append(n)
+            continue
+        i = 1
+        while f"{n}_{i}".lower() in seen:
+            i += 1
+        seen.add(f"{n}_{i}".lower())
+        out.append(f"{n}_{i}")
+    return out
+
+
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):
     """None if schemas agree; ("known", tag) for open-ticket width classes;
     ("diff", detail) otherwise."""
-    if duck.names != ours.names:
+    if _dedup_names(list(duck.names)) != list(ours.names):
         return ("diff", f"names {duck.names} != {ours.names}")
     known = []
     for d, o in zip(duck, ours, strict=True):
@@ -591,6 +615,12 @@ def run_case(case: G.Case) -> Verdict:
         """Our one result versus ONE DuckDB reading. Pure comparison — every
         side has already been executed, so calling it twice costs nothing."""
         duck_out, duck_phase, duck_err = duck
+        if duck_out is not None and len(set(duck_out.schema.names)) != len(
+            duck_out.schema.names
+        ):
+            duck_out = duck_out.rename_columns(
+                _dedup_names(list(duck_out.schema.names))
+            )
         t = list(tags)
         if duck_out is None and duck_phase == "build":
             return Verdict(
