@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import duckdb
 import pyarrow as pa
+import pytest
 from confit import DuckDBInferFn
 from test_duckdb_interpreter import duck_check, static
 
@@ -256,3 +257,37 @@ def test_joined_relation_column_list_alias_refusals():
         "SELECT x.p AS o FROM __THIS__ JOIN s AS x(p, p) ON x.p = __THIS__.a",
         "ambiguous",
     )
+
+
+def test_if_and_ifnull_vs_oracle():
+    # TASK-98: if() IS the ternary CASE, ifnull is 2-arg coalesce -- both
+    # desugar to their AST twin and re-enter the binder, so type unification,
+    # SQLNULL channels and lazy arms all apply verbatim.
+    dim = static({"a": "int", "label": "str?"}, [{"a": 3, "label": None}])
+    for sql in [
+        "SELECT if(a > 2, a, 0) AS o FROM __THIS__",
+        "SELECT if(a > 2, a, 0.5e0) AS o FROM __THIS__",  # unifies to DOUBLE
+        "SELECT if(s IS NULL, 'none', s) AS o FROM __THIS__",
+        "SELECT ifnull(s, 'fallback') AS o FROM __THIS__",
+        "SELECT ifnull(NULL, a) AS o FROM __THIS__",
+        # lazy arms: the untaken side may trap and must not fire
+        "SELECT if(a > 100, CAST('x' AS DOUBLE), 0.0e0) AS o FROM __THIS__",
+        "SELECT ifnull('v', CAST('x' AS VARCHAR)) AS o FROM __THIS__",
+    ]:
+        duck_check(sql, T, T_ROWS)
+    duck_check(
+        "SELECT ifnull(label, 'x') AS o FROM __THIS__ NATURAL JOIN dim",
+        T,
+        T_ROWS,
+        {"dim": dim},
+    )
+
+
+def test_if_and_ifnull_arity_refusals():
+    row = pa.schema([pa.field("a", pa.int64(), nullable=False)])
+    for sql, m in [
+        ("SELECT if(a > 1, a) AS o FROM __THIS__", "3 arguments"),
+        ("SELECT ifnull(a, a, a) AS o FROM __THIS__", "2 arguments"),
+    ]:
+        with pytest.raises(ValueError, match=m):
+            DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})

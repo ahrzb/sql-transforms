@@ -152,7 +152,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "bit_length", "cbrt", "ceil", "ceiling", "char_length", "character_length",
     "coalesce", "concat", "concat_ws", "contains", "cos", "count",
     "damerau_levenshtein", "divide", "editdist3", "ends_with", "exp", "fdiv",
-    "first", "floor", "fmod", "geomean", "greatest", "hamming", "instr",
+    "first", "floor", "fmod", "geomean", "greatest", "hamming", "if",
+    "ifnull", "instr",
     "jaccard", "last", "lcase", "least", "len", "length", "levenshtein",
     "list_extract", "list_slice", "ln", "log", "log10", "log2", "lower",
     "lpad", "ltrim", "max", "min", "mismatches", "mod", "multiply",
@@ -5727,7 +5728,42 @@ impl Binder<'_> {
                 }
                 Ok(acc.unwrap_or_else(|| lit_str("")))
             }
-            "coalesce" => {
+            // TASK-98: if() IS the ternary CASE (audited: same type
+            // unification, same lazy arms) — rebuild the AST and re-enter,
+            // the `-a %% b` precedent, so every CASE rule applies verbatim,
+            // selection-context conditions included.
+            "if" => {
+                let [c, a, b] = args[..] else {
+                    return Err(PrepareError::Bind(
+                        "if takes exactly 3 arguments".to_string(),
+                    ));
+                };
+                let rewritten = SqlExpr::Case {
+                    case_token: sqlparser::tokenizer::TokenWithSpan::wrap(
+                        sqlparser::tokenizer::Token::EOF,
+                    )
+                    .into(),
+                    end_token: sqlparser::tokenizer::TokenWithSpan::wrap(
+                        sqlparser::tokenizer::Token::EOF,
+                    )
+                    .into(),
+                    operand: None,
+                    conditions: vec![sqlparser::ast::CaseWhen {
+                        condition: c.clone(),
+                        result: a.clone(),
+                    }],
+                    else_result: Some(Box::new(b.clone())),
+                };
+                self.expr(&rewritten)
+            }
+            // TASK-98: ifnull is 2-arg coalesce on DuckDB (audited), so it
+            // shares the arm below — only the arity is its own.
+            "coalesce" | "ifnull" => {
+                if name == "ifnull" && args.len() != 2 {
+                    return Err(PrepareError::Bind(
+                        "ifnull takes exactly 2 arguments".to_string(),
+                    ));
+                }
                 // Lazy per-row (measured: untaken erroring arms don't fire) —
                 // guaranteed here because CASE branches run only when taken.
                 // audit 2026-08-13: stricter than DuckDB twice — it binds
