@@ -997,3 +997,97 @@ def test_constant_narrow_modulo_at_min_traps_like_the_column():
         static_tables={},
     )
     assert fn2.infer_rows([{"k": 1}]) == [{"o": 0}]
+
+
+# ---------------------------------------------------------------------------
+# TASK-131: a bare NULL arm and an integer literal, meeting inside a fold.
+#
+# DuckDB's CASE types by folding ELSE first, then the THEN arms in order,
+# through TryGetMaxLogicalType (bind_case_expression.cpp). The one rule our
+# fold missed (types.cpp): Max(SQLNULL, X) = NormalizeType(X) -- an
+# INTEGER_LITERAL that meets a NULL is normalized to its base type
+# (INTEGER), losing its shrink-to-fit. So NULL alone never widens, a
+# literal alone shrinks into a column's width, but a NULL meeting a
+# LITERAL-seeded accumulator hardens it: that is the whole "width floor".
+# COALESCE folds the same way but seeds from its first argument.
+# Measured 2026-08-24, source-verified against the v1.5.5 checkout.
+# ---------------------------------------------------------------------------
+_T131_SCHEMA = pa.schema(
+    [
+        pa.field("i8", pa.int8(), nullable=True),
+        pa.field("i16", pa.int16(), nullable=True),
+        pa.field("i32", pa.int32(), nullable=True),
+        pa.field("i64", pa.int64(), nullable=True),
+    ]
+)
+_T131_ROWS = [{"i8": 1, "i16": 2, "i32": 3, "i64": 4}]
+
+_W = "WHEN k > 0 THEN"
+_T131_GRID = [
+    # NULL hardens the literal seed: int32 floors
+    f"SELECT (CASE {_W} NULL {_W} i16 ELSE -22 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} NULL {_W} i8 ELSE -1 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} NULL {_W} i16 ELSE 5 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} NULL {_W} i8 ELSE 5 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} NULL {_W} i32 ELSE -1 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} NULL {_W} i64 ELSE -1 END) AS o FROM __THIS__",
+    # the seed 12745 shape (constant TRUE arms)
+    "SELECT (CASE WHEN TRUE THEN NULL WHEN TRUE THEN i16 ELSE -22 END) AS o"
+    " FROM __THIS__",
+    # NULL after the literal already shrank: no floor
+    f"SELECT (CASE {_W} i16 {_W} NULL ELSE -22 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} i16 {_W} -22 ELSE NULL END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} -22 {_W} NULL ELSE i16 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} NULL {_W} -22 ELSE i16 END) AS o FROM __THIS__",
+    # SQLNULL ELSE seed normalizes the first arm: floor without any NULL arm
+    f"SELECT (CASE {_W} -22 {_W} i16 ELSE NULL END) AS o FROM __THIS__",
+    # NULL beside columns only: width-neutral
+    f"SELECT (CASE {_W} NULL {_W} i16 ELSE i16 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} i16 ELSE NULL END) AS o FROM __THIS__",
+    # typed NULL keeps its width, no floor
+    f"SELECT (CASE {_W} CAST(NULL AS SMALLINT) {_W} i16 ELSE -22 END) AS o"
+    " FROM __THIS__",
+    f"SELECT (CASE {_W} CAST(NULL AS TINYINT) {_W} i16 ELSE -22 END) AS o"
+    " FROM __THIS__",
+    # nested: the inner CASE is a plain computed arm outside
+    f"SELECT (CASE {_W} NULL {_W} (CASE {_W} NULL ELSE i16 END) ELSE -22 END)"
+    " AS o FROM __THIS__",
+    # literal-vs-column controls (no NULL): shrink-to-fit lives
+    f"SELECT (CASE {_W} i16 ELSE -22 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} i8 ELSE -1 END) AS o FROM __THIS__",
+    f"SELECT (CASE {_W} 200 ELSE i8 END) AS o FROM __THIS__",
+    # COALESCE seeds from its FIRST argument
+    "SELECT coalesce(NULL, i16) AS o FROM __THIS__",
+    "SELECT coalesce(NULL, i8) AS o FROM __THIS__",
+    "SELECT coalesce(NULL, i16, -22) AS o FROM __THIS__",
+    "SELECT coalesce(NULL, -22, i16) AS o FROM __THIS__",
+    "SELECT coalesce(-22, NULL, i16) AS o FROM __THIS__",
+    "SELECT coalesce(-22, i16) AS o FROM __THIS__",
+    "SELECT coalesce(i16, -22) AS o FROM __THIS__",
+    # the TASK-98 desugars ride the CASE fold
+    "SELECT ifnull(NULL, i16) AS o FROM __THIS__",
+    "SELECT if(k > 0, NULL, i16) AS o FROM __THIS__",
+    "SELECT nullif(i16, NULL) AS o FROM __THIS__",
+]
+
+
+@pytest.mark.parametrize("sql", _T131_GRID)
+def test_null_meets_literal_width_matches_duckdb(sql):
+    duck_sql = sql.replace("__THIS__", "t")
+    con = duckdb.connect()
+    con.execute("PRAGMA disable_optimizer")
+    con.execute(
+        "CREATE TABLE t (i8 TINYINT, i16 SMALLINT, i32 INTEGER, i64 BIGINT, k BIGINT)"
+    )
+    con.execute("INSERT INTO t VALUES (1, 2, 3, 4, 1)")
+    want = con.execute(duck_sql).to_arrow_table()
+
+    schema = _T131_SCHEMA.append(pa.field("k", pa.int64(), nullable=False))
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
+    got = fn.infer_arrow(
+        pa.Table.from_pylist([{**_T131_ROWS[0], "k": 1}], schema=schema)
+    )
+    assert got.schema == want.schema, (
+        f"{got.schema.field('o').type} != {want.schema.field('o').type}"
+    )
+    assert got.to_pylist() == want.to_pylist()

@@ -4080,11 +4080,15 @@ impl Binder<'_> {
             else_result.map(|e| self.expr_or_null(e)).transpose()?;
 
         // Width unification — DuckDB's fold (2026-08-13 fleet, 0 errors on
-        // 19k probes): SEED from the ELSE (its syntactic-literal hint
-        // intact); no ELSE — or ELSE NULL — seeds as an implicit non-
-        // literal NULL. Then combine WHEN arms in order; every combine
-        // makes the accumulator computed, so only the seed's literal-ness
-        // ever survives. A NULL arm never widens (None; adopts below).
+        // 19k probes; TASK-131 source read 2026-08-24): SEED from the ELSE
+        // (its syntactic-literal hint intact); no ELSE — or ELSE NULL —
+        // seeds as an implicit non-literal NULL. Then combine WHEN arms in
+        // order; every combine makes the accumulator computed, so only the
+        // seed's literal-ness ever survives. A NULL arm never widens, but
+        // it is not a pure skip either: Max(acc, SQLNULL) =
+        // NormalizeType(acc) in types.cpp, so a NULL arm HARDENS a
+        // literal-seeded accumulator to the literal's base width — that is
+        // DuckDB's "NULL floors the CASE at INTEGER".
         let mut unified: Option<Ty> = None;
         let mut acc_lit: Option<i64> = None;
         if let Some(Some(r)) = &else_bound {
@@ -4092,7 +4096,10 @@ impl Binder<'_> {
             acc_lit = else_result.and_then(ast_int_literal);
         }
         for (r, when) in results.iter().zip(conditions) {
-            let Some(r) = r else { continue };
+            let Some(r) = r else {
+                acc_lit = None;
+                continue;
+            };
             let new_lit = ast_int_literal(&when.result);
             unified = Some(match unified {
                 None => r.ty,
@@ -5772,41 +5779,56 @@ impl Binder<'_> {
                 // (BOOLEAN+DOUBLE refuses on both engines). Preserved.
                 self.in_guarded.set(self.in_guarded.get() + 1);
                 let _guard = GuardScope(&self.in_guarded);
-                let mut bound = Vec::with_capacity(args.len());
+                // Seed-then-combine (DuckDB's fold, 0 errors on 19k probes;
+                // TASK-131 source read 2026-08-24): the seed keeps its
+                // literal hint; every combine makes the accumulator
+                // computed. Literal NULL args never produce a value — they
+                // drop from evaluation — but they still fold as SQLNULL:
+                // Max(acc, SQLNULL) = NormalizeType(acc), so a NULL hardens
+                // a literal accumulator (and a NULL BEFORE the seed strips
+                // the seed's hint the same way).
+                let mut bound: Vec<SExpr> = Vec::with_capacity(args.len());
+                let mut unified: Option<Ty> = None;
+                let mut acc_lit: Option<i64> = None;
+                let mut seen_null = false;
                 for arg in &args {
-                    if let Some(e) = self.expr_or_null(arg)? {
-                        // The hint rides with the arg's own SPELLING (never
-                        // the bound node — fleet 2026-08-13).
-                        bound.push((e, ast_int_literal(arg)));
-                    } // literal NULL args never produce a value: drop them
-                }
-                if bound.is_empty() {
-                    return Err(unsup("COALESCE of only NULL literals"));
-                }
-                // Seed-then-combine (DuckDB's fold, 0 errors on 19k
-                // probes): the seed keeps its literal hint; every combine
-                // makes the accumulator computed.
-                let mut unified = bound[0].0.ty;
-                let mut acc_lit = bound[0].1;
-                for (e, new_lit) in &bound[1..] {
-                    unified = match (unified, e.ty) {
-                        (u, t) if u == t => u,
-                        (u, t) if u.is_int() && t.is_int() => {
-                            int_width_promote(u, acc_lit, t, *new_lit)
-                        }
-                        (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
-                        (Ty::F64, t) if t.is_int() => Ty::F64,
-                        (u, t) => {
-                            return Err(PrepareError::Bind(format!(
-                                "COALESCE arguments disagree: {} vs {}",
-                                u.name(),
-                                t.name()
-                            )))
-                        }
+                    let Some(e) = self.expr_or_null(arg)? else {
+                        seen_null = true;
+                        acc_lit = None;
+                        continue;
                     };
-                    acc_lit = None;
+                    // The hint rides with the arg's own SPELLING (never
+                    // the bound node — fleet 2026-08-13).
+                    let new_lit = ast_int_literal(arg);
+                    match unified {
+                        None => {
+                            unified = Some(e.ty);
+                            acc_lit = if seen_null { None } else { new_lit };
+                        }
+                        Some(u) => {
+                            unified = Some(match (u, e.ty) {
+                                (u, t) if u == t => u,
+                                (u, t) if u.is_int() && t.is_int() => {
+                                    int_width_promote(u, acc_lit, t, new_lit)
+                                }
+                                (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
+                                (Ty::F64, t) if t.is_int() => Ty::F64,
+                                (u, t) => {
+                                    return Err(PrepareError::Bind(format!(
+                                        "COALESCE arguments disagree: {} vs {}",
+                                        u.name(),
+                                        t.name()
+                                    )))
+                                }
+                            });
+                            acc_lit = None;
+                        }
+                    }
+                    bound.push(e);
                 }
-                let bound: Vec<SExpr> = bound.into_iter().map(|(e, _)| e).collect();
+                let Some(unified) = unified else {
+                    return Err(unsup("COALESCE of only NULL literals"));
+                };
                 let mut bound: Vec<SExpr> = bound
                     .into_iter()
                     .map(|mut e| {
