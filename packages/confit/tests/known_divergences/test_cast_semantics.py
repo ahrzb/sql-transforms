@@ -283,6 +283,54 @@ _S2I_EDGES = [
     "2 2",
     "9999999999999999999999",
     "true",
+    # 2026-08-24 bounds audit (integer_cast_operator.hpp, v1.5.5 checkout):
+    # DuckDB's decimal path accumulates the MANTISSA in int64 (refusing on
+    # overflow), silently DROPS fraction digits past int64 capacity, parses
+    # the exponent into an int16, and only recognizes 0x/0b on a bare
+    # leading zero -- never after a sign. Boundary pairs, matching side
+    # first, diverging side second:
+    "999999999999999999",  # 18 digits: serves
+    "9999999999999999999",  # 19 digits overflow int64: refuses (all widths)
+    "9223372036854775807e-18",  # int64::MAX mantissa: serves 9
+    "9223372036854775808e-18",  # MAX+1 refuses -- the accumulator IS int64
+    "9999999999999999999e-17",
+    "12345678901234567890e-16",
+    "18446744073709551615e-1",
+    "1." + "9" * 37,
+    "1." + "9" * 38,  # fraction digits past capacity drop silently: 2
+    "1." + "9" * 50,
+    "0" * 38 + "1",
+    "0" * 39 + "1",  # leading zeros never overflow anything: 1
+    "0e39",
+    "0e32767",  # int16 exponent, zero mantissa skips the multiply: 0
+    "0e32768",  # int16 overflow: refuses
+    "1e32767",  # nonzero mantissa overflows in the multiply: refuses
+    "1e-10001",
+    "1e-32768",  # int16::MIN: serves 0
+    "1e-32769",  # refuses
+    "-0x10",  # hex/binary need a BARE leading 0 -- a sign refuses
+    "+0x10",
+    "-0b11",
+    "1.5e3",  # exponent past the fraction digits: 1500
+    "1.55e1",  # 15.5 rounds away: 16
+    "0.5e-1",  # 0.05: 0
+    "9.5e-1",  # 0.95: 1
+    "1.9e-1",  # 0.19: 0
+    "1e1_0",  # underscores live in exponent digits too: 1e10
+    "\x0b5",  # vertical tab is space to the trim
+    # the exponent is parsed by the same character loop, so its tail grammar
+    # is the loop's, not a number's; and the hex/binary loops have no
+    # trailing-space skip at all:
+    "1e5 ",  # 100000
+    "1e5.",  # a bare trailing point in the exponent parses: 100000
+    "1e ",  # an all-space exponent is exponent 0: serves 1 (!)
+    "5.e2",  # 500
+    "1e5.5",  # fraction digits in the exponent refuse
+    "0x1A ",  # trailing space after hex refuses...
+    " 0x1A",  # ...but leading space is trimmed before dispatch: 26
+    "0b1 ",
+    "1..5",
+    "1.5.5",
 ]
 
 
