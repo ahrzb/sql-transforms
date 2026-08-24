@@ -1,9 +1,11 @@
 # RFC: what happens to the bind-time constant refusals
 
-Status: REOPENED 2026-08-24. Alternative A was accepted earlier the same
-day on a premise ("DuckDB's binder errors at bind") that a source-level
-check then REFUTED; the decision needs re-making on the corrected facts
-below. A remains what is currently shipped.
+Status: ACCEPTED, alternative A -- AmirHossein, re-affirmed 2026-08-25
+on the corrected facts below. The build-time refusals stay, documented
+as deliberate strictness (severity 4: refuse where DuckDB serves), not
+as binder parity. Nothing to build; A is what ships. C (fallible fold)
+remains available as a follow-up ticket if the two-walker duplication
+bites.
 
 ## Context
 
@@ -137,11 +139,11 @@ Cons:
   site's return handling, for zero behavior change.
 - Moot if B is chosen.
 
-## Recommendation
+## Decision
 
-This is now a genuine trade -- strict-at-build ergonomics (A) versus
-exact phase parity (B) -- and the earlier "A because parity" argument is
-dead. Weakly held: A remains defensible as a deliberate, documented
-severity-4 strictness (fail-fast is worth something in a serving
-engine), but B is what the contract's plain reading ("match optimizer-
-off DuckDB or refuse by name") points at. AmirHossein's call.
+A, by AmirHossein (2026-08-24, re-affirmed 2026-08-25 after the phase
+facts were corrected). The trade accepted: strict-at-build fail-fast
+ergonomics over exact phase parity. The known cost is on record above --
+zero-row shapes (`WHERE FALSE`, empty inputs) refuse here and serve on
+DuckDB; a campaign that generates them will log severity-4 findings,
+which are attributed to this RFC.
