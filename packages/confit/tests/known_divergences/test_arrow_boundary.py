@@ -97,3 +97,41 @@ def test_infer_arrow_string_output_feeds_back_in():
     )
     once = fn.infer_arrow(pa.table({"s": ["a", "bb"]}))
     assert fn.infer_arrow(once).to_pylist() == [{"s": "A"}, {"s": "BB"}]
+
+
+# ---------------------------------------------------------------------------
+# TASK-130 (closed 2026-08-19 as a fuzzer fix, not an engine bug): a join
+# star with colliding names. DuckDB's TOP-LEVEL arrow export keeps the
+# DUPLICATES; its own subquery/CTE/CTAS boundaries and .df() rename them
+# `<name>_N` -- which is the wave-5 client contract this engine adopted
+# (pins-wave5/dup-names-client-contract.json), because dict-shaped
+# infer_rows output cannot hold two `c0` keys losslessly. KEPT divergence:
+# our arrow names are the deduped contract names; the campaign's schema leg
+# normalizes DuckDB through the same rule.
+# ---------------------------------------------------------------------------
+def test_join_star_collisions_keep_the_wave5_dedup_contract():
+    import duckdb as _duck
+
+    row = pa.schema(
+        [pa.field("c0", pa.int64(), nullable=False), pa.field("c2", pa.int64())]
+    )
+    static = pa.table(
+        {"c0": pa.array([1], pa.int64()), "c1": pa.array([9], pa.int64())}
+    )
+    sql = "SELECT * FROM __THIS__ LEFT JOIN s0 ON (c2 = s0.c0)"
+
+    con = _duck.connect()
+    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, c2 BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (5, 1)")
+    con.register("sa", static)
+    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
+    duck_names = con.execute(sql).to_arrow_table().schema.names
+    assert duck_names == ["c0", "c2", "c0", "c1"], (
+        f"oracle moved -- arrow export no longer keeps duplicates: {duck_names}"
+    )
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
+    assert fn.output_schema.names == ["c0", "c2", "c0_1", "c1"]
+    # and the dict path stays LOSSLESS, which is what the contract buys
+    rows = fn.infer_rows([{"c0": 5, "c2": 1}])
+    assert rows == [{"c0": 5, "c2": 1, "c0_1": 1, "c1": 9}]

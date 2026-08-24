@@ -36,31 +36,27 @@ from confit import DuckDBInferFn
 
 
 # ---------------------------------------------------------------------------
-# TASK-130: a join star does not dedupe colliding output names. Found by the
-# campaign once TASK-124's grammar shift re-rolled seed 380; pre-existing.
+# TASK-131: a bare-NULL arm floors a CASE's width at INTEGER on DuckDB.
+# Surfaced when TASK-130's oracle fix stopped the schema-name mismatch from
+# returning early (seed 12745).
 # ---------------------------------------------------------------------------
 @pytest.mark.xfail(
     strict=True,
-    reason="TASK-130: DuckDB renames the second `c0` in a join star to `c0_1`; "
-    "we emit the duplicate name, which a row DICT then silently collapses.",
+    reason="TASK-131: a bare NULL arm contributes SQLNULL/INTEGER to DuckDB's "
+    "CASE unification, flooring the result at int32; we adopt the NULL into "
+    "the value arms' width (int16).",
 )
-def test_a_join_star_dedupes_colliding_names():
-    row = pa.schema(
-        [pa.field("c0", pa.int64(), nullable=False), pa.field("c2", pa.int64())]
+def test_a_bare_null_arm_floors_the_case_width():
+    row = pa.schema([pa.field("c0", pa.int16(), nullable=False)])
+    sql = (
+        "SELECT (CASE WHEN TRUE THEN NULL WHEN TRUE THEN c0 ELSE -22 END) AS o "
+        "FROM __THIS__"
     )
-    static = pa.table(
-        {"c0": pa.array([1], pa.int64()), "c1": pa.array([9], pa.int64())}
-    )
-    sql = "SELECT * FROM __THIS__ LEFT JOIN s0 ON (c2 = s0.c0)"
-
     con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, c2 BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5, 1)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
-    res = con.execute(sql)
-    names = [d[0] for d in res.description]
-    assert names == ["c0", "c2", "c0_1", "c1"]  # oracle dedupes; remeasure if not
+    con.execute("CREATE TABLE __THIS__ (c0 SMALLINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (3)")
+    want = con.execute(sql).to_arrow_table()
+    assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
 
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
-    assert fn.output_schema.names == names
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
+    assert fn.output_schema.field("o").type == pa.int32()
