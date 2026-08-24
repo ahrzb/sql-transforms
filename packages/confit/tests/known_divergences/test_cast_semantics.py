@@ -102,24 +102,27 @@ def _cast_refusal(expr: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "expr",
+    "expr, want",
     [
-        "CAST('1.5' AS BIGINT)",
-        "CAST('2.5' AS BIGINT)",
-        "CAST('-1.5' AS BIGINT)",
-        "CAST('1e2' AS BIGINT)",
-        "CAST('.5' AS BIGINT)",
-        "CAST('1.5' AS TINYINT)",
+        # TASK-113, CLOSED by TASK-99's decimal parser (2026-08-19): a
+        # numeric-string constant is parsed and rounded HALF AWAY FROM ZERO,
+        # exactly as DuckDB's IntegerDecimalCastOperation does. These used to
+        # refuse "not implemented".
+        ("CAST('1.5' AS BIGINT)", 2),
+        ("CAST('2.5' AS BIGINT)", 3),
+        ("CAST('-1.5' AS BIGINT)", -2),
+        ("CAST('1e2' AS BIGINT)", 100),
+        ("CAST('.5' AS BIGINT)", 1),
+        ("CAST('1.5' AS TINYINT)", 2),
     ],
 )
-def test_refusal_does_not_claim_duckdb_errors_when_it_serves(expr):
-    """DuckDB answers a value for every one of these."""
-    msg = _cast_refusal(expr)
-    assert "errors at plan time" not in msg, msg
-    # TRY_CAST is not the escape hatch here either — it returns the same
-    # rounded value, so pointing at it would be a second false claim.
-    assert "TRY_CAST is the NULL-yielding spelling" not in msg, msg
-    assert "round" in msg.lower(), msg
+def test_a_numeric_string_constant_parses_and_rounds(expr, want):
+    fn = DuckDBInferFn(
+        f"SELECT {expr} AS o FROM __THIS__",
+        row_tables={"__THIS__": _CAST_ROW},
+        static_tables={},
+    )
+    assert fn.infer_rows([{"k": 1}]) == [{"o": want}]
 
 
 @pytest.mark.parametrize(
@@ -136,3 +139,171 @@ def test_refusal_keeps_the_true_claim_where_duckdb_really_errors(expr):
     and TRY_CAST yields NULL, so the original wording is accurate."""
     msg = _cast_refusal(expr)
     assert "TRY_CAST" in msg, msg
+
+
+# ===========================================================================
+# TASK-99 (b)+(c): DOUBLE -> narrow integers. This engine implements the
+# ROUND-FIRST-THEN-CHECK semantics of DuckDB main (PR #24393, merged
+# 2026-08-03) and of Postgres. Released DuckDB (v1.5.5, our pinned oracle)
+# checks the RAW double first and then hits UB: `CAST(127.5 AS TINYINT)`
+# serves a WRAPPED -128 (x86; aarch64 would saturate at INTEGER width), and
+# `-128.5` is refused although it rounds into range. An answer that differs
+# by CPU is not a function of the query, so we deliberately do NOT reproduce
+# it -- the two half-unit slivers below are a KEPT divergence that flips to
+# full agreement when the DuckDB pin advances past 1.5.5.
+# ===========================================================================
+_D2N_ROW = pa.schema([pa.field("x", pa.float64())])
+
+
+def _d2n(cast: str, val: float, dst: str = "TINYINT"):
+    fn = DuckDBInferFn(
+        f"SELECT {cast}(x AS {dst}) AS o FROM __THIS__",
+        row_tables={"__THIS__": _D2N_ROW},
+        static_tables={},
+    )
+    try:
+        return ("S", fn.infer_rows([{"x": val}])[0]["o"])
+    except ValueError:
+        return ("T", None)
+
+
+@pytest.mark.parametrize(
+    ("val", "cast_want", "try_want"),
+    [
+        # upstream main's own conformance rows (float_integer_cast.test)
+        (126.5, ("S", 126), ("S", 126)),
+        (127.4, ("S", 127), ("S", 127)),
+        (127.5, ("T", None), ("S", None)),
+        (127.6, ("T", None), ("S", None)),
+        (-128.4, ("S", -128), ("S", -128)),
+        (-128.5, ("S", -128), ("S", -128)),
+        (-128.6, ("T", None), ("S", None)),
+        (2.5, ("S", 2), ("S", 2)),
+        (3.5, ("S", 4), ("S", 4)),
+        (float("nan"), ("T", None), ("S", None)),
+        (float("inf"), ("T", None), ("S", None)),
+        (1e300, ("T", None), ("S", None)),
+    ],
+)
+def test_double_to_narrow_rounds_first_then_checks(val, cast_want, try_want):
+    assert _d2n("CAST", val) == cast_want
+    assert _d2n("TRY_CAST", val) == try_want
+
+
+@pytest.mark.parametrize(
+    ("val", "duck_155"),
+    [
+        # the wrap sliver [MAX+0.5, MAX+1): 1.5.5 serves a wrapped value
+        (127.5, -128),
+        (127.99, -128),
+        # the false-refusal sliver (MIN-0.5, MIN): 1.5.5 refuses a fit
+        (-128.5, None),
+    ],
+)
+def test_the_155_boundary_slivers_are_a_kept_divergence(val, duck_155):
+    """Remeasures the ORACLE each run: while DuckDB 1.5.5 still shows the
+    pre-#24393 behaviour these assert the divergence in both directions; the
+    day the pin advances, the oracle side flips and this test fails LOUDLY --
+    delete it then, the grid above already asserts the agreed semantics."""
+    import duckdb as _duck
+
+    con = _duck.connect()
+    con.execute("PRAGMA disable_optimizer")
+    con.execute("CREATE TABLE t (x DOUBLE)")
+    con.execute("INSERT INTO t VALUES (?)", [val])
+    try:
+        got = con.execute("SELECT CAST(x AS TINYINT) FROM t").fetchall()[0][0]
+    except _duck.Error:
+        got = None
+    assert got == duck_155, f"DuckDB moved past 1.5.5 semantics: {got}"
+    # and we deliberately disagree here (fixed semantics, grid above)
+    ours = _d2n("CAST", val)
+    fixed = ("T", None) if duck_155 == -128 else ("S", -128)
+    assert ours == fixed
+
+
+# ---------------------------------------------------------------------------
+# TASK-99 (d) / TASK-113: the VARCHAR -> integer grammar, live-oracle. One
+# matrix, three widths, both spellings -- if DuckDB's parser moves, this
+# remeasures. The grammar is digit-based (see kernels::duck_stoi): rounding
+# is half AWAY from zero decided on decimal DIGITS ('1.4999999999999999' is
+# 1, not 2), unlike the double path's half-to-even -- DuckDB's two cast
+# paths disagree on every exact half and both are preserved here.
+# ---------------------------------------------------------------------------
+_S2I_ROW = pa.schema([pa.field("x", pa.string())])
+_S2I_EDGES = [
+    "1",
+    "1.0",
+    "1.5",
+    "2.5",
+    "-2.5",
+    " 42 ",
+    "1e2",
+    "1.5e1",
+    "0x1A",
+    "0X1a",
+    "0b101",
+    "1_000",
+    "1_000.5",
+    "  1.5  ",
+    "+1.5",
+    ".5",
+    "1.",
+    "0.5",
+    "-0.5",
+    "+.5",
+    "-.5",
+    "5.",
+    ".5e1",
+    "1e+2",
+    "1e-0",
+    "150e-1",
+    "155e-2",
+    "145e-2",
+    "1.4999999999999999",
+    "127.4",
+    "127.6",
+    "-128.4",
+    "-128.5",
+    "300",
+    "abc",
+    "",
+    "inf",
+    "nan",
+    "1e",
+    "e5",
+    "1e400",
+    "0x",
+    "0o17",
+    "_1",
+    "1_",
+    "1__0",
+    "0x_1A",
+    "- 1",
+    "2 2",
+    "9999999999999999999999",
+    "true",
+]
+
+
+@pytest.mark.parametrize("dst", ["TINYINT", "INTEGER", "BIGINT"])
+@pytest.mark.parametrize("cast", ["CAST", "TRY_CAST"])
+def test_string_to_integer_matches_the_oracle(cast, dst):
+    import duckdb as _duck
+
+    sql = f"SELECT {cast}(x AS {dst}) AS o FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _S2I_ROW}, static_tables={})
+    for v in _S2I_EDGES:
+        con = _duck.connect()
+        con.execute("PRAGMA disable_optimizer")
+        con.execute("CREATE TABLE t (x VARCHAR)")
+        con.execute("INSERT INTO t VALUES (?)", [v])
+        try:
+            want = ("S", con.execute(sql.replace("__THIS__", "t")).fetchall()[0][0])
+        except _duck.Error:
+            want = ("T", None)
+        try:
+            got = ("S", fn.infer_rows([{"x": v}])[0]["o"])
+        except ValueError:
+            got = ("T", None)
+        assert got == want, f"{cast}({v!r} AS {dst}): {got} != {want}"

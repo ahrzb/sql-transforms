@@ -1026,7 +1026,7 @@ fn compile_inst(
                     ctx.regs[dst] = RegVal::I64(r as i64);
                     Ok(())
                 } else {
-                    Err(Trap(format!("f64 value {x:?} out of i64 range in ftoi")))
+                    Err(Trap(format!("Conversion Error: Type DOUBLE with value {x:?} can't be cast because the value is out of range for the destination type")))
                 }
             })
         }
@@ -1050,12 +1050,12 @@ fn compile_inst(
             let (flag, dst, a) = (sl(slots, flag), sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
                 let s = ctx.arena.get(as_str(ctx.regs[a]));
-                match s.trim_ascii().parse::<i64>() {
-                    Ok(v) => {
+                match super::kernels::duck_stoi(s) {
+                    Some(v) => {
                         ctx.regs[flag] = RegVal::I1(true);
                         ctx.regs[dst] = RegVal::I64(v);
                     }
-                    Err(_) => {
+                    None => {
                         ctx.regs[flag] = RegVal::I1(false);
                         ctx.regs[dst] = RegVal::I64(0);
                     }

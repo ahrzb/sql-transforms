@@ -2431,6 +2431,36 @@ impl<'a> FB<'a> {
                         a: l.val,
                     });
                 }
+                // TASK-99 (d): the string parser rounds and the WIDTH check
+                // applies to the rounded value, in the cast itself -- DuckDB
+                // says "Could not convert string" for '300'::TINYINT, not an
+                // out-of-range error, and TRY_CAST is NULL, not a trap. The
+                // in-arm check folds into `ok`, so both spellings follow.
+                let ok = match (to, e.ty.int_range()) {
+                    (Ty::I64, Some((lo, hi))) => {
+                        let lo_v = self.const_lit(Lit::I64(lo));
+                        let hi_v = self.const_lit(Lit::I64(hi));
+                        let ge = self.fresh();
+                        self.inst(Inst::Cmp {
+                            pred: CmpPred::Ge,
+                            ty: Ty::I64,
+                            dst: ge,
+                            a: parsed,
+                            b: lo_v,
+                        });
+                        let le = self.fresh();
+                        self.inst(Inst::Cmp {
+                            pred: CmpPred::Le,
+                            ty: Ty::I64,
+                            dst: le,
+                            a: parsed,
+                            b: hi_v,
+                        });
+                        let in_range = self.bin(BinOp::And, ge, le);
+                        self.bin(BinOp::And, ok, in_range)
+                    }
+                    _ => ok,
+                };
                 if trying {
                     let flag = match l.flag {
                         Some(f) => self.bin(BinOp::And, f, ok),
@@ -2471,10 +2501,21 @@ impl<'a> FB<'a> {
                 });
                 self.switch(trap_b);
                 self.term(Term::Trap {
-                    msg: format!(
-                        "Conversion Error: could not cast VARCHAR to {}",
-                        if to == Ty::I64 { "BIGINT" } else { "DOUBLE" }
-                    ),
+                    msg: if to == Ty::I64 {
+                        // DuckDB spells INT8/16/32/64 in THIS message
+                        // (measured), unlike its TINYINT-style DDL names.
+                        format!(
+                            "Conversion Error: Could not convert string to {}",
+                            match e.ty {
+                                Ty::I8 => "INT8",
+                                Ty::I16 => "INT16",
+                                Ty::I32 => "INT32",
+                                _ => "INT64",
+                            }
+                        )
+                    } else {
+                        "Conversion Error: could not cast VARCHAR to DOUBLE".to_string()
+                    },
                 });
                 self.switch(cont_b);
                 self.enter_block(live, &cont_p[..live_width]);

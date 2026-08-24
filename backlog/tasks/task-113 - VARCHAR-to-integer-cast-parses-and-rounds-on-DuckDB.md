@@ -3,7 +3,7 @@ id: TASK-113
 title: >-
   CAST(VARCHAR AS integer) parses and rounds on DuckDB; we refuse, and the
   refusal text is wrong about DuckDB
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-15 13:40'
 labels:
@@ -107,3 +107,14 @@ free coverage.
       a test asserts the two modes stay different
 - [ ] #7 fuzz seeds 12626 and 13560 replay clean
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Closed by TASK-99's decimal parser, 2026-08-19 -- kernels::duck_stoi parses
+and rounds numeric strings exactly as DuckDB does (half away from zero on
+decimal digits, exponents, hex/binary, underscore joins), at every width,
+both CAST and TRY_CAST, constants included. Live-oracle matrix in
+known_divergences/test_cast_semantics.py; the old
+"constant cast not implemented" refusal and its pins are gone.
+<!-- SECTION:NOTES:END -->
