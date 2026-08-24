@@ -175,26 +175,43 @@ fn flatten_static(
     prefix: &str,
     fields: &[(String, schema::RowField)],
     parent_nullable: bool,
-) {
+) -> Vec<crate::specializer::plan::StructField> {
+    use crate::specializer::plan::{StructField, StructNode};
+    let mut tree = Vec::with_capacity(fields.len());
     for (fname, rf) in fields {
         if fname.contains('.') {
+            // dropped from lanes AND tree alike (pre-TASK-132 behavior kept;
+            // lifting the skip is its own ticket)
             continue;
         }
         let path = format!("{prefix}.{fname}");
         match rf {
-            schema::RowField::Scalar { ty, nullable } => cols.push(Col {
-                name: path,
-                ty: ColTy {
-                    ty: *ty,
-                    nullable: parent_nullable || *nullable,
-                },
-            }),
-            schema::RowField::Struct { nullable, fields } => {
-                flatten_static(cols, &path, fields, parent_nullable || *nullable)
+            schema::RowField::Scalar { ty, nullable } => {
+                cols.push(Col {
+                    // display-only: resolution walks the tree (TASK-132)
+                    name: path,
+                    ty: ColTy {
+                        ty: *ty,
+                        nullable: parent_nullable || *nullable,
+                    },
+                });
+                tree.push(StructField {
+                    name: fname.clone(),
+                    node: StructNode::Leaf(cols.len() as u32 - 1),
+                });
             }
+            schema::RowField::Struct { nullable, fields } => {
+                let n = flatten_static(cols, &path, fields, parent_nullable || *nullable);
+                tree.push(StructField {
+                    name: fname.clone(),
+                    node: StructNode::Nested(n),
+                });
+            }
+            // dropped, as before: an unservable leaf is invisible here
             schema::RowField::Opaque(_) => {}
         }
     }
+    tree
 }
 
 /// A narrow out column's value must fit its declared width on EVERY
@@ -682,35 +699,40 @@ fn materialize_map(
                 spec.table
             ))
         })?;
-        // TASK-116: a struct column's lanes are named by their full ordered
-        // path, so a dotted name walks the row's nested dicts. A NULL struct
-        // anywhere on the way down makes every lane below it NULL, which is
-        // exactly the nullability the catalogue derived for those leaves.
-        let get = |name: &str| -> PyResult<pyo3::Bound<'_, PyAny>> {
+        // TASK-116 + TASK-132: a struct leaf's SEGMENT PATH walks the row's
+        // nested dicts; a plain column is one segment, dots and all — a
+        // name is never split. A NULL struct anywhere on the way down makes
+        // every lane below it NULL, which is exactly the nullability the
+        // catalogue derived for those leaves.
+        let get = |path: &[String]| -> PyResult<pyo3::Bound<'_, PyAny>> {
             let missing = || {
                 build_err(format!(
-                    "static table '{}' row is missing column '{name}'",
-                    spec.table
+                    "static table '{}' row is missing column '{}'",
+                    spec.table,
+                    path.join(".")
                 ))
             };
-            let mut cur = row.get_item(name.split('.').next().expect("non-empty"))?
+            let mut cur = row
+                .get_item(path.first().expect("non-empty").as_str())?
                 .ok_or_else(missing)?;
-            for seg in name.split('.').skip(1) {
+            for seg in &path[1..] {
                 if cur.is_none() {
                     return Ok(cur);
                 }
                 cur = cur
                     .cast::<PyDict>()
                     .map_err(|_| missing())?
-                    .get_item(seg)?
+                    .get_item(seg.as_str())?
                     .ok_or_else(missing)?;
             }
             Ok(cur)
         };
         let mut keys = Vec::with_capacity(key_tys.len());
         let mut kt = key_tys.iter();
-        for (name, &indf) in spec.key_cols.iter().zip(&spec.key_indf) {
-            let v = get(name)?;
+        for (path, &indf) in spec.key_cols.iter().zip(&spec.key_indf) {
+            let name = path.join(".");
+            let name = name.as_str();
+            let v = get(path)?;
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<KeyBits> {
                 Ok(match ty {
                     Ty::I1 => KeyBits::I1(v.extract()?),
@@ -753,8 +775,10 @@ fn materialize_map(
         }
         let mut vals = Vec::with_capacity(val_tys.len());
         let mut vt = val_tys.iter();
-        for (name, &nullable) in spec.val_cols.iter().zip(&spec.val_nullable) {
-            let v = get(name)?;
+        for (path, &nullable) in spec.val_cols.iter().zip(&spec.val_nullable) {
+            let name = path.join(".");
+            let name = name.as_str();
+            let v = get(path)?;
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<ScalarVal> {
                 Ok(match ty {
                     Ty::I1 => ScalarVal::I1(v.extract()?),
@@ -1002,16 +1026,16 @@ impl Marshaller {
     fn build(
         py: Python<'_>,
         in_cols: &[Col],
+        in_paths: &[Vec<String>],
         out_cols: &[Col],
         plan: &[EmitField],
         fun: &Backend,
     ) -> PyResult<Marshaller> {
         Ok(Marshaller {
-            in_names: in_cols
+            in_names: in_paths
                 .iter()
-                .map(|c| {
-                    c.name
-                        .split('.')
+                .map(|path| {
+                    path.iter()
                         .map(|seg| PyString::intern(py, seg).unbind())
                         .collect()
                 })
@@ -1167,6 +1191,10 @@ enum Engine {
     Compiled {
         fun: Backend,
         in_cols: Vec<Col>,
+        /// Per in_col: its SEGMENT path (TASK-132) — `[name]` for a plain
+        /// column (dots included, a name is not a path), the struct walk
+        /// for a leaf lane. The boundaries walk these, never split names.
+        in_paths: Vec<Vec<String>>,
         out_cols: Vec<Col>,
         /// Output FIELDS in projection order (wide UDF lanes collapsed).
         plan: Vec<EmitField>,
@@ -1336,7 +1364,11 @@ impl DuckDBInferFn {
             // (TASK-125). A struct is ONE opaque star entry; its flattened
             // leaves are addressable by path but never expand under a star.
             let mut star = Vec::new();
-            for (cname, rf) in schema::arrow_static_schema(py, name, &schema_obj)? {
+            let mut structs = Vec::new();
+            for (pos, (cname, rf)) in schema::arrow_static_schema(py, name, &schema_obj)?
+                .into_iter()
+                .enumerate()
+            {
                 match rf {
                     schema::RowField::Scalar { ty, nullable } => {
                         star.push(crate::specializer::plan::StarCol::Real(cols.len() as u32));
@@ -1350,17 +1382,20 @@ impl DuckDBInferFn {
                         star.push(crate::specializer::plan::StarCol::Opaque(cname.clone()));
                         opaque.push((cname, aty))
                     }
-                    // TASK-116: a struct's scalar leaves ARE the lane set a
-                    // static table already stores, so flatten them under
-                    // their FULL ORDERED PATH ('w.mean', 'w.x.y.z.a') the
-                    // way the row path does. The struct NAME stays opaque, so
-                    // `s.w` as a whole value refuses, and under a star the
-                    // struct is one opaque entry: EXCLUDE it or the query
-                    // refuses by name (TASK-125).
+                    // TASK-116 + TASK-132: a struct's scalar leaves ARE the
+                    // lane set a static table already stores. The lanes keep
+                    // their dotted names for DISPLAY; resolution walks the
+                    // TREE pushed here. Under a star the struct is one
+                    // opaque entry: EXCLUDE it or the query refuses by name
+                    // (TASK-125).
                     schema::RowField::Struct { nullable, fields } => {
                         star.push(crate::specializer::plan::StarCol::Opaque(cname.clone()));
-                        flatten_static(&mut cols, &cname, &fields, nullable);
-                        opaque.push((cname, "struct".to_string()));
+                        let tree = flatten_static(&mut cols, &cname, &fields, nullable);
+                        structs.push(crate::specializer::plan::StructCol {
+                            pos,
+                            name: cname,
+                            fields: tree,
+                        });
                     }
                 }
             }
@@ -1369,6 +1404,7 @@ impl DuckDBInferFn {
                 cols,
                 opaque,
                 star,
+                structs,
             });
         }
 
@@ -1483,12 +1519,14 @@ impl DuckDBInferFn {
         let plan = emit_plan(&prepared.program.out_cols, &prepared.wide_outputs);
         // SPECIALIZER_GENERIC_BOUNDARY pins the pre-marshaller boundary —
         // the bench baseline, mirroring SPECIALIZER_FORCE_INTERP.
+        let in_paths = crate::specializer::plan::lane_paths(&in_cols, &structs);
         let marsh = if std::env::var_os("SPECIALIZER_GENERIC_BOUNDARY").is_some() {
             None
         } else {
             Some(RefCell::new(Marshaller::build(
                 py,
                 &in_cols,
+                &in_paths,
                 &prepared.program.out_cols,
                 &plan,
                 &fun,
@@ -1498,6 +1536,7 @@ impl DuckDBInferFn {
             engine: Engine::Compiled {
                 fun,
                 in_cols,
+                in_paths,
                 out_cols: prepared.program.out_cols.clone(),
                 plan,
                 marsh,
@@ -1568,14 +1607,15 @@ impl DuckDBInferFn {
     /// silently skipping it made three documented entry points to one
     /// function give two different answers (TASK-71).
     fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        let (fun, in_cols, out_cols, plan) = match &self.engine {
+        let (fun, in_cols, in_paths, out_cols, plan) = match &self.engine {
             Engine::Compiled {
                 fun,
                 in_cols,
+                in_paths,
                 out_cols,
                 plan,
                 ..
-            } => (fun, in_cols, out_cols, plan),
+            } => (fun, in_cols, in_paths, out_cols, plan),
             Engine::Constant { .. } => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "infer_arrow: a static-tables-only query emits fixed rows — \
@@ -1583,6 +1623,15 @@ impl DuckDBInferFn {
                 ))
             }
         };
+        // Struct row columns have leaf LANES the arrow boundary cannot fill
+        // from a flat batch (TASK-114/132: keyed on the STRUCTURE, not on a
+        // dot in a name — a plain column named 'a.b' is servable).
+        if in_paths.iter().any(|p| p.len() > 1) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "infer_arrow requires an all-scalar row schema (struct columns: \
+                 use infer_rows())",
+            ));
+        }
         let input = arrow::ingest(py, &batch, in_cols)?;
         let mut st = fun.new_state();
         fun.run(&input, &mut st)
@@ -1593,14 +1642,15 @@ impl DuckDBInferFn {
 
 impl DuckDBInferFn {
     fn run_rows(&self, py: Python<'_>, rows: &[Py<PyAny>]) -> PyResult<Vec<Py<PyAny>>> {
-        let (fun, in_cols, out_cols, plan, marsh) = match &self.engine {
+        let (fun, in_cols, in_paths, out_cols, plan, marsh) = match &self.engine {
             Engine::Compiled {
                 fun,
                 in_cols,
+                in_paths,
                 out_cols,
                 plan,
                 marsh,
-            } => (fun, in_cols, out_cols, plan, marsh),
+            } => (fun, in_cols, in_paths, out_cols, plan, marsh),
             Engine::Constant { rows: fixed, .. } => {
                 // TASK-110. This build reads only static tables, so it cannot
                 // see input rows at all — and silently dropping them was the
@@ -1668,9 +1718,9 @@ impl DuckDBInferFn {
             // accept the same inputs as the marshaller, differing only in
             // cost (adversarial-review finding, 2026-07-26).
             let dict = bound.cast::<PyDict>().ok();
-            for (c, col) in in_cols.iter().zip(&mut cols) {
-                let mut segs = c.name.split('.');
-                let first = segs.next().expect("split yields at least one");
+            for ((c, path), col) in in_cols.iter().zip(in_paths).zip(&mut cols) {
+                let mut segs = path.iter().map(|s| s.as_str());
+                let first = segs.next().expect("a path is never empty");
                 let mut attr = match dict {
                     Some(d) => d.get_item(first)?.ok_or_else(|| {
                         pyo3::exceptions::PyValueError::new_err(format!(

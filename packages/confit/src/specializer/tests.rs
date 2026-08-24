@@ -30,6 +30,51 @@ fn stat(name: &str, spec: &[(&str, Ty, bool)]) -> StaticTable {
     StaticTable::all_scalar(name.to_string(), cols(spec))
 }
 
+/// TASK-132: the RFC's collision table at the unit level — a struct leaf
+/// and a literal column SHARE the dotted display spelling and stay
+/// different lanes, because resolution walks the tree while the name is
+/// display-only.
+#[test]
+fn static_struct_leaf_and_literal_column_are_different_lanes() {
+    use super::plan::{StarCol, StructCol, StructField, StructNode};
+    let mut t = stat(
+        "s",
+        &[
+            ("id", Ty::I64, false),
+            ("w.mean", Ty::F64, false), // the struct LEAF's display name
+            ("w.mean", Ty::F64, false), // the LITERAL column, same spelling
+        ],
+    );
+    t.star = vec![
+        StarCol::Real(0),
+        StarCol::Opaque("w".to_string()),
+        StarCol::Real(2),
+    ];
+    t.structs = vec![StructCol {
+        pos: 1,
+        name: "w".to_string(),
+        fields: vec![StructField {
+            name: "mean".to_string(),
+            node: StructNode::Leaf(1),
+        }],
+    }];
+    let schema = cols(&[("k", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT s.w.mean AS a, s.\"w.mean\" AS b FROM __THIS__ JOIN s ON k = s.id",
+        "__THIS__",
+        &schema,
+        &[t],
+    )
+    .unwrap();
+    // The two references materialize as two DIFFERENT value paths: the
+    // leaf's segment walk and the literal's whole (dotted) name.
+    let spec = &p.statics[0];
+    assert!(spec
+        .val_cols
+        .contains(&vec!["w".to_string(), "mean".to_string()]));
+    assert!(spec.val_cols.contains(&vec!["w.mean".to_string()]));
+}
+
 /// prepare + compile + run with static-table map data.
 fn run_join(
     sql: &str,
@@ -658,7 +703,11 @@ fn join_key_promotion_float_dyn_against_int_col() {
     let spec = &p.statics[0];
     assert_eq!(
         (spec.table.as_str(), &spec.key_cols[..], &spec.val_cols[..]),
-        ("dim", &["id".to_string()][..], &["v".to_string()][..])
+        (
+            "dim",
+            &[vec!["id".to_string()]][..],
+            &[vec!["v".to_string()]][..]
+        )
     );
     let data = StaticData::Map(vec![(
         vec![KeyBits::F64(2f64.to_bits())],

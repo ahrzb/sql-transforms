@@ -155,13 +155,9 @@ fn column<'py>(
 /// pyarrow batch -> engine Batch, matching `in_cols` by name with strict
 /// dtypes (int64 / double / string|large_string / bool).
 pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyResult<Batch> {
+    // Struct-lane refusal lives at the caller, keyed on the lane PATHS
+    // (TASK-132) — a dot in a plain column's NAME is not a struct.
     let _ = py;
-    if in_cols.iter().any(|c| c.name.contains('.')) {
-        return Err(err(
-            "infer_arrow requires an all-scalar row schema (struct columns: \
-             use infer_rows())",
-        ));
-    }
     let rows: usize = batch.call_method0("__len__")?.extract()?;
     let mut cols = Vec::with_capacity(in_cols.len());
     for c in in_cols {

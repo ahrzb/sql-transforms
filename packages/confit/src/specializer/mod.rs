@@ -50,13 +50,16 @@ pub struct StaticSpec {
     /// BATCH, assembled per call by the executor.
     pub batch: bool,
     pub table: String,
-    pub key_cols: Vec<String>,
+    /// Per key: the column's SEGMENT path (TASK-132) — one segment for a
+    /// plain column (dots and all: a name is not a path), the struct walk
+    /// for a leaf lane. Display = the segments dotted.
+    pub key_cols: Vec<Vec<String>>,
     /// Per key_col: true when the key joins under IS NOT DISTINCT FROM.
     /// Such a key occupies TWO flattened map-key lanes — (validity i1,
     /// payload) — and the materializer KEEPS NULL-key rows as
     /// (false, type default) instead of dropping them.
     pub key_indf: Vec<bool>,
-    pub val_cols: Vec<String>,
+    pub val_cols: Vec<Vec<String>>,
     /// Per val_col: a declared-nullable column's map value is a
     /// (validity i1, payload) PAIR in the flattened StaticTy::Map values
     /// (TASK-55 — NULL join values flow through as NULL, not errors).
@@ -150,19 +153,20 @@ pub fn prepare_opaque(
                 };
             }
             let t = &statics[j.table];
+            let paths = plan::lane_paths(&t.cols, &t.structs);
             StaticSpec {
                 batch: false,
                 table: t.name.clone(),
                 key_cols: j
                     .key_cols
                     .iter()
-                    .map(|&c| t.cols[c as usize].name.clone())
+                    .map(|&c| paths[c as usize].clone())
                     .collect(),
                 key_indf: j.key_indf.clone(),
                 val_cols: j
                     .val_cols
                     .iter()
-                    .map(|&c| t.cols[c as usize].name.clone())
+                    .map(|&c| paths[c as usize].clone())
                     .collect(),
                 val_nullable: j
                     .val_cols

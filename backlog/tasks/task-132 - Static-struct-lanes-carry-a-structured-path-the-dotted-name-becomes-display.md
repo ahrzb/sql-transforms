@@ -42,13 +42,13 @@ worse.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 a spec in docs/superpowers/specs/ maps every consumer of the
+- [x] #1 a spec in docs/superpowers/specs/ maps every consumer of the
       lane name to its behavior under the structured path, including the
       row-side flatten, before any code changes
-- [ ] #2 the collision table from the RFC serves BOTH spellings like
+- [x] #2 the collision table from the RFC serves BOTH spellings like
       DuckDB: `s.w.mean` is the leaf, `s."w.mean"` is the literal
       column, live-oracle pinned
-- [ ] #3 no name-resolution path constructs or splits a dotted string;
+- [x] #3 no name-resolution path constructs or splits a dotted string;
       the dotted spelling appears only in display surfaces (output
       schema field names, error text), each listed in the spec
 - [ ] #4 every existing green behavior over static structs survives:
