@@ -2,7 +2,7 @@
 id: TASK-123
 title: >-
   A 10s subprocess timeout makes the arrow-drain test fail under load
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-18 00:00'
 labels:
@@ -46,12 +46,27 @@ is exactly when people are least able to tell a real regression from noise.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 the healthy spellings do not fail on a machine running a full suite
+- [x] #1 the healthy spellings do not fail on a machine running a full suite
       concurrently — reproduce the load, do not assume
-- [ ] #2 a genuine hang is still detected, and still as a FAILURE rather than
+- [x] #2 a genuine hang is still detected, and still as a FAILURE rather than
       a wedged run
-- [ ] #3 whatever budget is chosen is justified against a MEASURED cold-start
+- [x] #3 whatever budget is chosen is justified against a MEASURED cold-start
       cost (interpreter + `import duckdb`) under load, not guessed
-- [ ] #4 if a retry is used instead of a longer budget, it must not be able to
+- [x] #4 if a retry is used instead of a longer budget, it must not be able to
       mask an intermittent hang — say why in the code
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-08-19. AC #3's measurement, reproduced rather than assumed:
+interpreter start + `import duckdb` under 2x-cores of PROCESS burners is
+4.1-7.7s across 8 samples (a GIL-bound thread burner shows a misleading
+0.7-1.9s -- the first probe made that mistake and was redone). The old 10s
+budget left ~2s for the real work on a machine like the one that flaked.
+
+New budget 120s, with the reasoning in the code: the timeout is a HANG
+detector, so its cost is paid only when the bug actually regresses, and a
+genuine hang still FAILS (AC #2). Deliberately no retry -- an intermittent
+hang must not pass on its second try (AC #4, stated in the comment).
+<!-- SECTION:NOTES:END -->
