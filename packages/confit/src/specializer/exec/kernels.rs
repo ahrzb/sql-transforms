@@ -1026,17 +1026,33 @@ pub(in crate::specializer) fn duck_shr(x: i64, y: i64) -> i64 {
     }
 }
 
-/// DuckDB's VARCHAR -> integer grammar (TASK-99 d / TASK-113), measured
-/// 2026-08-19 against optimizer-off DuckDB 1.5.5 and mirrored from
-/// `integer_cast_operator.hpp` (IntegerDecimalCastOperation):
+/// DuckDB's VARCHAR -> integer grammar (TASK-99 d / TASK-113): a
+/// transliteration of `integer_cast_operator.hpp` (TryIntegerCast +
+/// IntegerDecimalCastOperation) from the v1.5.5 source, re-measured against
+/// the live oracle 2026-08-24 when the first cut's invented bounds (u128
+/// accumulator, 39-digit cap, +-10000 exponent) turned out observable.
+/// The shape that matters:
 ///
-///   - ASCII whitespace trims at both ends; interior whitespace refuses
-///     ('2 2', '- 1').
-///   - one optional sign, then hex (0x/0X), binary (0b/0B), or decimal
-///     `digits[.frac][eE[+|-]exp]` -- '.5', '5.', '1e+2', '1e-0' all parse;
+///   - space, tab, \n, \v, \f, \r trim at the FRONT; trailing spaces are the
+///     number loop's own branch, so hex/binary (which lack it) refuse them:
+///     ' 0x1A' serves, '0x1A ' refuses. Interior whitespace refuses
+///     ('2 2', '- 1') -- except that an all-space exponent tail is exponent
+///     zero: '1e ' serves 1.
+///   - hex (0x/0X) and binary (0b/0B) are recognized ONLY on a bare leading
+///     zero: a sign refuses ('-0x10', '+0x10'). Decimal is
+///     `[+|-]digits[.frac][eE[+|-]exp]` -- '.5', '5.', '1e+2', '5.e2' parse;
 ///     'e5', 'inf', 'nan', '0o17' refuse.
-///   - '_' joins DIGITS: '1_000' and '1_000.5' parse; '_1', '1_', '1__0'
-///     and '0x_1A' refuse.
+///   - '_' joins DIGITS everywhere (mantissa, fraction, exponent, hex,
+///     binary): '1_000', '1_000.5', '1e1_0' parse; '_1', '1_', '1__0',
+///     '0x_1A' refuse.
+///   - the MANTISSA accumulates in i64 and overflow REFUSES:
+///     '9223372036854775807e-18' serves 9, '...808e-18' refuses. FRACTION
+///     digits past i64 capacity are silently DROPPED ('1.' + 38 nines is 2).
+///     Leading zeros never overflow anything.
+///   - the EXPONENT accumulates in i16: '0e32767' and '1e-32768' serve,
+///     one past either end refuses. The exponent reuses the plain digit
+///     loop, so its tail grammar is that loop's: '1e5.' serves 100000,
+///     '1e5.5' refuses.
 ///   - fractional digits round HALF AWAY FROM ZERO on the first digit past
 ///     the (exponent-shifted) point, decided on the DECIMAL DIGITS, not
 ///     through a double: '1.4999999999999999' is 1, '0.5' is 1, '-0.5' is
@@ -1045,147 +1061,292 @@ pub(in crate::specializer) fn duck_shr(x: i64, y: i64) -> i64 {
 ///     exact half, deliberately preserved here.
 ///
 /// Returns None where DuckDB's cast fails ("Could not convert string");
-/// the WIDTH check is the caller's, applied to the returned i64.
+/// the WIDTH check is the caller's, applied to the returned i64. DuckDB
+/// narrows to the target width BEFORE its +-1 round where we round in i64
+/// first -- not observable: both refuse exactly when the rounded value
+/// leaves the target width.
 pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
-    let s = s.trim_ascii();
-    let b = s.as_bytes();
-    if b.is_empty() {
-        return None;
-    }
-    let (neg, b) = match b[0] {
-        b'-' => (true, &b[1..]),
-        b'+' => (false, &b[1..]),
-        _ => (false, b),
-    };
-    if b.is_empty() {
-        return None;
+    // StringUtil::CharacterIsSpace -- includes \v, which Rust's
+    // is_ascii_whitespace deliberately does not.
+    fn is_space(c: u8) -> bool {
+        matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
     }
 
-    // digits with single underscores strictly BETWEEN digits
-    fn digits(b: &[u8], radix: u32) -> Option<(u128, usize, u32)> {
-        // -> (value, bytes consumed, digit count); None on malformed '_'
-        let mut v: u128 = 0;
-        let mut i = 0;
-        let mut n = 0u32;
-        while i < b.len() {
-            let c = b[i] as char;
-            if let Some(d) = c.to_digit(radix) {
-                v = v.checked_mul(radix as u128)?.checked_add(d as u128)?;
-                // cap: anything beyond 39 digits has long overflowed i64
-                if v > u128::MAX / 16 {
-                    return None;
-                }
-                n += 1;
-                i += 1;
-            } else if c == '_' {
-                // must be between digits: a digit before AND after
-                if n == 0 || i + 1 >= b.len() || !(b[i + 1] as char).is_digit(radix) {
-                    return None;
-                }
-                i += 1;
-            } else {
-                break;
-            }
-        }
-        Some((v, i, n))
-    }
-
-    let finish = |mag: u128, neg: bool| -> Option<i64> {
+    // IntegerCastOperation::HandleDigit at StoreType = int64: NEGATIVE
+    // accumulates downward so i64::MIN parses without a magnitude detour.
+    fn handle_digit(result: &mut i64, digit: u8, neg: bool) -> Option<()> {
+        let d = digit as i64;
         if neg {
-            if mag > i64::MIN.unsigned_abs() as u128 {
+            if *result < (i64::MIN + d) / 10 {
                 return None;
             }
-            Some((mag as i128).wrapping_neg() as i64)
+            *result = *result * 10 - d;
         } else {
-            i64::try_from(mag).ok()
+            if *result > (i64::MAX - d) / 10 {
+                return None;
+            }
+            *result = *result * 10 + d;
         }
-    };
-
-    // hex / binary: integer digits only, nothing may follow
-    if b.len() > 2 && b[0] == b'0' && (b[1] | 0x20) == b'x' {
-        let (v, used, n) = digits(&b[2..], 16)?;
-        if n == 0 || used != b.len() - 2 {
-            return None;
-        }
-        return finish(v, neg);
-    }
-    if b.len() > 2 && b[0] == b'0' && (b[1] | 0x20) == b'b' {
-        let (v, used, n) = digits(&b[2..], 2)?;
-        if n == 0 || used != b.len() - 2 {
-            return None;
-        }
-        return finish(v, neg);
+        Some(())
     }
 
-    // decimal: int digits, optional .frac, optional exponent. Collect the
-    // SIGNIFICANT DIGITS and a point position, then shift by the exponent --
-    // rounding happens on digits, never through a float.
-    let mut digs: Vec<u8> = Vec::new();
-    let mut i = 0;
-    let (_, used, n) = digits(b, 10)?;
-    for &c in &b[..used] {
-        if c != b'_' {
-            digs.push(c - b'0');
+    // IntegerDecimalCastOperation::Finalize, minus the width narrowing the
+    // caller owns; the +-1 is checked so a round off i64's edge refuses.
+    fn finalize(mut result: i64, mut decimal: i64, mut digits: u16, neg: bool) -> Option<i64> {
+        while decimal > 10 {
+            decimal /= 10;
+            digits = digits.wrapping_sub(1);
         }
+        if digits == 1 && decimal >= 5 {
+            result = if neg {
+                result.checked_sub(1)?
+            } else {
+                result.checked_add(1)?
+            };
+        }
+        Some(result)
     }
-    let int_n = n;
-    i += used;
-    let mut frac_n = 0u32;
-    if i < b.len() && b[i] == b'.' {
-        i += 1;
-        let (_, used, n) = digits(&b[i..], 10)?;
-        for &c in &b[i..i + used] {
-            if c != b'_' {
-                digs.push(c - b'0');
+
+    // IntegerDecimalCastOperation::HandleExponent, wrap-for-wrap: `power`
+    // wraps i64 exactly where the C++ does (19 kept fraction digits against
+    // a smaller exponent), and the observed x86 behavior is the contract.
+    fn handle_exponent(mut result: i64, mut decimal: i64, digits: u16, exponent: i16, neg: bool) -> Option<i64> {
+        let mut e = exponent as i32;
+        if e < 0 {
+            // the parsed fraction is DISCARDED; the digit shifted out of the
+            // mantissa last is the one that rounds
+            while e < 0 {
+                e += 1;
+                decimal = result % 10;
+                result /= 10;
+                if result == 0 && decimal == 0 {
+                    break;
+                }
+            }
+            if decimal < 0 {
+                decimal = -decimal;
+            }
+            return finalize(result, decimal, 1, neg);
+        }
+        while result != 0 && e > 0 {
+            e -= 1;
+            result = result.checked_mul(10)?;
+        }
+        if decimal == 0 {
+            return finalize(result, decimal, digits, neg);
+        }
+        let mut e2 = exponent as i32 - digits as i32;
+        let mut remainder: i64 = 0;
+        if e2 < 0 {
+            if -e2 <= 19 {
+                let mut power: i64 = 1;
+                while e2 < 0 {
+                    e2 += 1;
+                    power = power.wrapping_mul(10);
+                }
+                remainder = decimal % power;
+                decimal /= power;
+            } else {
+                decimal = 0;
+            }
+        } else {
+            while e2 > 0 {
+                e2 -= 1;
+                decimal = decimal.checked_mul(10)?;
             }
         }
-        frac_n = n;
-        i += used;
-    }
-    if int_n == 0 && frac_n == 0 {
-        return None;
-    }
-    let mut exp: i64 = 0;
-    if i < b.len() && (b[i] | 0x20) == b'e' {
-        i += 1;
-        let mut eneg = false;
-        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
-            eneg = b[i] == b'-';
-            i += 1;
-        }
-        let (v, used, n) = digits(&b[i..], 10)?;
-        if n == 0 || v > 10_000 {
-            return None;
-        }
-        exp = if eneg { -(v as i64) } else { v as i64 };
-        i += used;
-    }
-    if i != b.len() {
-        return None;
+        let digits = (digits as i32).wrapping_sub(exponent as i32) as u16;
+        result = if neg {
+            result.checked_sub(decimal)?
+        } else {
+            result.checked_add(decimal)?
+        };
+        finalize(result, remainder, digits, neg)
     }
 
-    // point sits after int_n digits; the exponent moves it right
-    let point = int_n as i64 + exp;
-    if point > 39 {
-        return None; // magnitude has overflowed i64 whatever the digits
-    }
-    let mut mag: u128 = 0;
-    for k in 0..point.max(0) as usize {
-        let d = *digs.get(k).unwrap_or(&0);
-        mag = mag.checked_mul(10)?.checked_add(d as u128)?;
-        if mag > u128::MAX / 16 {
+    // the exponent reuses IntegerCastLoop with the SIMPLE operation at
+    // StoreType = int16: digits and underscores, trailing spaces, a barren
+    // trailing '.', and nothing else.
+    fn exp_loop(b: &[u8]) -> Option<i16> {
+        let neg = b[0] == b'-';
+        let start = if neg || b[0] == b'+' { 1 } else { 0 };
+        let mut pos = start;
+        let mut result: i16 = 0;
+        while pos < b.len() {
+            let c = b[pos];
+            if !c.is_ascii_digit() {
+                if c == b'.' {
+                    let number_before_period = pos > start;
+                    pos += 1;
+                    if pos < b.len() && b[pos].is_ascii_digit() {
+                        return None; // HandleDecimal refuses on the simple op
+                    }
+                    if !number_before_period {
+                        return None;
+                    }
+                    if pos >= b.len() {
+                        break;
+                    }
+                }
+                if is_space(b[pos]) {
+                    pos += 1;
+                    while pos < b.len() {
+                        if !is_space(b[pos]) {
+                            return None;
+                        }
+                        pos += 1;
+                    }
+                    break;
+                }
+                return None;
+            }
+            let d = (c - b'0') as i16;
+            if neg {
+                if result < (i16::MIN + d) / 10 {
+                    return None;
+                }
+                result = result * 10 - d;
+            } else {
+                if result > (i16::MAX - d) / 10 {
+                    return None;
+                }
+                result = result * 10 + d;
+            }
+            pos += 1;
+            if pos != b.len() && b[pos] == b'_' {
+                pos += 1;
+                if pos == b.len() || !b[pos].is_ascii_digit() {
+                    return None;
+                }
+            }
+        }
+        if pos <= start {
             return None;
         }
+        Some(result)
     }
-    // first dropped digit decides, HALF AWAY FROM ZERO
-    let first_frac = if point < 0 {
-        // |value| < 1 with leading zeros: only -0.5|0.5.. can round to +-1
-        if point == 0 { *digs.first().unwrap_or(&0) } else { 0 }
-    } else {
-        *digs.get(point as usize).unwrap_or(&0)
-    };
-    if first_frac >= 5 {
-        mag = mag.checked_add(1)?;
+
+    // IntegerCastLoop over the decimal grammar, StoreType = int64.
+    fn cast_loop(b: &[u8], neg: bool) -> Option<i64> {
+        let start_pos = if neg || b[0] == b'+' { 1 } else { 0 };
+        let mut pos = start_pos;
+        let mut result: i64 = 0;
+        let mut decimal: i64 = 0;
+        let mut decimal_digits: u16 = 0;
+        while pos < b.len() {
+            let c = b[pos];
+            if !c.is_ascii_digit() {
+                if c == b'.' {
+                    let number_before_period = pos > start_pos;
+                    pos += 1;
+                    let start_digit = pos;
+                    while pos < b.len() && b[pos].is_ascii_digit() {
+                        // HandleDecimal: past i64 capacity the digits DROP
+                        let d = (b[pos] - b'0') as i64;
+                        if decimal <= (i64::MAX - d) / 10 {
+                            decimal_digits += 1;
+                            decimal = decimal * 10 + d;
+                        }
+                        pos += 1;
+                        if pos != b.len() && b[pos] == b'_' {
+                            pos += 1;
+                            if pos == b.len() || !b[pos].is_ascii_digit() {
+                                return None;
+                            }
+                        }
+                    }
+                    if !(number_before_period || pos > start_digit) {
+                        return None;
+                    }
+                    if pos >= b.len() {
+                        break;
+                    }
+                }
+                if is_space(b[pos]) {
+                    pos += 1;
+                    while pos < b.len() {
+                        if !is_space(b[pos]) {
+                            return None;
+                        }
+                        pos += 1;
+                    }
+                    break;
+                }
+                if b[pos] == b'e' || b[pos] == b'E' {
+                    if pos == start_pos {
+                        return None;
+                    }
+                    pos += 1;
+                    if pos >= b.len() {
+                        return None;
+                    }
+                    let exp = exp_loop(&b[pos..])?;
+                    return handle_exponent(result, decimal, decimal_digits, exp, neg);
+                }
+                return None;
+            }
+            handle_digit(&mut result, c - b'0', neg)?;
+            pos += 1;
+            if pos != b.len() && b[pos] == b'_' {
+                pos += 1;
+                if pos == b.len() || !b[pos].is_ascii_digit() {
+                    return None;
+                }
+            }
+        }
+        if pos <= start_pos {
+            return None;
+        }
+        finalize(result, decimal, decimal_digits, neg)
     }
-    finish(mag, neg)
+
+    // Integer{Hex,Binary}CastLoop: b[0] is the 'x'/'b' marker; digits and
+    // underscores only -- no sign reaches here, no trailing anything.
+    fn radix_loop(b: &[u8], radix: u32) -> Option<i64> {
+        let mut pos = 1;
+        let mut result: i64 = 0;
+        while pos < b.len() {
+            let d = (b[pos] as char).to_digit(radix)? as i64;
+            pos += 1;
+            if pos != b.len() && b[pos] == b'_' {
+                pos += 1;
+                if pos == b.len() || !(b[pos] as char).is_digit(radix) {
+                    return None;
+                }
+            }
+            if result > (i64::MAX - d) / radix as i64 {
+                return None;
+            }
+            result = result * radix as i64 + d;
+        }
+        if pos <= 1 {
+            return None;
+        }
+        Some(result)
+    }
+
+    // TryIntegerCast: skip LEADING spaces, then dispatch. Hex and binary
+    // hang off a bare '0' before the sign branch ever runs, which is why a
+    // signed '0x' falls into the decimal grammar and refuses at the 'x'.
+    let b = s.as_bytes();
+    let mut lo = 0;
+    while lo < b.len() && is_space(b[lo]) {
+        lo += 1;
+    }
+    let b = &b[lo..];
+    if b.is_empty() {
+        return None;
+    }
+    if b[0] == b'-' {
+        return cast_loop(b, true);
+    }
+    if b.len() > 1 && b[0] == b'0' {
+        if b[1] | 0x20 == b'x' {
+            return radix_loop(&b[1..], 16);
+        }
+        if b[1] | 0x20 == b'b' {
+            return radix_loop(&b[1..], 2);
+        }
+    }
+    cast_loop(b, false)
 }
