@@ -1,9 +1,9 @@
 # RFC: what happens to the bind-time constant refusals
 
-Status: ACCEPTED, alternative A -- AmirHossein, 2026-08-24. (Applied
-provisionally in the TASK-99 PR during the 2026-08-19 overnight run;
-now the decision of record. C remains available as a follow-up ticket
-if the duplication bites.)
+Status: REOPENED 2026-08-24. Alternative A was accepted earlier the same
+day on a premise ("DuckDB's binder errors at bind") that a source-level
+check then REFUTED; the decision needs re-making on the corrected facts
+below. A remains what is currently shipped.
 
 ## Context
 
@@ -18,121 +18,130 @@ landed, the bind-time constant machinery (`eval_i32_literal`, the
 constant-cast narrow-range refusal) would be interim scaffolding with
 nothing left to do.
 
-Two facts changed under that premise before TASK-99 was built:
+Two pieces of it did complete: `eval_i128_literal` was deleted by the
+oracle-conformance sweep (`ab5a897`), and the "constant cast not
+implemented" refusal was deleted in TASK-99 itself -- the decimal parser
+serves those casts now. This RFC is about the two survivors:
+`eval_i32_literal` and the constant-cast narrow-range refusal.
 
-1. DuckDB's binder itself evaluates constant integer arithmetic and
-   errors AT BIND, before any row exists (measured, optimizer off:
-   `SELECT 2147483647 + 1` fails at prepare). Refusing at build is not
-   scaffolding; it is what the oracle does.
-2. The dual-read fuzzer now OBSERVES the difference: if we serve a
-   runtime trap where DuckDB refuses at bind, the oracle classifies it
-   "confit builds what DuckDB refuses", so every constant-overflow
-   spelling becomes a standing finding.
+### What DuckDB actually does (measured + source-verified, 2026-08-24)
 
-Two pieces of the deletion criterion did complete: `eval_i128_literal`
-was deleted by the oracle-conformance sweep (`ab5a897`) because the i128
-comparison fold it fed was an optimizer emulation, and the
-"constant cast not implemented" refusal was deleted in TASK-99 itself --
-the decimal parser serves those casts now. This RFC is about the two
-survivors.
+An earlier version of this RFC claimed "DuckDB's binder evaluates
+constant integer arithmetic and errors at bind". That was a phase
+confusion -- the measurement ran prepare and execute in one call. The
+checked facts, per the v1.5.5 source and phase-separated probes (both
+optimizer modes unless noted):
 
-### The timing correspondence (why bind parity is even possible)
+- `PREPARE s AS SELECT 2147483647 + 1` SUCCEEDS; the error comes from
+  `EXECUTE`, raised per-row by `AddOperatorOverflowCheck`
+  (`add.hpp`) inside the projection executor. Same for `2000000000 * 2`
+  and for `CAST(300 AS TINYINT)` (cast raises in the vector cast loop).
+- Nothing in DuckDB's binder or planner folds constant arithmetic. The
+  only constant folder is the optimizer's `ConstantFoldingRule`, and it
+  deliberately SWALLOWS evaluation failure
+  (`ExpressionExecutor::TryEvaluateScalar`'s `catch (...)` returns
+  false), leaving the expression in the plan to trap at runtime.
+- Zero rows, zero errors: `SELECT 2147483647 + 1 WHERE FALSE` serves
+  `[]` in both optimizer modes; an empty input table likewise. The
+  expression only traps when a row actually reaches it.
+- `CREATE VIEW` and `EXPLAIN` over the overflowing expression succeed.
+- One optimizer-mode split: `... LIMIT 0` errors with the optimizer off
+  (the dummy scan's one row hits the projection under the limit) and
+  serves `[]` with it on (the plan collapses to EMPTY_RESULT).
 
-There is no information gap between DuckDB's bind and our build. In this
-engine, `DuckDBInferFn(...)` construction is bind, plan, and compile in
-one moment, and at that moment we hold everything DuckDB's binder holds
-at prepare: the SQL text, every schema, every constant. Rows are the
-only thing that arrives later -- for BOTH engines:
+So: DuckDB defers these expressions to runtime, full stop. A build-time
+refusal on our side is STRICTER than DuckDB -- it refuses queries DuckDB
+answers (`WHERE FALSE`, empty batches) and rejects at build what DuckDB
+happily prepares. On the severity ladder that is rung 4, refuse where
+DuckDB serves: the acceptable-cost rung, but a real cost, not parity.
 
-```
-DuckDB   PREPARE errors on 2147483647 + 1     EXECUTE traps per row
-ours     DuckDBInferFn(...) refuses           infer_rows traps per row
-```
+### The timing correspondence
 
-A constant refusal depends only on the constants, so mirroring DuckDB's
-bind error at our build is an exact correspondence, not an
-approximation. (We actually know MORE at build than DuckDB's binder
-does -- the static tables' full contents -- but constant refusals never
-use that.)
+`DuckDBInferFn(...)` construction is bind, plan, and compile in one
+moment, and holds everything DuckDB's prepare holds -- rows arrive later
+for both engines. So we COULD match either phase: refuse at build
+(stricter than DuckDB) or trap at infer time on the row that reaches the
+expression (exactly DuckDB). There is no information preventing either.
+
+One genuine asymmetry: for a CONSTANT query (no row tables), the engine
+freezes the whole answer at build. There is no "first row" to defer to;
+under runtime-trap semantics the build would have to bake a
+trap-on-call program. That is coherent but is a design consequence B
+has to own.
 
 ### Why `fold` cannot simply do the refusing (the shape of the duplication)
 
-Both constant evaluators run at build; the duplication is not
-bind-vs-runtime, it is two BUILD-time walkers. `fold`'s arithmetic
-returns `Option<Lit>` where `None` means "the interpreter would trap on
-this -- do not fold" (fold.rs). That `None` deliberately conflates two
-situations:
-
-- `2147483647 + 1` at top level: "does not fold" should be a BIND ERROR
-  (DuckDB's binder refuses it).
-- the same expression inside a guarded position (a CASE arm that may
-  never be taken): "does not fold" is CORRECT -- leave it as runtime
-  code that traps only if a row reaches it. Turning this into a build
-  error would refuse queries DuckDB serves.
-
-`fold` has no error channel and no guardedness context, so the
-context-aware refusal lives in a separate raw-AST walk
-(`eval_i32_literal`) that re-parses number text with i32 range rules.
-Both walkers know that `+` is checked addition; a semantics change
-(TASK-122's `%` was one) must be remembered in both. That is the drift
-risk named under alternative A.
+Both constant evaluators run at build. `fold`'s arithmetic returns
+`Option<Lit>` where `None` means "would trap -- do not fold", which
+deliberately conflates "guarded arm, leave for runtime" with "unguarded
+constant". `fold` has no error channel and no guardedness context, so
+the refusal lives in a separate raw-AST walk (`eval_i32_literal`) that
+re-parses number text with i32 range rules. Two walkers know what `+`
+does to constants; a semantics change must be remembered in both.
 
 ## Alternatives
 
-### A. Keep the bind-time refusals, reword their comments to "binder parity"
+### A. Keep the build-time refusals, documented as deliberate strictness
 
-What TASK-99 shipped: `eval_i32_literal` and the constant-cast
-narrow-range refusal stay, documented as reproducing DuckDB's own
-bind-time behavior rather than as backstops.
-
-Pros:
-- Matches the oracle exactly: both engines refuse at prepare time on
-  `2000000000 + 2000000000`, `2147483647 + 1`, `2000000000 * 2`
-  (measured; this agreement is also what closes TASK-84).
-- Keeps the campaign green -- no standing builds-what-DuckDB-refuses
-  class.
-- Better ergonomics than the alternative: the user hears "this can never
-  work" at prepare time instead of a trap on every row.
-
-Cons:
-- Two constant-evaluation mechanisms live side by side (the AST walk and
-  `fold`), which is duplication with drift risk.
-- The ticket's deletion criterion is not honored as written; it needed a
-  re-scope note.
-
-### B. Delete as the criterion says, serve runtime traps instead
+What currently ships. The honest framing after the source check: NOT
+binder parity -- a chosen severity-4 divergence.
 
 Pros:
-- Honors the ticket verbatim; less code; one less AST walk to maintain.
+- Fail-fast ergonomics: a query that must trap on every row that
+  reaches the expression is told "this can never work" at pack time,
+  not per row in production.
+- Under the fuzzer's refusal-absorb rule (a refusal is acceptable where
+  the oracle traps), the common case -- rows flow -- classifies clean.
+- Zero code movement.
 
 Cons:
-- Every constant-overflow spelling becomes a permanent fuzzer finding,
-  which either pollutes campaigns or forces an allowlist in the oracle.
-- Strictly worse user ergonomics for the same information (a per-row
-  trap instead of a prepare-time error).
-- Diverges from measured DuckDB behavior -- the thing the project
-  contract forbids.
+- Refuses queries DuckDB serves: `WHERE FALSE` shapes, always-empty
+  inputs. A campaign that generates those shapes will (correctly) log
+  refuse-where-oracle-serves findings.
+- The "parity" justification is gone; the RFC's own earlier argument
+  for A was wrong.
+- Keeps the two-walker duplication (see Context).
+
+### B. Delete the refusals; trap at infer time like DuckDB does
+
+The deletion criterion as written -- now revealed to be the EXACT-parity
+option, not the divergence it was earlier painted as.
+
+Pros:
+- Bit-for-bit phase parity: builds what DuckDB prepares, traps on the
+  first row that reaches the expression, serves `[]` on zero rows.
+- Closes the `WHERE FALSE` / empty-batch divergence class entirely.
+- Deletes the duplicated AST walk for free.
+
+Cons:
+- Loses prepare-time fail-fast: a query that can never serve a row
+  builds successfully and fails per-batch in production.
+- Constant queries (no row tables) need a baked trap-on-call program --
+  new machinery, and the constant path's frozen-answer story gets a
+  special case.
+- TASK-84's agree-refuse tests and several comments assume the current
+  behavior; they move with the change.
 
 ### C. Unify: make `fold` fallible and route constant overflow through it
 
-Delete the parallel AST walk but keep the bind-time refusal behavior, by
-letting the one constant folder distinguish "folded", "leave for
-runtime" (guarded), and "refuse the build" (unguarded constant that
-DuckDB bind-errors).
+Mechanism cleanup, orthogonal to the A/B choice but only meaningful if
+refusal behavior (A) stays: one folder that distinguishes "folded",
+"leave for runtime" (guarded), and "refuse the build".
 
 Pros:
-- Removes the duplication that is A's only real cost; one mechanism, one
-  place that knows what `+` does to constants.
+- Removes the two-walker duplication; one place knows what `+` does.
 - Same observable behavior as A.
 
 Cons:
-- The guardedness context (`in_guarded`) must thread into `fold`, and
-  every `fold` call site changes its return-type handling -- a refactor
-  for zero behavior change.
-- Not overnight work; needs its own ticket and red tests.
+- Threads the guardedness context through `fold` and changes every call
+  site's return handling, for zero behavior change.
+- Moot if B is chosen.
 
 ## Recommendation
 
-A now (it is what shipped); C as a follow-up ticket if the duplication
-bites in practice. B trades a green campaign and binder parity for a
-ticket checkbox and is not recommended. Overruling to B is one commit.
+This is now a genuine trade -- strict-at-build ergonomics (A) versus
+exact phase parity (B) -- and the earlier "A because parity" argument is
+dead. Weakly held: A remains defensible as a deliberate, documented
+severity-4 strictness (fail-fast is worth something in a serving
+engine), but B is what the contract's plain reading ("match optimizer-
+off DuckDB or refuse by name") points at. AmirHossein's call.
