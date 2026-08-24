@@ -1025,3 +1025,167 @@ pub(in crate::specializer) fn duck_shr(x: i64, y: i64) -> i64 {
         0
     }
 }
+
+/// DuckDB's VARCHAR -> integer grammar (TASK-99 d / TASK-113), measured
+/// 2026-08-19 against optimizer-off DuckDB 1.5.5 and mirrored from
+/// `integer_cast_operator.hpp` (IntegerDecimalCastOperation):
+///
+///   - ASCII whitespace trims at both ends; interior whitespace refuses
+///     ('2 2', '- 1').
+///   - one optional sign, then hex (0x/0X), binary (0b/0B), or decimal
+///     `digits[.frac][eE[+|-]exp]` -- '.5', '5.', '1e+2', '1e-0' all parse;
+///     'e5', 'inf', 'nan', '0o17' refuse.
+///   - '_' joins DIGITS: '1_000' and '1_000.5' parse; '_1', '1_', '1__0'
+///     and '0x_1A' refuse.
+///   - fractional digits round HALF AWAY FROM ZERO on the first digit past
+///     the (exponent-shifted) point, decided on the DECIMAL DIGITS, not
+///     through a double: '1.4999999999999999' is 1, '0.5' is 1, '-0.5' is
+///     -1, '155e-2' is 2, '145e-2' is 1. This is NOT the double->int
+///     rounding (half to even) -- DuckDB's two cast paths disagree on every
+///     exact half, deliberately preserved here.
+///
+/// Returns None where DuckDB's cast fails ("Could not convert string");
+/// the WIDTH check is the caller's, applied to the returned i64.
+pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
+    let s = s.trim_ascii();
+    let b = s.as_bytes();
+    if b.is_empty() {
+        return None;
+    }
+    let (neg, b) = match b[0] {
+        b'-' => (true, &b[1..]),
+        b'+' => (false, &b[1..]),
+        _ => (false, b),
+    };
+    if b.is_empty() {
+        return None;
+    }
+
+    // digits with single underscores strictly BETWEEN digits
+    fn digits(b: &[u8], radix: u32) -> Option<(u128, usize, u32)> {
+        // -> (value, bytes consumed, digit count); None on malformed '_'
+        let mut v: u128 = 0;
+        let mut i = 0;
+        let mut n = 0u32;
+        while i < b.len() {
+            let c = b[i] as char;
+            if let Some(d) = c.to_digit(radix) {
+                v = v.checked_mul(radix as u128)?.checked_add(d as u128)?;
+                // cap: anything beyond 39 digits has long overflowed i64
+                if v > u128::MAX / 16 {
+                    return None;
+                }
+                n += 1;
+                i += 1;
+            } else if c == '_' {
+                // must be between digits: a digit before AND after
+                if n == 0 || i + 1 >= b.len() || !(b[i + 1] as char).is_digit(radix) {
+                    return None;
+                }
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        Some((v, i, n))
+    }
+
+    let finish = |mag: u128, neg: bool| -> Option<i64> {
+        if neg {
+            if mag > i64::MIN.unsigned_abs() as u128 {
+                return None;
+            }
+            Some((mag as i128).wrapping_neg() as i64)
+        } else {
+            i64::try_from(mag).ok()
+        }
+    };
+
+    // hex / binary: integer digits only, nothing may follow
+    if b.len() > 2 && b[0] == b'0' && (b[1] | 0x20) == b'x' {
+        let (v, used, n) = digits(&b[2..], 16)?;
+        if n == 0 || used != b.len() - 2 {
+            return None;
+        }
+        return finish(v, neg);
+    }
+    if b.len() > 2 && b[0] == b'0' && (b[1] | 0x20) == b'b' {
+        let (v, used, n) = digits(&b[2..], 2)?;
+        if n == 0 || used != b.len() - 2 {
+            return None;
+        }
+        return finish(v, neg);
+    }
+
+    // decimal: int digits, optional .frac, optional exponent. Collect the
+    // SIGNIFICANT DIGITS and a point position, then shift by the exponent --
+    // rounding happens on digits, never through a float.
+    let mut digs: Vec<u8> = Vec::new();
+    let mut i = 0;
+    let (_, used, n) = digits(b, 10)?;
+    for &c in &b[..used] {
+        if c != b'_' {
+            digs.push(c - b'0');
+        }
+    }
+    let int_n = n;
+    i += used;
+    let mut frac_n = 0u32;
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        let (_, used, n) = digits(&b[i..], 10)?;
+        for &c in &b[i..i + used] {
+            if c != b'_' {
+                digs.push(c - b'0');
+            }
+        }
+        frac_n = n;
+        i += used;
+    }
+    if int_n == 0 && frac_n == 0 {
+        return None;
+    }
+    let mut exp: i64 = 0;
+    if i < b.len() && (b[i] | 0x20) == b'e' {
+        i += 1;
+        let mut eneg = false;
+        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+            eneg = b[i] == b'-';
+            i += 1;
+        }
+        let (v, used, n) = digits(&b[i..], 10)?;
+        if n == 0 || v > 10_000 {
+            return None;
+        }
+        exp = if eneg { -(v as i64) } else { v as i64 };
+        i += used;
+    }
+    if i != b.len() {
+        return None;
+    }
+
+    // point sits after int_n digits; the exponent moves it right
+    let point = int_n as i64 + exp;
+    if point > 39 {
+        return None; // magnitude has overflowed i64 whatever the digits
+    }
+    let mut mag: u128 = 0;
+    for k in 0..point.max(0) as usize {
+        let d = *digs.get(k).unwrap_or(&0);
+        mag = mag.checked_mul(10)?.checked_add(d as u128)?;
+        if mag > u128::MAX / 16 {
+            return None;
+        }
+    }
+    // first dropped digit decides, HALF AWAY FROM ZERO
+    let first_frac = if point < 0 {
+        // |value| < 1 with leading zeros: only -0.5|0.5.. can round to +-1
+        if point == 0 { *digs.first().unwrap_or(&0) } else { 0 }
+    } else {
+        *digs.get(point as usize).unwrap_or(&0)
+    };
+    if first_frac >= 5 {
+        mag = mag.checked_add(1)?;
+    }
+    finish(mag, neg)
+}

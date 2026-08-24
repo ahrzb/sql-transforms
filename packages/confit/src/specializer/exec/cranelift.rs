@@ -400,7 +400,7 @@ extern "C" fn h_ftoi(p: *mut Cx, x: f64, nearest: i64) -> i64 {
     if r.is_finite() && r >= -(2f64.powi(63)) && r < 2f64.powi(63) {
         r as i64
     } else {
-        unsafe { cx(p) }.set_trap(format!("f64 value {x:?} out of i64 range in ftoi"));
+        unsafe { cx(p) }.set_trap(format!("Conversion Error: Type DOUBLE with value {x:?} can't be cast because the value is out of range for the destination type"));
         0
     }
 }
@@ -422,12 +422,12 @@ extern "C" fn h_ftos(p: *mut Cx, v: f64, len_out: *mut i64) -> i64 {
 extern "C" fn h_stoi(p: *mut Cx, off: i64, len: i64, valid_out: *mut u8) -> i64 {
     let c = unsafe { cx(p) };
     let s = unsafe { &*c.arena }.get(span(off, len));
-    match s.trim_ascii().parse::<i64>() {
-        Ok(v) => {
+    match super::kernels::duck_stoi(s) {
+        Some(v) => {
             unsafe { *valid_out = 1 };
             v
         }
-        Err(_) => {
+        None => {
             unsafe { *valid_out = 0 };
             0
         }

@@ -2,7 +2,7 @@
 id: TASK-84
 title: >-
   Integer-literal arithmetic traps in INT32 on DuckDB and succeeds in i64 here
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-11 13:00'
 labels:
@@ -54,4 +54,16 @@ which is why this depends on it. A cheaper interim: refuse integer arithmetic
 whose DuckDB-typed width is narrower than i64 when the bound could overflow
 it — but computing "could overflow" is the same width analysis. Decide the
 two tickets together.
+<!-- SECTION:NOTES:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Re-measured 2026-08-19 during TASK-99: already closed in behaviour by the
+eval_i32_literal bind refusal ("integer literal arithmetic overflows
+INTEGER on DuckDB"), which is binder parity -- DuckDB errors at bind on the
+same spellings (2000000000 + 2000000000, 2147483647 + 1, 2000000000 * 2,
+optimizer off). Agree-refuse on all three; nothing left to build. The
+refusal's permanence is argued in
+docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md.
 <!-- SECTION:NOTES:END -->

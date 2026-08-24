@@ -4074,63 +4074,25 @@ impl Binder<'_> {
         // on DuckDB — measured to fire even over zero rows and under a
         // constant-false WHERE — while a row-driven engine never evaluates
         // it. Evaluate the constant here with the interpreter's EXACT parse
-        // (trim_ascii + Rust parse; see Inst::StoiOpt / Inst::StofOpt) and
-        // refuse a failure by name. TRY_CAST stays lazy: it yields NULL.
+        // (`kernels::duck_stoi`, the same grammar `Inst::StoiOpt` runs, so
+        // the fold and the runtime cannot drift) and refuse a failure by
+        // name. TRY_CAST stays lazy: it yields NULL. A numeric string that
+        // parses-and-rounds ('1.5', '0x1A', '150e-1') SERVES — TASK-113
+        // closed by TASK-99's decimal parser.
         let inner = fold(inner);
         if !trying && self.in_guarded.get() == 0 {
             if let SKind::Lit(Lit::Str(s)) = &inner.kind {
                 let ok = match to {
-                    t if t.is_int() => s
-                        .trim_ascii()
-                        .parse::<i64>()
-                        .is_ok_and(|v| fits_width(t, v)),
+                    t if t.is_int() => super::exec::kernels::duck_stoi(s)
+                        .is_some_and(|v| fits_width(t, v)),
                     Ty::F64 => s.trim_ascii().parse::<f64>().is_ok(),
                     _ => true,
                 };
                 if !ok {
-                    // TASK-113 AC #1. Two very different reasons land here
-                    // and they need different sentences, because DuckDB
-                    // SERVES one of them: a numeric string is parsed and
-                    // rounded (half away from zero, both CAST and TRY_CAST),
-                    // so claiming it errors at plan time — and pointing at
-                    // TRY_CAST as the lazy spelling — is false twice over.
-                    // Only a non-numeric string, or one whose value misses
-                    // the target's range, actually errors there.
-                    //
-                    // f64 is good enough to CHOOSE THE SENTENCE; it is not
-                    // good enough to implement the cast (that needs an exact
-                    // decimal parse — TASK-113 AC #3), which is why this
-                    // still refuses either way.
-                    let rounds_into_target = s
-                        .trim_ascii()
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|v| v.is_finite())
-                        .map(|v| {
-                            let r = v.round(); // ties away from zero, as DuckDB
-                            match to.int_range() {
-                                Some((lo, hi)) => r >= lo as f64 && r <= hi as f64,
-                                None => r >= i64::MIN as f64 && r <= i64::MAX as f64,
-                            }
-                        })
-                        .unwrap_or(false);
-                    return Err(PrepareError::Bind(if rounds_into_target {
-                        format!(
-                            "constant cast not implemented: CAST('{s}' AS {}) \
-                             — DuckDB parses the string and ROUNDS it (half \
-                             away from zero), which this engine does not do \
-                             yet (TASK-113); TRY_CAST rounds the same way, so \
-                             it is not a way around this",
-                            duck_int_name(to)
-                        )
-                    } else {
-                        format!(
-                            "constant cast fails on every row: CAST('{s}' AS \
-                             {}) — DuckDB errors at plan time; TRY_CAST is the \
-                             NULL-yielding spelling",
-                            duck_int_name(to)
-                        )
-                    }));
+                    return Err(PrepareError::Bind(format!(
+                        "constant cast fails on every row: CAST('{s}' AS                          {}) — DuckDB errors at plan time; TRY_CAST is the                          NULL-yielding spelling",
+                        duck_int_name(to)
+                    )));
                 }
             }
         }
