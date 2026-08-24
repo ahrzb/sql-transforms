@@ -2545,6 +2545,15 @@ impl Binder<'_> {
                 let Some(inner) = self.expr_or_null(expr)? else {
                     return Ok(null_of(Ty::I64));
                 };
+                // TASK-103: unary minus over a DECIMAL-spelled operand that
+                // folds to NULL is SQLNULL/INTEGER on DuckDB (the campaign's
+                // seed-20275804 spelling); a DOUBLE-spelled one stays DOUBLE.
+                if ast_decimal_literal(expr)
+                    && bind_foldable(&inner)
+                    && matches!(fold(inner.clone()).kind, SKind::NullOf)
+                {
+                    return Ok(null_of(Ty::I32));
+                }
                 let zero = if inner.ty == Ty::F64 {
                     SExpr {
                         kind: SKind::Lit(Lit::F64(-0.0)),
@@ -3852,9 +3861,23 @@ impl Binder<'_> {
                 | BinaryOperator::Minus
                 | BinaryOperator::Multiply
                 | BinaryOperator::Modulo
-        ) && ((a.is_none() && b.is_some() && ast_decimal_literal(right))
-            || (b.is_none() && a.is_some() && ast_decimal_literal(left)))
-        {
+        ) && {
+            // TASK-103: the rule is operand FOLDABILITY, not literal
+            // spelling. A decimal-spelled operand that BINDS and folds to
+            // NULL (CASE WHEN FALSE THEN 1.25 END) collapses exactly like a
+            // bare NULL next to a decimal literal; DOUBLE-spelled foldable
+            // NULLs do not (measured control).
+            let folds_null = |x: &Option<SExpr>| {
+                x.as_ref().is_none_or(|e| {
+                    bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
+                })
+            };
+            let dec_l = ast_decimal_literal(left);
+            let dec_r = ast_decimal_literal(right);
+            ((a.is_none() || (dec_l && folds_null(&a))) && b.is_some() && dec_r
+                || (b.is_none() || (dec_r && folds_null(&b))) && a.is_some() && dec_l)
+                && (folds_null(&a) || folds_null(&b))
+        } {
             return Ok(null_of(Ty::I32));
         }
         // A NULL literal adopts the other side's type; the op itself is not
@@ -4559,17 +4582,37 @@ impl Binder<'_> {
         if bind_foldable(&e) && matches!(fold(e.clone()).kind, SKind::NullOf) {
             return (e, true);
         }
-        // to_varchar wraps a non-Str operand in one Cast — look through.
-        let (inner, wrap) = match &e.kind {
-            SKind::Cast { inner, trying } => ((**inner).clone(), Some((e.ty, *trying))),
-            _ => (e.clone(), None),
-        };
+        // Peel unary wrappers down to a possible pure extern: to_varchar
+        // adds one Cast; TASK-103's composition pin showed upper()/lower()
+        // between the extern and the || is the same shape. Bake the extern,
+        // rebuild the wrappers over the literal, and FOLD the result — the
+        // StrCase/Abs fold arms finish what the bake started, so
+        // `upper(us9(..))` collapses exactly like the bare call.
+        enum Frame {
+            Cast { ty: Ty, trying: bool },
+            Case { upper: bool, ty: Ty },
+        }
+        let mut frames: Vec<Frame> = Vec::new();
+        let mut cur = e.clone();
+        loop {
+            match cur.kind {
+                SKind::Cast { inner, trying } => {
+                    frames.push(Frame::Cast { ty: cur.ty, trying });
+                    cur = *inner;
+                }
+                SKind::StrCase { upper, a } => {
+                    frames.push(Frame::Case { upper, ty: cur.ty });
+                    cur = *a;
+                }
+                _ => break,
+            }
+        }
         if let SKind::ExternCall {
             ext,
             ref args,
             whole: false,
             ..
-        } = inner.kind
+        } = cur.kind
         {
             if let Some(spec) = self.udfs.get(ext as usize) {
                 if spec.rets.len() == 1 {
@@ -4577,18 +4620,31 @@ impl Binder<'_> {
                         Some(Ok(None)) => return (e, true),
                         Some(Ok(Some(lanes))) => match lanes.into_iter().next() {
                             Some(Some(v)) => {
-                                let lit = scalar_lit(v, inner.ty);
-                                let rebuilt = match wrap {
-                                    Some((ty, trying)) => SExpr {
-                                        nullable: false,
-                                        kind: SKind::Cast {
-                                            inner: Box::new(lit),
-                                            trying,
+                                let mut rebuilt = scalar_lit(v, cur.ty);
+                                for f in frames.into_iter().rev() {
+                                    rebuilt = match f {
+                                        Frame::Cast { ty, trying } => SExpr {
+                                            nullable: false,
+                                            kind: SKind::Cast {
+                                                inner: Box::new(rebuilt),
+                                                trying,
+                                            },
+                                            ty,
                                         },
-                                        ty,
-                                    },
-                                    None => lit,
-                                };
+                                        Frame::Case { upper, ty } => SExpr {
+                                            nullable: rebuilt.nullable,
+                                            kind: SKind::StrCase {
+                                                upper,
+                                                a: Box::new(rebuilt),
+                                            },
+                                            ty,
+                                        },
+                                    };
+                                }
+                                let rebuilt = fold(rebuilt);
+                                if matches!(rebuilt.kind, SKind::NullOf) {
+                                    return (e, true);
+                                }
                                 return (rebuilt, false);
                             }
                             // A NULL-valued fold result collapses exactly
@@ -7169,6 +7225,20 @@ fn ast_decimal_literal(e: &SqlExpr) -> bool {
             op: UnaryOperator::Minus,
             expr,
         } => ast_decimal_literal(expr),
+        // TASK-103: DuckDB types a CASE over DECIMAL arms DECIMAL, so the
+        // SQLNULL collapse follows it through -- every RESULT arm (ELSE
+        // included, when present) must be decimal-spelled.
+        SqlExpr::Case {
+            conditions,
+            else_result,
+            ..
+        } => {
+            !conditions.is_empty()
+                && conditions.iter().all(|w| ast_decimal_literal(&w.result))
+                && else_result
+                    .as_ref()
+                    .is_none_or(|e| ast_decimal_literal(e))
+        }
         _ => false,
     }
 }

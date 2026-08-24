@@ -439,17 +439,10 @@ def test_pure_scalar_udf_value_under_concat_bakes_once():
     assert ours.schema == duck.schema
 
 
-# The bind-fold evaluates strictly LESS than DuckDB's — our fold keeps
-# runtime-only ops runtime and composition stops at the || operand
-# itself. Same family as the DECIMAL foldability gap: TASK-103.
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-103 (widened by the 2026-08-13 review): DuckDB folds the "
-    "WHOLE constant operand subtree — a pure udf under upper()/arith/CASE "
-    "still collapses || there, and an argument like abs(-3) still folds "
-    "before the udf executes. Our bind fold stops at spellings fold.rs "
-    "can finish.",
-)
+# TASK-103, closed 2026-08-19: the bind-fold finishes what DuckDB's does
+# on these spellings — Abs and upper/lower fold over literals (same
+# kernels as the runtime), and a pure extern bakes under a stack of
+# unary wrappers, so the || SQLNULL collapse sees through upper(us9(..)).
 @pytest.mark.parametrize(
     "sql",
     [
@@ -497,14 +490,6 @@ def test_concat_with_unfoldable_null_operand_stays_varchar():
     assert got.schema == want.schema, f"{got.schema} != {want.schema}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-103 (campaign 2026-08-13, seed 20275804): the DECIMAL "
-    "(+|-|*|%) bare-NULL SQLNULL fold keys on literal SPELLING; DuckDB's "
-    "rule is operand FOLDABILITY - a constant CASE folding to NULL "
-    "collapses the same way, unary minus included. Generalize the arm "
-    "over bind_foldable.",
-)
 @pytest.mark.parametrize(
     "sql",
     [
