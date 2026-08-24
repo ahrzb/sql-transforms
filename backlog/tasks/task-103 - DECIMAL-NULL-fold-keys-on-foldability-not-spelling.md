@@ -2,7 +2,7 @@
 id: TASK-103
 title: >-
   DECIMAL-NULL SQLNULL fold keys on foldability, not literal spelling
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-13 14:00'
 labels:
@@ -42,8 +42,33 @@ externs over constants, gated on DuckDB's binder-foldability.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 the xfail pin flips: DECIMAL arith over a bind-foldable NULL operand is SQLNULL/int32
-- [ ] #2 unary minus included; DOUBLE-typed foldable NULL stays double (control row keeps passing)
-- [ ] #3 the composition xfail pins flip (upper-wrapped || operand; unfinished-constant udf args)
-- [ ] #4 20k campaign: the class is gone, no new classes
+- [x] #1 the xfail pin flips: DECIMAL arith over a bind-foldable NULL operand is SQLNULL/int32
+- [x] #2 unary minus included; DOUBLE-typed foldable NULL stays double (control row keeps passing)
+- [x] #3 the composition xfail pins flip (upper-wrapped || operand; unfinished-constant udf args)
+- [x] #4 20k campaign: the class is gone, no new classes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-08-19, the ticket's one lever in three small pieces:
+
+1. The DECIMAL arm keys on FOLDABILITY: a decimal-SPELLED operand
+   (ast_decimal_literal, now walking CASE result arms) that binds and folds
+   to NullOf collapses to SQLNULL/int32 for + - * %, and a new unary-minus
+   arm does the same. The DOUBLE-spelled control keeps passing (the
+   spelling predicate is what separates them, exactly DuckDB's
+   DECIMAL-vs-DOUBLE typing).
+2. fold.rs finishes two total ops over literals it used to leave runtime:
+   Abs (i64::MIN stays unfolded -- the runtime trap owns it, the shifts'
+   doctrine) and upper/lower via the SAME casemap kernel as Inst::Str1.
+   That alone flipped the udf9(abs(-3), NULL) pin: the arg now folds
+   before the whole-call-NULL machinery looks.
+3. bind_fold_concat_operand peels a STACK of unary wrappers (Cast,
+   StrCase) instead of one Cast, bakes the pure extern underneath,
+   rebuilds, and folds -- so upper(us9(1,2)) collapses the || exactly like
+   the bare call.
+
+All 4 xfail pins flipped strict and are now plain live-oracle tests. AC #4:
+20k campaign green (background run logged in the PR).
+<!-- SECTION:NOTES:END -->

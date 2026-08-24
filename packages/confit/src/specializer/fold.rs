@@ -384,12 +384,27 @@ pub fn fold(e: SExpr) -> SExpr {
                 trying,
             })
         }
-        // Builtin nodes fold children only (ponytail: constant upper('a')
-        // etc. can fold later if a corpus query ever cares).
-        SKind::StrCase { upper, a } => e(SKind::StrCase {
-            upper,
-            a: Box::new(fold(*a)),
-        }),
+        // TASK-103: a corpus query DID care -- upper() over a baked pure
+        // extern must finish for the || SQLNULL collapse to see through it.
+        // Same casemap kernel as Inst::Str1, so fold and runtime agree.
+        SKind::StrCase { upper, a } => {
+            let a = fold(*a);
+            match &a.kind {
+                SKind::Lit(Lit::Str(s)) => {
+                    let f = if upper {
+                        super::exec::casemap::simple_upper
+                    } else {
+                        super::exec::casemap::simple_lower
+                    };
+                    lit(Lit::Str(s.chars().map(f).collect()), ty)
+                }
+                SKind::NullOf => null(ty),
+                _ => e(SKind::StrCase {
+                    upper,
+                    a: Box::new(a),
+                }),
+            }
+        }
         SKind::Trim { side, a, chars } => e(SKind::Trim {
             side,
             a: Box::new(fold(*a)),
@@ -400,7 +415,19 @@ pub fn fold(e: SExpr) -> SExpr {
             start: Box::new(fold(*start)),
             len: len.map(|l| Box::new(fold(*l))),
         }),
-        SKind::Abs(a) => e(SKind::Abs(Box::new(fold(*a)))),
+        SKind::Abs(a) => {
+            // TASK-103: DuckDB's binder folds abs over a constant, and an
+            // extern argument like abs(-3) must be a finished Lit for the
+            // pure-udf bake to see it. i64::MIN stays unfolded -- the
+            // runtime trap owns it, same doctrine as the shifts above.
+            let a = fold(*a);
+            match &a.kind {
+                SKind::Lit(Lit::I64(v)) if *v != i64::MIN => lit(Lit::I64(v.abs()), ty),
+                SKind::Lit(Lit::F64(v)) => lit(Lit::F64(v.abs()), ty),
+                SKind::NullOf => null(ty),
+                _ => e(SKind::Abs(Box::new(a))),
+            }
+        }
         SKind::Round(a) => e(SKind::Round(Box::new(fold(*a)))),
         SKind::Concat { a, b } => e(SKind::Concat {
             a: Box::new(fold(*a)),
