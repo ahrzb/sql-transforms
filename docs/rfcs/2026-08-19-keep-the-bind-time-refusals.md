@@ -34,6 +34,47 @@ comparison fold it fed was an optimizer emulation, and the
 the decimal parser serves those casts now. This RFC is about the two
 survivors.
 
+### The timing correspondence (why bind parity is even possible)
+
+There is no information gap between DuckDB's bind and our build. In this
+engine, `DuckDBInferFn(...)` construction is bind, plan, and compile in
+one moment, and at that moment we hold everything DuckDB's binder holds
+at prepare: the SQL text, every schema, every constant. Rows are the
+only thing that arrives later -- for BOTH engines:
+
+```
+DuckDB   PREPARE errors on 2147483647 + 1     EXECUTE traps per row
+ours     DuckDBInferFn(...) refuses           infer_rows traps per row
+```
+
+A constant refusal depends only on the constants, so mirroring DuckDB's
+bind error at our build is an exact correspondence, not an
+approximation. (We actually know MORE at build than DuckDB's binder
+does -- the static tables' full contents -- but constant refusals never
+use that.)
+
+### Why `fold` cannot simply do the refusing (the shape of the duplication)
+
+Both constant evaluators run at build; the duplication is not
+bind-vs-runtime, it is two BUILD-time walkers. `fold`'s arithmetic
+returns `Option<Lit>` where `None` means "the interpreter would trap on
+this -- do not fold" (fold.rs). That `None` deliberately conflates two
+situations:
+
+- `2147483647 + 1` at top level: "does not fold" should be a BIND ERROR
+  (DuckDB's binder refuses it).
+- the same expression inside a guarded position (a CASE arm that may
+  never be taken): "does not fold" is CORRECT -- leave it as runtime
+  code that traps only if a row reaches it. Turning this into a build
+  error would refuse queries DuckDB serves.
+
+`fold` has no error channel and no guardedness context, so the
+context-aware refusal lives in a separate raw-AST walk
+(`eval_i32_literal`) that re-parses number text with i32 range rules.
+Both walkers know that `+` is checked addition; a semantics change
+(TASK-122's `%` was one) must be remembered in both. That is the drift
+risk named under alternative A.
+
 ## Alternatives
 
 ### A. Keep the bind-time refusals, reword their comments to "binder parity"
@@ -73,14 +114,19 @@ Cons:
 ### C. Unify: make `fold` fallible and route constant overflow through it
 
 Delete the parallel AST walk but keep the bind-time refusal behavior, by
-letting the one constant folder surface errors.
+letting the one constant folder distinguish "folded", "leave for
+runtime" (guarded), and "refuse the build" (unguarded constant that
+DuckDB bind-errors).
 
 Pros:
-- Removes the duplication that is A's only real cost; one mechanism.
+- Removes the duplication that is A's only real cost; one mechanism, one
+  place that knows what `+` does to constants.
 - Same observable behavior as A.
 
 Cons:
-- A refactor of every `fold` call site for zero behavior change.
+- The guardedness context (`in_guarded`) must thread into `fold`, and
+  every `fold` call site changes its return-type handling -- a refactor
+  for zero behavior change.
 - Not overnight work; needs its own ticket and red tests.
 
 ## Recommendation
