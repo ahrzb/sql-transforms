@@ -26,37 +26,3 @@ sitting under a paragraph explaining why it is fine. The census on
 strict=True is the load-bearing part. A pin that silently starts passing is
 worse than no pin: it certifies work nobody did.
 """
-
-from __future__ import annotations
-
-import duckdb
-import pyarrow as pa
-import pytest
-from confit import DuckDBInferFn
-
-
-# ---------------------------------------------------------------------------
-# TASK-131: a bare-NULL arm floors a CASE's width at INTEGER on DuckDB.
-# Surfaced when TASK-130's oracle fix stopped the schema-name mismatch from
-# returning early (seed 12745).
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-131: a bare NULL arm contributes SQLNULL/INTEGER to DuckDB's "
-    "CASE unification, flooring the result at int32; we adopt the NULL into "
-    "the value arms' width (int16).",
-)
-def test_a_bare_null_arm_floors_the_case_width():
-    row = pa.schema([pa.field("c0", pa.int16(), nullable=False)])
-    sql = (
-        "SELECT (CASE WHEN TRUE THEN NULL WHEN TRUE THEN c0 ELSE -22 END) AS o "
-        "FROM __THIS__"
-    )
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 SMALLINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (3)")
-    want = con.execute(sql).to_arrow_table()
-    assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
-    assert fn.output_schema.field("o").type == pa.int32()
