@@ -835,6 +835,10 @@ fn bind_from<'a>(
                         .ok_or_else(|| unsup("JOIN USING entry form"))?;
                     let mut col = None;
                     for (i, c) in st.cols.iter().enumerate() {
+                        // Struct leaves never match a USING name (TASK-132).
+                        if st.is_leaf_lane(i as u32) {
+                            continue;
+                        }
                         if c.name.eq_ignore_ascii_case(&name) {
                             col = Some(i as u32);
                         }
@@ -861,6 +865,11 @@ fn bind_from<'a>(
                 let mut keys = Vec::new();
                 let mut key_cols = Vec::new();
                 for (i, c) in st.cols.iter().enumerate() {
+                    // Struct leaves never participate in NATURAL matching
+                    // (TASK-132): their dotted display name is not a column.
+                    if st.is_leaf_lane(i as u32) {
+                        continue;
+                    }
                     let Ok(key) = binder.column(&c.name) else {
                         continue;
                     };
@@ -1101,24 +1110,89 @@ fn opaque_static_refusal(
     name: &str,
     table: &str,
 ) -> Option<PrepareError> {
+    // TASK-116 serves a struct's LEAVES, so the struct name refuses for a
+    // different reason than a timestamp does: the fields are right there,
+    // only the whole value is unserved. Struct heads live in `structs`
+    // (TASK-132), everything else unservable in `opaque`.
+    if let Some(sc) = st
+        .structs
+        .iter()
+        .find(|s| s.name.eq_ignore_ascii_case(name))
+    {
+        return Some(PrepareError::Unsupported(format!(
+            "static table '{table}' column '{}' is a struct — \
+             project its fields instead",
+            sc.name
+        )));
+    }
     st.opaque
         .iter()
         .find(|(c, _)| c.eq_ignore_ascii_case(name))
         .map(|(c, aty)| {
-            // TASK-116 serves a struct's LEAVES, so the struct name is
-            // opaque for a different reason than a timestamp is: the fields
-            // are right there, only the whole value is unserved.
-            if aty == "struct" {
-                return PrepareError::Unsupported(format!(
-                    "static table '{table}' column '{c}' is a struct — \
-                     project its fields instead"
-                ));
-            }
             PrepareError::Unsupported(format!(
                 "static table '{table}' column '{c}' has type {aty}, which \
                  this engine does not serve — project a served column instead"
             ))
         })
+}
+
+/// Where a struct-tree walk stopped (TASK-132): shared by the row and
+/// static paths, which render the SAME stop into their own pinned error
+/// spellings. `at` indexes the FIELD parts handed to [`walk_fields`];
+/// `field` is the actual (declaration-cased) field name involved.
+enum WalkStop {
+    /// parts[at] matched no child of the current node.
+    Missing { at: usize },
+    /// parts[at] hit a scalar LEAF but more parts follow.
+    NotStruct { at: usize, field: String },
+    /// parts[at] hit a field whose type this engine does not serve.
+    OpaqueField { field: String },
+    /// The parts ran out ON a nested node — the reference is a whole
+    /// struct value, not a leaf.
+    Nested { at: usize, field: String },
+}
+
+/// Walk `parts` down a struct field tree to a scalar leaf lane index.
+/// Field matching is case-insensitive even when quoted (measured —
+/// quoting does not opt into case sensitivity).
+fn walk_fields(
+    fields: &[super::plan::StructField],
+    parts: &[sqlparser::ast::Ident],
+) -> Result<u32, WalkStop> {
+    use super::plan::StructNode;
+    debug_assert!(!parts.is_empty());
+    let mut cur = fields;
+    for (k, f) in parts.iter().enumerate() {
+        let Some(sf) = cur.iter().find(|x| x.name.eq_ignore_ascii_case(&f.value)) else {
+            return Err(WalkStop::Missing { at: k });
+        };
+        match &sf.node {
+            StructNode::Leaf(lane) => {
+                if k + 1 == parts.len() {
+                    return Ok(*lane);
+                }
+                return Err(WalkStop::NotStruct {
+                    at: k,
+                    field: sf.name.clone(),
+                });
+            }
+            StructNode::Opaque => {
+                return Err(WalkStop::OpaqueField {
+                    field: sf.name.clone(),
+                });
+            }
+            StructNode::Nested(n) => {
+                if k + 1 == parts.len() {
+                    return Err(WalkStop::Nested {
+                        at: k,
+                        field: sf.name.clone(),
+                    });
+                }
+                cur = n;
+            }
+        }
+    }
+    unreachable!("the loop returns on the last part")
 }
 
 fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, PrepareError> {
@@ -1258,7 +1332,14 @@ fn bind_on<'e>(
             let head_in_static = st
                 .cols
                 .iter()
-                .any(|c| c.name.eq_ignore_ascii_case(head))
+                .enumerate()
+                .any(|(ci, c)| {
+                    !st.is_leaf_lane(ci as u32) && c.name.eq_ignore_ascii_case(head)
+                })
+                || st
+                    .structs
+                    .iter()
+                    .any(|s| s.name.eq_ignore_ascii_case(head))
                 || st.opaque.iter().any(|(c, _)| c.eq_ignore_ascii_case(head));
             if head_in_outer && head_in_static {
                 return Err(PrepareError::Bind(format!(
@@ -1381,6 +1462,11 @@ fn static_col_of(
     };
     let mut hit = None;
     for (i, c) in st.cols.iter().enumerate() {
+        // A struct leaf is not an ON-key candidate (TASK-132): its dotted
+        // display name is not an identifier.
+        if st.is_leaf_lane(i as u32) {
+            continue;
+        }
         if c.name.eq_ignore_ascii_case(name) {
             if hit.is_some() {
                 return Err(PrepareError::Bind(format!(
@@ -3372,12 +3458,13 @@ impl Binder<'_> {
         self.column(&parts[0].value)
     }
 
-    /// A static table's column addressed by `parts`, which may be a struct
-    /// lane's FULL ORDERED PATH (TASK-116): `s.w.mean` is column "w.mean" of
-    /// `s`, because the catalogue flattens a struct's leaves under exactly
-    /// that name. The path either matches a lane exactly or misses — no
-    /// suffix match, no name-set match, so `w.x.y.z.a` and `w.z.y.x.a` are
-    /// different lanes and `w.a` finds nothing.
+    /// A static table's column addressed by `parts` (TASK-116, re-keyed by
+    /// TASK-132): the head resolves among the table's struct TREES first,
+    /// and the remaining parts walk the tree to a leaf lane — the path is
+    /// ORDERED and either walks exactly or misses, so `w.x.y.z.a` and
+    /// `w.z.y.x.a` are different lanes and `w.a` finds nothing. No dotted
+    /// string is ever built: a quoted `"w.mean"` is ONE part and lands in
+    /// the single-part branch, where it can only mean a literal column.
     fn qualified_path(
         &self,
         table: &str,
@@ -3387,46 +3474,59 @@ impl Binder<'_> {
         if parts.len() == 1 {
             return self.qualified(table, head);
         }
-        let path = parts
-            .iter()
-            .map(|p| p.value.as_str())
-            .collect::<Vec<_>>()
-            .join(".");
-        if let Ok(c) = self.qualified(table, &path) {
-            return Ok(c);
-        }
-        // The path missed. Which error depends on what it missed BY.
-        let sj = self
+        let sj_hit = self
             .joins
             .iter()
-            .find(|sj| sj.name.eq_ignore_ascii_case(table));
-        if let Some(sj) = sj {
-            // An INTERMEDIATE node of the tree: every lane below it exists,
-            // so the path is real and only its VALUE is a struct. Same
-            // refusal as the whole column, not a "no such key" lie.
-            let prefix = format!("{path}.");
-            if sj
+            .enumerate()
+            .find(|(_, sj)| sj.name.eq_ignore_ascii_case(table));
+        if let Some((j, sj)) = sj_hit {
+            if let Some(sc) = sj
                 .table
-                .cols
+                .structs
                 .iter()
-                .any(|c| c.name.len() > prefix.len() && c.name[..prefix.len()].eq_ignore_ascii_case(&prefix))
+                .find(|s| s.name.eq_ignore_ascii_case(head))
             {
-                return Err(unsup(format!(
-                    "static table '{table}' column '{path}' is a struct — \
-                     project its fields instead"
-                )));
-            }
-            // `head` is a struct we could not walk: the path is wrong.
-            if sj
-                .table
-                .opaque
-                .iter()
-                .any(|(c, aty)| aty == "struct" && c.eq_ignore_ascii_case(head))
-            {
-                return Err(PrepareError::Bind(format!(
-                    "Could not find key \"{}\" in struct",
-                    parts[parts.len() - 1].value
-                )));
+                let fields = &parts[1..];
+                return match walk_fields(&sc.fields, fields) {
+                    Ok(ci) => {
+                        let pos = sj
+                            .val_cols
+                            .iter()
+                            .position(|&v| v == ci)
+                            .ok_or_else(|| {
+                                PrepareError::Internal(format!(
+                                    "struct leaf lane {ci} of '{table}' is not a value lane"
+                                ))
+                            })?;
+                        Ok(self.static_lane(j, pos))
+                    }
+                    Err(WalkStop::Missing { at }) => Err(PrepareError::Bind(format!(
+                        "Could not find key \"{}\" in struct",
+                        fields[at].value
+                    ))),
+                    Err(WalkStop::NotStruct { at, field }) => Err(PrepareError::Bind(format!(
+                        "Cannot extract field '{}' from expression \"{field}\" \
+                         because it is not a struct",
+                        fields[at + 1].value
+                    ))),
+                    Err(WalkStop::OpaqueField { field }) => Err(unsup(format!(
+                        "struct field '{field}' has a non-scalar type"
+                    ))),
+                    // An INTERMEDIATE node: the path is real and only its
+                    // VALUE is a struct. Same refusal as the whole column,
+                    // not a "no such key" lie. The dotted spelling here is
+                    // DISPLAY, rebuilt from the parts.
+                    Err(WalkStop::Nested { at, .. }) => {
+                        let display: Vec<&str> = std::iter::once(head.as_str())
+                            .chain(fields[..=at].iter().map(|f| f.value.as_str()))
+                            .collect();
+                        Err(unsup(format!(
+                            "static table '{table}' column '{}' is a struct — \
+                             project its fields instead",
+                            display.join(".")
+                        )))
+                    }
+                };
             }
         }
         match self.qualified(table, head) {
@@ -3497,7 +3597,15 @@ impl Binder<'_> {
             sj.val_cols
                 .iter()
                 .chain(sj.key_cols.iter())
-                .any(|&ci| sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name))
+                .any(|&ci| {
+                    !sj.table.is_leaf_lane(ci)
+                        && sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name)
+                })
+                || sj
+                    .table
+                    .structs
+                    .iter()
+                    .any(|s| s.name.eq_ignore_ascii_case(name))
                 || sj
                     .table
                     .opaque
@@ -3514,6 +3622,9 @@ impl Binder<'_> {
         }
         for sj in &self.joins {
             for &ci in sj.val_cols.iter().chain(sj.key_cols.iter()) {
+                if sj.table.is_leaf_lane(ci) {
+                    continue;
+                }
                 if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
                     return Some(Err(PrepareError::Bind(format!(
                         "Cannot extract field '{}' from expression \"{name}\" \
@@ -3533,58 +3644,38 @@ impl Binder<'_> {
         sc: &super::plan::StructCol,
         fields: &[sqlparser::ast::Ident],
     ) -> Result<SExpr, PrepareError> {
-        use super::plan::StructNode;
         if fields.is_empty() {
             return Err(unsup(format!(
                 "struct column '{}' as a whole value (project its fields instead)",
                 sc.name
             )));
         }
-        let mut cur = &sc.fields;
-        for (k, f) in fields.iter().enumerate() {
-            // Field matching is case-insensitive even when quoted
-            // (measured — quoting does not opt into case sensitivity).
-            let Some(sf) = cur.iter().find(|x| x.name.eq_ignore_ascii_case(&f.value)) else {
-                return Err(PrepareError::Bind(format!(
-                    "Could not find key \"{}\" in struct",
-                    f.value
-                )));
-            };
-            match &sf.node {
-                StructNode::Leaf(lane) => {
-                    if k + 1 == fields.len() {
-                        let c = &self.in_cols[*lane as usize];
-                        return Ok(SExpr {
-                            kind: SKind::Col(*lane),
-                            ty: c.ty.ty,
-                            nullable: c.ty.nullable,
-                        });
-                    }
-                    return Err(PrepareError::Bind(format!(
-                        "Cannot extract field '{}' from expression \"{}\" \
-                         because it is not a struct",
-                        fields[k + 1].value, sf.name
-                    )));
-                }
-                StructNode::Opaque => {
-                    return Err(unsup(format!(
-                        "struct field '{}' has a non-scalar type",
-                        sf.name
-                    )));
-                }
-                StructNode::Nested(n) => {
-                    if k + 1 == fields.len() {
-                        return Err(unsup(format!(
-                            "struct field '{}' as a whole value (project its \
-                             scalar leaves instead)",
-                            sf.name
-                        )));
-                    }
-                    cur = n;
-                }
+        match walk_fields(&sc.fields, fields) {
+            Ok(lane) => {
+                let c = &self.in_cols[lane as usize];
+                Ok(SExpr {
+                    kind: SKind::Col(lane),
+                    ty: c.ty.ty,
+                    nullable: c.ty.nullable,
+                })
             }
+            Err(WalkStop::Missing { at }) => Err(PrepareError::Bind(format!(
+                "Could not find key \"{}\" in struct",
+                fields[at].value
+            ))),
+            Err(WalkStop::NotStruct { at, field }) => Err(PrepareError::Bind(format!(
+                "Cannot extract field '{}' from expression \"{field}\" \
+                 because it is not a struct",
+                fields[at + 1].value
+            ))),
+            Err(WalkStop::OpaqueField { field }) => Err(unsup(format!(
+                "struct field '{field}' has a non-scalar type"
+            ))),
+            Err(WalkStop::Nested { field, .. }) => Err(unsup(format!(
+                "struct field '{field}' as a whole value (project its \
+                 scalar leaves instead)"
+            ))),
         }
-        unreachable!("loop returns on the last field")
     }
 
     /// Case-insensitive, spelling-preserving bare-column bind over the whole
@@ -3623,6 +3714,10 @@ impl Binder<'_> {
         }
         for (j, sj) in self.joins.iter().enumerate() {
             for pos in 0..sj.val_cols.len() {
+                // Struct leaves bind by PATH only (TASK-132).
+                if sj.table.is_leaf_lane(sj.val_cols[pos]) {
+                    continue;
+                }
                 if sj.table.cols[sj.val_cols[pos] as usize]
                     .name
                     .eq_ignore_ascii_case(name)
@@ -3644,15 +3739,23 @@ impl Binder<'_> {
             }
         }
         // TASK-121: a static STRUCT (or non-vocabulary) column's bare name
-        // lives in `opaque`, not `cols` — it still BINDS on DuckDB, so it
-        // still counts for ambiguity, and as a sole hit it is the named
-        // non-scalar refusal rather than a "does not exist" lie.
+        // lives outside `cols` (structs / opaque, TASK-132) — it still
+        // BINDS on DuckDB, so it still counts for ambiguity, and as a sole
+        // hit it is the named non-scalar refusal rather than a "does not
+        // exist" lie.
         let join_opaque = self.joins.iter().find_map(|sj| {
             sj.table
-                .opaque
+                .structs
                 .iter()
-                .find(|(c, _)| c.eq_ignore_ascii_case(name))
-                .map(|(c, aty)| (sj.name.clone(), c.clone(), aty.clone()))
+                .find(|s| s.name.eq_ignore_ascii_case(name))
+                .map(|s| (sj.name.clone(), s.name.clone(), "struct".to_string()))
+                .or_else(|| {
+                    sj.table
+                        .opaque
+                        .iter()
+                        .find(|(c, _)| c.eq_ignore_ascii_case(name))
+                        .map(|(c, aty)| (sj.name.clone(), c.clone(), aty.clone()))
+                })
         });
         if let Some((tname, cname, aty)) = &join_opaque {
             if hits.is_empty() {
@@ -3766,6 +3869,11 @@ impl Binder<'_> {
             }
             let mut hit = None;
             for pos in 0..sj.val_cols.len() {
+                // A struct LEAF is reachable only through its path
+                // (TASK-132): its dotted display name is not an identifier.
+                if sj.table.is_leaf_lane(sj.val_cols[pos]) {
+                    continue;
+                }
                 if sj.table.cols[sj.val_cols[pos] as usize]
                     .name
                     .eq_ignore_ascii_case(name)

@@ -257,6 +257,108 @@ def test_a_static_struct_path_that_is_not_a_lane_refuses_by_name(expr, match):
     assert "does not exist" not in str(e.value), str(e.value)
 
 
+# TASK-132. The lane's PATH is data; the dotted spelling is display-only.
+# The RFC's collision table: a struct leaf and a literal column that share
+# the dotted spelling are DIFFERENT references (quoting is resolved by the
+# lexer, so `s."w.mean"` is two parts and `s.w.mean` is three) and DuckDB
+# serves both. A dotted name-lookup encoding cannot; a structured path can.
+_S132 = pa.struct([("mean", pa.float64())])
+_COLLIDE132 = pa.table(
+    {
+        "id": pa.array([5], pa.int64()),
+        "w": pa.array([{"mean": 1.5}], _S132),
+        "w.mean": pa.array([99.0], pa.float64()),
+    }
+)
+_STRUCT_ONLY132 = pa.table(
+    {
+        "id": pa.array([5], pa.int64()),
+        "w": pa.array([{"mean": 1.5}], _S132),
+    }
+)
+
+
+def _duck132(sql, static):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (5)")
+    con.register("sa", static)
+    con.execute("CREATE TABLE s AS SELECT * FROM sa")
+    return con.execute(sql).to_arrow_table()
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "s.w.mean",  # three parts: the struct leaf (1.5)
+        's."w.mean"',  # two parts: the literal column (99.0)
+    ],
+)
+def test_the_collision_table_serves_both_spellings(expr):
+    sql = f"SELECT {expr} AS o FROM __THIS__ JOIN s ON k = s.id"
+    want = _duck132(sql, _COLLIDE132)
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _COLLIDE132}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
+    assert got.to_pylist() == want.to_pylist()
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+
+
+def test_a_quoted_dotted_name_is_not_a_struct_leaf():
+    """Without a literal column, `s."w.mean"` is a name lookup that MISSES:
+    the leaf is reachable only through the 3-part spelling, like DuckDB."""
+    sql = 'SELECT s."w.mean" AS o FROM __THIS__ JOIN s ON k = s.id'
+    con = duckdb.connect()
+    con.register("sa", _STRUCT_ONLY132)
+    con.execute("CREATE TABLE s AS SELECT * FROM sa")
+    with pytest.raises(duckdb.Error):
+        con.execute('SELECT s."w.mean" FROM s')
+    with pytest.raises(ValueError, match="does not exist"):
+        DuckDBInferFn(
+            sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STRUCT_ONLY132}
+        )
+
+
+def test_a_plain_static_column_with_a_dot_in_its_name_serves():
+    """No struct anywhere -- just a column named 'a.b'. The data path must
+    read THE COLUMN, not walk row['a']['b']."""
+    static = pa.table(
+        {
+            "id": pa.array([5], pa.int64()),
+            "a.b": pa.array([42], pa.int64()),
+        }
+    )
+    sql = 'SELECT s."a.b" AS o FROM __THIS__ JOIN s ON k = s.id'
+    want = _duck132(sql, static)
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": static}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
+    assert got.to_pylist() == want.to_pylist() == [{"o": 42}]
+
+
+def test_a_non_ascii_field_name_misses_cleanly():
+    """A miss beside a non-ASCII field must be the named refusal, not a
+    byte-boundary panic: the probe 'w.z.' is four BYTES, which lands in the
+    middle of the é of the real lane 'w.zé.y'."""
+    static = pa.table(
+        {
+            "id": pa.array([5], pa.int64()),
+            "w": pa.array(
+                [{"zé": {"y": 2.0}}],
+                pa.struct([("zé", pa.struct([("y", pa.float64())]))]),
+            ),
+        }
+    )
+    with pytest.raises(ValueError, match="Could not find key"):
+        DuckDBInferFn(
+            "SELECT s.w.z AS o FROM __THIS__ JOIN s ON k = s.id",
+            row_tables={"__THIS__": _ROW116},
+            static_tables={"s": static},
+        )
+
+
 def test_an_unreferenced_static_struct_still_builds():
     fn = DuckDBInferFn(
         "SELECT s.v AS o FROM __THIS__ JOIN s ON k = s.id",

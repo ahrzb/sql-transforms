@@ -41,6 +41,10 @@ pub struct StaticTable {
     /// opaque entry here even though its flattened leaves live in `cols` —
     /// a star answers with the column, never with its leaves.
     pub star: Vec<StarCol>,
+    /// Struct columns as TREES (TASK-132): resolution walks these; the
+    /// leaf lanes interleaved in `cols` keep their dotted names for
+    /// DISPLAY ONLY. `StructNode::Leaf` here indexes into `cols`.
+    pub structs: Vec<StructCol>,
 }
 
 /// One declared column of a [`StaticTable`], as star expansion sees it.
@@ -65,8 +69,47 @@ impl StaticTable {
             cols,
             opaque: Vec::new(),
             star,
+            structs: Vec::new(),
         }
     }
+
+    /// Whether lane `ci` is a struct LEAF: reachable only through its
+    /// path, never by name (TASK-132 — a quoted identifier that happens
+    /// to spell the dotted display name is a different reference).
+    pub fn is_leaf_lane(&self, ci: u32) -> bool {
+        fn walk(fs: &[StructField], ci: u32) -> bool {
+            fs.iter().any(|f| match &f.node {
+                StructNode::Leaf(l) => *l == ci,
+                StructNode::Opaque => false,
+                StructNode::Nested(n) => walk(n, ci),
+            })
+        }
+        self.structs.iter().any(|sc| walk(&sc.fields, ci))
+    }
+}
+
+/// Per-lane SEGMENT paths for a lane set with struct trees over it: a
+/// plain column's path is its own (whole) name — dots included, a name is
+/// not a path — and a leaf lane's is `[struct, field, ...]` from its tree.
+/// The DATA paths walk these; nothing splits a name string (TASK-132).
+pub fn lane_paths(cols: &[Col], structs: &[StructCol]) -> Vec<Vec<String>> {
+    let mut paths: Vec<Vec<String>> = cols.iter().map(|c| vec![c.name.clone()]).collect();
+    fn walk(fs: &[StructField], prefix: &mut Vec<String>, paths: &mut [Vec<String>]) {
+        for f in fs {
+            prefix.push(f.name.clone());
+            match &f.node {
+                StructNode::Leaf(l) => paths[*l as usize] = prefix.clone(),
+                StructNode::Opaque => {}
+                StructNode::Nested(n) => walk(n, prefix, paths),
+            }
+            prefix.pop();
+        }
+    }
+    for sc in structs {
+        let mut prefix = vec![sc.name.clone()];
+        walk(&sc.fields, &mut prefix, &mut paths);
+    }
+    paths
 }
 
 /// A fitted tree transform's schema, as given to `prepare` — like
