@@ -36,40 +36,6 @@ from confit import DuckDBInferFn
 
 
 # ---------------------------------------------------------------------------
-# TASK-121: a bare struct path whose HEAD name also binds in a join scope is
-# ambiguous on DuckDB and binds here. 16 of the 28 findings in the 2026-08-17
-# campaign, and the largest single class the fuzzer sees.
-# ---------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="TASK-121: `ON (c0.f0 = s0.c0)` where __THIS__.c0 is a struct and "
-    "s0.c0 is a column -- DuckDB refuses as ambiguous before it looks at .f0; "
-    "we resolve to the struct and answer. The BARE-column case already refuses; "
-    "the struct-path route does not consult the join scopes.",
-)
-def test_an_ambiguous_struct_path_refuses():
-    row = pa.schema(
-        [
-            pa.field("c0", pa.struct([("f0", pa.int64())])),
-            pa.field("v", pa.int64(), nullable=False),
-        ]
-    )
-    static = pa.table({"c0": pa.array([1], pa.int64()), "w": pa.array([9], pa.int64())})
-    sql = "SELECT v AS o FROM __THIS__ LEFT JOIN s0 ON (c0.f0 = s0.c0)"
-
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 STRUCT(f0 BIGINT), v BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES ({'f0': 1}, 2)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
-    with pytest.raises(duckdb.Error, match="[Aa]mbiguous"):
-        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
-
-    with pytest.raises(ValueError, match="[Aa]mbiguous"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
-
-
-# ---------------------------------------------------------------------------
 # TASK-130: a join star does not dedupe colliding output names. Found by the
 # campaign once TASK-124's grammar shift re-rolled seed 380; pre-existing.
 # ---------------------------------------------------------------------------

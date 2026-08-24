@@ -2,7 +2,7 @@
 id: TASK-121
 title: >-
   An ambiguous struct-path column binds instead of refusing
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-17 00:00'
 labels:
@@ -63,3 +63,25 @@ Seeds: 217, 317, 776, 1231, 1577, 1636 and ten more.
 - [ ] #4 a struct path whose head is unique still binds unqualified
 - [ ] #5 the campaign's DIVERGE_BUILD ambiguity class is gone at 4000 seeds
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed 2026-08-19, two sites and a third spelling the pin had not named:
+
+1. `bind_on` (frontend.rs): the ON clause binds before its join enters
+   `binder.joins`, so the ambiguity check there tests the compound head
+   against the joined static ITSELF (`st.cols` + `st.opaque`) and the outer
+   scope. Closes the pin's spelling, `ON (c0.f0 = s0.c0)`.
+2. `bare_col_with_fields`: for WHERE/SELECT/residual positions, a struct
+   head that also binds in any join scope refuses before the walk.
+3. `column()` (found chasing the last campaign survivor, seed 2023): a
+   static STRUCT's bare name lives in `opaque`, not the lane set, so bare
+   `c0` against a row scalar c0 + static struct c0 bound instead of
+   refusing. Opaque names now count for ambiguity, and as a SOLE hit give
+   the named is-a-struct refusal instead of "does not exist".
+
+All 78 ambiguous findings of the 20k campaign now classify REFUSED (78/78
+re-run individually). Permanent tests: three spellings plus the sole-hit
+naming control in test_arrow_schema_api.py.
+<!-- SECTION:NOTES:END -->

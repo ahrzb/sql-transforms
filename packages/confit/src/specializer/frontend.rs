@@ -1241,6 +1241,30 @@ fn bind_on<'e>(
                 )));
             }
         }
+        // TASK-121, the STRUCT-PATH spelling of the same rule: DuckDB
+        // decides ambiguity on the HEAD name before it looks at the fields,
+        // and the table being joined is not in `binder.joins` yet while its
+        // ON binds — so the check has to happen here, against `st` itself.
+        // `c0.f0 = s0.c0` where the row table has struct c0 AND s0 has
+        // column c0 refuses; qualified spellings resolve as before.
+        if let SqlExpr::CompoundIdentifier(parts) = dyn_side {
+            let head = &parts[0].value;
+            let head_in_outer = binder.column(head).is_ok()
+                || binder
+                    .structs
+                    .iter()
+                    .any(|s| s.name.eq_ignore_ascii_case(head));
+            let head_in_static = st
+                .cols
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case(head))
+                || st.opaque.iter().any(|(c, _)| c.eq_ignore_ascii_case(head));
+            if head_in_outer && head_in_static {
+                return Err(PrepareError::Bind(format!(
+                    "ambiguous column '{head}' in JOIN ON (qualify it)"
+                )));
+            }
+        }
         let key = fold(binder.expr(dyn_side)?);
         let key = promote_key(key, st, col)?;
         keys.push(key);
@@ -3454,7 +3478,28 @@ impl Binder<'_> {
         name: &str,
         fields: &[sqlparser::ast::Ident],
     ) -> Option<Result<SExpr, PrepareError>> {
+        // TASK-121: DuckDB decides AMBIGUITY before it looks at the fields —
+        // a head that binds in the driving table AND in a join scope refuses
+        // even when only one side is a struct the path could walk. Resolving
+        // the struct first answered a query DuckDB rejects (the largest
+        // single class the campaign sees: 78 of 161 findings at 20k seeds).
+        let in_join = self.joins.iter().any(|sj| {
+            sj.val_cols
+                .iter()
+                .chain(sj.key_cols.iter())
+                .any(|&ci| sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name))
+                || sj
+                    .table
+                    .opaque
+                    .iter()
+                    .any(|(c, _)| c.eq_ignore_ascii_case(name))
+        });
         if let Some(r) = self.this_col_with_fields(name, fields) {
+            if in_join {
+                return Some(Err(PrepareError::Bind(format!(
+                    "ambiguous column '{name}' (qualify it)"
+                ))));
+            }
             return Some(r);
         }
         for sj in &self.joins {
@@ -3587,6 +3632,30 @@ impl Binder<'_> {
                     }
                 }
             }
+        }
+        // TASK-121: a static STRUCT (or non-vocabulary) column's bare name
+        // lives in `opaque`, not `cols` — it still BINDS on DuckDB, so it
+        // still counts for ambiguity, and as a sole hit it is the named
+        // non-scalar refusal rather than a "does not exist" lie.
+        let join_opaque = self.joins.iter().find_map(|sj| {
+            sj.table
+                .opaque
+                .iter()
+                .find(|(c, _)| c.eq_ignore_ascii_case(name))
+                .map(|(c, aty)| (sj.name.clone(), c.clone(), aty.clone()))
+        });
+        if let Some((tname, cname, aty)) = &join_opaque {
+            if hits.is_empty() {
+                return Err(unsup(if aty == "struct" {
+                    format!(
+                        "static table '{tname}' column '{cname}' is a struct — \
+                         project its fields instead"
+                    )
+                } else {
+                    format!("static table '{tname}' column '{cname}' has a non-scalar type")
+                }));
+            }
+            return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
         }
         match hits.len() {
             // The REAL column wins over a same-named select alias (measured

@@ -543,3 +543,85 @@ def test_the_constant_path_without_a_limit_is_untouched():
     )
     assert fn.backend == "constant"
     assert fn.infer_rows([]) == [{"o": 6}]
+
+
+# ------------------------------------------ bare-name ambiguity (TASK-121) --
+#
+# DuckDB decides AMBIGUITY on the bare HEAD name before it looks at struct
+# fields or lanes, and a static STRUCT's name binds for that purpose even
+# though we serve no struct value. Three spellings, one rule; closed
+# 2026-08-19, formerly the largest single class the campaign saw (78/161
+# findings at 20k seeds).
+def _ambig(sql, row, static):
+    import duckdb as _duck
+
+    con = _duck.connect()
+    con.execute("CREATE TABLE __THIS__ (c0 STRUCT(f0 BIGINT), v BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES ({'f0': 1}, 2)")
+    con.register("sa", static)
+    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
+    with pytest.raises(_duck.Error, match="[Aa]mbiguous"):
+        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+
+    with pytest.raises(ValueError, match="[Aa]mbiguous"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
+
+
+def test_a_struct_path_head_that_binds_in_a_join_scope_is_ambiguous():
+    row = pa.schema(
+        [
+            pa.field("c0", pa.struct([("f0", pa.int64())])),
+            pa.field("v", pa.int64(), nullable=False),
+        ]
+    )
+    static = pa.table({"c0": pa.array([1], pa.int64()), "w": pa.array([9], pa.int64())})
+    _ambig("SELECT v AS o FROM __THIS__ LEFT JOIN s0 ON (c0.f0 = s0.c0)", row, static)
+
+
+def test_a_bare_scalar_vs_a_static_struct_is_ambiguous():
+    # the seed-2023 spelling: the row SCALAR c0 collides with s0's STRUCT c0,
+    # whose bare name lives in the opaque list rather than the lane set
+    import duckdb as _duck
+
+    row = pa.schema(
+        [pa.field("c0", pa.int64(), nullable=False), pa.field("k", pa.int64())]
+    )
+    static = pa.table(
+        {
+            "c0": pa.array(
+                [{"f0": 1.5, "f1": 3}],
+                pa.struct([("f0", pa.float64()), ("f1", pa.int64())]),
+            ),
+        }
+    )
+    sql = "SELECT coalesce(c0, 7) AS o FROM __THIS__ LEFT JOIN s0 ON (k = s0.c0.f1)"
+
+    con = _duck.connect()
+    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, k BIGINT)")
+    con.execute("INSERT INTO __THIS__ VALUES (5, 3)")
+    con.register("sa", static)
+    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
+    with pytest.raises(_duck.Error, match="[Aa]mbiguous"):
+        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+
+    with pytest.raises(ValueError, match="[Aa]mbiguous"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
+
+
+def test_a_sole_static_struct_bare_name_refuses_as_a_struct_not_as_missing():
+    # no collision: the bare name resolves to the static STRUCT alone, and
+    # the refusal must name the struct, never claim the column is missing
+    row = pa.schema([pa.field("k", pa.int64(), nullable=False)])
+    static = pa.table(
+        {
+            "id": pa.array([1], pa.int64()),
+            "w": pa.array([{"m": 1.5}], pa.struct([("m", pa.float64())])),
+        }
+    )
+    with pytest.raises(ValueError, match="is a struct") as e:
+        DuckDBInferFn(
+            "SELECT w AS o FROM __THIS__ JOIN s0 ON k = s0.id",
+            row_tables={"__THIS__": row},
+            static_tables={"s0": static},
+        )
+    assert "does not exist" not in str(e.value)
