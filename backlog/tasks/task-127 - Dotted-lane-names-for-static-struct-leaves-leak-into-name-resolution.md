@@ -8,7 +8,8 @@ created_date: '2026-08-18 00:00'
 labels:
   - m-8
   - parity
-dependencies: []
+dependencies:
+  - TASK-132
 type: bug
 ordinal: 112000
 ---
@@ -67,9 +68,15 @@ review and NOT independently re-measured.
       message that names the real problem
 - [ ] #3 a flattened leaf colliding with a real sibling column name is
       detected -- at build, by name, not by a struct-key lookup failure
-- [ ] #4 decide whether the dotted lane NAME is the right encoding at all,
+- [x] #4 decide whether the dotted lane NAME is the right encoding at all,
       or whether the lane should carry a structured path and the dotted
       spelling stay a display detail; #3 is only cheap under the second
-- [ ] #5 re-measure #2 and #3 before building -- they are relayed, not
+      (DECIDED 2026-08-25: structured path, RFC
+      docs/rfcs/2026-08-19-static-struct-lane-encoding.md alternative A;
+      the refactor is TASK-132, and #2/#3 land on top of it)
+- [x] #5 re-measure #2 and #3 before building -- they are relayed, not
       confirmed here
+      (RE-MEASURED 2026-08-19, recorded in the RFC: DuckDB serves both
+      collision spellings and the unqualified reference; our refusals
+      and wrong-reason messages confirmed)
 <!-- AC:END -->

@@ -1,7 +1,9 @@
 # RFC: the static-struct lane encoding
 
-Status: needs AmirHossein's pick. No code written -- TASK-127 stays
-parked on this decision rather than half-built.
+Status: ACCEPTED, alternative A -- AmirHossein, 2026-08-25. The lane
+gets a structured path; the dotted spelling becomes display-only. Per
+the plan below: the encoding refactor is its own ticket (TASK-132,
+specced first), and TASK-127's remaining items land on top of it.
 
 ## Context
 
@@ -133,13 +135,13 @@ Cons:
   never touches `w` still loses the build.
 - Everything B leaves unfixed, C leaves unfixed too.
 
-## Recommendation
+## Decision
 
-A, scheduled as its own specced ticket rather than squeezed into
-TASK-127 -- the collision is pathological, but the encoding ALSO blocks
-the legitimate unqualified reference and keeps producing wrong-reason
-messages. B is the acceptable interim if A does not earn a slot; C is
-listed for completeness only.
+A, by AmirHossein (2026-08-25), on the source-verified ground above:
+the structured path is DuckDB's own architecture, and every TASK-127
+leak traces to encoding around it instead of mirroring it.
 
-If A is picked: TASK-127 splits into the encoding refactor (new ticket,
-spec first), then its remaining items land on top mostly for free.
+Execution plan: TASK-132 (new) carries the encoding refactor, spec
+first; TASK-127's unqualified-reference and collision-detection items
+then land on top of the new encoding, where they are natural instead of
+special-cased.
