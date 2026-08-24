@@ -1,7 +1,9 @@
 # RFC: what happens to the bind-time constant refusals
 
-Status: alternative A applied provisionally in the TASK-99 PR (decided
-overnight 2026-08-19, AmirHossein asleep). Overruling is one commit.
+Status: ACCEPTED, alternative A -- AmirHossein, 2026-08-24. (Applied
+provisionally in the TASK-99 PR during the 2026-08-19 overnight run;
+now the decision of record. C remains available as a follow-up ticket
+if the duplication bites.)
 
 ## Context
 
