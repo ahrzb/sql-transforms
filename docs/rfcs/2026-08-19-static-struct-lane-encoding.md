@@ -41,6 +41,34 @@ the catalog is built. The unqualified `SELECT w.mean` case (no
 collision) was also confirmed: DuckDB serves 1.5, we refuse with the
 wrong reason.
 
+### How DuckDB does it (source-verified, v1.5.5, 2026-08-24)
+
+DuckDB is structurally alternative A. Verified in the checkout:
+
+- The catalog stores `w STRUCT(mean DOUBLE)` as ONE `ColumnDefinition`
+  whose type is the struct; the name map has one whole-string entry per
+  column and struct children are never registered in it
+  (`column_list.cpp`, `table_binding.cpp`).
+- A reference is a `vector<string>` of parts from the parser on
+  (`transform_columnref.cpp`): quoting is resolved by the lexer, so
+  `s."w.mean"` arrives as 2 parts and `s.w.mean` as 3 -- structurally
+  disjoint before the binder ever looks.
+- Resolution consumes parts OUTERMOST-FIRST
+  (`bind_columnref_expression.cpp`): catalog -> schema -> table ->
+  column, and whatever parts remain become nested `struct_extract`
+  calls with the field name as a constant argument, resolved to an
+  ordinal at bind. Two-part precedence: table.column beats
+  column.field, and an implicit struct_pack is the last resort (both
+  pinned in DuckDB's own test_implicit_struct_pack.test).
+- Head-name ambiguity THROWS before fields are examined
+  (`bind_context.cpp::GetMatchingBinding`) -- the rule TASK-121
+  measured and mirrored.
+- A sweep of src/ found NO dotted-name construction used for name
+  resolution anywhere. The two places DuckDB mints dotted strings at
+  all are output-only: recursive UNNEST's keep-parent-names aliases,
+  and a constant-value fallback in table-function argument binding.
+  Neither is ever a lookup key.
+
 ## Alternatives
 
 ### A. Structured path on the lane
@@ -50,6 +78,10 @@ The lane carries a real path (`name: Vec<String>`, or
 display detail.
 
 Pros:
+- It is what DuckDB structurally IS (source-verified above): parts
+  vector in, outermost-first consumption, fields as expression
+  structure. Mirroring the reference model instead of encoding around
+  it is how the TASK-121 head-name rule already works.
 - Collisions stop existing structurally: `s."w.mean"` and `s.w.mean`
   resolve to different lanes, and both serve -- matching DuckDB, which
   no name-based scheme can do.
