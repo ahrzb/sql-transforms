@@ -117,17 +117,23 @@ fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
             "entry block cannot have params".to_string(),
         );
     }
-    for (side, cols) in [("in", &p.in_cols), ("out", &p.out_cols)] {
-        let mut seen: HashMap<&str, ()> = HashMap::new();
-        for c in cols.iter() {
-            if seen.insert(c.name.as_str(), ()).is_some() {
-                err(
-                    errs,
-                    None,
-                    None,
-                    format!("duplicate {side} column '{}'", c.name),
-                );
-            }
+    // OUT names only (TASK-127). An output name is a contract with the
+    // caller, so it cannot repeat — but an IN name stopped being an
+    // identifier at TASK-132: a struct leaf lane carries its dotted PATH
+    // here for display, nothing resolves a lane by it, and a leaf that
+    // spells a sibling column's name is a different lane, not a duplicate.
+    // The check that a real row IDENTIFIER cannot repeat lives at the build
+    // boundary, where the plain columns are still told apart from the
+    // leaves.
+    let mut seen: HashMap<&str, ()> = HashMap::new();
+    for c in p.out_cols.iter() {
+        if seen.insert(c.name.as_str(), ()).is_some() {
+            err(
+                errs,
+                None,
+                None,
+                format!("duplicate out column '{}'", c.name),
+            );
         }
     }
 }
