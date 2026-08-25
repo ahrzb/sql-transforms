@@ -12,6 +12,10 @@ use super::plan::{Catalog, Expr, JoinKind, Rel};
 use super::ty::DTy;
 use super::DialectError;
 
+/// Check `rel` against `cat`; `Ok(())` is the guarantee every printer relies
+/// on. A structural fault is [`DialectError::Internal`], an unknown table is
+/// [`DialectError::Bind`], and a type combination the lattice has not pinned
+/// surfaces as [`DialectError::Unsupported`] out of derivation.
 pub fn verify(rel: &Rel, cat: &Catalog) -> Result<(), DialectError> {
     walk(rel, cat)?;
     Ok(())

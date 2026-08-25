@@ -26,6 +26,9 @@
 //! * [`DialectError::Internal`] — an unverifiable plan escaped a
 //!   constructor; always a bug in this module or a frontend.
 //!
+//! [`DialectError::Text`] sits outside that contract: only hand-written or
+//! printer-drifted canonical plan text can raise it.
+//!
 //! v0 deliberate coarseness, each a named refusal, none a silent guess:
 //! decimal arithmetic result scales are not derived (lattice-spec phase 5
 //! owns the measurements), f32 arithmetic is not derived, expression
@@ -70,6 +73,9 @@ impl std::fmt::Display for DialectError {
     }
 }
 
+/// Shorthand for [`DialectError::Unsupported`]. `what` NAMES the construct
+/// that is not lowered — corpus accounting reads these messages to count a
+/// refusal class, so "expression" is a bad name and "SEMI join" a good one.
 pub fn unsup(what: impl Into<String>) -> DialectError {
     DialectError::Unsupported(what.into())
 }
