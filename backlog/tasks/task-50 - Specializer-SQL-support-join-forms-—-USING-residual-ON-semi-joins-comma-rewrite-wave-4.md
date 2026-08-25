@@ -12,7 +12,7 @@ milestone: m-7
 dependencies:
   - TASK-49
 documentation:
-  - docs/superpowers/specs/2026-07-25-sql-specializer-design.md
+  - packages/confit/docs/specs/2026-07-25-sql-specializer-design.md
 type: feature
 ordinal: 44000
 ---

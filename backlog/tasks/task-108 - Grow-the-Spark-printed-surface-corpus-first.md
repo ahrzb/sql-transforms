@@ -22,7 +22,7 @@ before the spelling ships (the concat-coalesce and startswith precedents
 from PR #140). Byte-vs-character families (edit distances) stay refused —
 that divergence is semantic, not spelling.
 
-Publish the printed/refused KPI per construct class in `docs/kpis.md`, like
+Publish the printed/refused KPI per construct class in `packages/confit/docs/kpis.md`, like
 550/678 is today for the specializer.
 <!-- SECTION:DESCRIPTION:END -->
 

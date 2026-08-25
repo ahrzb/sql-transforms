@@ -1,6 +1,6 @@
 """Stage-B multiplicity vs the duckdb oracle, multiset parity.
 
-Pins: docs/superpowers/specs/2026-07-28-stageB-multiplicity-pins.md —
+Pins: packages/confit/docs/specs/2026-07-28-stageB-multiplicity-pins.md —
 DuckDB's join output ORDER is a hash-join accident, so comparison is
 SORTED; the engine's own order (probe outer, insertion inner) is a
 documented contract of its own.

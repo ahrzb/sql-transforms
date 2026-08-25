@@ -101,7 +101,7 @@ one nesting level down -- see AC #6.
 
 <!-- SECTION:NOTES:BEGIN -->
 Done 2026-08-19, per the spec
-(docs/superpowers/specs/2026-08-19-selection-context-design.md), which was
+(packages/confit/docs/specs/2026-08-19-selection-context-design.md), which was
 measured FIRST and corrected three of this ticket's own guesses -- most
 importantly: OR is not blanket-lazy, it is AND's exact dual (TRUE left skips
 the right; NULL/FALSE left evaluates it), and my first OR probe was a bad

@@ -1,7 +1,7 @@
 """Wave-3 builtin pins: VARCHAR subscripts, codepoint probes, strip_accents.
 
 Pins measured against duckdb 1.5.5 per
-docs/superpowers/specs/2026-07-26-wave3-builtin-pins.md:
+packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md:
 - array_extract/list_extract on VARCHAR: 1-based CODEPOINT indexing,
   0 / out-of-range -> '' (empty string, not NULL), negative from end,
   NULL-strict, list_extract alias-identical.

@@ -1,5 +1,5 @@
 //! The dialect logical plan — the hub of Query ⇄ Plan conversion
-//! (docs/superpowers/specs/2026-08-13-dialect-logical-plan-design.md).
+//! (packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md).
 //!
 //! A bound, typed, order-free relational plan whose semantics are DuckDB's,
 //! as measured (design decision D1; pins in specs/pins-dialect/). Dialect

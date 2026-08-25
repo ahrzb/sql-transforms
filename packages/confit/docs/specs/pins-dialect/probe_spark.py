@@ -6,7 +6,7 @@ Emits spark-ansi.json. The dialect under measurement is Spark PLUS the pinned
 configuration below (design decision D6) — a probe run under different flags
 measures a different dialect and must not overwrite these pins.
 
-Run from the repo root:  uv run python docs/superpowers/specs/pins-dialect/probe_spark.py
+Run from the repo root:  uv run python packages/confit/docs/specs/pins-dialect/probe_spark.py
 (needs `uv pip install pyspark`; a JVM must be on PATH)
 """
 

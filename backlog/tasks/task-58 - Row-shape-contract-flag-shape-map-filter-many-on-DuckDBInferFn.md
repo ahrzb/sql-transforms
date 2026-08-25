@@ -48,7 +48,7 @@ work:
   static-only constant path called out separately (`mod.rs:1135`).
 - `tests/test_shape_contract.py` and `tests/test_infer_arrow.py`: **9 passed**.
   `tests/test_corpus_replay.py`: **1 passed** (22s).
-- The docs note lives at `docs/known-limitations.md:39`.
+- The docs note lives at `packages/confit/docs/known-limitations.md:39`.
 
 Two ACs read stale and are ticked on intent, not letter. **#3** — stage-B has
 since landed (TASK-59), so `'many'` *serves* rather than rejects; what survives

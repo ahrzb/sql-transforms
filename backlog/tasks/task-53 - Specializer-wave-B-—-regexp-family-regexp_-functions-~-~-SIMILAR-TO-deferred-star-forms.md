@@ -49,13 +49,13 @@ Stages (each lands with tests + corpus replay green):
 2. Functions + operators: regexp_matches (search) / regexp_full_match / regexp_extract (''-on-no-match, flat 0..9 group check) / regexp_replace; ~ / !~ = full match (NOT Postgres search!); SIMILAR TO = raw-pattern full match (no % translation); NULL rules incl. the options-arg asymmetry.
 3. Star forms: * SIMILAR TO (unanchored search) / NOT SIMILAR TO (NOT full match — independent predicates) via rewrite.rs marker codes; COLUMNS('re') interception + declared-order expansion.
 4. Census + bench parity + close-out + PR.
-Spec: docs/superpowers/specs/2026-07-27-waveB-regexp-pins.md (pins committed b003122 before implementation).
+Spec: packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md (pins committed b003122 before implementation).
 <!-- SECTION:PLAN:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Wave B shipped: the regexp family, corpus 484 -> 505 bit-exact of 678 (zero wrong answers, zero replay FAILs). Pins-first: 6-agent fleet (5 DuckDB areas + the RE2-vs-rust-regex DIFFERENTIAL battery) committed as docs/superpowers/specs/2026-07-27-waveB-regexp-pins.md + pins-waveB/*.json before implementation.
+Wave B shipped: the regexp family, corpus 484 -> 505 bit-exact of 678 (zero wrong answers, zero replay FAILs). Pins-first: 6-agent fleet (5 DuckDB areas + the RE2-vs-rust-regex DIFFERENTIAL battery) committed as packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md + pins-waveB/*.json before implementation.
 
 The engine is the rust `regex` crate (new direct dependency) behind the measured parity recipe: RegexBuilder::octal(true) + default Unicode mode (unicode(false) was measured to BREAK (?i) folding parity — the 'obvious' fix is the wrong one), a bind-time Perl-class rewrite in retrans.rs (\d -> (?-u:\d) etc, in-class variants included) closing the whole RE2-ASCII-vs-rust-Unicode gap, a reject list for irreconcilables (\B unservable in DuckDB itself, (?<name>), duplicate group names, bounds > 1000, stacked quantifiers a*+ — silently WRONG in rust, not just error-shaped different, \u, \Q\E), and replacement-template translation with RE2's invalid-rewrite quirks resolved at bind (out-of-range backref = identity; global bad escape = consume-with-prefix). With that applied all 98 differential battery entries were byte-identical or identically-rejected.
 

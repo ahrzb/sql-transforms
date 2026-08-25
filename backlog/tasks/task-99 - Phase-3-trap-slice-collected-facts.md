@@ -48,14 +48,14 @@ current divergence batch, not before it.
 
 <!-- AC:BEGIN -->
 - [x] #1 the campaign's INT32/16/8 DIVERGE_TRAP classes are gone
-- [x] #2 (RE-SCOPED -- see docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md) the AST-side constant evaluators and interim emit refusals are deleted in the same PR
+- [x] #2 (RE-SCOPED -- see packages/confit/docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md) the AST-side constant evaluators and interim emit refusals are deleted in the same PR
 - [x] #3 TRY_CAST double/string semantics match DuckDB, live-oracle pinned
 <!-- AC:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Done 2026-08-19; spec at docs/superpowers/specs/2026-08-19-cast-semantics-design.md.
+Done 2026-08-19; spec at packages/confit/docs/specs/2026-08-19-cast-semantics-design.md.
 
 (b)+(c): the engine ALREADY implemented round-first-then-check, which is
 DuckDB main's #24393 fix and Postgres semantics -- verified 24/24 against
@@ -84,6 +84,6 @@ AC #2: re-scoped, not executed -- eval_i128_literal was already deleted by
 ab5a897; eval_i32_literal and the constant-cast narrow refusal are BINDER
 parity (DuckDB errors at bind; deleting them would make every constant
 overflow a DIVERGE_BUILD finding). RFC with alternatives:
-docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md. This also closes
+packages/confit/docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md. This also closes
 TASK-84 (measured agree-refuse on its three spellings).
 <!-- SECTION:NOTES:END -->

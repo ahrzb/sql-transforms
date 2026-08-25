@@ -5,7 +5,7 @@ and the query names the order via in-call ``ORDER BY`` — DuckDB's own
 ordered-aggregate spelling. The fit scope is stably sorted by the named
 keys (DuckDB comparisons, input order breaking ties) before ``est.fit``.
 Mechanism promise only: we sort by what you name. Spec:
-docs/superpowers/specs/2026-08-05-fit-transform-split-design.md.
+docs/specs/2026-08-05-fit-transform-split-design.md.
 """
 
 import numpy as np

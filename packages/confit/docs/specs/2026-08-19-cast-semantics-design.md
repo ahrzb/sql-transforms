@@ -56,4 +56,4 @@ an optimizer pass. Optimizer off: `TRY_CAST(300 AS TINYINT) IS NULL` is
 TRUE. Reproducing it would be an OPT_EMULATED bug now. Dead like TASK-117.
 
 AC #2 is re-scoped rather than executed: see
-docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md.
+packages/confit/docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md.

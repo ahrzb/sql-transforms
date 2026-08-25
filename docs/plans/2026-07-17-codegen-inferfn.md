@@ -38,7 +38,7 @@ Task 11 does exactly this for all five.
 
 ## Global Constraints
 
-- **Spec:** `docs/superpowers/specs/2026-07-17-codegen-inferfn-design.md`. Its "Appendix: verified findings" is measured, not reasoned — trust it over intuition, and re-measure rather than assume.
+- **Spec:** `docs/specs/2026-07-17-codegen-inferfn-design.md`. Its "Appendix: verified findings" is measured, not reasoned — trust it over intuition, and re-measure rather than assume.
 - **Parity target: DataFusion.** When in doubt, *run both engines* (`tests/differential.py` exposes `_run_datafusion` and `_run_infer`) rather than reading either implementation and inferring. If they disagree, the oracle wins, and Rust gets an xfail + a PM ticket.
 - **Never trust a green bar for a new backend.** This wiring already produced one fake pass: correct IDs, doubled count, everything green, codegen never executed. `tests/test_backend_wiring.py` (Task 8) is the guard; do not weaken or skip it.
 - **Error-message parity is a NON-GOAL** (per `docs/BACKLOG.md`). Match error *values* and the raised *type* where the harness asserts it (`ValueError` on int div-by-zero and bad casts; `KeyError` on an inner lookup-join miss). Do not match message text.
@@ -85,7 +85,7 @@ Create `sql_transform/_codegen_runtime_test.py`:
 """Unit tests for the codegen semantics runtime.
 
 Each test here pins a place where naive Python diverges from the Rust engine
-(src/expr.rs). See docs/superpowers/specs/2026-07-17-codegen-inferfn-design.md.
+(src/expr.rs). See docs/specs/2026-07-17-codegen-inferfn-design.md.
 """
 
 import math
@@ -2898,7 +2898,7 @@ git commit -m "feat: codegen engine — cross, inner and lookup joins"
 
 **Files:**
 - Create: `tests/test_codegen_coverage.py`
-- Modify: `docs/superpowers/specs/2026-07-17-codegen-inferfn-design.md` (status banner)
+- Modify: `docs/specs/2026-07-17-codegen-inferfn-design.md` (status banner)
 
 **Interfaces:**
 - Consumes: everything above.
@@ -3019,7 +3019,7 @@ Expected: every skip reason mentions a struct/list/unnest. Any other skip is a c
 
 - [ ] **Step 4: Update the spec status**
 
-In `docs/superpowers/specs/2026-07-17-codegen-inferfn-design.md`, change the STATUS banner's first line from:
+In `docs/specs/2026-07-17-codegen-inferfn-design.md`, change the STATUS banner's first line from:
 
 ```markdown
 > **STATUS: scope + front-end fork decided; plan written.** Front-end decided
@@ -3037,7 +3037,7 @@ to:
 
 ```bash
 mise run fmt
-git add tests/test_codegen_coverage.py docs/superpowers/specs/2026-07-17-codegen-inferfn-design.md
+git add tests/test_codegen_coverage.py docs/specs/2026-07-17-codegen-inferfn-design.md
 git commit -m "test: pin the codegen engine's deferred surface"
 ```
 

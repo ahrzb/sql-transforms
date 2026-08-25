@@ -492,7 +492,7 @@ pub(super) fn trunc_prec_i64(x: i64, n: i64) -> i64 {
 /// already exhausted at that point. `'ax' LIKE 'a#' ESCAPE '#'` errors;
 /// `'a' LIKE 'a#' ESCAPE '#'` is false. Every DuckDB 1.5.5 behaviour
 /// reproduced here is pinned in
-/// docs/superpowers/specs/pins-wave1/pins_like.json.
+/// packages/confit/docs/specs/pins-wave1/pins_like.json.
 ///
 /// Iterative two-pointer restart, deliberately NOT the obvious recursive
 /// form: it yields identical booleans AND identical error rows to

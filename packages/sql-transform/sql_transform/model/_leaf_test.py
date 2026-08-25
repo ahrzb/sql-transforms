@@ -6,7 +6,7 @@ residual's expressions over struct reads. Nothing is registered: no Python in
 the row path, and the artifact's size is visible in the params table.
 
 Gates ``leaf`` and ``capture`` of
-`docs/superpowers/specs/2026-08-11-row-wise-projections-design.md`.
+`docs/specs/2026-08-11-row-wise-projections-design.md`.
 """
 
 import pyarrow as pa

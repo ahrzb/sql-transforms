@@ -5,7 +5,7 @@ The law (spec M2): ``marginalize(text).fit(F).transform(F)`` equals
 ``run(SQLTransform(text), F)`` — freezing is invisible on the fit data, and
 divergence exists only at unseen-partition misses (P14 NULL). Gates ``law``,
 ``freeze``, ``params``, ``serving`` and ``attribution`` of
-`docs/superpowers/specs/2026-08-13-marginalize-design.md`.
+`docs/specs/2026-08-13-marginalize-design.md`.
 """
 
 import math

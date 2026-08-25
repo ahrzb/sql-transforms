@@ -87,7 +87,7 @@ pins in the suite: none covers the bare-literal 1-ulp class. The one other
 DECIMAL pin (test_integer_widths.py, TASK-103) is the foldable-NULL
 collapse.
 
-What actually holds this class is `docs/known-limitations.md` — prose, and
+What actually holds this class is `packages/confit/docs/known-limitations.md` — prose, and
 TASK-95 (doc-twin totality) is still To Do, so nothing rings when phase 5
 lands. The `decimals` campaign tag in fuzz/oracle.py claimed a strict-xfail
 twin for the same reason; corrected there too.

@@ -29,7 +29,7 @@ Scope:
 - Constant-NULL regex pattern (1 case): regexp_matches(c0, CAST(NULL AS STRING)) — pin DuckDB's NULL-pattern behavior per regexp function + SIMILAR TO, serve it.
 - Paren-less '* REPLACE expr AS col' (1 case): token pre-rewrite to the parenthesized form sqlparser accepts.
 
-Same rhythm as every wave: pins fleet -> spec in docs/superpowers/specs/ -> staged implementation with the corpus gate green at every stage -> full gate on release build -> PR.
+Same rhythm as every wave: pins fleet -> spec in packages/confit/docs/specs/ -> staged implementation with the corpus gate green at every stage -> full gate on release build -> PR.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -58,7 +58,7 @@ Wave A shipped as PR #43 (branch task-56-wave-c, 5 commits): corpus 511 -> 529 m
 
 Delivered: (1) lazy non-scalar rejection — opaque row columns reject on REFERENCE (star included, model-order interleaved, EXCLUDE/filter/REPLACE remove them); (2) FROM-position colon alias via token rewrite (measured == AS form); (3) paren-less * REPLACE wrap honoring the measured one-item comma rule; (4) CAST-NULL regex arguments across the family; (5) reverse() lifted from the wave-3 descope — DuckDB's ASCII byte path (splits CRLF, measured) + UAX-29 extended graphemes via unicode-segmentation, limitations row removed + twin flipped same commit; (6) COLUMNS(* REPLACE/EXCLUDE) through the shared star expansion (sqlparser parses WildcardWithOptions natively); (7) structs-as-lanes — nested pydantic models flatten to dotted-path leaf lanes, binder resolves n-part references longest-prefix-with-backtracking per pins, struct-star with case-insensitive EXCLUDE/REPLACE and alias-case naming, both boundaries walk ingest paths with NULL short-circuit; IR/verify/exec untouched.
 
-Pins: docs/superpowers/specs/2026-07-28-waveA-structural-tails.md + pins-waveA/*.json (6 fleet agents, 136 pins) + census-all-nonmatches.json. Key traps caught by measuring first: reverse's ASCII fast path, paren-less REPLACE comma semantics, table-alias-beats-struct-column, quoted-identifier case-insensitivity in struct EXCLUDE.
+Pins: packages/confit/docs/specs/2026-07-28-waveA-structural-tails.md + pins-waveA/*.json (6 fleet agents, 136 pins) + census-all-nonmatches.json. Key traps caught by measuring first: reverse's ASCII fast path, paren-less REPLACE comma semantics, table-alias-beats-struct-column, quoted-identifier case-insensitivity in struct EXCLUDE.
 
 Gate: cargo 163 green, pytest 607 + 13 xfail (fuzzer + twin included), cranelift verified serving struct+reverse (no silent fallback). known-limitations.md updated in lockstep.
 <!-- SECTION:FINAL_SUMMARY:END -->

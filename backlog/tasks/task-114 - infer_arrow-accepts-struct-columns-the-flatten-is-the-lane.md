@@ -84,7 +84,7 @@ first; it is additive and refuses nothing that works today.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Landed per the spec (docs/superpowers/specs/2026-08-25-task-114-design.md),
+Landed per the spec (packages/confit/docs/specs/2026-08-25-task-114-design.md),
 on the post-TASK-132 surface: ingest walks each leaf lane's segment path
 through StructArray children and serves through the AND of every
 ancestor's validity with the leaf's own -- the load-bearing line is one

@@ -2253,7 +2253,7 @@ fn dominating_constant_keeps_the_dynamic_side() {
 
 // ---------------------------------------------------------------- stretch 4:
 // the builtin catalogue, per the measured pins in
-// docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md.
+// packages/confit/docs/specs/2026-07-26-stretch4-builtin-pins.md.
 
 #[test]
 fn string_builtins_end_to_end() {

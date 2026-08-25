@@ -63,7 +63,7 @@ integer directions measured this one too.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Landed per the spec (docs/superpowers/specs/2026-08-25-task-120-design.md).
+Landed per the spec (packages/confit/docs/specs/2026-08-25-task-120-design.md).
 A lossy join key (a DOUBLE probe against any integer static key width)
 rides as a shadow VALUE lane; a projected key reads that lane -- the
 static column's real values at its declared type -- never a

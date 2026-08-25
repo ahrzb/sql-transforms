@@ -2,7 +2,7 @@
 //! tables) into a specialized native function `f : Rows -> Rows`, prepared
 //! once and invoked millions of times with a small dynamic input relation.
 //!
-//! Design: docs/superpowers/specs/2026-07-25-sql-specializer-design.md.
+//! Design: packages/confit/docs/specs/2026-07-25-sql-specializer-design.md.
 //! This layer is the frontend + BTA + lowering. It emits the imperative IR
 //! of [`ir`], which either backend in [`exec`] — the closure-compiled
 //! interpreter oracle or Cranelift — then runs.

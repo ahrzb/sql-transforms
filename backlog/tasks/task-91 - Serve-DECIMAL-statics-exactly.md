@@ -10,7 +10,7 @@ labels:
   - parity
 dependencies: []
 documentation:
-  - docs/superpowers/specs/2026-08-11-duckdb-type-lattice-design.md
+  - packages/confit/docs/specs/2026-08-11-duckdb-type-lattice-design.md
 type: feature
 ordinal: 83000
 ---
@@ -47,7 +47,7 @@ and its wording out in the same PR.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Landed per the spec (docs/superpowers/specs/2026-08-25-task-91-design.md).
+Landed per the spec (packages/confit/docs/specs/2026-08-25-task-91-design.md).
 Decimal static payloads are scaled i128 lanes, typed Dec(p,s) in the
 frontend, emitted decimal128(p,s) at the boundary over all four DuckDB
 storage tiers -- pure store-and-serve, no decimal arithmetic (everything

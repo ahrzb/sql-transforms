@@ -11,7 +11,7 @@ labels:
 dependencies: []
 documentation:
   - >-
-    docs/superpowers/specs/2026-08-07-confit-tree-ensemble-design.md
+    packages/confit/docs/specs/2026-08-07-confit-tree-ensemble-design.md
 type: bug
 ordinal: 58000
 ---

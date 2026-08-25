@@ -6264,7 +6264,7 @@ impl Binder<'_> {
     }
 
     /// The v0 builtin catalogue. Everything here follows the measured pins
-    /// in docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md; names
+    /// in packages/confit/docs/specs/2026-07-26-stretch4-builtin-pins.md; names
     /// not listed reject as clean unsupported.
     fn function(&self, f: &sqlparser::ast::Function) -> Result<SExpr, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};

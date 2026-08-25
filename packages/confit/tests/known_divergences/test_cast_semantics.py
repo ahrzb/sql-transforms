@@ -34,7 +34,7 @@ from confit import DuckDBInferFn
 # `-2.5` literal — which DuckDB types DECIMAL(2,1), not DOUBLE. Measure a
 # DOUBLE cast with a DOUBLE column or an explicit `::DOUBLE`, never a literal.
 # (Decimal literals binding as f64 is a separate, deliberate v0 divergence;
-# see docs/known-limitations.md.)
+# see packages/confit/docs/known-limitations.md.)
 
 CAST_SCHEMA = pa.schema([pa.field("f", pa.float64(), nullable=False)])
 _CAST_F = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 2.6, -2.6, 1e19]

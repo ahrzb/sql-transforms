@@ -1,9 +1,9 @@
 # The unqualified reference, and what is left of collision detection (TASK-127)
 
-Decision ground: docs/rfcs/2026-08-19-static-struct-lane-encoding.md
+Decision ground: packages/confit/docs/rfcs/2026-08-19-static-struct-lane-encoding.md
 (accepted, alternative A). Predecessor: TASK-132, merged -- static struct
 lanes carry a structured path, the dotted name is display only
-(docs/superpowers/specs/2026-08-25-static-struct-lane-path-design.md).
+(packages/confit/docs/specs/2026-08-25-static-struct-lane-path-design.md).
 This spec covers exactly that spec's first two non-goals.
 
 Everything below was measured on 2026-08-25 against DuckDB 1.5.5 with

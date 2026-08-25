@@ -1,6 +1,6 @@
 """Wave-B regexp family vs the duckdb oracle.
 
-Pins: docs/superpowers/specs/2026-07-27-waveB-regexp-pins.md — the rust
+Pins: packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md — the rust
 `regex` crate behind the bind-time RE2 translation layer; ~ / SIMILAR TO
 are FULL match; extract returns '' on no-match; replace backrefs are
 backslash-style with the invalid-rewrite quirks.

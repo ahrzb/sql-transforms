@@ -5,7 +5,7 @@ walks `REASONS` looking for gaps, the way `_correlate_test` does for its own —
 a reason nothing exercises is a refusal nobody has named.
 
 Implements the gates of
-`docs/superpowers/specs/2026-08-11-row-wise-projections-design.md`.
+`docs/specs/2026-08-11-row-wise-projections-design.md`.
 """
 
 import pyarrow as pa

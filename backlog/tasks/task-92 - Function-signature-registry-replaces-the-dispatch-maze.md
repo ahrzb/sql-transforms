@@ -10,7 +10,7 @@ labels:
   - frontend
 dependencies: []
 documentation:
-  - docs/superpowers/specs/2026-08-13-function-signature-registry-design.md
+  - packages/confit/docs/specs/2026-08-13-function-signature-registry-design.md
 type: refactor
 ordinal: 84000
 ---

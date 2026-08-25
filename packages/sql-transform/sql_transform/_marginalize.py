@@ -57,10 +57,10 @@ so DISTINCT over (keys, values) collapses to exactly one params row per key
 tuple, and the LEFT JOIN matches exactly one per input row.
 
 Design specs, in order:
-docs/superpowers/specs/2026-07-29-sql-projection-marginalization-design.md
-docs/superpowers/specs/2026-07-29-window-widening-design.md
-docs/superpowers/specs/2026-07-29-projection-chains-fit-plan-design.md
-docs/superpowers/specs/2026-07-29-udf-protocol-serving-calls-design.md
+docs/specs/2026-07-29-sql-projection-marginalization-design.md
+docs/specs/2026-07-29-window-widening-design.md
+docs/specs/2026-07-29-projection-chains-fit-plan-design.md
+docs/specs/2026-07-29-udf-protocol-serving-calls-design.md
 """
 
 from __future__ import annotations

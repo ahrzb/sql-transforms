@@ -1,4 +1,4 @@
-"""Executable twin of docs/known-limitations.md.
+"""Executable twin of packages/confit/docs/known-limitations.md.
 
 Every DELIBERATE limitation is asserted here: the SQL that hits it and the
 named build-time rejection (or, for contract choices, the chosen behavior).

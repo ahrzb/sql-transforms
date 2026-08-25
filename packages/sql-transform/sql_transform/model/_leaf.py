@@ -1,6 +1,6 @@
 """A projection as a leaf: both halves spliced as SQL, θ as data.
 
-D1 and D2 of `docs/superpowers/specs/2026-08-11-row-wise-projections-design.md`:
+D1 and D2 of `docs/specs/2026-08-11-row-wise-projections-design.md`:
 
 ``p_fit(bundle)`` rewrites to a struct of the projection's own aggregates —
 grouped by whatever GROUP BY surrounds it, or windowed per-field when the

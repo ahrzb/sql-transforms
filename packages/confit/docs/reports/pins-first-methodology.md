@@ -4,7 +4,7 @@
 
 ## 1. The two-outcome contract
 
-The engine's user-facing contract (docs/known-limitations.md) is deliberately binary. For any SQL you hand it, exactly one of two things happens:
+The engine's user-facing contract (packages/confit/docs/known-limitations.md) is deliberately binary. For any SQL you hand it, exactly one of two things happens:
 
 1. It serves the query **bit-for-bit identical to DuckDB**, or
 2. It **refuses at build time** — `DuckDBInferFn(...)` raises a `ValueError` naming the construct.
@@ -17,13 +17,13 @@ This contract shapes everything below. Refusal has to be cheap, named, and testa
 
 ## 2. Pins: measure DuckDB before writing any code
 
-The founding design (docs/superpowers/specs/2026-07-25-sql-specializer-design.md) made DuckDB the frontend check, the prepare-time evaluator of static subtrees, and the differential oracle. The waves that followed added the harder rule: **no semantics are implemented from memory, documentation, or intuition — only from executed queries against DuckDB 1.5.5, recorded verbatim.**
+The founding design (packages/confit/docs/specs/2026-07-25-sql-specializer-design.md) made DuckDB the frontend check, the prepare-time evaluator of static subtrees, and the differential oracle. The waves that followed added the harder rule: **no semantics are implemented from memory, documentation, or intuition — only from executed queries against DuckDB 1.5.5, recorded verbatim.**
 
-A "pin" is one measured behavioural claim, backed by the exact SQL that was run and the exact result that came back. Each support wave begins with a fleet of parallel measurement agents (eight for the wave-5 structural sweep, six for the regexp wave, five for stage-B join multiplicity) probing one semantic family each. Their findings land as a pins spec — docs/superpowers/specs/2026-07-26-wave5-structural-pins.md, 2026-07-27-waveB-regexp-pins.md, 2026-07-28-waveA-structural-tails.md, 2026-07-28-stageB-multiplicity-pins.md — with the raw evidence committed alongside in `pins-wave5/`, `pins-waveB/`, `pins-waveA/`, `pins-stageB/` as JSON: query text, input reprs, result reprs, float bit patterns, verbatim error heads. Implementation starts only after the pins exist; the pins are the contract the code is written to.
+A "pin" is one measured behavioural claim, backed by the exact SQL that was run and the exact result that came back. Each support wave begins with a fleet of parallel measurement agents (eight for the wave-5 structural sweep, six for the regexp wave, five for stage-B join multiplicity) probing one semantic family each. Their findings land as a pins spec — packages/confit/docs/specs/2026-07-26-wave5-structural-pins.md, 2026-07-27-waveB-regexp-pins.md, 2026-07-28-waveA-structural-tails.md, 2026-07-28-stageB-multiplicity-pins.md — with the raw evidence committed alongside in `pins-wave5/`, `pins-waveB/`, `pins-waveA/`, `pins-stageB/` as JSON: query text, input reprs, result reprs, float bit patterns, verbatim error heads. Implementation starts only after the pins exist; the pins are the contract the code is written to.
 
 ### The incident that created the verbatim rule
 
-The discipline was not designed in the abstract; it was bought. During wave 3, the fleet's summary claimed that `%`-by-zero returns NULL — generalising from the integer probes, which do return NULL. The DOUBLE case was never actually run. It returns NaN (`7ff8...`), not NULL. The correction is appended to docs/superpowers/specs/pins-wave3/math_tail.json with the honest note: *"raw probes never covered this cell (only int rows + fmod(1.0,0.0)); the summary over-generalized."* (The follow-up was itself instructive: the NaN's sign bit turned out to be platform-libm — `7ff8` on Windows ucrt, `fff8` on Linux glibc — so the pin is *bit agreement with the oracle per platform*, not a constant.)
+The discipline was not designed in the abstract; it was bought. During wave 3, the fleet's summary claimed that `%`-by-zero returns NULL — generalising from the integer probes, which do return NULL. The DOUBLE case was never actually run. It returns NaN (`7ff8...`), not NULL. The correction is appended to packages/confit/docs/specs/pins-wave3/math_tail.json with the honest note: *"raw probes never covered this cell (only int rows + fmod(1.0,0.0)); the summary over-generalized."* (The follow-up was itself instructive: the NaN's sign bit turned out to be platform-libm — `7ff8` on Windows ucrt, `fff8` on Linux glibc — so the pin is *bit agreement with the oracle per platform*, not a constant.)
 
 Every wave dispatched since carries the rule explicitly — the task briefs for waves 5 and B (backlog/tasks/task-52\*, task-53\*) both read: *"wave-3 over-generalization precedent applies — every pin claim needs an executed query recorded."* A summary sentence with no query behind it is treated as a guess, because once, it was.
 
@@ -31,8 +31,8 @@ Every wave dispatched since carries the rule explicitly — the task briefs for 
 
 The point of pins-first is best made by the pins no reasonable engineer would have predicted:
 
-- **`reverse()` has two code paths, and the "correct" one is wrong on ASCII.** DuckDB byte-reverses all-ASCII strings — which *splits CRLF*: `'a\r\nb'` → `'b\n\ra'`, violating UAX-29. Only non-ASCII input takes the extended-grapheme-cluster path. A clean, pure UAX-29 implementation — the obvious thing to write — diverges from DuckDB on plain ASCII input. The engine reproduces both paths (docs/superpowers/specs/2026-07-28-waveA-structural-tails.md §4, pins-waveA/reverse-graphemes.json).
-- **DuckDB's join output order is an accident, not a contract.** The stage-B fleet found it is a hash-join artifact on three independent axes: the optimizer picks the streamed side by cost, duplicate-key matches emit in *reverse* build-insertion order (LIFO chains) in per-2048-row lockstep passes, and at multiple threads with ~500k+ rows the order differs run-to-run on the same connection. A row-at-a-time engine cannot reproduce this and must not try. The decision: parity for `shape='many'` is **multiset**, and the engine defines its own documented deterministic order — probe rows in input order, matches contiguous in build-insertion order (docs/superpowers/specs/2026-07-28-stageB-multiplicity-pins.md, pins-stageB/order-contract.json). Chasing byte-order parity here would have meant chasing a nondeterministic target.
+- **`reverse()` has two code paths, and the "correct" one is wrong on ASCII.** DuckDB byte-reverses all-ASCII strings — which *splits CRLF*: `'a\r\nb'` → `'b\n\ra'`, violating UAX-29. Only non-ASCII input takes the extended-grapheme-cluster path. A clean, pure UAX-29 implementation — the obvious thing to write — diverges from DuckDB on plain ASCII input. The engine reproduces both paths (packages/confit/docs/specs/2026-07-28-waveA-structural-tails.md §4, pins-waveA/reverse-graphemes.json).
+- **DuckDB's join output order is an accident, not a contract.** The stage-B fleet found it is a hash-join artifact on three independent axes: the optimizer picks the streamed side by cost, duplicate-key matches emit in *reverse* build-insertion order (LIFO chains) in per-2048-row lockstep passes, and at multiple threads with ~500k+ rows the order differs run-to-run on the same connection. A row-at-a-time engine cannot reproduce this and must not try. The decision: parity for `shape='many'` is **multiset**, and the engine defines its own documented deterministic order — probe rows in input order, matches contiguous in build-insertion order (packages/confit/docs/specs/2026-07-28-stageB-multiplicity-pins.md, pins-stageB/order-contract.json). Chasing byte-order parity here would have meant chasing a nondeterministic target.
 - **Paren-less `* REPLACE e AS c` consumes exactly one item.** A following comma starts a *new select item*: `SELECT * REPLACE i+100 AS i, j+1 AS j` yields three columns, `i, j, j` — measured, duplicate name and all (pins-waveA/columns-replace.json). Any parser written from the grammar one imagines would have absorbed the second item into the REPLACE list.
 - **Double-quoted identifiers are still case-insensitive in struct EXCLUDE.** `a.* EXCLUDE("J")` removes field `j`, quoting notwithstanding (pins-waveA/struct-star.json). The intuition that quoting forces case-sensitivity is simply false here.
 
@@ -57,15 +57,15 @@ The gate requires **zero FAILs**, always. The match count is deliberately *not* 
 | 529 | wave A structural tails |
 | 546 → 550 | stage-B join multiplicity, across its two PRs |
 
-Zero FAILs at every rung. The 128 remaining non-matches are all clean, named rejections — aggregation, ORDER BY, CTEs, and the other whole-relation constructs that are out of scope for a row-serving engine by decision (docs/known-limitations.md §2).
+Zero FAILs at every rung. The 128 remaining non-matches are all clean, named rejections — aggregation, ORDER BY, CTEs, and the other whole-relation constructs that are out of scope for a row-serving engine by decision (packages/confit/docs/known-limitations.md §2).
 
 The three-outcome shape matters more than the ladder. A conventional pass/fail suite would have forced a choice between skipping unsupported cases (hiding regressions in the rejection surface) and marking them expected-fail (letting wrong errors hide among right ones). Here, a rejection is only clean if it is one of the *documented* rejection classes; an undocumented error is a FAIL like any wrong answer.
 
 ## 4. The executable limitations twin
 
-docs/known-limitations.md would rot like any other document if it were only a document. Its executable twin is packages/confit/tests/test_known_limitations.py, whose module docstring states the mechanism plainly: every deliberate limitation in the document is asserted as a test — the SQL that hits it and the named build-time rejection. **If an engine change lifts a limitation, a test fails, and the document must change in the same commit.**
+packages/confit/docs/known-limitations.md would rot like any other document if it were only a document. Its executable twin is packages/confit/tests/test_known_limitations.py, whose module docstring states the mechanism plainly: every deliberate limitation in the document is asserted as a test — the SQL that hits it and the named build-time rejection. **If an engine change lifts a limitation, a test fails, and the document must change in the same commit.**
 
-This inverts the usual failure mode. Normally, docs describe capabilities and silently lag behind; here the doc describes *incapabilities* and mechanically cannot lag, in either direction. The `reverse()` story ran through this machinery end to end: descoped in wave 3 (grapheme segmentation for three corpus cases failed the cost test — a named rejection citing grapheme semantics), pinned anyway, then lifted in wave A with the instruction "remove the limitations row + flip its twin test in the same commit" (docs/superpowers/specs/2026-07-28-waveA-structural-tails.md §4).
+This inverts the usual failure mode. Normally, docs describe capabilities and silently lag behind; here the doc describes *incapabilities* and mechanically cannot lag, in either direction. The `reverse()` story ran through this machinery end to end: descoped in wave 3 (grapheme segmentation for three corpus cases failed the cost test — a named rejection citing grapheme semantics), pinned anyway, then lifted in wave A with the instruction "remove the limitations row + flip its twin test in the same commit" (packages/confit/docs/specs/2026-07-28-waveA-structural-tails.md §4).
 
 ## 5. Differential fuzzing as a standing gate
 
@@ -78,7 +78,7 @@ Then seed 20260728 earned the "standing" in the name, catching two more:
 - **An oracle self-inconsistency.** One catch was a pattern family on which DuckDB's two evaluation paths return different answers for the same input — there is no single behaviour to be bit-exact *with*, so the family is rejected by name. (The specifics are recorded in the pins evidence and held for a separate upstream-issues report.)
 - **RE2's post-simplification program-size budget.** `(\p{L}){1,500}` is "pattern too large" in DuckDB but serves fine in rust-regex. The exact budget point is an RE2 internal, so the guard is a deliberately **one-sided** weight estimate: it always fires before DuckDB's real budget. It may over-refuse; it can never serve where DuckDB errors. The asymmetry is the contract.
 
-Both are pinned in pins-waveB/fuzzer-20260728.json and rowed into docs/known-limitations.md §4.
+Both are pinned in pins-waveB/fuzzer-20260728.json and rowed into packages/confit/docs/known-limitations.md §4.
 
 ## 6. When the oracle is not reproducible row-locally
 
@@ -86,7 +86,7 @@ Two kinds of case break the clean oracle picture, and both are handled by naming
 
 The first is the self-inconsistency family above: where the oracle's evaluation paths disagree with each other, there is no behaviour to be bit-exact *with*; the constructs are rejected, with the measurement recorded.
 
-The second is subtler: DuckDB behaviours that depend on **column statistics**. The measured exemplar involves `ILIKE` on strings with embedded NUL bytes: the result for a given row can change depending on which *other* rows are present in the column, because the engine selects its comparison kernel from column-level statistics. The result for one row depends on its siblings. A row-at-a-time engine cannot reproduce this even in principle. The response is a **named divergence**: the source file is listed in `packages/confit/tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`, each entry required to cite a measured reason the divergence is irreproducible row-locally, and the engine's own behaviour (NUL-transparent) is documented in docs/known-limitations.md §5. Two such sources exist. They are excluded from the corpus *by name* — not silently skipped, not fudged to pass.
+The second is subtler: DuckDB behaviours that depend on **column statistics**. The measured exemplar involves `ILIKE` on strings with embedded NUL bytes: the result for a given row can change depending on which *other* rows are present in the column, because the engine selects its comparison kernel from column-level statistics. The result for one row depends on its siblings. A row-at-a-time engine cannot reproduce this even in principle. The response is a **named divergence**: the source file is listed in `packages/confit/tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`, each entry required to cite a measured reason the divergence is irreproducible row-locally, and the engine's own behaviour (NUL-transparent) is documented in packages/confit/docs/known-limitations.md §5. Two such sources exist. They are excluded from the corpus *by name* — not silently skipped, not fudged to pass.
 
 ## 7. What the discipline costs
 
@@ -108,7 +108,7 @@ Honesty requires the bill:
 | compute (the compiled program) | ~1.7 µs/row |
 | handcrafted Python twin — everything | ~2.2 µs/row total |
 
-A `__dict__` ingest fast path was built, benched **neutral**, and deleted. Against DuckDB itself, given a pre-built Arrow table per call (docs/proposals/2026-07-28-columnar-path.md):
+A `__dict__` ingest fast path was built, benched **neutral**, and deleted. Against DuckDB itself, given a pre-built Arrow table per call (packages/confit/docs/proposals/2026-07-28-columnar-path.md):
 
 | rows/call | DuckDB | us (row path) | ratio |
 |---|---|---|---|

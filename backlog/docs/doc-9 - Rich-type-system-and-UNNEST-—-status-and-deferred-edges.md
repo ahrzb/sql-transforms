@@ -6,7 +6,7 @@ created_date: '2026-07-19 01:07'
 ---
 **✅ First slice shipped** — on master (`4809470`). Recursive `Value`/`Base` spine, struct + list types, schema-driven Python↔`Value` marshalling (nested output models), `s.x` field access, `unnest(struct)`→columns, `unnest(list)`→rows (`RelNode::Unnest`), struct equality + join-keys. +17 differential parity tests (159→176), no regressions. **Live remaining work = the fast-follow types and the deferred edges below — none block anything.**
 
-Foundation for the composition output model, fan-out transformers, and the feature contract. Supersedes the narrower "Rust struct-support" ticket. Rather than bolt structs onto the closed scalar type layer, replace that layer with a **recursive, extensible, schema-driven** one so `InferFn` can carry the full pyarrow type surface. Spec: [rich type system design](superpowers/specs/2026-07-16-rich-type-system-design.md).
+Foundation for the composition output model, fan-out transformers, and the feature contract. Supersedes the narrower "Rust struct-support" ticket. Rather than bolt structs onto the closed scalar type layer, replace that layer with a **recursive, extensible, schema-driven** one so `InferFn` can carry the full pyarrow type surface. Spec: [rich type system design](../../docs/specs/2026-07-16-rich-type-system-design.md).
 
 **Why the pivot (2026-07-16):** composition needs structs; DataFusion has no `struct.*` — it uses **`UNNEST`** (`unnest(struct)`→columns, `unnest(list)`→rows), so we match that; and the engine should carry real feature-data types (also feature-contract groundwork). Build the type *layer* properly, not one type.
 

@@ -27,4 +27,4 @@
 Marginalization (so per-group fitting collapses to one row per group instead of
 retaining the training set), correlated `__FIT__` subqueries, and the
 row-at-a-time serving artifact. See
-`docs/superpowers/specs/2026-08-07-datamodel-redesign-design.md`.
+`docs/specs/2026-08-07-datamodel-redesign-design.md`.

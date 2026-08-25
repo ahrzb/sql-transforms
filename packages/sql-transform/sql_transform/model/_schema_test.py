@@ -6,7 +6,7 @@ back called ``(SELECT * FROM __param_0)`` and ``get_feature_names_out()``, a
 public sklearn surface, handed back an internal parameter name.
 
 The decision this pins: the law compares column names too. It is recorded in
-docs/properties.md next to the law itself.
+packages/confit/docs/properties.md next to the law itself.
 """
 
 import pyarrow as pa

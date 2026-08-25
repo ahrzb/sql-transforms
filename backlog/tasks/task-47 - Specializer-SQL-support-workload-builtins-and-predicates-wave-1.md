@@ -10,8 +10,8 @@ milestone: m-7
 dependencies:
   - TASK-46
 documentation:
-  - docs/superpowers/specs/2026-07-25-sql-specializer-design.md
-  - docs/superpowers/specs/2026-07-26-stretch4-builtin-pins.md
+  - packages/confit/docs/specs/2026-07-25-sql-specializer-design.md
+  - packages/confit/docs/specs/2026-07-26-stretch4-builtin-pins.md
 type: feature
 ordinal: 41000
 ---

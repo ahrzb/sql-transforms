@@ -13,7 +13,7 @@ ordinal: 66000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-`docs/properties.md` P8 states the law:
+`packages/confit/docs/properties.md` P8 states the law:
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Implementation Notes

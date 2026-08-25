@@ -15,7 +15,7 @@ ordinal: 96000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Design: `docs/superpowers/specs/2026-08-13-dialect-join-node-design.md`
+Design: `packages/confit/docs/specs/2026-08-13-dialect-join-node-design.md`
 (approved 2026-08-13). The general case in one slice: INNER/LEFT/RIGHT/
 FULL/CROSS, ON as a bound boolean expression (`Join{left, right, kind,
 on: Option<Expr>}` — supersedes the epic spec's JoinKey sketch), USING/

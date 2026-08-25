@@ -1,7 +1,7 @@
 """Slice 1 gates: the two parameters, freezing, ``fit``/``transform``.
 
 Every test here is a row from the spec's Properties and gates tables
-(`docs/superpowers/specs/2026-08-07-datamodel-redesign-design.md`). The
+(`docs/specs/2026-08-07-datamodel-redesign-design.md`). The
 ordered-frame gate is written first, deliberately: it pins a result that looks
 like a bug and must not be "corrected".
 """

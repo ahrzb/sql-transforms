@@ -1,7 +1,7 @@
 # NATURAL and USING join keys over non-scalar shared columns (TASK-133)
 
 Origin: the "Discovered, needs its own ticket" section of
-docs/superpowers/specs/2026-08-25-task-127-remainders-design.md. Direction
+packages/confit/docs/specs/2026-08-25-task-127-remainders-design.md. Direction
 decided by AmirHossein 2026-08-25: SUPPORT these joins, do not refuse them.
 
 Everything below was measured on 2026-08-25 against DuckDB 1.5.5 with

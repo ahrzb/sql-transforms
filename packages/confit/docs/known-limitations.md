@@ -15,7 +15,7 @@ forces this document to change with it.
    silently dropped at inference time.
 
 There is no third mode. Every limitation here is a *measured decision*
-recorded in a pins spec (`docs/superpowers/specs/`), not an accident.
+recorded in a pins spec (`packages/confit/docs/specs/`), not an accident.
 
 **Which DuckDB** (decided 2026-08-17, and it has a user-visible cost — see
 §5). "Identical to DuckDB" means DuckDB with its query optimizer off:
@@ -56,7 +56,7 @@ WHERE root and every `CASE WHEN` condition, projections included) makes
 `AND` lazy left-to-right and `OR` its exact dual, and exits to eager value
 context at `NOT`/`IS NULL`/comparisons/function arguments and CASE arms. The
 model, its measurements and the design are in
-`docs/superpowers/specs/2026-08-19-selection-context-design.md`; the full
+`packages/confit/docs/specs/2026-08-19-selection-context-design.md`; the full
 measured matrix runs against the live oracle in
 `known_divergences/test_short_circuit.py`.
 
@@ -189,7 +189,7 @@ bool. Measured consequences:
 ## 4. Semantics descoped after measurement
 
 Each of these was measured against DuckDB 1.5.5 first (pins in
-`docs/superpowers/specs/`), and rejected because serving it would risk a
+`packages/confit/docs/specs/`), and rejected because serving it would risk a
 wrong answer or require semantics we can't reproduce exactly:
 
 | Construct | Why it's descoped |
@@ -247,7 +247,7 @@ These are served, but with a consciously chosen surface — know them:
   statistic, and pruning a filter from a value range). A 4000-seed
   differential campaign puts it at 8 seeds in 28 findings; all eight are
   labelled `DIVERGE_OPT` by the campaign and enumerated in
-  `docs/2026-08-17-fuzz-triage.md`.
+  `packages/confit/docs/2026-08-17-fuzz-triage.md`.
 
   The trade is deliberate: matching the optimizer means matching an
   undocumented moving target that is not a function of the query, and in

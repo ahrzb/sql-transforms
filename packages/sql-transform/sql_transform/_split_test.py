@@ -3,7 +3,7 @@ sugar; every fit scope lives on ``tfm_fit`` where window semantics are
 true; ``tfm_transform`` is an ordinary scalar; the ``tfm(x) OVER w``
 sugar is deleted.
 
-Spec: docs/superpowers/specs/2026-08-05-fit-transform-split-design.md
+Spec: docs/specs/2026-08-05-fit-transform-split-design.md
 """
 
 import numpy as np

@@ -160,7 +160,7 @@ one integrator, many implementers.
 The recurring prompt must be self-contained (survives compaction):
 
 > Work the `sql-specializer` milestone ledger in backlog.md. Read
-> `docs/superpowers/specs/2026-07-25-sql-specializer-design.md` and this doc
+> `packages/confit/docs/specs/2026-07-25-sql-specializer-design.md` and this doc
 > first. One task per iteration; TDD; `mise gate-specializer` must be green
 > before any commit; update the ledger after. STOP and notify at milestone
 > boundaries (open a PR) or on any ambiguity/blocked task. Never start the next

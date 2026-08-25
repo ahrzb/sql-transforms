@@ -5,4 +5,4 @@ title: "sql-specializer"
 
 ## Description
 
-SQL specializer for ML model serving: prepare-once/run-millions engine built on binding-time separation. Design: docs/superpowers/specs/2026-07-25-sql-specializer-design.md; execution process: docs/superpowers/specs/2026-07-25-sql-specializer-loop-execution-design.md.
+SQL specializer for ML model serving: prepare-once/run-millions engine built on binding-time separation. Design: packages/confit/docs/specs/2026-07-25-sql-specializer-design.md; execution process: packages/confit/docs/specs/2026-07-25-sql-specializer-loop-execution-design.md.
