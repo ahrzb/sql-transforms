@@ -913,9 +913,7 @@ fn bind_from<'a>(
             }
             JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
         };
-        let val_cols: Vec<u32> = (0..st.cols.len() as u32)
-            .filter(|c| !key_cols.contains(c))
-            .collect();
+        let val_cols = val_cols_for(st, &key_cols, &keys);
 
         binder.joins.push(ScopeJoin {
             name: scope_name,
@@ -1079,9 +1077,7 @@ fn bind_from<'a>(
             key_cols.push(col);
             consumed[ci] = true;
         }
-        let val_cols: Vec<u32> = (0..st.cols.len() as u32)
-            .filter(|c| !key_cols.contains(c))
-            .collect();
+        let val_cols = val_cols_for(st, &key_cols, &keys);
         binder.joins.push(ScopeJoin {
             name: scope_name,
             table: match renamed {
@@ -1171,6 +1167,11 @@ fn head_hits_in_join(sj: &ScopeJoin, name: &str) -> usize {
     let named = |ci: &&u32| sj.table.cols[**ci as usize].name.eq_ignore_ascii_case(name);
     sj.val_cols
         .iter()
+        .enumerate()
+        // A lossy key's SHADOW lane is not a binding (TASK-120) — the key
+        // arm below already counts that column exactly once.
+        .filter(|(pos, _)| !is_shadow_lane(sj, *pos))
+        .map(|(_, ci)| ci)
         .filter(|ci| !sj.table.is_leaf_lane(**ci) && named(ci))
         .count()
         + if sj.using {
@@ -1481,8 +1482,10 @@ fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareE
         (a, Ty::F64) if a.is_int() => Ok(promote_f64(key)),
         // Static-side ints promote at materialization: the map key type
         // (the key expression's type) becomes F64 and the build side is
-        // converted while the probe table is built.
-        (Ty::F64, Ty::I64) => Ok(key),
+        // converted while the probe table is built. EVERY integer width
+        // (TASK-120): DuckDB compares all four against a DOUBLE in double
+        // space, so refusing the narrow three refused joins DuckDB serves.
+        (Ty::F64, b) if b.is_int() => Ok(key),
         // A DECIMAL build key, same precedent, no new key machinery: the
         // lane stays the PROBE's type and the build side converts while the
         // probe table is built (see duckdb::materialize_map).
@@ -1519,6 +1522,37 @@ fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareE
             st.cols[col as usize].name
         ))),
     }
+}
+
+/// TASK-120: does this key pairing LOSE the static column's value? A DOUBLE
+/// probe against an integer column compares in double space, so the build
+/// side is converted while the probe table is built and the comparison no
+/// longer names one i64 (every i64 above 2^53 shares its double with a
+/// neighbour). Such a column rides as a shadow VALUE lane as well, so
+/// [`Binder::key_lane`] can read the real value instead of rebuilding it.
+fn key_is_lossy(key_ty: Ty, col_ty: Ty) -> bool {
+    key_ty == Ty::F64 && col_ty.is_int()
+}
+
+/// The join's value lanes: every non-key column, then a shadow lane per
+/// LOSSY key column (appended, so ordinary lane positions never shift).
+fn val_cols_for(st: &StaticTable, key_cols: &[u32], keys: &[SExpr]) -> Vec<u32> {
+    let mut val: Vec<u32> = (0..st.cols.len() as u32)
+        .filter(|c| !key_cols.contains(c))
+        .collect();
+    for (kp, &c) in key_cols.iter().enumerate() {
+        if key_is_lossy(keys[kp].ty, st.cols[c as usize].ty.ty) {
+            val.push(c);
+        }
+    }
+    val
+}
+
+/// Value-lane positions that are SHADOWS of a lossy key column: they carry
+/// the key's real value for [`Binder::key_lane`] only and are NOT bindings —
+/// name resolution and `*` must skip them or the column would bind twice.
+fn is_shadow_lane(sj: &ScopeJoin, pos: usize) -> bool {
+    sj.key_cols.contains(&sj.val_cols[pos])
 }
 
 /// One traversal answering the wave-4 residual SCOPE questions about a bound
@@ -2391,18 +2425,23 @@ impl Binder<'_> {
                     super::plan::StarCol::Real(ci) => *ci,
                 };
                 let c = &sj.table.cols[ci as usize];
-                if let Some(pos) = sj.val_cols.iter().position(|&v| v == ci) {
+                // KEY first (TASK-120): a lossy key column ALSO appears in
+                // `val_cols` as a shadow lane, and taking that branch here
+                // would unmerge a USING key. `key_lane` reads the shadow.
+                let kp = sj.key_cols.iter().position(|&k| k == ci);
+                if kp.is_none() {
+                    let pos = sj
+                        .val_cols
+                        .iter()
+                        .position(|&v| v == ci)
+                        .expect("column is key or value");
                     cols.push((
                         sj.name.clone(),
                         c.name.clone(),
                         StarLane::Real(self.static_lane(j, pos)),
                     ));
                 } else {
-                    let kp = sj
-                        .key_cols
-                        .iter()
-                        .position(|&k| k == ci)
-                        .expect("column is key or value");
+                    let kp = kp.expect("checked above");
                     if !sj.using {
                         cols.push((
                             sj.name.clone(),
@@ -3522,17 +3561,25 @@ impl Binder<'_> {
     fn key_lane(&self, j: usize, key_pos: usize) -> Result<SExpr, PrepareError> {
         let sj = &self.joins[j];
         let key = sj.keys[key_pos].clone();
-        let col = &sj.table.cols[sj.key_cols[key_pos] as usize];
+        let ci = sj.key_cols[key_pos];
+        let col = &sj.table.cols[ci as usize];
+        // TASK-120: `promote_key`'s F64-probe-against-integer-column arm
+        // compares in double space, so no reconstruction can name the i64
+        // back (two build rows can collide on one double). That column rides
+        // as a shadow VALUE lane — read the real value, at the static
+        // column's own declared width, and let the ordinary LEFT-miss
+        // nullability of a value lane carry the miss.
+        if key_is_lossy(key.ty, col.ty.ty) {
+            let pos = sj
+                .val_cols
+                .iter()
+                .position(|&v| v == ci)
+                .expect("a lossy key column has a shadow value lane");
+            return Ok(self.static_lane(j, pos));
+        }
         let key = match (key.ty, col.ty.ty) {
             (a, b) if a == b => key,
             (a, b) if a.is_int() && b.is_int() => SExpr { ty: b, ..key },
-            // The remaining pairing is `promote_key`'s F64-probe-against-
-            // integer-column arm: the comparison happens in double space, so
-            // the reconstruction holds a double, and a double does not name
-            // one i64 (two build rows can collide on it). Refusing is the
-            // only sound answer available here — recovering the real value
-            // means materialising the key as a probe VALUE lane, which is
-            // TASK-120.
             (a, b) => {
                 return Err(unsup(format!(
                     "projecting join key column '{}.{}': it is declared {} \
@@ -3919,8 +3966,10 @@ impl Binder<'_> {
         }
         for (j, sj) in self.joins.iter().enumerate() {
             for pos in 0..sj.val_cols.len() {
-                // Struct leaves bind by PATH only (TASK-132).
-                if sj.table.is_leaf_lane(sj.val_cols[pos]) {
+                // Struct leaves bind by PATH only (TASK-132); a lossy key's
+                // shadow lane binds not at all (TASK-120) — the key arm
+                // below is that column's one binding.
+                if sj.table.is_leaf_lane(sj.val_cols[pos]) || is_shadow_lane(sj, pos) {
                     continue;
                 }
                 if sj.table.cols[sj.val_cols[pos] as usize]
@@ -4078,7 +4127,10 @@ impl Binder<'_> {
             for pos in 0..sj.val_cols.len() {
                 // A struct LEAF is reachable only through its path
                 // (TASK-132): its dotted display name is not an identifier.
-                if sj.table.is_leaf_lane(sj.val_cols[pos]) {
+                // A lossy key's SHADOW lane is not addressable either
+                // (TASK-120) — the key arm below serves that name, reading
+                // this very lane.
+                if sj.table.is_leaf_lane(sj.val_cols[pos]) || is_shadow_lane(sj, pos) {
                     continue;
                 }
                 if sj.table.cols[sj.val_cols[pos] as usize]
