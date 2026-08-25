@@ -81,29 +81,37 @@
 //! program   := static* regex* extern* func
 //! comment   := "#" ... end-of-line     // allowed anywhere whitespace is
 //! static    := "static" "@" INT ":" static_ty
-//! extern    := "extern" "@" INT ":" STRING "(" [ty ("," ty)*] ")" "->" "(" ret ("," ret)* ")"
+//! regex     := "regex" "@" INT ":" STRING ["ci"] ["dotall"] ["rewrite" STRING]
+//! extern    := "extern" "@" INT ":" STRING "(" [ty ("," ty)*] ")" "->"
+//!              "(" ret ("," ret)* ")" ["impure"]
 //! ret       := ty | STRING ":" ty     // named returns: all named or none
 //! static_ty := "scalar" "<" col_ty ">"
-//!            | "map" "(" ty ("," ty)* ")" "->" "(" ty ("," ty)* ")"
+//!            | "map" "(" [ty ("," ty)*] ")" "->" "(" [ty ("," ty)*] ")"
+//!            | "multimap" "(" [ty ("," ty)*] ")" "->" "(" [ty ("," ty)*] ")"
+//!            | "batchmap" "(" ")" "->" "(" [ty ("," ty)*] ")"
 //!            | "model" "<" "tree_ensemble" "(" INT ")" ">"   // INT = n_features
 //! func      := "fn" IDENT "(" "in" ":" batch "," "out" ":" batch ")" "{" block+ "}"
 //! batch     := "batch" "{" [col ("," col)*] "}"
 //! col       := (IDENT | STRING) ":" col_ty        // STRING for non-ident names
 //! col_ty    := ty ["?"]
-//! ty        := "i1" | "i64" | "f64" | "str" | "dec" "(" INT "," INT ")"
+//! ty        := "i1" | "i8" | "i16" | "i32" | "i64" | "f64" | "str"
+//!            | "dec" "(" INT "," INT ")"   // i8/i16/i32 in headers only
 //! block     := IDENT ["(" VALUE ":" ty ("," VALUE ":" ty)* ")"] ":" inst* term
 //! inst      := [VALUE ("," VALUE)* "="] OPCODE operands
 //!              // only store/store.opt omit the dests; everything else
 //!              // defines at least one value
 //! term      := "jump" target
 //!            | "brif" VALUE "," target "," target
+//!            | "emit.to" target
 //!            | "emit" | "skip" | "trap" STRING
 //! target    := IDENT ["(" VALUE ("," VALUE)* ")"]
 //! VALUE     := "%" NAME               // NAME: any run of [A-Za-z0-9_];
 //!                                     // the printer only emits %vN
 //! ```
 //!
-//! Instruction surface (`%d` result, `%f` an `i1` flag result):
+//! Core instruction surface (`%d` result, `%f` an `i1` flag result). The
+//! string, regex, multimap and extern families follow the same shape; each
+//! carries its own contract on the [`Inst`] variant that defines it:
 //!
 //! ```text
 //! %d = const.i1 true|false     %d = const.i64 INT
@@ -117,7 +125,7 @@
 //! %d = dcmp(P,S).PRED %a, %b                  // dec(P,S) operands -> i1
 //! %d = select %c, %a, %b                      // %c: i1; %a, %b same type
 //! %d = itof %a                                // i64 -> f64
-//! %d = ftoi.trunc|ftoi.round %a               // f64 -> i64; traps out of range
+//! %d = ftoi.trunc|ftoi.nearest %a             // f64 -> i64; traps out of range
 //! %d = dtof(P,S) %a                           // dec(P,S) -> f64, DuckDB div/mod
 //! %d = itod(P,S) %a                           // i64 -> dec(P,S), scaled
 //! %d = itos %a | ftos %a                      // -> str (arena)
@@ -134,9 +142,9 @@
 //! %w, %f1, %v1, .. = ecall @N, %af1, %av1, .. // extern (UDF) call
 //! ```
 //!
-//! Numeric-semantics pins deferred to M-interp (settled against the DuckDB
-//! oracle there): `ftoi.round` tie behavior, `fcmp` NaN ordering. The IR
-//! names the operations; the interpreter pins their edge cases with tests.
+//! Numeric-semantics pins live with the interpreter, settled there against
+//! the DuckDB oracle: `ftoi.nearest` tie behavior, `fcmp` NaN ordering. The
+//! IR names the operations; the interpreter's tests pin their edge cases.
 
 pub mod fixtures;
 pub mod gen;
@@ -196,8 +204,8 @@ mod tests;
 ///
 /// # Dec is a lane of its own
 ///
-/// `Dec(p, s)` (TASK-91) is a DECIMAL held as its SCALED INTEGER in an i128
-/// lane — the same storage DuckDB uses for `DECIMAL(38,x)`, and the same
+/// `Dec(p, s)` is a DECIMAL held as its SCALED INTEGER in an i128 lane —
+/// the same storage DuckDB uses for `DECIMAL(38,x)`, and the same
 /// value for the narrower tiers, which DuckDB exports as 128-bit arrow
 /// regardless (`SetArrowFormat`, arrow_converter.cpp:236-262). Unlike the
 /// narrow ints it does NOT erase: `lane()` keeps `(p, s)`, because the
@@ -482,7 +490,7 @@ impl CmpPred {
 /// How `ftoi` breaks a tie. `Nearest` is half-to-EVEN, which is what
 /// DuckDB's DOUBLE->BIGINT cast does — not the same thing as the SQL
 /// `round()` builtin, which is half-away-from-zero and lowers through
-/// `NumOp1::Round` instead (TASK-70).
+/// [`NumOp1::Fround`] instead.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RoundMode {
     Trunc,
@@ -693,8 +701,10 @@ pub enum Inst {
         a: Value,
         b: Value,
     },
-    /// `icmp.P` / `fcmp.P` / `scmp.P` — `ty` is the operand type
-    /// (I64/F64/Str), result is I1.
+    /// `icmp.P` / `fcmp.P` / `scmp.P` / `dcmp(P,S).PRED` — `ty` is the
+    /// operand type (I64/F64/Str/Dec), result is I1. A `Dec` carries the
+    /// (p, s) both operands are scaled at; two different scales never meet
+    /// here, because the frontend refuses that shape.
     Cmp {
         pred: CmpPred,
         ty: Ty,
@@ -717,9 +727,9 @@ pub enum Inst {
     /// which is a DIFFERENT number above 2**53 — `n as f32 as f64`, not
     /// `n as f64`. It exists because sklearn narrows an integer feature
     /// array to float32 in ONE step, and reproducing that bit-for-bit is
-    /// the whole contract (TASK-77). Introduces no f32 TYPE: the lane is
-    /// f64 in and f64 out, the same way `ftoi.nearest` is a rounding mode
-    /// rather than an integer type.
+    /// the whole contract. Introduces no f32 TYPE: the lane is f64 in and
+    /// f64 out, the same way `ftoi.nearest` is a rounding mode rather than
+    /// an integer type.
     Itof {
         narrow: bool,
         dst: Value,
@@ -941,9 +951,9 @@ pub enum Inst {
         idx: Value,
         dsts: Vec<Value>,
     },
-    /// Call opaque extern (UDF) `ext` — DRAFT-22 step 2. Everything at this
-    /// boundary is nullable: `args` are a (validity i1, payload) pair per
-    /// declared param (payload unread under a false flag); `dsts` are one
+    /// Call opaque extern (UDF) `ext`. Everything at this boundary is
+    /// nullable: `args` are a (validity i1, payload) pair per declared
+    /// param (payload unread under a false flag); `dsts` are one
     /// whole-call validity i1 (false iff the callable returned NULL — at
     /// the width-k output boundary that is the NULL-list case, distinct
     /// from a list of NULLs) followed by a (validity i1, payload) pair per
@@ -1063,15 +1073,15 @@ pub struct ExternSpec {
     pub name: String,
     pub params: Vec<Ty>,
     pub rets: Vec<Ty>,
-    /// Declared output field names, parallel to `rets` (TASK-63): either
-    /// empty (unnamed — field access over the call refuses by name) or
-    /// exactly one name per return.
+    /// Declared output field names, parallel to `rets`: either empty
+    /// (unnamed — field access over the call refuses by name) or exactly
+    /// one name per return.
     pub ret_names: Vec<String>,
-    /// TASK-101, DuckDB's own `create_function` flag with its default:
-    /// false declares the callable PURE — safe for the binder to execute
-    /// at build when a fold context asks for its constant-args value.
-    /// True keeps the call opaque until run. Bind-time-only fact: not
-    /// serialized in program text (parse defaults it false).
+    /// DuckDB's own `create_function` flag, with its default: false
+    /// declares the callable PURE — safe for the binder to execute at
+    /// build when a fold context asks for its constant-args value. True
+    /// keeps the call opaque until run. Spelled `impure` in the text form
+    /// (absent = pure), so a round-trip cannot launder impurity.
     pub side_effects: bool,
 }
 

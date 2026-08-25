@@ -1,6 +1,6 @@
-//! Deterministic random-program generator for round-trip and (later)
-//! differential fuzzing. Every generated program is verifier-valid by
-//! construction and built with dense definition-ordered value ids, so
+//! Deterministic random-program generator for round-trip and differential
+//! fuzzing. Every generated program is verifier-valid by construction and
+//! built with dense definition-ordered value ids, so
 //! `parse(print(p)) == p` must hold exactly — any divergence is a bug in the
 //! printer, the parser, or this generator, and all three are worth knowing.
 //!
@@ -635,6 +635,18 @@ fn stores(
     }
 }
 
+/// A verifier-valid program built from `seed` alone: the same seed always
+/// yields the same program, which is what lets a fuzz failure be reproduced
+/// from the seed its assertion prints. Value ids come out canonical, so
+/// `parse(print(p)) == p` must hold for the result.
+///
+/// The generated surface is deliberately narrower than the IR: one of three
+/// CFG shapes (straight line, filter, diamond), scalar/map/model statics
+/// only, column types drawn from `TYS`, and no regexes, externs, decimals,
+/// narrow widths or multiplicity loops. Trapping opcodes are excluded or
+/// rare, so most programs run to completion for the backend-agreement fuzz
+/// that shares this generator. Everything outside the surface is pinned by a
+/// hand-written test instead — or not at all.
 pub fn gen_program(seed: u64) -> Program {
     let mut rng = Rng::new(seed);
     let mut b = Builder::new();

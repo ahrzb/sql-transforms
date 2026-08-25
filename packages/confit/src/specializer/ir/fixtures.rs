@@ -146,7 +146,7 @@ entry:
 ///
 /// The second feature arrives as an INTEGER column, so it converts with
 /// `itof.f32` — one rounding, matching how sklearn narrows an integer
-/// feature array to float32 (TASK-77). This is the only place that opcode is
+/// feature array to float32. This is the only place that opcode is
 /// produced, which is why it lives in this fixture and not the cast one.
 pub const TREE_SCORE: &str = r#"
 static @0: map(str) -> (i64)
@@ -176,6 +176,9 @@ unseen:
 }
 "#;
 
+/// The fixtures the IR gate walks (round-trip and opcode coverage), each
+/// with the name its failures are reported under. `MULTI_EXPAND` is not
+/// among them: the stage-B fixture is built directly by the executor tests.
 pub fn all() -> Vec<(&'static str, &'static str)> {
     vec![
         ("projection", PROJECTION),

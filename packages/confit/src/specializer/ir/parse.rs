@@ -16,6 +16,7 @@ use super::{
 
 #[derive(Debug)]
 pub struct ParseError {
+    /// 1-based source line the error was found on.
     pub line: u32,
     pub msg: String,
 }
@@ -561,8 +562,8 @@ impl Parser {
             let mut ret_names = Vec::new();
             if *self.peek() != Tok::RParen {
                 if matches!(self.peek(), Tok::Str(_)) {
-                    // Named returns (TASK-63): ("a": f64, "b": f64) —
-                    // all named or none.
+                    // Named returns: ("a": f64, "b": f64) — all named
+                    // or none.
                     loop {
                         let n = match self.bump() {
                             Tok::Str(s) => s,
@@ -587,9 +588,9 @@ impl Parser {
                 }
             }
             self.expect(Tok::RParen)?;
-            // TASK-101: the purity flag round-trips so parse(print(p))
-            // stays lossless; a parsed program never bind-folds again,
-            // but the text must not silently launder impurity.
+            // The purity flag round-trips so parse(print(p)) stays
+            // lossless; a parsed program never bind-folds again, but the
+            // text must not silently launder impurity.
             let side_effects = self.keyword("impure").is_ok();
             externs.push(super::ExternSpec {
                 name,

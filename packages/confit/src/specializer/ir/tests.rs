@@ -39,9 +39,12 @@ fn fixtures_verify_and_round_trip() {
     }
 }
 
-/// Every opcode and terminator must appear in at least one fixture — this is
-/// the acceptance criterion "hand-written programs covering every
-/// instruction", kept honest mechanically.
+/// The hand-written fixtures must cover the CORE instruction set — the
+/// acceptance criterion "hand-written programs covering every instruction",
+/// kept honest mechanically. The list below is that core, and it does not
+/// grow by itself: the opcode families added after it (string, decimal,
+/// extern, regex, multimap) are covered — where they are covered — by the
+/// dedicated tests in this file and by `fuzz_round_trip`, not by this check.
 #[test]
 fn fixtures_cover_every_opcode() {
     let all: String = fixtures::all().iter().map(|(_, t)| *t).collect();
@@ -313,9 +316,9 @@ entry:
 }
 
 // ------------------------------------------------------------- externs --
-// DRAFT-22 step 2: opaque UDF calls. Args are (validity i1, payload) pairs
-// per declared param; dsts are a whole-call validity plus (validity i1,
-// payload) pairs per declared return.
+// Opaque UDF calls. Args are (validity i1, payload) pairs per declared
+// param; dsts are a whole-call validity plus (validity i1, payload) pairs
+// per declared return.
 
 #[test]
 fn extern_call_round_trips_and_verifies() {
@@ -339,8 +342,8 @@ b0:
     assert_eq!(print(&p2), printed, "printing is not a fixpoint");
 }
 
-/// TASK-91: the `dec(p,s)` type token, the `const.dec(p,s)` literal, and
-/// the three opcodes that carry a (p,s) — `dcmp`, `dtof`, `itod` — all
+/// The `dec(p,s)` type token, the `const.dec(p,s)` literal, and the three
+/// opcodes that carry a (p,s) — `dcmp`, `dtof`, `itod` — all
 /// survive `parse(print(p)) == p`. The (p,s) HAS to be in the text: unlike
 /// i8/i16/i32 a decimal's scale does not erase to a lane, so a form that
 /// dropped it could not rebuild the operand type.
@@ -927,12 +930,11 @@ fn rejects_duplicate_columns() {
     );
 }
 
-/// TASK-127: the IN side is no longer checked here. A struct leaf lane
-/// carries its dotted PATH as a display name, which stopped being an
-/// identifier at TASK-132 — nothing resolves a row lane by it — so a leaf
-/// that spells a sibling's name is not a duplicate. The check that a real
-/// row IDENTIFIER cannot repeat moved to the build boundary, where the
-/// plain columns are still distinguishable from the leaves.
+/// The IN side is not checked for duplicate names: a struct leaf lane
+/// carries its dotted PATH as a display name, not an identifier — nothing
+/// resolves a row lane by it — so a leaf that spells a sibling's name is not
+/// a duplicate. The build boundary owns the rule that a real row IDENTIFIER
+/// cannot repeat (see `check_structure`).
 #[test]
 fn accepts_duplicate_in_columns() {
     use super::{Col, ColTy, Ty};
