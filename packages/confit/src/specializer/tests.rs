@@ -172,6 +172,10 @@ fn presence_lanes_are_minted_lazily() {
     let keyed = prep("SELECT z AS o FROM __THIS__ NATURAL JOIN s");
     assert_eq!(keyed.present_lanes.len(), 1);
     assert_eq!(keyed.present_lanes[0].1, vec!["w".to_string()]);
+    // The minted lane's synthetic NAME is user-reachable (it is what the
+    // boundaries' refusals quote); pinned at the producer as well as at the
+    // boundaries (tests/test_join_keys.py).
+    assert_eq!(keyed.present_lanes[0].0.name, "w (present)");
     assert_eq!(keyed.program.in_cols.len(), schema.len() + 1);
     // ... and the static side asks for that node's PRESENCE, not a value.
     let spec = &keyed.statics[0];
