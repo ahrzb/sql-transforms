@@ -13,6 +13,12 @@ n in {1, 8, 64, 1024}:
   duckdb   — DuckDB itself per call (statics pre-materialized as native
              tables; per call: Arrow batch from row dicts -> register ->
              execute -> fetch)
+  arrow    — the same specializer fn through the COLUMNAR boundary:
+             pa.Table in, pa.Table out (per call: Arrow batch from the row
+             dicts -> infer_arrow, the same courtesy the duckdb row gets).
+             A large-batch lane: it pays a fixed per-call Python cost and
+             loses to `spec` below roughly n=1024, so read the small-n
+             cells as the crossover, not as a regression.
   python_dict — the handcrafted twin: what an engineer would hand-write
              for a microservice, returning plain dicts (the floor; the
              old typed-model "python" and "spec_dict" rows retired with
@@ -81,11 +87,15 @@ def build_callers(mod, engines):
     statics = mod.make_statics(sc.SEED)
     callers = {}
 
-    if any(e in engines for e in ("spec", "interp", "generic")):
+    if any(e in engines for e in ("spec", "interp", "generic", "arrow")):
         fn = sc.build_spec_fn(mod, statics)
         for e in ("spec", "interp", "generic"):
             if e in engines:
                 callers[e] = fn.infer_rows
+        if "arrow" in engines:
+            callers["arrow"] = lambda rows, f=fn: f.infer_arrow(
+                sc.rows_table(mod, rows)
+            )
 
     if "duckdb" in engines:
         duck = sc.duckdb_server(mod, statics)
@@ -147,6 +157,7 @@ def orchestrate():
     groups = {
         "main": [
             "spec",
+            "arrow",
             "duckdb",
             "python_dict",
         ],
@@ -170,6 +181,7 @@ def orchestrate():
 
     order = [
         "spec",
+        "arrow",
         "interp",
         "generic",
         "duckdb",
