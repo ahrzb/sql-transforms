@@ -629,27 +629,212 @@ def test_a_left_miss_on_the_key_is_still_null():
     assert got.schema == want.schema
 
 
-def test_a_double_probe_against_an_integer_key_refuses_to_project_it():
-    """The one pairing re-declaration cannot fix (TASK-120). `promote_key`
-    compares a DOUBLE probe against an integer column in double space, so the
-    reconstruction holds a double and a double does not name one i64 — two
-    build rows can collide on it. Refusing beats emitting the probe's value
-    under the column's name; only the PROJECTION refuses, the join itself is
-    unaffected."""
-    row = pa.schema([pa.field("k", pa.float64(), nullable=False)])
+# ===========================================================================
+# TASK-120: the one pairing re-declaration could not fix — a DOUBLE probe
+# against an INTEGER static key. The comparison happens in double space, so
+# reconstructing the key from the probe holds a double, and a double does not
+# name one i64. The answer is not a smarter conversion: the static column,
+# when projected, is read as a real probe VALUE lane (its own declared type,
+# its own real values) and never rebuilt from the comparison.
+#
+# Measured 2026-08-25 against optimizer-off DuckDB, static {2**53, 2**53+1}
+# (both float() to 9007199254740992.0), probe 9007199254740992.0:
+#
+#   SELECT s.c0, s.v   ->  (9007199254740993, 71), (9007199254740992, 70)
+#
+# i.e. TWO output rows, each carrying its OWN i64 — the fan-out our 'many'
+# shape already produces, and the duplicate-key refusal the unique shapes
+# already give. Only the projection was ever wrong.
+_P53 = 9007199254740992  # 2**53
+_P53_1 = 9007199254740993  # 2**53+1, float() == float(_P53)
+_P53_2 = 9007199254740994  # 2**53+2, exactly representable
+
+_KEY_DDL[pa.int16()] = "SMALLINT"  # the width parametrization needs all four
+
+_D_ROW = pa.schema([pa.field("k", pa.float64(), nullable=False)])
+_D_ONE = pa.table(
+    {"c0": pa.array([_P53_1], pa.int64()), "v": pa.array([7], pa.int64())}
+)
+_D_PAIR = pa.table(
+    {
+        "c0": pa.array([_P53, _P53_1], pa.int64()),
+        "v": pa.array([70, 71], pa.int64()),
+    }
+)
+
+
+def _double_probe_duck(sql, static, ddl="k DOUBLE", probe=((float(_P53),),)):
+    """The live oracle for a DOUBLE-probe join (optimizer-off per conftest)."""
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE __THIS__ ({ddl})")
+    for r in probe:
+        marks = ", ".join(["?"] * len(r))
+        con.execute(f"INSERT INTO __THIS__ VALUES ({marks})", list(r))
+    con.register("sa", static)
+    con.execute("CREATE TABLE s AS SELECT * FROM sa")
+    return con.execute(sql).to_arrow_table()
+
+
+def test_a_double_probe_against_an_integer_key_serves_the_static_value():
+    """AC #4, the rewrite: the pairing that used to refuse now serves."""
     static = pa.table({"c0": pa.array([5], pa.int64()), "v": pa.array([7], pa.int64())})
-    with pytest.raises(ValueError, match="join key column 's.c0'"):
-        DuckDBInferFn(
-            "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0",
-            row_tables={"__THIS__": row},
-            static_tables={"s": static},
-        )
+    sql = "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0"
+    want = _double_probe_duck(sql, static, probe=((5.0,),))
+
     fn = DuckDBInferFn(
-        "SELECT s.v AS o FROM __THIS__ JOIN s ON k = s.c0",
-        row_tables={"__THIS__": row},
-        static_tables={"s": static},
+        sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": static}
     )
-    assert fn.infer_rows([{"k": 5.0}]) == [{"o": 7}]
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5.0}], schema=_D_ROW))
+    assert want.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
+
+
+def test_a_double_probe_key_serves_the_i64_its_double_cannot_name():
+    """THE regression test: one static row, so no multiplicity is involved —
+    only whether the projected key is the REAL i64 or the probe's double read
+    back. The oracle says 9007199254740993; a reconstruction says ...992."""
+    sql = "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0"
+    want = _double_probe_duck(sql, _D_ONE)
+    assert want.to_pylist() == [{"o": _P53_1}], "oracle moved — remeasure"
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": _D_ONE}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": float(_P53)}], schema=_D_ROW))
+    assert got.to_pylist() == want.to_pylist()
+    assert got.schema == want.schema
+
+
+@pytest.mark.parametrize("kind", ["JOIN", "LEFT JOIN"])
+@pytest.mark.parametrize("proj", ["s.c0", "s.v"])
+@pytest.mark.parametrize("static_ty", [pa.int8(), pa.int16(), pa.int32(), pa.int64()])
+def test_a_double_probe_serves_every_integer_static_key_width(static_ty, proj, kind):
+    """`promote_key` used to serve only the i64 arm, so int8/int16/int32
+    static keys refused the WHOLE join. Schema equality carries the width."""
+    static = pa.table({"c0": pa.array([5], static_ty), "v": pa.array([7], pa.int64())})
+    sql = f"SELECT {proj} AS o FROM __THIS__ {kind} s ON k = s.c0"
+    want = _double_probe_duck(sql, static, probe=((5.0,),))
+    expect = static_ty if proj == "s.c0" else pa.int64()
+    assert want.schema.field("o").type == expect, "oracle moved — remeasure"
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": static}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5.0}], schema=_D_ROW))
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
+
+
+def test_f64_colliding_static_keys_fan_out_under_shape_many():
+    """Two i64 build rows sharing one double are TWO rows, each with its own
+    key value. Sorted-multiset compare, the stage-B multiplicity contract."""
+    sql = "SELECT s.c0 AS o, s.v AS w FROM __THIS__ JOIN s ON k = s.c0"
+    want = _double_probe_duck(sql, _D_PAIR)
+    fn = DuckDBInferFn(
+        sql,
+        row_tables={"__THIS__": _D_ROW},
+        static_tables={"s": _D_PAIR},
+        shape="many",
+    )
+    got = fn.infer_rows([{"k": float(_P53)}])
+    key = lambda r: tuple(r.values())  # noqa: E731
+    assert sorted(want.to_pylist(), key=key) == [
+        {"o": _P53, "w": 70},
+        {"o": _P53_1, "w": 71},
+    ], "oracle moved — remeasure"
+    assert sorted(got, key=key) == sorted(want.to_pylist(), key=key)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "kind"),
+    [({}, "JOIN"), ({"shape": "map"}, "LEFT JOIN")],
+)
+def test_f64_colliding_static_keys_still_refuse_under_the_unique_shapes(kwargs, kind):
+    """The fix must not weaken the shape contract: the unique shapes still
+    refuse a static whose keys collide, value-only projection included."""
+    with pytest.raises(ValueError, match="duplicate map key"):
+        DuckDBInferFn(
+            f"SELECT s.v AS w FROM __THIS__ {kind} s ON k = s.c0",
+            row_tables={"__THIS__": _D_ROW},
+            static_tables={"s": _D_PAIR},
+            **kwargs,
+        ).infer_rows([{"k": float(_P53)}])
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM __THIS__ JOIN s ON k = s.c0",
+        "SELECT c0 AS o FROM __THIS__ JOIN s ON k = s.c0",
+        "SELECT s.c0 + 1 AS o FROM __THIS__ JOIN s ON k = s.c0",
+        "SELECT s.c0 = 9007199254740993 AS o FROM __THIS__ JOIN s ON k = s.c0",
+        "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0 AND s.c0 > 3",
+    ],
+)
+def test_a_double_probe_key_projects_through_star_and_expressions(sql):
+    """The real value has to reach every consumer of the name, not just the
+    qualified projection: star, the bare name, arithmetic, a comparison
+    against the literal only the i64 can equal, and an ON residual."""
+    want = _double_probe_duck(sql, _D_ONE)
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": _D_ONE}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": float(_P53)}], schema=_D_ROW))
+    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist(), sql
+
+
+@pytest.mark.parametrize(
+    ("sql", "want_ty"),
+    [
+        ("SELECT c0 AS o FROM __THIS__ JOIN s USING (c0)", pa.float64()),
+        ("SELECT s.c0 AS o FROM __THIS__ JOIN s USING (c0)", pa.int64()),
+    ],
+)
+def test_a_using_join_keeps_merging_the_double_probe_key(sql, want_ty):
+    """The shadow value lane must stay invisible to NAME resolution: a USING
+    key merges into the LEFT occurrence (the probe's DOUBLE), while the
+    qualified static spelling still reaches the real i64."""
+    row = pa.schema([pa.field("c0", pa.float64(), nullable=False)])
+    want = _double_probe_duck(sql, _D_ONE, ddl="c0 DOUBLE")
+    assert want.schema.field("o").type == want_ty, "oracle moved — remeasure"
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": _D_ONE})
+    got = fn.infer_arrow(pa.Table.from_pylist([{"c0": float(_P53)}], schema=row))
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
+
+
+def test_a_using_star_keeps_one_merged_double_column():
+    """`SELECT *` over USING: one merged c0 at the probe's DOUBLE, and the
+    shadow lane must not surface as a phantom second column."""
+    row = pa.schema([pa.field("c0", pa.float64(), nullable=False)])
+    sql = "SELECT * FROM __THIS__ JOIN s USING (c0)"
+    want = _double_probe_duck(sql, _D_ONE, ddl="c0 DOUBLE")
+    assert [f.name for f in want.schema] == ["c0", "v"], "oracle moved — remeasure"
+
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": _D_ONE})
+    got = fn.infer_arrow(pa.Table.from_pylist([{"c0": float(_P53)}], schema=row))
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    assert got.to_pylist() == want.to_pylist()
+
+
+def test_a_left_miss_on_a_double_probe_key_is_still_null():
+    """The lossy pairing's mirror of `test_a_left_miss_on_the_key_is_still_null`:
+    a miss is NULL on the key column, never coalesced to the probe's value."""
+    sql = "SELECT s.c0 AS o FROM __THIS__ LEFT JOIN s ON k = s.c0"
+    want = _double_probe_duck(sql, _D_ONE, probe=((float(_P53),), (1.5,)))
+    assert want.to_pylist() == [{"o": _P53_1}, {"o": None}], "oracle moved — remeasure"
+
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": _D_ONE}
+    )
+    got = fn.infer_arrow(
+        pa.Table.from_pylist([{"k": float(_P53)}, {"k": 1.5}], schema=_D_ROW)
+    )
+    assert got.to_pylist() == want.to_pylist()
+    assert got.schema == want.schema
 
 
 # A static column whose arrow type the engine does not serve at that type

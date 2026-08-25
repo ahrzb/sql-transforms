@@ -744,21 +744,93 @@ fn join_key_promotion_float_dyn_against_int_col() {
     )
     .unwrap();
     let spec = &p.statics[0];
+    // TASK-120: the key column ALSO rides as a shadow value lane, appended
+    // after the ordinary ones — a double does not name one i64, so the real
+    // value has to travel through the probe rather than the comparison.
     assert_eq!(
         (spec.table.as_str(), &spec.key_cols[..], &spec.val_cols[..]),
         (
             "dim",
             &[vec!["id".to_string()]][..],
-            &[vec!["v".to_string()]][..]
+            &[vec!["v".to_string()], vec!["id".to_string()]][..]
         )
     );
     let data = StaticData::Map(vec![(
         vec![KeyBits::F64(2f64.to_bits())],
-        vec![ScalarVal::I64(20)],
+        vec![ScalarVal::I64(20), ScalarVal::I64(2)],
     )]);
     let f = compile(&p.program, vec![data]).unwrap();
     let got = run_snapshot(&f, &batch(2, vec![c_f64(&[Some(2.0), Some(2.5)])])).unwrap();
     assert_eq!(got, rows(&[&["20"]]));
+}
+
+/// TASK-120: `promote_key`'s F64-probe arm used to admit only I64, so an
+/// int8/int16/int32 static key refused the WHOLE join (severity 4 — DuckDB
+/// serves every one of them, comparing in double space).
+#[test]
+fn promote_key_accepts_every_integer_width_under_an_f64_probe() {
+    let schema = cols(&[("k", Ty::F64, false)]);
+    for ty in [Ty::I8, Ty::I16, Ty::I32, Ty::I64] {
+        let dim = stat("dim", &[("id", ty, false), ("v", Ty::I64, false)]);
+        let p = prepare(
+            "SELECT dim.id AS o, v FROM __THIS__ JOIN dim ON k = dim.id",
+            "__THIS__",
+            &schema,
+            &[dim],
+        )
+        .unwrap_or_else(|e| panic!("{ty:?} key refused: {e}"));
+        // The projected key keeps the STATIC column's declared width.
+        assert_eq!(p.program.out_cols[0].ty.ty, ty, "{ty:?}");
+    }
+}
+
+/// TASK-120: a lossy key column is a key AND a value lane; a sound int/int
+/// pairing keeps the single key lane it always had.
+#[test]
+fn a_lossy_key_column_is_also_a_value_lane() {
+    let dim = stat("dim", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
+    let sql = "SELECT v FROM __THIS__ JOIN dim ON k = dim.id";
+
+    let lossy = prepare(sql, "__THIS__", &cols(&[("k", Ty::F64, false)]), &[dim.clone()])
+        .unwrap();
+    let s = &lossy.statics[0];
+    assert_eq!(s.key_cols, vec![vec!["id".to_string()]]);
+    assert_eq!(
+        s.val_cols.iter().filter(|p| p[0] == "id").count(),
+        1,
+        "exactly one shadow lane: {:?}",
+        s.val_cols
+    );
+
+    let sound = prepare(sql, "__THIS__", &cols(&[("k", Ty::I64, false)]), &[dim]).unwrap();
+    let s = &sound.statics[0];
+    assert_eq!(s.key_cols, vec![vec!["id".to_string()]]);
+    assert!(
+        !s.val_cols.iter().any(|p| p[0] == "id"),
+        "sound pairing grew a lane: {:?}",
+        s.val_cols
+    );
+}
+
+/// The extra probe lane must not break IR round-tripping.
+#[test]
+fn a_lossy_join_program_is_canonical_ir() {
+    let schema = cols(&[("k", Ty::F64, false)]);
+    let dim = stat("dim", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT dim.id AS o, v FROM __THIS__ LEFT JOIN dim ON k = dim.id",
+        "__THIS__",
+        &schema,
+        &[dim],
+    )
+    .unwrap()
+    .program;
+    let text = print(&p);
+    assert_eq!(
+        parse(&text).unwrap(),
+        p,
+        "lossy join program is not canonical:\n{text}"
+    );
 }
 
 #[test]
