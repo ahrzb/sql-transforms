@@ -1292,6 +1292,19 @@ impl DuckDBInferFn {
                 schema::RowField::Opaque(_) => opaque.push((pos, name)),
             }
         }
+        // The IN-side duplicate check, moved off the IR verifier (TASK-127).
+        // Here the names are still IDENTIFIERS — the struct leaf lanes, whose
+        // dotted display names are not, get appended below — so a repeat is a
+        // real collision and refuses by name instead of surfacing later as an
+        // internal verifier bug on every query over the table.
+        for (i, c) in in_cols.iter().enumerate() {
+            if in_cols[..i].iter().any(|p| p.name == c.name) {
+                return Err(build_err(format!(
+                    "row table '{row_table}' has two columns named '{}'",
+                    c.name
+                )));
+            }
+        }
         fn build_fields(
             in_cols: &mut Vec<Col>,
             prefix: &str,

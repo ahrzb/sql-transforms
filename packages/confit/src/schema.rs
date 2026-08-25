@@ -90,9 +90,13 @@ fn arrow_schema_fields(
     let pa_types = PyModule::import(py, "pyarrow.types")
         .map_err(|e| InterpError::Build(format!("Failed to import pyarrow.types: {e}")))?;
     let mut out = Vec::with_capacity(names.len());
-    for name in names {
+    // By POSITION, not by name: a schema may carry the same name twice, and
+    // pyarrow's by-name lookup answers an ambiguous name with "does not
+    // exist" (TASK-127). Whether a repeat is legal is the caller's rule to
+    // state, in its own words.
+    for (i, name) in names.into_iter().enumerate() {
         let field = bound
-            .call_method1("field", (name.as_str(),))
+            .call_method1("field", (i,))
             .map_err(|e| InterpError::Build(format!("Failed to read field '{name}': {e}")))?;
         let rf = arrow_field_to_row_field(&pa_types, &field, policy)
             .map_err(|e| InterpError::Build(format!("Failed to read type of '{name}': {e}")))?;
