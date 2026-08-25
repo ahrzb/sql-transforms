@@ -124,13 +124,9 @@ def test_named_rejections():
                 ),
             )
         )
-    # Struct schemas use the row path.
-    m_schema = pa.schema([pa.field("a", pa.struct([pa.field("i", pa.int64())]))])
-    fs = DuckDBInferFn(
-        "SELECT a.i FROM __THIS__", row_tables={"__THIS__": m_schema}, static_tables={}
-    )
-    with pytest.raises(ValueError, match="all-scalar"):
-        fs.infer_arrow(pa.table({"a": [{"i": 1}]}))
+    # The "struct schemas use the row path" block retired with TASK-114:
+    # infer_arrow walks the lane path now, so a struct row column serves.
+    # Its replacements are the struct pins at the bottom of this file.
 
 
 # test_every_scenario_refuses_a_supplied_output_model (TASK-71) is gone with
@@ -326,3 +322,377 @@ def test_unaligned_model_tables_at_construction():
         """
     )
     assert out == "ok"
+
+
+# ------------------------------------- TASK-114: struct row columns ingest --
+#
+# infer_arrow used to refuse any row schema with a struct column; infer_rows
+# served it. The entry points now agree, because ingest walks the lane's
+# SEGMENT PATH (TASK-132) through the StructArray's children.
+#
+# The one hazard the design must not get wrong: a NOT NULL child under a
+# nullable parent has no validity buffer of its own, and its data buffer
+# under a null parent holds an arbitrary live value. DuckDB folds the
+# parent's mask into every child at arrow ingest
+# (src/function/table/arrow_conversion.cpp, ColumnArrowToDuckDB, the STRUCT
+# case) and struct_extract itself does not, so the fold belongs at OUR
+# ingest too: the null lane is the OR of every level.
+
+_NN = pa.field("x", pa.int64(), nullable=False)
+_S114 = pa.schema([pa.field("st", pa.struct([_NN]), nullable=True)])
+_S114_NESTED = pa.schema(
+    [
+        pa.field(
+            "a",
+            pa.struct(
+                [
+                    pa.field(
+                        "b",
+                        pa.struct([pa.field("c", pa.int64(), nullable=False)]),
+                        nullable=True,
+                    )
+                ]
+            ),
+            nullable=True,
+        )
+    ]
+)
+_S114_WIDE = pa.schema(
+    [
+        pa.field(
+            "st",
+            pa.struct(
+                [
+                    pa.field("s", pa.string()),
+                    pa.field("b", pa.bool_()),
+                    pa.field("i32", pa.int32()),
+                ]
+            ),
+            nullable=True,
+        )
+    ]
+)
+_S114_ROWS = [{"st": {"x": 41}}, {"st": None}, {"st": {"x": 7}}]
+_S114_SQL = "SELECT st.x + 1 AS o FROM __THIS__"
+
+
+def _duck(sql: str, table: pa.Table) -> pa.Table:
+    """The live oracle over the SAME arrow batch, optimizer off."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("PRAGMA disable_optimizer")
+    con.register("__THIS__", table)
+    return con.execute(sql).to_arrow_table()
+
+
+def _build(sql, schema):
+    return DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
+
+
+def _vs_duckdb(fn, sql, table):
+    """infer_arrow == optimizer-off DuckDB, values AND schema."""
+    got = fn.infer_arrow(table)
+    want = _duck(sql, table)
+    assert got.to_pylist() == want.to_pylist()
+    assert got.schema == want.schema
+    return got
+
+
+def test_differential_struct_row_column():
+    """The entry-point-agreement criterion, at its narrowest."""
+    tbl = _table(_S114_ROWS, schema=_S114)
+    for sql in (_S114_SQL, "SELECT st.* FROM __THIS__"):
+        fn = _build(sql, _S114)
+        _cmp(fn, _S114_ROWS, tbl)
+        _vs_duckdb(fn, sql, tbl)
+    # A NOT NULL parent over a NOT NULL child: no validity buffer anywhere.
+    nn = pa.schema([pa.field("st", pa.struct([_NN]), nullable=False)])
+    rows = [{"st": {"x": 1}}, {"st": {"x": 2}}]
+    tbl = _table(rows, schema=nn)
+    fn = _build(_S114_SQL, nn)
+    _cmp(fn, rows, tbl)
+    _vs_duckdb(fn, _S114_SQL, tbl)
+
+
+def test_a_null_parent_does_not_leak_the_child_buffer():
+    """The validity-OR criterion, on a fixture whose child buffer holds a
+    LOUD value under the null parent. `Table.from_pylist` happens to leave a
+    zero there, which would let a fold-free ingest pass by luck."""
+    loud = pa.StructArray.from_arrays(
+        [pa.array([41, 999999, 7])],
+        fields=[_NN],
+        mask=pa.array([False, True, False]),
+    )
+    tbl = pa.Table.from_arrays([loud], schema=_S114)
+    # The hazard is live: the child, undecorated, still carries the value.
+    child = tbl.column("st").chunk(0).field(0)
+    assert child.to_pylist() == [41, 999999, 7]
+    assert child.null_count == 0
+    fn = _build(_S114_SQL, _S114)
+    got = _vs_duckdb(fn, _S114_SQL, tbl)
+    assert [r["o"] for r in got.to_pylist()] == [42, None, 8]
+    assert fn.infer_rows(tbl.to_pylist()) == got.to_pylist()
+
+
+def test_a_null_at_any_nesting_level_nulls_the_leaf():
+    """The nesting criterion: an outer null, a middle null and a live leaf,
+    with the innermost buffer holding real values under both nulls."""
+    rows = [{"a": {"b": {"c": 1}}}, {"a": {"b": None}}, {"a": None}]
+    sql = "SELECT a.b.c * 10 AS o FROM __THIS__"
+    fn = _build(sql, _S114_NESTED)
+    tbl = _table(rows, schema=_S114_NESTED)
+    _cmp(fn, rows, tbl)
+    assert _vs_duckdb(fn, sql, tbl).to_pylist() == [{"o": 10}, {"o": None}, {"o": None}]
+
+    inner = pa.array([1, 777, 888])
+    mid = pa.StructArray.from_arrays(
+        [inner],
+        fields=[pa.field("c", pa.int64(), nullable=False)],
+        mask=pa.array([False, True, False]),
+    )
+    outer = pa.StructArray.from_arrays(
+        [mid],
+        fields=[pa.field("b", mid.type, nullable=True)],
+        mask=pa.array([False, False, True]),
+    )
+    loud = pa.Table.from_arrays([outer], schema=_S114_NESTED)
+    assert loud.column("a").chunk(0).field(0).field(0).to_pylist() == [1, 777, 888]
+    assert _vs_duckdb(fn, sql, loud).to_pylist() == [
+        {"o": 10},
+        {"o": None},
+        {"o": None},
+    ]
+
+
+@pytest.mark.parametrize("depth", [1, 2, 4, 8, 16, 32])
+def test_nested_structs_serve_to_the_row_paths_depth(depth):
+    """There is no depth constant to import: schema.rs, build_fields and
+    lane_paths all recurse unbounded and the ingest walk is a segment loop,
+    so this pins that the arrow path has no limit the row path lacks."""
+    field = pa.field("v", pa.int64(), nullable=False)
+    for i in range(depth - 1, -1, -1):
+        field = pa.field(f"f{i}", pa.struct([field]), nullable=True)
+    schema = pa.schema([field])
+    row = {"v": 5}
+    for i in range(depth - 1, -1, -1):
+        row = {f"f{i}": row}
+    path = ".".join(f"f{i}" for i in range(depth)) + ".v"
+    sql = f"SELECT {path} + 1 AS o FROM __THIS__"  # noqa: S608 -- our own names
+    fn = _build(sql, schema)
+    tbl = _table([row], schema=schema)
+    _cmp(fn, [row], tbl)
+    assert _vs_duckdb(fn, sql, tbl).to_pylist() == [{"o": 6}]
+
+
+def test_a_sliced_struct_batch_reads_the_right_rows():
+    """pyarrow COMPOSES a struct child's offset with its parent's, matching
+    DuckDB's GetEffectiveOffset — so each level is read through its OWN
+    offset and nothing is composed by hand."""
+    fn = _build(_S114_SQL, _S114)
+
+    # (a) a parent sliced over a zero-offset child.
+    big = _table([{"st": {"x": i}} for i in range(8)], schema=_S114)
+    sliced = big.slice(3, 4)
+    assert sliced.column("st").chunk(0).offset == 3
+    assert _vs_duckdb(fn, _S114_SQL, sliced).to_pylist() == [
+        {"o": 4},
+        {"o": 5},
+        {"o": 6},
+        {"o": 7},
+    ]
+
+    # (b) a child that carries its own offset 4 under a parent sliced at 2.
+    child = pa.array(list(range(100, 110)))
+    parent = pa.StructArray.from_arrays([child.slice(4)], fields=[_NN])
+    own = pa.Table.from_arrays([parent], schema=_S114).slice(2, 3)
+    assert own.column("st").chunk(0).field(0).offset == 6  # 4 + 2, composed
+    assert _vs_duckdb(fn, _S114_SQL, own).to_pylist() == [
+        {"o": 107},
+        {"o": 108},
+        {"o": 109},
+    ]
+
+    # (c) a sliced parent whose slice CONTAINS a null, with the null slot's
+    # raw value a real neighbouring row's rather than a zero.
+    vals = pa.array([100 + i for i in range(8)])
+    nulled = pa.StructArray.from_arrays(
+        [vals],
+        fields=[_NN],
+        mask=pa.array([False] * 4 + [True] + [False] * 3),
+    )
+    inside = pa.Table.from_arrays([nulled], schema=_S114).slice(3, 4)
+    assert inside.column("st").chunk(0).field(0).to_pylist() == [103, 104, 105, 106]
+    assert _vs_duckdb(fn, _S114_SQL, inside).to_pylist() == [
+        {"o": 104},
+        {"o": None},
+        {"o": 106},
+        {"o": 107},
+    ]
+
+
+def _wrong_st(kind):
+    """A batch whose 'st' column does not match the declared struct."""
+    if kind == "absent":
+        return pa.table({"other": [1]})
+    if kind == "not_a_struct":
+        return pa.table({"st": pa.array([1], pa.int64())})
+    if kind == "no_field":
+        arr = pa.StructArray.from_arrays(
+            [pa.array([1])], fields=[pa.field("y", pa.int64())]
+        )
+        return pa.table({"st": arr})
+    if kind == "leaf_dtype":
+        arr = pa.StructArray.from_arrays(
+            [pa.array([1], pa.int32())], fields=[pa.field("x", pa.int32())]
+        )
+        return pa.table({"st": arr})
+    raise AssertionError(kind)
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        ("absent", "missing column 'st'"),
+        ("not_a_struct", "'st' is int64"),
+        ("no_field", "has no field 'x'"),
+        ("leaf_dtype", "column 'st.x' is int32"),
+    ],
+)
+def test_struct_leaf_lanes_refuse_by_name(kind, reason):
+    """A struct-shaped batch that does not match the declared schema names
+    the specific reason, not the retired blanket all-scalar sentence."""
+    fn = _build(_S114_SQL, _S114)
+    with pytest.raises(ValueError) as e:
+        fn.infer_arrow(_wrong_st(kind))
+    assert reason in str(e.value)
+    assert "all-scalar" not in str(e.value)
+
+
+def test_a_non_nullable_struct_leaf_refuses_a_child_level_null():
+    """The declared-schema contract every NOT NULL column shares, extended
+    to a leaf lane and named with the leaf's dotted DISPLAY name."""
+    nn = pa.schema([pa.field("st", pa.struct([_NN]), nullable=False)])
+    arr = pa.StructArray.from_arrays([pa.array([1, None])], fields=[_NN])
+    fn = _build(_S114_SQL, nn)
+    with pytest.raises(ValueError, match="column 'st.x' is not nullable"):
+        fn.infer_arrow(pa.Table.from_arrays([arr], schema=nn))
+
+
+def test_a_struct_column_with_two_chunks_names_combine_chunks():
+    """The existing refusal, now that the all-scalar one no longer fires
+    first and hides it."""
+    fn = _build(_S114_SQL, _S114)
+    two = pa.concat_tables(
+        [
+            _table(_S114_ROWS[:1], schema=_S114),
+            _table(_S114_ROWS[1:], schema=_S114),
+        ]
+    )
+    assert two.column("st").num_chunks == 2
+    with pytest.raises(ValueError, match="combine_chunks"):
+        fn.infer_arrow(two)
+
+
+def test_an_empty_struct_batch_round_trips():
+    fn = _build(_S114_SQL, _S114)
+    empty = _table([], schema=_S114)
+    got = _vs_duckdb(fn, _S114_SQL, empty)
+    assert got.to_pylist() == []
+    assert got.schema == fn.output_schema
+
+
+def test_a_wide_struct_of_mixed_leaf_types():
+    """String, bool and a narrow int leaf, sliced so a NULL parent lands
+    inside the slice. Values AND the output pa.Schema against DuckDB."""
+    rows = [
+        {"st": None} if i == 2 else {"st": {"s": c * 2, "b": i % 2 == 1, "i32": i}}
+        for i, c in enumerate("abcde")
+    ]
+    sql = "SELECT st.s AS s, st.b AS b, st.i32 AS i FROM __THIS__"
+    fn = _build(sql, _S114_WIDE)
+    sliced = _table(rows, schema=_S114_WIDE).slice(1, 3)
+    got = _vs_duckdb(fn, sql, sliced)
+    assert got.schema.types == [pa.string(), pa.bool_(), pa.int32()]
+    assert got.to_pylist() == fn.infer_rows(sliced.to_pylist())
+
+
+# The opacity criterion. "Stays opaque and does not block the build" means
+# the all-opaque struct (zero lanes, never looked at) and the servable one
+# (lanes, required in the batch on exactly the row path's terms).
+_OPAQUE_TS = pa.struct([pa.field("t", pa.timestamp("us"))])
+_K = pa.field("k", pa.int64(), nullable=False)
+
+
+def test_an_unreferenced_all_opaque_struct_column_is_never_looked_at():
+    """Passes today; a regression pin. Zero lanes means the column need not
+    even be in the batch."""
+    schema = pa.schema([_K, pa.field("ts", _OPAQUE_TS, nullable=True)])
+    sql = "SELECT k + 1 AS o FROM __THIS__"
+    fn = _build(sql, schema)
+    flat = pa.table({"k": [1, 2]}, schema=pa.schema([_K]))
+    assert fn.infer_arrow(flat).to_pylist() == [{"o": 2}, {"o": 3}]
+    assert fn.infer_rows([{"k": 1, "ts": None}]) == [{"o": 2}]
+
+
+def test_an_unreferenced_struct_column_with_lanes_serves_and_is_required():
+    """Its leaves ARE lanes, so the batch must carry it -- and the row path
+    requires the same attribute for the same input."""
+    schema = pa.schema(
+        [_K, pa.field("st", pa.struct([pa.field("x", pa.int64())]), nullable=True)]
+    )
+    sql = "SELECT k + 1 AS o FROM __THIS__"
+    fn = _build(sql, schema)
+    present = pa.Table.from_pylist(
+        [{"k": 1, "st": {"x": 9}}, {"k": 2, "st": None}], schema=schema
+    )
+    assert _vs_duckdb(fn, sql, present).to_pylist() == [{"o": 2}, {"o": 3}]
+    # Absent: both entry points refuse, each in its own vocabulary.
+    with pytest.raises(ValueError, match="missing column 'st'"):
+        fn.infer_arrow(pa.table({"k": [1]}, schema=pa.schema([_K])))
+    with pytest.raises(ValueError, match="missing attribute 'st.x'"):
+        fn.infer_rows([{"k": 1}])
+
+
+def test_a_mixed_struct_never_touches_its_opaque_sibling():
+    """One servable field and one out-of-vocabulary field: exactly ONE lane,
+    and the walk only ever visits that lane's path."""
+    mix = pa.struct([pa.field("x", pa.int64()), pa.field("t", pa.timestamp("us"))])
+    schema = pa.schema([_K, pa.field("mix", mix, nullable=True)])
+    sql = "SELECT mix.x + k AS o FROM __THIS__"
+    fn = _build(sql, schema)
+    rows = [{"k": 1, "mix": {"x": 10, "t": None}}, {"k": 2, "mix": None}]
+    tbl = pa.Table.from_pylist(rows, schema=schema)
+    assert _vs_duckdb(fn, sql, tbl).to_pylist() == [{"o": 11}, {"o": None}]
+    # The opaque sibling is not type checked: a child type we do not serve
+    # goes straight through, because the walk never asks about it.
+    hostile = pa.struct(
+        [pa.field("x", pa.int64()), pa.field("t", pa.list_(pa.int64()))]
+    )
+    arr = pa.StructArray.from_arrays(
+        [pa.array([10, None]), pa.array([[1, 2], None], pa.list_(pa.int64()))],
+        fields=list(hostile),
+        mask=pa.array([False, True]),
+    )
+    batch = pa.table({"k": pa.array([1, 2]), "mix": arr})
+    assert fn.infer_arrow(batch).to_pylist() == [{"o": 11}, {"o": None}]
+
+
+def test_struct_input_does_not_change_the_output_schema():
+    """The no-output-change criterion: the flattened output is unchanged,
+    and still byte-identical to DuckDB's own."""
+    cases = [
+        (_S114_SQL, _S114, _table(_S114_ROWS, schema=_S114)),
+        (
+            "SELECT a.b.c * 10 AS o FROM __THIS__",
+            _S114_NESTED,
+            _table([{"a": {"b": {"c": 1}}}], schema=_S114_NESTED),
+        ),
+        ("SELECT st.* FROM __THIS__", _S114, _table(_S114_ROWS, schema=_S114)),
+    ]
+    for sql, schema, tbl in cases:
+        fn = _build(sql, schema)
+        want = _duck(sql, tbl).schema
+        assert fn.output_schema == want
+        for ty in fn.output_schema.types:
+            assert not pa.types.is_struct(ty)

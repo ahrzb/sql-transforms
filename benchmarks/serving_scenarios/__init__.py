@@ -24,7 +24,7 @@ from collections.abc import Callable
 import duckdb
 import pyarrow as pa
 
-NAMES = ["titanic", "house_prices", "fraud_txn", "store_sales"]
+NAMES = ["titanic", "house_prices", "fraud_txn", "store_sales", "feature_bundle"]
 
 SEED = 20260726
 _ARROW = {
@@ -43,7 +43,11 @@ def all_scenarios():
     return [load(n) for n in NAMES]
 
 
-def arrow_schema(schema: dict[str, str]) -> pa.Schema:
+def arrow_schema(schema: dict[str, str] | pa.Schema) -> pa.Schema:
+    # A scenario may declare ROW_SCHEMA as a pa.Schema outright: the
+    # dict[str, str] shorthand cannot spell a struct column (TASK-114).
+    if isinstance(schema, pa.Schema):
+        return schema
     return pa.schema(
         pa.field(n, _ARROW[s.rstrip("?")], nullable=s.endswith("?"))
         for n, s in schema.items()
@@ -105,6 +109,24 @@ def verify_parity(mod, n: int = 300) -> list[str]:
     problems: list[str] = []
     if fn.backend != "cranelift":
         problems.append(f"{mod.NAME}: backend is {fn.backend}, not cranelift")
+
+    # The columnar boundary is the same engine behind a second entry point,
+    # so it agrees POSITIONALLY with infer_rows or it is a defect (TASK-114).
+    got_arrow = fn.infer_arrow(rows_table(mod, rows)).to_pylist()
+    if got_arrow != got_spec:
+        first = next(
+            (
+                i
+                for i, (a, b) in enumerate(zip(got_arrow, got_spec, strict=False))
+                if a != b
+            ),
+            min(len(got_arrow), len(got_spec)),
+        )
+        problems.append(
+            f"{mod.NAME} infer_arrow vs infer_rows: {len(got_arrow)} vs "
+            f"{len(got_spec)} rows, first difference at {first}: "
+            f"{got_arrow[first : first + 1]} != {got_spec[first : first + 1]}"
+        )
 
     # No more output='dict' vs typed-mode differential: dict-out is the only
     # mode the arrow schema surface has (output= was deleted).
