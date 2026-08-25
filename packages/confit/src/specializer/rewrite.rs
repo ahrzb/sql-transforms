@@ -544,6 +544,8 @@ pub fn rewrite_colon_aliases(tokens: Vec<Token>) -> Vec<Token> {
         Keyword::QUALIFY,
     ];
 
+    // Close the current select item: re-emit its captured prefix alias as
+    // ` AS k`. A no-op for an item that carried no alias.
     let flush = |out: &mut Vec<Token>, pending: &mut Vec<Option<Word>>| {
         if let Some(slot) = pending.last_mut() {
             if let Some(alias) = slot.take() {
