@@ -1,4 +1,4 @@
-//! The columnar boundary (TASK-60): `infer_arrow(pa.Table) -> pa.Table`.
+//! The columnar boundary: `infer_arrow(pa.Table) -> pa.Table`.
 //!
 //! Ingest walks pyarrow buffers directly (address + size via the Python
 //! buffer API — no arrow-rs dependency) into the engine's `ColData` lanes;
@@ -53,7 +53,7 @@ impl RawArray<'_> {
 }
 
 /// A pointer into an Arrow value buffer, which carries NO alignment
-/// guarantee (TASK-67).
+/// guarantee.
 ///
 /// Arrow does not promise naturally aligned value buffers, and pyarrow
 /// zero-copies one that is not: `np.frombuffer(blob, np.float64, offset=4)`
@@ -89,7 +89,8 @@ impl<T: Copy> Unaligned<T> {
 /// built a null slice, which is UB in its own right. pyarrow refuses to
 /// construct a string array without a data buffer today (`ArrowInvalid: Value
 /// data buffer is null`), so this is hardening rather than a live bug, but it
-/// is the same "a raw address is not a Rust reference" mistake as TASK-67.
+/// is the same "a raw address is not a Rust reference" mistake [`Unaligned`]
+/// exists to prevent.
 fn str_bytes<'a>(raw: &'a RawArray<'_>) -> &'a [u8] {
     match raw.bufs.get(2).copied().flatten() {
         Some((addr, size)) if size > 0 => unsafe {
@@ -153,10 +154,9 @@ fn column<'py>(
     }
 }
 
-/// The leaf array for one lane, plus every struct ancestor along its path
-/// (TASK-114). A path is the lane's SEGMENT list (TASK-132): `[name]` for a
-/// plain column — dots included, a name is not a path — and the struct walk
-/// for a leaf lane.
+/// The leaf array for one lane, plus every struct ancestor along its path.
+/// A path is the lane's SEGMENT list: `[name]` for a plain column — dots
+/// included, a name is not a path — and the struct walk for a leaf lane.
 ///
 /// The ancestors come back because DuckDB folds a struct's validity into
 /// each child at ARROW INGEST (src/function/table/arrow_conversion.cpp,
@@ -210,7 +210,9 @@ fn walk_lane<'py>(
 }
 
 /// pyarrow batch -> engine Batch, matching each lane by its PATH with strict
-/// dtypes (int64 / double / string|large_string / bool).
+/// dtypes: the column's arrow type must be the declared one exactly
+/// (int8/int16/int32/int64 / double / string|large_string / bool), never a
+/// widening.
 pub fn ingest<'py>(
     py: Python<'_>,
     batch: &Bound<'py, PyAny>,
@@ -221,10 +223,10 @@ pub fn ingest<'py>(
     let mut cols = Vec::with_capacity(lanes.len());
     for lane in lanes {
         let (arr, parents) = walk_lane(batch, &lane.path, &lane.name)?;
-        // A PRESENCE lane (TASK-133) stops at a struct NODE and reads that
-        // node's own validity, folded with every parent's — the same fold
-        // the leaf lanes below use. Its arrow type is a struct, so the
-        // scalar dtype check does not apply to it.
+        // A PRESENCE lane stops at a struct NODE and reads that node's own
+        // validity, folded with every parent's — the same fold the leaf
+        // lanes below use. Its arrow type is a struct, so the scalar dtype
+        // check does not apply to it.
         let ct = match lane.kind {
             LaneKind::Present => {
                 let raw = raw_array(arr)?;
@@ -540,6 +542,9 @@ pub fn ensemble(
     .map_err(|e| err(format!("model set '{set}': {e}")))
 }
 
+/// Arrow's validity encoding for `n` flags: LSB-first bits (set = valid),
+/// plus the NULL count `Array.from_buffers` takes separately. `oks` yields
+/// exactly `n` items — it is the same row range the buffer covers.
 fn bitmap(oks: impl Iterator<Item = bool>, n: usize) -> (Vec<u8>, usize) {
     let mut bits = vec![0u8; n.div_ceil(8)];
     let mut nulls = 0usize;
@@ -554,6 +559,8 @@ fn bitmap(oks: impl Iterator<Item = bool>, n: usize) -> (Vec<u8>, usize) {
 }
 
 /// The raw little-endian bytes of a numeric buffer, for `pa.py_buffer`.
+/// `size` must be `size_of::<T>()`: it is what turns the element count into
+/// the byte length, so a larger value reads past the end of `data`.
 fn cast_bytes<T>(data: &[T], size: usize) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * size) }.to_vec()
 }
@@ -660,7 +667,7 @@ pub fn emit(
                     crate::specializer::ir::Ty::I64 => pa.call_method0("int64"),
                     crate::specializer::ir::Ty::F64 => pa.call_method0("float64"),
                     // `string`, not `large_string` — see the scalar lane
-                    // below and TASK-72.
+                    // below for why.
                     crate::specializer::ir::Ty::Str => pa.call_method0("string"),
                     // A struct_pack / UDF child over a DECIMAL refuses at
                     // bind (m-8 lattice phase 5).
@@ -669,7 +676,7 @@ pub fn emit(
                     }
                 };
                 // Unnamed extern: list<elem>; named extern: struct keyed by
-                // the declared names (slice 5), matching DuckDB's output.
+                // the declared names, matching DuckDB's output.
                 let out_ty = if field_names.is_empty() {
                     pa.call_method1("list_", (lane_ty(out_cols[*first].ty.ty)?,))?
                 } else {
@@ -714,8 +721,7 @@ pub fn emit(
                 OutCol::I64(v) => {
                     // The column's declared width narrows the emitted buffer
                     // (values compute in the i64 lane). Out of range refuses
-                    // by name: every such input DuckDB itself traps on, and
-                    // our matching runtime trap is m-8 phase 3.
+                    // by name: every such input DuckDB itself traps on.
                     let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
                     let ty = c.ty.ty;
                     let narrow_err = |x: i64| {
@@ -810,9 +816,9 @@ pub fn emit(
                     )
                 }
                 // `pa.string()`, 32-bit offsets, because that is what
-                // DuckDB's own `.arrow()` returns for a VARCHAR column
-                // (TASK-72). Emitting `large_string` gave byte-identical
-                // VALUES under a schema that would not stack:
+                // DuckDB's own `.arrow()` returns for a VARCHAR column.
+                // Emitting `large_string` gave byte-identical VALUES under
+                // a schema that would not stack:
                 // `pa.concat_tables([duck_out, ours])` raised, and so did any
                 // pinned-schema writer.
                 OutCol::Str(v) => {

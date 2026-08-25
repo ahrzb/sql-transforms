@@ -3,6 +3,9 @@
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::PyErr;
 
+/// The variant picks the Python exception a failure surfaces as, so it is
+/// part of the caller's contract: `Build` refuses at construction and `Eval`
+/// traps mid-run (both `ValueError`), `MissingKey` raises `KeyError`.
 pub enum InterpError {
     Build(String),
     MissingKey(String),

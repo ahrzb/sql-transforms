@@ -9,9 +9,9 @@
 //! * `specializer` — frontend, IR, verifier, and the interpreter/cranelift
 //!   backends.
 //!
-//! The remaining modules are deliberately semantics-free and public because
-//! `sql-transform` links this crate to share them: the error type, the type
-//! vocabulary, and the Python schema/model marshalling.
+//! The remaining modules are deliberately semantics-free — the error type,
+//! the type vocabulary, and the Python schema marshalling — and public
+//! because the crate also builds as an rlib.
 
 use pyo3::prelude::*;
 
