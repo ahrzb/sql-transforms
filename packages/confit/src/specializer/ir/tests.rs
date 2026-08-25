@@ -887,6 +887,35 @@ fn rejects_duplicate_columns() {
     );
 }
 
+/// TASK-127: the IN side is no longer checked here. A struct leaf lane
+/// carries its dotted PATH as a display name, which stopped being an
+/// identifier at TASK-132 — nothing resolves a row lane by it — so a leaf
+/// that spells a sibling's name is not a duplicate. The check that a real
+/// row IDENTIFIER cannot repeat moved to the build boundary, where the
+/// plain columns are still distinguishable from the leaves.
+#[test]
+fn accepts_duplicate_in_columns() {
+    use super::{Col, ColTy, Ty};
+    let mut p = api_program(vec![], "f", vec![store_emit_block()]);
+    p.in_cols = vec![
+        Col {
+            name: "w.mean".into(),
+            ty: ColTy {
+                ty: Ty::F64,
+                nullable: false,
+            },
+        },
+        Col {
+            name: "w.mean".into(),
+            ty: ColTy {
+                ty: Ty::F64,
+                nullable: false,
+            },
+        },
+    ];
+    verify(&p).expect("a leaf display name is not an identifier");
+}
+
 #[test]
 fn rejects_branch_to_entry() {
     assert_verify_rejects(
