@@ -12,18 +12,22 @@
 //! breaks the build, not the answers. Everything not lowered refuses by
 //! name (`Unsupported`), wrong-against-catalog is `Bind`.
 //!
-//! v0 surface (grown corpus-first, per the design's phases): one base
-//! table, WHERE, projection items that are bare columns, `*`, or ALIASED
-//! expressions over the plan-core expression set. Unaliased complex items
-//! refuse — reproducing DuckDB's auto-naming is unpinned. Functions,
-//! joins, windows, aggregates: phase 2+.
+//! v0 surface (grown corpus-first, per the design's phases): a FROM clause
+//! of base tables joined by ON/USING/NATURAL or by comma (INNER/LEFT/RIGHT/
+//! FULL/CROSS), WHERE, and projection items that are bare columns, `*`, a
+//! qualified star, an ALIASED expression, or an unaliased expression whose
+//! DuckDB auto-name was measured — an unmeasured rendering refuses rather
+//! than invent an output name. Calls reach only the bought scalar set.
+//! DISTINCT, ORDER BY/LIMIT, set operations, aggregates and windows refuse
+//! by name; they are later phases.
 //!
 //! Printer discipline: every identifier quoted (DuckDB matches
 //! case-insensitively regardless, spelling preserved), every compound
 //! expression parenthesized (no precedence table to get wrong), literal
-//! LEXEMES verbatim (never re-formatted). A plan whose intermediate schema
-//! has duplicate column names refuses at print time — a name-addressed
-//! subquery boundary cannot express it unambiguously.
+//! LEXEMES verbatim (never re-formatted). Duplicate column names print
+//! wherever the SQL can address them — join sides carry aliases, so
+//! cross-side duplicates are unambiguous — and refuse at a name-addressed
+//! boundary (a subquery, a bare table), which cannot express them.
 
 use sqlparser::ast::{
     BinaryOperator, CastKind, Expr as SqlExpr, GroupByExpr, JoinConstraint, JoinOperator, Select,
@@ -96,10 +100,10 @@ pub fn parse_sql(sql: &str, cat: &Catalog) -> Result<Rel, DialectError> {
 /// Refuse every `Query` field we do not lower, by walking all of them.
 fn refuse_unhandled_query(q: &sqlparser::ast::Query) -> Result<(), DialectError> {
     let sqlparser::ast::Query {
-        with: _,     // checked above
-        body: _,     // lowered
-        order_by: _, // checked above
-        limit_clause: _,
+        with: _,         // checked above
+        body: _,         // lowered
+        order_by: _,     // checked above
+        limit_clause: _, // checked above
         fetch,
         locks,
         for_clause,

@@ -74,6 +74,8 @@ pub enum BinOp {
 }
 
 impl BinOp {
+    /// The canonical plan-text token (`add`, `fdiv`), NOT the SQL symbol —
+    /// each printer carries its own symbol table. Inverse of [`BinOp::parse`].
     pub fn name(self) -> &'static str {
         match self {
             BinOp::Add => "add",
@@ -549,6 +551,8 @@ pub enum JoinKind {
 }
 
 impl JoinKind {
+    /// The canonical plan-text token (`inner`, `cross`), NOT the SQL
+    /// keywords — printers spell those. Inverse of [`JoinKind::parse`].
     pub fn name(self) -> &'static str {
         match self {
             JoinKind::Inner => "inner",
@@ -577,6 +581,9 @@ pub enum Rel {
     Scan {
         table: String,
     },
+    /// The rows the predicate holds for. `pred` is a BOOLEAN expression over
+    /// the input schema, read under SQL three-valued logic: only TRUE keeps
+    /// a row, NULL drops it exactly as FALSE does.
     Filter {
         input: Box<Rel>,
         pred: Expr,

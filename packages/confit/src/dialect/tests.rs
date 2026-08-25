@@ -384,7 +384,7 @@ fn literal_typing_follows_the_lattice() {
     );
 }
 
-// --- Join (TASK-104; 2026-08-13-dialect-join-node-design.md) ----------------
+// --- Join (2026-08-13-dialect-join-node-design.md) --------------------------
 
 fn cat2() -> Catalog {
     let t = |name: &str, cols: Vec<(&str, DTy)>| Table {
@@ -482,8 +482,9 @@ fn join_right_full_cross_comma_and_chains() {
 
 #[test]
 fn join_using_and_natural_follow_the_probe() {
-    // Measured 2026-08-13 (probe in the TASK-104 commit): USING merges the
-    // key column at its LEFT-side position; remaining left, then right.
+    // Measured 2026-08-13 (pins-dialect/joins.json, probe_joins.py): USING
+    // merges the key column at its LEFT-side position; then the remaining
+    // left columns, then the remaining right ones.
     let c = cat2();
     let p = assert_join_fixpoint("SELECT * FROM t1 JOIN t2 USING (a)", &c);
     let names: Vec<String> = p.schema(&c).unwrap().into_iter().map(|(n, _)| n).collect();

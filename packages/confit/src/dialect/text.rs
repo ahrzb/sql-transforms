@@ -25,6 +25,8 @@
 //!       | (case (when expr expr)+ (else expr)?)
 //!       | (isnull expr) | (isnotnull expr)
 //!       | (isdistinct expr expr) | (isnotdistinct expr expr)
+//!       | (call FN expr*)               FN: a bought scalar function's
+//!                                           canonical name (upper, ...)
 //! ```
 
 use super::plan::{BinOp, Expr, JoinKind, Rel, ScalarFn, UnOp};
@@ -33,6 +35,8 @@ use super::DialectError;
 
 // --- printing ---------------------------------------------------------------
 
+/// The plan's one canonical spelling — an indented s-expression with every
+/// binding and type visible.
 pub fn print(rel: &Rel) -> String {
     let mut out = String::new();
     print_rel(rel, 0, &mut out);
@@ -471,6 +475,9 @@ impl P {
     }
 }
 
+/// Read canonical plan text back, whitespace-insensitively. Malformed text
+/// is [`DialectError::Text`]; the plan comes back UNVERIFIED — a caller
+/// holding a catalog runs [`super::verify::verify`] over it.
 pub fn parse(s: &str) -> Result<Rel, DialectError> {
     let mut p = P {
         toks: lex(s)?,

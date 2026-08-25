@@ -23,6 +23,10 @@ pub(crate) struct ColRef {
     pub sql: Option<String>,
 }
 
+/// What a dialect owes the shared query skeleton: how it quotes an
+/// identifier, and how it spells one expression. `input` is the caller's
+/// per-ordinal [`ColRef`] table — an implementation resolves a column
+/// through [`col_ref`] and so never handles names itself.
 pub(crate) trait ExprPrinter {
     fn quote_ident(&self, name: &str) -> String;
     fn expr(&self, e: &Expr, input: &[ColRef]) -> Result<String, DialectError>;
