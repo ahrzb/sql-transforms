@@ -109,7 +109,7 @@ def test_dict_rows_and_object_rows_agree():
     # MIGRATION-NOTE: the old pydantic ``_row_model`` synthesized-model
     # constructor is gone (no output/row model to build). The equivalent
     # property in the arrow surface is dict-or-object marshalling
-    # (docs/superpowers/specs/2026-08-13-arrow-schema-api-design.md):
+    # (packages/confit/docs/specs/2026-08-13-arrow-schema-api-design.md):
     # infer() accepts a dict or an attribute-bearing object and must serve
     # the same row either way.
     from types import SimpleNamespace

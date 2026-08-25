@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Design spec of record: `docs/superpowers/specs/2026-07-23-transformer-ref-followups-design.md`. Read it before starting.
+- Design spec of record: `docs/specs/2026-07-23-transformer-ref-followups-design.md`. Read it before starting.
 - DataFusion is the parity oracle (decision-1). Native and codegen must match it bug-for-bug.
 - Every test must be mutation-checked: break the mechanism it covers, confirm the test fails, restore. A test that has never failed proves nothing.
 - **Never `git checkout` a file to undo a mutation while other work is uncommitted** — commit first, then mutate, then restore. This destroyed an uncommitted guard during TASK-2.
@@ -944,7 +944,7 @@ native engine calls `.tolist()`, so a plain list raises.
 - Every new test mutation-checked: break the mechanism, confirm the test fails.
 - No `src/*.rs` change, no maturin rebuild.
 
-Design spec: `docs/superpowers/specs/2026-07-23-transformer-ref-followups-design.md`
+Design spec: `docs/specs/2026-07-23-transformer-ref-followups-design.md`
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF

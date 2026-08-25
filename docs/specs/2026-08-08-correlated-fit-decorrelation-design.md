@@ -1,8 +1,8 @@
 # The correlated `__FIT__` subquery, as a keyed table
 
 Date: 2026-08-08. Follows
-[the survey](../../reports/2026-08-08-decorrelation-survey.md) and
-[the reference](../../reports/decorrelation-reference.md).
+[the survey](../reports/2026-08-08-decorrelation-survey.md) and
+[the reference](../reports/decorrelation-reference.md).
 
 **The goal, in the words it was set in:** never ship the training set; keep the
 minimal amount of data needed for the job, or refuse. Refusals are metered,

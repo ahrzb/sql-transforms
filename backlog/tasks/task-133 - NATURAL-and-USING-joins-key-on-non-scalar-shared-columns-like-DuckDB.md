@@ -59,7 +59,7 @@ fixes.
       are measured against DuckDB first (NULL fields, NULL structs,
       nested structs, and at least one non-struct opaque type), with a
       recorded matrix, before any key-encoding design
-      (docs/superpowers/specs/2026-08-25-task-133-join-keys-design.md;
+      (packages/confit/docs/specs/2026-08-25-task-133-join-keys-design.md;
       discriminator cells independently re-verified)
 - [x] #2 NATURAL JOIN keys on ALL shared columns; the TASK-127 pin
       (struct leg and TIMESTAMP leg) flips from xfail to passing

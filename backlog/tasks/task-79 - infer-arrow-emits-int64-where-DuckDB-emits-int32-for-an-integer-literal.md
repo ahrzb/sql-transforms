@@ -35,7 +35,7 @@ reject it) but a different type and a different cause, which is why it was not
 folded into that fix.
 
 This is the Arrow-visible face of the documented "narrow integer widths don't
-exist" limitation in `docs/known-limitations.md`, which until now was only ever
+exist" limitation in `packages/confit/docs/known-limitations.md`, which until now was only ever
 discussed as an arithmetic concern.
 
 **Not hypothetical SQL.** It hits the `titanic` serving scenario, whose

@@ -1,6 +1,6 @@
 """Wave-3 string-builder builtins vs the duckdb oracle.
 
-Pins: docs/superpowers/specs/2026-07-26-wave3-builtin-pins.md
+Pins: packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md
 Family: repeat, lpad, rpad, replace, translate, concat_ws, ucase, lcase.
 
 Everything runs through `duck_check` (both engines, repr-multiset compare)

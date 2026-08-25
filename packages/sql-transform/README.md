@@ -83,6 +83,6 @@ refusal families — is the progression record; widening a loop edits it
 upward in a reviewable diff.
 
 Design specs, in order:
-[loop 1 — marginalization](../../docs/superpowers/specs/2026-07-29-sql-projection-marginalization-design.md),
-[loop 2 — window widening](../../docs/superpowers/specs/2026-07-29-window-widening-design.md),
-[loop 3 — chains and the fit plan](../../docs/superpowers/specs/2026-07-29-projection-chains-fit-plan-design.md).
+[loop 1 — marginalization](../../docs/specs/2026-07-29-sql-projection-marginalization-design.md),
+[loop 2 — window widening](../../docs/specs/2026-07-29-window-widening-design.md),
+[loop 3 — chains and the fit plan](../../docs/specs/2026-07-29-projection-chains-fit-plan-design.md).

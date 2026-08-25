@@ -78,5 +78,5 @@ raises — but a different type and a different cause: it is the arrow-visible
 face of the documented "narrow integer widths don't exist" limitation.
 
 Pinned xfail-strict in `test_arrow_boundary.py` and noted in
-`docs/known-limitations.md`. It needs its own ticket. The scenario sweep
+`packages/confit/docs/known-limitations.md`. It needs its own ticket. The scenario sweep
 allows exactly this one widening and nothing else, so it cannot quietly grow.

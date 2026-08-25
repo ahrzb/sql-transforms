@@ -107,7 +107,7 @@ boundary for direct `DuckDBInferFn(udfs=...)` users is unchanged.
 
 Re-run `uv run python -m benchmarks.bench_transforms` (row path) and add a
 batch-path (`p.transform`) reading; record before/after for `tf_fields2`
-and `tf_bare2` in docs/kpis.md D2. Expected: tf_fields2 ~138.6µs → ~87µs
+and `tf_bare2` in packages/confit/docs/kpis.md D2. Expected: tf_fields2 ~138.6µs → ~87µs
 per row, converging on tf_width1's single-call cost; batch path k→1
 likewise.
 

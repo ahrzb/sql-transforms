@@ -1,6 +1,6 @@
 # KPIs
 
-Companion: `docs/properties.md` — the semantic laws the system holds; KPIs
+Companion: `packages/confit/docs/properties.md` — the semantic laws the system holds; KPIs
 measure, properties state what must remain true.
 
 The measurable state of this project, in one place. Two kinds, optimized in
@@ -53,11 +53,11 @@ the 33 plan-rewrite passes. The reason is that the optimizer-on reading is
 not a function of the query — `statistics_propagation` answers from a
 column's stored null statistic, so the same query over the same rows differs
 by the table's insert history. The user-visible cost of the choice is one
-named divergence class in `docs/known-limitations.md` §5.
+named divergence class in `packages/confit/docs/known-limitations.md` §5.
 
 - Enforced: `packages/confit/tests/test_duckdb_*.py` (the wave suites),
   `test_params_joins.py`, `test_udfs.py` (`udf_check` — the parameterized
-  form of the contract), `docs/known-limitations.md` (each refusal has an
+  form of the contract), `packages/confit/docs/known-limitations.md` (each refusal has an
   executable twin).
 - Internal sub-invariant: cranelift ≡ interpreter, byte-for-byte —
   `packages/confit/src/specializer/exec/tests.rs` (500-seed random-IR
@@ -95,7 +95,7 @@ state; the corpus's FAILED bucket is pinned empty.
 
 - Enforced: `packages/sql-transform/sql_transform/_corpus_test.py` (three
   outcomes: MARGINALIZED / REFUSED / FAILED-must-be-empty), the refusal
-  tables in every test module, `docs/known-limitations.md`.
+  tables in every test module, `packages/confit/docs/known-limitations.md`.
 
 ## Drive KPIs (2)
 

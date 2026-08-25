@@ -81,7 +81,7 @@ Filtering is what a transform is for. `SQLTransform` may change cardinality
 freely, because a table function is under no such obligation — and it does not
 serve row-wise at all, so nothing in this design uses Confit's `shape="filter"`.
 
-This mirrors `docs/superpowers/specs/2026-08-05-fit-transform-split-design.md`,
+This mirrors `docs/specs/2026-08-05-fit-transform-split-design.md`,
 which already states the pair and the one sugar over it.
 
 ## Marginalization is not the default

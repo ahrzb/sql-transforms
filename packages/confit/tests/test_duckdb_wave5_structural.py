@@ -1,6 +1,6 @@
 """Wave-5 structural + dialect forms vs the duckdb oracle.
 
-Pins: docs/superpowers/specs/2026-07-26-wave5-structural-pins.md — colon
+Pins: packages/confit/docs/specs/2026-07-26-wave5-structural-pins.md — colon
 prefix aliases (token pre-rewrite), slices, extended subscripts, bitwise
 ops, ^@/GLOB, star forms, duplicate-name contract, binder tail.
 """

@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-29
 **Status:** validated with AmirHossein (dialogue + spike), narrow slice of
-[DRAFT-20](../../../backlog/drafts/draft-20%20-%20Serving-pipelines-in-SQL-marginalized-aggregates-fitted-artifacts-and-the-leakage-question.md)
+[DRAFT-20](../../backlog/drafts/draft-20%20-%20Serving-pipelines-in-SQL-marginalized-aggregates-fitted-artifacts-and-the-leakage-question.md)
 **Scope:** rename `SQLTransform` → `SQLProjection`; implement bulletproof
 marginalization. **No inference wiring** — `infer`/`infer_batch`/`backend`/
 `boundary` keep raising `NotImplementedError`.

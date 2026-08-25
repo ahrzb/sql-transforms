@@ -15,7 +15,8 @@ wheels/
 
 .worktrees/
 
-# Superpowers runtime/session state (plans + specs live under docs/superpowers/)
+# Superpowers runtime/session state (plans live under docs/plans/; specs under
+# docs/specs/ and packages/confit/docs/specs/)
 .superpowers/
 
 # Rust build artifacts

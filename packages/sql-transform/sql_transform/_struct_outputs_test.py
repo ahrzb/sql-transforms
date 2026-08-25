@@ -5,8 +5,8 @@ transformer call as an output item serves its whole output struct
 (measured: DuckDB already serves it via the arrow-typed UDF; confit
 refused by name at specializer/frontend.rs — this slice teaches it to
 emit the lanes as a struct value). C2 gates batch ≡ DuckDB; C3 gates
-row ≡ batch. Spec: docs/superpowers/specs/
-2026-08-05-fit-transform-split-design.md, slice 5.
+row ≡ batch. Spec: docs/specs/2026-08-05-fit-transform-split-design.md,
+slice 5.
 """
 
 import numpy as np

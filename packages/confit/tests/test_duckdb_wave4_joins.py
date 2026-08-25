@@ -1,6 +1,6 @@
 """Wave-4 join forms vs the duckdb oracle.
 
-Pins: docs/superpowers/specs/2026-07-26-wave4-join-pins.md — USING
+Pins: packages/confit/docs/specs/2026-07-26-wave4-join-pins.md — USING
 desugar (merged column = left value at the left position), residual ON
 predicates (LEFT keeps residual-failing key-matches with a NULL side),
 all-key/semi joins, star-over-join key reconstruction, comma-join

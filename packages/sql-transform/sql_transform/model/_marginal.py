@@ -13,7 +13,7 @@ against the author's own spelling, before the rewrite, and a refusal escaping
 from the derived text is our bug.
 
 Implements slices 2–5 of
-`docs/superpowers/specs/2026-08-13-marginalize-design.md`: plain aggregates
+`docs/specs/2026-08-13-marginalize-design.md`: plain aggregates
 and ``PARTITION BY`` scopes; projection scopes (windowed ``tfm_fit``, the
 bare ``tfm(x)`` sugar, keyed composition per RFC M5); order-discriminating
 ``RANGE``/``GROUPS`` scopes (keys = partitions ⊕ order values, DISTINCT

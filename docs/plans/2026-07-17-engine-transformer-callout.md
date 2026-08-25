@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust (pyo3 0.29, sqlparser 0.62), Python 3.13/3.14, datafusion 54, pyarrow, pydantic v2, scikit-learn, numpy, pandas (dev/test).
 
-**Design doc:** `docs/superpowers/specs/2026-07-17-engine-transformer-callout-design.md`
+**Design doc:** `docs/specs/2026-07-17-engine-transformer-callout-design.md`
 
 ## Global Constraints
 

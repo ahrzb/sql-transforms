@@ -27,7 +27,7 @@ VARCHAR. Supersedes the §5 "NULL || NULL types as VARCHAR" contract
 row (delete it; the row also understated the divergence). Fix is a
 fold-pass arm: a concat operand folded to a NULL literal retypes the
 node to null_of(int32) — value-correct, || propagates NULL. Spec:
-docs/superpowers/specs/2026-08-13-bind-fold-alignment-design.md.
+packages/confit/docs/specs/2026-08-13-bind-fold-alignment-design.md.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

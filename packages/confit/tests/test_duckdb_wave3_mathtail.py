@@ -2,7 +2,7 @@
 
 Family: add/subtract/multiply/divide/mod aliases, the // operator, fdiv,
 fmod, nextafter. Measured pins live in
-docs/superpowers/specs/2026-07-26-wave3-builtin-pins.md ("Math tail").
+packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md ("Math tail").
 Every case below was probed through the vectorized path (table columns).
 """
 

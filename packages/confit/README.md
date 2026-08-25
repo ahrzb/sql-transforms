@@ -112,7 +112,7 @@ Confit's regime is serving.
 - Every semantic is implemented from *measured* behavior — queries executed
   against DuckDB 1.5.5 and recorded verbatim — never from documentation or
   intuition.
-- `docs/known-limitations.md` has an executable twin: lifting a limitation
+- `packages/confit/docs/known-limitations.md` has an executable twin: lifting a limitation
   breaks a test, so the document cannot drift.
 - A standing differential fuzzer keeps auditing the regex translation layer.
 

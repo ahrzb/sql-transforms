@@ -115,18 +115,20 @@ _DUCK_T = {
 # hundreds of random spellings per run; delete the tag in the feature's own
 # PR or it hides regressions.
 #
-# The tag covers the LITERAL-derived class ONLY: docs/known-limitations.md's
-# "DECIMAL literals are f64" row, where DuckDB types `1.5` as DECIMAL(2,1)
+# The tag covers the LITERAL-derived class ONLY:
+# packages/confit/docs/known-limitations.md's "DECIMAL literals are f64"
+# row, where DuckDB types `1.5` as DECIMAL(2,1)
 # and we map to f64. A decimal STATIC column serves exactly as
 # decimal128(p,s), so a decimal-vs-double type delta THERE is a REGRESSION,
 # not a known gap — and since gen.py emits both spellings, the surviving tag
 # hits stay checkable by hand: every one should trace to a literal.
 #
 # This tag has NO strict-xfail twin. The bare-literal 1-ulp class is
-# documented instead, in docs/known-limitations.md, and doc-twin accounting
-# — a strict-xfail pin standing behind every known-limitations row — does
-# not exist yet. So when decimal arithmetic lands and this tag has to be
-# deleted, nothing rings: that accounting is what should.
+# documented instead, in packages/confit/docs/known-limitations.md, and
+# doc-twin accounting — a strict-xfail pin standing behind every
+# known-limitations row — does not exist yet. So when decimal arithmetic
+# lands and this tag has to be deleted, nothing rings: that accounting is
+# what should.
 
 
 @dataclass

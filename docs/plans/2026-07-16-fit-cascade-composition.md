@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14, sqlglot, DataFusion (`datafusion`), the Rust `InferFn`, pyarrow, Pydantic v2, pytest, the differential harness `tests/differential.py`.
 
-**Spec:** [docs/superpowers/specs/2026-07-16-fit-cascade-composition-design.md](../specs/2026-07-16-fit-cascade-composition-design.md)
+**Spec:** [docs/specs/2026-07-16-fit-cascade-composition-design.md](../specs/2026-07-16-fit-cascade-composition-design.md)
 
 ## Global Constraints
 

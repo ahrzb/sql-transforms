@@ -7,7 +7,7 @@ authored against the OBSERVED output of this script — rerun after a DuckDB
 upgrade and diff; a changed observation is a changed pin, which is a design
 event, not a test flake.
 
-Run from the repo root:  uv run python docs/superpowers/specs/pins-dialect/probe_duckdb.py
+Run from the repo root:  uv run python packages/confit/docs/specs/pins-dialect/probe_duckdb.py
 """
 
 from __future__ import annotations

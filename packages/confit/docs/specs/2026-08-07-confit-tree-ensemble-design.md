@@ -61,7 +61,7 @@ the IR:
 
 | candidate | verdict |
 |---|---|
-| a value in the params map | **impossible today**: map values are `Vec<ScalarVal>` — scalars only ([`exec/mod.rs`](../../../packages/confit/src/specializer/exec/mod.rs) `StaticData::Map`). List-typed IR values are a far bigger change than one opcode. |
+| a value in the params map | **impossible today**: map values are `Vec<ScalarVal>` — scalars only ([`exec/mod.rs`](../../src/specializer/exec/mod.rs) `StaticData::Map`). List-typed IR values are a far bigger change than one opcode. |
 | an `ecall` extern | that is the Python trampoline (DRAFT-22). Wrong tier: a built-in needs no GIL, no `ExternImpl` box, and should be type-checked and foldable like any other op. |
 | **a third static kind** | chosen. `PreparedStatic` is already a heterogeneous table (`Scalar \| Map`) reached through `Cx::statics`, so a `Model` variant reuses materialization, `Cx` wiring, the compile-time kind check and lifetime verbatim. Layout inside it is a backend decision, exactly as the design doc already licenses for maps. |
 
@@ -75,7 +75,7 @@ The layout freedom matters: `predict` can become QuickScorer, or grow a
 vectorized multi-tree walk, without touching the IR. A *data-driven*
 traversal in the IR would need a loop, which the acyclic-CFG rule forbids
 today ("lift when one needs a loop, e.g. QuickScorer" —
-[`ir/mod.rs`](../../../packages/confit/src/specializer/ir/mod.rs)); putting
+[`ir/mod.rs`](../../src/specializer/ir/mod.rs)); putting
 the loop in the kernel leaves that rule intact.
 
 ### Kernel vs lowering the tree into IR — measured 2026-08-07, kernel stays
@@ -258,7 +258,7 @@ that keeps the interpreter and cranelift from drifting.
 ### The cranelift binding
 
 The `h_probe` pattern almost verbatim
-([`cranelift.rs`](../../../packages/confit/src/specializer/exec/cranelift.rs)):
+([`cranelift.rs`](../../src/specializer/exec/cranelift.rs)):
 a per-site descriptor owned by the `CraneliftFn` whose absolute address is
 baked in as an `iconst`, arguments marshalled through a stack slot, result
 returned in a register.
@@ -306,7 +306,7 @@ cut.
 ### Which backend runs it
 
 One backend runs a whole program; they are never mixed per instruction.
-[`duckdb/mod.rs`](../../../packages/confit/src/duckdb/mod.rs) tries
+[`duckdb/mod.rs`](../../src/duckdb/mod.rs) tries
 `cranelift::compile_ext` first and falls back to the interpreter when
 compilation fails, with `SPECIALIZER_FORCE_INTERP` pinning the interpreter
 for benches and debugging. The kernel is native Rust either way: the
@@ -510,7 +510,7 @@ These are the correctness surface; each is a test, not a comment.
   NULL-in-NULL-out rule, because the model has a defined answer for missing —
   and it matches the engine's existing convention, where `_as_feature`
   already maps NULL to NaN as "the estimator's own missing-value convention"
-  ([`_udf.py`](../../../packages/sql-transform/sql_transform/_udf.py)).
+  ([`_udf.py`](../../../sql-transform/sql_transform/_udf.py)).
   Consequence for the IR: NULL features are *not* folded into the caller's
   validity `and`-chain; only the probe miss is. The kernel therefore does
   receive NaN, and `predict` needs a NaN-carrying feature operand rather than
@@ -578,8 +578,8 @@ Four gates, strongest first.
    whose expected value should be frozen regardless: NaN feature, NULL
    feature, probe miss, single-node (root-is-leaf) tree, empty ensemble.
 
-**As built** ([`_trees_test.py`](../../../packages/sql-transform/sql_transform/_trees_test.py),
-[`test_tree_predict.py`](../../../packages/confit/tests/test_tree_predict.py)):
+**As built** ([`_trees_test.py`](../../../sql-transform/sql_transform/_trees_test.py),
+[`test_tree_predict.py`](../../tests/test_tree_predict.py)):
 
 - Gate 1 compares against `est.predict` **directly** rather than through a
   DuckDB-registered UDF. The SQL on both sides would have been
@@ -672,7 +672,7 @@ boundary.
 
 - **`from_arrow(&RecordBatch)` does not exist, and should not.** confit has
   no `arrow-rs` dependency and that is deliberate:
-  [`duckdb/arrow.rs`](../../../packages/confit/src/duckdb/arrow.rs) walks
+  [`duckdb/arrow.rs`](../../src/duckdb/arrow.rs) walks
   pyarrow buffers by address through the Python buffer API. The kernel
   therefore takes plain Rust slices (`NodeRows` / `ModelRows`), and the
   pyarrow decode will live beside the existing ingest. Arrow is still what
@@ -691,7 +691,7 @@ boundary.
 Two notes for whoever picks this up:
 
 - **The "acyclic CFG in v0" premise is stale.** `MULTI_EXPAND`
-  ([`ir/fixtures.rs`](../../../packages/confit/src/specializer/ir/fixtures.rs))
+  ([`ir/fixtures.rs`](../../src/specializer/ir/fixtures.rs))
   already contains a legal cycle via `emit.to`. The kernel-versus-lowering
   argument above leaned on that rule; it should lean on the size and refit
   arguments instead, which are unaffected.

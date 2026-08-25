@@ -10,7 +10,7 @@ what serves. The levels that carry the batch's rows (the *spine*) must be pure
 projection over joins; a level that reads only params is free, because it is a
 constant table at serving.
 
-Implements `docs/superpowers/specs/2026-08-11-row-wise-projections-design.md`.
+Implements `docs/specs/2026-08-11-row-wise-projections-design.md`.
 """
 
 import sys
@@ -818,7 +818,7 @@ class SQLProjection:
         (a window aggregate over the spine) frozen over ``__FIT__`` per
         partition and joined back NULL-safe. A rewrite in front of the
         ordinary constructor — one code path below the derived text
-        (`docs/superpowers/specs/2026-08-13-marginalize-design.md`)."""
+        (`docs/specs/2026-08-13-marginalize-design.md`)."""
         frame = sys._getframe(1)
         scope = frame.f_globals | frame.f_locals
         del frame

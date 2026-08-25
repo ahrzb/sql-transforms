@@ -1,6 +1,6 @@
 """Names starting with ``__`` belong to the model.
 
-``docs/properties.md`` P8 states the law and names ``__cf_``, the old
+``packages/confit/docs/properties.md`` P8 states the law and names ``__cf_``, the old
 implementation's prefix. The new model mints ``__param_0``, ``__param_fit``,
 ``__param_{cte_key}`` and ``{name}__x{token}`` and reserved nothing, so a user
 relation of that name silently beat the frozen parameter:

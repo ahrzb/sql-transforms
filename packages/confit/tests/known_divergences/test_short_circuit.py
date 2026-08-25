@@ -139,7 +139,7 @@ def test_where_guard_skips_an_unknown_model_trap():
 
 # ===========================================================================
 # Selection context, the full measured matrix (2026-08-19 spec,
-# docs/superpowers/specs/2026-08-19-selection-context-design.md).
+# packages/confit/docs/specs/2026-08-19-selection-context-design.md).
 #
 # The model: AND is the ONLY lazy operator -- its LEFT always runs, its RIGHT
 # is skipped when the left is not TRUE, recursively. OR always evaluates both

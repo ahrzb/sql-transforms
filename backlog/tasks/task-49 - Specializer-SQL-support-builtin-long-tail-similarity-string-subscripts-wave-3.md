@@ -12,8 +12,8 @@ milestone: m-7
 dependencies:
   - TASK-48
 documentation:
-  - docs/superpowers/specs/2026-07-25-sql-specializer-design.md
-  - docs/superpowers/specs/2026-07-26-wave1-builtin-pins.md
+  - packages/confit/docs/specs/2026-07-25-sql-specializer-design.md
+  - packages/confit/docs/specs/2026-07-26-wave1-builtin-pins.md
 type: feature
 ordinal: 43000
 ---

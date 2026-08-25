@@ -85,7 +85,7 @@ half-away-from-zero for a DOUBLE cast and had to be corrected. Both were
 written from a DuckDB query on a bare `-2.5` literal, which DuckDB types
 `DECIMAL(2,1)` — so they measured the decimal cast and pinned its answer onto
 the double one. **Measure a DOUBLE cast with a DOUBLE column or an explicit
-`::DOUBLE`, never a bare literal.** Recorded in `docs/known-limitations.md`
+`::DOUBLE`, never a bare literal.** Recorded in `packages/confit/docs/known-limitations.md`
 next to the decimal-literals-are-f64 divergence, which is what makes the two
 reachable from the same SQL.
 

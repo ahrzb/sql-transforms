@@ -11,8 +11,8 @@ approximated or silently dropped at inference.
     fn.infer_rows(rows)     # dict-or-object rows in, dict rows out
     fn.infer_arrow(table)   # pa.Table in, pa.Table out
 
-See docs/known-limitations.md for the constructs that are refused, each with an
-executable twin asserting the refusal.
+See packages/confit/docs/known-limitations.md for the constructs that are
+refused, each with an executable twin asserting the refusal.
 """
 
 from __future__ import annotations

@@ -8,7 +8,7 @@ title: "the dialect logical plan"
 Query ⇄ Plan for DuckDB, Spark, BigQuery: author in DuckDB SQL, parse to a
 bound/typed logical plan, print to the target dialect — bit-exact where
 representable, ε-bounded where float accumulation forbids it, refused by
-name otherwise. Spec: `docs/superpowers/specs/2026-08-13-dialect-logical-plan-design.md`
+name otherwise. Spec: `packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md`
 (decisions D1–D7, laws L1–L4). Lives at `packages/confit/src/dialect/`;
 `specializer/` and the JSON-AST marginalizer are untouched by this epic.
 

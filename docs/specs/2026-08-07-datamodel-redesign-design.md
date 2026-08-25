@@ -281,7 +281,7 @@ composite is the **oracle**, not the implementation — see the gates.
 ## Properties and gates
 
 Named descriptively so citing one carries its meaning. Where a property
-restates a law from `docs/properties.md` or `docs/kpis.md`, that is noted.
+restates a law from `packages/confit/docs/properties.md` or `packages/confit/docs/kpis.md`, that is noted.
 
 ### The oracle
 

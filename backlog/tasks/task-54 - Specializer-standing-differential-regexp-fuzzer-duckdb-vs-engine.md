@@ -21,7 +21,7 @@ ordinal: 48000
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Wave B (TASK-53) shipped the regexp family on a bind-time RE2→rust-regex
 translation with a measured reject list (pins:
-docs/superpowers/specs/2026-07-27-waveB-regexp-pins.md). The one-time
+packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md). The one-time
 differential battery had 98 entries; the residual risk is untested constructs
 slipping through translate_pattern's pass-through path and serving wrong
 answers.
@@ -68,7 +68,7 @@ wrong-answer shapes (class set-notation `--`/`&&`/`~~`, spaced bounds
 patterns: row path literal-optimizes `$\z` to string equality while the
 constant fold matches). All fixed in retrans.rs (reject list + POSIX tracker
 fix + rewrite MaxSubmatch pre-scan) and pinned:
-docs/superpowers/specs/pins-waveB/fuzzer-task54.json + spec addendum.
+packages/confit/docs/specs/pins-waveB/fuzzer-task54.json + spec addendum.
 Re-swept to ZERO divergences over 40k cases / 8 seeds. Gate: 155 Rust + 802
 py green, clippy clean on retrans.rs.
 <!-- SECTION:FINAL_SUMMARY:END -->

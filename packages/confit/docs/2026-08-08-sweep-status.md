@@ -104,7 +104,7 @@ SQL.
 
 Deliberately not folded into TASK-72 — different type, different cause. It is
 the arrow-visible face of the documented "narrow integer widths don't exist"
-limitation. Pinned xfail-strict, noted in `docs/known-limitations.md`, and
+limitation. Pinned xfail-strict, noted in `packages/confit/docs/known-limitations.md`, and
 ticketed as **TASK-79**. The scenario sweep allows that one widening and
 nothing else, so it cannot quietly grow.
 

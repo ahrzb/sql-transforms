@@ -5,7 +5,7 @@ minted UDF binding and ``id`` is the params-table ``__cf_est`` joined per
 group. A public ``sc_fit(bundle) OVER (...) AS theta`` column therefore
 serves as ``struct_pack(type := '__cf_tf0', id := __cf_p0.__cf_est)`` —
 pure existing parts, the same value for every row of a fit scope. Spec:
-docs/superpowers/specs/2026-08-05-fit-transform-split-design.md, slice 6.
+docs/specs/2026-08-05-fit-transform-split-design.md, slice 6.
 """
 
 import pyarrow as pa

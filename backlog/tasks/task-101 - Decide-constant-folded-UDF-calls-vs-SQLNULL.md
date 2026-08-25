@@ -40,7 +40,7 @@ We mirror: protocol objects gain `side_effects: bool = False`
 (same name and default as DuckDB); build may execute a pure udf when
 its args are constants under a fold context, None routes through the
 SQLNULL channel (null_of int32). Spec:
-docs/superpowers/specs/2026-08-13-bind-fold-alignment-design.md.
+packages/confit/docs/specs/2026-08-13-bind-fold-alignment-design.md.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -56,4 +56,4 @@ docs/superpowers/specs/2026-08-13-bind-fold-alignment-design.md.
 
 ## Notes
 
-2026-08-13 hygiene: merged to master (c27ee16, PR #137/#138 lineage); the xfail-strict pin flipped and stays green post arrow-migration. AC #6 verified against the 2026-08-13 20k campaign: the bare-literal-args (seed-601418) class is gone. Seed 8352's `(udf0(NULL, upper('0'), ...)).f0` divergence is the SEPARATE TASK-103 family-2 composition gap (fold contexts whose constant args need builtin folding), already pinned in test_bind_fold_composition_gaps — see docs/2026-08-13-fuzz-triage.md.
+2026-08-13 hygiene: merged to master (c27ee16, PR #137/#138 lineage); the xfail-strict pin flipped and stays green post arrow-migration. AC #6 verified against the 2026-08-13 20k campaign: the bare-literal-args (seed-601418) class is gone. Seed 8352's `(udf0(NULL, upper('0'), ...)).f0` divergence is the SEPARATE TASK-103 family-2 composition gap (fold contexts whose constant args need builtin folding), already pinned in test_bind_fold_composition_gaps — see packages/confit/docs/2026-08-13-fuzz-triage.md.

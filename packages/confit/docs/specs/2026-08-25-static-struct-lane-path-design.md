@@ -1,6 +1,6 @@
 # Static struct lanes carry a structured path (TASK-132)
 
-Decision ground: docs/rfcs/2026-08-19-static-struct-lane-encoding.md
+Decision ground: packages/confit/docs/rfcs/2026-08-19-static-struct-lane-encoding.md
 (accepted, alternative A). Surface map: full-code survey 2026-08-25, the
 three riskiest sites re-verified by hand. DuckDB reference model
 source-verified in the RFC.

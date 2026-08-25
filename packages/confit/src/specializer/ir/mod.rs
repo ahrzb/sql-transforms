@@ -641,8 +641,8 @@ pub enum NumOp1 {
     Iabs,
     Fabs,
     Fround,
-    // Wave-1 math unaries (pins: docs/superpowers/specs/2026-07-26-wave1-
-    // builtin-pins.md). Ln/Log2/Log10 trap on x <= 0; Fsqrt traps on
+    // Wave-1 math unaries (pins: packages/confit/docs/specs/2026-07-26-
+    // wave1-builtin-pins.md). Ln/Log2/Log10 trap on x <= 0; Fsqrt traps on
     // negatives; Fsin/Fcos/Ftan trap on +-inf (NaN passes through
     // bit-exactly); Fexp/Fcbrt/Ffloor/Fceil/Ftrunc are total.
     Ln,

@@ -7,7 +7,7 @@ none to forget.
 
 No estimator surface: this module is the part of ``SQLTransform`` that
 ``SQLProjection`` also needs, held as a value rather than inherited
-(`docs/superpowers/specs/2026-08-11-row-wise-projections-design.md`). The parts
+(`docs/specs/2026-08-11-row-wise-projections-design.md`). The parts
 it stands on live next door: ``_ast`` (the oracle as parser and printer),
 ``_analysis`` (what a subtree reads), ``_plan`` (freezing), ``_foreign`` (the
 supplied pair), ``_errors``.

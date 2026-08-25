@@ -17,7 +17,7 @@ ordinal: 117000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 The accepted lane-encoding RFC
-(docs/rfcs/2026-08-19-static-struct-lane-encoding.md, alternative A,
+(packages/confit/docs/rfcs/2026-08-19-static-struct-lane-encoding.md, alternative A,
 2026-08-25): a static table's struct leaves are currently flattened into
 lanes NAMED by their dotted spelling ("w.mean"), which destroys the
 leaf-vs-literal-column distinction at catalog build and leaks into every
@@ -42,7 +42,7 @@ worse.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [x] #1 a spec in docs/superpowers/specs/ maps every consumer of the
+- [x] #1 a spec in packages/confit/docs/specs/ maps every consumer of the
       lane name to its behavior under the structured path, including the
       row-side flatten, before any code changes
 - [x] #2 the collision table from the RFC serves BOTH spellings like
@@ -59,7 +59,7 @@ worse.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Landed per the spec (docs/superpowers/specs/2026-08-25-static-struct-
+Landed per the spec (packages/confit/docs/specs/2026-08-25-static-struct-
 lane-path-design.md). StaticTable carries the row side's StructCol tree;
 one shared walk_fields serves both sides message-for-message; dotted
 names are display-only; the data paths carry segment paths. Four flips,

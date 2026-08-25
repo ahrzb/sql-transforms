@@ -9,7 +9,7 @@ labels: []
 milestone: m-7
 dependencies: []
 documentation:
-  - docs/superpowers/specs/2026-07-25-sql-specializer-design.md
+  - packages/confit/docs/specs/2026-07-25-sql-specializer-design.md
 type: feature
 ordinal: 35000
 ---
@@ -17,7 +17,7 @@ ordinal: 35000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Define the specializer's imperative IR per §6 of docs/superpowers/specs/2026-07-25-sql-specializer-design.md: SSA over typed scalars with a separate null lane (T? vs T are distinct types; ops on T? only via the .opt instructions), StaticRef handles, no allocation vocabulary. Deliverables are the IR definitions, the verifier, and a round-trippable text format under src/specializer/ir/. This is the diagnostic surface for the whole engine and the loop's machine-checkable gate substrate — the boundary must be airtight before anything targets it.
+Define the specializer's imperative IR per §6 of packages/confit/docs/specs/2026-07-25-sql-specializer-design.md: SSA over typed scalars with a separate null lane (T? vs T are distinct types; ops on T? only via the .opt instructions), StaticRef handles, no allocation vocabulary. Deliverables are the IR definitions, the verifier, and a round-trippable text format under src/specializer/ir/. This is the diagnostic surface for the whole engine and the loop's machine-checkable gate substrate — the boundary must be airtight before anything targets it.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

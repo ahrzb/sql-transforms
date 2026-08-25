@@ -52,7 +52,7 @@ True
 
 ```
 
-That equality is a law, not a habit: `docs/properties.md` calls it *freezing is
+That equality is a law, not a habit: `packages/confit/docs/properties.md` calls it *freezing is
 faithful*.
 
 ### 2. Applying a groupless transform per group
@@ -152,7 +152,7 @@ A join miss is a NULL. Not a `KeyError`, not a silent zero, not a dropped row:
 
 ```
 
-The row survives, carrying NULL. `docs/properties.md` calls this P14. Whether
+The row survives, carrying NULL. `packages/confit/docs/properties.md` calls this P14. Whether
 that beats a `KeyError` depends on whether you would rather find out at the
 call site or downstream — NULL propagates quietly.
 

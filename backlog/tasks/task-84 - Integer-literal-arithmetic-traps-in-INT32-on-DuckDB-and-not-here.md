@@ -40,7 +40,7 @@ DIVERGE_TRAP findings in the 20k campaign (seed 1547 is the sample above).
 - [ ] #1 An integer expression DuckDB traps on either traps here with the
       matching named error, or refuses at build — no served answer where the
       oracle errors
-- [ ] #2 The decision is written into docs/known-limitations.md alongside the
+- [ ] #2 The decision is written into packages/confit/docs/known-limitations.md alongside the
       TASK-79 width note, since they are one design question
 - [ ] #3 Executable pin(s) in test_literal_typing.py
 <!-- AC:END -->
@@ -65,5 +65,5 @@ INTEGER on DuckDB"), which is binder parity -- DuckDB errors at bind on the
 same spellings (2000000000 + 2000000000, 2147483647 + 1, 2000000000 * 2,
 optimizer off). Agree-refuse on all three; nothing left to build. The
 refusal's permanence is argued in
-docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md.
+packages/confit/docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md.
 <!-- SECTION:NOTES:END -->

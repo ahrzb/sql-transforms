@@ -4,7 +4,7 @@ Leakage control is a spelling, not a policy: ``sc_fit(b) FILTER (WHERE
 split = 'train') OVER (...)`` fits each scope on predicate-TRUE rows only
 and transforms every row. A group with no passing rows is an unseen group
 (params-miss NULL, P14); FILTER on any scalar call refuses like DuckDB.
-Spec: docs/superpowers/specs/2026-08-05-fit-transform-split-design.md.
+Spec: docs/specs/2026-08-05-fit-transform-split-design.md.
 """
 
 import numpy as np

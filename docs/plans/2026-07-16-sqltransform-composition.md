@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.14 (t-strings), sqlglot (AST), DataFusion (`datafusion`, fit-time state + batch), Rust `InferFn` (inference), pyarrow, Pydantic v2, pytest, the differential harness (`tests/differential.py`).
 
-**Spec:** [docs/superpowers/specs/2026-07-16-sqltransform-composition-design.md](../specs/2026-07-16-sqltransform-composition-design.md)
+**Spec:** [docs/specs/2026-07-16-sqltransform-composition-design.md](../specs/2026-07-16-sqltransform-composition-design.md)
 
 ## Global Constraints
 

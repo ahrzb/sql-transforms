@@ -3,8 +3,8 @@
 An output field named ``_...`` is a same-SELECT macro: usable by later
 items (β-reduced at the raw AST, so windows and transformer bundles see
 closed expressions), never crossing the output boundary. ``_th`` is the
-ergonomic split spelling. Spec: docs/superpowers/specs/
-2026-08-05-fit-transform-split-design.md, slice-2 addendum.
+ergonomic split spelling. Spec: docs/specs/2026-08-05-fit-transform-split-design.md,
+slice-2 addendum.
 """
 
 import duckdb

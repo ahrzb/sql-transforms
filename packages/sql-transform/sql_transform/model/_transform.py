@@ -9,7 +9,7 @@ This module is the estimator surface — ``SQLTransform``, the output
 currencies, and the sklearn contract. The compiled text itself lives in
 ``_program``: resolution, binding, freezing, ``Fitted``, ``Program``.
 
-Implements `docs/superpowers/specs/2026-08-07-datamodel-redesign-design.md`.
+Implements `docs/specs/2026-08-07-datamodel-redesign-design.md`.
 DuckDB is both the parser and the oracle — a construct means what DuckDB
 computes.
 """

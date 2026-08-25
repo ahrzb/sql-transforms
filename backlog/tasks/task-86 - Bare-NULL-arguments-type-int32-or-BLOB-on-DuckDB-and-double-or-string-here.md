@@ -12,7 +12,7 @@ labels:
   - fuzz
 dependencies: []
 documentation:
-  - docs/known-limitations.md
+  - packages/confit/docs/known-limitations.md
 type: bug
 ordinal: 79000
 ---
@@ -47,7 +47,7 @@ Found by the fuzzer 2026-08-11: 11 `DIVERGE_VALUE schema` findings (seeds
 - [ ] #1 A bare NULL argument either types the way DuckDB types it (schema
       -equal output) or refuses by name — extending the existing bare-NULL
       refusal to these positions is an acceptable answer
-- [ ] #2 The choice is recorded in docs/known-limitations.md next to the
+- [ ] #2 The choice is recorded in packages/confit/docs/known-limitations.md next to the
       existing bare-NULL rule
 - [ ] #3 Pins for the nullif and repeat shapes
 <!-- AC:END -->

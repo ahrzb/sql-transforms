@@ -69,7 +69,7 @@ review and NOT independently re-measured.
       (CLOSED 2026-08-25: bare heads see the whole scope, qualified heads
       backtrack exactly where DuckDB's binder does, ambiguity refuses
       before any field is examined -- live-oracle pinned, spec
-      docs/superpowers/specs/2026-08-25-task-127-remainders-design.md)
+      packages/confit/docs/specs/2026-08-25-task-127-remainders-design.md)
 - [x] #3 a flattened leaf colliding with a real sibling column name is
       detected -- at build, by name, not by a struct-key lookup failure
       (CLOSED 2026-08-25: vacuous on the static side -- under TASK-132
@@ -85,7 +85,7 @@ review and NOT independently re-measured.
       or whether the lane should carry a structured path and the dotted
       spelling stay a display detail; #3 is only cheap under the second
       (DECIDED 2026-08-25: structured path, RFC
-      docs/rfcs/2026-08-19-static-struct-lane-encoding.md alternative A;
+      packages/confit/docs/rfcs/2026-08-19-static-struct-lane-encoding.md alternative A;
       the refactor is TASK-132, and #2/#3 land on top of it)
 - [x] #5 re-measure #2 and #3 before building -- they are relayed, not
       confirmed here
@@ -97,7 +97,7 @@ review and NOT independently re-measured.
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Landed per the spec (docs/superpowers/specs/2026-08-25-task-127-
+Landed per the spec (packages/confit/docs/specs/2026-08-25-task-127-
 remainders-design.md), on top of TASK-132's structured paths. The
 unqualified ladder now mirrors DuckDB's source-pinned order: a
 qualified head backtracks to the next rung exactly when the relation

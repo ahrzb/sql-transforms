@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust + pyo3 0.29 (`src/`, built via `uv run maturin develop`), sqlparser 0.62, Python 3.14, DataFusion (`datafusion` pkg) as the differential oracle, pytest, the differential harness `tests/differential.py`.
 
-**Spec:** [docs/superpowers/specs/2026-07-16-rich-type-system-design.md](../specs/2026-07-16-rich-type-system-design.md)
+**Spec:** [docs/specs/2026-07-16-rich-type-system-design.md](../specs/2026-07-16-rich-type-system-design.md)
 
 ## Global Constraints
 

@@ -1419,11 +1419,11 @@ consumer, and lane assembly done three times.
 
 **Recommendation: C2, landed last, and droppable (ASK 3).**
 
-## Proposed additions to docs/properties.md
+## Proposed additions to packages/confit/docs/properties.md
 
-Drafted to match `docs/properties.md`'s house style for the Engine (Confit)
+Drafted to match `packages/confit/docs/properties.md`'s house style for the Engine (Confit)
 section, numbered after P20. These are PROPOSALS inside this spec;
-`docs/properties.md` is not edited by this change.
+`packages/confit/docs/properties.md` is not edited by this change.
 
 House-style notes, so adoption is a copy and not a rewrite. P18/P19/P20 are
 each 3-5 lines with the pin named INLINE, not in a footer; the file's `*Spec:*`
@@ -1521,7 +1521,7 @@ Only the decisions this design does not settle.
    smaller; dropping it cuts roughly a third of this change's line count and
    all of its non-lane risk. If it lands, it lands LAST and alone.
 
-4. **Adopt P21 and P22 into `docs/properties.md` now, or when their pins
+4. **Adopt P21 and P22 into `packages/confit/docs/properties.md` now, or when their pins
    land?** They are not in the same state, and the first draft's "both are
    true today" was wrong on both halves.
    - **P21, with its safe-constant clause, is TRUE today** -- as an unenforced

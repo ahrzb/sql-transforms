@@ -100,16 +100,16 @@ SQL over __THIS__
 
 Confit's contract: SQL plus frozen tables either specialize into a function
 bit-exact with DuckDB (the optimizer-off reading — `PRAGMA
-disable_optimizer`, and [why](docs/known-limitations.md)), or construction
+disable_optimizer`, and [why](packages/confit/docs/known-limitations.md)), or construction
 raises and names the construct it will not serve — see
-[Confit's known limitations](docs/known-limitations.md).
+[Confit's known limitations](packages/confit/docs/known-limitations.md).
 
 ## What Confit supports
 
 The expression surface, joins to static tables, the row-shape contract
 (`map`/`filter`/`many`) and the Arrow boundary are documented in
 [`packages/confit`](packages/confit) and
-[docs/known-limitations.md](docs/known-limitations.md): **550 of 678** statements
+[packages/confit/docs/known-limitations.md](packages/confit/docs/known-limitations.md): **550 of 678** statements
 mined from DuckDB's own test suite replay bit-exact, with the remainder clean,
 named build-time rejections.
 
@@ -120,9 +120,9 @@ loops.
 
 ## Reports
 
-- [The architecture of Confit](docs/reports/confit-architecture.md)
-- [Pins-first: building a bit-exact engine twin](docs/reports/pins-first-methodology.md)
-- [Performance: the serving regime, measured](docs/reports/performance-report.md)
+- [The architecture of Confit](packages/confit/docs/reports/confit-architecture.md)
+- [Pins-first: building a bit-exact engine twin](packages/confit/docs/reports/pins-first-methodology.md)
+- [Performance: the serving regime, measured](packages/confit/docs/reports/performance-report.md)
 
 ## Development
 

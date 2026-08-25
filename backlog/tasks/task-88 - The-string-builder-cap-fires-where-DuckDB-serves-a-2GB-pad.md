@@ -11,7 +11,7 @@ labels:
   - fuzz
 dependencies: []
 documentation:
-  - docs/known-limitations.md
+  - packages/confit/docs/known-limitations.md
 type: bug
 ordinal: 81000
 ---

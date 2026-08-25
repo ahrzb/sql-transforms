@@ -1,6 +1,6 @@
 """NATURAL / USING join keys over STRUCT shared columns.
 
-Design: docs/superpowers/specs/2026-08-25-task-133-join-keys-design.md.
+Design: packages/confit/docs/specs/2026-08-25-task-133-join-keys-design.md.
 
 DuckDB's join binder intersects column NAME SETS with no type inspection
 (bind_joinref.cpp:185-208), so a shared STRUCT is an ordinary join key there
