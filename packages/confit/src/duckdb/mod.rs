@@ -1798,16 +1798,7 @@ impl DuckDBInferFn {
                 ))
             }
         };
-        // Struct row columns have leaf LANES the arrow boundary cannot fill
-        // from a flat batch (TASK-114/132: keyed on the STRUCTURE, not on a
-        // dot in a name — a plain column named 'a.b' is servable).
-        if in_paths.iter().any(|p| p.len() > 1) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "infer_arrow requires an all-scalar row schema (struct columns: \
-                 use infer_rows())",
-            ));
-        }
-        let input = arrow::ingest(py, &batch, in_cols)?;
+        let input = arrow::ingest(py, &batch, in_cols, in_paths)?;
         let mut st = fun.new_state();
         fun.run(&input, &mut st)
             .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
