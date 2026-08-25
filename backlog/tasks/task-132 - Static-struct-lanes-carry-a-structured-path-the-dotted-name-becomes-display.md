@@ -2,7 +2,7 @@
 id: TASK-132
 title: >-
   Static struct lanes carry a structured path; the dotted name becomes display
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-25 00:00'
 labels:
@@ -51,7 +51,28 @@ worse.
 - [x] #3 no name-resolution path constructs or splits a dotted string;
       the dotted spelling appears only in display surfaces (output
       schema field names, error text), each listed in the spec
-- [ ] #4 every existing green behavior over static structs survives:
+- [x] #4 every existing green behavior over static structs survives:
       star, EXCLUDE, aliases, dedup, TASK-121 ambiguity trio, TASK-125
       star pins -- full suite plus a 4k campaign clean
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed per the spec (docs/superpowers/specs/2026-08-25-static-struct-
+lane-path-design.md). StaticTable carries the row side's StructCol tree;
+one shared walk_fields serves both sides message-for-message; dotted
+names are display-only; the data paths carry segment paths. Four flips,
+live-oracle pinned: the collision table serves both spellings, a quoted
+dotted identifier no longer binds a leaf, a plain column named 'a.b'
+serves (it was misread as a struct walk in the data path), and the
+non-ASCII prefix-scan panic is a named refusal.
+
+Gate: full suite release AND debug (2986 passed, no debug_assert
+deviations), 4k campaign = baseline classes seed-for-seed. The one new
+campaign item (seed 2813 TIMEOUT) attributed: the seed spends ~28s in
+DUCKDB materializing a 2 GiB lpad against a 30s budget - our side
+REFUSES it instantly via the TASK-88 string-budget limit; inherently
+marginal under the campaign budget, unrelated to this change. Follow-up
+option: raise the campaign timeout or bound the lpad-count generator.
+<!-- SECTION:NOTES:END -->
