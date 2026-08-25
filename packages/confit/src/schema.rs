@@ -5,9 +5,9 @@ use crate::specializer::ir::Ty;
 
 /// One row-table column as its `pa.Schema` field declares it: a scalar the
 /// engine serves at that exact width, a struct of these (flattened to leaf
-/// lanes downstream, TASK-56), or a type outside the vocabulary — kept
-/// opaque so an unreferenced foreign column never blocks a build, while any
-/// reference refuses by name.
+/// lanes downstream), or a type outside the vocabulary — kept opaque so an
+/// unreferenced foreign column never blocks a build, while any reference
+/// refuses by name.
 pub enum RowField {
     Scalar {
         ty: Ty,
@@ -25,9 +25,9 @@ pub enum RowField {
 
 /// Which acceptance policy a schema is read under.
 ///
-/// One walker, two policies — and they are DIFFERENT today, which is worth
-/// stating plainly because the difference used to be accidental (two
-/// parsers in two files) and is now deliberate.
+/// One walker, two policies — and they are DIFFERENT, which is worth
+/// stating plainly, because the difference is a decision rather than an
+/// artifact of who wrote which reader.
 ///
 /// `Row` is exact: a type is served at its declared width or it is opaque.
 /// `Static` additionally takes `large_string`/`utf8` and the decimal tiers
@@ -64,10 +64,11 @@ pub fn arrow_row_schema(
 
 /// The same walk for a static table's `pa.Table.schema`.
 ///
-/// TASK-96: the catalogue used to run its own parser, which collapsed every
-/// integer width to i64 — so an int32 static emitted int64 where DuckDB
-/// emits int32, while an int32 ROW column bound correctly. Same physical
-/// vocabulary, two readers, one of them wrong.
+/// One reader for both, deliberately: row and static columns are the same
+/// physical vocabulary, so a second reader of it drifts. A catalogue running
+/// a parser of its own collapsed every integer width to i64 — an int32
+/// static then emitted int64 where DuckDB emits int32, while an int32 ROW
+/// column bound correctly.
 pub fn arrow_static_schema(
     py: Python<'_>,
     table: &str,
@@ -97,8 +98,8 @@ fn arrow_schema_fields(
     let mut out = Vec::with_capacity(names.len());
     // By POSITION, not by name: a schema may carry the same name twice, and
     // pyarrow's by-name lookup answers an ambiguous name with "does not
-    // exist" (TASK-127). Whether a repeat is legal is the caller's rule to
-    // state, in its own words.
+    // exist". Whether a repeat is legal is the caller's rule to state, in
+    // its own words.
     for (i, name) in names.into_iter().enumerate() {
         let field = bound
             .call_method1("field", (i,))
@@ -147,9 +148,9 @@ fn arrow_field_to_row_field(
         //   large_string/utf8  DuckDB normalises these to VARCHAR, so the
         //                      value and the output type both match.
         //   decimal32/64/128   an ordinary fit-path output (sum(BIGINT) is
-        //                      decimal128(38,0)). TASK-91: the payload is
-        //                      the SCALED i128, exact from ingest to emit.
-        //                      Every tier leaves DuckDB as decimal128(p,s)
+        //                      decimal128(38,0)). The payload is the SCALED
+        //                      i128, exact from ingest to emit. Every tier
+        //                      leaves DuckDB as decimal128(p,s)
         //                      (SetArrowFormat, arrow_converter.cpp), so
         //                      all three normalise to one Ty::Dec(p,s).
         //
@@ -158,12 +159,12 @@ fn arrow_field_to_row_field(
         // serve-where-DuckDB-refuses. It stays opaque, which refuses by
         // name on reference and costs nothing unreferenced.
         //
-        // float32 and the unsigned widths used to ride here too and were
-        // removed 2026-08-15: both DIVERGE. float32 in value AND type
+        // float32 and the unsigned widths do NOT ride here either: both
+        // DIVERGE (measured 2026-08-15). float32 in value AND type
         // (s.v * 3.0 is 0.30000001192092896/FLOAT on DuckDB, f64 arithmetic
         // here), unsigned in type (uint64 stays UINT64 there, int64 here).
-        // The row path always refused them; the catalogue widened them
-        // silently, which is the third mode the contract forbids.
+        // The row path refuses them; a catalogue that widened them silently
+        // instead would be the third mode the contract forbids.
         _ if policy == Policy::Static => match name.as_str() {
             "large_string" | "utf8" | "large_utf8" => Ty::Str,
             n if n.starts_with("decimal") => match decimal_ps(n) {

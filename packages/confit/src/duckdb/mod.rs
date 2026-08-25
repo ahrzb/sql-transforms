@@ -184,10 +184,11 @@ fn push_input_cell(
     Ok(())
 }
 
-/// An empty `ColData` for one input lane, optionally with capacity. The ONE
-/// place a lane's KIND chooses a `ColData` variant, and all three ingest
-/// paths call it — `Marshaller::build`, the generic row boundary, and
-/// `arrow::ingest` — so `ColData::push_present` can only ever meet an `I1`.
+/// An empty `ColData` for one input lane, optionally with capacity. Both row
+/// boundaries build every lane through it and `arrow::ingest` builds its
+/// string lanes here, so the mapping it fixes is the one every ingest path
+/// obeys — and a PRESENCE lane is always a non-nullable `I1`, which is what
+/// lets `ColData::push_present` assume an `I1`.
 ///
 /// Not a constructor on `ColData`: that would put `exec` on `plan`, and the
 /// import graph runs the other way (`plan` names `ir` and nothing else,
@@ -224,10 +225,10 @@ pub(crate) fn col_for_lane(lane: &plan::InputLane, cap: usize) -> ColData {
 }
 
 /// Append a static struct column's scalar leaves as lanes named by their
-/// FULL ORDERED PATH (TASK-116), so `w.x.y.z.a` and `w.z.y.x.a` stay
-/// distinct names and a lookup either walks the path exactly or misses. A
-/// field name holding a '.' would make that encoding ambiguous, so its
-/// subtree is skipped — the same rule the row path follows.
+/// FULL ORDERED PATH, so `w.x.y.z.a` and `w.z.y.x.a` stay distinct names and
+/// a lookup either walks the path exactly or misses. A field name holding a
+/// '.' would make that encoding ambiguous, so its subtree is skipped — the
+/// same rule the row path follows.
 fn flatten_static(
     cols: &mut Vec<Col>,
     prefix: &str,
@@ -238,15 +239,13 @@ fn flatten_static(
     let mut tree = Vec::with_capacity(fields.len());
     for (fname, rf) in fields {
         if fname.contains('.') {
-            // dropped from lanes AND tree alike (pre-TASK-132 behavior kept;
-            // lifting the skip is its own ticket)
             continue;
         }
         let path = format!("{prefix}.{fname}");
         match rf {
             schema::RowField::Scalar { ty, nullable } => {
                 cols.push(Col {
-                    // display-only: resolution walks the tree (TASK-132)
+                    // display-only: resolution walks the tree
                     name: path,
                     ty: ColTy {
                         ty: *ty,
@@ -275,7 +274,6 @@ fn flatten_static(
 /// A narrow out column's value must fit its declared width on EVERY
 /// boundary — infer and infer_arrow answer identically or not at all
 /// (fleet 2026-08-13: the row path served what the arrow path refused).
-/// The matching runtime trap is m-8 phase 3.
 fn narrow_check(ty: Ty, name: &str, v: i64) -> PyResult<()> {
     if let Some((lo, hi)) = ty.int_range() {
         if !(lo..=hi).contains(&v) {
@@ -375,7 +373,7 @@ fn dec_py(py: Python<'_>, v: i128, ty: Ty) -> PyResult<Py<PyAny>> {
 /// field assembled from its whole-validity lane plus k component lanes.
 /// Empty `names` is the DRAFT-22 unnamed boundary (the field is
 /// `list | None`); non-empty assembles a STRUCT keyed by the declared
-/// names (slice 5). Either way a NULL whole-validity is the NULL field —
+/// names. Either way a NULL whole-validity is the NULL field —
 /// distinct from a container of NULLs.
 #[derive(Clone)]
 pub(crate) enum EmitField {
@@ -569,7 +567,7 @@ fn parse_takes(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec
 /// is and whether its lanes are addressable.
 ///
 /// * a scalar type — an ordinary scalar expression;
-/// * `pa.struct([...])` — width-k with addressable field names (TASK-63),
+/// * `pa.struct([...])` — width-k with addressable field names,
 ///   struct-valued at EVERY width including 1;
 /// * `pa.list_(t, k)` — width-k unnamed, the DRAFT-22 list boundary. Fixed
 ///   size because the width is part of the declaration; a variable-length
@@ -616,6 +614,13 @@ fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, V
     Ok((Vec::new(), vec![arrow_ty(name, "returns", obj)?]))
 }
 
+/// Every declared UDF, split by how it will be SERVED: an ordinary extern
+/// whose callable runs per row, or a tree transform the native kernel scores
+/// without ever calling Python. The split is the object's own shape — a
+/// `tree_tables()` method — not a flag the caller sets.
+///
+/// Both lists share ONE name space with each other and with the builtins,
+/// because a call site resolves a name against all three.
 fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, Vec<TreeDecl>)> {
     let mut out: Vec<UdfDecl> = Vec::new();
     let mut trees: Vec<TreeDecl> = Vec::new();
@@ -680,7 +685,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
                 )));
             }
         }
-        // TASK-101: DuckDB's own flag, its default. Absent means false =
+        // DuckDB's own flag, and its default. Absent means false =
         // pure = bind-foldable; a PRESENT non-bool refuses rather than
         // failing open into executing user code at build (DuckDB's own
         // create_function rejects non-bools too).
@@ -819,12 +824,12 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
 /// expression's).
 fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyResult<StaticData> {
     let rows = table.bind(py).call_method0("to_pylist")?;
-    // TASK-91: `to_pylist` hands `decimal.Decimal` for a DECIMAL column
-    // (the ordinary fit path — sum(BIGINT) params are decimal128(38,0)),
-    // and it becomes the SCALED i128 exactly. TASK-90's exactness guard is
-    // gone with the lane it existed to protect: it refused every payload
-    // f64 could not hold, referenced or not, and 2^63+1 (a plain
-    // sum(BIGINT)) is one of them.
+    // `to_pylist` hands `decimal.Decimal` for a DECIMAL column (the ordinary
+    // fit path — sum(BIGINT) params are decimal128(38,0)), and it becomes
+    // the SCALED i128 exactly. No f64-exactness guard rides here on purpose:
+    // the payload never touches f64, and a guard that refused every value
+    // f64 could not hold refused ordinary ones — 2^63+1 is a plain
+    // sum(BIGINT), referenced or not.
     let mut entries = Vec::new();
     'row: for item in rows.try_iter()? {
         let row = item?;
@@ -834,11 +839,11 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                 spec.table
             ))
         })?;
-        // TASK-116 + TASK-132: a struct leaf's SEGMENT PATH walks the row's
-        // nested dicts; a plain column is one segment, dots and all — a
-        // name is never split. A NULL struct anywhere on the way down makes
-        // every lane below it NULL, which is exactly the nullability the
-        // catalogue derived for those leaves.
+        // A struct leaf's SEGMENT PATH walks the row's nested dicts; a plain
+        // column is one segment, dots and all — a name is never split. A
+        // NULL struct anywhere on the way down makes every lane below it
+        // NULL, which is exactly the nullability the catalogue derived for
+        // those leaves.
         let get = |path: &[String]| -> PyResult<pyo3::Bound<'_, PyAny>> {
             let missing = || {
                 build_err(format!(
@@ -873,10 +878,10 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
             // is the established, semantics-preserving move (a NULL `=` key
             // drops the same way, just below).
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<Option<KeyBits>> {
-                // A PRESENCE key (TASK-133) reads the struct NODE, not a
-                // value: reaching here at all means the node is non-NULL,
-                // and the NULL case is handled by the plain / INDF arms
-                // below exactly as it is for any other key.
+                // A PRESENCE key reads the struct NODE, not a value:
+                // reaching here at all means the node is non-NULL, and the
+                // NULL case is handled by the plain / INDF arms below
+                // exactly as it is for any other key.
                 if present {
                     return Ok(Some(KeyBits::I1(true)));
                 }
@@ -997,8 +1002,8 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
             };
             let ty = vc.map.ty;
             if vc.map.nullable {
-                // (validity, payload) pair per the flattened map layout
-                // (TASK-55): NULL -> (false, typed default).
+                // (validity, payload) pair per the flattened map layout:
+                // NULL -> (false, typed default).
                 if v.is_none() {
                     vals.extend(exec::null_val_slots(ty));
                 } else {
@@ -1158,9 +1163,9 @@ fn materialize_statics(
     Ok(data)
 }
 
-/// AC #2's constant emitter: a static-tables-only query is evaluated ONCE,
-/// here at build time, by DuckDB itself — nothing dynamic remains and no IR
-/// is built at all. Statics materialize as native tables (duckdb's
+/// The constant emitter: a static-tables-only query is evaluated ONCE, here
+/// at build time, by DuckDB itself — nothing dynamic remains and no IR is
+/// built at all. Statics materialize as native tables (duckdb's
 /// registered-arrow scan path has divergent filter semantics — see the
 /// builtin-pins spec). Returns the fixed row dicts plus the result schema.
 fn eval_static_only(
@@ -1191,8 +1196,8 @@ fn eval_static_only(
 }
 
 /// The execution backend: cranelift when it compiles, the interpreter as
-/// the always-available fallback (AC #2 — an uncovered op must not fail
-/// prepare). Both agree byte-for-byte by the 500-seed differential.
+/// the always-available fallback — an uncovered op must not fail prepare.
+/// Both agree byte-for-byte by the 500-seed differential.
 enum Backend {
     Cranelift(CraneliftFn),
     Interp(InterpFn),
@@ -1325,8 +1330,8 @@ impl Marshaller {
                 }
                 let null = attr.is_none();
                 match lane.kind {
-                    // A PRESENCE lane's VALUE is that validity (TASK-133):
-                    // its path walked to a struct NODE, not to a scalar.
+                    // A PRESENCE lane's VALUE is that validity: its path
+                    // walked to a struct NODE, not to a scalar.
                     plan::LaneKind::Present => col.push_present(!null),
                     plan::LaneKind::Value(ct) => {
                         if null && !ct.nullable {
@@ -1424,13 +1429,17 @@ impl Marshaller {
     }
 }
 
+/// What a successful build produced. The two share only the Python
+/// boundary: `Compiled` runs a program over the request rows, while a query
+/// that reads nothing but static tables has no program at all — DuckDB
+/// already answered it, so `Constant` just hands the answer back.
 enum Engine {
     Compiled {
         fun: Backend,
-        /// The program's row input, in IR order: name, SEGMENT path
-        /// (TASK-132 — the boundaries walk these, never split names) and
-        /// KIND. Taken verbatim off `Prepared`, which is the only place it
-        /// is built; the boundary does not assemble a lane list of its own.
+        /// The program's row input, in IR order: name, SEGMENT path (the
+        /// boundaries walk these, never split names) and KIND. Taken
+        /// verbatim off `Prepared`, which is the only place it is built;
+        /// the boundary does not assemble a lane list of its own.
         lanes: Vec<plan::InputLane>,
         out_cols: Vec<Col>,
         /// Output FIELDS in projection order (wide UDF lanes collapsed).
@@ -1473,7 +1482,7 @@ impl DuckDBInferFn {
         shape: Option<String>,
     ) -> PyResult<Self> {
         let (udf_decls, tree_decls) = parse_udfs(py, udfs.unwrap_or_default())?;
-        // The row-shape contract (TASK-58): "filter" (default) is today's
+        // The row-shape contract: "filter" (default) is today's
         // 0..1 rows out per row in; "map" statically PROVES exactly-one
         // (out[i] <-> in[i]) or refuses at build; "many" is reserved for
         // join multiplicity (stage B) and is the only shape under which
@@ -1507,9 +1516,8 @@ impl DuckDBInferFn {
         // (the binder knows them as opaque, star expansion included) — an
         // unreferenced timestamp field must not block a scalar query.
         // Struct columns flatten to scalar leaf LANES appended after every
-        // plain column (TASK-56); the dotted lane name doubles as the
-        // ingest path (segments are field names without dots, so '.' is
-        // unambiguous).
+        // plain column; the dotted lane name doubles as the ingest path
+        // (segments are field names without dots, so '.' is unambiguous).
         let mut in_cols = Vec::new();
         let mut opaque: Vec<(usize, String)> = Vec::new();
         let mut struct_defs: Vec<(usize, String, bool, Vec<(String, schema::RowField)>)> =
@@ -1529,11 +1537,12 @@ impl DuckDBInferFn {
                 schema::RowField::Opaque(_) => opaque.push((pos, name)),
             }
         }
-        // The IN-side duplicate check, moved off the IR verifier (TASK-127).
-        // Here the names are still IDENTIFIERS — the struct leaf lanes, whose
-        // dotted display names are not, get appended below — so a repeat is a
-        // real collision and refuses by name instead of surfacing later as an
-        // internal verifier bug on every query over the table.
+        // The IN-side duplicate check belongs HERE rather than in the IR
+        // verifier: here the names are still IDENTIFIERS — the struct leaf
+        // lanes, whose dotted display names are not, get appended below — so
+        // a repeat is a real collision and refuses by name instead of
+        // surfacing later as an internal verifier bug on every query over
+        // the table.
         for (i, c) in in_cols.iter().enumerate() {
             if in_cols[..i].iter().any(|p| p.name == c.name) {
                 return Err(build_err(format!(
@@ -1604,15 +1613,15 @@ impl DuckDBInferFn {
                     build_err(format!("static table '{name}' is not a pyarrow.Table: {e}"))
                 })?
                 .unbind();
-            // TASK-96: the SAME parser the row path uses, so a static column
-            // types at its declared arrow width instead of collapsing every
-            // integer to int64. A non-scalar column is still omitted rather
-            // than rejected — unreferenced ones cost nothing.
+            // The SAME parser the row path uses, so a static column types at
+            // its declared arrow width instead of collapsing every integer
+            // to int64. A non-scalar column is still omitted rather than
+            // rejected — unreferenced ones cost nothing.
             let mut cols = Vec::new();
             let mut opaque = Vec::new();
-            // Declared order, one entry per schema column: what a star sees
-            // (TASK-125). A struct is ONE opaque star entry; its flattened
-            // leaves are addressable by path but never expand under a star.
+            // Declared order, one entry per schema column: what a star sees.
+            // A struct is ONE opaque star entry; its flattened leaves are
+            // addressable by path but never expand under a star.
             let mut star = Vec::new();
             let mut structs = Vec::new();
             for (pos, (cname, rf)) in schema::arrow_static_schema(py, name, &schema_obj)?
@@ -1632,12 +1641,11 @@ impl DuckDBInferFn {
                         star.push(crate::specializer::plan::StarCol::Opaque(cname.clone()));
                         opaque.push((cname, aty))
                     }
-                    // TASK-116 + TASK-132: a struct's scalar leaves ARE the
-                    // lane set a static table already stores. The lanes keep
-                    // their dotted names for DISPLAY; resolution walks the
-                    // TREE pushed here. Under a star the struct is one
-                    // opaque entry: EXCLUDE it or the query refuses by name
-                    // (TASK-125).
+                    // A struct's scalar leaves ARE the lane set a static
+                    // table already stores. The lanes keep their dotted
+                    // names for DISPLAY; resolution walks the TREE pushed
+                    // here. Under a star the struct is one opaque entry:
+                    // EXCLUDE it or the query refuses by name.
                     schema::RowField::Struct { nullable, fields } => {
                         star.push(crate::specializer::plan::StarCol::Opaque(cname.clone()));
                         let tree = flatten_static(&mut cols, &cname, &fields, nullable);
@@ -1668,8 +1676,8 @@ impl DuckDBInferFn {
                 grid: t.grid,
             })
             .collect();
-        // TASK-101: the same closures the runtime uses, handed to the
-        // binder so a pure udf can constant-fold at build.
+        // The same closures the runtime uses, handed to the binder so a pure
+        // udf can constant-fold at build.
         let bind_impls = make_externs(py, &udf_decls);
         let prepared = match prepare_opaque(
             &sql,
@@ -1696,12 +1704,11 @@ impl DuckDBInferFn {
             // which DuckDB does not know, so evaluation fails and the
             // original clean error surfaces unchanged. Bind errors stay hard.
             Err(e @ (PrepareError::Unsupported(_) | PrepareError::Parse(_))) => {
-                // TASK-128: a row limit picks which rows survive, and that
-                // pick is not a function of the query (four answers over
-                // twelve connections, measured; ORDER BY does not fix
-                // ties). Refused WHOLESALE -- decision (a), 2026-08-19 --
-                // rather than frozen from whichever evaluation the build
-                // happened to run.
+                // A row limit picks which rows survive, and that pick is not
+                // a function of the query (four answers over twelve
+                // connections, measured; ORDER BY does not fix ties).
+                // Refused WHOLESALE (decided 2026-08-19) rather than frozen
+                // from whichever evaluation the build happened to run.
                 if let Some(clause) =
                     crate::specializer::frontend::row_limit_clause(&sql)
                 {
@@ -1837,23 +1844,18 @@ impl DuckDBInferFn {
 
     /// The row path: dict-or-object rows in, dict rows out. A
     /// static-tables-only build emits fixed rows and cannot read input, so
-    /// it REFUSES anything but `infer_rows([])` (TASK-110) rather than
-    /// dropping what it was handed.
+    /// it REFUSES anything but `infer_rows([])` rather than dropping what it
+    /// was handed.
     fn infer_rows(&self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
         self.run_rows(py, &rows)
     }
 
-    /// The columnar boundary (TASK-60): a single-chunk pa.Table or
-    /// RecordBatch in, a pa.Table out — zero per-value Python objects on
-    /// either side. Columns match the row model by NAME with strict
-    /// dtypes (int64 / double / string / bool; cast first otherwise).
-    /// Values are byte-identical to infer(); under shape='map' the output
-    /// aligns positionally with the input.
-    ///
-    /// Refuses when the caller supplied an `output_model`: this path never
-    /// builds Python rows, so it has nothing to run `model_validate` on, and
-    /// silently skipping it made three documented entry points to one
-    /// function give two different answers (TASK-71).
+    /// The columnar boundary: a single-chunk pa.Table or RecordBatch in, a
+    /// pa.Table out — zero per-value Python objects on either side. Columns
+    /// match the row schema by name — a struct leaf by its path through the
+    /// struct — at their exact declared arrow types, never a widening (cast
+    /// first otherwise). Values are byte-identical to infer_rows(); under
+    /// shape='map' the output aligns positionally with the input.
     fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let (fun, lanes, out_cols, plan) = match &self.engine {
             Engine::Compiled {
@@ -1889,10 +1891,10 @@ impl DuckDBInferFn {
                 marsh,
             } => (fun, lanes, out_cols, plan, marsh),
             Engine::Constant { rows: fixed, .. } => {
-                // TASK-110. This build reads only static tables, so it cannot
-                // see input rows at all — and silently dropping them was the
-                // one mistake at this boundary that did not refuse by name.
-                // It hides a real caller bug: N request rows through a
+                // This build reads only static tables, so it cannot see
+                // input rows at all — and silently dropping them was the one
+                // mistake at this boundary that did not refuse by name. It
+                // hides a real caller bug: N request rows through a
                 // function that structurally cannot read them returns 1 fixed
                 // row, and the caller's positional assumption breaks
                 // somewhere downstream instead of here.
@@ -1973,7 +1975,7 @@ impl DuckDBInferFn {
                 }
                 let null = attr.is_none();
                 match lane.kind {
-                    // A PRESENCE lane's VALUE is that validity (TASK-133).
+                    // A PRESENCE lane's VALUE is that validity.
                     plan::LaneKind::Present => col.push_present(!null),
                     plan::LaneKind::Value(ct) => {
                         if null && !ct.nullable {

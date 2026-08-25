@@ -15,8 +15,7 @@ pub enum Base {
     /// Unresolvable — a passthrough column, a multi-type union, an
     /// unsupported generic annotation, etc. Maps to Python `Any`.
     Other,
-    /// Ordered field list (name, type). Not `Copy` — Task 1 spine only,
-    /// no SQL construction surface yet.
+    /// Ordered field list (name, type).
     Struct(Vec<(String, FieldType)>),
     /// Element type.
     List(Box<FieldType>),
