@@ -1134,6 +1134,74 @@ fn tree_score_fixture_pins_null_and_unseen_group_on_both_backends() {
     assert_eq!(snapshot(&st), want, "cranelift");
 }
 
+/// TASK-91: the Dec lane on BOTH backends, end to end -- probe a
+/// decimal128(38,0) and a decimal128(6,2) value column, select between the
+/// probed payload and a zero default on the miss (the LEFT-join shape),
+/// compare at one scale, convert down with DuckDB's div/mod algorithm, and
+/// emit. 2^53+1 must survive all of it as ITSELF, which is the whole
+/// ticket; the interpreter and the JIT must agree, which is the backend
+/// contract.
+#[test]
+fn interp_and_cranelift_agree_on_a_decimal_probe_select_and_emit() {
+    use super::cranelift;
+    let p = parse(
+        r#"static @0: map(str) -> (dec(38,0), dec(6,2))
+
+fn f(in: batch{g: str}, out: batch{sk: dec(38,0)?, d: dec(6,2)?, big: i1?, x: f64?}) {
+entry:
+  %g = load in.g
+  %hit, %sk, %d = probe @0, %g
+  %z38 = const.dec(38,0) 0
+  %z6 = const.dec(6,2) 0
+  %skv = select %hit, %sk, %z38
+  %dv = select %hit, %d, %z6
+  %lim = const.dec(38,0) 9007199254740992
+  %big = dcmp(38,0).gt %skv, %lim
+  %x = dtof(6,2) %dv
+  store.opt out.sk, %hit, %skv
+  store.opt out.d, %hit, %dv
+  store.opt out.big, %hit, %big
+  store.opt out.x, %hit, %x
+  emit
+}"#,
+    )
+    .unwrap();
+    let statics = || {
+        vec![StaticData::Map(vec![
+            (
+                vec![KeyBits::Str("a".into())],
+                vec![
+                    ScalarVal::Dec(9_007_199_254_740_993, 38, 0),
+                    ScalarVal::Dec(-1234, 6, 2),
+                ],
+            ),
+            (
+                vec![KeyBits::Str("b".into())],
+                vec![
+                    ScalarVal::Dec(-9_007_199_254_740_993, 38, 0),
+                    ScalarVal::Dec(50, 6, 2),
+                ],
+            ),
+        ])]
+    };
+    let input = batch(3, vec![c_str(&[Some("a"), Some("b"), Some("zz")])]);
+    // The snapshot renders a Dec lane as its SCALED integer; the decimal
+    // point is the arrow boundary's business, not the lane's.
+    let want = rows(&[
+        &["9007199254740993", "-1234", "true", "-12.34"],
+        &["-9007199254740993", "50", "false", "0.5"],
+        &["NULL", "NULL", "NULL", "NULL"],
+    ]);
+
+    let fi = compile(&p, statics()).expect("interp compile");
+    assert_eq!(run_snapshot(&fi, &input).unwrap(), want, "interpreter");
+
+    let fc = cranelift::compile(&p, statics()).expect("cranelift compile");
+    let mut st = fc.new_state();
+    fc.run(&input, &mut st).expect("cranelift run");
+    assert_eq!(snapshot(&st), want, "cranelift");
+}
+
 /// Raw compute, no Python boundary: `cargo test --release backend_compute_
 /// bench -- --ignored --nocapture`. Informational, not a gate assertion.
 #[test]

@@ -97,6 +97,12 @@ _ARROW = {
     # out of vocabulary on purpose: unreferenced, these must not block a build
     "float32": pa.float32(),
     "timestamp": pa.timestamp("us"),
+    # STATIC-ONLY (TASK-91): served exactly, emitted as decimal128(p,s)
+    # whatever the internal storage tier.
+    "decimal(4,2)": pa.decimal128(4, 2),
+    "decimal(9,4)": pa.decimal128(9, 4),
+    "decimal(18,6)": pa.decimal128(18, 6),
+    "decimal(38,0)": pa.decimal128(38, 0),
 }
 _DUCK_T = {
     pa.bool_(): "BOOLEAN",
@@ -110,12 +116,19 @@ _DUCK_T = {
 # hundreds of random spellings per run; delete the tag in the feature's own
 # PR or it hides regressions. (int-widths deleted with TASK-79/phase 2.)
 #
+# NARROWED by TASK-91 (2026-08-25): the tag no longer covers decimal STATIC
+# columns — those now serve exactly as decimal128(p,s), so a decimal-vs-
+# double type delta there is a REGRESSION, not a known gap. What survives is
+# the LITERAL-derived class only: docs/known-limitations.md's "DECIMAL
+# literals are f64" row, where DuckDB types `1.5` as DECIMAL(2,1) and we map
+# to f64. gen.py emits decimal literals (gen.py:255, :574) and, since
+# TASK-91, decimal STATIC columns as well — so the surviving tag hits are
+# checkable by hand: every one should trace to a literal.
+#
 # This tag has NO strict-xfail twin, contrary to what this comment claimed
 # until 2026-08-15. The bare-literal 1-ulp class is documented instead, in
 # docs/known-limitations.md — and TASK-95 (doc-twin totality) is still To
-# Do, so nothing rings when phase 5 lands. test_decimals.py's only pin is
-# TASK-91, which is phase 1 (decimal STATIC ingest), a different member.
-# Until one of those closes, this tag is a report filter and nothing more.
+# Do, so nothing rings when phase 5 lands.
 
 
 @dataclass

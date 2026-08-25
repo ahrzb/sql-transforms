@@ -1410,3 +1410,65 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
     }
     cast_loop(b, false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Source item 5, pinned: `TryCastDecimalToFloatingPoint`
+    /// (cast_operators.cpp:2908-2924) is NOT a correctly-rounded
+    /// conversion. Past 2^53 the unscaled integer goes down the div/mod
+    /// path, and the two answers DIFFER on real payloads -- measured live
+    /// on DuckDB 1.5.5, optimizer off, 2026-08-25:
+    ///
+    ///   CAST(CAST('9007199254740993.5' AS DECIMAL(38,1)) AS DOUBLE)
+    ///     DuckDB            9007199254740992.0
+    ///     float(Decimal)    9007199254740994.0
+    ///
+    /// This is the one place a "cleaner" implementation silently breaks
+    /// the contract, so it is pinned on the VALUE rather than the shape.
+    #[test]
+    fn duckdb_decimal_to_double_uses_the_div_mod_algorithm() {
+        // The divergent payload: div rounds to 9007199254740992.0, and
+        // adding 5/10 lands back on it (ties to even at 2^53's spacing).
+        assert_eq!(dec_to_f64(90_071_992_547_409_935, 1), 9007199254740992.0);
+        assert_ne!(dec_to_f64(90_071_992_547_409_935, 1), 9007199254740994.0);
+
+        // The fast path (scale 0, or an exactly representable unscaled
+        // integer) agrees with the obvious answer, both signs.
+        assert_eq!(dec_to_f64(9_007_199_254_740_993, 0), 9007199254740992.0);
+        assert_eq!(dec_to_f64(-9_007_199_254_740_993, 0), -9007199254740992.0);
+        assert_eq!(dec_to_f64(50, 2), 0.5);
+        assert_eq!(dec_to_f64(-225, 2), -2.25);
+        assert_eq!(dec_to_f64(10_625, 4), 1.0625);
+        assert_eq!(dec_to_f64(0, 2), 0.0);
+
+        // A DECIMAL(38,x) magnitude on the slow path, exercising the
+        // hugeint halves conversion in both directions (upper != 0, and
+        // DuckDB's own upper == -1 special case).
+        assert_eq!(
+            dec_to_f64(1_234_567_890_123_456_789_012_345, 5),
+            1.2345678901234567e19
+        );
+        assert_eq!(
+            dec_to_f64(-1_234_567_890_123_456_789_012_345, 5),
+            -1.2345678901234567e19
+        );
+    }
+
+    /// The other direction: DuckDB casts the INTEGER up when a DECIMAL
+    /// meets one (ImplicitCastBigint, cast_rules.cpp:96-107), so the
+    /// comparison stays exact.
+    #[test]
+    fn an_integer_scales_up_into_a_decimals_lane_exactly() {
+        assert_eq!(int_to_dec(1, 0), 1);
+        assert_eq!(int_to_dec(100, 2), 10_000);
+        assert_eq!(int_to_dec(-2, 2), -200);
+        // The widest shape the frontend admits: a BIGINT probe (decimal
+        // width 19) against scale 19, which is 19 + 19 = 38 exactly.
+        assert_eq!(
+            int_to_dec(i64::MAX, 19),
+            92_233_720_368_547_758_070_000_000_000_000_000_000
+        );
+    }
+}
