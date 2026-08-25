@@ -28,7 +28,7 @@ class DuckDBInferFn:
         `pa.int32()` binds INTEGER, exactly like DuckDB DDL, and reaches the
         type lattice at that width. The v0 vocabulary is `bool_` / `int8` /
         `int16` / `int32` / `int64` / `float64` / `string`, plus structs of
-        these (flattened to `parent.leaf` lanes, TASK-56). A field outside
+        these (flattened to `parent.leaf` lanes). A field outside
         the vocabulary stays opaque: unreferenced it costs nothing,
         referenced it refuses by name. Nullability is the arrow field flag
         (`pa.field(name, t, nullable=False)` binds NOT NULL; arrow's default
@@ -49,9 +49,9 @@ class DuckDBInferFn:
         and whether its lanes are addressable:
 
             pa.float64()          an ordinary scalar expression
-            pa.struct([...])      width-k with addressable field names
-                                  (TASK-63) — struct-valued at EVERY width,
-                                  so `f(x).a` reads a lane off ONE call
+            pa.struct([...])      width-k with addressable field names —
+                                  struct-valued at EVERY width, so `f(x).a`
+                                  reads a lane off ONE call
             pa.list_(t, k)        width-k unnamed (the DRAFT-22 list
                                   boundary); FIXED size, because the width is
                                   part of the declaration, and k >= 2 — a
