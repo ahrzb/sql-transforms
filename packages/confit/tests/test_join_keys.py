@@ -549,6 +549,71 @@ def test_a_struct_on_one_side_only_is_not_a_key():
     )
 
 
+# --- the minted lane's own NAME is user-reachable ---------------------------
+#
+# A minted presence lane is named `"<dotted path> (present)"`, and that
+# synthetic name reaches users verbatim through the boundaries' "missing
+# attribute" / "no field" refusals. Every ordinary struct shape SHADOWS it:
+# the struct's leaf lanes come first in lane order and refuse under their own
+# names. A struct NODE with no scalar leaf beneath it is the shape where the
+# presence lane is the only lane that walks there, so it is what pins the
+# name -- on all three ingest paths, which fill presence lanes separately.
+
+_EMPTY = pa.struct([])
+_ROW_WE = pa.schema([pa.field("id", pa.int64(), nullable=False), pa.field("w", _EMPTY)])
+# a real leaf beside a leafless node, so the dotted JOIN of the path is pinned
+# too and not just a one-segment name
+_NESTED_E = pa.struct([("m", pa.float64()), ("a", _EMPTY)])
+_ROW_WN = pa.schema(
+    [pa.field("id", pa.int64(), nullable=False), pa.field("w", _NESTED_E)]
+)
+
+
+def _present_fn(row_schema, wtype, wval):
+    return DuckDBInferFn(
+        "SELECT z AS o FROM __THIS__ NATURAL JOIN s",
+        row_tables={"__THIS__": row_schema},
+        static_tables={"s": _static_w(wtype, wval)},
+    )
+
+
+# True pins the generic row boundary (the pre-marshaller baseline), which
+# fills presence lanes in its own loop -- the env var is read at construction.
+@pytest.mark.parametrize("generic", [False, True])
+def test_a_minted_presence_lane_names_itself_at_the_row_boundary(monkeypatch, generic):
+    if generic:
+        monkeypatch.setenv("SPECIALIZER_GENERIC_BOUNDARY", "1")
+    fn = _present_fn(_ROW_WE, _EMPTY, {})
+    with pytest.raises(ValueError) as e:
+        fn.infer_rows([{"id": 5}])
+    assert str(e.value) == "Row for table '__THIS__' is missing attribute 'w (present)'"
+
+
+@pytest.mark.parametrize("generic", [False, True])
+def test_a_nested_presence_lane_dots_its_path_into_its_name(monkeypatch, generic):
+    if generic:
+        monkeypatch.setenv("SPECIALIZER_GENERIC_BOUNDARY", "1")
+    fn = _present_fn(_ROW_WN, _NESTED_E, {"m": 1.0, "a": {}})
+    with pytest.raises(ValueError) as e:
+        fn.infer_rows([{"id": 5, "w": {"m": 1.0}}])
+    assert (
+        str(e.value) == "Row for table '__THIS__' is missing attribute 'w.a (present)'"
+    )
+
+
+def test_a_minted_presence_lane_names_itself_at_the_arrow_boundary():
+    fn = _present_fn(_ROW_WN, _NESTED_E, {"m": 1.0, "a": {}})
+    only_m = pa.struct([("m", pa.float64())])
+    batch = pa.table(
+        {"id": pa.array([5], pa.int64()), "w": pa.array([{"m": 1.0}], only_m)}
+    )
+    with pytest.raises(ValueError) as e:
+        fn.infer_arrow(batch)
+    assert str(e.value) == (
+        "infer_arrow: column 'w.a (present)': the batch's struct 'w' has no field 'a'"
+    )
+
+
 # The lazy-minting contract -- a presence lane costs ~25 ns/row at the
 # boundary, so an unjoined query over a struct-carrying row model must
 # marshal exactly the lanes it did before -- is pinned on `program.in_cols`
