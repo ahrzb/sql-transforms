@@ -123,6 +123,16 @@ impl ColData {
         }
     }
 
+    /// Append one non-NULL cell to an I1 column — the struct-node PRESENCE
+    /// lanes both row boundaries fill (TASK-133).
+    pub fn push_present(&mut self, v: bool) {
+        let ColData::I1 { valid, data } = self else {
+            unreachable!("a presence lane is always I1");
+        };
+        valid.push(true);
+        data.push(v);
+    }
+
     /// Append one cell to a Str column (`""` for a NULL payload).
     pub fn push_str_cell(&mut self, ok: bool, s: &str) {
         let ColData::Str { valid, buf, spans } = self else {

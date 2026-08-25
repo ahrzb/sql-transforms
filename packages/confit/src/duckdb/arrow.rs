@@ -215,12 +215,34 @@ pub fn ingest<'py>(
     batch: &Bound<'py, PyAny>,
     in_cols: &[Col],
     in_paths: &[Vec<String>],
+    present_from: usize,
 ) -> PyResult<Batch> {
     let _ = py;
     let rows: usize = batch.call_method0("__len__")?.extract()?;
     let mut cols = Vec::with_capacity(in_cols.len());
-    for (c, path) in in_cols.iter().zip(in_paths) {
+    for (i, (c, path)) in in_cols.iter().zip(in_paths).enumerate() {
         let (arr, parents) = walk_lane(batch, path, &c.name)?;
+        // A PRESENCE lane (TASK-133) stops at a struct NODE and reads that
+        // node's own validity, folded with every parent's — the same fold
+        // the leaf lanes below use. Its arrow type is a struct, so the
+        // scalar dtype check does not apply to it.
+        if i >= present_from {
+            let raw = raw_array(arr)?;
+            if raw.len != rows {
+                return Err(err(format!(
+                    "infer_arrow: column '{}' has {} rows, the batch {rows}",
+                    c.name, raw.len
+                )));
+            }
+            let data: Vec<bool> = (0..rows)
+                .map(|r| parents.iter().all(|p| p.valid(r)) && raw.valid(r))
+                .collect();
+            cols.push(ColData::I1 {
+                valid: vec![true; rows],
+                data,
+            });
+            continue;
+        }
         let dtype: String = arr.getattr("type")?.str()?.extract()?;
         let ok = matches!(
             (c.ty.ty, dtype.as_str()),

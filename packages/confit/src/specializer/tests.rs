@@ -118,6 +118,73 @@ fn an_unqualified_head_reaches_a_static_struct_leaf() {
     assert!(spec.val_cols.contains(&vec!["w.mean".to_string()]));
 }
 
+/// TASK-133: the boundary contract behind the LAZY minting decision. A
+/// struct-node PRESENCE lane costs ~25 ns/row at the marshalling boundary,
+/// so a query that does not key a join on the struct must marshal exactly
+/// the lanes it marshalled before; only the keyed query pays. Asserted on
+/// `program.in_cols` itself rather than by timing.
+#[test]
+fn presence_lanes_are_minted_lazily() {
+    use super::plan::{StarCol, StructCol, StructField, StructNode};
+    let mut t = stat(
+        "s",
+        &[
+            ("id", Ty::I64, false),
+            ("w.mean", Ty::F64, true), // the struct leaf lane
+            ("z", Ty::I64, false),
+        ],
+    );
+    t.star = vec![
+        StarCol::Real(0),
+        StarCol::Opaque("w".to_string()),
+        StarCol::Real(2),
+    ];
+    t.structs = vec![StructCol {
+        pos: 1,
+        name: "w".to_string(),
+        fields: vec![StructField {
+            name: "mean".to_string(),
+            node: StructNode::Leaf(1),
+        }],
+    }];
+    // The row model: `id` plus struct `w`, flattened to one leaf lane.
+    let schema = cols(&[("id", Ty::I64, false), ("w.mean", Ty::F64, true)]);
+    let structs = [StructCol {
+        pos: 1,
+        name: "w".to_string(),
+        fields: vec![StructField {
+            name: "mean".to_string(),
+            node: StructNode::Leaf(1),
+        }],
+    }];
+    let prep = |sql: &str| {
+        super::prepare_opaque(
+            sql, "__THIS__", &schema, &[], &structs, &[t.clone()], false, &[], &[], &[],
+        )
+        .unwrap()
+    };
+    // No join on `w`: not one extra lane.
+    let plain = prep("SELECT z AS o FROM __THIS__ JOIN s ON __THIS__.id = s.id");
+    assert!(plain.present_lanes.is_empty());
+    assert_eq!(plain.program.in_cols.len(), schema.len());
+    // NATURAL keys on `w`, which mints exactly the top-level presence lane
+    // (one node, one leaf — the leaf already has a lane).
+    let keyed = prep("SELECT z AS o FROM __THIS__ NATURAL JOIN s");
+    assert_eq!(keyed.present_lanes.len(), 1);
+    assert_eq!(keyed.present_lanes[0].1, vec!["w".to_string()]);
+    assert_eq!(keyed.program.in_cols.len(), schema.len() + 1);
+    // ... and the static side asks for that node's PRESENCE, not a value.
+    let spec = &keyed.statics[0];
+    let kp = spec
+        .key_cols
+        .iter()
+        .position(|p| p == &vec!["w".to_string()])
+        .expect("the struct head is a key column");
+    assert!(spec.key_present[kp]);
+    assert!(!spec.key_indf[kp], "the top-level presence key is PLAIN");
+    assert!(!spec.val_cols.contains(&vec!["w".to_string(), "mean".to_string()]));
+}
+
 /// prepare + compile + run with static-table map data.
 fn run_join(
     sql: &str,
