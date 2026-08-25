@@ -1880,8 +1880,8 @@ fn is_shadow_lane(sj: &ScopeJoin, pos: usize) -> bool {
 /// not trustworthy past it.
 ///
 /// Trap-freeness is deliberately NOT computed here — it is
-/// [`plan::may_trap`], shared with Kleene lowering so the two cannot
-/// drift. Acceptance rule at the call site:
+/// [`plan::may_trap`], whose one consumer is the JOIN ON residual rule
+/// below. Acceptance rule at the call site:
 /// `!may_trap(e) || (left && right && known)` — measured: DuckDB scan-pushes
 /// single-side residuals (eager trap timing) but evaluates both-sides
 /// residuals per candidate pair, which our hit-guarded lowering matches.
@@ -2083,8 +2083,9 @@ struct Binder<'a> {
     /// trapping-constant refusals only apply at depth 0 — a guarded
     /// trapping constant stays a lazy runtime question on both engines.
     in_guarded: std::cell::Cell<u32>,
-    /// Lanes the binder MINTED (today: struct-node presence; TASK-134 adds
-    /// a second kind). The caller APPENDS these to the lane list before
+    /// Lanes the binder MINTED. Struct-node presence is the only minted kind
+    /// today; the seam is shaped to take a second, key-only kind without
+    /// changing its contract. The caller APPENDS these to the lane list before
     /// lowering. Named the same on the way out, because it is the same list
     /// moved out of this `RefCell` — one list, one name, in both places.
     ///

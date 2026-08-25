@@ -224,11 +224,11 @@ pub(crate) fn col_for_lane(lane: &plan::InputLane, cap: usize) -> ColData {
     }
 }
 
-/// Append a static struct column's scalar leaves as lanes named by their
-/// FULL ORDERED PATH, so `w.x.y.z.a` and `w.z.y.x.a` stay distinct names and
-/// a lookup either walks the path exactly or misses. A field name holding a
-/// '.' would make that encoding ambiguous, so its subtree is skipped — the
-/// same rule the row path follows.
+/// Append a static struct column's scalar leaves as input lanes and return
+/// the field TREE that resolution walks. Each lane's `name` is its dotted
+/// path, carried for display only — nothing resolves by building or
+/// splitting that string. A field whose own name contains a '.' is skipped,
+/// subtree and all, so it is unreachable here by any spelling.
 fn flatten_static(
     cols: &mut Vec<Col>,
     prefix: &str,
@@ -238,6 +238,12 @@ fn flatten_static(
     use crate::specializer::plan::{StructField, StructNode};
     let mut tree = Vec::with_capacity(fields.len());
     for (fname, rf) in fields {
+        // A retained choice, not something the encoding forces: lanes carry
+        // a structured path, so a dotted segment is no longer ambiguous and
+        // this skip could be lifted soundly. Until someone decides to,
+        // dotted names stay opaque here. (The row path keeps such a field as
+        // an `Opaque` node instead, so it refuses by name rather than going
+        // missing.)
         if fname.contains('.') {
             continue;
         }
@@ -1562,7 +1568,7 @@ impl DuckDBInferFn {
                 .iter()
                 .map(|(fname, rf)| {
                     let node = if fname.contains('.') {
-                        StructNode::Opaque // would break the path encoding
+                        StructNode::Opaque // dotted names stay unreachable
                     } else {
                         match rf {
                             schema::RowField::Struct { nullable, fields } => {

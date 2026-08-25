@@ -1100,8 +1100,9 @@ pub fn compile_ext(
     // interpreter-only: rejecting here makes the caller's interp fallback
     // the documented 'many' path, and lets the match arms below treat
     // these constructs as unreachable. This is the ONLY thing the
-    // interpreter's eval loop is load-bearing for (TASK-111 lowers it) —
-    // every other program compiles here.
+    // interpreter's eval loop is still load-bearing for — every other
+    // program compiles here, so lowering multiplicity to CLIF is what
+    // would remove the dependence on it.
     let has_multiplicity = p
         .statics
         .iter()
@@ -2443,10 +2444,10 @@ mod tests {
         assert_eq!(f(40, 2), 42);
     }
 
-    /// TASK-100, the lattice spec's hard dependency for the i128 lane:
-    /// does cranelift legalize i128 arithmetic on x64, through the same JIT
-    /// harness the engine uses? Answered here rather than assumed, because
-    /// the phase was scheduled behind it.
+    /// The lattice spec's hard dependency for the i128 lane: does cranelift
+    /// legalize i128 arithmetic on x64, through the same JIT harness the
+    /// engine uses? Answered here rather than assumed, because extending the
+    /// Dec lane to HUGEINT is scheduled behind the answer.
     ///
     /// i128 is passed and returned INDIRECTLY (a pointer to caller memory) —
     /// cranelift's I128 is a value type in the IR but not in the C ABI, so

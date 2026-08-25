@@ -12,17 +12,25 @@ fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
-/// Parsed DuckDB regex options string (wave-B pins: parsed left-to-right,
-/// whitespace skipped, LAST conflicting letter wins; `m`/`n`/`p` are
-/// functional no-ops — multiline anchors exist only via inline (?m)).
+/// A DuckDB regex options string, parsed. Default is every flag off, which
+/// is the same thing an empty option string means.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReOptions {
+    /// 'i' — the whole pattern folds case.
     pub case_insensitive: bool,
+    /// 's' — `.` also matches newline.
     pub dotall: bool,
+    /// 'l' — the pattern is a literal string, not a regex.
     pub literal: bool,
+    /// 'g' — replace every match, not just the first.
     pub global: bool,
 }
 
+/// Parse an options string per the wave-B pins: left to right, whitespace
+/// skipped, LAST conflicting letter wins; `m`/`n`/`p` are functional no-ops
+/// (multiline anchors exist only via inline `(?m)`). An unrecognised letter
+/// is a bind error with DuckDB's message.
+///
 /// `allow_g`: only regexp_replace accepts 'g' (pinned error otherwise).
 pub fn parse_options(opts: &str, allow_g: bool) -> Result<ReOptions, PrepareError> {
     let mut o = ReOptions::default();
@@ -121,7 +129,7 @@ fn anchors_only_multi(p: &str) -> bool {
 
 /// Rewrite a DuckDB/RE2 pattern into a rust-regex pattern with identical
 /// semantics, or reject constructs on the measured divergence list (wave-B
-/// pins + the TASK-54 standing fuzzer's findings).
+/// pins plus the standing differential fuzzer's findings).
 pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
     if anchors_only_multi(p) {
         return Err(unsup(
@@ -150,12 +158,15 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
     // RE2 program-size budget (fuzzer 2026-07-28 seed 20260728: DuckDB
     // errors "pattern too large" on '(\p{L}){1,500}' while rust serves).
     // One-sided over-estimate in "range units": \p/\P weigh 800 (above any
-    // property's real range count), classes their member count, literals a
-    // flat 4; a counted repetition whose weight product clears 100_000 is
-    // rejected — always BEFORE DuckDB's real budget (measured error floor
-    // ~216k units), so we can refuse but never serve where DuckDB errors.
+    // property's real range count), a class two per member plus two,
+    // literals a flat 4; a counted repetition whose weight product clears
+    // 100_000 is rejected — always BEFORE DuckDB's real budget (measured
+    // error floor ~216k units), so we can refuse but never serve where
+    // DuckDB errors.
     let mut weights: Vec<u64> = Vec::new(); // per open group
     let mut cur_weight: u64 = 0;
+    // Weight of the last ATOM alone: the multiplicand a following {m,n}
+    // multiplies, where `cur_weight` is the running sum for the open group.
     let mut last_weight: u64 = 4;
     let mut class_p: u64 = 0; // \p/\P weight inside the open class
     while i < b.len() {
@@ -483,9 +494,9 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
     Ok(out)
 }
 
-/// Translate a DuckDB replacement template (`\N` backrefs, literal `$`)
-/// into a rust-regex template (`$N` refs, literal `\`), resolving the
-/// pinned invalid-rewrite quirks at bind time.
+/// What a replacement template translated to. An invalid template is not an
+/// error on either engine, so two of the three outcomes are behaviours the
+/// caller must lower rather than reject.
 pub enum Rewrite {
     /// A valid rust template.
     Template(String),
@@ -497,6 +508,14 @@ pub enum Rewrite {
     ConsumeWithPrefix(String),
 }
 
+/// Translate a DuckDB replacement template (`\N` backrefs, literal `$`) into
+/// a rust-regex template (`$N` refs, literal `\`), resolving the pinned
+/// invalid-rewrite quirks at bind time rather than at match time.
+///
+/// `group_count` is the pattern's CAPTURE count, which decides whether a
+/// `\N` is in range; `global` is the 'g' option, which decides how a bad
+/// escape degrades. Never fails: every invalid template maps to one of the
+/// [`Rewrite`] outcomes.
 pub fn translate_rewrite(r: &str, group_count: usize, global: bool) -> Rewrite {
     let b = r.as_bytes();
     // RE2's MaxSubmatch pre-check scans the WHOLE template before any
@@ -589,7 +608,7 @@ mod tests {
 
     #[test]
     fn fuzzer_reject_list() {
-        // TASK-54 standing-fuzzer findings (spec addendum pins).
+        // Standing differential-fuzzer findings (spec addendum pins).
         for p in [
             r"a\1",         // RE2 backref reject vs rust octal-mode escape
             "a?*",          // stacked quantifiers beyond the */+ pairs

@@ -483,9 +483,23 @@ pub(super) fn trunc_prec_i64(x: i64, n: i64) -> i64 {
 /// SQL LIKE over BYTES: `%` matches any run, `_` matches exactly ONE
 /// codepoint (multibyte-aware), anything else compares byte for byte.
 /// `esc` is the optional escape BYTE, which de-wildcards the pattern
-/// character after it; a pattern ending in the escape byte traps with
-/// DuckDB's message. Case folding is the caller's — ILIKE lowercases both
+/// character after it. Case folding is the caller's — ILIKE lowercases both
 /// operands before calling, nothing here folds.
+///
+/// The dangling-escape trap is DATA-DEPENDENT, not a property of the pattern
+/// alone: it fires only when the match reaches a trailing escape byte with
+/// string bytes still unconsumed, and is a plain `false` when the string is
+/// already exhausted at that point. `'ax' LIKE 'a#' ESCAPE '#'` errors;
+/// `'a' LIKE 'a#' ESCAPE '#'` is false. Every DuckDB 1.5.5 behaviour
+/// reproduced here is pinned in
+/// docs/superpowers/specs/pins-wave1/pins_like.json.
+///
+/// Iterative two-pointer restart, deliberately NOT the obvious recursive
+/// form: it yields identical booleans AND identical error rows to
+/// leftmost-first recursive semantics, in O(n*m), where DuckDB's own
+/// recursive matcher degenerates to O(n^k) — measured at 23 s/row on
+/// pathological patterns. Rewriting this into recursion would keep the
+/// answers and lose the bound.
 pub(super) fn like_match(s: &[u8], p: &[u8], esc: Option<u8>) -> Result<bool, Trap> {
     let (mut si, mut pi) = (0usize, 0usize);
     // Backtrack state: pattern index just past the last %, and the string
