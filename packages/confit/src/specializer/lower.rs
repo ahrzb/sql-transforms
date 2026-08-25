@@ -12,10 +12,10 @@
 //! Null-lane discipline: an SExpr with `nullable == false` lowers to a bare
 //! payload register (no flag anywhere); a nullable one carries an `i1` flag,
 //! combined with `and` where NULL propagates. Kleene AND/OR are lowered
-//! branchless from flag algebra — except when the right operand can trap
-//! ([`plan::may_trap`]), where SQL's short-circuit is observable and they
-//! branch instead (TASK-75). WHERE keeps a row iff the predicate is TRUE —
-//! flag && value.
+//! branchless from flag algebra wherever the value is what is wanted;
+//! SQL's observable short-circuit belongs to SELECTION context and branches
+//! instead, in `FB::emit_truth`. WHERE keeps a row iff the predicate is
+//! TRUE — flag && value.
 //!
 //! CASE lowers to a condition chain with a join block; branch results are
 //! evaluated only on their taken path (a guarded `1/0`-style branch must not
@@ -77,6 +77,21 @@ fn arrow_narrow_name(ty: Ty) -> &'static str {
     }
 }
 
+/// The bound plan as one imperative-IR program named `name`: the projection
+/// `rel` carries, its joins, and the statics they probe.
+///
+/// `in_cols` is the row input in LANE order (struct leaves already
+/// flattened) and `out_cols` its declared output, both positional — the
+/// projection's i-th expression stores to `out_cols[i]`. `joins` indexes
+/// `catalog`, and join `j` probes static `@j`, so the `model<...>` statics
+/// for `model_refs` (indices into `models`) are appended after them all.
+/// `many` selects the multiplicity loop of `shape="many"`, which stage B
+/// limits to a single join.
+///
+/// The result is well-formed but NOT yet canonical or verified; the caller
+/// does both. What the loop form cannot serve refuses here as
+/// [`PrepareError::Unsupported`]; a shape the frontend should have rejected
+/// surfaces as [`PrepareError::Internal`], never as a wrong program.
 #[allow(clippy::too_many_arguments)]
 pub fn lower(
     rel: &Rel,
@@ -201,11 +216,11 @@ pub fn lower(
     }
 
     if let Some(pred) = filter_pred {
-        // The WHERE root is SELECTION context (TASK-124): emit_truth is
-        // where AND's left-to-right laziness lives, recursively -- the old
-        // one-conjunct-at-a-time spine was the top-level special case of
-        // it. A filter asks `pred IS TRUE`, and FALSE and NULL answer that
-        // question alike, so the bare i1 is the whole story.
+        // The WHERE root is SELECTION context: emit_truth is where AND's
+        // left-to-right laziness lives, recursively, at every depth rather
+        // than only along a top-level conjunct spine. A filter asks
+        // `pred IS TRUE`, and FALSE and NULL answer that question alike, so
+        // the bare i1 is the whole story.
         let mut live = Vec::new();
         let cond = fb.emit_truth(pred, &mut live)?;
         let (keep, _) = fb.create_block(&[]);
@@ -229,8 +244,8 @@ pub fn lower(
         // pushes lanes and forgets to truncate. A leak leaves dead values
         // riding every later block transition — well-formed IR, so `verify`
         // says nothing, and a release-only test run sees nothing either
-        // (measured: TASK-66's own fix passed the whole suite with its
-        // `live.truncate` deleted).
+        // (measured: the whole suite passed green with a `live.truncate`
+        // deleted from the arm that had just been fixed to add it).
         assert!(live.is_empty(), "live stack leaked before column {ci}");
         let lane = fb.emit(e, &mut live)?;
         let col = ci as u32;
@@ -291,6 +306,7 @@ struct PB {
     params: Vec<(Value, Ty)>,
     insts: Vec<Inst>,
     term: Option<Term>,
+    /// Input columns already loaded in this block, by column index.
     cache: HashMap<u32, Lane>,
     /// Probes already emitted in this block: join index -> (valid hit —
     /// map hit AND every key flag — and the value-column registers).
@@ -327,21 +343,24 @@ struct FB<'a> {
     /// after every join static, so `predict @N` is `model_base + model`.
     model_base: usize,
     /// The many-join whose probe cache must be re-created in every block a
-    /// split creates, while one expression is being emitted under it
-    /// (TASK-68). `base` is where the join's value lanes sit on the live
-    /// stack — NOT `live.len() - nd`, which holds only at an expression
-    /// boundary, before operands are pushed on top of them.
+    /// split creates, while one expression is being emitted under it.
+    /// `base` is where the join's value lanes sit on the live stack — NOT
+    /// `live.len() - nd`, which holds only at an expression boundary,
+    /// before operands are pushed on top of them.
     many: Option<ManySeed>,
     /// Scalar joins whose residual is being emitted right now, innermost
     /// last. Same hazard as `many`, different cache: the join's value lanes
     /// ride the live stack but the cache ENTRY is per block, and a split
     /// inside the residual used to drop it, miss, and re-enter `emit_probe`
     /// without bound — a stack overflow that killed the process rather than
-    /// raising (TASK-73). A stack, not an Option: a residual may probe
-    /// another join.
+    /// raising. A stack, not an Option: a residual may probe another join.
     probe_seeds: Vec<ProbeSeed>,
 }
 
+/// Where an active many-join's probe lanes ride: `nd` live entries starting
+/// at `base`, `nd` being the FLATTENED value width (`val_flat_tys`), plus
+/// the hit flag to seed the cache with — true in the loop body, false on the
+/// LEFT null-extension path.
 #[derive(Clone, Copy)]
 struct ManySeed {
     join: u32,
@@ -350,6 +369,8 @@ struct ManySeed {
     nd: usize,
 }
 
+/// The same for a scalar join being probed inside its own residual, where
+/// the hit is TRUE by construction and needs no field.
 #[derive(Clone, Copy)]
 struct ProbeSeed {
     join: u32,
@@ -542,10 +563,10 @@ impl<'a> FB<'a> {
         }
     }
 
-    /// SELECTION context (TASK-124): the value is consumed only for
-    /// TRUE-ness, so the result is a bare i1 with no null flag. Entered from
-    /// the WHERE root (scalar and many paths) and from every CASE condition;
-    /// exits to `emit` at every operator that can tell NULL from FALSE.
+    /// SELECTION context: the value is consumed only for TRUE-ness, so the
+    /// result is a bare i1 with no null flag. Entered from the WHERE root
+    /// (scalar and many paths) and from every CASE condition; exits to
+    /// `emit` at every operator that can tell NULL from FALSE.
     ///
     /// The measured model (the 2026-08-19 spec): AND is the ONLY lazy
     /// operator -- its LEFT always runs, its RIGHT is skipped when the left
@@ -711,8 +732,8 @@ impl<'a> FB<'a> {
     /// wherever DuckDB's would. Checking at the OUTPUT boundary is not that.
     /// `CAST((i + 1) AS BIGINT)` over INT32_MAX served 2147483648, a value
     /// DuckDB never produces, because the widening cast consumed the i32
-    /// result before any boundary saw it (TASK-118); a comparison, a
-    /// function argument, or a float promotion hid it the same way.
+    /// result before any boundary saw it; a comparison, a function
+    /// argument, or a float promotion hid it the same way.
     ///
     /// So the check lands on the RESULT, at the point of production. The
     /// opt-out is an ALLOWLIST rather than a denylist, so an operator added
@@ -813,6 +834,9 @@ impl<'a> FB<'a> {
         }
     }
 
+    /// The per-kind body of [`Self::emit`], which is its only caller: the
+    /// narrow-width range trap belongs to `emit`, so reaching a kind from
+    /// anywhere else would skip the trap.
     fn emit_kind(&mut self, e: &SExpr, live: &mut Live) -> Result<Lane, PrepareError> {
         match &e.kind {
             SKind::Col(idx) => {
@@ -853,9 +877,9 @@ impl<'a> FB<'a> {
                     JoinKind::Inner => None,
                     JoinKind::Left => Some(valid_hit),
                 };
-                // A nullable static column carries its own validity dst
-                // (TASK-55); on a LEFT miss the probe defaults it to false,
-                // so the AND is correct without extra guards.
+                // A nullable static column carries its own validity dst; on
+                // a LEFT miss the probe defaults it to false, so the AND is
+                // correct without extra guards.
                 let vflag = validity.map(|vi| dsts[vi]);
                 let flag = self.combine_flags(hit_flag, vflag);
                 Ok(Lane {
@@ -953,8 +977,8 @@ impl<'a> FB<'a> {
                     flag: self.combine_flags(la.flag, lb.flag),
                     val,
                 };
-                // TASK-122: MIN % -1 at a NARROW width. DuckDB computes the
-                // modulo through the checked division, which overflows at the
+                // MIN % -1 at a NARROW width. DuckDB computes the modulo
+                // through the checked division, which overflows at the
                 // width even though the mathematical result (0) is in range —
                 // the one narrow overflow a RESULT-range check cannot see.
                 // Masked payloads (defaults) can never equal a negative MIN,
@@ -1419,7 +1443,7 @@ impl<'a> FB<'a> {
                 // splits the CFG, and `rebind_live` then rewrites the earlier
                 // lanes to the new block's params — so a `Lane` still held in
                 // a local from before the split names a register that block
-                // cannot see (TASK-66: `COALESCE(x, 0.0)` around a nullable
+                // cannot see (measured: `COALESCE(x, 0.0)` around a nullable
                 // feature stranded the id). Reading the operands back OUT of
                 // `live` afterwards is the point, not the pushing; this is
                 // the same shape as `emit_probe` and `emit_extern`.
@@ -1553,16 +1577,10 @@ impl<'a> FB<'a> {
         }
     }
 
-    /// Emit (or reuse) join `j`'s probe in the current block. The probe is
-    /// pure — same keys, same row, same result — so blocks re-probe rather
-    /// than thread probe lanes through branch args. Returns the valid-hit
-    /// flag (map hit AND every nullable key's validity: a NULL key never
-    /// matches, and a garbage payload under a false flag must not spuriously
-    /// hit) plus the value-column registers.
     /// Flattened probe-dst layout for join `j`: per value column either
     /// `(None, payload_idx)` or `(Some(validity_idx), payload_idx)` —
-    /// nullable static value columns ride as validity+payload pairs
-    /// (TASK-55), mirroring the StaticTy::Map flattening.
+    /// nullable static value columns ride as validity+payload pairs,
+    /// mirroring the StaticTy::Map flattening.
     fn val_slots(&self, j: u32) -> Vec<(Option<usize>, usize)> {
         plan::slot_pairs(&self.map_vals(j))
     }
@@ -1745,7 +1763,7 @@ impl<'a> FB<'a> {
             live.push((Lane { flag: None, val: d }, ty));
         }
         if let Some(pred) = filter_pred {
-            // SELECTION context (TASK-124), same as the scalar WHERE.
+            // SELECTION context, same as the scalar WHERE.
             let pv = self.emit_truth_many(pred, &mut live, j, true, nd)?;
             let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
             let (keep, kp) = {
@@ -1801,7 +1819,7 @@ impl<'a> FB<'a> {
             }
             if let Some(pred) = filter_pred {
                 // WHERE sees the null-extended row too (measured), and it
-                // is SELECTION context (TASK-124), same as the scalar path.
+                // is SELECTION context, same as the scalar path.
                 let pv = self.emit_truth_many(pred, &mut live, j, false, nd)?;
                 let vals: Vec<Value> = live.iter().map(|(l, _)| l.val).collect();
                 let (keep, kp) = self.create_block(&dst_tys);
@@ -1839,7 +1857,7 @@ impl<'a> FB<'a> {
     /// registers" is per block (`PB::new` starts it empty). Without the
     /// re-creation, a joined column read inside a CASE arm misses the cache
     /// and falls through to the scalar `Inst::Probe`, which `ir::verify`
-    /// rejects for a multimap: "@N is a multimap: use probe.range" (TASK-68).
+    /// rejects for a multimap: "@N is a multimap: use probe.range".
     fn emit_many(
         &mut self,
         e: &SExpr,
@@ -1935,15 +1953,21 @@ impl<'a> FB<'a> {
         Ok(())
     }
 
+    /// Emit (or reuse) join `j`'s probe in the current block. The probe is
+    /// pure — same keys, same row, same result — so blocks re-probe rather
+    /// than thread probe lanes through branch args. Returns the valid-hit
+    /// flag (map hit AND every nullable key's validity: a NULL key never
+    /// matches, and a garbage payload under a false flag must not spuriously
+    /// hit) plus the value-column registers, laid out by `val_slots`.
     fn emit_probe(&mut self, j: u32, live: &mut Live) -> Result<(Value, Vec<Value>), PrepareError> {
         if let Some((valid_hit, dsts)) = self.blocks[self.cur].probes.get(&j) {
             return Ok((*valid_hit, dsts.clone()));
         }
         // Re-entering a join while emitting its OWN residual means the cache
         // entry was lost across a block transition. That used to recurse until
-        // the process died of stack overflow (TASK-73); the seeding above
-        // prevents it, and this turns any FUTURE hole into a named error
-        // rather than a dead serving process.
+        // the process died of stack overflow; the seeding above prevents it,
+        // and this turns any FUTURE hole into a named error rather than a
+        // dead serving process.
         if self.probe_seeds.iter().any(|p| p.join == j) {
             return Err(PrepareError::Internal(format!(
                 "probe cache for @{j} lost inside its own residual"
@@ -2032,7 +2056,7 @@ impl<'a> FB<'a> {
                 self.blocks[self.cur].probes.insert(j, (t, eval_dsts));
                 // Keep that cache entry alive across any CFG split INSIDE the
                 // residual — a CASE arm, a COALESCE over a nullable joined
-                // column, a guarded CAST (TASK-73).
+                // column, a guarded CAST.
                 self.probe_seeds.push(ProbeSeed {
                     join: j,
                     base: live.len() - dst_tys.len(),
@@ -2113,16 +2137,17 @@ impl<'a> FB<'a> {
         Ok(res)
     }
 
-    /// Kleene AND/OR. Branchless from flag algebra whenever the right
-    /// operand cannot trap — that is the common case and the reason the
-    /// branchless form exists. When it CAN trap the operator has to
-    /// short-circuit instead, because SQL's does: `WHERE k = 0 AND <trap>`
-    /// returns `[]` in DuckDB rather than failing the request, and
-    /// evaluating both operands unconditionally made the guard useless
-    /// (TASK-75).
+    /// Kleene AND/OR in VALUE context, where the three-valued RESULT is what
+    /// the consumer wants: both operands are evaluated, always, and the flag
+    /// algebra combines them branchlessly.
+    ///
+    /// Nothing short-circuits here. SQL's observable laziness — `WHERE
+    /// k = 0 AND <trap>` returns `[]` on DuckDB rather than failing the
+    /// request — is SELECTION context and lives in [`Self::emit_truth`],
+    /// which asks only whether the answer is TRUE.
     ///
     /// With the lane contract (payloads under a false flag may be garbage),
-    /// every value read is guarded by its flag on both paths.
+    /// every value read is guarded by its flag.
     fn kleene(
         &mut self,
         a: &SExpr,
@@ -2131,8 +2156,6 @@ impl<'a> FB<'a> {
         is_and: bool,
         res_nullable: bool,
     ) -> Result<Lane, PrepareError> {
-        // VALUE context is ALWAYS eager (TASK-124): both operands run and
-        // Kleene combines them. Laziness lives only in `emit_truth`.
         let la = self.emit(a, live)?;
         let _ = res_nullable;
         live.push((la, Ty::I1));
@@ -2141,7 +2164,8 @@ impl<'a> FB<'a> {
         Ok(self.kleene_combine(la, lb, is_and))
     }
 
-    /// The flag algebra itself, shared by both paths.
+    /// The flag algebra itself: when a Kleene AND/OR result is KNOWN, and
+    /// what it is.
     fn kleene_combine(&mut self, la: Lane, lb: Lane, is_and: bool) -> Lane {
         let op = if is_and { BinOp::And } else { BinOp::Or };
         let val = self.bin(op, la.val, lb.val);
@@ -2211,8 +2235,8 @@ impl<'a> FB<'a> {
 
         for (cond, result) in arms {
             // A CASE condition is SELECTION context wherever the CASE sits
-            // (TASK-124, measured in a projection too); the ARMS below stay
-            // value context -- a taken arm traps on DuckDB even under WHERE.
+            // (measured in a projection too); the ARMS below stay value
+            // context -- a taken arm traps on DuckDB even under WHERE.
             let keep = self.emit_truth(cond, live)?;
             let shape = Self::live_types(live);
             let (then_b, then_p) = self.create_block(&shape);
@@ -2275,9 +2299,9 @@ impl<'a> FB<'a> {
         trying: bool,
         live: &mut Live,
     ) -> Result<Lane, PrepareError> {
-        // Casts convert LANES; a width-only int cast is the (a == b) no-op
-        // below, its range semantics living in the frontend (guards) and at
-        // the emit boundary until phase-3 traps.
+        // Casts convert LANES, so a width-only int cast is the (a == b)
+        // no-op below: its range check is the result trap `emit` applies
+        // over this call, not anything emitted here.
         let from = inner.ty.lane();
         let to = e.ty.lane();
         let l = self.emit(inner, live)?;
@@ -2299,7 +2323,7 @@ impl<'a> FB<'a> {
             }
             (Ty::F64, Ty::I64) if !trying => {
                 // ftoi.nearest is half-to-even, which is DuckDB's cast
-                // rounding (TASK-70 — the round() BUILTIN is the other one,
+                // rounding (the round() BUILTIN is the other one,
                 // half-away-from-zero, and lowers elsewhere). Its own range
                 // trap stands in for DuckDB's conversion error. Nullable
                 // payloads are masked: computed garbage under a false flag
@@ -2441,9 +2465,9 @@ impl<'a> FB<'a> {
                         a: l.val,
                     });
                 }
-                // TASK-99 (d): the string parser rounds and the WIDTH check
-                // applies to the rounded value, in the cast itself -- DuckDB
-                // says "Could not convert string" for '300'::TINYINT, not an
+                // The string parser rounds and the WIDTH check applies to
+                // the ROUNDED value, in the cast itself -- DuckDB says
+                // "Could not convert string" for '300'::TINYINT, not an
                 // out-of-range error, and TRY_CAST is NULL, not a trap. The
                 // in-arm check folds into `ok`, so both spellings follow.
                 let ok = match (to, e.ty.int_range()) {
