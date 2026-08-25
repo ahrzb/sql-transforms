@@ -38,15 +38,8 @@ pub struct WideOut {
     pub names: Vec<String>,
 }
 
-/// How to materialize map static `@N` from the static table it came from:
-/// build one entry per table row, keyed by `key_cols` (converted to the
-/// declared key types — an int column joined against a float expression
-/// becomes f64 here), valued by `val_cols`. Rows with a NULL key are dropped
-/// (a NULL never equi-matches); a NULL in a value column is an error.
 /// One map key at the BOUNDARY: where to read it out of a build row, and
-/// its slot layout. Replaces four parallel vectors — the paths, the INDF
-/// flags, the presence flags, and the key types the materializer used to
-/// walk out of `StaticTy::Map` with an iterator skip.
+/// its slot layout.
 #[derive(Debug)]
 pub struct StaticKey {
     /// The column's SEGMENT path — one segment for a plain column (dots
@@ -69,6 +62,12 @@ pub struct StaticVal {
     pub map: plan::MapVal,
 }
 
+/// How to materialize map static `@N` from the static table it came from:
+/// build one entry per table row, keyed by `keys` (converted to the
+/// declared key types — an int column joined against a float expression
+/// becomes f64 here), valued by `vals`. Which build rows survive, and how
+/// many flattened slots each column takes, follow from the per-column
+/// comparison and nullability in [`plan::MapKey`] / [`plan::MapVal`].
 #[derive(Debug)]
 pub struct StaticSpec {
     /// Stage-B self-join: no materialization — the build side is the

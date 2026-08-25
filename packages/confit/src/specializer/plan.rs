@@ -285,25 +285,26 @@ pub enum KeyCmp {
 /// The layout of ONE map key. `ty` is the COMPARISON lane type — the probe
 /// expression's type after `promote_key`, which may be wider than the static
 /// column's own (an INTEGER column keyed against an F64 probe compares in
-/// F64; the column's real value then rides a shadow VALUE lane, TASK-120).
+/// F64; the column's real value then rides a shadow VALUE lane).
 /// Deliberately NOT the column type; see [`MapVal`].
 ///
-/// INVARIANT: `ty` is stored ALREADY LANE-ERASED ([`Ty::lane`]). Every
-/// producer this type replaces erased at the point of construction, and
-/// `StaticTy`'s type vector is what a gate whose claim is "nothing moves"
-/// compares. `promote_key` can leave an `I32`, so an un-erased `ty` would
-/// print `map(i32, ..)` where the tree prints `map(i64, ..)` — an IR-shape
-/// change wearing a refactor's clothes. `Ty::lane()` is identity on `I1` /
-/// `F64` / `Str` / `Dec`, so this bites only on narrow integer keys, which
-/// is exactly why nothing else notices and why it is written down here.
+/// INVARIANT: `ty` is stored ALREADY LANE-ERASED ([`Ty::lane`]). Erasing at
+/// construction, not at each use, is what keeps this `ty` and the
+/// `StaticTy` type vector the IR declares in agreement. `promote_key` can
+/// leave an `I32`, so an un-erased `ty` would print `map(i32, ..)` where
+/// the tree prints `map(i64, ..)` — a silent IR-shape change. `Ty::lane()`
+/// is identity on `I1` / `F64` / `Str` / `Dec`, so this bites only on
+/// narrow integer keys, which is exactly why nothing else notices and why
+/// it is written down here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapKey {
     pub ty: Ty,
     pub cmp: KeyCmp,
 }
 
-/// The layout of ONE map value. `ty` is the static COLUMN's lane type, and
-/// LANE-ERASED on the same terms as [`MapKey::ty`].
+/// The layout of ONE map value. `ty` is the BUILD-side column's lane type
+/// (the static table's, or the batch's own under a batchmap), LANE-ERASED
+/// on the same terms as [`MapKey::ty`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapVal {
     pub ty: Ty,
@@ -325,7 +326,7 @@ impl MapKey {
 impl MapVal {
     /// The flattened slot types, in order. Same rule, value side: a
     /// declared-nullable column rides as (validity i1, payload) so a NULL
-    /// join value flows through as NULL rather than as an error (TASK-55).
+    /// join value flows through as NULL rather than as an error.
     pub fn slots(self) -> Vec<Ty> {
         if self.nullable {
             vec![Ty::I1, self.ty]

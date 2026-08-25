@@ -352,9 +352,9 @@ pub(crate) fn null_key_slots(ty: Ty) -> Vec<KeyBits> {
 }
 
 /// THE typed default a masked map-value payload carries: the constant the
-/// consumer accepts under `valid = false`. One table, three readers — the
-/// build side's `(false, default)` pair, the batchmap's row flattening, and
-/// [`null_val_slots`].
+/// consumer accepts under `valid = false`. ONE table: the batchmap's row
+/// flattening reads it directly, and the build side's `(false, default)`
+/// pair reaches it through [`null_val_slots`].
 pub(crate) fn null_val_payload(ty: Ty) -> ScalarVal {
     match ty {
         Ty::I1 => ScalarVal::I1(false),

@@ -162,9 +162,6 @@ pub fn lower(
         fb.lower_many_loop(exprs, filter_pred, &out_cols)?;
         let statics = vec![if joins[0].batch {
             StaticTy::BatchMap {
-                // The batch's value lanes come from the CALLER's columns —
-                // `table` is meaningless under `batch`, which is why the
-                // source is a parameter and not read off the spec.
                 values: plan::map_vals(in_cols, &joins[0].val_cols)
                     .iter()
                     .flat_map(|v| v.slots())
@@ -172,10 +169,10 @@ pub fn lower(
             }
         } else {
             StaticTy::MultiMap {
-                // Behavior-preserving today: the INDF refusal above means
-                // every key reaching here compares `Eq`, so `slots()`
-                // returns exactly `[ty.lane()]`. TASK-135 deletes that
-                // refusal and the line starts carrying pairs unedited.
+                // The INDF refusal above means every key reaching here
+                // compares `Eq`, so `slots()` returns exactly
+                // `[ty.lane()]` today; lift that refusal and this line
+                // starts carrying pairs unedited.
                 keys: plan::map_keys(&joins[0].keys, &joins[0].key_cols)
                     .iter()
                     .flat_map(|k| k.slots())
