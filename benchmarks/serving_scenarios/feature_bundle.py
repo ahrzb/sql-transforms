@@ -174,7 +174,7 @@ SELECT
   coalesce(feat.income, 52000.0) / 12.0 AS monthly_income,
   feat.tenure_months AS tenure_months,
   CASE WHEN feat.tenure_months >= 24 THEN 1 ELSE 0 END AS is_tenured,
-  feat.n_txn * 1.0 AS n_txn,
+  feat.n_txn * 1.0e0 AS n_txn,
   coalesce(feat.avg_amt, 0.0) AS avg_amt,
   greatest(coalesce(feat.max_amt, 0.0), coalesce(feat.avg_amt, 0.0)) AS peak_amt,
   least(greatest(feat.ratio, 0.0), 1.0) AS ratio_clipped,
@@ -246,7 +246,9 @@ def handcrafted(statics: dict[str, pa.Table]) -> Callable[[dict], dict]:
             "n_txn": None if n_txn is None else n_txn * 1.0,
             "avg_amt": avg_amt,
             "peak_amt": max(max_amt, avg_amt),
-            "ratio_clipped": None if ratio is None else min(max(ratio, 0.0), 1.0),
+            # greatest()/least() SKIP nulls in DuckDB, so a NULL ratio
+            # clamps to the floor rather than propagating.
+            "ratio_clipped": 0.0 if ratio is None else min(max(ratio, 0.0), 1.0),
             "score_log1p": None if score is None else math.log(1.0 + score),
             "segment_channel": None if segment is None else segment + "/" + channel,
             "premium_flag": 1 if premium else 0,

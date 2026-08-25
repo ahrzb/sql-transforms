@@ -152,16 +152,75 @@ fn column<'py>(
     }
 }
 
-/// pyarrow batch -> engine Batch, matching `in_cols` by name with strict
-/// dtypes (int64 / double / string|large_string / bool).
-pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyResult<Batch> {
-    // Struct-lane refusal lives at the caller, keyed on the lane PATHS
-    // (TASK-132) — a dot in a plain column's NAME is not a struct.
+/// The leaf array for one lane, plus every struct ancestor along its path
+/// (TASK-114). A path is the lane's SEGMENT list (TASK-132): `[name]` for a
+/// plain column — dots included, a name is not a path — and the struct walk
+/// for a leaf lane.
+///
+/// The ancestors come back because DuckDB folds a struct's validity into
+/// each child at ARROW INGEST (src/function/table/arrow_conversion.cpp,
+/// `ColumnArrowToDuckDB`, the STRUCT case: it copies the child's own mask
+/// and then explicitly invalidates every slot the parent invalidated, then
+/// recurses with that mask). `StructExtractFunction`
+/// (src/function/scalar/struct/struct_extract.cpp) is three statements and
+/// folds nothing — it only references the child vector. So the fold belongs
+/// HERE, at our own arrow ingest, not at the extract.
+///
+/// Each ancestor keeps its OWN `RawArray` because each carries its own
+/// offset: pyarrow composes a child's offset with its parent's
+/// (`GetEffectiveOffset` = array.offset + parent_offset + chunk_offset), so
+/// a sliced struct hands back ancestors at different offsets and every
+/// bitmap must be read at the one it came with.
+fn walk_lane<'py>(
+    batch: &Bound<'py, PyAny>,
+    path: &[String],
+    display: &str,
+) -> PyResult<(Bound<'py, PyAny>, Vec<RawArray<'py>>)> {
+    let mut arr = column(batch, &path[0], "infer_arrow")?;
+    let mut parents = Vec::new();
+    for seg in &path[1..] {
+        let ty = arr.getattr("type")?;
+        // `get_field_index` exists only on a struct type, and returns -1 for
+        // a missing AND for an ambiguous name — one refusal covers both,
+        // where `.field(name)` would raise the same KeyError for either.
+        let idx: i64 = match ty.call_method1("get_field_index", (seg.as_str(),)) {
+            Ok(v) => v.extract()?,
+            Err(_) => {
+                return Err(err(format!(
+                    "infer_arrow: column '{display}': '{}' is {}, the schema \
+                     declares a struct — cast first",
+                    path[0],
+                    ty.str()?
+                )))
+            }
+        };
+        if idx < 0 {
+            return Err(err(format!(
+                "infer_arrow: column '{display}': the batch's struct '{}' has \
+                 no field '{seg}'",
+                path[0]
+            )));
+        }
+        let child = arr.call_method1("field", (idx,))?;
+        parents.push(raw_array(arr)?);
+        arr = child;
+    }
+    Ok((arr, parents))
+}
+
+/// pyarrow batch -> engine Batch, matching `in_cols` by their lane PATH with
+/// strict dtypes (int64 / double / string|large_string / bool).
+pub fn ingest<'py>(
+    py: Python<'_>,
+    batch: &Bound<'py, PyAny>,
+    in_cols: &[Col],
+    in_paths: &[Vec<String>],
+) -> PyResult<Batch> {
     let _ = py;
     let rows: usize = batch.call_method0("__len__")?.extract()?;
     let mut cols = Vec::with_capacity(in_cols.len());
-    for c in in_cols {
-        let arr = column(batch, &c.name, "infer_arrow")?;
+    for (c, path) in in_cols.iter().zip(in_paths) {
+        let (arr, parents) = walk_lane(batch, path, &c.name)?;
         let dtype: String = arr.getattr("type")?.str()?.extract()?;
         let ok = matches!(
             (c.ty.ty, dtype.as_str()),
@@ -183,6 +242,15 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
         }
         let large = dtype == "large_string";
         let raw = raw_array(arr)?;
+        // The null lane is the OR of EVERY level: a NOT NULL child under a
+        // nullable parent has no validity buffer of its own, and its data
+        // buffer under a null parent holds an arbitrary live value (measured:
+        // a `.field()` walk without this fold serves 1000000 where DuckDB
+        // serves NULL). On the all-scalar path `parents` is an empty Vec,
+        // which does not allocate, and `[].iter().all(..)` is a length
+        // compare. Everything else below reads the LEAF, whose own offset is
+        // already the composed one.
+        let valid_at = |i: usize| parents.iter().all(|p| p.valid(i)) && raw.valid(i);
         if raw.len != rows {
             return Err(err(format!(
                 "infer_arrow: column '{}' has {} rows, the batch {rows}",
@@ -197,7 +265,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                 let mut valid = Vec::with_capacity(rows);
                 let mut data = Vec::with_capacity(rows);
                 for i in 0..rows {
-                    let v = raw.valid(i);
+                    let v = valid_at(i);
                     null_seen |= !v;
                     valid.push(v);
                     data.push(if v {
@@ -218,7 +286,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                 let mut data = Vec::with_capacity(rows);
                 let p = unsafe { raw.data::<f64>(1) };
                 for i in 0..rows {
-                    let v = raw.valid(i);
+                    let v = valid_at(i);
                     null_seen |= !v;
                     valid.push(v);
                     data.push(if v { unsafe { p.get(i) } } else { 0.0 });
@@ -230,7 +298,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                 let mut data = Vec::with_capacity(rows);
                 let (addr, _) = raw.bufs[1].expect("bool data buffer");
                 for i in 0..rows {
-                    let v = raw.valid(i);
+                    let v = valid_at(i);
                     null_seen |= !v;
                     valid.push(v);
                     let bit = raw.offset + i;
@@ -247,7 +315,7 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                 };
                 let bytes = str_bytes(&raw);
                 for i in 0..rows {
-                    let v = raw.valid(i);
+                    let v = valid_at(i);
                     null_seen |= !v;
                     if !v {
                         col.push_str_cell(false, "");
