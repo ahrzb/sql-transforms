@@ -1,4 +1,4 @@
-"""The row-shape contract flag (TASK-58): shape="map" | "filter" | "many".
+"""The row-shape contract flag: shape="map" | "filter" | "many".
 
 "map" is a STATIC build-time proof of exactly one output row per input row
 (out[i] <-> in[i]) — the serving-path guarantee. "filter" is the default

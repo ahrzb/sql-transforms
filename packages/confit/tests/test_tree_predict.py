@@ -544,7 +544,7 @@ def test_unused_model_set_costs_nothing(backend):
     assert got == [{"p": 3.0}]
 
 
-# ------------------------------------------- TASK-66: block-splitting args --
+# ---------------------------------------------------- block-splitting args --
 #
 # CASE and guarded CASTs split the CFG, and the IR's strict block-param SSA
 # means every value that must outlive the split has to ride the branch. The
@@ -664,7 +664,7 @@ def test_split_after_the_call(backend):
 # features only for a float32-grid set.
 #
 # Before this field existed, `itof.f32` fired for every model, which quietly
-# made the wire format sklearn-specific: a packer that skipped TASK-65's
+# made the wire format sklearn-specific: a packer that skipped the float32
 # threshold rewrite still got its integer features narrowed, silently losing
 # precision above 2**24 that it had every right to keep.
 #

@@ -41,7 +41,7 @@ def test_non_constant_regex_pattern_rejects():
 def test_static_tables_are_frozen_unique_key_maps():
     dup = static({"id": "int", "v": "int"}, [{"id": 1, "v": 1}, {"id": 1, "v": 2}])
     # Duplicate keys = 1:N multiplicity: rejected under the DEFAULT shapes,
-    # served under the opt-in shape='many' (stage B, TASK-59).
+    # served under the opt-in shape='many' (stage B).
     rejects(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
         "duplicate map key",
@@ -55,8 +55,8 @@ def test_static_tables_are_frozen_unique_key_maps():
     )
     got = sorted(r["v"] for r in fn.infer_rows([{"a": 1, "s": None}]))
     assert got == [1, 2]
-    # NULL VALUES serve since TASK-55 (they ride as validity+payload pairs);
-    # only NULL keys keep the drop rule (a NULL never equi-matches).
+    # NULL VALUES serve (they ride as validity+payload pairs); only NULL
+    # KEYS keep the drop rule, a NULL never equi-matching.
     withnull = static({"id": "int", "v": "int?"}, [{"id": 1, "v": None}])
     duck_check(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
@@ -129,10 +129,9 @@ def test_non_scalar_row_columns_reject():
 
 
 def test_non_scalar_rejection_is_reference_time():
-    # TASK-56: the rejection moved from construction to REFERENCE — an
-    # unreferenced list/timestamp field no longer blocks a scalar query,
-    # and star modifiers can remove one. Referenced (incl. via *) keeps
-    # the named error.
+    # The rejection lands at REFERENCE, not at construction — an unreferenced
+    # list/timestamp field does not block a scalar query, and star modifiers
+    # can remove one. Referenced (incl. via *) keeps the named error.
     L = pa.schema(
         [
             pa.field("a", pa.int64(), nullable=False),
@@ -153,8 +152,8 @@ def test_non_scalar_rejection_is_reference_time():
 
 
 def test_struct_whole_value_rejects_but_fields_serve():
-    # TASK-56: structs of scalars serve AS FIELDS (flattened to lanes);
-    # the struct as a whole value stays a named non-scalar rejection.
+    # Structs of scalars serve AS FIELDS (flattened to lanes); the struct as
+    # a whole value stays a named non-scalar rejection.
     M = pa.schema([pa.field("a", pa.struct([pa.field("i", pa.int64())]))])
     fn = DuckDBInferFn(
         "SELECT a.i FROM __THIS__",
@@ -210,8 +209,8 @@ def test_ubigint_static_payloads_reject():
             "duplicate regex capture group",
         ),
         ("SELECT regexp_matches(s, 'a{1001}') FROM __THIS__", "repetition bound"),
-        # TASK-54 fuzzer-found classes (pins-waveB/fuzzer-task54.json):
-        # each was a measured silent-wrong-answer risk in rust-regex.
+        # Standing-fuzzer classes (pins-waveB/fuzzer-task54.json): each was
+        # a measured silent-wrong-answer risk in rust-regex.
         ("SELECT regexp_matches(s, '(a)x\\1') FROM __THIS__", "backref"),
         ("SELECT regexp_matches(s, 'a?*') FROM __THIS__", "quantifi"),
         ("SELECT regexp_matches(s, 'a{2}*') FROM __THIS__", "quantifi"),

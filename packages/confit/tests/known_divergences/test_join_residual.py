@@ -1,4 +1,4 @@
-"""The join ON residual, three ways (TASK-73, TASK-74).
+"""The join ON residual, three ways.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -17,17 +17,17 @@ from confit import DuckDBInferFn
 #
 # All three live in the same corner: a one-sided residual on a JOIN ON clause.
 #
-# TASK-73 is the serious one and it is a REGRESSION IN MY OWN REASONING. When
-# fixing TASK-68 I wrote, in the ticket and in the commit message, that a
-# scalar join losing its probe cache across a CFG split was "correct, and free
-# when the split is a branch (only one arm runs)". That is false when the split
-# is inside the join's OWN residual: the cache miss re-enters emit_probe, which
-# re-emits the residual, which contains the split, which misses again —
-# unbounded recursion that kills the process at build time. I asserted it
-# without testing it.
+# The RECURSION one is the serious one and it is a REGRESSION IN MY OWN
+# REASONING. When fixing the many-join probe cache I wrote, in the ticket and in
+# the commit message, that a scalar join losing its probe cache across a CFG
+# split was "correct, and free when the split is a branch (only one arm runs)".
+# That is false when the split is inside the join's OWN residual: the cache miss
+# re-enters emit_probe, which re-emits the residual, which contains the split,
+# which misses again — unbounded recursion that kills the process at build time.
+# I asserted it without testing it.
 #
-# TASK-73 reproduced by hand 2026-08-08 (exit 0xC00000FD, both join kinds).
-# TASK-74 relayed from the sweep.
+# Reproduced by hand 2026-08-08 (exit 0xC00000FD, both join kinds). The
+# trap-freeness one below was relayed from the sweep.
 
 _ONRES_BODY = """
 schema = pa.schema([pa.field("k", pa.int64(), nullable=False),
@@ -39,10 +39,9 @@ print("BUILT", [tuple(x.values()) for x in fn.infer_rows([{{"k": 0, "n": 1}}])])
 """
 
 
-# FIXED 2026-08-08 (TASK-73). The scalar probe cache is now re-created on
-# every block transition, exactly as TASK-68 did for the many-join cache, plus
-# a re-entry guard so a FUTURE cache hole raises a named error instead of
-# recursing to death.
+# FIXED 2026-08-08. The scalar probe cache is now re-created on every block
+# transition, exactly as the many-join cache already was, plus a re-entry guard
+# so a FUTURE cache hole raises a named error instead of recursing to death.
 #
 # Still run in a SUBPROCESS: if this ever regresses it goes back to killing the
 # interpreter, and a subprocess turns that into a failed test rather than a
@@ -76,10 +75,10 @@ def test_split_in_the_on_residual_builds_and_is_correct(join, residual):
     assert p.stdout.strip().splitlines()[-1] == f"BUILT {want}", p.stdout
 
 
-# FIXED 2026-08-08 (TASK-74). `scan_residual` no longer decides
-# trap-freeness at all: that question moved to `plan::may_trap`, one
-# definition shared with Kleene lowering (TASK-75) so the two cannot drift.
-# A CASE is trap-free exactly when all of its arms are.
+# FIXED 2026-08-08. `scan_residual` no longer decides trap-freeness at all:
+# that question moved to `plan::may_trap`, one definition shared with Kleene
+# lowering so the two cannot drift. A CASE is trap-free exactly when all of
+# its arms are.
 
 _ONESIDED = pa.table(
     {"id": pa.array([0, 1], pa.int64()), "cat": pa.array([1, 2], pa.int64())}

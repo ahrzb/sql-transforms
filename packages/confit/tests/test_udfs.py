@@ -163,7 +163,7 @@ class Embed2:
 
 
 class NamedEmbed2:
-    """Embed2 with declared output field names (TASK-63) + a call counter."""
+    """Embed2 with declared output field names + a call counter."""
 
     name = "emb"
     takes = pa.schema([("x", pa.float64())])
@@ -368,8 +368,8 @@ def test_case_colliding_return_names_refuse_at_build():
 
 
 def test_field_access_shares_one_call_per_row():
-    # TASK-63: two field reads of one width-2 call — ONE callable
-    # invocation per row on the engine AND on DuckDB (its CSE), counted.
+    # Two field reads of one width-2 call — ONE callable invocation per row
+    # on the engine, counted. (DuckDB's leg makes two; see below.)
     u = NamedEmbed2()
     engine_calls = []
     got = udf_check(
@@ -385,8 +385,8 @@ def test_field_access_shares_one_call_per_row():
     assert by_g[None] == (6.0, 4.0)  # NULL g joins the NULL-key row: id 1
     assert by_g["de"] == (2.0, 2.0)  # id 0, d = 0
     assert by_g["fr"] == (None, None)  # unseen group: NULL id -> NULL fields
-    # One call per ROW on OUR path — the TASK-63 single-evaluation guarantee,
-    # and the assertion that matters here.
+    # One call per ROW on OUR path — the single-evaluation guarantee, and the
+    # assertion that matters here.
     assert engine_calls == [3], f"engine leg: {engine_calls} calls for 3 rows"
     # DuckDB's leg makes TWO per row, one per field read. Sharing them is its
     # `common_subexpressions` pass, and the oracle runs with the optimizer off

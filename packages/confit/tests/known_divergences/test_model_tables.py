@@ -1,4 +1,4 @@
-"""Model-table structure refusals (TASK-76).
+"""Model-table structure refusals.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -15,12 +15,8 @@ from _helpers import (
 
 # ------------------------------------------ model-table structure checks --
 #
-# DISPUTED by the sweep's own verifiers — one refuter broke it, one did not,
-# and I have not adjudicated by hand. Pinned anyway so the question cannot be
-# lost; if it turns out the behaviour is correct, delete the test and say so
-
-
-# ADJUDICATED 2026-08-08, then FIXED (TASK-76). Two separate things.
+# DISPUTED by the sweep's own verifiers — one refuter broke it, one did not.
+# ADJUDICATED by hand 2026-08-08, then FIXED. Two separate things.
 #
 # The spec's bullet was wrong and is corrected: it read "a cycle: a node
 # reachable from two parents, or unreachable from its tree's root", and a node
@@ -63,8 +59,8 @@ def test_a_shared_child_is_refused_as_not_a_tree():
     assert [r["p"] for r in fn.infer_rows(rows)] == [10.0, 20.0, 10.0, 30.0]
 
 
-# TASK-76 AC #4: every OTHER refusal the spec claims, checked by construction
-# rather than assumed. All nine hold.
+# Every OTHER refusal the spec claims, checked by construction rather than
+# assumed. All nine hold.
 @pytest.mark.parametrize(
     ("what", "nodes", "kw", "match"),
     [

@@ -1,4 +1,4 @@
-"""Clauses and modifiers parsed then silently dropped (TASK-69, TASK-81).
+"""Clauses and modifiers parsed then silently dropped.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -23,7 +23,7 @@ from confit import DuckDBInferFn
 # `shape='map'` — the exactly-one-row-out-per-row-in PROOF — also builds and
 # certifies a query whose entire purpose is to drop rows.
 #
-# Reproduced by hand 2026-08-08. TASK-69.
+# Reproduced by hand 2026-08-08.
 
 _QUAL_DDL = "CREATE TABLE __THIS__ (k BIGINT, ts BIGINT)"
 _QUAL_ROWS = [(1, 1), (1, 2), (2, 5)]
@@ -40,7 +40,7 @@ def _run(sql: str, schema: pa.Schema, rows: list[dict]) -> list[tuple]:
     return [tuple(r.values()) for r in fn.infer_rows(rows)]
 
 
-# FIXED 2026-08-08 (TASK-69). The resolution is REFUSAL, which is half the
+# FIXED 2026-08-08. The resolution is REFUSAL, which is half the
 # contract: match DuckDB or refuse by name. Ignoring the clause was the third
 # mode that is not supposed to exist.
 #
@@ -66,8 +66,9 @@ def _run(sql: str, schema: pa.Schema, rows: list[dict]) -> list[tuple]:
     ],
 )
 def test_row_limiting_clauses_are_refused_not_dropped(sql, match):
-    """Each of these silently emitted every input row before TASK-69. LIMIT is
-    the control: it was always refused, and the others are its synonyms."""
+    """Each of these silently emitted every input row before the exhaustive
+    destructure landed. LIMIT is the control: it was always refused, and the
+    others are its synonyms."""
     with pytest.raises(ValueError, match=match):
         _run(sql, QUAL_SCHEMA, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
 
@@ -80,22 +81,23 @@ def test_ordinary_query_still_builds():
     assert got == duck(sql, _QUAL_DDL, _QUAL_ROWS)
 
 
-# TASK-119 (2026-08-16). The SAME class, leaking through the one struct the
-# doctrine above was never applied to. `TableFactor::Table { name, alias, .. }`
-# sat at three sites and swallowed every modifier sqlparser can hang off a
-# table name, so `TABLESAMPLE 3 ROWS` was parsed and dropped: DuckDB returned
-# 3 rows, we returned all 20 — again under shape='map', whose
-# one-row-out-per-row-in certificate the dropped clause satisfied.
+# 2026-08-16: the SAME class, leaking through the one struct the doctrine above
+# was never applied to. `TableFactor::Table { name, alias, .. }` sat at three
+# sites and swallowed every modifier sqlparser can hang off a table name, so
+# `TABLESAMPLE 3 ROWS` was parsed and dropped: DuckDB returned 3 rows, we
+# returned all 20 — again under shape='map', whose one-row-out-per-row-in
+# certificate the dropped clause satisfied.
 #
-# Fixed the way TASK-69 was, not as one field: `plain_table` is now the only
-# `TableFactor::Table` pattern in the frontend, it destructures exhaustively,
-# and all three relation positions call it. There is nothing left to forget.
+# Fixed the same way, as a class rather than as one field: `plain_table` is now
+# the only `TableFactor::Table` pattern in the frontend, it destructures
+# exhaustively, and all three relation positions call it. There is nothing left
+# to forget.
 #
-# The audit AC #2 asked for (every remaining `..` in a sqlparser destructure)
-# turned up exactly one more pair of real modifiers — CAST's `array` and
-# `format`, both refused below. The rest drop formatting-only fields
-# (`Case`'s attached tokens, `Substring`'s `special`/`shorthand`) or sit in
-# arms that already refuse the whole node.
+# The follow-up audit — every remaining `..` in a sqlparser destructure — turned
+# up exactly one more pair of real modifiers: CAST's `array` and `format`, both
+# refused below. The rest drop formatting-only fields (`Case`'s attached tokens,
+# `Substring`'s `special`/`shorthand`) or sit in arms that already refuse the
+# whole node.
 
 _SAMPLE_ROW = pa.schema([pa.field("a", pa.int64(), nullable=False)])
 _SAMPLE_STATIC = pa.table(
@@ -148,7 +150,7 @@ def test_unmodified_relations_still_build():
     assert fn.infer_rows([{"a": 1}]) == [{"o": 9}]
 
 
-# TASK-81 (fuzz campaign 2026-08-11, ~570 of 963 findings). A call-node
+# Fuzz campaign 2026-08-11, ~570 of 963 findings. A call-node
 # modifier that DuckDB refuses -- OVER () on a scalar function, FILTER, IGNORE
 # NULLS -- was parsed and silently DROPPED on the builtin path, so the bare
 # call was served where the oracle errors. The udf path already screened

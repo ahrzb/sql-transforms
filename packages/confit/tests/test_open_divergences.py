@@ -1,9 +1,10 @@
 """Divergences we intend to CLOSE — one xfail-strict pin each, ticket named.
 
-It emptied on 2026-08-17 when TASK-115, 116, 117, 118 and 119 all closed, and
-refilled the same day from the campaign that followed the oracle change --
-which is the intended rhythm, not churn. Adding a pin here is how a new
-divergence gets recorded; emptying it again is what closing one looks like.
+It has emptied and refilled inside a single day before -- five pins closed at
+once on 2026-08-17 and the campaign that followed the oracle change refilled
+it by evening. That is the intended rhythm, not churn: adding a pin here is
+how a new divergence gets recorded, and emptying it again is what closing one
+looks like.
 
 The split from `known_divergences/` is by INTENT, not by severity:
 
@@ -26,9 +27,9 @@ sitting under a paragraph explaining why it is fine. The census on
 strict=True is the load-bearing part. A pin that silently starts passing is
 worse than no pin: it certifies work nobody did.
 
-Empty again on 2026-08-25: TASK-133 closed both of its legs. The struct leg
-FLIPPED -- NATURAL and USING now key on a shared struct exactly like DuckDB
--- and the TIMESTAMP leg became a named REFUSAL rather than a wrong answer
-(the decision of 2026-08-25 splits opaque scalar keys into their own
-ticket). The live-oracle pins for both live in test_join_keys.py.
+Empty as of 2026-08-25, when the last two pins closed. The struct leg FLIPPED
+-- NATURAL and USING now key on a shared struct exactly like DuckDB -- and the
+TIMESTAMP leg became a named REFUSAL rather than a wrong answer (the decision
+of 2026-08-25 splits opaque scalar keys off into TASK-134, still open). The
+live-oracle pins for both live in test_join_keys.py.
 """

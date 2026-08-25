@@ -1,4 +1,4 @@
-"""The infer_arrow boundary: output types and round-trips (TASK-71, TASK-72).
+"""The infer_arrow boundary: output types and round-trips.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -14,40 +14,31 @@ from confit import DuckDBInferFn
 
 # ------------------------------------------------- the infer_arrow path --
 #
-# Three documented entry points — infer, infer_rows, infer_arrow — are supposed
-# to be the same function behind different boundaries. Two ways they were not.
+# The documented entry points — infer_rows and infer_arrow — are supposed to be
+# the same function behind different boundaries. Two ways they were not, both
+# FIXED 2026-08-08.
 #
-# FIXED 2026-08-08 (TASK-71, TASK-72).
+# The FIRST was resolved by REFUSAL, the other half of the contract.
+# `infer_arrow` builds no Python rows — that is its entire reason to exist — so
+# there was nothing to call `model_validate` on. Running the rows through
+# pydantic anyway would have made the columnar path exactly as slow as the row
+# one, which is to say pointless; silently skipping it gave two answers from one
+# function. That whole surface is gone now: the pydantic `output_model=` kwarg
+# and the synthesized-model machinery beside it were deleted by the
+# arrow-schema-api migration (2026-08-13, spec
+# 2026-08-13-arrow-schema-api-design.md), so the refusal has no construction
+# left to express — `output_model=` raises TypeError at
+# `DuckDBInferFn.__init__` itself, for every entry point, pinned in
+# `test_arrow_schema_api.py::test_infer_and_output_model_are_gone`.
 #
-# TASK-71 is resolved by REFUSAL, the other half of the contract. `infer_arrow`
-# builds no Python rows — that is its entire reason to exist — so there is
-# nothing to call `model_validate` on. Running the rows through pydantic anyway
-# would make the columnar path exactly as slow as `infer`, which is to say
-# pointless; silently skipping it gave two answers from one function. So it
-# now refuses when an `output_model` was SUPPLIED. A synthesized one (the
-# default) carries no validators, defaults or coercion, so the columnar path
-# stays available for it, which is the common case.
-#
-# TASK-72 is resolved by matching DuckDB: `pa.string()`, 32-bit offsets. The
+# The SECOND was resolved by matching DuckDB: `pa.string()`, 32-bit offsets. The
 # 2 GiB-per-batch ceiling that comes with them is refused by name rather than
 # wrapped.
-#
-# MIGRATION-NOTE (2026-08-13, arrow-schema-api): TASK-71's refusal fired only
-# when an `output_model` was SUPPLIED to a pydantic-surface build — that whole
-# kwarg, and the synthesized-model machinery it stood next to, is deleted by
-# this migration (spec 2026-08-13-arrow-schema-api-design.md: "the
-# `output_model` refusal on `infer_arrow` ... exist[s] only to serve pydantic
-# out. Dict-out deletes the machinery and the limitation."). The test that
-# pinned it (`test_infer_arrow_refuses_a_supplied_output_model`) has no
-# construction left to express — `output_model=` now raises TypeError at
-# `DuckDBInferFn.__init__` itself, for every entry point, which is already
-# covered by `test_arrow_schema_api.py::test_infer_and_output_model_are_gone`.
-# Removed rather than mistranslated.
 
 
 def test_infer_arrow_without_an_output_model_still_works():
-    """infer_arrow needs nothing extra supplied to serve — the fast path
-    that TASK-71/72 protected is exercised directly here."""
+    """infer_arrow needs nothing extra supplied to serve — the fast path both
+    of those fixes protect is exercised directly here."""
     schema = pa.schema([pa.field("x", pa.int64(), nullable=False)])
     fn = DuckDBInferFn(
         "SELECT x * 5 AS y FROM __THIS__",
@@ -100,7 +91,7 @@ def test_infer_arrow_string_output_feeds_back_in():
 
 
 # ---------------------------------------------------------------------------
-# TASK-130 (closed 2026-08-19 as a fuzzer fix, not an engine bug): a join
+# Adjudicated 2026-08-19 as a fuzzer fix, not an engine bug: a join
 # star with colliding names. DuckDB's TOP-LEVEL arrow export keeps the
 # DUPLICATES; its own subquery/CTE/CTAS boundaries and .df() rename them
 # `<name>_N` -- which is the wave-5 client contract this engine adopted

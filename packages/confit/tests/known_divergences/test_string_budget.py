@@ -1,4 +1,4 @@
-"""The string-builder budget and pad/repeat counts (TASK-82, TASK-88).
+"""The string-builder budget and pad/repeat counts.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -12,7 +12,7 @@ import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 
-# TASK-82 (fuzz campaign 2026-08-11, 169 of 963 findings). DuckDB's lpad and
+# Fuzz campaign 2026-08-11, 169 of 963 findings. DuckDB's lpad and
 # rpad take INTEGER, and its binder does NOT implicitly downcast: a BIGINT
 # count -- a row column, or even 2::BIGINT -- is a binder error there, while
 # this engine's single integer width bound it happily and served what the
@@ -75,7 +75,7 @@ def test_integer_shaped_counts_still_bind_and_match(sql):
     assert got == want, f"{got} != {want}"
 
 
-# TASK-82 follow-up (certification campaign 2026-08-11, seed 1589): the
+# Follow-up, certification campaign 2026-08-11, seed 1589: the
 # count check ran AFTER the NULL short-circuit, so a bare-NULL string let a
 # BIGINT count slip through -- lpad(NULL, c1, 'x') served NULL where DuckDB
 # still binder-errors on the count. The count check now runs first. A NULL
@@ -107,7 +107,7 @@ def test_a_null_string_with_an_integer_count_still_serves():
     assert got == [{"o": None, "p": None}]
 
 
-# TASK-88 (fuzz rounds 1+2, ~7 findings + the campaign timeouts). A literal
+# Fuzz rounds 1+2, ~7 findings + the campaign timeouts. A literal
 # pad/repeat count that can exceed the engine's 1 GiB string-builder budget
 # refuses at build by name. Data-driven counts (a column, CAST(k AS INTEGER))
 # keep the documented runtime cap.
@@ -120,7 +120,7 @@ def test_a_null_string_with_an_integer_count_still_serves():
 #   repeat('a', n)   n <= 4294967295   serves (2 GiB took 9.0s)
 #                    n >  4294967295   Out of Range Error, every time, 0.00s
 #   lpad/rpad        n >  2147483647   Binder Error - their count parameter
-#                                      is declared INTEGER (that is TASK-82,
+#                                      is declared INTEGER (the pin above,
 #                                      a different fact entirely)
 #
 # Two deterministic errors for two unrelated reasons; no coin flip, no
