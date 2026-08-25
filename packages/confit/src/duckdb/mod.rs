@@ -825,7 +825,8 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
 /// One map static from a pyarrow Table, per its `StaticSpec` recipe: rows
 /// with a NULL `=` key are dropped (a NULL never equi-matches) while a NULL
 /// IS NOT DISTINCT FROM key is an ordinary (false, default) key pair, a
-/// NULL in a value column is an error, and an int column joined against a
+/// NULL in a declared NON-NULLABLE value column is an error (a nullable one
+/// rides as its own (false, default) pair), and an int column joined against a
 /// float expression converts here (the declared key type is the
 /// expression's).
 fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyResult<StaticData> {
