@@ -2,7 +2,7 @@
 id: TASK-114
 title: >-
   infer_arrow accepts struct columns — the arrow flatten IS the lane
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-15 13:40'
 labels:
@@ -67,16 +67,37 @@ first; it is additive and refuses nothing that works today.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 infer_arrow accepts a struct row column and agrees with infer_rows
+- [x] #1 infer_arrow accepts a struct row column and agrees with infer_rows
       row-for-row on the same data — the two entry points stop disagreeing
-- [ ] #2 a NOT NULL child under a nullable parent is served through the OR
+- [x] #2 a NOT NULL child under a nullable parent is served through the OR
       of both validity levels, with a test that a null parent does NOT leak
       the child's buffer value
-- [ ] #3 nested structs work to the same depth the row path allows
-- [ ] #4 a struct column the query never references stays opaque and does
+- [x] #3 nested structs work to the same depth the row path allows
+- [x] #4 a struct column the query never references stays opaque and does
       not block the build, matching the row path's rule
-- [ ] #5 output-side struct emission is NOT built here — the current
+- [x] #5 output-side struct emission is NOT built here — the current
       flattened output is unchanged, and the question is raised separately
-- [ ] #6 the serving bench gains a struct-column scenario, so the columnar
+- [x] #6 the serving bench gains a struct-column scenario, so the columnar
       win over infer_rows on this shape is measured rather than assumed
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed per the spec (docs/superpowers/specs/2026-08-25-task-114-design.md),
+on the post-TASK-132 surface: ingest walks each leaf lane's segment path
+through StructArray children and serves through the AND of every
+ancestor's validity with the leaf's own -- the load-bearing line is one
+closure. The fold hazard got its own red: with the walk in and the fold
+deliberately out, a NULL parent served 999999+1 straight from the child
+buffer (pinned with a loud mask-built fixture, never a zero). Sliced,
+chunked, empty, wide, and nested-to-the-row-path's-depth batches are all
+pinned against the live oracle. Output stays flattened; the output-side
+struct question remains open per the ticket's own fence.
+
+The fuzzer's rows_only escape hatch is deleted: 636 struct-bearing
+cases per 4k campaign now run the whole infer_arrow boundary battery,
+adding zero residue. The serving bench gained feature_bundle; measured
+clean-columnar (pre-built batch) infer_arrow beats infer_rows ~1.8-1.9x
+at n>=1024 and loses below the crossover between n=64 and n=1024.
+<!-- SECTION:NOTES:END -->
