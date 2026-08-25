@@ -2,7 +2,7 @@
 id: TASK-127
 title: >-
   Dotted lane names for static struct leaves leak into name resolution
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-18 00:00'
 labels:
@@ -64,10 +64,23 @@ review and NOT independently re-measured.
       (CLOSED BY TASK-125, 2026-08-19: the star's Opaque entry restores the
       name, so EXCLUDE takes it out and the rest serves -- pinned passing in
       test_arrow_schema_api.py)
-- [ ] #2 an unqualified `w.mean` resolves like DuckDB, or refuses with a
+- [x] #2 an unqualified `w.mean` resolves like DuckDB, or refuses with a
       message that names the real problem
-- [ ] #3 a flattened leaf colliding with a real sibling column name is
+      (CLOSED 2026-08-25: bare heads see the whole scope, qualified heads
+      backtrack exactly where DuckDB's binder does, ambiguity refuses
+      before any field is examined -- live-oracle pinned, spec
+      docs/superpowers/specs/2026-08-25-task-127-remainders-design.md)
+- [x] #3 a flattened leaf colliding with a real sibling column name is
       detected -- at build, by name, not by a struct-key lookup failure
+      (CLOSED 2026-08-25: vacuous on the static side -- under TASK-132
+      both spellings are different references and SERVE, so there is
+      nothing left to collide; on the row side the stale IR name-
+      uniqueness invariant was the real bug, turning the collision into
+      "internal specializer bug" for every query over the table. The
+      in-side duplicate check moved to build, over plain row columns
+      only, where a name is still an identifier; a genuine duplicate
+      plain column refuses by name, and the collision table serves both
+      spellings like the static side)
 - [x] #4 decide whether the dotted lane NAME is the right encoding at all,
       or whether the lane should carry a structured path and the dotted
       spelling stay a display detail; #3 is only cheap under the second
@@ -80,3 +93,28 @@ review and NOT independently re-measured.
       collision spellings and the unqualified reference; our refusals
       and wrong-reason messages confirmed)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed per the spec (docs/superpowers/specs/2026-08-25-task-127-
+remainders-design.md), on top of TASK-132's structured paths. The
+unqualified ladder now mirrors DuckDB's source-pinned order: a
+qualified head backtracks to the next rung exactly when the relation
+matched but its column half missed (never past an ambiguity), and a
+bare head collects candidates over the whole scope, refusing ambiguous
+heads before any field is examined. The row-side collision fix removed
+the stale IR in-side name-uniqueness check (display names stopped
+being identifiers in TASK-132) and re-homed a real duplicate-plain-
+column check at build, by name.
+
+Also in this change, on AmirHossein's word: the two message-only
+divergences align with DuckDB's wording (EXCLUDE names the scope it
+searched, with DuckDB's own qualified/unqualified split; the
+not-a-struct refusal enumerates struct, union, map, or json).
+
+Out of scope, discovered and pinned: NATURAL JOIN drops non-scalar
+shared columns from the key set and serves rows DuckDB does not
+(severity 2). xfail-strict pinned in test_open_divergences.py, two
+legs; TASK-133 owns the fix, direction decided: support, not refuse.
+<!-- SECTION:NOTES:END -->
