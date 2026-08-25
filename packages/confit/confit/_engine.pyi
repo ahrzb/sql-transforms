@@ -132,8 +132,10 @@ class DuckDBInferFn:
         exactly: the right Python type category for the declared arrow type
         or a refusal naming the column — no coercion ("1" is not 1, 1 is not
         1.0, bool is not an int value), and a narrow integer checks its
-        range on the way in. A static-tables-only build ignores the input
-        and emits its fixed rows (`infer_rows([])`).
+        range on the way in. A static-tables-only build cannot see input
+        rows at all, so a non-empty list refuses by name — naming both
+        counts — and `infer_rows([])` is the call that returns its fixed
+        rows.
         """
 
     def infer_arrow(self, batch: pa.Table) -> pa.Table:
