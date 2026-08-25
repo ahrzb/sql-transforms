@@ -35,6 +35,13 @@ def probe(body: str) -> subprocess.CompletedProcess[str]:
 
 
 def duck(sql: str, ddl: str, rows: list[tuple]) -> list[tuple]:
+    """The oracle leg: `sql` against a fresh DuckDB holding `rows`.
+
+    `ddl` must create the table `__THIS__` — that name is what the INSERT
+    below writes to — and each tuple in `rows` is one of its rows, in
+    declared column order. The connection comes from the conftest fixture,
+    so the optimizer is off.
+    """
     con = duckdb.connect()
     con.execute(ddl)
     for r in rows:
@@ -45,7 +52,6 @@ def duck(sql: str, ddl: str, rows: list[tuple]) -> list[tuple]:
 # ---- the tree-UDF fixture -------------------------------------------
 # Shared: the model-table checks build refusals out of it, and the WHERE
 # short-circuit test uses it as a trap that must not be reached.
-# in the ticket rather than weakening it. TASK-76.
 
 NODE_SCHEMA = pa.schema(
     [

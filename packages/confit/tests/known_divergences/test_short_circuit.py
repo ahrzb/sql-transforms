@@ -1,4 +1,4 @@
-"""WHERE short-circuit and three-valued logic (TASK-75).
+"""WHERE short-circuit and three-valued logic.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -20,7 +20,7 @@ from confit import DuckDBInferFn
 # correctly skipped. So a guard that excluded every row still evaluated the
 # thing it was written to guard, and its trap killed the whole request.
 #
-# FIXED 2026-08-08 (TASK-75). The branchless form is kept — it is what makes
+# FIXED 2026-08-08. The branchless form is kept — it is what makes
 # three-valued NULL semantics cheap — and is now used only when the RIGHT
 # operand cannot trap, which is the overwhelmingly common case (`a > 1 AND
 # b < 2` is still entirely branchless). When it can trap, AND/OR lowers to a
@@ -30,7 +30,7 @@ from confit import DuckDBInferFn
 # still traps there, exactly as DuckDB does.
 #
 # "Can this trap" is `plan::may_trap`, the same predicate the JOIN ON residual
-# rule uses (TASK-74). One definition, so the two cannot drift apart.
+# rule uses. One definition, so the two cannot drift apart.
 #
 # The branch carries a flag param only when the result is NULLABLE, exactly as
 # `FB::case` does. That is not bookkeeping: the null-lane discipline says a
@@ -75,8 +75,8 @@ _3VL_ROWS = [(k, x) for k in (None, 0, 1) for x in (-1.5, 1.5)]
     ],
 )
 def test_short_circuit_preserves_three_valued_logic(right):
-    """AC #3: the branchless form was chosen because Kleene NULL semantics
-    fall out of flag algebra for free, and the branch must not regress them.
+    """The branchless form was chosen because Kleene NULL semantics fall out
+    of flag algebra for free, and the branch must not regress them.
 
     The full truth table — left in {NULL, FALSE, TRUE} against a right that
     is FALSE and TRUE — evaluated both ways and checked against DuckDB. The
@@ -98,10 +98,10 @@ def test_short_circuit_preserves_three_valued_logic(right):
 
 
 def test_where_guard_skips_an_unknown_model_trap():
-    """AC #2's other half: scoring an id with no model raises, and a guard
-    that excludes every row must stop it from ever being called. DuckDB
-    cannot be the oracle here — it has no native tree scoring — so the
-    assertion is the empty result the guard implies."""
+    """The other half of the guarantee: scoring an id with no model raises,
+    and a guard that excludes every row must stop it from ever being called.
+    DuckDB cannot be the oracle here — it has no native tree scoring — so
+    the assertion is the empty result the guard implies."""
     schema = pa.schema(
         [
             pa.field("k", pa.int64(), nullable=False),
@@ -124,7 +124,7 @@ def test_where_guard_skips_an_unknown_model_trap():
 
 
 # ===========================================================================
-# TASK-124: selection context, the full measured matrix (2026-08-19 spec,
+# Selection context, the full measured matrix (2026-08-19 spec,
 # docs/superpowers/specs/2026-08-19-selection-context-design.md).
 #
 # The model: AND is the ONLY lazy operator -- its LEFT always runs, its RIGHT

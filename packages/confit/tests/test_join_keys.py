@@ -1,4 +1,4 @@
-"""NATURAL / USING join keys over STRUCT shared columns (TASK-133).
+"""NATURAL / USING join keys over STRUCT shared columns.
 
 Design: docs/superpowers/specs/2026-08-25-task-133-join-keys-design.md.
 
@@ -224,8 +224,8 @@ def test_natural_and_using_key_on_different_column_sets():
 
 
 def test_natural_misses_when_only_the_struct_differs():
-    """The ticket's own severity-2: ids equal, `w` unequal, and we used to
-    key on `id` alone and emit a row DuckDB never produces."""
+    """The wrong answer this file exists for: ids equal, `w` unequal, and we
+    used to key on `id` alone and emit a row DuckDB never produces."""
     check(
         _FORMS[0],
         _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}]),
@@ -290,8 +290,8 @@ def test_a_struct_key_leaf_stays_addressable_on_the_static_side(sw, want):
 
 
 def test_an_explicit_on_over_a_struct_still_refuses():
-    """Scope boundary, pinned: this ticket serves the NATURAL and USING
-    arms. `ON t.w = s.w` keeps the existing named refusal."""
+    """Scope boundary, pinned: only the NATURAL and USING arms key on a
+    struct. `ON t.w = s.w` keeps the existing named refusal."""
     row = _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}])
     sql = "SELECT z AS o FROM __THIS__ JOIN s ON __THIS__.w = s.w"
     assert oracle(sql, row, _static_w(_S1, {"mean": 2.0})) == []
@@ -375,7 +375,7 @@ def test_a_struct_key_is_not_a_servable_value():
             )
 
 
-# --- the refuse-by-name backstop (AC #4) -----------------------------------
+# --- the refuse-by-name backstop -------------------------------------------
 
 _T0 = datetime.datetime(2020, 1, 1)
 
@@ -390,7 +390,7 @@ def _refuses(sql, row_schema, static, needle, **kw):
         )
     msg = str(e.value)
     assert needle in msg, msg
-    # The false claim this ticket removes: the column plainly DOES exist.
+    # The false claim the refusal must not make: the column plainly DOES exist.
     assert "does not exist" not in msg, msg
     return msg
 
@@ -413,11 +413,11 @@ _OPAQUE_SHARED = [
 @pytest.mark.parametrize(("aty", "vals", "col"), _OPAQUE_SHARED)
 def test_an_opaque_shared_column_refuses_by_name(sql, aty, vals, col):
     """A shared column with no lane on either side REFUSES naming the column
-    (severity-2 -> severity-4). A follow-up ticket adds key-only lanes so
-    they serve; what dies here is the wrong ANSWER.
+    (severity-2 -> severity-4). TASK-134 adds key-only lanes so they serve;
+    what dies here is the wrong ANSWER.
 
-    The ticket's TIMESTAMP leg is the first row: DuckDB keys on `t` and
-    returns nothing, and we used to key on `id` alone and return the row.
+    The TIMESTAMP leg is the first row: DuckDB keys on `t` and returns
+    nothing, and we used to key on `id` alone and return the row.
     """
     row_schema = pa.schema(
         [pa.field("id", pa.int64(), nullable=False), pa.field("t", aty)]

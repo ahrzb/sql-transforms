@@ -1,4 +1,4 @@
-"""CAST: rounding mode, and the refusal text about it (TASK-70, TASK-113).
+"""CAST: rounding mode, and the refusal text about it.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -19,7 +19,7 @@ from confit import DuckDBInferFn
 # implemented RoundMode::Round as Rust `f64::round()` — half AWAY from zero —
 # while DuckDB's DOUBLE->BIGINT cast is half-to-EVEN.
 #
-# FIXED 2026-08-08 (TASK-70). The mode is now `RoundMode::Nearest`
+# FIXED 2026-08-08. The mode is now `RoundMode::Nearest`
 # (`ftoi.nearest` in the IR text), half-to-even on both backends. Only CAST
 # and TRY_CAST ever emitted it, so no other op moved.
 #
@@ -81,7 +81,7 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
         fn.infer_rows([{"f": 1e19}])
 
 
-# TASK-113 AC #1: the refusal text must not assert DuckDB errors on an input
+# The refusal text must not assert DuckDB errors on an input
 # where DuckDB serves a value. Measured 2026-08-15: a numeric string that
 # fits the target is parsed and ROUNDED by DuckDB (both CAST and TRY_CAST);
 # only a non-numeric string, or one whose value misses the target's range,
@@ -104,10 +104,10 @@ def _cast_refusal(expr: str) -> str:
 @pytest.mark.parametrize(
     "expr, want",
     [
-        # TASK-113, CLOSED by TASK-99's decimal parser (2026-08-19): a
-        # numeric-string constant is parsed and rounded HALF AWAY FROM ZERO,
-        # exactly as DuckDB's IntegerDecimalCastOperation does. These used to
-        # refuse "not implemented".
+        # Since the decimal parser landed (2026-08-19) a numeric-string
+        # constant is parsed and rounded HALF AWAY FROM ZERO, exactly as
+        # DuckDB's IntegerDecimalCastOperation does. These used to refuse
+        # "not implemented".
         ("CAST('1.5' AS BIGINT)", 2),
         ("CAST('2.5' AS BIGINT)", 3),
         ("CAST('-1.5' AS BIGINT)", -2),
@@ -142,7 +142,7 @@ def test_refusal_keeps_the_true_claim_where_duckdb_really_errors(expr):
 
 
 # ===========================================================================
-# TASK-99 (b)+(c): DOUBLE -> narrow integers. This engine implements the
+# DOUBLE -> narrow integers. This engine implements the
 # ROUND-FIRST-THEN-CHECK semantics of DuckDB main (PR #24393, merged
 # 2026-08-03) and of Postgres. Released DuckDB (v1.5.5, our pinned oracle)
 # checks the RAW double first and then hits UB: `CAST(127.5 AS TINYINT)`
@@ -223,7 +223,7 @@ def test_the_155_boundary_slivers_are_a_kept_divergence(val, duck_155):
 
 
 # ---------------------------------------------------------------------------
-# TASK-99 (d) / TASK-113: the VARCHAR -> integer grammar, live-oracle. One
+# The VARCHAR -> integer grammar, live-oracle. One
 # matrix, three widths, both spellings -- if DuckDB's parser moves, this
 # remeasures. The grammar is digit-based (see kernels::duck_stoi): rounding
 # is half AWAY from zero decided on decimal DIGITS ('1.4999999999999999' is

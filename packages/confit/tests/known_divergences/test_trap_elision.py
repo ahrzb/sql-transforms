@@ -9,15 +9,15 @@ folds split cleanly into two piles, and only one is ours to reproduce.
 
   BINDER, so we match it -- survives `PRAGMA disable_optimizer`:
     a literal-NULL operand of an ARITHMETIC op folds the op to NULL, which
-    elides a trapping sibling (TASK-85's real half); a constant-condition
-    CASE folding to NULL does the same (TASK-87 face D); constant integer
-    arithmetic errors at bind.
+    elides a trapping sibling (the strict-op rule's real half); a
+    constant-condition CASE folding to NULL does the same (face D); constant
+    integer arithmetic errors at bind.
 
   OPTIMIZER, so we do NOT -- disappears with the optimizer off:
-    comparison against a literal NULL (TASK-85's other half); the i128
-    comparison fold (face B); the dead-range BETWEEN in a filter (face C);
-    the statically-NULL-conjunct filter elision (TASK-117); the constant
-    shift `x ± c <cmp> k` (TASK-118); the `IS NULL` nullness rewrite.
+    comparison against a literal NULL (the strict-op rule's other half); the
+    i128 comparison fold (face B); the dead-range BETWEEN in a filter (face
+    C); the statically-NULL-conjunct filter elision; the constant shift
+    `x ± c <cmp> k`; the `IS NULL` nullness rewrite.
 
   EXECUTION, so we match it and it was never about folding:
     a filter short-circuits left to right and drops the row as soon as a
@@ -39,8 +39,8 @@ import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 
-# TASK-85 (fuzz campaign 2026-08-11, ~20 findings), CORRECTED 2026-08-17 when
-# the oracle became DuckDB with the optimizer off.
+# THE STRICT-OP NULL RULE. Fuzz campaign 2026-08-11, ~20 findings; CORRECTED
+# 2026-08-17 when the oracle became DuckDB with the optimizer off.
 #
 # The original reading was that DuckDB folds a STRICT operator with a
 # literal-NULL operand to NULL "at optimize time", so a trapping sibling never
@@ -78,7 +78,7 @@ _NF_SCHEMA = pa.schema(
         # a comparison whose operands cannot trap: nothing to elide, so the
         # NULL simply propagates and both readings agree
         # (the giant count is DYNAMIC here; the literal spelling refuses at
-        # build since TASK-88)
+        # build against the string-builder budget)
         ("SELECT (lpad(s, CAST(k AS INTEGER), s) = NULL) AS o FROM __THIS__", None),
     ],
 )
@@ -102,9 +102,10 @@ def test_a_null_arith_operand_elides_a_trapping_sibling(
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
 def test_a_null_comparison_operand_does_not_elide_its_sibling(backend, monkeypatch):
-    """The half of TASK-85 that turned out to be the optimizer. `ln(-2.0) <
-    NULL` is NULL on optimizer-ON DuckDB and a domain error on the oracle, so
-    the engine evaluates and traps -- unlike the arithmetic form above."""
+    """The half of the strict-op rule that turned out to be the optimizer.
+    `ln(-2.0) < NULL` is NULL on optimizer-ON DuckDB and a domain error on
+    the oracle, so the engine evaluates and traps -- unlike the arithmetic
+    form above."""
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
@@ -141,10 +142,10 @@ def test_the_trap_stays_live_without_a_null_to_fold(backend, monkeypatch):
         fn.infer_rows([{"x": -2.0, "d": None}])
 
 
-# TASK-87 (fuzz round 2, 2026-08-11), RE-SPLIT 2026-08-17 by the oracle.
-# Four faces were pinned as folds we match. Two of them are the BINDER and
+# THE FOUR FACES. Fuzz round 2, 2026-08-11; RE-SPLIT 2026-08-17 by the oracle.
+# All four were pinned as folds we match. Two of them are the BINDER and
 # still are: A, a trapping constant that errors over ZERO rows, and D, a
-# folded constant CASE landing on NULL joining TASK-85's elision. The other
+# folded constant CASE landing on NULL joining the strict-op elision. The other
 # two were plan rewrites and now evaluate -- B, the wide-arithmetic literal
 # comparison, and C, the dead-range BETWEEN in a WHERE. See
 # `test_a_fold_that_was_only_the_optimizer_now_evaluates` below.
@@ -175,10 +176,10 @@ def test_a_trapping_constant_refuses_at_build(sql):
 @pytest.mark.parametrize(
     ("sql", "rows", "want"),
     [
-        # D: constant CASE folds to NULL, sqrt sibling eliminated (TASK-85).
-        # The only one of TASK-87's four faces that is the BINDER rather than
-        # the optimizer, so the only one still here -- see the block below for
-        # where B and C went.
+        # D: constant CASE folds to NULL, sqrt sibling eliminated by the
+        # strict-op rule. The only one of the four faces that is the BINDER
+        # rather than the optimizer, so the only one still here -- see the
+        # block below for where B and C went.
         (
             "SELECT ((CASE WHEN TRUE THEN NULL WHEN FALSE THEN -2.5e0 END)"
             " * sqrt(-83.025e0)) AS o FROM __THIS__",
@@ -230,7 +231,7 @@ def test_plan_time_folds_match_duckdb(sql, rows, want, backend, monkeypatch):
 def test_a_fold_that_was_only_the_optimizer_now_evaluates(
     sql, match, backend, monkeypatch
 ):
-    """TASK-87 faces B and C, which this file used to pin as folds we match.
+    """Faces B and C, which this file used to pin as folds we match.
     Both were plan rewrites, so under the oracle they evaluate and trap -- and
     so do we. Kept as pins because the engine reproduced each of them for a
     while, and would again by accident."""
@@ -267,9 +268,9 @@ def test_a_projection_dead_range_still_traps_like_duckdb(backend, monkeypatch):
         fn.infer_rows([{"s": "one", "x": 1.0}])
 
 
-# TASK-117 (fuzz seed 1667). Fixed 2026-08-16 by eliding the whole filter when
-# a top-level conjunct folded to NULL; RETIRED 2026-08-17 when the oracle
-# became optimizer-off DuckDB, which evaluates it:
+# THE STATICALLY-NULL CONJUNCT. Fuzz seed 1667. Fixed 2026-08-16 by eliding the
+# whole filter when a top-level conjunct folded to NULL; RETIRED 2026-08-17 when
+# the oracle became optimizer-off DuckDB, which evaluates it:
 #
 #   WHERE CAST(s AS DOUBLE) BETWEEN 61.591 AND NULL
 #   oracle: Conversion Error: Could not convert string 'abc' to DOUBLE
@@ -329,12 +330,12 @@ def _ours117(sql):
         "SELECT 1 AS o FROM __THIS__ WHERE ln(x) > 0 AND CAST(s AS DOUBLE) > NULL",
         # a bare comparison against NULL is already a NULL conjunct
         "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) > NULL",
-        # the NULL may be FOLDED rather than spelled (TASK-85's strict-op rule
+        # the NULL may be FOLDED rather than spelled (the strict-op rule above
         # produces it), and the elision must see it either way
         "SELECT 1 AS o FROM __THIS__ WHERE CAST(s AS DOUBLE) > (1e0 - NULL)",
         "SELECT 1 AS o FROM __THIS__ "
         "WHERE CAST(s AS DOUBLE) BETWEEN 61.591e0 AND (1e0 - NULL)",
-        # --- the guard must not become a blanket suppression (AC #4) ---
+        # --- the guard must not become a blanket suppression ---
         # OR, not AND: a NULL side can still let the other side be TRUE
         "SELECT 1 AS o FROM __THIS__ WHERE (CAST(s AS DOUBLE) > 1) OR NULL",
         # a live range with no NULL in it still evaluates the subject
@@ -395,10 +396,10 @@ def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(backend, monkey
 # ===========================================================================
 # TRAP ELISION IS NOT A SEMANTIC RULE, SO IT CANNOT BE MATCHED SEMANTICALLY
 #
-# This pin and its ticket (TASK-117) are bounded by a result worth stating
-# once, here, rather than re-deriving per ticket: DuckDB's decision to
-# evaluate or skip a trapping subexpression is not a function of what the
-# query MEANS. Proof, all lines measured against DuckDB 1.5.5 on 2026-08-16.
+# The pins above are bounded by a result worth stating once, here, rather than
+# re-deriving per finding: DuckDB's decision to evaluate or skip a trapping
+# subexpression is not a function of what the query MEANS. Proof, all lines
+# measured against DuckDB 1.5.5 on 2026-08-16.
 #
 # Take two queries over the same table (s='abc' uncastable, n IS NULL):
 #
@@ -420,8 +421,8 @@ def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(backend, monkey
 #   WHERE keep  AND trap      -> rows=[(1,)]  per-row short-circuit, L-to-R
 #   WHERE trap  AND keep      -> TRAP         same operands, other order
 #
-# We already match the second and third (TASK-75's flag lanes): those ARE
-# semantic — left-to-right short-circuit is in the language. Only the
+# We already match the second and third (the WHERE short-circuit's flag lanes):
+# those ARE semantic — left-to-right short-circuit is in the language. Only the
 # fold-visible rows differ.
 #
 # WHAT MATCHING WOULD COST. Since the rule is syntactic, agreement is not
@@ -455,10 +456,10 @@ def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(backend, monkey
 def test_duckdbs_trap_elision_is_syntactic_not_semantic():
     """The premises of the proof above, executable.
 
-    If DuckDB ever makes these two agree, the argument for bounding TASK-117
-    (and for the stopping rule) has lost its basis and must be re-derived —
-    so this fails loudly rather than the reasoning quietly going stale. It
-    asserts DuckDB alone; confit is not involved.
+    If DuckDB ever makes these two agree, the argument for bounding this
+    class (and for the stopping rule) has lost its basis and must be
+    re-derived — so this fails loudly rather than the reasoning quietly going
+    stale. It asserts DuckDB alone; confit is not involved.
     """
     con = duckdb.connect()
     # ABOUT the optimizer, so it opts back into it (conftest hands out the

@@ -1,5 +1,4 @@
-"""Literal and NULL typing: bare NULLs, INT32 overflow, signed zero
-(TASK-86, TASK-84, TASK-80).
+"""Literal and NULL typing: bare NULLs, INT32 overflow, signed zero.
 
 Split out of test_known_divergences.py 2026-08-16; see README.md for what
 belongs here (kept behaviour + its ground) versus in
@@ -13,15 +12,16 @@ import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
 
-# TASK-86 (fuzz campaign 2026-08-11, 11 schema findings + 5 downstream
-# binder splits). DuckDB types a bare NULL argument FIRST (INTEGER, or the
-# BLOB overload), and lets IT drive the signature -- so nullif(NULL, 84.7e0)
+# Fuzz campaign 2026-08-11, 11 schema findings + 5 downstream binder splits.
+# DuckDB types a bare NULL argument FIRST (INTEGER, or the BLOB overload), and
+# lets IT drive the signature -- so nullif(NULL, 84.7e0)
 # comes back int32 there and double here, and repeat(NULL, n) is BLOB there
 # and string here, which then splits every OUTER call binding a BLOB
 # (strpos/ltrim/lower/levenshtein/LIKE -- the campaign's five singleton
 # "No function matches" findings). Values all NULL, schemas apart, so
-# concat_tables against the oracle raises: the TASK-72/79 consequence
-# through a different door. The two divergent adopters now refuse by name;
+# concat_tables against the oracle raises: the same schema-divergence
+# consequence the string-type and integer-width classes have, through a
+# different door. The two divergent adopters now refuse by name;
 # CAST(NULL AS ...) stays the documented spelling, and adopters that agree
 # with DuckDB (upper(NULL), coalesce(NULL, x), nullif(x, NULL)) are
 # untouched.
@@ -74,15 +74,16 @@ def test_agreeing_null_adopters_still_bind_and_match(sql):
     assert got.to_pylist() == want.to_pylist()
 
 
-# TASK-84 (fuzz campaign 2026-08-11, 16 DIVERGE_TRAP findings). DuckDB types
+# Fuzz campaign 2026-08-11, 16 DIVERGE_TRAP findings. DuckDB types
 # integer literals INTEGER and computes their arithmetic in 32 bits, so
 # `-6 * (- 2147483647)` ERRORS there -- while the engine's single i64 width
 # served 12884901882 where the oracle traps. Literal-shaped integer
 # arithmetic is now evaluated at build in checked int32, DuckDB's own
 # semantics, and a subtree that would trap refuses by name. The residual --
-# `CAST(k AS INTEGER) * 2` trapping data-dependently at row time -- needs
-# the declared-width design (TASK-79) and stays ticketed there; a BIGINT
-# operand anywhere in the expression keeps 64-bit math on both engines.
+# `CAST(k AS INTEGER) * 2` trapping data-dependently at row time -- needed
+# the declared-width design and landed with it (the runtime narrow trap is
+# pinned in test_integer_widths.py); a BIGINT operand anywhere in the
+# expression keeps 64-bit math on both engines.
 
 _OV_SCHEMA = pa.schema([pa.field("k", pa.int64(), nullable=False)])
 
@@ -129,7 +130,7 @@ def test_bigint_and_in_range_literal_arithmetic_still_matches(sql):
     assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
 
 
-# TASK-80 (fuzz campaign 2026-08-11, 113 of 963 findings). Unary minus was
+# Fuzz campaign 2026-08-11, 113 of 963 findings. Unary minus was
 # lowered as `0 - x` -- the comment on that lowering even said so -- and IEEE
 # `0.0 - 0.0` is +0.0, so the sign of negative zero vanished everywhere it
 # could arise: the folded literal `-0.0e0`, runtime `(- x)` at x = 0.0, and

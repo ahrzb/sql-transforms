@@ -1,4 +1,4 @@
-"""Field access over struct_pack (TASK-93): `(struct_pack(a := e)).a` and
+"""Field access over struct_pack: `(struct_pack(a := e)).a` and
 `struct_extract(struct_pack(a := e), 'a')` are a pure bind-time desugar —
 extracting a field of a just-packed struct IS binding that field's
 expression. Case-insensitive matching, DuckDB's missing-key wording, and
