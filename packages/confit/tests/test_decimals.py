@@ -1,9 +1,9 @@
-"""The decimals feature (m-8 Dec lane, TASK-91).
+"""The decimals feature (m-8 Dec lane).
 
 Ordinary fits produce DECIMAL statics - sum(BIGINT) is decimal128(38,0),
 and it routinely leaves int64 (2^63+1 measured) - so serving them exactly
-is a real demand path, not an edge case. TASK-91 stores a decimal static
-as a scaled i128 from ingest through the join and emits decimal128(p,s).
+is a real demand path, not an edge case. A decimal static is held as a
+scaled i128 from ingest through the join and emitted as decimal128(p,s).
 
 Every expectation here is the LIVE oracle: an optimizer-off DuckDB
 connection with the same arrow fixtures registered, compared on
@@ -185,7 +185,7 @@ def test_a_decimal_static_survives_star_and_exclude(proj):
 
 
 def test_a_fit_tables_sum_bigint_serves_beyond_int64():
-    """Cells F1+F2, the ticket's reason to exist: sum(BIGINT) over a fit
+    """Cells F1+F2, the feature's reason to exist: sum(BIGINT) over a fit
     table is 2^63+1, which no i64 lane can hold."""
     params = _fit_params()
     assert params.to_pylist()[0]["sk"] == decimal.Decimal("9223372036854775809")

@@ -149,8 +149,8 @@ def test_duplicate_build_keys_error():
 
 
 def test_null_in_value_column_serves():
-    # TASK-55: NULL VALUES flow through joins as NULL (validity+payload
-    # pairs in the map); only NULL KEYS keep the drop rule.
+    # NULL VALUES flow through joins as NULL (validity+payload pairs in
+    # the map); only NULL KEYS keep the drop rule.
     holed = static({"id": "int", "v": "int?"}, [{"id": 1, "v": None}])
     duck_check(
         "SELECT v FROM __THIS__ JOIN dim ON k = dim.id",
@@ -357,10 +357,10 @@ def test_substr_negative_length_differential():
 
 
 def test_substr_negative_start_column_path_differential():
-    # The TASK-45-review "parity bug" triples, through the path real queries
-    # take (column input -> DuckDB's vectorized substr). builtin-pins \u00a74 read
-    # these as "negative start clamps to 1 BEFORE the length window"; that was
-    # measured on the one DuckDB path which disagrees with its own other three
+    # The adversarial review's "parity bug" triples, through the path real
+    # queries take (column input -> DuckDB's vectorized substr). builtin-pins
+    # \u00a74 read these as "negative start clamps to 1 BEFORE the length window";
+    # that was measured on the one DuckDB path which disagrees with its other three
     # (see test_substr_constant_fold_divergence below). The rule is the WINDOW:
     # map a negative start end-relative, then intersect [pos, pos+len) with the
     # string -- so ('ab', -4, 2) is '' here, not 'ab'.
@@ -375,20 +375,19 @@ def test_substr_negative_start_column_path_differential():
     )
 
 
-# CLOSED 2026-08-17 by the oracle change, and it closed by itself. DuckDB's
-# constant-fold substr disagrees with its own OPTIMIZED vectorized path on
-# negative starts, and this engine used to pin the vectorized one, so the
-# pure-literal spelling diverged (xfail-strict, "known residual, builtin-pins
-# spec \u00a74"). Measured across all four paths for `substr('hello', -10, 8)`:
+# DuckDB's constant-fold substr disagrees with its own OPTIMIZED vectorized
+# path on negative starts, so pinning the vectorized path makes the
+# pure-literal spelling diverge. Measured 2026-08-17 across all four paths
+# for `substr('hello', -10, 8)`:
 #
 #   optimizer ON,  literal args   'hel'
-#   optimizer ON,  column args    'hello'   <- the outlier we used to pin
+#   optimizer ON,  column args    'hello'   <- the outlier
 #   optimizer OFF, literal args   'hel'
 #   optimizer OFF, column args    'hel'
 #
-# The window rule the engine now implements agrees with three of the four,
-# including DuckDB's own constant folder, so the literal and column spellings
-# finally answer the same thing and the residual is gone.
+# The window rule the engine implements agrees with three of the four,
+# including DuckDB's own constant folder, so the literal and column
+# spellings answer the same thing.
 def test_substr_constant_fold_divergence():
     duck_check(
         "SELECT substr('ab', -4, 2) AS a, substr('ab', -3, 2) AS b, "
@@ -437,8 +436,8 @@ def test_nan_filter_differential_on_native_tables():
     )
 
 
-# ------------------------------------------------- static-only queries:
-# AC #2 — evaluated once at build time by DuckDB, nothing dynamic remains.
+# ----------------------------------------------------- static-only queries --
+# Evaluated once at build time by DuckDB; nothing dynamic remains.
 
 
 def test_static_only_query_is_a_constant_emitter():
@@ -459,7 +458,7 @@ def test_static_only_query_is_a_constant_emitter():
     # The result is fixed at build time — constructs like ORDER BY work
     # because DuckDB itself evaluated it. Input rows are not "irrelevant"
     # though: this build cannot READ them, so handing it any is a refusal
-    # rather than a silent drop (TASK-110).
+    # rather than a silent drop.
     assert fn.infer_rows([]) == [
         {"name": "three", "x": 30},
         {"name": "one", "x": 10},
@@ -565,9 +564,9 @@ def test_reentrant_infer_falls_back_instead_of_erroring():
     assert inner == [10]  # the nested call completed via the generic path
 
 
-# --------------------------------------------------------- TASK-46:
-# SELECT * star expansion — measured DuckDB 1.5.5 pins (order, EXCLUDE
-# case-folding, mixed items) verified end-to-end against the oracle.
+# --------------------------------------------------- SELECT * expansion --
+# Measured DuckDB 1.5.5 pins (order, EXCLUDE case-folding, mixed items),
+# verified end-to-end against the oracle.
 
 
 def test_star_expansion_matches_duckdb():
@@ -607,8 +606,8 @@ def test_star_over_joined_table_expands():
         )
 
 
-# --------------------------------------------------------- TASK-47:
-# BETWEEN / IN desugars — measured DuckDB 1.5.5 truth tables (wave-1 pins).
+# ------------------------------------------------- BETWEEN / IN desugars --
+# Measured DuckDB 1.5.5 truth tables (wave-1 pins).
 nan, inf = float("nan"), float("inf")
 
 
@@ -735,8 +734,8 @@ def test_in_strings_and_bools():
         )
 
 
-# --------------------------------------------------------- TASK-47:
-# wave-1 math builtins - measured DuckDB 1.5.5 pins as oracle tests.
+# ---------------------------------------------------- wave-1 math builtins --
+# Measured DuckDB 1.5.5 pins as oracle tests.
 
 
 def test_logexp_basic_values():
@@ -1201,11 +1200,10 @@ def test_pow_operator_rejects_cleanly():
         )
 
 
-# --------------------------------------------------------- TASK-47:
-# wave-1 string search - measured DuckDB 1.5.5 pins as oracle tests.
-# string-search family - contract pins measured against DuckDB 1.5.5 (2026-07-26).
-# All values below were probed through the vectorized path (table columns);
-# literal-fold agreed on every pair (0 divergences).
+# ---------------------------------------------------- wave-1 string search --
+# Contract pins measured against DuckDB 1.5.5 (2026-07-26). Every value below
+# was probed through the vectorized path (table columns); literal-fold agreed
+# on every pair (0 divergences).
 
 STRSEARCH_SCHEMA = {"s": "str?", "n": "str?"}
 STRSEARCH_ROWS = [
@@ -1283,8 +1281,8 @@ def test_strsearch_length_family():
     )
 
 
-# --------------------------------------------------------- TASK-47:
-# least/greatest - NULL-ignoring, first-arg ties, duck order (pins).
+# -------------------------------------------------------- least / greatest --
+# NULL-ignoring, first-arg ties, duck order (pins).
 
 
 def test_least_greatest_null_ignoring_int():
@@ -1347,8 +1345,8 @@ def test_least_greatest_strings_and_bools():
     )
 
 
-# --------------------------------------------------------- TASK-47:
-# round/trunc with digits - oracle pow10 table semantics (pins).
+# ------------------------------------------------ round / trunc with digits --
+# Oracle pow10 table semantics (pins).
 
 
 def test_round_double_with_digits_constant_n():
@@ -1452,8 +1450,8 @@ def test_round_family_int64_identity_and_negative_n():
     )
 
 
-# --------------------------------------------------------- TASK-48:
-# dynamic-table alias — the alias REPLACES the original name (measured).
+# ---------------------------------------------------- dynamic-table alias --
+# The alias REPLACES the original name (measured).
 
 
 def test_dynamic_table_alias():
@@ -1485,10 +1483,9 @@ def test_alias_shadows_original_name():
         )
 
 
-# --------------------------------------------------------- TASK-48:
-# LIKE / NOT LIKE / ILIKE - measured DuckDB 1.5.5 pins as oracle tests.
-# LIKE / NOT LIKE / ILIKE pins via duck_check (engine vs live DuckDB 1.5.5).
-# Every SQL below was validated against a native-table DuckDB oracle on 2026-07-26.
+# ------------------------------------------------ LIKE / NOT LIKE / ILIKE --
+# Pinned via duck_check (engine vs live DuckDB 1.5.5); every SQL below was
+# validated against a native-table DuckDB oracle on 2026-07-26.
 # NOT expressible here: the error pins (dangling escape with chars left, multi-byte
 # ESCAPE string) — those raise SyntaxException per-row; cover them with pytest.raises.
 

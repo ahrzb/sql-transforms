@@ -46,8 +46,8 @@ from confit import _engine
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
-# Measured at introduction (see PR); a drop is a regression.
-# Measured in CI (TASK-104 joins: 213 -> 260); a drop is a regression.
+# Measured in CI; general joins last raised it, 213 -> 260. A drop is a
+# regression: raise this when the surface grows, never lower it.
 SPARK_MATCH_FLOOR = 260
 
 PINNED_SPARK_CONFIG = {
@@ -64,8 +64,10 @@ def cases():
 
 
 def build_duckdb(case) -> duckdb.DuckDBPyConnection | None:
-    """Replay the case's setup; None when it needs the replay-only drop trick
-    to fail differently than corpus replay would."""
+    """Replay the case's setup into a fresh connection. Applies the same
+    drop-and-recreate the miner's duplicate CREATEs need (see corpus replay);
+    any other setup failure raises, because a case whose tables cannot be
+    built has nothing to compare."""
     con = duckdb.connect()
     for stmt in case["setup"]:
         try:

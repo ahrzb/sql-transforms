@@ -1,4 +1,4 @@
-"""Stage-B multiplicity vs the duckdb oracle (TASK-59), multiset parity.
+"""Stage-B multiplicity vs the duckdb oracle, multiset parity.
 
 Pins: docs/superpowers/specs/2026-07-28-stageB-multiplicity-pins.md —
 DuckDB's join output ORDER is a hash-join accident, so comparison is
@@ -132,10 +132,10 @@ def test_value_lanes_from_both_column_sources_vs_oracle():
     ],
 )
 def test_split_over_a_joined_column_under_many(expr):
-    """TASK-68: the many-join's probe CACHE lives per block while its values
-    ride the live stack, so a CFG split used to drop it and the joined column
-    fell through to the scalar `Inst::Probe` — rejected by verify with '@N is
-    a multimap: use probe.range'."""
+    """The many-join's probe CACHE lives per block while its values ride the
+    live stack, so a CFG split that drops it sends the joined column through
+    the scalar `Inst::Probe` — which verify rejects with '@N is a multimap:
+    use probe.range'."""
     _many_check(f"SELECT {expr} AS v FROM __THIS__ AS t JOIN d ON t.pid = d.id")
 
 

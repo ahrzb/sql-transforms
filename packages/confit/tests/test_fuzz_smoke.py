@@ -67,8 +67,8 @@ def test_verdicts_cover_the_contract_and_reproduce():
 
 def test_planted_over_modifier_diverges_or_refuses():
     """`abs(k) OVER ()` is live on master: DuckDB refuses it, confit builds
-    it (the TASK-69 silent-drop class, one function over). The fuzzer must
-    see that case as not-AGREE today, and as REFUSED once fixed — this
+    it -- the silently-dropped-modifier class, one function over. The fuzzer
+    must see that case as not-AGREE today, and as REFUSED once fixed — this
     assertion survives the fix."""
     case = gen.planted_over_case()
     v = oracle.run_case(case)
@@ -115,9 +115,9 @@ def _vocabulary(seeds: int):
 
 
 def test_generator_reaches_every_boundary_scalar_type():
-    """int8/int16/int32 were unreachable: every generated column was int64,
-    so the narrow-width families (TASK-79, TASK-84, TASK-96) were invisible
-    to the fuzzer no matter how many seeds it burned."""
+    """int8/int16/int32 were unreachable while every generated column was
+    int64, so the narrow-width families were invisible to the fuzzer no
+    matter how many seeds it burned."""
     scalars, _, _, _ = _vocabulary(PARITY_SEEDS)
     missing = BOUNDARY_SCALARS - scalars
     assert not missing, f"generator cannot put {sorted(missing)} in a table column"
