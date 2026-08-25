@@ -1,7 +1,7 @@
 //! The relational IR: what the frontend produces, what BTA annotates, what
 //! lowering consumes. Deliberately skinny — the v0 shape is the
-//! scan/filter/project ribbon over the dynamic table; joins and static
-//! subtrees grow here at the BTA stretch.
+//! scan/filter/project ribbon over the dynamic table, and joins to static
+//! tables are not tree nodes at all (see [`Rel`]).
 
 use super::ir::{ColTy, CmpPred, Col, Lit, TrimSide, Ty};
 
@@ -36,14 +36,14 @@ pub struct StaticTable {
     /// reader hunting a typo in a correct query. Unreferenced they cost
     /// nothing; referenced they refuse by name. `(column, arrow type)`.
     pub opaque: Vec<(String, String)>,
-    /// The DECLARED column list, in declaration order, as a star must see it
-    /// (TASK-125): one entry per schema column. A struct column is ONE
-    /// opaque entry here even though its flattened leaves live in `cols` —
-    /// a star answers with the column, never with its leaves.
+    /// The DECLARED column list, in declaration order, as a star must see
+    /// it: one entry per schema column. A struct column is ONE opaque entry
+    /// here even though its flattened leaves live in `cols` — a star
+    /// answers with the column, never with its leaves.
     pub star: Vec<StarCol>,
-    /// Struct columns as TREES (TASK-132): resolution walks these; the
-    /// leaf lanes interleaved in `cols` keep their dotted names for
-    /// DISPLAY ONLY. `StructNode::Leaf` here indexes into `cols`.
+    /// Struct columns as TREES: resolution walks these; the leaf lanes
+    /// interleaved in `cols` keep their dotted names for DISPLAY ONLY.
+    /// `StructNode::Leaf` here indexes into `cols`.
     pub structs: Vec<StructCol>,
 }
 
@@ -74,8 +74,8 @@ impl StaticTable {
     }
 
     /// Whether lane `ci` is a struct LEAF: reachable only through its
-    /// path, never by name (TASK-132 — a quoted identifier that happens
-    /// to spell the dotted display name is a different reference).
+    /// path, never by name — a quoted identifier that happens to spell the
+    /// dotted display name is a different reference.
     pub fn is_leaf_lane(&self, ci: u32) -> bool {
         fn walk(fs: &[StructField], ci: u32) -> bool {
             fs.iter().any(|f| match &f.node {
@@ -91,7 +91,7 @@ impl StaticTable {
 /// Per-lane SEGMENT paths for a lane set with struct trees over it: a
 /// plain column's path is its own (whole) name — dots included, a name is
 /// not a path — and a leaf lane's is `[struct, field, ...]` from its tree.
-/// The DATA paths walk these; nothing splits a name string (TASK-132).
+/// The DATA paths walk these; nothing splits a name string.
 pub fn lane_paths(cols: &[Col], structs: &[StructCol]) -> Vec<Vec<String>> {
     let mut paths: Vec<Vec<String>> = cols.iter().map(|c| vec![c.name.clone()]).collect();
     fn walk(fs: &[StructField], prefix: &mut Vec<String>, paths: &mut [Vec<String>]) {
@@ -122,11 +122,11 @@ pub fn lane_paths(cols: &[Col], structs: &[StructCol]) -> Vec<Vec<String>> {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InputLane {
     /// Display name — what a refusal calls this lane. For a struct leaf it
-    /// is the dotted path (TASK-132: display, never data); for a minted
-    /// presence lane it is `"<dotted path> (present)"`.
+    /// is the dotted path (display, never data); for a minted presence lane
+    /// it is `"<dotted path> (present)"`.
     pub name: String,
-    /// SEGMENT path (TASK-132). A plain column is ONE segment, dots and all
-    /// — a name is not a path. Never empty.
+    /// SEGMENT path. A plain column is ONE segment, dots and all — a name
+    /// is not a path. Never empty.
     pub path: Vec<String>,
     pub kind: LaneKind,
 }
@@ -139,8 +139,8 @@ pub enum LaneKind {
     /// A caller-supplied column: the path ends at a SCALAR. The boundary
     /// dtype-checks it (arrow) and refuses `None` when `!nullable`.
     Value(ColTy),
-    /// Minted by the binder for a struct join key (TASK-133): the path ends
-    /// at a struct NODE and the lane's VALUE is that node's validity.
+    /// Minted by the binder for a struct join key: the path ends at a
+    /// struct NODE and the lane's VALUE is that node's validity.
     /// Carries no type — a presence lane is non-nullable `Ty::I1`, always —
     /// which is what lets `ColData::push_present`'s `unreachable!` rest on a
     /// type rather than on a threshold. It is unreachable given that every
@@ -206,8 +206,8 @@ pub struct ModelTable {
 /// real test at each node is `float32(x) <= t`. That is a property of the
 /// library that packed the model, not of the engine — hence a declared field
 /// rather than a hardcoded assumption. `pack_trees` rewrites its thresholds
-/// onto the float32 grid (TASK-65) and declares `F32`; a packer for a library
-/// that compares in float64 declares `F64` and its integer features reach the
+/// onto the float32 grid and declares `F32`; a packer for a library that
+/// compares in float64 declares `F64` and its integer features reach the
 /// compare exactly.
 ///
 /// It belongs to the TRANSFORM, not to an instance within it: the instance id
@@ -220,8 +220,8 @@ pub enum CompareGrid {
     F64,
 }
 
-/// A struct row column flattened to scalar LANES at build time (TASK-56,
-/// pins-waveA/struct-star.json + struct-nested.json): the binder resolves
+/// A struct row column flattened to scalar LANES at build time
+/// (pins-waveA/struct-star.json + struct-nested.json): the binder resolves
 /// `col.field...` paths and `col.*` expansion to the leaf lanes; no struct
 /// value exists at runtime. Leaf lanes sit in `in_cols` AFTER every plain
 /// scalar column, named by their dotted path.
@@ -249,6 +249,8 @@ pub enum StructNode {
 }
 
 impl StructCol {
+    /// How many input LANES this column flattens to, nested fields
+    /// included. An `Opaque` leaf has no lane and does not count.
     pub fn leaf_count(&self) -> usize {
         fn walk(fs: &[StructField]) -> usize {
             fs.iter()
@@ -395,8 +397,8 @@ pub struct JoinKey {
 pub enum KeySrc {
     /// A lane of the static table (index into [`StaticTable::cols`]).
     Lane(u32),
-    /// "the struct node at this SEGMENT path is non-NULL" (TASK-133). A
-    /// STRUCT join key expands into leaf keys plus one PRESENCE key per
+    /// "the struct node at this SEGMENT path is non-NULL".
+    /// A STRUCT join key expands into leaf keys plus one PRESENCE key per
     /// node, because DuckDB's nested `=` carries each node's own validity
     /// as a VALUE (`row_matcher.cpp:379-382`: top-level Equals, every child
     /// NOT_DISTINCT_FROM): `{inner: NULL}` misses `{inner: {val: NULL}}`
@@ -495,9 +497,9 @@ pub enum SKind {
     /// i64 -> f64 VIA f32 — `n as f32 as f64`, one rounding, not two.
     /// Only ever wraps a `tree_predict` feature: sklearn narrows an integer
     /// feature array to float32 in a single step, and above 2**53 that is a
-    /// different number from `float32(float64(n))` (TASK-77). Below 2**53
-    /// it is identical to [`SKind::IntToFloat`], which is what makes it safe
-    /// to apply unconditionally.
+    /// different number from `float32(float64(n))`. Below 2**53 it is
+    /// identical to [`SKind::IntToFloat`], which is what makes it safe to
+    /// apply unconditionally.
     IntToFloat32(Box<SExpr>),
     /// 3VL NOT: value negates, NULL stays NULL.
     Not(Box<SExpr>),
@@ -693,17 +695,12 @@ pub enum SKind {
 /// failed CAST, an unknown model id? Conservative in one direction only:
 /// anything not on the trap-free allowlist counts as trapping.
 ///
-/// One definition, two callers, and they must not drift apart:
-///
-/// * the JOIN ON residual rule — a single-side residual has to be trap-free
-///   because DuckDB scan-pushes it, so a trap would fire at a different time
-///   than ours (`bind_residual`);
-/// * Kleene AND/OR lowering, which stays branchless — and therefore
-///   evaluates both operands on every row — only when the right operand
-///   cannot trap (`FB::kleene`, TASK-75).
+/// The JOIN ON residual rule is what consumes it (`bind_residual`): a
+/// single-side residual has to be trap-free because DuckDB scan-pushes it,
+/// so a trap would fire at a different time than ours.
 ///
 /// A CASE is trap-free exactly when all of its arms are: lowering branches,
-/// so an arm that is not taken is never evaluated (TASK-74).
+/// so an arm that is not taken is never evaluated.
 pub fn may_trap(e: &SExpr) -> bool {
     match &e.kind {
         SKind::Col(_)
@@ -733,12 +730,13 @@ pub fn may_trap(e: &SExpr) -> bool {
 
 /// Could DuckDB's BINDER constant-fold this expression? True iff the
 /// subtree references no input (`Col`/`StaticCol`/`JoinHit`) and runs no
-/// user code (`ExternCall`/`TreePredict` — TASK-101 relaxes pure externs
-/// with constant args). This is a SPELLING test, deliberately weaker than
-/// our own `fold`: fold dead-arm-eliminates a CASE whose column sits in an
-/// untaken arm, while DuckDB's binder refuses to fold anything holding a
-/// column — and its bind-time typing rules (the TASK-102 || collapse) key
-/// on ITS notion, so the gate must too.
+/// user code (`ExternCall`/`TreePredict`; a PURE extern over constant args
+/// is folded separately, by the frontend's bind-time execution). This is a
+/// SPELLING test, deliberately weaker than our own `fold`: fold
+/// dead-arm-eliminates a CASE whose column sits in an untaken arm, while
+/// DuckDB's binder refuses to fold anything holding a column — and its
+/// bind-time typing rules (the `||`-to-SQLNULL collapse) key on ITS notion,
+/// so the gate must too.
 pub fn bind_foldable(e: &SExpr) -> bool {
     match &e.kind {
         SKind::Col(_) | SKind::StaticCol { .. } | SKind::JoinHit(_) => false,

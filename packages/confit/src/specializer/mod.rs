@@ -3,10 +3,9 @@
 //! once and invoked millions of times with a small dynamic input relation.
 //!
 //! Design: docs/superpowers/specs/2026-07-25-sql-specializer-design.md.
-//! Build order (backlog milestone m-7): imperative IR (M-ir, done), the
-//! closure-compiled interpreter oracle (M-interp, done), then this layer —
-//! frontend + BTA + lowering (M-lower, in progress) — followed by the
-//! Cranelift backend and the generated Python-boundary marshaller.
+//! This layer is the frontend + BTA + lowering. It emits the imperative IR
+//! of [`ir`], which either backend in [`exec`] — the closure-compiled
+//! interpreter oracle or Cranelift — then runs.
 
 pub mod exec;
 pub mod fold;
@@ -50,12 +49,12 @@ pub struct WideOut {
 /// walk out of `StaticTy::Map` with an iterator skip.
 #[derive(Debug)]
 pub struct StaticKey {
-    /// The column's SEGMENT path (TASK-132) — one segment for a plain
-    /// column (dots and all: a name is not a path), the struct walk for a
-    /// leaf lane. When `present`, it names a struct NODE. Display = the
-    /// segments dotted.
+    /// The column's SEGMENT path — one segment for a plain column (dots
+    /// and all: a name is not a path), the struct walk for a leaf lane.
+    /// When `present`, it names a struct NODE. Display = the segments
+    /// dotted.
     pub path: Vec<String>,
-    /// TASK-133: the key is the node's PRESENCE, not its value — `TRUE if
+    /// True when the key is the node's PRESENCE, not its value — `TRUE if
     /// that node is non-NULL else NULL`, so the ordinary plain /
     /// IS-NOT-DISTINCT machinery gives it DuckDB's nested semantics.
     pub present: bool,
@@ -65,6 +64,7 @@ pub struct StaticKey {
 /// One map value at the boundary: its path plus its slot layout.
 #[derive(Debug)]
 pub struct StaticVal {
+    /// The column's SEGMENT path, read exactly like [`StaticKey::path`].
     pub path: Vec<String>,
     pub map: plan::MapVal,
 }
@@ -74,6 +74,8 @@ pub struct StaticSpec {
     /// Stage-B self-join: no materialization — the build side is the
     /// BATCH, assembled per call by the executor.
     pub batch: bool,
+    /// The source table's registered name; EMPTY when `batch` — a self-join
+    /// builds from the batch, so no catalogue table backs it.
     pub table: String,
     pub keys: Vec<StaticKey>,
     pub vals: Vec<StaticVal>,
@@ -89,9 +91,9 @@ pub struct Prepared {
     pub wide_outputs: Vec<WideOut>,
     /// `None` when the query provably emits EXACTLY one output row per
     /// input row (out[i] <-> in[i]); otherwise names the first construct
-    /// that can drop a row. The static proof behind `shape="map"`
-    /// (TASK-58): no WHERE, and every join is LEFT (unique keys are
-    /// already the map contract, so LEFT never drops or duplicates).
+    /// that can drop a row. The static proof behind `shape="map"`: no
+    /// WHERE, and every join is LEFT (unique keys are already the map
+    /// contract, so LEFT never drops or duplicates).
     pub one_row_blocker: Option<String>,
     /// Referenced model sets by name, in `model<...>` static order. These
     /// statics sit AFTER every map static, so the caller materializes the
@@ -104,9 +106,9 @@ pub struct Prepared {
 
 impl Prepared {
     /// Every input lane, in IR order: caller lanes first, then the lanes the
-    /// binder minted (TASK-133: struct-node presence — appended, so no
-    /// caller lane index moves, and empty for every query without a struct
-    /// join key). `input_lanes()[i].col() == program.in_cols[i]` for every
+    /// binder minted (struct-node presence — appended, so no caller lane
+    /// index moves, and empty for every query without a struct join key).
+    /// `input_lanes()[i].col() == program.in_cols[i]` for every
     /// `i`: the program's list is the projection, this one is the authority,
     /// and this is the ONLY place either is built.
     pub fn input_lanes(&self) -> &[plan::InputLane] {
@@ -145,8 +147,8 @@ pub fn prepare_opaque(
     many: bool,
     udfs: &[ir::ExternSpec],
     models: &[plan::ModelTable],
-    // TASK-101: the udf callables, decl-order-aligned with `udfs`, for
-    // the bind-time fold of pure externs. Empty disables the fold.
+    // The udf callables, decl-order-aligned with `udfs`, for the bind-time
+    // fold of pure externs. Empty disables the fold.
     bind_eval: &[exec::ExternImpl],
 ) -> Result<Prepared, PrepareError> {
     let (rel, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes) =
@@ -155,9 +157,9 @@ pub fn prepare_opaque(
         )?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
     // THE one producer of the lane list. A minted lane is an ordinary input
-    // column from here down — appended, so no caller lane index shifts
-    // (TASK-133) — and `all_in` is this vector's projection, not a second
-    // list built from the same parts somewhere else.
+    // column from here down — appended, so no caller lane index shifts —
+    // and `all_in` is this vector's projection, not a second list built
+    // from the same parts somewhere else.
     let mut input_lanes = plan::input_lanes(in_cols, structs);
     input_lanes.extend(minted_lanes);
     let all_in: Vec<ir::Col> = input_lanes.iter().map(plan::InputLane::col).collect();
