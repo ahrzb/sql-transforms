@@ -15,6 +15,7 @@ use crate::error::InterpError;
 use crate::specializer::exec::tree_ensemble::{ModelRows, NodeRows, TreeEnsemble};
 use crate::specializer::exec::{Batch, ColData, OutCol, RunState};
 use crate::specializer::ir::{Col, Ty};
+use crate::specializer::plan::{InputLane, LaneKind};
 
 fn err(msg: impl Into<String>) -> PyErr {
     InterpError::Build(msg.into()).into()
@@ -208,44 +209,45 @@ fn walk_lane<'py>(
     Ok((arr, parents))
 }
 
-/// pyarrow batch -> engine Batch, matching `in_cols` by their lane PATH with
-/// strict dtypes (int64 / double / string|large_string / bool).
+/// pyarrow batch -> engine Batch, matching each lane by its PATH with strict
+/// dtypes (int64 / double / string|large_string / bool).
 pub fn ingest<'py>(
     py: Python<'_>,
     batch: &Bound<'py, PyAny>,
-    in_cols: &[Col],
-    in_paths: &[Vec<String>],
-    present_from: usize,
+    lanes: &[InputLane],
 ) -> PyResult<Batch> {
     let _ = py;
     let rows: usize = batch.call_method0("__len__")?.extract()?;
-    let mut cols = Vec::with_capacity(in_cols.len());
-    for (i, (c, path)) in in_cols.iter().zip(in_paths).enumerate() {
-        let (arr, parents) = walk_lane(batch, path, &c.name)?;
+    let mut cols = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        let (arr, parents) = walk_lane(batch, &lane.path, &lane.name)?;
         // A PRESENCE lane (TASK-133) stops at a struct NODE and reads that
         // node's own validity, folded with every parent's — the same fold
         // the leaf lanes below use. Its arrow type is a struct, so the
         // scalar dtype check does not apply to it.
-        if i >= present_from {
-            let raw = raw_array(arr)?;
-            if raw.len != rows {
-                return Err(err(format!(
-                    "infer_arrow: column '{}' has {} rows, the batch {rows}",
-                    c.name, raw.len
-                )));
+        let ct = match lane.kind {
+            LaneKind::Present => {
+                let raw = raw_array(arr)?;
+                if raw.len != rows {
+                    return Err(err(format!(
+                        "infer_arrow: column '{}' has {} rows, the batch {rows}",
+                        lane.name, raw.len
+                    )));
+                }
+                let data: Vec<bool> = (0..rows)
+                    .map(|r| parents.iter().all(|p| p.valid(r)) && raw.valid(r))
+                    .collect();
+                cols.push(ColData::I1 {
+                    valid: vec![true; rows],
+                    data,
+                });
+                continue;
             }
-            let data: Vec<bool> = (0..rows)
-                .map(|r| parents.iter().all(|p| p.valid(r)) && raw.valid(r))
-                .collect();
-            cols.push(ColData::I1 {
-                valid: vec![true; rows],
-                data,
-            });
-            continue;
-        }
+            LaneKind::Value(ct) => ct,
+        };
         let dtype: String = arr.getattr("type")?.str()?.extract()?;
         let ok = matches!(
-            (c.ty.ty, dtype.as_str()),
+            (ct.ty, dtype.as_str()),
             (Ty::I8, "int8")
                 | (Ty::I16, "int16")
                 | (Ty::I32, "int32")
@@ -258,8 +260,8 @@ pub fn ingest<'py>(
         if !ok {
             return Err(err(format!(
                 "infer_arrow: column '{}' is {dtype}, the schema declares {} — cast first",
-                c.name,
-                c.ty.ty.name()
+                lane.name,
+                ct.ty.name()
             )));
         }
         let large = dtype == "large_string";
@@ -276,11 +278,11 @@ pub fn ingest<'py>(
         if raw.len != rows {
             return Err(err(format!(
                 "infer_arrow: column '{}' has {} rows, the batch {rows}",
-                c.name, raw.len
+                lane.name, raw.len
             )));
         }
         let mut null_seen = false;
-        let col_data = match c.ty.ty {
+        let col_data = match ct.ty {
             // Narrow widths widen into the engine's i64 lane; the declared
             // arrow type already proved every value fits.
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
@@ -291,7 +293,7 @@ pub fn ingest<'py>(
                     null_seen |= !v;
                     valid.push(v);
                     data.push(if v {
-                        match c.ty.ty {
+                        match ct.ty {
                             Ty::I8 => unsafe { raw.data::<i8>(1).get(i) as i64 },
                             Ty::I16 => unsafe { raw.data::<i16>(1).get(i) as i64 },
                             Ty::I32 => unsafe { raw.data::<i32>(1).get(i) as i64 },
@@ -330,11 +332,7 @@ pub fn ingest<'py>(
                 ColData::I1 { valid, data }
             }
             Ty::Str => {
-                let mut col = ColData::Str {
-                    valid: Vec::with_capacity(rows),
-                    buf: String::new(),
-                    spans: Vec::with_capacity(rows),
-                };
+                let mut col = super::col_for_lane(lane, rows);
                 let bytes = str_bytes(&raw);
                 for i in 0..rows {
                     let v = valid_at(i);
@@ -360,10 +358,10 @@ pub fn ingest<'py>(
             // the arrow INPUT path needs no decimal arm at all.
             Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
         };
-        if null_seen && !c.ty.nullable {
+        if null_seen && !ct.nullable {
             return Err(err(format!(
                 "column '{}' is not nullable but the batch has NULLs",
-                c.name
+                lane.name
             )));
         }
         cols.push(col_data);

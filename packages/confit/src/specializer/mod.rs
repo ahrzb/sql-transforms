@@ -89,13 +89,21 @@ pub struct Prepared {
     /// statics sit AFTER every map static, so the caller materializes the
     /// map recipes first and then one ensemble per name here.
     pub models: Vec<String>,
-    /// Struct-node PRESENCE lanes the frontend MINTED for join keys
-    /// (TASK-133), as `(column, the node's SEGMENT path)`. They sit AFTER
-    /// every caller-supplied lane in the program's input, and the boundary
-    /// fills each with "the node at this path is non-NULL". Empty for every
-    /// query without a struct join key — the lane is minted lazily because
-    /// one extra input lane costs ~25 ns/row at the marshalling boundary.
-    pub present_lanes: Vec<(ir::Col, Vec<String>)>,
+    /// See [`Prepared::input_lanes`] — the AUTHORITY on the program's row
+    /// input, of which `program.in_cols` is the projection.
+    input_lanes: Vec<plan::InputLane>,
+}
+
+impl Prepared {
+    /// Every input lane, in IR order: caller lanes first, then the lanes the
+    /// binder minted (TASK-133: struct-node presence — appended, so no
+    /// caller lane index moves, and empty for every query without a struct
+    /// join key). `input_lanes()[i].col() == program.in_cols[i]` for every
+    /// `i`: the program's list is the projection, this one is the authority,
+    /// and this is the ONLY place either is built.
+    pub fn input_lanes(&self) -> &[plan::InputLane] {
+        &self.input_lanes
+    }
 }
 
 /// STAGE 1 for the v0 ribbon: SQL text + the dynamic table's name and schema
@@ -133,15 +141,18 @@ pub fn prepare_opaque(
     // the bind-time fold of pure externs. Empty disables the fold.
     bind_eval: &[exec::ExternImpl],
 ) -> Result<Prepared, PrepareError> {
-    let (rel, joins, out_cols, regexes, wide_outputs, model_refs, present_lanes) =
+    let (rel, joins, out_cols, regexes, wide_outputs, model_refs, minted_lanes) =
         frontend::frontend(
             sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
         )?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
-    // A minted presence lane is an ordinary input column from here down —
-    // appended, so no caller lane index shifts (TASK-133).
-    let mut all_in = in_cols.to_vec();
-    all_in.extend(present_lanes.iter().map(|(c, _)| c.clone()));
+    // THE one producer of the lane list. A minted lane is an ordinary input
+    // column from here down — appended, so no caller lane index shifts
+    // (TASK-133) — and `all_in` is this vector's projection, not a second
+    // list built from the same parts somewhere else.
+    let mut input_lanes = plan::input_lanes(in_cols, structs);
+    input_lanes.extend(minted_lanes);
+    let all_in: Vec<ir::Col> = input_lanes.iter().map(plan::InputLane::col).collect();
     let mut program = lower::lower(
         &rel, &joins, statics, &all_in, out_cols, regexes, udfs, "run", many, models,
         &model_refs,
@@ -202,6 +213,21 @@ pub fn prepare_opaque(
             }
         })
         .collect();
+    // DOCUMENTATION, not the guarantee. `all_in` above is this very vector's
+    // projection, taken a few lines apart, so this compares a list against
+    // itself. What actually keeps the boundary's lanes and the program's
+    // columns in step is that there is now exactly ONE producer — the
+    // boundary's own second append is deleted. A reviewer who reads this
+    // assert as the guarantee would accept a patch that re-introduces a
+    // second producer and keeps the assert green.
+    debug_assert!(
+        input_lanes.len() == program.in_cols.len()
+            && input_lanes
+                .iter()
+                .zip(&program.in_cols)
+                .all(|(l, c)| &l.col() == c),
+        "input lanes do not project to program.in_cols"
+    );
     Ok(Prepared {
         program,
         statics: specs,
@@ -211,7 +237,7 @@ pub fn prepare_opaque(
             .iter()
             .map(|r| models[*r as usize].name.clone())
             .collect(),
-        present_lanes,
+        input_lanes,
     })
 }
 

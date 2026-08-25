@@ -349,10 +349,10 @@ pub fn frontend(
         Vec<super::ir::ReSpec>,
         Vec<super::WideOut>,
         Vec<u32>,
-        // Struct-node PRESENCE lanes minted for join keys (TASK-133), as
-        // `(column, node SEGMENT path)`. The caller APPENDS these to
-        // `in_cols` before lowering and marshals them at the boundary.
-        Vec<(Col, Vec<String>)>,
+        // Lanes the binder MINTED (TASK-133: struct-node presence). The
+        // caller APPENDS these to the lane list before lowering; see
+        // `Binder::minted_lanes` for the write-side invariant.
+        Vec<super::plan::InputLane>,
     ),
     PrepareError,
 > {
@@ -629,7 +629,7 @@ pub fn frontend(
         binder.regexes.into_inner(),
         wide_outs,
         binder.model_refs.into_inner(),
-        binder.present_lanes.into_inner(),
+        binder.minted_lanes.into_inner(),
     ))
 }
 
@@ -746,7 +746,7 @@ fn bind_from<'a>(
         sites: std::cell::Cell::new(0),
         extern_sites: std::cell::RefCell::new(Vec::new()),
         in_guarded: std::cell::Cell::new(0),
-        present_lanes: std::cell::RefCell::new(Vec::new()),
+        minted_lanes: std::cell::RefCell::new(Vec::new()),
     };
     let mut specs: Vec<JoinSpec> = Vec::new();
 
@@ -2064,9 +2064,21 @@ struct Binder<'a> {
     /// trapping-constant refusals only apply at depth 0 — a guarded
     /// trapping constant stays a lazy runtime question on both engines.
     in_guarded: std::cell::Cell<u32>,
-    /// Struct-node PRESENCE lanes minted for join keys (TASK-133), as
-    /// `(column, the node's SEGMENT path)`. They are appended to `in_cols`
-    /// AFTER every caller lane, so lane `i` here is `Col(in_cols.len() + i)`.
+    /// Lanes the binder MINTED (TASK-133: struct-node presence; TASK-134: a
+    /// second kind). The caller APPENDS these to the lane list before
+    /// lowering. Named the same on the way out, because it is the same list
+    /// moved out of this `RefCell` — one list, one name, in both places.
+    ///
+    /// WRITE-SIDE INVARIANT, which [`super::plan::LaneKind`] does NOT
+    /// enforce and which is therefore written here: ONE vector, APPEND-ONLY,
+    /// DEDUPED BY PATH ACROSS KINDS, INDEXED BY POSITION, and OFFSET BY
+    /// `in_cols.len()`. `present_key` mints
+    /// `SKind::Col((self.in_cols.len() + idx) as u32)` where `idx` is a
+    /// position in this vector, so a second minter that pushed into a SECOND
+    /// vector would collide on `idx`, and a second minter that deduped only
+    /// within its own kind would mint two lanes for one path. `LaneKind`
+    /// makes the boundary's READERS exhaustive; it says nothing about the
+    /// writer. That asymmetry is the honest limit of this seam.
     ///
     /// Minted LAZILY — only when a struct actually becomes a join key.
     /// Minting them at schema parse would widen `in_cols` for every query
@@ -2075,7 +2087,7 @@ struct Binder<'a> {
     /// boundary against a ~200 ns/row floor. Arrow schemas default to
     /// nullable, so that would be charged to essentially every struct
     /// column in the repo for a feature one query shape uses.
-    present_lanes: std::cell::RefCell<Vec<(Col, Vec<String>)>>,
+    minted_lanes: std::cell::RefCell<Vec<super::plan::InputLane>>,
 }
 
 /// Decrements `in_guarded` on scope exit, whatever the exit path.
@@ -3879,20 +3891,15 @@ impl Binder<'_> {
     /// propagates NULL), as an IS-NOT-DISTINCT key it matches its own kind
     /// (every level below, where a node's NULL is a value).
     fn present_key(&self, path: &[String]) -> SExpr {
-        let mut lanes = self.present_lanes.borrow_mut();
-        let idx = match lanes.iter().position(|(_, p)| p == path) {
+        let mut lanes = self.minted_lanes.borrow_mut();
+        let idx = match lanes.iter().position(|l| l.path == path) {
             Some(i) => i,
             None => {
-                lanes.push((
-                    Col {
-                        name: format!("{} (present)", path.join(".")),
-                        ty: super::ir::ColTy {
-                            ty: Ty::I1,
-                            nullable: false,
-                        },
-                    },
-                    path.to_vec(),
-                ));
+                lanes.push(super::plan::InputLane {
+                    name: format!("{} (present)", path.join(".")),
+                    path: path.to_vec(),
+                    kind: super::plan::LaneKind::Present,
+                });
                 lanes.len() - 1
             }
         };

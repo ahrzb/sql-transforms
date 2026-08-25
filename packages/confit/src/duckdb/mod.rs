@@ -22,7 +22,7 @@ use crate::specializer::exec::interp::{compile_ext, InterpFn};
 use crate::specializer::exec::{Batch, ColData, ExternImpl, KeyBits, OutCol, ScalarVal, StaticData};
 use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
-use crate::specializer::plan::StaticTable;
+use crate::specializer::plan::{self, StaticTable};
 use crate::specializer::{prepare_opaque, StaticSpec, WideOut};
 
 /// The declared type's spelling for boundary refusals — Arrow's, because
@@ -59,7 +59,20 @@ pub(super) fn arrow_ty_name(t: Ty) -> std::borrow::Cow<'static, str> {
 /// exactly like a Python bool; the DOUBLE lane stays float-only (np.float64
 /// IS a float, np.float32 refuses — the engine computes in f64). A narrow
 /// width checks its range on the way IN, mirroring `narrow_check` out.
-fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bool) -> PyResult<()> {
+///
+/// `name` and `ty` are exactly what this reads off the lane — the display
+/// name for the two error messages, the declared type for `arrow_ty_name`
+/// and `int_range`. Taken apart rather than as a `&Col` because this runs
+/// ONCE PER CELL PER ROW on the engine's headline path against a ~200 ns/row
+/// floor: `name: &str` borrows out of the lane, `ColTy` is `Copy`, and
+/// rebuilding a `Col` per cell would allocate a `String` per cell.
+fn push_input_cell(
+    col: &mut ColData,
+    name: &str,
+    ty: ColTy,
+    attr: &Bound<'_, PyAny>,
+    null: bool,
+) -> PyResult<()> {
     use pyo3::exceptions::PyOverflowError;
     use pyo3::types::{PyBool, PyFloat, PyInt};
     let type_err = |want: &str| {
@@ -70,8 +83,8 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
             .unwrap_or_else(|_| "?".into());
         pyo3::exceptions::PyValueError::new_err(format!(
             "column '{}' expects {want} for its {} type, got {got}",
-            c.name,
-            arrow_ty_name(c.ty.ty)
+            name,
+            arrow_ty_name(ty.ty)
         ))
     };
     // Fast path per arm: `downcast_exact` is one type-object pointer compare
@@ -100,8 +113,8 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
                 let range_err = |v: &dyn std::fmt::Display| {
                     pyo3::exceptions::PyValueError::new_err(format!(
                         "column '{}' value {v} is outside its {} range",
-                        c.name,
-                        arrow_ty_name(c.ty.ty)
+                        name,
+                        arrow_ty_name(ty.ty)
                     ))
                 };
                 let v: i64 = match attr.cast_exact::<PyInt>() {
@@ -126,7 +139,7 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
                         })?
                     }
                 };
-                if let Some((lo, hi)) = c.ty.ty.int_range() {
+                if let Some((lo, hi)) = ty.ty.int_range() {
                     if !(lo..=hi).contains(&v) {
                         return Err(range_err(&v));
                     }
@@ -167,6 +180,45 @@ fn push_input_cell(col: &mut ColData, c: &Col, attr: &Bound<'_, PyAny>, null: bo
         }
     }
     Ok(())
+}
+
+/// An empty `ColData` for one input lane, optionally with capacity. The ONE
+/// place a lane's KIND chooses a `ColData` variant, and all three ingest
+/// paths call it — `Marshaller::build`, the generic row boundary, and
+/// `arrow::ingest` — so `ColData::push_present` can only ever meet an `I1`.
+///
+/// Not a constructor on `ColData`: that would put `exec` on `plan`, and the
+/// import graph runs the other way (`plan` names `ir` and nothing else,
+/// `exec` names `ir` and nothing else). The chooser lives at the BOUNDARY
+/// instead, which is where every lane already is.
+pub(crate) fn col_for_lane(lane: &plan::InputLane, cap: usize) -> ColData {
+    let ty = match lane.kind {
+        // Always non-nullable I1 — that is the whole payload of the kind.
+        plan::LaneKind::Present => Ty::I1,
+        plan::LaneKind::Value(ct) => ct.ty,
+    };
+    match ty {
+        Ty::I1 => ColData::I1 {
+            valid: Vec::with_capacity(cap),
+            data: Vec::with_capacity(cap),
+        },
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ColData::I64 {
+            valid: Vec::with_capacity(cap),
+            data: Vec::with_capacity(cap),
+        },
+        Ty::F64 => ColData::F64 {
+            valid: Vec::with_capacity(cap),
+            data: Vec::with_capacity(cap),
+        },
+        Ty::Str => ColData::Str {
+            valid: Vec::with_capacity(cap),
+            buf: String::new(),
+            spans: Vec::with_capacity(cap),
+        },
+        // A decimal ROW column is opaque (schema.rs, Policy::Row), so no
+        // input lane is ever a Dec.
+        Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
+    }
 }
 
 /// Append a static struct column's scalar leaves as lanes named by their
@@ -1175,9 +1227,6 @@ struct Marshaller {
     /// Ingest path per lane: one segment for a plain column, the dotted
     /// segments for a struct leaf (None at any level -> NULL lane).
     in_names: Vec<Vec<Py<PyString>>>,
-    /// Lanes at and after this index carry a struct NODE's presence, not a
-    /// value (TASK-133).
-    present_from: usize,
     /// One entry per OUTPUT FIELD (not lane): plan + interned name.
     plan: Vec<EmitField>,
     /// Declared out-column types, indexed like the engine's out lanes —
@@ -1191,19 +1240,17 @@ struct Marshaller {
 impl Marshaller {
     fn build(
         py: Python<'_>,
-        in_cols: &[Col],
-        in_paths: &[Vec<String>],
-        present_from: usize,
+        lanes: &[plan::InputLane],
         out_cols: &[Col],
         plan: &[EmitField],
         fun: &Backend,
     ) -> PyResult<Marshaller> {
         Ok(Marshaller {
-            present_from,
-            in_names: in_paths
+            in_names: lanes
                 .iter()
-                .map(|path| {
-                    path.iter()
+                .map(|l| {
+                    l.path
+                        .iter()
                         .map(|seg| PyString::intern(py, seg).unbind())
                         .collect()
                 })
@@ -1214,7 +1261,7 @@ impl Marshaller {
                 .iter()
                 .map(|f| PyString::intern(py, f.name(out_cols)).unbind())
                 .collect(),
-            cols: in_cols.iter().map(|c| ColData::new(c.ty.ty)).collect(),
+            cols: lanes.iter().map(|l| col_for_lane(l, 0)).collect(),
             state: fun.new_state(),
         })
     }
@@ -1226,7 +1273,7 @@ impl Marshaller {
         &mut self,
         py: Python<'_>,
         fun: &Backend,
-        in_cols: &[Col],
+        lanes: &[plan::InputLane],
         rows: &[Py<PyAny>],
         row_table: &str,
     ) -> PyResult<Vec<Py<PyAny>>> {
@@ -1236,23 +1283,20 @@ impl Marshaller {
         for row_obj in rows {
             let bound = row_obj.bind(py);
             let dict = bound.cast::<PyDict>().ok();
-            for (i, ((c, path), col)) in in_cols
-                .iter()
-                .zip(&self.in_names)
-                .zip(&mut self.cols)
-                .enumerate()
+            for ((lane, path), col) in
+                lanes.iter().zip(&self.in_names).zip(&mut self.cols)
             {
                 let mut attr = match dict {
                     Some(d) => d.get_item(path[0].bind(py))?.ok_or_else(|| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{row_table}' is missing attribute '{}'",
-                            c.name
+                            lane.name
                         ))
                     })?,
                     None => bound.getattr(path[0].bind(py)).map_err(|e| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{row_table}' is missing attribute '{}': {e}",
-                            c.name
+                            lane.name
                         ))
                     })?,
                 };
@@ -1266,31 +1310,32 @@ impl Marshaller {
                         Ok(d) => d.get_item(seg.bind(py))?.ok_or_else(|| {
                             pyo3::exceptions::PyValueError::new_err(format!(
                                 "Row for table '{row_table}' is missing attribute '{}'",
-                                c.name
+                                lane.name
                             ))
                         })?,
                         Err(_) => attr.getattr(seg.bind(py)).map_err(|e| {
                             pyo3::exceptions::PyValueError::new_err(format!(
                                 "Row for table '{row_table}' is missing attribute '{}': {e}",
-                                c.name
+                                lane.name
                             ))
                         })?,
                     };
                 }
                 let null = attr.is_none();
-                // A PRESENCE lane's VALUE is that validity (TASK-133): its
-                // path walked to a struct NODE, not to a scalar.
-                if i >= self.present_from {
-                    col.push_present(!null);
-                    continue;
+                match lane.kind {
+                    // A PRESENCE lane's VALUE is that validity (TASK-133):
+                    // its path walked to a struct NODE, not to a scalar.
+                    plan::LaneKind::Present => col.push_present(!null),
+                    plan::LaneKind::Value(ct) => {
+                        if null && !ct.nullable {
+                            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                                "column '{}' is not nullable but a row has None",
+                                lane.name
+                            )));
+                        }
+                        push_input_cell(col, &lane.name, ct, &attr, null)?;
+                    }
                 }
-                if null && !c.ty.nullable {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "column '{}' is not nullable but a row has None",
-                        c.name
-                    )));
-                }
-                push_input_cell(col, c, &attr, null)?;
             }
         }
 
@@ -1380,17 +1425,11 @@ impl Marshaller {
 enum Engine {
     Compiled {
         fun: Backend,
-        in_cols: Vec<Col>,
-        /// Per in_col: its SEGMENT path (TASK-132) — `[name]` for a plain
-        /// column (dots included, a name is not a path), the struct walk
-        /// for a leaf lane. The boundaries walk these, never split names.
-        in_paths: Vec<Vec<String>>,
-        /// Lanes at and after this index are struct-node PRESENCE lanes
-        /// minted by the frontend for a struct join key (TASK-133): their
-        /// path names a NODE, and the boundary fills them with "that node
-        /// is non-NULL" instead of reading a value. Always `in_cols.len()`
-        /// unless the query keys a join on a struct.
-        present_from: usize,
+        /// The program's row input, in IR order: name, SEGMENT path
+        /// (TASK-132 — the boundaries walk these, never split names) and
+        /// KIND. Taken verbatim off `Prepared`, which is the only place it
+        /// is built; the boundary does not assemble a lane list of its own.
+        lanes: Vec<plan::InputLane>,
         out_cols: Vec<Col>,
         /// Output FIELDS in projection order (wide UDF lanes collapsed).
         plan: Vec<EmitField>,
@@ -1728,24 +1767,13 @@ impl DuckDBInferFn {
         let plan = emit_plan(&prepared.program.out_cols, &prepared.wide_outputs);
         // SPECIALIZER_GENERIC_BOUNDARY pins the pre-marshaller boundary —
         // the bench baseline, mirroring SPECIALIZER_FORCE_INTERP.
-        let mut in_paths = crate::specializer::plan::lane_paths(&in_cols, &structs);
-        // Struct-node PRESENCE lanes the frontend minted for join keys
-        // (TASK-133): appended, so no existing lane index moves, and their
-        // path names a struct NODE rather than a leaf. Empty unless the
-        // query actually keys a join on a struct.
-        let present_from = in_cols.len();
-        for (c, p) in &prepared.present_lanes {
-            in_cols.push(c.clone());
-            in_paths.push(p.clone());
-        }
+        let lanes = prepared.input_lanes().to_vec();
         let marsh = if std::env::var_os("SPECIALIZER_GENERIC_BOUNDARY").is_some() {
             None
         } else {
             Some(RefCell::new(Marshaller::build(
                 py,
-                &in_cols,
-                &in_paths,
-                present_from,
+                &lanes,
                 &prepared.program.out_cols,
                 &plan,
                 &fun,
@@ -1754,9 +1782,7 @@ impl DuckDBInferFn {
         Ok(DuckDBInferFn {
             engine: Engine::Compiled {
                 fun,
-                in_cols,
-                in_paths,
-                present_from,
+                lanes,
                 out_cols: prepared.program.out_cols.clone(),
                 plan,
                 marsh,
@@ -1827,16 +1853,14 @@ impl DuckDBInferFn {
     /// silently skipping it made three documented entry points to one
     /// function give two different answers (TASK-71).
     fn infer_arrow(&self, py: Python<'_>, batch: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        let (fun, in_cols, in_paths, present_from, out_cols, plan) = match &self.engine {
+        let (fun, lanes, out_cols, plan) = match &self.engine {
             Engine::Compiled {
                 fun,
-                in_cols,
-                in_paths,
-                present_from,
+                lanes,
                 out_cols,
                 plan,
                 ..
-            } => (fun, in_cols, in_paths, *present_from, out_cols, plan),
+            } => (fun, lanes, out_cols, plan),
             Engine::Constant { .. } => {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "infer_arrow: a static-tables-only query emits fixed rows — \
@@ -1844,7 +1868,7 @@ impl DuckDBInferFn {
                 ))
             }
         };
-        let input = arrow::ingest(py, &batch, in_cols, in_paths, present_from)?;
+        let input = arrow::ingest(py, &batch, lanes)?;
         let mut st = fun.new_state();
         fun.run(&input, &mut st)
             .map_err(|t| PyErr::from(InterpError::Eval(t.0)))?;
@@ -1854,16 +1878,14 @@ impl DuckDBInferFn {
 
 impl DuckDBInferFn {
     fn run_rows(&self, py: Python<'_>, rows: &[Py<PyAny>]) -> PyResult<Vec<Py<PyAny>>> {
-        let (fun, in_cols, in_paths, present_from, out_cols, plan, marsh) = match &self.engine {
+        let (fun, lanes, out_cols, plan, marsh) = match &self.engine {
             Engine::Compiled {
                 fun,
-                in_cols,
-                in_paths,
-                present_from,
+                lanes,
                 out_cols,
                 plan,
                 marsh,
-            } => (fun, in_cols, in_paths, *present_from, out_cols, plan, marsh),
+            } => (fun, lanes, out_cols, plan, marsh),
             Engine::Constant { rows: fixed, .. } => {
                 // TASK-110. This build reads only static tables, so it cannot
                 // see input rows at all — and silently dropping them was the
@@ -1898,58 +1920,32 @@ impl DuckDBInferFn {
             // A reentrant call (row property re-entering infer mid-marshal)
             // finds the cell borrowed and takes the generic path below.
             if let Ok(mut m) = cell.try_borrow_mut() {
-                return m.call(py, fun, in_cols, rows, &self.row_table);
+                return m.call(py, fun, lanes, rows, &self.row_table);
             }
         }
 
         let n = rows.len();
-        let mut cols: Vec<ColData> = in_cols
-            .iter()
-            .map(|c| match c.ty.ty {
-                Ty::I1 => ColData::I1 {
-                    valid: Vec::with_capacity(n),
-                    data: Vec::with_capacity(n),
-                },
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ColData::I64 {
-                    valid: Vec::with_capacity(n),
-                    data: Vec::with_capacity(n),
-                },
-                Ty::F64 => ColData::F64 {
-                    valid: Vec::with_capacity(n),
-                    data: Vec::with_capacity(n),
-                },
-                Ty::Str => ColData::Str {
-                    valid: Vec::with_capacity(n),
-                    buf: String::new(),
-                    spans: Vec::with_capacity(n),
-                },
-                // A decimal ROW column is opaque (schema.rs, Policy::Row),
-                // so no input lane is ever a Dec.
-                Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
-            })
-            .collect();
+        let mut cols: Vec<ColData> = lanes.iter().map(|l| col_for_lane(l, n)).collect();
         for row_obj in rows {
             let bound = row_obj.bind(py);
             // Dict rows are part of the API surface; the baseline path must
             // accept the same inputs as the marshaller, differing only in
             // cost (adversarial-review finding, 2026-07-26).
             let dict = bound.cast::<PyDict>().ok();
-            for (i, ((c, path), col)) in
-                in_cols.iter().zip(in_paths).zip(&mut cols).enumerate()
-            {
-                let mut segs = path.iter().map(|s| s.as_str());
+            for (lane, col) in lanes.iter().zip(&mut cols) {
+                let mut segs = lane.path.iter().map(|s| s.as_str());
                 let first = segs.next().expect("a path is never empty");
                 let mut attr = match dict {
                     Some(d) => d.get_item(first)?.ok_or_else(|| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{}' is missing attribute '{}'",
-                            self.row_table, c.name
+                            self.row_table, lane.name
                         ))
                     })?,
                     None => bound.getattr(first).map_err(|e| {
                         pyo3::exceptions::PyValueError::new_err(format!(
                             "Row for table '{}' is missing attribute '{}': {e}",
-                            self.row_table, c.name
+                            self.row_table, lane.name
                         ))
                     })?,
                 };
@@ -1962,30 +1958,31 @@ impl DuckDBInferFn {
                         Ok(d) => d.get_item(seg)?.ok_or_else(|| {
                             pyo3::exceptions::PyValueError::new_err(format!(
                                 "Row for table '{}' is missing attribute '{}'",
-                                self.row_table, c.name
+                                self.row_table, lane.name
                             ))
                         })?,
                         Err(_) => attr.getattr(seg).map_err(|e| {
                             pyo3::exceptions::PyValueError::new_err(format!(
                                 "Row for table '{}' is missing attribute '{}': {e}",
-                                self.row_table, c.name
+                                self.row_table, lane.name
                             ))
                         })?,
                     };
                 }
                 let null = attr.is_none();
-                // A PRESENCE lane's VALUE is that validity (TASK-133).
-                if i >= present_from {
-                    col.push_present(!null);
-                    continue;
+                match lane.kind {
+                    // A PRESENCE lane's VALUE is that validity (TASK-133).
+                    plan::LaneKind::Present => col.push_present(!null),
+                    plan::LaneKind::Value(ct) => {
+                        if null && !ct.nullable {
+                            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                                "column '{}' is not nullable but a row has None",
+                                lane.name
+                            )));
+                        }
+                        push_input_cell(col, &lane.name, ct, &attr, null)?;
+                    }
                 }
-                if null && !c.ty.nullable {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "column '{}' is not nullable but a row has None",
-                        c.name
-                    )));
-                }
-                push_input_cell(col, c, &attr, null)?;
             }
         }
 
