@@ -33,7 +33,7 @@ use super::ir::{
     BinOp, Block, BlockId, Builder, CmpPred, Col, Inst, Lit, NumOp1, Program, StaticTy, StrOp1,
     StrOp2, Term, Ty, Value,
 };
-use super::plan::{ArithOp, JoinKind, JoinSpec, Rel, SExpr, SKind, StaticTable};
+use super::plan::{self, ArithOp, JoinKind, JoinSpec, KeyCmp, Rel, SExpr, SKind, StaticTable};
 
 
 /// Can this kind's NARROW result sit outside its width's range?
@@ -132,7 +132,11 @@ pub fn lower(
             "multiple joins under shape='many' (one join per query in stage B)".to_string(),
         ));
     }
-    if many && joins.iter().any(|j| j.key_indf.iter().any(|&b| b)) {
+    if many
+        && joins
+            .iter()
+            .any(|j| j.key_cols.iter().any(|k| k.cmp == KeyCmp::NotDistinct))
+    {
         return Err(PrepareError::Unsupported(
             "IS NOT DISTINCT FROM join keys under shape='many' \
              (params joins are the map/filter shapes)"
@@ -141,28 +145,30 @@ pub fn lower(
     }
     if many && joins.len() == 1 {
         fb.lower_many_loop(exprs, filter_pred, &out_cols)?;
-        // Static layouts are payload shapes: narrow widths erase to the lane.
-        let flat = |cols: &[Col], val_cols: &[u32]| -> Vec<Ty> {
-            val_cols
-                .iter()
-                .flat_map(|&c| {
-                    let ct = cols[c as usize].ty;
-                    if ct.nullable {
-                        vec![Ty::I1, ct.ty.lane()]
-                    } else {
-                        vec![ct.ty.lane()]
-                    }
-                })
-                .collect()
-        };
         let statics = vec![if joins[0].batch {
             StaticTy::BatchMap {
-                values: flat(in_cols, &joins[0].val_cols),
+                // The batch's value lanes come from the CALLER's columns —
+                // `table` is meaningless under `batch`, which is why the
+                // source is a parameter and not read off the spec.
+                values: plan::map_vals(in_cols, &joins[0].val_cols)
+                    .iter()
+                    .flat_map(|v| v.slots())
+                    .collect(),
             }
         } else {
             StaticTy::MultiMap {
-                keys: joins[0].keys.iter().map(|k| k.ty.lane()).collect(),
-                values: flat(&catalog[joins[0].table].cols, &joins[0].val_cols),
+                // Behavior-preserving today: the INDF refusal above means
+                // every key reaching here compares `Eq`, so `slots()`
+                // returns exactly `[ty.lane()]`. TASK-135 deletes that
+                // refusal and the line starts carrying pairs unedited.
+                keys: plan::map_keys(&joins[0].keys, &joins[0].key_cols)
+                    .iter()
+                    .flat_map(|k| k.slots())
+                    .collect(),
+                values: plan::map_vals(&catalog[joins[0].table].cols, &joins[0].val_cols)
+                    .iter()
+                    .flat_map(|v| v.slots())
+                    .collect(),
             }
         }];
         let statics = [statics, model_statics].concat();
@@ -253,33 +259,13 @@ pub fn lower(
     let statics = joins
         .iter()
         .map(|spec| StaticTy::Map {
-            // An INDF key flattens to (validity i1, payload) — NULL is an
-            // ordinary key value on both sides (DRAFT-22 params joins).
-            keys: spec
-                .keys
+            keys: plan::map_keys(&spec.keys, &spec.key_cols)
                 .iter()
-                .zip(&spec.key_indf)
-                .flat_map(|(k, &indf)| {
-                    if indf {
-                        vec![Ty::I1, k.ty.lane()]
-                    } else {
-                        vec![k.ty.lane()]
-                    }
-                })
+                .flat_map(|k| k.slots())
                 .collect(),
-            // A NULLABLE value column flattens to (validity i1, payload) —
-            // TASK-55; the probe dst layout mirrors this (val_slots).
-            values: spec
-                .val_cols
+            values: plan::map_vals(&catalog[spec.table].cols, &spec.val_cols)
                 .iter()
-                .flat_map(|&c| {
-                    let ct = catalog[spec.table].cols[c as usize].ty;
-                    if ct.nullable {
-                        vec![Ty::I1, ct.ty.lane()]
-                    } else {
-                        vec![ct.ty.lane()]
-                    }
-                })
+                .flat_map(|v| v.slots())
                 .collect(),
         })
         .collect();
@@ -471,6 +457,36 @@ impl<'a> FB<'a> {
             Some(f) => {
                 let d = self.default_of(ty);
                 self.select_of(f, l.val, d)
+            }
+        }
+    }
+
+    /// Encode one PROBE-side key into its flattened slots, appending them to
+    /// `out`. Returns, for an `Eq` key only, the validity flag the CALLER
+    /// must fold — into `keys_valid` for a map probe, into the range gate
+    /// for the fan-out loop. The plain-key NULL rule is per-site and stays
+    /// out of the layout; what the layout owns is the slot count and the
+    /// masked payload, which must match the build side bit for bit
+    /// (`exec::null_key_slots`).
+    fn encode_probe_key(
+        &mut self,
+        k: plan::MapKey,
+        lane: Lane,
+        out: &mut Vec<Value>,
+    ) -> Option<Value> {
+        match k.cmp {
+            KeyCmp::NotDistinct => {
+                let (valid, payload) = match lane.flag {
+                    None => (self.const_i1(true), lane.val),
+                    Some(f) => (f, self.masked(lane, k.ty)),
+                };
+                out.push(valid);
+                out.push(payload);
+                None
+            }
+            KeyCmp::Eq => {
+                out.push(lane.val);
+                lane.flag
             }
         }
     }
@@ -1548,45 +1564,25 @@ impl<'a> FB<'a> {
     /// nullable static value columns ride as validity+payload pairs
     /// (TASK-55), mirroring the StaticTy::Map flattening.
     fn val_slots(&self, j: u32) -> Vec<(Option<usize>, usize)> {
-        let spec = &self.joins[j as usize];
-        let cols: &[Col] = if spec.batch {
-            self.in_cols
-        } else {
-            &self.catalog[spec.table].cols
-        };
-        let mut out = Vec::with_capacity(spec.val_cols.len());
-        let mut i = 0usize;
-        for &c in &spec.val_cols {
-            if cols[c as usize].ty.nullable {
-                out.push((Some(i), i + 1));
-                i += 2;
-            } else {
-                out.push((None, i));
-                i += 1;
-            }
-        }
-        out
+        plan::slot_pairs(&self.map_vals(j))
     }
 
     /// Flattened probe-dst TYPES for join `j` (same order as val_slots).
     fn val_flat_tys(&self, j: u32) -> Vec<Ty> {
+        self.map_vals(j).iter().flat_map(|v| v.slots()).collect()
+    }
+
+    /// Join `j`'s value layouts, read from whichever column list this join's
+    /// build side actually is: the batch's own input columns under `batch`
+    /// (where `spec.table` means nothing), the static catalog otherwise.
+    fn map_vals(&self, j: u32) -> Vec<plan::MapVal> {
         let spec = &self.joins[j as usize];
         let cols: &[Col] = if spec.batch {
             self.in_cols
         } else {
             &self.catalog[spec.table].cols
         };
-        spec.val_cols
-            .iter()
-            .flat_map(|&c| {
-                let ct = cols[c as usize].ty;
-                if ct.nullable {
-                    vec![Ty::I1, ct.ty.lane()]
-                } else {
-                    vec![ct.ty.lane()]
-                }
-            })
-            .collect()
+        plan::map_vals(cols, &spec.val_cols)
     }
 
     /// Stage-B loop lowering for the (single) join under shape='many':
@@ -1624,10 +1620,12 @@ impl<'a> FB<'a> {
         let mut live: Live = Vec::new();
         let mut keys_valid: Option<Value> = None;
         let mut key_vals = Vec::with_capacity(keys_expr.len());
-        for key in &keys_expr {
+        let key_layout = plan::map_keys(&keys_expr, &self.joins[0].key_cols);
+        for (key, k) in keys_expr.iter().zip(&key_layout) {
             let lane = self.emit(key, &mut live)?;
-            key_vals.push(lane.val);
-            if let Some(fl) = lane.flag {
+            // Every key here is plain (INDF is refused under `many` above),
+            // so every flag comes back and every one gates the range.
+            if let Some(fl) = self.encode_probe_key(*k, lane, &mut key_vals) {
                 keys_valid = self.combine_flags(keys_valid, Some(fl));
             }
         }
@@ -1960,23 +1958,12 @@ impl<'a> FB<'a> {
         let mut keys_valid: Option<Value> = None;
         let mut key_vals = Vec::with_capacity(nkeys);
         let start = live.len() - nkeys;
-        for i in 0..nkeys {
-            let (lane, ty) = live[start + i];
-            if spec.key_indf[i] {
-                // INDF key: (validity, payload masked to the type default)
-                // — the build side stores NULL keys the same way, so NULL
-                // joins NULL as one ordinary bucket.
-                let (valid, payload) = match lane.flag {
-                    None => (self.const_i1(true), lane.val),
-                    Some(f) => (f, self.masked(lane, ty)),
-                };
-                key_vals.push(valid);
-                key_vals.push(payload);
-            } else {
-                key_vals.push(lane.val);
-                if let Some(f) = lane.flag {
-                    keys_valid = self.combine_flags(keys_valid, Some(f));
-                }
+        for (i, k) in plan::map_keys(&spec.keys, &spec.key_cols).iter().enumerate() {
+            let (lane, _) = live[start + i];
+            // A plain key's flag is the caller's business: a NULL key never
+            // matches, and here that is spelled by ANDing it into the hit.
+            if let Some(f) = self.encode_probe_key(*k, lane, &mut key_vals) {
+                keys_valid = self.combine_flags(keys_valid, Some(f));
             }
         }
         live.truncate(start);

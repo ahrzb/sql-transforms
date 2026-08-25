@@ -44,31 +44,39 @@ pub struct WideOut {
 /// declared key types — an int column joined against a float expression
 /// becomes f64 here), valued by `val_cols`. Rows with a NULL key are dropped
 /// (a NULL never equi-matches); a NULL in a value column is an error.
+/// One map key at the BOUNDARY: where to read it out of a build row, and
+/// its slot layout. Replaces four parallel vectors — the paths, the INDF
+/// flags, the presence flags, and the key types the materializer used to
+/// walk out of `StaticTy::Map` with an iterator skip.
+#[derive(Debug)]
+pub struct StaticKey {
+    /// The column's SEGMENT path (TASK-132) — one segment for a plain
+    /// column (dots and all: a name is not a path), the struct walk for a
+    /// leaf lane. When `present`, it names a struct NODE. Display = the
+    /// segments dotted.
+    pub path: Vec<String>,
+    /// TASK-133: the key is the node's PRESENCE, not its value — `TRUE if
+    /// that node is non-NULL else NULL`, so the ordinary plain /
+    /// IS-NOT-DISTINCT machinery gives it DuckDB's nested semantics.
+    pub present: bool,
+    pub map: plan::MapKey,
+}
+
+/// One map value at the boundary: its path plus its slot layout.
+#[derive(Debug)]
+pub struct StaticVal {
+    pub path: Vec<String>,
+    pub map: plan::MapVal,
+}
+
 #[derive(Debug)]
 pub struct StaticSpec {
     /// Stage-B self-join: no materialization — the build side is the
     /// BATCH, assembled per call by the executor.
     pub batch: bool,
     pub table: String,
-    /// Per key: the column's SEGMENT path (TASK-132) — one segment for a
-    /// plain column (dots and all: a name is not a path), the struct walk
-    /// for a leaf lane. Display = the segments dotted.
-    pub key_cols: Vec<Vec<String>>,
-    /// Per key_col: true when the key joins under IS NOT DISTINCT FROM.
-    /// Such a key occupies TWO flattened map-key lanes — (validity i1,
-    /// payload) — and the materializer KEEPS NULL-key rows as
-    /// (false, type default) instead of dropping them.
-    pub key_indf: Vec<bool>,
-    /// Per key_col: true when the key is a struct node's PRESENCE, not its
-    /// value (TASK-133). The path then names a struct NODE, and the key is
-    /// `TRUE if that node is non-NULL else NULL` — so the ordinary plain /
-    /// IS-NOT-DISTINCT machinery gives it DuckDB's nested semantics.
-    pub key_present: Vec<bool>,
-    pub val_cols: Vec<Vec<String>>,
-    /// Per val_col: a declared-nullable column's map value is a
-    /// (validity i1, payload) PAIR in the flattened StaticTy::Map values
-    /// (TASK-55 — NULL join values flow through as NULL, not errors).
-    pub val_nullable: Vec<bool>,
+    pub keys: Vec<StaticKey>,
+    pub vals: Vec<StaticVal>,
 }
 
 /// The output of stage 1: a verified program plus, per map static, the
@@ -174,11 +182,8 @@ pub fn prepare_opaque(
                 return StaticSpec {
                     batch: true,
                     table: String::new(),
-                    key_cols: Vec::new(),
-                    key_indf: Vec::new(),
-                    key_present: Vec::new(),
-                    val_cols: Vec::new(),
-                    val_nullable: Vec::new(),
+                    keys: Vec::new(),
+                    vals: Vec::new(),
                 };
             }
             let t = &statics[j.table];
@@ -186,29 +191,35 @@ pub fn prepare_opaque(
             StaticSpec {
                 batch: false,
                 table: t.name.clone(),
-                key_cols: j
+                keys: j
                     .key_cols
                     .iter()
-                    .map(|c| match c {
-                        plan::KeyCol::Lane(c) => paths[*c as usize].clone(),
-                        plan::KeyCol::Present(p) => p.clone(),
+                    .zip(plan::map_keys(&j.keys, &j.key_cols))
+                    .map(|(c, map)| {
+                        let (path, present) = match &c.src {
+                            plan::KeySrc::Lane(c) => (paths[*c as usize].clone(), false),
+                            plan::KeySrc::Present(p) => (p.clone(), true),
+                        };
+                        // A presence key's declared type is built as I1 by
+                        // `present_key`, and the build side short-circuits
+                        // the type dispatch on `present` — which is only
+                        // consistent while the two agree. Debug-only, so
+                        // release behavior is untouched.
+                        debug_assert!(
+                            !present || map.ty == ir::Ty::I1,
+                            "a presence key is always I1"
+                        );
+                        StaticKey { path, present, map }
                     })
                     .collect(),
-                key_indf: j.key_indf.clone(),
-                key_present: j
-                    .key_cols
-                    .iter()
-                    .map(|c| matches!(c, plan::KeyCol::Present(_)))
-                    .collect(),
-                val_cols: j
+                vals: j
                     .val_cols
                     .iter()
-                    .map(|&c| paths[c as usize].clone())
-                    .collect(),
-                val_nullable: j
-                    .val_cols
-                    .iter()
-                    .map(|&c| t.cols[c as usize].ty.nullable)
+                    .zip(plan::map_vals(&t.cols, &j.val_cols))
+                    .map(|(&c, map)| StaticVal {
+                        path: paths[c as usize].clone(),
+                        map,
+                    })
                     .collect(),
             }
         })

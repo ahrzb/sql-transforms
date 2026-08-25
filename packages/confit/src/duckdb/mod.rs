@@ -19,7 +19,9 @@ use crate::error::InterpError;
 use crate::schema;
 use crate::specializer::exec::cranelift::{self, CraneliftFn};
 use crate::specializer::exec::interp::{compile_ext, InterpFn};
-use crate::specializer::exec::{Batch, ColData, ExternImpl, KeyBits, OutCol, ScalarVal, StaticData};
+use crate::specializer::exec::{
+    self, Batch, ColData, ExternImpl, KeyBits, OutCol, ScalarVal, StaticData,
+};
 use crate::specializer::exec::{RunState, Trap};
 use crate::specializer::ir::{Col, ColTy, ExternSpec, StaticTy, Ty};
 use crate::specializer::plan::{self, StaticTable};
@@ -815,13 +817,7 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
 /// NULL in a value column is an error, and an int column joined against a
 /// float expression converts here (the declared key type is the
 /// expression's).
-fn materialize_map(
-    py: Python<'_>,
-    table: &Py<PyAny>,
-    spec: &StaticSpec,
-    key_tys: &[Ty],
-    val_tys: &[Ty],
-) -> PyResult<StaticData> {
+fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyResult<StaticData> {
     let rows = table.bind(py).call_method0("to_pylist")?;
     // TASK-91: `to_pylist` hands `decimal.Decimal` for a DECIMAL column
     // (the ordinary fit path — sum(BIGINT) params are decimal128(38,0)),
@@ -866,17 +862,12 @@ fn materialize_map(
             }
             Ok(cur)
         };
-        let mut keys = Vec::with_capacity(key_tys.len());
-        let mut kt = key_tys.iter();
-        for ((path, &indf), &present) in spec
-            .key_cols
-            .iter()
-            .zip(&spec.key_indf)
-            .zip(&spec.key_present)
-        {
-            let name = path.join(".");
+        let mut keys = Vec::with_capacity(spec.keys.len());
+        for k in &spec.keys {
+            let present = k.present;
+            let name = k.path.join(".");
             let name = name.as_str();
-            let v = get(path)?;
+            let v = get(&k.path)?;
             // `None` means "this build row can never equal any probe" — a
             // non-integral DECIMAL against an integer key lane. Dropping it
             // is the established, semantics-preserving move (a NULL `=` key
@@ -938,45 +929,41 @@ fn materialize_map(
                     Ty::Dec(..) => unreachable!("a probe expression is never a decimal"),
                 }))
             };
-            if indf {
+            let ty = k.map.ty;
+            match k.map.cmp {
                 // IS NOT DISTINCT FROM key: (validity, payload) pair; NULL
                 // is an ordinary key value, stored as (false, type default)
                 // — exactly the probe side's masked encoding.
-                let _validity_ty = kt.next();
-                let ty = *kt.next().expect("payload type follows validity");
-                if v.is_none() {
-                    keys.push(KeyBits::I1(false));
-                    keys.push(match ty {
-                        Ty::I1 => KeyBits::I1(false),
-                        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(0),
-                        Ty::F64 => KeyBits::F64(0f64.to_bits()),
-                        Ty::Str => KeyBits::Str(String::new()),
-                        Ty::Dec(..) => unreachable!("a probe expression is never a decimal"),
-                    });
-                } else {
+                plan::KeyCmp::NotDistinct => {
+                    if v.is_none() {
+                        keys.extend(exec::null_key_slots(ty));
+                    } else {
+                        let Some(kb) = convert(&v, ty)? else {
+                            continue 'row;
+                        };
+                        keys.push(KeyBits::I1(true));
+                        keys.push(kb);
+                    }
+                }
+                // A NULL `=` key never matches anything, so the row is not
+                // in the map at all — the per-site half of the plain-key
+                // rule, which the slot layout deliberately does not own.
+                plan::KeyCmp::Eq => {
+                    if v.is_none() {
+                        continue 'row;
+                    }
                     let Some(kb) = convert(&v, ty)? else {
                         continue 'row;
                     };
-                    keys.push(KeyBits::I1(true));
                     keys.push(kb);
                 }
-            } else {
-                let ty = *kt.next().expect("one type per plain key column");
-                if v.is_none() {
-                    continue 'row;
-                }
-                let Some(kb) = convert(&v, ty)? else {
-                    continue 'row;
-                };
-                keys.push(kb);
             }
         }
-        let mut vals = Vec::with_capacity(val_tys.len());
-        let mut vt = val_tys.iter();
-        for (path, &nullable) in spec.val_cols.iter().zip(&spec.val_nullable) {
-            let name = path.join(".");
+        let mut vals = Vec::with_capacity(spec.vals.len());
+        for vc in &spec.vals {
+            let name = vc.path.join(".");
             let name = name.as_str();
-            let v = get(path)?;
+            let v = get(&vc.path)?;
             let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<ScalarVal> {
                 Ok(match ty {
                     Ty::I1 => ScalarVal::I1(v.extract()?),
@@ -1008,26 +995,17 @@ fn materialize_map(
                     }
                 })
             };
-            if nullable {
+            let ty = vc.map.ty;
+            if vc.map.nullable {
                 // (validity, payload) pair per the flattened map layout
                 // (TASK-55): NULL -> (false, typed default).
-                let _validity_ty = vt.next();
-                let ty = *vt.next().expect("payload type follows validity");
                 if v.is_none() {
-                    vals.push(ScalarVal::I1(false));
-                    vals.push(match ty {
-                        Ty::I1 => ScalarVal::I1(false),
-                        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
-                        Ty::F64 => ScalarVal::F64(0.0),
-                        Ty::Str => ScalarVal::Str(String::new()),
-                        Ty::Dec(p, s) => ScalarVal::Dec(0, p, s),
-                    });
+                    vals.extend(exec::null_val_slots(ty));
                 } else {
                     vals.push(ScalarVal::I1(true));
                     vals.push(convert(&v, ty)?);
                 }
             } else {
-                let ty = *vt.next().expect("one type per non-nullable column");
                 if v.is_none() {
                     // Declared non-nullable yet NULL in the data — the
                     // original guard stays as a safety net.
@@ -1128,7 +1106,26 @@ fn materialize_statics(
         let table = static_tables
             .get(&spec.table)
             .expect("spec names come from the catalog");
-        data.push(materialize_map(py, table, spec, keys, values)?);
+        // The recipe and the lowered type vector are two derivations of one
+        // slot layout, and after Seam B nothing else compares them: the
+        // materializer now takes its types off the recipe. A DISAGREEMENT
+        // is silent, not loud — `cmp_key` zips stored keys against probe
+        // registers and stops at the shorter, so a build tuple one slot
+        // short compares Equal on its prefix and the join quietly widens.
+        // Debug-only, so release behavior is untouched; it replaces the
+        // `expect("payload type follows validity")` that used to fire (in
+        // one direction only) when the iterator ran out.
+        debug_assert_eq!(
+            spec.keys.iter().map(|k| k.map.slots().len()).sum::<usize>(),
+            keys.len(),
+            "StaticSpec and StaticTy disagree on key slot arity"
+        );
+        debug_assert_eq!(
+            spec.vals.iter().map(|v| v.map.slots().len()).sum::<usize>(),
+            values.len(),
+            "StaticSpec and StaticTy disagree on value slot arity"
+        );
+        data.push(materialize_map(py, table, spec)?);
     }
     // Model statics are appended AFTER every join static — that ordering is
     // what keeps existing probes' `@N` from shifting, and this zip asserts it.

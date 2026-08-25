@@ -326,6 +326,52 @@ impl KeyBits {
     }
 }
 
+/// The `(false, type default)` PAIR a NULL `IS NOT DISTINCT FROM` key
+/// stores — the same default the probe side masks to, so NULL keys land in
+/// ONE bucket and `cmp_key` can stay positional. Prepare-time / build-time
+/// only. [`KeyBits`] has no `Dec` variant, so this genuinely is a different
+/// table from [`null_val_payload`], not a copy of it.
+///
+/// The `Eq`-key rule ("a NULL never matches, so drop the build row") is NOT
+/// here: it is per-site (drop the row / AND the probe flag / empty the
+/// range) and the caller branches on the key's comparison before calling.
+pub(crate) fn null_key_slots(ty: Ty) -> Vec<KeyBits> {
+    vec![
+        KeyBits::I1(false),
+        match ty {
+            Ty::I1 => KeyBits::I1(false),
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(0),
+            Ty::F64 => KeyBits::F64(0f64.to_bits()),
+            Ty::Str => KeyBits::Str(String::new()),
+            // The key lane is the PROBE expression's type, and a probe
+            // expression is a ROW expression — decimal row columns are
+            // opaque, so nothing can produce one.
+            Ty::Dec(..) => unreachable!("a probe expression is never a decimal"),
+        },
+    ]
+}
+
+/// THE typed default a masked map-value payload carries: the constant the
+/// consumer accepts under `valid = false`. One table, three readers — the
+/// build side's `(false, default)` pair, the batchmap's row flattening, and
+/// [`null_val_slots`].
+pub(crate) fn null_val_payload(ty: Ty) -> ScalarVal {
+    match ty {
+        Ty::I1 => ScalarVal::I1(false),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
+        Ty::F64 => ScalarVal::F64(0.0),
+        Ty::Str => ScalarVal::Str(String::new()),
+        Ty::Dec(p, s) => ScalarVal::Dec(0, p, s),
+    }
+}
+
+/// The `(false, type default)` pair for a NULL nullable map value. Called
+/// only when the column is nullable — a non-nullable column with a NULL
+/// keeps its named refusal at the call site.
+pub(crate) fn null_val_slots(ty: Ty) -> Vec<ScalarVal> {
+    vec![ScalarVal::I1(false), null_val_payload(ty)]
+}
+
 /// DuckDB's DOUBLE comparison order (measured 1.5.5): IEEE except that NaN
 /// equals NaN and sorts above everything (`nan > inf` is TRUE); zeros are
 /// equal (`-0.0 = 0.0`). NOT Rust `total_cmp` (which orders -0.0 < 0.0).
