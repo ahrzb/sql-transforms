@@ -6,6 +6,15 @@ tree at `debaf8c`. Every file:line below was re-verified against that tree
 while writing this document; the handful of places where a grounding claim did
 not survive re-verification are called out inline as DEVIATION notes.
 
+Revised 2026-08-25 after an adversarial verification round -- a citation audit
+and an implementer dry-run -- that failed the first draft on 20 fact errors and
+9 decisions it left to the implementer. Every correction below was re-checked
+against the tree before being applied; where a CORRECTION was itself wrong the
+first draft's text stands with the reason recorded (the nine-vs-eleven count in
+Finding 2, and the `*Spec:*`-footer half of the house-style note under Proposed
+additions). The document is ASCII-only by house rule, so em-dashes are spelled
+`--` throughout.
+
 This is a refactor spec, not a feature spec. It ships no behavior. Its whole
 value is that the two tickets queued behind it -- TASK-134 (a third input-lane
 kind) and TASK-135 (the fan-out loop reading the slot rule) -- would otherwise
@@ -57,7 +66,8 @@ Three facts make this a convention rather than a type:
 
 The two lane kinds also carry different obligations, and today those live in
 the branch bodies rather than in a type: a value lane refuses `None` on a
-non-nullable column (`src/duckdb/mod.rs:1287-1292`, `:1982-1988`) and is dtype-
+non-nullable column (`src/duckdb/mod.rs:1287-1292`, `:1982-1987`; `:1988` is
+the `push_input_cell` call that follows the refusal, not part of it) and is dtype-
 checked at arrow ingest (`src/duckdb/arrow.rs:246-264`); a presence lane skips
 both, is always non-nullable I1, and lands on `ColData::I1` with
 `valid: vec![true; rows]` (`src/duckdb/arrow.rs:240-243`). The last of those is
@@ -79,7 +89,12 @@ The rule, stated once:
 > byte-identical encodings, and the NULL payload must be the SAME type default
 > on both.
 
-It is currently written in nine places. Producers:
+It is currently written in nine places, across eleven listed sites. The
+counting rule, because the arithmetic below depends on it: a site COUNTS as a
+writing of the rule when it emits or consumes the two-slot form. The two
+plain-only sites -- `lower.rs:158-167` and `lower.rs:1627-1633` -- do not; they
+are the fan-out GAP, listed here because they are where the rule is missing and
+where TASK-135 writes it for the tenth and eleventh time. Producers:
 
 ```
 src/specializer/lower.rs:255-269   StaticTy::Map keys      (INDF -> [I1, ty])
@@ -191,6 +206,18 @@ Both queued tickets consume these seams, and both would deepen them.
   to handle it rather than a silent fall-through.
 - Fewer parallel vectors: `Engine::Compiled`'s three lane fields become one,
   and `StaticSpec`'s five become two.
+- **Three debug asserts, and that is the whole assert budget.** They are
+  release-invisible, so none of them changes behavior:
+  1. `input_lanes()[i].col() == program.in_cols[i]` at construction in
+     `prepare_opaque`. Documentation, not the guarantee -- see Section 1
+     complication 11.
+  2. `!k.present || k.map.ty == Ty::I1` at `StaticKey` construction (Section 2
+     complication 5).
+  3. `debug_assert_eq!` on FLATTENED slot lengths in `materialize_statics`
+     (`src/duckdb/mod.rs:1055-1080`): the sum of `spec.keys[i].map.slots().len()`
+     against `keys.len()` from the `StaticTy`, and the same for values. This one
+     replaces a check that exists today by accident -- see Section 2
+     complication 8 -- and it guards a silent wider join, not a panic.
 
 ## Non-goals
 
@@ -202,8 +229,12 @@ Both queued tickets consume these seams, and both would deepen them.
 - **Not unifying dialect and specializer**, and not touching the IR text
   format. `StaticTy::Map` keeps `keys: Vec<Ty>` / `values: Vec<Ty>`: the
   printer emits a flat type list (`src/specializer/ir/print.rs:19-27`), the
-  parser reads one (`src/specializer/ir/parse.rs:719-794`), `prepare` asserts
-  `parse(print(p)) == p` (`src/specializer/mod.rs:150-158`), and the IR fuzz
+  parser reads one (`src/specializer/ir/parse.rs:719-794`), `prepare`
+  CANONICALIZES so `parse(print(p)) == p` holds (`ir::canonicalize` at
+  `src/specializer/mod.rs:151`, then `ir::verify::verify` at `:152`) while the
+  assertion itself lives only in tests
+  (`src/specializer/exec/tests.rs:1270`, `src/specializer/ir/tests.rs:32`,
+  `src/specializer/tests.rs:313`), and the IR fuzz
   generator builds them (`src/specializer/ir/gen.rs:214-233`). `MapKey`/`MapVal`
   live in `specializer::plan` and `slots()` is what FEEDS `StaticTy`.
 - **Not the `frontend.rs` god-module split.** That file is 4500+ lines and the
@@ -231,14 +262,24 @@ Both queued tickets consume these seams, and both would deepen them.
   which types can be row lanes, not with a refactor whose gate is
   "nothing moves".
 
-  DEVIATION from the dispatch brief, which said 16: the measured count is 12
-  decimal `unreachable!` arms in `packages/confit/src`, of which 6 (listed
-  above) are the row-lane kind a `RowTy` would kill. The other 6 are two
-  DIFFERENT newtypes' worth: `"a probe expression is never a decimal"`
-  (`src/duckdb/mod.rs:886`, `:902`) is a key-lane claim, and `"a udf parameter
-  / return is never a decimal"` (`src/specializer/exec/cranelift.rs:1003`,
-  `:1022`, `:1482`, `:1527`) is an extern-boundary claim. Three newtypes, not
-  one; all three are the same opener's business.
+  DEVIATION from the dispatch brief, which said 16, and from this spec's own
+  first draft, which said 12: the measured count is 15 decimal `unreachable!`
+  arms in `packages/confit/src`, carrying FOUR distinct claim-kinds.
+
+  - **Row lane** (6, the ones a `RowTy` would kill, listed above):
+    `src/duckdb/arrow.rs:361`, `src/duckdb/mod.rs:1928`,
+    `src/specializer/exec/cranelift.rs:1988`, `:2021`,
+    `src/specializer/exec/mod.rs:99`, `src/specializer/exec/tests.rs:912`.
+  - **Key / probe lane** (3): `"a probe expression is never a decimal"` at
+    `src/duckdb/mod.rs:886`, `:902`, and
+    `src/specializer/exec/cranelift.rs:2066`.
+  - **Extern boundary** (5): `"a udf parameter / return is never a decimal"`
+    at `src/specializer/exec/cranelift.rs:1003`, `:1022`, `:1482`, `:1527`,
+    and `src/specializer/exec/interp.rs:1588`.
+  - **Wide field child** (1): `"a wide field child is never a decimal"` at
+    `src/duckdb/arrow.rs:670`.
+
+  Four newtypes' worth, not one; all four are the same opener's business.
 
 ## Design
 
@@ -259,7 +300,9 @@ Three parallel vectors of equal length, index-aligned with
 Written at `src/duckdb/mod.rs:1731-1740`, mirrored at
 `src/specializer/mod.rs:141-144`, forward-referenced at
 `src/specializer/frontend.rs:3900`, asserted nowhere at runtime, and pinned
-only by lane COUNTS in `src/specializer/tests.rs:126-186`.
+only by `src/specializer/tests.rs:126-186` -- two lane COUNTS (`:168`, `:173`)
+and one minted PATH (`:174`). The lane's KIND is pinned nowhere, because today
+there is no kind to pin.
 
 #### The new interface
 
@@ -296,8 +339,10 @@ pub enum LaneKind {
     /// Minted by the binder for a struct join key (TASK-133): the path ends
     /// at a struct NODE and the lane's VALUE is that node's validity.
     /// Carries no type -- a presence lane is non-nullable `Ty::I1`, always
-    /// -- which is what makes `ColData::push_present`'s `unreachable!`
-    /// structurally unreachable rather than conventionally so.
+    /// -- which is what lets `ColData::push_present`'s `unreachable!` rest
+    /// on a type rather than on a threshold. It is unreachable given that
+    /// every `ColData` for a lane comes from `duckdb::col_for_lane`; see
+    /// complication 10 for what that buys and what it does not.
     Present,
 }
 
@@ -316,14 +361,38 @@ pub fn input_lanes(cols: &[Col], structs: &[StructCol]) -> Vec<InputLane>;
 ```
 
 ```rust
-// src/specializer/exec/mod.rs
-impl ColData {
-    /// Empty column for one input lane, optionally with capacity. The ONE
-    /// place a lane's kind chooses a ColData variant -- both boundaries
-    /// call it, so `push_present` can only ever meet an `I1`.
-    pub fn for_lane(lane: &InputLane, cap: usize) -> ColData;
-}
+// src/duckdb/mod.rs -- NOT exec/mod.rs; see complication 10
+
+/// Empty `ColData` for one input lane, optionally with capacity. The ONE
+/// place a lane's kind chooses a `ColData` variant. All THREE ingest paths
+/// call it -- `Marshaller::call`, the row-boundary loop at `:1937-1989`, and
+/// `arrow::ingest` (as `super::col_for_lane`) -- so `push_present` can only
+/// ever meet an `I1`.
+pub(crate) fn col_for_lane(lane: &InputLane, cap: usize) -> ColData;
+
+/// The hot-path cell writer, re-signed so it takes no `&Col`. `name` and
+/// `ty` are exactly what it reads today -- `c.name` for the two error
+/// messages and `c.ty.ty` for `arrow_ty_name` / `int_range`.
+///
+/// CONSTRAINT, and the reason the signature is specified here rather than
+/// left to the implementer: this runs ONCE PER CELL PER ROW on the engine's
+/// headline path, against a ~200 ns/row floor. `name: &str` borrows out of
+/// `InputLane.name`; `ty: ColTy` is `Copy` (`ir/mod.rs:270`). Writing
+/// `push_input_cell(col, &lane.col(), ..)` instead would build a fresh
+/// `String` per cell and is the one migration reading that passes the suite
+/// and loses the benchmark.
+fn push_input_cell(col: &mut ColData, name: &str, ty: ColTy,
+                   attr: &Bound<'_, PyAny>, null: bool) -> PyResult<()>;
 ```
+
+**Two erasure conventions, stated together because confusing them is the one
+silent bug this section can produce.** `LaneKind::Value(ColTy)` carries the
+DECLARED type, narrow widths and all -- `push_input_cell` needs `Ty::I32` to
+call `int_range` (`ir/mod.rs:246-252`), and `Program::in_cols` carries the
+un-erased type today (`check_input` compares `col.ty() != ty.lane()`,
+`interp.rs:423`). Section 2's `MapKey.ty` / `MapVal.ty` are the opposite: they
+are stored ALREADY `.lane()`-erased. Lane types never meet column types in the
+same field.
 
 DEVIATION from grounding A's sketch, which proposed
 `enum InputLane { Value { col, path }, Present { col, path } }`. Rejected on
@@ -342,34 +411,60 @@ Writers (the whole triple is produced once, at site W-new):
 | site | change |
 |---|---|
 | `src/specializer/plan.rs:95-113` | `lane_paths` stays (statics still use it at `src/specializer/mod.rs:174`); `input_lanes` is added on top of it |
-| `src/specializer/frontend.rs:3881-3898` | `Binder::present_lanes` becomes `RefCell<Vec<InputLane>>`; `present_key` mints an `InputLane { name, path, kind: Present }` directly. The `name` expression at `:3888` is copied verbatim. |
+| `src/specializer/frontend.rs:3881-3898` | `Binder::minted_lanes` (renamed, see complication 12); `present_key` mints an `InputLane { name, path, kind: Present }` directly and dedups by `path` exactly as `:3883` does today. The `name` expression at `:3888` is copied verbatim. |
 | `src/specializer/frontend.rs:3899-3903` | `SKind::Col(self.in_cols.len() + idx)` UNCHANGED (see complications) |
-| `src/specializer/frontend.rs:352-355`, `:625-633` | return element 7 becomes `Vec<InputLane>` |
-| `src/specializer/frontend.rs:722-750` | `Binder` construction: the `present_lanes` field's type |
+| `src/specializer/frontend.rs:352-355`, `:625-633` | return element 7 becomes `Vec<InputLane>`, named `minted_lanes` on `Bound` |
+| `src/specializer/frontend.rs:2078` | the FIELD DECLARATION: `present_lanes: RefCell<Vec<(Col, Vec<String>)>>` becomes `minted_lanes: RefCell<Vec<InputLane>>`, carrying the invariant doc comment from Section 3 |
+| `src/specializer/frontend.rs:749` | the `Binder` construction line. `RefCell::new(Vec::new())` is type-inferred, so this is a RENAME only -- no type edit. (Both were folded into a single `:722-750` row in the first draft; they are two different edits.) |
 | `src/specializer/mod.rs:141-144` | **W-new**: `let mut lanes = plan::input_lanes(in_cols, structs); lanes.extend(minted);` -- and `all_in` becomes `lanes.iter().map(InputLane::col).collect()` |
 | `src/specializer/mod.rs:93-98`, `:205-215` | `Prepared::present_lanes` is DELETED and replaced by `input_lanes: Vec<InputLane>` (accessor `input_lanes()`), plus a `debug_assert` that it projects to `program.in_cols` |
 | `src/duckdb/mod.rs:1731-1740` | **DELETED**. `lane_paths` call, `present_from` capture, and the second append all go; the boundary reads `prepared.input_lanes()`. This is the whole point of finding 1. |
 | `src/duckdb/mod.rs:1383-1393` | `Engine::Compiled`'s `in_cols` / `in_paths` / `present_from` become one `lanes: Vec<InputLane>` |
 | `src/duckdb/mod.rs:1755-1762` | construction follows |
-| `src/duckdb/mod.rs:1177-1180`, `:1191-1220` | `Marshaller` drops `present_from`; keeps `in_names: Vec<Vec<Py<PyString>>>` (interned, built once); `cols` allocate via `ColData::for_lane(lane, 0)` |
+| `src/duckdb/mod.rs:1177-1180`, `:1191-1220` | `Marshaller` drops `present_from`; keeps `in_names: Vec<Vec<Py<PyString>>>` (interned, built once); `cols` allocate via `col_for_lane(lane, 0)` |
+| `src/duckdb/mod.rs:62` (`push_input_cell`) | signature migration, per the interface block above: `(col, name: &str, ty: ColTy, attr, null)`. Body unchanged -- `c.name` becomes `name`, `c.ty.ty` becomes `ty.ty`, `c.ty.nullable` is already read by the caller. Call sites `:1293` and `:1988`. |
 | `src/specializer/plan.rs` (`StructCol`) | unchanged |
 
 Readers:
 
 | site | change |
 |---|---|
-| `src/duckdb/mod.rs:1225-1294` (`Marshaller::call`) | the `in_cols: &[Col]` parameter becomes `lanes: &[InputLane]` (call site `:1901`); the zip at `:1239-1244` zips lanes with `in_names`; `:1283-1286` becomes `match lane.kind { Present => {..; continue}, Value(ct) => {..} }` with the nullable refusal at `:1287-1292` INSIDE the `Value` arm |
-| `src/duckdb/mod.rs:1906-1930` | the hand-inlined capacity match is DELETED; `ColData::for_lane(lane, n)` replaces it. Removes one of the two `Ty::Dec(..) => unreachable!` copies. |
-| `src/duckdb/mod.rs:1937-1989` | same match as the marshaller; reads `lane.path` as `&str` with NO interning (the generic path's cost model is the point -- see constraints) |
+| `src/duckdb/mod.rs:1225-1294` (`Marshaller::call`) | the `in_cols: &[Col]` parameter becomes `lanes: &[InputLane]` (call site `:1901`); the zip at `:1239-1244` zips lanes with `in_names`; `:1283-1286` becomes `match lane.kind { Present => {..; continue}, Value(ct) => {..} }` with the nullable refusal at `:1287-1292` INSIDE the `Value` arm, and `:1293` calling `push_input_cell(col, &lane.name, ct, ..)` |
+| `src/duckdb/mod.rs:1906-1930` | the hand-inlined capacity match is DELETED; `col_for_lane(lane, n)` replaces it. Removes one of the two `Ty::Dec(..) => unreachable!` copies. |
+| `src/duckdb/mod.rs:1937-1989` | same match as the marshaller; reads `lane.path` as `&str` with NO interning (the generic path's cost model is the point -- see constraints). The refusal at `:1982-1987` moves inside the `Value` arm; `:1988` is the `push_input_cell` call, not part of the refusal. |
 | `src/duckdb/mod.rs:1830-1847`, `:1857-1866` | destructure one `lanes` field instead of three |
-| `src/duckdb/arrow.rs:213-245` (`ingest`) | signature `(py, batch, lanes: &[InputLane])`; `walk_lane(batch, &l.path, &l.name)` unchanged; `:229-245` becomes the `Present` arm of an exhaustive match, `:246-264` and `:363-368` become the `Value` arm |
+| `src/duckdb/arrow.rs:213-245` (`ingest`) | signature `(py, batch, lanes: &[InputLane])`; `walk_lane(batch, &l.path, &l.name)` unchanged; `:229-245` becomes the `Present` arm of an exhaustive match, `:246-264` and `:363-368` become the `Value` arm; any `ColData` it allocates comes from `super::col_for_lane` |
 | `src/duckdb/arrow.rs:174-209` (`walk_lane`) | unchanged -- shared by both kinds by design |
 | `src/specializer/exec/mod.rs:126-134` (`push_present`) | unchanged; its `unreachable!` is now structurally unreachable |
 | `src/specializer/exec/interp.rs:259`, `:1463`; `src/specializer/exec/cranelift.rs:1980`, `:2001` | unchanged -- below `Prepared` a presence lane is an ordinary non-nullable I1 column and `Vec<Col>` stays the IR's input type |
 | `src/specializer/ir/verify.rs:120-135`, `:517-533` | unchanged |
 | `src/specializer/ir/print.rs:367`, `:373-391` | unchanged -- `ident_or_quoted` still quotes `"w (present)"`, round-trip survives |
 | `src/specializer/lower.rs:1550-1557`, `:1571-1578` | unchanged -- batch self-join value slots read `self.in_cols`, which is still the `Vec<Col>` projection |
-| `src/specializer/tests.rs:126-186` | the lazy-mint pin reads `prepared.input_lanes()` instead of `.present_lanes`; the assertion (lane COUNT before and after) is unchanged |
+| `src/specializer/tests.rs:126-186` (`presence_lanes_are_minted_lazily`) | THREE readers, and one of them changes shape -- see below. |
+
+**The one test edit, spelled out**, because the first draft claimed "the
+assertion is unchanged" and that is false for one of the three. The readers are
+`tests.rs:168`, `:173` and `:174` (`:172` is `let keyed = prep(..)`, not a
+reader). `input_lanes()` returns ALL lanes, so a reader of the MINTED SUBSET
+has to index past the caller lanes:
+
+```rust
+// :168   assert!(plain.present_lanes.is_empty());
+         assert_eq!(plain.input_lanes().len(), schema.len());
+// :173   assert_eq!(keyed.present_lanes.len(), 1);
+         assert_eq!(keyed.input_lanes().len(), schema.len() + 1);
+// :174   assert_eq!(keyed.present_lanes[0].1, vec!["w".to_string()]);
+         assert_eq!(keyed.input_lanes()[schema.len()].path, vec!["w".to_string()]);
+         assert_eq!(keyed.input_lanes()[schema.len()].kind, LaneKind::Present);
+```
+
+DECISION: `input_lanes()` plus a position, NOT a minted-subset accessor. A
+second accessor would exist for one test and would have to re-derive
+`in_cols.len()` -- the same forward-reference arithmetic complication 4 keeps in
+exactly one place. The cost is that `:168` becomes a length compare that reads
+close to `:169`'s; they check two different vectors (the authority and its
+projection), which is worth two lines. The gain is the `kind` assertion on the
+last line: the minted lane's KIND was unpinnable before this change.
 
 #### How this resolves the grounding's complications
 
@@ -415,9 +510,62 @@ Readers:
    become exhaustive matches with no catch-all. That is the entire behavioral
    delta of section 1; everything else is bookkeeping.
 9. **The static side made the opposite choice.** Section 2 is that sibling.
-10. **Presence lanes are invisible below `Prepared`.** Confirmed and relied on:
-    `Vec<Col>` stays the IR's input-column type, and no enum crosses into
-    `lower` / `verify` / `exec`.
+10. **Presence lanes are invisible below `Prepared`, and that constrains where
+    `col_for_lane` can live.** `Vec<Col>` stays the IR's input-column type and
+    no `plan` enum crosses into `lower` / `verify` / `exec`. The import graph
+    today is one-directional and shallow: `plan.rs:6` imports only
+    `super::ir::{..}`, and `exec/mod.rs:27` imports only `super::ir::Ty`.
+    Neither module names the other.
+
+    The first draft put `ColData::for_lane(lane: &InputLane, ..)` in
+    `exec/mod.rs`, which would have made `exec` import `plan::InputLane` --
+    inverting the only layering the two modules have, and contradicting this
+    complication in the same document. Section 2's first draft did the same in
+    the other direction (`MapKey::null_key_bits -> Vec<KeyBits>` and
+    `MapVal::null_vals -> Vec<ScalarVal>` put `plan` on `exec`), so the two
+    interfaces together described a cycle. It would compile -- both are in one
+    crate -- but "it compiles" is not the property being defended.
+
+    RESOLUTION, applied to both sections:
+
+    - `plan.rs` holds the TYPES and the PURE slot logic only. `InputLane`,
+      `LaneKind`, `MapKey`, `MapVal`, `KeyCmp`, `JoinKey`, `KeySrc`,
+      `slots()`, `slot_pairs()`, `map_keys()`, `map_vals()`, `input_lanes()`.
+      Every one of those mentions `Ty`, `Col` and `String` and nothing else.
+    - The functions that need `KeyBits` / `ScalarVal` live at PREPARE TIME on
+      the side that owns those types: two free functions in `exec/mod.rs`
+      beside their own vocabulary, taking a plain `Ty` and returning plain
+      vectors (Section 2's interface block). `exec` never learns a `plan`
+      type; `plan` never learns an `exec` type.
+    - `col_for_lane` moves to `duckdb/mod.rs` as ONE boundary helper called by
+      all three ingest paths, instead of a constructor on `ColData`.
+
+    What is KEPT: exactly one place chooses a `ColData` variant from a lane's
+    kind, which is the whole argument that `push_present`'s `unreachable!`
+    rests on the type rather than on `present_from`. What is WEAKENED, stated
+    plainly: the chooser lives at the BOUNDARY, not in `exec`, so `exec` alone
+    cannot prove it -- a future third constructor inside `exec` could still
+    hand `push_present` a non-`I1`. Nothing in the tree does that today
+    (`ColData::new` at `exec/mod.rs:99` is type-driven and lane-agnostic), and
+    buying the stronger version costs the layering. The layering is worth more.
+11. **The `input_lanes()[i].col() == program.in_cols[i]` assert is
+    DOCUMENTATION, not the guarantee.** With W-new deriving `all_in` from the
+    lane vector inside the same function, the assert is a tautology: it
+    compares a vector against its own projection, taken three lines apart. It
+    costs nothing in release and it tells a reader what the relationship is,
+    which is why it stays. But the "two lists cannot drift" property is bought
+    ENTIRELY by deleting `src/duckdb/mod.rs:1731-1740` -- the second,
+    independent append. A reviewer who reads the assert as the guarantee has
+    the causality backwards, and would then accept a future patch that
+    re-introduces a second producer while keeping the assert green.
+12. **`present_lanes` is renamed to `minted_lanes` everywhere,** including on
+    the `Binder`. TASK-134 puts a second KIND in the same vector, so a name
+    that says `present` becomes a lie at the moment the next ticket lands, and
+    the first draft already used `minted_lanes` on `Bound` while keeping
+    `present_lanes` on the `Binder` -- one list, two names, which is the exact
+    defect Section 3 complication (f) is about. The write-side invariant that
+    the type does NOT enforce is written into the field's doc comment instead;
+    see Section 3.
 
 ### Section 2: `MapKey` / `MapVal`, and what happens to `StaticSpec`
 
@@ -435,8 +583,10 @@ which the new types must NOT absorb:
 - **The runtime is layout-blind.** `cmp_key`
   (`src/specializer/exec/interp.rs:1709-1724`) and its cranelift twin
   (`src/specializer/exec/cranelift.rs:898-914`) iterate `KeyBits` positionally
-  and know nothing about pairing; `ir::verify` only length-checks the flat
-  vectors (`src/specializer/ir/verify.rs:602-634`, `:756-786`). The pair
+  and know nothing about pairing; `ir::verify` length-checks the flat vectors
+  AND positionally type-checks each key through `want(..)`
+  (`src/specializer/ir/verify.rs:602-634`, esp. `:618-620`, and `:756-786`,
+  esp. `:769-771`) -- what it has no notion of is PAIRING, not types. The pair
   convention never escapes prepare time, which is exactly why an owning type is
   viable AND why it must stop at the IR boundary.
 
@@ -461,39 +611,87 @@ pub enum KeyCmp {
 /// column's own (an INTEGER column keyed against an F64 probe compares in
 /// F64; the column's real value then rides a shadow VALUE lane, TASK-120).
 /// Deliberately NOT the column type; see `MapVal`.
+///
+/// INVARIANT: `ty` is stored ALREADY LANE-ERASED (`Ty::lane()`). Every
+/// producer this type replaces erases at the point of construction
+/// (`lower.rs:264`, `:266`, `:164`), and `StaticTy`'s type vector is what a
+/// gate whose claim is "nothing moves" compares. `promote_key` can leave an
+/// `I32`, so an un-erased `ty` would print `map(i32, ..)` where the tree
+/// prints `map(i64, ..)` -- an IR-shape change wearing a refactor's clothes.
+/// `Ty::lane()` is identity on `I1` / `F64` / `Str` / `Dec`, so this bites
+/// only on narrow integer keys, which is exactly why nothing else in the
+/// migration notices and why it has to be written down here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapKey { pub ty: Ty, pub cmp: KeyCmp }
 
-/// The layout of ONE map value. `ty` is the static COLUMN's lane type.
+/// The layout of ONE map value. `ty` is the static COLUMN's lane type, and
+/// LANE-ERASED on the same terms as `MapKey.ty` (`lower.rs:278`, `:280`,
+/// `:151`, `:1584`, `:1586` all erase today).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapVal { pub ty: Ty, pub nullable: bool }
+
+/// The key layouts of one join, in declaration order. A free function
+/// taking its sources EXPLICITLY, for the same reason `map_vals` does.
+/// Erases: `MapKey { ty: keys[i].ty.lane(), cmp: key_cols[i].cmp }`.
+pub fn map_keys(keys: &[SExpr], key_cols: &[JoinKey]) -> Vec<MapKey>;
+
+/// The value layouts of one join, in declaration order.
+///
+/// A FREE FUNCTION over an explicit column source, not a `JoinSpec` method,
+/// because the two callers read from two different places: `StaticTy::Map`
+/// and `MultiMap` read `catalog[spec.table].cols`, and `StaticTy::BatchMap`
+/// reads the caller's `in_cols` -- `JoinSpec.table` is documented MEANINGLESS
+/// when `batch` is true (`plan.rs:225-227`), so a method taking the catalog
+/// has no route to the batch case. `val_slots` / `val_flat_tys` already solve
+/// it this way with an explicit `if spec.batch { self.in_cols } else { .. }`
+/// at `lower.rs:1552-1556` and `:1574-1578`; this mirrors that, so ONE
+/// function serves both and the source is chosen at the call site.
+/// Erases: `MapVal { ty: cols[c].ty.ty.lane(), nullable: cols[c].ty.nullable }`.
+pub fn map_vals(cols: &[Col], val_cols: &[u32]) -> Vec<MapVal>;
 
 impl MapKey {
     /// The flattened slot types this key occupies, in order. THE rule --
     /// every `StaticTy::Map`/`MultiMap` key vector is a flat_map of this.
     pub fn slots(self) -> Vec<Ty>;
-
-    /// The build-side encoding of a NULL key. `None` means "drop this build
-    /// row" (an `Eq` key: a NULL never matches). `Some(bits)` is the
-    /// `(false, type default)` pair an `IS NOT DISTINCT FROM` key stores --
-    /// the SAME default the probe side masks to.
-    pub fn null_key_bits(self) -> Option<Vec<KeyBits>>;
 }
 
 impl MapVal {
     /// The flattened slot types, in order. Same rule, value side.
     pub fn slots(self) -> Vec<Ty>;
-
-    /// The build-side encoding of a NULL value: the `(false, type default)`
-    /// pair. Callable only when `nullable` -- a non-nullable column with a
-    /// NULL keeps its named refusal at the call site.
-    pub fn null_vals(self) -> Vec<ScalarVal>;
-
-    /// `(validity_slot, payload_slot)` index pairs for a whole value vector,
-    /// in slot space. A free function, not an `FB` method, so the borrow at
-    /// `lower.rs:124` cannot force a duplicate (grounding complication 6).
-    pub fn slot_pairs(vals: &[MapVal]) -> Vec<(Option<usize>, usize)>;
 }
+
+/// `(validity_slot, payload_slot)` index pairs for a whole value vector, in
+/// slot space. A FREE FUNCTION, not an `FB` method, so the borrow at
+/// `lower.rs:124` cannot force a duplicate (grounding complication 6). It is
+/// declared here rather than inside `impl MapVal`, where the first draft put
+/// it while its own doc said "a free function" -- one of those was wrong.
+pub fn slot_pairs(vals: &[MapVal]) -> Vec<(Option<usize>, usize)>;
+```
+
+The two NULL-payload tables cannot live on `MapKey` / `MapVal`: `KeyBits` and
+`ScalarVal` are `exec` types and `plan` does not import `exec` (complication
+10). They go beside their own vocabulary instead, as free functions over a
+plain `Ty`:
+
+```rust
+// src/specializer/exec/mod.rs -- beside KeyBits (:305-327) and ScalarVal
+
+/// The `(false, type default)` PAIR a NULL `IS NOT DISTINCT FROM` key stores
+/// -- the same default the probe side masks to. Prepare-time / build-time
+/// only. `KeyBits` has no `Dec` variant, so this genuinely is a different
+/// table from `null_val_slots`, not a copy of it.
+///
+/// The `Eq`-key rule ("a NULL never matches, so drop the build row") is NOT
+/// here: it is per-site (drop the row / AND the probe flag / empty the range)
+/// and the caller branches on `k.cmp` before calling. The first draft folded
+/// it in as an `Option` return, which put the per-site rule inside the layout
+/// after the corollary above says it must stay out.
+pub(crate) fn null_key_slots(ty: Ty) -> Vec<KeyBits>;
+
+/// The `(false, type default)` pair for a NULL nullable map value. Called
+/// only when `nullable` -- a non-nullable column with a NULL keeps its named
+/// refusal at the call site (`duckdb/mod.rs:977-988`).
+pub(crate) fn null_val_slots(ty: Ty) -> Vec<ScalarVal>;
 ```
 
 ```rust
@@ -569,10 +767,10 @@ Producers:
 
 | site | change |
 |---|---|
-| `src/specializer/lower.rs:255-269` | `spec.map_keys().flat_map(MapKey::slots)` |
-| `src/specializer/lower.rs:270-283` | `spec.map_vals(catalog).flat_map(MapVal::slots)` |
-| `src/specializer/lower.rs:145-157` | the duplicate `flat` closure is DELETED; the free function above replaces it |
-| `src/specializer/lower.rs:158-167` | `StaticTy::MultiMap.keys` uses `MapKey::slots` too. **Behavior-preserving TODAY**: `lower.rs:135-141` still refuses any INDF key under `many`, so every key reaching this line has `cmp == Eq` and `slots()` returns exactly `[ty]` -- the identical vector. TASK-135 deletes that refusal and the line starts carrying pairs with no further edit. |
+| `src/specializer/lower.rs:255-269` | `map_keys(&spec.keys, &spec.key_cols).iter().flat_map(\|k\| k.slots())`. The `.lane()` at `:264` and `:266` moves INTO `map_keys`; it does not disappear. |
+| `src/specializer/lower.rs:270-283` | `map_vals(&catalog[spec.table].cols, &spec.val_cols).iter().flat_map(\|v\| v.slots())`. The `.lane()` at `:278` / `:280` likewise. |
+| `src/specializer/lower.rs:145-157` | the duplicate `flat` closure is DELETED. Its two call sites take the free function with their own source: `:160` `map_vals(in_cols, &joins[0].val_cols)` (BatchMap), `:165` `map_vals(&catalog[joins[0].table].cols, &joins[0].val_cols)` (MultiMap). The closure's `.lane()` at `:151`/`:153` is the same erasure `map_vals` now owns. |
+| `src/specializer/lower.rs:158-167` | `StaticTy::MultiMap.keys` uses `map_keys` + `slots()` too; the `k.ty.lane()` at `:164` moves into `map_keys`. **Behavior-preserving TODAY**: `lower.rs:135-141` still refuses any INDF key under `many`, so every key reaching this line has `cmp == Eq` and `slots()` returns exactly `[ty.lane()]` -- the identical vector. TASK-135 deletes that refusal and the line starts carrying pairs with no further edit. |
 | `src/specializer/lower.rs:1963-1982` | `emit_probe` calls `MapKey::encode_probe` (see below) |
 | `src/specializer/lower.rs:1627-1633` | `lower_many_loop` calls the SAME encoder. Also behavior-preserving today, by the same argument. |
 
@@ -595,20 +793,75 @@ Consumers:
 | site | change |
 |---|---|
 | `src/duckdb/mod.rs:766-772` (`materialize_map`) | the `key_tys` / `val_tys` parameters are DELETED -- `spec.keys[i].map.ty` and `spec.vals[i].map.ty` carry them |
+| `src/duckdb/mod.rs:1073-1079` (`materialize_statics`, the ONLY caller) | the call at `:1079` drops two arguments; the `keys, values` binding destructured out of `StaticTy` at `:1073` is then dead FOR THE CALL, but stays for the new arity assert below |
 | `src/duckdb/mod.rs:817-824` | the 3-way nested zip becomes `for k in &spec.keys` |
-| `src/duckdb/mod.rs:889-910` | `let _validity_ty = kt.next(); let ty = *kt.next()...` DELETED. The `(false, default)` table at `:897-903` becomes `k.map.null_key_bits()`. |
-| `src/duckdb/mod.rs:911-920` | the plain arm's `continue 'row` stays at the call site (per-site rule), driven by `null_key_bits() == None` |
+| `src/duckdb/mod.rs:889-910` | `let _validity_ty = kt.next(); let ty = *kt.next()...` DELETED (`:893-894`). The `(false, default)` table at `:897-903` becomes `exec::null_key_slots(k.map.ty)`. |
+| `src/duckdb/mod.rs:911-920` | the plain arm's `continue 'row` stays at the call site (per-site rule), driven by `k.map.cmp == KeyCmp::Eq`. Its `kt.next().expect("one type per plain key column")` at `:911` also goes -- see complication 8. |
 | `src/duckdb/mod.rs:924` | value zip becomes `for v in &spec.vals` |
-| `src/duckdb/mod.rs:959-976` | `let _validity_ty = vt.next()` DELETED; the table at `:966-972` becomes `v.map.null_vals()` |
+| `src/duckdb/mod.rs:959-976` | `let _validity_ty = vt.next()` DELETED (`:962-963`); the table at `:966-972` becomes `exec::null_val_slots(v.map.ty)` |
 | `src/duckdb/mod.rs:977-988` | the non-nullable NULL refusal stays verbatim |
-| `src/specializer/lower.rs:1550-1569` (`val_slots`) | becomes `MapVal::slot_pairs(&self.map_vals(j))` |
-| `src/specializer/lower.rs:1572-1590` (`val_flat_tys`) | becomes `self.map_vals(j).flat_map(MapVal::slots)` |
+| `src/specializer/lower.rs:1550-1569` (`val_slots`) | becomes `plan::slot_pairs(&map_vals(src, &j.val_cols))`, where `src` is the existing `if spec.batch { self.in_cols } else { .. }` choice at `:1552-1556` |
+| `src/specializer/lower.rs:1572-1590` (`val_flat_tys`) | becomes `map_vals(src, &j.val_cols).iter().flat_map(\|v\| v.slots())`, source chosen at `:1574-1578` as today |
 | `src/specializer/lower.rs:830-848` (`SKind::StaticCol`) | unchanged |
-| `src/specializer/exec/interp.rs:464-497` | `in_decl: &[(Ty, bool)]` becomes `&[MapVal]` (it already IS a `MapVal`, spelled as a tuple); the table at `:485-491` becomes `v.null_vals()` |
-| `src/specializer/mod.rs:159-204` | the `StaticSpec` fold builds `StaticKey`/`StaticVal` |
-| `src/specializer/frontend.rs:1992-2006` (`ScopeJoin`) | `key_cols: Vec<JoinKey>`; index sites `:2742`, `:3924-3926`, `:4365-4375`, `:4537` read `.src` |
+| `src/specializer/exec/interp.rs:464-497` (`build_batch_rows`) | `in_decl` KEEPS its `&[(Ty, bool)]` type -- see below. Only the default table at `:485-491` changes, to `null_val_slots(ty)`. |
+| `src/specializer/mod.rs:159-204` | the `StaticSpec` fold builds `StaticKey`/`StaticVal`. `StaticKey.map` is built from `j.keys[i].ty.lane()`, NOT `j.keys[i].ty` -- `map_keys` is the one constructor and it erases. |
 | `src/specializer/plan.rs:203-240` | `KeyCol` -> `KeySrc`; `JoinSpec.key_cols: Vec<JoinKey>`, `key_indf` deleted |
-| `src/specializer/tests.rs` | the `indf_*` trio and any test naming `key_indf` |
+| `src/specializer/tests.rs:1149-1150` | the `indf_*` trio reading `p.statics[0].key_indf` |
+| `src/specializer/tests.rs:179-184` | `spec.key_cols` position lookup, `spec.key_present[kp]`, `spec.key_indf[kp]` all become `spec.keys[kp].path` / `.present` / `.map.cmp` |
+| `src/specializer/tests.rs:818`, `:864`, `:874` | compare `StaticSpec::key_cols` as `Vec<Vec<String>>`; they become `spec.keys.iter().map(\|k\| &k.path)`. Not listed in the first draft. |
+
+**The `frontend.rs` half of Seam B is roughly 20 sites, not one row.** The
+first draft gave `ScopeJoin` a single line naming four index sites. Every
+reader below destructures a `KeyCol` and must read `.src`, and three of them
+are SIGNATURE changes the first draft never named. All compiler-caught -- that
+is the point of the seam -- but the half-day-per-commit estimate rests on the
+real number.
+
+| site | change |
+|---|---|
+| `src/specializer/frontend.rs:1996-1998` (`ScopeJoin`) | `key_cols: Vec<JoinKey>`; the doc comment at `:1998` still says the dynamic keys are aligned with it |
+| `:812`, `:826-827` | the empty-key `ScopeJoin` / `JoinSpec` literals: `key_cols: Vec::new()`, `key_indf: Vec::new()` collapse to one |
+| `:847-850`, `:858-859`, `:895-896`, `:899`, `:906-907`, `:923-924`, `:934` | the `(keys, key_cols, key_indf, ..)` tuple threading in `bind_from`: two parallel vectors become one `Vec<JoinKey>` |
+| `:938`, `:947`, `:960-961` | `val_cols_for` call, the `ScopeJoin` literal, the `JoinSpec` literal |
+| `:1027`, `:1037-1038`, `:1064`, `:1099`, `:1102`, `:1110`, `:1115`, `:1121-1122` | the self-join path's second copy of all of the above; `:1122`'s `key_indf: vec![false; n]` becomes `cmp: KeyCmp::Eq` on each pushed `JoinKey` at `:1099` |
+| `:1188-1211` (`head_hits_in_join`) | `KeyCol::Lane(ci) => Some(ci)` / `Present(_) => None` at `:1205-1206` read `k.src` |
+| `:1230-1236` (`key_struct`) | same, `:1233-1234` |
+| `:1242-1252` (`binds_in_join`) | same, `:1246-1250` |
+| `:1384-1394`, `:1468-1471` (`bind_on`) | **SIGNATURE**: `-> Result<(Vec<SExpr>, Vec<KeyCol>, Vec<bool>, Vec<&'e SqlExpr>), _>` becomes `-> Result<(Vec<SExpr>, Vec<JoinKey>, Vec<&'e SqlExpr>), _>` |
+| `:1604-1609`, `:1699` (`shared_key`) | **SIGNATURE**: `-> Result<Vec<(SExpr, KeyCol, bool)>, _>` becomes `-> Result<Vec<(SExpr, JoinKey)>, _>` |
+| `:1706-1719` (`struct_keys`) | **SIGNATURE**: same change; `:1719`'s `KeyCol::Present(vec![st_sc.name.clone()])` becomes a `JoinKey` |
+| `:1738-1746`, `:1784`, `:1793` (`walk_key_fields`) | **SIGNATURE**: `out: &mut Vec<(SExpr, KeyCol, bool)>` becomes `&mut Vec<(SExpr, JoinKey)>`; the `true` at `:1784` and the `Present` push at `:1793` fold into `JoinKey.cmp` |
+| `:1832-1841` (`val_cols_for`) | **SIGNATURE**: `key_cols: &[KeyCol]` becomes `&[JoinKey]`; `:1838`'s `contains(&KeyCol::Lane(*c))` and `:1841`'s `if let KeyCol::Lane(c) = k` read `.src` |
+| `:1853-1854` (`is_shadow_lane`) | `sj.key_cols.contains(&KeyCol::Lane(sj.val_cols[pos]))` reads `.src` |
+| `:2742` | `position(\|k\| *k == KeyCol::Lane(ci))` reads `.src` |
+| `:3924-3926` | `let KeyCol::Lane(ci) = sj.key_cols[key_pos] else` reads `.src` |
+| `:4128-4130` | the same `position(..)` shape as `:2742`. Not listed in the first draft. |
+| `:4365-4375`, `:4537-4538` | `for (kp, k) in sj.key_cols.iter().enumerate()` + `let KeyCol::Lane(ci) = k else { continue }` read `.src` |
+| `src/specializer/mod.rs:180-190` | the two `plan::KeyCol::` matches in the `StaticSpec` fold read `.src`; the `key_indf: j.key_indf.clone()` at `:186` becomes `cmp` on each `StaticKey` |
+
+**`in_decl` stays a `Vec<(Ty, bool)>`, and that is a DESIGN DECISION, not an
+omission.** The first draft said it "already IS a `MapVal`, spelled as a
+tuple". It is not, and the mistake is a role mistake rather than a shape one:
+`in_decl` is the PROGRAM'S ROW SCHEMA, built from `p.in_cols` at
+`interp.rs:259` and read by `check_input` on EVERY `run` (`:415`, `:419`,
+`:422`, `:439`) for the arity, lane-type and validity-length checks of every
+program, not only the batchmap ones. Retyping the field would drag a
+prepare-time layout type into the runtime type-checker and contradict this
+section's own corollary that the pair convention never escapes prepare time --
+and complication 10 forbids `exec` importing `plan` at all, which is what
+`&[MapVal]` on `build_batch_rows`'s parameter would require.
+
+So the scope is narrower than the first draft's, and narrower than the obvious
+correction: nothing about `in_decl` changes, at the field OR the parameter.
+What changes is only the fourth default TABLE at `:485-491`, which becomes a
+call to the shared `null_val_slots(ty)`. The honest residue: the value-pair
+SHAPE (`if nullable { validity, payload } else { payload }`) is still written
+twice -- once at `duckdb/mod.rs:959-976`, once here -- because the two live on
+opposite sides of a layering boundary. What collapses is the four typed-default
+tables, which is the half that had to agree BY HAND and the half that fails
+silently. The cost of the alternative (a `Vec<MapVal>` rebuilt per `run` at
+`:303`) buys only the two-line branch, and it buys it by breaking the import
+graph.
 
 Unchanged, and load-bearing that they are: `StaticTy` keeps flat `Vec<Ty>`;
 `KeyBits` (`src/specializer/exec/mod.rs:305-327`) and `canon_f64_bits`
@@ -637,9 +890,9 @@ multiplicity program to the interpreter; `ProbeDesc`
    per-site loop that indexes `key_tys[i]` (`cranelift.rs:2060`).
 4. **Four typed-default tables.** Three of the four -- the ones that must agree
    BY HAND across files -- collapse to two owned tables:
-   `MapKey::null_key_bits` (as `KeyBits`; note `KeyBits` has no `Dec` variant,
+   `exec::null_key_slots` (as `KeyBits`; note `KeyBits` has no `Dec` variant,
    `exec/mod.rs:311-316`, so it genuinely is a different table) and
-   `MapVal::null_vals` (as `ScalarVal`, shared by `materialize_map` and
+   `exec::null_val_slots` (as `ScalarVal`, shared by `materialize_map` and
    `build_batch_rows`). The fourth, `lower.rs:497-507`'s `default_of`, stays
    where it is: it is the general masking default, used by `masked` for every
    trapping instruction, not only for keys. It is reached from the key path
@@ -661,6 +914,37 @@ multiplicity program to the interpreter; `ProbeDesc`
    than an `FB` method; the duplicate closure is deleted, not moved.
 7. **`emit_probe`'s `Copy` read.** Dissolved by `MapKey: Copy` (see the
    DEVIATION above).
+8. **Deleting the iterator-skips deletes the only runtime key-arity
+   cross-check, so the design puts one back deliberately.** Today the three
+   `kt.next().expect(..)` / `vt.next().expect(..)` calls
+   (`duckdb/mod.rs:894`, `:911`, `:963`) are the accidental guard that
+   `StaticSpec` and the lowered `StaticTy` agree on how many slots the key
+   tuple has: if the type vector runs short, the build panics on
+   `"payload type follows validity"`. After the migration the types come from
+   `spec.keys[i].map.ty` and NOTHING compares the two vectors.
+
+   That matters because the failure is silent, not loud. `cmp_key`
+   (`exec/interp.rs:1709-1724`) zips `stored` against `key_regs` and stops at
+   the shorter of the two, returning `Ordering::Equal` when every compared
+   position matched -- so a build tuple one slot short compares EQUAL on its
+   prefix, and the join silently widens. That is Finding 1's failure class
+   (WRONG ANSWERS, not a refusal) reappearing on the static side.
+
+   The fix is one line, and it is in the Goals' assert budget:
+
+   ```rust
+   // src/duckdb/mod.rs, in materialize_statics, before materialize_map
+   debug_assert_eq!(
+       spec.keys.iter().map(|k| k.map.slots().len()).sum::<usize>(),
+       keys.len(),
+       "StaticSpec and StaticTy disagree on key slot arity"
+   );
+   ```
+
+   plus the same for `spec.vals` against `values`. Debug-only, so release
+   behavior stays byte-identical, and it is a strictly better guard than the
+   `expect` it replaces: the `expect` only fired when the type vector was
+   SHORT, this fires on either direction.
 
 Two more, stated because the design deliberately does NOT change them:
 
@@ -746,8 +1030,22 @@ pub struct Bound {
     pub regexes: Vec<super::ir::ReSpec>,
     pub wide_outputs: Vec<super::WideOut>,
     pub model_refs: Vec<u32>,
-    /// Lanes the binder minted for struct join keys (TASK-133). The caller
-    /// APPENDS these to the lane list before lowering.
+    /// Lanes the binder minted (TASK-133: struct-key presence; TASK-134: a
+    /// second kind). The caller APPENDS these to the lane list before
+    /// lowering. Same name as `Binder::minted_lanes`, which is the same list
+    /// moved out of its `RefCell` -- one list, one name, in both places.
+    ///
+    /// WRITE-SIDE INVARIANT, which `LaneKind` does NOT enforce and which is
+    /// therefore written here: ONE vector, APPEND-ONLY, DEDUPED BY PATH
+    /// ACROSS KINDS, INDEXED BY POSITION, and OFFSET BY `in_cols.len()`.
+    /// `present_key` mints `SKind::Col((self.in_cols.len() + idx) as u32)`
+    /// where `idx` is a position in this vector (`frontend.rs:3882-3900`), so
+    /// a second minter that pushed into a SECOND vector would collide on
+    /// `idx`, and a second minter that deduped only within its own kind would
+    /// mint two lanes for one path. `LaneKind` makes the three READERS
+    /// exhaustive; it says nothing about the writer. That asymmetry is the
+    /// honest limit of Seam A, and TASK-134's minting sibling has to respect
+    /// this paragraph rather than a type.
     pub minted_lanes: Vec<plan::InputLane>,
 }
 
@@ -763,7 +1061,7 @@ Both `#[allow]`s at `frontend.rs:332` go away.
 | 1 | `src/specializer/frontend.rs:332-358` | signature and return type; construction at `:625-633` becomes a `Bound` literal |
 | 2 | `src/specializer/frontend.rs:426-428` | the `bind_from(...)` call, 10 positional args |
 | 3 | `src/specializer/frontend.rs:640-651` | `bind_from` takes the request (its `'a` already unifies every borrow -- the struct is a rename of an existing constraint, not a new one) |
-| 4 | `src/specializer/frontend.rs:722-750` | `Binder` construction reads from the request |
+| 4 | `src/specializer/frontend.rs:722-750` | `Binder` construction reads from the request; `:749` is the `minted_lanes` rename (Section 1) and `:2078` the field declaration |
 | 5 | `src/specializer/mod.rs:105-112` | `prepare` builds a `PrepareRequest` and calls through |
 | 6 | `src/specializer/mod.rs:121-139` | `prepare_opaque(req)`; the `frontend` call destructures `Bound` |
 | 7 | `src/specializer/mod.rs:141-148` | lane assembly (Section 1's W-new); `lower` still takes `&[Col]` |
@@ -774,12 +1072,14 @@ Both `#[allow]`s at `frontend.rs:332` go away.
 | 12 | `src/duckdb/mod.rs:1830-1847`, `:1857-1866`, `:1897-1989` | one field instead of three (Section 1) |
 | 13 | `src/duckdb/arrow.rs:213-232` | `ingest(py, batch, lanes)` (Section 1) |
 | 14-25 | `src/specializer/tests.rs:161`, `:1173`, `:1245`, `:1361`, `:1450`, `:3164`, `:3476`, `:3586`, `:3621`, `:3705`, `:3732`, `:3798` | the 12 `prepare_opaque` sites become request literals. The four with a lone flag in a run of `&[]` (`:1173`, `:3621`, `:3705`, `:3732`) are the ones this exists for. |
-| 26 | `src/specializer/tests.rs:168`, `:172`, `:173` | `.present_lanes` becomes `.input_lanes()` |
+| 26 | `src/specializer/tests.rs:168`, `:173`, `:174` | `.present_lanes` becomes `.input_lanes()`; `:174` changes SHAPE, not just name -- the exact three replacements are in Section 1. (`:172` is `let keyed = prep(..)` and is not a reader; the first draft listed it and omitted `:174`.) |
 
 **Untouched:** the 31 `prepare(..)` sites in `tests.rs` (lines 26, 62, 107,
 196, 620, 630, 641, 806, 842, 861, 872, 887, 954, 977, 987, 1137, 1198, 1954,
 1965, 1992, 1998, 2909, 2919, 2956, 2967, 3242, 3690, 3885, 3911, 3924, 3944);
-all 38 pytest files under `packages/confit/tests/`; `packages/confit/fuzz/*.py`
+all 40 pytest files under `packages/confit/tests/` (43 `.py` including
+`conftest.py`, `_native_guard.py` and `known_divergences/_helpers.py`);
+`packages/confit/fuzz/*.py`
 (Python, entering through `DuckDBInferFn`). There is no `benches/`, no
 `tests/*.rs`, and no `[[bench]]`/`[[test]]` in `Cargo.toml`, so no other entry
 point touches this seam.
@@ -811,8 +1111,11 @@ point touches this seam.
 - **(f) Two names for one list.** Accepted and made explicit:
   `Prepared::input_lanes()` is the authority, `Program::in_cols` is its
   projection (kept because `ir::print`/`parse` round-trip and `ir::verify`
-  need it), and a `debug_assert` in `prepare_opaque` ties them. Deleting
-  `Program::in_cols` is out of scope for a behavior-preserving change.
+  need it), and a `debug_assert` in `prepare_opaque` ties them -- as
+  DOCUMENTATION; Section 1 complication 11 says why it is not the guarantee.
+  Deleting `Program::in_cols` is out of scope for a behavior-preserving
+  change. The minted sublist does NOT get a third name: `minted_lanes` on the
+  `Binder` and on `Bound`, both, per Section 1 complication 12.
 - **(g) The minted name is user-reachable and unpinned.** Preserved verbatim;
   see ASK 2.
 - **(h) Self-joins and non-scalar row columns are mutually exclusive**
@@ -828,7 +1131,7 @@ point touches this seam.
 What 134 adds ON TOP of these seams. Everything below is 134's diff, not this
 spec's.
 
-1. **One `LaneKind` variant.**
+1. **One `LaneKind` variant -- plus a derive, plus a borrow at every reader.**
    ```rust
    /// Servable as a join KEY, never as a value (TASK-134): the path ends at
    /// a scalar the row vocabulary refuses to serve, ingested at its exact
@@ -841,23 +1144,52 @@ spec's.
    this variant is a compile error at `src/duckdb/arrow.rs:229`,
    `src/duckdb/mod.rs:1283` and `:1978` -- the three sites that must grow an
    arm -- instead of silently taking the `Value` path.
+
+   Stated honestly, because the first draft called this "one variant" and it
+   is not: TASK-134's ticket also says timezone-carrying types need their own
+   answer or a named refusal, and a timezone is a `String`. The moment
+   `KeyOnly` carries one, `LaneKind` loses its `Copy` derive, and the three
+   sites Seam A just specified as by-value `match lane.kind` become
+   `match &lane.kind`. So the delta is: **add a variant, drop the `Copy`
+   derive when it carries a `String`, re-edit the borrow at every reader the
+   compiler flags.** All three steps are compiler-caught and mechanical, and
+   the payoff below is still real -- but it is a smaller payoff than "one
+   variant" implied. If `ArrowKind` can stay a fieldless enum (a timezone
+   refused by name rather than carried), the derive survives and the delta
+   really is one variant; that is 134's call, not this spec's.
 2. **The row-side arrow type.** `PrepareRequest.opaque` becomes
    `&'a [(usize, String, String)]` (or a named record), fed from
-   `src/duckdb/mod.rs:1488`. One field on the request; its 11 use sites move
-   (`frontend.rs:337`, `:644`, `:688`, `:698`, `:729`, `:776`, `:1001`,
-   `:1643`, `:2025`, `:2685`, `:4192`, `:4325`).
-3. **The landing site is one arm.** `frontend.rs:1671`,
+   `src/duckdb/mod.rs:1488`. One field on the request; its 15 references move.
+   The first draft said 11 and listed 12; the tree has 15:
+   `frontend.rs:337` (the `frontend` parameter), `:427` (the `bind_from` call
+   -- the exact 10-positional-argument site this seam exists to kill), `:644`
+   (the `bind_from` parameter), `:688`, `:698`, `:729` (the `Binder` field
+   init), `:776`, `:1001`, `:1643`, `:2025` (the `Binder` field declaration),
+   `:2684` and `:2685` (two statements in the star-expansion loop, not one),
+   `:4193` (`this_col_with_fields`), `:4325` (`Binder::column`), and `:4479`
+   (`Binder::qualified` -- a THIRD copy of the "row column has a non-scalar
+   type" refusal, listed in no earlier draft or audit).
+3. **The landing site is one arm.** `frontend.rs:1673`,
    `(Side::Opaque(w), _) | (_, Side::Opaque(w)) => cannot(w)`, splits into
    "admitted arrow type -> mint a `KeyOnly` lane" and "everything else ->
-   the existing named refusal at `:1666-1670`" (AC #4).
-4. **A minting sibling of `present_key`** (`frontend.rs:3881-3903`), with the
-   same dedup-by-path and the same `in_cols.len() + idx` forward index. Key-only
-   and presence lanes then INTERLEAVE in the appended region in mint order --
-   which is precisely the event `present_from` cannot survive and `LaneKind`
-   does. It must mint LAZILY, for the same +22..26 ns/row/lane reason
-   (`frontend.rs:2068-2077`); minting eagerly at schema parse would break
+   the existing named refusal", which is the `cannot` closure at
+   `:1667-1671` (AC #4). (`:1671` is that closure's `};` and `:1666` is the
+   shared-name early return's; the first draft cited both off by one.)
+4. **A minting sibling of `present_key`** (`frontend.rs:3881-3903`), pushing
+   into the SAME `minted_lanes` vector, with the same dedup-by-path and the
+   same `in_cols.len() + idx` forward index. Key-only and presence lanes then
+   INTERLEAVE in the appended region in mint order -- which is precisely the
+   event `present_from` cannot survive and `LaneKind` does. It must mint
+   LAZILY, for the same +22..26 ns/row/lane reason (`frontend.rs:2068-2077`);
+   minting eagerly at schema parse would break
    `n_plain = len - sum(leaf_count)` (`:656`) and all five `in_cols[..n_plain]`
    scans with it.
+
+   The four write-side obligations -- one vector, append-only, deduped by path
+   ACROSS kinds, indexed by position, offset by `in_cols.len()` -- are the
+   invariant paragraph on `Bound::minted_lanes` in Section 3, not something
+   the type checks. Two vectors would collide on `idx`; per-kind dedup would
+   mint two lanes for one path. 134 owes this a reading, not a compile.
 5. **Star invisibility (AC #3)** is inherited, not re-argued: a key-only lane
    is minted after `n_plain` is computed, so `frontend.rs:2683-2698` cannot see
    it, and the column stays in `binder.opaque` so `Binder::column`
@@ -879,13 +1211,20 @@ spec's.
    in the IR, exactly as a presence lane is.
 9. **Test flips.** `packages/confit/tests/test_join_keys.py:401-434`
    (`_OPAQUE_SHARED`) flips per admitted type; `pa.list_(pa.int64())` at `:406`
-   stays a refusal (AC #4); `:455-470` (a struct field with a TIMESTAMP leaf)
-   flips too, same code path.
+   stays a refusal (AC #4); `:456-465`
+   (`test_a_struct_key_with_an_unlaneable_field_refuses_by_name`, a struct
+   field with a TIMESTAMP leaf) flips too, same code path. The first draft
+   said `:455-470`, which reaches into
+   `test_a_struct_key_with_a_dotted_field_name_refuses_by_name` at `:468-475`
+   -- and that one must NOT flip: a dotted field name is a path-encoding
+   limit, which item 7 above keeps refusing, not a type-vocabulary one.
 
 Checkable payoff: without this spec, item 1 is instead "replace `present_from`
 with a per-lane tag at three sites, in the same diff as the per-type equality
 proofs"; item 2 is instead "change one of ten positional arguments at 14 call
 sites"; and item 4 has to re-derive that the threshold encoding is untenable.
+Item 1's derive-and-borrow churn is owed either way, so it is not part of the
+payoff.
 
 ### TASK-135 delta
 
@@ -972,9 +1311,12 @@ index threshold stored three times and maintained at three independent sites.
   boundary branches become exhaustive matches, so TASK-134's variant is a
   compile error at exactly the three sites that must handle it; `Present`
   carrying no `ColTy` makes `push_present`'s `unreachable!` structural.
-- Con: 24 call sites move; `Prepared` and `Program::in_cols` are two views of
-  one list, tied only by a debug assert; the `in_cols.len() + idx` forward
-  reference in the binder survives.
+- Con: ~26 call sites move (the migration tables above are the count that
+  matters, not this line); `Prepared` and `Program::in_cols` are two views of
+  one list, tied by DELETING the second producer -- the debug assert only
+  documents that (complication 11); the `in_cols.len() + idx` forward
+  reference in the binder survives, and so does the whole write-side
+  minting convention (complication 12).
 - Verdict: chosen.
 
 **A3. Generic `InputLane<S>` over the segment type** (`S = String` for the
@@ -1007,8 +1349,10 @@ only thing tying the build side to the layout the lowering declared.
   would be needed at all.
 - Con: `StaticTy` is a serialized TEXT format with a round-trip law --
   `print` emits `map(i1, i64) -> (...)` (`ir/print.rs:19-27`), `parse` reads a
-  flat type list (`ir/parse.rs:719-794`), and `prepare` asserts
-  `parse(print(p)) == p` (`mod.rs:150-158`). This breaks every `.ir` fixture,
+  flat type list (`ir/parse.rs:719-794`), and `prepare` canonicalizes so the
+  law holds (`mod.rs:151`) while three tests assert it
+  (`exec/tests.rs:1270`, `ir/tests.rs:32`, `tests.rs:313`). This breaks every
+  `.ir` fixture,
   the IR fuzz generator (`ir/gen.rs:214-233`, `:642-655`), and cranelift's
   scratch-slot arithmetic (`cranelift.rs:1174-1206`, which sizes `16 *
   keys.len()` and would silently undersize). It is not behavior-preserving.
@@ -1017,10 +1361,14 @@ only thing tying the build side to the layout the lowering declared.
 
 **B2. `MapKey`/`MapVal` as layout types in `plan`, feeding `StaticTy` (CHOSEN).**
 - Pro: `slots()` is the one home; `StaticTy` and therefore the IR text form,
-  the fuzz generator and the cranelift arithmetic are all untouched; the two
+  the fuzz generator and the cranelift arithmetic are all untouched; the three
   iterator-skips delete; `materialize_map` loses two parameters; three of four
   default tables collapse to two owned ones; `StaticSpec`'s five parallel
   vectors become two records; both `Copy`, so no encoder-loop borrow churn.
+- Con, the second one: deleting those skips deletes an accidental arity
+  cross-check, so the design owes a `debug_assert_eq!` back (complication 8),
+  and the value-pair SHAPE stays written twice because `build_batch_rows` is
+  on the far side of the `exec` / `plan` layering boundary.
 - Con: `encode` is genuinely two methods, not one -- the build side produces
   `KeyBits`/`ScalarVal` inside a pyo3 `PyResult` with `continue 'row` control
   flow, the probe side emits `Inst::Select` through `&mut FB`. They are
@@ -1073,60 +1421,66 @@ consumer, and lane assembly done three times.
 
 ## Proposed additions to docs/properties.md
 
-Drafted in the house style, numbered after P20, for the Engine (Confit)
-section. These are PROPOSALS inside this spec; `docs/properties.md` is not
-edited by this change.
+Drafted to match `docs/properties.md`'s house style for the Engine (Confit)
+section, numbered after P20. These are PROPOSALS inside this spec;
+`docs/properties.md` is not edited by this change.
 
----
+House-style notes, so adoption is a copy and not a rewrite. P18/P19/P20 are
+each 3-5 lines with the pin named INLINE, not in a footer; the file's `*Spec:*`
+footers are real house style but belong to the P1-P17 sections, so P21/P22
+carry one `*Spec:*` line and no `*Pinned (proposed):*` line. No `---` rule
+separates laws -- the file's only rules are at `properties.md:11` and `:246`,
+and neither is a law separator. Every law separates its label from its title
+with an EM-DASH; this spec file is ASCII-only, so the two below use `--`, and
+the em-dash is restored when the text is adopted into `properties.md` (which
+is itself unicode).
 
-**P21 -- A masked payload is the type default, on every path.** Wherever a
-value rides beside a validity flag -- a nullable map value, an IS NOT DISTINCT
-FROM key, a NULL extern return, a static load under a false flag -- the payload
-under `valid = false` is the TYPE DEFAULT (`false` / `0` / `0.0` / `""` / a
-zero at the column's declared scale), never whatever the source happened to
-hold. Two consequences carry the law. Trapping instructions never meet
-unbounded garbage: computed garbage is unbounded (`x + MAX + MAX` with `x` NULL
-overflows its payload), so a masked payload is what makes "evaluate then
-discard" safe at all. And a NULL key is ONE bucket: the probe side masks and
-the build side stores the identical `(false, default)` pair, so `NULL` joins
-`NULL` without the runtime knowing anything about NULLs -- the layout does the
-work, which is why `cmp_key` can be positional over flat `KeyBits`.
+**P21 -- A masked payload is a SAFE constant, and the same one on both sides.**
+Wherever a value rides beside a validity flag -- a nullable map value, an IS
+NOT DISTINCT FROM key, a NULL extern return, a static load under a false flag
+-- the payload under `valid = false` is a constant the op accepts: the type
+default (`false` / `0` / `0.0` / `""` / a zero at the column's declared scale),
+or the op-specific safe constant `masked_to` names, and never the
+un-normalized source register. That is what makes "evaluate then discard" safe
+(computed garbage is unbounded), and it is what makes a NULL key ONE bucket:
+probe and build store the identical `(false, constant)` pair, so `cmp_key` can
+be positional over flat `KeyBits` and know nothing about NULLs. Owned per value
+type, not per site -- `exec::null_key_slots`, `exec::null_val_slots`,
+`FB::default_of`, `FB::masked_to`; a default written a fifth time is the bug
+this law names. (`indf_*` in `specializer/tests.rs` pins the end-to-end
+reading; the three tables agreeing type-for-type is not yet pinned.)
 
-The defaults are owned per value type, not per site: `MapKey::null_key_bits`
-(as `KeyBits`, which has no `Dec` variant), `MapVal::null_vals` (as
-`ScalarVal`, shared by the map materializer and the batchmap builder), and
-`FB::default_of` (as `Lit`, the general masking default). A default written a
-fifth time is the bug this law exists to name.
-
-*Spec:* 2026-08-25-lane-and-slot-seams-design (SEAM B). *Pinned (proposed):* a
-Rust unit test that asserts the three tables agree type-for-type across the
-shared vocabulary, plus the existing `indf_*` trio in
-`packages/confit/src/specializer/tests.rs` for the end-to-end reading.
-
----
+*Spec:* 2026-08-25-lane-and-slot-seams-design (Seam B).
 
 **P22 -- Every IR instruction is reachable by the generator.** The
-interpreter-vs-cranelift differential (P19, `exec/tests.rs`, 500 seeds) is only
-a guarantee for instructions the generator can emit, so the generator's
-instruction coverage is itself an invariant: every `Inst` variant is either
-produced by `ir::gen::gen_program` or listed, by name and with a reason, in a
-totality test that fails when a new variant is added and neither generated nor
-listed. "The differential guards the rest" is a claim about coverage, and a
-claim about coverage that nothing counts is a hope.
+interpreter-vs-cranelift differential (P19, 500 seeds) guarantees only what the
+generator can emit, so coverage is itself the invariant: every `Inst` variant is
+either produced by `ir::gen::gen_program` or listed, by name and with a reason,
+in a totality test that fails when a new variant is neither. Measured
+2026-08-25 at `debaf8c`: 42 variants, 32 reachable, 10 not -- `Dtof`, `Itod`,
+`StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`, `ReReplace`, `ExternCall`,
+`ProbeRange`, `ProbeRead` -- four of them the narrowing/parsing conversions
+where the backends are likeliest to disagree, so the hole is not uniformly
+cheap. A claim about coverage that nothing counts is a hope. (Not yet pinned:
+the totality test goes beside the differential in `exec/tests.rs`.)
 
-Measured 2026-08-25 at `debaf8c`: 42 `Inst` variants, 32 reachable, 10 not --
-`Dtof`, `Itod`, `StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`, `ReReplace`,
-`ExternCall`, `ProbeRange`, `ProbeRead`. Four of those ten are the
-narrowing/parsing conversions where the two backends are most likely to
-disagree, and two are the multiplicity probe pair that cranelift refuses
-outright (`cranelift.rs:1104-1118`) -- so the hole is not uniformly cheap.
+*Spec:* 2026-08-25-lane-and-slot-seams-design (proposed properties).
 
-*Spec:* 2026-08-25-lane-and-slot-seams-design (proposed properties). *Pinned
-(proposed):* one totality test beside the differential in
-`packages/confit/src/specializer/exec/tests.rs`, with the exclusion list
-carrying a one-line reason per entry.
-
----
+**Why P21's wording changed from the first draft, since the change is the
+whole point of it.** The draft said "the payload under `valid = false` is the
+TYPE DEFAULT ... never whatever the source happened to hold". That is FALSE in
+the tree. `FB::masked_to` (`src/specializer/lower.rs:481`, doc at `:478-480`)
+exists precisely to mask to something the type default is not, and it is called
+seven times: `:1156` `F64(1.0)` for `Ln|Log2|Log10`, `:1158` `F64(0.0)`,
+`:1188` `F64(10.0)` and `:1189` `F64(1.0)` for the log pair, `:1226` and
+`:1227` `Str("a")`, `:1298` `I64(0)`. Five of those seven name a constant that
+is NOT `default_of`'s -- and the law's own rationale is why: `0.0` is itself in
+`ln`'s trap domain, so "the type default" would be the unsafe choice at exactly
+the sites the law exists to protect. The clause is not an exception bolted on;
+it is the law stated correctly. (Checked and clean on the other side: `h_sload`
+at `cranelift.rs:850-859`, `h_probe`'s miss path at `:934-945` and `LoadOpt` at
+`:2005-2030` all write type defaults, so there is no cranelift-specific
+violation.)
 
 ## ASK blocks
 
@@ -1168,13 +1522,22 @@ Only the decisions this design does not settle.
    all of its non-lane risk. If it lands, it lands LAST and alone.
 
 4. **Adopt P21 and P22 into `docs/properties.md` now, or when their pins
-   land?** Both are true today (P21 as an unenforced convention at six sites,
-   P22 with a measured 10/42 hole -- so P22 as written is currently FALSE and
-   would enter as a law the code does not yet satisfy).
+   land?** They are not in the same state, and the first draft's "both are
+   true today" was wrong on both halves.
+   - **P21, with its safe-constant clause, is TRUE today** -- as an unenforced
+     convention, held by inspection across the four default tables plus
+     `masked_to`'s seven call sites. P21 as the draft FIRST worded it ("the
+     type default ... never whatever the source held") was false, falsified by
+     five of those seven; the redraft above is what is true.
+   - **P22 is FALSE today**, with a measured 10-of-42 hole. It would enter as a
+     law the code does not satisfy.
    Trade-off: writing a law before its pin is how "agreed direction, not yet
-   law" exists as a section; adopting P22 immediately would mean either
-   generating ten instruction kinds or writing the exclusion list first, which
-   is a separate ticket's worth of work.
+   law" (`properties.md:246-259`) exists as a section, and P22 belongs there
+   rather than in the numbered list until the exclusion list exists. Adopting
+   P22 as a numbered law immediately would mean either generating ten
+   instruction kinds or writing the exclusion list first, which is a separate
+   ticket's worth of work. P21 has no such blocker -- the only question for it
+   is whether an inspection-held law is a law.
 
 ## Staging
 
@@ -1186,12 +1549,14 @@ without touching the others.
    one that pays for itself immediately by deleting
    `src/duckdb/mod.rs:1731-1740`. Land first so TASK-134 is unblocked even if
    the rest stalls. Suite green; the only test edit is
-   `tests.rs:126-186`/`:168-173` reading `input_lanes()` instead of
-   `present_lanes`.
+   `tests.rs:126-186` -- three lines (`:168`, `:173`, `:174`), of which `:174`
+   changes shape rather than name, spelled out in Section 1.
 2. **`MapKey`/`MapVal` (Seam B).** Independent of Seam A -- it touches
-   `lower.rs`, `plan.rs`, `materialize_map` and `build_batch_rows`, none of
-   which Seam A moves. Unblocks TASK-135. Suite green; the only test edits are
-   Rust unit tests naming `key_indf`.
+   `lower.rs`, `plan.rs`, `frontend.rs`'s key plumbing, `materialize_map` and
+   `build_batch_rows`, none of which Seam A moves. Unblocks TASK-135. Suite
+   green; the test edits are Rust unit tests naming `key_indf`
+   (`tests.rs:1149-1150`, `:179-184`) and the three comparing `key_cols` as
+   `Vec<Vec<String>>` (`:818`, `:864`, `:874`).
 3. **`PrepareRequest` (Seam C).** Last, because it is the widest mechanical
    diff and the least load-bearing, and because it is the one a reviewer may
    decide to drop (ASK 3). It depends on Seam A only in that
@@ -1201,9 +1566,16 @@ without touching the others.
 develop` then the full pytest suite from the repo ROOT (the maturin rebuild is
 not optional -- `uv sync` does not rebuild the `.pyd` and pytest will silently
 run the stale engine); then the same in a DEBUG build so `debug_asserts` runs,
-because two of the invariants this change installs are debug asserts. No fuzz
+because all three of the invariants this change installs are debug asserts --
+and the third (key slot arity, Section 2 complication 8) replaces a check that
+fires TODAY in release, so the debug run is the only thing that would catch its
+regression. No fuzz
 campaign is required: this change moves no accept/refuse boundary, and a
 campaign that finds anything means the "behavior-preserving" claim was false,
 which the suite should already have said.
 
-Half a day per commit, plus the migration typing.
+Half a day per commit, plus the migration typing -- with the caveat that the
+estimate rests on the migration lists being complete, and the first draft's
+were not. Seam B in particular is ~20 `frontend.rs` sites and three signature
+changes, not the one table row it originally had. Every one of them is
+compiler-caught, so the risk is schedule, not correctness.
