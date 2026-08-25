@@ -1,8 +1,8 @@
-"""TASK-76: an identifier means whatever DuckDB says it means.
+"""An identifier means whatever DuckDB says it means.
 
-TASK-71 folded CTE keys because the binder is case-insensitive, and stopped
-there. The walk compares identifiers in three other places, and each was still
-comparing exact strings:
+CTE keys were folded first, because the binder is case-insensitive, and the
+fold stopped there. The walk compares identifiers in three other places, and
+each was still comparing exact strings:
 
 * ``_catalog`` — a supplied connection's ``Customers`` was unreachable as
   ``customers``, and a frame object of that name then quietly won a lookup the
@@ -179,10 +179,10 @@ def test_reads_follows_a_cte_referenced_in_another_case(used):
 
 @pytest.mark.parametrize("used", ["Live", "LIVE", "lIvE"])
 def test_a_subtree_reading_this_through_a_cte_in_another_case_is_not_frozen(used):
-    """What that fold buys end to end, and it is the F6 shape again: the
-    subquery reads ``__FIT__`` and a CTE that reads ``__THIS__``. Miss the CTE
-    and it looks freezable, so it is evaluated at fit — where ``__THIS__`` is
-    not bound."""
+    """What that fold buys end to end, and it is the *``_reads`` must follow a
+    CTE* shape again: the subquery reads ``__FIT__`` and a CTE that reads
+    ``__THIS__``. Miss the CTE and it looks freezable, so it is evaluated at
+    fit — where ``__THIS__`` is not bound."""
     t = SQLTransform(
         "WITH Live AS (SELECT * FROM __THIS__) "
         f"SELECT t.v, (SELECT count(*) FROM {used}, (SELECT v FROM __FIT__) f) AS c "

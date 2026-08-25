@@ -1,4 +1,4 @@
-"""TASK-73: passing a connection means using all of its catalog.
+"""Passing a connection means using all of its catalog.
 
 ``_catalog`` read the supplied connection for tables and views, but the two
 function catalogs called bare ``duckdb.execute`` — the module-level default
@@ -58,7 +58,7 @@ def test_the_oracles_own_functions_still_work_without_a_connection():
     assert t.fit(D).transform(D).to_pylist()[0] == {"z": 1.0}
 
 
-# ------------------------------------------------- qualified names (TASK-76)
+# ----------------------------------------------------------- qualified names
 #
 # Found while narrowing `_catalog` to the names a connection can bind
 # *unqualified*: that listing was also what let a qualified name through, so
@@ -109,7 +109,7 @@ def test_a_qualified_name_without_a_connection_refuses_at_construction():
         SQLTransform("SELECT count(*) AS c FROM __THIS__ t, information_schema.tables")
 
 
-# ------------------------------------------------------ output= (F15, F16)
+# -------------------------------------------------------------------- output=
 
 
 def test_a_bad_output_refuses_at_construction():

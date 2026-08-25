@@ -1,4 +1,4 @@
-"""TASK-70: the sklearn boundary — index alignment, cloning, pickling.
+"""The sklearn boundary: index alignment, cloning, pickling.
 
 Three independent failures where the model meets sklearn's conventions.
 
@@ -36,7 +36,7 @@ REL = (
 FRAME = pd.DataFrame({"v": [1.0, 2.0, 3.0, 4.0]}, index=[7, 3, 11, 5])
 
 
-# ------------------------------------------------------------- the index (F4)
+# ------------------------------------------------------------------ the index
 
 
 def test_pandas_output_carries_the_callers_index():
@@ -75,7 +75,7 @@ def test_a_transform_that_changes_cardinality_does_not_fake_an_index():
     assert list(out.index) == [0]
 
 
-# ------------------------------------------------------------- cloning (F11)
+# -------------------------------------------------------------------- cloning
 
 
 def test_clone_survives_a_shared_connection():
@@ -108,7 +108,7 @@ def test_clone_still_carries_captured_objects():
     assert copy.captured["codes"] is codes
 
 
-# ------------------------------------------------------------- pickling (F12)
+# ------------------------------------------------------------------- pickling
 
 
 def test_a_from_estimator_leaf_pickles():
@@ -151,7 +151,7 @@ def test_a_pickled_leaf_still_transforms():
     assert out["v"][0].as_py() == pytest.approx(0.0)
 
 
-# ------------------------------------------------- the index is a claim (F4b)
+# ------------------------------------------------------- the index is a claim
 
 
 def test_a_reordering_transform_does_not_relabel_rows():

@@ -1,4 +1,4 @@
-"""TASK-71: the walk must resolve names, not compare strings.
+"""The walk must resolve names, not compare strings.
 
 Four failures, one cause. Every one is loud, so C5 holds — but P7 does not:
 three surfaced as raw DuckDB errors at fit, on queries ``run`` executes fine.
@@ -18,7 +18,7 @@ D = pa.table({"grp": ["a", "a", "b"], "price": [1.0, 3.0, 100.0]})
 T = pa.table({"grp": ["a", "b"], "price": [7.0, 9.0]})
 
 
-# ------------------------------------------- _reads must follow a CTE (F6)
+# ------------------------------------------------ _reads must follow a CTE
 
 
 def test_a_subtree_reading_this_through_a_cte_is_not_frozen():
@@ -53,7 +53,7 @@ def test_a_chain_of_ctes_propagates_what_it_reads():
     assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
 
 
-# ------------------------------- an unqualified correlated reference (F7)
+# ------------------------------------ an unqualified correlated reference
 
 
 def test_an_unqualified_correlated_fit_reference_refuses_by_name():
@@ -114,7 +114,7 @@ def test_an_ordinary_unqualified_column_is_untouched():
     assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
 
 
-# ------------------------------------------------- a recursive CTE (F13)
+# ------------------------------------------------------- a recursive CTE
 
 
 def test_a_recursive_cte_reading_fit_refuses_by_name():
@@ -142,7 +142,7 @@ def test_a_plain_cte_named_like_its_own_body_still_freezes():
     assert t.fit(D).transform(D).to_pylist() == run(t, D).to_pylist()
 
 
-# ------------------------------------------------- case-insensitivity (F14)
+# ------------------------------------------------------ case-insensitivity
 
 
 @pytest.mark.parametrize(

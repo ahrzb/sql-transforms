@@ -138,9 +138,9 @@ class UDFSpec:
 
     ``field`` is None for a whole-value call (``__cf_tf{j}``) and the
     requested output field name for a field access, which serves as a field
-    read over that same one call (TASK-63) — the name is checked against
-    the fitted output at fit time (DRAFT-24, the P7 carve-out). One spec
-    per distinct (name, field) request."""
+    read over that same one call — the name is checked against the fitted
+    output at fit time (DRAFT-24, the P7 carve-out). One spec per distinct
+    (name, field) request."""
 
     name: str
     step: str
@@ -540,8 +540,9 @@ def _resolve_chain(root: Node) -> list[_Level]:
 def _walk_row_wise(x: Any, where: str, lookup: Any = None) -> None:
     """The subtree must be row-wise: no nesting of table semantics. With a
     ``lookup``, transformer calls (bare sugar, split halves) are screened
-    too — composition is TASK-65, parked, and un-screened text would ride
-    verbatim into fit-side SQL and die mid-fit (review round 2026-08-05)."""
+    too — composition is parked (DRAFT-24 loop 5), and un-screened text would
+    ride verbatim into fit-side SQL and die mid-fit (review round
+    2026-08-05)."""
     if isinstance(x, dict):
         cls = x.get("class")
         if cls == "WINDOW":
@@ -984,9 +985,9 @@ class _LevelRewriter:
                         # θ field reads and the deleted OVER sugar refuse
                         # the same way here as anywhere else.
                         self._refuse_window_tf(kids[0], win_name)
-                    # The field read SURVIVES over the whole-value call
-                    # (TASK-63): one call, k lane reads — DuckDB CSEs the
-                    # identical mentions, confit shares the ecall site.
+                    # The field read SURVIVES over the whole-value call: one
+                    # call, k lane reads — DuckDB CSEs the identical
+                    # mentions, confit shares the ecall site.
                     # Width-1 collapses to the bare call at fit, where the
                     # width is known.
                     if split_tf is not None:
@@ -1080,15 +1081,14 @@ class _LevelRewriter:
                         x.get("query_location"),
                     )
                 if not x.get("is_operator"):
-                    # TASK-89: `fname not in _known_functions()` conflated
-                    # "is a builtin" with "is not a UDF", so a declared UDF
-                    # named after a DuckDB function was dropped here and the
-                    # call planned as the BUILTIN — silently serving someone
+                    # `fname not in _known_functions()` conflated "is a
+                    # builtin" with "is not a UDF", so a declared UDF named
+                    # after a DuckDB function was dropped here and the call
+                    # planned as the BUILTIN — silently serving someone
                     # else's function. Resolve against the registry FIRST; a
                     # name that resolves in BOTH places is the refusal, the
-                    # same rule confit enforces one layer down (PR #95),
-                    # whose guard was unreachable while the UDF never
-                    # reached it.
+                    # same rule confit enforces one layer down, whose guard
+                    # was unreachable while the UDF never reached it.
                     known = fname in _known_functions()
                     declared = (
                         self.planner.lookup is not None
@@ -2036,8 +2036,8 @@ class _Planner:
         children: list[Node] | None = None,
     ) -> Node:
         """The serving call for transformer step ``j`` — always the ONE
-        whole-value UDF (TASK-63). A requested field is recorded on its spec
-        for fit-time validation; the field read wraps this call at the call
+        whole-value UDF. A requested field is recorded on its spec for
+        fit-time validation; the field read wraps this call at the call
         site. ``children`` overrides the argument nodes (a split call's
         transform bundle may differ from the fit bundle)."""
         step = self.tf_steps[j]

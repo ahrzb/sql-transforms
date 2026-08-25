@@ -6,8 +6,8 @@ which is live is read off the text — there is no annotation to remember and
 none to forget.
 
 No estimator surface: this module is the part of ``SQLTransform`` that
-``SQLProjection`` also needs, held as a value rather than inherited (TASK-87,
-`docs/superpowers/specs/2026-08-11-row-wise-projections-design.md`). The parts
+``SQLProjection`` also needs, held as a value rather than inherited
+(`docs/superpowers/specs/2026-08-11-row-wise-projections-design.md`). The parts
 it stands on live next door: ``_ast`` (the oracle as parser and printer),
 ``_analysis`` (what a subtree reads), ``_plan`` (freezing), ``_foreign`` (the
 supplied pair), ``_errors``.
@@ -450,10 +450,13 @@ class Fitted:
     that a measurement instead of a rule.
     """
 
-    node: Node
-    params: Params
+    node: Node  # the RESIDUAL, not the resolved text `Program.node` holds
+    params: Params  # each fit step's evaluated table, under its parameter name
     bindings: Bindings
     foreign: Foreign
+    # A leaf's fitted state, keyed by the θ id its params row carries. Two
+    # fits mint two id spaces, so mixing an artifact's params with another's
+    # instances is caught rather than silently scored.
     instances: dict[int, Any]
     connection: Connection | None = None
     # Leases handed out by `relation()` and not yet given back. See `relation`.

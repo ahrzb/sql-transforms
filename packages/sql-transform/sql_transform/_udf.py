@@ -103,9 +103,9 @@ class UDF:
 
     ===========================  =======================================
     ``pa.float64()``             an ordinary scalar expression
-    ``pa.struct([...])``         width-k with addressable field names
-                                 (TASK-63) — struct-valued at EVERY width,
-                                 so ``f(x).a`` reads a lane off ONE call
+    ``pa.struct([...])``         width-k with addressable field names;
+                                 struct-valued at EVERY width, so
+                                 ``f(x).a`` reads a lane off ONE call
     ``pa.list_(t, k)``           width-k unnamed (the DRAFT-22 list
                                  boundary); fixed size because the width
                                  is part of the declaration
@@ -176,8 +176,8 @@ class UDF:
         """The single-SQL-value form: unwraps a width-1 tuple to its value,
         checks the result against ``returns`` (a violated declaration is a
         broken artifact — raise, never a silent NULL). Width-k is a dict
-        (STRUCT — one call, field reads, TASK-63) when field names are
-        declared, else a list."""
+        (STRUCT — one call, field reads) when field names are declared, else
+        a list."""
         out = self(*args)
         if out is None:
             return None
@@ -207,8 +207,8 @@ class UDF:
         names, rets = self.return_names, self.return_types
         if names:
             # Declared names => a STRUCT return at EVERY width, so field
-            # access reads lanes off ONE call (TASK-63) — DuckDB CSEs the
-            # identical pure calls; confit shares the ecall site.
+            # access reads lanes off ONE call — DuckDB CSEs the identical
+            # pure calls; confit shares the ecall site.
             import duckdb
 
             return params, duckdb.struct_type(

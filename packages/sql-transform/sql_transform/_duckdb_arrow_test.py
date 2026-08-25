@@ -46,7 +46,7 @@ import pytest
 # machine: measured 2026-08-19, interpreter start + `import duckdb` alone
 # takes 4.1-7.7s with 2x-cores of process burners (the healthy spelling's
 # real work is ~1s on top), and the two observed flakes ran inside full
-# suites at 3-6x normal wall time (TASK-123). 120s is >15x the worst
+# suites at 3-6x normal wall time. 120s is >15x the worst
 # measured cold start; a genuine hang still fails, just slower -- a price
 # paid only when the bug actually regresses. Deliberately NO retry: an
 # INTERMITTENT hang must not be able to pass on its second try.

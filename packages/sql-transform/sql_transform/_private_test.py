@@ -1,4 +1,4 @@
-"""Private columns (TASK-64) + θ laterals — fit/transform-split slice 2.
+"""Private columns + θ laterals — fit/transform-split slice 2.
 
 An output field named ``_...`` is a same-SELECT macro: usable by later
 items (β-reduced at the raw AST, so windows and transformer bundles see
@@ -105,8 +105,9 @@ def test_private_feeds_transformer_bundle():
 
 
 def test_private_struct_valued_call_read_via_struct_extract():
-    """Name the call once privately, read a field — the TASK-64 pattern
-    (dotted ``_t.v`` refuses like DuckDB; struct_extract binds laterally)."""
+    """Name the call once privately, read a field — the private-column
+    pattern (dotted ``_t.v`` refuses like DuckDB; struct_extract binds
+    laterally)."""
     lateral = _fit(
         "SELECT sc(struct_pack(v := age)) AS _t,"
         " struct_extract(_t, 'v') AS z, name FROM __THIS__"
