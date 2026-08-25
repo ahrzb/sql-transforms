@@ -2435,4 +2435,102 @@ mod tests {
         assert_eq!(f(&mut out2, &a2, &b2), 1, "i128::MIN < 1");
         assert_eq!(out2, a2.wrapping_mul(b2).wrapping_add(a2));
     }
+
+    /// TASK-91's own hard dependency, and the one the add/mul/cmp probe
+    /// above did NOT answer: `select` on I128 and I128 BLOCK PARAMS. The
+    /// Dec lane needs both — a LEFT-join miss selects between the probed
+    /// payload and a zero default, and CASE lowering carries the payload
+    /// across a block boundary as a branch argument. Written before the
+    /// lane, because a red here means cranelift refuses Dec programs and
+    /// the interpreter is the only backend for them.
+    #[test]
+    fn cranelift_legalizes_i128_select_and_block_params_on_the_host() {
+        let mut flags = settings::builder();
+        flags.set("use_colocated_libcalls", "false").unwrap();
+        flags.set("is_pic", "false").unwrap();
+        flags.set("opt_level", "speed").unwrap();
+        let isa = cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
+            .unwrap()
+            .finish(settings::Flags::new(flags))
+            .unwrap();
+        let mut module = JITModule::new(JITBuilder::with_isa(
+            isa,
+            cranelift_module::default_libcall_names(),
+        ));
+        let ptr = module.target_config().pointer_type();
+
+        // fn(out: *mut i128, a: *const i128, b: *const i128, c: i64)
+        //   v = c ? a : b            (branch, carried as an I128 block param)
+        //   *out = v + select(c, a, b)
+        let mut ctx = module.make_context();
+        for _ in 0..3 {
+            ctx.func.signature.params.push(AbiParam::new(ptr));
+        }
+        ctx.func.signature.params.push(AbiParam::new(types::I64));
+
+        let mut fb_ctx = FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let entry = b.create_block();
+        let lhs = b.create_block();
+        let rhs = b.create_block();
+        let merge = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.append_block_param(merge, types::I128);
+        b.switch_to_block(entry);
+        let (o, pa, pb, c) = (
+            b.block_params(entry)[0],
+            b.block_params(entry)[1],
+            b.block_params(entry)[2],
+            b.block_params(entry)[3],
+        );
+        let mf = cranelift_codegen::ir::MemFlags::trusted();
+        let x = b.ins().load(types::I128, mf, pa, 0);
+        let y = b.ins().load(types::I128, mf, pb, 0);
+        let c8 = b.ins().ireduce(types::I8, c);
+        b.ins().brif(c8, lhs, &[], rhs, &[]);
+        b.seal_block(entry);
+
+        b.switch_to_block(lhs);
+        b.ins().jump(merge, &[x.into()]);
+        b.seal_block(lhs);
+        b.switch_to_block(rhs);
+        b.ins().jump(merge, &[y.into()]);
+        b.seal_block(rhs);
+
+        b.switch_to_block(merge);
+        b.seal_block(merge);
+        let carried = b.block_params(merge)[0];
+        let sel = b.ins().select(c8, x, y);
+        let sum = b.ins().iadd(carried, sel);
+        b.ins().store(mf, sum, o, 0);
+        b.ins().return_(&[]);
+        b.finalize();
+
+        let id = module
+            .declare_function("i128_select_probe", Linkage::Export, &ctx.func.signature)
+            .unwrap();
+        module.define_function(id, &mut ctx).unwrap();
+        module.clear_context(&mut ctx);
+        module.finalize_definitions().unwrap();
+
+        let code = module.get_finalized_function(id);
+        let f: extern "C" fn(*mut i128, *const i128, *const i128, i64) =
+            unsafe { std::mem::transmute(code) };
+
+        // DECIMAL(38,x) magnitude, both signs, plus the i128 extremes.
+        let a: i128 = 99_999_999_999_999_999_999_999_999_999_999_999_999;
+        let bb: i128 = -99_999_999_999_999_999_999_999_999_999_999_999_999;
+        let mut out: i128 = 0;
+        f(&mut out, &a, &bb, 1);
+        assert_eq!(out, a.wrapping_add(a), "true picks a on both paths");
+        f(&mut out, &a, &bb, 0);
+        assert_eq!(out, bb.wrapping_add(bb), "false picks b on both paths");
+
+        let lo: i128 = i128::MIN;
+        let hi: i128 = i128::MAX;
+        f(&mut out, &lo, &hi, 1);
+        assert_eq!(out, lo.wrapping_add(lo));
+        f(&mut out, &lo, &hi, 0);
+        assert_eq!(out, hi.wrapping_add(hi));
+    }
 }
