@@ -694,6 +694,9 @@ def test_a_double_probe_key_serves_the_i64_its_double_cannot_name():
     """THE regression test: one static row, so no multiplicity is involved —
     only whether the projected key is the REAL i64 or the probe's double read
     back. The oracle says 9007199254740993; a reconstruction says ...992."""
+    # The premise the whole ticket rides on: above 2**53 an i64 shares its
+    # double with a neighbour, so no double names one i64.
+    assert float(_P53) == float(_P53_1) != float(_P53_2), "the 2**53 boundary moved"
     sql = "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0"
     want = _double_probe_duck(sql, _D_ONE)
     assert want.to_pylist() == [{"o": _P53_1}], "oracle moved — remeasure"
