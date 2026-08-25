@@ -2,7 +2,7 @@
 id: TASK-133
 title: >-
   NATURAL and USING joins key on non-scalar shared columns like DuckDB
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-08-25 00:00'
 labels:
@@ -55,15 +55,53 @@ fixes.
 ## Acceptance Criteria
 
 <!-- AC:BEGIN -->
-- [ ] #1 the join-key semantics for struct and opaque shared columns
+- [x] #1 the join-key semantics for struct and opaque shared columns
       are measured against DuckDB first (NULL fields, NULL structs,
       nested structs, and at least one non-struct opaque type), with a
       recorded matrix, before any key-encoding design
-- [ ] #2 NATURAL JOIN keys on ALL shared columns; the TASK-127 pin
+      (docs/superpowers/specs/2026-08-25-task-133-join-keys-design.md;
+      discriminator cells independently re-verified)
+- [x] #2 NATURAL JOIN keys on ALL shared columns; the TASK-127 pin
       (struct leg and TIMESTAMP leg) flips from xfail to passing
-- [ ] #3 `USING (w)` with a struct column serves like DuckDB, and the
+      (AMENDED by the split decision, AmirHossein 2026-08-25: STRUCT
+      keys serve and that leg flipped and moved to real pins; OPAQUE
+      scalar keys refuse by name until TASK-134 adds key-only lanes,
+      so the TIMESTAMP leg is REWRITTEN as a named-refusal pin rather
+      than flipped. The severity-2 -- wrong rows from silently dropped
+      keys -- is dead in both arms.)
+- [x] #3 `USING (w)` with a struct column serves like DuckDB, and the
       false "does not exist on right side of join!" refusal is gone
-- [ ] #4 a shared non-scalar column the key encoding still cannot carry
+- [x] #4 a shared non-scalar column the key encoding still cannot carry
       (if any remain) refuses by name at build -- never silently drops
       from the key set
+      (opaque columns, mismatched field sets, unlaneable fields, and
+      struct keys over a duplicate-key static all refuse by name)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed per the spec plus the decisions section. A struct join key
+expands at bind time into composite keys mirroring DuckDB's own
+row-matcher structure: a PLAIN presence key for the top-level struct
+(NULL struct never matches), a NOT-DISTINCT presence key per nested
+node (presence is part of the key -- {inner: NULL} vs
+{inner: {val: NULL}} is a miss despite identical leaf tuples), and a
+NOT-DISTINCT key per leaf, paired by field path case-insensitively.
+Presence lanes are minted lazily in the frontend, only on struct-keyed
+joins. The NATURAL arm's silent skip of unkeyable shared columns (the
+severity-2) is deleted; both arms refuse by name for what the encoding
+cannot carry. Mutation-checked: dropping the nested presence key fails
+exactly the discriminator cells; INDF at top level fails exactly the
+NULL-struct cells.
+
+Follow-ups split out on AmirHossein's word: TASK-134 (key-only lanes
+so opaque scalar keys serve), TASK-135 (the fan-out loop learns
+NOT-DISTINCT comparison so struct keys serve over duplicate-key
+statics).
+
+Gate: full root suite release AND debug, 3216 passed, 3 xfailed (the
+two TASK-133 legs are gone -- one flipped to real pins, one rewritten
+as a named refusal), cargo the 5 known pre-existing failures, 107
+live-oracle pins in test_join_keys.py.
+<!-- SECTION:NOTES:END -->
