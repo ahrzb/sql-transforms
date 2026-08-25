@@ -1136,6 +1136,48 @@ fn opaque_static_refusal(
         })
 }
 
+/// How many bindings of head `name` a joined relation contributes
+/// (TASK-127): value lanes that are not struct LEAVES (a leaf's dotted
+/// display name is not an identifier), key lanes — none under USING, where
+/// the key is merged into the left occurrence — struct heads, and columns
+/// this engine cannot serve. Ambiguity counts bindings, not lanes we can
+/// answer with.
+fn head_hits_in_join(sj: &ScopeJoin, name: &str) -> usize {
+    let named = |ci: &&u32| sj.table.cols[**ci as usize].name.eq_ignore_ascii_case(name);
+    sj.val_cols
+        .iter()
+        .filter(|ci| !sj.table.is_leaf_lane(**ci) && named(ci))
+        .count()
+        + if sj.using {
+            0
+        } else {
+            sj.key_cols.iter().filter(named).count()
+        }
+        + sj.table
+            .structs
+            .iter()
+            .filter(|s| s.name.eq_ignore_ascii_case(name))
+            .count()
+        + sj.table
+            .opaque
+            .iter()
+            .filter(|(c, _)| c.eq_ignore_ascii_case(name))
+            .count()
+}
+
+/// Whether `name` binds in this joined relation at all — the qualified
+/// question, where a USING key is still addressable and `rowid` still
+/// answers for itself. A head that does NOT bind is the one case DuckDB
+/// retries as a shorter interpretation (TASK-127).
+fn binds_in_join(sj: &ScopeJoin, name: &str) -> bool {
+    head_hits_in_join(sj, name) > 0
+        || name.eq_ignore_ascii_case("rowid")
+        || sj
+            .key_cols
+            .iter()
+            .any(|&ci| sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name))
+}
+
 /// Where a struct-tree walk stopped (TASK-132): shared by the row and
 /// static paths, which render the SAME stop into their own pinned error
 /// spellings. `at` indexes the FIELD parts handed to [`walk_fields`];
@@ -2309,8 +2351,15 @@ impl Binder<'_> {
                     Some(t) => format!("{t}.{ex}"),
                     None => ex.to_string(),
                 };
+                // Name the scope that was actually searched, as DuckDB does
+                // (measured): a QUALIFIED star searched one relation, an
+                // unqualified one searched every relation in FROM.
+                let scope = match qualifier {
+                    Some(q) => format!("'{q}'"),
+                    None => "FROM clause".to_string(),
+                };
                 return Err(PrepareError::Bind(format!(
-                    "column \"{disp}\" in EXCLUDE list not found in FROM clause"
+                    "column \"{disp}\" in EXCLUDE list not found in {scope}"
                 )));
             }
         }
@@ -3422,7 +3471,9 @@ impl Binder<'_> {
                     .iter()
                     .any(|sj| sj.name.eq_ignore_ascii_case(&parts[1].value))
             {
-                return self.qualified_path(&parts[1].value, &parts[2..]);
+                if let Some(r) = self.qualified_path(&parts[1].value, &parts[2..]) {
+                    return r;
+                }
             }
         }
         // R2: this.column[.fields...] / join.column
@@ -3431,12 +3482,8 @@ impl Binder<'_> {
                 if let Some(r) = self.this_col_with_fields(&parts[1].value, &parts[2..]) {
                     return r;
                 }
-            } else if self
-                .joins
-                .iter()
-                .any(|sj| sj.name.eq_ignore_ascii_case(&parts[0].value))
-            {
-                return self.qualified_path(&parts[0].value, &parts[1..]);
+            } else if let Some(r) = self.qualified_path(&parts[0].value, &parts[1..]) {
+                return r;
             }
         }
         // R3: bare column[.fields...]
@@ -3444,8 +3491,24 @@ impl Binder<'_> {
             if let Some(r) = self.bare_col_with_fields(&parts[0].value, &parts[1..]) {
                 return r;
             }
-            // Nothing bound anywhere: reproduce the pre-struct error
-            // shapes (unknown table / column does not exist).
+            // Nothing bound anywhere. DuckDB surfaces the error of the
+            // LONGEST rung whose RELATION existed (measured: `s.nope.x` and
+            // `main.s.nope.x.y` both say `Table "s" does not have a column
+            // named "nope"`); with no relation at all, the pre-struct
+            // shapes stand.
+            let relation = |i: usize| {
+                parts[i].value.eq_ignore_ascii_case(&self.this_name)
+                    || self
+                        .joins
+                        .iter()
+                        .any(|sj| sj.name.eq_ignore_ascii_case(&parts[i].value))
+            };
+            if parts.len() >= 3 && relation(1) {
+                return self.qualified(&parts[1].value, &parts[2].value);
+            }
+            if relation(0) {
+                return self.qualified(&parts[0].value, &parts[1].value);
+            }
             return match parts.len() {
                 2 => self.qualified(&parts[0].value, &parts[1].value),
                 3 => self.qualified(&parts[1].value, &parts[2].value),
@@ -3465,77 +3528,94 @@ impl Binder<'_> {
     /// `w.z.y.x.a` are different lanes and `w.a` finds nothing. No dotted
     /// string is ever built: a quoted `"w.mean"` is ONE part and lands in
     /// the single-part branch, where it can only mean a literal column.
+    ///
+    /// TASK-127: `None` means BACKTRACK — the relation is in scope but the
+    /// head is not one of its columns, DuckDB's only fall-through between
+    /// ladder rungs (bind_context.cpp:360-363). Everything the relation
+    /// does bind is answered here, ambiguous and unservable included.
     fn qualified_path(
         &self,
         table: &str,
         parts: &[sqlparser::ast::Ident],
-    ) -> Result<SExpr, PrepareError> {
+    ) -> Option<Result<SExpr, PrepareError>> {
         let head = &parts[0].value;
-        if parts.len() == 1 {
-            return self.qualified(table, head);
-        }
-        let sj_hit = self
+        let (j, sj) = self
             .joins
             .iter()
             .enumerate()
-            .find(|(_, sj)| sj.name.eq_ignore_ascii_case(table));
-        if let Some((j, sj)) = sj_hit {
-            if let Some(sc) = sj
-                .table
-                .structs
-                .iter()
-                .find(|s| s.name.eq_ignore_ascii_case(head))
-            {
-                let fields = &parts[1..];
-                return match walk_fields(&sc.fields, fields) {
-                    Ok(ci) => {
-                        let pos = sj
-                            .val_cols
-                            .iter()
-                            .position(|&v| v == ci)
-                            .ok_or_else(|| {
-                                PrepareError::Internal(format!(
-                                    "struct leaf lane {ci} of '{table}' is not a value lane"
-                                ))
-                            })?;
-                        Ok(self.static_lane(j, pos))
-                    }
-                    Err(WalkStop::Missing { at }) => Err(PrepareError::Bind(format!(
-                        "Could not find key \"{}\" in struct",
-                        fields[at].value
-                    ))),
-                    Err(WalkStop::NotStruct { at, field }) => Err(PrepareError::Bind(format!(
-                        "Cannot extract field '{}' from expression \"{field}\" \
-                         because it is not a struct",
-                        fields[at + 1].value
-                    ))),
-                    Err(WalkStop::OpaqueField { field }) => Err(unsup(format!(
-                        "struct field '{field}' has a non-scalar type"
-                    ))),
-                    // An INTERMEDIATE node: the path is real and only its
-                    // VALUE is a struct. Same refusal as the whole column,
-                    // not a "no such key" lie. The dotted spelling here is
-                    // DISPLAY, rebuilt from the parts.
-                    Err(WalkStop::Nested { at, .. }) => {
-                        let display: Vec<&str> = std::iter::once(head.as_str())
-                            .chain(fields[..=at].iter().map(|f| f.value.as_str()))
-                            .collect();
-                        Err(unsup(format!(
-                            "static table '{table}' column '{}' is a struct — \
-                             project its fields instead",
-                            display.join(".")
-                        )))
-                    }
-                };
-            }
+            .find(|(_, sj)| sj.name.eq_ignore_ascii_case(table))?;
+        if !binds_in_join(sj, head) {
+            return None;
         }
-        match self.qualified(table, head) {
+        if parts.len() == 1 {
+            return Some(self.qualified(table, head));
+        }
+        if let Some(sc) = sj
+            .table
+            .structs
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(head))
+        {
+            return Some(self.static_struct_lane(j, sc, table, head, &parts[1..]));
+        }
+        Some(match self.qualified(table, head) {
             Ok(_) => Err(PrepareError::Bind(format!(
                 "Cannot extract field '{}' from expression \"{head}\" \
-                 because it is not a struct",
+                 because it is not a struct, union, map, or json",
                 parts[1].value
             ))),
             Err(e) => Err(e),
+        })
+    }
+
+    /// Walk one static struct TREE of join `j` down `fields` to its leaf
+    /// lane. Shared by the qualified head and the unqualified one (TASK-127)
+    /// — `table` and `head` are the spellings the user typed, because the
+    /// refusals quote them back.
+    fn static_struct_lane(
+        &self,
+        j: usize,
+        sc: &super::plan::StructCol,
+        table: &str,
+        head: &str,
+        fields: &[sqlparser::ast::Ident],
+    ) -> Result<SExpr, PrepareError> {
+        let sj = &self.joins[j];
+        match walk_fields(&sc.fields, fields) {
+            Ok(ci) => {
+                let pos = sj.val_cols.iter().position(|&v| v == ci).ok_or_else(|| {
+                    PrepareError::Internal(format!(
+                        "struct leaf lane {ci} of '{table}' is not a value lane"
+                    ))
+                })?;
+                Ok(self.static_lane(j, pos))
+            }
+            Err(WalkStop::Missing { at }) => Err(PrepareError::Bind(format!(
+                "Could not find key \"{}\" in struct",
+                fields[at].value
+            ))),
+            Err(WalkStop::NotStruct { at, field }) => Err(PrepareError::Bind(format!(
+                "Cannot extract field '{}' from expression \"{field}\" \
+                 because it is not a struct, union, map, or json",
+                fields[at + 1].value
+            ))),
+            Err(WalkStop::OpaqueField { field }) => Err(unsup(format!(
+                "struct field '{field}' has a non-scalar type"
+            ))),
+            // An INTERMEDIATE node: the path is real and only its VALUE is
+            // a struct. Same refusal as the whole column, not a "no such
+            // key" lie. The dotted spelling here is DISPLAY, rebuilt from
+            // the parts.
+            Err(WalkStop::Nested { at, .. }) => {
+                let display: Vec<&str> = std::iter::once(head)
+                    .chain(fields[..=at].iter().map(|f| f.value.as_str()))
+                    .collect();
+                Err(unsup(format!(
+                    "static table '{table}' column '{}' is a struct — \
+                     project its fields instead",
+                    display.join(".")
+                )))
+            }
         }
     }
 
@@ -3552,7 +3632,7 @@ impl Binder<'_> {
                 if let Some(f) = fields.first() {
                     return Some(Err(PrepareError::Bind(format!(
                         "Cannot extract field '{}' from expression \"{}\" \
-                         because it is not a struct",
+                         because it is not a struct, union, map, or json",
                         f.value, c.name
                     ))));
                 }
@@ -3579,10 +3659,11 @@ impl Binder<'_> {
         Some(self.walk_struct(sc, fields))
     }
 
-    /// A bare first part: the driving table's columns (incl. structs and
-    /// opaque) — static value columns are scalars, so `x.field` never
-    /// binds through them silently (a scalar hit with fields is the hard
-    /// not-a-struct error, matching DuckDB).
+    /// A bare first part, resolved over the WHOLE scope (TASK-127): the
+    /// driving table's columns (incl. structs and opaque) and every joined
+    /// table's — a static struct head is a binding here exactly as it is
+    /// under a qualifier, which is what lets an unqualified `w.mean` reach
+    /// a lane instead of hunting for a table called `w`.
     fn bare_col_with_fields(
         &self,
         name: &str,
@@ -3593,48 +3674,50 @@ impl Binder<'_> {
         // even when only one side is a struct the path could walk. Resolving
         // the struct first answered a query DuckDB rejects (the largest
         // single class the campaign sees: 78 of 161 findings at 20k seeds).
-        let in_join = self.joins.iter().any(|sj| {
-            sj.val_cols
+        // GetMatchingBinding THROWS and no rung catches it, so the verdict
+        // is on the head name alone, whatever the heads hold.
+        let row = self.this_col_with_fields(name, fields);
+        let hits = usize::from(row.is_some())
+            + self
+                .joins
                 .iter()
-                .chain(sj.key_cols.iter())
-                .any(|&ci| {
-                    !sj.table.is_leaf_lane(ci)
-                        && sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name)
-                })
-                || sj
-                    .table
-                    .structs
-                    .iter()
-                    .any(|s| s.name.eq_ignore_ascii_case(name))
-                || sj
-                    .table
-                    .opaque
-                    .iter()
-                    .any(|(c, _)| c.eq_ignore_ascii_case(name))
-        });
-        if let Some(r) = self.this_col_with_fields(name, fields) {
-            if in_join {
-                return Some(Err(PrepareError::Bind(format!(
-                    "ambiguous column '{name}' (qualify it)"
-                ))));
-            }
-            return Some(r);
+                .map(|sj| head_hits_in_join(sj, name))
+                .sum::<usize>();
+        if hits == 0 {
+            return None;
         }
-        for sj in &self.joins {
-            for &ci in sj.val_cols.iter().chain(sj.key_cols.iter()) {
-                if sj.table.is_leaf_lane(ci) {
-                    continue;
-                }
-                if sj.table.cols[ci as usize].name.eq_ignore_ascii_case(name) {
-                    return Some(Err(PrepareError::Bind(format!(
-                        "Cannot extract field '{}' from expression \"{name}\" \
-                         because it is not a struct",
-                        fields[0].value
-                    ))));
-                }
-            }
+        if hits > 1 {
+            return Some(Err(PrepareError::Bind(format!(
+                "ambiguous column '{name}' (qualify it)"
+            ))));
         }
-        None
+        if row.is_some() {
+            return row;
+        }
+        let (j, sj) = self
+            .joins
+            .iter()
+            .enumerate()
+            .find(|(_, sj)| head_hits_in_join(sj, name) > 0)
+            .expect("the single hit is in a join");
+        if let Some(sc) = sj
+            .table
+            .structs
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name))
+        {
+            return Some(self.static_struct_lane(j, sc, &sj.name, name, fields));
+        }
+        if let Some(e) = opaque_static_refusal(&sj.table, name, &sj.name) {
+            return Some(Err(e));
+        }
+        // A scalar lane (value or key): a field asked of it is the
+        // pre-struct error, unchanged.
+        Some(Err(PrepareError::Bind(format!(
+            "Cannot extract field '{}' from expression \"{name}\" \
+             because it is not a struct, union, map, or json",
+            fields[0].value
+        ))))
     }
 
     /// Walk `fields` down a struct column to a scalar leaf lane. Empty
@@ -3665,7 +3748,7 @@ impl Binder<'_> {
             ))),
             Err(WalkStop::NotStruct { at, field }) => Err(PrepareError::Bind(format!(
                 "Cannot extract field '{}' from expression \"{field}\" \
-                 because it is not a struct",
+                 because it is not a struct, union, map, or json",
                 fields[at + 1].value
             ))),
             Err(WalkStop::OpaqueField { field }) => Err(unsup(format!(
