@@ -122,8 +122,9 @@ def test_numpy_bool_crosses_the_bool_lane():
 
 
 def test_infer_arrow_serves_a_struct_row_column():
-    """TASK-114: the refusal this test used to pin is gone. A struct row
-    column crosses the columnar boundary and both entry points agree."""
+    """A struct row column crosses the COLUMNAR boundary, and the two entry
+    points agree on it -- infer_arrow is not a narrower surface than
+    infer_rows."""
     schema = pa.schema([pa.field("st", pa.struct([pa.field("x", pa.int64())]))])
     fn = build("SELECT st.x AS o FROM __THIS__", schema=schema)
     rows = [{"st": {"x": 1}}, {"st": None}]
@@ -168,10 +169,10 @@ def test_struct_row_column_serves():
     assert fn.infer_rows([{"st": None}]) == [{"o": None}]
 
 
-# TASK-116. The same column used to bind or refuse depending only on which
-# table it sat in: served in a ROW table (above), unserved in a STATIC one.
-# A static table is already `map(keys) -> value lanes`, and a struct's scalar
-# leaves ARE a lane set, so they flatten under their FULL ORDERED PATH.
+# A struct column serves in a STATIC table exactly as it does in a ROW table
+# (above) -- which table it sits in must not decide whether it binds. A static
+# table is already `map(keys) -> value lanes`, and a struct's scalar leaves ARE
+# a lane set, so they flatten under their FULL ORDERED PATH.
 #
 # Full ordered path is the load-bearing part. Keying by leaf name, by name
 # set, or by suffix would collapse `w.x.y.z.a` and `w.z.y.x.a` into one lane
@@ -260,7 +261,7 @@ def test_a_static_struct_path_that_is_not_a_lane_refuses_by_name(expr, match):
     assert "does not exist" not in str(e.value), str(e.value)
 
 
-# TASK-132. The lane's PATH is data; the dotted spelling is display-only.
+# The lane's PATH is data; the dotted spelling is display-only.
 # The RFC's collision table: a struct leaf and a literal column that share
 # the dotted spelling are DIFFERENT references (quoting is resolved by the
 # lexer, so `s."w.mean"` is two parts and `s.w.mean` is three) and DuckDB
@@ -448,12 +449,12 @@ def test_non_arrow_schema_refuses_by_name():
         build("SELECT a AS o FROM __THIS__", schema=Row)
 
 
-# TASK-110: a static-tables-only query compiles to a fixed answer, so it
-# structurally cannot see input rows. It used to DROP them without a word —
-# the one input mistake at this boundary that did not refuse by name, and
-# the one that hides a real caller bug: serving N request rows through a
-# function that cannot read them returns 1 fixed row, and the caller's
-# zip/positional assumption breaks somewhere downstream instead of here.
+# A static-tables-only query compiles to a fixed answer, so it structurally
+# cannot see input rows. Dropping them silently would be the one input mistake
+# at this boundary that does not refuse by name, and the one that hides a real
+# caller bug: serving N request rows through a function that cannot read them
+# returns 1 fixed row, and the caller's zip/positional assumption breaks
+# somewhere downstream instead of here.
 def _constant_fn(shape=None):
     statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
     kw = {"shape": shape} if shape else {}
@@ -507,9 +508,9 @@ def test_compiled_build_is_untouched_by_the_constant_guard():
 
 # --------------------------------------------------------- the static star --
 #
-# TASK-125. A star over a static relation expands the DECLARED column list, in
-# declared order. We serve no struct and no non-vocabulary value, so a star
-# that covers one refuses NAMING it -- never a different column set: expanding
+# A star over a static relation expands the DECLARED column list, in declared
+# order. We serve no struct and no non-vocabulary value, so a star that
+# covers one refuses NAMING it -- never a different column set: expanding
 # a struct's leaves invents columns DuckDB does not output, and dropping an
 # opaque column removes one it does. EXCLUDE takes the column out of the star
 # before that check, exactly as it does on the row path.
@@ -572,8 +573,8 @@ def test_a_static_star_refuses_a_column_it_cannot_serve(star, kind, unservable):
 
 @pytest.mark.parametrize(("kind", "unservable"), [("struct", "w"), ("opaque", "ts")])
 def test_exclude_lets_a_static_star_drop_what_it_cannot_serve(kind, unservable):
-    """TASK-127 AC #1: the star entry restores the NAME, so EXCLUDE can take
-    the column out before the refusal fires -- and the rest serves."""
+    """The star entry restores the NAME, so EXCLUDE can take the column out
+    before the refusal fires -- and the rest serves."""
     sql = f"SELECT s.* EXCLUDE ({unservable}) FROM __THIS__ JOIN s ON s.id = __THIS__.k"
     names, want = _duck125(sql, kind)
     assert names == ["id", "z"] and want == [(1, 7)]
@@ -612,8 +613,8 @@ def test_a_scalar_only_static_star_expands_in_declared_order():
 
 # ------------------------------------------- row limits on the constant path --
 #
-# TASK-128. A static-tables-only query is evaluated ONCE at build by DuckDB
-# and frozen. A row limit picks WHICH rows survive, and without a total order
+# A static-tables-only query is evaluated ONCE at build by DuckDB and frozen.
+# A row limit picks WHICH rows survive, and without a total order
 # that pick is not a function of the query: measured 2026-08-19, the same
 # `GROUP BY ... FETCH FIRST 1 ROWS ONLY` over the same four rows returned
 # FOUR distinct answers across twelve fresh connections -- and ORDER BY does
@@ -650,14 +651,16 @@ def test_the_constant_path_without_a_limit_is_untouched():
     assert fn.infer_rows([]) == [{"o": 6}]
 
 
-# ------------------------------------------ bare-name ambiguity (TASK-121) --
+# ------------------------------------------------------ bare-name ambiguity --
 #
 # DuckDB decides AMBIGUITY on the bare HEAD name before it looks at struct
 # fields or lanes, and a static STRUCT's name binds for that purpose even
-# though we serve no struct value. Three spellings, one rule; closed
-# 2026-08-19, formerly the largest single class the campaign saw (78/161
-# findings at 20k seeds).
+# though we serve no struct value. Three spellings, one rule -- measured
+# 2026-08-19 as the largest single divergence class the campaign had seen
+# (78 of 161 findings at 20k seeds).
 def _ambig(sql, row, static):
+    """Assert BOTH engines refuse `sql` as ambiguous, over a fixed row table
+    (`c0 STRUCT(f0 BIGINT), v BIGINT`) joined to static `s0`."""
     import duckdb as _duck
 
     con = _duck.connect()
@@ -732,13 +735,13 @@ def test_a_sole_static_struct_bare_name_refuses_as_a_struct_not_as_missing():
     assert "does not exist" not in str(e.value)
 
 
-# --------------------------------- the unqualified ladder (TASK-127) --
+# ------------------------------------------------ the unqualified ladder --
 #
 # DuckDB's two-part `a.b` reads table-then-column FIRST and falls through to
 # column-then-field only when the relation matched and its COLUMN half
-# missed (bind_context.cpp:360-363). We had no fall-through at all, and a
-# static struct head was invisible to the bare-name rung -- so every
-# reference DuckDB resolves that way came back as `unknown table 'w'`.
+# missed (bind_context.cpp:360-363). A static struct head must be visible to
+# the bare-name rung, or every reference DuckDB resolves that way comes back
+# as `unknown table 'w'`.
 _S127 = pa.struct(
     [
         ("mean", pa.float64()),
@@ -903,10 +906,10 @@ def test_a_join_alias_beside_a_row_column_of_the_same_name_is_ambiguous():
 
 
 def test_a_row_struct_leaf_and_a_dotted_sibling_both_serve():
-    """The ROW side of the RFC's collision table (TASK-127's collision
-    criterion). A leaf lane's dotted name is DISPLAY post-132, so it is no
-    longer a duplicate identifier: the table must build -- including for a
-    query that touches neither column -- and both spellings serve."""
+    """The ROW side of the RFC's collision table. A leaf lane's dotted name is
+    DISPLAY, never an identifier, so it does not collide with a real column of
+    that spelling: the table must build -- including for a query that touches
+    neither column -- and both spellings serve."""
     row = pa.schema(
         [
             pa.field("k", pa.int64(), nullable=False),
@@ -943,10 +946,11 @@ def test_two_plain_row_columns_of_the_same_name_refuse_by_name():
     assert "internal" not in str(e.value).lower(), str(e.value)
 
 
-# ------------------------------- refusals quoted from DuckDB (TASK-127) --
+# ----------------------------------------- refusals quoted from DuckDB --
 #
-# Both engines already refused in these two cells; only our wording was
-# poorer. DuckDB's words carry more information, so we adopt them.
+# Both engines refuse in these two cells, so only the WORDING is at stake --
+# and DuckDB's words carry more information than ours did, so the refusal
+# text is quoted from it verbatim.
 def test_a_not_a_struct_refusal_enumerates_what_duckdb_enumerates():
     sql = "SELECT z.bad AS o FROM __THIS__ JOIN s ON k = s.id"
     with pytest.raises(duckdb.Error) as oracle:

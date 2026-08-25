@@ -1,7 +1,7 @@
-"""Standing differential regexp fuzzer: duckdb vs the engine (TASK-54).
+"""Standing differential regexp fuzzer: duckdb vs the engine.
 
-Wave B (TASK-53) translated DuckDB/RE2 patterns to rust-regex behind a
-measured reject list (docs/superpowers/specs/2026-07-27-waveB-regexp-pins.md).
+Wave B translated DuckDB/RE2 patterns to rust-regex behind a measured reject
+list (docs/superpowers/specs/2026-07-27-waveB-regexp-pins.md).
 The one-time battery had 98 entries; the residual risk is constructs slipping
 through translate_pattern's pass-through path. This test generates patterns
 from a grammar biased toward the divergence-prone axes (Perl classes in/out

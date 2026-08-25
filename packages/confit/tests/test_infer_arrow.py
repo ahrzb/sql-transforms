@@ -1,4 +1,4 @@
-"""The columnar boundary (TASK-60): infer_arrow == infer_rows, always.
+"""The columnar boundary: infer_arrow == infer_rows, always.
 
 The differential is the contract: same engine, same program, two
 boundaries — parity is by construction, this suite makes drift
@@ -124,21 +124,20 @@ def test_named_rejections():
                 ),
             )
         )
-    # The "struct schemas use the row path" block retired with TASK-114:
-    # infer_arrow walks the lane path now, so a struct row column serves.
-    # Its replacements are the struct pins at the bottom of this file.
+    # A struct row column is NOT rejected here: infer_arrow walks the lane
+    # path, so it serves. The struct pins are at the bottom of this file.
 
 
-# test_every_scenario_refuses_a_supplied_output_model (TASK-71) is gone with
-# output_model=: the kwarg itself no longer exists, so there is nothing left
-# to supply and no separate refusal path to differential-test. Its premise
-# ("a supplied model flips infer_arrow's behaviour") is now covered once, at
-# the constructor, by test_arrow_schema_api.py::test_infer_and_output_model_are_gone.
+# There is no "infer_arrow refuses a supplied output model" pin because
+# output_model= no longer exists: nothing can be supplied, so there is no
+# separate refusal path to differential-test. The premise ("a supplied model
+# flips infer_arrow's behaviour") is covered once, at the constructor, by
+# test_arrow_schema_api.py::test_infer_and_output_model_are_gone.
 
 
-# TASK-79 landed with m-8 phase 2: integer widths are typed for real, so the
-# schema suite allows NO differences and the former width pin is a plain
-# parity test. The catalogue lives in test_integer_widths.py.
+# Integer widths are typed for real (m-8 phase 2), so the schema suite allows
+# NO differences and this is a plain parity test rather than a width pin. The
+# catalogue lives in test_integer_widths.py.
 def test_infer_arrow_integer_width_matches_duckdb():
     import duckdb
 
@@ -155,8 +154,8 @@ def test_infer_arrow_integer_width_matches_duckdb():
 
 
 def test_output_schema_matches_duckdb_for_every_scenario():
-    """TASK-72: values always agreed; the SCHEMA did not, and a schema that
-    does not match DuckDB's cannot be stacked with DuckDB's output."""
+    """Values agreeing is not enough: a schema that does not match DuckDB's
+    cannot be stacked with DuckDB's own output."""
     for mod in sc.all_scenarios():
         statics = mod.make_statics(sc.SEED)
         fn = sc.build_spec_fn(mod, statics)
@@ -181,7 +180,7 @@ def test_sliced_and_recordbatch_inputs():
     assert fn.infer_arrow(rb).to_pylist() == tbl.to_pylist()
 
 
-# --------------------------------------- TASK-67: unaligned value buffers --
+# ------------------------------------------------ unaligned value buffers --
 #
 # Arrow does not promise aligned value buffers. `np.frombuffer(blob,
 # np.float64, offset=4)` — what you get parsing a packed binary record or an
@@ -324,11 +323,10 @@ def test_unaligned_model_tables_at_construction():
     assert out == "ok"
 
 
-# ------------------------------------- TASK-114: struct row columns ingest --
+# ---------------------------------------------- struct row columns ingest --
 #
-# infer_arrow used to refuse any row schema with a struct column; infer_rows
-# served it. The entry points now agree, because ingest walks the lane's
-# SEGMENT PATH (TASK-132) through the StructArray's children.
+# Both entry points serve a row schema with a struct column, because ingest
+# walks the lane's SEGMENT PATH through the StructArray's children.
 #
 # The one hazard the design must not get wrong: a NOT NULL child under a
 # nullable parent has no validity buffer of its own, and its data buffer

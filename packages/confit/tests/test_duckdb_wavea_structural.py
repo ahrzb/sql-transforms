@@ -1,4 +1,4 @@
-"""Wave-A structural tails vs the duckdb oracle (TASK-56).
+"""Wave-A structural tails vs the duckdb oracle.
 
 Pins: docs/superpowers/specs/2026-07-28-waveA-structural-tails.md +
 pins-waveA/*.json — structs-as-lanes, FROM colon alias, reverse()
@@ -119,7 +119,7 @@ def test_null_regex_pattern_vs_oracle():
 
 
 def test_unreferenced_nonscalar_column_serves():
-    # TASK-56 lazy rejection: a datetime field blocks nothing unless
+    # Lazy rejection: a non-vocabulary field blocks nothing unless it is
     # referenced (including via *).
     D = pa.schema(
         [

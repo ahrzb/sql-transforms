@@ -1,10 +1,10 @@
-"""TASK-129: the oracle's order legs must actually FIRE.
+"""The oracle's order legs must actually FIRE.
 
-A comparison leg that never fails verifies nothing (the review that produced
-this ticket found `_key` sorting every leg, so ANY permutation of the row
-path passed). Each test here wraps a real engine in a deliberate order bug
-and requires the leg to report it -- these are capability pins: delete the
-leg, or quietly route it back through the multiset form, and they go red.
+A comparison leg that never fails verifies nothing (a review found `_key`
+sorting every leg, so ANY permutation of the row path passed). Each test here
+wraps a real engine in a deliberate order bug and requires the leg to report
+it -- these are capability pins: delete the leg, or quietly route it back
+through the multiset form, and they go red.
 """
 
 from __future__ import annotations

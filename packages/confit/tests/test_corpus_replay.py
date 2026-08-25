@@ -49,11 +49,14 @@ _KNOWN_DIVERGENT_SOURCES = {
 }
 
 # Corpus spellings whose DECLARED input schema our row surface cannot
-# express: pydantic `int` is width-less, so this corpus INTEGER column
-# binds as int64 — and round(f64, i64) then refuses HERE exactly as
-# round(DOUBLE, BIGINT) refuses on DuckDB (TASK-97, probe 2026-08-13).
-# Not a divergence: an input schema we cannot declare. Narrow ROW-input
-# types are an open API question (statics get widths in TASK-96).
+# express — clean, not a divergence: the SQL is fine, the declaration is
+# not.
+#
+# The one entry dates from the width-less pydantic row surface: `int` could
+# not spell INTEGER, so this corpus column bound as int64 and round(f64,
+# i64) refused HERE exactly as round(DOUBLE, BIGINT) refuses on DuckDB
+# (probe 2026-08-13). Row schemas are arrow declarations now and carry the
+# INTEGER straight through.
 _INEXPRESSIBLE_INPUTS = {
     (
         "test/sql/function/numeric/test_round.test",
@@ -70,7 +73,9 @@ def _norm_row(row) -> tuple[str, ...]:
 
 
 def _replay(case: dict) -> tuple[str, str]:
-    """-> (outcome, detail)."""
+    """Rebuild one mined case's tables in a fresh DuckDB, run it through the
+    engine, and classify -> (outcome, detail). Outcomes as in the module
+    docstring; `detail` is empty on a match and quotes the cause otherwise."""
     con = duckdb.connect()
     for stmt in case["setup"]:
         try:
@@ -115,7 +120,7 @@ def _replay(case: dict) -> tuple[str, str]:
     # DuckDB's own arrow schema for the driving table, straight through: no
     # synthesized model, no width loss. A field the engine can't bind is its
     # own clean opaque rejection (unsupported if referenced by the SQL,
-    # ignored otherwise -- TASK-56).
+    # ignored otherwise).
     row_schema = arrow[driving].schema
     statics = {t: a for t, a in arrow.items() if t != driving}
 
@@ -125,8 +130,8 @@ def _replay(case: dict) -> tuple[str, str]:
         )
     except Exception as e:  # noqa: BLE001 -- classification, not control flow
         msg = str(e)
-        # Stage-B (TASK-59): multiplicity constructs build only under the
-        # opt-in shape='many'. The retry keeps proving the DEFAULT rejects
+        # Stage-B: multiplicity constructs build only under the opt-in
+        # shape='many'. The retry keeps proving the DEFAULT rejects
         # while letting the corpus exercise the multiplicity path; rows
         # compare as a sorted multiset below, which is exactly the pinned
         # parity contract (DuckDB's join order is a hash-join accident).
@@ -154,8 +159,8 @@ def _replay(case: dict) -> tuple[str, str]:
         return "unsupported", "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
     try:
         # A constant build reads only static tables and refuses rows it
-        # cannot see (TASK-110), so the replay hands it the empty call it
-        # documents rather than the driving table.
+        # cannot see, so the replay hands it the empty call it documents
+        # rather than the driving table.
         rows_in = (
             []
             if fn.backend == "constant"

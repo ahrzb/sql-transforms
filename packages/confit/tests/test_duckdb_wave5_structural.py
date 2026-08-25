@@ -2,8 +2,7 @@
 
 Pins: docs/superpowers/specs/2026-07-26-wave5-structural-pins.md — colon
 prefix aliases (token pre-rewrite), slices, extended subscripts, bitwise
-ops, ^@/GLOB, star forms, duplicate-name contract, binder tail. The file
-grows stage by stage with TASK-52.
+ops, ^@/GLOB, star forms, duplicate-name contract, binder tail.
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ T_ROWS = [
 
 
 def test_null_value_statics_vs_oracle():
-    # TASK-55: NULL values in static tables flow through joins as NULL
-    # (INNER and LEFT, incl. under residual predicates); NULL keys drop.
+    # NULL values in static tables flow through joins as NULL (INNER and
+    # LEFT, incl. under residual predicates); NULL keys drop.
     dim = static(
         {"id": "int", "v": "int?", "w": "str?"},
         [
@@ -60,7 +59,7 @@ def test_null_value_statics_vs_oracle():
 
 
 def test_schema_qualified_relations_vs_oracle():
-    # TASK-55: schema qualifiers are registry-noise; suffix match binds.
+    # Schema qualifiers are registry-noise; suffix match binds.
     duck_check("SELECT main.__THIS__.a FROM main.__THIS__", T, T_ROWS)
 
 
@@ -196,10 +195,10 @@ def test_bracket_slices_vs_oracle():
 
 
 def test_joined_relation_column_list_alias_vs_oracle():
-    # TASK-126: `AS x(p, q)` on a JOINED or comma relation renames
-    # positionally over the DECLARED columns, exactly like the driving arm
-    # (t AS u(x, y) above). The clause was silently DROPPED before, which
-    # answered with the wrong names in scope in all three directions.
+    # `AS x(p, q)` on a JOINED or comma relation renames positionally over
+    # the DECLARED columns, exactly like the driving arm (t AS u(x, y)
+    # above). Dropping the clause silently puts the wrong names in scope,
+    # in all three directions below.
     dim = static({"a": "int", "b": "int"}, [{"a": 3, "b": 30}, {"a": 7, "b": 70}])
     for sql in [
         # the rename works, old spellings below refuse
@@ -218,8 +217,8 @@ def test_joined_relation_column_list_alias_vs_oracle():
 
 
 def test_joined_relation_column_list_alias_refusals():
-    # Two directions DuckDB refuses and we must refuse too (they SERVED
-    # before TASK-126), plus one deliberate cost.
+    # Two directions DuckDB refuses and we must refuse too, plus one
+    # deliberate cost.
     row = pa.schema([pa.field("a", pa.int64(), nullable=False)])
     stat = pa.table({"a": pa.array([3], pa.int64()), "b": pa.array([30], pa.int64())})
 
@@ -260,7 +259,7 @@ def test_joined_relation_column_list_alias_refusals():
 
 
 def test_if_and_ifnull_vs_oracle():
-    # TASK-98: if() IS the ternary CASE, ifnull is 2-arg coalesce -- both
+    # if() IS the ternary CASE, ifnull is 2-arg coalesce -- both
     # desugar to their AST twin and re-enter the binder, so type unification,
     # SQLNULL channels and lazy arms all apply verbatim.
     dim = static({"a": "int", "label": "str?"}, [{"a": 3, "label": None}])
