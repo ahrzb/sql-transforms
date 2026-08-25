@@ -727,3 +727,247 @@ def test_a_sole_static_struct_bare_name_refuses_as_a_struct_not_as_missing():
             static_tables={"s0": static},
         )
     assert "does not exist" not in str(e.value)
+
+
+# --------------------------------- the unqualified ladder (TASK-127) --
+#
+# DuckDB's two-part `a.b` reads table-then-column FIRST and falls through to
+# column-then-field only when the relation matched and its COLUMN half
+# missed (bind_context.cpp:360-363). We had no fall-through at all, and a
+# static struct head was invisible to the bare-name rung -- so every
+# reference DuckDB resolves that way came back as `unknown table 'w'`.
+_S127 = pa.struct(
+    [
+        ("mean", pa.float64()),
+        ("sd", pa.float64()),
+        ("inner", pa.struct([("val", pa.float64())])),
+    ]
+)
+_STATIC127 = pa.table(
+    {
+        "id": pa.array([5], pa.int64()),
+        "w": pa.array([{"mean": 1.5, "sd": 0.5, "inner": {"val": 9.0}}], _S127),
+        "z": pa.array([7], pa.int64()),
+    }
+)
+
+
+def _serves127(sql, static=_STATIC127):
+    """Both engines answer, and the OUTPUT NAME is half the answer: an
+    unqualified path is named by its last part, spelled as typed."""
+    want = _duck132(sql, static)
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": static}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
+    assert got.to_pylist() == want.to_pylist()
+    assert got.schema.names == want.schema.names
+    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # SELECT: the head is a static struct nobody qualified
+        "SELECT w.mean FROM __THIS__ JOIN s ON k = s.id",
+        "SELECT W.MEAN FROM __THIS__ JOIN s ON k = s.id",
+        "SELECT w.inner.val FROM __THIS__ JOIN s ON k = s.id",
+        "SELECT w.sd + 1 AS o FROM __THIS__ JOIN s ON k = s.id",
+        # the same heads in a WHERE
+        "SELECT z AS o FROM __THIS__ JOIN s ON k = s.id WHERE w.mean > 1.0",
+        "SELECT z AS o FROM __THIS__ JOIN s ON k = s.id WHERE w.inner.val > 1.0",
+        "SELECT z AS o FROM __THIS__ JOIN s ON k = s.id WHERE w.sd < 1.0",
+        # and in an ON residual
+        "SELECT z AS o FROM __THIS__ JOIN s ON k = s.id AND w.mean > 1.0",
+        "SELECT z AS o FROM __THIS__ JOIN s ON k = s.id AND w.inner.val > 1.0",
+        "SELECT z AS o FROM __THIS__ JOIN s ON k = s.id AND w.sd < 1.0",
+    ],
+)
+def test_an_unqualified_static_struct_path_serves(sql):
+    _serves127(sql)
+
+
+@pytest.mark.parametrize(
+    ("expr", "match", "names_a_table"),
+    [
+        # the head bound: the miss is about the KEY, not about a table
+        ("w.nope", 'Could not find key "nope"', False),
+        ("w.inner.nope", 'Could not find key "nope"', False),
+        ("z.bad", "not a struct", False),
+        # a head in no scope at all still says so
+        ("q.mean", "unknown table", True),
+    ],
+)
+def test_an_unqualified_static_struct_miss_names_the_key(expr, match, names_a_table):
+    sql = f"SELECT {expr} AS o FROM __THIS__ JOIN s ON k = s.id"
+    with pytest.raises(duckdb.Error):
+        _duck132(sql, _STATIC127)  # oracle refuses; if this stops, remeasure
+    with pytest.raises(ValueError, match=match) as e:
+        DuckDBInferFn(
+            sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC127}
+        )
+    if not names_a_table:
+        assert "unknown table" not in str(e.value), str(e.value)
+
+
+_W127 = pa.struct([("mean", pa.float64())])
+_SW127 = pa.table(
+    {"id": pa.array([5], pa.int64()), "w": pa.array([{"mean": 1.5}], _W127)}
+)
+_SW2127 = pa.table(
+    {"id": pa.array([5], pa.int64()), "w": pa.array([{"mean": 2.5}], _W127)}
+)
+_SWSCALAR127 = pa.table(
+    {"id": pa.array([5], pa.int64()), "w": pa.array([9.0], pa.float64())}
+)
+_ROWW127 = pa.schema(
+    [pa.field("k", pa.int64(), nullable=False), pa.field("w", pa.int64())]
+)
+_ROWWSTRUCT127 = pa.schema(
+    [pa.field("k", pa.int64(), nullable=False), pa.field("w", _W127)]
+)
+_TWO127 = "SELECT w.mean AS o FROM __THIS__ JOIN s ON k = s.id JOIN s2 ON k = s2.id"
+
+
+def _both_refuse_ambiguously(sql, row_ddl, row_schema, statics):
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE __THIS__ ({row_ddl})")
+    for name, tbl in statics.items():
+        con.register(f"{name}_a", tbl)
+        con.execute(f"CREATE TABLE {name} AS SELECT * FROM {name}_a")
+    with pytest.raises(duckdb.Error, match="[Aa]mbiguous"):
+        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+    with pytest.raises(ValueError, match="[Aa]mbiguous"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": row_schema}, static_tables=statics)
+
+
+@pytest.mark.parametrize(
+    ("row_ddl", "row_schema", "statics", "sql"),
+    [
+        # a row SCALAR beside a static struct head
+        (
+            "k BIGINT, w BIGINT",
+            _ROWW127,
+            {"s": _SW127},
+            "SELECT w.mean AS o FROM __THIS__ JOIN s ON k = s.id",
+        ),
+        # a row STRUCT beside a static struct head
+        (
+            "k BIGINT, w STRUCT(mean DOUBLE)",
+            _ROWWSTRUCT127,
+            {"s": _SW127},
+            "SELECT w.mean AS o FROM __THIS__ JOIN s ON k = s.id",
+        ),
+        # two statics, both carrying a struct head `w`
+        ("k BIGINT", _ROW116, {"s": _SW127, "s2": _SW2127}, _TWO127),
+        # a static struct head beside a static SCALAR of the same name:
+        # the verdict is on the HEAD, before any field is examined
+        ("k BIGINT", _ROW116, {"s": _SW127, "s2": _SWSCALAR127}, _TWO127),
+    ],
+)
+def test_an_ambiguous_unqualified_head_refuses_before_the_fields(
+    row_ddl, row_schema, statics, sql
+):
+    _both_refuse_ambiguously(sql, row_ddl, row_schema, statics)
+
+
+@pytest.mark.parametrize(
+    ("expr", "want"),
+    [
+        ("w.z", 7),  # the ALIAS wins -- its column `z` binds
+        ("w.mean", 1.5),  # the alias has no `mean`: backtrack to column `w`
+        ("w.w.mean", 1.5),  # spelled out: alias `w`, column `w`, field `mean`
+    ],
+)
+def test_a_join_alias_backtracks_to_a_struct_column(expr, want):
+    sql = f"SELECT {expr} AS o FROM __THIS__ JOIN s AS w ON k = w.id"
+    assert _duck132(sql, _STATIC127).to_pylist() == [{"o": want}]
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC127}
+    )
+    assert fn.infer_rows([{"k": 5}]) == [{"o": want}]
+
+
+def test_a_join_alias_beside_a_row_column_of_the_same_name_is_ambiguous():
+    """The backtrack never runs past an ambiguity: with a row column `w`
+    too, the head has two bindings and DuckDB refuses on the head alone."""
+    _both_refuse_ambiguously(
+        "SELECT w.mean AS o FROM __THIS__ JOIN s AS w ON k = w.id",
+        "k BIGINT, w BIGINT",
+        _ROWW127,
+        {"s": _SW127},
+    )
+
+
+def test_a_row_struct_leaf_and_a_dotted_sibling_both_serve():
+    """The ROW side of the RFC's collision table (TASK-127's collision
+    criterion). A leaf lane's dotted name is DISPLAY post-132, so it is no
+    longer a duplicate identifier: the table must build -- including for a
+    query that touches neither column -- and both spellings serve."""
+    row = pa.schema(
+        [
+            pa.field("k", pa.int64(), nullable=False),
+            pa.field("w", pa.struct([("mean", pa.float64())])),
+            pa.field("w.mean", pa.float64()),
+        ]
+    )
+    rows = [{"k": 5, "w": {"mean": 1.5}, "w.mean": 99.0}]
+    con = duckdb.connect()
+    con.execute(
+        'CREATE TABLE __THIS__ (k BIGINT, w STRUCT(mean DOUBLE), "w.mean" DOUBLE)'
+    )
+    con.execute("INSERT INTO __THIS__ VALUES (5, {'mean': 1.5}, 99.0)")
+    for expr, want in [("k", 5), ("w.mean", 1.5), ('"w.mean"', 99.0)]:
+        sql = f"SELECT {expr} AS o FROM __THIS__"
+        assert con.execute(sql).fetchall() == [(want,)], f"oracle moved: {expr}"
+        got = DuckDBInferFn(
+            sql, row_tables={"__THIS__": row}, static_tables={}
+        ).infer_rows(rows)
+        assert got == [{"o": want}], f"{expr}: {got}"
+
+
+def test_two_plain_row_columns_of_the_same_name_refuse_by_name():
+    """The other half of D4: a name that IS an identifier still cannot
+    repeat, and it refuses at build naming the column -- not as an internal
+    verifier bug."""
+    row = pa.schema([pa.field("a", pa.int64()), pa.field("a", pa.int64())])
+    with pytest.raises(ValueError, match="two columns named 'a'") as e:
+        DuckDBInferFn(
+            "SELECT 1 AS o FROM __THIS__",
+            row_tables={"__THIS__": row},
+            static_tables={},
+        )
+    assert "internal" not in str(e.value).lower(), str(e.value)
+
+
+# ------------------------------- refusals quoted from DuckDB (TASK-127) --
+#
+# Both engines already refused in these two cells; only our wording was
+# poorer. DuckDB's words carry more information, so we adopt them.
+def test_a_not_a_struct_refusal_enumerates_what_duckdb_enumerates():
+    sql = "SELECT z.bad AS o FROM __THIS__ JOIN s ON k = s.id"
+    with pytest.raises(duckdb.Error) as oracle:
+        _duck132(sql, _STATIC127)
+    assert "not a struct, union, map, or json" in str(oracle.value)
+    with pytest.raises(ValueError, match="not a struct, union, map, or json"):
+        DuckDBInferFn(
+            sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC127}
+        )
+
+
+@pytest.mark.parametrize(
+    ("star", "scope"),
+    [
+        ("s.*", "'s'"),  # a qualified star searched ONE relation: name it
+        ("*", "FROM clause"),  # an unqualified star searched all of them
+    ],
+)
+def test_an_exclude_miss_names_the_scope_it_searched(star, scope):
+    sql = f"SELECT {star} EXCLUDE (nope) FROM __THIS__ JOIN s ON k = s.id"
+    with pytest.raises(duckdb.Error) as oracle:
+        _duck132(sql, _STATIC127)
+    assert "in EXCLUDE list not found in" in str(oracle.value)
+    with pytest.raises(ValueError, match=f"in EXCLUDE list not found in {scope}"):
+        DuckDBInferFn(
+            sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC127}
+        )

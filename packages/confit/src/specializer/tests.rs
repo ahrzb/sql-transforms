@@ -75,6 +75,49 @@ fn static_struct_leaf_and_literal_column_are_different_lanes() {
     assert!(spec.val_cols.contains(&vec!["w.mean".to_string()]));
 }
 
+/// TASK-127: the same table, addressed WITHOUT the qualifier. `w.mean` is
+/// two parts and no relation is named `w`, so the head is the struct and
+/// the tail is its field — the literal column keeps needing its quoted
+/// (one-part) spelling.
+#[test]
+fn an_unqualified_head_reaches_a_static_struct_leaf() {
+    use super::plan::{StarCol, StructCol, StructField, StructNode};
+    let mut t = stat(
+        "s",
+        &[
+            ("id", Ty::I64, false),
+            ("w.mean", Ty::F64, false), // the struct LEAF's display name
+            ("w.mean", Ty::F64, false), // the LITERAL column, same spelling
+        ],
+    );
+    t.star = vec![
+        StarCol::Real(0),
+        StarCol::Opaque("w".to_string()),
+        StarCol::Real(2),
+    ];
+    t.structs = vec![StructCol {
+        pos: 1,
+        name: "w".to_string(),
+        fields: vec![StructField {
+            name: "mean".to_string(),
+            node: StructNode::Leaf(1),
+        }],
+    }];
+    let schema = cols(&[("k", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT w.mean AS a, s.\"w.mean\" AS b FROM __THIS__ JOIN s ON k = s.id",
+        "__THIS__",
+        &schema,
+        &[t],
+    )
+    .unwrap();
+    let spec = &p.statics[0];
+    assert!(spec
+        .val_cols
+        .contains(&vec!["w".to_string(), "mean".to_string()]));
+    assert!(spec.val_cols.contains(&vec!["w.mean".to_string()]));
+}
+
 /// prepare + compile + run with static-table map data.
 fn run_join(
     sql: &str,
