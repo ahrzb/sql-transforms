@@ -21,6 +21,7 @@ from drifting apart again.
 
 from __future__ import annotations
 
+import decimal
 import random
 from dataclasses import dataclass, field
 
@@ -39,6 +40,13 @@ SCALARS = ("bool", "int8", "int16", "int32", "int64", "double", "string")
 # Outside the vocabulary on purpose. The boundary rule is opaque-unless-
 # referenced: an unreferenced foreign column must never block a build.
 OPAQUE = ("float32", "timestamp")
+
+# STATIC-ONLY storage (TASK-91). Decimals serve exactly as decimal128(p,s)
+# from a static table and stay opaque in a row table, so the generator emits
+# them only on the static side -- one spelling per DuckDB storage tier
+# (int16 / int32 / int64 / int128 by precision), plus the (38,0) that an
+# ordinary fit-time sum(BIGINT) actually produces.
+STATIC_ONLY = ("decimal(4,2)", "decimal(9,4)", "decimal(18,6)", "decimal(38,0)")
 
 SEMANTIC = {
     "bool": "bool",
@@ -894,11 +902,17 @@ def render(q: Q) -> str:
 HOSTILE_NAMES = ["Weird Name", "sélect", "from", "__param_0", "K", 'a"b']
 
 
-def _colspec(rng: random.Random, depth: int = 0):
+def _colspec(rng: random.Random, depth: int = 0, static: bool = False):
     """One column's STORAGE type. Structs nest (a lane is addressed by its
     full ordered path, so depth is part of the surface, not decoration) and
-    opaque columns appear at low weight — they must never block a build."""
+    opaque columns appear at low weight — they must never block a build.
+
+    `static` widens the vocabulary by the STATIC-ONLY types (TASK-91's
+    decimals): a decimal row column is opaque, so generating one there
+    would only ever exercise the opaque path."""
     r = rng.random()
+    if static and depth == 0 and 0.20 <= r < 0.32:
+        return rng.choice(STATIC_ONLY) + ("?" if rng.random() < 0.5 else "")
     if depth < 2 and r < (0.16 if depth == 0 else 0.25):
         k = rng.randrange(1, 4)
         return Struct(
@@ -910,7 +924,9 @@ def _colspec(rng: random.Random, depth: int = 0):
     return rng.choice(SCALARS) + ("?" if rng.random() < 0.5 else "")
 
 
-def _schema(rng: random.Random, n: int, hostile: bool = False) -> dict:
+def _schema(
+    rng: random.Random, n: int, hostile: bool = False, static: bool = False
+) -> dict:
     out: dict = {}
     for i in range(n):
         name = f"c{i}"
@@ -918,7 +934,7 @@ def _schema(rng: random.Random, n: int, hostile: bool = False) -> dict:
             cand = rng.choice(HOSTILE_NAMES)
             if cand not in out:
                 name = cand
-        out[name] = _colspec(rng)
+        out[name] = _colspec(rng, static=static)
     return out
 
 
@@ -928,9 +944,34 @@ def _cell(rng: random.Random, spec) -> object:
             return None
         return {n: _cell(rng, s) for n, s in spec.fields}
     storage = spec.rstrip("?")
+    if storage.startswith("decimal("):
+        # TASK-91: a STATIC-ONLY type. Deliberately NOT in SEMANTIC, so the
+        # expression grammar never binds one -- every operator over a
+        # decimal except a comparison, a join and CAST-to-DOUBLE refuses by
+        # name until lattice phase 5, and a grammar full of them would bury
+        # the signal in REFUSED. Star expansion and the schema path are what
+        # exercise the lane, which is exactly where it is observable.
+        if spec.endswith("?") and rng.random() < 0.3:
+            return None
+        return _decimal_cell(rng, storage)
     if storage not in SEMANTIC:  # opaque: pyarrow fills these, not us
         return None
     return value(rng, SEMANTIC[storage], spec.endswith("?"), storage)
+
+
+def _decimal_cell(rng: random.Random, storage: str) -> decimal.Decimal:
+    """An exact payload at the declared (p,s), biased PAST 2^53 a third of
+    the time -- that is where f64 and the exact value part ways, and the
+    whole reason the lane is an i128."""
+    p, s = (int(x) for x in storage[len("decimal(") : -1].split(","))
+    hi = 10**p - 1
+    if rng.random() < 0.35 and hi > 9_007_199_254_740_992:
+        m = rng.randrange(9_007_199_254_740_992, hi + 1)
+    else:
+        m = rng.randrange(0, min(hi, 10**9) + 1)
+    if rng.random() < 0.5:
+        m = -m
+    return decimal.Decimal(m).scaleb(-s)
 
 
 def _rows(rng: random.Random, schema: dict, n: int) -> list[dict]:
@@ -975,7 +1016,7 @@ def gen(seed: int) -> Case:
         name = f"s{i}" if not hostile_ids else rng.choice(["S0", "Dim Table", "s0"])
         if name.lower() in {k.lower() for k in statics}:
             continue  # DuckDB resolves table names case-insensitively
-        sch = _schema(rng, rng.randrange(1, 4), hostile=hostile_ids)
+        sch = _schema(rng, rng.randrange(1, 4), hostile=hostile_ids, static=True)
         # TASK-129: 8% of statics are WIDE (50-200 rows, spread int values)
         # -- an unordered GROUP BY over 4 groups cannot show hash-order
         # variance; over 50+ it measurably does (12 orders / 12 connections).

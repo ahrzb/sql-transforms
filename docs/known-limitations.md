@@ -133,10 +133,21 @@ bool. Measured consequences:
   `0.30000000447034836`/DOUBLE), unsigned in type (`uint64` stays UINT64
   there, became int64 here). The row path had always refused both. The two
   exceptions that stay served are measured equivalent, not convenient:
-  `large_string`/`utf8` (DuckDB normalises them to VARCHAR) and
-  `decimal128(p,s)`, which rides the f64 lane behind an exactness guard —
-  any payload f64 cannot hold refuses by name, and TASK-91 lands exact
-  serving.
+  `large_string`/`utf8` (DuckDB normalises them to VARCHAR) and the
+  decimal tiers (below).
+- **DECIMAL static columns serve EXACTLY** (since TASK-91): the payload is
+  the scaled integer in an i128 lane from ingest through the join, emitted
+  as `decimal128(p,s)`. `2^53+1` comes back as itself, and so does
+  `2^63+1` — an ordinary fit-time `sum(BIGINT)` produces that, which is
+  why the lane is i128 and not i64. `decimal32`/`decimal64` inputs
+  normalise to `decimal128(p,s)` output because DuckDB exports every tier
+  as 128-bit arrow. What still refuses, by name: EXPRESSIONS over a
+  decimal — arithmetic, `CAST` to anything but `DOUBLE`, and
+  `COALESCE`/`CASE`/`greatest` unifying it with a non-identical type (m-8
+  lattice phase 5; each of these used to serve a silently wrong double).
+  Comparisons, joins, `CAST(d AS DOUBLE)` and `SELECT *` all serve.
+  `decimal256` statics refuse (DuckDB itself refuses them at arrow
+  register, at any precision), and decimal ROW columns stay opaque.
 - **Structs of scalars SERVE** (since TASK-56): struct row columns are
   flattened to scalar lanes at build time — field access (`a.i`, deep
   `t.t.t.t` paths) and struct-star (`a.*` incl. EXCLUDE/REPLACE) are

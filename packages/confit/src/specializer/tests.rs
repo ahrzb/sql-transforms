@@ -3731,3 +3731,84 @@ fn many_shape_self_joins() {
     };
     assert!(e.contains("USING/NATURAL"), "{e}");
 }
+
+// ------------------------------------------------------------ TASK-91 --
+
+/// A DECIMAL static VALUE column lowers to a Dec probe dst -- the lane is
+/// the type, not a side channel, so the program header says so.
+#[test]
+fn a_decimal_static_value_lowers_to_a_dec_probe_dst() {
+    let t = stat(
+        "s",
+        &[("id", Ty::I64, false), ("d", Ty::Dec(6, 2), false)],
+    );
+    let schema = cols(&[("k", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT d AS o FROM __THIS__ JOIN s ON k = s.id",
+        "__THIS__",
+        &schema,
+        &[t],
+    )
+    .unwrap()
+    .program;
+    let text = print(&p);
+    assert!(text.contains("map(i64) -> (dec(6,2))"), "{text}");
+    assert!(text.contains("o: dec(6,2)"), "{text}");
+    assert_eq!(p.out_cols[0].ty.ty, Ty::Dec(6, 2));
+}
+
+/// The join key needs NO new machinery: the lane stays the PROBE
+/// expression's type and the build side converts at materialize time. An
+/// integer probe against a decimal key therefore keeps the INTEGER key
+/// lane -- exactly the precedent an int column joined to an f64 expression
+/// already set.
+#[test]
+fn a_decimal_key_against_an_int_probe_keeps_the_int_key_lane() {
+    let t = stat(
+        "s",
+        &[("dk", Ty::Dec(6, 2), false), ("v", Ty::Str, false)],
+    );
+    let schema = cols(&[("k", Ty::I64, false)]);
+    let p = prepare(
+        "SELECT v AS o FROM __THIS__ JOIN s ON k = s.dk",
+        "__THIS__",
+        &schema,
+        &[t.clone()],
+    )
+    .unwrap()
+    .program;
+    assert!(print(&p).contains("map(i64) -> (str)"), "{}", print(&p));
+
+    // A DOUBLE probe keeps the F64 lane, which is where DuckDB's LOSSY
+    // decimal->double comparison lives.
+    let fschema = cols(&[("k", Ty::F64, false)]);
+    let p = prepare(
+        "SELECT v AS o FROM __THIS__ JOIN s ON k = s.dk",
+        "__THIS__",
+        &fschema,
+        &[t],
+    )
+    .unwrap()
+    .program;
+    assert!(print(&p).contains("map(f64) -> (str)"), "{}", print(&p));
+}
+
+/// The one key shape that refuses: the CAPPED comparison width, where
+/// DuckDB's own integer cast can fail per row (source item 6).
+#[test]
+fn a_wide_scale_decimal_key_against_an_int_probe_refuses_by_name() {
+    let t = stat(
+        "s",
+        &[("dk", Ty::Dec(38, 30), false), ("v", Ty::Str, false)],
+    );
+    let schema = cols(&[("k", Ty::I64, false)]);
+    let e = prepare(
+        "SELECT v AS o FROM __THIS__ JOIN s ON k = s.dk",
+        "__THIS__",
+        &schema,
+        &[t],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("cannot join") && e.contains("dec(38,30)"), "{e}");
+}

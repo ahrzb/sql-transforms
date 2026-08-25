@@ -339,6 +339,46 @@ b0:
     assert_eq!(print(&p2), printed, "printing is not a fixpoint");
 }
 
+/// TASK-91: the `dec(p,s)` type token, the `const.dec(p,s)` literal, and
+/// the three opcodes that carry a (p,s) — `dcmp`, `dtof`, `itod` — all
+/// survive `parse(print(p)) == p`. The (p,s) HAS to be in the text: unlike
+/// i8/i16/i32 a decimal's scale does not erase to a lane, so a form that
+/// dropped it could not rebuild the operand type.
+#[test]
+fn a_dec_type_and_literal_round_trip_through_the_text_form() {
+    let text = r#"static @0: map(str) -> (i1, dec(38,0), dec(6,2))
+
+fn f(in: batch{g: str}, out: batch{o: dec(38,0)?, c: i1?, d: f64?}) {
+b0:
+  %g = load in.g
+  %hit, %vf, %sk, %d = probe @0, %g
+  %zero = const.dec(38,0) 0
+  %big = const.dec(38,0) 99999999999999999999999999999999999999
+  %lt = dcmp(38,0).lt %sk, %big
+  %k = const.i64 -12
+  %kd = itod(6,2) %k
+  %eq = dcmp(6,2).eq %d, %kd
+  %both = and %lt, %eq
+  %f = dtof(6,2) %d
+  %ok = and %hit, %vf
+  store.opt out.o, %ok, %sk
+  store.opt out.c, %hit, %both
+  store.opt out.d, %hit, %f
+  emit
+}"#;
+    let p = verified(text);
+    let printed = print(&p);
+    let p2 = parsed(&printed);
+    assert_eq!(p2, p, "dec round-trip changed the program:\n{printed}");
+    assert_eq!(print(&p2), printed, "printing is not a fixpoint");
+    // The scale survives in the TEXT, not merely in the parsed structure.
+    assert!(printed.contains("dec(6,2)"), "{printed}");
+    assert!(printed.contains("const.dec(38,0)"), "{printed}");
+    assert!(printed.contains("dcmp(6,2).eq"), "{printed}");
+    assert!(printed.contains("itod(6,2)"), "{printed}");
+    assert!(printed.contains("dtof(6,2)"), "{printed}");
+}
+
 #[test]
 fn extern_call_width_two_round_trips() {
     let text = r#"extern @0: "wide" (f64) -> (f64, f64)
