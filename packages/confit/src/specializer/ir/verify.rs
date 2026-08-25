@@ -4,9 +4,10 @@
 //!
 //! Rules enforced (numbers referenced from tests):
 //!  1. Structure: at least one block; entry (b0) has no params and is never a
-//!     branch target; batch column names unique per side; the function name
-//!     is an identifier and map statics have >= 1 key and >= 1 value column
-//!     (a verified program must print to parseable canonical text).
+//!     branch target; OUT column names unique (IN names are display strings,
+//!     see `check_structure`); the function name is an identifier and a map
+//!     static is non-empty on at least one axis (a verified program must
+//!     print to parseable canonical text).
 //!  2. SSA: every value defined exactly once function-wide; every use sees a
 //!     definition earlier in the same block or a param of the same block
 //!     (strict block-param form — cross-block uses are illegal, which is what
@@ -16,9 +17,11 @@
 //!     ones (the null lane can be neither skipped nor invented).
 //!  4. Statics: every `@N` resolves; probe/sload match the static's kind,
 //!     arity, and types.
-//!  5. CFG: all blocks reachable from entry; branch args (cycles are legal
-//!     since stage-B multiplicity loops; see the back-edge notes below);
-//!     match target params in count and type.
+//!  5. CFG: all blocks reachable from entry; branch args match their target
+//!     block's params in count and type. Cycles are legal (stage-B
+//!     multiplicity loops), provided every reachable block can still reach a
+//!     row-ending terminator — see the back-edge notes in
+//!     `check_cfg_and_stores`.
 //!  6. Stores: no path stores a column twice, whatever its terminator
 //!     (including `trap` — a double store is always a lowering bug); paths
 //!     to `emit` store every column exactly once; paths to `skip` store
@@ -47,6 +50,10 @@ impl std::fmt::Display for VerifyError {
     }
 }
 
+/// Check every rule above, collecting ALL violations rather than stopping at
+/// the first: one pass has to show the whole picture, or fixing an error just
+/// uncovers the next one. `Ok(())` is the only permission to execute or
+/// compile the program.
 pub fn verify(p: &Program) -> Result<(), Vec<VerifyError>> {
     let mut errs = Vec::new();
 
@@ -117,14 +124,13 @@ fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
             "entry block cannot have params".to_string(),
         );
     }
-    // OUT names only (TASK-127). An output name is a contract with the
-    // caller, so it cannot repeat — but an IN name stopped being an
-    // identifier at TASK-132: a struct leaf lane carries its dotted PATH
-    // here for display, nothing resolves a lane by it, and a leaf that
-    // spells a sibling column's name is a different lane, not a duplicate.
-    // The check that a real row IDENTIFIER cannot repeat lives at the build
-    // boundary, where the plain columns are still told apart from the
-    // leaves.
+    // OUT names only. An output name is a contract with the caller, so it
+    // cannot repeat — but an IN name is not an identifier: a struct leaf
+    // lane carries its dotted PATH here for display, nothing resolves a
+    // lane by it, and a leaf that spells a sibling column's name is a
+    // different lane, not a duplicate. The check that a real row IDENTIFIER
+    // cannot repeat lives at the build boundary, where the plain columns
+    // are still told apart from the leaves.
     let mut seen: HashMap<&str, ()> = HashMap::new();
     for c in p.out_cols.iter() {
         if seen.insert(c.name.as_str(), ()).is_some() {
