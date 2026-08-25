@@ -16,20 +16,19 @@
 //! front half, and the JIT then reading the prepared statics and extern
 //! impls this compile produced.
 //!
-//! The eval loop is genuinely a second implementation of the same 40
-//! instructions, and it is load-bearing for one reason: `shape="many"`.
-//! Cranelift refuses multiplicity programs (EmitTo loops, multimap probes)
-//! up front, so join multiplicity runs HERE and nowhere else. It is also
-//! the differential oracle for codegen bugs and the bench control
+//! The eval loop is genuinely a second implementation of every `Inst`, and
+//! it is load-bearing for one reason: `shape="many"`. Cranelift refuses
+//! multiplicity programs (EmitTo loops, multimap probes) up front, so join
+//! multiplicity runs HERE and nowhere else. It is also the differential
+//! oracle for codegen bugs and the bench control
 //! (`SPECIALIZER_FORCE_INTERP=1`).
 //!
-//! What it is NOT, despite what the old comments claimed, is a coverage
-//! fallback for instructions Cranelift cannot lower: that dispatch is an
-//! exhaustive `match` over `Inst`, so a new instruction cannot compile
-//! without a Cranelift arm. Measured 2026-08-14: of 137 fuzz-generated
-//! programs that built, 137 chose Cranelift.
+//! What it is NOT is a coverage fallback for instructions Cranelift cannot
+//! lower: that dispatch is an exhaustive `match` over `Inst`, so a new
+//! instruction cannot compile without a Cranelift arm. Measured 2026-08-14:
+//! of 137 fuzz-generated programs that built, 137 chose Cranelift.
 //!
-//! # Semantics pins (provisional until the DuckDB differential at M-lower)
+//! # Semantics pins (measured against DuckDB 1.5.5)
 //!
 //! * `iadd`/`isub`/`imul` trap on i64 overflow (SQL overflow is an error,
 //!   not a wrap); `idiv`/`irem` trap on zero and on `i64::MIN / -1`.
@@ -40,13 +39,17 @@
 //!   these primitives.
 //! * `icmp` is i64 order; `scmp` is byte order (Rust `str` cmp).
 //! * `itof` is `as f64` (may round — same as DuckDB's BIGINT->DOUBLE).
-//! * `ftoi.trunc` rounds toward zero; `ftoi.round` half-away-from-zero
-//!   (matches DuckDB CAST); both trap on non-finite or out-of-i64-range.
-//! * `stoi.opt`/`stof.opt` trim ASCII whitespace then `str::parse` — pinned
-//!   at M-lower against DuckDB CAST (measured: `' 5'::BIGINT = 5`); the
-//!   empty/whitespace-only string fails the parse.
-//! * `itos`/`ftos` format into the arena; `ftos` uses Rust's shortest
-//!   round-trip form (provisional; oracle-pinned at M-lower).
+//! * `ftoi.trunc` rounds toward zero; `ftoi.round` is half to EVEN, which
+//!   is what DuckDB's CAST does — the `round()` BUILTIN is the
+//!   half-away-from-zero one (`NumOp1::Fround`). Both trap on non-finite
+//!   or out-of-i64-range.
+//! * `stoi.opt` implements DuckDB's whole VARCHAR->integer grammar; the
+//!   contract lives on `kernels::duck_stoi`. `stof.opt` trims ASCII
+//!   whitespace then `str::parse`. Both fail on the empty or
+//!   whitespace-only string.
+//! * `itos`/`ftos` format into the arena; `ftos` renders the shortest
+//!   round-trip form in DuckDB's spelling — its exponent form and `nan`
+//!   (`kernels::DuckF64`).
 //! * On a false validity flag the payload is the type default; `load.opt`
 //!   normalizes even if the input batch carries garbage in invalid slots.
 
@@ -126,6 +129,9 @@ struct Ctx<'a> {
     row: usize,
 }
 
+/// A static structure after [`prepare_statics`]: type-checked against its
+/// declaration and put in the form the run-time reads expect. Both backends
+/// read these — the Cranelift one through [`InterpFn::statics`].
 pub(super) enum PreparedStatic {
     Scalar {
         valid: bool,
@@ -179,6 +185,10 @@ enum CTerm {
     Trap(String),
 }
 
+/// A compiled program: one closure vector per block, plus the prepared
+/// statics and extern impls the closures read. Immutable and reusable —
+/// every per-call buffer lives in the [`RunState`] handed to [`Self::run`],
+/// so one `InterpFn` serves an unbounded number of calls.
 pub struct InterpFn {
     blocks: Vec<CBlock>,
     nregs: usize,
@@ -191,6 +201,9 @@ pub struct InterpFn {
     has_batch_map: bool,
 }
 
+/// Compile `p` against its static payloads, one per declared `@N` in
+/// declaration order. The program is verified first — nothing here executes
+/// unverified IR. For a program that declares externs, use [`compile_ext`].
 pub fn compile(p: &Program, statics: Vec<StaticData>) -> Result<InterpFn, CompileError> {
     compile_ext(p, statics, Vec::new())
 }
@@ -274,8 +287,6 @@ impl InterpFn {
                 .iter()
                 .map(|ty| match ty {
                     Ty::I1 => OutCol::I1(Vec::new()),
-                    // Narrow out columns compute and land in the i64 lane;
-                    // the width is applied at the arrow emit boundary.
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => OutCol::I64(Vec::new()),
                     Ty::F64 => OutCol::F64(Vec::new()),
                     Ty::Str => OutCol::Str(Vec::new()),
@@ -285,8 +296,10 @@ impl InterpFn {
         }
     }
 
-    /// Execute over `input`, filling `st.out` (cleared first, capacity kept).
-    /// On `Err` the output is meaningless and the whole call is void.
+    /// Execute over `input`, filling `st.out` (cleared first, capacity kept)
+    /// and `st.emitted` — the row count, which is the only output a program
+    /// with zero output columns produces. On `Err` the output is meaningless
+    /// and the whole call is void.
     pub fn run(&self, input: &Batch, st: &mut RunState) -> Result<(), Trap> {
         self.check_input(input)?;
         self.check_state(st)?;
@@ -297,8 +310,8 @@ impl InterpFn {
         }
         reserve_out(&mut st.out, input.rows);
 
-        // Stage-B self-joins: flatten the batch ONCE per call into the
-        // multimap-value layout (nullable -> validity+payload).
+        // Hoisted out of the row loop deliberately: a self-join reads the
+        // whole batch, so flattening it is once-per-call work, not per-row.
         let batch_rows: Vec<Vec<ScalarVal>> = if self.has_batch_map {
             build_batch_rows(input, &self.in_decl)
         } else {
@@ -399,7 +412,6 @@ impl InterpFn {
                 // type IS the answer here.
                 OutCol::Dec(_) => *ty,
             };
-            // Narrow declarations run in their lane; width applies at emit.
             if col_ty != ty.lane() {
                 return Err(Trap(format!(
                     "RunState out column {ci} is {}, this function declares {}",
@@ -411,6 +423,10 @@ impl InterpFn {
         Ok(())
     }
 
+    /// The batch must match the program's input declaration: column count,
+    /// lane type, and one entry per row in every payload — plus, for a
+    /// nullable column, in its validity vector. A mismatch is a trap, not a
+    /// panic, because the batch comes from outside the engine.
     pub(super) fn check_input(&self, input: &Batch) -> Result<(), Trap> {
         if input.cols.len() != self.in_decl.len() {
             return Err(Trap(format!(
@@ -456,7 +472,6 @@ fn do_moves(regs: &mut [RegVal], moves: &[(u32, u32)]) {
     }
 }
 
-
 /// Flatten the batch into multimap-value rows for a batchmap static:
 /// per input row, each column contributes payload (non-nullable) or
 /// validity + payload (nullable), in declaration order — the same layout
@@ -491,7 +506,12 @@ fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>
     rows
 }
 
-
+/// Type-check each payload against its declaration and put it in
+/// probe-ready form. Both map kinds canonicalize their f64 key bits first;
+/// a map is then sorted and rejected on a duplicate key, a multimap sorted
+/// with equal keys adjacent and in insertion order. That stored order is
+/// half of every probe's correctness — [`cmp_key`] is the other half, and
+/// the two must agree.
 pub(super) fn prepare_statics(
     p: &Program,
     statics: Vec<StaticData>,
@@ -723,72 +743,6 @@ fn compile_term(p: &Program, t: &Term, slots: &HashMap<u32, u32>) -> CTerm {
         Term::Trap { msg } => CTerm::Trap(msg.clone()),
     }
 }
-
-
-
-
-
-
-
-
-
-
-// ------------------------------------------------- wave-1 math semantics --
-// One shared fn per op, used verbatim by BOTH backends (pins:
-// docs/superpowers/specs/2026-07-26-wave1-builtin-pins.md). Trap messages
-// are DuckDB 1.5.5's own, measured — including its typo.
-
-
-
-
-
-
-
-
-
-// ------------------------------------------------------ LIKE (wave 2) --
-// Byte-based matcher with codepoint `_`, reproducing every DuckDB 1.5.5
-// pin including the DATA-DEPENDENT dangling-escape error (raised only
-// when the matcher examines a trailing escape while string bytes remain;
-// plain false when the string is exhausted). Iterative two-pointer
-// restart: identical booleans and identical error rows to the leftmost-
-// first recursive semantics, never DuckDB's own O(n^k) blowup (measured
-// 23s/row there on pathological patterns; ours is O(n*m)).
-// Pins: docs/superpowers/specs/pins-wave1/pins_like.json.
-
-
-
-
-// ------------------------------------------ wave-3 builtins (TASK-49) --
-// One shared fn per op, used verbatim by BOTH backends. Pins:
-// docs/superpowers/specs/2026-07-26-wave3-builtin-pins.md — all
-// similarity ops are raw UTF-8 BYTE-based; error texts are DuckDB's own.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// Value id -> dense register slot.
 fn sl(slots: &HashMap<u32, u32>, v: Value) -> usize {
@@ -1024,7 +978,9 @@ fn compile_inst(
             Box::new(move |ctx| {
                 let n = as_i64(ctx.regs[a]);
                 // `n as f32 as f64` is NOT `n as f64` above 2**53 — one
-                // rounding versus two. That is the point (TASK-77).
+                // rounding versus two. That is the point: sklearn narrows an
+                // integer feature array to float32 in a SINGLE step, and
+                // this reproduces it bit for bit.
                 let v = if narrow { n as f32 as f64 } else { n as f64 };
                 ctx.regs[dst] = RegVal::F64(v);
                 Ok(())
@@ -1576,8 +1532,8 @@ fn compile_inst(
                             Ty::Str => ScalarVal::Str(
                                 ctx.arena.get(as_str(ctx.regs[args[2 * j + 1]])).to_string(),
                             ),
-                            // A UDF over DECIMAL refuses at bind (m-8
-                            // lattice phase 5).
+                            // A UDF over DECIMAL refuses at bind, so no
+                            // decimal ever reaches an extern parameter.
                             Ty::Dec(..) => {
                                 unreachable!("a udf parameter is never a decimal")
                             }

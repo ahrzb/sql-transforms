@@ -1,14 +1,9 @@
-//! Execution substrate shared by the interpreter backend (and, at
-//! M-cranelift, the codegen backend): batches, the bump arena, prepared
-//! static structures, and the run-state buffers. Everything here obeys the
-//! Stage-2 discipline: the only growable memory is the arena and the
-//! pre-reserved output builders, both owned by [`RunState`] and reused
+//! Execution substrate shared by both backends: batches, the bump arena,
+//! prepared static structures, and the run-state buffers. Everything here
+//! obeys the Stage-2 discipline: the only growable memory is the arena and
+//! the pre-reserved output builders, both owned by [`RunState`] and reused
 //! across calls — see [`RunState`]'s docs for the precise zero-allocation
 //! contract.
-//!
-//! Lives under `exec/` rather than a separate `runtime/` until the Cranelift
-//! backend actually shares it — one home per concept until two consumers
-//! exist.
 
 pub mod casemap;
 pub mod cranelift;
@@ -39,7 +34,7 @@ impl std::fmt::Display for Trap {
 }
 
 /// Columnar input batch. `valid` is meaningful only for nullable columns —
-/// for non-nullable columns the interpreter ignores it entirely. The payload
+/// for non-nullable ones both backends ignore it entirely. The payload
 /// slot of an invalid row may hold anything; readers normalize it to the
 /// type's default so downstream behavior never depends on garbage.
 pub struct Batch {
@@ -47,6 +42,9 @@ pub struct Batch {
     pub cols: Vec<ColData>,
 }
 
+/// One input column's storage, one variant per runtime LANE. The narrow
+/// integer widths get no variant of their own: an I8/I16/I32 declaration
+/// rides in the I64 lane and its width lives only in the program's headers.
 pub enum ColData {
     I1 {
         valid: Vec<bool>,
@@ -78,7 +76,6 @@ impl ColData {
                 valid: Vec::new(),
                 data: Vec::new(),
             },
-            // Narrow widths live in headers only; payloads are the i64 lane.
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ColData::I64 {
                 valid: Vec::new(),
                 data: Vec::new(),
@@ -124,7 +121,7 @@ impl ColData {
     }
 
     /// Append one non-NULL cell to an I1 column — the struct-node PRESENCE
-    /// lanes both row boundaries fill (TASK-133).
+    /// lanes both row boundaries fill.
     pub fn push_present(&mut self, v: bool) {
         let ColData::I1 { valid, data } = self else {
             unreachable!("a presence lane is always I1");
@@ -153,6 +150,9 @@ impl ColData {
         &buf[off..off + len]
     }
 
+    /// The column's LANE type: every narrow integer declaration reports
+    /// `I64`, so a caller checking shape compares against `Ty::lane()`
+    /// rather than the declared type.
     pub fn ty(&self) -> Ty {
         match self {
             ColData::I1 { .. } => Ty::I1,
@@ -407,7 +407,7 @@ pub fn canon_f64_bits(x: f64) -> u64 {
 /// * `Ok(Some(vals))` — one `Option<ScalarVal>` per declared return;
 /// * `Err(msg)` — trap the whole call (a raised Python exception).
 ///
-/// Both backends route through [`interp::call_extern`], which enforces the
+/// Both backends route through `kernels::call_extern`, which enforces the
 /// declared return shape (wrong length/type -> named trap) — the shared-code
 /// rule that keeps the backends from drifting.
 pub struct ExternImpl {
@@ -437,6 +437,8 @@ pub enum StaticData {
 }
 
 /// Output column builder: `(valid, value)` pairs; strings are arena spans.
+/// Narrow integer declarations build in the `I64` lane, exactly as input
+/// columns do; the declared width is applied at the arrow emit boundary.
 pub enum OutCol {
     I1(Vec<(bool, bool)>),
     I64(Vec<(bool, i64)>),
