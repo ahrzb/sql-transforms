@@ -64,6 +64,23 @@ master `85b4739`).
 
 ---
 
+## Contents
+
+- [1. What the oracle is](#1-what-the-oracle-is)
+- [2. Inherited quirks](#2-inherited-quirks)
+- [3. Nondeterminism](#3-nondeterminism)
+- [4. Verdicts: agreement, abstention, refusal](#4-verdicts-agreement-abstention-refusal)
+- [5. The comparison contract](#5-the-comparison-contract)
+- [6. Pins](#6-pins)
+- [7. The divergence ledger](#7-the-divergence-ledger)
+- [8. The severity ladder](#8-the-severity-ladder)
+- [9. Version bumps and mutability](#9-version-bumps-and-mutability)
+- [10. Campaign validity and blind spots](#10-campaign-validity-and-blind-spots)
+- [11. Proposed tickets](#11-proposed-tickets)
+- [12. ASK index](#12-ask-index)
+
+Claims are cited by id (`ORC-NN`), never by section - grep the id. ASK blocks are indexed in section 12.
+
 ## 1. What the oracle is
 
 ### 1.1 It is a pseudo-oracle
