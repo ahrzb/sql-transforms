@@ -6,8 +6,10 @@ description = "Confit — a partial evaluator that specializes SQL against froze
 
 [lib]
 name = "_engine"
-# rlib as well as cdylib: the extension module is the wheel's entry point, but
-# sql-transform links the crate to reuse the shared error/type/schema vocabulary.
+# rlib as well as cdylib: the extension module is the wheel's entry point, and
+# the rlib keeps the crate linkable as an ordinary Rust library. Nothing links
+# it today - this workspace has one member and sql-transform is pure Python -
+# which is also why the error/type/schema modules stay public.
 crate-type = ["cdylib", "rlib"]
 
 # extension-module is deliberately NOT a default feature: it suppresses the

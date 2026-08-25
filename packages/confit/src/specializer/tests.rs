@@ -1,6 +1,8 @@
-//! End-to-end stretch-1 tests: SQL text -> prepare -> interpreter oracle.
-//! Expected values follow the DuckDB pins measured 2026-07-26 (`/` is float
-//! division, `%` stays integral, overflow traps).
+//! End-to-end specializer tests: SQL text -> prepare -> interpreter oracle.
+//! Sections run in the order the features landed and each banner names its
+//! own pin source; the first section's expected values follow the DuckDB
+//! pins measured 2026-07-26 (`/` is float division, `%` stays integral,
+//! overflow traps).
 
 use super::exec::interp::compile;
 use super::exec::testutil::{batch, c_f64, c_i64, c_str, rows, run_snapshot};
@@ -9,6 +11,7 @@ use super::ir::{parse::parse, print::print, Col, ColTy, Ty};
 use super::plan::StaticTable;
 use super::{prepare, PrepareError};
 
+/// Column list from (name, type, NULLABLE) triples.
 fn cols(spec: &[(&str, Ty, bool)]) -> Vec<Col> {
     spec.iter()
         .map(|(n, t, null)| Col {
@@ -26,6 +29,8 @@ fn prep(sql: &str, in_cols: &[Col]) -> Result<super::ir::Program, PrepareError> 
     prepare(sql, "__THIS__", in_cols, &[]).map(|p| p.program)
 }
 
+/// An all-scalar static table: no struct columns, so `star` and `structs`
+/// stay at their defaults and a test can set them when it needs them.
 fn stat(name: &str, spec: &[(&str, Ty, bool)]) -> StaticTable {
     StaticTable::all_scalar(name.to_string(), cols(spec))
 }
@@ -41,7 +46,7 @@ fn val_paths(s: &super::StaticSpec) -> Vec<Vec<String>> {
     s.vals.iter().map(|v| v.path.clone()).collect()
 }
 
-/// TASK-132: the RFC's collision table at the unit level — a struct leaf
+/// The lane-encoding RFC's collision table at the unit level — a struct leaf
 /// and a literal column SHARE the dotted display spelling and stay
 /// different lanes, because resolution walks the tree while the name is
 /// display-only.
@@ -84,7 +89,7 @@ fn static_struct_leaf_and_literal_column_are_different_lanes() {
     assert!(val_paths(spec).contains(&vec!["w.mean".to_string()]));
 }
 
-/// TASK-127: the same table, addressed WITHOUT the qualifier. `w.mean` is
+/// The same table, addressed WITHOUT the qualifier. `w.mean` is
 /// two parts and no relation is named `w`, so the head is the struct and
 /// the tail is its field — the literal column keeps needing its quoted
 /// (one-part) spelling.
@@ -125,7 +130,7 @@ fn an_unqualified_head_reaches_a_static_struct_leaf() {
     assert!(val_paths(spec).contains(&vec!["w.mean".to_string()]));
 }
 
-/// TASK-133: the boundary contract behind the LAZY minting decision. A
+/// The boundary contract behind the LAZY minting decision. A
 /// struct-node PRESENCE lane costs ~25 ns/row at the marshalling boundary,
 /// so a query that does not key a join on the struct must marshal exactly
 /// the lanes it marshalled before; only the keyed query pays. Asserted on
@@ -473,8 +478,7 @@ fn cast_matrix() {
     // The -2 is measured, and the earlier -3 here was measured WRONG: a bare
     // `CAST(-2.5 AS BIGINT)` in DuckDB is a DECIMAL cast (half away from
     // zero, -3), while `f` is a DOUBLE column and DOUBLE->BIGINT is
-    // half-to-even (-2). Check DOUBLE casts with a DOUBLE, never a literal
-    // (TASK-70).
+    // half-to-even (-2). Check DOUBLE casts with a DOUBLE, never a literal.
     assert_eq!(
         got,
         rows(&[&["5", "-2", "true", "false", "true", "-2.5", "NULL", "NULL"]])
@@ -828,7 +832,7 @@ fn join_key_promotion_float_dyn_against_int_col() {
     )
     .unwrap();
     let spec = &p.statics[0];
-    // TASK-120: the key column ALSO rides as a shadow value lane, appended
+    // The key column ALSO rides as a shadow value lane, appended
     // after the ordinary ones — a double does not name one i64, so the real
     // value has to travel through the probe rather than the comparison.
     assert_eq!(
@@ -848,7 +852,7 @@ fn join_key_promotion_float_dyn_against_int_col() {
     assert_eq!(got, rows(&[&["20"]]));
 }
 
-/// TASK-120: `promote_key`'s F64-probe arm used to admit only I64, so an
+/// `promote_key`'s F64-probe arm once admitted only I64, so an
 /// int8/int16/int32 static key refused the WHOLE join (severity 4 — DuckDB
 /// serves every one of them, comparing in double space).
 #[test]
@@ -868,7 +872,7 @@ fn promote_key_accepts_every_integer_width_under_an_f64_probe() {
     }
 }
 
-/// TASK-120: a lossy key column is a key AND a value lane; a sound int/int
+/// A lossy key column is a key AND a value lane; a sound int/int
 /// pairing keeps the single key lane it always had.
 #[test]
 fn a_lossy_key_column_is_also_a_value_lane() {
@@ -1173,8 +1177,8 @@ fn indf_and_keyless_joins_are_map_shape_provable() {
         vec![(super::plan::KeyCmp::NotDistinct, 2)]
     );
     assert!(p.statics[1].keys.is_empty());
-    // Chained end to end. `v` is nullable, so values are (validity,
-    // payload) pairs (TASK-55 flattening).
+    // Chained end to end. `v` is nullable, so values arrive as flattened
+    // (validity, payload) pairs.
     let data0 = StaticData::Map(vec![
         (
             indf_key(Some(1)),
@@ -1521,7 +1525,7 @@ fn compare_grid_selects_the_integer_conversion() {
 /// without parsing the whole program.
 ///
 /// It must be `itof.f32`, not a plain `itof`: a tree feature rounds through
-/// f32 ONCE, the way sklearn narrows an integer feature array (TASK-77). A
+/// f32 ONCE, the way sklearn narrows an integer feature array. A
 /// plain `itof` here would be the two-rounding bug back again, so this
 /// helper deliberately does not accept one.
 fn feature_position_of_itof(text: &str) -> usize {
@@ -1807,7 +1811,7 @@ fn udf_named(name: &str, params: &[Ty], rets: &[(&str, Ty)]) -> super::ir::Exter
 
 #[test]
 fn field_access_reads_lanes_off_one_ecall() {
-    // TASK-63: k field reads of one width-k call share ONE ecall — the dot
+    // k field reads of one width-k call share ONE ecall — the dot
     // spelling and the struct_extract spelling, mid-expression included (a
     // field read is width-1 and composes).
     let schema = cols(&[("x", Ty::F64, true)]);
@@ -2230,8 +2234,8 @@ fn dominating_constant_keeps_the_dynamic_side() {
     // fold() must not rewrite `false AND <dyn>` to false: the dynamic side
     // may trap and folding it away would change behavior. The dynamic trap
     // here is an i64 overflow reachable only through the COLUMN — the
-    // earlier `a % 0` spelling stopped serving the purpose once TASK-87's
-    // folds legitimately reduced it (rem-by-zero is NULL on both engines,
+    // earlier `a % 0` spelling stopped serving the purpose once constant
+    // folding legitimately reduced it (rem-by-zero is NULL on both engines,
     // never a trap, so `false AND NULL` folding to false IS DuckDB's
     // answer).
     let schema = cols(&[("a", Ty::I64, false)]);
@@ -2965,7 +2969,7 @@ fn binder_tail_null_ops_natural_join_main_qualifier() {
     )
     .unwrap();
     assert_eq!(got, rows(&[&["NULL", "NULL", "NULL"]]));
-    // Schema qualifiers are registry-noise (TASK-55): any single qualifier
+    // Schema qualifiers are registry-noise: any single qualifier
     // resolves when the table part matches; 3-part column refs bind too.
     let p = prep("SELECT a FROM main.__THIS__", &schema).unwrap();
     assert_eq!(p.out_cols[0].name, "a");
@@ -3896,7 +3900,7 @@ fn many_shape_self_joins() {
     assert!(e.contains("USING/NATURAL"), "{e}");
 }
 
-// ------------------------------------------------------------ TASK-91 --
+// --------------------------------------------------- DECIMAL statics --
 
 /// A DECIMAL static VALUE column lowers to a Dec probe dst -- the lane is
 /// the type, not a side channel, so the program header says so.

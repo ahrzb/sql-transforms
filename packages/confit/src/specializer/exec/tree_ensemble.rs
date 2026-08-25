@@ -36,6 +36,12 @@ pub enum Link {
 /// The node table, one entry per row, grouped by `(model_id, tree_id)`.
 /// `left`/`right` are tree-local node ids (`-1` on a leaf), matching what
 /// every library emits.
+///
+/// `feature` is `-1` on a leaf, whose score is `value`; on a split it is a
+/// column index into the request row, and `threshold`/`missing_left` decide
+/// the direction (`x <= threshold` goes left; a NaN goes the way
+/// `missing_left` says). The unused half of each row is ignored, not
+/// checked — a leaf's `threshold` and a split's `value` may hold anything.
 pub struct NodeRows<'a> {
     pub model_id: &'a [i64],
     pub tree_id: &'a [i64],
@@ -49,6 +55,10 @@ pub struct NodeRows<'a> {
 }
 
 /// The per-model header table, one entry per model, `model_id` dense from 0.
+/// `agg` spells an [`Agg`] (`"sum"` / `"mean"`) and `link` a [`Link`]
+/// (`"identity"` / `"sigmoid"`); any other spelling is a build refusal that
+/// names it, so the extractor's vocabulary can widen without this side
+/// guessing.
 pub struct ModelRows<'a> {
     pub model_id: &'a [i64],
     pub base: &'a [f64],
@@ -180,7 +190,7 @@ impl TreeEnsemble {
         // (checked in it). A DAG scores perfectly well — one path, still
         // terminating — but nothing we target emits one, so it means the
         // table is malformed, and rejecting only the zero case would be an
-        // arbitrary place to stop (TASK-76).
+        // arbitrary place to stop.
         let mut left = vec![0u32; nn];
         let mut right = vec![0u32; nn];
         for &(lo, hi) in &tree_span {
@@ -615,7 +625,7 @@ mod tests {
         // Both of the root's children are node 2: a decision DAG, not a
         // tree. It scores perfectly well — one path, terminating — but
         // "exactly one parent per non-root node" is what MAKES the table a
-        // tree, and we check both ends of it rather than only zero (TASK-76).
+        // tree, and we check both ends of it rather than only zero.
         assert!(refusal(|n| n.left[0] = 2).contains("already has a parent"));
     }
 

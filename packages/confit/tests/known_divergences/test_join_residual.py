@@ -76,9 +76,8 @@ def test_split_in_the_on_residual_builds_and_is_correct(join, residual):
 
 
 # FIXED 2026-08-08. `scan_residual` no longer decides trap-freeness at all:
-# that question moved to `plan::may_trap`, one definition shared with Kleene
-# lowering so the two cannot drift. A CASE is trap-free exactly when all of
-# its arms are.
+# that question moved to `plan::may_trap`, which the JOIN ON residual rule is
+# the sole consumer of. A CASE is trap-free exactly when all of its arms are.
 
 _ONESIDED = pa.table(
     {"id": pa.array([0, 1], pa.int64()), "cat": pa.array([1, 2], pa.int64())}

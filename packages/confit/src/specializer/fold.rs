@@ -11,8 +11,11 @@
 //!   left unfolded — the trap stays a run-time trap, same timing as before;
 //! * f64 arithmetic and comparisons mirror exec/interp.rs exactly (IEEE:
 //!   `x/0 = inf`, NaN compares false except `!=`);
-//! * CASE and CAST nodes fold their children but never themselves — CAST
-//!   can trap and CASE guards branch traps, both wrong to evaluate eagerly.
+//! * CASE and CAST never evaluate eagerly — a CAST can trap, and a CASE arm
+//!   exists to guard one. What they do fold is SELECTION: a constant CASE
+//!   condition picks its arm exactly as the runtime walk would, and a
+//!   width-only cast of an integer literal collapses because it cannot trap
+//!   and its provenance mark is already spent by fold time.
 
 use super::ir::{CmpPred, Lit, Ty};
 use super::plan::{ArithOp, SExpr, SKind};
@@ -111,7 +114,7 @@ pub fn fold(e: SExpr) -> SExpr {
         }
         // Same shape, but the constant folds through f32 — otherwise a
         // LITERAL feature would keep the double rounding this node exists
-        // to remove (TASK-77).
+        // to remove.
         SKind::IntToFloat32(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {
@@ -120,9 +123,10 @@ pub fn fold(e: SExpr) -> SExpr {
                 _ => e(SKind::IntToFloat32(Box::new(inner))),
             }
         }
-        // Wave-1 math: fold children only — the ops themselves stay
-        // runtime so constant domain errors trap per row exactly like the
-        // vectorized path we pin against (no fold/vector divergence).
+        // Wave-1 builtins, math and string and regex alike: fold children
+        // only — the ops themselves stay runtime so constant domain errors
+        // trap per row exactly like the vectorized path we pin against (no
+        // fold/vector divergence).
         SKind::Str2 { op, a, b } => {
             let a = fold(*a);
             let b = fold(*b);
@@ -267,9 +271,9 @@ pub fn fold(e: SExpr) -> SExpr {
             let (a, b) = (fold(*a), fold(*b));
             match (as_const(&a), as_const(&b)) {
                 (Some(K::Null), Some(_)) | (Some(_), Some(K::Null)) => null(ty),
-                // TASK-122: MIN % -1 at a NARROW width overflows DuckDB's
-                // checked division even though the i64 value (0) is fine, so
-                // the fold must not hide it from the runtime guard.
+                // MIN % -1 at a NARROW width overflows DuckDB's checked
+                // division even though the i64 value (0) is fine, so the
+                // fold must not hide it from the runtime guard.
                 (Some(K::Val(Lit::I64(x))), Some(K::Val(Lit::I64(y))))
                     if op == ArithOp::Rem
                         && y == -1
@@ -317,14 +321,14 @@ pub fn fold(e: SExpr) -> SExpr {
                 .map(|(c, r)| (fold(c), fold(r)))
                 .collect();
             let default = default.map(|d| Box::new(fold(*d)));
-            // TASK-87 face D: constant CONDITIONS select at fold time,
-            // exactly the runtime walk — a FALSE/NULL condition drops its
-            // arm, the first TRUE condition commits to its (already
-            // folded, never evaluated-early) arm. DuckDB folds this and
-            // then elides trapping siblings of a NULL result; leaving the
-            // CASE unfolded hid that NULL from the TASK-85 strict-op
-            // check. Arm VALUES still never fold themselves here — only
-            // the selection runs, which is what the runtime does anyway.
+            // Constant CONDITIONS select at fold time, exactly the runtime
+            // walk — a FALSE/NULL condition drops its arm, the first TRUE
+            // condition commits to its (already folded, never
+            // evaluated-early) arm. DuckDB folds this and then elides
+            // trapping siblings of a NULL result, so a CASE left unfolded
+            // would hide that NULL from the binder's strict-op elision.
+            // Arm VALUES still never fold themselves here — only the
+            // selection runs, which is what the runtime does anyway.
             // An arm escaping the CASE carries the node's unified width
             // (fleet 2026-08-13: the arm's own ty re-narrowed enclosers).
             let retype = |mut r: SExpr| {
@@ -333,8 +337,8 @@ pub fn fold(e: SExpr) -> SExpr {
                 }
                 r
             };
-            // TASK-124: an arm is VALUE context and the CASE's surroundings
-            // may be SELECTION context (`WHERE CASE WHEN TRUE THEN (b AND
+            // An arm is VALUE context and the CASE's surroundings may be
+            // SELECTION context (`WHERE CASE WHEN TRUE THEN (b AND
             // trap) END` traps on DuckDB -- the taken arm is eager). Letting
             // a non-constant arm escape the CASE bare would move it across
             // that boundary and lend it a laziness DuckDB never gives it, so
@@ -376,7 +380,7 @@ pub fn fold(e: SExpr) -> SExpr {
             if kept.is_empty() {
                 // every arm dropped: the default, or SQL's implicit NULL.
                 // The default is an ARM for context purposes -- same
-                // boundary, same wrapper (TASK-124).
+                // boundary, same wrapper.
                 return match default {
                     Some(d) => escape(*d),
                     None => null(ty),
@@ -408,9 +412,11 @@ pub fn fold(e: SExpr) -> SExpr {
                 trying,
             })
         }
-        // TASK-103: a corpus query DID care -- upper() over a baked pure
-        // extern must finish for the || SQLNULL collapse to see through it.
-        // Same casemap kernel as Inst::Str1, so fold and runtime agree.
+        // Folded, unlike its Str2/Str3 neighbours: a corpus query DID care
+        // -- upper() over a baked pure extern must finish for the ||
+        // SQLNULL collapse to see through it. Safe because case mapping
+        // cannot trap, and the same casemap kernel serves Inst::Str1, so
+        // fold and runtime agree by construction.
         SKind::StrCase { upper, a } => {
             let a = fold(*a);
             match &a.kind {
@@ -440,10 +446,10 @@ pub fn fold(e: SExpr) -> SExpr {
             len: len.map(|l| Box::new(fold(*l))),
         }),
         SKind::Abs(a) => {
-            // TASK-103: DuckDB's binder folds abs over a constant, and an
-            // extern argument like abs(-3) must be a finished Lit for the
-            // pure-udf bake to see it. i64::MIN stays unfolded -- the
-            // runtime trap owns it, same doctrine as the shifts above.
+            // DuckDB's binder folds abs over a constant, and an extern
+            // argument like abs(-3) must be a finished Lit for the pure-udf
+            // bake to see it. i64::MIN stays unfolded -- the runtime trap
+            // owns it, same doctrine as the shifts above.
             let a = fold(*a);
             match &a.kind {
                 SKind::Lit(Lit::I64(v)) if *v != i64::MIN => lit(Lit::I64(v.abs()), ty),

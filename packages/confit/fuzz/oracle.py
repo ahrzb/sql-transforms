@@ -123,8 +123,10 @@ _DUCK_T = {
 # hits stay checkable by hand: every one should trace to a literal.
 #
 # This tag has NO strict-xfail twin. The bare-literal 1-ulp class is
-# documented instead, in docs/known-limitations.md — and TASK-95 (doc-twin
-# totality) is still To Do, so nothing rings when phase 5 lands.
+# documented instead, in docs/known-limitations.md, and doc-twin accounting
+# — a strict-xfail pin standing behind every known-limitations row — does
+# not exist yet. So when decimal arithmetic lands and this tag has to be
+# deleted, nothing rings: that accounting is what should.
 
 
 @dataclass
