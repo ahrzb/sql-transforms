@@ -795,6 +795,24 @@ store_h!(h_store_i1, I1, u8, |v: u8| v != 0);
 store_h!(h_store_i64, I64, i64, |v| v);
 store_h!(h_store_f64, F64, f64, |v| v);
 
+/// A 16-byte helper cell as a scaled i128 and back. The cell is exactly
+/// the width, so a Dec payload needs no side table — and on the JIT side
+/// the same bytes load as `types::I128` directly.
+fn dec_cell(v: i128) -> Cell {
+    [v as u128 as u64, ((v as u128) >> 64) as u64]
+}
+
+/// The i128 halves as the ABI carries them: cranelift's I128 is a value
+/// type in the IR but not in the C ABI, so a Dec store passes lo/hi.
+extern "C" fn h_store_dec(p: *mut Cx, col: i64, valid: u8, lo: i64, hi: i64) {
+    let c = unsafe { cx(p) };
+    let v = (((hi as u64 as u128) << 64) | (lo as u64 as u128)) as i128;
+    match &mut c.out()[col as usize] {
+        OutCol::Dec(out) => out.push((valid != 0, v)),
+        _ => unreachable!("store type checked by the verifier"),
+    }
+}
+
 extern "C" fn h_store_str(p: *mut Cx, col: i64, valid: u8, off: i64, len: i64) {
     let c = unsafe { cx(p) };
     let r = StrRef {
@@ -805,6 +823,19 @@ extern "C" fn h_store_str(p: *mut Cx, col: i64, valid: u8, off: i64, len: i64) {
         OutCol::Str(v) => v.push((valid != 0, r)),
         _ => unreachable!("store type checked by the verifier"),
     }
+}
+
+/// DECIMAL -> DOUBLE and integer -> scaled DECIMAL, delegating to the SAME
+/// kernels the interpreter calls so the two backends cannot drift. Both
+/// take/return the i128 through i64 halves or a pointer, because
+/// cranelift's I128 is not a C-ABI value type.
+extern "C" fn h_dec_to_f64(lo: i64, hi: i64, scale: i64) -> f64 {
+    let v = (((hi as u64 as u128) << 64) | (lo as u64 as u128)) as i128;
+    kernels::dec_to_f64(v, scale as u8)
+}
+
+extern "C" fn h_int_to_dec(v: i64, scale: i64, out: *mut Cell) {
+    unsafe { *out = dec_cell(kernels::int_to_dec(v, scale as u8)) };
 }
 
 /// Scalar static read; covers `sload` (flag ignored) and `sload.opt`.
@@ -824,12 +855,14 @@ extern "C" fn h_sload(p: *mut Cx, sid: i64, valid_out: *mut u8, cell_out: *mut C
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
             Ty::F64 => ScalarVal::F64(0.0),
             Ty::Str => ScalarVal::Str(String::new()),
+            Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
         }
     };
     let cell = match val {
         ScalarVal::I1(b) => [b as u64, 0],
         ScalarVal::I64(i) => [i as u64, 0],
         ScalarVal::F64(f) => [f.to_bits(), 0],
+        ScalarVal::Dec(d, ..) => dec_cell(d),
         ScalarVal::Str(s) => {
             let r = c.arena().push_str(&s);
             [r.off as u64, r.len as u64]
@@ -888,6 +921,7 @@ extern "C" fn h_probe(
                     ScalarVal::I1(b) => [*b as u64, 0],
                     ScalarVal::I64(x) => [*x as u64, 0],
                     ScalarVal::F64(f) => [f.to_bits(), 0],
+                    ScalarVal::Dec(d, ..) => dec_cell(*d),
                     ScalarVal::Str(s) => {
                         let r = arena.push_str(s);
                         [r.off as u64, r.len as u64]
@@ -900,7 +934,7 @@ extern "C" fn h_probe(
         None => {
             for (i, ty) in desc.val_tys.iter().enumerate() {
                 let cell: Cell = match ty {
-                    Ty::I1 | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => [0, 0],
+                    Ty::I1 | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Dec(..) => [0, 0],
                     Ty::F64 => [0f64.to_bits(), 0],
                     Ty::Str => {
                         let r = arena.push_str("");
@@ -965,6 +999,8 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
                     Ty::Str => ScalarVal::Str(
                         arena.get(span(cell[0] as i64, cell[1] as i64)).to_string(),
                     ),
+                    // A UDF over DECIMAL refuses at bind (m-8 phase 5).
+                    Ty::Dec(..) => unreachable!("a udf parameter is never a decimal"),
                 })
             } else {
                 None
@@ -983,6 +1019,7 @@ extern "C" fn h_extern(p: *mut Cx, desc: *const ExternDesc, args: *const Cell, o
                     ScalarVal::I1(x) => [*x as u64, 0],
                     ScalarVal::I64(x) => [*x as u64, 0],
                     ScalarVal::F64(x) => [x.to_bits(), 0],
+                    ScalarVal::Dec(..) => unreachable!("a udf return is never a decimal"),
                     ScalarVal::Str(s) => {
                         let r = arena.push_str(s);
                         [r.off as u64, r.len as u64]
@@ -1039,6 +1076,10 @@ fn clif_ty(ty: Ty) -> types::Type {
         Ty::I1 => types::I8,
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => types::I64,
         Ty::F64 => types::F64,
+        // One cranelift value, like every other scalar lane: `V::S` carries
+        // it as-is, so the `V::Str(CVal, CVal)` split is not needed here.
+        // TASK-91's probe proved select and block params legalize on I128.
+        Ty::Dec(..) => types::I128,
         Ty::Str => unreachable!("str values are two i64s, expanded at use sites"),
     }
 }
@@ -1406,6 +1447,22 @@ fn translate_inst(
         Inst::ProbeRange { .. } | Inst::ProbeRead { .. } => {
             unreachable!("multiplicity programs are rejected before codegen")
         }
+        Inst::Dtof { s: sc, dst, a, .. } => {
+            // The kernels are the SHARED semantics (see kernels.rs): the
+            // backends call the same function or they drift.
+            let x = vals[&a.0].s();
+            let (lo, hi) = b.ins().isplit(x);
+            let scv = icon(b, *sc as i64);
+            let v = call_h(b, module, "h_dec_to_f64", &[lo, hi, scv]).unwrap();
+            vals.insert(dst.0, V::S(v));
+        }
+        Inst::Itod { s: sc, dst, a, .. } => {
+            let x = vals[&a.0].s();
+            let scv = icon(b, *sc as i64);
+            let lp = b.ins().stack_addr(types::I64, slot_out, 0);
+            call_h(b, module, "h_int_to_dec", &[x, scv, lp]);
+            vals.insert(dst.0, V::S(b.ins().stack_load(types::I128, slot_out, 0)));
+        }
         Inst::ExternCall { ext, dsts, args } => {
             let spec = &p.externs[*ext as usize];
             // Write the arg cells: (flag, payload) per param, one cell each.
@@ -1422,6 +1479,7 @@ fn translate_inst(
                                 Ty::I1 => b.ins().uextend(types::I64, v),
                                 Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => v,
                                 Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
+                                Ty::Dec(..) => unreachable!("a udf parameter is never a decimal"),
                                 Ty::Str => unreachable!("str payload is a two-i64 V::Str"),
                             }
                         };
@@ -1466,6 +1524,7 @@ fn translate_inst(
                             let x = b.ins().stack_load(types::I64, slot_vals, base);
                             V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))
                         }
+                        Ty::Dec(..) => unreachable!("a udf return is never a decimal"),
                         Ty::Str => {
                             let o = b.ins().stack_load(types::I64, slot_vals, base);
                             let l = b.ins().stack_load(types::I64, slot_vals, base + 8);
@@ -1481,6 +1540,12 @@ fn translate_inst(
                 Lit::I1(x) => V::S(b.ins().iconst(types::I8, *x as i64)),
                 Lit::I64(x) => V::S(b.ins().iconst(types::I64, *x)),
                 Lit::F64(x) => V::S(b.ins().f64const(*x)),
+                Lit::Dec(x, ..) => {
+                    // No `iconst.i128` in cranelift: build it from halves.
+                    let lo = b.ins().iconst(types::I64, *x as u128 as u64 as i64);
+                    let hi = b.ins().iconst(types::I64, ((*x as u128) >> 64) as u64 as i64);
+                    V::S(b.ins().iconcat(lo, hi))
+                }
                 Lit::Str(s) => {
                     let boxed: Box<str> = s.clone().into_boxed_str();
                     let ptr = boxed.as_ptr() as i64;
@@ -1549,7 +1614,9 @@ fn translate_inst(
             b: rhs,
         } => {
             let v = match ty {
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
+                // The scaled i128s compare as plain signed integers: one
+                // scale on both sides, guaranteed by the verifier.
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Dec(..) => {
                     let cc = match pred {
                         CmpPred::Eq => IntCC::Equal,
                         CmpPred::Ne => IntCC::NotEqual,
@@ -1918,6 +1985,7 @@ fn translate_inst(
                     V::S(call_h(b, module, "h_load_i64", &[cxp, cv]).unwrap())
                 }
                 Ty::F64 => V::S(call_h(b, module, "h_load_f64", &[cxp, cv]).unwrap()),
+                Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
                 Ty::Str => {
                     let lp = b.ins().stack_addr(types::I64, slot_out, 0);
                     let off = call_h(b, module, "h_load_str", &[cxp, cv, lp]).unwrap();
@@ -1950,6 +2018,7 @@ fn translate_inst(
                     let zero = b.ins().f64const(0.0);
                     V::S(b.ins().select(f, raw, zero))
                 }
+                Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
                 Ty::Str => {
                     let lp = b.ins().stack_addr(types::I64, slot_out, 0);
                     let off = call_h(b, module, "h_load_str", &[cxp, cv, lp]).unwrap();
@@ -1993,6 +2062,9 @@ fn translate_inst(
                             Ty::I1 => b.ins().uextend(types::I64, v),
                             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => v,
                             Ty::F64 => b.ins().bitcast(types::I64, MemFlags::new(), v),
+                            Ty::Dec(..) => {
+                                unreachable!("a probe expression is never a decimal")
+                            }
                             Ty::Str => unreachable!(),
                         };
                         b.ins().stack_store(as64, slot_keys, base);
@@ -2022,6 +2094,9 @@ fn translate_inst(
                         let x = b.ins().stack_load(types::I64, slot_vals, base);
                         V::S(b.ins().ireduce(types::I8, x))
                     }
+                    // The cell is 16 bytes wide, so the scaled i128 loads
+                    // straight out of it.
+                    Ty::Dec(..) => V::S(b.ins().stack_load(types::I128, slot_vals, base)),
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
                         V::S(b.ins().stack_load(types::I64, slot_vals, base))
                     }
@@ -2112,6 +2187,11 @@ fn store(
             let v = vals[&val.0].s();
             call_h(b, module, "h_store_f64", &[cxp, cv, valid, v]);
         }
+        Ty::Dec(..) => {
+            let v = vals[&val.0].s();
+            let (lo, hi) = b.ins().isplit(v);
+            call_h(b, module, "h_store_dec", &[cxp, cv, valid, lo, hi]);
+        }
         Ty::Str => {
             let (o, l) = vals[&val.0].str2();
             call_h(b, module, "h_store_str", &[cxp, cv, valid, o, l]);
@@ -2150,6 +2230,7 @@ fn sload(
             V::S(b.ins().ireduce(types::I8, x))
         }
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => V::S(b.ins().stack_load(types::I64, slot_vals, 0)),
+        Ty::Dec(..) => V::S(b.ins().stack_load(types::I128, slot_vals, 0)),
         Ty::F64 => {
             let x = b.ins().stack_load(types::I64, slot_vals, 0);
             V::S(b.ins().bitcast(types::F64, MemFlags::new(), x))
@@ -2195,6 +2276,9 @@ const HELPERS: &[(&str, *const u8)] = &[
     ("h_store_i64", h_store_i64 as *const u8),
     ("h_store_f64", h_store_f64 as *const u8),
     ("h_store_str", h_store_str as *const u8),
+    ("h_store_dec", h_store_dec as *const u8),
+    ("h_dec_to_f64", h_dec_to_f64 as *const u8),
+    ("h_int_to_dec", h_int_to_dec as *const u8),
     ("h_sload", h_sload as *const u8),
     ("h_probe", h_probe as *const u8),
     ("h_predict", h_predict as *const u8),
@@ -2288,6 +2372,9 @@ fn helper_sig(name: &str, sig: &mut cranelift_codegen::ir::Signature, ptr: types
         "h_store_i64" => (&[ptr, I64, I8, I64], None),
         "h_store_f64" => (&[ptr, I64, I8, F64], None),
         "h_store_str" => (&[ptr, I64, I8, I64, I64], None),
+        "h_store_dec" => (&[ptr, I64, I8, I64, I64], None),
+        "h_dec_to_f64" => (&[I64, I64, I64], Some(F64)),
+        "h_int_to_dec" => (&[I64, I64, ptr], None),
         "h_sload" => (&[ptr, I64, I64, I64], None),
         "h_probe" => (&[ptr, I64, I64, I64], Some(I8)),
         "h_predict" => (&[ptr, I64, I64, I64, I64], Some(F64)),

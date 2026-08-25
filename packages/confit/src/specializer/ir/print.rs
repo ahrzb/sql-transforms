@@ -116,18 +116,27 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
             Lit::Str(t) => {
                 let _ = write!(s, "const.str {}", quote(t));
             }
+            Lit::Dec(v, dp, ds) => {
+                let _ = write!(s, "const.dec({dp},{ds}) {v}");
+            }
         },
         Inst::Bin { op, a, b, .. } => {
             let _ = write!(s, "{} {}, {}", op.name(), val(*a), val(*b));
         }
         Inst::Cmp { pred, ty, a, b, .. } => {
+            // The scaled i128 compares as a plain signed integer AT ONE
+            // SCALE, so `dcmp` carries the (p,s) that scale is: two
+            // different (p,s) never reach here (the frontend refuses), and
+            // the text form has to say which one this is or the round-trip
+            // could not rebuild the operand type.
             let prefix = match ty {
-                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => "icmp",
-                Ty::F64 => "fcmp",
-                Ty::Str => "scmp",
+                Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => "icmp".to_string(),
+                Ty::F64 => "fcmp".to_string(),
+                Ty::Str => "scmp".to_string(),
+                Ty::Dec(dp, ds) => format!("dcmp({dp},{ds})"),
                 // Unreachable in verified programs; printed anyway so a bad
                 // program still prints for diagnostics.
-                Ty::I1 => "icmp",
+                Ty::I1 => "icmp".to_string(),
             };
             let _ = write!(s, "{prefix}.{} {}, {}", pred.name(), val(*a), val(*b));
         }
@@ -136,6 +145,12 @@ fn print_inst(s: &mut String, p: &Program, inst: &Inst) {
         }
         Inst::Select { cond, a, b, .. } => {
             let _ = write!(s, "select {}, {}, {}", val(*cond), val(*a), val(*b));
+        }
+        Inst::Dtof { p: dp, s: ds, a, .. } => {
+            let _ = write!(s, "dtof({dp},{ds}) {}", val(*a));
+        }
+        Inst::Itod { p: dp, s: ds, a, .. } => {
+            let _ = write!(s, "itod({dp},{ds}) {}", val(*a));
         }
         Inst::Itof { narrow, a, .. } => {
             let n = if *narrow { ".f32" } else { "" };

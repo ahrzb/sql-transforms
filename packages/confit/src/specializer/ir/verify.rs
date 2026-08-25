@@ -192,6 +192,8 @@ fn dst_types(p: &Program, inst: &Inst) -> Vec<(Value, Ty)> {
         Inst::Select { dst, .. } => vec![(*dst, Ty::I1)],
         Inst::Itof { dst, .. } => vec![(*dst, Ty::F64)],
         Inst::Ftoi { dst, .. } => vec![(*dst, Ty::I64)],
+        Inst::Dtof { dst, .. } => vec![(*dst, Ty::F64)],
+        Inst::Itod { p: dp, s: ds, dst, .. } => vec![(*dst, Ty::Dec(*dp, *ds))],
         Inst::Itos { dst, .. }
         | Inst::Ftos { dst, .. }
         | Inst::Sconcat { dst, .. }
@@ -408,6 +410,22 @@ fn check_block(
                 }
             }
             Inst::Itof { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
+            Inst::Dtof {
+                p: dp,
+                s: ds,
+                a,
+                ..
+            } => want(
+                &in_scope,
+                def_types,
+                *a,
+                Ty::Dec(*dp, *ds),
+                "operand",
+                bi,
+                i,
+                errs,
+            ),
+            Inst::Itod { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
             Inst::Ftoi { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),
             Inst::Itos { a, .. } => want(&in_scope, def_types, *a, Ty::I64, "operand", bi, i, errs),
             Inst::Ftos { a, .. } => want(&in_scope, def_types, *a, Ty::F64, "operand", bi, i, errs),

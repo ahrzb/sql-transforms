@@ -90,7 +90,7 @@
 //! batch     := "batch" "{" [col ("," col)*] "}"
 //! col       := (IDENT | STRING) ":" col_ty        // STRING for non-ident names
 //! col_ty    := ty ["?"]
-//! ty        := "i1" | "i64" | "f64" | "str"
+//! ty        := "i1" | "i64" | "f64" | "str" | "dec" "(" INT "," INT ")"
 //! block     := IDENT ["(" VALUE ":" ty ("," VALUE ":" ty)* ")"] ":" inst* term
 //! inst      := [VALUE ("," VALUE)* "="] OPCODE operands
 //!              // only store/store.opt omit the dests; everything else
@@ -108,14 +108,18 @@
 //! ```text
 //! %d = const.i1 true|false     %d = const.i64 INT
 //! %d = const.f64 FLOAT         %d = const.str STRING
+//! %d = const.dec(P,S) INT                     // the SCALED integer
 //! %d = iadd|isub|imul|idiv|irem %a, %b        // i64; idiv/irem trap on 0 or overflow
 //! %d = fadd|fsub|fmul|fdiv %a, %b             // f64, IEEE (inf/nan flow, no trap)
 //! %d = and|or|xor %a, %b                      // i1
 //! %d = not %a                                 // i1
 //! %d = icmp.P|fcmp.P|scmp.P %a, %b            // P in eq ne lt le gt ge; -> i1
+//! %d = dcmp(P,S).PRED %a, %b                  // dec(P,S) operands -> i1
 //! %d = select %c, %a, %b                      // %c: i1; %a, %b same type
 //! %d = itof %a                                // i64 -> f64
 //! %d = ftoi.trunc|ftoi.round %a               // f64 -> i64; traps out of range
+//! %d = dtof(P,S) %a                           // dec(P,S) -> f64, DuckDB div/mod
+//! %d = itod(P,S) %a                           // i64 -> dec(P,S), scaled
 //! %d = itos %a | ftos %a                      // -> str (arena)
 //! %f, %d = stoi.opt %a | stof.opt %a          // parse; %f=false on failure
 //! %d = sconcat %a, %b                         // str (arena)
@@ -164,6 +168,7 @@ mod tests;
 /// | `I64` | `int64` | `BIGINT` |
 /// | `F64` | `double` | `DOUBLE` |
 /// | `Str` | `string` | `VARCHAR` |
+/// | `Dec(p,s)` | `decimal128(p,s)` | `DECIMAL(p,s)` |
 ///
 /// A SQL type with no Arrow spelling never needs one as long as it stays
 /// internal: measured 2026-08-15, `('12:00:00+02'::TIMETZ)::VARCHAR` serves
@@ -188,6 +193,17 @@ mod tests;
 /// checked-never-wrapping, so i64 compute + range trap + narrow emit is
 /// bit-identical. An SSA value or payload with a narrow type is a verifier
 /// error; `lane()` is the erasure.
+///
+/// # Dec is a lane of its own
+///
+/// `Dec(p, s)` (TASK-91) is a DECIMAL held as its SCALED INTEGER in an i128
+/// lane — the same storage DuckDB uses for `DECIMAL(38,x)`, and the same
+/// value for the narrower tiers, which DuckDB exports as 128-bit arrow
+/// regardless (`SetArrowFormat`, arrow_converter.cpp:236-262). Unlike the
+/// narrow ints it does NOT erase: `lane()` keeps `(p, s)`, because the
+/// scale is part of the value's meaning, not merely of its emit width.
+/// `is_int()` is false and `int_range()` is None — a Dec is not an integer
+/// lane and must never be treated as one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Ty {
     I1,
@@ -197,18 +213,24 @@ pub enum Ty {
     I64,
     F64,
     Str,
+    /// DECIMAL(p, s): `p` in 1..=38, `s` <= `p`.
+    Dec(u8, u8),
 }
 
 impl Ty {
-    pub fn name(self) -> &'static str {
+    /// The IR text-form spelling. `Cow` rather than `&'static str` because
+    /// `Dec` carries its (p, s); every other arm still allocates nothing.
+    pub fn name(self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow;
         match self {
-            Ty::I1 => "i1",
-            Ty::I8 => "i8",
-            Ty::I16 => "i16",
-            Ty::I32 => "i32",
-            Ty::I64 => "i64",
-            Ty::F64 => "f64",
-            Ty::Str => "str",
+            Ty::I1 => Cow::Borrowed("i1"),
+            Ty::I8 => Cow::Borrowed("i8"),
+            Ty::I16 => Cow::Borrowed("i16"),
+            Ty::I32 => Cow::Borrowed("i32"),
+            Ty::I64 => Cow::Borrowed("i64"),
+            Ty::F64 => Cow::Borrowed("f64"),
+            Ty::Str => Cow::Borrowed("str"),
+            Ty::Dec(p, s) => Cow::Owned(format!("dec({p},{s})")),
         }
     }
 
@@ -232,6 +254,14 @@ impl Ty {
 
     pub fn is_int(self) -> bool {
         matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
+    }
+
+    /// `(p, s)` when this is a DECIMAL.
+    pub fn dec(self) -> Option<(u8, u8)> {
+        match self {
+            Ty::Dec(p, s) => Some((p, s)),
+            _ => None,
+        }
     }
 }
 
@@ -292,6 +322,9 @@ pub enum Lit {
     I64(i64),
     F64(f64),
     Str(String),
+    /// A DECIMAL literal: the SCALED integer plus the (p, s) it is scaled
+    /// at, so `const.dec(6,2) 50` is 0.50 and prints back as itself.
+    Dec(i128, u8, u8),
 }
 
 impl PartialEq for Lit {
@@ -301,6 +334,7 @@ impl PartialEq for Lit {
             (Lit::I64(a), Lit::I64(b)) => a == b,
             (Lit::F64(a), Lit::F64(b)) => a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
             (Lit::Str(a), Lit::Str(b)) => a == b,
+            (Lit::Dec(a, ap, asc), Lit::Dec(b, bp, bsc)) => a == b && ap == bp && asc == bsc,
             _ => false,
         }
     }
@@ -314,6 +348,7 @@ impl Lit {
             Lit::I64(_) => Ty::I64,
             Lit::F64(_) => Ty::F64,
             Lit::Str(_) => Ty::Str,
+            Lit::Dec(_, p, s) => Ty::Dec(*p, *s),
         }
     }
 }
@@ -695,6 +730,30 @@ pub enum Inst {
         dst: Value,
         a: Value,
     },
+    /// `dtof.p.s` — Dec(p,s) -> f64, DuckDB's own algorithm, NOT a
+    /// correctly-rounded conversion: fast path when the unscaled integer is
+    /// exactly representable or `s == 0`, otherwise `div + mod/10^s`
+    /// (`TryCastDecimalToFloatingPoint`, cast_operators.cpp:2908-2924).
+    /// The two disagree on real payloads, so this is a contract, not a
+    /// convenience. Total, never traps.
+    Dtof {
+        p: u8,
+        s: u8,
+        dst: Value,
+        a: Value,
+    },
+    /// `itod.p.s` — i64 lane -> the scaled i128 of Dec(p,s). DuckDB casts
+    /// the INTEGER side up when a DECIMAL meets an integer
+    /// (`ImplicitCastBigint`, cast_rules.cpp:96-107), so this is the exact
+    /// comparison path. Traps out of range only when the comparison width
+    /// was capped at 38 (cast_operators.cpp's per-row failure); the
+    /// frontend refuses that shape today, so `trap` is false in practice.
+    Itod {
+        p: u8,
+        s: u8,
+        dst: Value,
+        a: Value,
+    },
     Itos {
         dst: Value,
         a: Value,
@@ -1037,6 +1096,8 @@ impl Inst {
             | Inst::Select { dst, .. }
             | Inst::Itof { dst, .. }
             | Inst::Ftoi { dst, .. }
+            | Inst::Dtof { dst, .. }
+            | Inst::Itod { dst, .. }
             | Inst::Itos { dst, .. }
             | Inst::Ftos { dst, .. }
             | Inst::Sconcat { dst, .. }
@@ -1109,6 +1170,8 @@ impl Inst {
             | Inst::Ftos { dst, a }
             | Inst::Itof { dst, a, .. }
             | Inst::Ftoi { dst, a, .. }
+            | Inst::Dtof { dst, a, .. }
+            | Inst::Itod { dst, a, .. }
             | Inst::Str1 { dst, a, .. }
             | Inst::SLen { dst, a, .. }
             | Inst::Sord { dst, a, .. }

@@ -278,6 +278,18 @@ pub enum SKind {
     },
     /// i64 -> f64 promotion node, inserted by the frontend.
     IntToFloat(Box<SExpr>),
+    /// Dec(p,s) -> f64, DuckDB's div/mod algorithm (NOT a correctly-rounded
+    /// conversion — see kernels::dec_to_f64). Inserted where a DECIMAL
+    /// meets a DOUBLE, which is the direction DuckDB casts: only
+    /// decimal->double is a legal implicit cast (cast_rules.cpp:196-204).
+    DecToFloat(Box<SExpr>),
+    /// integer lane -> the scaled i128 of Dec(_, s). The OTHER direction of
+    /// the same rule: against an integer DuckDB casts the INTEGER up, so
+    /// the comparison stays exact. `s` is the target scale.
+    IntToDec {
+        s: u8,
+        a: Box<SExpr>,
+    },
     /// i64 -> f64 VIA f32 — `n as f32 as f64`, one rounding, not two.
     /// Only ever wraps a `tree_predict` feature: sklearn narrows an integer
     /// feature array to float32 in a single step, and above 2**53 that is a
@@ -503,6 +515,8 @@ pub fn may_trap(e: &SExpr) -> bool {
         SKind::Not(a)
         | SKind::IsNull { inner: a, .. }
         | SKind::IntToFloat(a)
+        | SKind::DecToFloat(a)
+        | SKind::IntToDec { a, .. }
         | SKind::IntToFloat32(a) => may_trap(a),
         SKind::Case { arms, default } => {
             arms.iter().any(|(c, r)| may_trap(c) || may_trap(r))
@@ -541,6 +555,8 @@ pub fn bind_foldable(e: &SExpr) -> bool {
         SKind::Not(a)
         | SKind::IsNull { inner: a, .. }
         | SKind::IntToFloat(a)
+        | SKind::DecToFloat(a)
+        | SKind::IntToDec { a, .. }
         | SKind::IntToFloat32(a)
         | SKind::Cast { inner: a, .. }
         | SKind::StrCase { a, .. }

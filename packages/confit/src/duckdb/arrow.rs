@@ -266,6 +266,9 @@ pub fn ingest(py: Python<'_>, batch: &Bound<'_, PyAny>, in_cols: &[Col]) -> PyRe
                 }
                 col
             }
+            // A decimal ROW column is opaque (schema.rs, Policy::Row), so
+            // the arrow INPUT path needs no decimal arm at all.
+            Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
         };
         if null_seen && !c.ty.nullable {
             return Err(err(format!(
@@ -476,6 +479,11 @@ fn pa_ty<'py>(pa: &Bound<'py, PyModule>, t: Ty) -> PyResult<Bound<'py, PyAny>> {
         Ty::I64 => pa.call_method0("int64"),
         Ty::F64 => pa.call_method0("float64"),
         Ty::Str => pa.call_method0("string"),
+        // decimal128 at EVERY tier, because that is what DuckDB exports:
+        // `SetArrowFormat` writes bit_width 128 regardless of the internal
+        // int16/int32/int64/int128 storage under the default
+        // ArrowFormatVersion::V1_0 (arrow_converter.cpp:236-262).
+        Ty::Dec(p, s) => pa.call_method1("decimal128", (p, s)),
     }
 }
 
@@ -566,6 +574,11 @@ pub fn emit(
                     // `string`, not `large_string` — see the scalar lane
                     // below and TASK-72.
                     crate::specializer::ir::Ty::Str => pa.call_method0("string"),
+                    // A struct_pack / UDF child over a DECIMAL refuses at
+                    // bind (m-8 lattice phase 5).
+                    crate::specializer::ir::Ty::Dec(..) => {
+                        unreachable!("a wide field child is never a decimal")
+                    }
                 };
                 // Unnamed extern: list<elem>; named extern: struct keyed by
                 // the declared names (slice 5), matching DuckDB's output.
@@ -669,6 +682,20 @@ pub fn emit(
                         dtype,
                         vb,
                         vec![py_buffer.call1((PyBytes::new(py, &raw),))?.unbind()],
+                    )
+                }
+                // x86-64 little-endian i128 IS arrow's decimal128 layout,
+                // so the payload slice goes straight into the buffer — the
+                // same `cast_bytes` shape the i64 lane uses.
+                OutCol::Dec(v) => {
+                    let vb = bitmap(v.iter().map(|(ok, _)| *ok), n);
+                    let data: Vec<i128> = v.iter().map(|(_, x)| *x).collect();
+                    (
+                        pa_ty(&pa, c.ty.ty)?,
+                        vb,
+                        vec![py_buffer
+                            .call1((PyBytes::new(py, &cast_bytes(&data, 16)),))?
+                            .unbind()],
                     )
                 }
                 OutCol::F64(v) => {
