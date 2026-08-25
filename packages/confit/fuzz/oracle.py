@@ -581,24 +581,14 @@ def run_case(case: G.Case) -> Verdict:
     )
     tags.append(f"cmp={compare_mode(case, static_only)}")
 
-    # infer_arrow cannot take a struct row schema yet (TASK-114), so a
-    # struct-bearing case runs through infer_rows instead of being scored as
-    # a divergence against our own boundary. Values are still fully compared;
-    # only the ARROW leg is unavailable, and the tag says so rather than the
-    # case quietly counting as covered.
-    rows_only = not static_only and any(
-        isinstance(s, G.Struct) for s in case.row_schema.values()
-    )
-    if rows_only:
-        tags.append("rows_only")
-
+    # The TASK-114 escape hatch is gone: infer_arrow takes a struct row
+    # schema now, so a struct-bearing case runs through the SAME boundary as
+    # every other case and gets the whole battery below with it.
     def run_fn(fn):
         """(rows, output schema, error) — one shape whichever entry point."""
         try:
             if static_only:
                 return fn.infer_rows([]), fn.output_schema, None
-            if rows_only:
-                return fn.infer_rows(case.rows), fn.output_schema, None
             out = fn.infer_arrow(table)
             return out.to_pylist(), out.schema, None
         except Exception as e:  # noqa: BLE001
@@ -726,21 +716,15 @@ def run_case(case: G.Case) -> Verdict:
         return v
     if trap_cl is not None or static_only:
         return v  # the boundary legs all need a non-trapping row run
-    extra = _extra_legs(fn_cl, case, table, got_cl, ests, v.tags, rows_only)
+    extra = _extra_legs(fn_cl, case, table, got_cl, ests, v.tags)
     return extra if extra is not None else v
 
 
-def _extra_legs(fn, case, table, got, ests, tags, rows_only=False) -> Verdict | None:
+def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
     """The boundary checks a plain differential run misses.
 
-    `got` is the primary run's rows. Under `rows_only` the primary run WAS
-    infer_rows, so every leg here needs infer_arrow and none of them can
-    run; the case keeps its value comparison and loses the boundary legs.
-    That is the honest shape of TASK-114 — not silence, and not a finding.
+    `got` is the primary run's rows, which always came from infer_arrow.
     """
-    if rows_only:
-        return None
-
     # infer_rows (dict rows) agrees with infer_arrow -- case.rows is already
     # a list of TOTAL dicts against case.row_schema (gen.py's own contract).
     try:
