@@ -34,16 +34,17 @@ multiply the expression grammar."""
 # The STORAGE vocabulary: exactly what schema.rs::arrow_field_to_row_field
 # serves, at exactly its width. int32 IS Ty::I32, never a collapse to i64 —
 # so `a + a` over an int32 column is INTEGER arithmetic on DuckDB and traps
-# at INT32, which is a different program from the int64 one.
+# at INT32, which is a different program from the int64 one. A spec string
+# carries nullability as a trailing `?`.
 SCALARS = ("bool", "int8", "int16", "int32", "int64", "double", "string")
 
 # Outside the vocabulary on purpose. The boundary rule is opaque-unless-
 # referenced: an unreferenced foreign column must never block a build.
 OPAQUE = ("float32", "timestamp")
 
-# STATIC-ONLY storage (TASK-91). Decimals serve exactly as decimal128(p,s)
-# from a static table and stay opaque in a row table, so the generator emits
-# them only on the static side -- one spelling per DuckDB storage tier
+# STATIC-ONLY storage. Decimals serve exactly as decimal128(p,s) from a
+# static table and stay opaque in a row table, so the generator emits them
+# only on the static side -- one spelling per DuckDB storage tier
 # (int16 / int32 / int64 / int128 by precision), plus the (38,0) that an
 # ordinary fit-time sum(BIGINT) actually produces.
 STATIC_ONLY = ("decimal(4,2)", "decimal(9,4)", "decimal(18,6)", "decimal(38,0)")
@@ -223,7 +224,7 @@ SIGS = {
     "length": (("str",), "int"),
     "strpos": (("str", "str"), "int"),
     "ascii": (("str",), "int"),
-    # m-8 phase 2: INTEGER-returning names patrol the width catalogue.
+    # INTEGER-returning names patrol the width catalogue.
     "ord": (("str",), "int"),
     "unicode": (("str",), "int"),
     "repeat": (("str", "int"), "str"),
@@ -249,6 +250,12 @@ AGGS = {  # statics-side aggregation only (fit-time surface)
 
 @dataclass
 class Node:
+    """An expression node, and the edit protocol the shrinker drives it by:
+    `kids()` lists the child expressions and `swap(i, new)` replaces the
+    i-th of THAT list. The two orders must agree — a fold addresses a child
+    by its `kids()` index and then swaps at the same index. A leaf keeps
+    both defaults, so swapping into one raises."""
+
     def kids(self) -> list[Node]:
         return []
 
@@ -426,7 +433,7 @@ class Star(Node):
     exclude: list[str] = field(default_factory=list)
     replace: list[tuple[Node, str]] = field(default_factory=list)
     columns_re: str | None = None  # COLUMNS('re')
-    qualifier: str | None = None  # `t.*` (TASK-125: statics under a star)
+    qualifier: str | None = None  # `t.*` — a star over one joined relation
 
 
 @dataclass
@@ -482,14 +489,15 @@ class TreeSpec:
 @dataclass
 class Case:
     seed: int
-    row_schema: dict[str, str]
-    rows: list[dict]
-    statics: dict[str, tuple[dict[str, str], list[dict]]]
+    row_schema: dict[str, str]  # column -> storage spec (a name, or a Struct)
+    rows: list[dict]  # TOTAL dicts against row_schema — every column present
+    statics: dict[str, tuple[dict[str, str], list[dict]]]  # name -> (schema, rows)
     udfs: list[UdfSpec]
     tree: TreeSpec | None
     query: Q
-    shape: str | None
-    output: str | None
+    shape: str | None  # the declared row-shape contract; None = undeclared
+    output: str | None  # nothing consumes this: dict rows are the only mode
+    # the constructs this case exercises, for the coverage histogram
     tags: list[str] = field(default_factory=list)
 
 
@@ -544,6 +552,8 @@ QUANT = [i / 4 for i in range(-8, 9)]  # quantised grid — the sklearn lesson
 
 
 def value(rng: random.Random, ty: str, nullable: bool, storage: str = "") -> object:
+    """One data value of semantic type `ty`. `storage` is the declared
+    integer width ("" = int64), and the value never leaves its range."""
     if nullable and rng.random() < 0.3:
         return None
     if ty == "int":
@@ -645,8 +655,8 @@ def _num(rng, env, ty, depth):
         return CaseW(whens, els)
     if r < 0.70:
         src = rng.choice(TYPES)
-        # m-8 phase 2: narrow targets are real; CAST/TRY_CAST AS INTEGER
-        # exercises the typed-width lane and its range semantics.
+        # Narrow targets are real: CAST/TRY_CAST AS INTEGER exercises the
+        # typed-width lane and its range semantics.
         to = "int32" if ty == "int" and rng.random() < 0.4 else ty
         return Cast(expr(rng, env, src, depth - 1), to, try_=rng.random() < 0.3)
     if r < 0.78:
@@ -907,9 +917,9 @@ def _colspec(rng: random.Random, depth: int = 0, static: bool = False):
     full ordered path, so depth is part of the surface, not decoration) and
     opaque columns appear at low weight — they must never block a build.
 
-    `static` widens the vocabulary by the STATIC-ONLY types (TASK-91's
-    decimals): a decimal row column is opaque, so generating one there
-    would only ever exercise the opaque path."""
+    `static` widens the vocabulary by the STATIC-ONLY types (the decimals):
+    a decimal row column is opaque, so generating one there would only ever
+    exercise the opaque path."""
     r = rng.random()
     if static and depth == 0 and 0.20 <= r < 0.32:
         return rng.choice(STATIC_ONLY) + ("?" if rng.random() < 0.5 else "")
@@ -945,11 +955,11 @@ def _cell(rng: random.Random, spec) -> object:
         return {n: _cell(rng, s) for n, s in spec.fields}
     storage = spec.rstrip("?")
     if storage.startswith("decimal("):
-        # TASK-91: a STATIC-ONLY type. Deliberately NOT in SEMANTIC, so the
-        # expression grammar never binds one -- every operator over a
-        # decimal except a comparison, a join and CAST-to-DOUBLE refuses by
-        # name until lattice phase 5, and a grammar full of them would bury
-        # the signal in REFUSED. Star expansion and the schema path are what
+        # A STATIC-ONLY type. Deliberately NOT in SEMANTIC, so the expression
+        # grammar never binds one -- every operator over a decimal except a
+        # comparison, a join and CAST-to-DOUBLE refuses by name until lattice
+        # phase 5, and a grammar full of them would bury the signal in
+        # REFUSED. Star expansion and the schema path are what
         # exercise the lane, which is exactly where it is observable.
         if spec.endswith("?") and rng.random() < 0.3:
             return None
@@ -979,9 +989,10 @@ def _rows(rng: random.Random, schema: dict, n: int) -> list[dict]:
 
 
 def _equi_on(rng, env: Env, table: str, tschema: dict) -> Node | None:
-    """key = table.col [AND residual] — the residual may carry CASE/AND/OR
-    (the TASK-73/74/75 ON-residual class). Joins on a struct LANE too: a
-    lane is a column, so `w.mean = c0` is an ordinary equi-key."""
+    """key = table.col [AND residual] — the residual may carry CASE/AND/OR,
+    which is where the ON path has diverged before (see
+    tests/known_divergences/test_join_residual.py). Joins on a struct LANE
+    too: a lane is a column, so `w.mean = c0` is an ordinary equi-key."""
     tleaves = leaves(tschema)
     pairs = [
         (rc, tc)
@@ -1004,6 +1015,8 @@ def _equi_on(rng, env: Env, table: str, tschema: dict) -> Node | None:
 
 
 def gen(seed: int) -> Case:
+    """The whole case for `seed`: schemas, data, UDF/tree specs and the query
+    AST. Seeded end to end, so the repro for any finding is its seed alone."""
     rng = random.Random(seed)  # noqa: S311 — fuzzing, not crypto
     tags: list[str] = []
 
@@ -1017,7 +1030,7 @@ def gen(seed: int) -> Case:
         if name.lower() in {k.lower() for k in statics}:
             continue  # DuckDB resolves table names case-insensitively
         sch = _schema(rng, rng.randrange(1, 4), hostile=hostile_ids, static=True)
-        # TASK-129: 8% of statics are WIDE (50-200 rows, spread int values)
+        # 8% of statics are WIDE (50-200 rows, spread int values)
         # -- an unordered GROUP BY over 4 groups cannot show hash-order
         # variance; over 50+ it measurably does (12 orders / 12 connections).
         # %97 keeps every width honest (96 fits int8) and still gives ~97
@@ -1083,6 +1096,12 @@ def _items(rng, env: Env, n: int, aliased=True) -> list[tuple[Node, str | None]]
 
 
 def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
+    """One query off a weighted menu of templates, retrying another template
+    when this case cannot meet the one drawn (no statics, no bool column).
+
+    APPENDS the template's name to `tags`, which is what makes a template
+    that stopped firing at all visible in the coverage histogram.
+    """
     r = rng.random()
     body: Sel
     ctes: list[tuple[str, Sel]] = []
@@ -1108,10 +1127,10 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
             )
         body.items = _items(rng, jenv, rng.randrange(1, 4))
         env = jenv
-    elif r < 0.60:  # selection-context forms (TASK-124)
+    elif r < 0.60:  # selection-context forms
         # a nullable-bool conjunct with a sibling that can trap, nested under
-        # OR / NOT or used as a CASE condition -- the class the 4000-seed
-        # gate could not see when TASK-124 was found by review instead.
+        # OR / NOT or used as a CASE condition -- a class 4000 seeds of this
+        # generator could not reach before this arm existed.
         bools = [c for _, c, tt in env.cols if tt == "bool" and "." not in c]
         ints = [c for _, c, tt in env.cols if tt == "int" and "." not in c]
         if not bools or not ints:
@@ -1149,9 +1168,9 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
         m = rng.random()
         body = Sel([(star, None)], "__THIS__")
         if statics and m < 0.35:
-            # a star over a JOINED STATIC (TASK-125): struct and opaque
-            # columns must refuse by name under `s.*`/`*`, never expand as
-            # leaves or drop -- unreachable before this arm existed.
+            # a star over a JOINED STATIC: struct and opaque columns must
+            # refuse by name under `s.*`/`*`, never expand as leaves or
+            # drop -- unreachable before this arm existed.
             sname = rng.choice(list(statics))
             sch = statics[sname][0]
             on = _equi_on(rng, env, sname, sch)
@@ -1179,7 +1198,7 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
         tags.append("cte")
         sname = rng.choice(list(statics))
         sch, _ = statics[sname]
-        cname = rng.choice(["agg", "Agg", "AGG"])  # case-varied (TASK-76 class)
+        cname = rng.choice(["agg", "Agg", "AGG"])  # names bind case-insensitively
         sleaves = leaves(sch)
         if not sleaves:
             return _query(rng, env, {}, tags, hostile_ids)  # opaque-only static
@@ -1259,7 +1278,8 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
     if body.frm == "__THIS__" and rng.random() < 0.45:
         body.where = expr(rng, env, "bool", rng.randrange(1, 4))
 
-    # hostile clause / modifier — refused constructs on purpose (TASK-69 class)
+    # hostile clause / modifier — constructs the engine must REFUSE, never
+    # parse and drop
     h = rng.random()
     if h < 0.10:
         tags.append("hostile_clause")
@@ -1293,8 +1313,12 @@ def _walk(n: Node):
 
 
 def planted_over_case() -> Case:
-    """The known-live TASK-69-class case: DuckDB refuses `abs(k) OVER ()`,
-    confit builds it. The smoke test pins that this stays not-AGREE."""
+    """The planted case that must never come back AGREE: `abs(k) OVER ()` is
+    a call-node modifier on a scalar call, which DuckDB refuses. Confit
+    refuses it as well, so the verdict is REFUSED — and were the modifier
+    ever parsed and dropped instead, the same case would come back
+    DIVERGE_BUILD. The smoke test accepts either, because what it really
+    watches is that the pipeline still SEES a silent drop."""
     q = Q(
         [],
         Sel([(Call("abs", [Col("k", None, "int")], modifier="over"), "c")], "__THIS__"),

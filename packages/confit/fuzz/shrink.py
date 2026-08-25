@@ -22,6 +22,9 @@ def _sig(case: G.Case):
 
 
 def _try(case: G.Case, want, edit) -> G.Case:
+    """`edit` applied to a COPY, kept only while the verdict signature still
+    equals `want`. A rejected edit — or one that raised — returns the very
+    object passed in, so callers detect "no progress" with `is`."""
     cand = copy.deepcopy(case)
     try:
         edit(cand)
@@ -50,6 +53,9 @@ def _sites(case: G.Case):
 
 
 def shrink(case: G.Case, rounds: int = 6) -> G.Case:
+    """The smallest case this reaches whose verdict signature still equals
+    `case`'s. `rounds` caps the passes; a round that renders the same SQL as
+    the one before it stops early."""
     want = _sig(case)
     for _ in range(rounds):
         before = G.render(case.query)

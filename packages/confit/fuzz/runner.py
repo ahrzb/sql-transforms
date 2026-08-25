@@ -42,6 +42,8 @@ COVERED = ("AGREE",)
 
 
 def _spawn():
+    """A worker subprocess and the temp file holding its stderr, as
+    `(proc, err)`. The caller owns `err` and must close it."""
     err = tempfile.TemporaryFile()
     proc = subprocess.Popen(  # noqa: S603 — our own module, fixed argv
         [sys.executable, "-m", "fuzz.worker"],
@@ -63,6 +65,12 @@ def _stderr_tail(err_file) -> str:
 
 
 def _drive(seeds, results, timeout, lock):
+    """One worker thread: seeds off the shared iterator (`lock` guards it)
+    into a subprocess, verdict dicts onto `results`.
+
+    `timeout` is per seed, in seconds. A worker that dies or outruns it is
+    killed, blamed for the seed it was holding, and replaced.
+    """
     proc, err = _spawn()
     while True:
         with lock:
@@ -110,6 +118,8 @@ def _drive(seeds, results, timeout, lock):
 
 
 def campaign(start: int, n: int, workers: int, timeout: float, out: Path):
+    """Seeds `start .. start + n - 1` across `workers` subprocesses: reports,
+    writes the findings to `out`, and returns every verdict dict."""
     seeds = iter(range(start, start + n))
     results: list[dict] = []
     lock = threading.Lock()
@@ -131,6 +141,9 @@ def campaign(start: int, n: int, workers: int, timeout: float, out: Path):
 
 
 def report(results: list[dict], out: Path):
+    """Print the campaign summary and write every INTERESTING verdict to
+    `out`, one JSON object per line. The file keeps the raw findings; only
+    the printout collapses them to one example per (kind, klass)."""
     kinds = collections.Counter(r["kind"] for r in results)
     print("\n== verdicts ==")
     for k, c in kinds.most_common():

@@ -28,10 +28,9 @@ instead of needing a human to reason about fold visibility:
                            this is user-visible and needs a decision.
   ours == on, off != on    OPT_EMULATED. We answer like the optimizer and
                            unlike the oracle, which means we are reproducing
-                           a plan-rewrite pass. Since 2026-08-17 that is a
-                           BUG, not a note: the emulations this docstring used
-                           to list were all deleted that day, and the class is
-                           empty. If it refills, something reintroduced one.
+                           a plan-rewrite pass. That is a BUG, not a note:
+                           the class is empty, and if it refills something
+                           reintroduced an emulation.
 
 Why the optimizer-off run is the BASELINE and not merely a second opinion: it
 is the only one of the two whose answer is a function of the query. The
@@ -97,8 +96,8 @@ _ARROW = {
     # out of vocabulary on purpose: unreferenced, these must not block a build
     "float32": pa.float32(),
     "timestamp": pa.timestamp("us"),
-    # STATIC-ONLY (TASK-91): served exactly, emitted as decimal128(p,s)
-    # whatever the internal storage tier.
+    # STATIC-ONLY: served exactly, emitted as decimal128(p,s) whatever the
+    # internal storage tier.
     "decimal(4,2)": pa.decimal128(4, 2),
     "decimal(9,4)": pa.decimal128(9, 4),
     "decimal(18,6)": pa.decimal128(18, 6),
@@ -114,28 +113,27 @@ _DUCK_T = {
 # Campaign-report filter for the one feature not yet shipped: decimals
 # (lattice-spec phase 5, Dec(p,s) arithmetic). One unshipped feature =
 # hundreds of random spellings per run; delete the tag in the feature's own
-# PR or it hides regressions. (int-widths deleted with TASK-79/phase 2.)
+# PR or it hides regressions.
 #
-# NARROWED by TASK-91 (2026-08-25): the tag no longer covers decimal STATIC
-# columns — those now serve exactly as decimal128(p,s), so a decimal-vs-
-# double type delta there is a REGRESSION, not a known gap. What survives is
-# the LITERAL-derived class only: docs/known-limitations.md's "DECIMAL
-# literals are f64" row, where DuckDB types `1.5` as DECIMAL(2,1) and we map
-# to f64. gen.py emits decimal literals (gen.py:255, :574) and, since
-# TASK-91, decimal STATIC columns as well — so the surviving tag hits are
-# checkable by hand: every one should trace to a literal.
+# The tag covers the LITERAL-derived class ONLY: docs/known-limitations.md's
+# "DECIMAL literals are f64" row, where DuckDB types `1.5` as DECIMAL(2,1)
+# and we map to f64. A decimal STATIC column serves exactly as
+# decimal128(p,s), so a decimal-vs-double type delta THERE is a REGRESSION,
+# not a known gap — and since gen.py emits both spellings, the surviving tag
+# hits stay checkable by hand: every one should trace to a literal.
 #
-# This tag has NO strict-xfail twin, contrary to what this comment claimed
-# until 2026-08-15. The bare-literal 1-ulp class is documented instead, in
-# docs/known-limitations.md — and TASK-95 (doc-twin totality) is still To
-# Do, so nothing rings when phase 5 lands.
+# This tag has NO strict-xfail twin. The bare-literal 1-ulp class is
+# documented instead, in docs/known-limitations.md — and TASK-95 (doc-twin
+# totality) is still To Do, so nothing rings when phase 5 lands.
 
 
 @dataclass
 class Verdict:
-    kind: str
+    kind: str  # one of KINDS
     klass: str = ""  # dedup key within the kind
     detail: str = ""
+    # the case's own construct tags, plus oracle-side notes (`cmp=`, a known
+    # width class, `fallback`)
     tags: list[str] = dfield(default_factory=list)
 
     def to_json(self):
@@ -151,6 +149,8 @@ class Verdict:
 
 
 def _arrow_field(name: str, spec) -> pa.Field:
+    """One field from a gen.py storage spec: a trailing `?` is the nullable
+    flag, and a `G.Struct` nests."""
     if isinstance(spec, G.Struct):
         return pa.field(
             name,
@@ -186,6 +186,9 @@ def _mix(vals, tys):
 
 
 def _lane_val(acc: float, ty: str, salt: int):
+    """One output lane off the shared accumulator. `salt` is the lane's own
+    index, so sibling lanes never carry the same value — a lane read off the
+    wrong position cannot pass by coincidence."""
     if ty == "float":
         return acc + salt
     if ty == "int":
@@ -196,6 +199,12 @@ def _lane_val(acc: float, ty: str, salt: int):
 
 
 def make_udf(spec: G.UdfSpec):
+    """The protocol object for `spec`, deterministic by construction.
+
+    The SAME instance is handed to confit as a `udfs` entry and to DuckDB via
+    `create_function`, so a value difference is the engine's and never two
+    different functions.
+    """
     lanes = (
         [(None, spec.ret[1])]
         if spec.ret[0] == "scalar"
@@ -354,6 +363,9 @@ _DUCK_BUILD_ERRS = (
 
 
 def _duck_con(case: G.Case, udf_objs):
+    """A connection with the case's UDFs registered and its tables copied
+    out of arrow into NATIVE DuckDB tables (the recipe is in the module
+    note). Both readings share it, so `_duck_run` owns closing it."""
     con = duckdb.connect()
     for u in udf_objs:
         params = [_DUCK_T[t] for t in u.takes.types]
@@ -373,6 +385,9 @@ def _duck_con(case: G.Case, udf_objs):
 
 
 def _exec(con, sql):
+    """`(table, phase, detail)`, phase being "build" or "run" — the split
+    that separates "DuckDB refuses this query" from "DuckDB traps on this
+    data". On success the two error slots are None."""
     try:
         return con.execute(sql).to_arrow_table(), None, None
     except Exception as e:  # noqa: BLE001 — classify, don't die
@@ -411,7 +426,7 @@ def _seq(rows: list[dict]):
 
 
 def compare_mode(case, static_only: bool) -> str:
-    """TASK-129: which comparison the ORACLE owes this case.
+    """Which comparison the ORACLE owes this case.
 
     row-path             order is defined by the SERVING contract (output
                          follows input rows), not by SQL -- so DuckDB legs
@@ -453,7 +468,7 @@ def _dedup_names(names: list[str]) -> list[str]:
     every subquery/CTE/CTAS boundary and in .df(); its TOP-LEVEL arrow
     export keeps the duplicates instead, so the oracle leg normalizes
     DuckDB's names through the same rule before comparing -- the engine's
-    deduped names are the DECIDED contract, not a divergence (TASK-130)."""
+    deduped names are the DECIDED contract, not a divergence."""
     seen: set[str] = set()
     out = []
     for n in names:
@@ -517,6 +532,13 @@ def _norm(table: pa.Table, to: pa.Schema | None = None) -> list[dict]:
 
 
 def run_case(case: G.Case) -> Verdict:
+    """One case's verdict: build both backends, run both DuckDB readings,
+    classify, then the boundary legs.
+
+    Refusals, traps and disagreements all come back AS a Verdict. An
+    exception escaping here is the oracle's own bug, and `run_case_json`
+    turns that into SKIP rather than blaming the engine.
+    """
     sql = G.render(case.query)
     tags = list(case.tags)
     schema = _arrow_schema(case.row_schema)
@@ -527,9 +549,8 @@ def run_case(case: G.Case) -> Verdict:
         tree_obj, ests = make_tree(case.tree, case.seed)
         udf_objs.append(tree_obj)
 
-    # case.output (gen.py still generates None/"dict"/"model") exercised the
-    # deleted output= kwarg; dict-out is now the only mode, so it is not
-    # forwarded to _build.
+    # `case.output` is not forwarded: dict rows are the only output mode, so
+    # the field gen.py still fills has nothing to select.
     # --- build both backends -------------------------------------------
     def build(force):
         try:
@@ -581,8 +602,8 @@ def run_case(case: G.Case) -> Verdict:
     )
     tags.append(f"cmp={compare_mode(case, static_only)}")
 
-    # The TASK-114 escape hatch is gone: infer_arrow takes a struct row
-    # schema now, so a struct-bearing case runs through the SAME boundary as
+    # No escape hatch for struct row columns: infer_arrow takes a struct row
+    # schema, so a struct-bearing case runs through the SAME boundary as
     # every other case and gets the whole battery below with it.
     def run_fn(fn):
         """(rows, output schema, error) — one shape whichever entry point."""
@@ -654,8 +675,8 @@ def run_case(case: G.Case) -> Verdict:
                 return Verdict(
                     "DIVERGE_VALUE", "static-only-values", f"{got_cl} != {want}", t
                 )
-            # constant-ordered (TASK-129): the multiset matched; the sequence
-            # must SATISFY the ORDER BY, not equal DuckDB's (ties make its
+            # constant-ordered: the multiset matched; the sequence must
+            # SATISFY the ORDER BY, not equal DuckDB's (ties make its
             # sequence one of several valid answers).
             ob = case.query.body.order_by
             if ob is not None:
@@ -744,7 +765,7 @@ def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
             tags,
         )
 
-    # hostile Arrow: sliced offset, chunked, empty (TASK-67 class)
+    # hostile Arrow: sliced offset, chunked, empty
     if len(table) >= 2:
         for name, hostile, sub in (
             ("sliced", table.slice(1), table.slice(1)),
@@ -771,12 +792,11 @@ def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
                     tags,
                 )
 
-    # single-row concatenation == batch, AS A SEQUENCE (TASK-129): the
-    # serving contract is that output rows follow input rows -- map exactly,
-    # filter as a subsequence, many as per-input-row blocks in input order.
-    # Comparing through `_key` here accepted any permutation, so an order bug
-    # on the row path was invisible. (Also still catches cross-row state
-    # leaks, which is what this leg was originally for.)
+    # single-row concatenation == batch, AS A SEQUENCE: the serving contract
+    # is that output rows follow input rows -- map exactly, filter as a
+    # subsequence, many as per-input-row blocks in input order. `_key` here
+    # would accept any permutation and leave an order bug on the row path
+    # invisible. (The leg also catches cross-row state leaks.)
     if 2 <= len(table) <= 6:
         singles = [fn.infer_arrow(table.slice(i, 1)) for i in range(len(table))]
         cat = pa.concat_tables(singles).to_pylist()
@@ -858,6 +878,7 @@ def _first_words(s: str, n: int = 6) -> str:
 
 
 def run_case_json(seed: int) -> dict:
+    """`gen(seed)` through `run_case`, as the JSON line the worker prints."""
     case = G.gen(seed)
     try:
         v = run_case(case)
