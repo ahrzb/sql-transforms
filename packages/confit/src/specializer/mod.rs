@@ -59,6 +59,11 @@ pub struct StaticSpec {
     /// payload) — and the materializer KEEPS NULL-key rows as
     /// (false, type default) instead of dropping them.
     pub key_indf: Vec<bool>,
+    /// Per key_col: true when the key is a struct node's PRESENCE, not its
+    /// value (TASK-133). The path then names a struct NODE, and the key is
+    /// `TRUE if that node is non-NULL else NULL` — so the ordinary plain /
+    /// IS-NOT-DISTINCT machinery gives it DuckDB's nested semantics.
+    pub key_present: Vec<bool>,
     pub val_cols: Vec<Vec<String>>,
     /// Per val_col: a declared-nullable column's map value is a
     /// (validity i1, payload) PAIR in the flattened StaticTy::Map values
@@ -84,6 +89,13 @@ pub struct Prepared {
     /// statics sit AFTER every map static, so the caller materializes the
     /// map recipes first and then one ensemble per name here.
     pub models: Vec<String>,
+    /// Struct-node PRESENCE lanes the frontend MINTED for join keys
+    /// (TASK-133), as `(column, the node's SEGMENT path)`. They sit AFTER
+    /// every caller-supplied lane in the program's input, and the boundary
+    /// fills each with "the node at this path is non-NULL". Empty for every
+    /// query without a struct join key — the lane is minted lazily because
+    /// one extra input lane costs ~25 ns/row at the marshalling boundary.
+    pub present_lanes: Vec<(ir::Col, Vec<String>)>,
 }
 
 /// STAGE 1 for the v0 ribbon: SQL text + the dynamic table's name and schema
@@ -121,12 +133,17 @@ pub fn prepare_opaque(
     // the bind-time fold of pure externs. Empty disables the fold.
     bind_eval: &[exec::ExternImpl],
 ) -> Result<Prepared, PrepareError> {
-    let (rel, joins, out_cols, regexes, wide_outputs, model_refs) = frontend::frontend(
-        sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
-    )?;
+    let (rel, joins, out_cols, regexes, wide_outputs, model_refs, present_lanes) =
+        frontend::frontend(
+            sql, this_name, in_cols, opaque, structs, statics, many, udfs, models, bind_eval,
+        )?;
     let one_row_blocker = one_row_blocker(&rel, &joins, statics);
+    // A minted presence lane is an ordinary input column from here down —
+    // appended, so no caller lane index shifts (TASK-133).
+    let mut all_in = in_cols.to_vec();
+    all_in.extend(present_lanes.iter().map(|(c, _)| c.clone()));
     let mut program = lower::lower(
-        &rel, &joins, statics, in_cols, out_cols, regexes, udfs, "run", many, models,
+        &rel, &joins, statics, &all_in, out_cols, regexes, udfs, "run", many, models,
         &model_refs,
     )?;
     // Block-splitting lowerings mint ids out of text order; renumber so
@@ -148,6 +165,7 @@ pub fn prepare_opaque(
                     table: String::new(),
                     key_cols: Vec::new(),
                     key_indf: Vec::new(),
+                    key_present: Vec::new(),
                     val_cols: Vec::new(),
                     val_nullable: Vec::new(),
                 };
@@ -160,9 +178,17 @@ pub fn prepare_opaque(
                 key_cols: j
                     .key_cols
                     .iter()
-                    .map(|&c| paths[c as usize].clone())
+                    .map(|c| match c {
+                        plan::KeyCol::Lane(c) => paths[*c as usize].clone(),
+                        plan::KeyCol::Present(p) => p.clone(),
+                    })
                     .collect(),
                 key_indf: j.key_indf.clone(),
+                key_present: j
+                    .key_cols
+                    .iter()
+                    .map(|c| matches!(c, plan::KeyCol::Present(_)))
+                    .collect(),
                 val_cols: j
                     .val_cols
                     .iter()
@@ -185,6 +211,7 @@ pub fn prepare_opaque(
             .iter()
             .map(|r| models[*r as usize].name.clone())
             .collect(),
+        present_lanes,
     })
 }
 

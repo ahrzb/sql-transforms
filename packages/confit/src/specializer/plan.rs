@@ -200,6 +200,23 @@ pub enum JoinKind {
     Left,
 }
 
+/// One map key on the STATIC side of a [`JoinSpec`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum KeyCol {
+    /// A lane of the static table (index into [`StaticTable::cols`]).
+    Lane(u32),
+    /// "the struct node at this SEGMENT path is non-NULL" (TASK-133). A
+    /// STRUCT join key expands into leaf keys plus one PRESENCE key per
+    /// node, because DuckDB's nested `=` carries each node's own validity
+    /// as a VALUE (`row_matcher.cpp:379-382`: top-level Equals, every child
+    /// NOT_DISTINCT_FROM): `{inner: NULL}` misses `{inner: {val: NULL}}`
+    /// although the two flatten to the same leaf tuple. No lane exists for
+    /// a node on either side, so both sides synthesize the boolean —
+    /// NULL when the node is absent, TRUE when it is present — and the
+    /// ordinary plain / IS-NOT-DISTINCT key machinery does the rest.
+    Present(Vec<String>),
+}
+
 /// One equi-join to a static table, in FROM-clause order. Join `i` probes
 /// map static `@i`; its map layout is `keys[..] -> value columns`, where the
 /// key column split comes from the ON clause.
@@ -214,9 +231,8 @@ pub struct JoinSpec {
     /// Dynamic-side key expressions, one per key column, already promoted
     /// to the map's key types.
     pub keys: Vec<SExpr>,
-    /// Static-table columns acting as map keys (indices into `table.cols`),
-    /// aligned with `keys`.
-    pub key_cols: Vec<u32>,
+    /// Static-table map keys, aligned with `keys`.
+    pub key_cols: Vec<KeyCol>,
     /// Per key: true when the ON conjunct was IS NOT DISTINCT FROM. NULL is
     /// then an ordinary key value: the key flattens to TWO map-key lanes,
     /// (validity i1, payload masked to the type default under NULL), on
