@@ -4,6 +4,10 @@ use super::super::ir::Program;
 use super::interp::InterpFn;
 use super::{Batch, ColData, OutCol, RunState, Trap};
 
+// Column builders: `None` is a NULL cell, and its payload is the type
+// default rather than garbage — matching what the boundaries hand the
+// engine, so a test cannot pass by reading through a false validity flag.
+
 pub fn c_i1(vals: &[Option<bool>]) -> ColData {
     ColData::I1 {
         valid: vals.iter().map(|v| v.is_some()).collect(),
@@ -95,6 +99,8 @@ pub fn run_snapshot(f: &InterpFn, input: &Batch) -> Result<Vec<Vec<String>>, Tra
     Ok(snapshot(&st))
 }
 
+/// The expected-value side of [`snapshot`]: rows of already-rendered cell
+/// text, with `"NULL"` spelling a NULL cell.
 pub fn rows(v: &[&[&str]]) -> Vec<Vec<String>> {
     v.iter()
         .map(|r| r.iter().map(|s| s.to_string()).collect())

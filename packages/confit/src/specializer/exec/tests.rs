@@ -1,7 +1,8 @@
-//! Interpreter-backend tests: every M-ir fixture executes against
-//! hand-computed expectations; unverified IR and mismatched statics are
-//! rejected; the steady state performs zero heap allocations (counting
-//! global allocator); generated programs execute deterministically.
+//! Backend tests: every M-ir fixture executes against hand-computed
+//! expectations; unverified IR and mismatched statics are rejected; the
+//! steady state performs zero heap allocations (counting global
+//! allocator); generated programs execute deterministically, and the
+//! interpreter and the JIT agree byte-for-byte on all of them.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -50,8 +51,6 @@ unsafe impl GlobalAlloc for CountingAlloc {
 
 #[global_allocator]
 static GA: CountingAlloc = CountingAlloc;
-
-// ------------------------------------------------------------- helpers --
 
 // ------------------------------------------------------------ fixtures --
 
@@ -110,7 +109,7 @@ fn casts_fixture_executes_and_traps() {
     };
     // @1 NULL: n = nearest(3.5) - trunc(3.5) = 4 - 3 = 1; msg = select over
     // scmp.eq("3.5:", ":") = false -> ":". 3.5 rather than 2.5 so the two
-    // opcodes still disagree now that `nearest` is half-to-EVEN (TASK-70) —
+    // opcodes still disagree now that `nearest` is half-to-EVEN —
     // nearest(2.5) == trunc(2.5) == 2 would make this fixture blind to a
     // collapse of the two modes.
     let f = compile(
@@ -263,8 +262,8 @@ fn rejects_input_shape_mismatch() {
 
 // ---------------------------------------------------------- allocation --
 
-/// AC#3: after warmup, run() performs ZERO heap allocations — registers,
-/// arena, and output builders are all reused; varlen goes arena-only.
+/// After warmup, run() performs ZERO heap allocations — registers, arena,
+/// and output builders are all reused; varlen goes arena-only.
 /// PROJECTION covers str loads, a probe, arithmetic, and store.opt.
 #[test]
 fn steady_state_run_allocates_nothing() {
@@ -295,7 +294,7 @@ fn steady_state_run_allocates_nothing() {
 
     // The cranelift backend honors the same contract — its helpers share
     // the interpreter's semantic functions, so they must also share the
-    // no-alloc property (TASK-45 AC #4).
+    // no-alloc property.
     let statics = vec![StaticData::Map(vec![(
         vec![KeyBits::Str("a".into())],
         vec![ScalarVal::F64(10.0)],
@@ -317,8 +316,8 @@ fn steady_state_run_allocates_nothing() {
 }
 
 /// The string surface — case map, trim, substr, concat, int/float text,
-/// parse, compare — is arena-only in steady state on BOTH backends. These
-/// ops all used to build temp Strings per row (TASK-45 AC #4).
+/// parse, compare — is arena-only in steady state on BOTH backends. Every
+/// one of these ops built a temp String per row before it was pinned here.
 #[test]
 fn steady_state_string_ops_allocate_nothing() {
     let p = built(
@@ -511,7 +510,9 @@ fn emitted_counts_rows() {
 // One test per documented pin in interp.rs that the design review found
 // untested. Each tiny program computes one edge through the text form.
 
-/// Run a one-output program over no input rows... rather, over one dummy row.
+/// Run `body` as a one-output program over a single dummy row (`in.d` = 0,
+/// there so the batch has a shape, not to be read), and snapshot the one
+/// output column `out_col` — or return the trap it raised.
 fn eval1(body: &str, out_col: &str) -> Result<Vec<Vec<String>>, Trap> {
     let text = format!(
         "fn f(in: batch{{d: i64}}, out: batch{{{out_col}}}) {{\nentry:\n{body}\n  emit\n}}"
@@ -699,7 +700,7 @@ fn pin_ssubstr_range_guards_trap() {
 fn pin_ftoi_rounding_and_traps() {
     // `nearest` is half-to-EVEN: it is DuckDB's DOUBLE->BIGINT cast, and it
     // is deliberately NOT the SQL round() builtin, which is
-    // half-away-from-zero and never reaches this opcode (TASK-70).
+    // half-away-from-zero and never reaches this opcode.
     for (lit, mode, expect) in [
         ("2.5", "nearest", "2"),
         ("-2.5", "nearest", "-2"),
@@ -1005,10 +1006,10 @@ fn casemap_tables_sorted_and_marquee_pins() {
     assert_eq!(simple_upper('ﬁ'), 'ﬁ');
 }
 
-/// THE backend contract (TASK-44): cranelift and the interpreter agree
-/// byte-for-byte on every generated program — outputs, emitted counts, and
-/// traps. Same seeds as the determinism fuzz, both backends fed identical
-/// statics and inputs.
+/// THE backend contract: cranelift and the interpreter agree byte-for-byte
+/// on every generated program — outputs, emitted counts, and traps. Same
+/// seeds as the determinism fuzz, both backends fed identical statics and
+/// inputs.
 #[test]
 fn fuzz_cranelift_agrees_with_interpreter() {
     use super::cranelift;
@@ -1108,7 +1109,7 @@ fn tree_score_fixture_pins_null_and_unseen_group_on_both_backends() {
             ]),
             c_f64(&[Some(50.0), None, None, Some(50.0)]),
             // `rooms` is an INTEGER feature: it reaches predict through
-            // itof.f32, one rounding, matching sklearn (TASK-77).
+            // itof.f32, one rounding, matching sklearn.
             c_i64(&[Some(1), Some(1), Some(1), Some(1)]),
         ],
     );
@@ -1134,13 +1135,12 @@ fn tree_score_fixture_pins_null_and_unseen_group_on_both_backends() {
     assert_eq!(snapshot(&st), want, "cranelift");
 }
 
-/// TASK-91: the Dec lane on BOTH backends, end to end -- probe a
-/// decimal128(38,0) and a decimal128(6,2) value column, select between the
-/// probed payload and a zero default on the miss (the LEFT-join shape),
-/// compare at one scale, convert down with DuckDB's div/mod algorithm, and
-/// emit. 2^53+1 must survive all of it as ITSELF, which is the whole
-/// ticket; the interpreter and the JIT must agree, which is the backend
-/// contract.
+/// The Dec lane on BOTH backends, end to end -- probe a decimal128(38,0)
+/// and a decimal128(6,2) value column, select between the probed payload
+/// and a zero default on the miss (the LEFT-join shape), compare at one
+/// scale, convert down with DuckDB's div/mod algorithm, and emit. 2^53+1
+/// must survive all of it as ITSELF, which is what the lane exists for;
+/// the interpreter and the JIT must agree, which is the backend contract.
 #[test]
 fn interp_and_cranelift_agree_on_a_decimal_probe_select_and_emit() {
     use super::cranelift;
