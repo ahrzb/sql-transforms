@@ -35,8 +35,8 @@ use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
 use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
-    ArithOp, CompareGrid, JoinKind, JoinSpec, KeyCol, Rel, SExpr, SKind, StaticTable, StructCol,
-    StructField, StructNode, bind_foldable, may_trap,
+    ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Rel, SExpr, SKind,
+    StaticTable, StructCol, StructField, StructNode, bind_foldable, may_trap,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -824,7 +824,6 @@ fn bind_from<'a>(
                 kind,
                 keys: Vec::new(),
                 key_cols: Vec::new(),
-                key_indf: Vec::new(),
                 val_cols: (0..n_batch).collect(),
                 residual,
             });
@@ -844,10 +843,10 @@ fn bind_from<'a>(
 
         let renamed = apply_column_alias(&statics[table_idx], rel_alias)?;
         let st = renamed.as_ref().unwrap_or(&statics[table_idx]);
-        let (keys, key_cols, key_indf, residual_raw, using) = match constraint {
+        let (keys, key_cols, residual_raw, using) = match constraint {
             JoinConstraint::On(e) => {
-                let (keys, key_cols, key_indf, res) = bind_on(&binder, st, &scope_name, e)?;
-                (keys, key_cols, key_indf, res, false)
+                let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, e)?;
+                (keys, key_cols, res, false)
             }
             // USING desugar (wave-4 pins): each column pairs the LEFT
             // scope's binding with this table's column; duplicates in the
@@ -856,7 +855,6 @@ fn bind_from<'a>(
             JoinConstraint::Using(cols) => {
                 let mut keys = Vec::new();
                 let mut key_cols = Vec::new();
-                let mut key_indf = Vec::new();
                 let mut heads: Vec<String> = Vec::new();
                 let offered = static_head_names(st);
                 for obj in cols {
@@ -890,13 +888,12 @@ fn bind_from<'a>(
                             ))
                         }));
                     }
-                    for (key, col, indf) in ks {
+                    for (key, col) in ks {
                         keys.push(key);
                         key_cols.push(col);
-                        key_indf.push(indf);
                     }
                 }
-                (keys, key_cols, key_indf, Vec::new(), true)
+                (keys, key_cols, Vec::new(), true)
             }
             // NATURAL = USING(all common column names), case-insensitive,
             // merged output like USING with the LEFT spelling; NO common
@@ -904,7 +901,6 @@ fn bind_from<'a>(
             JoinConstraint::Natural => {
                 let mut keys = Vec::new();
                 let mut key_cols = Vec::new();
-                let mut key_indf = Vec::new();
                 let mut heads: Vec<String> = Vec::new();
                 // DuckDB intersects NAME SETS with no type inspection, so
                 // the scan is over every head, not just the scalar lanes
@@ -918,10 +914,9 @@ fn bind_from<'a>(
                         continue; // not a shared name at all
                     }
                     heads.push(name);
-                    for (key, col, indf) in ks {
+                    for (key, col) in ks {
                         keys.push(key);
                         key_cols.push(col);
-                        key_indf.push(indf);
                     }
                 }
                 if heads.is_empty() {
@@ -931,7 +926,7 @@ fn bind_from<'a>(
                             .into(),
                     ));
                 }
-                (keys, key_cols, key_indf, Vec::new(), true)
+                (keys, key_cols, Vec::new(), true)
             }
             JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
         };
@@ -958,7 +953,6 @@ fn bind_from<'a>(
             kind,
             keys,
             key_cols,
-            key_indf,
             val_cols,
             residual,
         });
@@ -1035,7 +1029,6 @@ fn bind_from<'a>(
                 kind: JoinKind::Inner,
                 keys: Vec::new(),
                 key_cols: Vec::new(),
-                key_indf: Vec::new(),
                 val_cols: (0..n_batch).collect(),
                 residual: None,
             });
@@ -1096,7 +1089,11 @@ fn bind_from<'a>(
                 continue;
             };
             keys.push(promote_key(fold(key), st, col)?);
-            key_cols.push(KeyCol::Lane(col));
+            // A comma equi-conjunct is always plain `=`.
+            key_cols.push(JoinKey {
+                src: KeySrc::Lane(col),
+                cmp: KeyCmp::Eq,
+            });
             consumed[ci] = true;
         }
         let val_cols = val_cols_for(st, &key_cols, &keys);
@@ -1112,14 +1109,12 @@ fn bind_from<'a>(
             keys: keys.clone(),
             using: false,
         });
-        let n = key_cols.len();
         specs.push(JoinSpec {
             table: table_idx,
             batch: false,
             kind: JoinKind::Inner,
             keys,
             key_cols,
-            key_indf: vec![false; n],
             val_cols,
             residual: None,
         });
@@ -1201,9 +1196,9 @@ fn head_hits_in_join(sj: &ScopeJoin, name: &str) -> usize {
         } else {
             sj.key_cols
                 .iter()
-                .filter_map(|k| match k {
-                    KeyCol::Lane(ci) => Some(ci),
-                    KeyCol::Present(_) => None,
+                .filter_map(|k| match &k.src {
+                    KeySrc::Lane(ci) => Some(ci),
+                    KeySrc::Present(_) => None,
                 })
                 // A struct LEAF key is reachable only by path (TASK-132);
                 // its dotted display name is not a column name.
@@ -1229,9 +1224,9 @@ fn head_hits_in_join(sj: &ScopeJoin, name: &str) -> usize {
 /// columns? Its presence key carries the head's own name (TASK-133).
 fn key_struct(sj: &ScopeJoin, head: &str) -> bool {
     sj.using
-        && sj.key_cols.iter().any(|k| match k {
-            KeyCol::Present(p) => p.len() == 1 && p[0].eq_ignore_ascii_case(head),
-            KeyCol::Lane(_) => false,
+        && sj.key_cols.iter().any(|k| match &k.src {
+            KeySrc::Present(p) => p.len() == 1 && p[0].eq_ignore_ascii_case(head),
+            KeySrc::Lane(_) => false,
         })
 }
 
@@ -1242,12 +1237,12 @@ fn key_struct(sj: &ScopeJoin, head: &str) -> bool {
 fn binds_in_join(sj: &ScopeJoin, name: &str) -> bool {
     head_hits_in_join(sj, name) > 0
         || name.eq_ignore_ascii_case("rowid")
-        || sj.key_cols.iter().any(|k| match k {
-            KeyCol::Lane(ci) => {
+        || sj.key_cols.iter().any(|k| match &k.src {
+            KeySrc::Lane(ci) => {
                 !sj.table.is_leaf_lane(*ci)
                     && sj.table.cols[*ci as usize].name.eq_ignore_ascii_case(name)
             }
-            KeyCol::Present(p) => p.len() == 1 && p[0].eq_ignore_ascii_case(name),
+            KeySrc::Present(p) => p.len() == 1 && p[0].eq_ignore_ascii_case(name),
         })
 }
 
@@ -1386,23 +1381,22 @@ fn bind_on<'e>(
     st: &StaticTable,
     scope_name: &str,
     on: &'e SqlExpr,
-) -> Result<(Vec<SExpr>, Vec<KeyCol>, Vec<bool>, Vec<&'e SqlExpr>), PrepareError> {
+) -> Result<(Vec<SExpr>, Vec<JoinKey>, Vec<&'e SqlExpr>), PrepareError> {
     let mut conjuncts = Vec::new();
     collect_conjuncts(on, &mut conjuncts);
     let mut keys = Vec::new();
     let mut key_cols = Vec::new();
-    let mut key_indf = Vec::new();
     let mut residual = Vec::new();
     for c in conjuncts {
-        let (left, right, indf) = match c {
+        let (left, right, cmp) = match c {
             SqlExpr::BinaryOp {
                 left,
                 op: BinaryOperator::Eq,
                 right,
-            } => (left, right, false),
+            } => (left, right, KeyCmp::Eq),
             // IS NOT DISTINCT FROM: NULL is an ordinary key value — NULL
             // joins NULL (DRAFT-22's params-join contract).
-            SqlExpr::IsNotDistinctFrom(left, right) => (left, right, true),
+            SqlExpr::IsNotDistinctFrom(left, right) => (left, right, KeyCmp::NotDistinct),
             _ => {
                 residual.push(c);
                 continue;
@@ -1465,10 +1459,12 @@ fn bind_on<'e>(
         let key = fold(binder.expr(dyn_side)?);
         let key = promote_key(key, st, col)?;
         keys.push(key);
-        key_cols.push(KeyCol::Lane(col));
-        key_indf.push(indf);
+        key_cols.push(JoinKey {
+            src: KeySrc::Lane(col),
+            cmp,
+        });
     }
-    Ok((keys, key_cols, key_indf, residual))
+    Ok((keys, key_cols, residual))
 }
 
 /// Promote a dynamic-side key expression to the map's key type.
@@ -1606,7 +1602,7 @@ fn shared_key(
     st: &StaticTable,
     name: &str,
     many: bool,
-) -> Result<Vec<(SExpr, KeyCol, bool)>, PrepareError> {
+) -> Result<Vec<(SExpr, JoinKey)>, PrepareError> {
     // Both sides' SHAPE for this name. A name absent on either side is not
     // shared at all, and every refusal below is gated on it being shared —
     // refusing an unshared opaque column would refuse queries DuckDB serves.
@@ -1696,7 +1692,13 @@ fn shared_key(
                 .map(|(i, _)| i as u32)
                 .expect("Side::Scalar came from this lookup");
             let key = fold(binder.column(name)?);
-            Ok(vec![(promote_key(key, st, col)?, KeyCol::Lane(col), false)])
+            Ok(vec![(
+                promote_key(key, st, col)?,
+                JoinKey {
+                    src: KeySrc::Lane(col),
+                    cmp: KeyCmp::Eq,
+                },
+            )])
         }
     }
 }
@@ -1709,15 +1711,17 @@ fn struct_keys(
     name: &str,
     row_sc: &StructCol,
     st_sc: &StructCol,
-) -> Result<Vec<(SExpr, KeyCol, bool)>, PrepareError> {
+) -> Result<Vec<(SExpr, JoinKey)>, PrepareError> {
     // PLAIN, not IS NOT DISTINCT FROM: level 0 propagates NULL, so a NULL
     // struct misses even another NULL struct. A plain key already does
     // exactly that — the build side drops NULL-key rows and the probe side
     // ANDs the validity into `keys_valid`.
     let mut out = vec![(
         binder.present_key(&[row_sc.name.clone()]),
-        KeyCol::Present(vec![st_sc.name.clone()]),
-        false,
+        JoinKey {
+            src: KeySrc::Present(vec![st_sc.name.clone()]),
+            cmp: KeyCmp::Eq,
+        },
     )];
     let mut rp = vec![row_sc.name.clone()];
     let mut sp = vec![st_sc.name.clone()];
@@ -1743,7 +1747,7 @@ fn walk_key_fields(
     sf: &[StructField],
     rp: &mut Vec<String>,
     sp: &mut Vec<String>,
-    out: &mut Vec<(SExpr, KeyCol, bool)>,
+    out: &mut Vec<(SExpr, JoinKey)>,
 ) -> Result<(), PrepareError> {
     let mismatch = |side: &str, at: &[String], field: &str| {
         Err(unsup(format!(
@@ -1781,7 +1785,13 @@ fn walk_key_fields(
                 };
                 // IS NOT DISTINCT FROM: a NULL field equals a NULL field
                 // (the nested walk's child predicate).
-                out.push((promote_key(key, st, *c)?, KeyCol::Lane(*c), true));
+                out.push((
+                    promote_key(key, st, *c)?,
+                    JoinKey {
+                        src: KeySrc::Lane(*c),
+                        cmp: KeyCmp::NotDistinct,
+                    },
+                ));
             }
             (StructNode::Nested(rn), StructNode::Nested(sn)) => {
                 // An inner node's NULL is a VALUE: NULL-node matches
@@ -1790,8 +1800,10 @@ fn walk_key_fields(
                 // cannot supply.
                 out.push((
                     binder.present_key(rp),
-                    KeyCol::Present(sp.clone()),
-                    true,
+                    JoinKey {
+                        src: KeySrc::Present(sp.clone()),
+                        cmp: KeyCmp::NotDistinct,
+                    },
                 ));
                 walk_key_fields(binder, st, name, rn, sn, rp, sp, out)?;
             }
@@ -1829,16 +1841,16 @@ fn key_is_lossy(key_ty: Ty, col_ty: Ty) -> bool {
 
 /// The join's value lanes: every non-key column, then a shadow lane per
 /// LOSSY key column (appended, so ordinary lane positions never shift).
-fn val_cols_for(st: &StaticTable, key_cols: &[KeyCol], keys: &[SExpr]) -> Vec<u32> {
+fn val_cols_for(st: &StaticTable, key_cols: &[JoinKey], keys: &[SExpr]) -> Vec<u32> {
     // A struct key's LEAF lanes leave `val_cols` with every other key
     // column, or the struct's leaves would be emitted as separate output
     // columns on the static side (TASK-133). A PRESENCE key has no lane, so
     // it has nothing of its own to exclude.
     let mut val: Vec<u32> = (0..st.cols.len() as u32)
-        .filter(|c| !key_cols.contains(&KeyCol::Lane(*c)))
+        .filter(|c| !key_cols.iter().any(|k| k.src == KeySrc::Lane(*c)))
         .collect();
     for (kp, k) in key_cols.iter().enumerate() {
-        if let KeyCol::Lane(c) = k {
+        if let KeySrc::Lane(c) = &k.src {
             if key_is_lossy(keys[kp].ty, st.cols[*c as usize].ty.ty) {
                 val.push(*c);
             }
@@ -1851,7 +1863,9 @@ fn val_cols_for(st: &StaticTable, key_cols: &[KeyCol], keys: &[SExpr]) -> Vec<u3
 /// the key's real value for [`Binder::key_lane`] only and are NOT bindings —
 /// name resolution and `*` must skip them or the column would bind twice.
 fn is_shadow_lane(sj: &ScopeJoin, pos: usize) -> bool {
-    sj.key_cols.contains(&KeyCol::Lane(sj.val_cols[pos]))
+    sj.key_cols
+        .iter()
+        .any(|k| k.src == KeySrc::Lane(sj.val_cols[pos]))
 }
 
 /// One traversal answering the wave-4 residual SCOPE questions about a bound
@@ -1993,7 +2007,7 @@ struct ScopeJoin<'a> {
     name: String,
     table: std::borrow::Cow<'a, StaticTable>,
     kind: JoinKind,
-    key_cols: Vec<KeyCol>,
+    key_cols: Vec<JoinKey>,
     val_cols: Vec<u32>,
     /// Dynamic-side key expressions aligned with `key_cols` — the material
     /// for key-column reconstruction.
@@ -2751,7 +2765,7 @@ impl Binder<'_> {
                 // KEY first (TASK-120): a lossy key column ALSO appears in
                 // `val_cols` as a shadow lane, and taking that branch here
                 // would unmerge a USING key. `key_lane` reads the shadow.
-                let kp = sj.key_cols.iter().position(|k| *k == KeyCol::Lane(ci));
+                let kp = sj.key_cols.iter().position(|k| k.src == KeySrc::Lane(ci));
                 if kp.is_none() {
                     let pos = sj
                         .val_cols
@@ -3928,7 +3942,7 @@ impl Binder<'_> {
     fn key_lane(&self, j: usize, key_pos: usize) -> Result<SExpr, PrepareError> {
         let sj = &self.joins[j];
         let key = sj.keys[key_pos].clone();
-        let KeyCol::Lane(ci) = sj.key_cols[key_pos] else {
+        let KeySrc::Lane(ci) = sj.key_cols[key_pos].src else {
             return Err(PrepareError::Internal(
                 "a struct presence key has no projectable column".into(),
             ));
@@ -4134,7 +4148,7 @@ impl Binder<'_> {
                 let kp = sj
                     .key_cols
                     .iter()
-                    .position(|k| *k == KeyCol::Lane(ci))
+                    .position(|k| k.src == KeySrc::Lane(ci))
                     .ok_or_else(|| {
                         PrepareError::Internal(format!(
                             "struct leaf lane {ci} of '{table}' is neither a value \
@@ -4372,7 +4386,7 @@ impl Binder<'_> {
                 for (kp, k) in sj.key_cols.iter().enumerate() {
                     // A struct LEAF key binds by PATH only (TASK-132) and a
                     // PRESENCE key is not a column at all (TASK-133).
-                    let KeyCol::Lane(ci) = k else { continue };
+                    let KeySrc::Lane(ci) = &k.src else { continue };
                     if !sj.table.is_leaf_lane(*ci)
                         && sj.table.cols[*ci as usize].name.eq_ignore_ascii_case(name)
                     {
@@ -4542,7 +4556,7 @@ impl Binder<'_> {
             // measured to stay addressable even after USING (NULL on a
             // LEFT miss, never coalesced).
             for (kp, k) in sj.key_cols.iter().enumerate() {
-                let KeyCol::Lane(ci) = k else { continue };
+                let KeySrc::Lane(ci) = &k.src else { continue };
                 if !sj.table.is_leaf_lane(*ci)
                     && sj.table.cols[*ci as usize].name.eq_ignore_ascii_case(name)
                 {

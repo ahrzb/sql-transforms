@@ -30,6 +30,17 @@ fn stat(name: &str, spec: &[(&str, Ty, bool)]) -> StaticTable {
     StaticTable::all_scalar(name.to_string(), cols(spec))
 }
 
+/// The build-side key / value SEGMENT paths of one join recipe. The paths
+/// now ride inside `StaticKey` / `StaticVal` beside each column's slot
+/// layout, and these tests only ever ask about the paths.
+fn key_paths(s: &super::StaticSpec) -> Vec<Vec<String>> {
+    s.keys.iter().map(|k| k.path.clone()).collect()
+}
+
+fn val_paths(s: &super::StaticSpec) -> Vec<Vec<String>> {
+    s.vals.iter().map(|v| v.path.clone()).collect()
+}
+
 /// TASK-132: the RFC's collision table at the unit level — a struct leaf
 /// and a literal column SHARE the dotted display spelling and stay
 /// different lanes, because resolution walks the tree while the name is
@@ -69,10 +80,8 @@ fn static_struct_leaf_and_literal_column_are_different_lanes() {
     // The two references materialize as two DIFFERENT value paths: the
     // leaf's segment walk and the literal's whole (dotted) name.
     let spec = &p.statics[0];
-    assert!(spec
-        .val_cols
-        .contains(&vec!["w".to_string(), "mean".to_string()]));
-    assert!(spec.val_cols.contains(&vec!["w.mean".to_string()]));
+    assert!(val_paths(spec).contains(&vec!["w".to_string(), "mean".to_string()]));
+    assert!(val_paths(spec).contains(&vec!["w.mean".to_string()]));
 }
 
 /// TASK-127: the same table, addressed WITHOUT the qualifier. `w.mean` is
@@ -112,10 +121,8 @@ fn an_unqualified_head_reaches_a_static_struct_leaf() {
     )
     .unwrap();
     let spec = &p.statics[0];
-    assert!(spec
-        .val_cols
-        .contains(&vec!["w".to_string(), "mean".to_string()]));
-    assert!(spec.val_cols.contains(&vec!["w.mean".to_string()]));
+    assert!(val_paths(spec).contains(&vec!["w".to_string(), "mean".to_string()]));
+    assert!(val_paths(spec).contains(&vec!["w.mean".to_string()]));
 }
 
 /// TASK-133: the boundary contract behind the LAZY minting decision. A
@@ -181,14 +188,18 @@ fn presence_lanes_are_minted_lazily() {
     assert_eq!(keyed.program.in_cols.len(), schema.len() + 1);
     // ... and the static side asks for that node's PRESENCE, not a value.
     let spec = &keyed.statics[0];
-    let kp = spec
-        .key_cols
+    let k = spec
+        .keys
         .iter()
-        .position(|p| p == &vec!["w".to_string()])
+        .find(|k| k.path == vec!["w".to_string()])
         .expect("the struct head is a key column");
-    assert!(spec.key_present[kp]);
-    assert!(!spec.key_indf[kp], "the top-level presence key is PLAIN");
-    assert!(!spec.val_cols.contains(&vec!["w".to_string(), "mean".to_string()]));
+    assert!(k.present);
+    assert_eq!(
+        k.map.cmp,
+        super::plan::KeyCmp::Eq,
+        "the top-level presence key is PLAIN"
+    );
+    assert!(!val_paths(spec).contains(&vec!["w".to_string(), "mean".to_string()]));
 }
 
 /// prepare + compile + run with static-table map data.
@@ -821,11 +832,11 @@ fn join_key_promotion_float_dyn_against_int_col() {
     // after the ordinary ones — a double does not name one i64, so the real
     // value has to travel through the probe rather than the comparison.
     assert_eq!(
-        (spec.table.as_str(), &spec.key_cols[..], &spec.val_cols[..]),
+        (spec.table.as_str(), key_paths(spec), val_paths(spec)),
         (
             "dim",
-            &[vec!["id".to_string()]][..],
-            &[vec!["v".to_string()], vec!["id".to_string()]][..]
+            vec![vec!["id".to_string()]],
+            vec![vec!["v".to_string()], vec!["id".to_string()]]
         )
     );
     let data = StaticData::Map(vec![(
@@ -867,21 +878,21 @@ fn a_lossy_key_column_is_also_a_value_lane() {
     let lossy = prepare(sql, "__THIS__", &cols(&[("k", Ty::F64, false)]), &[dim.clone()])
         .unwrap();
     let s = &lossy.statics[0];
-    assert_eq!(s.key_cols, vec![vec!["id".to_string()]]);
+    assert_eq!(key_paths(s), vec![vec!["id".to_string()]]);
     assert_eq!(
-        s.val_cols.iter().filter(|p| p[0] == "id").count(),
+        val_paths(s).iter().filter(|p| p[0] == "id").count(),
         1,
         "exactly one shadow lane: {:?}",
-        s.val_cols
+        val_paths(s)
     );
 
     let sound = prepare(sql, "__THIS__", &cols(&[("k", Ty::I64, false)]), &[dim]).unwrap();
     let s = &sound.statics[0];
-    assert_eq!(s.key_cols, vec![vec!["id".to_string()]]);
+    assert_eq!(key_paths(s), vec![vec!["id".to_string()]]);
     assert!(
-        !s.val_cols.iter().any(|p| p[0] == "id"),
+        !val_paths(s).iter().any(|p| p[0] == "id"),
         "sound pairing grew a lane: {:?}",
-        s.val_cols
+        val_paths(s)
     );
 }
 
@@ -1151,9 +1162,17 @@ fn indf_and_keyless_joins_are_map_shape_provable() {
     .unwrap();
     assert_eq!(p.one_row_blocker, None);
     // The StaticSpec names which key columns join under INDF, so the
-    // materializer knows to KEEP NULL-key rows as (false, default) pairs.
-    assert_eq!(p.statics[0].key_indf, vec![true]);
-    assert!(p.statics[1].key_indf.is_empty());
+    // materializer knows to KEEP NULL-key rows as (false, default) pairs —
+    // and the slot count that follows from it.
+    assert_eq!(
+        p.statics[0]
+            .keys
+            .iter()
+            .map(|k| (k.map.cmp, k.map.slots().len()))
+            .collect::<Vec<_>>(),
+        vec![(super::plan::KeyCmp::NotDistinct, 2)]
+    );
+    assert!(p.statics[1].keys.is_empty());
     // Chained end to end. `v` is nullable, so values are (validity,
     // payload) pairs (TASK-55 flattening).
     let data0 = StaticData::Map(vec![

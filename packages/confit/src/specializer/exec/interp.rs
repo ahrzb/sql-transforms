@@ -482,13 +482,7 @@ fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>
                     }
                 }
             } else {
-                match ty {
-                    Ty::I1 => ScalarVal::I1(false),
-                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
-                    Ty::F64 => ScalarVal::F64(0.0),
-                    Ty::Str => ScalarVal::Str(String::new()),
-                    Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
-                }
+                super::null_val_payload(ty)
             };
             vals.push(v);
         }

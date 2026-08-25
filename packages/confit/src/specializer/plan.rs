@@ -269,9 +269,130 @@ pub enum JoinKind {
     Left,
 }
 
-/// One map key on the STATIC side of a [`JoinSpec`].
+/// How a map key compares — and therefore its FLATTENED SLOT LAYOUT.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyCmp {
+    /// `=`: NULL propagates. One slot. A NULL key never matches, and each
+    /// site says so its own way (drop the build row / AND the probe flag /
+    /// empty the fan-out range) — that rule is NOT part of the layout.
+    Eq,
+    /// `IS NOT DISTINCT FROM`: NULL is an ordinary key value. Two slots.
+    NotDistinct,
+}
+
+/// The layout of ONE map key. `ty` is the COMPARISON lane type — the probe
+/// expression's type after `promote_key`, which may be wider than the static
+/// column's own (an INTEGER column keyed against an F64 probe compares in
+/// F64; the column's real value then rides a shadow VALUE lane, TASK-120).
+/// Deliberately NOT the column type; see [`MapVal`].
+///
+/// INVARIANT: `ty` is stored ALREADY LANE-ERASED ([`Ty::lane`]). Every
+/// producer this type replaces erased at the point of construction, and
+/// `StaticTy`'s type vector is what a gate whose claim is "nothing moves"
+/// compares. `promote_key` can leave an `I32`, so an un-erased `ty` would
+/// print `map(i32, ..)` where the tree prints `map(i64, ..)` — an IR-shape
+/// change wearing a refactor's clothes. `Ty::lane()` is identity on `I1` /
+/// `F64` / `Str` / `Dec`, so this bites only on narrow integer keys, which
+/// is exactly why nothing else notices and why it is written down here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MapKey {
+    pub ty: Ty,
+    pub cmp: KeyCmp,
+}
+
+/// The layout of ONE map value. `ty` is the static COLUMN's lane type, and
+/// LANE-ERASED on the same terms as [`MapKey::ty`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MapVal {
+    pub ty: Ty,
+    pub nullable: bool,
+}
+
+impl MapKey {
+    /// The flattened slot types this key occupies, in order. THE rule —
+    /// every `StaticTy::Map`/`MultiMap` key vector is a flat_map of this,
+    /// and every encoder that fills those slots walks the same shape.
+    pub fn slots(self) -> Vec<Ty> {
+        match self.cmp {
+            KeyCmp::Eq => vec![self.ty],
+            KeyCmp::NotDistinct => vec![Ty::I1, self.ty],
+        }
+    }
+}
+
+impl MapVal {
+    /// The flattened slot types, in order. Same rule, value side: a
+    /// declared-nullable column rides as (validity i1, payload) so a NULL
+    /// join value flows through as NULL rather than as an error (TASK-55).
+    pub fn slots(self) -> Vec<Ty> {
+        if self.nullable {
+            vec![Ty::I1, self.ty]
+        } else {
+            vec![self.ty]
+        }
+    }
+}
+
+/// The key layouts of one join, in declaration order.
+pub fn map_keys(keys: &[SExpr], key_cols: &[JoinKey]) -> Vec<MapKey> {
+    keys.iter()
+        .zip(key_cols)
+        .map(|(k, jk)| MapKey {
+            ty: k.ty.lane(),
+            cmp: jk.cmp,
+        })
+        .collect()
+}
+
+/// The value layouts of one join, in declaration order.
+///
+/// A FREE FUNCTION over an explicit column source, not a [`JoinSpec`]
+/// method, because the two callers read from two different places:
+/// `StaticTy::Map` and `MultiMap` read the static catalog's columns, and
+/// `StaticTy::BatchMap` reads the caller's own `in_cols` — [`JoinSpec::table`]
+/// is MEANINGLESS when `batch` is true, so a method taking the catalog has
+/// no route to the batch case. The source is chosen at the call site.
+pub fn map_vals(cols: &[Col], val_cols: &[u32]) -> Vec<MapVal> {
+    val_cols
+        .iter()
+        .map(|&c| {
+            let ct = cols[c as usize].ty;
+            MapVal {
+                ty: ct.ty.lane(),
+                nullable: ct.nullable,
+            }
+        })
+        .collect()
+}
+
+/// `(validity_slot, payload_slot)` index pairs for a whole value vector, in
+/// slot space — the probe-dst layout that mirrors [`MapVal::slots`].
+pub fn slot_pairs(vals: &[MapVal]) -> Vec<(Option<usize>, usize)> {
+    let mut out = Vec::with_capacity(vals.len());
+    let mut i = 0usize;
+    for v in vals {
+        if v.nullable {
+            out.push((Some(i), i + 1));
+            i += 2;
+        } else {
+            out.push((None, i));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// One map key on the STATIC side of a [`JoinSpec`]: where the build side
+/// reads it, and how it compares.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum KeyCol {
+pub struct JoinKey {
+    pub src: KeySrc,
+    pub cmp: KeyCmp,
+}
+
+/// Where a key's build-side value comes from.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum KeySrc {
     /// A lane of the static table (index into [`StaticTable::cols`]).
     Lane(u32),
     /// "the struct node at this SEGMENT path is non-NULL" (TASK-133). A
@@ -300,13 +421,9 @@ pub struct JoinSpec {
     /// Dynamic-side key expressions, one per key column, already promoted
     /// to the map's key types.
     pub keys: Vec<SExpr>,
-    /// Static-table map keys, aligned with `keys`.
-    pub key_cols: Vec<KeyCol>,
-    /// Per key: true when the ON conjunct was IS NOT DISTINCT FROM. NULL is
-    /// then an ordinary key value: the key flattens to TWO map-key lanes,
-    /// (validity i1, payload masked to the type default under NULL), on
-    /// both the probe and build sides — so NULL joins NULL, one bucket.
-    pub key_indf: Vec<bool>,
+    /// Static-table map keys, aligned with `keys`. Each carries its own
+    /// comparison, and therefore its own slot count — see [`MapKey::slots`].
+    pub key_cols: Vec<JoinKey>,
     /// The remaining columns, in table order — the probe's value lanes.
     /// May be EMPTY (all-key/semi joins — wave-4 pins).
     /// ponytail: all non-key columns become map values even if unreferenced;
