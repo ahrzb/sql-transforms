@@ -1107,14 +1107,19 @@ fn materialize_statics(
             .get(&spec.table)
             .expect("spec names come from the catalog");
         // The recipe and the lowered type vector are two derivations of one
-        // slot layout, and after Seam B nothing else compares them: the
-        // materializer now takes its types off the recipe. A DISAGREEMENT
-        // is silent, not loud — `cmp_key` zips stored keys against probe
-        // registers and stops at the shorter, so a build tuple one slot
-        // short compares Equal on its prefix and the join quietly widens.
-        // Debug-only, so release behavior is untouched; it replaces the
-        // `expect("payload type follows validity")` that used to fire (in
-        // one direction only) when the iterator ran out.
+        // slot layout, and the materializer now takes its types off the
+        // recipe alone — so this is where the two are compared.
+        //
+        // MEASURED, against the spec's claim that a disagreement would
+        // otherwise be silent: it would not. `interp::prepare_statics`
+        // type-checks EVERY entry's flat key and value vectors against the
+        // declaration in release, for `Map` and `MultiMap` alike, and a
+        // shortened build tuple fails there with "static data mismatch".
+        // What this assert buys is WHERE and WHEN: it fires at the
+        // recipe/declaration seam naming the two derivations, before any
+        // row is read, instead of downstream naming one row's shape — and
+        // it covers the zero-row table the entry loop walks vacuously.
+        // Debug-only, so release behavior is untouched.
         debug_assert_eq!(
             spec.keys.iter().map(|k| k.map.slots().len()).sum::<usize>(),
             keys.len(),
