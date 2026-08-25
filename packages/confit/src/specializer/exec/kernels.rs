@@ -14,6 +14,8 @@ use super::super::ir::{BinOp, NumOp1, StrOp2, TrimSide, Ty};
 use super::{OutCol, ScalarVal, Trap};
 
 
+/// Reserve room for `rows` more rows in every output column, so the
+/// per-row store path never reallocates part-way through a batch.
 pub(super) fn reserve_out(out: &mut [OutCol], rows: usize) {
     for col in out {
         match col {
@@ -134,22 +136,17 @@ pub(super) fn call_extern(
     }
 }
 
-/// DuckDB's substr window arithmetic (measured 1.5.5), on codepoints — NOT
-/// grapheme clusters (substr slices inside ZWJ emoji). 1-based virtual
-/// positions: negative start counts from the end (`start = n + start + 1`),
-/// start <= 0 consumes length before character 1, negative len is "". A
-/// missing SQL length arrives as i64::MAX; the saturating add makes that
-/// "rest of the string".
-/// DuckDB's substr window arithmetic — the VECTORIZED path, which columns
-/// (and therefore every real query and the mined corpus) take; DuckDB's own
-/// constant-fold path disagrees with it on negative starts (measured
-/// 2026-07-26, see the builtin-pins spec). Codepoints, NOT grapheme
-/// clusters. 1-based positions: a negative start counts from the end
+/// DuckDB's substr window arithmetic (measured 1.5.5) — the VECTORIZED
+/// path, which columns (and therefore every real query and the mined
+/// corpus) take; DuckDB's own constant-fold path disagrees with it on
+/// negative starts (measured 2026-07-26, see the builtin-pins spec).
+/// Codepoints, NOT grapheme clusters (substr slices inside ZWJ emoji).
+/// 1-based positions: a negative start counts from the end
 /// (`rs = n + start + 1`, NOT clamped -- see the body) while start 0 stays
-/// virtual;
-/// a non-negative length runs forward `[rs, rs+len)`, a NEGATIVE length
-/// slices BACKWARDS `[rs+len, rs)`; `len: None` is the 2-arg rest-of-string
-/// form.
+/// virtual, consuming length before character 1; a non-negative length runs
+/// forward `[rs, rs+len)`, a NEGATIVE length slices BACKWARDS
+/// `[rs+len, rs)`; `len: None` is the 2-arg rest-of-string form. The
+/// result is a BYTE range into `s`, so callers subview instead of copying.
 pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> std::ops::Range<usize> {
     let n = s.chars().count() as i64;
     // A negative start is END-RELATIVE, and the mapped position is NOT clamped
@@ -180,8 +177,6 @@ pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> std::ops::
     if hi <= lo {
         return 0..0;
     }
-    // Byte range of the char window — the output is a subview of `s`, so
-    // callers slice instead of copying.
     let skip = (lo - 1) as usize;
     let take = (hi - lo) as usize;
     let b0 = s
@@ -485,6 +480,12 @@ pub(super) fn trunc_prec_i64(x: i64, n: i64) -> i64 {
     (x / power) * power
 }
 
+/// SQL LIKE over BYTES: `%` matches any run, `_` matches exactly ONE
+/// codepoint (multibyte-aware), anything else compares byte for byte.
+/// `esc` is the optional escape BYTE, which de-wildcards the pattern
+/// character after it; a pattern ending in the escape byte traps with
+/// DuckDB's message. Case folding is the caller's — ILIKE lowercases both
+/// operands before calling, nothing here folds.
 pub(super) fn like_match(s: &[u8], p: &[u8], esc: Option<u8>) -> Result<bool, Trap> {
     let (mut si, mut pi) = (0usize, 0usize);
     // Backtrack state: pattern index just past the last %, and the string
@@ -794,9 +795,6 @@ pub(super) fn duck_ord(s: &str, empty_zero: bool) -> i64 {
     }
 }
 
-/// strip_accents: all-ASCII passes VERBATIM (NULs preserved); otherwise
-/// truncate at the first NUL (the measured context-dependent quirk),
-/// per-codepoint oracle map, then Hangul jamo composition. TOTAL.
 /// DuckDB reverse() (pins-waveA/reverse-graphemes.json): an all-ASCII
 /// string BYTE-reverses (this splits CRLF — measured, not a bug to "fix");
 /// anything else reverses UAX-29 EXTENDED grapheme clusters, each cluster
@@ -810,9 +808,14 @@ pub(super) fn duck_reverse(s: &str) -> String {
     }
 }
 
+/// strip_accents: all-ASCII passes VERBATIM (NULs preserved); otherwise
+/// truncate at the first NUL (the measured context-dependent quirk),
+/// per-codepoint oracle map, then Hangul jamo composition. TOTAL.
+/// `None` IS the all-ASCII answer — the caller keeps the input span rather
+/// than taking a copy of a string that never changed.
 pub(super) fn duck_strip_accents(s: &str) -> Option<String> {
     if s.is_ascii() {
-        return None; // caller keeps the input span — no copy
+        return None;
     }
     let cut = s.find('\0').map(|i| &s[..i]).unwrap_or(s);
     let mut out = String::with_capacity(cut.len());
@@ -898,6 +901,10 @@ pub(in crate::specializer) fn duck_shl(x: i64, y: i64) -> Result<i64, Trap> {
     Ok(x << y)
 }
 
+/// DuckDB's int-overflow trap texts, verbatim (wave-3 pins: measured via
+/// both the operators and their function aliases). The division arm covers
+/// `//` AND `%` on i64::MIN op -1 — DuckDB's own % message says "division",
+/// and only add/sub/mul carry the trailing '!'.
 pub(super) fn overflow_msg(op: BinOp, x: i64, y: i64) -> String {
     match op {
         BinOp::Iadd => format!("Overflow in addition of INT64 ({x} + {y})!"),
@@ -963,10 +970,6 @@ fn utf8_width(b: u8) -> usize {
 /// not probed); 1 GiB keeps the engine alive without shadowing any pin.
 const STR_BUILD_CAP: u64 = 1 << 30;
 
-/// DuckDB's int-overflow trap texts, verbatim (wave-3 pins: measured via
-/// both the operators and their function aliases). Division covers `//`
-/// AND `%` on i64::MIN op -1 — DuckDB's own % message says "division",
-/// and only add/sub/mul carry the trailing '!'.
 /// One parsed GLOB pattern element (bytes, not codepoints — measured).
 enum GTok {
     Star,
@@ -1086,11 +1089,11 @@ pub(in crate::specializer) fn duck_shr(x: i64, y: i64) -> i64 {
     }
 }
 
-/// DuckDB's VARCHAR -> integer grammar (TASK-99 d / TASK-113): a
-/// transliteration of `integer_cast_operator.hpp` (TryIntegerCast +
-/// IntegerDecimalCastOperation) from the v1.5.5 source, re-measured against
-/// the live oracle 2026-08-24 when the first cut's invented bounds (u128
-/// accumulator, 39-digit cap, +-10000 exponent) turned out observable.
+/// DuckDB's VARCHAR -> integer grammar: a transliteration of
+/// `integer_cast_operator.hpp` (TryIntegerCast + IntegerDecimalCastOperation)
+/// from the v1.5.5 source, re-measured against the live oracle 2026-08-24
+/// when the first cut's invented bounds (u128 accumulator, 39-digit cap,
+/// +-10000 exponent) turned out observable.
 /// The shape that matters:
 ///
 ///   - space, tab, \n, \v, \f, \r trim at the FRONT; trailing spaces are the

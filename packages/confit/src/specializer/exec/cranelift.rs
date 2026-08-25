@@ -1,8 +1,8 @@
 //! Cranelift-jit backend: the same verified IR, compiled to native code.
 //!
-//! Coverage-first (TASK-44 stretch plan): trivially-safe ops map inline to
-//! CLIF (const scalars, float arith, int compares, logic, select, itof,
-//! fabs); everything with nontrivial semantics — checked int arith, every
+//! Coverage-first: trivially-safe ops map inline to CLIF (const scalars,
+//! float arith, int compares, logic, select, itof, fabs); everything with
+//! nontrivial semantics — checked int arith, every
 //! string op, loads/stores, statics — calls an `extern "C"` helper that
 //! delegates to the SAME functions the interpreter uses (casemap,
 //! substr_window, duck_fcmp, DuckF64, the arena). The two backends cannot
@@ -1078,7 +1078,8 @@ fn clif_ty(ty: Ty) -> types::Type {
         Ty::F64 => types::F64,
         // One cranelift value, like every other scalar lane: `V::S` carries
         // it as-is, so the `V::Str(CVal, CVal)` split is not needed here.
-        // TASK-91's probe proved select and block params legalize on I128.
+        // The probes at the bottom of this file establish that cranelift
+        // legalizes I128 arithmetic, `select` and block params on the host.
         Ty::Dec(..) => types::I128,
         Ty::Str => unreachable!("str values are two i64s, expanded at use sites"),
     }
@@ -1271,7 +1272,6 @@ pub fn compile_ext(
                     trap_exit,
                 );
             }
-            // Terminator.
             let arg_list = |vals: &HashMap<u32, V>,
                             args: &[super::super::ir::Value]|
              -> Vec<cranelift_codegen::ir::BlockArg> {
@@ -2245,6 +2245,10 @@ fn sload(
 }
 
 // -------------------------------------------------- helper symbol table --
+// Two halves of one decision, edited together: `HELPERS` gives the JIT each
+// helper's ADDRESS, `helper_sig` its CLIF signature. A signature that
+// disagrees with the Rust `extern "C"` declaration miscompiles silently —
+// nothing checks the two against each other.
 
 const HELPERS: &[(&str, *const u8)] = &[
     ("h_load_i1", h_load_i1 as *const u8),
@@ -2523,7 +2527,7 @@ mod tests {
         assert_eq!(out2, a2.wrapping_mul(b2).wrapping_add(a2));
     }
 
-    /// TASK-91's own hard dependency, and the one the add/mul/cmp probe
+    /// The Dec lane's other hard dependency, the one the add/mul/cmp probe
     /// above did NOT answer: `select` on I128 and I128 BLOCK PARAMS. The
     /// Dec lane needs both — a LEFT-join miss selects between the probed
     /// payload and a zero default, and CASE lowering carries the payload
