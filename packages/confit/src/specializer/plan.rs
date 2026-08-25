@@ -3,7 +3,7 @@
 //! scan/filter/project ribbon over the dynamic table; joins and static
 //! subtrees grow here at the BTA stretch.
 
-use super::ir::{CmpPred, Col, Lit, TrimSide, Ty};
+use super::ir::{ColTy, CmpPred, Col, Lit, TrimSide, Ty};
 
 /// A relational operator tree over the dynamic table. Joins to static
 /// tables are not tree nodes: the v0 shape is rigid
@@ -110,6 +110,75 @@ pub fn lane_paths(cols: &[Col], structs: &[StructCol]) -> Vec<Vec<String>> {
         walk(&sc.fields, &mut prefix, &mut paths);
     }
     paths
+}
+
+/// One column of the engine's row input, as the BOUNDARY sees it: where to
+/// read it out of a row (or an arrow batch), and what reading it means.
+///
+/// The lane list is built ONCE, in `prepare_opaque`, and handed out on
+/// [`super::Prepared`]. `Program::in_cols` is its projection, not a second
+/// list: `Prepared::input_lanes()[i].col()` is `program.in_cols[i]` for
+/// every `i`, and a debug assert ties them at construction.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct InputLane {
+    /// Display name — what a refusal calls this lane. For a struct leaf it
+    /// is the dotted path (TASK-132: display, never data); for a minted
+    /// presence lane it is `"<dotted path> (present)"`.
+    pub name: String,
+    /// SEGMENT path (TASK-132). A plain column is ONE segment, dots and all
+    /// — a name is not a path. Never empty.
+    pub path: Vec<String>,
+    pub kind: LaneKind,
+}
+
+/// What walking an [`InputLane`]'s path yields, and therefore which
+/// obligations the boundary owes it. Adding a variant here is a compile
+/// error at every boundary site, which is the point of the type.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LaneKind {
+    /// A caller-supplied column: the path ends at a SCALAR. The boundary
+    /// dtype-checks it (arrow) and refuses `None` when `!nullable`.
+    Value(ColTy),
+    /// Minted by the binder for a struct join key (TASK-133): the path ends
+    /// at a struct NODE and the lane's VALUE is that node's validity.
+    /// Carries no type — a presence lane is non-nullable `Ty::I1`, always —
+    /// which is what lets `ColData::push_present`'s `unreachable!` rest on a
+    /// type rather than on a threshold. It is unreachable given that every
+    /// `ColData` for a lane comes from `duckdb::col_for_lane`.
+    Present,
+}
+
+impl InputLane {
+    /// This lane as an IR input column. `Present` synthesizes
+    /// `ColTy { ty: Ty::I1, nullable: false }`.
+    pub fn col(&self) -> Col {
+        Col {
+            name: self.name.clone(),
+            ty: match self.kind {
+                LaneKind::Value(ct) => ct,
+                LaneKind::Present => ColTy {
+                    ty: Ty::I1,
+                    nullable: false,
+                },
+            },
+        }
+    }
+}
+
+/// Every input lane for a row model, in IR order: plain scalar columns in
+/// declaration order, then each struct's scalar leaf lanes in struct order.
+/// All `Value` — the minted lanes are appended by `prepare_opaque`, which is
+/// the only place the two halves ever meet.
+pub fn input_lanes(cols: &[Col], structs: &[StructCol]) -> Vec<InputLane> {
+    lane_paths(cols, structs)
+        .into_iter()
+        .zip(cols)
+        .map(|(path, c)| InputLane {
+            name: c.name.clone(),
+            path,
+            kind: LaneKind::Value(c.ty),
+        })
+        .collect()
 }
 
 /// A fitted tree transform's schema, as given to `prepare` — like
