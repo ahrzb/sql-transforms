@@ -32,15 +32,19 @@ use crate::specializer::{prepare_opaque, StaticSpec, WideOut};
 /// not `INTEGER`, so the message quotes the declaration back instead of
 /// making them translate it. Decided 2026-08-15. The DuckDB spellings live
 /// on in `dialect/`, where they belong: that module emits SQL text.
-pub(super) fn arrow_ty_name(t: Ty) -> &'static str {
+pub(super) fn arrow_ty_name(t: Ty) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow;
     match t {
-        Ty::I1 => "bool",
-        Ty::I8 => "int8",
-        Ty::I16 => "int16",
-        Ty::I32 => "int32",
-        Ty::I64 => "int64",
-        Ty::F64 => "double",
-        Ty::Str => "string",
+        Ty::I1 => Cow::Borrowed("bool"),
+        Ty::I8 => Cow::Borrowed("int8"),
+        Ty::I16 => Cow::Borrowed("int16"),
+        Ty::I32 => Cow::Borrowed("int32"),
+        Ty::I64 => Cow::Borrowed("int64"),
+        Ty::F64 => Cow::Borrowed("double"),
+        Ty::Str => Cow::Borrowed("string"),
+        // pyarrow's own `str()` spelling, space and all, so a refusal
+        // quotes back exactly what the caller can read off the schema.
+        Ty::Dec(p, s) => Cow::Owned(format!("decimal128({p}, {s})")),
     }
 }
 
@@ -236,6 +240,83 @@ fn build_err(msg: impl Into<String>) -> PyErr {
     InterpError::Build(msg.into()).into()
 }
 
+/// A scaled i128 back as `decimal.Decimal`, WITH THE DECLARED SCALE:
+/// `Decimal('0.50')`, never `Decimal('0.5')`. Not cosmetic — the whole
+/// differential harness compares by `repr`, and DuckDB's own `to_pylist`
+/// preserves the trailing zeros. Built from the text spelling because the
+/// string carries the exponent exactly; the row boundary is not the hot
+/// lane (the arrow boundary writes the raw buffer instead).
+pub(crate) fn dec_text(v: i128, scale: u8) -> String {
+    if scale == 0 {
+        return v.to_string();
+    }
+    let s = scale as usize;
+    let neg = v < 0;
+    let digits = v.unsigned_abs().to_string();
+    let digits = if digits.len() <= s {
+        format!("{}{digits}", "0".repeat(s + 1 - digits.len()))
+    } else {
+        digits
+    };
+    let (int, frac) = digits.split_at(digits.len() - s);
+    format!("{}{int}.{frac}", if neg { "-" } else { "" })
+}
+
+/// A python `decimal.Decimal` as `(unscaled, scale)` at ITS OWN exponent,
+/// exactly — no f64 anywhere on the path. `as_tuple()` rather than
+/// `scaleb`/`int()`: the decimal context's 28-digit precision would round a
+/// 38-digit payload, which is the whole class this task exists to serve.
+fn decimal_parts(v: &Bound<'_, PyAny>, what: &str) -> PyResult<(i128, u8)> {
+    let bad = || build_err(format!("{what} holds a DECIMAL this build cannot serve: {v}"));
+    let t = v.call_method0("as_tuple").map_err(|_| bad())?;
+    let sign: i32 = t.get_item(0)?.extract().map_err(|_| bad())?;
+    let digits: Vec<u8> = t.get_item(1)?.extract().map_err(|_| bad())?;
+    // NaN / Infinity spell their exponent as a string; arrow cannot carry
+    // either, so this is a refusal rather than a special case.
+    let exp: i32 = t.get_item(2)?.extract().map_err(|_| bad())?;
+    let mut m: i128 = 0;
+    for d in digits {
+        m = m
+            .checked_mul(10)
+            .and_then(|x| x.checked_add(i128::from(d)))
+            .ok_or_else(bad)?;
+    }
+    let (m, scale) = if exp >= 0 {
+        (
+            m.checked_mul(10i128.checked_pow(exp as u32).ok_or_else(bad)?)
+                .ok_or_else(bad)?,
+            0u8,
+        )
+    } else {
+        let s = u8::try_from(-exp).map_err(|_| bad())?;
+        if s > 38 {
+            return Err(bad());
+        }
+        (m, s)
+    };
+    Ok((if sign == 1 { -m } else { m }, scale))
+}
+
+/// The same value's scaled integer AT `to`. `None` when it does not divide
+/// down exactly — which for an integer key lane means the build row can
+/// never equal any probe and drops.
+fn rescale(m: i128, from: u8, to: u8) -> Option<i128> {
+    if to >= from {
+        m.checked_mul(10i128.checked_pow(u32::from(to - from))?)
+    } else {
+        let p = 10i128.checked_pow(u32::from(from - to))?;
+        (m % p == 0).then_some(m / p)
+    }
+}
+
+fn dec_py(py: Python<'_>, v: i128, ty: Ty) -> PyResult<Py<PyAny>> {
+    let (_, s) = ty.dec().expect("a Dec lane carries a Dec type");
+    Ok(PyModule::import(py, "decimal")?
+        .getattr("Decimal")?
+        .call1((dec_text(v, s),))?
+        .unbind())
+}
+
 /// One field of the output boundary: a plain scalar lane, or a wide UDF
 /// field assembled from its whole-validity lane plus k component lanes.
 /// Empty `names` is the DRAFT-22 unnamed boundary (the field is
@@ -291,9 +372,17 @@ fn emit_plan(out_cols: &[Col], wide: &[WideOut]) -> Vec<EmitField> {
 }
 
 /// One engine lane's value at row `r`, as a Python object (None for NULL).
-fn lane_py(py: Python<'_>, st: &RunState, lane: usize, r: usize) -> PyResult<Py<PyAny>> {
+fn lane_py(py: Python<'_>, st: &RunState, ty: Ty, lane: usize, r: usize) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt;
     Ok(match &st.out[lane] {
+        OutCol::Dec(v) => {
+            let (ok, x) = v[r];
+            if ok {
+                dec_py(py, x, ty)?
+            } else {
+                py.None()
+            }
+        }
         OutCol::I1(v) => {
             let (ok, x) = v[r];
             if ok {
@@ -367,7 +456,7 @@ pub(crate) fn wide_py(
                     narrow_check(tys[j], &child, x)?;
                 }
             }
-            lane_py(py, st, l, r)
+            lane_py(py, st, tys[j], l, r)
         })
         .collect::<PyResult<Vec<_>>>()?;
     if names.is_empty() {
@@ -595,6 +684,14 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                                 Some(ScalarVal::Str(x)) => {
                                     x.into_py_any(py).map_err(|e| e.to_string())?
                                 }
+                                // A UDF over DECIMAL refuses at bind (m-8
+                                // lattice phase 5).
+                                Some(ScalarVal::Dec(..)) => {
+                                    return Err(format!(
+                                        "udf '{name}' was handed a DECIMAL argument, which \
+                                         this build does not serve"
+                                    ))
+                                }
                             });
                         }
                         let tuple = pyo3::types::PyTuple::new(py, py_args)
@@ -642,6 +739,14 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                                 }
                                 Ty::F64 => ScalarVal::F64(item.extract().map_err(bad)?),
                                 Ty::Str => ScalarVal::Str(item.extract().map_err(bad)?),
+                                // A UDF over DECIMAL refuses at bind (m-8
+                                // lattice phase 5), so no declaration
+                                // reaches here carrying one.
+                                Ty::Dec(..) => {
+                                    return Err(format!(
+                                        "udf '{name}' declares a DECIMAL return, which                                          this build does not serve"
+                                    ))
+                                }
                             }));
                         }
                         Ok(Some(vals))
@@ -666,30 +771,12 @@ fn materialize_map(
     val_tys: &[Ty],
 ) -> PyResult<StaticData> {
     let rows = table.bind(py).call_method0("to_pylist")?;
-    // TASK-90 / m-8 phase 1: `to_pylist` hands decimal.Decimal for DECIMAL
-    // columns (the ordinary fit path — sum(BIGINT) params are
-    // decimal128(38,0)), and a bare f64 extract SILENTLY rounds them:
-    // 9007199254740993 served as ...992.0, off by one, violating "no third
-    // mode". Exact-or-refuse: a Decimal that round-trips f64 exactly keeps
-    // the conversion; one that does not refuses by name. Exact serving
-    // arrives with the m-8 Dec lanes.
-    let decimal_cls = PyModule::import(py, "decimal")?.getattr("Decimal")?;
-    let exact_f64 = |v: &pyo3::Bound<'_, PyAny>, name: &str| -> PyResult<f64> {
-        let f: f64 = v.extract()?;
-        if v.is_instance(&decimal_cls)? {
-            let back = decimal_cls.call1((f,))?;
-            if !back.eq(v)? {
-                return Err(build_err(format!(
-                    "unsupported: static table '{}' column '{name}' holds the \
-                     DECIMAL value {v} that f64 cannot represent exactly — \
-                     serving it would round silently. CAST the fit-time \
-                     aggregate to DOUBLE or BIGINT",
-                    spec.table
-                )));
-            }
-        }
-        Ok(f)
-    };
+    // TASK-91: `to_pylist` hands `decimal.Decimal` for a DECIMAL column
+    // (the ordinary fit path — sum(BIGINT) params are decimal128(38,0)),
+    // and it becomes the SCALED i128 exactly. TASK-90's exactness guard is
+    // gone with the lane it existed to protect: it refused every payload
+    // f64 could not hold, referenced or not, and 2^63+1 (a plain
+    // sum(BIGINT)) is one of them.
     let mut entries = Vec::new();
     'row: for item in rows.try_iter()? {
         let row = item?;
@@ -733,9 +820,31 @@ fn materialize_map(
             let name = path.join(".");
             let name = name.as_str();
             let v = get(path)?;
-            let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<KeyBits> {
-                Ok(match ty {
+            // `None` means "this build row can never equal any probe" — a
+            // non-integral DECIMAL against an integer key lane. Dropping it
+            // is the established, semantics-preserving move (a NULL `=` key
+            // drops the same way, just below).
+            let convert = |v: &pyo3::Bound<'_, PyAny>, ty: Ty| -> PyResult<Option<KeyBits>> {
+                let is_dec = |v: &pyo3::Bound<'_, PyAny>| -> PyResult<bool> {
+                    Ok(v.get_type().name()?.to_string_lossy() == "Decimal")
+                };
+                Ok(Some(match ty {
                     Ty::I1 => KeyBits::I1(v.extract()?),
+                    // A DECIMAL build key against an INTEGER probe: DuckDB
+                    // casts the integer UP to the decimal, exactly
+                    // (ImplicitCastBigint, cast_rules.cpp:96-107), so
+                    // equality is decidable here — integral and in range,
+                    // or the row cannot match.
+                    Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 if is_dec(v)? => {
+                        let (m, s) = decimal_parts(
+                            v,
+                            &format!("static table '{}' key column '{name}'", spec.table),
+                        )?;
+                        match rescale(m, s, 0).and_then(|x| i64::try_from(x).ok()) {
+                            Some(i) => KeyBits::I64(i),
+                            None => return Ok(None),
+                        }
+                    }
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(v.extract().map_err(|_| {
                         build_err(format!(
                             "unsupported: static table '{}' key column '{name}' value \
@@ -743,9 +852,27 @@ fn materialize_map(
                             spec.table
                         ))
                     })?),
-                    Ty::F64 => KeyBits::F64(exact_f64(v, name)?.to_bits()),
+                    // A DECIMAL build key against a DOUBLE probe: only
+                    // decimal->double is a legal implicit cast, so the
+                    // DECIMAL side casts DOWN and the comparison is LOSSY.
+                    // Reproduce the loss with DuckDB's own algorithm rather
+                    // than hide it (cell D2).
+                    Ty::F64 if is_dec(v)? => {
+                        let (m, s) = decimal_parts(
+                            v,
+                            &format!("static table '{}' key column '{name}'", spec.table),
+                        )?;
+                        KeyBits::F64(
+                            crate::specializer::exec::kernels::dec_to_f64(m, s).to_bits(),
+                        )
+                    }
+                    Ty::F64 => KeyBits::F64(v.extract::<f64>()?.to_bits()),
                     Ty::Str => KeyBits::Str(v.extract()?),
-                })
+                    // The key lane is the PROBE expression's type, and a
+                    // probe expression is a ROW expression — decimal row
+                    // columns are opaque, so nothing can produce one.
+                    Ty::Dec(..) => unreachable!("a probe expression is never a decimal"),
+                }))
             };
             if indf {
                 // IS NOT DISTINCT FROM key: (validity, payload) pair; NULL
@@ -760,17 +887,24 @@ fn materialize_map(
                         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => KeyBits::I64(0),
                         Ty::F64 => KeyBits::F64(0f64.to_bits()),
                         Ty::Str => KeyBits::Str(String::new()),
+                        Ty::Dec(..) => unreachable!("a probe expression is never a decimal"),
                     });
                 } else {
+                    let Some(kb) = convert(&v, ty)? else {
+                        continue 'row;
+                    };
                     keys.push(KeyBits::I1(true));
-                    keys.push(convert(&v, ty)?);
+                    keys.push(kb);
                 }
             } else {
                 let ty = *kt.next().expect("one type per plain key column");
                 if v.is_none() {
                     continue 'row;
                 }
-                keys.push(convert(&v, ty)?);
+                let Some(kb) = convert(&v, ty)? else {
+                    continue 'row;
+                };
+                keys.push(kb);
             }
         }
         let mut vals = Vec::with_capacity(val_tys.len());
@@ -790,8 +924,24 @@ fn materialize_map(
                             spec.table
                         ))
                     })?),
-                    Ty::F64 => ScalarVal::F64(exact_f64(v, name)?),
+                    Ty::F64 => ScalarVal::F64(v.extract()?),
                     Ty::Str => ScalarVal::Str(v.extract()?),
+                    // The whole point: the scaled i128, exactly, no f64 on
+                    // the path at all.
+                    Ty::Dec(p, s) => {
+                        let what = format!("static table '{}' value column '{name}'", spec.table);
+                        let (m, vs) = decimal_parts(v, &what)?;
+                        ScalarVal::Dec(
+                            rescale(m, vs, s).ok_or_else(|| {
+                                build_err(format!(
+                                    "{what} holds {v}, which does not fit its declared \
+                                     decimal128({p}, {s})"
+                                ))
+                            })?,
+                            p,
+                            s,
+                        )
+                    }
                 })
             };
             if nullable {
@@ -806,6 +956,7 @@ fn materialize_map(
                         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
                         Ty::F64 => ScalarVal::F64(0.0),
                         Ty::Str => ScalarVal::Str(String::new()),
+                        Ty::Dec(p, s) => ScalarVal::Dec(0, p, s),
                     });
                 } else {
                     vals.push(ScalarVal::I1(true));
@@ -1155,6 +1306,17 @@ impl Marshaller {
                         OutCol::Str(v) => {
                             let (ok, s) = v[r];
                             d.set_item(k, ok.then(|| self.state.arena.get(s)))?;
+                        }
+                        OutCol::Dec(v) => {
+                            let (ok, x) = v[r];
+                            d.set_item(
+                                k,
+                                if ok {
+                                    dec_py(py, x, self.out_tys[*i])?
+                                } else {
+                                    py.None()
+                                },
+                            )?;
                         }
                     },
                     EmitField::Wide {
@@ -1723,6 +1885,9 @@ impl DuckDBInferFn {
                     buf: String::new(),
                     spans: Vec::with_capacity(n),
                 },
+                // A decimal ROW column is opaque (schema.rs, Policy::Row),
+                // so no input lane is ever a Dec.
+                Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
             })
             .collect();
         for row_obj in rows {
@@ -1809,6 +1974,17 @@ impl DuckDBInferFn {
                         OutCol::Str(v) => {
                             let (ok, s) = v[r];
                             dict.set_item(name, ok.then(|| st.arena.get(s)))?;
+                        }
+                        OutCol::Dec(v) => {
+                            let (ok, x) = v[r];
+                            dict.set_item(
+                                name,
+                                if ok {
+                                    dec_py(py, x, out_cols[*i].ty.ty)?
+                                } else {
+                                    py.None()
+                                },
+                            )?;
                         }
                     },
                     EmitField::Wide {

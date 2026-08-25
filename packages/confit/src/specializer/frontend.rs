@@ -65,6 +65,31 @@ fn unsup(what: impl Into<String>) -> PrepareError {
     PrepareError::Unsupported(what.into())
 }
 
+/// The ONE refusal for everything over a DECIMAL this build does not
+/// serve: arithmetic, a cast to anything but DOUBLE, and family
+/// unification with a non-identical type. Each of these was a silently
+/// WRONG double before TASK-91 (0.50::BIGINT was 0 here, 1 on DuckDB;
+/// '0.5' where DuckDB says '0.50'), so refusing is the severity ladder's
+/// own preference and the lattice spec's rule verbatim.
+fn refuse_dec(op: &str, ty: Ty, col: Option<&str>) -> PrepareError {
+    let (p, s) = ty.dec().unwrap_or((38, 0));
+    let where_ = match col {
+        Some(c) => format!(" column '{c}'"),
+        None => String::new(),
+    };
+    unsup(format!(
+        "{op} over DECIMAL({p},{s}){where_} -- decimal arithmetic and casts \
+         are m-8 lattice phase 5; this build serves DECIMAL statics, \
+         compares them, and emits them unchanged"
+    ))
+}
+
+/// The DECIMAL-typed operand of `a`/`b`, if either is one. Nothing but a
+/// static column produces a Dec, so the pair always names the offender.
+fn dec_operand<'a>(a: &'a SExpr, b: &'a SExpr) -> Option<&'a SExpr> {
+    [a, b].into_iter().find(|e| e.ty.dec().is_some())
+}
+
 /// The ONLY place `TableFactor::Table` is destructured, and it is
 /// destructured EXHAUSTIVELY.
 ///
@@ -1399,6 +1424,54 @@ fn bind_on<'e>(
 }
 
 /// Promote a dynamic-side key expression to the map's key type.
+/// An integer-lane expression as the scaled i128 of scale `s`. Refuses the
+/// one shape DuckDB caps: `int_dec_width + s > 38` makes the comparison
+/// width DECIMAL(38,s), where the integer's cast can fail PER ROW
+/// (measured: `CAST(1 AS DECIMAL(38,30)) = 10000000000::BIGINT` is a
+/// Conversion Error while `= 1::BIGINT` is true).
+fn promote_dec(e: SExpr, p: u8, s: u8) -> Result<SExpr, PrepareError> {
+    if u32::from(int_dec_width(e.ty)) + u32::from(s) > 38 {
+        return Err(PrepareError::Bind(format!(
+            "cannot compare {} with a DECIMAL of scale {s}: DuckDB compares these \
+             as DECIMAL(38,{s}) and the integer cast can fail per row (m-8 lattice \
+             phase 5)",
+            e.ty.name()
+        )));
+    }
+    // The precision is presentation only on this path: the comparison is
+    // between scaled INTEGERS at one scale, and taking the column's own
+    // (p, s) is what makes the two operand types identical for the
+    // verifier. A probe value wider than p compares correctly all the same
+    // — it simply is not equal to anything the column can hold, which is
+    // also DuckDB's answer at its wider comparison width.
+    let nullable = e.nullable;
+    Ok(SExpr {
+        kind: SKind::IntToDec { s, a: Box::new(e) },
+        ty: Ty::Dec(p, s),
+        nullable,
+    })
+}
+
+fn dec_to_float(e: SExpr) -> SExpr {
+    let nullable = e.nullable;
+    SExpr {
+        kind: SKind::DecToFloat(Box::new(e)),
+        ty: Ty::F64,
+        nullable,
+    }
+}
+
+/// The DECIMAL width DuckDB gives an integer type when the two meet —
+/// `LogicalType::GetDecimalProperties`, src/common/types.cpp:730-795.
+fn int_dec_width(t: Ty) -> u8 {
+    match t {
+        Ty::I8 => 3,
+        Ty::I16 => 5,
+        Ty::I32 => 10,
+        _ => 19,
+    }
+}
+
 fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareError> {
     let col_ty = st.cols[col as usize].ty.ty;
     match (key.ty, col_ty) {
@@ -1410,6 +1483,35 @@ fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareE
         // (the key expression's type) becomes F64 and the build side is
         // converted while the probe table is built.
         (Ty::F64, Ty::I64) => Ok(key),
+        // A DECIMAL build key, same precedent, no new key machinery: the
+        // lane stays the PROBE's type and the build side converts while the
+        // probe table is built (see duckdb::materialize_map).
+        //
+        // Against an INTEGER probe DuckDB casts the integer UP to the
+        // decimal (ImplicitCastBigint, cast_rules.cpp:96-107), exactly — so
+        // equality is decidable at build time and a non-integral build row
+        // simply drops. The one shape that refuses is the CAPPED comparison
+        // width: when the integer's decimal width plus the scale exceeds
+        // 38, DuckDB caps the width and the integer's per-row cast can FAIL
+        // (measured: CAST(1 AS DECIMAL(38,30)) = 10000000000::BIGINT is a
+        // Conversion Error, = 1::BIGINT is true). Reproducing that needs a
+        // row-time trap the key path has no shape for.
+        (a, Ty::Dec(_, s)) if a.is_int() => {
+            if u32::from(int_dec_width(a)) + u32::from(s) > 38 {
+                return Err(PrepareError::Bind(format!(
+                    "cannot join {} with {}: DuckDB compares these as DECIMAL(38,{s}) \
+                     and the integer cast can fail per row (m-8 lattice phase 5)",
+                    a.name(),
+                    col_ty.name()
+                )));
+            }
+            Ok(key)
+        }
+        // Against a DOUBLE probe only decimal->double is a legal implicit
+        // cast, so the DECIMAL side casts DOWN and the comparison is LOSSY.
+        // The lane stays F64 and the build side converts with DuckDB's own
+        // algorithm, reproducing the loss rather than hiding it.
+        (Ty::F64, Ty::Dec(..)) => Ok(key),
         (a, b) => Err(PrepareError::Bind(format!(
             "cannot join {} with {} (ON '{}')",
             a.name(),
@@ -1452,6 +1554,8 @@ fn scan_residual(e: &SExpr, j: u32, right: &mut bool, left: &mut bool, known: &m
         SKind::Not(a)
         | SKind::IsNull { inner: a, .. }
         | SKind::IntToFloat(a)
+        | SKind::DecToFloat(a)
+        | SKind::IntToDec { a, .. }
         | SKind::IntToFloat32(a) => {
             scan_residual(a, j, right, left, known);
         }
@@ -2027,13 +2131,31 @@ impl Binder<'_> {
     /// exec-time cast semantics we don't model — clean-unsupported.
     fn unify_family(&self, exprs: &[&SqlExpr]) -> Result<Vec<SqlExpr>, PrepareError> {
         let (mut any_f64, mut any_num) = (false, false);
+        // A DECIMAL arm unifies with a WIDER decimal on DuckDB
+        // (CombineEqualTypes / DecimalSizeCheck); we serve one (p,s) per
+        // value, so a family mixing a decimal with anything not identical
+        // to it refuses by name (m-8 lattice phase 5).
+        let mut any_dec: Option<SExpr> = None;
+        let mut all_dec: Option<Ty> = None;
+        let mut mixed_dec = false;
         for e in exprs {
             if let Some(b) = self.expr_or_null(e)? {
+                match (all_dec, b.ty) {
+                    (None, t) => all_dec = Some(t),
+                    (Some(prev), t) if prev != t => mixed_dec = true,
+                    _ => {}
+                }
                 match b.ty {
                     Ty::F64 => (any_f64, any_num) = (true, true),
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => any_num = true,
+                    Ty::Dec(..) => any_dec = Some(b.clone()),
                     Ty::Str | Ty::I1 => {}
                 }
+            }
+        }
+        if let Some(d) = any_dec {
+            if mixed_dec {
+                return Err(self.dec_refusal("family unification", &d));
             }
         }
         // Wave-5 pins: mixing casts the string/bool side to the NUMERIC
@@ -3848,7 +3970,9 @@ impl Binder<'_> {
                          project its fields instead"
                     )
                 } else {
-                    format!("static table '{tname}' column '{cname}' has a non-scalar type")
+                    format!(
+                        "static table '{tname}' column '{cname}' has a non-scalar type: {aty}"
+                    )
                 }));
             }
             return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
@@ -4282,9 +4406,13 @@ impl Binder<'_> {
         // DuckDB's "NULL floors the CASE at INTEGER".
         let mut unified: Option<Ty> = None;
         let mut acc_lit: Option<i64> = None;
+        let mut dec_arm: Option<SExpr> = None;
         if let Some(Some(r)) = &else_bound {
             unified = Some(r.ty);
             acc_lit = else_result.and_then(ast_int_literal);
+            if r.ty.dec().is_some() {
+                dec_arm = Some(r.clone());
+            }
         }
         for (r, when) in results.iter().zip(conditions) {
             let Some(r) = r else {
@@ -4292,6 +4420,9 @@ impl Binder<'_> {
                 continue;
             };
             let new_lit = ast_int_literal(&when.result);
+            if r.ty.dec().is_some() {
+                dec_arm.get_or_insert_with(|| r.clone());
+            }
             unified = Some(match unified {
                 None => r.ty,
                 Some(u) if u == r.ty => u,
@@ -4301,11 +4432,18 @@ impl Binder<'_> {
                 Some(u) if u.is_int() && r.ty == Ty::F64 => Ty::F64,
                 Some(Ty::F64) if r.ty.is_int() => Ty::F64,
                 Some(u) => {
+                    if let Some(d) = &dec_arm {
+                        return Err(refuse_dec(
+                            "CASE unification",
+                            d.ty,
+                            self.dec_col_name(d).as_deref(),
+                        ));
+                    }
                     return Err(PrepareError::Bind(format!(
                         "CASE branches disagree: {} vs {}",
                         u.name(),
                         r.ty.name()
-                    )))
+                    )));
                 }
             });
             acc_lit = None;
@@ -4360,6 +4498,15 @@ impl Binder<'_> {
         }
         if inner.ty == Ty::Str && to == Ty::I1 {
             return Err(unsup("CAST VARCHAR -> BOOLEAN"));
+        }
+        // DECIMAL -> DOUBLE is bought (DuckDB's div/mod algorithm); every
+        // other target is phase 5. Both of the refused ones were WRONG
+        // VALUES before this landed.
+        if inner.ty.dec().is_some() {
+            if to == Ty::F64 {
+                return Ok(dec_to_float(inner));
+            }
+            return Err(self.dec_refusal(&format!("CAST to {}", duck_int_name(to)), &inner));
         }
         // TASK-87 face A: a constant cast that FAILS is a plan-time error
         // on DuckDB — measured to fire even over zero rows and under a
@@ -4501,6 +4648,13 @@ impl Binder<'_> {
         // visible to the strict-op check below, exactly as DuckDB's folder
         // sees it. fold() is pure and idempotent.
         let (a, b) = (fold(a), fold(b));
+        // Decimal ARITHMETIC is m-8 lattice phase 5. Refuse by name here,
+        // before the promotion below turns it into the generic
+        // "arithmetic needs numeric operands" — the column and its (p,s)
+        // are what the reader needs.
+        if let Some(d) = dec_operand(&a, &b) {
+            return Err(self.dec_refusal(&format!("{} ", arith_sym(op)).trim(), d));
+        }
         let null_operand =
             matches!(a.kind, SKind::NullOf) || matches!(b.kind, SKind::NullOf);
         if matches!(
@@ -4640,6 +4794,32 @@ impl Binder<'_> {
         })
     }
 
+    /// The static column a DECIMAL value came from, for the refusal to
+    /// name. Nothing but a static column produces a Dec, so the walk finds
+    /// one whenever the expression is Dec-typed.
+    fn dec_col_name(&self, e: &SExpr) -> Option<String> {
+        fn walk(b: &Binder<'_>, e: &SExpr) -> Option<String> {
+            match &e.kind {
+                SKind::StaticCol { join, col } => {
+                    let sj = b.joins.get(*join as usize)?;
+                    let ci = *sj.val_cols.get(*col as usize)? as usize;
+                    Some(sj.table.cols.get(ci)?.name.clone())
+                }
+                SKind::Case { arms, default } => arms
+                    .iter()
+                    .find_map(|(_, r)| walk(b, r))
+                    .or_else(|| default.as_deref().and_then(|d| walk(b, d))),
+                _ => None,
+            }
+        }
+        walk(self, e)
+    }
+
+    /// [`refuse_dec`] with the offending column resolved.
+    fn dec_refusal(&self, op: &str, e: &SExpr) -> PrepareError {
+        refuse_dec(op, e.ty, self.dec_col_name(e).as_deref())
+    }
+
     fn cmp(&self, pred: CmpPred, a: SExpr, b: SExpr) -> Result<SExpr, PrepareError> {
         // TASK-92: the comparison result type is the operator table's rule.
         let Ret::Fixed(ret) = sig::op_ret(cmp_sym(pred)) else {
@@ -4654,6 +4834,17 @@ impl Binder<'_> {
             (x, y) if x.is_int() && y.is_int() => (a, b),
             (x, Ty::F64) if x.is_int() => (promote_f64(a), b),
             (Ty::F64, y) if y.is_int() => (a, promote_f64(b)),
+            // DECIMAL vs INTEGER: DuckDB casts the INTEGER up, exactly, so
+            // the comparison stays in the decimal's scale. The one shape it
+            // refuses is the CAPPED width, where the integer's per-row cast
+            // can fail (source item 6) — a row-time trap phase 5 buys.
+            (Ty::Dec(p, s), y) if y.is_int() => (a, promote_dec(b, p, s)?),
+            (x, Ty::Dec(p, s)) if x.is_int() => (promote_dec(a, p, s)?, b),
+            // DECIMAL vs DOUBLE: only decimal->double is a legal implicit
+            // cast (cast_rules.cpp:196-204), so the DECIMAL side casts DOWN
+            // and the comparison is lossy — DuckDB's loss, reproduced.
+            (Ty::Dec(..), Ty::F64) => (dec_to_float(a), b),
+            (Ty::F64, Ty::Dec(..)) => (a, dec_to_float(b)),
             (x, y) => {
                 return Err(PrepareError::Bind(format!(
                     "cannot compare {} with {}",
@@ -6005,11 +6196,20 @@ impl Binder<'_> {
                                 (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                                 (Ty::F64, t) if t.is_int() => Ty::F64,
                                 (u, t) => {
+                                    if let Some(d) =
+                                        bound.iter().chain([&e]).find(|x| x.ty.dec().is_some())
+                                    {
+                                        return Err(refuse_dec(
+                                            "COALESCE unification",
+                                            d.ty,
+                                            self.dec_col_name(d).as_deref(),
+                                        ));
+                                    }
                                     return Err(PrepareError::Bind(format!(
                                         "COALESCE arguments disagree: {} vs {}",
                                         u.name(),
                                         t.name()
-                                    )))
+                                    )));
                                 }
                             });
                             acc_lit = None;
@@ -6097,11 +6297,20 @@ impl Binder<'_> {
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
                         (u, t) => {
+                            if let Some((d, _)) =
+                                bound.iter().find(|(x, _)| x.ty.dec().is_some())
+                            {
+                                return Err(refuse_dec(
+                                    &format!("{name} unification"),
+                                    d.ty,
+                                    self.dec_col_name(d).as_deref(),
+                                ));
+                            }
                             return Err(PrepareError::Bind(format!(
                                 "{name} arguments disagree: {} vs {}",
                                 u.name(),
                                 t.name()
-                            )))
+                            )));
                         }
                     };
                     acc_lit = None;
@@ -7163,6 +7372,7 @@ fn scalar_lit(v: ScalarVal, ty: Ty) -> SExpr {
         ScalarVal::I64(x) => Lit::I64(x),
         ScalarVal::F64(x) => Lit::F64(x),
         ScalarVal::Str(x) => Lit::Str(x),
+        ScalarVal::Dec(x, p, s) => Lit::Dec(x, p, s),
     };
     SExpr {
         kind: SKind::Lit(lit),

@@ -21,8 +21,65 @@ pub(super) fn reserve_out(out: &mut [OutCol], rows: usize) {
             OutCol::I64(v) => v.reserve(rows),
             OutCol::F64(v) => v.reserve(rows),
             OutCol::Str(v) => v.reserve(rows),
+            OutCol::Dec(v) => v.reserve(rows),
         }
     }
+}
+
+/// `1e0 .. 1e38` as DuckDB spells them — `NumericHelper::DOUBLE_POWERS_OF_TEN`,
+/// cast_helpers.cpp:27-30. Literals, not `powi`: above 1e22 the two are
+/// different doubles.
+const DOUBLE_POWERS_OF_TEN: [f64; 39] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29, 1e30, 1e31, 1e32,
+    1e33, 1e34, 1e35, 1e36, 1e37, 1e38,
+];
+
+/// `Hugeint::TryCast(hugeint_t, double)` — `CastBigintToFloating`,
+/// hugeint.cpp:649-661. TWO roundings (the halves convert separately), not
+/// Rust's correctly-rounded `as f64`, so it is spelled out rather than
+/// simplified.
+fn hugeint_to_f64(v: i128) -> f64 {
+    let lower = v as u128 as u64;
+    let upper = ((v as u128) >> 64) as u64 as i64;
+    if upper == -1 {
+        // DuckDB's own special case, "to avoid rounding issues in small
+        // negative numbers".
+        -((u64::MAX - lower) as f64) - 1.0
+    } else {
+        lower as f64 + (upper as f64) * ((u64::MAX as f64) + 1.0)
+    }
+}
+
+/// `2^53`, `MAX_INT_REPRESENTABLE_IN_DOUBLE` (cast_operators.cpp:2850).
+const MAX_INT_IN_DOUBLE: i128 = 0x0020_0000_0000_0000;
+
+/// DECIMAL -> DOUBLE, `TryCastDecimalToFloatingPoint`
+/// (cast_operators.cpp:2908-2924). NOT `float(Decimal)`: a scaled integer
+/// past 2^53 goes down the div/mod path, and the two answers differ there —
+/// DECIMAL(38,1) 9007199254740993.5 is 9007199254740992.0 on DuckDB and
+/// 9007199254740994.0 correctly rounded. This is a contract, not a
+/// convenience; a "cleaner" implementation silently breaks parity.
+pub fn dec_to_f64(v: i128, scale: u8) -> f64 {
+    let s = scale as usize;
+    if s == 0 || (-MAX_INT_IN_DOUBLE..=MAX_INT_IN_DOUBLE).contains(&v) {
+        return hugeint_to_f64(v) / DOUBLE_POWERS_OF_TEN[s];
+    }
+    let pow = 10i128.pow(scale as u32);
+    // Rust `/` truncates toward zero and `%` takes the dividend's sign,
+    // which is C++'s integer division exactly.
+    let (div, rem) = (v / pow, v % pow);
+    hugeint_to_f64(div) + hugeint_to_f64(rem) / DOUBLE_POWERS_OF_TEN[s]
+}
+
+/// An integer lane value as the scaled i128 of `DECIMAL(_, scale)`. DuckDB
+/// casts the INTEGER side UP when a DECIMAL meets an integer
+/// (`ImplicitCastBigint`, cast_rules.cpp:96-107), so this is exact. The
+/// frontend refuses the one shape where the comparison width caps and the
+/// cast could fail per row, which is also the shape that would overflow
+/// i128 here.
+pub fn int_to_dec(v: i64, scale: u8) -> i128 {
+    (v as i128) * 10i128.pow(scale as u32)
 }
 
 /// Execute one extern (UDF) call and enforce the declared return shape —
@@ -41,6 +98,9 @@ pub(super) fn call_extern(
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
         Ty::F64 => ScalarVal::F64(0.0),
         Ty::Str => ScalarVal::Str(String::new()),
+        // A UDF taking or returning a DECIMAL refuses at bind (m-8 lattice
+        // phase 5), so no Dec ever reaches an extern boundary.
+        Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
     };
     match (imp.fun)(args).map_err(Trap)? {
         // Whole-call NULL: every component flag false.

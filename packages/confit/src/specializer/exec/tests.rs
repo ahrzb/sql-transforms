@@ -789,6 +789,7 @@ fn gen_scalar(rng: &mut gen::Rng, ty: Ty) -> ScalarVal {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(rng.next() as i64 % 1000),
         Ty::F64 => ScalarVal::F64((rng.next() as i64 % 1000) as f64 / 4.0),
         Ty::Str => ScalarVal::Str(format!("s{}", rng.below(5))),
+        Ty::Dec(p, s) => ScalarVal::Dec((rng.next() as i64 % 1000) as i128, p, s),
     }
 }
 
@@ -906,6 +907,9 @@ fn gen_input(rng: &mut gen::Rng, p: &Program) -> Batch {
         .map(|c| {
             let mk_valid = |rng: &mut gen::Rng| !c.ty.nullable || rng.chance(70);
             match c.ty.ty.lane() {
+                // A decimal ROW column is opaque, so the generator never
+                // produces one (see schema.rs, Policy::Row).
+                Ty::Dec(..) => unreachable!("a decimal row column is opaque"),
                 Ty::I1 => c_i1(
                     &(0..rows)
                         .map(|_| mk_valid(rng).then(|| rng.chance(50)))

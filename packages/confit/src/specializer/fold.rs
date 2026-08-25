@@ -77,6 +77,30 @@ pub fn fold(e: SExpr) -> SExpr {
             id: Box::new(fold(*id)),
             feats: feats.into_iter().map(fold).collect(),
         }),
+        SKind::DecToFloat(inner) => {
+            let inner = fold(*inner);
+            match (as_const(&inner), inner.ty) {
+                (Some(K::Val(Lit::Dec(m, _, sc))), _) => {
+                    lit(Lit::F64(super::exec::kernels::dec_to_f64(m, sc)), ty)
+                }
+                (Some(K::Null), _) => null(ty),
+                _ => e(SKind::DecToFloat(Box::new(inner))),
+            }
+        }
+        SKind::IntToDec { s: sc, a: inner } => {
+            let inner = fold(*inner);
+            match (as_const(&inner), ty) {
+                (Some(K::Val(Lit::I64(i))), Ty::Dec(dp, ds)) => lit(
+                    Lit::Dec(super::exec::kernels::int_to_dec(i, sc), dp, ds),
+                    ty,
+                ),
+                (Some(K::Null), _) => null(ty),
+                _ => e(SKind::IntToDec {
+                    s: sc,
+                    a: Box::new(inner),
+                }),
+            }
+        }
         SKind::IntToFloat(inner) => {
             let inner = fold(*inner);
             match as_const(&inner) {

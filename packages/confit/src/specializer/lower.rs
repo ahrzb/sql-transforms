@@ -500,6 +500,9 @@ impl<'a> FB<'a> {
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Lit::I64(0),
             Ty::F64 => Lit::F64(0.0),
             Ty::Str => Lit::Str(String::new()),
+            // The LEFT-miss payload of a decimal lane: a zero at the
+            // column's own scale, exactly like the other lanes' defaults.
+            Ty::Dec(p, s) => Lit::Dec(0, p, s),
         })
     }
 
@@ -854,6 +857,26 @@ impl<'a> FB<'a> {
                 Ok(Lane {
                     flag: Some(flag),
                     val,
+                })
+            }
+            SKind::DecToFloat(inner) => {
+                let (p, s) = inner.ty.dec().expect("dtof operand is a decimal");
+                let l = self.emit(inner, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::Dtof { p, s, dst, a: l.val });
+                Ok(Lane {
+                    val: dst,
+                    flag: l.flag,
+                })
+            }
+            SKind::IntToDec { s: _, a: inner } => {
+                let (p, s) = e.ty.dec().expect("itod result is a decimal");
+                let l = self.emit(inner, live)?;
+                let dst = self.fresh();
+                self.inst(Inst::Itod { p, s, dst, a: l.val });
+                Ok(Lane {
+                    val: dst,
+                    flag: l.flag,
                 })
             }
             SKind::IntToFloat(inner) | SKind::IntToFloat32(inner) => {

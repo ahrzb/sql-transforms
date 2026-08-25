@@ -30,10 +30,15 @@ pub enum RowField {
 /// parsers in two files) and is now deliberate.
 ///
 /// `Row` is exact: a type is served at its declared width or it is opaque.
-/// `Static` additionally takes `large_string`/`utf8` and `decimal128(p,s)`,
-/// and ONLY those — both measured against DuckDB rather than assumed. The
-/// difference is the remaining gap between the two, not a design; closing
-/// it needs TASK-91 (exact decimal serving) first.
+/// `Static` additionally takes `large_string`/`utf8` and the decimal tiers
+/// `decimal32`/`decimal64`/`decimal128` as `Ty::Dec(p,s)`, and ONLY those —
+/// each measured against DuckDB rather than assumed. `decimal256` stays
+/// opaque because DuckDB refuses it outright at arrow register ("Unsupported
+/// Internal Arrow Type for Decimal"), at any precision.
+///
+/// The two remaining differences are `large_string`/`utf8` and the decimal
+/// acceptance itself. Decimal ROW columns stay opaque, which is also why the
+/// arrow ROW-ingest path needs no decimal arm at all.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     Row,
@@ -141,10 +146,17 @@ fn arrow_field_to_row_field(
         //
         //   large_string/utf8  DuckDB normalises these to VARCHAR, so the
         //                      value and the output type both match.
-        //   decimal128(p,s)    an ordinary fit-path output (sum(BIGINT) is
-        //                      decimal128(38,0)). Rides the f64 lane behind
-        //                      an exactness guard that refuses any payload
-        //                      f64 cannot hold; TASK-91 lands exact serving.
+        //   decimal32/64/128   an ordinary fit-path output (sum(BIGINT) is
+        //                      decimal128(38,0)). TASK-91: the payload is
+        //                      the SCALED i128, exact from ingest to emit.
+        //                      Every tier leaves DuckDB as decimal128(p,s)
+        //                      (SetArrowFormat, arrow_converter.cpp), so
+        //                      all three normalise to one Ty::Dec(p,s).
+        //
+        // decimal256 does NOT ride here: DuckDB refuses it at arrow
+        // register at any precision, so serving it would be
+        // serve-where-DuckDB-refuses. It stays opaque, which refuses by
+        // name on reference and costs nothing unreferenced.
         //
         // float32 and the unsigned widths used to ride here too and were
         // removed 2026-08-15: both DIVERGE. float32 in value AND type
@@ -154,11 +166,28 @@ fn arrow_field_to_row_field(
         // silently, which is the third mode the contract forbids.
         _ if policy == Policy::Static => match name.as_str() {
             "large_string" | "utf8" | "large_utf8" => Ty::Str,
-            n if n.starts_with("decimal") => Ty::F64,
+            n if n.starts_with("decimal") => match decimal_ps(n) {
+                Some((p, s)) => Ty::Dec(p, s),
+                None => return Ok(RowField::Opaque(name)),
+            },
             _ => return Ok(RowField::Opaque(name)),
         },
         _ => return Ok(RowField::Opaque(name)),
     };
     Ok(RowField::Scalar { ty: t, nullable })
+}
+
+/// `(p, s)` out of pyarrow's own spelling — `decimal128(38, 0)`,
+/// `decimal32(6, 2)`. `None` for `decimal256` (DuckDB refuses it) and for
+/// anything outside DECIMAL's 1..=38 / s <= p range.
+fn decimal_ps(name: &str) -> Option<(u8, u8)> {
+    let (head, args) = name.split_once('(')?;
+    if !matches!(head, "decimal32" | "decimal64" | "decimal128" | "decimal") {
+        return None;
+    }
+    let (p, s) = args.strip_suffix(')')?.split_once(',')?;
+    let p: u8 = p.trim().parse().ok()?;
+    let s: u8 = s.trim().parse().ok()?;
+    ((1..=38).contains(&p) && s <= p).then_some((p, s))
 }
 

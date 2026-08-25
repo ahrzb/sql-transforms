@@ -92,6 +92,11 @@ impl ColData {
                 buf: String::new(),
                 spans: Vec::new(),
             },
+            // Input columns only. A decimal ROW column is outside the row
+            // schema vocabulary and stays opaque (schema.rs, `Policy::Row`),
+            // so a Dec never reaches an INPUT lane — only a static's value
+            // lane and the output boundary, neither of which is ColData.
+            Ty::Dec(..) => unreachable!("a decimal row column is opaque, never a ColData"),
         }
     }
 
@@ -268,6 +273,11 @@ pub enum ScalarVal {
     I64(i64),
     F64(f64),
     Str(String),
+    /// A DECIMAL as its SCALED integer plus the (p, s) it is scaled at.
+    /// The (p, s) rides along because [`ScalarVal::ty`] is what prepare
+    /// checks against the declared value type, and unlike the narrow ints
+    /// a Dec's scale does not erase.
+    Dec(i128, u8, u8),
 }
 
 impl ScalarVal {
@@ -277,6 +287,7 @@ impl ScalarVal {
             ScalarVal::I64(_) => Ty::I64,
             ScalarVal::F64(_) => Ty::F64,
             ScalarVal::Str(_) => Ty::Str,
+            ScalarVal::Dec(_, p, s) => Ty::Dec(*p, *s),
         }
     }
 }
@@ -375,6 +386,9 @@ pub enum OutCol {
     I64(Vec<(bool, i64)>),
     F64(Vec<(bool, f64)>),
     Str(Vec<(bool, StrRef)>),
+    /// Scaled i128 payloads. Little-endian i128 IS arrow's decimal128
+    /// layout on this target, so the emit writes the slice straight out.
+    Dec(Vec<(bool, i128)>),
 }
 
 impl OutCol {
@@ -384,6 +398,7 @@ impl OutCol {
             OutCol::I64(v) => v.clear(),
             OutCol::F64(v) => v.clear(),
             OutCol::Str(v) => v.clear(),
+            OutCol::Dec(v) => v.clear(),
         }
     }
 
@@ -393,6 +408,7 @@ impl OutCol {
             OutCol::I64(v) => v.len(),
             OutCol::F64(v) => v.len(),
             OutCol::Str(v) => v.len(),
+            OutCol::Dec(v) => v.len(),
         }
     }
 
@@ -408,6 +424,11 @@ pub enum RegVal {
     I64(i64),
     F64(f64),
     Str(StrRef),
+    /// A DECIMAL's scaled integer. The (p, s) is static — it lives in the
+    /// program's types, not in the register — so only the payload rides
+    /// here. The enum grows from 24 to 32 bytes; the register frame is
+    /// per-CALL and tens of slots wide, so this is noise.
+    Dec(i128),
 }
 
 /// Reusable per-call buffers: registers, arena, output builders. Create once

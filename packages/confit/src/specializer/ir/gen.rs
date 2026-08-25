@@ -71,6 +71,9 @@ fn rand_col_ty(rng: &mut Rng) -> ColTy {
 fn rand_lit(rng: &mut Rng, ty: Ty) -> Lit {
     match ty {
         Ty::I1 => Lit::I1(rng.chance(50)),
+        // TYS never generates Dec either; a request still gets a literal at
+        // the right type so the generator stays total.
+        Ty::Dec(p, s) => Lit::Dec((rng.next() % 1_000_000) as i128, p, s),
         // TYS never generates narrow widths (they are header-only); a narrow
         // request still gets an i64-lane literal.
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => Lit::I64(match rng.below(6) {

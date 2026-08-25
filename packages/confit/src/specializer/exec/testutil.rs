@@ -72,6 +72,9 @@ pub fn snapshot(st: &RunState) -> Vec<Vec<String>> {
                     OutCol::I64(v) => render(v[r].0, format!("{}", v[r].1)),
                     OutCol::F64(v) => render(v[r].0, format!("{:?}", v[r].1)),
                     OutCol::Str(v) => render(v[r].0, st.arena.get(v[r].1).to_string()),
+                    // The SCALED integer, which is what the lane holds; the
+                    // decimal point is the boundary's business.
+                    OutCol::Dec(v) => render(v[r].0, format!("{}", v[r].1)),
                 })
                 .collect()
         })

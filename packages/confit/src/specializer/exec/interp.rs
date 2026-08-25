@@ -279,6 +279,7 @@ impl InterpFn {
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => OutCol::I64(Vec::new()),
                     Ty::F64 => OutCol::F64(Vec::new()),
                     Ty::Str => OutCol::Str(Vec::new()),
+                    Ty::Dec(..) => OutCol::Dec(Vec::new()),
                 })
                 .collect(),
         }
@@ -393,6 +394,10 @@ impl InterpFn {
                 OutCol::I64(_) => Ty::I64,
                 OutCol::F64(_) => Ty::F64,
                 OutCol::Str(_) => Ty::Str,
+                // The width check below is `col_ty != ty.lane()`, and a Dec
+                // lane keeps its (p, s) through `lane()`, so the declared
+                // type IS the answer here.
+                OutCol::Dec(_) => *ty,
             };
             // Narrow declarations run in their lane; width applies at emit.
             if col_ty != ty.lane() {
@@ -482,6 +487,7 @@ fn build_batch_rows(input: &Batch, in_decl: &[(Ty, bool)]) -> Vec<Vec<ScalarVal>
                     Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
                     Ty::F64 => ScalarVal::F64(0.0),
                     Ty::Str => ScalarVal::Str(String::new()),
+                    Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
                 }
             };
             vals.push(v);
@@ -653,12 +659,20 @@ fn as_str(r: RegVal) -> StrRef {
     }
 }
 
+fn as_dec(r: RegVal) -> i128 {
+    match r {
+        RegVal::Dec(v) => v,
+        _ => unreachable!("type hole past the verifier: expected dec"),
+    }
+}
+
 fn scalar_to_reg(v: &ScalarVal, arena: &mut Arena) -> RegVal {
     match v {
         ScalarVal::I1(b) => RegVal::I1(*b),
         ScalarVal::I64(i) => RegVal::I64(*i),
         ScalarVal::F64(f) => RegVal::F64(*f),
         ScalarVal::Str(s) => RegVal::Str(arena.push_str(s)),
+        ScalarVal::Dec(v, ..) => RegVal::Dec(*v),
     }
 }
 
@@ -668,6 +682,7 @@ fn default_reg(ty: Ty) -> RegVal {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => RegVal::I64(0),
         Ty::F64 => RegVal::F64(0.0),
         Ty::Str => RegVal::Str(StrRef { off: 0, len: 0 }),
+        Ty::Dec(..) => RegVal::Dec(0),
     }
 }
 
@@ -858,6 +873,10 @@ fn compile_inst(
                     ctx.regs[dst] = RegVal::Str(ctx.arena.push_str(&s));
                     Ok(())
                 }),
+                ir::Lit::Dec(v, ..) => Box::new(move |ctx| {
+                    ctx.regs[dst] = RegVal::Dec(v);
+                    Ok(())
+                }),
             }
         }
         Inst::Bin { op, dst, a, b } => {
@@ -976,6 +995,12 @@ fn compile_inst(
                         let (x, y) = (as_str(ctx.regs[a]), as_str(ctx.regs[b]));
                         apply_ord(pred, ctx.arena.get(x).cmp(ctx.arena.get(y)))
                     }
+                    // One scale on both sides (the verifier requires the
+                    // operand types to be identical), so the scaled i128s
+                    // compare as plain signed integers.
+                    Ty::Dec(..) => {
+                        apply_ord(pred, as_dec(ctx.regs[a]).cmp(&as_dec(ctx.regs[b])))
+                    }
                     Ty::I1 => unreachable!("cmp on i1 is rejected by the verifier"),
                 };
                 ctx.regs[dst] = RegVal::I1(v);
@@ -1008,6 +1033,20 @@ fn compile_inst(
                 // rounding versus two. That is the point (TASK-77).
                 let v = if narrow { n as f32 as f64 } else { n as f64 };
                 ctx.regs[dst] = RegVal::F64(v);
+                Ok(())
+            })
+        }
+        Inst::Dtof { s: sc, dst, a, .. } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                ctx.regs[dst] = RegVal::F64(super::kernels::dec_to_f64(as_dec(ctx.regs[a]), sc));
+                Ok(())
+            })
+        }
+        Inst::Itod { s: sc, dst, a, .. } => {
+            let (dst, a) = (sl(slots, dst), sl(slots, a));
+            Box::new(move |ctx| {
+                ctx.regs[dst] = RegVal::Dec(super::kernels::int_to_dec(as_i64(ctx.regs[a]), sc));
                 Ok(())
             })
         }
@@ -1543,6 +1582,11 @@ fn compile_inst(
                             Ty::Str => ScalarVal::Str(
                                 ctx.arena.get(as_str(ctx.regs[args[2 * j + 1]])).to_string(),
                             ),
+                            // A UDF over DECIMAL refuses at bind (m-8
+                            // lattice phase 5).
+                            Ty::Dec(..) => {
+                                unreachable!("a udf parameter is never a decimal")
+                            }
                         })
                     } else {
                         None
@@ -1727,6 +1771,7 @@ fn push_out(col: &mut OutCol, valid: bool, v: RegVal) {
         (OutCol::I64(vec), RegVal::I64(i)) => vec.push((valid, i)),
         (OutCol::F64(vec), RegVal::F64(f)) => vec.push((valid, f)),
         (OutCol::Str(vec), RegVal::Str(s)) => vec.push((valid, s)),
+        (OutCol::Dec(vec), RegVal::Dec(d)) => vec.push((valid, d)),
         _ => unreachable!("store type checked by the verifier"),
     }
 }

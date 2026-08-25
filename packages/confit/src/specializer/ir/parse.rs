@@ -685,6 +685,28 @@ impl Parser {
         })
     }
 
+    /// `(p, s)` after a `dec` / `dcmp` / `dtof` / `itod` head.
+    fn dec_params(&mut self) -> Result<(u8, u8), ParseError> {
+        self.expect(Tok::LParen)?;
+        let p = self.int_literal("a decimal precision")?;
+        self.expect(Tok::Comma)?;
+        let sc = self.int_literal("a decimal scale")?;
+        self.expect(Tok::RParen)?;
+        if !(1..=38).contains(&p) || !(0..=p).contains(&sc) {
+            return Err(self.err(format!("bad decimal type dec({p},{sc})")));
+        }
+        Ok((p as u8, sc as u8))
+    }
+
+    fn i128_literal(&mut self, what: &str) -> Result<i128, ParseError> {
+        match self.bump() {
+            Tok::Num(s) => s
+                .parse::<i128>()
+                .map_err(|_| self.err(format!("bad {what}: '{s}'"))),
+            other => Err(self.err(format!("expected {what}, found {}", other.show()))),
+        }
+    }
+
     fn int_literal(&mut self, what: &str) -> Result<i64, ParseError> {
         match self.bump() {
             Tok::Num(s) => s
@@ -797,6 +819,13 @@ impl Parser {
             "i64" => Ok(Ty::I64),
             "f64" => Ok(Ty::F64),
             "str" => Ok(Ty::Str),
+            // DECIMAL carries its precision and scale in the type itself:
+            // the scale is part of the value's meaning, not merely of its
+            // emit width, so it cannot erase the way i8/i16/i32 do.
+            "dec" => {
+                let (p, sc) = self.dec_params()?;
+                Ok(Ty::Dec(p, sc))
+            }
             other => Err(self.err(format!("unknown type '{other}'"))),
         }
     }
@@ -1036,6 +1065,35 @@ impl Parser {
         }
 
         let inst = match opcode.as_str() {
+            "const.dec" => {
+                want_dsts(1, self)?;
+                let (dp, ds) = self.dec_params()?;
+                let v = self.i128_literal("a scaled decimal literal")?;
+                Inst::Const {
+                    dst: def!(0),
+                    lit: Lit::Dec(v, dp, ds),
+                }
+            }
+            "dtof" | "itod" => {
+                want_dsts(1, self)?;
+                let (dp, ds) = self.dec_params()?;
+                let a = self.use_value()?;
+                if opcode == "dtof" {
+                    Inst::Dtof {
+                        p: dp,
+                        s: ds,
+                        dst: def!(0),
+                        a,
+                    }
+                } else {
+                    Inst::Itod {
+                        p: dp,
+                        s: ds,
+                        dst: def!(0),
+                        a,
+                    }
+                }
+            }
             "const.i1" | "const.i64" | "const.f64" | "const.str" => {
                 want_dsts(1, self)?;
                 let lit = match opcode.as_str() {
@@ -1095,6 +1153,30 @@ impl Parser {
                 let b = self.use_value()?;
                 Inst::Bin {
                     op,
+                    dst: def!(0),
+                    a,
+                    b,
+                }
+            }
+            _ if head == "dcmp" => {
+                want_dsts(1, self)?;
+                let (dp, ds) = self.dec_params()?;
+                self.expect(Tok::Dot)?;
+                let pred = match self.ident("a comparison predicate")?.as_str() {
+                    "eq" => CmpPred::Eq,
+                    "ne" => CmpPred::Ne,
+                    "lt" => CmpPred::Lt,
+                    "le" => CmpPred::Le,
+                    "gt" => CmpPred::Gt,
+                    "ge" => CmpPred::Ge,
+                    other => return Err(self.err(format!("unknown opcode 'dcmp.{other}'"))),
+                };
+                let a = self.use_value()?;
+                self.expect(Tok::Comma)?;
+                let b = self.use_value()?;
+                Inst::Cmp {
+                    pred,
+                    ty: Ty::Dec(dp, ds),
                     dst: def!(0),
                     a,
                     b,
