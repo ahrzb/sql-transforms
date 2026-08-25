@@ -1,4 +1,4 @@
-//! TASK-92: the function-signature registry.
+//! The function-signature registry.
 //!
 //! What a builtin ACCEPTS and RETURNS is one declarative table; HOW its
 //! node is built stays a small arm in `Binder::function`. Rows marked
@@ -15,8 +15,7 @@ use super::ir::Ty;
 pub enum ArgTy {
     /// Exactly this type — no implicit casts (measured on every row).
     Exact(Ty),
-    /// Any integer. Today's lattice has a single integer lane, so this
-    /// means exactly I64 — see [`arg_ok`], the ONE place that fact lives.
+    /// Any integer width — see [`arg_ok`], the ONE place that fact lives.
     Int,
     /// Any integer or f64.
     Num,
@@ -45,8 +44,8 @@ pub enum NullArg {
     /// result type, BEFORE per-arg type checks — the audited dominant
     /// pattern (e.g. replace(NULL, 1, 2) binds NULL::VARCHAR).
     WholeCallNull,
-    /// The arm keeps its own NULL/gate logic (TASK-82/86 refusals,
-    /// skip-NULL desugars, lazy guarded binding).
+    /// The arm keeps its own NULL/gate logic (the pad-count and
+    /// bare-NULL-BLOB refusals, skip-NULL desugars, lazy guarded binding).
     Custom,
 }
 
@@ -144,7 +143,7 @@ pub const SIGS: &[(&[&str], Sig)] = &[
     (&["reverse"], whole(STR1, Ret::Fixed(Ty::Str))),
     // ---- Custom rows: facts recorded, arm keeps every gate verbatim ----
     (
-        &["repeat"], // arg0 bare NULL is the TASK-86 BLOB-face refusal
+        &["repeat"], // arg0 bare NULL picks DuckDB's BLOB overload: refused
         custom(&[ArgTy::Exact(Ty::Str), ArgTy::Int], Ret::Fixed(Ty::Str)),
     ),
     (
@@ -152,7 +151,7 @@ pub const SIGS: &[(&[&str], Sig)] = &[
         custom(STR2, Ret::Fixed(Ty::I1)),
     ),
     (
-        // TASK-82: the count is additionally gated on int32-literal SHAPE
+        // The count is additionally gated on int32-literal SHAPE
         // (a syntactic predicate no bound type can express) BEFORE the
         // NULL short-circuit, plus the 1 GiB budget refusal.
         &["lpad", "rpad"],
@@ -216,7 +215,7 @@ pub fn lookup(name: &str) -> Option<&'static Sig> {
         .map(|(_, s)| s)
 }
 
-/// Operator result-type rules (TASK-92): the RULE lookup consumed by
+/// Operator result-type rules: the RULE lookup consumed by
 /// `numeric_promote` and `cmp`; all machinery (constant folds/refusals,
 /// NULL-op-NULL, zero-divisor guards) stays with the operators. m-8
 /// phase 5 turns DECIMAL scale propagation into more data here.
@@ -252,7 +251,7 @@ mod tests {
     use super::*;
     use crate::specializer::frontend::BUILTIN_NAMES;
 
-    /// TASK-92 totality: SIGS aliases plus CUSTOM_NAMES partition the
+    /// Totality: SIGS aliases plus CUSTOM_NAMES partition the
     /// builtin catalogue exactly — every builtin is either a table alias
     /// or explicitly custom, every alias is a real builtin, and no alias
     /// appears twice.
