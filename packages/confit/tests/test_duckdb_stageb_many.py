@@ -77,6 +77,52 @@ def test_engine_order_contract():
     ]
 
 
+def test_value_lanes_from_both_column_sources_vs_oracle():
+    """A map's value slots are laid out from ONE of two column lists, and
+    which one is a property of the join, not of the layout rule: a MULTIMAP
+    reads the static catalog, a BATCHMAP (the stage-B self-join) reads the
+    caller's own row schema. A nullable column rides as a validity+payload
+    PAIR on both, so each source needs a NULL that survives the round trip.
+
+    `test_dup_key_fanout_vs_oracle` already covers the multimap half with a
+    non-NULL value; what was unpinned is a NULL through the multimap and the
+    batchmap value lane at all.
+    """
+    schema = pa.schema(
+        [pa.field("pid", pa.int64(), nullable=False), pa.field("tag", pa.string())]
+    )
+    rows = [{"pid": 1, "tag": "a"}, {"pid": 1, "tag": None}, {"pid": 2, "tag": "b"}]
+    dim = pa.table({"id": [1, 1, 2], "v": ["x", None, "y"]})
+
+    def check(sql: str, statics: dict):
+        fn = DuckDBInferFn(
+            sql,
+            row_tables={"__THIS__": schema},
+            static_tables=statics,
+            shape="many",
+        )
+        got = [tuple(r.values()) for r in fn.infer_rows(rows)]
+        con = duckdb.connect()
+        con.execute("CREATE TABLE __THIS__ (pid BIGINT NOT NULL, tag VARCHAR)")
+        for r in rows:
+            con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["pid"], r["tag"]])
+        for name, tbl in statics.items():
+            con.register(f"__arrow_{name}", tbl)
+            con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')
+        want = con.execute(sql).fetchall()
+        key = lambda t: tuple((x is None, x) for x in t)  # noqa: E731
+        assert sorted(got, key=key) == sorted(want, key=key), f"{sql}\n{got}\n{want}"
+
+    # MultiMap: the value lanes come from the static catalog's columns.
+    check("SELECT pid, d.v AS g FROM __THIS__ JOIN d ON pid = d.id", {"d": dim})
+    # BatchMap: the value lanes come from the caller's in_cols instead.
+    check(
+        "SELECT __THIS__.pid AS p, t2.tag AS g "
+        "FROM __THIS__ JOIN __THIS__ t2 ON __THIS__.pid = t2.pid",
+        {},
+    )
+
+
 @pytest.mark.parametrize(
     "expr",
     [
