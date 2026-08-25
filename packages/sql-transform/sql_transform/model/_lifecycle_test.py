@@ -1,4 +1,4 @@
-"""TASK-69: nothing the model registers outlives the call that needed it.
+"""Nothing the model registers outlives the call that needed it.
 
 ``Fitted._bind`` mints a ``{name}__x{token}`` per execution so a shared
 connection never sees two registrations under one name. ``_connect`` — the
@@ -114,7 +114,7 @@ def _built_with_own_codes(con, factor):
 
 
 def test_a_transform_built_after_a_fit_still_captures_from_its_own_frame():
-    """F3, the silent one.
+    """The silent one.
 
     ``fit`` left ``codes`` registered under its readable name; ``_catalog``
     then reported it as *the connection already owns this*, so the second
@@ -150,7 +150,7 @@ FOREIGN_SQL = (
 
 
 def test_a_second_fit_with_a_foreign_member_works_on_a_shared_connection():
-    """F9: the halves registered under the raw stem, so the second fit hit
+    """The halves registered under the raw stem, so the second fit hit
     'a function by the name of sc_fit is already created'."""
     con = duckdb.connect()
     sc = _tick()
@@ -189,9 +189,9 @@ def test_a_lazy_relation_survives_a_later_execution():
 
 
 def test_holding_the_artifact_keeps_its_relations_alive_across_a_refit():
-    """TASK-74 tied the lease to the artifact, so this is the contract now: a
-    relation belongs to the fit that produced it. Keep that fit and the
-    relation keeps working, however many times the estimator is refitted."""
+    """The lease is tied to the artifact, so the contract is: a relation
+    belongs to the fit that produced it. Keep that fit and the relation keeps
+    working, however many times the estimator is refitted."""
     con = duckdb.connect()
     t = SQLTransform(REL, connection=con).set_output(transform="duckdb")
     fitted = t.fit(SMALL)  # held, so it is not collected on refit
@@ -203,8 +203,8 @@ def test_holding_the_artifact_keeps_its_relations_alive_across_a_refit():
 def test_a_refit_releases_the_previous_fits_relations():
     """The other half of the same contract, and how the retention stays
     bounded: nothing holds the old artifact, so its tables go back. Written
-    down because it is a behaviour change — before TASK-74 the relation
-    survived its own fit being replaced."""
+    down because it was a behaviour change — the relation used to survive its
+    own fit being replaced."""
     con = duckdb.connect()
     t = SQLTransform(REL, connection=con).set_output(transform="duckdb")
     t.fit(SMALL)

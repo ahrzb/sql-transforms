@@ -345,12 +345,12 @@ def test_udf_name_mismatch_refuses():
 
 
 def test_a_udf_named_after_a_duckdb_function_refuses(recwarn):  # noqa: ARG001
-    """TASK-89. `_known_functions()` gated UDF resolution, so a declared UDF
-    named after any DuckDB function was never resolved, never recorded, and
-    the call planned as the BUILTIN — the user declared a callable and got
+    """`_known_functions()` gated UDF resolution, so a declared UDF named
+    after any DuckDB function was never resolved, never recorded, and the
+    call planned as the BUILTIN — the user declared a callable and got
     someone else's function, silently. confit refuses the same collision one
-    layer down (PR #95), but the dropped UDF never reaches it, so that guard
-    was unreachable from here."""
+    layer down, but the dropped UDF never reaches it, so that guard was
+    unreachable from here."""
     shout = PythonUDF(
         "abs",
         lambda x: 111.0,

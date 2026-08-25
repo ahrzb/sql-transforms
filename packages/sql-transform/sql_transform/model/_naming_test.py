@@ -1,4 +1,4 @@
-"""TASK-68: a generated parameter name may never mean a user's relation.
+"""A generated parameter name may never mean a user's relation.
 
 ``_plan`` mints parameter names from user-controlled strings — a CTE key
 becomes ``__param_{key}``. Two ways that went wrong, both silent, both
@@ -28,11 +28,11 @@ from sql_transform.model import SQLTransform, TransformError, run
 D = pa.table({"price": [1.0, 2.0]})
 
 
-# ------------------------------------------------- a CTE named `fit` (F1)
+# ------------------------------------------------------ a CTE named `fit`
 
 
 def test_a_cte_named_fit_does_not_capture_the_training_sets_parameter():
-    """The whole of F1 in one comparison.
+    """The whole failure in one comparison.
 
     ``WITH fit AS (...)`` is an unremarkable name in a library whose two
     parameters are ``__FIT__`` and ``__THIS__``. Before the fix the frozen
@@ -100,7 +100,7 @@ def test_generated_names_stay_distinct_across_many_colliding_ctes():
     assert t.fit(D).transform(D).to_pydict() == run(t, D).to_pydict()
 
 
-# ---------------------------------------------- a CTE named __FIT__ (F2)
+# --------------------------------------------------- a CTE named __FIT__
 
 
 @pytest.mark.parametrize("name", ["__FIT__", "__THIS__", "__fit__", "__This__"])

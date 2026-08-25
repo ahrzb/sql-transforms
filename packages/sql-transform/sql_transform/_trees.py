@@ -57,8 +57,8 @@ def _f32_grid_threshold(t: np.ndarray) -> np.ndarray:
     float64, so it splits on `float32(x) <= t`. That is not a rounding artefact
     to tolerate: the threshold IS the float32 midpoint of two neighbouring
     training values, so the split was *learned* on that grid, and comparing the
-    raw double evaluates a different model (TASK-65 measured 157 of 3000 rows
-    differing on a 2-decimal price grid, by up to a whole leaf).
+    raw double evaluates a different model (measured: 157 of 3000 rows differ
+    on a 2-decimal price grid, by up to a whole leaf).
 
     Rounding to float32 is monotone, so the predicate is still a single
     cutpoint and moving that cutpoint reproduces it EXACTLY — no per-row cast,
@@ -171,9 +171,9 @@ def _pack(
             )
         # Features bind by POSITION, so names in the wrong order pass every
         # other check and score a plausible-looking wrong answer — the same
-        # failure shape BaggingRegressor and multi-output are refused for
-        # (TASK-78). `feature_names_in_` exists only when the estimator was
-        # fitted on something with column names, so ndarray-fitted models —
+        # failure shape BaggingRegressor and multi-output are refused for.
+        # `feature_names_in_` exists only when the estimator was fitted on
+        # something with column names, so ndarray-fitted models —
         # the common case — are unaffected. Since the schema always carries
         # names, this check is no longer opt-in the way `take_names` was.
         fitted_names = getattr(est, "feature_names_in_", None)
@@ -245,7 +245,7 @@ def _as_grid_value(f: Any, declared: str) -> float:
 
     A BIGINT feature must reach float32 in ONE rounding — that is what
     sklearn's `_validate_X_predict` does to an integer feature array, and
-    what the engine's `itof.f32` does (TASK-77). Going through `float(n)`
+    what the engine's `itof.f32` does. Going through `float(n)`
     first rounds twice and lands a whole float32 ULP away above `2**53`,
     which is a whole leaf.
 
@@ -278,8 +278,8 @@ class TreeBasedTransform(UDF):
     out, and an id that names no instance raises.
 
     Feature names come from the schema, and they are a fit-time cross-check
-    against the estimator's `feature_names_in_` (TASK-78) — arguments bind by
-    POSITION, so a call site may name its columns anything.
+    against the estimator's `feature_names_in_` — arguments bind by POSITION,
+    so a call site may name its columns anything.
 
     You hand over the FITTED ESTIMATOR. Turning it into the tables the engine
     walks happens here, at build, and no estimator object, pickle or live
@@ -340,7 +340,7 @@ class TreeBasedTransform(UDF):
         """The semantic contract, and the DuckDB-side binding: sklearn's own
         `predict`. The native kernel is gated against this bit-for-bit.
 
-        Rows with a NULL feature walk the PACKED tables instead (TASK-83):
+        Rows with a NULL feature walk the PACKED tables instead:
         `predict` REJECTS NaN on an estimator fitted without missing values
         (GradientBoosting, RandomForest), while the kernel scores such rows
         via `missing_left` — so sklearn has no answer there, and the packed

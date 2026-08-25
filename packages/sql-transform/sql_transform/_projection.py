@@ -201,8 +201,8 @@ class SQLProjection:
                         step, materialized[step.reads[0]]
                     )
                     materialized[step.name] = params_table
-                    # ONE UDF per step (TASK-63): whole-value calls and
-                    # field reads all serve through it. Every addressed
+                    # ONE UDF per step: whole-value calls and field
+                    # reads all serve through it. Every addressed
                     # field must exist in the fitted output — checked here,
                     # at fit, not construction: T is learned (DRAFT-24, the
                     # P7 carve-out).
@@ -390,7 +390,7 @@ class SQLProjection:
             # the bundle expressions, so a string feature stays a string.
             takes=takes,
             # T is a STRUCT: the learned names are addressable, at every
-            # width (TASK-63).
+            # width.
             returns=pa.struct([(n, pa.float64()) for n in shape]),
         )
         return pa.table(cols), udf
@@ -446,8 +446,8 @@ class SQLProjection:
         """The rewritten projection: params joins instead of aggregates.
 
         Final at construction: every transformer mention — a whole struct
-        output or a field read — serves through the one whole-value call
-        (TASK-63); fit rewrites nothing."""
+        output or a field read — serves through the one whole-value call;
+        fit rewrites nothing."""
         if self._serving_sql is not None:
             return self._serving_sql
         return self._marginalized.serving_sql

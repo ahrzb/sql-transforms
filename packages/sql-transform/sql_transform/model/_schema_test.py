@@ -1,4 +1,4 @@
-"""TASK-72: *freezing is faithful* covers the schema, not only the values.
+"""*Freezing is faithful* covers the schema, not only the values.
 
 ``freeze`` swapped the frozen node for ``SELECT * FROM __param_N``, and DuckDB
 names an unaliased select item after its own printed text — so the column came

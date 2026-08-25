@@ -1,4 +1,4 @@
-"""Single-evaluation field access (TASK-63, DRAFT-24 loop 4).
+"""Single-evaluation field access (DRAFT-24 loop 4).
 
 k addressed fields of one fitted transformer cost ONE ``transform()`` call
 per row on BOTH serving paths: the batch path (DuckDB — one struct-returning

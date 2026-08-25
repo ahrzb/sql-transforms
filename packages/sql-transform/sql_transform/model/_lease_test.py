@@ -1,4 +1,4 @@
-"""TASK-74 R1: a lease outlives the relation, and dies with the artifact.
+"""A lease outlives the relation, and dies with the artifact.
 
 ``relation()`` tied its lease to the returned relation via ``weakref.finalize``.
 A relation *derived* from it still needs those tables but holds no reference to
@@ -11,6 +11,9 @@ The lease now lives on the ``Fitted``, which is what the caller actually holds.
 That is bounded rather than free: every outstanding lazy relation costs one
 registration until the artifact is released, refit, or dropped. ``release()``
 is the deterministic way out, and the eager path never accumulates at all.
+
+The second half of the file covers the other regression from the same round:
+a leaf transform's own refusal must reach the caller under its own name.
 """
 
 import gc
@@ -132,14 +135,14 @@ def test_release_is_idempotent():
     t.fitted_.release()  # must not raise on the second pass
 
 
-# ------------------------------------- R2: a leaf's refusal keeps its name
+# ----------------------------------------- a leaf's refusal keeps its name
 
 
 def test_a_foreign_transforms_own_refusal_reaches_the_caller():
-    """TASK-71 wrapped a failing fit step in a named TransformError. It caught
-    every duckdb.Error, and DuckDB rewraps a Python exception raised inside a
-    UDF — so a leaf's own refusal was replaced by a message about correlated
-    subqueries, which is both wrong and unactionable.
+    """The wrapper that dresses a failing fit step as a named TransformError
+    caught every duckdb.Error, and DuckDB rewraps a Python exception raised
+    inside a UDF — so a leaf's own refusal was replaced by a message about
+    correlated subqueries, which is both wrong and unactionable.
 
     ``_Registry`` carries the first real error precisely so a refusal keeps
     its name; the wrapper has to consult it before dressing anything up.

@@ -3,8 +3,8 @@
 A fitted transform is ``S -> T`` between named structs: S's field types come
 from the bundle's real column types, T's field names are learned at fit
 (sklearn's ``get_feature_names_out``, else canonical ``f0..``). Field access
-is validated at fit and serves as a field read over the ONE whole-value call
-(TASK-63) — k addressed fields cost one evaluation per row on both engines;
+is validated at fit and serves as a field read over the ONE whole-value
+call — k addressed fields cost one evaluation per row on both engines;
 identity is name-keyed, so a refit that renumbers lanes breaks loudly
 instead of rewiring silently.
 """
@@ -172,7 +172,7 @@ def test_two_fields_share_one_fit_step():
         transformers={"ohe": _ohe()},
     ).fit(TRAIN)
     assert [s.name for s in p.plan] == ["__CF_LEVEL_0__", "__CF_PARAMS_0__"]
-    # ONE call, two field reads (TASK-63) — no per-lane UDFs. The identical
+    # ONE call, two field reads — no per-lane UDFs. The identical
     # mentions cost one evaluation per row (DuckDB CSE / confit's shared
     # ecall site; counted in _single_eval_test.py).
     assert "(__cf_tf0(__cf_p0.__cf_est, __cf_t.color)).color_red" in p.serving_sql

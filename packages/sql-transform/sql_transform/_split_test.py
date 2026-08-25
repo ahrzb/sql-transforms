@@ -131,7 +131,7 @@ REFUSALS = [
         "chained field access",
     ),
     # Nested transformer calls refuse at construction, never mid-fit
-    # (composition is TASK-65, parked; review round 2026-08-05).
+    # (composition is parked, DRAFT-24 loop 5; review round 2026-08-05).
     (
         "SELECT pca(struct_pack(v := sc(age).age)).pca0 AS z FROM __THIS__",
         "inside a transformer bundle",

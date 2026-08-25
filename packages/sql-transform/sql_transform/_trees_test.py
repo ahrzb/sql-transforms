@@ -495,8 +495,8 @@ def test_threshold_rewrite_reproduces_the_f32_comparison():
 
 
 def test_threshold_rewrite_flips_the_ticketed_witness():
-    """TASK-65's witness, spelled out: 0.15 is BELOW the stored threshold in
-    f64 and ABOVE it once narrowed, so the raw compare went left where
+    """The reported witness, spelled out: 0.15 is BELOW the stored threshold
+    in f64 and ABOVE it once narrowed, so the raw compare went left where
     sklearn went right. The rewrite has to move the split below 0.15."""
     t = 0.15000000223517418  # == mean(f32(0.1), f32(0.2))
     (tp,) = _f32_grid_threshold(np.array([t]))
@@ -590,14 +590,16 @@ def test_sparse_instance_ids_refuse():
         )
 
 
-# ------------------------- known divergences, 2026-08-08 adversarial sweep --
+# --------------------- sklearn divergences, 2026-08-08 adversarial sweep ----
 #
-# Both pinned xfail-strict: they fail today and cannot silently start passing.
-# Full context and the confit-side pins are in
-# packages/confit/tests/test_known_divergences.py; tickets are TASK-77/78.
+# Both were pinned xfail-strict while they stood; both are fixed, so the
+# tests below are ordinary regression gates rather than pins. The confit-side
+# divergence homes are packages/confit/tests/known_divergences/ (behaviour we
+# keep) and packages/confit/tests/test_open_divergences.py (behaviour pinned
+# to change).
 
 
-# FIXED 2026-08-08 (TASK-77). An integer `tree_predict` feature no longer
+# FIXED 2026-08-08. An integer `tree_predict` feature no longer
 # binds through the ordinary `promote_f64`: it converts with `itof.f32`, which
 # rounds i64 -> f32 -> f64 in ONE rounding, exactly as sklearn's
 # `_validate_X_predict` narrows an integer feature array. `promote_f64` gave
@@ -678,7 +680,7 @@ def test_call_and_kernel_agree_on_an_integer_feature_above_2_53(declared):
 
     `__call__` built its array with `float(f)`, so sklearn's own float32
     narrowing became a SECOND rounding, while the kernel narrows once
-    (`itof.f32`, TASK-77). Above 2**53 that is a whole float32 ULP and a whole
+    (`itof.f32`). Above 2**53 that is a whole float32 ULP and a whole
     leaf. Both declarations are checked because they are different right
     answers, not one: a declared BIGINT reaches sklearn as an int64 and
     narrows once, while a declared DOUBLE is cast by DuckDB first and narrows
@@ -713,8 +715,8 @@ def test_call_and_kernel_agree_on_an_integer_feature_above_2_53(declared):
 
 
 def test_small_integer_features_are_unchanged_by_the_f32_narrowing():
-    """AC #2: `float64(n)` is exact below 2**53, so the narrowing must be a
-    no-op there — the overwhelmingly common case must not move."""
+    """`float64(n)` is exact below 2**53, so the narrowing must be a no-op
+    there — the overwhelmingly common case must not move."""
     rng = np.random.RandomState(77)
     x = rng.randint(-100_000, 100_000, size=(300, 2)).astype(np.int64)
     y = (x[:, 0] * 0.5 - x[:, 1] * 0.25).astype(np.float64)
@@ -768,8 +770,8 @@ def test_integer_feature_literal_is_narrowed_too():
     assert got == want, f"engine {got} vs sklearn {want} (literal feature)"
 
 
-# ADJUDICATED and CONFIRMED 2026-08-08 (TASK-78). The sweep's verifiers had
-# split on it; reproduced by hand, and the divergence is not subtle — a forest
+# ADJUDICATED and CONFIRMED 2026-08-08. The sweep's verifiers had split on
+# it; reproduced by hand, and the divergence is not subtle — a forest
 # fitted on columns ['b', 'a'] and declared as ['a', 'b'] built without
 # complaint and scored -2.72 where sklearn said 0.84. FIXED: the schema's
 # field names must match the fitted order. Since the schema always carries
@@ -837,7 +839,7 @@ def test_schema_names_do_not_bind_the_call_site():
 
 
 def test_call_answers_null_features_the_kernel_scores():
-    """TASK-83 (fuzz seed 3112): `__call__` fed None -> NaN straight into
+    """Fuzz seed 3112: `__call__` fed None -> NaN straight into
     `est.predict`, which REJECTS NaN on an estimator fitted without missing
     values (GradientBoosting and RandomForest raise; DecisionTree >= 1.3
     happens to accept). The kernel scored the same row via missing_left. One
@@ -867,11 +869,11 @@ def test_call_answers_null_features_the_kernel_scores():
 
 
 def test_registered_duckdb_udf_answers_null_features_like_the_other_two():
-    """TASK-83 AC #2's third binding, executed rather than argued: the
-    DuckDB-REGISTERED function (register -> _arrow_scalar_batch -> _scalar ->
-    __call__) actually run by duckdb over rows with NULL features — the exact
-    leg fuzz seed 3112 crashed. Three-way `==`: registered UDF, kernel,
-    direct `__call__`."""
+    """The third binding, executed rather than argued: the DuckDB-REGISTERED
+    function (register -> _arrow_scalar_batch -> _scalar -> __call__)
+    actually run by duckdb over rows with NULL features — the exact leg fuzz
+    seed 3112 crashed. Three-way `==`: registered UDF, kernel, direct
+    `__call__`."""
     import duckdb
 
     rows = [

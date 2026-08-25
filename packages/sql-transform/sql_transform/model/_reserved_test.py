@@ -1,4 +1,4 @@
-"""TASK-75: names starting with ``__`` belong to the model.
+"""Names starting with ``__`` belong to the model.
 
 ``docs/properties.md`` P8 states the law and names ``__cf_``, the old
 implementation's prefix. The new model mints ``__param_0``, ``__param_fit``,
@@ -12,9 +12,9 @@ relation of that name silently beat the frozen parameter:
     t.fit(D).transform(D)   -> 2, 4, 6       the frozen k, no error
 
 The rule is the whole prefix rather than ``__param_`` alone: one line to state,
-nothing to keep in step as more names are synthesized, and it turns TASK-68's
-CTE refusal into a special case of a general law. ``__FIT__`` and ``__THIS__``
-remain legal — they are the two parameters.
+nothing to keep in step as more names are synthesized, and it turns the older
+refusal of a CTE named for a parameter into a special case of a general law.
+``__FIT__`` and ``__THIS__`` remain legal — they are the two parameters.
 """
 
 import duckdb
@@ -78,9 +78,9 @@ def test_the_two_parameters_are_still_legal():
 
 
 def test_a_cte_named_for_a_parameter_still_refuses_by_its_own_name():
-    """TASK-68's refusal is now a special case of this law, but it keeps its
-    own message: naming a CTE __FIT__ is a different mistake from stepping on
-    the reserved prefix."""
+    """That refusal is a special case of this law, but it keeps its own
+    message: naming a CTE __FIT__ is a different mistake from stepping on the
+    reserved prefix."""
     with pytest.raises(TransformError, match="two parameters"):
         SQLTransform("WITH __FIT__ AS (SELECT 1 AS x) SELECT * FROM __FIT__")
 
