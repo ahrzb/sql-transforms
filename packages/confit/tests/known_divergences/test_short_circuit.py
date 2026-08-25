@@ -20,24 +20,35 @@ from confit import DuckDBInferFn
 # correctly skipped. So a guard that excluded every row still evaluated the
 # thing it was written to guard, and its trap killed the whole request.
 #
-# FIXED 2026-08-08. The branchless form is kept — it is what makes
-# three-valued NULL semantics cheap — and is now used only when the RIGHT
-# operand cannot trap, which is the overwhelmingly common case (`a > 1 AND
-# b < 2` is still entirely branchless). When it can trap, AND/OR lowers to a
-# branch that evaluates the right operand only on rows the left one does not
-# already decide: a definite FALSE decides an AND, a definite TRUE decides an
-# OR, and a NULL decides nothing — so the right operand still runs there, and
-# still traps there, exactly as DuckDB does.
+# FIXED 2026-08-08, by branching inside `FB::kleene` when the right operand
+# could trap. SUPERSEDED 2026-08-19: laziness is not a property of the
+# operator and not a function of what can trap — it is a property of the
+# CONTEXT the value is consumed in. That model, and which spellings it makes
+# lazy, is the measured matrix at the bottom of this file; it re-measures
+# against the live oracle, so it is the contract and this prose is only its
+# reading.
 #
-# "Can this trap" is `plan::may_trap`, the same predicate the JOIN ON residual
-# rule uses. One definition, so the two cannot drift apart.
+# So `FB::kleene` is branchless again, with nothing gating it: it is the
+# VALUE-context route, where the consumer wants the three-valued RESULT, and
+# it evaluates both operands on every row. The laziness lives in
+# `FB::emit_truth`, the SELECTION-context route entered at the WHERE root and
+# at every CASE condition, where the only question asked of the value is "is
+# it TRUE" — so a left operand can settle that without the right being
+# evaluated at all. It branches UNCONDITIONALLY; nothing asks whether the
+# skipped operand could have trapped.
 #
-# The branch carries a flag param only when the result is NULLABLE, exactly as
-# `FB::case` does. That is not bookkeeping: the null-lane discipline says a
-# non-nullable SExpr lowers to a bare payload with no flag anywhere, and
-# `emit_stores` asserts it. A first cut of this fix always carried one, which
-# passed the entire suite in RELEASE — `debug_assert!` compiles out — and
-# panicked on `BETWEEN` in debug. Run the suite against a debug build too.
+# `plan::may_trap` is no part of this — lowering never calls it. Its one
+# consumer is the JOIN ON residual rule (`bind_residual`), where trap-freeness
+# answers a different question: DuckDB scan-pushes a one-sided residual, so a
+# trap there would fire at a different time than ours.
+#
+# The 2026-08-08 branch carried a flag param only when the result was
+# NULLABLE, exactly as `FB::case` still does. That was not bookkeeping: the
+# null-lane discipline says a non-nullable SExpr lowers to a bare payload with
+# no flag anywhere, and the out-column stores `debug_assert!` it. A first cut
+# of that fix always carried one, which passed the entire suite in RELEASE —
+# `debug_assert!` compiles out — and panicked on `BETWEEN` in debug. Run the
+# suite against a debug build too.
 
 
 @pytest.mark.parametrize(
@@ -70,17 +81,20 @@ _3VL_ROWS = [(k, x) for k in (None, 0, 1) for x in (-1.5, 1.5)]
 @pytest.mark.parametrize(
     "right",
     [
-        "CAST(x AS BIGINT) > 0",  # may trap -> the new branching path
-        "x > 0",  # cannot trap -> the original branchless path
+        "CAST(x AS BIGINT) > 0",  # a right operand that CAN trap
+        "x > 0",  # one that cannot
     ],
 )
 def test_short_circuit_preserves_three_valued_logic(right):
     """The branchless form was chosen because Kleene NULL semantics fall out
-    of flag algebra for free, and the branch must not regress them.
+    of flag algebra for free, and nothing since may regress them.
 
     The full truth table — left in {NULL, FALSE, TRUE} against a right that
-    is FALSE and TRUE — evaluated both ways and checked against DuckDB. The
-    two parametrisations differ ONLY in which lowering path they take.
+    is FALSE and TRUE — checked against DuckDB. Both spellings are projected,
+    so both lower branchless; the pair dates from the 2026-08-08 fix, where
+    trap-freeness picked the path, and is kept because the truth table has to
+    come out the same for a right operand that can trap as for one that
+    cannot.
     """
     schema = pa.schema(
         [pa.field("k", pa.int64()), pa.field("x", pa.float64(), nullable=False)]
