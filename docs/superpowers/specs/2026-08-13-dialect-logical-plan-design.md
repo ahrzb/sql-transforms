@@ -38,10 +38,15 @@ that deserves its own phase, not a footnote in the first one.
 
 ### Non-goals
 
-* **Not a general transpiler.** The admitted surface is what the frontends
-  bind — feature-transform SQL (expressions, CASE, string ops, joins,
-  window aggregates, projection chains), grown corpus-first. DDL, DML,
-  arbitrary analytic SQL: out.
+* **Printers are not general transpilers.** *(Amended 2026-08-13, with
+  AmirHossein: representation IS general.)* The plan's goal is universal
+  DuckDB **query** coverage — almost any query gets a plan, D2's doctrine
+  ("representable is unconditional") applied to constructs, grown
+  corpus-first through the L2 gate. What stays bought per consumer, with
+  named refusals, is *printing* (per dialect) and *lowering* (confit —
+  RFC-1). DDL and DML stay out. The frontend remains sqlparser + token
+  pre-rewrites; DuckDB's own AST is plugin-extensible and not a stable
+  contract.
 * **Not an optimizer.** The plan preserves author structure (projection
   chains stay chains; nothing is fused or reordered). Printers print what
   is there. Canonicalization is spelling-level, never structural — the
@@ -93,7 +98,8 @@ for making them checkable.
 L1  round-trip        parse_d(print_d(p)) == p            for every dialect d with a frontend
 L2  invisibility      run_duck(sql) == run_duck(print_duck(parse_duck(sql)))     bit-exact
 L3  cross-dialect     run_duck(print_duck(p), D) ≍ run_e(print_e(p), D)          per tier
-L4  determinism       the meaning of p is a function of its input multisets
+L4  determinism       the meaning of a plan the verifier marks deterministic
+                      is a function of its input multisets
 ```
 
 * **L2** is what lets the plan sit inside the existing gates without
@@ -105,9 +111,13 @@ L4  determinism       the meaning of p is a function of its input multisets
   the provisional tolerance; and a plan containing anything the target
   printer hasn't bought **fails at print time, by name** — never at the
   gate, never silently.
-* **L4** is enforced by the verifier, not by review: `array_agg` without an
-  inner `ORDER BY`, `first_value` over a non-total order, `LIMIT` without a
-  total order — rejected structurally.
+* **L4** is a verifier *verdict*, not a frontend refusal *(amended
+  2026-08-13: represent + mark)*: the verifier classifies every plan
+  `deterministic | nondeterministic(named cause)` — `array_agg` without an
+  inner `ORDER BY`, `LIMIT` without a total order, `random()`, `SAMPLE`.
+  L1/L2 hold for every admitted plan either way; the cross-dialect gate
+  (L3) and confit's lowering refuse nondeterministic plans by their named
+  cause.
 
 ## The plan
 
