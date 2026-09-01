@@ -48,12 +48,17 @@ def _norm(spec: str, v: Any) -> Any:
     return v
 
 
-def duck_check(
+def _legs(
     sql: str,
     row_schema: dict[str, str],
     row_rows: list[dict[str, Any]],
-    statics: dict[str, pa.Table] | None = None,
-) -> None:
+    statics: dict[str, pa.Table] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(engine rows, oracle rows) for the same SQL over the same data.
+
+    Both differential checks below run this; they differ only in what they
+    then call the two sides being equal.
+    """
     statics = statics or {}
     schema = _row_schema(row_schema)
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables=statics)
@@ -68,8 +73,16 @@ def duck_check(
     for name, table in statics.items():
         o.load(name, table)
     o.load("__THIS__", static(row_schema, row_rows))
-    want = compare.rows(o.answer(sql))
+    return got, compare.rows(o.answer(sql))
 
+
+def duck_check(
+    sql: str,
+    row_schema: dict[str, str],
+    row_rows: list[dict[str, Any]],
+    statics: dict[str, pa.Table] | None = None,
+) -> None:
+    got, want = _legs(sql, row_schema, row_rows, statics)
     # Row order is not part of the contract (a join may reorder).
     compare.assert_rows(got, want, ctx=sql)
 
@@ -919,31 +932,8 @@ def duck_check_ulp(sql, row_schema, row_rows, max_ulp=1):
     off on e.g. cbrt(27)) — CI-discovered 2026-07-26. The oracle itself is
     platform-inconsistent here, so repr-exact parity is unpinnable.
     """
-    import math
-    import struct
-
-    schema = _row_schema(row_schema)
-    fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
-    inputs = [{k: _norm(row_schema[k], r.get(k)) for k in row_schema} for r in row_rows]
-    got = fn.infer_rows(inputs)
-
-    o = Oracle()
-    o.load("__THIS__", static(row_schema, row_rows))
-    want = o.answer(sql).to_pylist()
-
-    def close(a, b):
-        if isinstance(a, float) and isinstance(b, float):
-            if math.isnan(a) and math.isnan(b):
-                return True
-            ia = struct.unpack("<q", struct.pack("<d", a))[0]
-            ib = struct.unpack("<q", struct.pack("<d", b))[0]
-            return abs(ia - ib) <= max_ulp
-        return repr(a) == repr(b)
-
-    assert len(got) == len(want)
-    for g, w in zip(got, want, strict=True):
-        for k in g:
-            assert close(g[k], w[k]), f"{k}: {g[k]!r} vs {w[k]!r} (> {max_ulp} ulp)"
+    got, want = _legs(sql, row_schema, row_rows, None)
+    compare.assert_rows_close(got, want, max_ulp=max_ulp, ctx=sql)
 
 
 def test_sqrt_cbrt_bigint():
