@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 
 T = pa.schema([pa.field("pid", pa.int64())])
@@ -26,14 +26,13 @@ def _many_check(sql: str):
         static_tables={"d": DIM},
         shape="many",
     )
-    got = [tuple(r.values()) for r in fn.infer_rows(ROWS)]
+    got = fn.infer_rows(ROWS)
 
     o = Oracle()
     o.table("__THIS__", "pid BIGINT", [(r["pid"],) for r in ROWS])
     o.load("d", DIM)
-    want = o.execute(sql).fetchall()
-    key = lambda t: tuple((x is None, x) for x in t)  # noqa: E731
-    assert sorted(got, key=key) == sorted(want, key=key), f"{sql}\n{got}\n{want}"
+    want = compare.rows(o.answer(sql))
+    compare.assert_rows(got, want, ctx=sql)
 
 
 def test_dup_key_fanout_vs_oracle():
@@ -98,7 +97,7 @@ def test_value_lanes_from_both_column_sources_vs_oracle():
             static_tables=statics,
             shape="many",
         )
-        got = [tuple(r.values()) for r in fn.infer_rows(rows)]
+        got = fn.infer_rows(rows)
         with Oracle() as o:
             o.table(
                 "__THIS__",
@@ -107,9 +106,8 @@ def test_value_lanes_from_both_column_sources_vs_oracle():
             )
             for name, tbl in statics.items():
                 o.load(name, tbl)
-            want = o.execute(sql).fetchall()
-        key = lambda t: tuple((x is None, x) for x in t)  # noqa: E731
-        assert sorted(got, key=key) == sorted(want, key=key), f"{sql}\n{got}\n{want}"
+            want = compare.rows(o.answer(sql))
+        compare.assert_rows(got, want, ctx=sql)
 
     # MultiMap: the value lanes come from the static catalog's columns.
     check("SELECT pid, d.v AS g FROM __THIS__ JOIN d ON pid = d.id", {"d": dim})

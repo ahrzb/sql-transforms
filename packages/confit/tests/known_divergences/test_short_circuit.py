@@ -10,7 +10,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pytest
 from _helpers import _node, _tree_udf
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 
 # ------------------------------------------- WHERE does not short-circuit --
@@ -243,9 +243,9 @@ def test_selection_context_reaches_the_many_join_filter(join, oracle):
         [(r["c0"], r["b"], r["s"]) for r in rows],
     )
     oracle.table("s0", "k BIGINT, v BIGINT", [(1, 10), (1, 20)])
-    want = oracle.execute(sql).fetchall()
+    want = compare.rows(oracle.answer(sql))
     # order under 'many' is the documented multiset (join-order accident)
     fn = DuckDBInferFn(
         sql, row_tables={"__THIS__": row}, static_tables={"s0": static}, shape="many"
     )
-    assert sorted(tuple(x.values()) for x in fn.infer_rows(rows)) == sorted(want)
+    compare.assert_rows(fn.infer_rows(rows), want, ctx=sql)

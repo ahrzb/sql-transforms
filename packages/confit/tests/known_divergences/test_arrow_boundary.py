@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 
 # ------------------------------------------------- the infer_arrow path --
 #
@@ -66,8 +66,8 @@ def test_infer_arrow_string_type_matches_duckdb(sql, oracle):
     got = fn.infer_arrow(pa.table({"s": ["a", "bb", "ccc"]}))
     oracle.table("__THIS__", "s VARCHAR", [("a",), ("bb",), ("ccc",)])
     want = oracle.answer(sql)
-    assert got.schema == want.schema
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
     # The point of the schema agreeing: the two stack.
     assert pa.concat_tables([want, got]).num_rows == 6
 

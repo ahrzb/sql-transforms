@@ -23,6 +23,7 @@ from collections.abc import Callable
 
 import duckdb
 import pyarrow as pa
+from confit.compare import multiset, sequence
 
 NAMES = ["titanic", "house_prices", "fraud_txn", "store_sales", "feature_bundle"]
 
@@ -131,15 +132,12 @@ def verify_parity(mod, n: int = 300) -> list[str]:
     # No more output='dict' vs typed-mode differential: dict-out is the only
     # mode the arrow schema surface has (output= was deleted).
 
-    def norm(row: dict) -> tuple:
-        return tuple((k, repr(v)) for k, v in row.items())
-
     # DuckDB reorders rows after hash joins (the specializer preserves input
     # order — a contract, not an accident): multiset equality, like the
     # corpus replay. The handcrafted twin is positional.
-    if sorted(map(norm, got_spec)) != sorted(map(norm, got_duck)):
-        spec_only = sorted(map(norm, got_spec))
-        duck_only = sorted(map(norm, got_duck))
+    if multiset(got_spec) != multiset(got_duck):
+        spec_only = multiset(got_spec)
+        duck_only = multiset(got_duck)
         first = next(
             (
                 i
@@ -158,8 +156,10 @@ def verify_parity(mod, n: int = 300) -> list[str]:
             f"{mod.NAME} vs handcrafted: {len(got_spec)} vs {len(got_hand)} rows"
         )
     else:
+        spec_seq = sequence(got_spec)
+        hand_seq = sequence(got_hand)
         for i, (a, b) in enumerate(zip(got_spec, got_hand, strict=True)):
-            if norm(a) != norm(b):
+            if spec_seq[i] != hand_seq[i]:
                 problems.append(f"{mod.NAME} vs handcrafted row {i}: {a!r} != {b!r}")
                 if len(problems) > 5:
                     return problems

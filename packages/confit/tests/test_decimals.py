@@ -474,12 +474,8 @@ def test_a_many_shape_join_serves_a_decimal_value_column():
         static_tables={"p": static},
         shape="many",
     )
-    got = [r["o"] for r in fn.infer_rows(rows)]
-    want = [
-        r["o"]
-        for r in _oracle(
-            _JOIN.format("d AS o"), _DEC_SCHEMA, rows, {"p": static}
-        ).to_pylist()
-    ]
-    key = lambda v: (v is None, repr(v))  # noqa: E731
-    assert sorted(got, key=key) == sorted(want, key=key), f"{got} != {want}"
+    got = fn.infer_rows(rows)
+    want = compare.rows(
+        _oracle(_JOIN.format("d AS o"), _DEC_SCHEMA, rows, {"p": static})
+    )
+    compare.assert_rows(got, want, ctx=_JOIN.format("d AS o"))

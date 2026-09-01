@@ -13,7 +13,7 @@ import textwrap
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 
 from benchmarks import serving_scenarios as sc
@@ -142,8 +142,8 @@ def test_infer_arrow_integer_width_matches_duckdb(oracle):
     got = fn.infer_arrow(pa.table({"k": [0, 2]}))
     oracle.table("__THIS__", "k BIGINT", [(0,), (2,)])
     want = oracle.answer(sql)
-    assert got.to_pylist() == want.to_pylist()  # values already agree
-    assert got.schema == want.schema
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
 
 
 def test_output_schema_matches_duckdb_for_every_scenario():
@@ -382,8 +382,8 @@ def _vs_duckdb(fn, sql, table):
     """infer_arrow == optimizer-off DuckDB, values AND schema."""
     got = fn.infer_arrow(table)
     want = _duck(sql, table)
-    assert got.to_pylist() == want.to_pylist()
-    assert got.schema == want.schema
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
     return got
 
 
