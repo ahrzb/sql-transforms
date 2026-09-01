@@ -99,15 +99,15 @@ def test_value_lanes_from_both_column_sources_vs_oracle():
             shape="many",
         )
         got = [tuple(r.values()) for r in fn.infer_rows(rows)]
-        o = Oracle()
-        o.table(
-            "__THIS__",
-            "pid BIGINT NOT NULL, tag VARCHAR",
-            [(r["pid"], r["tag"]) for r in rows],
-        )
-        for name, tbl in statics.items():
-            o.load(name, tbl)
-        want = o.execute(sql).fetchall()
+        with Oracle() as o:
+            o.table(
+                "__THIS__",
+                "pid BIGINT NOT NULL, tag VARCHAR",
+                [(r["pid"], r["tag"]) for r in rows],
+            )
+            for name, tbl in statics.items():
+                o.load(name, tbl)
+            want = o.execute(sql).fetchall()
         key = lambda t: tuple((x is None, x) for x in t)  # noqa: E731
         assert sorted(got, key=key) == sorted(want, key=key), f"{sql}\n{got}\n{want}"
 

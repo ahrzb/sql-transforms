@@ -931,9 +931,9 @@ def test_two_plain_row_columns_of_the_same_name_refuse_by_name():
 # text is quoted from it verbatim.
 def test_a_not_a_struct_refusal_enumerates_what_duckdb_enumerates():
     sql = "SELECT z.bad AS o FROM __THIS__ JOIN s ON k = s.id"
-    with pytest.raises(Oracle.Error) as oracle:
+    with pytest.raises(Oracle.Error) as caught:
         _duck132(sql, _STATIC127)
-    assert "not a struct, union, map, or json" in str(oracle.value)
+    assert "not a struct, union, map, or json" in str(caught.value)
     with pytest.raises(ValueError, match="not a struct, union, map, or json"):
         DuckDBInferFn(
             sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC127}
@@ -949,9 +949,9 @@ def test_a_not_a_struct_refusal_enumerates_what_duckdb_enumerates():
 )
 def test_an_exclude_miss_names_the_scope_it_searched(star, scope):
     sql = f"SELECT {star} EXCLUDE (nope) FROM __THIS__ JOIN s ON k = s.id"
-    with pytest.raises(Oracle.Error) as oracle:
+    with pytest.raises(Oracle.Error) as caught:
         _duck132(sql, _STATIC127)
-    assert "in EXCLUDE list not found in" in str(oracle.value)
+    assert "in EXCLUDE list not found in" in str(caught.value)
     with pytest.raises(ValueError, match=f"in EXCLUDE list not found in {scope}"):
         DuckDBInferFn(
             sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC127}

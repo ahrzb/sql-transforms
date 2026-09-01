@@ -652,7 +652,8 @@ _D_PAIR = pa.table(
 
 
 def _double_probe_duck(sql, static, ddl="k DOUBLE", probe=((float(_P53),),)):
-    """The live oracle for a DOUBLE-probe join (optimizer-off per conftest)."""
+    """The live oracle for a DOUBLE-probe join (optimizer-off from the
+    `Oracle` constructor)."""
     o = Oracle()
     o.table("__THIS__", ddl, list(probe))
     o.load("s", static)

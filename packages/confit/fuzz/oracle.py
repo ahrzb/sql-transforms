@@ -45,10 +45,12 @@ user's DuckDB returns — optimizer on. `DIVERGE_OPT` is exactly the gap
 between the two, which is why it stays a finding.
 
 The connection is `confit.oracle.Oracle`, the same one the tests compare
-against, so the baseline cannot drift from theirs. What is NOT shared is the
-UDF `create_function` recipe: it mirrors tests/test_udfs.py `udf_check` and
-stays duplicated on purpose, because writing it a second time from the
-documented protocol alone is itself the check that the protocol doc suffices.
+against, so the baseline cannot drift from theirs -- and it comes from the
+PACKAGE, which is what keeps the standing rule intact: fuzz/ must not import
+from tests/. What is NOT shared is the UDF `create_function` recipe: it
+mirrors tests/test_udfs.py `udf_check` and stays duplicated on purpose, under
+that same rule and because writing it a second time from the documented
+protocol alone is itself the check that the protocol doc suffices.
 """
 
 from __future__ import annotations
@@ -390,8 +392,9 @@ def _exec(con, sql):
     that separates "DuckDB refuses this query" from "DuckDB traps on this
     data". On success the two error slots are None.
 
-    Deliberately wider than the oracle's own `try_answer`, which names a
-    DuckDB refusal and lets everything else through: a campaign classifies
+    Deliberately wider than the oracle's own `try_answer`, which names
+    `duckdb.Error` and `UnicodeDecodeError` and lets everything else
+    through: a campaign classifies
     whatever comes back rather than dying on it, so anything unnamed is
     phased as a run-time trap and reported with its class.
     """

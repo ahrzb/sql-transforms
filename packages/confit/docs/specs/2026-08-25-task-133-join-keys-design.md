@@ -5,7 +5,8 @@ packages/confit/docs/specs/2026-08-25-task-127-remainders-design.md. Direction
 decided by AmirHossein 2026-08-25: SUPPORT these joins, do not refuse them.
 
 Everything below was measured on 2026-08-25 against DuckDB 1.5.5 with
-`PRAGMA disable_optimizer` (the repo oracle, conftest.py:62-71), and against
+`PRAGMA disable_optimizer` (the repo oracle,
+packages/confit/confit/oracle.py), and against
 confit built from this worktree (`uv run maturin develop --release`). Every
 DuckDB cell in the matrix was additionally run as `PREPARE p AS <sql>` on its
 own connection, as a plain execute, and as a zero-row leg (`... WHERE 1=0`);
@@ -623,8 +624,8 @@ Live-oracle pins in `packages/confit/tests/test_arrow_schema_api.py`,
 mirroring the existing `_duck132` helper: register the arrow table, `CREATE
 TABLE s AS SELECT * FROM sa`, compare `to_pylist()` AND the column-name list.
 Every test asserts the ORACLE's answer first (so an oracle move is a loud
-failure, not a silent rebaseline), then ours against it. The conftest fixture
-already applies `PRAGMA disable_optimizer` to every connection.
+failure, not a silent rebaseline), then ours against it. `confit.oracle.Oracle`
+applies `PRAGMA disable_optimizer` to every connection it opens.
 
 The three-way split is structural, not incidental: every value test is
 parametrized over `NATURAL`, `USING (id, w)`, `USING (w)`, and
