@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-from _helpers import _node, _tree_udf, duck
+from _helpers import _node, _tree_udf
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 # ------------------------------------------- WHERE does not short-circuit --
 #
@@ -63,7 +64,7 @@ from confit import DuckDBInferFn
     ],
 )
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
-def test_where_and_or_short_circuits_like_duckdb(sql, backend, monkeypatch):
+def test_where_and_or_short_circuits_like_duckdb(sql, backend, monkeypatch, oracle):
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
@@ -72,7 +73,8 @@ def test_where_and_or_short_circuits_like_duckdb(sql, backend, monkeypatch):
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
     assert fn.backend == backend
     got = [tuple(r.values()) for r in fn.infer_rows([{"k": 1}, {"k": 2}])]
-    assert got == duck(sql, "CREATE TABLE __THIS__ (k BIGINT)", [(1,), (2,)])
+    oracle.table("__THIS__", "k BIGINT", [(1,), (2,)])
+    assert got == oracle.execute(sql).fetchall()
 
 
 _3VL_ROWS = [(k, x) for k in (None, 0, 1) for x in (-1.5, 1.5)]
@@ -85,7 +87,7 @@ _3VL_ROWS = [(k, x) for k in (None, 0, 1) for x in (-1.5, 1.5)]
         "x > 0",  # one that cannot
     ],
 )
-def test_short_circuit_preserves_three_valued_logic(right):
+def test_short_circuit_preserves_three_valued_logic(right, oracle):
     """The branchless form was chosen because Kleene NULL semantics fall out
     of flag algebra for free, and nothing since may regress them.
 
@@ -105,7 +107,8 @@ def test_short_circuit_preserves_three_valued_logic(right):
         tuple(r.values())
         for r in fn.infer_rows([{"k": k, "x": x} for k, x in _3VL_ROWS])
     ]
-    want = duck(sql, "CREATE TABLE __THIS__ (k BIGINT, x DOUBLE)", _3VL_ROWS)
+    oracle.table("__THIS__", "k BIGINT, x DOUBLE", _3VL_ROWS)
+    want = oracle.execute(sql).fetchall()
     assert got == want
     # The table really does exercise all three left-hand values.
     assert {r[1] for r in got} == {None, True, False}
@@ -192,16 +195,13 @@ _T124 = "CAST(s AS DOUBLE) > 1"
         f"SELECT ((b AND {_T124}) OR TRUE) AS o FROM __THIS__",
     ],
 )
-def test_selection_context_matches_the_oracle(sql):
-    import duckdb as _duck
-
-    con = _duck.connect()
-    con.execute("CREATE TABLE __THIS__ (b BOOLEAN, s VARCHAR)")
-    for r in _SC124_ROWS:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["b"], r["s"]])
+def test_selection_context_matches_the_oracle(sql, oracle):
+    oracle.table(
+        "__THIS__", "b BOOLEAN, s VARCHAR", [(r["b"], r["s"]) for r in _SC124_ROWS]
+    )
     try:
-        want = ("S", con.execute(sql).fetchall())
-    except _duck.Error:
+        want = ("S", oracle.execute(sql).fetchall())
+    except Oracle.Error:
         want = ("T", None)
 
     shape = "filter" if " WHERE " in sql else None
@@ -224,7 +224,7 @@ def test_selection_context_matches_the_oracle(sql):
 
 
 @pytest.mark.parametrize("join", ["JOIN", "LEFT JOIN"])
-def test_selection_context_reaches_the_many_join_filter(join):
+def test_selection_context_reaches_the_many_join_filter(join, oracle):
     row = pa.schema(
         [
             pa.field("c0", pa.int64()),
@@ -237,15 +237,13 @@ def test_selection_context_reaches_the_many_join_filter(join):
     )
     rows = [{"c0": 1, "b": None, "s": "abc"}, {"c0": 1, "b": True, "s": "1.5"}]
     sql = f"SELECT s0.v AS o FROM __THIS__ {join} s0 ON c0 = s0.k WHERE (b AND {_T124})"
-    import duckdb as _duck
-
-    con = _duck.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, b BOOLEAN, s VARCHAR)")
-    for r in rows:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?, ?)", [r["c0"], r["b"], r["s"]])
-    con.execute("CREATE TABLE s0 (k BIGINT, v BIGINT)")
-    con.execute("INSERT INTO s0 VALUES (1, 10), (1, 20)")
-    want = con.execute(sql).fetchall()
+    oracle.table(
+        "__THIS__",
+        "c0 BIGINT, b BOOLEAN, s VARCHAR",
+        [(r["c0"], r["b"], r["s"]) for r in rows],
+    )
+    oracle.table("s0", "k BIGINT, v BIGINT", [(1, 10), (1, 20)])
+    want = oracle.execute(sql).fetchall()
     # order under 'many' is the documented multiset (join-order accident)
     fn = DuckDBInferFn(
         sql, row_tables={"__THIS__": row}, static_tables={"s0": static}, shape="many"

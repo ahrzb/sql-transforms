@@ -10,20 +10,16 @@ refusal rows by name.
 
 from __future__ import annotations
 
-import duckdb
 import pytest
 from confit import _engine
+from confit.oracle import Oracle
 
 
 @pytest.fixture
 def catalog():
-    con = duckdb.connect()
-    con.execute("CREATE TABLE t(a INTEGER, b VARCHAR, c DOUBLE, big BIGINT)")
-    cols = [
-        (name, dtype, nullable == "YES")
-        for name, dtype, nullable, *_ in con.execute('DESCRIBE "t"').fetchall()
-    ]
-    return [("t", cols)]
+    with Oracle() as o:
+        o.table("t", "a INTEGER, b VARCHAR, c DOUBLE, big BIGINT")
+        return o.catalog()
 
 
 def to_bq(sql: str, catalog) -> str:

@@ -18,10 +18,10 @@ from __future__ import annotations
 import decimal
 from typing import Any
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 _DEC_SCHEMA = pa.schema([pa.field("gid", pa.string(), nullable=False)])
 _GID_ROWS = [{"gid": "a"}]
@@ -53,13 +53,14 @@ def _dec62(vals: list[str | None], gs: list[str] | None = None) -> pa.Table:
 def _fit_params() -> pa.Table:
     """A REAL fit-time aggregate, so the decimal128(38,0) comes from DuckDB
     rather than a hand-built pa.array. sum(BIGINT) here is 2^63+1."""
-    con = duckdb.connect()
-    con.execute("CREATE TABLE t(g VARCHAR, n BIGINT)")
-    con.execute("INSERT INTO t VALUES ('a', 9223372036854775807), ('a', 2), ('b', 5)")
-    return con.execute(
+    o = Oracle()
+    o.table(
+        "t", "g VARCHAR, n BIGINT", [("a", 9223372036854775807), ("a", 2), ("b", 5)]
+    )
+    return o.answer(
         "SELECT g, sum(n) AS sk, count(*) AS c, min(n) AS mn"
         " FROM t GROUP BY g ORDER BY g"
-    ).to_arrow_table()
+    )
 
 
 def _oracle(
@@ -68,14 +69,11 @@ def _oracle(
     rows: list[dict[str, Any]],
     statics: dict[str, pa.Table],
 ) -> pa.Table:
-    con = duckdb.connect()
-    con.execute("PRAGMA disable_optimizer")
+    o = Oracle()
     for name, table in statics.items():
-        con.register(f"__arrow_{name}", table)
-        con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')
-    con.register("__arrow_this", pa.Table.from_pylist(rows, schema=row_schema))
-    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
-    return con.execute(sql).to_arrow_table()
+        o.load(name, table)
+    o.load("__THIS__", pa.Table.from_pylist(rows, schema=row_schema))
+    return o.answer(sql)
 
 
 def _check(

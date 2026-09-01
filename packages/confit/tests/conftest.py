@@ -55,6 +55,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 from _native_guard import ensure_native_built
+from confit.oracle import Oracle
 
 ensure_native_built()
 
@@ -69,3 +70,10 @@ def _duckdb_is_the_oracle(monkeypatch):
         return con
 
     monkeypatch.setattr(duckdb, "connect", connect)
+
+
+@pytest.fixture
+def oracle():
+    """The oracle, one per test, closed at teardown."""
+    with Oracle() as o:
+        yield o

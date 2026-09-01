@@ -9,10 +9,10 @@ INTEGER). Every expectation is the live oracle.
 
 from __future__ import annotations
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 IN = pa.schema(
     [
@@ -36,11 +36,9 @@ BATTERY = [
 
 
 def _duck(sql: str) -> pa.Table:
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    for r in ROWS:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["k"], r["s"]])
-    return con.execute(sql).to_arrow_table()
+    o = Oracle()
+    o.table("__THIS__", "k BIGINT, s VARCHAR", [(r["k"], r["s"]) for r in ROWS])
+    return o.answer(sql)
 
 
 def _ours(sql: str) -> pa.Table:

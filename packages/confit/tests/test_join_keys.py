@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import datetime
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 _S1 = pa.struct([("mean", pa.float64())])
 _S2 = pa.struct([("inner", pa.struct([("val", pa.float64())]))])
@@ -53,12 +53,10 @@ def _row_table(schema, rows):
 
 def oracle(sql, row_table, static):
     """DuckDB's own answer, over exactly the arrow data we hand the engine."""
-    con = duckdb.connect()
-    con.register("ra", row_table)
-    con.register("sa", static)
-    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM ra")
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    res = con.execute(sql)
+    o = Oracle()
+    o.load("__THIS__", row_table)
+    o.load("s", static)
+    res = o.execute(sql)
     names = [d[0] for d in res.description]
     return [dict(zip(names, r, strict=True)) for r in res.fetchall()]
 

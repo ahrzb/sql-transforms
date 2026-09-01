@@ -1,7 +1,7 @@
 """Shared probes for the divergence record.
 
 `probe` runs a snippet in a FRESH interpreter - several of these findings only
-reproduce on a clean process. `duck` is the oracle leg.
+reproduce on a clean process.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ import subprocess
 import sys
 import textwrap
 
-import duckdb
 import pyarrow as pa
 from confit import DuckDBInferFn
 
@@ -32,21 +31,6 @@ def probe(body: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=180,
     )
-
-
-def duck(sql: str, ddl: str, rows: list[tuple]) -> list[tuple]:
-    """The oracle leg: `sql` against a fresh DuckDB holding `rows`.
-
-    `ddl` must create the table `__THIS__` — that name is what the INSERT
-    below writes to — and each tuple in `rows` is one of its rows, in
-    declared column order. The connection comes from the conftest fixture,
-    so the optimizer is off.
-    """
-    con = duckdb.connect()
-    con.execute(ddl)
-    for r in rows:
-        con.execute(f"INSERT INTO __THIS__ VALUES ({', '.join('?' * len(r))})", list(r))
-    return con.execute(sql).fetchall()
 
 
 # ---- the tree-UDF fixture -------------------------------------------

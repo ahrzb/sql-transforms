@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 import struct
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
@@ -202,7 +201,7 @@ def test_fdiv_fmod_double_edges():
     )
 
 
-def test_computed_nan_bits_match_oracle():
+def test_computed_nan_bits_match_oracle(oracle):
     # repr collapses every NaN to 'nan', so pin the BITS manually. fmod's
     # NaN comes from hardware arithmetic (0*inf under SSE) and is fff8…
     # on every x86 platform. The %-by-zero NaN comes from LIBM fmod and
@@ -227,10 +226,8 @@ def test_computed_nan_bits_match_oracle():
     (got,) = fn.infer_rows([{"x": 7.5, "y": 0.0}])
     assert bits(got["f"]) == "fff8000000000000"
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (x DOUBLE, y DOUBLE)")
-    con.execute("INSERT INTO __THIS__ VALUES (7.5, 0.0)")
-    f, m = con.execute("SELECT fmod(x, y), x % y FROM __THIS__").fetchone()
+    oracle.table("__THIS__", "x DOUBLE, y DOUBLE", [(7.5, 0.0)])
+    f, m = oracle.execute("SELECT fmod(x, y), x % y FROM __THIS__").fetchone()
     assert bits(f) == "fff8000000000000"
     assert bits(got["m"]) == bits(m), f"{bits(got['m'])} vs oracle {bits(m)}"
 

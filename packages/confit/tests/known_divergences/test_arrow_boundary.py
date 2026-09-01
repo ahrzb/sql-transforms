@@ -7,7 +7,6 @@ belongs here (kept behaviour + its ground) versus in
 
 from __future__ import annotations
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
@@ -61,14 +60,12 @@ def test_infer_arrow_without_an_output_model_still_works():
         "SELECT s AS a, lower(s) AS b, s || s AS c FROM __THIS__",
     ],
 )
-def test_infer_arrow_string_type_matches_duckdb(sql):
+def test_infer_arrow_string_type_matches_duckdb(sql, oracle):
     schema = pa.schema([pa.field("s", pa.string(), nullable=False)])
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
     got = fn.infer_arrow(pa.table({"s": ["a", "bb", "ccc"]}))
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES ('a'), ('bb'), ('ccc')")
-    want = con.execute(sql).to_arrow_table()
+    oracle.table("__THIS__", "s VARCHAR", [("a",), ("bb",), ("ccc",)])
+    want = oracle.answer(sql)
     assert got.schema == want.schema
     assert got.to_pylist() == want.to_pylist()
     # The point of the schema agreeing: the two stack.
@@ -100,9 +97,7 @@ def test_infer_arrow_string_output_feeds_back_in():
 # our arrow names are the deduped contract names; the campaign's schema leg
 # normalizes DuckDB through the same rule.
 # ---------------------------------------------------------------------------
-def test_join_star_collisions_keep_the_wave5_dedup_contract():
-    import duckdb as _duck
-
+def test_join_star_collisions_keep_the_wave5_dedup_contract(oracle):
     row = pa.schema(
         [pa.field("c0", pa.int64(), nullable=False), pa.field("c2", pa.int64())]
     )
@@ -111,12 +106,9 @@ def test_join_star_collisions_keep_the_wave5_dedup_contract():
     )
     sql = "SELECT * FROM __THIS__ LEFT JOIN s0 ON (c2 = s0.c0)"
 
-    con = _duck.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, c2 BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5, 1)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
-    duck_names = con.execute(sql).to_arrow_table().schema.names
+    oracle.table("__THIS__", "c0 BIGINT, c2 BIGINT", [(5, 1)])
+    oracle.load("s0", static)
+    duck_names = oracle.answer(sql).schema.names
     assert duck_names == ["c0", "c2", "c0", "c1"], (
         f"oracle moved -- arrow export no longer keeps duplicates: {duck_names}"
     )

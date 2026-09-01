@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-from _helpers import duck
 from confit import DuckDBInferFn
 
 # ------------------------------------------- silently discarded clauses --
@@ -25,7 +24,6 @@ from confit import DuckDBInferFn
 #
 # Reproduced by hand 2026-08-08.
 
-_QUAL_DDL = "CREATE TABLE __THIS__ (k BIGINT, ts BIGINT)"
 _QUAL_ROWS = [(1, 1), (1, 2), (2, 5)]
 QUAL_SCHEMA = pa.schema(
     [
@@ -73,12 +71,13 @@ def test_row_limiting_clauses_are_refused_not_dropped(sql, match):
         _run(sql, QUAL_SCHEMA, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
 
 
-def test_ordinary_query_still_builds():
+def test_ordinary_query_still_builds(oracle):
     """The audit refuses by exhaustive destructure, so the risk is refusing
     something that used to work."""
     sql = "SELECT k, ts FROM __THIS__ WHERE k = 1"
     got = _run(sql, QUAL_SCHEMA, [{"k": k, "ts": t} for k, t in _QUAL_ROWS])
-    assert got == duck(sql, _QUAL_DDL, _QUAL_ROWS)
+    oracle.table("__THIS__", "k BIGINT, ts BIGINT", _QUAL_ROWS)
+    assert got == oracle.execute(sql).fetchall()
 
 
 # 2026-08-16: the SAME class, leaking through the one struct the doctrine above

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-from _helpers import duck
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 # ------------------------------------------------- CAST rounding mode --
 #
@@ -53,7 +53,9 @@ def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch):
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": CAST_SCHEMA}, static_tables={})
     assert fn.backend == backend
     got = [(r["i"], r["r"]) for r in fn.infer_rows([{"f": v} for v in _CAST_F])]
-    want = duck(sql, "CREATE TABLE __THIS__ (f DOUBLE)", [(v,) for v in _CAST_F])
+    o = Oracle()
+    o.table("__THIS__", "f DOUBLE", [(v,) for v in _CAST_F])
+    want = o.execute(sql).fetchall()
     assert got == want
     # And the contrast, stated rather than implied: the two columns disagree
     # on every tie, so this test fails if the cast ever adopts round()'s mode.
@@ -72,10 +74,9 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
     assert fn.backend == backend
     fine = [v for v in _CAST_F if v != 1e19]
     got = [r["i"] for r in fn.infer_rows([{"f": v} for v in fine])]
-    want = [
-        r[0]
-        for r in duck(sql, "CREATE TABLE __THIS__ (f DOUBLE)", [(v,) for v in fine])
-    ]
+    o = Oracle()
+    o.table("__THIS__", "f DOUBLE", [(v,) for v in fine])
+    want = [r[0] for r in o.execute(sql).fetchall()]
     assert got == want
     with pytest.raises(ValueError, match="range"):
         fn.infer_rows([{"f": 1e19}])
@@ -205,15 +206,11 @@ def test_the_155_boundary_slivers_are_a_kept_divergence(val, duck_155):
     pre-#24393 behaviour these assert the divergence in both directions; the
     day the pin advances, the oracle side flips and this test fails LOUDLY --
     delete it then, the grid above already asserts the agreed semantics."""
-    import duckdb as _duck
-
-    con = _duck.connect()
-    con.execute("PRAGMA disable_optimizer")
-    con.execute("CREATE TABLE t (x DOUBLE)")
-    con.execute("INSERT INTO t VALUES (?)", [val])
+    o = Oracle()
+    o.table("t", "x DOUBLE", [(val,)])
     try:
-        got = con.execute("SELECT CAST(x AS TINYINT) FROM t").fetchall()[0][0]
-    except _duck.Error:
+        got = o.execute("SELECT CAST(x AS TINYINT) FROM t").fetchall()[0][0]
+    except Oracle.Error:
         got = None
     assert got == duck_155, f"DuckDB moved past 1.5.5 semantics: {got}"
     # and we deliberately disagree here (fixed semantics, grid above)
@@ -337,19 +334,15 @@ _S2I_EDGES = [
 @pytest.mark.parametrize("dst", ["TINYINT", "INTEGER", "BIGINT"])
 @pytest.mark.parametrize("cast", ["CAST", "TRY_CAST"])
 def test_string_to_integer_matches_the_oracle(cast, dst):
-    import duckdb as _duck
-
     sql = f"SELECT {cast}(x AS {dst}) AS o FROM __THIS__"
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": _S2I_ROW}, static_tables={})
     for v in _S2I_EDGES:
-        con = _duck.connect()
-        con.execute("PRAGMA disable_optimizer")
-        con.execute("CREATE TABLE t (x VARCHAR)")
-        con.execute("INSERT INTO t VALUES (?)", [v])
-        try:
-            want = ("S", con.execute(sql.replace("__THIS__", "t")).fetchall()[0][0])
-        except _duck.Error:
-            want = ("T", None)
+        with Oracle() as o:
+            o.table("t", "x VARCHAR", [(v,)])
+            try:
+                want = ("S", o.execute(sql.replace("__THIS__", "t")).fetchall()[0][0])
+            except Oracle.Error:
+                want = ("T", None)
         try:
             got = ("S", fn.infer_rows([{"x": v}])[0]["o"])
         except ValueError:

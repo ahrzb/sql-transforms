@@ -17,6 +17,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle, Trap
 
 IN_SCHEMA = pa.schema(
     [
@@ -130,11 +131,9 @@ CATALOGUE = [
 
 
 def _duck(sql: str) -> pa.Table:
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    for r in ROWS:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["k"], r["s"]])
-    return con.execute(sql).to_arrow_table()
+    o = Oracle()
+    o.table("__THIS__", "k BIGINT, s VARCHAR", [(r["k"], r["s"]) for r in ROWS])
+    return o.answer(sql)
 
 
 def _ours(sql: str) -> pa.Table:
@@ -253,7 +252,7 @@ def _ours_udf(sql, *udfs):
 
 
 def _duck_udf(sql, *udfs):
-    con = duckdb.connect()
+    o = Oracle()
     for u in udfs:
         names = [f.name for f in u.returns] if pa.types.is_struct(u.returns) else None
         duck_ret = (
@@ -261,7 +260,7 @@ def _duck_udf(sql, *udfs):
             if names
             else "VARCHAR"
         )
-        con.create_function(
+        o.create_function(
             u.name,
             (
                 lambda uu, nn: (
@@ -278,10 +277,8 @@ def _duck_udf(sql, *udfs):
             duck_ret,
             null_handling="special",
         )
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    for r in ROWS:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["k"], r["s"]])
-    return con.execute(sql).to_arrow_table()
+    o.table("__THIS__", "k BIGINT, s VARCHAR", [(r["k"], r["s"]) for r in ROWS])
+    return o.answer(sql)
 
 
 def test_pure_udf_bind_fold_matches_duckdb_schema():
@@ -537,7 +534,7 @@ def test_round_trunc_bigint_digits_refuse_like_duckdb(sql):
         (pa.bool_(), "bool"),
     ],
 )
-def test_static_column_types_at_its_arrow_width(arrow_ty, name):
+def test_static_column_types_at_its_arrow_width(arrow_ty, name, oracle):
     payload = {
         "int8": 7,
         "int16": 7,
@@ -552,13 +549,9 @@ def test_static_column_types_at_its_arrow_width(arrow_ty, name):
     )
     sql = "SELECT s.v AS o FROM __THIS__ JOIN s ON k = s.id"
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    for r in ROWS:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["k"], r["s"]])
-    con.register("s_arrow", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM s_arrow")
-    want = con.execute(sql).to_arrow_table()
+    oracle.table("__THIS__", "k BIGINT, s VARCHAR", [(r["k"], r["s"]) for r in ROWS])
+    oracle.load("s", static)
+    want = oracle.answer(sql)
 
     fn = DuckDBInferFn(
         sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={"s": static}
@@ -588,17 +581,16 @@ _KEY_DDL = {pa.int8(): "TINYINT", pa.int32(): "INTEGER", pa.int64(): "BIGINT"}
         (pa.int32(), pa.int32()),  # control: same width, unchanged
     ],
 )
-def test_projected_static_key_takes_the_static_columns_width(row_ty, static_ty, kind):
+def test_projected_static_key_takes_the_static_columns_width(
+    row_ty, static_ty, kind, oracle
+):
     row = pa.schema([pa.field("k", row_ty, nullable=False)])
     static = pa.table({"c0": pa.array([5], static_ty), "v": pa.array([7], pa.int64())})
     sql = f"SELECT s.c0 AS o FROM __THIS__ {kind} s ON k = s.c0"
 
-    con = duckdb.connect()
-    con.execute(f"CREATE TABLE __THIS__ (k {_KEY_DDL[row_ty]})")
-    con.execute("INSERT INTO __THIS__ VALUES (5)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    want = con.execute(sql).to_arrow_table()
+    oracle.table("__THIS__", f"k {_KEY_DDL[row_ty]}", [(5,)])
+    oracle.load("s", static)
+    want = oracle.answer(sql)
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=row))
@@ -607,19 +599,16 @@ def test_projected_static_key_takes_the_static_columns_width(row_ty, static_ty, 
     assert got.to_pylist() == want.to_pylist()
 
 
-def test_a_left_miss_on_the_key_is_still_null():
+def test_a_left_miss_on_the_key_is_still_null(oracle):
     """The re-declaration must not disturb what it rides on: a LEFT miss is
     NULL on the key column, never coalesced to the probe's value."""
     row = pa.schema([pa.field("k", pa.int8(), nullable=False)])
     static = pa.table({"c0": pa.array([5], pa.int64()), "v": pa.array([7], pa.int64())})
     sql = "SELECT s.c0 AS o FROM __THIS__ LEFT JOIN s ON k = s.c0"
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k TINYINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5), (6)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    want = con.execute(sql).to_arrow_table()
+    oracle.table("__THIS__", "k TINYINT", [(5,), (6,)])
+    oracle.load("s", static)
+    want = oracle.answer(sql)
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}, {"k": 6}], schema=row))
@@ -664,14 +653,10 @@ _D_PAIR = pa.table(
 
 def _double_probe_duck(sql, static, ddl="k DOUBLE", probe=((float(_P53),),)):
     """The live oracle for a DOUBLE-probe join (optimizer-off per conftest)."""
-    con = duckdb.connect()
-    con.execute(f"CREATE TABLE __THIS__ ({ddl})")
-    for r in probe:
-        marks = ", ".join(["?"] * len(r))
-        con.execute(f"INSERT INTO __THIS__ VALUES ({marks})", list(r))
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    return con.execute(sql).to_arrow_table()
+    o = Oracle()
+    o.table("__THIS__", ddl, list(probe))
+    o.load("s", static)
+    return o.answer(sql)
 
 
 def test_a_double_probe_against_an_integer_key_serves_the_static_value():
@@ -936,21 +921,20 @@ _W_ROW = pa.schema(
         pa.field("b", pa.int64(), nullable=False),
     ]
 )
-_W_DDL = "CREATE TABLE __THIS__ (i INTEGER, j INTEGER, t TINYINT, h SMALLINT, b BIGINT)"
 _W_ROWS = [{"i": 2147483647, "j": 3, "t": 127, "h": 32767, "b": 9223372036854775807}]
 
 
 def _width_duck(sql):
-    con = duckdb.connect()
-    con.execute(_W_DDL)
-    con.execute(
-        "INSERT INTO __THIS__ VALUES (?, ?, ?, ?, ?)",
-        list(_W_ROWS[0].values()),
+    o = Oracle()
+    o.table(
+        "__THIS__",
+        "i INTEGER, j INTEGER, t TINYINT, h SMALLINT, b BIGINT",
+        [tuple(_W_ROWS[0].values())],
     )
-    try:
-        return ("rows", con.execute(sql).to_arrow_table().to_pylist())
-    except duckdb.Error:
+    result = o.try_answer(sql)
+    if isinstance(result, Trap):
         return ("trap", None)
+    return ("rows", result.to_pylist())
 
 
 def _width_ours(sql):
@@ -1103,20 +1087,19 @@ _NULLNESS_ROWS = [
     ],
 )
 def test_is_null_over_arithmetic_reads_the_operands_not_the_result(
-    sql, backend, monkeypatch
+    sql, backend, monkeypatch, oracle
 ):
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
         monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 TINYINT, h SMALLINT, b BIGINT, s VARCHAR)")
-    for r in _NULLNESS_ROWS:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?, ?, ?)", list(r.values()))
-    try:
-        want = ("rows", con.execute(sql).to_arrow_table().to_pylist())
-    except duckdb.Error:
-        want = ("trap", None)
+    oracle.table(
+        "__THIS__",
+        "c0 TINYINT, h SMALLINT, b BIGINT, s VARCHAR",
+        [tuple(r.values()) for r in _NULLNESS_ROWS],
+    )
+    result = oracle.try_answer(sql)
+    want = ("trap", None) if isinstance(result, Trap) else ("rows", result.to_pylist())
     try:
         fn = DuckDBInferFn(
             sql, row_tables={"__THIS__": _NULLNESS_ROW}, static_tables={}
@@ -1141,15 +1124,13 @@ def test_is_null_over_arithmetic_reads_the_operands_not_the_result(
         (pa.int32(), "INTEGER", -2147483648),
     ],
 )
-def test_narrow_modulo_by_minus_one_at_min_overflows(arrow_ty, ddl, lo):
+def test_narrow_modulo_by_minus_one_at_min_overflows(arrow_ty, ddl, lo, oracle):
     row = pa.schema([pa.field("i", arrow_ty, nullable=False)])
     sql = "SELECT (i % -1) AS o FROM __THIS__"
 
-    con = duckdb.connect()
-    con.execute(f"CREATE TABLE __THIS__ (i {ddl})")
-    con.execute("INSERT INTO __THIS__ VALUES (?)", [lo])
-    with pytest.raises(duckdb.Error, match="Overflow"):
-        con.execute(sql).fetchall()  # oracle overflows; if this stops, remeasure
+    oracle.table("__THIS__", f"i {ddl}", [(lo,)])
+    with pytest.raises(Oracle.Error, match="Overflow"):
+        oracle.execute(sql).fetchall()  # oracle overflows; if this stops, remeasure
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={})
     with pytest.raises(ValueError, match="Overflow in division"):
@@ -1259,15 +1240,14 @@ _T131_GRID = [
 
 
 @pytest.mark.parametrize("sql", _T131_GRID)
-def test_null_meets_literal_width_matches_duckdb(sql):
+def test_null_meets_literal_width_matches_duckdb(sql, oracle):
     duck_sql = sql.replace("__THIS__", "t")
-    con = duckdb.connect()
-    con.execute("PRAGMA disable_optimizer")
-    con.execute(
-        "CREATE TABLE t (i8 TINYINT, i16 SMALLINT, i32 INTEGER, i64 BIGINT, k BIGINT)"
+    oracle.table(
+        "t",
+        "i8 TINYINT, i16 SMALLINT, i32 INTEGER, i64 BIGINT, k BIGINT",
+        [(1, 2, 3, 4, 1)],
     )
-    con.execute("INSERT INTO t VALUES (1, 2, 3, 4, 1)")
-    want = con.execute(duck_sql).to_arrow_table()
+    want = oracle.answer(duck_sql)
 
     schema = _T131_SCHEMA.append(pa.field("k", pa.int64(), nullable=False))
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})

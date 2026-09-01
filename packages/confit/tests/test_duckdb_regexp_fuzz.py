@@ -28,8 +28,8 @@ import os
 import random
 from collections import Counter
 
-import duckdb
 from confit import DuckDBInferFn
+from confit.oracle import Trap
 from test_duckdb_interpreter import _row_schema, static
 
 SEED = int(os.environ.get("REGEXP_FUZZ_SEED", "20260727"))
@@ -218,28 +218,22 @@ def _rows_key(rows: list[dict]) -> list:
     return sorted(sorted((k, repr(v)) for k, v in r.items()) for r in rows)
 
 
-def test_regexp_differential_fuzz():
+def test_regexp_differential_fuzz(oracle):
     rng = random.Random(SEED)  # noqa: S311 - deterministic fuzzing, not crypto
     schema = _row_schema(SCHEMA)
     inputs = ROWS
-    con = duckdb.connect()
-    con.register("__arrow_this", static(SCHEMA, ROWS))
-    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
+    oracle.load("__THIS__", static(SCHEMA, ROWS))
 
     stats: Counter[str] = Counter()
     for i in range(N):
         sql = _case_sql(rng)
         ctx = f"seed={SEED} case={i}: {sql!r}"
 
-        try:
-            want = con.execute(sql).to_arrow_table().to_pylist()
-        except duckdb.Error:
-            want = None
-        except UnicodeDecodeError:
-            # RE2's \C can serve raw bytes inside multibyte chars — duckdb
-            # produces invalid UTF-8 the oracle side can't even decode. The
-            # engine (rust String) never can; treat like a duckdb error.
-            want = None
+        # RE2's \C can serve raw bytes inside multibyte chars — duckdb
+        # produces invalid UTF-8 the oracle side can't even decode. The
+        # engine (rust String) never can; treat like a duckdb error.
+        result = oracle.try_answer(sql)
+        want = None if isinstance(result, Trap) else result.to_pylist()
 
         try:
             fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
