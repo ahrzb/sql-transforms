@@ -14,6 +14,7 @@ import textwrap
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 from benchmarks import serving_scenarios as sc
 
@@ -44,15 +45,11 @@ def _cmp(fn, rows, tbl):
 def _duck_arrow(mod, statics, rows_d):
     """The same scenario run by DuckDB itself, as an arrow table — the oracle
     for the OUTPUT schema, not just the values."""
-    import duckdb
-
-    con = duckdb.connect()
+    o = Oracle()
     for name, table in statics.items():
-        con.register(f"__arrow_{name}", table)
-        con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')  # noqa: S608
-        con.unregister(f"__arrow_{name}")
-    con.register("__THIS__", sc.rows_table(mod, rows_d))
-    return con.execute(mod.SQL).to_arrow_table()
+        o.load(name, table)
+    o.register("__THIS__", sc.rows_table(mod, rows_d))
+    return o.answer(mod.SQL)
 
 
 def test_differential_basic_and_nulls():
@@ -138,17 +135,13 @@ def test_named_rejections():
 # Integer widths are typed for real (m-8 phase 2), so the schema suite allows
 # NO differences and this is a plain parity test rather than a width pin. The
 # catalogue lives in test_integer_widths.py.
-def test_infer_arrow_integer_width_matches_duckdb():
-    import duckdb
-
+def test_infer_arrow_integer_width_matches_duckdb(oracle):
     in_schema = pa.schema([pa.field("k", pa.int64(), nullable=False)])
     sql = "SELECT CASE WHEN k > 1 THEN 1 ELSE 0 END AS c FROM __THIS__"
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": in_schema}, static_tables={})
     got = fn.infer_arrow(pa.table({"k": [0, 2]}))
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (0), (2)")
-    want = con.execute(sql).to_arrow_table()
+    oracle.table("__THIS__", "k BIGINT", [(0,), (2,)])
+    want = oracle.answer(sql)
     assert got.to_pylist() == want.to_pylist()  # values already agree
     assert got.schema == want.schema
 
@@ -376,12 +369,9 @@ _S114_SQL = "SELECT st.x + 1 AS o FROM __THIS__"
 
 def _duck(sql: str, table: pa.Table) -> pa.Table:
     """The live oracle over the SAME arrow batch, optimizer off."""
-    import duckdb
-
-    con = duckdb.connect()
-    con.execute("PRAGMA disable_optimizer")
-    con.register("__THIS__", table)
-    return con.execute(sql).to_arrow_table()
+    o = Oracle()
+    o.register("__THIS__", table)
+    return o.answer(sql)
 
 
 def _build(sql, schema):

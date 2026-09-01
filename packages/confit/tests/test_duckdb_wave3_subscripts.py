@@ -23,7 +23,6 @@ lazy-guard convention has nothing to witness here.
 
 from __future__ import annotations
 
-import duckdb
 import pytest
 from test_duckdb_interpreter import duck_check
 
@@ -189,14 +188,13 @@ def test_strip_accents_nul_context_quirk():
     )
 
 
-def test_strip_accents_census_sample():
+def test_strip_accents_census_sample(oracle):
     # Deterministic sample (~300) of every codepoint strip_accents changes
     # in planes 0-1, extracted from the oracle itself, replayed through
     # both engines as single-char rows.
-    con = duckdb.connect()
     cps = [
         r[0]
-        for r in con.execute(
+        for r in oracle.execute(
             "SELECT i FROM generate_series(1, 131071) t(i) "
             "WHERE i NOT BETWEEN 55296 AND 57343 "
             "AND strip_accents(chr(i::INTEGER)) != chr(i::INTEGER) "

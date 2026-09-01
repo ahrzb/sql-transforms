@@ -38,6 +38,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle, Trap
 
 # THE STRICT-OP NULL RULE. Fuzz campaign 2026-08-11, ~20 findings; CORRECTED
 # 2026-08-17 when the oracle became DuckDB with the optimizer off.
@@ -83,7 +84,7 @@ _NF_SCHEMA = pa.schema(
     ],
 )
 def test_a_null_arith_operand_elides_a_trapping_sibling(
-    sql, want, backend, monkeypatch
+    sql, want, backend, monkeypatch, oracle
 ):
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
@@ -94,14 +95,14 @@ def test_a_null_arith_operand_elides_a_trapping_sibling(
     got = fn.infer_rows(rows)
     assert got == [{"o": want}], got
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (x DOUBLE, k BIGINT, s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES (-2.0, 1, 'a')")
-    assert con.execute(sql).fetchall() == [(want,)]
+    oracle.table("__THIS__", "x DOUBLE, k BIGINT, s VARCHAR", [(-2.0, 1, "a")])
+    assert oracle.execute(sql).fetchall() == [(want,)]
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
-def test_a_null_comparison_operand_does_not_elide_its_sibling(backend, monkeypatch):
+def test_a_null_comparison_operand_does_not_elide_its_sibling(
+    backend, monkeypatch, oracle
+):
     """The half of the strict-op rule that turned out to be the optimizer.
     `ln(-2.0) < NULL` is NULL on optimizer-ON DuckDB and a domain error on
     the oracle, so the engine evaluates and traps -- unlike the arithmetic
@@ -115,11 +116,9 @@ def test_a_null_comparison_operand_does_not_elide_its_sibling(backend, monkeypat
     with pytest.raises(Exception, match="logarithm"):
         fn.infer_rows([{"x": -2.0, "k": 1, "s": "a"}])
 
-    con = duckdb.connect()  # the oracle: optimizer off (conftest)
-    con.execute("CREATE TABLE __THIS__ (x DOUBLE, k BIGINT, s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES (-2.0, 1, 'a')")
-    with pytest.raises(duckdb.Error, match="logarithm"):
-        con.execute(sql).fetchall()
+    oracle.table("__THIS__", "x DOUBLE, k BIGINT, s VARCHAR", [(-2.0, 1, "a")])
+    with pytest.raises(Oracle.Error, match="logarithm"):
+        oracle.execute(sql).fetchall()
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
@@ -188,7 +187,7 @@ def test_a_trapping_constant_refuses_at_build(sql):
         ),
     ],
 )
-def test_plan_time_folds_match_duckdb(sql, rows, want, backend, monkeypatch):
+def test_plan_time_folds_match_duckdb(sql, rows, want, backend, monkeypatch, oracle):
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
     else:
@@ -197,12 +196,8 @@ def test_plan_time_folds_match_duckdb(sql, rows, want, backend, monkeypatch):
     got = fn.infer_rows(rows)
     assert got == want, got
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (s VARCHAR, x DOUBLE)")
-    con.executemany(
-        "INSERT INTO __THIS__ VALUES (?, ?)", [(r["s"], r["x"]) for r in rows]
-    )
-    assert con.execute(sql).to_arrow_table().to_pylist() == want
+    oracle.table("__THIS__", "s VARCHAR, x DOUBLE", [(r["s"], r["x"]) for r in rows])
+    assert oracle.answer(sql).to_pylist() == want
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
@@ -229,7 +224,7 @@ def test_plan_time_folds_match_duckdb(sql, rows, want, backend, monkeypatch):
     ],
 )
 def test_a_fold_that_was_only_the_optimizer_now_evaluates(
-    sql, match, backend, monkeypatch
+    sql, match, backend, monkeypatch, oracle
 ):
     """Faces B and C, which this file used to pin as folds we match.
     Both were plan rewrites, so under the oracle they evaluate and trap -- and
@@ -244,11 +239,9 @@ def test_a_fold_that_was_only_the_optimizer_now_evaluates(
         fn = DuckDBInferFn(sql, row_tables={"__THIS__": _CF_SCHEMA}, static_tables={})
         fn.infer_rows(rows)
 
-    con = duckdb.connect()  # the oracle: optimizer off (conftest)
-    con.execute("CREATE TABLE __THIS__ (s VARCHAR, x DOUBLE)")
-    con.execute("INSERT INTO __THIS__ VALUES ('one', -2.0)")
-    with pytest.raises(duckdb.Error):
-        con.execute(sql).fetchall()
+    oracle.table("__THIS__", "s VARCHAR, x DOUBLE", [("one", -2.0)])
+    with pytest.raises(Oracle.Error):
+        oracle.execute(sql).fetchall()
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
@@ -295,17 +288,15 @@ _S117 = pa.schema(
     ]
 )
 _R117 = [{"s": "abc", "x": -2.0}]  # 'abc' is uncastable, ln(-2.0) is a domain trap
-_DDL117 = "CREATE TABLE __THIS__ (s VARCHAR, x DOUBLE)"
 
 
 def _duck117(sql):
-    con = duckdb.connect()
-    con.execute(_DDL117)
-    con.execute("INSERT INTO __THIS__ VALUES ('abc', -2.0)")
-    try:
-        return ("rows", con.execute(sql).fetchall())
-    except duckdb.Error:
+    o = Oracle()
+    o.table("__THIS__", "s VARCHAR, x DOUBLE", [("abc", -2.0)])
+    result = o.try_answer(sql)
+    if isinstance(result, Trap):
         return ("trap", None)
+    return ("rows", [tuple(r.values()) for r in result.to_pylist()])
 
 
 def _ours117(sql):
@@ -359,7 +350,9 @@ def test_a_filter_short_circuits_left_to_right_on_a_null_conjunct(
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
-def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(backend, monkeypatch):
+def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(
+    backend, monkeypatch, oracle
+):
     """The evidence that this is execution and not rewriting: the left operand
     is a nullable COLUMN, NULL on one row and TRUE on another, and the oracle
     drops the first row while emitting the second. A plan-time elision could
@@ -374,10 +367,8 @@ def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(backend, monkey
     rows = [{"s": "abc", "b": None}, {"s": "1.5", "b": True}]
     sql = "SELECT 1 AS o FROM __THIS__ WHERE b AND (CAST(s AS DOUBLE) > 1)"
 
-    con = duckdb.connect()  # the oracle: optimizer off (conftest)
-    con.execute("CREATE TABLE __THIS__ (s VARCHAR, b BOOLEAN)")
-    con.execute("INSERT INTO __THIS__ VALUES ('abc', NULL), ('1.5', true)")
-    want = con.execute(sql).fetchall()
+    oracle.table("__THIS__", "s VARCHAR, b BOOLEAN", [("abc", None), ("1.5", True)])
+    want = oracle.execute(sql).fetchall()
     assert want == [(1,)], "oracle moved — remeasure"
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
@@ -386,8 +377,8 @@ def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(backend, monkey
     # ... and the reverse order still traps, because the trapping conjunct now
     # runs first. Same operands, so this is ORDER, not nullness.
     rev = "SELECT 1 AS o FROM __THIS__ WHERE (CAST(s AS DOUBLE) > 1) AND b"
-    with pytest.raises(duckdb.Error):
-        con.execute(rev).fetchall()
+    with pytest.raises(Oracle.Error):
+        oracle.execute(rev).fetchall()
     rfn = DuckDBInferFn(rev, row_tables={"__THIS__": schema}, static_tables={})
     with pytest.raises(Exception, match="cast|convert"):
         rfn.infer_rows(rows)
@@ -453,7 +444,7 @@ def test_the_filter_short_circuit_is_per_row_not_a_constant_fold(backend, monkey
 # turns out to be an optimizer pass, name the pass (the campaign does this
 # mechanically now) and match the oracle, which does not have it.
 # ===========================================================================
-def test_duckdbs_trap_elision_is_syntactic_not_semantic():
+def test_duckdbs_trap_elision_is_syntactic_not_semantic(oracle):
     """The premises of the proof above, executable.
 
     If DuckDB ever makes these two agree, the argument for bounding this
@@ -461,19 +452,20 @@ def test_duckdbs_trap_elision_is_syntactic_not_semantic():
     re-derived — so this fails loudly rather than the reasoning quietly going
     stale. It asserts DuckDB alone; confit is not involved.
     """
-    con = duckdb.connect()
-    # ABOUT the optimizer, so it opts back into it (conftest hands out the
-    # oracle, optimizer OFF, by default). With the optimizer off both P1 and
-    # P2 simply trap and there is no split to prove.
-    con.execute("PRAGMA enable_optimizer")
-    con.execute("CREATE TABLE t (s VARCHAR, n DOUBLE, keep BOOLEAN)")
-    con.execute("INSERT INTO t VALUES ('abc', NULL, false), ('1.5', 2.0, true)")
+    oracle.optimizer_on()
+    # With the optimizer off both P1 and P2 simply trap and there is no
+    # split to prove.
+    oracle.table(
+        "t",
+        "s VARCHAR, n DOUBLE, keep BOOLEAN",
+        [("abc", None, False), ("1.5", 2.0, True)],
+    )
 
     def duck(sql):
-        try:
-            return ("rows", con.execute(sql).fetchall())
-        except duckdb.Error:
+        result = oracle.try_answer(sql)
+        if isinstance(result, Trap):
             return ("trap", None)
+        return ("rows", [tuple(r.values()) for r in result.to_pylist()])
 
     # P1 and P2 denote the same relation: the predicate is NULL on every row,
     # so both select nothing. Only the SPELLING of the upper bound differs.
@@ -560,10 +552,8 @@ def test_duckdbs_is_null_elision_is_not_a_function_of_the_query_or_the_rows():
     ground for eliding unconditionally has gone and must be re-derived."""
 
     def duck(setup, decl="TINYINT", q=_IS_NN):
-        con = duckdb.connect()
-        # This test is ABOUT the optimizer, so it opts back into it -- conftest
-        # hands every connection the oracle (optimizer OFF) by default.
-        con.execute("PRAGMA enable_optimizer")
+        con = Oracle()
+        con.optimizer_on()
         con.execute(f"CREATE TABLE t (c0 {decl})")
         for s in setup:
             con.execute(s)
@@ -602,7 +592,9 @@ def test_duckdbs_is_null_elision_is_not_a_function_of_the_query_or_the_rows():
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
-def test_we_evaluate_is_null_over_arithmetic_like_the_oracle(backend, monkeypatch):
+def test_we_evaluate_is_null_over_arithmetic_like_the_oracle(
+    backend, monkeypatch, oracle
+):
     """Our side, stated rather than implied: no nullness rewrite, so the
     arithmetic runs and the narrow overflow traps -- on every batch, matching
     the oracle, and NOT matching what a user with the optimizer on would see."""
@@ -614,19 +606,16 @@ def test_we_evaluate_is_null_over_arithmetic_like_the_oracle(backend, monkeypatc
     sql = "SELECT (c0 * 32) IS NOT NULL AS o FROM __THIS__"
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": schema}, static_tables={})
 
-    con = duckdb.connect()  # the oracle: optimizer off (conftest)
-    con.execute("CREATE TABLE __THIS__ (c0 TINYINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (-128), (7)")
-    with pytest.raises(duckdb.Error, match="Overflow"):
-        con.execute(sql).fetchall()
+    oracle.table("__THIS__", "c0 TINYINT", [(-128,), (7,)])
+    with pytest.raises(Oracle.Error, match="Overflow"):
+        oracle.execute(sql).fetchall()
     with pytest.raises(Exception, match="range|Overflow"):
         fn.infer_rows([{"c0": -128}, {"c0": 7}])
 
     # and a batch with nothing out of range serves on both
-    con2 = duckdb.connect()
-    con2.execute("CREATE TABLE __THIS__ (c0 TINYINT)")
-    con2.execute("INSERT INTO __THIS__ VALUES (3), (NULL)")
-    want = con2.execute(sql).fetchall()
+    o2 = Oracle()
+    o2.table("__THIS__", "c0 TINYINT", [(3,), (None,)])
+    want = o2.execute(sql).fetchall()
     assert want == [(True,), (False,)], "oracle moved — remeasure"
     got = fn.infer_rows([{"c0": 3}, {"c0": None}])
     assert [tuple(r.values()) for r in got] == want

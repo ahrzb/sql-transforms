@@ -15,6 +15,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 from sql_transform._udf import UDF
 from test_duckdb_interpreter import _row_schema, static
 
@@ -251,7 +252,7 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, after_engine=None):
     if after_engine is not None:
         after_engine()
 
-    con = duckdb.connect()
+    o = Oracle()
     for u in udfs:
         params = [_DUCK_T[t] for t in u.takes.types]
         if hasattr(u, "instances"):
@@ -268,16 +269,12 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, after_engine=None):
             ret = f"{_DUCK_T[rt[0]]}[]"
         else:
             ret = _DUCK_T[rt[0]]
-        con.create_function(
-            u.name, _scalar_form(u), params, ret, null_handling="special"
-        )
+        o.create_function(u.name, _scalar_form(u), params, ret, null_handling="special")
     for name, table in statics.items():
-        con.register(f"__arrow_{name}", table)
-        con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')
-    con.register("__arrow_this", static(row_schema, row_rows))
-    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
-    want = con.execute(sql).to_arrow_table().to_pylist()
-    con.close()
+        o.load(name, table)
+    o.load("__THIS__", static(row_schema, row_rows))
+    want = o.answer(sql).to_pylist()
+    o.close()
 
     key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
     assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"

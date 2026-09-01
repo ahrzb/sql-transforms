@@ -36,13 +36,12 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import warnings
 from pathlib import Path
 
-import duckdb
 import pytest
 from confit import _engine
+from confit.oracle import Oracle
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
@@ -63,44 +62,14 @@ def cases():
                 yield json.loads(line)
 
 
-def build_duckdb(case) -> duckdb.DuckDBPyConnection | None:
+def build_duckdb(case) -> Oracle:
     """Replay the case's setup into a fresh connection. Applies the same
     drop-and-recreate the miner's duplicate CREATEs need (see corpus replay);
     any other setup failure raises, because a case whose tables cannot be
     built has nothing to compare."""
-    con = duckdb.connect()
-    for stmt in case["setup"]:
-        try:
-            con.execute(stmt)
-        except duckdb.CatalogException as e:
-            m = re.match(r'\s*CREATE\s+TABLE\s+"?([A-Za-z_]\w*)"?', stmt, re.IGNORECASE)
-            if m and "already exists" in str(e):
-                con.execute(f'DROP TABLE "{m.group(1)}"')
-                con.execute(stmt)
-            else:
-                raise
-    return con
-
-
-def catalog_of(con: duckdb.DuckDBPyConnection):
-    tables = [
-        r[0]
-        for r in con.execute(
-            "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main'"
-        ).fetchall()
-    ]
-    return [
-        (
-            t,
-            [
-                (name, dtype, nullable == "YES")
-                for name, dtype, nullable, *_ in con.execute(
-                    f'DESCRIBE "{t}"'
-                ).fetchall()
-            ],
-        )
-        for t in tables
-    ]
+    o = Oracle()
+    o.replay_setup(case["setup"])
+    return o
 
 
 def norm(v):
@@ -163,9 +132,8 @@ def test_spark_execution_equivalence(spark):
     fails: list[str] = []
 
     for case in cases():
-        con = build_duckdb(case)
-        try:
-            cat = catalog_of(con)
+        with build_duckdb(case) as o:
+            cat = o.catalog()
             try:
                 plan_text = _engine.dialect_parse(case["sql"], cat)
                 printed = _engine.dialect_print(plan_text, "spark", cat)
@@ -175,8 +143,8 @@ def test_spark_execution_equivalence(spark):
                     continue
                 fails.append(f"{case['source']}: {case['sql']!r}: {e}")
                 continue
-            original = run_duckdb(con, case["sql"])
-            ship_tables_to_spark(spark, con, cat)
+            original = run_duckdb(o, case["sql"])
+            ship_tables_to_spark(spark, o, cat)
             try:
                 translated = run_spark(spark, printed)
             except Exception as e:
@@ -192,8 +160,6 @@ def test_spark_execution_equivalence(spark):
                     f"{case['source']}: {case['sql']!r} -> {printed!r}: "
                     f"duckdb {original} != spark {translated}"
                 )
-        finally:
-            con.close()
 
     total = counts["match"] + counts["clean-unsupported"] + len(fails)
     summary = (
@@ -297,15 +263,13 @@ def run_or_error(fn, *args):
 def test_spark_synthetic_divergences(spark):
     fails = []
     for name, setup, sql in SYNTHETIC:
-        con = duckdb.connect()
-        try:
-            for stmt in setup:
-                con.execute(stmt)
-            cat = catalog_of(con)
+        with Oracle() as o:
+            o.replay_setup(setup)
+            cat = o.catalog()
             plan_text = _engine.dialect_parse(sql, cat)
             printed = _engine.dialect_print(plan_text, "spark", cat)
-            original = run_or_error(run_duckdb, con, sql)
-            ship_tables_to_spark(spark, con, cat)
+            original = run_or_error(run_duckdb, o, sql)
+            ship_tables_to_spark(spark, o, cat)
             translated = run_or_error(run_spark, spark, printed)
             outcomes_match = (
                 original[0] == "error" and translated[0] == "error"
@@ -314,8 +278,6 @@ def test_spark_synthetic_divergences(spark):
                 fails.append(
                     f"{name}: {printed!r}: duckdb {original} != spark {translated}"
                 )
-        finally:
-            con.close()
     assert not fails, "\n".join(fails)
 
 

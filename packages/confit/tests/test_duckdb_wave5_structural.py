@@ -7,10 +7,10 @@ ops, ^@/GLOB, star forms, duplicate-name contract, binder tail.
 
 from __future__ import annotations
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle, Trap
 from test_duckdb_interpreter import duck_check, static
 
 T = {"a": "int", "s": "str?"}
@@ -103,10 +103,9 @@ def test_star_filters_replace_rename_vs_oracle():
     duck_check("SELECT * EXCLUDE (s) LIKE 'a%' FROM __THIS__", T, T_ROWS)
 
 
-def test_dup_names_match_duckdb_df_contract():
+def test_dup_names_match_duckdb_df_contract(oracle):
     # The pinned contract: our field names == DuckDB's own .df() dedup
     # (which equals its subquery-boundary rename). Values stay positional.
-    con = duckdb.connect()
     dim = static(
         {"id": "int", "v": "int"},
         [{"id": 1, "v": 10}, {"id": 2, "v": 20}],
@@ -118,10 +117,9 @@ def test_dup_names_match_duckdb_df_contract():
         static_tables={"dim": dim},
     )
     got = fn.infer_rows([{"id": 1}])
-    con.execute("CREATE TABLE t (id BIGINT); INSERT INTO t VALUES (1)")
-    con.execute("CREATE TABLE dim (id BIGINT, v BIGINT)")
-    con.execute("INSERT INTO dim VALUES (1, 10), (2, 20)")
-    df = con.execute("SELECT * FROM t JOIN dim ON t.id = dim.id").df()
+    oracle.table("t", "id BIGINT", [(1,)])
+    oracle.table("dim", "id BIGINT, v BIGINT", [(1, 10), (2, 20)])
+    df = oracle.execute("SELECT * FROM t JOIN dim ON t.id = dim.id").df()
     assert list(got[0].keys()) == list(df.columns)
     assert list(got[0].values()) == [x.item() for x in df.iloc[0].values]
 
@@ -223,16 +221,10 @@ def test_joined_relation_column_list_alias_refusals():
     stat = pa.table({"a": pa.array([3], pa.int64()), "b": pa.array([30], pa.int64())})
 
     def refuses(sql, match):
-        con = duckdb.connect()
-        con.execute("CREATE TABLE __THIS__ (a BIGINT)")
-        con.execute("INSERT INTO __THIS__ VALUES (3)")
-        con.execute("CREATE TABLE s (a BIGINT, b BIGINT)")
-        con.execute("INSERT INTO s VALUES (3, 30)")
-        try:
-            con.execute(sql).fetchall()
-            oracle_served = True
-        except duckdb.Error:
-            oracle_served = False
+        with Oracle() as o:
+            o.table("__THIS__", "a BIGINT", [(3,)])
+            o.table("s", "a BIGINT, b BIGINT", [(3, 30)])
+            oracle_served = not isinstance(o.try_answer(sql), Trap)
         try:
             DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": stat})
             raise AssertionError(f"built: {sql}")

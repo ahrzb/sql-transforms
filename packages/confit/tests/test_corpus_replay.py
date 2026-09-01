@@ -26,9 +26,9 @@ import json
 import re
 from pathlib import Path
 
-import duckdb
 import pyarrow as pa
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
@@ -76,23 +76,15 @@ def _replay(case: dict) -> tuple[str, str]:
     """Rebuild one mined case's tables in a fresh DuckDB, run it through the
     engine, and classify -> (outcome, detail). Outcomes as in the module
     docstring; `detail` is empty on a match and quotes the cause otherwise."""
-    con = duckdb.connect()
-    for stmt in case["setup"]:
-        try:
-            con.execute(stmt)
-        except duckdb.CatalogException as e:
-            # Miner limitation: a file that drops + re-creates a table via a
-            # directive the line-parser skips records both CREATEs. Replaying
-            # the re-create after a drop is exactly what the file did.
-            m = re.match(r'\s*CREATE\s+TABLE\s+"?([A-Za-z_]\w*)"?', stmt, re.IGNORECASE)
-            if m and "already exists" in str(e):
-                con.execute(f'DROP TABLE "{m.group(1)}"')
-                con.execute(stmt)
-            else:
-                return "FAIL", f"setup failed: {stmt[:80]}: {e}"
-    named = con.execute(
-        "SELECT schema_name, table_name FROM duckdb_tables()"
-    ).fetchall()
+    o = Oracle()
+    try:
+        # Miner limitation: a file that drops + re-creates a table via a
+        # directive the line-parser skips records both CREATEs. Replaying
+        # the re-create after a drop is exactly what the file did.
+        o.replay_setup(case["setup"])
+    except Exception as e:  # noqa: BLE001 -- classification, not control flow
+        return "FAIL", f"setup failed: {e}"
+    named = o.execute("SELECT schema_name, table_name FROM duckdb_tables()").fetchall()
     if not named:
         return "unsupported", "FROM is a table function; no base tables, never v0"
 
@@ -105,7 +97,7 @@ def _replay(case: dict) -> tuple[str, str]:
         driving = named[0][1]
 
     arrow = {
-        t: con.execute(f'SELECT * FROM "{s}"."{t}"').to_arrow_table() for s, t in named
+        t: o.execute(f'SELECT * FROM "{s}"."{t}"').to_arrow_table() for s, t in named
     }
 
     # f32 base tables cannot be emulated by the f64-only engine: widening

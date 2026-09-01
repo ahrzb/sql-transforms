@@ -11,10 +11,10 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 _ARROW = {
     "int": pa.int64(),
@@ -60,17 +60,15 @@ def duck_check(
     inputs = [{k: _norm(row_schema[k], r.get(k)) for k in row_schema} for r in row_rows]
     got = fn.infer_rows(inputs)
 
-    con = duckdb.connect()
+    o = Oracle()
     # Materialize NATIVE tables: duckdb pushes constant filters into
     # registered-arrow scans with IEEE NaN semantics, which disagrees with
     # its own native-table comparison order (adversarial probe, 2026-07-26).
     # The engine follows native-table semantics — the corpus's world.
     for name, table in statics.items():
-        con.register(f"__arrow_{name}", table)
-        con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')
-    con.register("__arrow_this", static(row_schema, row_rows))
-    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
-    want = con.execute(sql).to_arrow_table().to_pylist()
+        o.load(name, table)
+    o.load("__THIS__", static(row_schema, row_rows))
+    want = o.answer(sql).to_pylist()
 
     # Row order is not part of the contract (a join may reorder); compare as
     # multisets of repr'd rows — repr keeps value types apart (1 vs '1' vs
@@ -932,10 +930,9 @@ def duck_check_ulp(sql, row_schema, row_rows, max_ulp=1):
     inputs = [{k: _norm(row_schema[k], r.get(k)) for k in row_schema} for r in row_rows]
     got = fn.infer_rows(inputs)
 
-    con = duckdb.connect()
-    con.register("__arrow_this", static(row_schema, row_rows))
-    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
-    want = con.execute(sql).to_arrow_table().to_pylist()
+    o = Oracle()
+    o.load("__THIS__", static(row_schema, row_rows))
+    want = o.answer(sql).to_pylist()
 
     def close(a, b):
         if isinstance(a, float) and isinstance(b, float):

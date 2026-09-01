@@ -24,13 +24,12 @@ surface grows, never lower it.
 from __future__ import annotations
 
 import json
-import re
 import warnings
 from pathlib import Path
 
-import duckdb
 import pytest
 from confit import _engine
+from confit.oracle import Oracle
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
@@ -45,25 +44,8 @@ def cases():
                 yield json.loads(line)
 
 
-def catalog_of(con: duckdb.DuckDBPyConnection):
-    tables = [
-        r[0]
-        for r in con.execute(
-            "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main'"
-        ).fetchall()
-    ]
-    cat = []
-    for t in tables:
-        cols = [
-            (name, dtype, nullable == "YES")
-            for name, dtype, nullable, *_ in con.execute(f'DESCRIBE "{t}"').fetchall()
-        ]
-        cat.append((t, cols))
-    return cat
-
-
-def run(con: duckdb.DuckDBPyConnection, sql: str):
-    cur = con.execute(sql)
+def run(o: Oracle, sql: str):
+    cur = o.execute(sql)
     names = [d[0] for d in cur.description]
     # repr keeps int/float/bool/Decimal apart and makes NaN self-equal —
     # plain == would count 1 == 1.0 == True as a match (review-confirmed
@@ -77,23 +59,11 @@ def test_dialect_corpus_gate():
     fails: list[str] = []
 
     for case in cases():
-        con = duckdb.connect()
-        try:
-            for stmt in case["setup"]:
-                try:
-                    con.execute(stmt)
-                except duckdb.CatalogException as e:
-                    # Same miner limitation corpus replay handles: a skipped
-                    # drop directive records two CREATEs — drop and re-create.
-                    m = re.match(
-                        r'\s*CREATE\s+TABLE\s+"?([A-Za-z_]\w*)"?', stmt, re.IGNORECASE
-                    )
-                    if m and "already exists" in str(e):
-                        con.execute(f'DROP TABLE "{m.group(1)}"')
-                        con.execute(stmt)
-                    else:
-                        raise
-            cat = catalog_of(con)
+        with Oracle() as o:
+            # Same miner limitation corpus replay handles: a skipped drop
+            # directive records two CREATEs — drop and re-create.
+            o.replay_setup(case["setup"])
+            cat = o.catalog()
             try:
                 plan_text = _engine.dialect_parse(case["sql"], cat)
                 printed = _engine.dialect_print(plan_text, "duckdb", cat)
@@ -105,8 +75,8 @@ def test_dialect_corpus_gate():
                     # disagreement with the oracle — never clean.
                     fails.append(f"{case['source']}: {case['sql']!r}: {e}")
                 continue
-            original = run(con, case["sql"])
-            reprinted = run(con, printed)
+            original = run(o, case["sql"])
+            reprinted = run(o, printed)
             if original == reprinted:
                 counts["match"] += 1
             else:
@@ -114,8 +84,6 @@ def test_dialect_corpus_gate():
                     f"{case['source']}: {case['sql']!r} -> {printed!r}: "
                     f"{original} != {reprinted}"
                 )
-        finally:
-            con.close()
 
     total = counts["match"] + counts["clean-unsupported"] + len(fails)
     summary = (

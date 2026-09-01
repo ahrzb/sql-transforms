@@ -7,7 +7,6 @@ belongs here (kept behaviour + its ground) versus in
 
 from __future__ import annotations
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
@@ -39,15 +38,13 @@ _PAD_SCHEMA = pa.schema(
         "SELECT lpad(s, 3000000000, 'x') AS o FROM __THIS__",
     ],
 )
-def test_a_bigint_pad_count_refuses_like_duckdb(sql):
+def test_a_bigint_pad_count_refuses_like_duckdb(sql, oracle):
     with pytest.raises(ValueError, match="lpad|rpad"):
         DuckDBInferFn(sql, row_tables={"__THIS__": _PAD_SCHEMA}, static_tables={})
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
+    oracle.table("__THIS__", "k BIGINT, s VARCHAR", [(2, "ab")])
     with pytest.raises(Exception, match="No function matches|out of range"):
-        con.execute(sql)
+        oracle.execute(sql)
 
 
 @pytest.mark.parametrize(
@@ -60,7 +57,7 @@ def test_a_bigint_pad_count_refuses_like_duckdb(sql):
         "SELECT repeat(s, k) AS o FROM __THIS__",
     ],
 )
-def test_integer_shaped_counts_still_bind_and_match(sql):
+def test_integer_shaped_counts_still_bind_and_match(sql, oracle):
     """The spellings DuckDB types INTEGER keep building — and keep matching:
     literals, constant arithmetic, negatives; repeat's count is BIGINT on
     DuckDB and stays column-friendly."""
@@ -68,10 +65,8 @@ def test_integer_shaped_counts_still_bind_and_match(sql):
     rows = [{"k": 2, "s": "ab"}]
     got = fn.infer_rows(rows)
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
-    want = con.execute(sql).to_arrow_table().to_pylist()
+    oracle.table("__THIS__", "k BIGINT, s VARCHAR", [(2, "ab")])
+    want = oracle.answer(sql).to_pylist()
     assert got == want, f"{got} != {want}"
 
 
@@ -83,18 +78,16 @@ def test_integer_shaped_counts_still_bind_and_match(sql):
 # VARCHAR (measured -- lpad has no BLOB overload, unlike repeat).
 
 
-def test_a_null_string_does_not_smuggle_a_bigint_pad_count():
+def test_a_null_string_does_not_smuggle_a_bigint_pad_count(oracle):
     with pytest.raises(ValueError, match="lpad"):
         DuckDBInferFn(
             "SELECT lpad(NULL, k, 'x') AS o FROM __THIS__",
             row_tables={"__THIS__": _PAD_SCHEMA},
             static_tables={},
         )
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES (2, 'ab')")
+    oracle.table("__THIS__", "k BIGINT, s VARCHAR", [(2, "ab")])
     with pytest.raises(Exception, match="No function matches"):
-        con.execute("SELECT lpad(NULL, k, 'x') AS o FROM __THIS__")
+        oracle.execute("SELECT lpad(NULL, k, 'x') AS o FROM __THIS__")
 
 
 def test_a_null_string_with_an_integer_count_still_serves():
@@ -154,7 +147,7 @@ def test_a_budget_breaking_literal_count_refuses(sql):
         DuckDBInferFn(sql, row_tables={"__THIS__": _SB_SCHEMA}, static_tables={})
 
 
-def test_a_large_but_bounded_count_still_serves_and_matches():
+def test_a_large_but_bounded_count_still_serves_and_matches(oracle):
     sql = (
         "SELECT length(lpad(s, 100000, 'x')) AS o,"
         " length(repeat(s, 50000)) AS p FROM __THIS__"
@@ -162,8 +155,6 @@ def test_a_large_but_bounded_count_still_serves_and_matches():
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": _SB_SCHEMA}, static_tables={})
     got = fn.infer_rows([{"k": 1, "s": "ab"}])
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, s VARCHAR)")
-    con.execute("INSERT INTO __THIS__ VALUES (1, 'ab')")
-    want = con.execute(sql).to_arrow_table().to_pylist()
+    oracle.table("__THIS__", "k BIGINT, s VARCHAR", [(1, "ab")])
+    want = oracle.answer(sql).to_pylist()
     assert got == want, f"{got} != {want}"

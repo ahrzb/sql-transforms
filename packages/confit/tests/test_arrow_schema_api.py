@@ -7,10 +7,10 @@ the arrow field flag. The pydantic surface is deleted.
 
 from types import SimpleNamespace
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 SCHEMA = pa.schema(
     [
@@ -199,12 +199,10 @@ _ROW116 = pa.schema([pa.field("k", pa.int64(), nullable=False)])
 
 
 def _duck116(sql):
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5)")
-    con.register("sa", _STATIC116)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    return con.execute(sql).to_arrow_table()
+    o = Oracle()
+    o.table("__THIS__", "k BIGINT", [(5,)])
+    o.load("s", _STATIC116)
+    return o.answer(sql)
 
 
 @pytest.mark.parametrize(
@@ -283,12 +281,10 @@ _STRUCT_ONLY132 = pa.table(
 
 
 def _duck132(sql, static):
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    return con.execute(sql).to_arrow_table()
+    o = Oracle()
+    o.table("__THIS__", "k BIGINT", [(5,)])
+    o.load("s", static)
+    return o.answer(sql)
 
 
 @pytest.mark.parametrize(
@@ -309,15 +305,13 @@ def test_the_collision_table_serves_both_spellings(expr):
     assert got.schema == want.schema, f"{got.schema} != {want.schema}"
 
 
-def test_a_quoted_dotted_name_is_not_a_struct_leaf():
+def test_a_quoted_dotted_name_is_not_a_struct_leaf(oracle):
     """Without a literal column, `s."w.mean"` is a name lookup that MISSES:
     the leaf is reachable only through the 3-part spelling, like DuckDB."""
     sql = 'SELECT s."w.mean" AS o FROM __THIS__ JOIN s ON k = s.id'
-    con = duckdb.connect()
-    con.register("sa", _STRUCT_ONLY132)
-    con.execute("CREATE TABLE s AS SELECT * FROM sa")
-    with pytest.raises(duckdb.Error):
-        con.execute('SELECT s."w.mean" FROM s')
+    oracle.load("s", _STRUCT_ONLY132)
+    with pytest.raises(Oracle.Error):
+        oracle.execute('SELECT s."w.mean" FROM s')
     with pytest.raises(ValueError, match="does not exist"):
         DuckDBInferFn(
             sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STRUCT_ONLY132}
@@ -372,7 +366,7 @@ def test_an_unreferenced_static_struct_still_builds():
     assert fn.infer_rows([{"k": 5}]) == [{"o": 7}]
 
 
-def test_a_static_table_beats_a_row_struct_column_of_the_same_name():
+def test_a_static_table_beats_a_row_struct_column_of_the_same_name(oracle):
     """Measured on DuckDB: with a TABLE named `w` in scope, `w.mean` is that
     table's column, not the struct's field. Qualifying forces the struct."""
     row = pa.schema(
@@ -388,18 +382,16 @@ def test_a_static_table_beats_a_row_struct_column_of_the_same_name():
     tbl = {"__THIS__": row}
     st = {"w": static}
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, w STRUCT(mean DOUBLE))")
-    con.execute("INSERT INTO __THIS__ VALUES (5, {'mean': 2.0})")
-    con.register("wa", static)
-    con.execute("CREATE TABLE w AS SELECT * FROM wa")
+    oracle.execute("CREATE TABLE __THIS__ (k BIGINT, w STRUCT(mean DOUBLE))")
+    oracle.execute("INSERT INTO __THIS__ VALUES (5, {'mean': 2.0})")
+    oracle.load("w", static)
 
     for expr in ["w.mean", "__THIS__.w.mean"]:
         sql = f"SELECT {expr} AS o FROM __THIS__ JOIN w ON k = w.id"
-        want = con.execute(sql).to_arrow_table().to_pylist()
+        want = oracle.answer(sql).to_pylist()
         got = DuckDBInferFn(sql, row_tables=tbl, static_tables=st).infer_rows(rows)
         assert got == want, f"{expr}: {got} != {want}"
-    assert con.execute(
+    assert oracle.execute(
         "SELECT w.mean AS o FROM __THIS__ JOIN w ON k = w.id"
     ).fetchall() == [(99.0,)], "oracle moved — the table no longer wins"
 
@@ -547,13 +539,12 @@ _STAR125_DDL = {
 
 
 def _duck125(sql: str, kind: str):
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (1)")
+    o = Oracle()
+    o.table("__THIS__", "k BIGINT", [(1,)])
     ddl, ins = _STAR125_DDL[kind]
-    con.execute(ddl)
-    con.execute(ins)
-    res = con.execute(sql)
+    o.execute(ddl)
+    o.execute(ins)
+    res = o.execute(sql)
     return [d[0] for d in res.description], res.fetchall()
 
 
@@ -585,7 +576,7 @@ def test_exclude_lets_a_static_star_drop_what_it_cannot_serve(kind, unservable):
     assert [tuple(x.values()) for x in fn.infer_rows([{"k": 1}])] == want
 
 
-def test_a_scalar_only_static_star_expands_in_declared_order():
+def test_a_scalar_only_static_star_expands_in_declared_order(oracle):
     static = pa.table(
         {
             "id": pa.array([1], pa.int64()),
@@ -594,12 +585,9 @@ def test_a_scalar_only_static_star_expands_in_declared_order():
         }
     )
     sql = "SELECT s.* FROM __THIS__ JOIN s ON s.id = __THIS__.k"
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (1)")
-    con.execute("CREATE TABLE s (id BIGINT, b DOUBLE, a BIGINT)")
-    con.execute("INSERT INTO s VALUES (1, 2.5, 9)")
-    res = con.execute(sql)
+    oracle.table("__THIS__", "k BIGINT", [(1,)])
+    oracle.table("s", "id BIGINT, b DOUBLE, a BIGINT", [(1, 2.5, 9)])
+    res = oracle.execute(sql)
     names, want = [d[0] for d in res.description], res.fetchall()
     assert names == ["id", "b", "a"]
 
@@ -661,15 +649,12 @@ def test_the_constant_path_without_a_limit_is_untouched():
 def _ambig(sql, row, static):
     """Assert BOTH engines refuse `sql` as ambiguous, over a fixed row table
     (`c0 STRUCT(f0 BIGINT), v BIGINT`) joined to static `s0`."""
-    import duckdb as _duck
-
-    con = _duck.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 STRUCT(f0 BIGINT), v BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES ({'f0': 1}, 2)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
-    with pytest.raises(_duck.Error, match="[Aa]mbiguous"):
-        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+    o = Oracle()
+    o.execute("CREATE TABLE __THIS__ (c0 STRUCT(f0 BIGINT), v BIGINT)")
+    o.execute("INSERT INTO __THIS__ VALUES ({'f0': 1}, 2)")
+    o.load("s0", static)
+    with pytest.raises(Oracle.Error, match="[Aa]mbiguous"):
+        o.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
 
     with pytest.raises(ValueError, match="[Aa]mbiguous"):
         DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
@@ -686,11 +671,9 @@ def test_a_struct_path_head_that_binds_in_a_join_scope_is_ambiguous():
     _ambig("SELECT v AS o FROM __THIS__ LEFT JOIN s0 ON (c0.f0 = s0.c0)", row, static)
 
 
-def test_a_bare_scalar_vs_a_static_struct_is_ambiguous():
+def test_a_bare_scalar_vs_a_static_struct_is_ambiguous(oracle):
     # the seed-2023 spelling: the row SCALAR c0 collides with s0's STRUCT c0,
     # whose bare name lives in the opaque list rather than the lane set
-    import duckdb as _duck
-
     row = pa.schema(
         [pa.field("c0", pa.int64(), nullable=False), pa.field("k", pa.int64())]
     )
@@ -704,13 +687,10 @@ def test_a_bare_scalar_vs_a_static_struct_is_ambiguous():
     )
     sql = "SELECT coalesce(c0, 7) AS o FROM __THIS__ LEFT JOIN s0 ON (k = s0.c0.f1)"
 
-    con = _duck.connect()
-    con.execute("CREATE TABLE __THIS__ (c0 BIGINT, k BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (5, 3)")
-    con.register("sa", static)
-    con.execute("CREATE TABLE s0 AS SELECT * FROM sa")
-    with pytest.raises(_duck.Error, match="[Aa]mbiguous"):
-        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+    oracle.table("__THIS__", "c0 BIGINT, k BIGINT", [(5, 3)])
+    oracle.load("s0", static)
+    with pytest.raises(Oracle.Error, match="[Aa]mbiguous"):
+        oracle.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
 
     with pytest.raises(ValueError, match="[Aa]mbiguous"):
         DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s0": static})
@@ -806,7 +786,7 @@ def test_an_unqualified_static_struct_path_serves(sql):
 )
 def test_an_unqualified_static_struct_miss_names_the_key(expr, match, names_a_table):
     sql = f"SELECT {expr} AS o FROM __THIS__ JOIN s ON k = s.id"
-    with pytest.raises(duckdb.Error):
+    with pytest.raises(Oracle.Error):
         _duck132(sql, _STATIC127)  # oracle refuses; if this stops, remeasure
     with pytest.raises(ValueError, match=match) as e:
         DuckDBInferFn(
@@ -836,13 +816,12 @@ _TWO127 = "SELECT w.mean AS o FROM __THIS__ JOIN s ON k = s.id JOIN s2 ON k = s2
 
 
 def _both_refuse_ambiguously(sql, row_ddl, row_schema, statics):
-    con = duckdb.connect()
-    con.execute(f"CREATE TABLE __THIS__ ({row_ddl})")
+    o = Oracle()
+    o.table("__THIS__", row_ddl)
     for name, tbl in statics.items():
-        con.register(f"{name}_a", tbl)
-        con.execute(f"CREATE TABLE {name} AS SELECT * FROM {name}_a")
-    with pytest.raises(duckdb.Error, match="[Aa]mbiguous"):
-        con.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
+        o.load(name, tbl)
+    with pytest.raises(Oracle.Error, match="[Aa]mbiguous"):
+        o.execute(sql).fetchall()  # oracle refuses; if this stops, remeasure
     with pytest.raises(ValueError, match="[Aa]mbiguous"):
         DuckDBInferFn(sql, row_tables={"__THIS__": row_schema}, static_tables=statics)
 
@@ -905,7 +884,7 @@ def test_a_join_alias_beside_a_row_column_of_the_same_name_is_ambiguous():
     )
 
 
-def test_a_row_struct_leaf_and_a_dotted_sibling_both_serve():
+def test_a_row_struct_leaf_and_a_dotted_sibling_both_serve(oracle):
     """The ROW side of the RFC's collision table. A leaf lane's dotted name is
     DISPLAY, never an identifier, so it does not collide with a real column of
     that spelling: the table must build -- including for a query that touches
@@ -918,14 +897,13 @@ def test_a_row_struct_leaf_and_a_dotted_sibling_both_serve():
         ]
     )
     rows = [{"k": 5, "w": {"mean": 1.5}, "w.mean": 99.0}]
-    con = duckdb.connect()
-    con.execute(
+    oracle.execute(
         'CREATE TABLE __THIS__ (k BIGINT, w STRUCT(mean DOUBLE), "w.mean" DOUBLE)'
     )
-    con.execute("INSERT INTO __THIS__ VALUES (5, {'mean': 1.5}, 99.0)")
+    oracle.execute("INSERT INTO __THIS__ VALUES (5, {'mean': 1.5}, 99.0)")
     for expr, want in [("k", 5), ("w.mean", 1.5), ('"w.mean"', 99.0)]:
         sql = f"SELECT {expr} AS o FROM __THIS__"
-        assert con.execute(sql).fetchall() == [(want,)], f"oracle moved: {expr}"
+        assert oracle.execute(sql).fetchall() == [(want,)], f"oracle moved: {expr}"
         got = DuckDBInferFn(
             sql, row_tables={"__THIS__": row}, static_tables={}
         ).infer_rows(rows)
@@ -953,7 +931,7 @@ def test_two_plain_row_columns_of_the_same_name_refuse_by_name():
 # text is quoted from it verbatim.
 def test_a_not_a_struct_refusal_enumerates_what_duckdb_enumerates():
     sql = "SELECT z.bad AS o FROM __THIS__ JOIN s ON k = s.id"
-    with pytest.raises(duckdb.Error) as oracle:
+    with pytest.raises(Oracle.Error) as oracle:
         _duck132(sql, _STATIC127)
     assert "not a struct, union, map, or json" in str(oracle.value)
     with pytest.raises(ValueError, match="not a struct, union, map, or json"):
@@ -971,7 +949,7 @@ def test_a_not_a_struct_refusal_enumerates_what_duckdb_enumerates():
 )
 def test_an_exclude_miss_names_the_scope_it_searched(star, scope):
     sql = f"SELECT {star} EXCLUDE (nope) FROM __THIS__ JOIN s ON k = s.id"
-    with pytest.raises(duckdb.Error) as oracle:
+    with pytest.raises(Oracle.Error) as oracle:
         _duck132(sql, _STATIC127)
     assert "in EXCLUDE list not found in" in str(oracle.value)
     with pytest.raises(ValueError, match=f"in EXCLUDE list not found in {scope}"):

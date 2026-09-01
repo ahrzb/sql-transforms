@@ -7,11 +7,11 @@ belongs here (kept behaviour + its ground) versus in
 
 from __future__ import annotations
 
-import duckdb
 import pyarrow as pa
 import pytest
 from _helpers import probe
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 # ------------------------------------- the join ON residual, three ways --
 #
@@ -57,7 +57,7 @@ print("BUILT", [tuple(x.values()) for x in fn.infer_rows([{{"k": 0, "n": 1}}])])
         "n + COALESCE(NULLIF(r.bud, 7), 0) > 50",
     ],
 )
-def test_split_in_the_on_residual_builds_and_is_correct(join, residual):
+def test_split_in_the_on_residual_builds_and_is_correct(join, residual, oracle):
     sql = (
         f"SELECT n, r.bud AS b FROM __THIS__ AS t {join} r ON t.k = r.id AND {residual}"
     )
@@ -66,12 +66,9 @@ def test_split_in_the_on_residual_builds_and_is_correct(join, residual):
     assert p.returncode == 0, (
         f"exit {p.returncode} ({code})\n{p.stdout}\n{p.stderr[-1500:]}"
     )
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, n BIGINT)")
-    con.execute("INSERT INTO __THIS__ VALUES (0, 1)")
-    con.execute("CREATE TABLE r (id BIGINT, bud BIGINT)")
-    con.execute("INSERT INTO r VALUES (0, 100)")
-    want = con.execute(sql).fetchall()
+    oracle.table("__THIS__", "k BIGINT, n BIGINT", [(0, 1)])
+    oracle.table("r", "id BIGINT, bud BIGINT", [(0, 100)])
+    want = oracle.execute(sql).fetchall()
     assert p.stdout.strip().splitlines()[-1] == f"BUILT {want}", p.stdout
 
 
@@ -82,7 +79,6 @@ def test_split_in_the_on_residual_builds_and_is_correct(join, residual):
 _ONESIDED = pa.table(
     {"id": pa.array([0, 1], pa.int64()), "cat": pa.array([1, 2], pa.int64())}
 )
-_ONESIDED_DDL = "CREATE TABLE r (id BIGINT, cat BIGINT)"
 _ONESIDED_ROWS = [(0, 1), (1, 2)]
 
 
@@ -106,14 +102,10 @@ def _one_sided(residual: str, rows: list[tuple[int, int]]) -> list[tuple]:
     got = [
         tuple(x.values()) for x in fn.infer_rows([{"k": k, "n": n} for k, n in rows])
     ]
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (k BIGINT, n BIGINT)")
-    for k, n in rows:
-        con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [k, n])
-    con.execute(_ONESIDED_DDL)
-    for r in _ONESIDED_ROWS:
-        con.execute("INSERT INTO r VALUES (?, ?)", list(r))
-    assert got == con.execute(sql).fetchall()
+    o = Oracle()
+    o.table("__THIS__", "k BIGINT, n BIGINT", rows)
+    o.table("r", "id BIGINT, cat BIGINT", _ONESIDED_ROWS)
+    assert got == o.execute(sql).fetchall()
     return got
 
 

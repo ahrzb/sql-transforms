@@ -8,10 +8,10 @@ documented contract of its own.
 
 from __future__ import annotations
 
-import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle
 
 T = pa.schema([pa.field("pid", pa.int64())])
 ROWS = [{"pid": 1}, {"pid": 2}, {"pid": 3}, {"pid": None}]
@@ -28,13 +28,10 @@ def _many_check(sql: str):
     )
     got = [tuple(r.values()) for r in fn.infer_rows(ROWS)]
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE __THIS__ (pid BIGINT)")
-    for r in ROWS:
-        con.execute("INSERT INTO __THIS__ VALUES (?)", [r["pid"]])
-    con.register("__arrow_d", DIM)
-    con.execute('CREATE TABLE d AS SELECT * FROM "__arrow_d"')
-    want = con.execute(sql).fetchall()
+    o = Oracle()
+    o.table("__THIS__", "pid BIGINT", [(r["pid"],) for r in ROWS])
+    o.load("d", DIM)
+    want = o.execute(sql).fetchall()
     key = lambda t: tuple((x is None, x) for x in t)  # noqa: E731
     assert sorted(got, key=key) == sorted(want, key=key), f"{sql}\n{got}\n{want}"
 
@@ -102,14 +99,15 @@ def test_value_lanes_from_both_column_sources_vs_oracle():
             shape="many",
         )
         got = [tuple(r.values()) for r in fn.infer_rows(rows)]
-        con = duckdb.connect()
-        con.execute("CREATE TABLE __THIS__ (pid BIGINT NOT NULL, tag VARCHAR)")
-        for r in rows:
-            con.execute("INSERT INTO __THIS__ VALUES (?, ?)", [r["pid"], r["tag"]])
+        o = Oracle()
+        o.table(
+            "__THIS__",
+            "pid BIGINT NOT NULL, tag VARCHAR",
+            [(r["pid"], r["tag"]) for r in rows],
+        )
         for name, tbl in statics.items():
-            con.register(f"__arrow_{name}", tbl)
-            con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"')
-        want = con.execute(sql).fetchall()
+            o.load(name, tbl)
+        want = o.execute(sql).fetchall()
         key = lambda t: tuple((x is None, x) for x in t)  # noqa: E731
         assert sorted(got, key=key) == sorted(want, key=key), f"{sql}\n{got}\n{want}"
 
