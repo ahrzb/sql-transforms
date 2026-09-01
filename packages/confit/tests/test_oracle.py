@@ -1,19 +1,20 @@
 """The oracle's one constructor, exercised on its own terms.
 
 Every test builds its oracle through `confit.oracle.Oracle` rather than a bare
-`duckdb.connect()`: the module exists so that the optimizer-off pragma, the
+DuckDB connection: the module exists so that the optimizer-off pragma, the
 native-table load and the raw arrow answer come from a single place, and a
 test that reached for `duckdb` directly would not be testing that.
 
-The tests run under this directory's autouse fixture, which patches
-`duckdb.connect` to hand back an optimizer-off connection. `Oracle` must be
-independent of it -- it captures the real `duckdb.connect` at import -- so
-nothing here may rely on the fixture being in force.
+No fixture hands these tests a doctored connection: `Oracle` captures the real
+connect at import and applies the pragma itself, so what is exercised here is
+the module and nothing else. The last test is the ban that keeps it that way,
+read off the sources -- see conftest for why the ban cannot live at runtime.
 """
 
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import duckdb
 import pyarrow as pa
@@ -166,3 +167,25 @@ def test_exit_closes_the_connection():
         pass
     with pytest.raises(duckdb.Error):
         oracle.execute("SELECT 1")
+
+
+# Spelled in halves so this file is not its own offender.
+_BAN = "duckdb.connect" + "("
+
+
+def test_no_raw_connections_in_the_sources():
+    """The tests and the fuzzer take their DuckDB from the oracle, and this is
+    where that is enforced -- off the files, not at runtime, because the
+    engine reaches for the same module attribute to fold a static-tables-only
+    query and a patched `connect` cannot tell the two callers apart. Reading
+    the sources also covers the tests a run never reaches."""
+    root = Path(__file__).resolve().parent.parent
+    offenders = sorted(
+        p.relative_to(root).as_posix()
+        for p in (*root.glob("tests/**/*.py"), *root.glob("fuzz/**/*.py"))
+        if _BAN in p.read_text(encoding="utf-8")
+    )
+    assert offenders == [], (
+        f"raw DuckDB connections in {offenders}: use confit.oracle.Oracle() "
+        "(the oracle), and .optimizer_on() when the test is ABOUT the optimizer"
+    )

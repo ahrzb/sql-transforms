@@ -44,10 +44,11 @@ Note this does NOT restate the user-facing contract, which still names what a
 user's DuckDB returns — optimizer on. `DIVERGE_OPT` is exactly the gap
 between the two, which is why it stays a finding.
 
-DuckDB setup mirrors tests/test_udfs.py `udf_check` (native tables, repr-keyed
-multiset compare) — duplicated here on purpose: fuzz/ must not import from
-tests/, and the duplication is itself a check that the registration recipe is
-writable from the documented protocol alone.
+The connection is `confit.oracle.Oracle`, the same one the tests compare
+against, so the baseline cannot drift from theirs. What is NOT shared is the
+UDF `create_function` recipe: it mirrors tests/test_udfs.py `udf_check` and
+stays duplicated on purpose, because writing it a second time from the
+documented protocol alone is itself the check that the protocol doc suffices.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ from dataclasses import field as dfield
 
 import duckdb
 import pyarrow as pa
+from confit.oracle import Oracle
 
 from . import gen as G
 
@@ -367,10 +369,9 @@ _DUCK_BUILD_ERRS = (
 
 
 def _duck_con(case: G.Case, udf_objs):
-    """A connection with the case's UDFs registered and its tables copied
-    out of arrow into NATIVE DuckDB tables (the recipe is in the module
-    note). Both readings share it, so `_duck_run` owns closing it."""
-    con = duckdb.connect()
+    """The oracle, with the case's UDFs registered and its tables loaded as
+    NATIVE tables. Both readings share it, so `_duck_run` owns closing it."""
+    con = Oracle()
     for u in udf_objs:
         params = [_DUCK_T[t] for t in u.takes.types]
         if hasattr(u, "instances"):
@@ -379,21 +380,23 @@ def _duck_con(case: G.Case, udf_objs):
             u.name, _scalar_form(u), params, _duck_ret(u), null_handling="special"
         )
     for name, (sch, rows) in case.statics.items():
-        con.register(f"__arrow_{name}", _arrow_table(sch, rows))
-        # our own generated table names, not user input
-        ddl = f'CREATE TABLE "{name}" AS SELECT * FROM "__arrow_{name}"'  # noqa: S608
-        con.execute(ddl)
-    con.register("__arrow_this", _arrow_table(case.row_schema, case.rows))
-    con.execute("CREATE TABLE __THIS__ AS SELECT * FROM __arrow_this")
+        con.load(name, _arrow_table(sch, rows))
+    con.load("__THIS__", _arrow_table(case.row_schema, case.rows))
     return con
 
 
 def _exec(con, sql):
     """`(table, phase, detail)`, phase being "build" or "run" — the split
     that separates "DuckDB refuses this query" from "DuckDB traps on this
-    data". On success the two error slots are None."""
+    data". On success the two error slots are None.
+
+    Deliberately wider than the oracle's own `try_answer`, which names a
+    DuckDB refusal and lets everything else through: a campaign classifies
+    whatever comes back rather than dying on it, so anything unnamed is
+    phased as a run-time trap and reported with its class.
+    """
     try:
-        return con.execute(sql).to_arrow_table(), None, None
+        return con.answer(sql), None, None
     except Exception as e:  # noqa: BLE001 — classify, don't die
         phase = "build" if type(e).__name__ in _DUCK_BUILD_ERRS else "run"
         return None, phase, f"{type(e).__name__}: {e}"
@@ -407,12 +410,14 @@ def _duck_run(sql, case: G.Case, udf_objs):
     comparable. `statistics_propagation` reads per-column statistics, so two
     separate connections could differ for reasons that have nothing to do
     with the optimizer.
+
+    The baseline reading needs no pragma of its own: an oracle is
+    optimizer-off by construction, and the flip below is the exception.
     """
     con = _duck_con(case, udf_objs)
     try:
-        con.execute("PRAGMA disable_optimizer")
         off = _exec(con, sql)
-        con.execute("PRAGMA enable_optimizer")
+        con.optimizer_on()
         on = _exec(con, sql)
         return off, on
     finally:
