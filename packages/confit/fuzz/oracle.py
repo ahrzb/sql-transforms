@@ -80,6 +80,9 @@ KINDS = (
     # we are reproducing. Since the oracle moved, that is a FINDING.
     "OPT_EMULATED",
     "REFUSED",
+    # the case's answer has a width we have not shipped, so there is nothing
+    # to compare — see the unshipped-feature note below
+    "UNSHIPPED",
     "SKIP",
 )
 
@@ -114,25 +117,28 @@ _DUCK_T = {
     pa.string(): "VARCHAR",
 }
 
-# Campaign-report filter for the one feature not yet shipped: decimals
-# (lattice-spec phase 5, Dec(p,s) arithmetic). One unshipped feature =
-# hundreds of random spellings per run; delete the tag in the feature's own
-# PR or it hides regressions.
+# THE UNSHIPPED-FEATURE VERDICT, and why it is not a comparison
 #
-# The tag covers the LITERAL-derived class ONLY:
-# packages/confit/docs/known-limitations.md's "DECIMAL literals are f64"
-# row, where DuckDB types `1.5` as DECIMAL(2,1)
-# and we map to f64. A decimal STATIC column serves exactly as
-# decimal128(p,s), so a decimal-vs-double type delta THERE is a REGRESSION,
-# not a known gap — and since gen.py emits both spellings, the surviving tag
-# hits stay checkable by hand: every one should trace to a literal.
+# One feature is not yet shipped: decimals (lattice-spec phase 5, Dec(p,s)
+# arithmetic). DuckDB types `1.5` as DECIMAL(2,1); we map it to f64. That is
+# a WIDTH difference, and there is no honest value comparison across it — the
+# oracle once cast DuckDB's answer down to f64 so the rows could still be
+# checked, which manufactured 1-ulp artifacts and graded the gap as
+# agreement. A feature we have not shipped either fails or says so by name.
+# So the case gets its OWN verdict, UNSHIPPED, carrying the class and the
+# lane that differs, and no value comparison happens at all.
 #
-# This tag has NO strict-xfail twin. The bare-literal 1-ulp class is
-# documented instead, in packages/confit/docs/known-limitations.md, and
-# doc-twin accounting — a strict-xfail pin standing behind every
-# known-limitations row — does not exist yet. So when decimal arithmetic
-# lands and this tag has to be deleted, nothing rings: that accounting is
-# what should.
+# The class covers the LITERAL-derived case ONLY:
+# packages/confit/docs/known-limitations.md's "DECIMAL literals are f64" row.
+# A decimal STATIC column serves exactly as decimal128(p,s), so a
+# decimal-vs-double delta THERE is a REGRESSION, not a known gap — and since
+# gen.py emits both spellings, the UNSHIPPED bucket stays checkable by hand:
+# every entry should trace to a literal.
+#
+# When decimal arithmetic lands the schemas match, `_type_delta`'s decimal
+# arm goes dead, the bucket empties, and any decimal divergence left over
+# rings as the real thing. Deleting the dead arm is then the feature's own
+# housekeeping, not a suppression anyone has to remember to lift.
 
 
 @dataclass
@@ -497,23 +503,31 @@ def _dedup_names(names: list[str]) -> list[str]:
 
 
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):
-    """None if schemas agree; ("known", tag) for open-ticket width classes;
-    ("diff", detail) otherwise."""
+    """`(kind, klass, detail)`, or None when the schemas agree.
+
+    `kind` is "unshipped" for a feature whose width we have not shipped —
+    classified, never compared — and "diff" for every other mismatch, which
+    is a divergence. The first unshipped lane names the case; a "diff"
+    anywhere outranks it, because a real difference is not excused by a
+    known gap sitting in another column.
+    """
     if _dedup_names(list(duck.names)) != list(ours.names):
-        return ("diff", f"names {duck.names} != {ours.names}")
-    known = []
+        return ("diff", "", f"names {duck.names} != {ours.names}")
+    unshipped = None
     for d, o in zip(duck, ours, strict=True):
         r = _type_delta(d.type, o.type)
+        detail = f"{d.name}: duck {d.type} != ours {o.type}"
         if r == "diff":
-            return ("diff", f"{d.name}: duck {d.type} != ours {o.type}")
-        if r is not None:
-            known.append(r)
-    return ("known", known[0]) if known else None
+            return ("diff", "", detail)
+        if r is not None and unshipped is None:
+            unshipped = ("unshipped", r, detail)
+    return unshipped
 
 
 def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
-    """None = equal; a tag = an unshipped feature's width class (recursing
-    into structs — a decimal lane inside struct_pack still tags); "diff"."""
+    """None = equal; a class name = an unshipped feature's width (recursing
+    into structs — a decimal lane inside struct_pack still classifies);
+    "diff"."""
     if duck == ours:
         return None
     # One arm per unshipped feature; delete when it ships (see note above).
@@ -535,12 +549,6 @@ def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
             tag = tag or r
         return tag
     return "diff"
-
-
-def _norm(table: pa.Table, to: pa.Schema | None = None) -> list[dict]:
-    if to is not None:
-        table = table.cast(to)
-    return table.to_pylist()
 
 
 def run_case(case: G.Case) -> Verdict:
@@ -706,23 +714,26 @@ def run_case(case: G.Case) -> Verdict:
             return Verdict("AGREE", "", "", t)
 
         delta = _schema_delta(duck_out.schema, sch_cl)
-        cast_to = None
         if delta is not None:
-            if delta[0] == "diff":
-                return Verdict("DIVERGE_VALUE", "schema", delta[1], t)
-            t.append(delta[1])
-            cast_to = sch_cl
-        try:
-            want = _norm(duck_out, cast_to)
-        except Exception as e:  # noqa: BLE001 — cast refuses: widths lied
-            return Verdict("DIVERGE_VALUE", "schema-cast", str(e), t)
+            dkind, klass, detail = delta
+            if dkind == "diff":
+                return Verdict("DIVERGE_VALUE", "schema", detail, t)
+            # An unshipped width is classified, never compared: casting the
+            # oracle's answer down to ours would absorb the gap as agreement.
+            return Verdict("UNSHIPPED", klass, detail, t)
+        want = duck_out.to_pylist()
         if _key(got_cl) != _key(want):
             return Verdict("DIVERGE_VALUE", "values", f"{got_cl[:4]} != {want[:4]}", t)
         return Verdict("AGREE", "", "", t)
 
     v_off, v_on = against(duck_off), against(duck_on)
     agreed = ("AGREE", "AGREE_TRAP")
-    if v_off.kind in agreed and v_on.kind not in agreed:
+    if "UNSHIPPED" in (v_off.kind, v_on.kind):
+        # An unshipped width outranks the optimizer bracket: neither reading
+        # was value-compared, so neither can be evidence for or against a
+        # plan-rewrite pass.
+        v = v_off if v_off.kind == "UNSHIPPED" else v_on
+    elif v_off.kind in agreed and v_on.kind not in agreed:
         # Eager semantics agree with us; a pass changes what the USER sees.
         v = Verdict(
             "DIVERGE_OPT",
@@ -745,7 +756,10 @@ def run_case(case: G.Case) -> Verdict:
         # optimizer in the way.
         v = v_off
 
-    if v.kind not in ("AGREE", "OPT_EMULATED"):
+    # UNSHIPPED still earns the boundary legs: they are OUR side against
+    # itself, with no DuckDB in them, so an unshipped width cannot excuse a
+    # self-inconsistency and a real DIVERGE_VALUE there outranks the class.
+    if v.kind not in ("AGREE", "OPT_EMULATED", "UNSHIPPED"):
         return v
     if trap_cl is not None or static_only:
         return v  # the boundary legs all need a non-trapping row run
