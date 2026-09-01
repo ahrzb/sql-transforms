@@ -82,7 +82,7 @@ def _replay(case: dict) -> tuple[str, str]:
         # directive the line-parser skips records both CREATEs. Replaying
         # the re-create after a drop is exactly what the file did.
         o.replay_setup(case["setup"])
-    except Exception as e:  # noqa: BLE001 -- classification, not control flow
+    except Oracle.Error as e:
         return "FAIL", f"setup failed: {e}"
     named = o.execute("SELECT schema_name, table_name FROM duckdb_tables()").fetchall()
     if not named:

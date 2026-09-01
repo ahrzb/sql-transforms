@@ -41,7 +41,7 @@ _CAST_F = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 2.6, -2.6, 1e19]
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
-def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch):
+def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch, oracle):
     """Every exactly-representable half-integer used to differ by 1. `1e19` is
     on the end to keep the range-guarded TRY_CAST path (a second `Ftoi` site)
     in the same comparison — it overflows BIGINT and must become NULL."""
@@ -53,9 +53,8 @@ def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch):
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": CAST_SCHEMA}, static_tables={})
     assert fn.backend == backend
     got = [(r["i"], r["r"]) for r in fn.infer_rows([{"f": v} for v in _CAST_F])]
-    o = Oracle()
-    o.table("__THIS__", "f DOUBLE", [(v,) for v in _CAST_F])
-    want = o.execute(sql).fetchall()
+    oracle.table("__THIS__", "f DOUBLE", [(v,) for v in _CAST_F])
+    want = oracle.execute(sql).fetchall()
     assert got == want
     # And the contrast, stated rather than implied: the two columns disagree
     # on every tie, so this test fails if the cast ever adopts round()'s mode.
@@ -63,7 +62,7 @@ def test_cast_double_to_bigint_rounds_half_to_even(backend, monkeypatch):
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
-def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
+def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch, oracle):
     """The non-TRY path shares the rounding but keeps its own range trap."""
     if backend == "interpreter":
         monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
@@ -74,9 +73,8 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch):
     assert fn.backend == backend
     fine = [v for v in _CAST_F if v != 1e19]
     got = [r["i"] for r in fn.infer_rows([{"f": v} for v in fine])]
-    o = Oracle()
-    o.table("__THIS__", "f DOUBLE", [(v,) for v in fine])
-    want = [r[0] for r in o.execute(sql).fetchall()]
+    oracle.table("__THIS__", "f DOUBLE", [(v,) for v in fine])
+    want = [r[0] for r in oracle.execute(sql).fetchall()]
     assert got == want
     with pytest.raises(ValueError, match="range"):
         fn.infer_rows([{"f": 1e19}])
@@ -201,15 +199,14 @@ def test_double_to_narrow_rounds_first_then_checks(val, cast_want, try_want):
         (-128.5, None),
     ],
 )
-def test_the_155_boundary_slivers_are_a_kept_divergence(val, duck_155):
+def test_the_155_boundary_slivers_are_a_kept_divergence(val, duck_155, oracle):
     """Remeasures the ORACLE each run: while DuckDB 1.5.5 still shows the
     pre-#24393 behaviour these assert the divergence in both directions; the
     day the pin advances, the oracle side flips and this test fails LOUDLY --
     delete it then, the grid above already asserts the agreed semantics."""
-    o = Oracle()
-    o.table("t", "x DOUBLE", [(val,)])
+    oracle.table("t", "x DOUBLE", [(val,)])
     try:
-        got = o.execute("SELECT CAST(x AS TINYINT) FROM t").fetchall()[0][0]
+        got = oracle.execute("SELECT CAST(x AS TINYINT) FROM t").fetchall()[0][0]
     except Oracle.Error:
         got = None
     assert got == duck_155, f"DuckDB moved past 1.5.5 semantics: {got}"

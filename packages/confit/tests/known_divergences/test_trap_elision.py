@@ -38,7 +38,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
-from confit.oracle import Oracle, Trap
+from confit.oracle import Oracle
 
 # THE STRICT-OP NULL RULE. Fuzz campaign 2026-08-11, ~20 findings; CORRECTED
 # 2026-08-17 when the oracle became DuckDB with the optimizer off.
@@ -293,10 +293,10 @@ _R117 = [{"s": "abc", "x": -2.0}]  # 'abc' is uncastable, ln(-2.0) is a domain t
 def _duck117(sql):
     o = Oracle()
     o.table("__THIS__", "s VARCHAR, x DOUBLE", [("abc", -2.0)])
-    result = o.try_answer(sql)
-    if isinstance(result, Trap):
+    try:
+        return ("rows", o.execute(sql).fetchall())
+    except Oracle.Error:
         return ("trap", None)
-    return ("rows", [tuple(r.values()) for r in result.to_pylist()])
 
 
 def _ours117(sql):
@@ -452,9 +452,10 @@ def test_duckdbs_trap_elision_is_syntactic_not_semantic(oracle):
     re-derived — so this fails loudly rather than the reasoning quietly going
     stale. It asserts DuckDB alone; confit is not involved.
     """
+    # This test is ABOUT the optimizer, so it opts back into it -- the `Oracle`
+    # constructor hands out every connection with the optimizer OFF. With the
+    # optimizer off both P1 and P2 simply trap and there is no split to prove.
     oracle.optimizer_on()
-    # With the optimizer off both P1 and P2 simply trap and there is no
-    # split to prove.
     oracle.table(
         "t",
         "s VARCHAR, n DOUBLE, keep BOOLEAN",
@@ -462,10 +463,10 @@ def test_duckdbs_trap_elision_is_syntactic_not_semantic(oracle):
     )
 
     def duck(sql):
-        result = oracle.try_answer(sql)
-        if isinstance(result, Trap):
+        try:
+            return ("rows", oracle.execute(sql).fetchall())
+        except Oracle.Error:
             return ("trap", None)
-        return ("rows", [tuple(r.values()) for r in result.to_pylist()])
 
     # P1 and P2 denote the same relation: the predicate is NULL on every row,
     # so both select nothing. Only the SPELLING of the upper bound differs.
@@ -553,6 +554,9 @@ def test_duckdbs_is_null_elision_is_not_a_function_of_the_query_or_the_rows():
 
     def duck(setup, decl="TINYINT", q=_IS_NN):
         con = Oracle()
+        # This test is ABOUT the optimizer, so it opts back into it -- the
+        # `Oracle` constructor hands out every connection with the optimizer
+        # OFF by default.
         con.optimizer_on()
         con.execute(f"CREATE TABLE t (c0 {decl})")
         for s in setup:

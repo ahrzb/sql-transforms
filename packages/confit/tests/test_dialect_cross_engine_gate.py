@@ -264,7 +264,8 @@ def test_spark_synthetic_divergences(spark):
     fails = []
     for name, setup, sql in SYNTHETIC:
         with Oracle() as o:
-            o.replay_setup(setup)
+            for stmt in setup:
+                o.execute(stmt)
             cat = o.catalog()
             plan_text = _engine.dialect_parse(sql, cat)
             printed = _engine.dialect_print(plan_text, "spark", cat)

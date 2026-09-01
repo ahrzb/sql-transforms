@@ -11,8 +11,8 @@ NOT-DISTINCT presence key per nested node, one NOT-DISTINCT key per leaf --
 which is that recursion written out.
 
 Every test asserts THE ORACLE's answer first, so an oracle move is a loud
-failure rather than a silent rebaseline. The conftest fixture already puts
-`PRAGMA disable_optimizer` on every connection.
+failure rather than a silent rebaseline. `confit.oracle.Oracle` puts
+`PRAGMA disable_optimizer` on every connection it opens.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _row_table(schema, rows):
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-def oracle(sql, row_table, static):
+def _oracle(sql, row_table, static):
     """DuckDB's own answer, over exactly the arrow data we hand the engine."""
     o = Oracle()
     o.load("__THIS__", row_table)
@@ -79,7 +79,7 @@ def ours(sql, row_table, static, **kw):
 
 
 def check(sql, row_table, static, want):
-    got_oracle = oracle(sql, row_table, static)
+    got_oracle = _oracle(sql, row_table, static)
     assert got_oracle == want, f"oracle moved: {got_oracle} != {want}"
     assert ours(sql, row_table, static) == want
 
@@ -292,7 +292,7 @@ def test_an_explicit_on_over_a_struct_still_refuses():
     struct. `ON t.w = s.w` keeps the existing named refusal."""
     row = _row_table(_ROW_W, [{"id": 5, "w": {"mean": 1.0}}])
     sql = "SELECT z AS o FROM __THIS__ JOIN s ON __THIS__.w = s.w"
-    assert oracle(sql, row, _static_w(_S1, {"mean": 2.0})) == []
+    assert _oracle(sql, row, _static_w(_S1, {"mean": 2.0})) == []
     with pytest.raises(ValueError, match="is a struct"):
         DuckDBInferFn(
             sql,
@@ -429,7 +429,7 @@ def test_an_opaque_shared_column_refuses_by_name(sql, aty, vals, col):
         }
     )
     # The oracle keys on the shared column, so an UNEQUAL one misses.
-    assert oracle(sql, row, static) == ([] if len(vals) > 1 else [{"o": 7}])
+    assert _oracle(sql, row, static) == ([] if len(vals) > 1 else [{"o": 7}])
     _refuses(sql, row_schema, static, f"'{col}'")
 
 

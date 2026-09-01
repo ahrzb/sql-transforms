@@ -387,7 +387,7 @@ def test_field_access_shares_one_call_per_row():
     assert engine_calls == [3], f"engine leg: {engine_calls} calls for 3 rows"
     # DuckDB's leg makes TWO per row, one per field read. Sharing them is its
     # `common_subexpressions` pass, and the oracle runs with the optimizer off
-    # (see conftest), so there is nothing to share. Still pinned rather than
+    # (see confit/oracle.py), so there is nothing to share. Still pinned rather
     # dropped, because the number is what attributes calls to a leg: if our
     # side ever leaked a call into DuckDB's, this moves.
     assert u.calls == 3 + 6, f"DuckDB leg: {u.calls - 3} calls for 3 rows"
