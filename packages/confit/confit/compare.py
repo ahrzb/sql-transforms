@@ -13,8 +13,9 @@ in precisely the places bit-exactness differs from arithmetic agreement.
 
 Ships in the wheel next to `confit.oracle` for the same reason that one does:
 the fuzzer must not import from tests/, and the tests must not import from
-fuzz/, so anything both of them compare with belongs to the PACKAGE. It
-imports stdlib and pyarrow only -- no pytest, no duckdb -- and raises plain
+fuzz/, so anything both of them compare with belongs to the PACKAGE. At run
+time it imports stdlib ONLY -- pyarrow appears in annotations and nowhere
+else, and there is no pytest and no duckdb at all -- and it raises plain
 AssertionError, which is what lets a non-pytest campaign runner use it. It is
 deliberately absent from `confit/__init__.py`: `import confit` stays lean.
 """
@@ -23,8 +24,10 @@ from __future__ import annotations
 
 import math
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-import pyarrow as pa
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 
 def dedup_names(names: list[str]) -> list[str]:
@@ -121,9 +124,12 @@ def assert_rows(got, want, *, ordered: bool = False, ctx: str = "") -> None:
     # each entry back with the row it came from. Failure path only.
     gp, wp = _paired(got, ordered), _paired(want, ordered)
     diffs = [i for i in range(max(len(gp), len(wp))) if _key(gp, i) != _key(wp, i)]
+    # Unordered pairs the two sides up in CANONICAL order, so the index below
+    # is that order's and not the caller's -- the label has to say which.
+    label = "row" if ordered else "canonical row"
     for i in diffs[:_MAX_ROWS]:
         grow, wrow = _row(gp, i), _row(wp, i)
-        lines.append(f"  row {i}:")
+        lines.append(f"  {label} {i}:")
         lines.append(f"    got  {grow!r}")
         lines.append(f"    want {wrow!r}")
         lines.extend(_value_diffs(grow, wrow))
@@ -222,6 +228,12 @@ def _caught_by(a, b) -> str | None:
         return "signed zero"
     if isinstance(a, Decimal) and isinstance(b, Decimal):
         return "Decimal scale"
+    if isinstance(a, list | dict) and isinstance(b, list | dict):
+        # A list or a struct that `==` calls equal differs somewhere INSIDE,
+        # and "type list vs list" names nothing. Saying where exactly would
+        # mean walking the nesting; the reprs on the line above already show
+        # it, so this only says which kind of difference to look for.
+        return "differs inside a nested container"
     return f"type {type(a).__name__} vs {type(b).__name__}"
 
 

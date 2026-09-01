@@ -99,6 +99,21 @@ def test_assert_rows_message_names_the_axis_the_counts_and_the_context():
     assert "leg 3" in msg
 
 
+def test_assert_rows_unordered_message_locates_a_difference_in_canonical_order():
+    """The unordered path pairs the two sides up AFTER canonicalizing, so the
+    index it reports is that order's and not the caller's -- got's `3` is the
+    caller's row 0 and the canonical row 1. The label has to say so, or the
+    reader goes looking at the wrong input row."""
+    got = [{"a": 3}, {"a": 1}]
+    want = [{"a": 1}, {"a": 9}]
+    with pytest.raises(AssertionError) as e:
+        compare.assert_rows(got, want)
+    msg = str(e.value)
+    assert "unordered" in msg
+    assert "canonical row 1" in msg
+    assert "{'a': 3}" in msg and "{'a': 9}" in msg
+
+
 def test_assert_rows_message_locates_the_first_differing_row():
     got = [{"a": 1}, {"a": 2}, {"a": 3}]
     want = [{"a": 1}, {"a": 9}, {"a": 3}]
@@ -188,6 +203,12 @@ def test_compare_imports_stdlib_and_pyarrow_only():
             roots.add((node.module or "").split(".")[0])
     assert roots.isdisjoint({"pytest", "duckdb", "fuzz", "tests"})
     assert roots - {"pyarrow"} <= sys.stdlib_module_names
+    # And pyarrow is reached only through annotations, so nothing third-party
+    # is imported at RUN time. A module-level `import pyarrow` means someone
+    # added a real use; move it back out of the TYPE_CHECKING block if so.
+    assert "pyarrow" not in {
+        a.name for n in tree.body if isinstance(n, ast.Import) for a in n.names
+    }
 
 
 def test_import_confit_stays_lean():
