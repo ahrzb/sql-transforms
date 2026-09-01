@@ -6,8 +6,8 @@ is a real demand path, not an edge case. A decimal static is held as a
 scaled i128 from ingest through the join and emitted as decimal128(p,s).
 
 Every expectation here is the LIVE oracle: an optimizer-off DuckDB
-connection with the same arrow fixtures registered, compared on
-`to_pylist()` AND on `schema`. A wrong row is impossible to write.
+connection with the same arrow fixtures registered, compared on ROWS AND on
+SCHEMA through `confit.compare`. A wrong row is impossible to write.
 Expressions OVER a decimal (arithmetic, casts to int/varchar, mixed
 coalesce) are m-8 lattice phase 5 and refuse by name; those refusals are
 pinned on their message text.
@@ -91,8 +91,8 @@ def _check(
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row_schema}, static_tables=statics)
     got = fn.infer_arrow(pa.Table.from_pylist(rows, schema=row_schema))
     want = _oracle(sql, row_schema, rows, statics)
-    compare.assert_rows(got.to_pylist(), want.to_pylist(), ctx=sql)
-    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+    compare.assert_rows(compare.rows(got), compare.rows(want), ctx=sql)
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
     return got
 
 
