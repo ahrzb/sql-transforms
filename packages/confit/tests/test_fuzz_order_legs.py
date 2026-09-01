@@ -1,10 +1,10 @@
 """The oracle's order legs must actually FIRE.
 
-A comparison leg that never fails verifies nothing (a review found `_key`
-sorting every leg, so ANY permutation of the row path passed). Each test here
-wraps a real engine in a deliberate order bug and requires the leg to report
-it -- these are capability pins: delete the leg, or quietly route it back
-through the multiset form, and they go red.
+A comparison leg that never fails verifies nothing (a review found the
+multiset form sorting every leg, so ANY permutation of the row path passed).
+Each test here wraps a real engine in a deliberate order bug and requires the
+leg to report it -- these are capability pins: delete the leg, or quietly
+route it back through the multiset form, and they go red.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fuzz import oracle  # noqa: E402
@@ -82,7 +82,8 @@ def test_a_scrambled_batch_is_caught_as_an_order_bug():
     assert "order" in v.klass or v.klass == "reversal", v.klass
     # and the bug really was order-only: the multiset never differed
     singles = [fn.infer_arrow(table.slice(i, 1)).to_pylist() for i in range(3)]
-    assert oracle._key([r for s in singles for r in s]) == oracle._key(got)
+    flat = [r for s in singles for r in s]
+    assert compare.multiset(flat) == compare.multiset(got)
 
 
 def test_sortedness_follows_duckdb_defaults():

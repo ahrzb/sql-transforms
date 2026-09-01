@@ -44,13 +44,16 @@ Note this does NOT restate the user-facing contract, which still names what a
 user's DuckDB returns — optimizer on. `DIVERGE_OPT` is exactly the gap
 between the two, which is why it stays a finding.
 
-The connection is `confit.oracle.Oracle`, the same one the tests compare
-against, so the baseline cannot drift from theirs -- and it comes from the
-PACKAGE, which is what keeps the standing rule intact: fuzz/ must not import
-from tests/. What is NOT shared is the UDF `create_function` recipe: it
-mirrors tests/test_udfs.py `udf_check` and stays duplicated on purpose, under
-that same rule and because writing it a second time from the documented
-protocol alone is itself the check that the protocol doc suffices.
+The connection is `confit.oracle.Oracle` and the canonical forms every
+comparison below is written in -- `multiset`, `sequence`, `dedup_names` --
+are `confit.compare`'s. Both are the ones the tests compare against, so
+neither the baseline nor the meaning of "equal" can drift from theirs, and
+both come from the PACKAGE, which is what keeps the standing rule intact:
+fuzz/ must not import from tests/. What is NOT shared is the UDF
+`create_function` recipe: it mirrors tests/test_udfs.py `udf_check` and stays
+duplicated on purpose, under that same rule and because writing it a second
+time from the documented protocol alone is itself the check that the protocol
+doc suffices.
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ from dataclasses import field as dfield
 
 import duckdb
 import pyarrow as pa
+from confit.compare import dedup_names, multiset, sequence
 from confit.oracle import Oracle
 
 from . import gen as G
@@ -433,16 +437,6 @@ def _duck_run(sql, case: G.Case, udf_objs):
         con.close()
 
 
-def _key(rows: list[dict]):
-    return sorted(sorted((k, repr(v)) for k, v in r.items()) for r in rows)
-
-
-def _seq(rows: list[dict]):
-    """Row-order-PRESERVING canonical form, for the legs where order is part
-    of the contract. `_key` above is the multiset form."""
-    return [sorted((k, repr(v)) for k, v in r.items()) for r in rows]
-
-
 def compare_mode(case, static_only: bool) -> str:
     """Which comparison the ORACLE owes this case.
 
@@ -478,30 +472,6 @@ def _sorted_by(rows: list[dict], col: str) -> bool:
     return all(a <= b for a, b in zip(vals, vals[1:], strict=False))
 
 
-def _dedup_names(names: list[str]) -> list[str]:
-    """The wave-5 client contract (pins-wave5/dup-names-client-contract.json,
-    mirrored from frontend.rs::dedup_output_names): duplicate OUTPUT names
-    rename left-to-right to `<name>_N`, smallest free N, case-insensitive,
-    generated candidates included. DuckDB itself applies exactly this at
-    every subquery/CTE/CTAS boundary and in .df(); its TOP-LEVEL arrow
-    export keeps the duplicates instead, so the oracle leg normalizes
-    DuckDB's names through the same rule before comparing -- the engine's
-    deduped names are the DECIDED contract, not a divergence."""
-    seen: set[str] = set()
-    out = []
-    for n in names:
-        if n.lower() not in seen:
-            seen.add(n.lower())
-            out.append(n)
-            continue
-        i = 1
-        while f"{n}_{i}".lower() in seen:
-            i += 1
-        seen.add(f"{n}_{i}".lower())
-        out.append(f"{n}_{i}")
-    return out
-
-
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):
     """`(kind, klass, detail)`, or None when the schemas agree.
 
@@ -511,7 +481,7 @@ def _schema_delta(duck: pa.Schema, ours: pa.Schema):
     anywhere outranks it, because a real difference is not excused by a
     known gap sitting in another column.
     """
-    if _dedup_names(list(duck.names)) != list(ours.names):
+    if dedup_names(list(duck.names)) != list(ours.names):
         return ("diff", "", f"names {duck.names} != {ours.names}")
     unshipped = None
     for d, o in zip(duck, ours, strict=True):
@@ -648,7 +618,9 @@ def run_case(case: G.Case) -> Verdict:
     # Backend agreement is a question about US and does not involve DuckDB, so
     # it is settled once, before either reading.
     if sch_cl != sch_in or (
-        got_cl is not None and got_in is not None and _key(got_cl) != _key(got_in)
+        got_cl is not None
+        and got_in is not None
+        and multiset(got_cl) != multiset(got_in)
     ):
         return Verdict(
             "DIVERGE_VALUE", "backend-values", "cranelift != interpreter", tags
@@ -662,9 +634,7 @@ def run_case(case: G.Case) -> Verdict:
         if duck_out is not None and len(set(duck_out.schema.names)) != len(
             duck_out.schema.names
         ):
-            duck_out = duck_out.rename_columns(
-                _dedup_names(list(duck_out.schema.names))
-            )
+            duck_out = duck_out.rename_columns(dedup_names(list(duck_out.schema.names)))
         t = list(tags)
         if duck_out is None and duck_phase == "build":
             return Verdict(
@@ -691,7 +661,7 @@ def run_case(case: G.Case) -> Verdict:
             )
         if static_only:
             want = duck_out.to_pylist()
-            if _key(got_cl) != _key(want):
+            if multiset(got_cl) != multiset(want):
                 return Verdict(
                     "DIVERGE_VALUE", "static-only-values", f"{got_cl} != {want}", t
                 )
@@ -722,7 +692,7 @@ def run_case(case: G.Case) -> Verdict:
             # oracle's answer down to ours would absorb the gap as agreement.
             return Verdict("UNSHIPPED", klass, detail, t)
         want = duck_out.to_pylist()
-        if _key(got_cl) != _key(want):
+        if multiset(got_cl) != multiset(want):
             return Verdict("DIVERGE_VALUE", "values", f"{got_cl[:4]} != {want[:4]}", t)
         return Verdict("AGREE", "", "", t)
 
@@ -783,7 +753,7 @@ def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
             f"infer_rows() raised where infer_arrow ran: {e}",
             tags,
         )
-    if _key(rows) != _key(got):
+    if multiset(rows) != multiset(got):
         return Verdict(
             "DIVERGE_VALUE",
             "infer-vs-arrow",
@@ -810,7 +780,7 @@ def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
                 return Verdict("DIVERGE_VALUE", f"hostile-{name}", f"raised: {e}", tags)
             except Exception as e:  # noqa: BLE001
                 return Verdict("DIVERGE_VALUE", f"hostile-{name}", f"raised: {e}", tags)
-            if _key(h.to_pylist()) != _key(ref.to_pylist()):
+            if multiset(h.to_pylist()) != multiset(ref.to_pylist()):
                 return Verdict(
                     "DIVERGE_VALUE",
                     f"hostile-{name}",
@@ -820,15 +790,17 @@ def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
 
     # single-row concatenation == batch, AS A SEQUENCE: the serving contract
     # is that output rows follow input rows -- map exactly, filter as a
-    # subsequence, many as per-input-row blocks in input order. `_key` here
-    # would accept any permutation and leave an order bug on the row path
+    # subsequence, many as per-input-row blocks in input order. `multiset`
+    # here would accept any permutation and leave an order bug on the row path
     # invisible. (The leg also catches cross-row state leaks.)
     if 2 <= len(table) <= 6:
         singles = [fn.infer_arrow(table.slice(i, 1)) for i in range(len(table))]
         cat = pa.concat_tables(singles).to_pylist()
-        if _seq(cat) != _seq(got):
+        if sequence(cat) != sequence(got):
             kind = (
-                "batch-vs-single-order" if _key(cat) == _key(got) else "batch-vs-single"
+                "batch-vs-single-order"
+                if multiset(cat) == multiset(got)
+                else "batch-vs-single"
             )
             return Verdict(
                 "DIVERGE_VALUE",
@@ -849,7 +821,7 @@ def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
                 "DIVERGE_VALUE", "reversal", f"reversed input raised: {e}", tags
             )
         want_rev = [r for s in reversed(singles) for r in s.to_pylist()]
-        if _seq(rev) != _seq(want_rev):
+        if sequence(rev) != sequence(want_rev):
             return Verdict(
                 "DIVERGE_VALUE",
                 "reversal",
