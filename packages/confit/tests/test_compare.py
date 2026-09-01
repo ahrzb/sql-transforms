@@ -174,9 +174,10 @@ def test_assert_schema_reports_a_length_difference():
 
 def test_compare_imports_stdlib_and_pyarrow_only():
     """Read off the source, not `sys.modules`: pytest and duckdb are both
-    already imported by the time this test runs. A campaign runner outside
-    pytest, and the fuzzer, both import this module -- neither may be made to
-    pay for a test-only or an oracle-only dependency."""
+    already imported by the time this test runs. The fuzzer's canonicalizers
+    ARE this module's -- fuzz/oracle.py imports `dedup_names`, `multiset` and
+    `sequence` from here -- and a campaign runs outside pytest, so neither may
+    be made to pay for a test-only or an oracle-only dependency."""
     tree = ast.parse(Path(compare.__file__).read_text(encoding="utf-8"))
     roots = set()
     for node in ast.walk(tree):
