@@ -95,6 +95,11 @@ def duckdb_server(
     return call
 
 
+def cols(rows: list[dict]) -> list[str]:
+    """The output column names IN ORDER, off the first row."""
+    return list(rows[0]) if rows else []
+
+
 def verify_parity(mod, n: int = 300) -> list[str]:
     """specializer == DuckDB == handcrafted, exact (repr-level floats).
     Returns human-readable mismatches; empty list = trusted."""
@@ -132,6 +137,16 @@ def verify_parity(mod, n: int = 300) -> list[str]:
     # No more output='dict' vs typed-mode differential: dict-out is the only
     # mode the arrow schema surface has (output= was deleted).
 
+    # `multiset` and `sequence` canonicalize each row by SORTING its items, so
+    # neither leg below can see a column reorder. Output column order is part
+    # of what these scenarios claim, and nothing else here checks it, so both
+    # legs state it once up front — cheaply, off the first row, since a result
+    # set carries one column order for all of its rows.
+    assert cols(got_spec) == cols(got_duck), (
+        f"{mod.NAME} vs duckdb: output column order differs: "
+        f"spec {cols(got_spec)} != duckdb {cols(got_duck)}"
+    )
+
     # DuckDB reorders rows after hash joins (the specializer preserves input
     # order — a contract, not an accident): multiset equality, like the
     # corpus replay. The handcrafted twin is positional.
@@ -156,6 +171,10 @@ def verify_parity(mod, n: int = 300) -> list[str]:
             f"{mod.NAME} vs handcrafted: {len(got_spec)} vs {len(got_hand)} rows"
         )
     else:
+        assert cols(got_spec) == cols(got_hand), (
+            f"{mod.NAME} vs handcrafted: output column order differs: "
+            f"spec {cols(got_spec)} != handcrafted {cols(got_hand)}"
+        )
         spec_seq = sequence(got_spec)
         hand_seq = sequence(got_hand)
         for i, (a, b) in enumerate(zip(got_spec, got_hand, strict=True)):

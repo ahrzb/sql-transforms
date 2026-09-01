@@ -6,10 +6,17 @@ part of the claim. Left to each call site that decision is made by omission: a
 `sorted()` that is there or is not, and a reader has to infer the strength of
 a leg from what the code forgot to do. This module names it instead.
 
-There is exactly ONE axis a caller declares, and it is order. What makes two
-VALUES the same is not an option: `repr` is the contract everywhere, because
-this project's whole claim is bit-exactness, and `repr` is stricter than `==`
-in precisely the places bit-exactness differs from arithmetic agreement.
+Order is the axis `assert_rows` declares, and it is the only one it has: what
+makes two VALUES the same is not an option there. `repr` is the contract,
+because this project's whole claim is bit-exactness, and `repr` is stricter
+than `==` in precisely the places bit-exactness differs from arithmetic
+agreement.
+
+`assert_rows_close` is the named exception, and it is a separate function so
+that the weaker claim is visible at the call site rather than hidden in a
+keyword: it trades `repr` for an ulp tolerance, and pays for that by comparing
+rows POSITIONALLY. It exists for the one leg whose ORACLE wobbles by an ulp;
+everything else is `assert_rows`.
 
 Ships in the wheel next to `confit.oracle` for the same reason that one does:
 the fuzzer must not import from tests/, and the tests must not import from
@@ -117,26 +124,24 @@ def assert_rows(got, want, *, ordered: bool = False, ctx: str = "") -> None:
         return
 
     where = f" [{ctx}]" if ctx else ""
-    lines = [
-        f"assert_rows {axis} mismatch{where}: "
-        f"got {_n(len(g), 'row')}, want {_n(len(w), 'row')}"
-    ]
     # The canonical entries said WHETHER; the source rows say what, so pair
     # each entry back with the row it came from. Failure path only.
     gp, wp = _paired(got, ordered), _paired(want, ordered)
-    diffs = [i for i in range(max(len(gp), len(wp))) if _key(gp, i) != _key(wp, i)]
-    # Unordered pairs the two sides up in CANONICAL order, so the index below
-    # is that order's and not the caller's -- the label has to say which.
-    label = "row" if ordered else "canonical row"
-    for i in diffs[:_MAX_ROWS]:
-        grow, wrow = _row(gp, i), _row(wp, i)
-        lines.append(f"  {label} {i}:")
-        lines.append(f"    got  {grow!r}")
-        lines.append(f"    want {wrow!r}")
-        lines.extend(_value_diffs(grow, wrow))
-    if len(diffs) > _MAX_ROWS:
-        lines.append(f"  ... {len(diffs) - _MAX_ROWS} more differing rows")
-    raise AssertionError("\n".join(lines))
+    diffs = []
+    for i in range(max(len(gp), len(wp))):
+        if _key(gp, i) != _key(wp, i):
+            grow, wrow = _row(gp, i), _row(wp, i)
+            diffs.append((i, grow, wrow, _value_diffs(grow, wrow)))
+    # Unordered pairs the two sides up in CANONICAL order, so the index in the
+    # message is that order's and not the caller's -- the label says which.
+    raise AssertionError(
+        _message(
+            f"assert_rows {axis} mismatch{where}: "
+            f"got {_n(len(g), 'row')}, want {_n(len(w), 'row')}",
+            "row" if ordered else "canonical row",
+            diffs,
+        )
+    )
 
 
 def assert_rows_close(got, want, *, max_ulp: int = 1, ctx: str = "") -> None:
@@ -150,12 +155,19 @@ def assert_rows_close(got, want, *, max_ulp: int = 1, ctx: str = "") -> None:
     concession to a measured wobble, not a second default.
 
     Distance is between the two BIT PATTERNS read as int64, so one ulp is one
-    representable float. That encoding keeps the properties `multiset` keeps,
-    without a special case for any of them: NaN is self-equal (explicitly,
-    since its patterns need not match), and -0.0 sits 2**63 patterns away from
-    0.0, so a signed-zero difference still FAILS at every tolerance a caller
-    would ask for -- deliberately. A pair that is not two floats falls back to
-    `repr` with no tolerance at all.
+    representable float. Most of what `multiset` keeps survives that encoding
+    with no special case: -0.0 sits 2**63 patterns away from 0.0, so a
+    signed-zero difference still FAILS at every tolerance a caller would ask
+    for -- deliberately. NaN is self-equal, and that one IS a special case,
+    since two NaN patterns need not match.
+
+    What the encoding does NOT keep: infinity is the pattern immediately after
+    DBL_MAX, so at the default tolerance this leg accepts a finite answer where
+    the other side overflowed, which `repr` would reject. Nothing here repairs
+    that -- the leg is for a one-ulp wobble in a cbrt, not for values at the
+    edge of the range -- so a comparison that can overflow wants `assert_rows`.
+    A pair that is not two floats falls back to `repr` with no tolerance at
+    all.
 
     Rows are compared POSITIONALLY: a tolerance and a multiset do not combine,
     because canonicalizing to sort would have to know the tolerance to pair the
@@ -183,18 +195,14 @@ def assert_rows_close(got, want, *, max_ulp: int = 1, ctx: str = "") -> None:
     if not diffs:
         return
 
-    lines = [
-        f"assert_rows_close mismatch{where}: "
-        f"{_n(len(diffs), 'row')} differ at {_n(max_ulp, 'ulp')} tolerance"
-    ]
-    for i, g, w, bad in diffs[:_MAX_ROWS]:
-        lines.append(f"  row {i}:")
-        lines.append(f"    got  {g!r}")
-        lines.append(f"    want {w!r}")
-        lines.extend(bad)
-    if len(diffs) > _MAX_ROWS:
-        lines.append(f"  ... {len(diffs) - _MAX_ROWS} more differing rows")
-    raise AssertionError("\n".join(lines))
+    raise AssertionError(
+        _message(
+            f"assert_rows_close mismatch{where}: "
+            f"{_n(len(diffs), 'row')} differ at {_n(max_ulp, 'ulp')} tolerance",
+            "row",
+            diffs,
+        )
+    )
 
 
 def assert_schema(got: pa.Schema, want: pa.Schema, *, ctx: str = "") -> None:
@@ -239,6 +247,26 @@ _MISSING = _Missing()
 
 def _n(k: int, noun: str) -> str:
     return f"{k} {noun}" if k == 1 else f"{k} {noun}s"
+
+
+def _message(header: str, label: str, diffs) -> str:
+    """The failure message both `assert_rows` legs raise: the header the caller
+    wrote, then each differing row as got/want plus whatever separated the two,
+    then a count of the rows that did not fit.
+
+    A reader who has seen one of these messages has seen the other; the two
+    legs differ only in the header, the row label and how they decide a row
+    differs, so those are what they pass in.
+    """
+    lines = [header]
+    for i, grow, wrow, why in diffs[:_MAX_ROWS]:
+        lines.append(f"  {label} {i}:")
+        lines.append(f"    got  {grow!r}")
+        lines.append(f"    want {wrow!r}")
+        lines.extend(why)
+    if len(diffs) > _MAX_ROWS:
+        lines.append(f"  ... {len(diffs) - _MAX_ROWS} more differing rows")
+    return "\n".join(lines)
 
 
 def _paired(rows_, ordered: bool):

@@ -209,6 +209,16 @@ def test_assert_rows_close_is_positional_where_assert_rows_is_not():
         compare.assert_rows_close(rows, list(reversed(rows)))
 
 
+def test_assert_rows_close_message_truncates_a_long_run_of_differences():
+    got = [{"c": float(i)} for i in range(60)]
+    want = [{"c": float(i + 100)} for i in range(60)]
+    with pytest.raises(AssertionError) as e:
+        compare.assert_rows_close(got, want)
+    msg = str(e.value)
+    assert msg.count("  row ") <= 20
+    assert "40 more differing rows" in msg
+
+
 def test_assert_rows_close_reports_a_row_count_mismatch():
     with pytest.raises(AssertionError) as e:
         compare.assert_rows_close([{"c": 1.0}], [], ctx="leg 3")
