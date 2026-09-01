@@ -10,6 +10,7 @@ in `sys.modules` by the time anything here runs.
 from __future__ import annotations
 
 import ast
+import math
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -150,6 +151,69 @@ def test_assert_rows_message_truncates_a_long_run_of_differences():
 
 def test_assert_rows_passes_silently_when_equal():
     assert compare.assert_rows([{"a": float("nan")}], [{"a": float("nan")}]) is None
+
+
+def test_assert_rows_close_accepts_a_one_ulp_difference():
+    assert (
+        compare.assert_rows_close([{"c": 1.0}], [{"c": math.nextafter(1.0, 2.0)}])
+        is None
+    )
+
+
+def test_assert_rows_close_rejects_two_ulps_at_max_ulp_one():
+    two = math.nextafter(math.nextafter(1.0, 2.0), 2.0)
+    with pytest.raises(AssertionError) as e:
+        compare.assert_rows_close([{"c": 1.0}], [{"c": two}], ctx="cbrt leg")
+    msg = str(e.value)
+    assert "2 ulp" in msg
+    assert "cbrt leg" in msg
+    assert "row 0" in msg and "c:" in msg
+    compare.assert_rows_close([{"c": 1.0}], [{"c": two}], max_ulp=2)
+
+
+def test_assert_rows_close_makes_nan_self_equal():
+    nan = float("nan")
+    assert compare.assert_rows_close([{"c": nan}], [{"c": nan}]) is None
+    assert nan != nan  # what `==` would have said
+
+
+def test_assert_rows_close_still_rejects_signed_zero():
+    """The bit patterns of -0.0 and 0.0 are 2**63 apart, so the tolerance leg
+    keeps the property the repr leg keeps -- out of the encoding, not out of a
+    special case, and at any tolerance a caller would plausibly ask for."""
+    with pytest.raises(AssertionError) as e:
+        compare.assert_rows_close([{"c": -0.0}], [{"c": 0.0}], max_ulp=1000)
+    assert str(2**63) in str(e.value)
+
+
+@pytest.mark.parametrize("dropped_from", ["got", "want"])
+def test_assert_rows_close_fails_on_a_key_missing_from_either_side(dropped_from):
+    both, one = {"a": 1.0, "b": 2.0}, {"a": 1.0}
+    got, want = (one, both) if dropped_from == "got" else (both, one)
+    with pytest.raises(AssertionError) as e:
+        compare.assert_rows_close([got], [want])
+    msg = str(e.value)
+    assert "b:" in msg and "missing" in msg
+
+
+def test_assert_rows_close_falls_back_to_repr_off_the_float_pairs():
+    compare.assert_rows_close([{"v": "x"}], [{"v": "x"}])
+    with pytest.raises(AssertionError):
+        compare.assert_rows_close([{"v": 1}], [{"v": 1.0}], max_ulp=1000)
+
+
+def test_assert_rows_close_is_positional_where_assert_rows_is_not():
+    rows = [{"c": 1.0}, {"c": 2.0}]
+    compare.assert_rows(rows, list(reversed(rows)))
+    with pytest.raises(AssertionError):
+        compare.assert_rows_close(rows, list(reversed(rows)))
+
+
+def test_assert_rows_close_reports_a_row_count_mismatch():
+    with pytest.raises(AssertionError) as e:
+        compare.assert_rows_close([{"c": 1.0}], [], ctx="leg 3")
+    msg = str(e.value)
+    assert "1 row" in msg and "0 rows" in msg and "leg 3" in msg
 
 
 def test_assert_schema_accepts_an_equal_schema():

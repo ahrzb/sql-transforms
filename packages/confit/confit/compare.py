@@ -23,6 +23,7 @@ deliberately absent from `confit/__init__.py`: `import confit` stays lean.
 from __future__ import annotations
 
 import math
+import struct
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -138,6 +139,64 @@ def assert_rows(got, want, *, ordered: bool = False, ctx: str = "") -> None:
     raise AssertionError("\n".join(lines))
 
 
+def assert_rows_close(got, want, *, max_ulp: int = 1, ctx: str = "") -> None:
+    """`got` equals `want` with the floats allowed to be `max_ulp` apart, or
+    AssertionError saying how not.
+
+    The tolerance leg, for the few comparisons where the ORACLE itself is not
+    bit-reproducible -- DuckDB's own wheels disagree by one ulp on cbrt across
+    platforms, so a repr-exact pin there fails on somebody's machine and says
+    nothing true. `assert_rows` is the leg everywhere else; this one is a
+    concession to a measured wobble, not a second default.
+
+    Distance is between the two BIT PATTERNS read as int64, so one ulp is one
+    representable float. That encoding keeps the properties `multiset` keeps,
+    without a special case for any of them: NaN is self-equal (explicitly,
+    since its patterns need not match), and -0.0 sits 2**63 patterns away from
+    0.0, so a signed-zero difference still FAILS at every tolerance a caller
+    would ask for -- deliberately. A pair that is not two floats falls back to
+    `repr` with no tolerance at all.
+
+    Rows are compared POSITIONALLY: a tolerance and a multiset do not combine,
+    because canonicalizing to sort would have to know the tolerance to pair the
+    rows up. Each row is compared over the UNION of the two sides' keys, so an
+    output column that one side dropped is a failure naming that key rather
+    than a key the loop never reached.
+    """
+    where = f" [{ctx}]" if ctx else ""
+    if len(got) != len(want):
+        raise AssertionError(
+            f"assert_rows_close mismatch{where}: "
+            f"got {_n(len(got), 'row')}, want {_n(len(want), 'row')}"
+        )
+
+    diffs = []
+    for i, (g, w) in enumerate(zip(got, want, strict=True)):
+        bad = []
+        for k in sorted(set(g) | set(w), key=str):
+            a, b = g.get(k, _MISSING), w.get(k, _MISSING)
+            why = _not_close(a, b, max_ulp)
+            if why:
+                bad.append(f"    {k}: {a!r} != {b!r}   [{why}]")
+        if bad:
+            diffs.append((i, g, w, bad))
+    if not diffs:
+        return
+
+    lines = [
+        f"assert_rows_close mismatch{where}: "
+        f"{_n(len(diffs), 'row')} differ at {_n(max_ulp, 'ulp')} tolerance"
+    ]
+    for i, g, w, bad in diffs[:_MAX_ROWS]:
+        lines.append(f"  row {i}:")
+        lines.append(f"    got  {g!r}")
+        lines.append(f"    want {w!r}")
+        lines.extend(bad)
+    if len(diffs) > _MAX_ROWS:
+        lines.append(f"  ... {len(diffs) - _MAX_ROWS} more differing rows")
+    raise AssertionError("\n".join(lines))
+
+
 def assert_schema(got: pa.Schema, want: pa.Schema, *, ctx: str = "") -> None:
     """`got` equals `want`, or AssertionError naming the FIRST field that
     differs and the attribute that differs on it.
@@ -235,6 +294,26 @@ def _caught_by(a, b) -> str | None:
         # it, so this only says which kind of difference to look for.
         return "differs inside a nested container"
     return f"type {type(a).__name__} vs {type(b).__name__}"
+
+
+def _not_close(a, b, max_ulp: int) -> str | None:
+    """Why `a` is not `b` within `max_ulp`, phrased for the failure line, or
+    None when it is."""
+    if a is _MISSING or b is _MISSING:
+        return "key missing on one side"
+    if isinstance(a, float) and isinstance(b, float):
+        if _isnan(a) and _isnan(b):
+            return None
+        d = abs(_bits(a) - _bits(b))
+        return None if d <= max_ulp else f"{_n(d, 'ulp')} apart"
+    return None if repr(a) == repr(b) else "repr"
+
+
+def _bits(v: float) -> int:
+    """The float's own bits read as a signed int64: consecutive floats of one
+    sign are consecutive here, which is what makes a subtraction an ulp count.
+    """
+    return struct.unpack("<q", struct.pack("<d", v))[0]
 
 
 def _eq(a, b) -> bool:
