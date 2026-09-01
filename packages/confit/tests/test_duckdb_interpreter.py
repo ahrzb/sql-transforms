@@ -13,7 +13,7 @@ from typing import Any
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 
 _ARROW = {
@@ -68,13 +68,10 @@ def duck_check(
     for name, table in statics.items():
         o.load(name, table)
     o.load("__THIS__", static(row_schema, row_rows))
-    want = o.answer(sql).to_pylist()
+    want = compare.rows(o.answer(sql))
 
-    # Row order is not part of the contract (a join may reorder); compare as
-    # multisets of repr'd rows — repr keeps value types apart (1 vs '1' vs
-    # 1.0) and makes NaN compare equal to itself.
-    key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
-    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
+    # Row order is not part of the contract (a join may reorder).
+    compare.assert_rows(got, want, ctx=sql)
 
 
 DIM = static(

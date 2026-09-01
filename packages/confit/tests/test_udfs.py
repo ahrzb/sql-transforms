@@ -14,7 +14,7 @@ from __future__ import annotations
 import duckdb
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 from sql_transform._udf import UDF
 from test_duckdb_interpreter import _row_schema, static
@@ -276,8 +276,7 @@ def udf_check(sql, row_schema, row_rows, statics, udfs, after_engine=None):
     want = o.answer(sql).to_pylist()
     o.close()
 
-    key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
-    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
+    compare.assert_rows(got, want, ctx=sql)
     return got
 
 
