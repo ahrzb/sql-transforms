@@ -20,7 +20,7 @@ from typing import Any
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 
 _DEC_SCHEMA = pa.schema([pa.field("gid", pa.string(), nullable=False)])
@@ -91,10 +91,7 @@ def _check(
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row_schema}, static_tables=statics)
     got = fn.infer_arrow(pa.Table.from_pylist(rows, schema=row_schema))
     want = _oracle(sql, row_schema, rows, statics)
-    key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
-    assert sorted(map(key, got.to_pylist())) == sorted(map(key, want.to_pylist())), (
-        f"{sql}: {got.to_pylist()} != {want.to_pylist()}"
-    )
+    compare.assert_rows(got.to_pylist(), want.to_pylist(), ctx=sql)
     assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
     return got
 

@@ -28,7 +28,7 @@ import os
 import random
 from collections import Counter
 
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Trap
 from test_duckdb_interpreter import _row_schema, static
 
@@ -214,10 +214,6 @@ def _case_sql(rng: random.Random) -> str:
     return f"SELECT a, {expr} AS r FROM __THIS__"
 
 
-def _rows_key(rows: list[dict]) -> list:
-    return sorted(sorted((k, repr(v)) for k, v in r.items()) for r in rows)
-
-
 def test_regexp_differential_fuzz(oracle):
     rng = random.Random(SEED)  # noqa: S311 - deterministic fuzzing, not crypto
     schema = _row_schema(SCHEMA)
@@ -243,7 +239,7 @@ def test_regexp_differential_fuzz(oracle):
         got = fn.infer_rows(inputs)
 
         assert want is not None, f"duckdb errored but the engine served rows: {ctx}"
-        assert _rows_key(got) == _rows_key(want), f"{ctx}\n got={got}\nwant={want}"
+        compare.assert_rows(got, want, ctx=ctx)
         stats["match"] += 1
 
     # Self-check: a degenerate generator (everything rejected) proves nothing.

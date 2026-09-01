@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 
 # Fuzz campaign 2026-08-11, 11 schema findings + 5 downstream binder splits.
 # DuckDB types a bare NULL argument FIRST (INTEGER, or the BLOB overload), and
@@ -119,8 +119,7 @@ def test_bigint_and_in_range_literal_arithmetic_still_matches(sql, oracle):
 
     oracle.table("__THIS__", "k BIGINT", [(2,)])
     want = oracle.answer(sql).to_pylist()
-    key = lambda r: sorted((c, repr(v)) for c, v in r.items())  # noqa: E731
-    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
+    compare.assert_rows(got, want, ctx=sql)
 
 
 # Fuzz campaign 2026-08-11, 113 of 963 findings. Unary minus was
@@ -157,5 +156,4 @@ def test_negative_zero_keeps_its_sign(sql, rows, backend, monkeypatch, oracle):
 
     oracle.table("__THIS__", "x DOUBLE", [(r["x"],) for r in rows])
     want = oracle.answer(sql).to_pylist()
-    key = lambda r: sorted((k, repr(v)) for k, v in r.items())  # noqa: E731
-    assert sorted(map(key, got)) == sorted(map(key, want)), f"{got} != {want}"
+    compare.assert_rows(got, want, ctx=sql)
