@@ -5,9 +5,9 @@
 
 Each worker is a subprocess reading seeds line-by-line; a dead or hung worker
 is killed, blamed for its in-flight seed (PANIC/TIMEOUT finding, stderr tail
-attached), and replaced. Verdict counts, refusal classes, and a construct-
-coverage histogram over AGREE cases print at the end — a grammar hole should
-be visible, not silent.
+attached), and replaced. Verdict counts, refusal classes, the unshipped-
+feature bucket, and a construct-coverage histogram over AGREE cases print at
+the end — a grammar hole should be visible, not silent.
 """
 
 from __future__ import annotations
@@ -38,6 +38,8 @@ INTERESTING = (
 # Agreement, for the coverage histogram. OPT_EMULATED is NOT agreement: since
 # the oracle became optimizer-off DuckDB it means we answer unlike the oracle,
 # so it is a finding, and counting it as coverage would hide it twice.
+# UNSHIPPED is not agreement either — nothing was compared — and it is not a
+# finding, so it gets its own section below rather than a place in either.
 COVERED = ("AGREE",)
 
 
@@ -162,6 +164,16 @@ def report(results: list[dict], out: Path):
     print("\n== AGREE coverage by construct ==")
     for k, c in cover.most_common():
         print(f"  {c:6}  {k}")
+
+    # Cases whose answer has a width we have not shipped: classified, never
+    # value-compared, never counted as agreement. An EMPTY section means
+    # either the feature shipped — delete its arm in fuzz/oracle.py — or the
+    # grammar stopped reaching it, and both are worth seeing.
+    uns = [r for r in results if r["kind"] == "UNSHIPPED"]
+    print("\n== unshipped features (classified, not compared) ==")
+    for k, c in collections.Counter(r["klass"] for r in uns).most_common():
+        ex = next(x for x in uns if x["klass"] == k)
+        print(f"  {c:6}  {k}   e.g. seed {ex['seed']}: {ex['detail'][:60]}")
 
     # The passes we reproduce on purpose, by the eager-baseline disagreement
     # they resolve. Empty here means no emulation was exercised at all, which

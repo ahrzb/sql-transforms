@@ -20,6 +20,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pyarrow as pa
+
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from fuzz import gen, oracle, shrink  # noqa: E402
@@ -73,6 +75,37 @@ def test_planted_over_modifier_diverges_or_refuses():
     case = gen.planted_over_case()
     v = oracle.run_case(case)
     assert v.kind in ("DIVERGE_BUILD", "REFUSED"), v
+
+
+def _decimal_lit_case(pack: bool) -> gen.Case:
+    """A bare decimal literal: DuckDB types `1.5` as DECIMAL(2,1) and we map
+    it to f64, decimal arithmetic being unshipped. `pack` puts the literal in
+    a struct lane, so the nested delta is exercised too."""
+    e: gen.Node = gen.Lit(1.5, "float", bare_decimal=True)
+    if pack:
+        e = gen.StructPack([("f", e)])
+    q = gen.Q([], gen.Sel([(e, "o0")], "__THIS__"))
+    return gen.Case(-2, {"k": "int"}, [{"k": 1}], {}, [], None, q, None, None, [])
+
+
+def test_an_unshipped_lane_is_classified_and_never_value_compared():
+    """The oracle used to cast DuckDB's DECIMAL answer down to our f64 so the
+    values could still be compared. That manufactured 1-ulp artifacts and
+    graded a feature nobody has shipped as agreement. An unshipped width now
+    gets its own verdict, and no comparison at all."""
+    for pack in (False, True):
+        v = oracle.run_case(_decimal_lit_case(pack))
+        assert (v.kind, v.klass) == ("UNSHIPPED", "decimals"), v
+        assert "decimal" in v.detail, v
+
+
+def test_a_real_schema_difference_is_still_a_divergence():
+    """Only the named unshipped classes take the UNSHIPPED exit; every other
+    type or name mismatch stays the DIVERGE_VALUE "schema" it always was."""
+    duck = pa.schema([("o0", pa.int64())])
+    assert oracle._schema_delta(duck, pa.schema([("o0", pa.string())]))[0] == "diff"
+    assert oracle._schema_delta(duck, pa.schema([("o1", pa.int64())]))[0] == "diff"
+    assert oracle._schema_delta(duck, duck) is None
 
 
 def _walk_schema(schema: dict) -> tuple[set[str], bool, bool]:
