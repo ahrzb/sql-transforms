@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 
 IN = pa.schema(
@@ -49,8 +49,8 @@ def _ours(sql: str) -> pa.Table:
 @pytest.mark.parametrize("sql", BATTERY)
 def test_struct_pack_field_access_matches_duckdb(sql):
     got, want = _ours(sql), _duck(sql)
-    assert got.to_pylist() == want.to_pylist(), sql
-    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 @pytest.mark.parametrize(

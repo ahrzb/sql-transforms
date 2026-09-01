@@ -16,7 +16,7 @@ from __future__ import annotations
 import duckdb
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle, Trap
 
 IN_SCHEMA = pa.schema(
@@ -144,8 +144,8 @@ def _ours(sql: str) -> pa.Table:
 @pytest.mark.parametrize("sql", CATALOGUE)
 def test_output_width_matches_duckdb(sql):
     got, want = _ours(sql), _duck(sql)
-    assert got.to_pylist() == want.to_pylist(), sql
-    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_try_cast_to_integer_nulls_out_of_range():
@@ -286,8 +286,8 @@ def test_pure_udf_bind_fold_matches_duckdb_schema():
     sql = "SELECT (udf9(1, NULL)).f1 AS o FROM __THIS__"
     ours, duck = _ours_udf(sql, _StructUdf()), _duck_udf(sql, _StructUdf())
     assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    assert ours.to_pylist() == duck.to_pylist()
-    assert ours.schema == duck.schema, f"{ours.schema} != {duck.schema}"
+    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
+    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
 
 
 def test_pure_udf_fold_uses_the_real_result():
@@ -299,8 +299,10 @@ def test_pure_udf_fold_uses_the_real_result():
     assert u.calls == 1, "the bind fold runs the callable exactly once"
     duck = _duck_udf(sql, _StructUdf(on_null=(99,)))
     assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    assert ours.to_pylist() == duck.to_pylist() == [{"o": 99}] * len(ROWS)
-    assert ours.schema == duck.schema
+    duck_rows = compare.rows(duck)
+    assert duck_rows == [{"o": 99}] * len(ROWS), "oracle moved — remeasure"
+    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
+    compare.assert_rows(compare.rows(ours), duck_rows, ordered=True, ctx=sql)
 
 
 def test_pure_udf_fold_keeps_declared_type_for_null_fields():
@@ -310,8 +312,8 @@ def test_pure_udf_fold_keeps_declared_type_for_null_fields():
     ours = _ours_udf(sql, _StructUdf(on_null=(None,)))
     duck = _duck_udf(sql, _StructUdf(on_null=(None,)))
     assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    assert ours.schema == duck.schema
-    assert ours.to_pylist() == duck.to_pylist()
+    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
+    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
 
 
 def test_side_effects_udf_is_never_executed_at_build():
@@ -376,8 +378,8 @@ ADOPTION_BATTERY = [
 def test_sqlnull_fold_results_adopt_like_bare_null(sql):
     ours, duck = _ours_udf(sql, _StructUdf()), _duck_udf(sql, _StructUdf())
     assert duck.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    assert ours.to_pylist() == duck.to_pylist(), sql
-    assert ours.schema == duck.schema, f"{sql}: {ours.schema} != {duck.schema}"
+    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
+    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
 
 
 class _ScalarStrUdf:
@@ -403,8 +405,8 @@ def test_pure_scalar_udf_null_under_concat_collapses():
     ours = _ours_udf(sql, _ScalarStrUdf(result=None))
     duck = _duck_udf(sql, _ScalarStrUdf(result=None))
     assert duck.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    assert ours.to_pylist() == duck.to_pylist()
-    assert ours.schema == duck.schema
+    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
+    compare.assert_rows(compare.rows(ours), compare.rows(duck), ordered=True, ctx=sql)
 
 
 def test_raising_pure_udf_under_concat_stays_runtime():
@@ -432,8 +434,10 @@ def test_pure_scalar_udf_value_under_concat_bakes_once():
     ours = fn.infer_arrow(pa.Table.from_pylist(ROWS))
     assert u.calls == 1, "the baked literal never re-executes the udf"
     duck = _duck_udf(sql, _ScalarStrUdf(result=("x",)))
-    assert ours.to_pylist() == duck.to_pylist() == [{"o": "x" + r["s"]} for r in ROWS]
-    assert ours.schema == duck.schema
+    duck_rows = compare.rows(duck)
+    assert duck_rows == [{"o": "x" + r["s"]} for r in ROWS], "oracle moved — remeasure"
+    compare.assert_schema(ours.schema, duck.schema, ctx=sql)
+    compare.assert_rows(compare.rows(ours), duck_rows, ordered=True, ctx=sql)
 
 
 # Measured 2026-08-19: the bind-fold finishes what DuckDB's does
@@ -473,8 +477,8 @@ CONCAT_NULL_BATTERY = [
 def test_concat_with_foldable_null_operand_is_sqlnull(sql):
     got, want = _ours(sql), _duck(sql)
     assert want.schema.field("o").type == pa.int32(), "oracle moved — remeasure"
-    assert got.to_pylist() == want.to_pylist(), sql
-    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_concat_with_unfoldable_null_operand_stays_varchar():
@@ -483,8 +487,8 @@ def test_concat_with_unfoldable_null_operand_stays_varchar():
     sql = "SELECT (CASE WHEN 1 = 0 THEN s END) || 'a' AS o FROM __THIS__"
     got, want = _ours(sql), _duck(sql)
     assert want.schema.field("o").type == pa.string(), "oracle moved — remeasure"
-    assert got.to_pylist() == want.to_pylist(), sql
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 @pytest.mark.parametrize(
@@ -558,8 +562,8 @@ def test_static_column_types_at_its_arrow_width(arrow_ty, name, oracle):
     )
     got = fn.infer_arrow(pa.Table.from_pylist(ROWS))
     assert want.schema.field("o").type == arrow_ty, "oracle moved — remeasure"
-    assert got.schema == want.schema, f"{name}: {got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 # The same rule for a KEY column, which the value-column rule above does not
@@ -595,8 +599,8 @@ def test_projected_static_key_takes_the_static_columns_width(
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=row))
     assert want.schema.field("o").type == static_ty, "oracle moved — remeasure"
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_a_left_miss_on_the_key_is_still_null(oracle):
@@ -612,9 +616,10 @@ def test_a_left_miss_on_the_key_is_still_null(oracle):
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": static})
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}, {"k": 6}], schema=row))
-    assert want.to_pylist() == [{"o": 5}, {"o": None}], "oracle moved — remeasure"
-    assert got.to_pylist() == want.to_pylist()
-    assert got.schema == want.schema
+    want_rows = compare.rows(want)
+    assert want_rows == [{"o": 5}, {"o": None}], "oracle moved — remeasure"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), want_rows, ordered=True, ctx=sql)
 
 
 # ===========================================================================
@@ -671,8 +676,8 @@ def test_a_double_probe_against_an_integer_key_serves_the_static_value():
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5.0}], schema=_D_ROW))
     assert want.schema.field("o").type == pa.int64(), "oracle moved — remeasure"
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_a_double_probe_key_serves_the_i64_its_double_cannot_name():
@@ -690,8 +695,8 @@ def test_a_double_probe_key_serves_the_i64_its_double_cannot_name():
         sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": _D_ONE}
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": float(_P53)}], schema=_D_ROW))
-    assert got.to_pylist() == want.to_pylist()
-    assert got.schema == want.schema
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 @pytest.mark.parametrize("kind", ["JOIN", "LEFT JOIN"])
@@ -710,8 +715,8 @@ def test_a_double_probe_serves_every_integer_static_key_width(static_ty, proj, k
         sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": static}
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5.0}], schema=_D_ROW))
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_f64_colliding_static_keys_fan_out_under_shape_many():
@@ -731,7 +736,7 @@ def test_f64_colliding_static_keys_fan_out_under_shape_many():
         {"o": _P53, "w": 70},
         {"o": _P53_1, "w": 71},
     ], "oracle moved — remeasure"
-    assert sorted(got, key=key) == sorted(want.to_pylist(), key=key)
+    compare.assert_rows(got, compare.rows(want), ctx=sql)
 
 
 @pytest.mark.parametrize(
@@ -769,8 +774,8 @@ def test_a_double_probe_key_projects_through_star_and_expressions(sql):
         sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": _D_ONE}
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": float(_P53)}], schema=_D_ROW))
-    assert got.schema == want.schema, f"{sql}: {got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist(), sql
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 @pytest.mark.parametrize(
@@ -790,8 +795,8 @@ def test_a_using_join_keeps_merging_the_double_probe_key(sql, want_ty):
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": _D_ONE})
     got = fn.infer_arrow(pa.Table.from_pylist([{"c0": float(_P53)}], schema=row))
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_a_using_star_keeps_one_merged_double_column():
@@ -804,8 +809,8 @@ def test_a_using_star_keeps_one_merged_double_column():
 
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"s": _D_ONE})
     got = fn.infer_arrow(pa.Table.from_pylist([{"c0": float(_P53)}], schema=row))
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_a_left_miss_on_a_double_probe_key_is_still_null():
@@ -813,7 +818,8 @@ def test_a_left_miss_on_a_double_probe_key_is_still_null():
     a miss is NULL on the key column, never coalesced to the probe's value."""
     sql = "SELECT s.c0 AS o FROM __THIS__ LEFT JOIN s ON k = s.c0"
     want = _double_probe_duck(sql, _D_ONE, probe=((float(_P53),), (1.5,)))
-    assert want.to_pylist() == [{"o": _P53_1}, {"o": None}], "oracle moved — remeasure"
+    want_rows = compare.rows(want)
+    assert want_rows == [{"o": _P53_1}, {"o": None}], "oracle moved — remeasure"
 
     fn = DuckDBInferFn(
         sql, row_tables={"__THIS__": _D_ROW}, static_tables={"s": _D_ONE}
@@ -821,8 +827,8 @@ def test_a_left_miss_on_a_double_probe_key_is_still_null():
     got = fn.infer_arrow(
         pa.Table.from_pylist([{"k": float(_P53)}, {"k": 1.5}], schema=_D_ROW)
     )
-    assert got.to_pylist() == want.to_pylist()
-    assert got.schema == want.schema
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), want_rows, ordered=True, ctx=sql)
 
 
 # A static column whose arrow type the engine does not serve at that type
@@ -1255,7 +1261,5 @@ def test_null_meets_literal_width_matches_duckdb(sql, oracle):
     got = fn.infer_arrow(
         pa.Table.from_pylist([{**_T131_ROWS[0], "k": 1}], schema=schema)
     )
-    assert got.schema == want.schema, (
-        f"{got.schema.field('o').type} != {want.schema.field('o').type}"
-    )
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)

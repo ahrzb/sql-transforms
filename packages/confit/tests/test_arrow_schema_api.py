@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pyarrow as pa
 import pytest
-from confit import DuckDBInferFn
+from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
 
 SCHEMA = pa.schema(
@@ -222,8 +222,8 @@ def test_struct_static_column_serves_its_lanes(expr):
         sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _STATIC116}
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
-    assert got.to_pylist() == want.to_pylist()
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_a_static_struct_lane_is_null_on_a_left_miss():
@@ -301,8 +301,8 @@ def test_the_collision_table_serves_both_spellings(expr):
         sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": _COLLIDE132}
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
-    assert got.to_pylist() == want.to_pylist()
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 def test_a_quoted_dotted_name_is_not_a_struct_leaf(oracle):
@@ -333,7 +333,9 @@ def test_a_plain_static_column_with_a_dot_in_its_name_serves():
         sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": static}
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
-    assert got.to_pylist() == want.to_pylist() == [{"o": 42}]
+    want_rows = compare.rows(want)
+    assert want_rows == [{"o": 42}], "oracle moved — remeasure"
+    compare.assert_rows(compare.rows(got), want_rows, ordered=True, ctx=sql)
 
 
 def test_a_non_ascii_field_name_misses_cleanly():
@@ -746,9 +748,9 @@ def _serves127(sql, static=_STATIC127):
         sql, row_tables={"__THIS__": _ROW116}, static_tables={"s": static}
     )
     got = fn.infer_arrow(pa.Table.from_pylist([{"k": 5}], schema=_ROW116))
-    assert got.to_pylist() == want.to_pylist()
     assert got.schema.names == want.schema.names
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 @pytest.mark.parametrize(

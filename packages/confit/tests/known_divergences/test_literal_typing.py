@@ -67,8 +67,8 @@ def test_agreeing_null_adopters_still_bind_and_match(sql, oracle):
 
     oracle.table("__THIS__", "k BIGINT, s VARCHAR", [(2, "ab")])
     want = oracle.answer(sql)
-    assert got.schema == want.schema, f"{got.schema} != {want.schema}"
-    assert got.to_pylist() == want.to_pylist()
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
 
 
 # Fuzz campaign 2026-08-11, 16 DIVERGE_TRAP findings. DuckDB types
