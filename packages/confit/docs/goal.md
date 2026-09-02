@@ -89,8 +89,8 @@ ship in the wheel and are deliberately *outside* `__init__`: they are the **meas
 surface — the apparatus the four-yardsticks section runs — and not the engine anyone serves
 with. That boundary is part of the target, not an accident of packaging.
 
-The engine is one constructor and four members (`packages/confit/confit/_engine.pyi`, quoted
-exactly):
+The engine is one constructor and six members (`packages/confit/confit/_engine.pyi`, quoted
+exactly and in its order):
 
 ```python
 class DuckDBInferFn:
@@ -104,9 +104,13 @@ class DuckDBInferFn:
     ) -> None: ...
 
     @property
-    def output_schema(self) -> pa.Schema: ...
+    def shape(self) -> str: ...
     @property
     def backend(self) -> str: ...
+    @property
+    def boundary(self) -> str: ...
+    @property
+    def output_schema(self) -> pa.Schema: ...
     def infer_rows(self, rows: list[Any]) -> list[dict[str, Any]]: ...
     def infer_arrow(self, batch: pa.Table) -> pa.Table: ...
 ```
@@ -117,7 +121,9 @@ default) / `"many"` — proven at build, never checked at runtime. `output_schem
 output contract: the field names, arrow types and order of `infer_arrow`'s table and the
 keys of every `infer_rows` dict. `backend` is `"cranelift"`, `"interpreter"` or
 `"constant"`, and the last of those is the static-tables-only carve-out the scope-edge
-section turns on.
+section turns on. `boundary` is how rows cross into Python — `"marshaller"` (generated at
+prepare), `"generic"` (the env-pinned baseline) or `"constant"`; it is a second axis, not a
+restatement of `backend`, and both are readable state, never a mode anyone selects.
 
 **One build, both call paths.** SERVES:
 
@@ -128,9 +134,11 @@ fn = DuckDBInferFn(
     row_tables={"__THIS__": ROW}, static_tables={}, shape="map",
 )
 fn.output_schema.names                          # ['gross', 'c']
+fn.shape                                        # 'map'
 fn.backend                                      # 'cranelift'
+fn.boundary                                     # 'marshaller'
 fn.infer_rows([{"price": 10.0, "city": "de"}])  # [{'gross': 12.0, 'c': 'DE'}]
-fn.infer_arrow(pa.table({"price": [10.0, 20.0], "city": ["de", "fr"]}))
+fn.infer_arrow(pa.table({"price": [10.0, 20.0], "city": ["de", "fr"]})).to_pydict()
                             # {'gross': [12.0, 24.0], 'c': ['DE', 'FR']}
 ```
 
@@ -889,8 +897,12 @@ forbids:
 | `Pipeline([StandardScaler, PCA])` columns | **`rtol=1e-9`** | `_transformers_test.py:109, :127` |
 | the campaign's sklearn metamorphic leg | **absolute `1e-9`**, not a relative tolerance | `fuzz/oracle.py:845` — `abs(o - p) > 1e-9` |
 
-Four of the six `assert_allclose` sites in the transformer file are the tighter `1e-12`;
-the campaign's `1e-9` shares a numeral with the transformer bound and not a meaning.
+Four of the seven `assert_allclose` sites in the transformer file are the tighter `1e-12`
+and two are the pipeline's `1e-9`; the campaign's `1e-9` shares a numeral with the
+transformer bound and not a meaning. The seventh (`_transformers_test.py:166`) is not a
+bound in force here and is not one of the rows above: it compares a SQL window expression,
+not a transformer column, against a numpy mean, and it passes no `rtol` at all — so it runs
+at numpy's default `1e-7`, looser than every bound named above.
 *Enforced-by:* the four rows above;
 `packages/sql-transform/sql_transform/_transformers_test.py::_reference` (`:34`) is the
 clone-per-group reference all the transformer rows compare against.
@@ -1235,9 +1247,9 @@ stayed out under the front matter's rule — they are the dated report's.
 
 Two costs were known before the ruling and are taken, not discovered. **Citations:**
 line-anchored references into that file — from the oracle spec (claim: fit-serving-oracle),
-`properties.md`, drafts and merged PRs — no longer resolve; every live one was repointed at
-a slug in the same commit, and the historical ones (backlog tickets, dated reports and
-decision files) were left as the records they are. **Scope:** four of the five controls and
+`properties.md`, drafts and merged PRs — no longer resolve; every live one was repointed in
+the same commit, and the historical ones (backlog tickets, dated reports and decision
+files) were left as the records they are. **Scope:** four of the five controls and
 kpi: coverage-ladder are enforced in `packages/sql-transform`, so a document whose
 engine-purpose section says it is about confit's half (goal: engine-half-only) now holds four
 bars its own package does not enforce. The enforcing-suites section states that rather than
