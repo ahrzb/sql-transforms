@@ -5,6 +5,16 @@ the oracle is, what it decides, what it declines to decide, and how to compare
 against it. It is a consolidation, not a proposal — where a decision is already in
 force it is written down here so the next reader stops re-deriving it.
 
+**Non-circularity, and it is the load-bearing rule of this document.** The claims are
+the authority; `confit.oracle`, `confit.compare` and `packages/confit/fuzz/` are their
+**enforcement**. *Correct* is never defined as "whatever `Oracle` and `compare` do" — if
+it were, a bug in either class would become normative the moment it shipped, and the
+spec would certify it. The direction of authority runs one way: a claim says what must
+hold, `Enforced-by:` names the code that makes it hold, and `Verified-by:` names the
+test that would fail if the code stopped. Those modules' docstrings mirror this
+document; this document cites the tests, never the docstrings. A disagreement between a
+claim and a module is a bug in the module until the owner rules otherwise.
+
 **Governance.** The oracle spec states what is considered correct. Every
 contradiction goes through the owner. This document therefore keeps three kinds of
 content strictly apart:
@@ -26,19 +36,24 @@ content strictly apart:
   marked now, and adopting them is ASK-15. **15 claims** carry this marker.
 - **`[FACT]`** — a measured statement of current state with no decision attached.
   It is here because the state is load-bearing, not because anyone ruled on it.
-  **8 claims** carry this marker.
+  **9 claims** carry this marker.
 
-Of 89 claims, 66 are decisions in force.
+Of 92 live claims, 68 are decisions in force. One id is **retired**: a claim the
+shipped code dissolved keeps its number and a one-line tombstone saying what replaced
+it, because ids are cited from outside this document and are never renumbered or
+reused.
 
 Every other `ORC-NN` is a decision in force, made somewhere outside this document,
 and its `Verified-by` names where.
 
-**How to read a claim.** One claim per paragraph block, so a content-hash field can
-be added later by tooling without re-cutting the text. `Verified-by` names a test
-path, a pin file, a source line, or a measurement; where nothing verifies a claim it
-says `Unverified` and says so plainly. "Derived" and "normative here" are not
-verification and no longer appear: a claim that only this document asserts is
-`[PROPOSED]`. Behaviors carry a status:
+**How to read a claim.** One normative sentence per claim, then its pointers:
+`Enforced-by:` names the module function that makes the claim hold, and `Verified-by:`
+names the test, pin file, source line or measurement that would catch it not holding.
+Where nothing verifies a claim it says `Unverified` and says so plainly. "Derived" and
+"normative here" are not verification and no longer appear: a claim that only this
+document asserts is `[PROPOSED]`. Prose about where a behavior lives, or how two copies
+of it are kept in sync, is not a claim and is not here — the pointers are that. Behaviors
+carry a status:
 
 | status | meaning |
 |---|---|
@@ -61,6 +76,19 @@ Anything else that is an oracle fact and is not here is a gap.
 **Doc homes.** confit's docs live under `packages/confit/docs/`. A spec, ticket or
 comment citing a bare `docs/known-limitations.md` is a stale path (the move merged as
 master `85b4739`).
+
+**The three enforcement modules**, so a claim's `Enforced-by:` line needs no
+introduction:
+
+| module | what it enforces | its tests |
+|---|---|---|
+| `packages/confit/confit/oracle.py` | the oracle's identity and setup verbs — `Oracle`, `Trap` | `packages/confit/tests/test_oracle.py` |
+| `packages/confit/confit/compare.py` | what "equal" means, and the one axis a caller declares | `packages/confit/tests/test_compare.py` |
+| `packages/confit/fuzz/oracle.py`, `fuzz/runner.py` | the verdict taxonomy and what a campaign reports | `packages/confit/tests/test_fuzz_smoke.py` |
+
+Both `confit` modules ship in the wheel rather than in `tests/`, because the campaign
+runner must not import from `tests/` and the tests must not import from `fuzz/`; a
+comparison vocabulary both of them use is therefore package surface.
 
 ---
 

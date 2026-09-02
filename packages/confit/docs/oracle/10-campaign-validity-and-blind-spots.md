@@ -26,8 +26,9 @@ manual CLI (`python -m fuzz.runner`) and is not collected — `packages/confit`'
 whose docstring says the opposite of a differential gate: "The fuzzer exists to find live
 bugs, so 'no findings over N seeds' **cannot** be the CI invariant ... What CI pins
 instead: generation is deterministic, the oracle produces verdicts across the seed range,
-verdicts are reproducible" — machinery, not zero findings. That distinction is what §10's
-continuity claim actually rests on. See proposed ticket T-22.
+verdicts are reproducible" — machinery, not zero findings. That file is also where the
+verdict *rules* of chapters 4 and 5 are gated, `UNSHIPPED` included, so it carries more
+than smoke. See proposed ticket T-22.
 
 **ORC-89.** A campaign is an **acceptance test, not a formality**: each m-8 phase ends
 with a fuzz campaign certifying it before the next starts, and for a feature whose
@@ -70,8 +71,8 @@ spot. The blind spots, named:
 | error texts (D2) | message bodies for bind-time rejections | error *class* is compared; texts are not oracle-decided output (ORC-39) |
 | the excluded ILIKE-NUL source (D3), the f32 blanket rule and `_INEXPRESSIBLE_INPUTS` (ORC-77) | statistics-dependent kernel selection; every f32-grid-sensitive operation; declared-schema-inexpressible inputs | exclusion by name with a measured reason (ORC-20, ORC-77) |
 | refusals | whether the oracle would have served (ORC-30) | **none today** — this is ASK-3 |
-| NaN sign and payload, in both differential gates | which NaN | `repr` makes every NaN self-equal in `_key` and `_norm_row`; only the explicit bit pins see the difference (ORC-32) |
-| the harness's own normalization | whether the cast that makes the two legs comparable preserves the value | **none today** — measured not to, for decimal literals. This is ASK-12 |
+| NaN sign and payload, wherever the canonical form is used | which NaN | `repr` makes every NaN self-equal in `confit.compare`; only the explicit bit pins see the difference (ORC-32, ORC-90) |
+| an **unshipped width** (today: decimal literals) | whether the values would have agreed, since none were compared | `UNSHIPPED` classifies loudly, is neither a finding nor coverage, and gets its own report section — so the blind spot is *counted* rather than absorbed (ORC-92). The harness no longer casts, so it no longer invents a value either |
 | a worker that never answered | everything about that case | `TIMEOUT` / `PANIC` are findings, not silence (ORC-23, ORC-26), and are attributed oracle-side vs engine-side by hand (ORC-78) |
 
 *Verified-by:* each row's cited claim.
@@ -83,10 +84,11 @@ empty), `infer_rows` vs `infer_arrow` agreement, cranelift vs interpreter agreem
 and sklearn as a second ground truth on plain tree cases. They involve no DuckDB, which
 is what makes them usable exactly where the oracle abstains. Five of the six compare
 exactly; the sklearn leg compares within `1e-9` (ORC-32), because sklearn is a second
-reference and not the oracle.
-*Verified-by:* `packages/confit/fuzz/oracle.py:748-858` (`_extra_legs`), `:799-836` (the
-sequence and reversal legs), `:851` (the sklearn `1e-9` bound), `:625-639`;
-`packages/confit/tests/test_fuzz_order_legs.py`; P1-P20 in
+reference and not the oracle. They run for an `UNSHIPPED` case too, precisely because
+they contain no DuckDB (ORC-92).
+*Enforced-by:* `fuzz.oracle._extra_legs`, whose exact comparisons are
+`confit.compare.sequence` and `.multiset`.
+*Verified-by:* `packages/confit/tests/test_fuzz_order_legs.py`; P1-P20 in
 `packages/confit/docs/properties.md`.
 
 **ORC-70.** **[PROPOSED]** Not in force. A campaign declares a coverage signal, because
@@ -95,7 +97,7 @@ plans to diversify over, so the analogue is distinct **(operator, argument-type,
 edge-class)** triples reached per campaign — which extends the existing `AGREE`-only
 construct histogram's axis rather than replacing it. That same triple is the right unit
 for decision coverage: one operator x one type x one edge class, not one feature.
-*Verified-by:* the histogram exists at `packages/confit/fuzz/runner.py:38-41, :159-164`;
+*Verified-by:* the histogram exists in `fuzz.runner.report`, over `fuzz.runner.COVERED`;
 the triple axis does not. Proposed ticket T-14.
 
 **ORC-71.** **[PROPOSED]** Not in force. A campaign reports an **abstention rate per
@@ -105,9 +107,11 @@ measures nothing while still printing a green bar. The **kinds** it would report
 exist and are all findings today — `SKIP` (ORC-26), `TIMEOUT` and `PANIC` (ORC-23), the
 `order-by-unevaluated` tag (ORC-27) — and the rule that oracle-side and engine-side
 timeouts are opposite things is **already decided** (ORC-78). What does not exist is the
-rate, and the machine-readable separation ORC-78 asks for by hand.
+rate, and the machine-readable separation ORC-78 asks for by hand. `UNSHIPPED` is the one
+abstention kind that already reports separately (ORC-28), which is the shape this claim
+wants for the rest.
 *Verified-by:* the kinds exist per ORC-23, ORC-26, ORC-27; ORC-78 for the attribution
-rule; the rate does not exist (`runner.py:147-150` prints raw verdict counts only).
+rule; the rate does not exist — `fuzz.runner.report` prints raw verdict counts only.
 Proposed ticket T-15, and see ASK-5 for the user-visibility boundary.
 
 > ### ASK-10 — the width residuals: defect count or mixed bag?
