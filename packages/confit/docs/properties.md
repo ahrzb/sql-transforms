@@ -1,7 +1,7 @@
 # Properties of the system
 
 The laws this system holds — semantic guarantees, stated as invariants.
-Companion to `packages/confit/docs/goal.md` §5: KPIs are what we *measure*; properties are
+Companion to `packages/confit/docs/goal.md`'s measurement-and-kpis section: KPIs are what we *measure*; properties are
 what must remain *true*. Each entry says where the property is argued
 (spec/draft) and where it is pinned (test). A change that repeals one of
 these is a design decision and goes through a draft, not a diff.
