@@ -26,8 +26,12 @@ worker that never answered.
 
 `TIMEOUT` and `PANIC` are in `INTERESTING` and reach `findings.jsonl` by the same path
 as every other verdict, so any statement about "what a campaign reports" has to include
-them — ORC-26's abstention story and ORC-68's blind-spot table both do now. `UNSHIPPED`
-is the one kind that is neither a finding nor coverage; it has its own report section.
+them — ORC-26's abstention story and ORC-68's blind-spot table both do now. Three of the
+eleven kinds are in neither `INTERESTING` nor `COVERED` — `AGREE_TRAP`, `REFUSED` and
+`UNSHIPPED` — and each is silent for a different reason: `AGREE_TRAP` is agreement the
+histogram does not count, `REFUSED` is absorbed (ORC-30), and `UNSHIPPED` is the one where
+**nothing was compared at all**, which is why it alone gets a report section of its own
+(ORC-28).
 *Enforced-by:* `fuzz.oracle.KINDS` and `fuzz.oracle.run_case`; `fuzz.runner` synthesizes
 `TIMEOUT` / `PANIC` and writes every `INTERESTING` verdict to `findings.jsonl`. The same
 shape holds one level down, on the oracle's own side: `confit.oracle.Oracle.try_answer`
@@ -45,16 +49,23 @@ itself. An `UNSHIPPED` verdict outranks the bracket: neither reading was value-c
 so neither can be evidence for or against a plan-rewrite pass (ORC-92).
 *Enforced-by:* `fuzz.oracle._duck_run` (one connection, `Oracle` then
 `Oracle.optimizer_on`) and the ranking at the end of `fuzz.oracle.run_case`.
-*Verified-by:* `packages/confit/tests/test_oracle.py::test_optimizer_on_flips_the_same_connection`
-(the flip is in place, on the same connection);
+*Verified-by:* the **ranking** half —
 `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
+The **one-connection** half is `Unverified`: `packages/confit/tests/test_oracle.py::test_optimizer_on_flips_the_same_connection`
+pins that `Oracle.optimizer_on` flips in place (`assert oracle.con is con`), but no test
+exercises `fuzz.oracle._duck_run`, so changing it to open two connections would fail
+nothing. Proposed ticket T-24.
 
 **ORC-25.** `OPT_EMULATED` is a bug, not an accepted class, and it is excluded from
 coverage. Counting it as agreement would hide it twice: once as a finding and once as
 coverage.
 *Enforced-by:* `fuzz.runner.INTERESTING` (contains it) and `fuzz.runner.COVERED`
 (`("AGREE",)`, which does not).
-*Verified-by:* `packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
+*Verified-by:* `Unverified` — no test imports `fuzz.runner` (measured 2026-09-02), so
+adding `OPT_EMULATED` to `COVERED` or dropping it from `INTERESTING` breaks nothing. The
+`fuzz.oracle` half — that the kind exists and is emitted — is
+`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
+Proposed ticket T-24.
 
 ### 4.2 Abstention is a verdict
 
@@ -66,7 +77,10 @@ species and are treated the same way.
 *Enforced-by:* `fuzz.oracle.run_case_json` (an exception escaping `run_case` becomes
 `SKIP`, blaming the oracle rather than the engine) and `fuzz.runner.INTERESTING`, which
 holds all three.
-*Verified-by:* `packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
+*Verified-by:* the kinds exist and are reachable —
+`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
+Their **membership in `INTERESTING`** is `Unverified` for the same reason as ORC-06 and
+ORC-25: nothing in `packages/confit/tests/` imports `fuzz.runner`. Proposed ticket T-24.
 
 **ORC-78.** A timeout is attributed before it is counted: **an oracle-side timeout and
 an engine-side timeout mean opposite things.** Measured 2026-08-14 on seed 4395 —
@@ -94,8 +108,11 @@ at all (ORC-92). It is not a finding either, so it is reported in a section of i
 an empty one means either the feature shipped or the grammar stopped reaching it, and
 both are worth seeing.
 *Enforced-by:* `fuzz.runner.COVERED` and the unshipped-feature section of
-`fuzz.runner.report`.
-*Verified-by:* `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
+`fuzz.runner.report` (`fuzz/runner.py:43`, `:168-176`).
+*Verified-by:* that `UNSHIPPED` is the verdict such a case gets —
+`packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
+What the **runner** then does with it — `COVERED`'s membership and the report section — is
+`Unverified`: no test imports `fuzz.runner`. Proposed ticket T-24.
 
 ### 4.3 Refusals
 

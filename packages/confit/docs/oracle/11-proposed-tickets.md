@@ -1,7 +1,10 @@
 ## 11. Proposed tickets
 
-Everything this document wants changed in code or in another document. **None of it is
-applied here** — this deliverable is one markdown file.
+Everything this document wants changed in code or in another document. **This document
+applies none of it** — the deliverable is this chapter directory and nothing else. One
+row is nevertheless struck through: T-18 was applied in code by the ASK-12 ruling, which
+shipped separately, and it is kept here struck rather than deleted so the id stays
+resolvable.
 
 | id | change | claim | blocked on |
 |---|---|---|---|
@@ -23,11 +26,13 @@ applied here** — this deliverable is one markdown file.
 | **T-16** | `SET threads = 1` in `Oracle.__init__`, beside the pragma, if ASK-13(a) takes that option | ORC-75 | ASK-13 |
 | **T-17** | reconcile `_CLEAN`'s two unprefixed messages with the documented three-prefix rule, either way | ORC-29 | editorial |
 | ~~**T-18**~~ | ~~make the campaign's schema normalization value-preserving~~ — **done**. ASK-12 ruled that normalization leaves the answer and the verdict; the cast is deleted and `UNSHIPPED` replaces it (ORC-92) | ORC-38, ORC-92 | closed |
-| **T-23** | decide whether the engine's build-time fold moves to the oracle's reading, and write the answer into ORC-02 — today the constant reads as though it had no exceptions | ORC-91 | ASK-16 |
 | **T-19** | correct `known-limitations.md:205`: DuckDB is deterministic on pad/repeat budgets; the "spelling-dependent" ground was measured false and restated 2026-08-16 | ORC-53, D14 | editorial |
 | **T-20** | enumerate the pins that cannot be re-run mechanically and convert them; this is the bump's actual first task | ORC-85 | owner's go |
 | **T-21** | stamp provenance onto `duckdb_mined.jsonl` at mining time (version, date, settings profile) | ORC-87 | owner's go |
 | **T-22** | correct `known-limitations.md:301-307`: the campaign fuzzer is a manual CLI, not a gate mechanism; what runs is `test_fuzz_smoke.py`, and its invariant is machinery | ORC-66 | editorial |
+| **T-23** | decide whether the engine's build-time fold moves to the oracle's reading, and write the answer into ORC-02 — today the constant reads as though it had no exceptions. First step is the unmeasured half: run the suite under both readings | ORC-91 | ASK-16 |
+| **T-24** | give `fuzz.runner`'s `INTERESTING` / `COVERED` tuples a test. Nothing in `packages/confit/tests/` imports `fuzz.runner`, so which verdict kinds become findings and which count as coverage — the substance of ORC-06, ORC-24, ORC-25, ORC-26 and ORC-28 — is enforced by an untested tuple | ORC-06, ORC-24, ORC-25, ORC-26, ORC-28 | owner's go |
+| **T-25** | compare schemas on the campaign's static-only path too. `against()` returns before `_schema_delta`, so there a wrong width grades `AGREE` and a bare-decimal literal value-compares across an unshipped width as `static-only-values` — which the ASK-12 ruling forbids. Needs a static-only twin of `test_an_unshipped_lane_is_classified_and_never_value_compared` with it | ORC-38, ORC-92 | **defect against a ruling already made**, not a proposal |
 
 Two further editorial corrections found while writing, no ticket needed if fixed in
 place: `known-limitations.md:248-249` says a 4000-seed campaign puts trap elision at
