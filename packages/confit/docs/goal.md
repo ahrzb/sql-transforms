@@ -1,19 +1,24 @@
 # The confit goal
 
-**What this document is.** What confit is *for*, how much of it we intend to serve,
-what we deliberately do not serve, and how each of those is measured. It sits above the
-oracle spec (`packages/confit/docs/oracle/`) and the engine and testing specs that follow
-it: the oracle spec defines *correct*, this document says *how much correct, over which
-queries, and why the rest is out*.
+**What this document is.** The **target**: what confit is *for*, how much of it we intend to
+serve, where the target's edge is drawn and why, and by which yardsticks it is measured. It
+sits above the oracle spec (`packages/confit/docs/oracle/`) and the engine and testing specs
+that follow it: the oracle spec defines *correct*, this document says *how much correct, over
+which queries, and why the rest is out*.
 
-**Where the numbers are.** This document holds **definitions, methods and enforcement
-pointers, and no dated reading**. Every measured value — acceptance rates, corpus and floor
-counts, bench tables, refusal histograms — lives in a dated report under
-`packages/confit/docs/reports/`; the first is `2026-09-02-goal-baseline.md`, and a later
-reading is a **new dated file**, never an edit to this one. Facts are still measured or read
-from a pin and never recalled; what changed is that a *reading* no longer lives in prose
-here, which is how a bar goes a month unre-run and nobody notices. Current tasks, tickets
-and defects are the implementation loop's, and the loop reports into those files.
+**Where the distance is.** This document is the destination and holds **definitions, methods
+and enforcement pointers, and no dated reading**. How close today's engine is to the
+destination — every measured value, and every way the current engine falls short of what is
+written here — lives in a dated report under `packages/confit/docs/reports/`; the first is
+`2026-09-02-goal-baseline.md`, and a later reading is a **new dated file**, never an edit to
+this one. Each shortfall is stated there as a **gap** — a divergence of the current state
+from this document's target — under the same slug it would have here. So a construct that is
+out of scope *by decision* is in section 3 below; a construct that is out only because it is
+not built is a gap in the report, and section 3 says where each one went. Facts are still
+measured or read from a pin and never recalled; what changed is that a *reading* no longer
+lives in prose here, which is how a bar goes a month unre-run and nobody notices. Current
+tasks, tickets and defects are the implementation loop's, and the loop reports into those
+files.
 
 **Non-circularity, the same rule the oracle spec runs on.** This document is the
 authority. Code, tests, pins and gate floors are its **enforcement**, never its
@@ -29,24 +34,27 @@ the ruling changes. Slugs are assigned once; renaming one is a tombstone line na
 both. Moving an item to a dated report is **not** a rename and not a retirement: it keeps
 its slug there. The family is carried by the citation, not by the slug:
 
-| kind | written as | example |
-|---|---|---|
-| goal | `goal: <slug>` | goal: two-outcome-contract |
-| exclusion-ledger row | `exclusion: <slug>` | exclusion: whole-relation-shapes |
-| KPI | `kpi: <slug>` | kpi: acceptance-rate |
-| claim of fact | `claim: <slug>` | claim: model-surface-split |
-| ASK block | `ask: <slug>` | ask: acceptance-target |
+| kind | written as | example | defined in |
+|---|---|---|---|
+| goal | `goal: <slug>` | goal: two-outcome-contract | here |
+| exclusion-ledger row | `exclusion: <slug>` | exclusion: whole-relation-shapes | here |
+| KPI | `kpi: <slug>` | kpi: acceptance-rate | here |
+| claim of fact | `claim: <slug>` | claim: model-surface-split | here, or the oracle spec |
+| ASK block | `ask: <slug>` | ask: acceptance-target | here |
+| gap from the target | `gap: <slug>` | gap: unshipped-decimal-arithmetic | the dated report |
+| finding | `finding: <slug>` | finding: seed-1804 | the dated report |
 
 Slugs are unique across every family and across the oracle spec, and the form above is
 used at the definition and at every reference, so `grep -rn "<slug>"` finds an item and
-everything that cites it.
+everything that cites it. A row that leaves this document for the report keeps its slug and
+changes only its family, and section 3 records the pair so an old citation still lands.
 
 **Two markers keep the normative half honest.** `[PROPOSED]` — a statement this document
 would like, which nobody has ruled on; it holds a slug only so a ticket can cite it.
 `[FACT]` — a measured statement of current state with no decision attached. Every
 decision that belongs to the owner is an ASK block or carries `[PROPOSED]`; none of them
-is written as settled. That includes every acceptance-rate target, every choice of which
-query class is next, ratification of the exclusion ledger, and any change to the KPI set —
+is written as settled. That includes every acceptance-rate target, ratification of the
+permanent scope set in section 3, and any change to the KPI set —
 the set itself is in force in section 5, which is a ruling and not a proposal.
 
 ---
@@ -224,8 +232,8 @@ and nothing converts it into a statement about the SQL people write.
 > spec's ask: match-count-ratchet is the same question for the mined corpus and should be
 > answered with this one, not separately.
 >
-> **(c) A named target per surface**, e.g. "N% acceptance over the campaign grammar by the
-> time decimal arithmetic ships". Cost: it needs the denominator work
+> **(c) A named target per surface**, e.g. "N% acceptance over the campaign grammar, by a
+> named date". Cost: it needs the denominator work
 > (claim: coverage-denominator) before the number means anything.
 >
 > My read: (b) for the corpus and dialect ladders, which have stable denominators, and (a)
@@ -237,45 +245,34 @@ and nothing converts it into a statement about the SQL people write.
 > *Binds:* goal: growing-accepted-surface, kpi: acceptance-rate, kpi: ladder-ratchet, and
 > the oracle spec's ask: match-count-ratchet.
 
-> ### ask: next-query-classes — which classes are next, and in what order?
->
-> The candidates, each with what it would unlock and what it costs. None of these is
-> chosen; the list is evidence for a choice, not a plan.
->
-> | candidate | unlocks | cost / blocker |
-> |---|---|---|
-> | decimal arithmetic | retires exclusion: unshipped-decimal-arithmetic entirely; empties the only `UNSHIPPED` bucket | an exact decimal lane through the expression tree, not just the join lane that already ships |
-> | HUGEINT + the unsigned family (the i128 lane) | retires half of exclusion: wide-integer-lanes; the cranelift dependency was verified GO 2026-08-15 | i128 arithmetic and its overflow traps across both backends |
-> | narrow-lane overflow traps | closes the one place a narrow lane serves an i64 value on the row path where `infer_arrow` refuses | trap threshold per declared width |
-> | nested / struct-valued outputs | retires the whole-struct half of exclusion: non-scalar-values | output schema work at the Arrow boundary |
-> | `USING` / `NATURAL` self-joins under `shape='many'` | closes a named follow-up inside exclusion: multiplicity-by-default | small; it is a named rejection, not a model gap |
-> | lifting the one-join-per-query restriction under `'many'` | multi-join serving | multiplicity composition, the hardest of these |
->
-> The campaign's refusal histogram says which of these the *generator* reaches, not which
-> your users need, and the ranking it produces is not the ranking intuition gives — that is
-> a fact about the grammar, not a demand signal. It also holds a large class that belongs to
-> no exclusion row at all; see ask: exclusion-ratification (2).
->
-> *Context:* the histogram is in
-> `packages/confit/docs/reports/2026-09-02-goal-baseline.md`.
->
-> *Binds:* goal: growing-accepted-surface, exclusion: unshipped-decimal-arithmetic,
-> exclusion: wide-integer-lanes, exclusion: non-scalar-values,
-> exclusion: multiplicity-by-default.
+**ask: next-query-classes is not here.** Which unbuilt class ships next is a question about
+*distance*, and every candidate it ranks is a gap entry rather than a scope decision, so the
+block lives in the dated report next to the ledger it ranks
+(`packages/confit/docs/reports/2026-09-02-goal-baseline.md`). It still binds
+goal: growing-accepted-surface, and the ASK index below records where it went.
 
 ---
 
-## 3. What we exclude for now
+## 3. What is out of scope, by decision
+
+**This is the target's edge, not its distance.** Every row here is out of scope **by
+decision**: the engine model cannot express it, or it could be served and we chose not to,
+or it costs more per row than a serving engine may spend. **None of these retires** — a
+permanent decision does not retire, it gets re-decided, and re-deciding one is
+ask: exclusion-ratification's business, not a feature's. Anything that is out today only
+because it is not built yet is *distance from this target*, and the redirects at the end of
+this section say where each such row went.
 
 **Every row in this section is `[PROPOSED]`.** The marker is stated once here rather than
-ten times below, and it is not decoration: the *behaviour* each row describes is in force
-and measured, but the **ground assigned**, the **retirement trigger named** and the
-**ledger's completeness** are exactly what ask: exclusion-ratification puts to the owner.
-Read the declarative voice below as "this is what the evidence says the rule is", never as
-"this is ruled". A reader grepping for `[PROPOSED]` should find this section.
+six times below, and it is not decoration: the *behaviour* each row describes is in force
+and measured, but the **ground assigned** and the **set's completeness** are exactly what
+ask: exclusion-ratification puts to the owner. Read the declarative voice below as "this is
+what the evidence says the rule is", never as "this is ruled". A reader grepping for
+`[PROPOSED]` should find this section.
 
-The ledger. Each row: **what** is excluded, **why**, the **condition** that retires it, and
-**how it rings** when that condition is met — or an honest flag that nothing rings.
+Each row: **what** is out of scope, **why**, what would have to happen to **re-decide** it
+where that is worth stating, and **how it rings** if the decision is ever violated or
+changed — or an honest flag that nothing rings.
 
 Three grounds classify every exclusion, and they are already decided:
 **specialization-inherent** (the engine model cannot express it — permanent),
@@ -288,30 +285,31 @@ claim: refusal-grounds.
 *serve* with a consciously different surface (duplicate-column rename, approximate error
 texts, schema-qualifier resolution, the platform-libm NaN bit pattern). Those are
 divergences, not exclusions, and they belong to the oracle spec's divergence ledger
-(`packages/confit/docs/oracle/07-the-divergence-ledger.md`). Two entries below overlap that
-ledger because the *decision* is an exclusion even though the *symptom* is a divergence;
-each says so.
+(`packages/confit/docs/oracle/07-the-divergence-ledger.md`). Entries below whose *decision*
+is an exclusion even though the *symptom* is a divergence say so and point at the row.
 
 **exclusion: whole-relation-shapes.** `GROUP BY`/`HAVING`/aggregates, `ORDER BY`,
 `LIMIT`/`OFFSET`/`FETCH`/`TOP`, `DISTINCT`, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries,
 multiple statements, table functions in `FROM`, `rowid`, `FULL OUTER JOIN`, **`QUALIFY`**
 (`frontend.rs:284`), **named window definitions** (`WINDOW`, `:314`) and **window/aggregate
 modifiers on a scalar call** — `OVER`, `FILTER`, `IGNORE NULLS`, `WITHIN GROUP`
-(`:6289-6299`). The last three are not small: `QUALIFY` and the modifier class each sit near
-the top of the campaign's refusal histogram, and `abs(k) OVER ()` was a silently-dropped
-modifier on master until it was made to refuse by name.
+(`:6289-6299`). The last three are not small: `QUALIFY` and the modifier class are both
+constructs the campaign reaches often, and a modifier on a scalar call is the shape that
+gets *dropped* rather than refused if nobody is watching for it. How often, and where they
+rank, is a reading and the report's.
 *Why:* scope-by-product-decision. Their output shape is not one-row-in / 0..N-out, so they
 are not row-at-a-time feature transforms.
-*Retires when:* nothing — none intended. The carve-out already exists and is not a
-retirement: a **static-tables-only** query is evaluated once by DuckDB at build and frozen,
-so aggregation and `ORDER BY` serve there — with row limits refused, because which rows
-survive a limit is not a function of the query (measured: four different answers across
-twelve connections). **The carve-out has a hole its source names:** only a *row limit*
-refuses, and `ORDER BY` does not fix ties (a tie fed from a `GROUP BY` flipped in 20 runs,
-`known-limitations.md:116-117`). So a static-only tie-producing `ORDER BY` builds and
-freezes whichever order that build's DuckDB run happened to get — two builds of the same
-function can disagree with each other, which is goal: serving-without-skew's failure in its
-build-to-build face rather than its train-to-serve one. Nothing refuses it today.
+*The carve-out, which is part of the decision and not an exception to it:* a
+**static-tables-only** query is evaluated once by DuckDB at build and frozen, so aggregation
+and `ORDER BY` serve there. Its edge is the same decision applied twice — **what a
+whole-relation construct selects is frozen only when it is a function of the query.** A row
+limit is not (measured: four different answers across twelve connections) and refuses; a
+tie-producing `ORDER BY` is not either (a tie fed from a `GROUP BY` flipped in 20 runs,
+`known-limitations.md:116-117`), and freezing one would let two builds of the same function
+disagree — goal: serving-without-skew's failure in its build-to-build face rather than its
+train-to-serve one. **Both must refuse.** Whether today's engine refuses both is a reading,
+and it is the report's: finding: static-only-tie-order.
+*Re-decided by:* nothing intended — the output-shape argument would have to change first.
 *Rings:* nothing rings — there is no trigger. Lifting one breaks
 `packages/confit/tests/test_known_limitations.py` — which is the executable twin of
 `known-limitations.md`, **not of this row**. Its docstring says so (`:1-7`, "Section
@@ -326,103 +324,18 @@ ask: doc-twin-overstatement is open on it; this document does not become a sixth
 regex options and extract-group indexes; anything that would compile or bind per row.
 *Why:* specialization-inherent, and the direct negation of goal: pack-time-only-work.
 DuckDB compiles regexes per row; we compile at prepare.
-*Retires when:* a decision is taken to abandon compile-once for this construct. Effectively
-permanent — retiring it contradicts a goal, so it would be a goal change first.
+*Re-decided by:* a decision to abandon compile-once for this construct — which contradicts
+goal: pack-time-only-work, so it is a goal change before it is a scope change.
 *Rings:* nothing rings.
 *Verified-by:* `packages/confit/docs/known-limitations.md:74-75`.
-
-**exclusion: unshipped-decimal-arithmetic.** What is **excluded** is narrower than the
-heading suggests, so it is worth stating what still serves: comparisons, joins, `CAST(d AS
-DOUBLE)` and `SELECT *` over decimals all serve (`known-limitations.md:148`), and decimal
-*statics* serve exactly in an i128 lane. The exclusion is **expressions** over DECIMAL —
-arithmetic, `CAST` to anything but `DOUBLE`, and `COALESCE`/`CASE`/`greatest` unifying a
-decimal with a non-identical type.
-**A DECIMAL literal is not excluded — it *serves*, at a different width.** Measured
-2026-09-02, `SELECT 1.5 AS o0 FROM __THIS__` builds and returns `double` where the oracle
-returns `decimal128(2,1)`; the campaign's `UNSHIPPED` verdict means built-and-not-compared,
-never refused. The visible consequence is that `CAST(-2.5 AS BIGINT)` on a bare literal
-rounds half-to-even here and half-away-from-zero there. And the real split is not
-literal-vs-static-column but **row-path vs static-only path**: the same literal reached
-through a static-tables-only query never prepares, so DuckDB evaluates it and it comes back
-`decimal128(2,1)` and `AGREE`
-(`test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`).
-**This row overlaps the divergence ledger, and here is the pointer this document promised
-for each such row:** the served-width fact is divergence: decimal-literal-typing and the
-rounding fact is divergence: decimal-cast-rounding, both `unruled` there pending
-ask: float-tolerance-list. The *scope* decision is this row's; the *symptom's* status is
-theirs, and this row does not settle it.
-*Why:* scope-by-product-decision, pending the lattice phase. Each of the excluded
-expressions used to serve a silently wrong double, which is why they refuse now rather than
-approximate.
-*Retires when:* **decimal arithmetic ships and the `UNSHIPPED` bucket is empty** — and the
-bucket empties for two different reasons, so it is checked, not just read.
-*Rings:* **yes, loudly, and this is the one exclusion with a real bell.** The campaign
-classifies these cases `UNSHIPPED` instead of comparing them, `fuzz.oracle._type_delta`
-carries exactly one arm (decimal-against-float64) which is deleted when the feature lands,
-and the runner prints the bucket in a section of its own — an empty section means either the
-feature shipped or the grammar stopped reaching it, and both are worth seeing.
-*Verified-by:* `packages/confit/docs/known-limitations.md:138-174`;
-`packages/confit/fuzz/oracle.py:124-145` (the note), `:498-505` (the arm),
-`packages/confit/fuzz/runner.py:168-176` (the report section);
-`packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
-
-**exclusion: wide-integer-lanes.** HUGEINT and the whole unsigned family refuse by name
-rather than collapse to i64; `float32` base tables refuse; `float32` and unsigned *static*
-columns refuse rather than widen. Narrow lanes type in DuckDB's lattice but compute in i64,
-so until the trap phase lands an overflowing narrow lane serves the i64 value on the row
-path and refuses at the `infer_arrow` boundary.
-*Why:* specialization-inherent for the lane widths (the engine computes in i64/f64/str/bool),
-scope-by-product-decision for the refusal-instead-of-widen rule. The catalogue used to
-widen `float32` and the unsigned widths and **both diverged silently**, which is the
-measurement that produced the rule.
-*Retires when:* the **i128 lane** ships (its cranelift dependency was verified GO
-2026-08-15) for HUGEINT/unsigned; the **narrow-lane trap phase** ships for the traps.
-*Rings:* partially. `test_integer_widths.py::test_unserved_static_type_refuses_by_name`
-(`:856-871`) parameterizes the unsigned widths (and `float32`) and asserts the refusal names
-the column and the type — so shipping any unsigned *static* width turns that test red by
-name, on the day it ships. `test_known_limitations.py:180-192` pins the uint64 static the
-same way. What still rings nothing: **HUGEINT**, unsigned *row* columns, and the
-narrow-lane trap phase.
-*Verified-by:* `packages/confit/docs/known-limitations.md:122-136`, `:175-187`;
-`packages/confit/tests/test_integer_widths.py:856-871`.
-
-**exclusion: non-scalar-values.** List-typed columns when referenced (unreferenced they
-cost nothing), the struct as a whole value (`SELECT a`), bracket field access (`a['i']`),
-struct fields whose own types are non-scalar, the list-valued regex functions
-(`regexp_extract_all`, `regexp_split_to_array`, the STRUCT form of `regexp_extract`),
-`decimal256` statics, decimal row columns, and the BLOB overload DuckDB picks for a bare
-`NULL` `repeat` string. Structs of scalars, deep field paths and struct-star **do** serve.
-*Why:* scope-by-product-decision — the row-schema vocabulary is scalar, and a non-scalar
-output has no place in a dict row.
-*Retires when:* nested output support ships, for the struct half; the BLOB lane ships, for
-BLOB. `decimal256` is upstream-blocked and retires on nothing we control — DuckDB itself
-refuses it at arrow register.
-*Rings:* nothing rings.
-*Verified-by:* `packages/confit/docs/known-limitations.md:149-165`, `:207` — note the
-`decimal256` and decimal-row-column facts this row names are at `:149-150`, and `:166`
-opens the DECIMAL-literals bullet, which belongs to
-exclusion: unshipped-decimal-arithmetic and not here.
-
-**exclusion: parse-divergence-guards.** The `^` operator (it *is* pow in DuckDB, but
-sqlparser's precedence differs, so mapping it computes a different tree silently), prefix
-`~`, `#`, `NOT GLOB`, and the regex reject list: the RE2-vs-rust-regex differential
-battery's classes plus the twelve the fuzzer found.
-*Why:* specialization-inherent — these are the constructs where a served answer would be
-*silently* different, which goal: two-outcome-contract forbids outright.
-*Retires when:* the dialect frontend's own parser replaces sqlparser, for the precedence
-cases; a matching regex engine lands, for the RE2 cases. Neither is scheduled.
-*Rings:* **yes** — the standing regexp differential fuzzer runs in the normal gate
-(N=250, fixed seed), and a new divergence fails with its reproducing seed.
-*Verified-by:* `packages/confit/docs/known-limitations.md:197-200`;
-`packages/confit/tests/test_duckdb_regexp_fuzz.py:13-20, :35-37`;
-`packages/confit/docs/oracle/` claim: regexp-fuzz-gate.
 
 **exclusion: resource-ceilings.** Pad/repeat counts past a 1 GiB string-builder budget (a
 literal count refuses at build; a data-driven count traps at runtime), the regex
 program-size guard, and the Arrow batch ceiling.
 *Why:* **resource** — no gigabyte allocations in a serving engine, by decision. This is
 the ground whose whole point is that the accepted cost has a number attached.
-*Retires when:* a decision raises the number, which is a review, not a feature.
+*Re-decided by:* a review that raises the number. A ceiling moves by a decision, never by a
+feature landing.
 *Rings:* **for the string budget only.**
 `known_divergences/test_string_budget.py::test_a_budget_breaking_literal_count_refuses`
 (`:145-146`) asserts the refusal with `pytest.raises(ValueError, match="builder|GiB")`, so
@@ -447,7 +360,7 @@ function of the query — `statistics_propagation` answers from a column's store
 statistic, so the same query over the same rows differs by the table's insert history. A
 target you cannot compute from the query is not a target, and confit compiles against a
 schema and never sees a table.
-*Retires when:* nothing — none intended. Decided 2026-08-17.
+*Decided:* 2026-08-17; no reversal intended.
 *Rings:* **yes** — the campaign reads DuckDB twice per case and labels these `DIVERGE_OPT`,
 so the class is counted rather than absorbed. It is a **reported finding, not an accepted
 class** (the oracle spec's claim: contract-surface-gap), so its standing count is a cost the
@@ -459,60 +372,67 @@ report carries, never a bucket that quietly grows.
 — ILIKE's NUL handling selects a different kernel depending on sibling rows — are excluded
 from the corpus by name, and the engine takes the ASCII-kernel (NUL-transparent) behavior.
 *Why:* specialization-inherent. A row-at-a-time engine cannot reproduce statistics-
-dependent semantics even in principle.
-*Retires when:* nothing. This one is permanent by construction.
+dependent semantics even in principle — permanent by construction, with nothing to
+re-decide.
 *Rings:* nothing rings, by design — the exclusion is a named source list, and a named list
 does not fire.
 *Verified-by:* `packages/confit/docs/known-limitations.md:225-230`;
 `packages/confit/tests/test_corpus_replay.py:150-151` (`_KNOWN_DIVERGENT_SOURCES`);
 `packages/confit/docs/oracle/` claim: statistics-dependent-exclusion.
 
-**exclusion: multiplicity-by-default.** Duplicate-key joins, cross joins, and
-inequality/constant `ON` joins build **only** under `shape='many'`, one join per query;
-`shape='map'` rejects anything that can drop a row; `USING`/`NATURAL` self-joins refuse
-under every shape.
-*Why:* scope-by-product-decision. Multiplicity is never allowed to sneak into a serving
-path by default — `map` is a build-time *proof* of exactly-one, not a runtime check.
-*Retires when:* the one-join-per-query restriction lifts, and `USING`/`NATURAL` self-joins
-land — both named follow-ups, neither scheduled.
-*Rings:* nothing rings for the retirement; the shape contract itself is pinned in
+**exclusion: multiplicity-by-default.** Multiplicity never enters a serving path by default.
+Duplicate-key joins, cross joins and inequality/constant `ON` joins build **only** under an
+explicit `shape='many'`; `shape='map'` rejects anything that can drop a row.
+*Why:* scope-by-product-decision — `map` is a build-time *proof* of exactly-one, not a
+runtime check, and a shape that can multiply rows is something the caller asks for by name
+or does not get.
+*Re-decided by:* nothing intended — defaulting to multiplicity is the failure this row
+exists to prevent.
+*Rings:* the shape contract is pinned in
 `packages/confit/tests/test_shape_contract.py`.
+*Scope note:* the *composition* limits inside `'many'` — one join per query, and
+`USING`/`NATURAL` self-joins refusing under every shape — are **not** this decision. They
+are unbuilt work, and they are gap: join-composition-limits in the report.
 *Verified-by:* `packages/confit/docs/known-limitations.md:76-93`.
 
-> ### ask: exclusion-ratification — does this ledger become the exclusion list?
+### 3.1 Rows that left this section
+
+Each of these was here because something is **not built yet**, which is distance from the
+target rather than the target's edge. They are gap entries in the dated report, under the
+same slug, and a citation of the old name lands here:
+
+| was | is now | carries |
+|---|---|---|
+| exclusion: unshipped-decimal-arithmetic | gap: unshipped-decimal-arithmetic | DECIMAL expressions, the served literal width, the `UNSHIPPED` bucket |
+| exclusion: wide-integer-lanes | gap: wide-integer-lanes | HUGEINT, the unsigned family, `float32`, the narrow-lane traps |
+| exclusion: non-scalar-values | gap: non-scalar-values | lists, whole structs, bracket access, BLOB, `decimal256` |
+| exclusion: parse-divergence-guards | gap: parse-divergence-guards | `^`, prefix `~`, `#`, `NOT GLOB`, the regex reject list |
+| part of exclusion: multiplicity-by-default | gap: join-composition-limits | one join per query, `USING`/`NATURAL` self-joins |
+
+The rule that produced this split is the front matter's: a construct we **chose** not to
+serve is scope; a construct we have **not got to** is a gap. The refusal a user sees today is
+identical either way — which is exactly why the two had to stop sharing a section.
+
+> ### ask: exclusion-ratification — does this become the permanent scope set?
 >
-> Ten rows above, all `[PROPOSED]`, assembled from `known-limitations.md`, the engine's
-> refusal sites and the campaign's refusal histogram. Ratifying them means three things
-> bind: the **ground** assigned to each (specialization-inherent vs
-> scope-by-product-decision vs resource, which is what makes "we refuse" auditable), the
-> **condition** that retires each, and how many rings nothing.
+> Six rows above, all `[PROPOSED]`, assembled from `known-limitations.md`, the engine's
+> refusal sites and the campaign's refusal histogram. Ratifying them binds two things: the
+> **ground** assigned to each (specialization-inherent vs scope-by-product-decision vs
+> resource, which is what makes "we refuse" auditable), and that each is a **decision rather
+> than a delay** — nothing here is waiting on work, so nothing here retires.
 >
-> Three specific pieces I would like ruled on rather than assumed:
+> Two specific pieces I would like ruled on rather than assumed:
 >
-> **(1) Are the silent rows acceptable? Counted from the `Rings:` lines, it is seven of
-> ten.** exclusion: whole-relation-shapes, per-row-general-work, non-scalar-values and
-> statistics-dependent-kernels ring nothing at all; exclusion: multiplicity-by-default rings
-> nothing *for its retirement*; exclusion: resource-ceilings rings on a change and not on a
-> retirement, and its **Arrow half rings nothing at all**; and exclusion: wide-integer-lanes
-> rings for its unsigned-static half and not for the rest. That count moved in both
-> directions when it was re-measured, which is itself the argument for ratifying an
-> inventory rather than inheriting one. Silence is fine where the condition is "never"; it
-> is a live gap for exclusion: non-scalar-values and exclusion: multiplicity-by-default,
-> whose conditions are real scheduled-ish work. The pattern that *does* work is
-> exclusion: unshipped-decimal-arithmetic's: a classified verdict, a single code arm deleted
-> on landing, and a report section that empties.
+> **(1) Is silence acceptable where the decision is permanent?** Counted from the `Rings:`
+> lines it is four of six: exclusion: whole-relation-shapes, per-row-general-work and
+> statistics-dependent-kernels ring nothing at all, and exclusion: resource-ceilings rings for
+> its string budget while its **Arrow half rings nothing** and is `Unverified`. Silence is
+> defensible where the condition is "never" — nothing is waiting to fire. The Arrow half is
+> the exception and is a real hole: a ceiling with a number and no check is a number nobody
+> is holding. Ratify the silence, or ask for the Arrow test.
 >
-> **(2) Is the enumeration complete? Measurably not.** The campaign's second-largest refusal
-> class appears in **no** exclusion row and **nowhere** in `known-limitations.md`, and the
-> modifier class reached the ledger only by being added to exclusion: whole-relation-shapes
-> in the pass that wrote this document. By `known-limitations.md:284`'s own rule a refusal in
-> code and in no document is a bookkeeping bug to file. Behind that: the engine's
-> `PrepareError` refusal sites outnumber these ten rows by two orders of magnitude, and **no
-> mechanism maps a refusal site to a ledger row**. Ratification either accepts that the
-> ledger is a curated summary rather than a cover, or asks for the mapping.
->
-> **(3) Do the three grounds cover what actually refuses?** They classify *scope* decisions,
-> and the histogram holds a class that is not one: a UDF whose declared return shape is
+> **(2) Do the three grounds cover what actually refuses?** They classify *scope* decisions,
+> and the campaign holds a class that is not one: a UDF whose declared return shape is
 > wrong (`src/duckdb/mod.rs:606-609`) is neither specialization-inherent, nor
 > scope-by-product-decision, nor resource — the **caller declared their UDF wrong**. Adding a
 > message prefix would not classify it, because the taxonomy has no slot for
@@ -520,6 +440,12 @@ land — both named follow-ups, neither scheduled.
 > feeds the acceptance rate. Either a fourth ground, or a rule that they are excluded from
 > the acceptance denominator — both are your call, and the second is the one
 > kpi: acceptance-rate depends on.
+>
+> **What this ask no longer carries.** Whether the enumeration *covers* what the engine
+> refuses is a question about today's code, not about the target: the refusal-site census,
+> the undocumented classes and the missing site-to-row mapping are the report's open
+> questions now. They still want an answer; they are just not answered by ratifying a
+> destination.
 >
 > *Context:* the class sizes and the refusal-site census are in
 > `packages/confit/docs/reports/2026-09-02-goal-baseline.md`.
@@ -583,10 +509,10 @@ clone-per-group reference all the transformer rows compare against.
 text names **no** tolerance, so the bounds above are read from the tests, not from the
 KPI); `packages/confit/docs/oracle/` claim: metamorphic-self-legs (the `1e-9` leg, itself
 recorded as having **no test of its own** — `Unverified`).
-*Note, and it belongs to the owner rather than to this document:* kpi: transformer-parity's
-extension for native transform families ("bit-exact for scaler/tree tiers, within the
-declared per-family ulp bound for matvec tiers") is written against work that has not
-landed. It is carried there as a pointer, not adopted.
+*Note:* a fourth bound, for natively implemented transform families, is written but **not in
+force** — it is written against work that has not landed, which makes it a gap rather than a
+reference bound. It is gap: native-transform-families in the dated report, and adopting it is
+the owner's through ask: kpi-set-change.
 
 ---
 
@@ -621,9 +547,9 @@ Two kinds, optimized in opposite directions:
   smuggle past.
 
 **Loosening a control is a design decision, never a fix.** The only legitimate way a
-control moves: explicitly, in a spec/draft, with the new bound named (precedent: matvec-tier
-parity got a *declared* per-family ulp tolerance in DRAFT-23 — through review, not through a
-failing test). And the rule that governs every trade below:
+control moves: explicitly, in a spec or draft, with the new bound named and reviewed — the
+precedent being a *declared* per-family ulp tolerance written down before the code that
+needs it, never a bar relaxed by a failing test. And the rule that governs every trade below:
 
 > Never trade a control for a drive gain. If a bar seems in the way, the move is a
 > written, named tolerance — or a refusal.
@@ -680,11 +606,9 @@ code under test). The entry names no tolerance of its own; the three bounds actu
 force are read from the tests, in claim: sklearn-is-the-reference.
 *Enforced-by:* `packages/sql-transform/sql_transform/_transformers_test.py`
 (`_reference()`).
-*Extension, recorded as written and not in force* (DRAFT-23, when native families land): a
-native entry equals its `PythonTransform` fallback twin — bit-exact for scaler/tree tiers,
-within the *declared* per-family ulp bound for matvec tiers. The gate is swap-the-entry:
-same SQL, same statics, different udfs-list entry. It is written against work that has not
-landed, so it is a pointer, not an adopted bound.
+*Not in force:* an extension of this control to natively implemented transform families is
+written against work that has not landed, so it is a gap and not a bound —
+gap: native-transform-families in the dated report carries it.
 
 **kpi: no-third-mode.** Every query either **serves** (under the four controls above) or
 **refuses at construction with an error naming the construct**. Silent wrongness — a query
@@ -704,15 +628,14 @@ metric, in one place — edit these pins when a loop widens support") for the to
 `::test_mined_corpus_scoreboard` for the mined split — it takes both tests, so citing the
 totals alone would name a gate that cannot catch a drift in the split.
 Progress = moving queries from REFUSED to MARGINALIZED (never to FAILED) and growing the
-corpus. Known headroom, roughly in order of value: step semantics for order-keyed windows
-off the training support (DRAFT-21), static-table joins + frozen composition, IN-subqueries
-as fitted sets, star bundles into transformers, typed takes (string features).
+corpus. The named headroom is unbuilt work and therefore a gap, not a definition:
+gap: admission-ladder-headroom in the dated report lists it in order of value.
 *Method for widening it:* add the query to the corpus first, watch it refuse, then implement
 until it marginalizes — and extend kpi: training-round-trip's gate to the new family in the
 same loop. Update the pins deliberately.
 *Scope, stated because it is not confit's:* this ladder is `sql_transform`'s
 (goal: engine-half-only); §2.1 says why it is cited from here.
-*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §6.
+*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §9.
 
 **kpi: serving-latency.** Row-at-a-time serving cost on the wide-table scenarios in
 `benchmarks/`. Two harnesses: `bench_serving.py` (pure-SQL path) and `bench_transforms.py`
@@ -720,36 +643,22 @@ same loop. Update the pins deliberately.
 **compare WITHIN a run**; the honest cross-run metric is a ratio to a baseline row measured
 in the same run, which the transformer path has (a 2-field query against a 1-field one) and
 the pure-SQL table does not.
-*The finding that sets priorities* (measured 2026-08-04): the extern/UDF machinery is cheap
-and our own marshalling is ~400ns, while **~93% of a fitted transformer's per-row cost is
-sklearn's own `transform()`** — 60,900ns for `StandardScaler.transform` on one row against
-1,500ns for the identical arithmetic in numpy and 1,000ns in pure Python. sklearn's per-call
-validation, not the boundary, is the bottleneck. Levers, in that measurement's order:
-
-1. **Native UDF families (DRAFT-23)** — replaces the 60µs sklearn call with ~1µs of
-   arithmetic. A ~100x lever on transformer queries and by far the dominant one.
-2. ~~Single-evaluation field access~~ — **DONE**: k addressed fields share ONE
-   `transform()` call per row on both paths, counted rather than timed
-   (`_single_eval_test.py` asserts the call count; DuckDB merges the identical pure calls by
-   CSE, confit reads k lanes off one ecall).
-3. Vectorized `apply_batch` for `infer_arrow`; marshaller work as measured.
-
 *Method for moving it:* measure first (`benchmarks/`), then swap entries behind the extern
 slots — the five controls are the safety net; if an optimization needs a control loosened,
-that is a draft + review, not a code change.
+that is a draft + review, not a code change. Which lever is worth pulling is a reading and
+not a definition: the measured cost split, and the ranked levers that fall out of it, are
+gap: native-transform-families in the dated report.
 *No target number is in force* — goal: request-latency-budget is a regime, `Unverified` by
 construction, and no gate, floor or pin bounds serving latency.
-*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §7, which also
-carries finding: bench-baseline-flip. The 2026-08-04 bench tables this entry used to carry
-were dated readings and did not move; they are in git history at
-`packages/confit/docs/kpis.md`.
+*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §10, which
+also carries gap: bench-baseline-flip.
 
 ### 5.4 What enforces them
 
 **claim: kpi-pointers-resolve.** Every `Enforced-by:` pointer under the five controls in 5.2
 resolves — the check itself is a dated reading and lives in
-`packages/confit/docs/reports/2026-09-02-goal-baseline.md` §8, which carries the map suite by
-suite.
+`packages/confit/docs/reports/2026-09-02-goal-baseline.md` §11, which carries the map suite
+by suite.
 
 **Four of the five controls, and the coverage-ladder drive, are enforced in the other
 package.** Only kpi: engine-parity is confit's own (`_projection_test.py`,
@@ -810,7 +719,7 @@ its class list, driven to empty.
 `_type_delta` carries one arm per unshipped feature — so the bucket is exactly the ledger's
 open widths, already machine-readable.
 *Cost:* near zero; this is the one candidate whose machinery is already built and whose
-retirement bell already rings (exclusion: unshipped-decimal-arithmetic). Note the empty
+closing bell already rings (gap: unshipped-decimal-arithmetic). Note the empty
 state is ambiguous — the runner's own comment says an empty section means either the
 feature shipped **or the grammar stopped reaching it**, so burn-down to zero needs the
 generator checked, not just the number.
@@ -854,13 +763,14 @@ serving bench is re-run and re-recorded at a named cadence (per release, or per 
 and a number older than the bound is marked stale rather than quoted.
 *Measurement that backs it:* the bench runs in a few minutes with a parity gate of its own,
 so the cadence is affordable.
-*Cost:* absolute numbers drift with machine load — the same cell has read a 57% spread
-across two runs on one machine on one day — so a cadence produces noise unless what is
+*Cost:* absolute numbers drift with machine load — the same cell has read a wide spread
+across two runs on one machine on one day, and the size of that spread is the report's — so
+a cadence produces noise unless what is
 recorded is the **ratio** to a baseline row in the same run, which is what
 kpi: serving-latency already has for the transformer path (a 2-field query against a
 1-field one) and does *not* have for the pure-SQL table. Adopting this means picking
 which ratio is the metric, and settling
-`finding: bench-baseline-flip` in
+`gap: bench-baseline-flip` in
 `packages/confit/docs/reports/2026-09-02-goal-baseline.md` first — a cadence on a metric
 whose baseline changed identity would re-record the confusion.
 
@@ -904,23 +814,24 @@ Above the specs, below the owner. The intended shape of the set:
 
 | document | answers |
 |---|---|
-| **this document** (`docs/goal.md`) | what confit is for, how much of it we intend to serve, what we exclude, how it is measured |
-| `docs/reports/<date>-goal-baseline.md` | what those yardsticks read on a date — one file per reading, never an edit to an older one |
+| **this document** (`docs/goal.md`) | the target — what confit is for, how much of it we intend to serve, what is out of scope by decision, how it is measured |
+| `docs/reports/<date>-goal-baseline.md` | the distance — what those yardsticks read on a date, and every way the engine diverges from the target; one file per reading, never an edit to an older one |
 | `docs/oracle/` (merged) | what *correct* means — the oracle's identity, the verdict taxonomy, the comparison contract, pins, the divergence ledger |
-| the engine spec (upcoming) | how the engine achieves it — lanes, slots, the specializer, the backends |
-| the testing spec (upcoming) | how it is checked — gates, corpora, campaigns, what each suite is for |
+| the engine spec | how the engine achieves it — lanes, slots, the specializer, the backends |
+| the testing spec | how it is checked — gates, corpora, campaigns, what each suite is for |
 
 The direction of citation runs downward: this document may cite an oracle-spec claim as
 evidence for a goal, and the oracle spec does not cite goals. Where the two overlap the
 oracle spec wins on *correctness* questions and this document wins on *scope* questions.
 Concretely, and it is tested by two places above: section 1 **points at** the divergence
 ledger as the enumerated exception to the two-outcome contract and takes the rows and their
-status from the ledger's own column rather than copying them; and
-exclusion: unshipped-decimal-arithmetic **names** the two rows it overlaps and leaves them
-`unruled` where the ledger leaves them. Citing a row is deference; restating its verdict
-would be re-litigation, and section 2 does not redefine a verdict either. The same
-direction holds downward into the reports: a report reads this document's yardsticks and
-never amends one.
+status from the ledger's own column rather than copying them; and where a scope decision
+overlaps a divergence row — exclusion: resource-ceilings and exclusion: optimizer-on-answers
+here, gap: unshipped-decimal-arithmetic in the report — the entry **names** the row it
+overlaps and leaves it `unruled` where the ledger leaves it. Citing a row is deference;
+restating its verdict would be re-litigation, and section 2 does not redefine a verdict
+either. The same direction holds downward into the reports: a report reads this document's
+yardsticks and states the distance from them; it never amends one.
 
 **ask: kpis-absorb-or-defer — RULED: this document owns the KPIs.** Three options were on
 the table: absorb, defer-and-split-by-kind, defer wholly. The owner ruled **absorb**.
@@ -950,22 +861,34 @@ the document where it binds, next to what it created.
 |---|---|---|
 | **ask: kpis-absorb-or-defer** | **absorb** — this document owns the KPIs; `packages/confit/docs/kpis.md` is deleted, its definitions and standing law move here under `kpi:` slugs, its dated readings stay in the reports | section 6 (the ruling) and section 5 (the set itself: kpi: training-round-trip, kpi: engine-parity, kpi: binding-parity, kpi: transformer-parity, kpi: no-third-mode, kpi: coverage-ladder, kpi: serving-latency) |
 
-### Open (4)
+### Open here (3)
 
 | ask | question | binds |
 |---|---|---|
 | ask: acceptance-target | is there an acceptance-rate target, and does the ladder ratchet? | goal: growing-accepted-surface, kpi: acceptance-rate, kpi: ladder-ratchet |
-| ask: next-query-classes | which query classes are next, in what order? | goal: growing-accepted-surface, four `exclusion:` rows |
-| ask: exclusion-ratification | does the ten-row ledger bind — silent conditions, the classes it misses, and the ground it has no slot for? | every `exclusion:` slug, kpi: acceptance-rate |
+| ask: exclusion-ratification | does the six-row permanent scope set bind — its grounds, its silence, and the ground it has no slot for? | every `exclusion:` slug, kpi: acceptance-rate |
 | ask: kpi-set-change | adopt any of the six proposed KPIs, and as what kind? | all six proposed `kpi:` slugs in 5.5 |
+
+### Open in the dated report (1)
+
+An ask whose subject is *distance* is asked where the distance is measured. It is still the
+owner's to answer; it is just not a question about the destination.
+
+| ask | question | where |
+|---|---|---|
+| ask: next-query-classes | which unbuilt query classes are next, in what order? | `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §12, ranking the gap ledger in §3 |
+
+The report also carries the part of ask: exclusion-ratification that asked whether the
+enumeration *covers* what the engine refuses today — a question about the current refusal
+surface, not about the target.
 
 **Current readings live in `packages/confit/docs/reports/`**, one dated file per reading,
 starting with `2026-09-02-goal-baseline.md`. Anything this document once carried as a dated
-number is there under the same slug — including the serving bench's baseline question, which
-is a **finding with options** for the implementation loop rather than a question the owner
-must rule on, and the loop-level findings each reading turns up. Those files also carry the
-reproduction commands and their environment preconditions, which is where a fresh checkout
-starts.
+number is there under the same slug, as is every way today's engine falls short of what is
+written here — including the serving bench's baseline question, which is a **gap with
+options** for the implementation loop rather than a question the owner must rule on, and the
+loop-level findings each reading turns up. Those files also carry the reproduction commands
+and their environment preconditions, which is where a fresh checkout starts.
 
 Three questions this document deliberately does **not** ask, because they are already open
 in the oracle spec and forking them would split the answer: the corpus match count's
