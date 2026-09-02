@@ -9,7 +9,8 @@ environment. Every difference between the two is stated here as a **gap**. It is
 
 **A later reading is a new dated file in this directory**, never an edit to this one. That
 is the whole point of the split: a document that carries its own readings in prose is how a
-bar goes a month unre-run and nobody notices — which is exactly what §10 below measured.
+bar goes a month unre-run and nobody notices — which is exactly what the latency-reading
+section below measured.
 
 **Slugs, and the one new family.** Items keep the slugs they had when they lived in
 `goal.md`; only the family changes, and each entry records its old name once.
@@ -19,11 +20,15 @@ from the *oracle* on the accepted surface; a gap closes when the work lands, a `
 closes when the ledger rules on it. `goal:`, `exclusion:`, `kpi:` and `claim:` citations
 resolve in `goal.md`, as do `ask:` citations except the one its ASK index records as living
 here; `gap:` and `finding:` resolve here; `claim:`, `divergence:` and `ticket:` citations
-without a local definition resolve in `packages/confit/docs/oracle/`.
+without a local definition resolve in `packages/confit/docs/oracle/`. **Sections carry slugs
+too:** every numbered heading here and in `goal.md` ends in a kebab-case anchor — `## 3. The
+gap ledger {#gap-ledger}` — and every cross-reference names that slug ("the gap-ledger
+section"), never the number, which is reading order only. A heading whose subject is already
+a slugged item (`### 4.1 finding: seed-1804`) is cited by that item and takes no anchor.
 
 ---
 
-## 1. Environment and reproduction
+## 1. Environment and reproduction {#environment-and-repro}
 
 Every number below was produced here, or is marked as unreproducible here and says why.
 
@@ -57,42 +62,43 @@ The campaign flags matter and are **not** the defaults: `fuzz/runner.py:213-214`
 
 ---
 
-## 2. KPI status
+## 2. KPI status {#kpi-status}
 
-One row per KPI in force (`goal.md` §5.2 and §5.3 define them; this table reads them). All
-cells read **2026-09-02** on the environment in §1. "Pointer resolves" means the enforcing
-suite named in `goal.md` exists and runs, which §11 checked suite by suite; it is not a claim
-that the bar was re-run here.
+One row per KPI in force (`goal.md`'s controls-in-force and drives-in-force sections define
+them; this table reads them). All cells read **2026-09-02** in the environment-and-repro
+section. "Pointer resolves" means the enforcing suite named in `goal.md` exists and runs,
+which the enforcement-as-read section checked suite by suite; it is not a claim that the bar
+was re-run here.
 
 | kpi | defined at | reading, 2026-09-02 | read from |
 |---|---|---|---|
-| kpi: training-round-trip | `goal.md` §5.2 | pointer resolves; the standing gate runs at depth **25**, not the 1,500-2,000 the definition names | §11, finding: c1-depth |
-| kpi: engine-parity | `goal.md` §5.2 | **one live counterexample**: seed 1804 of 2000, one `DIVERGE_VALUE`; corpus replay 0 FAIL of 678; the 7 `DIVERGE_OPT` are exclusion: optimizer-on-answers' standing cost, reported not accepted | §5, finding: seed-1804 |
-| kpi: binding-parity | `goal.md` §5.2 | pointer resolves (`_serving_test.py::serve_gate`); no dedicated reading taken this run | §11 |
-| kpi: transformer-parity | `goal.md` §5.2 | pointer resolves (`_transformers_test.py::_reference`); the three bounds in force were not re-read this run | §11 |
-| kpi: no-third-mode | `goal.md` §5.2 | the FAILED bucket is **empty** (0 of 678 corpus, 0 of 2000 campaign); the "names the construct" half of the clause is **unmeasured** — 88.7% prefix presence is a floor, and 107 refusals carry no documented prefix | §6, gap: undocumented-refusal-prefixes |
-| kpi: coverage-ladder | `goal.md` §5.3 | mined **11 marginalized / 11 refused of 22**; curated **39 / 17 / 5**; corpus replay **547 of 678** (three below the last number written down); dialect L2 **288/678**, exactly on its floor; L3 Spark floor 260 **unread** — no `pyspark` here | §7, §8, §9, gap: corpus-match-slip |
-| kpi: serving-latency | `goal.md` §5.3 | `spec` p50 **2,300-8,800 ns** per call at n=1 against **5.3-13.1 ms** for DuckDB-per-call — the regime holds; against the surviving Python twin row the engine is **1.13-2.05x slower** where the last written reading said 1.5-1.7x faster; the recorded table is 389 commits old | §10, gap: bench-baseline-flip |
+| kpi: training-round-trip | `goal.md` controls-in-force | pointer resolves; the standing gate runs at depth **25**, not the 1,500-2,000 the definition names | enforcement-as-read, finding: c1-depth |
+| kpi: engine-parity | `goal.md` controls-in-force | **one live counterexample**: seed 1804 of 2000, one `DIVERGE_VALUE`; corpus replay 0 FAIL of 678; the 7 `DIVERGE_OPT` are exclusion: optimizer-on-answers' standing cost, reported not accepted | acceptance-reading, finding: seed-1804 |
+| kpi: binding-parity | `goal.md` controls-in-force | pointer resolves (`_serving_test.py::serve_gate`); no dedicated reading taken this run | enforcement-as-read |
+| kpi: transformer-parity | `goal.md` controls-in-force | pointer resolves (`_transformers_test.py::_reference`); the three bounds in force were not re-read this run | enforcement-as-read |
+| kpi: no-third-mode | `goal.md` controls-in-force | the FAILED bucket is **empty** (0 of 678 corpus, 0 of 2000 campaign); the "names the construct" half of the clause is **unmeasured** — 88.7% prefix presence is a floor, and 107 refusals carry no documented prefix | refusal-histogram, gap: undocumented-refusal-prefixes |
+| kpi: coverage-ladder | `goal.md` drives-in-force | mined **11 marginalized / 11 refused of 22**; curated **39 / 17 / 5**; corpus replay **547 of 678** (three below the last number written down); dialect L2 **288/678**, exactly on its floor; L3 Spark floor 260 **unread** — no `pyspark` here | mined-statements, l2-and-l3-floors, authoring-side-ladder, gap: corpus-match-slip |
+| kpi: serving-latency | `goal.md` drives-in-force | `spec` p50 **2,300-8,800 ns** per call at n=1 against **5.3-13.1 ms** for DuckDB-per-call — the regime holds; against the surviving Python twin row the engine is **1.13-2.05x slower** where the last written reading said 1.5-1.7x faster; the recorded table is 389 commits old | latency-reading, gap: bench-baseline-flip |
 
 Two of the seven have a reading that is a **gap against the KPI's own text** rather than a
 value: kpi: training-round-trip (depth) and kpi: no-third-mode (the unmeasured half). Both
-are routed in §12.
+are routed in the left-open section.
 
 ---
 
-## 3. The gap ledger
+## 3. The gap ledger {#gap-ledger}
 
 **A gap is a divergence of the current state from `goal.md`'s target.** Every entry names
 what the goal targets, what the engine does today, the ground, the condition that closes it,
 and its measured size where a histogram or campaign gives one. Five entries were rows of
-`goal.md` §3 until this reading: they were there because something is **not built yet**,
-which is distance and not the target's edge, and `goal.md` §3.1 records the redirect. The
-rest were found by measuring.
+`goal.md`'s scope-edge section until this reading: they were there because something is **not
+built yet**, which is distance and not the target's edge, and `goal.md`'s scope-redirects
+table records the redirect. The rest were found by measuring.
 
 A gap is not a bug. Where the engine violates a control, that is a **finding** and lives in
-§4 — a control violation is never a gap to live with.
+the findings-not-gaps section — a control violation is never a gap to live with.
 
-### 3.1 Gaps that were scope rows
+### 3.1 Gaps that were scope rows {#former-scope-rows}
 
 **gap: unshipped-decimal-arithmetic.** *(was `exclusion: unshipped-decimal-arithmetic`.)*
 *Target:* DECIMAL expressions serve bit-exact, and the `UNSHIPPED` bucket is empty.
@@ -117,7 +123,8 @@ approximate — the refusal is correct behaviour under goal: two-outcome-contrac
 that they refuse at all.
 *Closes when:* **decimal arithmetic ships and the `UNSHIPPED` bucket is empty** — and the
 bucket empties for two different reasons, so it is checked, not just read.
-*Size:* **14 of 2000** campaign cases (0.7%), all class `decimals` (§5).
+*Size:* **14 of 2000** campaign cases (0.7%), all class `decimals` (the acceptance-reading
+section).
 *Rings:* **yes, loudly, and this is the one entry with a real bell.** `fuzz.oracle._type_delta`
 carries exactly one arm (decimal-against-float64) which is deleted when the feature lands,
 and the runner prints the bucket in a section of its own — an empty section means either the
@@ -134,18 +141,19 @@ theirs, and this entry does not settle it.
 **The `UNSHIPPED` bucket, in one place.** The verdict itself is the oracle spec's
 (claim: unshipped-verdict, `packages/confit/docs/oracle/05-the-comparison-contract.md:206`);
 what it means for *this* gap is collected here, because it is measurement vocabulary and
-`goal.md` §2 deliberately carries none of it. **A case whose answer exercises this gap's
-enumerated width is classified, never value-compared**: it counts as neither agreement nor
-finding, and it never enters `findings.jsonl`. Four handlings were available and three of
-them lie. Casting both sides and comparing buries a real width difference inside `AGREE`.
-Grading it a divergence floods the findings with one known, already-documented fact, and a
-findings file that is mostly known facts is a findings file nobody reads. Not generating the
-case leaves the gap unmeasured and quietly shrinks the denominator, so the gap stops costing
-anything on paper the moment it stops being visible. A bucket of its own is the only handling
-that keeps both numbers honest: acceptance still counts the case as built (it did build, and
-it did serve), and parity still refuses to claim anything about a comparison that never
-happened. The bucket is also **self-retiring** — when decimal arithmetic ships, the single
-`_type_delta` arm goes with it and the bucket must empty, so a case still landing there
+`goal.md`'s acceptance-frame section deliberately carries none of it. **A case whose answer
+exercises this gap's enumerated width is classified, never value-compared**: it counts as
+neither agreement nor finding, and it never enters `findings.jsonl`. Four handlings were
+available and three of them lie. Casting both sides and comparing buries a real width
+difference inside `AGREE`. Grading it a divergence floods the findings with one known,
+already-documented fact, and a findings file that is mostly known facts is a findings file
+nobody reads. Not generating the case leaves the gap unmeasured and quietly shrinks the
+denominator, so the gap stops costing anything on paper the moment it stops being visible. A
+bucket of its own is the only handling that keeps both numbers honest: acceptance still counts
+the case as built (it did build, and it did serve), and parity still refuses to claim anything
+about a comparison that never happened. The bucket is also **self-retiring** — when decimal
+arithmetic ships, the single `_type_delta` arm goes with it and the bucket must empty, so a
+case still landing there
 afterwards is a real bug rather than a known gap, which is why *Closes when* checks the
 empty state instead of reading it. Today it holds exactly the 14 cases counted under *Size*,
 all class `decimals`.
@@ -166,7 +174,7 @@ the missing lane.
 *Closes when:* the **i128 lane** ships (its cranelift dependency was verified GO 2026-08-15)
 for HUGEINT/unsigned; the **narrow-lane trap phase** ships for the traps.
 *Size:* not separated in the 2026-09-02 histogram — the generated grammar does not reach the
-wide widths often enough to rank (§6).
+wide widths often enough to rank (the refusal-histogram section).
 *Rings:* partially. `test_integer_widths.py::test_unserved_static_type_refuses_by_name`
 (`:856-871`) parameterizes the unsigned widths (and `float32`) and asserts the refusal names
 the column and the type — so shipping any unsigned *static* width turns that test red by
@@ -211,7 +219,7 @@ outright. Refusing is right; needing to is the gap.
 cases; a matching regex engine lands, for the RE2 cases. Neither is scheduled.
 *Size:* the reject list is the RE2 battery's classes plus twelve fuzzer-found patterns; the
 standing differential re-swept to **zero new divergences over 40k cases across 8 seeds**
-(§11.1).
+(the other-dated-readings section).
 *Rings:* **yes** — the standing regexp differential fuzzer runs in the normal gate
 (N=250, fixed seed), and a new divergence fails with its reproducing seed.
 *Verified-by:* `packages/confit/docs/known-limitations.md:197-200`;
@@ -220,7 +228,7 @@ standing differential re-swept to **zero new divergences over 40k cases across 8
 
 **gap: join-composition-limits.** *(was the second half of
 `exclusion: multiplicity-by-default`; the first half — multiplicity only under an explicit
-`shape='many'` — stayed in `goal.md` §3 as a permanent decision.)*
+`shape='many'` — stayed in `goal.md`'s scope-edge section as a permanent decision.)*
 *Target:* multi-join serving under `shape='many'`, and `USING`/`NATURAL` self-joins where
 the shape allows them.
 *Today:* one join per query under `'many'`; `USING`/`NATURAL` self-joins refuse under every
@@ -230,12 +238,12 @@ self-join case is a named rejection, not a model limit.
 *Closes when:* the one-join-per-query restriction lifts, and `USING`/`NATURAL` self-joins
 land — both named follow-ups, neither scheduled.
 *Size:* unmeasured as a class; the generator's `shape='map'` WHERE-drop refusals (42 of 944,
-§6) belong to the permanent half, not to this entry.
+the refusal-histogram section) belong to the permanent half, not to this entry.
 *Rings:* nothing rings. The shape contract that *is* permanent is pinned in
 `packages/confit/tests/test_shape_contract.py`; nothing pins these two follow-ups.
 *Verified-by:* `packages/confit/docs/known-limitations.md:76-93`.
 
-### 3.2 Gaps this reading measured
+### 3.2 Gaps this reading measured {#measured-gaps}
 
 **gap: undocumented-refusal-prefixes.**
 *Target:* every refusal carries a documented, actionable prefix and names the construct —
@@ -249,9 +257,9 @@ The construct-naming half is not measured at all.
 mapping a site to a documented family.
 *Closes when:* the oracle spec's ticket: clean-prefix-reconcile lands the missing prefixes,
 and a measurement exists for the naming half.
-*Size:* 107 of 944 (§6). The corpus gate's narrower `_CLEAN` set puts it differently again —
-688 of 944, 72.9%.
-*Verified-by:* claim: refusal-prefix-share (§6);
+*Size:* 107 of 944 (the refusal-histogram section). The corpus gate's narrower `_CLEAN` set
+puts it differently again — 688 of 944, 72.9%.
+*Verified-by:* claim: refusal-prefix-share (the refusal-histogram section);
 `packages/confit/docs/oracle/` claim: refusal-message-prefixes.
 
 **gap: undocumented-boolean-comparison.** *(was `finding: undocumented-boolean-comparison`;
@@ -265,10 +273,10 @@ it appears in **no** scope row, in no gap entry above, and **nowhere** in
 `known-limitations.md` (`grep -c BOOLEAN` there returns 0). `unsupported: modifier on scalar
 call abs` (`frontend.rs:6296`, 39 refusals) reached the ledger only by being added to
 exclusion: whole-relation-shapes in the pass that wrote `goal.md`.
-*Ground:* bookkeeping, plus the missing site-to-row mapping behind it (§6, the refusal-site
-census).
-*Closes when:* the class is documented and classified — as a scope decision in `goal.md` §3
-if it is one, as a gap entry here if it is not.
+*Ground:* bookkeeping, plus the missing site-to-row mapping behind it (the refusal-histogram
+section's refusal-site census).
+*Closes when:* the class is documented and classified — as a scope decision in `goal.md`'s
+scope-edge section if it is one, as a gap entry here if it is not.
 *Size:* 86 of 944 (9.1%).
 
 **gap: corpus-match-slip.**
@@ -279,8 +287,8 @@ unhedged sites across *five* documents, and the oracle spec's ladder records 550
 earlier reading (`53 -> 395 -> 505 -> 511 -> 529 -> 546 -> 550`), so the ungated match count
 has moved **down by three** since it was last written down and nothing noticed.
 *Ground:* the count is printed and never asserted (`test_corpus_replay.py:180-184` prints,
-`:186` asserts only `not fails`), which is two of `goal.md` §2.1's four yardsticks having no
-ratchet.
+`:186` asserts only `not fails`), which is two of the four-yardsticks table's rows in
+`goal.md` having no ratchet.
 *Closes when:* the ratchet decision lands — this is fresh evidence for the oracle spec's open
 ask: match-count-ratchet and for `goal.md`'s ask: acceptance-target, which should be answered
 with it rather than separately — and the six stale sites are corrected.
@@ -291,11 +299,11 @@ occurrence in `reports/confit-architecture.md:30`, and
 `docs/specs/2026-08-13-dialect-logical-plan-design.md:265` and `:298` — so the six *unhedged
 current-state* sites the oracle spec's correction enumerates are a subset of the occurrences
 a remediation would have to walk.
-*Verified-by:* claim: corpus-match-today (§7); `packages/confit/docs/oracle/`
-claim: zero-fails-gate and its correction.
+*Verified-by:* claim: corpus-match-today (the mined-statements section);
+`packages/confit/docs/oracle/` claim: zero-fails-gate and its correction.
 
 **gap: admission-ladder-headroom.** *(was kpi: coverage-ladder's "known headroom" list in
-`goal.md` §5.3.)*
+`goal.md`'s drives-in-force section.)*
 *Target:* the `sql_transform` admission ladder keeps growing — progress is queries moving
 from REFUSED to MARGINALIZED, never to FAILED.
 *Today:* the named headroom, roughly in order of value: step semantics for order-keyed
@@ -308,7 +316,7 @@ sides of the boundary.
 it refuse, implement until it marginalizes, extend kpi: training-round-trip's gate in the
 same loop.
 *Size:* today's ladder is 11 marginalized / 11 refused of 22 mined, and 39 / 17 / 5 curated
-(§9).
+(the authoring-side-ladder section).
 
 **gap: native-transform-families.** *(carries kpi: serving-latency's 2026-08-04 priority
 finding and kpi: transformer-parity's not-in-force extension, both of which were written in
@@ -334,7 +342,7 @@ native entry equals its `PythonTransform` fallback twin — bit-exact for scaler
 within the *declared* per-family ulp bound for matvec tiers, gated by swap-the-entry (same
 SQL, same statics, different udfs-list entry).
 *Closes when:* the native families land **and** that bound is adopted through review, which
-under `goal.md` §5.1 is the only legitimate way a control moves.
+under `goal.md`'s standing-law section is the only legitimate way a control moves.
 *Size:* the 60,900 vs 1,500 ns split above; ~100x on the transformer path if the lever lands
 as measured.
 
@@ -364,9 +372,10 @@ capitals.** `benchmarks/bench_serving.py:31-35`: "rebuild the wheel first (`uv r
 --reinstall-package confit python -c pass`) — a stale wheel inflates ONLY the engine rows
 and once produced a phantom 7x regression (caught by bisection, 2026-07-26)". Engine rows
 uniformly slower with the Python row unchanged **is** the stale-wheel signature, it has
-happened in this repo before, and it is the cheapest of the four to rule out. §1's
-environment names `uv run maturin develop --release`, which is not the harness's own
-recommended command; ruling (d) out costs one re-run after `--reinstall-package`.
+happened in this repo before, and it is the cheapest of the four to rule out. The
+environment-and-repro section names `uv run maturin develop --release`, which is not the
+harness's own recommended command; ruling (d) out costs one re-run after
+`--reinstall-package`.
 
 *Ground:* unknown, which is the gap — no bisect was run. What can be said: (c) alone is
 unlikely to produce a uniform sign flip, (d) is untested and cheapest, and the answer changes
@@ -374,11 +383,12 @@ what goal: request-latency-budget is worth as a claim.
 *Closes when:* (d) is ruled out by a re-run, then (b) by a bisect if it survives.
 **Settle this before adopting kpi: bench-refresh-cadence** — a cadence on a metric whose
 baseline changed identity would re-record the confusion.
-*Size:* 1.13-2.05x slower on five scenarios; the recorded table is 389 commits old (§10).
+*Size:* 1.13-2.05x slower on five scenarios; the recorded table is 389 commits old (the
+latency-reading section).
 
 ---
 
-## 4. Findings that are not gaps
+## 4. Findings that are not gaps {#findings-not-gaps}
 
 A **finding** is a defect or an enforcement fault: the engine, or a bar, failing on its own
 terms. It is not distance from the target and it is never something to live with — a control
@@ -398,11 +408,11 @@ engine-bug process it wants an xfail-strict pin and a ticket.
 
 kpi: training-round-trip says "1,500-2,000-case runs at each widening loop", but
 `_projection_test.py:375` is `n = int(os.environ.get("MARGINALIZE_FUZZ_N", "25"))` — the deep
-run is opt-in and the standing gate is 25. Under `goal.md` §5.1 a control that only holds at
-its written depth when someone sets an environment variable is "an unacknowledged
-trade-off", and the remedy is a decision, not an edit: **either correct the text to 25, or
-raise the default and pay the runtime**. Both are changes to the KPI set, so both route
-through `goal.md`'s ask: kpi-set-change.
+run is opt-in and the standing gate is 25. Under `goal.md`'s standing-law section a control
+that only holds at its written depth when someone sets an environment variable is "an
+unacknowledged trade-off", and the remedy is a decision, not an edit: **either correct the
+text to 25, or raise the default and pay the runtime**. Both are changes to the KPI set, so
+both route through `goal.md`'s ask: kpi-set-change.
 
 ### 4.3 finding: static-only-tie-order — a nondeterministic order can be frozen
 
@@ -420,7 +430,7 @@ written reason it is acceptable.
 
 ---
 
-## 5. Campaign verdicts and the acceptance reading
+## 5. Campaign verdicts and the acceptance reading {#acceptance-reading}
 
 **claim: campaign-verdicts-today.** Over seeds 0-1999 of the generated grammar, measured
 2026-09-02, and re-run twice with identical counts. **Corroboration, not independence:** the
@@ -447,24 +457,24 @@ found load — the fix is to re-run the named seed alone, not to re-record the t
 **Acceptance** — cases that **built rather than refused**, which is the only definition the
 arithmetic supports — is **1056/2000 = 52.8%**. That numerator deliberately contains the 14
 `UNSHIPPED` (they build and serve, only the comparison is withheld — the bucket's rules and
-its rationale are gap: unshipped-decimal-arithmetic in §3.1, which is where all 14 sit), the
-21 `AGREE_TRAP`, and the one live `DIVERGE_VALUE`: on this definition the seed-1804 parity
-defect counts as accepted, which is correct for a *scope* metric and is the reason acceptance
-can never stand in for parity. This paragraph is the reading `goal.md` §2 points at for what
-today's numerator contains; the definition of acceptance stays there. All 7 `DIVERGE_OPT` are
-exclusion: optimizer-on-answers' standing cost — **reported findings, not an accepted
-class**, which is the oracle spec's claim: contract-surface-gap. A 4000-seed campaign put
-that class at 8 seeds in 28 findings.
+its rationale are gap: unshipped-decimal-arithmetic in the former-scope-rows section, which
+is where all 14 sit), the 21 `AGREE_TRAP`, and the one live `DIVERGE_VALUE`: on this
+definition the seed-1804 parity defect counts as accepted, which is correct for a *scope*
+metric and is the reason acceptance can never stand in for parity. This paragraph is the
+reading `goal.md`'s acceptance-frame section points at for what today's numerator contains; the
+definition of acceptance stays there. All 7 `DIVERGE_OPT` are exclusion: optimizer-on-answers'
+standing cost — **reported findings, not an accepted class**, which is the oracle spec's claim:
+contract-surface-gap. A 4000-seed campaign put that class at 8 seeds in 28 findings.
 
-**The validity caveat in `goal.md` §2 bounds every number in this section**: these rates are
-over the generated grammar, which is not query space, and no denominator that means
-anything exists yet (claim: coverage-denominator, `[PROPOSED]`). "52.8% of a grammar" is a
-real measurement of a synthetic population and converts into nothing about the SQL people
+**The validity caveat in `goal.md`'s acceptance-frame section bounds every number here**:
+these rates are over the generated grammar, which is not query space, and no denominator that
+means anything exists yet (claim: coverage-denominator, `[PROPOSED]`). "52.8% of a grammar" is
+a real measurement of a synthetic population and converts into nothing about the SQL people
 write.
 
 ---
 
-## 6. The refusal histogram and refusal quality
+## 6. The refusal histogram and refusal quality {#refusal-histogram}
 
 **Top of the histogram**, seeds 0-1999, of 944 refusals: `WITH` 104, `comparison on
 BOOLEAN` 86, `bind error: bad integer literal` 43, `shape=map` WHERE-drop 42, `udf udf0: a
@@ -472,7 +482,7 @@ width-1 list return` 42, `modifier on scalar call abs` 39, `QUALIFY` 36, `DISTIN
 `ORDER BY` 23. Only the first is a whole-relation shape near the top; `QUALIFY` ranks
 **seventh**, not third. That is a fact about the grammar, not a demand signal — the campaign
 says which classes the *generator* reaches, not which users need
-(bears on ask: next-query-classes, §12).
+(bears on ask: next-query-classes, in the left-open section).
 
 Per-row shares the scope rows and gap entries carry: `WITH` 104 of 944, `QUALIFY` 36,
 `DISTINCT` 30, `ORDER BY` 23 (exclusion: whole-relation-shapes); `shape='map': a WHERE
@@ -517,12 +527,13 @@ other 115 live under `src/dialect/` (`duckdb.rs` 84, `plan.rs` 13, `bigquery.rs`
 a different error type on the translation surface feeding the L2/L3 gates
 (`src/dialect/mod.rs:19-24`), which claim: dialect-gate-oracle scopes out. So the gap is
 ~164 call sites against six scope rows plus this ledger's entries, not 281 against ten. **No
-mechanism maps either set to a row.** That is an open question of this reading (§12), not of
-`goal.md`'s ask: exclusion-ratification, which asks whether the *permanent* set binds.
+mechanism maps either set to a row.** That is an open question of this reading (the left-open
+section), not of `goal.md`'s ask: exclusion-ratification, which asks whether the *permanent*
+set binds.
 
 ---
 
-## 7. The mined corpus
+## 7. The mined corpus {#mined-statements}
 
 **claim: corpus-match-today.** Of the 678 statements mined from DuckDB's own test suite,
 **547 replay bit-exact, 131 refuse cleanly, 0 FAIL**. Zero FAILs is the gate and it holds;
@@ -535,7 +546,7 @@ written down — gap: corpus-match-slip carries that and the cleanup it implies.
 
 ---
 
-## 8. Dialect floors
+## 8. Dialect floors {#l2-and-l3-floors}
 
 **claim: dialect-floors-today.** The dialect frontend's L2 gate (parse then print is
 invisible to the oracle) stands at **288/678 match, 390 clean-unsupported, 0 FAIL** —
@@ -548,11 +559,12 @@ design rather than skipping. Ratcheting that floor means naming the environment 
 it (bears on `goal.md`'s kpi: ladder-ratchet).
 
 Both floors already carry the ratchet — "raise it when the surface grows, never lower it" —
-which is why two of the four ladders in `goal.md` §2.1 are enforced and two are not.
+which is why two of the four ladders in `goal.md`'s four-yardsticks table are enforced and
+two are not.
 
 ---
 
-## 9. The authoring-side ladder
+## 9. The authoring-side ladder {#authoring-side-ladder}
 
 `packages/confit/docs/goal.md` kpi: coverage-ladder pins the sql-transform admission
 ladder: **11 marginalized + 11 refused of 22 mined**, and **39 marginalized / 17 refused /
@@ -569,7 +581,7 @@ headroom is gap: admission-ladder-headroom.
 
 ---
 
-## 10. Serving latency
+## 10. Serving latency {#latency-reading}
 
 **claim: bench-is-stale.** The recorded serving-latency table is dated **2026-08-04**
 (`kpis.md:118`, the file kpi: serving-latency absorbed and deleted — the old readings are in
@@ -619,19 +631,19 @@ sign flip is gap: bench-baseline-flip.
 
 ---
 
-## 11. KPI enforcement, as read
+## 11. KPI enforcement, as read {#enforcement-as-read}
 
-**claim: kpi-pointers-resolve.** Every enforcement pointer under the five control KPIs in
-`packages/confit/docs/goal.md` §5.2 resolves on master `2ba96e5`, checked 2026-09-02: C1
-`_projection_test.py::gate` (`:34`) and its `MARGINALIZE_FUZZ_N` seeded differential
-(`:374-376`, seed 20260729); C2 the `test_duckdb_*.py` wave suites, `test_params_joins.py`,
-`test_udfs.py::udf_check` (`:240`), `known-limitations.md`, and
+**claim: kpi-pointers-resolve.** Every enforcement pointer in
+`packages/confit/docs/goal.md`'s controls-in-force section resolves on master `2ba96e5`,
+checked 2026-09-02: C1 `_projection_test.py::gate` (`:34`) and its `MARGINALIZE_FUZZ_N`
+seeded differential (`:374-376`, seed 20260729); C2 the `test_duckdb_*.py` wave suites,
+`test_params_joins.py`, `test_udfs.py::udf_check` (`:240`), `known-limitations.md`, and
 `src/specializer/exec/tests.rs`; C3 `_serving_test.py::serve_gate` (`:29`); C4
 `_transformers_test.py::_reference` (`:34`); C5 `_corpus_test.py` and its three-outcome
 FAILED-must-be-empty rule. A pointer resolving is not a bar holding at its written depth —
 finding: c1-depth is the one place they differ today.
 
-### 11.1 Other dated readings
+### 11.1 Other dated readings {#other-dated-readings}
 
 Readings that were living in `goal.md` prose and belong to a dated file:
 
@@ -670,7 +682,7 @@ Readings that were living in `goal.md` prose and belong to a dated file:
 
 ---
 
-## 12. What this reading leaves open
+## 12. What this reading leaves open {#left-open}
 
 Nothing here is acted on; each item belongs somewhere else. The routing:
 
@@ -679,17 +691,17 @@ Nothing here is acted on; each item belongs somewhere else. The routing:
 | finding: seed-1804 | an xfail-strict pin plus a ticket, per the engine-bug process |
 | finding: c1-depth | `goal.md`'s ask: kpi-set-change — correct the text or raise the default |
 | finding: static-only-tie-order | a measurement, then a refusal — or a written reason it is acceptable |
-| gap: undocumented-boolean-comparison | a bookkeeping fix in `known-limitations.md`, then a row in `goal.md` §3 or an entry in §3 here |
+| gap: undocumented-boolean-comparison | a bookkeeping fix in `known-limitations.md`, then a row in `goal.md`'s scope-edge section or an entry in the gap-ledger section here |
 | gap: undocumented-refusal-prefixes | the oracle spec's ticket: clean-prefix-reconcile, which gains two families |
 | gap: bench-baseline-flip | one re-run after `--reinstall-package` rules out (d); then `goal.md`'s kpi: bench-refresh-cadence |
 | gap: corpus-match-slip | the oracle spec's ask: match-count-ratchet, answered together with `goal.md`'s ask: acceptance-target |
-| the other nine gap entries in §3 | ask: next-query-classes below, which is what ranks them |
+| the other nine gap entries in the gap-ledger section | ask: next-query-classes below, which is what ranks them |
 
 ### 12.1 ask: next-query-classes — which classes are next, and in what order?
 
-*Moved here from `goal.md` §2 with this reading: every candidate it ranks is a gap entry
-rather than a scope decision, so it belongs next to the ledger it ranks. It is still the
-owner's question.*
+*Moved here from `goal.md`'s acceptance-frame section with this reading: every candidate it
+ranks is a gap entry rather than a scope decision, so it belongs next to the ledger it ranks.
+It is still the owner's question.*
 
 The candidates, each with what it would unlock and what it costs. None of these is
 chosen; the list is evidence for a choice, not a plan.
@@ -704,14 +716,14 @@ chosen; the list is evidence for a choice, not a plan.
 | lifting the one-join-per-query restriction under `'many'` | multi-join serving, the other half of gap: join-composition-limits | multiplicity composition, the hardest of these |
 | native transform families | closes gap: native-transform-families; a ~100x lever on the transformer path | the per-family ulp bound has to be adopted through review first |
 
-The campaign's refusal histogram (§6) says which of these the *generator* reaches, not which
-your users need, and the ranking it produces is not the ranking intuition gives — that is
-a fact about the grammar, not a demand signal. It also holds a large class that belongs to
-no entry at all: gap: undocumented-boolean-comparison.
+The campaign's refusal histogram (the refusal-histogram section) says which of these the
+*generator* reaches, not which your users need, and the ranking it produces is not the
+ranking intuition gives — that is a fact about the grammar, not a demand signal. It also holds
+a large class that belongs to no entry at all: gap: undocumented-boolean-comparison.
 
-*Binds:* goal: growing-accepted-surface, and every gap entry in §3.
+*Binds:* goal: growing-accepted-surface, and every gap entry in the gap-ledger section.
 
-### 12.2 Does the enumeration cover what the engine refuses?
+### 12.2 Does the enumeration cover what the engine refuses? {#enumeration-coverage}
 
 *The half of `goal.md`'s ask: exclusion-ratification that asked about coverage rather than
 about the target. It is a question about today's code, so it is measured here.*
@@ -722,9 +734,9 @@ modifier class reached the ledger only by being added to exclusion: whole-relati
 the pass that wrote `goal.md`. By `known-limitations.md:284`'s own rule a refusal in code and
 in no document is a bookkeeping bug to file. Behind that: **~164 `PrepareError` refusal sites
 against six scope rows and eleven gap entries, with no mechanism mapping a site to either**
-(§6). The choice is to accept that the enumeration is a curated summary rather than a cover,
-or to ask for the mapping — and that choice is not part of ratifying the permanent set, which
-is why it is asked here rather than there.
+(the refusal-histogram section). The choice is to accept that the enumeration is a curated
+summary rather than a cover, or to ask for the mapping — and that choice is not part of
+ratifying the permanent set, which is why it is asked here rather than there.
 
 **Reading N=2 replaces none of this.** It is a new file next to it, and the interesting
 column is the delta.
