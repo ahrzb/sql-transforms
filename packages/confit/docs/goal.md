@@ -13,12 +13,12 @@ written here — lives in a dated report under `packages/confit/docs/reports/`; 
 `2026-09-02-goal-baseline.md`, and a later reading is a **new dated file**, never an edit to
 this one. Each shortfall is stated there as a **gap** — a divergence of the current state
 from this document's target — under the same slug it would have here. So a construct that is
-out of scope *by decision* is in section 3 below; a construct that is out only because it is
-not built is a gap in the report, and section 3 says where each one went. Facts are still
-measured or read from a pin and never recalled; what changed is that a *reading* no longer
-lives in prose here, which is how a bar goes a month unre-run and nobody notices. Current
-tasks, tickets and defects are the implementation loop's, and the loop reports into those
-files.
+out of scope *by decision* is in the scope-edge section below; a construct that is out only
+because it is not built is a gap in the report, and the scope-redirects table says where each
+one went. Facts are still measured or read from a pin and never recalled; what changed is
+that a *reading* no longer lives in prose here, which is how a bar goes a month unre-run and
+nobody notices. Current tasks, tickets and defects are the implementation loop's, and the
+loop reports into those files.
 
 **Non-circularity, the same rule the oracle spec runs on.** This document is the
 authority. Code, tests, pins and gate floors are its **enforcement**, never its
@@ -47,19 +47,26 @@ its slug there. The family is carried by the citation, not by the slug:
 Slugs are unique across every family and across the oracle spec, and the form above is
 used at the definition and at every reference, so `grep -rn "<slug>"` finds an item and
 everything that cites it. A row that leaves this document for the report keeps its slug and
-changes only its family, and section 3 records the pair so an old citation still lands.
+changes only its family, and the scope-redirects table records the pair so an old citation
+still lands.
+
+**Sections are cited the same way.** Every numbered heading carries a kebab-case slug anchor
+— `## 3. What is out of scope, by decision {#scope-edge}` — and every cross-reference, here
+or into the dated report, names that slug ("the scope-edge section"). The number in a heading
+is reading order; nothing cites it. A heading whose subject is already a slugged item
+(`### 4.1 finding: seed-1804`, in the report) is cited by that item and takes no anchor.
 
 **Two markers keep the normative half honest.** `[PROPOSED]` — a statement this document
 would like, which nobody has ruled on; it holds a slug only so a ticket can cite it.
 `[FACT]` — a measured statement of current state with no decision attached. Every
 decision that belongs to the owner is an ASK block or carries `[PROPOSED]`; none of them
 is written as settled. That includes every acceptance-rate target, ratification of the
-permanent scope set in section 3, and any change to the KPI set —
-the set itself is in force in section 5, which is a ruling and not a proposal.
+permanent scope set in the scope-edge section, and any change to the KPI set — the set
+itself is in force in the measurement-and-kpis section, which is a ruling and not a proposal.
 
 ---
 
-## 1. What confit is for
+## 1. What confit is for {#engine-purpose}
 
 The repository has **two** goals, and confit is one half of one of them: ergonomic
 SQL-to-transformer authoring, and fast inference. `sql_transform` owns authoring and fit;
@@ -75,12 +82,13 @@ to support.
 *Enforced-by:* the two-outcome contract below, and the fit-side gates in
 `packages/sql-transform` (kpi: training-round-trip).
 *Verified-by:* `packages/confit/README.md:11-22` (the contract and this argument);
-kpi: training-round-trip and kpi: engine-parity (section 5.2).
+kpi: training-round-trip and kpi: engine-parity (the controls-in-force section).
 
 **goal: two-outcome-contract.** For any SQL handed to `DuckDBInferFn`, exactly one of two
 things happens: it serves bit-for-bit identical to the oracle, or it refuses at build with
 a `ValueError` naming the construct. Nothing is approximated, silently dropped, or widened
-at inference time. This is the load-bearing goal, and everything in section 2 follows from it.
+at inference time. This is the load-bearing goal, and everything in the acceptance-frame
+section follows from it.
 
 **The third mode exists and is enumerated — that is the whole difference.** The absolute
 above is "no *unenumerated* third mode", not "no third mode", and writing it the strong
@@ -88,12 +96,12 @@ way would make this document false on its own evidence. The enumeration is the o
 spec's divergence ledger
 (`packages/confit/docs/oracle/07-the-divergence-ledger.md`), whose rows *serve* with a
 consciously different surface. **Which rows are in force, and at what severity, is the
-ledger's status column to say, never this document's** (section 6) — so the ledger is
-pointed at here and never copied. The pointer is the structural part: a contract that
-admits enumerated exceptions is only honest while the enumeration has a single home.
+ledger's status column to say, never this document's** (the document-set section) — so the
+ledger is pointed at here and never copied. The pointer is the structural part: a contract
+that admits enumerated exceptions is only honest while the enumeration has a single home.
 *Enforced-by:* build-time refusal at `DuckDBInferFn(...)` construction throughout
 `packages/confit/src/specializer/`; the ledger for the enumerated exceptions.
-*Verified-by:* kpi: no-third-mode (section 5.2, the corpus's
+*Verified-by:* kpi: no-third-mode (the controls-in-force section, the corpus's
 FAILED bucket pinned empty); `packages/confit/tests/test_corpus_replay.py:171-190` (three
 outcomes, zero FAILs); `packages/confit/docs/properties.md:231-235` (P18);
 `packages/confit/docs/oracle/` claim: oracle-identity for which DuckDB.
@@ -104,8 +112,8 @@ time. The ceiling this doctrine tolerates is a single n-dispatch branch; anythin
 would re-do general work per row is refused rather than served slowly.
 *Enforced-by:* the specializer's partial-evaluation model; refusals for every construct
 that would need per-row compilation (exclusion: per-row-general-work).
-*Verified-by:* `packages/confit/docs/known-limitations.md:65-79` (section 1, "the
-specialization bargain"); `packages/confit/docs/properties.md:246` (P20, statics frozen at
+*Verified-by:* `packages/confit/docs/known-limitations.md:65-79` ("the specialization
+bargain"); `packages/confit/docs/properties.md:246` (P20, statics frozen at
 build); `packages/confit/docs/specs/2026-08-25-task-133-join-keys-design.md:520` ("an
 engine whose whole doctrine is compile-once with no runtime ...").
 
@@ -135,19 +143,20 @@ gate that lives in sql-transform").
 — parity outside the enumerated divergence ledger is fixed at 100% by
 goal: two-outcome-contract — it is **acceptance**: how much real SQL builds instead of
 refusing. Progress is queries moving from REFUSED to served,
-never into a wrong answer. Section 2 is this goal's frame and its yardsticks.
-*Enforced-by:* **two of the four yardsticks in section 2, and only two.** The dialect
+never into a wrong answer. The acceptance-frame section is this goal's frame and its
+yardsticks.
+*Enforced-by:* **two of the four-yardsticks table's rows, and only two.** The dialect
 floors gate ratchets its two constants (`test_dialect_corpus_gate.py:37`,
 `test_dialect_cross_engine_gate.py:50`). The corpus match count is *printed and never
 asserted* — `test_corpus_replay.py:180-184` prints it, `:186` asserts only `not fails` —
 and the campaign acceptance rate has no gate at all. A count records a goal; it does not
 make one hold. That gap is what ask: acceptance-target and kpi: ladder-ratchet are about.
-*Verified-by:* kpi: coverage-ladder (section 5.3, "Progress = moving queries from
-REFUSED to MARGINALIZED (never to FAILED)"); the four line reads above.
+*Verified-by:* kpi: coverage-ladder (the drives-in-force section, "Progress = moving queries
+from REFUSED to MARGINALIZED (never to FAILED)"); the four line reads above.
 
 ---
 
-## 2. Parity is a control; acceptance is the goal
+## 2. Parity is a control; acceptance is the goal {#acceptance-frame}
 
 The reframe this document exists to make explicit. Because the contract is
 bit-exact-or-refuse-by-name (goal: two-outcome-contract), **parity on the accepted surface
@@ -173,8 +182,8 @@ about what a campaign reports has to include them
 they were zero rather than leaving them out.
 
 `REFUSED` is the shape of "not accepted", and it is the only shape the target has: the
-contract in section 1 admits exactly two outcomes, so a case either built or it refused by
-name, and a refusal retires by a decision to serve the construct.
+contract in the engine-purpose section admits exactly two outcomes, so a case either built
+or it refused by name, and a refusal retires by a decision to serve the construct.
 
 **Where the rest of the vocabulary lives.** A measurement apparatus needs more words than
 the target does — including what it does with a case whose answer exercises a currently-open
@@ -185,14 +194,15 @@ defined in the oracle spec's verdict chapter
 (`packages/confit/docs/oracle/04-verdicts-agreement-abstention-refusal.md`, and
 claim: unshipped-verdict in `05-the-comparison-contract.md`), and read on a date in
 `packages/confit/docs/reports/2026-09-02-goal-baseline.md`, where
-gap: unshipped-decimal-arithmetic carries the whole story and §5 carries what today's
-acceptance numerator contains. This document points at both and restates neither.
+gap: unshipped-decimal-arithmetic carries the whole story and the acceptance-reading section
+carries what today's acceptance numerator contains. This document points at both and
+restates neither.
 
 **Acceptance is defined as cases that built rather than refused** — on this definition a
 parity defect counts as accepted, which is correct for a *scope* metric and is exactly the
 reason acceptance can never stand in for parity.
 
-### 2.1 The four yardsticks
+### 2.1 The four yardsticks {#four-yardsticks}
 
 What the accepted surface is read with. Each row is a **method**, not a number; the numbers
 are the dated report's.
@@ -204,12 +214,13 @@ are the dated report's.
 | dialect L3 cross-engine floor | how many match through a second engine's dialect | `test_dialect_cross_engine_gate.py` | **yes**, an asserted floor — but only in an environment that has `pyspark`, and the fixture fails loudly rather than skipping |
 | campaign verdict census | over a seed range of the generated grammar, the verdict distribution and the acceptance rate that falls out of it | `python -m fuzz.runner` (a manual CLI, **not** a standing gate) | no |
 
-A fifth number is cited from across the package boundary: kpi: coverage-ladder (section 5.3)
-pins the `sql_transform` admission ladder (mined marginalized/refused, and the curated
-three-way split). That ladder is `sql_transform`'s, not confit's (goal: engine-half-only);
-it is cited because acceptance growth is measured on both sides of the boundary, and it is
-the one ladder whose *split* has a pin test that fails when the number moves. It takes two
-tests to say so — `_corpus_test.py::test_progression_totals` pins the totals and
+A fifth number is cited from across the package boundary: kpi: coverage-ladder (the
+drives-in-force section) pins the `sql_transform` admission ladder (mined
+marginalized/refused, and the curated three-way split). That ladder is `sql_transform`'s,
+not confit's (goal: engine-half-only); it is cited because acceptance growth is measured on
+both sides of the boundary, and it is the one ladder whose *split* has a pin test that fails
+when the number moves. It takes two tests to say so —
+`_corpus_test.py::test_progression_totals` pins the totals and
 `::test_mined_corpus_scoreboard` pins the split — so citing the totals test alone would name
 a gate that cannot catch a drift in the split.
 
@@ -261,7 +272,7 @@ goal: growing-accepted-surface, and the ASK index below records where it went.
 
 ---
 
-## 3. What is out of scope, by decision
+## 3. What is out of scope, by decision {#scope-edge}
 
 **This is the target's edge, not its distance.** Every row here is out of scope **by
 decision**: the engine model cannot express it, or it could be served and we chose not to,
@@ -289,12 +300,13 @@ decision), **resource** (it would cost more than a serving engine may spend per 
 judgement with a number attached). See `packages/confit/docs/oracle/`
 claim: refusal-grounds.
 
-**Not in this ledger, deliberately:** the rows of `known-limitations.md` section 5 that
-*serve* with a consciously different surface (duplicate-column rename, approximate error
-texts, schema-qualifier resolution, the platform-libm NaN bit pattern). Those are
-divergences, not exclusions, and they belong to the oracle spec's divergence ledger
-(`packages/confit/docs/oracle/07-the-divergence-ledger.md`). Entries below whose *decision*
-is an exclusion even though the *symptom* is a divergence say so and point at the row.
+**Not in this ledger, deliberately:** the rows of `known-limitations.md:209-273` ("deliberate
+contract choices") that *serve* with a consciously different surface (duplicate-column
+rename, approximate error texts, schema-qualifier resolution, the platform-libm NaN bit
+pattern). Those are divergences, not exclusions, and they belong to the oracle spec's
+divergence ledger (`packages/confit/docs/oracle/07-the-divergence-ledger.md`). Entries below
+whose *decision* is an exclusion even though the *symptom* is a divergence say so and point at
+the row.
 
 **exclusion: whole-relation-shapes.** `GROUP BY`/`HAVING`/aggregates, `ORDER BY`,
 `LIMIT`/`OFFSET`/`FETCH`/`TOP`, `DISTINCT`, CTEs, `UNION`/`INTERSECT`/`EXCEPT`, subqueries,
@@ -403,7 +415,7 @@ exists to prevent.
 are unbuilt work, and they are gap: join-composition-limits in the report.
 *Verified-by:* `packages/confit/docs/known-limitations.md:76-93`.
 
-### 3.1 Rows that left this section
+### 3.1 Rows that left this section {#scope-redirects}
 
 Each of these was here because something is **not built yet**, which is distance from the
 target rather than the target's edge. They are gap entries in the dated report, under the
@@ -463,7 +475,7 @@ identical either way — which is exactly why the two had to stop sharing a sect
 
 ---
 
-## 4. What we cover that DuckDB does not
+## 4. What we cover that DuckDB does not {#beyond-duckdb}
 
 The model surface. DuckDB is the oracle for SQL; it has no opinion at all about a fitted
 sklearn transformer or a gradient-boosted tree, so on this surface there is no differential
@@ -491,15 +503,16 @@ builtin is refused rather than resolved: DuckDB lets a registered function shado
 builtin and we do not, so serving it would be two engines answering one SQL differently.
 *Enforced-by:* `packages/confit/tests/test_udfs.py::udf_check` (`:240`), the parameterized
 form of the contract.
-*Verified-by:* kpi: engine-parity's `Enforced-by:` line (section 5.2), which names
-`test_udfs.py` (`udf_check`) among its enforcing suites — its "Which DuckDB" line names no
-suite; `test_udfs.py::test_a_udf_may_not_take_a_builtin_name`.
+*Verified-by:* kpi: engine-parity's `Enforced-by:` line (the controls-in-force section),
+which names `test_udfs.py` (`udf_check`) among its enforcing suites — its "Which DuckDB" line
+names no suite; `test_udfs.py::test_a_udf_may_not_take_a_builtin_name`.
 
 **claim: sklearn-is-the-reference.** On the surface DuckDB cannot run, an independent
 sklearn reference plays the role optimizer-off DuckDB plays for SQL — and it is a
 **reference**, not the oracle, which is why it comes with a named bound instead of bit
 equality everywhere. The bound differs by family, and **there are three bounds in force,
-not one** — naming only the loosest would be the quiet loosening section 5.1 forbids:
+not one** — naming only the loosest would be the quiet loosening the standing-law section
+forbids:
 
 | surface | bound | where |
 |---|---|---|
@@ -513,10 +526,10 @@ the campaign's `1e-9` shares a numeral with the transformer bound and not a mean
 *Enforced-by:* the four rows above;
 `packages/sql-transform/sql_transform/_transformers_test.py::_reference` (`:34`) is the
 clone-per-group reference all the transformer rows compare against.
-*Verified-by:* kpi: transformer-parity (section 5.2, the control this is — note its own
-text names **no** tolerance, so the bounds above are read from the tests, not from the
-KPI); `packages/confit/docs/oracle/` claim: metamorphic-self-legs (the `1e-9` leg, itself
-recorded as having **no test of its own** — `Unverified`).
+*Verified-by:* kpi: transformer-parity (the controls-in-force section, the control this is —
+note its own text names **no** tolerance, so the bounds above are read from the tests, not
+from the KPI); `packages/confit/docs/oracle/` claim: metamorphic-self-legs (the `1e-9` leg,
+itself recorded as having **no test of its own** — `Unverified`).
 *Note:* a fourth bound, for natively implemented transform families, is written but **not in
 force** — it is written against work that has not landed, which makes it a gap rather than a
 reference bound. It is gap: native-transform-families in the dated report, and adopting it is
@@ -524,13 +537,13 @@ the owner's through ask: kpi-set-change.
 
 ---
 
-## 5. Measurement and KPIs
+## 5. Measurement and KPIs {#measurement-and-kpis}
 
 **The KPI set is in force here.** It lived in `packages/confit/docs/kpis.md` until the
-owner ruled that this document owns it (ask: kpis-absorb-or-defer, section 6); that file is
-deleted and its definitions, enforcing-suite pointers and standing law are below, under
-slugs. What did **not** move is its dated readings — bench tables and ladder counts are a
-report's under the front matter's rule, and the current ones are in
+owner ruled that this document owns it (ask: kpis-absorb-or-defer, the document-set
+section); that file is deleted and its definitions, enforcing-suite pointers and standing law
+are below, under slugs. What did **not** move is its dated readings — bench tables and ladder
+counts are a report's under the front matter's rule, and the current ones are in
 `packages/confit/docs/reports/2026-09-02-goal-baseline.md`.
 
 Companion: `packages/confit/docs/properties.md` — KPIs measure; properties state what must
@@ -542,7 +555,7 @@ C3 = kpi: binding-parity, C4 = kpi: transformer-parity, C5 = kpi: no-third-mode,
 D1 = kpi: coverage-ladder, D2 = kpi: serving-latency. The slug is the name; the code is a
 pointer and nothing is named by it.
 
-### 5.1 Two kinds, and the standing law
+### 5.1 Two kinds, and the standing law {#standing-law}
 
 Two kinds, optimized in opposite directions:
 
@@ -562,21 +575,21 @@ needs it, never a bar relaxed by a failing test. And the rule that governs every
 > Never trade a control for a drive gain. If a bar seems in the way, the move is a
 > written, named tolerance — or a refusal.
 
-**Three of the six candidates in 5.5 are bars, not drives, and one of them lands on
-kpi: no-third-mode.** Saying otherwise here would be an unforced error in the one paragraph
-whose job is to show the standing law is respected, so it is said plainly instead:
-kpi: named-refusal-share is proposed as a **control at 100%** over refusal message quality,
-and kpi: no-third-mode's own text is "refuses at construction with an error naming the
-construct" — so it is a second bar over that clause, over a property that demonstrably does
-not hold at 100% today, and the two-kind rule above calls a control adopted below its own bar
-"not a control, it is an unacknowledged trade-off". kpi: ladder-ratchet is a never-decreases
-rule and kpi: bench-refresh-cadence a staleness bound; neither is a drive. **None of the six
-may be adopted in a form that weakens the seven in force**, and the sequence that respects
-the law for the one that touches kpi: no-third-mode is spelled out in its own entry: drive
-first, control only after the gap is closed. Nothing in 5.5 is adopted; ask: kpi-set-change
-is the door.
+**Three of the six candidates in the proposed-kpis section are bars, not drives, and one of
+them lands on kpi: no-third-mode.** Saying otherwise here would be an unforced error in the
+one paragraph whose job is to show the standing law is respected, so it is said plainly
+instead: kpi: named-refusal-share is proposed as a **control at 100%** over refusal message
+quality, and kpi: no-third-mode's own text is "refuses at construction with an error naming the
+construct" — so it is a second bar over that clause, over a property that demonstrably does not
+hold at 100% today, and the two-kind rule above calls a control adopted below its own bar "not
+a control, it is an unacknowledged trade-off". kpi: ladder-ratchet is a never-decreases rule
+and kpi: bench-refresh-cadence a staleness bound; neither is a drive. **None of the six may be
+adopted in a form that weakens the seven in force**, and the sequence that respects the law for
+the one that touches kpi: no-third-mode is spelled out in its own entry: drive first, control
+only after the gap is closed. Nothing in the proposed-kpis section is adopted; ask:
+kpi-set-change is the door.
 
-### 5.2 The controls in force (5)
+### 5.2 The controls in force (5) {#controls-in-force}
 
 **kpi: training-round-trip.** `fit(train)` + serving, applied to the training set, is
 **bit-exact** equal to running the original SQL with `__THIS__` = train (both at
@@ -626,7 +639,7 @@ corpus's FAILED bucket is pinned empty.
 MARGINALIZED / REFUSED / FAILED-must-be-empty), the refusal tables in every test module,
 `packages/confit/docs/known-limitations.md`.
 
-### 5.3 The drives in force (2)
+### 5.3 The drives in force (2) {#drives-in-force}
 
 **kpi: coverage-ladder.** How much of projection-SQL the marginalizer admits: the mined
 scoreboard (queries lifted verbatim from DuckDB's own window test suite, with provenance)
@@ -642,8 +655,9 @@ gap: admission-ladder-headroom in the dated report lists it in order of value.
 until it marginalizes — and extend kpi: training-round-trip's gate to the new family in the
 same loop. Update the pins deliberately.
 *Scope, stated because it is not confit's:* this ladder is `sql_transform`'s
-(goal: engine-half-only); §2.1 says why it is cited from here.
-*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §9.
+(goal: engine-half-only); the four-yardsticks section says why it is cited from here.
+*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md`, the
+authoring-side-ladder section.
 
 **kpi: serving-latency.** Row-at-a-time serving cost on the wide-table scenarios in
 `benchmarks/`. Two harnesses: `bench_serving.py` (pure-SQL path) and `bench_transforms.py`
@@ -658,32 +672,33 @@ not a definition: the measured cost split, and the ranked levers that fall out o
 gap: native-transform-families in the dated report.
 *No target number is in force* — goal: request-latency-budget is a regime, `Unverified` by
 construction, and no gate, floor or pin bounds serving latency.
-*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §10, which
-also carries gap: bench-baseline-flip.
+*Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md`, the
+latency-reading section, which also carries gap: bench-baseline-flip.
 
-### 5.4 What enforces them
+### 5.4 What enforces them {#enforcing-suites}
 
-**claim: kpi-pointers-resolve.** Every `Enforced-by:` pointer under the five controls in 5.2
-resolves — the check itself is a dated reading and lives in
-`packages/confit/docs/reports/2026-09-02-goal-baseline.md` §11, which carries the map suite
-by suite.
+**claim: kpi-pointers-resolve.** Every `Enforced-by:` pointer in the controls-in-force
+section resolves — the check itself is a dated reading and lives in
+`packages/confit/docs/reports/2026-09-02-goal-baseline.md`, the enforcement-as-read section,
+which carries the map suite by suite.
 
 **Four of the five controls, and the coverage-ladder drive, are enforced in the other
 package.** Only kpi: engine-parity is confit's own (`_projection_test.py`,
 `_serving_test.py`, `_transformers_test.py` and `_corpus_test.py` all live in
-`packages/sql-transform`). Absorbing the set did not move a gate: this document's §1 says it
-is about confit's half (goal: engine-half-only), and it now holds four bars its own package
-does not enforce. That is stated rather than hidden — it was the strongest argument against
-absorbing, and the ruling in section 6 took it knowingly.
+`packages/sql-transform`). Absorbing the set did not move a gate: this document's
+engine-purpose section says it is about confit's half (goal: engine-half-only), and it now
+holds four bars its own package does not enforce. That is stated rather than hidden — it was
+the strongest argument against absorbing, and the ruling in the document-set section took it
+knowingly.
 
 **A pointer that resolves is not a bar that holds at its written depth.** Where a control's
 text names a run depth and its gate reads that depth from an environment variable, the
-control holds at the default, not at the text — under 5.1 that is an unacknowledged
-trade-off, and the remedy is a decision (correct the text, or raise the default and pay the
-runtime), not an edit. Which control that is today, and by how much, is the dated report's;
-the decision routes through ask: kpi-set-change.
+control holds at the default, not at the text — under the standing-law section that is an
+unacknowledged trade-off, and the remedy is a decision (correct the text, or raise the
+default and pay the runtime), not an edit. Which control that is today, and by how much, is the
+dated report's; the decision routes through ask: kpi-set-change.
 
-### 5.5 Proposed KPI candidates — none adopted
+### 5.5 Proposed KPI candidates — none adopted {#proposed-kpis}
 
 Six candidates, **separate from the seven in force above**. Each names the measurement that
 would back it and what it costs. **None is adopted** — changing the set is
@@ -726,27 +741,27 @@ and we do not yet serve, with its class list, driven to empty.
 *Measurement that backs it:* the campaign already isolates these cases and reports them in a
 section of their own, and `fuzz.oracle._type_delta` carries one arm per open width — so the
 set is exactly the divergence ledger's open widths, already machine-readable. The rules by
-which the campaign classifies them are the measurement layer's (§2's pointer), and the
-reading is `packages/confit/docs/reports/2026-09-02-goal-baseline.md`,
-gap: unshipped-decimal-arithmetic.
+which the campaign classifies them are the measurement layer's (the acceptance-frame
+section's pointer), and the reading is
+`packages/confit/docs/reports/2026-09-02-goal-baseline.md`, gap: unshipped-decimal-arithmetic.
 *Cost:* near zero; this is the one candidate whose machinery is already built and whose
 closing bell already rings. Note the empty state is ambiguous — the runner's own comment
 says an empty section means either the width shipped **or the grammar stopped reaching
 it**, so burn-down to zero needs the generator checked, not just the number.
 
 **kpi: named-refusal-share.** **[PROPOSED]** A **control** at 100% — and it is the one
-candidate that is a *bar*, over kpi: no-third-mode's own clause; 5.1 says so rather than pretending
-otherwise. The property: every refusal carries a documented, actionable prefix **and names
-the construct**.
+candidate that is a *bar*, over kpi: no-third-mode's own clause; the standing-law section
+says so rather than pretending otherwise. The property: every refusal carries a documented,
+actionable prefix **and names the construct**.
 *Measurement that backs it:* a script over the campaign's own verdicts measures the
 **prefix half** — a refusal message either starts with one of the documented prefixes or it
 does not — so any reading of it is a **floor** on this KPI, never a reading of it: the
 frontend's catch-all `expression: {other}` site passes the prefix check while naming
 nothing. The **construct-naming half has no measurement today** and would need one before
 the bar could be set.
-*Cost:* a control adopted while the property demonstrably does not hold is, by 5.1's own
-definition, "not a control, it is an unacknowledged trade-off" — so adopting it means
-**first** closing the undocumented refusals, which is the oracle spec's open
+*Cost:* a control adopted while the property demonstrably does not hold is, by the
+standing-law section's own definition, "not a control, it is an unacknowledged trade-off" — so
+adopting it means **first** closing the undocumented refusals, which is the oracle spec's open
 prefix-reconciliation work, and only then declaring the bar. Adopting it as a drive first,
 then promoting it, is the sequence that respects the standing law. This is the candidate I
 would rank first: it is the only one that measures whether goal: two-outcome-contract's
@@ -758,11 +773,12 @@ never-decreases rule and a single dated home.
 *Measurement that backs it:* all four already exist; two already ratchet (the dialect
 floors), two do not.
 *Two scope notes before this one is adopted, because both change what it costs.* The
-sql-transform ladder is **not confit's** (goal: engine-half-only, and §2.1 says so in the
-same breath as citing it) — a confit document proposing a gate over the other package's
-admission ladder is annexation unless the owner rules the KPI cross-package. And the L3
-Spark floor **cannot be read in an environment without `pyspark`**, where the fixture fails
-loudly rather than skipping, so ratcheting it means naming the environment that checks it.
+sql-transform ladder is **not confit's** (goal: engine-half-only, and the four-yardsticks
+section says so in the same breath as citing it) — a confit document proposing a gate over
+the other package's admission ladder is annexation unless the owner rules the KPI
+cross-package. And the L3 Spark floor **cannot be read in an environment without `pyspark`**,
+where the fixture fails loudly rather than skipping, so ratcheting it means naming the
+environment that checks it.
 *Cost:* a deliberate scope reduction becomes a gate failure. That cost is not theoretical —
 an ungated count has already slipped unnoticed, which is the argument *for*; and a scope
 reduction is sometimes right, which is the argument *against*. Same question as the oracle
@@ -794,7 +810,7 @@ whose baseline changed identity would re-record the confusion.
 >    fails goal: two-outcome-contract's promise as surely as a wrong value does. Adopting it
 >    as a control at today's share would violate the standing law on its first day.
 > 2. **kpi: unshipped-burndown, as a drive.** Its machinery already exists and already
->    rings; adopting it costs a line in 5.3.
+>    rings; adopting it costs a line in the drives-in-force section.
 > 3. **kpi: ladder-ratchet**, decided together with the oracle spec's
 >    ask: match-count-ratchet, because they are one question.
 > 4. **kpi: bench-refresh-cadence**, once the serving bench's baseline question is settled —
@@ -814,11 +830,11 @@ whose baseline changed identity would re-record the confusion.
 > *Context:* the readings behind all six, and the depth gap, are in
 > `packages/confit/docs/reports/2026-09-02-goal-baseline.md`.
 >
-> *Binds:* all six `kpi:` slugs, and section 5's two-kind structure.
+> *Binds:* all six `kpi:` slugs, and the measurement-and-kpis section's two-kind structure.
 
 ---
 
-## 6. Where this document sits
+## 6. Where this document sits {#document-set}
 
 Above the specs, below the owner. The intended shape of the set:
 
@@ -833,34 +849,35 @@ Above the specs, below the owner. The intended shape of the set:
 The direction of citation runs downward: this document may cite an oracle-spec claim as
 evidence for a goal, and the oracle spec does not cite goals. Where the two overlap the
 oracle spec wins on *correctness* questions and this document wins on *scope* questions.
-Concretely, and it is tested by two places above: section 1 **points at** the divergence
-ledger as the enumerated exception to the two-outcome contract and takes the rows and their
-status from the ledger's own column rather than copying them; and where a scope decision
-overlaps a divergence row — exclusion: resource-ceilings and exclusion: optimizer-on-answers
-here, gap: unshipped-decimal-arithmetic in the report — the entry **names** the row it
-overlaps and leaves it `unruled` where the ledger leaves it. Citing a row is deference;
-restating its verdict would be re-litigation, and section 2 does not redefine a verdict
-either. The same direction holds downward into the reports: a report reads this document's
-yardsticks and states the distance from them; it never amends one.
+Concretely, and it is tested by two places above: the engine-purpose section **points at**
+the divergence ledger as the enumerated exception to the two-outcome contract and takes the
+rows and their status from the ledger's own column rather than copying them; and where a scope
+decision overlaps a divergence row — exclusion: resource-ceilings and exclusion:
+optimizer-on-answers here, gap: unshipped-decimal-arithmetic in the report — the entry
+**names** the row it overlaps and leaves it `unruled` where the ledger leaves it. Citing a row
+is deference; restating its verdict would be re-litigation, and the acceptance-frame section
+does not redefine a verdict either. The same direction holds downward into the reports: a
+report reads this document's yardsticks and states the distance from them; it never amends one.
 
 **ask: kpis-absorb-or-defer — RULED: this document owns the KPIs.** Three options were on
 the table: absorb, defer-and-split-by-kind, defer wholly. The owner ruled **absorb**.
 `packages/confit/docs/kpis.md` is deleted; its five controls, its two drives and its
-standing law are section 5, under `kpi:` slugs, and its dated readings stayed out under the
-front matter's rule — they are the dated report's.
+standing law are the measurement-and-kpis section, under `kpi:` slugs, and its dated readings
+stayed out under the front matter's rule — they are the dated report's.
 
 Two costs were known before the ruling and are taken, not discovered. **Citations:**
 line-anchored references into that file — from the oracle spec (claim: fit-serving-oracle),
 `properties.md`, drafts and merged PRs — no longer resolve; every live one was repointed at
 a slug in the same commit, and the historical ones (backlog tickets, dated reports and
 decision files) were left as the records they are. **Scope:** four of the five controls and
-kpi: coverage-ladder are enforced in `packages/sql-transform`, so a document whose §1 says
-it is about confit's half (goal: engine-half-only) now holds four bars its own package does
-not enforce. 5.4 states that rather than hiding it.
+kpi: coverage-ladder are enforced in `packages/sql-transform`, so a document whose
+engine-purpose section says it is about confit's half (goal: engine-half-only) now holds four
+bars its own package does not enforce. The enforcing-suites section states that rather than
+hiding it.
 
 ---
 
-## ASK index
+## ASK index {#ask-index}
 
 ### Ruled
 
@@ -869,7 +886,7 @@ the document where it binds, next to what it created.
 
 | ask | ruling | where it landed |
 |---|---|---|
-| **ask: kpis-absorb-or-defer** | **absorb** — this document owns the KPIs; `packages/confit/docs/kpis.md` is deleted, its definitions and standing law move here under `kpi:` slugs, its dated readings stay in the reports | section 6 (the ruling) and section 5 (the set itself: kpi: training-round-trip, kpi: engine-parity, kpi: binding-parity, kpi: transformer-parity, kpi: no-third-mode, kpi: coverage-ladder, kpi: serving-latency) |
+| **ask: kpis-absorb-or-defer** | **absorb** — this document owns the KPIs; `packages/confit/docs/kpis.md` is deleted, its definitions and standing law move here under `kpi:` slugs, its dated readings stay in the reports | the document-set section (the ruling) and the measurement-and-kpis section (the set itself: kpi: training-round-trip, kpi: engine-parity, kpi: binding-parity, kpi: transformer-parity, kpi: no-third-mode, kpi: coverage-ladder, kpi: serving-latency) |
 
 ### Open here (3)
 
@@ -877,7 +894,7 @@ the document where it binds, next to what it created.
 |---|---|---|
 | ask: acceptance-target | is there an acceptance-rate target, and does the ladder ratchet? | goal: growing-accepted-surface, kpi: acceptance-rate, kpi: ladder-ratchet |
 | ask: exclusion-ratification | does the six-row permanent scope set bind — its grounds, its silence, and the ground it has no slot for? | every `exclusion:` slug, kpi: acceptance-rate |
-| ask: kpi-set-change | adopt any of the six proposed KPIs, and as what kind? | all six proposed `kpi:` slugs in 5.5 |
+| ask: kpi-set-change | adopt any of the six proposed KPIs, and as what kind? | all six proposed `kpi:` slugs in the proposed-kpis section |
 
 ### Open in the dated report (1)
 
@@ -886,7 +903,7 @@ owner's to answer; it is just not a question about the destination.
 
 | ask | question | where |
 |---|---|---|
-| ask: next-query-classes | which unbuilt query classes are next, in what order? | `packages/confit/docs/reports/2026-09-02-goal-baseline.md` §12, ranking the gap ledger in §3 |
+| ask: next-query-classes | which unbuilt query classes are next, in what order? | `packages/confit/docs/reports/2026-09-02-goal-baseline.md`, in its left-open section, ranking the gap-ledger section |
 
 The report also carries the part of ask: exclusion-ratification that asked whether the
 enumeration *covers* what the engine refuses today — a question about the current refusal
