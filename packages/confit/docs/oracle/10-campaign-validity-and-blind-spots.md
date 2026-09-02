@@ -78,11 +78,27 @@ own its blind spot. The blind spots, named:
 | the excluded ILIKE-NUL source (divergence: ilike-nul), the f32 blanket rule and `_INEXPRESSIBLE_INPUTS` (claim: corpus-exclusion-sets) | statistics-dependent kernel selection; every f32-grid-sensitive operation; declared-schema-inexpressible inputs | exclusion by name with a measured reason (claim: statistics-dependent-exclusion, claim: corpus-exclusion-sets) |
 | refusals | whether the oracle would have served (claim: refusal-absorb) | **none today** — this is ask: refusal-cost-counting |
 | NaN sign and payload, wherever the canonical form is used | which NaN | `repr` makes every NaN self-equal — in `confit.compare` and, independently, in `test_corpus_replay.py`'s own `_norm_row` (`:70-72`); only the explicit bit pins see the difference (claim: float-bit-equality, claim: repr-equality) |
-| schema, on the campaign's **static-only** path | name, type, width and nullability, none of which is compared against DuckDB there | **none today** — `against()` returns before `_schema_delta` is reached, so a wrong-width or zero-row answer grades `AGREE`, and a bare-decimal static-only case value-compares across an unshipped width instead of classifying (claim: schema-comparison, claim: unshipped-verdict, ticket: static-only-schema-check) |
 | an **unshipped width** (today: decimal literals) | whether the values would have agreed, since none were compared | `UNSHIPPED` classifies loudly, is neither a finding nor coverage, and gets its own report section — so the blind spot is *counted* rather than absorbed (claim: unshipped-verdict). The harness no longer casts, so it no longer invents a value either |
 | a worker that never answered | everything about that case | `TIMEOUT` / `PANIC` are findings, not silence (claim: verdict-taxonomy, claim: abstention-reporting), and are attributed oracle-side vs engine-side by hand (claim: timeout-attribution) |
 
 *Verified-by:* each row's cited claim.
+*Correction, measured 2026-09-02.* An earlier version of this table carried a row
+claiming the campaign's **static-only** path is schema-blind — that a wrong width there
+grades `AGREE` and a bare-decimal literal value-compares across an unshipped width. That
+row is deleted, because the leg is **tautological on types**: a static-tables-only query
+never prepares, `eval_static_only` builds it into `Engine::Constant`, and DuckDB's own
+rows *and schema* come back verbatim, so we contribute no types there and no our-side
+width can be wrong. The case that was supposed to show it, `SELECT 1.5 AS o0 FROM s0`, is
+`decimal128(2,1)` on both sides and agrees. Nor can a seed reach the combination: the
+generator's one static-only template emits aggregates over static columns and never a
+literal, so the `bare_decimal` flag cannot land there (0 such cases over seeds 0-1999).
+What the leg genuinely compares is the engine's build-time fold against the oracle's
+readings, which is claim: one-door-bypass's subject and standing evidence for
+ask: engine-fold-reading — not a blind spot of ours, and the substance now lives there.
+*Verified-by (the correction):*
+`packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`,
+which goes red the day our own evaluator answers that path — which is when the leg owes
+the same classification the row path does.
 
 **claim: metamorphic-self-legs.** Metamorphic self-legs are the oracle *substitute* in
 the abstention region, and the set is capped rather than grown: batch-vs-single sequence
