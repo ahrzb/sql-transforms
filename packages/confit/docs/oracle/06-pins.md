@@ -29,8 +29,14 @@ something. `con.execute` conflates prepare and execute, so a bind-time claim nee
 PREPARE/EXECUTE split, a zero-row leg, and the pinned source. This is the same genus as
 the wave-3 incident with a larger blast radius: it killed the stated premise of an
 already-accepted RFC.
+*Scope, precisely:* `confit.oracle.Oracle.answer` is one `con.execute`, so it inherits
+the conflation by construction — that is the right shape for a value claim and the wrong
+tool for a phase claim. A phase claim goes through the connection directly (the
+`__getattr__` passthrough exists so no wrapper has to be invented for it) and says in the
+pin which phase it measured.
 *Verified-by:* `packages/confit/docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58`
-(the corrected facts, and the phase-confusion admission at `:31-35`).
+(the corrected facts, and the phase-confusion admission at `:31-35`);
+`packages/confit/tests/test_oracle.py::test_connection_passthrough`.
 *Note:* this rule lives in memory and in one RFC's body. The methodology report owns
 "how we measure DuckDB" and does not carry it. Proposed ticket T-6.
 
@@ -38,10 +44,13 @@ already-accepted RFC.
 
 **ORC-46.** A pin's provenance is what makes a disagreement re-verifiable: without the
 oracle version that produced a recorded answer, a future disagreement cannot be
-re-run, only argued about. Measured state of the corpus today: of 53 pin files, **41
-carry a `duckdb_version` field, 10 mention a capture date anywhere, and 3 mention a
-harness or commit**; the version field itself is free text with at least four spellings
-in use (`1.5.5`, `v1.5.5`, `v1.5.5 (python pkg 1.5.5)`, and a sentence).
+re-run, only argued about. The version a pin should carry now has a name in code —
+`confit.oracle.Oracle.VERSION` — so "which oracle recorded this" and "which oracle is
+installed" are at least the same string in two places, even though nothing yet compares
+them (ORC-09). Measured state of the corpus today: of 53 pin files, **41 carry a
+`duckdb_version` field, 10 mention a capture date anywhere, and 3 mention a harness or
+commit**; the version field itself is free text with at least four spellings in use
+(`1.5.5`, `v1.5.5`, `v1.5.5 (python pkg 1.5.5)`, and a sentence).
 *Verified-by:* measured 2026-08-25 over `packages/confit/docs/specs/pins-*/*.json`.
 Best existing examples: `pins-dialect/joins.json` `_meta` (date, engine, task, spec,
 how) and `pins-waveB/fuzzer-task54.json` `meta` (task, measured, method, contract).

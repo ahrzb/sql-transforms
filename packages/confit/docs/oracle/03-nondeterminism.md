@@ -11,7 +11,8 @@ project. It is why the oracle is optimizer-off (ORC-03), why row limits on the
 constant path refuse (ORC-17), why row order is compared per mode rather than by
 byte-equality (ORC-18), and why statistics-dependent behavior is excluded (ORC-20).
 *Verified-by:* three existing phrasings of the same rule —
-`packages/confit/docs/known-limitations.md:39`, `packages/confit/fuzz/oracle.py:40-41`,
+`packages/confit/docs/known-limitations.md:39`, `confit/oracle.py`'s module docstring
+("the optimizer-on reading is NOT matchable in principle"),
 `backlog/tasks/task-128 ...md` description ("The doctrine already exists").
 *Note:* `packages/confit/docs/properties.md` ends at P20, so **P21** is the free number
 if the owner wants this numbered as a project property and the three sites made to cite
@@ -43,9 +44,9 @@ ASK-13.
 the vocabulary in the front matter (`PINNED` / `IMPL-DEFINED` / `UNSPECIFIED`), and a
 target with no status is not yet a target. Today the vocabulary is applied to eight
 claims and to the section 7 ledger's `proposed status` column; ORC-16, ORC-32, ORC-33,
-ORC-36, ORC-37, ORC-38, ORC-39 and every ORC-11 quirk carry no status, so under this
-rule as written they are not targets — which they plainly are. Adopting the rule means
-either statusing them or narrowing the rule to the ledger.
+ORC-37, ORC-38, ORC-39, ORC-90, ORC-92, ORC-93 and every ORC-11 quirk carry no status, so
+under this rule as written they are not targets — which they plainly are. Adopting the
+rule means either statusing them or narrowing the rule to the ledger.
 *Verified-by:* Unverified — no rule outside this document requires a status. Part of
 ASK-15.
 
@@ -55,10 +56,10 @@ ASK-15.
 contract: output rows follow input rows — `map` exactly (`out[i] <-> in[i]`), `filter`
 as a subsequence, `many` as per-input-row blocks in input order. That order comes from
 the serving contract, not from SQL, and is checked by DuckDB-free self-legs.
-*Verified-by:* `packages/confit/docs/known-limitations.md:41-51`;
-`packages/confit/fuzz/oracle.py:799-836` (batch-vs-single sequence leg and reversal
-leg); `packages/confit/tests/test_fuzz_order_legs.py` (the capability test that proves
-the legs catch a scrambler).
+*Enforced-by:* `fuzz.oracle._extra_legs` (the batch-vs-single and reversal legs, both
+compared with `confit.compare.sequence`).
+*Verified-by:* `packages/confit/tests/test_fuzz_order_legs.py` (the capability test that
+proves the legs catch a scrambler); `packages/confit/docs/known-limitations.md:41-51`.
 
 **ORC-17.** A row limit on a static-tables-only query refuses at build, by name,
 `ORDER BY` or not: `LIMIT`, `OFFSET`, `FETCH`, `TOP`, anywhere in the statement
@@ -88,9 +89,12 @@ compare modes. Values are bit-for-bit in all three; only the *sequence* rule dif
 
 Status: `UNSPECIFIED` for the sequence outside the row path and outside a total
 `ORDER BY`; `PINNED` for values in all three modes.
-*Verified-by:* `packages/confit/fuzz/oracle.py:432-449` (`compare_mode`), `:452-464`
-(`_sorted_by`, DuckDB defaults: ASC, NULLS LAST, NaN above every number),
-`:676-698` (the static-only branch); `backlog/tasks/task-129 ...md` (Done, AC #1-#7);
+*Enforced-by:* `fuzz.oracle.compare_mode` (which mode a case is owed) and
+`fuzz.oracle._sorted_by` (DuckDB defaults: ASC, NULLS LAST, NaN above every number);
+`confit.compare.assert_rows`'s `ordered` flag is the same axis for a test.
+*Verified-by:* `packages/confit/tests/test_compare.py::test_assert_rows_default_accepts_reordered_rows`
+and `::test_assert_rows_ordered_rejects_reordered_rows`;
+`backlog/tasks/task-129 ...md` (Done, AC #1-#7);
 `packages/confit/docs/known-limitations.md:41-51`.
 
 **ORC-19.** Join output order is a measured hash-join accident on three independent
@@ -152,8 +156,24 @@ normally. Status: `UNSPECIFIED`, refused.
 `packages/confit/docs/specs/pins-waveB/fuzzer-20260728.json`;
 `packages/confit/docs/known-limitations.md:200`.
 *Scope:* this covers the oracle disagreeing across its own **evaluation paths** within
-one build. The oracle disagreeing across its own **builds** is a different species with
-a different, already-decided disposition — ORC-76.
+one build, where neither answer can be preferred. Where one *can* be — because the
+engine follows one of them — the identity names it instead of refusing: that is ORC-93.
+The oracle disagreeing across its own **builds** is a third species with a third,
+already-decided disposition — ORC-76.
+
+**ORC-93.** The oracle's tables are **native tables**, never registered arrow relations,
+and the difference is semantic rather than a convenience. DuckDB pushes constant filters
+into a registered-arrow scan with IEEE NaN semantics, which disagrees with its own
+native-table comparison order; the engine follows the native-table reading, so a bare
+`register` is a *different* oracle wearing the same name. Column widths survive the
+materialization; `NOT NULL` does not, which is why a fixture that needs a constraint
+declares it in SQL instead.
+*Enforced-by:* `confit.oracle.Oracle.load` (register, CTAS, unregister) and
+`confit.oracle.Oracle.table` (the SQL declaration is kept verbatim).
+*Verified-by:* `packages/confit/tests/test_oracle.py::test_load_materializes_a_native_table_with_widths_intact`,
+`::test_load_unregisters_its_alias`, `::test_table_keeps_the_declaration_including_not_null`;
+the measured filter-pushdown ground is recorded in `Oracle.load`'s own docstring and in
+the builtin-pins spec.
 
 **ORC-76.** Where DuckDB's own wheels disagree with each other, the disposition is a
 **bounded, named tolerance**, not refusal. The measured instance: `cbrt`. The Windows
@@ -199,37 +219,26 @@ window aggregation is not bit-deterministic for floats (1/500 fuzz drift) — bu
 fit side only (ORC-72).
 *Verified-by:* measured 2026-08-25 as described; `packages/confit/docs/properties.md:118-121`
 (P11) and `packages/confit/docs/kpis.md:31-34` (C1) for the existing `threads = 1`
-decision; `packages/confit/tests/conftest.py:62-71` sets no `threads`.
+decision; `confit.oracle.Oracle.__init__` sets no `threads`.
 *Status:* stated, not ruled. See ASK-13.
 
 > ### ASK-13 — does `threads` join the oracle constant, and what disposition covers
 > order *inside* a value?
 >
-> Two halves, both measured (ORC-75), neither ruled.
->
-> **(a) The constant.** ORC-02 says "all other settings default", and DuckDB's `threads`
-> default is core-count-derived. Either the constant names `threads` explicitly — the
-> obvious value is `1`, which is what the fit side already runs (ORC-72) and is one line
-> in the fixture that already applies the pragma — or the document says that
-> hardware-derived defaults are part of the oracle identity and that thread-sensitive
-> constructs are therefore `IMPL-DEFINED` with the machine as discriminator.
->
-> ```python
-> # packages/confit/tests/conftest.py, inside _duckdb_is_the_oracle, if (a) is taken
-> con.execute("PRAGMA disable_optimizer")
-> con.execute("SET threads = 1")
-> ```
->
-> Not applied here — docs-only. Proposed ticket T-16.
+> **(a) The constant.** ORC-02 says "all other settings default" and DuckDB's `threads`
+> default is core-count-derived, so a 4-core runner and a 12-core dev box are different
+> oracles for thread-sensitive aggregates. Either the constant names `threads` (the
+> obvious value is `1`, which the fit side already runs — ORC-72) or the document says
+> hardware-derived defaults are part of the identity and those constructs are
+> `IMPL-DEFINED` with the machine as discriminator. The landing spot is one line in
+> `Oracle.__init__`, beside the pragma: `self.con.execute("SET threads = 1")`.
 >
 > **(b) The disposition.** ORC-14's table has four keys that can all fire on one case and
 > no tiebreaker, and no row at all for nondeterminism *inside* a value. `string_agg`
-> element order fits "which rows exist" (refuse), "row order" (compare per mode — the
-> mode assigned, `constant-ordered`, cannot see it, because the multiset differs in the
-> *values*), "values from outside the query" (exclude by source name — but a frozen
-> build-time artifact has no corpus source file to name), and "the oracle disagrees with
-> itself" (same build, same pragma, different machine). Ruling (b) means either an
-> ordering rule for the table's keys, or a fifth row for intra-value order, or both.
+> element order fits all four and is seen by none: the assigned mode
+> (`constant-ordered`) cannot see it because the multiset differs in the *values*, and a
+> frozen build-time artifact has no corpus source file to exclude by name. Ruling (b)
+> means an ordering rule for the keys, a fifth row for intra-value order, or both.
 >
 > *Binds:* ORC-02, ORC-14, ORC-22, ORC-75, and every static-only query with an
 > order-sensitive aggregate.

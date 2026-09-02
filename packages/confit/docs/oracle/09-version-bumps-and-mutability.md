@@ -4,10 +4,14 @@ The urgency is external: DuckDB ships minor versions roughly every four months,
 semantics have already moved inside a patch release, and v2.0 brings a new SQL parser.
 This protocol is cheap to write now and expensive to write during a migration.
 
-**ORC-60.** **[FACT]** The bump protocol's two preconditions — the pinned oracle version
-is **one named constant** (ORC-02) and appears in **every pin file** (ORC-46) — are
-today unenforced and partial respectively. Everything below depends on both.
-*Verified-by:* ORC-02, ORC-09, ORC-46.
+**ORC-60.** **[FACT]** The bump protocol's object is `confit.oracle.Oracle.VERSION`: the
+version a bump changes is that constant, and everything below is written against it.
+Its two preconditions — that the constant is **binding** and that it appears in **every
+pin file** (ORC-46) — are today unmet and partial respectively. `Oracle.VERSION` is
+recorded and never compared to `duckdb.__version__` (ORC-09), so a bump can happen
+without the constant moving at all, which is the failure mode the protocol exists to
+prevent.
+*Verified-by:* `confit/oracle.py`, `Oracle.VERSION`; ORC-02, ORC-09, ORC-46.
 
 **ORC-85.** **[FACT]** Step one of a bump is not re-recording; it is making the corpus
 re-runnable, and that work is not ticketed anywhere. Measured 2026-08-25 over the 53 pin
@@ -24,12 +28,13 @@ first task** — before ORC-61's diff report has anything to run against.
 *Verified-by:* measured 2026-08-25 over `packages/confit/docs/specs/pins-*/*.json` and
 `pins-*/`. Proposed ticket T-20.
 
-**ORC-86.** **[FACT]** Pin *capture* runs outside the oracle fixture, and at least one
-pin file was demonstrably captured with the optimizer **on**. The autouse fixture covers
-`packages/confit/tests/` (ORC-07); capture scripts are not tests. Measured: no capture
-script applies `PRAGMA disable_optimizer` — `scripts/gen_casemap.py`,
-`scripts/gen_pow10.py`, `scripts/gen_strip_accents.py` and `scripts/mine_duckdb_corpus.py`
-all use a bare `duckdb.connect()` — and `pins-stageB/order-contract.json`'s own notes
+**ORC-86.** **[FACT]** Pin *capture* runs outside the oracle, and at least one pin file
+was demonstrably captured with the optimizer **on**. The ban on raw connections is read
+off `tests/` and `fuzz/` (ORC-07); `scripts/` is outside it, and capture scripts are not
+tests. Measured: no capture script applies `PRAGMA disable_optimizer` —
+`scripts/gen_casemap.py`, `scripts/gen_pow10.py`, `scripts/gen_strip_accents.py` and
+`scripts/mine_duckdb_corpus.py` all use a bare `duckdb.connect()`, and none of them
+imports `confit.oracle` — and `pins-stageB/order-contract.json`'s own notes
 ("The optimizer picks stream/build sides by cost", "Chained-join nesting is
 optimizer-chosen") describe an optimizer-on capture. Only 4 of 53 pin files mention the
 optimizer at all. By ORC-02's own sentence — a comparison run against anything else is

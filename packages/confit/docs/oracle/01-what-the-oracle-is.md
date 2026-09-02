@@ -19,13 +19,15 @@ ORACLE = DuckDB 1.5.5, PRAGMA disable_optimizer, all other settings default
 
 Neither half is a per-test choice, a per-campaign flag, or a thing a caller may
 vary. A comparison run against anything else is not a comparison against the oracle.
-*Verified-by:* the **pragma** half at `packages/confit/tests/conftest.py:7-12`
-(decided 2026-08-17), `packages/confit/fuzz/oracle.py:10-16`,
-`packages/confit/docs/known-limitations.md:20-30`. The **version** half is stated in
-those documents' prose and enforced nowhere — see ORC-09. The **"all other settings
-default"** half is `Unverified` and is measurably weaker than it reads: DuckDB's
-`threads` default is derived from core count (measured 12 on this machine), and it
-changes answers — see ORC-75 and ASK-13.
+*Enforced-by:* `confit.oracle.Oracle.__init__` — the constructor applies the pragma,
+and it is the only way to build an oracle.
+*Verified-by:* the **pragma** half at
+`packages/confit/tests/test_oracle.py::test_construction_applies_the_pragma` (the probe
+is plan-shaped, because `PRAGMA disable_optimizer` writes no setting `current_setting`
+can read back). The **version** half is recorded as `Oracle.VERSION` and asserted
+nowhere — see ORC-09. The **"all other settings default"** half is `Unverified` and is
+measurably weaker than it reads: DuckDB's `threads` default is derived from core count
+(measured 12 on this machine), and it changes answers — see ORC-75 and ASK-13.
 
 ### 1.2 Why optimizer-off
 
@@ -72,12 +74,10 @@ axis that ORC-19 says decides hash-join output order.
 `src/include/duckdb/common/enums/optimizer_type.hpp:16-50` (33 members;
 `EXPRESSION_REWRITER = 1` at `:18`, `WINDOW_SELF_JOIN = 33` at `:50`); the twelve
 sites above, enumerated by grep over `src/` 2026-08-25, each line read.
-*Correction, three parts.* (a) `conftest.py:20` ("`PRAGMA disable_optimizer` ==
-disabling all 33 named optimizers") and `known-limitations.md:30` ("What it removes is
-the 33 plan-rewrite passes") are incomplete by these twelve sites. (b) An earlier
-version of this claim said "four sites ... none in binding" and that their reach was
-"the static-tables-only path"; both are corrected above — the join flip and the delim
-join are reachable from the row path. (c) `conftest.py:22`'s "constant folding still
+*Correction, two parts, both against `confit/oracle.py`'s module docstring — which is
+where the rationale now lives.* (a) "`PRAGMA disable_optimizer` == disabling all 33
+named optimizers" (and `known-limitations.md:30`'s "What it removes is the 33
+plan-rewrite passes") is incomplete by these twelve sites. (b) "constant folding still
 happens (`1 + 2` is int32 3)" is true as an **observation** and wrong as a
 **mechanism**: DuckDB's only constant folder is `src/optimizer/rule/constant_folding.cpp`,
 an `EXPRESSION_REWRITER` rule, so the pragma removes it — `1 + 2` is still int32 3
@@ -91,72 +91,91 @@ See proposed ticket T-1.
 is optimizer-*on*. The gap between the two readings is therefore user-visible and
 stays a reported finding (`DIVERGE_OPT`) rather than an accepted class. The oracle
 and the contract surface are deliberately not the same thing.
-*Verified-by:* `packages/confit/fuzz/oracle.py:43-46`;
-`packages/confit/fuzz/runner.py:28-29` (`DIVERGE_OPT` is in `INTERESTING`).
+*Enforced-by:* `fuzz.runner.INTERESTING` (which contains `DIVERGE_OPT`).
+*Verified-by:* `packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
 
 ### 1.3 How the identity is enforced
 
-**ORC-07.** The specialization half is enforced mechanically across
-`packages/confit/tests/`, and **deliberately not further**. An autouse fixture
-monkeypatches `duckdb.connect` so every connection in the confit test suite comes back
-with `PRAGMA disable_optimizer` already applied: the oracle is a property of the
-package, not a per-test choice, and a new test that reaches for DuckDB gets the oracle
-by construction. Measured today: **62 `duckdb.connect(` call sites across 23 files**
-are covered by that one fixture (a grep for the bare name returns 66 lines in 24 files;
-the four extra are inside `conftest.py` itself — three in its docstring and the
-fixture's own `raw_connect = duckdb.connect` — and none of them is a covered call site).
-The scoping is a decision with a measured ground, not an oversight: an import-time
-assignment leaks into every other package for the rest of the session, and it did —
-`sql_transform`'s single-evaluation tests count sklearn calls made through DuckDB, and
-losing CSE doubled them. A `monkeypatch` fixture keeps the oracle inside this directory.
-*Verified-by:* `packages/confit/tests/conftest.py:62-71` (the fixture), `:45-50` (the
-scoping decision and its ground); counts measured 2026-08-25 by grep over
-`packages/confit/tests/`.
-*Correction:* `conftest.py:14` still says "the 42 call sites". See proposed ticket T-1.
+**ORC-07.** Everything that compares against DuckDB gets its connection from
+`confit.oracle.Oracle`, and a raw `duckdb.connect(` anywhere in `tests/` or `fuzz/` is a
+gate failure. The oracle is a property of the repo rather than a per-call-site choice
+that can be forgotten, and a new comparison site gets the oracle by construction.
+*Enforced-by:* `confit.oracle.Oracle.__init__`; the ban itself is read off the **sources**
+rather than applied at run time, because the door is shared — see ORC-91.
+*Verified-by:* `packages/confit/tests/test_oracle.py::test_no_raw_connections_in_the_sources`,
+which walks `tests/**/*.py` and `fuzz/**/*.py` and so also covers the tests a run never
+reaches.
 
-**ORC-08.** A test that *wants* the optimizer says so in its own body
-(`con.execute("PRAGMA enable_optimizer")`), which reads as the deliberate exception it
-is. Exactly two such exceptions exist, both in the test that documents what the
-optimizer does.
-*Verified-by:* `packages/confit/tests/conftest.py:37-43`;
-`packages/confit/tests/known_divergences/test_trap_elision.py:468` and `:566`.
+**ORC-91.** **[FACT]** The one-door property has exactly **one** known bypass, and it is
+the engine's own. `eval_static_only` (`packages/confit/src/duckdb/mod.rs:1178`) folds a
+static-tables-only query at build time by calling `duckdb.connect()` itself, with the
+optimizer **on**, which is what production does; the oracle it is then compared against
+is optimizer-off. The bypass is latent today — measured, suite outcomes are identical
+either way — and it is why the ban on raw connections cannot be a runtime patch of
+`duckdb.connect`: a Python frame cannot tell the engine's fold from a test's connection,
+so a patch either refuses the engine's own fold or silently folds those queries
+optimizer-off while production folds them optimizer-on. The second is what the deleted
+autouse fixture did.
+*Verified-by:* `packages/confit/src/duckdb/mod.rs`, `eval_static_only` (the bare
+`connect`, no pragma); `packages/confit/tests/conftest.py` (the deleted fixture's ground,
+recorded in its module docstring). *Status:* stated, not ruled. See ASK-16.
 
-**ORC-09.** **[FACT]** The version half of the identity is enforced **nowhere**.
-**36 markdown files outside `backlog/`** name DuckDB 1.5.5 (48 counting `backlog/`) —
-`known-limitations.md`, `properties.md`, three reports, both READMEs, both RFCs and
-some twenty specs among them — but `pyproject.toml:15` and
-`packages/sql-transform/pyproject.toml:10` declare `duckdb>=1.5.5` — a floor —
-`packages/confit/pyproject.toml` declares no duckdb dependency at all, and only
-`uv.lock` resolves 1.5.5 exactly. A `uv lock --upgrade` silently re-points the oracle
-and no gate notices.
-*Verified-by:* measured 2026-08-25 — `pyproject.toml:15`,
+> ### ASK-16 — does the engine's build-time fold move to the oracle's reading?
+>
+> ORC-91 is a fact, not a disposition. The engine folds a static-only query with the
+> optimizer ON (production's reading), and every gate then compares that frozen answer
+> against an optimizer-OFF oracle. It is latent — the suite's outcomes are identical
+> either way today — so this is a question about which reading the frozen artifact is
+> *supposed* to be, not a bug report. Three shapes it could take: the fold stays
+> optimizer-on and the spec says the constant path deliberately freezes the user-visible
+> reading (ORC-06's surface, not ORC-02's oracle); the fold moves to optimizer-off so
+> that one identity covers both paths; or the difference is declared unobservable and
+> gated by a test that says so.
+>
+> Whichever way it goes, the answer belongs in ORC-02, because today the constant is
+> stated as though it had no exceptions.
+>
+> *Binds:* ORC-02, ORC-06, ORC-07, ORC-17, ORC-22, ORC-74's role (b).
+
+**ORC-08.** A caller that *wants* the optimizer says so in its own body, which reads as
+the deliberate exception it is. The flip happens in place, on the same connection, so
+that the two readings of a differential comparison cannot differ because
+`statistics_propagation` read different per-column statistics.
+*Enforced-by:* `confit.oracle.Oracle.optimizer_on`.
+*Verified-by:* `packages/confit/tests/test_oracle.py::test_optimizer_on_flips_the_same_connection`;
+`packages/confit/tests/known_divergences/test_trap_elision.py` holds exactly two such
+exceptions and is the test that documents what the optimizer does — the campaign's
+`fuzz.oracle._duck_run` is the only other caller (measured 2026-09-02).
+
+**ORC-09.** **[FACT]** The version half of the identity is **recorded, not asserted**.
+`confit.oracle.Oracle.VERSION` is `"1.5.5"` and nothing compares it to
+`duckdb.__version__`; the manifests declare a floor (`duckdb>=1.5.5` at
+`pyproject.toml:15` and `packages/sql-transform/pyproject.toml:10`;
+`packages/confit/pyproject.toml` declares no duckdb dependency at all), and only
+`uv.lock` resolves 1.5.5 exactly. A `uv lock --upgrade` silently re-points the oracle and
+no gate notices. Some three dozen markdown files state 1.5.5 in prose.
+*Verified-by:* `confit/oracle.py`, `Oracle.VERSION` (and its comment reserving the
+assert); measured 2026-08-25 — `pyproject.toml:15`,
 `packages/sql-transform/pyproject.toml:10`, `packages/confit/pyproject.toml`
-(dependencies: `pyarrow>=19.0` only), `uv.lock:368-370`; document count by grep
-2026-08-25. The fix is ASK-1.
+(dependencies: `pyarrow>=19.0` only), `uv.lock:368-370`. No test in
+`packages/confit/tests/` reads `Oracle.VERSION`. The fix is ASK-1.
 
-> ### ASK-1 — pin or floor, and which line?
+> ### ASK-1 — pin `==1.5.5` or keep the floor; and 1.5.5 or the LTS line?
 >
-> The contract says 1.5.5; the manifests permit anything newer (ORC-09). Two
-> sub-questions, and the second is time-boxed.
->
-> **(a) How is the version enforced?** Options: hard-pin `duckdb==1.5.5` in the
-> manifests; or keep the floor and add a loud assert in the fixture that already owns
-> the oracle identity. The assert is one line in the file that already applies the
-> pragma:
+> **(a)** Hard-pin `duckdb==1.5.5` in the manifests, or keep the floor and assert. The
+> landing spot is reserved and is one line in `Oracle.__init__`, beside the pragma it
+> already applies:
 >
 > ```python
-> # packages/confit/tests/conftest.py, inside _duckdb_is_the_oracle
-> assert duckdb.__version__ == "1.5.5", f"oracle is 1.5.5, got {duckdb.__version__}"
+> assert duckdb.__version__ == VERSION, f"oracle is {VERSION}, got {duckdb.__version__}"
 > ```
 >
-> Not applied here — this document is docs-only. Proposed ticket T-2.
+> **(b)** 1.5.5, or the LTS line? DuckDB ships minor versions on a roughly 4-month
+> cadence, semantics have already moved inside a patch release, and v2.0 brings a new SQL
+> parser. Section 9's bump protocol is cheap now and expensive during a migration; which
+> version it targets is your call.
 >
-> **(b) 1.5.5, or the LTS line?** DuckDB ships minor versions on a roughly 4-month
-> cadence and semantics have already moved inside a patch release. v2.0 brings a new
-> SQL parser. The bump protocol in section 9 is cheap to write now and expensive to
-> write during a migration; which version it targets is your call.
->
-> *Binds:* ORC-02, and every pin in the corpus by extension.
+> *Binds:* ORC-02, ORC-09, ORC-86, and every pin in the corpus.
 
 ### 1.4 The three excluded neighbours
 
@@ -192,7 +211,8 @@ one of them. Besides the differential oracle it is (a) the **parser and printer*
 `sql_transform/model/_shapes.json`, with the corollary that an identifier means what the
 oracle binds; and (b) the **build-time evaluator** on the static-tables-only path, where
 the query is handed to DuckDB once at build and the answer frozen. Role (b) is why
-ORC-17 and ORC-22 exist at all: on that path parity is *identity*, not comparison.
+ORC-17 and ORC-22 exist at all: on that path parity is *identity*, not comparison — and
+it is the one place the engine opens its own DuckDB connection, which is ORC-91.
 *Verified-by:* `packages/confit/docs/properties.md:86-112` (P9, role (a));
 `scripts/pin_ast_shapes.py`; `packages/confit/src/duckdb/mod.rs` `eval_static_only`,
 `packages/confit/docs/known-limitations.md:109-112`, and the founding design
