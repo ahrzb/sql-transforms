@@ -215,9 +215,9 @@ which is why two of the four ladders in goal.md §2.1 are enforced and two are n
 
 ## 6. The authoring-side ladder
 
-`packages/confit/docs/kpis.md` D1 pins the sql-transform admission ladder: **11
-marginalized + 11 refused of 22 mined**, and **39 marginalized / 17 refused / 5 schema-mode**
-curated. Verified fresh 2026-09-02, and it takes **two** tests, not one:
+`packages/confit/docs/goal.md` kpi: coverage-ladder pins the sql-transform admission
+ladder: **11 marginalized + 11 refused of 22 mined**, and **39 marginalized / 17 refused /
+5 schema-mode** curated. Verified fresh 2026-09-02, and it takes **two** tests, not one:
 `_corpus_test.py::test_progression_totals` (`:232-239`) pins the totals — `len(MINED) == 22`,
 the two mined buckets summing to 22, and the three curated lengths — while the **11/11 split
 itself** is pinned only by `::test_mined_corpus_scoreboard` (`:197-207`,
@@ -270,7 +270,7 @@ bounds serving latency, so a regression that moved this number would fail nothin
 
 This is **not** called a regression here. The baseline row changed identity (plain dicts
 out, where the old row returned pydantic models), the machine is not the 2026-08-04 machine,
-and kpis.md warns absolute numbers drift with load. That warning is not theoretical:
+and kpi: serving-latency warns absolute numbers drift with load. That warning is not theoretical:
 `store_sales`' `spec` cell read 5,600 and 8,800 ns in two runs on the same machine on the
 same day, a 57% spread — which is exactly why goal.md's kpi: bench-refresh-cadence proposes
 recording a *ratio*.
@@ -313,7 +313,7 @@ metric whose baseline changed identity would re-record the confusion.
 ## 8. KPI enforcement, as read
 
 **claim: kpi-pointers-resolve.** Every enforcement pointer under the five control KPIs in
-`packages/confit/docs/kpis.md` resolves on master `2ba96e5`, checked 2026-09-02: C1
+`packages/confit/docs/goal.md` §5.2 resolves on master `2ba96e5`, checked 2026-09-02: C1
 `_projection_test.py::gate` (`:34`) and its `MARGINALIZE_FUZZ_N` seeded differential
 (`:374-376`, seed 20260729); C2 the `test_duckdb_*.py` wave suites, `test_params_joins.py`,
 `test_udfs.py::udf_check` (`:240`), `known-limitations.md`, and
@@ -323,9 +323,9 @@ FAILED-must-be-empty rule.
 
 ### 8.1 finding: c1-depth — the control is gated two orders of magnitude shallower than its text
 
-C1 says "1,500-2,000-case runs at each widening loop" (`kpis.md:38-39`), but
+C1 says "1,500-2,000-case runs at each widening loop" (kpi: training-round-trip), but
 `_projection_test.py:375` is `n = int(os.environ.get("MARGINALIZE_FUZZ_N", "25"))` — the deep
-run is opt-in and the standing gate is 25. Under `kpis.md:12` a control that only holds at
+run is opt-in and the standing gate is 25. Under `goal.md` §5.1 a control that only holds at
 its written depth when someone sets an environment variable is "an unacknowledged
 trade-off", and the remedy is a decision, not an edit: **either correct C1's text to 25, or
 raise the default and pay the runtime**. Both are changes to the KPI set, so both route

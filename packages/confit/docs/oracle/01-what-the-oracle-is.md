@@ -239,8 +239,8 @@ run at all, gate against an independent clone-per-group sklearn reference). Fit
 reproducibility itself is explicitly out of contract in v0. None of that is this
 document's oracle, and none of it is a gap here.
 *Verified-by:* `packages/sql-transform/sql_transform/_projection.py:188-189, :410`
-(`SET threads = 1`); `packages/confit/docs/kpis.md:31-34` (C1), `:40-41` and `:76-87`
-(C4); `packages/confit/docs/properties.md:118-121` (P11);
+(`SET threads = 1`); `packages/confit/docs/goal.md` kpi: training-round-trip (C1) and
+kpi: transformer-parity (C4); `packages/confit/docs/properties.md:118-121` (P11);
 `docs/specs/2026-08-05-fit-transform-split-design.md:124` and P16 (fit reproducibility
 is practice, not contract).
 

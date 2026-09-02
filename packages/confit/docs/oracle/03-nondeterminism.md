@@ -244,7 +244,8 @@ that DuckDB's parallel window aggregation is not bit-deterministic for floats (1
 fuzz drift) — but on the fit side only (claim: fit-serving-oracle).
 *Verified-by:* measured 2026-08-25 as described;
 `packages/confit/docs/properties.md:118-121` (P11) and
-`packages/confit/docs/kpis.md:31-34` (C1) for the existing `threads = 1` decision;
+`packages/confit/docs/goal.md` kpi: training-round-trip for the existing `threads = 1`
+decision;
 `confit.oracle.Oracle.__init__` sets no `threads`.
 *Status:* stated, not ruled. See ask: threads-and-value-order.
 
