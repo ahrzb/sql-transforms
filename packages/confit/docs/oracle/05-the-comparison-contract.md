@@ -1,10 +1,20 @@
 ## 5. The comparison contract
 
 This is what "same as the oracle" means, mechanically. It has been the strictest
-contract in the project from the start. It now has exactly one implementation —
-`confit.compare` — which the tests, the corpus gates and the campaign all import, so the
-question "is this leg as strict as that one?" has stopped being answerable by reading
-two call sites.
+contract in the project from the start. It now has one shipped implementation —
+`confit.compare` — which the tests and the campaign both import
+(`tests/test_compare.py:19`, `fuzz/oracle.py:68`, measured 2026-09-02), so the question
+"is this leg as strict as that one?" has stopped being answerable by reading two call
+sites for **those** two.
+
+*One leg is still outside it, and it is not a copy.* `tests/test_corpus_replay.py` imports
+neither, and canonicalizes with its own `_norm_row` (`:70-72`) — `tuple(repr(v) for v in
+row)` over `list(r.values())`, compared as `sorted(map(_norm_row, ...))` at `:166`. That is
+a **positional** read, not a name-keyed one, so it is materially a different leg from
+`confit.compare.multiset` rather than a duplicate of it; its own comment records the same
+`repr` ground ("makes NaN self-equal"). Whether it folds into `confit.compare` is not
+ruled and is not asked here — it is recorded so the count of comparison vocabularies in
+the repo stays honest at **two**.
 
 **ORC-90.** Two answers are equal when their canonical forms are equal, and a caller
 declares exactly **one** axis: whether row order is part of the claim. What makes two
@@ -31,8 +41,12 @@ declared, not inferred from a `sorted()` that somebody did or did not write.
 `::test_sequence_is_byte_identical_to_the_fuzzers_canonical_form` (the campaign and the
 tests canonicalize identically, because they call the same function).
 *Scope:* the module raises plain `AssertionError` and imports stdlib only at run time, so
-a campaign running outside pytest uses the same definition of equal that the suite does —
-`packages/confit/tests/test_compare.py::test_compare_imports_stdlib_and_pyarrow_only`.
+a campaign running outside pytest uses the same definition of equal that the suite does.
+Both halves are pinned: the imports by
+`packages/confit/tests/test_compare.py::test_compare_imports_stdlib_and_pyarrow_only`
+(an AST read of the source), and the exception type by the eight
+`pytest.raises(AssertionError)` sites in the same file — a `pytest.fail` or a custom
+error class would escape every one of them.
 
 **ORC-32.** Floats compare by **bit pattern**, and the pin records the bits, not a
 rendering. No rounding, no `%.3f`. **Three exceptions are in force**, all named and all
@@ -51,10 +65,11 @@ invisible**; only the explicit bit pins see those.
 *Enforced-by:* `confit.compare.multiset` / `.sequence` for the repr form;
 `confit.oracle.Oracle.answer`, which normalizes nothing at all, so a comparison site sees
 the oracle's own bits and decides its own equality.
-*Verified-by:* `packages/confit/tests/test_duckdb_wave3_mathtail.py:205-235` (explicit bit
-pinning, since `repr` collapses every NaN to `nan`);
-`packages/confit/tests/test_duckdb_interpreter.py`, `duck_check_ulp` (`max_ulp=1`, the
-cbrt bound); `fuzz.oracle._extra_legs` (the sklearn `1e-9` leg);
+*Verified-by:* `packages/confit/tests/test_duckdb_wave3_mathtail.py:204-232`
+(`test_computed_nan_bits_match_oracle` — explicit bit pinning, since `repr` collapses
+every NaN to `nan`); `packages/confit/tests/test_duckdb_interpreter.py:913-946`
+(`duck_check_ulp`, `max_ulp=1`, the cbrt bound); `fuzz.oracle._extra_legs:833-851` (the
+sklearn `1e-9` leg);
 `packages/confit/tests/test_oracle.py::test_answer_returns_arrow_unnormalized`;
 `packages/confit/docs/kpis.md:17-20` (the loosening rule) and `:85-89` (DRAFT-23's
 declared per-family ulp bound). Float bit patterns are a recorded field across the pins
@@ -83,8 +98,9 @@ on Windows ucrt, `fff8...` on Linux glibc), so the pin is *engine == oracle bit
 agreement per platform*, not a constant. `fmod`'s NaN, by contrast, comes from hardware
 arithmetic and is `fff8...` on every x86 platform, so it is pinned as a constant.
 Status: `IMPL-DEFINED`, platform is the discriminator.
-*Verified-by:* `packages/confit/tests/test_duckdb_wave3_mathtail.py:205-235` (the
-engine == oracle assertion is `assert bits(got["m"]) == bits(m)` at `:235`);
+*Verified-by:* `packages/confit/tests/test_duckdb_wave3_mathtail.py:204-232`
+(`test_computed_nan_bits_match_oracle`; the engine == oracle assertion is
+`assert bits(got["m"]) == bits(m)` at `:232`);
 `packages/confit/docs/specs/pins-wave3/math_tail.json` (the wave-3 correction);
 `packages/confit/docs/known-limitations.md:258-259`.
 
@@ -159,6 +175,15 @@ differing field and the attribute that differs on it rather than printing two sc
 dumps.
 *Verified-by:* `packages/confit/tests/test_fuzz_smoke.py::test_a_real_schema_difference_is_still_a_divergence`;
 `packages/confit/tests/test_compare.py::test_assert_schema_names_the_first_differing_field_and_attribute`.
+*Scope, measured, and it is narrower than the sentence reads.* In the campaign this holds
+on the **row path only**. `fuzz.oracle.run_case`'s `against()` returns inside
+`if static_only:` at `:662-684`, before `_schema_delta` is reached at `:686`, so on the
+static-only path no schema is compared against DuckDB at all: the only check is
+`multiset(got_cl) != multiset(want)` at `:664`, and `repr(1)` is identical for int32 and
+int64, so a width or nullability difference there — including a zero-row answer with a
+wholly wrong schema — grades `AGREE`. The claim is in force for tests either way
+(`confit.compare.assert_schema` has no such branch). See ORC-92's scope note and proposed
+ticket T-25.
 
 **ORC-92.** An unshipped feature **fails or is classified — never absorbed by weakening a
 comparison.** Where the engine has not shipped a width the oracle emits, there is no
@@ -182,6 +207,18 @@ one, decimal-against-float64, deleted when the feature lands.
 *Verified-by:* `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`
 and `::test_a_real_schema_difference_is_still_a_divergence` (only the named classes take
 the exit).
+*Scope, measured 2026-09-02, and the ruling is not yet fully implemented.* The `UNSHIPPED`
+exit is on the **row path** only; on the static-only path it is unreachable, for the reason
+in ORC-38's scope note — `against()` returns at `fuzz/oracle.py:662-684` before
+`_schema_delta` at `:686`. The gap is live rather than theoretical: `fuzz.gen.lit`
+(`fuzz/gen.py:588-593`) plants a `bare_decimal` literal into any float literal with
+p = 0.05, a static-only query included, and such a case grades `DIVERGE_VALUE` klass
+`static-only-values` at `:665-667` — a value comparison across an unshipped width, which
+is exactly what this claim and the ASK-12 ruling forbid. The gating test builds its case
+as `gen.Q([], gen.Sel([(e, "o0")], "__THIS__"))` (`test_fuzz_smoke.py:87`), and
+`static_only` is `case.query.body.frm not in (None, "__THIS__")` (`fuzz/oracle.py:590-592`),
+so the test exercises the row path and cannot see this. Recorded as a defect against the
+ruling, not as an exception to it. Proposed ticket T-25.
 
 > ### ASK-12 — RULED. Is the comparison harness's own normalization part of the
 > oracle's answer?
@@ -222,8 +259,11 @@ disagreement when reading a finding. Its *kind* is still a divergence kind
 census key on, so a backend split does count into those totals.
 *Enforced-by:* `fuzz.oracle.run_case` (the backend checks, upstream of `against`).
 *Verified-by:* P19 in `packages/confit/docs/properties.md:240-245`.
-*Precision:* settled before either reading is *compared*, not before either is *executed*
-— `_duck_run` runs first, so both readings exist by the time the backend check fires.
+*Precision, and it differs per klass.* `backend-split` really is settled before DuckDB is
+touched at all: it returns at `fuzz/oracle.py:563-569`, above the `_duck_run` call at
+`:571`. The other two — `backend-trap-split` (`:611-617`) and `backend-values`
+(`:620-627`) — fire after `_duck_run` has executed both readings, so there "settled first"
+means before either reading is *compared*, not before either is *executed*.
 
 **ORC-83.** The interpreter is the **internal oracle backend** for the engine's own
 two-backend differential: correctness and coverage over speed, never optimized, and

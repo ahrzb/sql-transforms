@@ -71,7 +71,8 @@ spot. The blind spots, named:
 | error texts (D2) | message bodies for bind-time rejections | error *class* is compared; texts are not oracle-decided output (ORC-39) |
 | the excluded ILIKE-NUL source (D3), the f32 blanket rule and `_INEXPRESSIBLE_INPUTS` (ORC-77) | statistics-dependent kernel selection; every f32-grid-sensitive operation; declared-schema-inexpressible inputs | exclusion by name with a measured reason (ORC-20, ORC-77) |
 | refusals | whether the oracle would have served (ORC-30) | **none today** — this is ASK-3 |
-| NaN sign and payload, wherever the canonical form is used | which NaN | `repr` makes every NaN self-equal in `confit.compare`; only the explicit bit pins see the difference (ORC-32, ORC-90) |
+| NaN sign and payload, wherever the canonical form is used | which NaN | `repr` makes every NaN self-equal — in `confit.compare` and, independently, in `test_corpus_replay.py`'s own `_norm_row` (`:70-72`); only the explicit bit pins see the difference (ORC-32, ORC-90) |
+| schema, on the campaign's **static-only** path | name, type, width and nullability, none of which is compared against DuckDB there | **none today** — `against()` returns before `_schema_delta` is reached, so a wrong-width or zero-row answer grades `AGREE`, and a bare-decimal static-only case value-compares across an unshipped width instead of classifying (ORC-38, ORC-92, T-25) |
 | an **unshipped width** (today: decimal literals) | whether the values would have agreed, since none were compared | `UNSHIPPED` classifies loudly, is neither a finding nor coverage, and gets its own report section — so the blind spot is *counted* rather than absorbed (ORC-92). The harness no longer casts, so it no longer invents a value either |
 | a worker that never answered | everything about that case | `TIMEOUT` / `PANIC` are findings, not silence (ORC-23, ORC-26), and are attributed oracle-side vs engine-side by hand (ORC-78) |
 
@@ -86,10 +87,18 @@ is what makes them usable exactly where the oracle abstains. Five of the six com
 exactly; the sklearn leg compares within `1e-9` (ORC-32), because sklearn is a second
 reference and not the oracle. They run for an `UNSHIPPED` case too, precisely because
 they contain no DuckDB (ORC-92).
-*Enforced-by:* `fuzz.oracle._extra_legs`, whose exact comparisons are
-`confit.compare.sequence` and `.multiset`.
-*Verified-by:* `packages/confit/tests/test_fuzz_order_legs.py`; P1-P20 in
-`packages/confit/docs/properties.md`.
+*Enforced-by:* **two** homes, and the split matters when reading a finding.
+`fuzz.oracle._extra_legs` (`fuzz/oracle.py:740-852`) holds five of the six — infer_rows
+vs infer_arrow (`:747-762`), hostile arrow (`:764-789`), batch-vs-single (`:796-811`),
+reversal (`:812-830`) and the sklearn `1e-9` leg (`:833-851`) — with its exact comparisons
+being `confit.compare.sequence` and `.multiset`. Cranelift vs interpreter is **not** there:
+it is settled early in `fuzz.oracle.run_case` (`:611-627`), which is what ORC-40 describes.
+*Verified-by:* `packages/confit/tests/test_fuzz_order_legs.py` for the order legs
+(`test_a_correct_engine_passes_the_order_legs`,
+`test_a_scrambled_batch_is_caught_as_an_order_bug`); P19 in
+`packages/confit/docs/properties.md:240-245` for the backend leg. The hostile-arrow,
+infer_rows-vs-arrow and sklearn legs have **no test of their own** — `Unverified`
+(measured 2026-09-02).
 
 **ORC-70.** **[PROPOSED]** Not in force. A campaign declares a coverage signal, because
 "20k queries, N residuals" is unanchored without a denominator that means something. We have no query
@@ -162,9 +171,18 @@ Proposed ticket T-15, and see ASK-5 for the user-visibility boundary.
 > adopted them. They are marked `[PROPOSED]` now rather than deleted, because each one is
 > a real answer to a real question — but adopting a rule is your call, not a document's.
 >
+> **Scope, so the marker's population and this ASK are not confused.** Fifteen claims carry
+> `[PROPOSED]`; this ASK covers nine of them. The other **eight** — ORC-48, ORC-49, ORC-61,
+> ORC-62, ORC-63, ORC-64, ORC-70, ORC-71 — are pins-and-campaign machinery rather than
+> comparison doctrine, and they are routed through proposed tickets T-8, T-9, T-12, T-14
+> and T-15, each blocked on your go rather than on this table. Two ids this table lists,
+> **ORC-41 and ORC-58, carry no marker**: ORC-41 is a survey whose four unadopted
+> mechanisms ORC-84 would turn into rejections, and ORC-58 is in force except for the
+> absolute the row names.
+>
 > | claim | the rule | the cost of adopting it |
 > |---|---|---|
-> | ORC-15 | every comparison target carries a status | eight claims have one today; the rest must be statused or the rule narrowed to the ledger |
+> | ORC-15 | every comparison target carries a status | seven claims have one today; the rest must be statused or the rule narrowed to the ledger |
 > | ORC-31 | an accepted cost must be countable, with the mechanism named in the decision | makes ASK-3's split mandatory rather than optional, and applies retroactively to D10 |
 > | ORC-35 | multi-answer sets are legitimate only with a selecting predicate | no pin in force is set-valued in that sense; ORC-76's bounded tolerance is a shape the rule does not cover |
 > | ORC-41's four unadopted mechanisms / ORC-84 | they become standing rejections | must be written so as not to contradict ORC-32's three in-force tolerances or ORC-73's designed epsilon tier |

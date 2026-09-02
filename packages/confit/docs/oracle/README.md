@@ -12,8 +12,12 @@ it were, a bug in either class would become normative the moment it shipped, and
 spec would certify it. The direction of authority runs one way: a claim says what must
 hold, `Enforced-by:` names the code that makes it hold, and `Verified-by:` names the
 test that would fail if the code stopped. Those modules' docstrings mirror this
-document; this document cites the tests, never the docstrings. A disagreement between a
-claim and a module is a bug in the module until the owner rules otherwise.
+document, and **a module's own prose is never a claim's evidence** — a docstring in the
+module a claim governs is that module certifying itself, so `Verified-by:` names a test,
+a source line whose *content is the fact* (a constant, an enum member, an upstream `.cpp`
+line), a pin file, or a dated measurement. Where a measurement is recorded only in a
+docstring, the claim says so and reads `Unverified`. A disagreement between a claim and a
+module is a bug in the module until the owner rules otherwise.
 
 **Governance.** The oracle spec states what is considered correct. Every
 contradiction goes through the owner. This document therefore keeps three kinds of
@@ -33,7 +37,11 @@ content strictly apart:
 - **`[PROPOSED]`** — a rule this document would like, which nobody has ruled on. It
   holds an id only so a pin or a ticket can reference it. Several of these are rules
   this document originally stated as though they were already in force; they are
-  marked now, and adopting them is ASK-15. **15 claims** carry this marker.
+  marked now. **15 claims** carry this marker, and they adopt through two doors: the
+  nine comparison-doctrine ones go through ASK-15, and the remaining eight (ORC-48,
+  ORC-49, ORC-61, ORC-62, ORC-63, ORC-64, ORC-70, ORC-71 — pins and campaign machinery)
+  through their own proposed tickets. Note ASK-15's table also names ORC-41 and ORC-58,
+  which carry no marker; ASK-15 says why.
 - **`[FACT]`** — a measured statement of current state with no decision attached.
   It is here because the state is load-bearing, not because anyone ruled on it.
   **9 claims** carry this marker.

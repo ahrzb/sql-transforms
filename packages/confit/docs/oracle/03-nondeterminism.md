@@ -10,10 +10,12 @@ is not a target.* This is the single axiom under every nondeterminism ruling in 
 project. It is why the oracle is optimizer-off (ORC-03), why row limits on the
 constant path refuse (ORC-17), why row order is compared per mode rather than by
 byte-equality (ORC-18), and why statistics-dependent behavior is excluded (ORC-20).
-*Verified-by:* three existing phrasings of the same rule —
-`packages/confit/docs/known-limitations.md:39`, `confit/oracle.py`'s module docstring
-("the optimizer-on reading is NOT matchable in principle"),
-`backlog/tasks/task-128 ...md` description ("The doctrine already exists").
+*Verified-by:* two existing phrasings of the same rule outside the enforcement modules —
+`packages/confit/docs/known-limitations.md:39` and `backlog/tasks/task-128 ...md`'s
+description ("The doctrine already exists"). `confit/oracle.py`'s module docstring phrases
+it a third time ("the optimizer-on reading is NOT matchable in principle"); that is the
+module mirroring this claim, not evidence for it, and is named here only so the next
+editor keeps the three in step.
 *Note:* `packages/confit/docs/properties.md` ends at P20, so **P21** is the free number
 if the owner wants this numbered as a project property and the three sites made to cite
 it. Proposed ticket T-3.
@@ -42,11 +44,14 @@ ASK-13.
 
 **ORC-15.** **[PROPOSED]** Not in force. Every comparison target carries one status from
 the vocabulary in the front matter (`PINNED` / `IMPL-DEFINED` / `UNSPECIFIED`), and a
-target with no status is not yet a target. Today the vocabulary is applied to eight
+target with no status is not yet a target. Today the vocabulary is applied to **seven**
 claims and to the section 7 ledger's `proposed status` column; ORC-16, ORC-32, ORC-33,
 ORC-37, ORC-38, ORC-39, ORC-90, ORC-92, ORC-93 and every ORC-11 quirk carry no status, so
 under this rule as written they are not targets — which they plainly are. Adopting the
-rule means either statusing them or narrowing the rule to the ledger.
+rule means either statusing them or narrowing the rule to the ledger. (The seven, counted
+2026-09-02: ORC-17, ORC-18, ORC-19, ORC-20, ORC-21, ORC-34, ORC-76. Every other
+`PINNED` / `IMPL-DEFINED` / `UNSPECIFIED` outside the section 7 ledger is a reference to
+the vocabulary, not an application of it.)
 *Verified-by:* Unverified — no rule outside this document requires a status. Part of
 ASK-15.
 
@@ -140,8 +145,9 @@ the blanket rule was chosen over a per-operation one on the measured ground that
 — the SQL is fine, the *declared* input schema is not; one entry, whose in-file comment
 records that its original ground (the width-less pydantic row surface) has since gone
 away.
-*Verified-by:* `packages/confit/tests/test_corpus_replay.py:38-49` (a), `:111-117` (b),
-`:60-65` (c). Sets (b) and (c) were absent from an earlier version of this document; (c)
+*Verified-by:* `packages/confit/tests/test_corpus_replay.py:38-49` (a), `:103-110` (b —
+the measured comment and the `is_float32` check it guards), `:60-65` (c).
+Sets (b) and (c) were absent from an earlier version of this document; (c)
 is a live instance of the ORC-53 REASON rule and is named in ASK-15.
 
 ### 3.6 The oracle disagreeing with itself
@@ -170,10 +176,16 @@ materialization; `NOT NULL` does not, which is why a fixture that needs a constr
 declares it in SQL instead.
 *Enforced-by:* `confit.oracle.Oracle.load` (register, CTAS, unregister) and
 `confit.oracle.Oracle.table` (the SQL declaration is kept verbatim).
-*Verified-by:* `packages/confit/tests/test_oracle.py::test_load_materializes_a_native_table_with_widths_intact`,
-`::test_load_unregisters_its_alias`, `::test_table_keeps_the_declaration_including_not_null`;
-the measured filter-pushdown ground is recorded in `Oracle.load`'s own docstring and in
-the builtin-pins spec.
+*Verified-by:* the **materialization** —
+`packages/confit/tests/test_oracle.py::test_load_materializes_a_native_table_with_widths_intact`,
+`::test_load_unregisters_its_alias`, `::test_table_keeps_the_declaration_including_not_null`
+(catalogue shape, TINYINT survival, the `NOT NULL` flag). The **semantic ground** is
+recorded at `packages/confit/docs/specs/2026-07-26-stretch4-builtin-pins.md:114-117`
+("duckdb-python pushes constant filters into REGISTERED-ARROW scans with IEEE NaN
+semantics, disagreeing with its own native-table order ... duck_check now materializes
+native tables") — the stretch4 file, not wave1 or wave3. No test in
+`packages/confit/tests/` runs that NaN comparison against a registered relation, so the
+semantic half is pinned by the recorded measurement rather than by a gate.
 
 **ORC-76.** Where DuckDB's own wheels disagree with each other, the disposition is a
 **bounded, named tolerance**, not refusal. The measured instance: `cbrt`. The Windows
@@ -183,9 +195,9 @@ platform-inconsistent there, so repr-exact parity is unpinnable; oracle parity f
 `cbrt` is pinned at **<= 1 ulp**, and the wave-1 pins spec records it as "the only such
 exception". The engine itself stays deterministic (Rust `cbrt`). Status:
 `IMPL-DEFINED`, discriminator = the oracle's own build.
-*Verified-by:* `packages/confit/tests/test_duckdb_interpreter.py:918-952`
-(`duck_check_ulp`, `max_ulp=1`), used by `test_sqrt_cbrt_bigint` and
-`test_cbrt_total_function` — both in the normal test gate;
+*Verified-by:* `packages/confit/tests/test_duckdb_interpreter.py:913-946`
+(`duck_check_ulp`, `max_ulp=1` by default), used by `test_sqrt_cbrt_bigint` (`:949`) and
+`test_cbrt_total_function` (`:958`) — both in the normal test gate;
 `packages/confit/docs/specs/2026-07-26-wave1-builtin-pins.md:47-52` (the ground and the
 "only such exception" wording).
 

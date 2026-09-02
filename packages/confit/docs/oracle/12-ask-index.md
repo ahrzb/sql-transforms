@@ -15,8 +15,8 @@ Fifteen open, in document order, with what each binds.
 
 | ask | question | at | binds |
 |---|---|---|---|
+| **ASK-16** | does the engine's build-time fold move to the oracle's reading? It folds optimizer-ON in production while the oracle is optimizer-OFF. Whether that is observable is **unmeasured** — take the measurement before ruling | 1.3 | ORC-02, ORC-06, ORC-07, ORC-17, ORC-22, ORC-74's role (b), ORC-91 |
 | **ASK-1** | pin `==1.5.5` or floor-plus-assert; and 1.5.5 or the LTS line. The assert's landing spot is one line in `Oracle.__init__` | 1.3 | ORC-02, ORC-09, ORC-86, every pin |
-| **ASK-16** | does the engine's build-time fold move to the oracle's reading? It folds optimizer-ON in production while the oracle is optimizer-OFF — latent today, measured | 1.3 | ORC-02, ORC-06, ORC-07, ORC-17, ORC-22, ORC-91 |
 | **ASK-2** | build-vs-build repeatability: sort-at-freeze, out of contract, or tentative | 3.7 | ORC-22 |
 | **ASK-13** | does `threads` join the oracle constant, and what disposition covers order *inside* a value. Landing spot: one line in `Oracle.__init__` | 3.7 | ORC-02, ORC-14, ORC-22, ORC-75 |
 | **ASK-3** | make the accepted severity-4 refusal cost countable, or amend the RFC to say it is unmeasured | 4.3 | ORC-30, ORC-59, D9 |
@@ -29,7 +29,7 @@ Fifteen open, in document order, with what each binds.
 | **ASK-14** | is a campaign baseline evidence, or a snapshot | 7.4 | ORC-66, D4, D12, D16, ASK-10 |
 | **ASK-10** | classify the width residuals before treating them as a defect count | 10 | D13, D16 |
 | **ASK-11** | corpus match count: dated generated number, or a ratchet | 10 | ORC-67, ORC-73 |
-| **ASK-15** | do this document's own eight `[PROPOSED]` rules (across nine claim ids) become normative | 10 | ORC-15, 31, 35, 41, 56, 58, 59, 65, 84 |
+| **ASK-15** | do this document's own eight rules (across nine claim ids) become normative. Covers nine of the fifteen `[PROPOSED]` claims; the other eight route through their own tickets | 10 | ORC-15, 31, 35, 41, 56, 58, 59, 65, 84 |
 
 Plus the section 7.3 ledger: **16 rows**, of which **D12 is now ruled** (the ASK-12
 ruling, transcribed into its cell). D13 and D16 are marked *unruled*, D7 and D8 are held
@@ -54,10 +54,14 @@ a reader needs to know about:
 - **ORC-36 is retired** — one comparison vocabulary made it a restatement of ORC-18 plus a
   default. Its number is kept with a tombstone; nothing is renumbered.
 - **Four claims are new.** ORC-90 (what equal means, and the single declared axis),
-  ORC-91 (the one-door property's single known bypass — the engine's own build-time fold,
-  optimizer-on, latent), ORC-92 (the ASK-12 ruling as a rule), and ORC-93 (the oracle's
+  ORC-91 (the comparison path's single known bypass — the engine's own build-time fold,
+  optimizer-on), ORC-92 (the ASK-12 ruling as a rule), and ORC-93 (the oracle's
   tables are native tables, and a bare `register` is a different oracle).
 - **ASK-16 is new**, and it is the decision ORC-91 does not make.
 - **Chapters 1, 6 and 9 re-anchor on `Oracle.VERSION`**, which is the object a bump moves.
   It is recorded and not asserted, which is still ASK-1 — but it is now a name in code
-  rather than a sentence in thirty-six markdown files.
+  rather than only a sentence in the 36 markdown files ORC-09 counts.
+- **Two scope corrections against the shipped code**, both measured 2026-09-02 and both
+  narrowing a claim rather than weakening it: ORC-38 and ORC-92 hold on the campaign's
+  **row path** only (T-25), and `fuzz.runner`'s verdict tuples have no test at all, so
+  ORC-06, ORC-24, ORC-25, ORC-26 and ORC-28 read `Unverified` for that half (T-24).

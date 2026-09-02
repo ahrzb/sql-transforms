@@ -11,7 +11,8 @@ pin file** (ORC-46) — are today unmet and partial respectively. `Oracle.VERSIO
 recorded and never compared to `duckdb.__version__` (ORC-09), so a bump can happen
 without the constant moving at all, which is the failure mode the protocol exists to
 prevent.
-*Verified-by:* `confit/oracle.py`, `Oracle.VERSION`; ORC-02, ORC-09, ORC-46.
+*Verified-by:* `packages/confit/confit/oracle.py:74-76` (the constant and the comment
+reserving the assert); ORC-02, ORC-09, ORC-46.
 
 **ORC-85.** **[FACT]** Step one of a bump is not re-recording; it is making the corpus
 re-runnable, and that work is not ticketed anywhere. Measured 2026-08-25 over the 53 pin
