@@ -99,6 +99,41 @@ def test_an_unshipped_lane_is_classified_and_never_value_compared():
         assert "decimal" in v.detail, v
 
 
+def _static_decimal_lit_case() -> gen.Case:
+    """The same bare decimal literal, reached from the STATIC-ONLY leg: FROM
+    a static table, so no request row is involved in the answer."""
+    e: gen.Node = gen.Lit(1.5, "float", bare_decimal=True)
+    q = gen.Q([], gen.Sel([(e, "o0")], "s0"))
+    statics = {"s0": ({"a": "int64"}, [{"a": 1}, {"a": 2}])}
+    return gen.Case(-3, {"k": "int"}, [{"k": 1}], statics, [], None, q, None, None, [])
+
+
+def test_the_static_only_leg_has_no_unshipped_width_to_classify():
+    """The static-only leg value-compares with no schema check in front of
+    it, which would break the rule above if our answer there carried a width
+    of its own. It cannot today, and the reason is worth pinning: a
+    static-tables-only query never prepares (its driving relation is not the
+    row table), so DuckDB evaluates it and both the rows and the schema come
+    back verbatim — decimals included. The AGREE below is a real agreement,
+    not a gap absorbed by a missing check.
+
+    This goes red the day our own evaluator answers that path, which is
+    exactly when the leg owes the same classification the row path does.
+    """
+    case = _static_decimal_lit_case()
+    fn = oracle._build(
+        gen.render(case.query),
+        oracle._arrow_schema(case.row_schema),
+        {n: oracle._arrow_table(s, r) for n, (s, r) in case.statics.items()},
+        [],
+        None,
+        False,
+    )
+    assert fn.backend == "constant", fn.backend
+    assert fn.output_schema.field(0).type == pa.decimal128(2, 1), fn.output_schema
+    assert oracle.run_case(case).kind == "AGREE"
+
+
 def test_a_real_schema_difference_is_still_a_divergence():
     """Only the named unshipped classes take the UNSHIPPED exit; every other
     type or name mismatch stays the DIVERGE_VALUE "schema" it always was."""
