@@ -186,15 +186,22 @@ dumps.
 *Verified-by:*
 `packages/confit/tests/test_fuzz_smoke.py::test_a_real_schema_difference_is_still_a_divergence`;
 `packages/confit/tests/test_compare.py::test_assert_schema_names_the_first_differing_field_and_attribute`.
-*Scope, measured, and it is narrower than the sentence reads.* In the campaign this
-holds on the **row path only**. `fuzz.oracle.run_case`'s `against()` returns inside `if
-static_only:` at `:662-684`, before `_schema_delta` is reached at `:686`, so on the
-static-only path no schema is compared against DuckDB at all: the only check is
-`multiset(got_cl) != multiset(want)` at `:664`, and `repr(1)` is identical for int32 and
-int64, so a width or nullability difference there — including a zero-row answer with a
-wholly wrong schema — grades `AGREE`. The claim is in force for tests either way
-(`confit.compare.assert_schema` has no such branch). See claim: unshipped-verdict's
-scope note and proposed ticket ticket: static-only-schema-check.
+*Scope, measured 2026-09-02, and the scope is complete.* In the campaign the schema
+comparison runs on the **row path**, and the row path is the only path where our engine
+contributes types. `fuzz.oracle.run_case`'s `against()` does return inside `if
+static_only:` at `:662-684`, before `_schema_delta` is reached at `:686` — but nothing is
+missed by it: a static-tables-only query never prepares, so `eval_static_only` folds it
+into `Engine::Constant` and both the rows and the schema on that leg are DuckDB's own
+answer handed back verbatim. There is no our-side schema there to compare against
+DuckDB's, and no width of ours that could be wrong. What that leg does compare is the
+engine's build-time fold against the oracle's readings (claim: one-door-bypass). The
+claim is in force for tests either way (`confit.compare.assert_schema` has no such
+branch). An earlier version of this note read the missing `_schema_delta` call as a gap;
+it is not one, and the ticket it raised is struck (section 11).
+*Verified-by (the scope):*
+`packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`,
+which pins the static-only leg's answer as DuckDB's verbatim decimal and goes red the day
+our own evaluator answers that path.
 
 **claim: unshipped-verdict.** An unshipped feature **fails or is classified — never
 absorbed by weakening a comparison.** Where the engine has not shipped a width the
@@ -220,19 +227,22 @@ one, decimal-against-float64, deleted when the feature lands.
 `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`
 and `::test_a_real_schema_difference_is_still_a_divergence` (only the named classes take
 the exit).
-*Scope, measured 2026-09-02, and the ruling is not yet fully implemented.* The
-`UNSHIPPED` exit is on the **row path** only; on the static-only path it is unreachable,
-for the reason in claim: schema-comparison's scope note — `against()` returns at
-`fuzz/oracle.py:662-684` before `_schema_delta` at `:686`. The gap is live rather than
-theoretical: `fuzz.gen.lit` (`fuzz/gen.py:588-593`) plants a `bare_decimal` literal into
-any float literal with p = 0.05, a static-only query included, and such a case grades
-`DIVERGE_VALUE` klass `static-only-values` at `:665-667` — a value comparison across an
-unshipped width, which is exactly what this claim and the ask: unshipped-never-compared
-ruling forbid. The gating test builds its case as `gen.Q([], gen.Sel([(e, "o0")],
-"__THIS__"))` (`test_fuzz_smoke.py:87`), and `static_only` is `case.query.body.frm not
-in (None, "__THIS__")` (`fuzz/oracle.py:590-592`), so the test exercises the row path
-and cannot see this. Recorded as a defect against the ruling, not as an exception to it.
-Proposed ticket: static-only-schema-check.
+*Scope, measured 2026-09-02, and the scope is complete.* The `UNSHIPPED` exit is on the
+**row path**, which is the only path where an unshipped width can exist. On the
+static-only path the exit is unreachable — `against()` returns at `fuzz/oracle.py:662-684`
+before `_schema_delta` at `:686` — and nothing is absorbed by that, because a
+static-tables-only query never prepares: the answer is `Engine::Constant`, DuckDB's own
+rows and schema verbatim, so we ship no width there that could be unshipped. The planted
+case `SELECT 1.5 AS o0 FROM s0` is `decimal128(2,1)` on both sides and grades `AGREE`.
+The combination is also unreachable by construction rather than by luck: `fuzz.gen.lit`
+(`fuzz/gen.py:588-593`) plants a `bare_decimal` literal into any float literal with
+p = 0.05, but the generator's one static-only template emits aggregate calls over static
+columns and never calls `lit()`, so no seed produces a bare-decimal static-only case
+(seeds 0-1999: 63 static-only cases, 35 building and 28 refusing, 0 bare-decimal). An
+earlier version of this note recorded the opposite as a defect against the ruling; that
+reading is refuted and its ticket is struck (section 11).
+*Verified-by (the scope):*
+`packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`.
 
 > ### ask: unshipped-never-compared — RULED. Is the comparison harness's own normalization part of the
 > oracle's answer?

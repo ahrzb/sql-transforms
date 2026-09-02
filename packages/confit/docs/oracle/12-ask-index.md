@@ -15,7 +15,7 @@ Fifteen open, in document order, with what each binds.
 
 | ask | question | at | binds |
 |---|---|---|---|
-| **ask: engine-fold-reading** | does the engine's build-time fold move to the oracle's reading? It folds optimizer-ON in production while the oracle is optimizer-OFF. Whether that is observable is **unmeasured** — take the measurement before ruling | 1.3 | claim: oracle-identity, claim: contract-surface-gap, claim: no-raw-connections, claim: row-limit-refusal, claim: build-vs-build-repeatability, claim: duckdb-three-roles' role (b), claim: one-door-bypass |
+| **ask: engine-fold-reading** | does the engine's build-time fold move to the oracle's reading? It folds optimizer-ON in production while the oracle is optimizer-OFF. Observability is measured only inside the campaign's static-only grammar (35 of 35 building cases agree across both readings, seeds 0-1999); the **suite** under both readings is still unmeasured — take that before ruling | 1.3 | claim: oracle-identity, claim: contract-surface-gap, claim: no-raw-connections, claim: row-limit-refusal, claim: build-vs-build-repeatability, claim: duckdb-three-roles' role (b), claim: one-door-bypass |
 | **ask: version-pin** | pin `==1.5.5` or floor-plus-assert; and 1.5.5 or the LTS line. The assert's landing spot is one line in `Oracle.__init__` | 1.3 | claim: oracle-identity, claim: oracle-version-constant, claim: capture-outside-the-oracle, every pin |
 | **ask: frozen-row-order** | build-vs-build repeatability: sort-at-freeze, out of contract, or tentative | 3.7 | claim: build-vs-build-repeatability |
 | **ask: threads-and-value-order** | does `threads` join the oracle constant, and what disposition covers order *inside* a value. Landing spot: one line in `Oracle.__init__` | 3.7 | claim: oracle-identity, claim: disposition-table, claim: build-vs-build-repeatability, claim: threads-setting |
@@ -75,10 +75,16 @@ a reader needs to know about:
   moves. It is recorded and not asserted, which is still ask: version-pin — but it is
   now a name in code rather than only a sentence in the 36 markdown files
   claim: oracle-version-constant counts.
-- **Two scope corrections against the shipped code**, both measured 2026-09-02 and both
-  narrowing a claim rather than weakening it: claim: schema-comparison and
-  claim: unshipped-verdict hold on the campaign's **row path** only
-  (ticket: static-only-schema-check), and `fuzz.runner`'s verdict tuples have no test at
+- **Two scope corrections against the shipped code**, both measured 2026-09-02.
+  claim: schema-comparison and claim: unshipped-verdict run on the campaign's **row
+  path**, and that scope is **complete**: the static-only leg contributes no types of
+  ours (its answer is `Engine::Constant`, DuckDB's own rows and schema verbatim), so
+  there is no width there to compare or to classify. An earlier revision read the missing
+  `_schema_delta` call on that leg as a defect and raised
+  ticket: static-only-schema-check for it; measurement refuted that, the ticket is struck
+  in chapter 11, the blind-spot row it justified is gone from claim: blind-spots, and the
+  leg's real content — the engine's fold against the oracle's readings — is recorded
+  under claim: one-door-bypass. Second: `fuzz.runner`'s verdict tuples have no test at
   all, so claim: contract-surface-gap, claim: optimizer-bracket,
   claim: opt-emulated-classification, claim: abstention-reporting and
   claim: coverage-accounting read `Unverified` for that half

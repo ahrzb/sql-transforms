@@ -140,11 +140,19 @@ autouse fixture did.
 *frame-indistinguishability* measurement behind the second paragraph is recorded only in
 `packages/confit/tests/conftest.py`'s module docstring (`:7-19`), so by the front
 matter's rule that half reads `Unverified`: nothing fails if it stops being true.
-*Unverified, and it is the half a ruling turns on:* whether the two readings are
-observable here. **No run of the suite under both readings is recorded anywhere in the
-tree** — searched 2026-09-02 across `packages/confit/docs/`, `backlog/` and the tests.
-So "latent" is an assumption, not a measurement, and ask: engine-fold-reading should not
-be answered on it.
+*Measured in part, and the half a ruling turns on is still the missing one.* One bounded
+measurement of observability exists, and it is the campaign's static-only leg: that leg
+**is** this comparison, grading the engine's optimizer-on fold against both oracle
+readings, and over seeds 0-1999 all **35** static-only cases that build agree under both
+readings with 0 schema deltas (the other 28 refuse at build). Its limits are the point:
+that is one generated grammar — aggregates over static columns, no literals — not a run
+of the suite. **No run of the suite under both readings is recorded anywhere in the
+tree** — searched 2026-09-02 across `packages/confit/docs/`, `backlog/` and the tests. So
+observability beyond the campaign grammar is still an assumption, and
+ask: engine-fold-reading should not be answered on it.
+*Verified-by (the campaign half):* the leg's nature is pinned by
+`packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`;
+the 35/35 count is a dated measurement (2026-09-02, seeds 0-1999), not a gate.
 *Status:* stated, not ruled. See ask: engine-fold-reading.
 
 > ### ask: engine-fold-reading — does the engine's build-time fold move to the oracle's reading?
@@ -158,8 +166,13 @@ be answered on it.
 > the fold moves to optimizer-off so that one identity covers both paths; or the
 > difference is declared unobservable and gated by a test that says so.
 >
-> **First, the cheap measurement nobody has taken.** Whether the two readings differ on
-> today's suite is unrecorded (claim: one-door-bypass), and the third option above
+> **First, the measurement — taken in part, and the cheap remainder is still cheap.**
+> The campaign's static-only leg already runs this comparison, and it bounds the answer
+> inside the generated grammar: 35 of 35 static-only cases that build over seeds 0-1999
+> agree across both readings, with 0 schema deltas (claim: one-door-bypass). That grammar
+> reaches aggregates over static columns and nothing else, so it is evidence that the
+> difference is hard to observe, not evidence that it is unobservable. Whether the two
+> readings differ on today's **suite** is still unrecorded, and the third option above
 > cannot be chosen without it — a test asserting unobservability is only writable once
 > someone has run the suite both ways. It is one pragma in `eval_static_only` and one
 > run.

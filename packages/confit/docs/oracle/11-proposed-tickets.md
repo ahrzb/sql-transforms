@@ -1,10 +1,11 @@
 ## 11. Proposed tickets
 
 Everything this document wants changed in code or in another document. **This document
-applies none of it** — the deliverable is this chapter directory and nothing else. One
-row is nevertheless struck through: ticket: value-preserving-normalization was applied
-in code by the ask: unshipped-never-compared ruling, which shipped separately, and it is
-kept here struck rather than deleted so the slug stays resolvable.
+applies none of it** — the deliverable is this chapter directory and nothing else. Two
+rows are nevertheless struck through: ticket: value-preserving-normalization was applied
+in code by the ask: unshipped-never-compared ruling, which shipped separately, and
+ticket: static-only-schema-check was refuted by measurement. Both are kept struck rather
+than deleted so the slugs stay resolvable.
 
 | ticket | change | claim | blocked on |
 |---|---|---|---|
@@ -32,7 +33,7 @@ kept here struck rather than deleted so the slug stays resolvable.
 | **ticket: fuzzer-gate-correction** | correct `known-limitations.md:301-307`: the campaign fuzzer is a manual CLI, not a gate mechanism; what runs is `test_fuzz_smoke.py`, and its invariant is machinery | claim: regexp-fuzz-gate | editorial |
 | **ticket: fold-reading-decision** | decide whether the engine's build-time fold moves to the oracle's reading, and write the answer into claim: oracle-identity — today the constant reads as though it had no exceptions. First step is the unmeasured half: run the suite under both readings | claim: one-door-bypass | ask: engine-fold-reading |
 | **ticket: verdict-tuple-test** | give `fuzz.runner`'s `INTERESTING` / `COVERED` tuples a test. Nothing in `packages/confit/tests/` imports `fuzz.runner`, so which verdict kinds become findings and which count as coverage — the substance of claim: contract-surface-gap, claim: optimizer-bracket, claim: opt-emulated-classification, claim: abstention-reporting and claim: coverage-accounting — is enforced by an untested tuple | claim: contract-surface-gap, claim: optimizer-bracket, claim: opt-emulated-classification, claim: abstention-reporting, claim: coverage-accounting | owner's go |
-| **ticket: static-only-schema-check** | compare schemas on the campaign's static-only path too. `against()` returns before `_schema_delta`, so there a wrong width grades `AGREE` and a bare-decimal literal value-compares across an unshipped width as `static-only-values` — which the ask: unshipped-never-compared ruling forbids. Needs a static-only twin of `test_an_unshipped_lane_is_classified_and_never_value_compared` with it | claim: schema-comparison, claim: unshipped-verdict | **defect against a ruling already made**, not a proposal |
+| ~~**ticket: static-only-schema-check**~~ | ~~compare schemas on the campaign's static-only path too, where a bare-decimal literal was reported to value-compare across an unshipped width~~ — **refuted by measurement**: a static-tables-only query never prepares, so `Engine::Constant` hands back DuckDB's own rows *and schema* verbatim and no our-side width exists there to classify. Pinned by `packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`, merged on master | claim: schema-comparison, claim: unshipped-verdict | closed |
 
 Two further editorial corrections found while writing, no ticket needed if fixed in
 place: `known-limitations.md:248-249` says a 4000-seed campaign puts trap elision at
