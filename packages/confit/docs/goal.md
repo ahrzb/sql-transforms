@@ -51,10 +51,18 @@ changes only its family, and the scope-redirects table records the pair so an ol
 still lands.
 
 **Sections are cited the same way.** Every numbered heading carries a kebab-case slug anchor
-— `## 3. What is out of scope, by decision {#scope-edge}` — and every cross-reference, here
+— `## 4. What is out of scope, by decision {#scope-edge}` — and every cross-reference, here
 or into the dated report, names that slug ("the scope-edge section"). The number in a heading
 is reading order; nothing cites it. A heading whose subject is already a slugged item
 (`### 4.1 finding: seed-1804`, in the report) is cited by that item and takes no anchor.
+
+**Every example is executed.** The API examples below were run against the shipped wheel
+(`BUILD_PROFILE == "release"`) and behave exactly as printed; refusal texts are quoted
+verbatim from the raised exception. A line is labelled `SERVES` or `REFUSES` for what the
+call actually did. Where the **target** requires an outcome today's engine does not produce,
+the line says `target: refuses` and cites the finding that carries the mismatch — this
+document may state a rule the engine has not met, but it may not print a result that did not
+happen.
 
 **Two markers keep the normative half honest.** `[PROPOSED]` — a statement this document
 would like, which nobody has ruled on; it holds a slug only so a ticket can cite it.
@@ -66,7 +74,107 @@ itself is in force in the measurement-and-kpis section, which is a ruling and no
 
 ---
 
-## 1. What confit is for {#engine-purpose}
+## 1. The public surface this document is about {#public-surface}
+
+**Everything that follows is a statement about one class.** The package `__init__` exports
+exactly two names, and one of them is a string:
+
+```python
+from confit import BUILD_PROFILE, DuckDBInferFn
+```
+
+`BUILD_PROFILE` is `"debug"` or `"release"` — the benchmarks refuse a debug build, so a
+serving number carries the profile it was taken under. `confit.oracle` and `confit.compare`
+ship in the wheel and are deliberately *outside* `__init__`: they are the **measurement**
+surface — the apparatus the four-yardsticks section runs — and not the engine anyone serves
+with. That boundary is part of the target, not an accident of packaging.
+
+The engine is one constructor and four members (`packages/confit/confit/_engine.pyi`, quoted
+exactly):
+
+```python
+class DuckDBInferFn:
+    def __init__(
+        self,
+        sql: str,
+        row_tables: dict[str, pa.Schema],
+        static_tables: dict[str, pa.Table],
+        udfs: list[Any] | None = None,
+        shape: str | None = None,
+    ) -> None: ...
+
+    @property
+    def output_schema(self) -> pa.Schema: ...
+    @property
+    def backend(self) -> str: ...
+    def infer_rows(self, rows: list[Any]) -> list[dict[str, Any]]: ...
+    def infer_arrow(self, batch: pa.Table) -> pa.Table: ...
+```
+
+Every schema is arrow, so a declared width is real: `pa.int32()` binds INTEGER exactly as
+DuckDB DDL does. `shape` is the output-multiplicity contract — `"map"` / `"filter"` (the
+default) / `"many"` — proven at build, never checked at runtime. `output_schema` is the
+output contract: the field names, arrow types and order of `infer_arrow`'s table and the
+keys of every `infer_rows` dict. `backend` is `"cranelift"`, `"interpreter"` or
+`"constant"`, and the last of those is the static-tables-only carve-out the scope-edge
+section turns on.
+
+**One build, both call paths.** SERVES:
+
+```python
+ROW = pa.schema([("price", pa.float64()), ("city", pa.string())])
+fn = DuckDBInferFn(
+    "SELECT price * 1.2 AS gross, upper(city) AS c FROM __THIS__",
+    row_tables={"__THIS__": ROW}, static_tables={}, shape="map",
+)
+fn.output_schema.names                          # ['gross', 'c']
+fn.backend                                      # 'cranelift'
+fn.infer_rows([{"price": 10.0, "city": "de"}])  # [{'gross': 12.0, 'c': 'DE'}]
+fn.infer_arrow(pa.table({"price": [10.0, 20.0], "city": ["de", "fr"]}))
+                            # {'gross': [12.0, 24.0], 'c': ['DE', 'FR']}
+```
+
+**Refusal is the constructor raising.** There is no validate step, no error mode, no
+degraded result: the second outcome of goal: two-outcome-contract is a `ValueError` out of
+`DuckDBInferFn(...)` naming the construct, before any row exists. REFUSES:
+
+```python
+DuckDBInferFn("SELECT sum(price) AS total FROM __THIS__",
+              row_tables={"__THIS__": ROW}, static_tables={})
+# ValueError: unsupported: aggregate function sum (no aggregation in v0)
+```
+
+**The `udfs=` protocol is the model surface**, and it is duck-typed: no base class, no
+registration call. An object carries `name: str`, `takes: pa.Schema` (one field per
+argument, names and types together, in call order), `returns: pa.DataType`, a scalar
+`__call__` returning a tuple of output lanes (or `None` for an all-NULL result), and
+optionally `instances`, which marks it a fitted transformer and adds an implicit leading
+nullable-BIGINT instance id never written in `takes`. `returns` also declares the call's
+width: `pa.struct([...])` is width-k with addressable field names, `pa.list_(t, k)` is
+width-k unnamed. An object that additionally exposes `tree_tables()` is a fitted ensemble
+scored by the native kernel, with no Python on the row path. SERVES:
+
+```python
+class Shout:                      # the contract is the protocol, not a class
+    name = "shout"
+    takes = pa.schema([("s", pa.string())])
+    returns = pa.string()
+
+    def __call__(self, s):
+        return (None if s is None else s.upper(),)
+
+fn = DuckDBInferFn("SELECT shout(city) AS c FROM __THIS__",
+                   row_tables={"__THIS__": ROW}, static_tables={},
+                   udfs=[Shout()], shape="map")
+fn.infer_rows([{"price": 1.0, "city": "de"}])   # [{'c': 'DE'}]
+```
+
+The rest of this document says what that constructor must return, what it must refuse, and
+which half of SQL sits on each side of the line.
+
+---
+
+## 2. What confit is for {#engine-purpose}
 
 The repository has **two** goals, and confit is one half of one of them: ergonomic
 SQL-to-transformer authoring, and fast inference. `sql_transform` owns authoring and fit;
@@ -89,6 +197,41 @@ things happens: it serves bit-for-bit identical to the oracle, or it refuses at 
 a `ValueError` naming the construct. Nothing is approximated, silently dropped, or widened
 at inference time. This is the load-bearing goal, and everything in the acceptance-frame
 section follows from it.
+
+**The two outcomes are the two things `DuckDBInferFn(...)` can do**, which is why the
+contract is testable one call at a time. It returns a servable function — SERVES:
+
+```python
+fn = DuckDBInferFn(
+    "SELECT t.price * r.rate AS gross FROM __THIS__ AS t "
+    "LEFT JOIN rates AS r ON t.city = r.city",
+    row_tables={"__THIS__": ROW},
+    static_tables={"rates": pa.table({"city": ["de", "fr"], "rate": [1.1, 1.2]})},
+    shape="map",
+)
+fn.infer_rows([{"price": 10.0, "city": "fr"}])  # [{'gross': 12.0}]
+```
+
+or it raises, naming what it could not take — REFUSES:
+
+```python
+class Width1:                          # a width-1 list return is a scalar
+    name = "emb"
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.list_(pa.float64(), 1)
+
+    def __call__(self, x):
+        return (x,)
+
+DuckDBInferFn("SELECT emb(price) AS e FROM __THIS__",
+              row_tables={"__THIS__": ROW}, static_tables={}, udfs=[Width1()])
+# ValueError: udf 'emb': a width-1 list return is a scalar — declare the element
+# type rather than pa.list_(t, 1)
+```
+
+That second one is deliberately not a SQL construct: it is the caller declaring their own
+UDF wrong — the class ask: exclusion-ratification (2) has no ground for, and which lands in
+the same `REFUSED` bucket as everything else.
 
 **The third mode exists and is enumerated — that is the whole difference.** The absolute
 above is "no *unenumerated* third mode", not "no third mode", and writing it the strong
@@ -156,7 +299,12 @@ from REFUSED to MARGINALIZED (never to FAILED)"); the four line reads above.
 
 ---
 
-## 2. Parity is a control; acceptance is the goal {#acceptance-frame}
+## 3. Parity is a control; acceptance is the goal {#acceptance-frame}
+
+**The yardstick is the constructor returning.** Acceptance is the share of queries for which
+`DuckDBInferFn(...)` hands back a function instead of raising — one call, one bit, counted
+over a corpus — so every number in this section is a count of successful constructions, and
+nothing in it is a judgement about the values that function then serves.
 
 The reframe this document exists to make explicit. Because the contract is
 bit-exact-or-refuse-by-name (goal: two-outcome-contract), **parity on the accepted surface
@@ -202,7 +350,7 @@ restates neither.
 parity defect counts as accepted, which is correct for a *scope* metric and is exactly the
 reason acceptance can never stand in for parity.
 
-### 2.1 The four yardsticks {#four-yardsticks}
+### 3.1 The four yardsticks {#four-yardsticks}
 
 What the accepted surface is read with. Each row is a **method**, not a number; the numbers
 are the dated report's.
@@ -272,7 +420,7 @@ goal: growing-accepted-surface, and the ASK index below records where it went.
 
 ---
 
-## 3. What is out of scope, by decision {#scope-edge}
+## 4. What is out of scope, by decision {#scope-edge}
 
 **This is the target's edge, not its distance.** Every row here is out of scope **by
 decision**: the engine model cannot express it, or it could be served and we chose not to,
@@ -337,8 +485,71 @@ numbers mirror the document"), and its whole-relation parameterization (`:98-117
 nine of the constructs enumerated above and not the rest. The oracle spec's
 claim: doc-twin-totality measured that gap across five other sites and
 ask: doc-twin-overstatement is open on it; this document does not become a sixth site.
+*At the constructor.* Over `ROW` — REFUSES, five shapes, five names:
+
+```python
+def build(sql, **kw):
+    return DuckDBInferFn(sql, row_tables={"__THIS__": ROW}, static_tables={}, **kw)
+
+build("SELECT sum(price) AS total FROM __THIS__")
+# ValueError: unsupported: aggregate function sum (no aggregation in v0)
+build("SELECT price FROM __THIS__ ORDER BY price")
+# ValueError: unsupported: ORDER BY
+build("SELECT DISTINCT city FROM __THIS__")
+# ValueError: unsupported: DISTINCT
+build("SELECT rank() OVER (ORDER BY price) AS r FROM __THIS__")
+# ValueError: unsupported: modifier on scalar call rank (FILTER, OVER, IGNORE
+# NULLS and WITHIN GROUP apply to aggregates and window functions, which this
+# engine does not serve)
+build("SELECT price FROM __THIS__ QUALIFY price > 1")
+# ValueError: unsupported: QUALIFY
+```
+
+The same shapes over a **frozen static** are a different query: nothing dynamic remains, so
+DuckDB evaluates them once at build and the result is the function. SERVES, and
+`backend == "constant"` is how you can tell:
+
+```python
+S = pa.table({"v": pa.array([1, 2, 3], pa.int64())})
+fn = DuckDBInferFn("SELECT max(v) AS top FROM s",
+                   row_tables={"__THIS__": ROW}, static_tables={"s": S})
+fn.backend, fn.infer_rows([])   # ('constant', [{'top': 3}])
+
+fn = DuckDBInferFn("SELECT v AS o FROM s ORDER BY v DESC",
+                   row_tables={"__THIS__": ROW}, static_tables={"s": S})
+fn.backend, fn.infer_rows([])   # ('constant', [{'o': 3}, {'o': 2}, {'o': 1}])
+```
+
+**The not-a-function-of-the-query rule, shown.** A row limit picks *which* rows survive, and
+that pick is not in the query — so it refuses even where the aggregation it sits on serves.
+REFUSES:
+
+```python
+DuckDBInferFn("SELECT v AS o FROM s ORDER BY v LIMIT 1",
+              row_tables={"__THIS__": ROW}, static_tables={"s": S})
+# ValueError: unsupported: row limit (LIMIT/OFFSET) on a
+#             static-tables-only query -- which rows survive
+#             depends on scan order, not the query
+```
+
+The same rule reaches a tie: two groups with equal sort keys have no order in the query
+either, so freezing whichever one this build's DuckDB run produced would let two builds of
+the same function disagree. **target: refuses** — today it builds and freezes the order,
+which is finding: static-only-tie-order in the dated report:
+
+```python
+TIES = pa.table({"g": ["x", "y", "z"], "v": pa.array([1, 1, 2], pa.int64())})
+DuckDBInferFn("SELECT g AS o, sum(v) AS t FROM ties GROUP BY g ORDER BY t",
+              row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
+# target: refuses (x and y tie at t=1, and the query does not order them)
+# today:  backend 'constant', infer_rows([]) ==
+#         [{'o': 'x', 't': Decimal('1')}, {'o': 'y', 't': Decimal('1')},
+#          {'o': 'z', 't': Decimal('2')}]
+```
+
 *Verified-by:* `packages/confit/docs/known-limitations.md:95-120`;
-`packages/confit/tests/test_known_limitations.py:1-7, :98-117`.
+`packages/confit/tests/test_known_limitations.py:1-7, :98-117`;
+`packages/confit/tests/test_arrow_schema_api.py:604-630` (the row-limit refusal).
 
 **exclusion: per-row-general-work.** Non-constant regex patterns, replacement strings,
 regex options and extract-group indexes; anything that would compile or bind per row.
@@ -347,6 +558,21 @@ DuckDB compiles regexes per row; we compile at prepare.
 *Re-decided by:* a decision to abandon compile-once for this construct — which contradicts
 goal: pack-time-only-work, so it is a goal change before it is a scope change.
 *Rings:* nothing rings.
+*At the constructor.* The line is where the pattern comes from, not what it says:
+
+```python
+PAT = pa.schema([("s", pa.string()), ("p", pa.string())])
+
+DuckDBInferFn("SELECT regexp_matches(s, p) AS m FROM __THIS__",
+              row_tables={"__THIS__": PAT}, static_tables={})     # REFUSES
+# ValueError: unsupported: non-constant regex pattern (compiled at prepare in v0)
+
+fn = DuckDBInferFn("SELECT regexp_matches(s, '^a.c$') AS m FROM __THIS__",
+                   row_tables={"__THIS__": PAT}, static_tables={},
+                   shape="map")                                   # SERVES
+fn.infer_rows([{"s": "abc", "p": "x"}])   # [{'m': True}]
+```
+
 *Verified-by:* `packages/confit/docs/known-limitations.md:74-75`.
 
 **exclusion: resource-ceilings.** Pad/repeat counts past a 1 GiB string-builder budget (a
@@ -365,6 +591,25 @@ it, and its only mention in `test_arrow_boundary.py` is a prose comment (`:33-35
 own definition of not-verified — so: **`Unverified` for the Arrow half.** This row is a live
 instance of ask: exclusion-ratification (1), inherited from the same pointer in
 `oracle/07-the-divergence-ledger.md:147`.
+*At the constructor.* The number is in the message, which is what a ceiling with a decision
+behind it looks like:
+
+```python
+SROW = pa.schema([("s", pa.string())])
+
+DuckDBInferFn("SELECT lpad(s, 2000000000, 'x') AS o FROM __THIS__",
+              row_tables={"__THIS__": SROW}, static_tables={})     # REFUSES
+# ValueError: bind error: lpad count 2000000000 exceeds the 1 GiB string-builder
+# budget — this engine will not allocate a gigabyte per row, so the result could
+# never serve. DuckDB does serve it; refusing at build is our deliberate limit,
+# not a DuckDB restriction
+
+fn = DuckDBInferFn("SELECT lpad(s, 8, 'x') AS o FROM __THIS__",
+                   row_tables={"__THIS__": SROW}, static_tables={},
+                   shape="map")                                    # SERVES
+fn.infer_rows([{"s": "ab"}])   # [{'o': 'xxxxxxab'}]
+```
+
 *Verified-by:* `packages/confit/docs/known-limitations.md:205`;
 `packages/confit/tests/known_divergences/test_string_budget.py:145-146`;
 `packages/confit/docs/oracle/` divergence: string-builder-budget,
@@ -385,6 +630,23 @@ schema and never sees a table.
 so the class is counted rather than absorbed. It is a **reported finding, not an accepted
 class** (the oracle spec's claim: contract-surface-gap), so its standing count is a cost the
 report carries, never a bucket that quietly grows.
+*At the constructor.* This one **SERVES** — that is the whole point of the row: the cost is
+paid at call time, as a trap, never as a different value:
+
+```python
+fn = DuckDBInferFn("SELECT (i + 1) > 5 AS o FROM __THIS__",
+                   row_tables={"__THIS__": pa.schema([("i", pa.int32())])},
+                   static_tables={}, shape="map")
+fn.backend                        # 'cranelift' — it built
+fn.infer_rows([{"i": 1}])         # [{'o': False}]
+fn.infer_rows([{"i": 2147483647}])
+# ValueError: Out of Range Error: value out of range for INTEGER (arrow int32)
+```
+
+The reader's own DuckDB answers `[(True,)]` for that row, because
+`expression_rewriter` turns `(i + 1) > 5` into `i > 4` and the addition never runs;
+`PRAGMA disable_optimizer` reproduces confit's trap
+(`Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!`).
 *Verified-by:* `packages/confit/docs/known-limitations.md:20-39`, `:231-257`;
 `packages/confit/docs/oracle/` claim: oracle-identity, claim: optimizer-bracket.
 
@@ -396,6 +658,19 @@ dependent semantics even in principle — permanent by construction, with nothin
 re-decide.
 *Rings:* nothing rings, by design — the exclusion is a named source list, and a named list
 does not fire.
+*At the constructor.* Nothing refuses — the engine SERVES one of the two behaviours and
+always the same one, which is the only thing a row-at-a-time engine can promise:
+
+```python
+fn = DuckDBInferFn("SELECT s ILIKE 'A\x00B' AS m FROM __THIS__",
+                   row_tables={"__THIS__": SROW}, static_tables={}, shape="map")
+fn.infer_rows([{"s": "a\x00b"}])   # [{'m': True}] — NUL-transparent, always
+```
+
+DuckDB answers `True` here only when the column's statistics are pure-ASCII; a single
+non-ASCII sibling row selects its generic kernel, whose fold NUL-truncates, and the same
+row answers `False`. There is no sibling row at this API — `infer_rows` sees one row's
+values — so the statistic is unreachable by construction.
 *Verified-by:* `packages/confit/docs/known-limitations.md:225-230`;
 `packages/confit/tests/test_corpus_replay.py:150-151` (`_KNOWN_DIVERGENT_SOURCES`);
 `packages/confit/docs/oracle/` claim: statistics-dependent-exclusion.
@@ -410,12 +685,38 @@ or does not get.
 exists to prevent.
 *Rings:* the shape contract is pinned in
 `packages/confit/tests/test_shape_contract.py`.
+*At the constructor.* One query, one static table, three values of `shape` — the multiplicity
+is in the data, and the keyword is the caller asking for it by name:
+
+```python
+DUP = pa.table({"city": ["de", "de"], "rate": [1.1, 1.3]})
+J = ("SELECT t.price * r.rate AS gross FROM __THIS__ AS t "
+     "JOIN dup AS r ON t.city = r.city")
+
+DuckDBInferFn(J, row_tables={"__THIS__": ROW}, static_tables={"dup": DUP})
+# REFUSES  ValueError: static data mismatch: @0: duplicate map key
+
+DuckDBInferFn(J, row_tables={"__THIS__": ROW}, static_tables={"dup": DUP},
+              shape="map")
+# REFUSES  ValueError: shape='map': INNER JOIN 'dup' drops rows on a key miss
+#          (use LEFT JOIN)
+
+fn = DuckDBInferFn(J, row_tables={"__THIS__": ROW}, static_tables={"dup": DUP},
+                   shape="many")                                    # SERVES
+fn.infer_rows([{"price": 10.0, "city": "de"}])
+# [{'gross': 11.0}, {'gross': 13.0}]   — one row in, two out, by request
+```
+
+The `map` refusal is the second half of the same decision: `map` is a build-time *proof* of
+exactly-one, so it rejects the row-dropping direction as flatly as the default rejects the
+row-multiplying one.
 *Scope note:* the *composition* limits inside `'many'` — one join per query, and
 `USING`/`NATURAL` self-joins refusing under every shape — are **not** this decision. They
 are unbuilt work, and they are gap: join-composition-limits in the report.
-*Verified-by:* `packages/confit/docs/known-limitations.md:76-93`.
+*Verified-by:* `packages/confit/docs/known-limitations.md:76-93`;
+`packages/confit/tests/test_shape_contract.py`.
 
-### 3.1 Rows that left this section {#scope-redirects}
+### 4.1 Rows that left this section {#scope-redirects}
 
 Each of these was here because something is **not built yet**, which is distance from the
 target rather than the target's edge. They are gap entries in the dated report, under the
@@ -475,7 +776,7 @@ identical either way — which is exactly why the two had to stop sharing a sect
 
 ---
 
-## 4. What we cover that DuckDB does not {#beyond-duckdb}
+## 5. What we cover that DuckDB does not {#beyond-duckdb}
 
 The model surface. DuckDB is the oracle for SQL; it has no opinion at all about a fitted
 sklearn transformer or a gradient-boosted tree, so on this surface there is no differential
@@ -489,6 +790,55 @@ the native tree kernel — a UDF exposing `tree_tables()` is scored by native co
 pair of Arrow tables plus a grid, with no sklearn import anywhere in the package.
 **sql-transform owns**: fitting, clone-per-group semantics, the packing of an sklearn
 estimator into those tables, and **parity against sklearn**.
+*At the constructor.* A fitted transform is an object in `udfs=` and a call in the SQL —
+`instances` is the whole of what marks it fitted, and the instance id is a static column
+joined in like any other. SERVES:
+
+```python
+class Scale:                     # a transformer: instances -> implicit leading id
+    name = "scale"
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.float64()
+    instances = {0: 10.0, 1: 100.0}
+
+    def __call__(self, iid, x):
+        if iid is None or x is None:
+            return None
+        return (x * self.instances[iid],)
+
+PARAMS = pa.table({"city": ["de", "fr"], "est": pa.array([0, 1], pa.int64())})
+fn = DuckDBInferFn(
+    "SELECT scale(p.est, t.price) AS y FROM __THIS__ AS t "
+    "LEFT JOIN params AS p ON t.city = p.city",
+    row_tables={"__THIS__": ROW}, static_tables={"params": PARAMS},
+    udfs=[Scale()], shape="map",
+)
+fn.infer_rows([{"price": 2.0, "city": "fr"}])   # [{'y': 200.0}]
+fn.infer_rows([{"price": 2.0, "city": "de"}])   # [{'y': 20.0}]
+```
+
+Width-k is the same object with a wider `returns`, and a struct makes the lanes
+addressable off **one** evaluation. SERVES:
+
+```python
+class Emb2:
+    name = "emb"
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.struct([("a", pa.float64()), ("b", pa.float64())])
+
+    def __call__(self, x):
+        return (x + 1.0, x - 1.0)
+
+fn = DuckDBInferFn("SELECT (emb(price)).a AS a, (emb(price)).b AS b FROM __THIS__",
+                   row_tables={"__THIS__": ROW}, static_tables={},
+                   udfs=[Emb2()], shape="map")
+fn.infer_rows([{"price": 2.0, "city": "de"}])   # [{'a': 3.0, 'b': 1.0}]
+```
+
+A tree ensemble is that same protocol with one addition — `tree_tables()` returning
+`(nodes, models, compare_grid)` — after which the engine scores it natively and never calls
+`__call__` at all. Which is the sense in which the line is drawn at the artifact: confit
+takes Arrow tables, and whoever packed them owns sklearn.
 *Verified-by:* `packages/confit/tests/test_tree_predict.py:1-17` — "Nothing here imports
 sklearn ... DuckDB has no native tree scoring, so there is no differential oracle here ...
 Parity against sklearn is a separate gate that lives in sql-transform";
@@ -501,6 +851,24 @@ to DuckDB **with the same UDFs registered**, or refuses. The UDF surface is the 
 contract with one parameter, not an exemption from it — which is why a UDF named after a
 builtin is refused rather than resolved: DuckDB lets a registered function shadow its
 builtin and we do not, so serving it would be two engines answering one SQL differently.
+REFUSES, and the message says which two engines would disagree:
+
+```python
+class Round:
+    name = "round"
+    takes = pa.schema([("x", pa.float64())])
+    returns = pa.float64()
+
+    def __call__(self, x):
+        return (x,)
+
+DuckDBInferFn("SELECT round(price) AS p FROM __THIS__",
+              row_tables={"__THIS__": ROW}, static_tables={}, udfs=[Round()])
+# ValueError: udf 'round' collides with the builtin function 'round' — rename it.
+# The builtin binds first here, while DuckDB binds the udf, so the two engines
+# would answer differently.
+```
+
 *Enforced-by:* `packages/confit/tests/test_udfs.py::udf_check` (`:240`), the parameterized
 form of the contract.
 *Verified-by:* kpi: engine-parity's `Enforced-by:` line (the controls-in-force section),
@@ -537,7 +905,7 @@ the owner's through ask: kpi-set-change.
 
 ---
 
-## 5. Measurement and KPIs {#measurement-and-kpis}
+## 6. Measurement and KPIs {#measurement-and-kpis}
 
 **The KPI set is in force here.** It lived in `packages/confit/docs/kpis.md` until the
 owner ruled that this document owns it (ask: kpis-absorb-or-defer, the document-set
@@ -555,7 +923,7 @@ C3 = kpi: binding-parity, C4 = kpi: transformer-parity, C5 = kpi: no-third-mode,
 D1 = kpi: coverage-ladder, D2 = kpi: serving-latency. The slug is the name; the code is a
 pointer and nothing is named by it.
 
-### 5.1 Two kinds, and the standing law {#standing-law}
+### 6.1 Two kinds, and the standing law {#standing-law}
 
 Two kinds, optimized in opposite directions:
 
@@ -589,7 +957,7 @@ the one that touches kpi: no-third-mode is spelled out in its own entry: drive f
 only after the gap is closed. Nothing in the proposed-kpis section is adopted; ask:
 kpi-set-change is the door.
 
-### 5.2 The controls in force (5) {#controls-in-force}
+### 6.2 The controls in force (5) {#controls-in-force}
 
 **kpi: training-round-trip.** `fit(train)` + serving, applied to the training set, is
 **bit-exact** equal to running the original SQL with `__THIS__` = train (both at
@@ -639,7 +1007,7 @@ corpus's FAILED bucket is pinned empty.
 MARGINALIZED / REFUSED / FAILED-must-be-empty), the refusal tables in every test module,
 `packages/confit/docs/known-limitations.md`.
 
-### 5.3 The drives in force (2) {#drives-in-force}
+### 6.3 The drives in force (2) {#drives-in-force}
 
 **kpi: coverage-ladder.** How much of projection-SQL the marginalizer admits: the mined
 scoreboard (queries lifted verbatim from DuckDB's own window test suite, with provenance)
@@ -675,7 +1043,7 @@ construction, and no gate, floor or pin bounds serving latency.
 *Current reading:* `packages/confit/docs/reports/2026-09-02-goal-baseline.md`, the
 latency-reading section, which also carries gap: bench-baseline-flip.
 
-### 5.4 What enforces them {#enforcing-suites}
+### 6.4 What enforces them {#enforcing-suites}
 
 **claim: kpi-pointers-resolve.** Every `Enforced-by:` pointer in the controls-in-force
 section resolves — the check itself is a dated reading and lives in
@@ -698,7 +1066,7 @@ unacknowledged trade-off, and the remedy is a decision (correct the text, or rai
 default and pay the runtime), not an edit. Which control that is today, and by how much, is the
 dated report's; the decision routes through ask: kpi-set-change.
 
-### 5.5 Proposed KPI candidates — none adopted {#proposed-kpis}
+### 6.5 Proposed KPI candidates — none adopted {#proposed-kpis}
 
 Six candidates, **separate from the seven in force above**. Each names the measurement that
 would back it and what it costs. **None is adopted** — changing the set is
@@ -834,7 +1202,7 @@ whose baseline changed identity would re-record the confusion.
 
 ---
 
-## 6. Where this document sits {#document-set}
+## 7. Where this document sits {#document-set}
 
 Above the specs, below the owner. The intended shape of the set:
 
