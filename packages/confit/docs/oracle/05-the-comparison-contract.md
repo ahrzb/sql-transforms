@@ -74,7 +74,7 @@ every NaN to `nan`); `packages/confit/tests/test_duckdb_interpreter.py:913-946`
 (`duck_check_ulp`, `max_ulp=1`, the cbrt bound); `fuzz.oracle._extra_legs:833-851` (the
 sklearn `1e-9` leg);
 `packages/confit/tests/test_oracle.py::test_answer_returns_arrow_unnormalized`;
-`packages/confit/docs/goal.md` §5.1 (the loosening rule) and kpi: transformer-parity
+`packages/confit/docs/goal.md`'s standing-law section (the loosening rule) and kpi: transformer-parity
 (DRAFT-23's declared per-family ulp bound). Float bit patterns are a recorded field across the pins
 corpus.
 
