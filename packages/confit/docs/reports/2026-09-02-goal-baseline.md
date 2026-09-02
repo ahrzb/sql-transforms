@@ -103,8 +103,9 @@ refuses is **expressions** over DECIMAL — arithmetic, `CAST` to anything but `
 `COALESCE`/`CASE`/`greatest` unifying a decimal with a non-identical type.
 **A DECIMAL literal does not refuse — it *serves*, at a different width.** Measured
 2026-09-02, `SELECT 1.5 AS o0 FROM __THIS__` builds and returns `double` where the oracle
-returns `decimal128(2,1)`; the campaign's `UNSHIPPED` verdict means built-and-not-compared,
-never refused. The visible consequence is that `CAST(-2.5 AS BIGINT)` on a bare literal
+returns `decimal128(2,1)`; the case builds and serves, and the campaign classifies it rather
+than comparing it (the bucket block below).
+The visible consequence is that `CAST(-2.5 AS BIGINT)` on a bare literal
 rounds half-to-even here and half-away-from-zero there. And the real split is not
 literal-vs-static-column but **row-path vs static-only path**: the same literal reached
 through a static-tables-only query never prepares, so DuckDB evaluates it and it comes back
@@ -117,8 +118,7 @@ that they refuse at all.
 *Closes when:* **decimal arithmetic ships and the `UNSHIPPED` bucket is empty** — and the
 bucket empties for two different reasons, so it is checked, not just read.
 *Size:* **14 of 2000** campaign cases (0.7%), all class `decimals` (§5).
-*Rings:* **yes, loudly, and this is the one entry with a real bell.** The campaign
-classifies these cases `UNSHIPPED` instead of comparing them, `fuzz.oracle._type_delta`
+*Rings:* **yes, loudly, and this is the one entry with a real bell.** `fuzz.oracle._type_delta`
 carries exactly one arm (decimal-against-float64) which is deleted when the feature lands,
 and the runner prints the bucket in a section of its own — an empty section means either the
 feature shipped or the grammar stopped reaching it, and both are worth seeing.
@@ -130,6 +130,25 @@ theirs, and this entry does not settle it.
 `packages/confit/fuzz/oracle.py:124-145` (the note), `:498-505` (the arm),
 `packages/confit/fuzz/runner.py:168-176` (the report section);
 `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
+
+**The `UNSHIPPED` bucket, in one place.** The verdict itself is the oracle spec's
+(claim: unshipped-verdict, `packages/confit/docs/oracle/05-the-comparison-contract.md:206`);
+what it means for *this* gap is collected here, because it is measurement vocabulary and
+`goal.md` §2 deliberately carries none of it. **A case whose answer exercises this gap's
+enumerated width is classified, never value-compared**: it counts as neither agreement nor
+finding, and it never enters `findings.jsonl`. Four handlings were available and three of
+them lie. Casting both sides and comparing buries a real width difference inside `AGREE`.
+Grading it a divergence floods the findings with one known, already-documented fact, and a
+findings file that is mostly known facts is a findings file nobody reads. Not generating the
+case leaves the gap unmeasured and quietly shrinks the denominator, so the gap stops costing
+anything on paper the moment it stops being visible. A bucket of its own is the only handling
+that keeps both numbers honest: acceptance still counts the case as built (it did build, and
+it did serve), and parity still refuses to claim anything about a comparison that never
+happened. The bucket is also **self-retiring** — when decimal arithmetic ships, the single
+`_type_delta` arm goes with it and the bucket must empty, so a case still landing there
+afterwards is a real bug rather than a known gap, which is why *Closes when* checks the
+empty state instead of reading it. Today it holds exactly the 14 cases counted under *Size*,
+all class `decimals`.
 
 **gap: wide-integer-lanes.** *(was `exclusion: wide-integer-lanes`.)*
 *Target:* every declared integer width serves, or refuses because we decided it should —
@@ -427,11 +446,12 @@ found load — the fix is to re-run the named seed alone, not to re-record the t
 
 **Acceptance** — cases that **built rather than refused**, which is the only definition the
 arithmetic supports — is **1056/2000 = 52.8%**. That numerator deliberately contains the 14
-`UNSHIPPED` (they build and serve, only the comparison is withheld), the 21 `AGREE_TRAP`,
-and the one live `DIVERGE_VALUE`: on this definition the seed-1804 parity defect counts as
-accepted, which is correct for a *scope* metric and is the reason acceptance can never stand
-in for parity. All 14 `UNSHIPPED` are class `decimals`
-(gap: unshipped-decimal-arithmetic). All 7 `DIVERGE_OPT` are
+`UNSHIPPED` (they build and serve, only the comparison is withheld — the bucket's rules and
+its rationale are gap: unshipped-decimal-arithmetic in §3.1, which is where all 14 sit), the
+21 `AGREE_TRAP`, and the one live `DIVERGE_VALUE`: on this definition the seed-1804 parity
+defect counts as accepted, which is correct for a *scope* metric and is the reason acceptance
+can never stand in for parity. This paragraph is the reading `goal.md` §2 points at for what
+today's numerator contains; the definition of acceptance stays there. All 7 `DIVERGE_OPT` are
 exclusion: optimizer-on-answers' standing cost — **reported findings, not an accepted
 class**, which is the oracle spec's claim: contract-surface-gap. A 4000-seed campaign put
 that class at 8 seeds in 28 findings.
@@ -457,7 +477,7 @@ says which classes the *generator* reaches, not which users need
 Per-row shares the scope rows and gap entries carry: `WITH` 104 of 944, `QUALIFY` 36,
 `DISTINCT` 30, `ORDER BY` 23 (exclusion: whole-relation-shapes); `shape='map': a WHERE
 clause can drop ...` 42 of 944 (exclusion: multiplicity-by-default, its permanent half);
-`UNSHIPPED` 14 of 2000, all class `decimals` (gap: unshipped-decimal-arithmetic);
+`UNSHIPPED` 14 of 2000 (gap: unshipped-decimal-arithmetic);
 `DIVERGE_OPT` 7 of 2000 (exclusion: optimizer-on-answers); `comparison on BOOLEAN` 86 of 944
 (gap: undocumented-boolean-comparison, which belongs to no row at all).
 

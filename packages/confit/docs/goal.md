@@ -156,16 +156,15 @@ bug to fix, never a dial to trade. Asking "how much oracle parity do we want" ha
 one answer, and it is not interesting. The goal-shaped question is **which queries are
 accepted at all**, and how fast that set grows.
 
-Three verdicts carry the distinction, and the oracle spec defines them
+Two verdicts carry the distinction, and the oracle spec defines them
 (`packages/confit/docs/oracle/04-verdicts-agreement-abstention-refusal.md`):
 
 | verdict | means | counts as |
 |---|---|---|
 | `AGREE` | ours == optimizer-off DuckDB == optimizer-on DuckDB | the only thing counted as coverage (claim: coverage-accounting) |
 | `REFUSED` | confit refused at build; the case never entered the comparison | **not** a finding and **not** coverage — absorbed into a histogram (claim: refusal-absorb). This is the number this section is about |
-| `UNSHIPPED` | the oracle's answer has a width we have not shipped, so *nothing was compared* | neither agreement nor finding; reported in its own section (claim: unshipped-verdict) |
 
-Three of eleven, and the three are not a partition. The full verdict space is
+Two of eleven, and the two are not a partition. The full verdict space is
 `fuzz.oracle.KINDS` (eleven), plus two the *runner* produces rather than the oracle —
 `TIMEOUT` and `PANIC`, both in `fuzz.runner.INTERESTING`, both reaching `findings.jsonl`
 by the same path as every other verdict. The oracle spec is explicit that any statement
@@ -173,16 +172,25 @@ about what a campaign reports has to include them
 (`04-verdicts-agreement-abstention-refusal.md:27-29`), so a reading of a campaign says when
 they were zero rather than leaving them out.
 
-`REFUSED` is the shape of "not accepted". `UNSHIPPED` is **not**: an unshipped case
-*builds and serves*, and only the comparison is withheld — which is why it sits inside the
-acceptance numerator and is the divergence ledger's business, not the refusal
-histogram's. The two retire differently all the same: a refusal retires by a decision to
-serve the construct, an unshipped width by the width landing.
+`REFUSED` is the shape of "not accepted", and it is the only shape the target has: the
+contract in section 1 admits exactly two outcomes, so a case either built or it refused by
+name, and a refusal retires by a decision to serve the construct.
 
-**Acceptance is defined as cases that built rather than refused**, and that numerator
-deliberately contains the unshipped widths, the trap agreements and any live parity
-finding — on this definition a parity defect counts as accepted, which is correct for a
-*scope* metric and is exactly the reason acceptance can never stand in for parity.
+**Where the rest of the vocabulary lives.** A measurement apparatus needs more words than
+the target does — including what it does with a case whose answer exercises a currently-open
+gap, which is classified rather than value-compared and so lands in neither the coverage
+count nor the findings, and how such a case is counted. Those classifications are the
+measurement layer's:
+defined in the oracle spec's verdict chapter
+(`packages/confit/docs/oracle/04-verdicts-agreement-abstention-refusal.md`, and
+claim: unshipped-verdict in `05-the-comparison-contract.md`), and read on a date in
+`packages/confit/docs/reports/2026-09-02-goal-baseline.md`, where
+gap: unshipped-decimal-arithmetic carries the whole story and §5 carries what today's
+acceptance numerator contains. This document points at both and restates neither.
+
+**Acceptance is defined as cases that built rather than refused** — on this definition a
+parity defect counts as accepted, which is correct for a *scope* metric and is exactly the
+reason acceptance can never stand in for parity.
 
 ### 2.1 The four yardsticks
 
@@ -403,7 +411,7 @@ same slug, and a citation of the old name lands here:
 
 | was | is now | carries |
 |---|---|---|
-| exclusion: unshipped-decimal-arithmetic | gap: unshipped-decimal-arithmetic | DECIMAL expressions, the served literal width, the `UNSHIPPED` bucket |
+| exclusion: unshipped-decimal-arithmetic | gap: unshipped-decimal-arithmetic | DECIMAL expressions, the served literal width, and how the campaign counts them |
 | exclusion: wide-integer-lanes | gap: wide-integer-lanes | HUGEINT, the unsigned family, `float32`, the narrow-lane traps |
 | exclusion: non-scalar-values | gap: non-scalar-values | lists, whole structs, bracket access, BLOB, `decimal256` |
 | exclusion: parse-divergence-guards | gap: parse-divergence-guards | `^`, prefix `~`, `#`, `NOT GLOB`, the regex reject list |
@@ -713,16 +721,18 @@ invariant". Making findings-per-N a control would mean either wiring the campaig
 punishes) or declaring a control nothing enforces. The honest middle is a control on the
 **release** cadence, not the commit cadence.
 
-**kpi: unshipped-burndown.** **[PROPOSED]** A **drive**: the `UNSHIPPED` bucket's size and
-its class list, driven to empty.
-*Measurement that backs it:* the runner already prints the bucket in its own section, and
-`_type_delta` carries one arm per unshipped feature — so the bucket is exactly the ledger's
-open widths, already machine-readable.
+**kpi: unshipped-burndown.** **[PROPOSED]** A **drive**: the set of widths the oracle emits
+and we do not yet serve, with its class list, driven to empty.
+*Measurement that backs it:* the campaign already isolates these cases and reports them in a
+section of their own, and `fuzz.oracle._type_delta` carries one arm per open width — so the
+set is exactly the divergence ledger's open widths, already machine-readable. The rules by
+which the campaign classifies them are the measurement layer's (§2's pointer), and the
+reading is `packages/confit/docs/reports/2026-09-02-goal-baseline.md`,
+gap: unshipped-decimal-arithmetic.
 *Cost:* near zero; this is the one candidate whose machinery is already built and whose
-closing bell already rings (gap: unshipped-decimal-arithmetic). Note the empty
-state is ambiguous — the runner's own comment says an empty section means either the
-feature shipped **or the grammar stopped reaching it**, so burn-down to zero needs the
-generator checked, not just the number.
+closing bell already rings. Note the empty state is ambiguous — the runner's own comment
+says an empty section means either the width shipped **or the grammar stopped reaching
+it**, so burn-down to zero needs the generator checked, not just the number.
 
 **kpi: named-refusal-share.** **[PROPOSED]** A **control** at 100% — and it is the one
 candidate that is a *bar*, over kpi: no-third-mode's own clause; 5.1 says so rather than pretending
