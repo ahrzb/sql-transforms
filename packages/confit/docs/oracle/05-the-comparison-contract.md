@@ -74,8 +74,8 @@ every NaN to `nan`); `packages/confit/tests/test_duckdb_interpreter.py:913-946`
 (`duck_check_ulp`, `max_ulp=1`, the cbrt bound); `fuzz.oracle._extra_legs:833-851` (the
 sklearn `1e-9` leg);
 `packages/confit/tests/test_oracle.py::test_answer_returns_arrow_unnormalized`;
-`packages/confit/docs/kpis.md:17-20` (the loosening rule) and `:85-89` (DRAFT-23's
-declared per-family ulp bound). Float bit patterns are a recorded field across the pins
+`packages/confit/docs/goal.md` §5.1 (the loosening rule) and kpi: transformer-parity
+(DRAFT-23's declared per-family ulp bound). Float bit patterns are a recorded field across the pins
 corpus.
 
 **claim: signed-zero.** `-0.0` is distinguished from `+0.0`, and this is **fixed, not
@@ -297,7 +297,7 @@ optimized, and cranelift is checked against it byte-for-byte over a 500-seed ran
 sweep. It is why claim: backend-agreement can settle backend agreement without DuckDB at
 all.
 *Verified-by:* P19 in `packages/confit/docs/properties.md:240-245`;
-`packages/confit/docs/kpis.md:62-64` (the 500-seed random-IR sub-invariant, in
+`packages/confit/docs/goal.md` kpi: engine-parity (the 500-seed random-IR sub-invariant, in
 `packages/confit/src/specializer/exec/tests.rs`); `backlog/tasks/task-42 -
 Specializer-M-interp-closure-compiled-IR-interpreter-the-oracle-backend.md`.
 

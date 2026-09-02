@@ -79,7 +79,7 @@ and divergence: bind-time-constant-refusals, from further down the table, are).
 *Verified-by:* the claims at `packages/confit/docs/known-limitations.md:5-7` and
 `:294-296` (two sites, one document),
 `packages/confit/docs/reports/pins-first-methodology.md:66`,
-`packages/confit/docs/kpis.md:58-61`, and
+`packages/confit/docs/goal.md` kpi: engine-parity, and
 `packages/confit/docs/reports/confit-architecture.md:150` ("each is a named build-time
 rejection with an executable twin" — the fifth site, missed by an earlier version of
 this claim); `backlog/tasks/task-95 ...md` (To Do, ACs `[ ]`); counts measured
