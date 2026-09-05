@@ -801,8 +801,8 @@ fn rejects_non_identifier_function_name() {
 /// A NaN's SIGN is program meaning — unary minus on a DOUBLE flips it and a
 /// VARCHAR cast prints it — so the text form must carry it through; a
 /// PAYLOAD is meaning to nothing and canonicalizes away. `Lit`'s equality
-/// deliberately calls every NaN equal, so a whole-program `assert_eq!` can
-/// see neither: this reads the constant's BITS back.
+/// draws the same line, so a whole-program `assert_eq!` sees the sign but
+/// not the payload: this reads the constant's BITS back for both.
 #[test]
 fn nan_sign_survives_the_round_trip_and_the_payload_does_not() {
     use super::{Block, Col, ColTy, Inst, Lit, Term, Ty, Value};
@@ -1043,6 +1043,7 @@ fn literal_edge_cases_round_trip() {
     let text = r#"fn lits(in: batch{a: i64}, out: batch{o: str}) {
 entry:
   %nan = const.f64 nan
+  %nnan = const.f64 -nan
   %pinf = const.f64 inf
   %ninf = const.f64 -inf
   %nzero = const.f64 -0.0
@@ -1058,9 +1059,13 @@ entry:
     let printed = print(&p);
     let p2 = parsed(&printed);
     assert_eq!(p2, p, "literal round-trip changed the program:\n{printed}");
-    // -0.0 must survive as -0.0 (bitwise equality, not IEEE ==).
-    let has_neg_zero = printed.contains("-0.0");
-    assert!(has_neg_zero, "printer lost the sign of -0.0:\n{printed}");
+    // Signs the round-trip above can only catch because `Lit`'s equality
+    // reads them: -0.0 bitwise (not IEEE ==) and a NaN's sign bit.
+    assert!(printed.contains("-0.0"), "printer lost -0.0's sign:\n{printed}");
+    assert!(
+        printed.contains("const.f64 -nan"),
+        "printer lost a NaN's sign:\n{printed}"
+    );
 }
 
 // ----------------------------------------------------------------- fuzz --

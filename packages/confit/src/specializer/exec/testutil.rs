@@ -76,9 +76,12 @@ pub fn snapshot(st: &RunState) -> Vec<Vec<String>> {
 }
 
 /// [`snapshot`], except a NaN carries its bit pattern, so a sign or payload
-/// that differs between two runs is visible as different text. For
-/// run-against-run comparisons only (cranelift vs the interpreter, run vs
-/// re-run): no expectation may pin this form, for the reason above.
+/// that differs between two runs is visible as different text. Its first use
+/// is run-against-run comparison (cranelift vs the interpreter, run vs
+/// re-run). A CONSTANT expectation may pin this form only where the IR
+/// itself defines the bits — literals and total bit operations such as
+/// `fneg`, whose sign flip is ours and not the platform's — never where a
+/// libm or the hardware chose them, for the reason above.
 pub fn snapshot_bits(st: &RunState) -> Vec<Vec<String>> {
     snap(st, |x| {
         if x.is_nan() {

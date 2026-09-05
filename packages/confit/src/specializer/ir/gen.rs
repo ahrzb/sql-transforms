@@ -83,15 +83,22 @@ fn rand_lit(rng: &mut Rng, ty: Ty) -> Lit {
             3 => i64::MIN,
             _ => rng.next() as i64 % 1_000_000,
         }),
-        Ty::F64 => Lit::F64(match rng.below(9) {
+        Ty::F64 => Lit::F64(match rng.below(10) {
             0 => 0.0,
             1 => -0.0,
-            2 => f64::NAN,
-            3 => f64::INFINITY,
-            4 => f64::NEG_INFINITY,
-            5 => 1e300,
-            6 => 1e-5,
-            7 => 0.1,
+            // Both NaN signs, spelled from a sign the generator chooses
+            // rather than from `f64::NAN` (whose sign bit Rust does not
+            // contract). The sign is program meaning — a DOUBLE's VARCHAR
+            // cast spells it, and unary minus flips it — so a menu with
+            // only one sign leaves the round trip and the cross-backend
+            // differential blind to a printer or a kernel that drops it.
+            2 => f64::NAN.copysign(1.0),
+            3 => f64::NAN.copysign(-1.0),
+            4 => f64::INFINITY,
+            5 => f64::NEG_INFINITY,
+            6 => 1e300,
+            7 => 1e-5,
+            8 => 0.1,
             _ => (rng.next() as i64 % 1000) as f64 / 8.0,
         }),
         Ty::Str => Lit::Str(

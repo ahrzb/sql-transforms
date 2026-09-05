@@ -320,10 +320,14 @@ pub struct Value(pub u32);
 pub struct BlockId(pub u32);
 
 /// Literal for `const.*`. `F64` equality is bitwise — so `-0.0 != 0.0`
-/// survives a round-trip — EXCEPT that all NaNs compare equal: the text form
-/// canonicalizes every NaN payload to the one `nan` token, and equality must
-/// match what the text format can distinguish or `parse(print(p)) == p`
-/// would fail for non-canonical payloads (found by adversarial fuzzing).
+/// survives a round-trip — EXCEPT that two NaNs of the SAME SIGN compare
+/// equal whatever their payloads: equality has to distinguish exactly what
+/// the text form does, no more and no less. A payload is not in the text
+/// (every payload collapses to the one token) so demanding it would fail
+/// `parse(print(p)) == p` for non-canonical payloads, found by adversarial
+/// fuzzing. A SIGN is in the text (`nan` vs `-nan`) and is program meaning,
+/// so ignoring it would let `parse(print(p)) == p` hold across a printer
+/// that silently dropped the sign — which is the round trip's whole job.
 #[derive(Clone, Debug)]
 pub enum Lit {
     I1(bool),
@@ -340,7 +344,10 @@ impl PartialEq for Lit {
         match (self, other) {
             (Lit::I1(a), Lit::I1(b)) => a == b,
             (Lit::I64(a), Lit::I64(b)) => a == b,
-            (Lit::F64(a), Lit::F64(b)) => a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
+            (Lit::F64(a), Lit::F64(b)) => {
+                a.to_bits() == b.to_bits()
+                    || (a.is_nan() && b.is_nan() && a.is_sign_negative() == b.is_sign_negative())
+            }
             (Lit::Str(a), Lit::Str(b)) => a == b,
             (Lit::Dec(a, ap, asc), Lit::Dec(b, bp, bsc)) => a == b && ap == bp && asc == bsc,
             _ => false,
