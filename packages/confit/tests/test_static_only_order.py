@@ -352,6 +352,57 @@ def test_a_unique_key_under_from_first_syntax_still_serves():
     assert [r["t"] for r in fn.infer_rows([])] == [1, 2, 3]
 
 
+def test_a_hash_position_is_a_position_in_the_output_not_the_input():
+    # `#N` is DuckDB's positional reference, and where it lands depends on
+    # where it is written: in an ORDER BY it is the Nth OUTPUT column
+    # (order_binder.cpp resolves POSITIONAL_REFERENCE to `index - 1` in the
+    # projection, exactly like `ORDER BY N`), while in a SELECT list it is the
+    # Nth column of the FROM. Here the two disagree: output column 2 is the
+    # constant, which ties every row, and input column 2 is unique.
+    assert refuses("SELECT g AS o, 1 AS c FROM s ORDER BY #2", UNIQ) == TIE_MSG
+    assert refuses("SELECT 1 AS c, g AS o FROM s ORDER BY #1", UNIQ) == TIE_MSG
+    assert refuses("SELECT g AS o, 1 AS c FROM s ORDER BY #2 DESC", UNIQ) == TIE_MSG
+
+
+def test_a_hash_position_ties_exactly_where_its_integer_twin_does():
+    for sql in (
+        "SELECT g AS o, v AS t FROM s ORDER BY #2",
+        "SELECT g AS o, v AS t FROM s ORDER BY 2",
+    ):
+        assert refuses(sql) == TIE_MSG, sql
+
+
+def test_a_hash_position_over_a_key_that_separates_every_row_serves():
+    # The mirror of the tie: output column 2 is `g`, which is unique, while
+    # input column 2 is `v`, which ties. Reading it as the input column would
+    # refuse a query whose stated order is total.
+    fn = build("SELECT v AS t, g AS o FROM s ORDER BY #2")
+    assert fn.backend == "constant"
+    assert [r["o"] for r in fn.infer_rows([])] == ["x", "y", "z"]
+
+
+def test_a_hash_position_inside_an_expression_is_the_input_column():
+    # Only a BARE `#N` is a projection reference. Inside an expression DuckDB
+    # binds it over the FROM instead, and so does the projection this reading
+    # computes the key in -- the same column in both places, which is what
+    # lets the key be measured beside the rows it orders.
+    fn = build("SELECT g AS o, 1 AS c FROM s ORDER BY #2 + 0", UNIQ)
+    assert fn.backend == "constant"
+    assert [r["o"] for r in fn.infer_rows([])] == ["y", "z", "x"]
+
+
+def test_a_hash_position_out_of_range_never_reaches_the_frozen_path():
+    # DuckDB rejects it at bind ("ORDER term out of range"), so the fold never
+    # produces rows and no static-tables-only refusal may be pinned on it --
+    # the row path's own error is what reaches the caller, as for any other
+    # query the fold cannot run.
+    for sql in (
+        "SELECT g AS o, v AS t FROM s ORDER BY #3",
+        "SELECT g AS o, v AS t FROM s ORDER BY #0",
+    ):
+        assert refuses(sql, UNIQ) == "unsupported: ORDER BY", sql
+
+
 def test_a_statement_duckdb_will_not_expose_refuses_rather_than_serving():
     # PIVOT executes but does not serialize (measured), so its shape cannot be
     # inspected. It carries an ORDER BY, and an order that cannot be read is
@@ -654,6 +705,18 @@ def test_more_than_one_statement_is_named_as_that():
         "only when it is a function of the query, and only one statement of "
         "this string is read"
     ), msg
+
+
+def test_a_static_column_named_top_is_not_a_row_limit():
+    # `SELECT TOP n` is not DuckDB syntax, so a statement DuckDB has already
+    # RUN can only be spelling `top` as an identifier. Reading that token as a
+    # clause reported a row limit for a query with no limit in it, and hid the
+    # refusal the query actually earned.
+    tops = pa.table({"top": ["x", "y", "z"], "v": pa.array([3, 1, 2], pa.int64())})
+    msg = refuses("PIVOT s ON top USING max(v)", tops)
+    assert "would not expose for inspection" in msg, msg
+    msg = refuses("SELECT 1 AS o; SELECT top AS o FROM s", tops)
+    assert "statement string holding more than one statement" in msg, msg
 
 
 def test_a_dynamic_query_keeps_the_row_paths_own_error():

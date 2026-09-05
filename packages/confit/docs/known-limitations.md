@@ -211,13 +211,20 @@ one is `sum_no_overflow is for internal use only!`.
 
 A **row-based window frame refuses**. `ROWS BETWEEN ... PRECEDING/FOLLOWING/
 CURRENT ROW` counts NEIGHBOURS, so which rows are in the frame is the arrival
-order of the current row's peers: measured, a running `sum` over a
-`ROWS`-framed window answered **six ways** while the same window spelled
-`RANGE` answered **one**. `RANGE` and `GROUPS` frames move by peer group and
-are functions of the key, so they serve even over tied keys — and so does
+order of the current row's peers. Measured with `max` — one of the eleven
+names the aggregate rule lets through, so the window it sits in is one that
+can serve at all; `sum` refuses in every window spelling and could never have
+shown the difference: over a 200k-row static table fed through a tying
+`GROUP BY`, whose own arrival order moved twelve ways in fifteen runs across
+those five settings, a running `max` over `ROWS BETWEEN UNBOUNDED PRECEDING
+AND CURRENT ROW` answered **twelve ways** and over `ROWS BETWEEN 2 PRECEDING
+AND 2 FOLLOWING` **eleven**, while the same window spelled `RANGE` or `GROUPS`
+answered **one**. `RANGE` and `GROUPS` frames move by peer group and are
+functions of the key, so they serve even over tied keys — and so does
 `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`, which is the whole
-partition however it is spelled. The `rank` family (`rank`, `dense_rank`,
-`percent_rank`, `cume_dist`) is a function of the key and serves over ties.
+partition however it is spelled and answered one way too. The `rank` family
+(`rank`, `dense_rank`, `percent_rank`, `cume_dist`) is a function of the key
+and serves over ties, one answer on the same data.
 You'll see: `a row-based window frame (ROWS PRECEDING/FOLLOWING/CURRENT ROW)
 on a static-tables-only query`.
 
