@@ -1,11 +1,9 @@
 """DOUBLE -> VARCHAR text, sign included.
 
-DuckDB renders a double with `duckdb_fmt::format("{}", v)` (v1.5.5,
-src/common/operator/string_cast.cpp). The bundled fmt float writer reads
-`std::signbit` BEFORE it branches on finiteness -- its own comment says
-"value < 0 is false for NaN so use signbit" -- so the sign is prefixed to
-`nan` exactly as it is to `inf` and to a zero. A NaN carrying the sign bit
-therefore prints `-nan`.
+DuckDB's float writer takes the sign off `std::signbit` before it branches on
+finiteness, so a NaN carrying the sign bit prints `-nan` exactly as an
+infinity or a zero would. The source that settles it is cited once, at the
+formatter these tests exercise (`DuckF64` in src/specializer/exec/kernels.rs).
 
 Every string-producing path in this file shares one formatter, so they are
 checked together: a fix that reached only the explicit CAST would leave `||`
@@ -54,8 +52,7 @@ SQL = (
 
 # The same rendering over a NEGATED operand. Unary minus is IEEE negation on
 # DuckDB (`-(TR)input` in NegateOperator, v1.5.5), which flips the sign bit of
-# a NaN like any other; a lowering that subtracts from a zero instead cannot,
-# because IEEE subtraction propagates the operand's NaN sign unchanged.
+# a NaN like any other; a lowering that subtracts from a zero instead cannot.
 NEG_SQL = (
     "SELECT CAST(-d AS VARCHAR) AS c,"
     " (-d) || '|' AS bar,"
