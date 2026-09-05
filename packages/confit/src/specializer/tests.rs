@@ -2559,18 +2559,40 @@ fn substr_range_guard_traps_like_duckdb() {
 
 #[test]
 fn float_to_varchar_matches_duckdb_rendering() {
-    // Pins: explicit exponent sign, two-digit minimum, lowercase nan.
+    // Pins: explicit exponent sign, two-digit minimum, lowercase nan, and
+    // the sign bit reaching the text on every form that carries one — nan
+    // included, which is where DuckDB's signbit-first float writer parts
+    // company with Rust's `{:?}`.
     let schema = cols(&[("x", Ty::F64, false)]);
+    let vals = [
+        Some(1e300),
+        Some(1e-5),
+        Some(f64::NAN),
+        Some(-f64::NAN),
+        Some(f64::INFINITY),
+        Some(f64::NEG_INFINITY),
+        Some(-0.0),
+        Some(2.5),
+    ];
     let got = run_sql(
         "SELECT x || '' AS s FROM __THIS__",
         &schema,
-        batch(
-            4,
-            vec![c_f64(&[Some(1e300), Some(1e-5), Some(f64::NAN), Some(2.5)])],
-        ),
+        batch(vals.len(), vec![c_f64(&vals)]),
     )
     .unwrap();
-    assert_eq!(got, rows(&[&["1e+300"], &["1e-05"], &["nan"], &["2.5"]]));
+    assert_eq!(
+        got,
+        rows(&[
+            &["1e+300"],
+            &["1e-05"],
+            &["nan"],
+            &["-nan"],
+            &["inf"],
+            &["-inf"],
+            &["-0.0"],
+            &["2.5"],
+        ])
+    );
 }
 
 #[test]
