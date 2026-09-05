@@ -1017,6 +1017,13 @@ def _equi_on(rng, env: Env, table: str, tschema: dict) -> Node | None:
 def gen(seed: int) -> Case:
     """The whole case for `seed`: schemas, data, UDF/tree specs and the query
     AST. Seeded end to end, so the repro for any finding is its seed alone."""
+    # The static-order twins ride a stream of their own (static_order_case
+    # says why), so a seed they do not claim reaches `rng` untouched and
+    # generates exactly what it generated before.
+    planted = static_order_case(seed)
+    if planted is not None:
+        return planted
+
     rng = random.Random(seed)  # noqa: S311 — fuzzing, not crypto
     tags: list[str] = []
 
@@ -1312,17 +1319,41 @@ def _walk(n: Node):
         yield from _walk(k)
 
 
-def planted_tie_order_case() -> Case:
-    """The planted static-tables-only tie: two groups total the same, and the
-    ORDER BY says nothing about which of them comes first. The constant
-    emitter freezes ONE DuckDB evaluation, so an order the query does not
-    state may not be frozen, and the verdict is REFUSED.
+# The salt for the static-order stream. Any constant does; what matters is
+# that the stream is the seed's OWN and separate from `gen`'s, so the seeds
+# it does not claim generate byte-for-byte what they generated before.
+_ORDER_STREAM = 0x71E5
 
-    Planted because the grammar cannot reach it: a generated ORDER BY is
-    always the FIRST output item's alias, which in a static-only case is
-    either the group key (unique by construction) or the lone aggregate of a
-    one-row result -- neither can tie. Measured over seeds 0-39999: 28
-    static-only ORDER BY cases, no tie among them."""
+
+def static_order_case(seed: int) -> Case | None:
+    """The static-tables-only ORDER BY twins, or None when this seed is not
+    one of them: the same query over a sort key that repeats (REFUSED) and
+    over one that does not (AGREE).
+
+    Planted because the grammar cannot reach either: a generated ORDER BY is
+    always the FIRST output item's alias, which in a static-only case is the
+    group key (unique by construction) or the lone aggregate of a one-row
+    result -- so no generated case can tie, and none can be a witness that a
+    non-tie still serves. Measured over seeds 0-39999: 28 static-only ORDER
+    BY cases, no tie among them.
+
+    Both twins matter. The tie one is the rule; the unique one is the guard
+    against paying for it with an over-refusal, which the oracle turns into a
+    finding rather than a quiet REFUSED.
+    """
+    aux = random.Random(seed ^ _ORDER_STREAM)  # noqa: S311 -- fuzzing
+    r = aux.random()
+    if r >= 0.02:
+        return None
+    ties = r < 0.01
+    n = aux.randrange(3, 7)
+    vals = aux.sample(range(1, 40), n)
+    if ties:
+        # one group totals what another already does, and the ORDER BY says
+        # nothing about which of the two comes first
+        vals[aux.randrange(1, n)] = vals[0]
+    rows = [{"g": f"g{i}", "v": v} for i, v in enumerate(vals)]
+    aux.shuffle(rows)  # the tie apart in scan order as often as beside it
     q = Q(
         [],
         Sel(
@@ -1336,21 +1367,16 @@ def planted_tie_order_case() -> Case:
     q.body.group_by = [Col("g", None, "str")]
     q.body.order_by = "t"
     return Case(
-        -1,
+        seed,
         {"k": "int"},
         [{"k": 1}],
-        {
-            "ties": (
-                {"g": "string", "v": "int64"},
-                [{"g": "x", "v": 1}, {"g": "y", "v": 1}, {"g": "z", "v": 2}],
-            )
-        },
+        {"ties": ({"g": "string", "v": "int64"}, rows)},
         [],
         None,
         q,
         None,
         None,
-        ["planted_tie_order"],
+        ["static_tie_order" if ties else "static_tie_unique"],
     )
 
 
