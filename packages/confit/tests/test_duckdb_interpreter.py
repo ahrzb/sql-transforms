@@ -479,11 +479,11 @@ def test_static_only_query_is_a_constant_emitter():
 def test_static_only_aggregation_works_via_duckdb():
     dim = static({"v": "int"}, [{"v": 1}, {"v": 2}, {"v": 3}])
     fn = DuckDBInferFn(
-        "SELECT sum(v) AS s FROM dim",
+        "SELECT max(v) AS s FROM dim",
         row_tables={"__THIS__": _row_schema({"a": "int"})},
         static_tables={"dim": dim},
     )
-    assert fn.infer_rows([]) == [{"s": 6}]
+    assert fn.infer_rows([]) == [{"s": 3}]
 
 
 def test_unknown_driving_table_stays_clean_unsupported():
@@ -511,7 +511,7 @@ def test_v0_queries_run_on_cranelift():
 
 def test_static_only_backend_is_constant():
     fn = DuckDBInferFn(
-        "SELECT sum(v) AS s FROM dim",
+        "SELECT max(v) AS s FROM dim",
         row_tables={"__THIS__": _row_schema({"a": "int"})},
         static_tables={"dim": static({"v": "int"}, [{"v": 1}, {"v": 2}])},
     )

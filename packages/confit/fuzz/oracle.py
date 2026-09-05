@@ -529,20 +529,28 @@ TIE_KLASS = "unsupported: tie-producing ORDER BY on a"
 
 
 def run_case(case: G.Case) -> Verdict:
-    """`_run_case`, with the static-order twins graded.
+    """`_run_case`, with the cases whose answer the generator KNOWS graded.
 
-    The generator KNOWS which twin it planted (gen.static_order_case): the
-    tie one must refuse and the unique one must not, and either mistake is a
-    DIVERGE_BUILD-class finding — an over-refusal is the price of the rule
-    charged where it is not owed, an under-refusal is the rule not applied.
+    Two things are known, and both become DIVERGE_BUILD-class findings rather
+    than a plausible-looking REFUSED or AGREE that nobody reads:
+
+    * A case tagged `gen.DETERMINED_TAG` is fixed by its query and its static
+      tables, so the static-tables-only path owes it an answer. ANY refusal of
+      it is the price of some rule charged where it is not owed — and the
+      class is not predicted, because an over-refusal that arrives under a
+      rule nobody expected is exactly the one worth reporting. The klass the
+      refusal came in under is carried into the detail.
+    * A case tagged `static_tie_order` has a planted tie, so serving it is the
+      rule not applied at all.
     """
     v = _run_case(case)
-    if (
-        "static_tie_unique" in case.tags
-        and v.kind == "REFUSED"
-        and v.klass == TIE_KLASS
-    ):
-        return Verdict("DIVERGE_BUILD", "tie-over-refusal", v.detail, v.tags)
+    if G.DETERMINED_TAG in case.tags and v.kind == "REFUSED":
+        return Verdict(
+            "DIVERGE_BUILD",
+            "static-only-over-refusal",
+            f"a fully determined static-only case was refused: {v.klass}",
+            v.tags,
+        )
     if "static_tie_order" in case.tags and v.kind == "AGREE":
         return Verdict(
             "DIVERGE_BUILD",

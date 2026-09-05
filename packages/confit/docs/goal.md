@@ -456,7 +456,7 @@ decision), **resource** (it would cost more than a serving engine may spend per 
 judgement with a number attached). See `packages/confit/docs/oracle/`
 claim: refusal-grounds.
 
-**Not in this ledger, deliberately:** the rows of `known-limitations.md:209-273` ("deliberate
+**Not in this ledger, deliberately:** the rows of `known-limitations.md:282-346` ("deliberate
 contract choices") that *serve* with a consciously different surface (duplicate-column
 rename, approximate error texts, schema-qualifier resolution, the platform-libm NaN bit
 pattern). Those are divergences, not exclusions, and they belong to the oracle spec's
@@ -482,7 +482,7 @@ whole-relation construct selects is frozen only when it is a function of the que
 limit is not (measured: four different answers across twelve connections) and refuses,
 and neither is any other selection by position; a tie-producing `ORDER BY` is not either
 (five sequences under five settings a build machine picks for itself,
-`known-limitations.md:131-142`), and freezing one would let two builds of the same function
+`known-limitations.md:132-143`), and freezing one would let two builds of the same function
 disagree — goal: serving-without-skew's failure in its build-to-build face rather than its
 train-to-serve one. **Both must refuse**, and both now do: the tie half was
 finding: static-only-tie-order in the dated report, and closing it is what makes this
@@ -549,7 +549,7 @@ itself at build, so an `ORDER BY` whose keys separate every row still serves:
 
 ```python
 TIES = pa.table({"g": ["x", "y", "z"], "v": pa.array([1, 1, 2], pa.int64())})
-DuckDBInferFn("SELECT g AS o, sum(v) AS t FROM ties GROUP BY g ORDER BY t",
+DuckDBInferFn("SELECT g AS o, min(v) AS t FROM ties GROUP BY g ORDER BY t",
               row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
 # ValueError: unsupported: tie-producing ORDER BY on a static-tables-only
 #             query -- which of the tied rows comes first depends on scan
@@ -560,7 +560,37 @@ fn = DuckDBInferFn("SELECT g AS o, v AS t FROM ties GROUP BY g, v ORDER BY g",
 fn.backend, [r["o"] for r in fn.infer_rows([])]   # ('constant', ['x', 'y', 'z'])
 ```
 
-*Verified-by:* `packages/confit/docs/known-limitations.md:95-156`;
+A tie in the ORDER BY is one instance of the rule, not the whole of it. Anything else that
+lets scan order, thread scheduling or a random draw pick among valid answers refuses the
+same way and by name — a function whose value is a draw or a clock, an aggregate whose
+answer follows the arrival order, a window frame counted in rows rather than in key peers.
+REFUSES:
+
+```python
+DuckDBInferFn("SELECT g AS o, v AS t FROM ties ORDER BY random()",
+              row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
+# ValueError: unsupported: the non-deterministic function random() on a
+#             static-tables-only query -- its value is drawn when the query
+#             runs, not fixed by the query
+
+DuckDBInferFn("SELECT list(g) AS o FROM ties",
+              row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
+# ValueError: unsupported: order-sensitive aggregate list on a
+#             static-tables-only query -- its answer follows scan order, and
+#             an ORDER BY inside the aggregate is not read as a fix
+
+fn = DuckDBInferFn("SELECT g AS o, max(v) OVER (ORDER BY v) AS w FROM ties ORDER BY g",
+                   row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
+fn.backend, [r["w"] for r in fn.infer_rows([])]   # ('constant', [1, 1, 2])
+```
+
+The classification is DuckDB's own, not a list kept here: `duckdb_functions().stability`
+says which functions are a draw or a clock, and the aggregate source's
+`SetOrderDependent` says which aggregates follow the scan — everything DuckDB does not
+opt out of is refused, so `count`/`min`/`max`/`median` serve and `sum`/`avg`/`first`/`list`
+do not.
+
+*Verified-by:* `packages/confit/docs/known-limitations.md:95-229`;
 `packages/confit/tests/test_known_limitations.py:1-7, :98-117`;
 `packages/confit/tests/test_arrow_schema_api.py:604-630` (the row-limit refusal);
 `packages/confit/tests/test_static_only_order.py` (the tie refusal, and the ORDER BY
@@ -625,7 +655,7 @@ fn = DuckDBInferFn("SELECT lpad(s, 8, 'x') AS o FROM __THIS__",
 fn.infer_rows([{"s": "ab"}])   # [{'o': 'xxxxxxab'}]
 ```
 
-*Verified-by:* `packages/confit/docs/known-limitations.md:205`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:278`;
 `packages/confit/tests/known_divergences/test_string_budget.py:145-146`;
 `packages/confit/docs/oracle/` divergence: string-builder-budget,
 divergence: arrow-batch-ceiling.
@@ -662,7 +692,7 @@ The reader's own DuckDB answers `[(True,)]` for that row, because
 `expression_rewriter` turns `(i + 1) > 5` into `i > 4` and the addition never runs;
 `PRAGMA disable_optimizer` reproduces confit's trap
 (`Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!`).
-*Verified-by:* `packages/confit/docs/known-limitations.md:20-39`, `:231-257`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:20-39`, `:304-330`;
 `packages/confit/docs/oracle/` claim: oracle-identity, claim: optimizer-bracket.
 
 **exclusion: statistics-dependent-kernels.** Behaviors that depend on column *statistics*
@@ -686,7 +716,7 @@ DuckDB answers `True` here only when the column's statistics are pure-ASCII; a s
 non-ASCII sibling row selects its generic kernel, whose fold NUL-truncates, and the same
 row answers `False`. There is no sibling row at this API — `infer_rows` sees one row's
 values — so the statistic is unreachable by construction.
-*Verified-by:* `packages/confit/docs/known-limitations.md:225-230`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:298-303`;
 `packages/confit/tests/test_corpus_replay.py:150-151` (`_KNOWN_DIVERGENT_SOURCES`);
 `packages/confit/docs/oracle/` claim: statistics-dependent-exclusion.
 

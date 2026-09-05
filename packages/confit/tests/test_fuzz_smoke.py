@@ -106,15 +106,29 @@ def test_a_planted_unique_sort_key_agrees_and_is_not_over_refused():
     assert v.kind == "AGREE", v
 
 
-def test_an_over_refused_unique_key_is_a_finding_not_a_refusal():
-    """The detector itself, driven by a case whose tag lies about it: a
-    unique-key twin that comes back with the tie refusal must be graded
+def test_an_over_refused_determined_case_is_a_finding_not_a_refusal():
+    """The detector itself, driven by a case whose tag lies about it: a case
+    claiming to be fully determined that comes back refused must be graded
     DIVERGE_BUILD, not filed under REFUSED."""
     case = _planted_order_case("static_tie_order")
-    case.tags = ["static_tie_unique"]
+    case.tags = [gen.DETERMINED_TAG]
     v = oracle.run_case(case)
     assert v.kind == "DIVERGE_BUILD", v
-    assert v.klass == "tie-over-refusal", v
+    assert v.klass == "static-only-over-refusal", v
+
+
+def test_the_over_refusal_detector_reads_every_refusal_class_not_just_the_tie():
+    """The detector may not be spelled for one rule: a determined case
+    refused by ANY static-only rule is the finding. This one carries a
+    volatile function, so it refuses under a class the tie rule never
+    produces, and it still has to arrive as DIVERGE_BUILD."""
+    case = _planted_order_case("static_tie_order")
+    case.tags = [gen.DETERMINED_TAG]
+    case.query.body.items[0] = (gen.Call("random", []), "o")
+    v = oracle.run_case(case)
+    assert v.kind == "DIVERGE_BUILD", v
+    assert v.klass == "static-only-over-refusal", v
+    assert "non-deterministic function" in v.detail, v
 
 
 def _decimal_lit_case(pack: bool) -> gen.Case:
