@@ -479,12 +479,14 @@ are not row-at-a-time feature transforms.
 **static-tables-only** query is evaluated once by DuckDB at build and frozen, so aggregation
 and `ORDER BY` serve there. Its edge is the same decision applied twice — **what a
 whole-relation construct selects is frozen only when it is a function of the query.** A row
-limit is not (measured: four different answers across twelve connections) and refuses; a
-tie-producing `ORDER BY` is not either (a tie fed from a `GROUP BY` flipped in 20 runs,
-`known-limitations.md:116-117`), and freezing one would let two builds of the same function
+limit is not (measured: four different answers across twelve connections) and refuses,
+and neither is any other selection by position; a tie-producing `ORDER BY` is not either
+(five sequences under five settings a build machine picks for itself,
+`known-limitations.md:131-142`), and freezing one would let two builds of the same function
 disagree — goal: serving-without-skew's failure in its build-to-build face rather than its
-train-to-serve one. **Both must refuse.** Whether today's engine refuses both is a reading,
-and it is the report's: finding: static-only-tie-order.
+train-to-serve one. **Both must refuse**, and both now do: the tie half was
+finding: static-only-tie-order in the dated report, and closing it is what makes this
+sentence a statement rather than a target.
 *Re-decided by:* nothing intended — the output-shape argument would have to change first.
 *Rings:* nothing rings — there is no trigger. Lifting one breaks
 `packages/confit/tests/test_known_limitations.py` — which is the executable twin of
@@ -542,22 +544,27 @@ DuckDBInferFn("SELECT v AS o FROM s ORDER BY v LIMIT 1",
 
 The same rule reaches a tie: two groups with equal sort keys have no order in the query
 either, so freezing whichever one this build's DuckDB run produced would let two builds of
-the same function disagree. **target: refuses** — today it builds and freezes the order,
-which is finding: static-only-tie-order in the dated report:
+the same function disagree. REFUSES — the ties are read off the frozen result by DuckDB
+itself at build, so an `ORDER BY` whose keys separate every row still serves:
 
 ```python
 TIES = pa.table({"g": ["x", "y", "z"], "v": pa.array([1, 1, 2], pa.int64())})
 DuckDBInferFn("SELECT g AS o, sum(v) AS t FROM ties GROUP BY g ORDER BY t",
               row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
-# target: refuses (x and y tie at t=1, and the query does not order them)
-# today:  backend 'constant', infer_rows([]) ==
-#         [{'o': 'x', 't': Decimal('1')}, {'o': 'y', 't': Decimal('1')},
-#          {'o': 'z', 't': Decimal('2')}]
+# ValueError: unsupported: tie-producing ORDER BY on a static-tables-only
+#             query -- which of the tied rows comes first depends on scan
+#             order, not the query
+
+fn = DuckDBInferFn("SELECT g AS o, v AS t FROM ties GROUP BY g, v ORDER BY g",
+                   row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
+fn.backend, [r["o"] for r in fn.infer_rows([])]   # ('constant', ['x', 'y', 'z'])
 ```
 
-*Verified-by:* `packages/confit/docs/known-limitations.md:95-120`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:95-156`;
 `packages/confit/tests/test_known_limitations.py:1-7, :98-117`;
-`packages/confit/tests/test_arrow_schema_api.py:604-630` (the row-limit refusal).
+`packages/confit/tests/test_arrow_schema_api.py:604-630` (the row-limit refusal);
+`packages/confit/tests/test_static_only_order.py` (the tie refusal, and the ORDER BY
+shapes that still serve).
 
 **exclusion: per-row-general-work.** Non-constant regex patterns, replacement strings,
 regex options and extract-group indexes; anything that would compile or bind per row.
