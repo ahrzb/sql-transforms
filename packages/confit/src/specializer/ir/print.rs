@@ -400,12 +400,16 @@ pub(super) fn is_ident(name: &str) -> bool {
 }
 
 /// `f64` text form: `{:?}` for finite values (guaranteed shortest
-/// round-trip), dedicated tokens for the specials. NaN payloads collapse to
-/// the single canonical `nan`.
+/// round-trip), dedicated tokens for the specials. A NaN's SIGN is printed,
+/// because it is program meaning — unary minus on a DOUBLE is a sign-bit
+/// flip and a VARCHAR cast spells the bit as `-nan` — so dropping it would
+/// let print/parse change what a program computes. A NaN PAYLOAD is not
+/// meaning (no op reads one) and still collapses.
 pub(super) fn f64_text(f: f64) -> String {
     if f.is_nan() {
-        "nan".to_string()
-    } else if f == f64::INFINITY {
+        return if f.is_sign_negative() { "-nan" } else { "nan" }.to_string();
+    }
+    if f == f64::INFINITY {
         "inf".to_string()
     } else if f == f64::NEG_INFINITY {
         "-inf".to_string()

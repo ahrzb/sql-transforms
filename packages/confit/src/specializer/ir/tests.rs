@@ -798,13 +798,15 @@ fn rejects_non_identifier_function_name() {
     }
 }
 
-/// Every NaN payload canonicalizes to the one `nan` token; equality must
-/// treat NaNs as one class or non-canonical payloads break the round-trip.
+/// A NaN's SIGN is program meaning — unary minus on a DOUBLE flips it and a
+/// VARCHAR cast prints it — so the text form must carry it through; a
+/// PAYLOAD is meaning to nothing and canonicalizes away. `Lit`'s equality
+/// deliberately calls every NaN equal, so a whole-program `assert_eq!` can
+/// see neither: this reads the constant's BITS back.
 #[test]
-fn non_canonical_nan_payload_round_trips() {
+fn nan_sign_survives_the_round_trip_and_the_payload_does_not() {
     use super::{Block, Col, ColTy, Inst, Lit, Term, Ty, Value};
-    let neg_quiet_nan = f64::from_bits(0xFFF8_0000_0000_0000);
-    let p = Program {
+    let program = |bits: u64| Program {
         statics: vec![],
         regexes: vec![],
         externs: vec![],
@@ -822,7 +824,7 @@ fn non_canonical_nan_payload_round_trips() {
             insts: vec![
                 Inst::Const {
                     dst: Value(0),
-                    lit: Lit::F64(neg_quiet_nan),
+                    lit: Lit::F64(f64::from_bits(bits)),
                 },
                 Inst::Store {
                     col: 0,
@@ -832,12 +834,25 @@ fn non_canonical_nan_payload_round_trips() {
             term: Term::Emit,
         }],
     };
-    verify(&p).expect("NaN const is legal");
-    assert_eq!(
-        parsed(&print(&p)),
-        p,
-        "non-canonical NaN payload broke the round-trip"
-    );
+    for (bits, want) in [
+        (0x7FF8_0000_0000_0000u64, 0x7FF8_0000_0000_0000u64),
+        (0xFFF8_0000_0000_0000, 0xFFF8_0000_0000_0000),
+        // ... and the same two carrying a payload, which does not survive.
+        (0x7FF8_0000_0BAD_BEEF, 0x7FF8_0000_0000_0000),
+        (0xFFF8_0000_0BAD_BEEF, 0xFFF8_0000_0000_0000),
+    ] {
+        let p = program(bits);
+        verify(&p).expect("NaN const is legal");
+        let back = parsed(&print(&p));
+        assert_eq!(back, p, "0x{bits:016X}: round-trip broke");
+        let got = match &back.blocks[0].insts[0] {
+            Inst::Const {
+                lit: Lit::F64(v), ..
+            } => v.to_bits(),
+            other => panic!("0x{bits:016X}: expected a f64 const, got {other:?}"),
+        };
+        assert_eq!(got, want, "0x{bits:016X}: came back as 0x{got:016X}");
+    }
 }
 
 /// Double stores are a lowering bug on ANY path, including trap-terminated
