@@ -2335,6 +2335,14 @@ pub(crate) fn order_by_tie_probe(
             _ => None,
         };
         match out_col {
+            // A repeated output name is renamed at the wrapper's subquery
+            // boundary (DuckDB's own dup-name rule), so the name no longer
+            // picks out the column the key meant.
+            Some(name)
+                if out_names.iter().filter(|n| n.eq_ignore_ascii_case(name)).count() > 1 =>
+            {
+                return Some(Err("a sort key on a repeated output name"));
+            }
             Some(name) => keys.push(quoted(name)),
             // This dialect has no ALL kind of its own, so DuckDB's
             // sort-by-every-output-column arrives here as a bare name -- and

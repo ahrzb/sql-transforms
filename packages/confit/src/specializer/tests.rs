@@ -4025,6 +4025,18 @@ fn a_tie_probe_reads_order_by_all_as_every_output_column() {
     assert_eq!(probe.keys, ["\"o\"", "\"t\""]);
 }
 
+/// DuckDB renames a repeated output name at the wrapper's subquery boundary,
+/// so the name a key resolved to no longer picks out the column it meant.
+/// Unmeasurable, and therefore refused.
+#[test]
+fn a_tie_probe_refuses_a_key_on_a_repeated_output_name() {
+    let names = ["x".to_string(), "x".to_string()];
+    let probe =
+        super::frontend::order_by_tie_probe("SELECT a AS x, b AS x FROM s ORDER BY 2", &names)
+            .unwrap();
+    assert!(probe.is_err(), "wanted a refusal, got a probe");
+}
+
 /// An ORDER BY below the top orders nothing in the output, so there is
 /// nothing to test and the query serves as it always did.
 #[test]

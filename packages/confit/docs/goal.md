@@ -481,7 +481,7 @@ and `ORDER BY` serve there. Its edge is the same decision applied twice — **wh
 whole-relation construct selects is frozen only when it is a function of the query.** A row
 limit is not (measured: four different answers across twelve connections) and refuses; a
 tie-producing `ORDER BY` is not either (a tie fed from a `GROUP BY` flipped in 20 runs,
-`known-limitations.md:117-118`), and freezing one would let two builds of the same function
+`known-limitations.md:119-120`), and freezing one would let two builds of the same function
 disagree — goal: serving-without-skew's failure in its build-to-build face rather than its
 train-to-serve one. **Both must refuse**, and both now do: the tie half was
 finding: static-only-tie-order in the dated report, and closing it is what makes this
