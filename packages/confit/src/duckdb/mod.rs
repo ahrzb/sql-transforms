@@ -1207,11 +1207,16 @@ fn positional_refusal(shape: &str) -> String {
 }
 
 /// A statement DuckDB runs but will not hand back for inspection. Nothing
-/// can be ruled out about a shape that cannot be read, so the word that
-/// raised the question is named and the query refuses.
-fn unreadable_refusal(word: &str) -> String {
+/// can be ruled out about a shape that cannot be read, so the query refuses
+/// whatever it spells; `word` only names the clause that raised the question
+/// when the tokens showed one.
+fn unreadable_refusal(word: Option<&str>) -> String {
+    let what = word.map_or_else(
+        || "a statement".to_string(),
+        |w| format!("{w} in a statement"),
+    );
     format!(
-        "unsupported: {word} in a statement DuckDB would not expose for \
+        "unsupported: {what} DuckDB would not expose for \
          inspection -- what a static-tables-only query selects may be frozen \
          only when it is a function of the query, and this shape could not be \
          read"
@@ -1220,10 +1225,16 @@ fn unreadable_refusal(word: &str) -> String {
 
 /// Several statements in one string. DuckDB exposes them all perfectly well
 /// (measured), so the reading names the count, not the serialization: only
-/// one of them is inspected and only the last one's rows come back.
-fn multi_statement_refusal(word: &str) -> String {
+/// one of them is inspected and only the last one's rows come back — which
+/// leaves every value rule asked of the wrong statement, whether or not any
+/// clause word turned up.
+fn multi_statement_refusal(word: Option<&str>) -> String {
+    let what = word.map_or_else(
+        || "a statement string".to_string(),
+        |w| format!("{w} in a statement string"),
+    );
     format!(
-        "unsupported: {word} in a statement string holding more than one \
+        "unsupported: {what} holding more than one \
          statement -- what a static-tables-only query selects may be frozen \
          only when it is a function of the query, and only one statement of \
          this string is read"
@@ -1236,6 +1247,11 @@ fn multi_statement_refusal(word: &str) -> String {
 /// CONSISTENT_WITHIN_QUERY for one reading of a clock or a session per query
 /// (`now`, `current_date`). Either way the value belongs to the RUN, so
 /// freezing one makes the answer a function of the build.
+///
+/// Two kinds the catalogue cannot answer for join them: a MACRO, whose
+/// stability column is NULL, is read through its `macro_definition` instead,
+/// and the names in `RUN_STATE_FUNCTIONS`, which the catalogue calls
+/// CONSISTENT although their value comes from the machine or the moment.
 fn nondeterministic_refusal(name: &str) -> String {
     format!(
         "unsupported: the non-deterministic function {name}() on a \
@@ -1297,6 +1313,11 @@ struct Shapes {
 /// NAME and one step coarser than DuckDB's own flag; reading the bound
 /// overload back off the result type would recover the exact sums, and is
 /// the upgrade path if that matters.
+///
+/// `sum_no_overflow` is opted out at both its overloads and is still absent,
+/// because no query can name it: it is in the catalogue but binding one is
+/// `sum_no_overflow is for internal use only!` (measured). A name that
+/// cannot be called cannot be over-refused.
 const ORDER_FREE_AGGREGATES: &str = "'count','count_star','min','max',\
      'bool_and','bool_or','mad','median','quantile','quantile_cont',\
      'quantile_disc'";
@@ -1327,6 +1348,28 @@ const WINDOW_ONLY_FUNCTIONS: &str = "'row_number','ntile','lead','lag',\
 const CLOCK_KEYWORDS: &str =
     "'current_date','current_time','current_timestamp','localtime','localtimestamp'";
 
+/// The functions whose value is a reading of the machine or the moment while
+/// DuckDB's catalogue calls them CONSISTENT — the one place this reading
+/// keeps names of its own, because DuckDB has no flag that answers the
+/// question. `stability` says "constant within one query"; the rule here is
+/// "a function of the query text and the statics", and these four are not.
+///
+/// The two clocks are DuckDB's own inconsistency, not a judgement call: its
+/// binder maps the bare words `localtime` and `localtimestamp` onto
+/// `current_localtime`/`current_localtimestamp`
+/// (`bind_columnref_expression.cpp`), which ICU registers with no stability
+/// at all and so inherits CONSISTENT (`extension/icu/icu-timezone.cpp`).
+/// Measured, the value moves between two connections milliseconds apart, and
+/// the bare spellings already refuse. `version` and `current_setting` freeze
+/// the build's wheel and the build machine's settings — two machines, two
+/// frozen answers for one query.
+///
+/// A list, so not a proof of exhaustion: a TABLE function that reads the
+/// machine (`duckdb_settings()`) is the same class and is not covered, which
+/// known-limitations.md names.
+const RUN_STATE_FUNCTIONS: &str =
+    "'current_localtime','current_localtimestamp','version','current_setting'";
+
 /// The shapes of a statement, read off DuckDB's OWN parse of it.
 ///
 /// A static-tables-only query is evaluated once at build and frozen, and what
@@ -1356,7 +1399,15 @@ const CLOCK_KEYWORDS: &str =
 /// they answer the same question: a function whose value is a draw or a
 /// clock, an aggregate whose value follows the arrival order, and a window
 /// frame counted in ROWS rather than in key peers. Each is asked of DuckDB's
-/// own catalogue or its own frame flavour, not of a list kept here.
+/// own catalogue or its own frame flavour, not of a list kept here — with
+/// the two exceptions the catalogue cannot answer, which say so where they
+/// are written (`RUN_STATE_FUNCTIONS`, and a macro read through its
+/// definition).
+///
+/// Asked of the connection the statement has ALREADY run on, so the
+/// catalogue is the one that bound it: `json_serialize_sql` only parses, and
+/// a function DuckDB autoloads an extension for at BIND time is in no
+/// catalogue before then.
 fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Shapes> {
     /// One round trip: the parse status, and every marker the scan turns on,
     /// gathered from anywhere in the tree by JSON recursive descent.
@@ -1364,19 +1415,28 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     /// The two name columns pick the ALPHABETICALLY FIRST offender so the
     /// message a query earns is a function of the query. Calls are matched
     /// against the catalogue; a BARE name is matched only against the clock
-    /// keywords, because a static column may legitimately be called `uuid`
-    /// or `today` and DuckDB binds the column, not the function.
+    /// keywords and `rowid`, because a static column may legitimately be
+    /// called `uuid` or `today` and DuckDB binds the column, not the
+    /// function.
     ///
-    /// A row limit that removes no row is not a row limit: `LIMIT ALL` gives
-    /// the modifier a NULL-typed value and `OFFSET 0` a zero, and neither
-    /// changes which rows survive. Anything the walk cannot read as one of
-    /// those counts as a real limit, so an unexpected shape keeps refusing.
+    /// A row limit that removes no row is not a row limit, and the walk
+    /// distinguishes the two ways a limit node can fail to be one. DuckDB's
+    /// LIMIT modifier always carries BOTH fields, so the side the query did
+    /// not spell arrives as the JSON literal `null` — that one is absent, and
+    /// absent removes no row. The side it did spell has to READ as a no-op:
+    /// `LIMIT ALL` is a NULL-typed constant and `OFFSET 0` a zero. A limit
+    /// that is any other node — an arithmetic expression, a CAST, a subquery
+    /// — is one this reading cannot evaluate, so it counts as the real limit
+    /// it is rather than defaulting to a no-op.
     const SHAPE_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
          f(n) AS (SELECT lower(unnest(coalesce( \
              json_extract_string(j, '$..function_name'), []))) FROM a), \
-         c(n) AS (SELECT lower(json_extract_string(x, '$[0]')) FROM ( \
-             SELECT unnest(coalesce(CAST(json_extract(j, '$..column_names') \
-                 AS JSON[]), [])) AS x FROM a) WHERE json_array_length(x) = 1), \
+         cn(x) AS (SELECT unnest(coalesce(CAST(json_extract(j, \
+             '$..column_names') AS JSON[]), [])) FROM a), \
+         c(n) AS (SELECT lower(json_extract_string(x, '$[0]')) FROM cn \
+             WHERE json_array_length(x) = 1), \
+         t(n) AS (SELECT lower(json_extract_string(x, \
+             '$[' || (json_array_length(x) - 1) || ']')) FROM cn), \
          lim(x) AS (SELECT unnest(coalesce(CAST(json_extract(j, '$..limit') \
              AS JSON[]), [])) FROM a), \
          off(x) AS (SELECT unnest(coalesce(CAST(json_extract(j, '$..offset') \
@@ -1393,16 +1453,29 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
              SELECT n FROM f WHERE n IN (SELECT lower(function_name) \
                  FROM duckdb_functions() \
                  WHERE stability IN ('VOLATILE', 'CONSISTENT_WITHIN_QUERY')) \
+             UNION ALL SELECT n FROM f WHERE n IN (__RUN_STATE__) \
+             UNION ALL SELECT f.n FROM f, duckdb_functions() d \
+                 WHERE lower(d.function_name) = f.n \
+                     AND d.macro_definition IS NOT NULL \
+                     AND regexp_matches(lower(d.macro_definition), \
+                         (SELECT '\\b(' || string_agg(DISTINCT v, '|') || ')\\b' \
+                          FROM (SELECT lower(function_name) AS v \
+                                    FROM duckdb_functions() \
+                                    WHERE stability IN ('VOLATILE', \
+                                        'CONSISTENT_WITHIN_QUERY') \
+                                        AND lower(function_name) <> 'error' \
+                                UNION SELECT unnest([__CLOCK__])))) \
              UNION ALL SELECT n FROM c WHERE n IN (__CLOCK__))), \
          (SELECT min(n) FROM f WHERE n IN (SELECT lower(function_name) \
              FROM duckdb_functions() WHERE function_type = 'aggregate' \
                  AND lower(function_name) NOT IN (__ORDER_FREE__))), \
-         coalesce((SELECT bool_and(coalesce( \
-             json_extract_string(x, '$.value.is_null'), 'true') = 'true') \
+         coalesce((SELECT bool_and(json_type(x) = 'NULL' OR coalesce( \
+             json_extract_string(x, '$.value.is_null'), 'false') = 'true') \
              FROM lim), true) \
-         AND coalesce((SELECT bool_and(coalesce( \
-             json_extract_string(x, '$.value.value'), '0') = '0') \
-             FROM off), true) \
+         AND coalesce((SELECT bool_and(json_type(x) = 'NULL' OR coalesce( \
+             json_extract_string(x, '$.value.value'), '') = '0') \
+             FROM off), true), \
+         (SELECT count(*) FROM t WHERE n = 'rowid') > 0 \
          FROM a";
     /// Window functions whose value is a row's POSITION among its peers.
     /// `rank` and its family are functions of the key and stay out; a plain
@@ -1432,14 +1505,29 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     // LIMIT, OFFSET and FETCH into one node, and the message quotes back the
     // clause the query actually wrote.
     let (limit_word, other_word) = ordering_words(py, sql)?;
-    let shape_sql = SHAPE_SQL.replace("__CLOCK__", CLOCK_KEYWORDS).replace(
-        "__ORDER_FREE__",
-        &format!("{ORDER_FREE_AGGREGATES},{WINDOW_ONLY_FUNCTIONS}"),
-    );
+    let shape_sql = SHAPE_SQL
+        .replace("__CLOCK__", CLOCK_KEYWORDS)
+        .replace("__RUN_STATE__", RUN_STATE_FUNCTIONS)
+        .replace(
+            "__ORDER_FREE__",
+            &format!("{ORDER_FREE_AGGREGATES},{WINDOW_ONLY_FUNCTIONS}"),
+        );
     let row = con
         .call_method1("execute", (shape_sql, (sql,)))?
         .call_method0("fetchone")?;
-    let (error, n_statements, types, qualify, sample, distinct_on, frame, drawn, agg, no_op_limit): (
+    let (
+        error,
+        n_statements,
+        types,
+        qualify,
+        sample,
+        distinct_on,
+        frame,
+        drawn,
+        agg,
+        no_op_limit,
+        rowid,
+    ): (
         Option<String>,
         Option<i64>,
         Option<String>,
@@ -1450,22 +1538,28 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         Option<String>,
         Option<String>,
         bool,
+        bool,
     ) = row.extract()?;
     // A serialized value object opens with a brace; the absence of one is
     // DuckDB's `null` for that field, and an empty DISTINCT list is plain
     // DISTINCT, which collapses a set rather than picking out of a group.
     let present = |field: &Option<String>| field.as_deref().is_some_and(|s| s.contains('{'));
+    // Both of these return before a single value rule above has been read, so
+    // neither may depend on a clause word turning up: the word only sharpens
+    // the message. A statement nobody could read is a statement in which
+    // nothing was ruled out — no draw, no order-sensitive aggregate, no frame
+    // — and the same goes for the statements of the string that were skipped.
     if error.as_deref() != Some("false") {
         return Ok(Shapes {
             row_limit: limit_word,
-            refusal: other_word.map(unreadable_refusal),
+            refusal: Some(unreadable_refusal(other_word)),
             readable: false,
         });
     }
     if n_statements != Some(1) {
         return Ok(Shapes {
             row_limit: limit_word,
-            refusal: other_word.map(multi_statement_refusal),
+            refusal: Some(multi_statement_refusal(other_word)),
             readable: false,
         });
     }
@@ -1494,6 +1588,8 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         Some(positional_refusal(
             "a row-position window function (row_number/ntile/lead/lag/first_value/last_value/nth_value)",
         ))
+    } else if rowid {
+        Some(positional_refusal("the rowid pseudo-column"))
     } else {
         None
     };
@@ -1753,7 +1849,6 @@ fn eval_static_only(
 ) -> PyResult<Result<(Vec<Py<PyAny>>, Py<PyAny>), String>> {
     let duckdb = PyModule::import(py, "duckdb")?;
     let con = duckdb.call_method0("connect")?;
-    let shapes = read_shapes(py, &con, sql)?;
     for (name, table) in static_tables {
         con.call_method1("register", (format!("__arrow_{name}"), table))?;
         con.call_method1(
@@ -1773,6 +1868,11 @@ fn eval_static_only(
         .call_method1("execute", (sql,))?
         .call_method0("to_arrow_table")?;
     let schema = arrow.getattr("schema")?;
+    // AFTER the statement has bound, so the catalogue the shapes are read
+    // against is the one that answered it — an extension DuckDB autoloads for
+    // an unknown function name is loaded by this execute and by nothing
+    // earlier.
+    let shapes = read_shapes(py, &con, sql)?;
     if let Some(clause) = shapes.row_limit {
         return Ok(Err(row_limit_refusal(clause)));
     }

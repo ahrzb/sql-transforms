@@ -1356,8 +1356,9 @@ def static_order_case(seed: int) -> Case | None:
     queries instead of a random one -- 44 of seeds 0-1999, ~400 of a 20k run
     -- and a seed the stream claims no longer generates what it generated
     before. Repros cited by seed in older findings therefore have to be
-    checked against the claimed set; none of the seeds in fuzz/findings.jsonl
-    or in the baseline report is claimed (checked). Two fixed queries are
+    checked against the claimed set; none of the seeds in
+    packages/confit/findings.jsonl or in the baseline report is claimed
+    (checked). Two fixed queries are
     worth 2% because the grammar reaches neither shape at all: without them
     the campaign has no view of this rule in either direction.
 
