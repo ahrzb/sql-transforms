@@ -77,14 +77,44 @@ def test_planted_over_modifier_diverges_or_refuses():
     assert v.kind in ("DIVERGE_BUILD", "REFUSED"), v
 
 
-def test_planted_static_only_tie_order_refuses_under_its_own_name():
+def _planted_order_case(tag: str, limit: int = 600) -> gen.Case:
+    """The first seed the static-order stream hands the named twin. Scanning
+    beats hard-coding a seed: the twins ride an auxiliary stream (gen
+    .static_order_case), and which seeds it claims is its own business."""
+    for seed in range(limit):
+        case = gen.gen(seed)
+        if tag in case.tags:
+            return case
+    raise AssertionError(f"no {tag} case in seeds 0-{limit - 1}")
+
+
+def test_a_planted_static_only_tie_refuses_under_its_own_name():
     """A refusal the campaign reports has to arrive as REFUSED under a class
-    of its own, or it hides in another refusal's bucket. This one is planted
-    because the grammar cannot reach it (gen.planted_tie_order_case says
-    why), so the campaign would otherwise never see the shape at all."""
-    v = oracle.run_case(gen.planted_tie_order_case())
+    of its own, or it hides in another refusal's bucket. Planted because the
+    grammar cannot reach it (gen.static_order_case says why), so the campaign
+    would otherwise never see the shape at all."""
+    v = oracle.run_case(_planted_order_case("static_tie_order"))
     assert v.kind == "REFUSED", v
-    assert v.klass == "unsupported: tie-producing ORDER BY on a", v
+    assert v.klass == oracle.TIE_KLASS, v
+
+
+def test_a_planted_unique_sort_key_agrees_and_is_not_over_refused():
+    """The twin that guards the price of the rule: the same query over a key
+    that separates every row still serves. Were it refused, the oracle would
+    say so as a finding rather than as one more REFUSED nobody reads."""
+    v = oracle.run_case(_planted_order_case("static_tie_unique"))
+    assert v.kind == "AGREE", v
+
+
+def test_an_over_refused_unique_key_is_a_finding_not_a_refusal():
+    """The detector itself, driven by a case whose tag lies about it: a
+    unique-key twin that comes back with the tie refusal must be graded
+    DIVERGE_BUILD, not filed under REFUSED."""
+    case = _planted_order_case("static_tie_order")
+    case.tags = ["static_tie_unique"]
+    v = oracle.run_case(case)
+    assert v.kind == "DIVERGE_BUILD", v
+    assert v.klass == "tie-over-refusal", v
 
 
 def _decimal_lit_case(pack: bool) -> gen.Case:

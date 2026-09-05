@@ -521,7 +521,39 @@ def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
     return "diff"
 
 
+# The tie refusal, by the prefix `_refusal_class` reduces it to. The static
+# order twins are the campaign's ONLY view of the tie rule, so a wrong answer
+# on either one has to arrive as a finding rather than as a plausible-looking
+# REFUSED or AGREE that nobody reads.
+TIE_KLASS = "unsupported: tie-producing ORDER BY on a"
+
+
 def run_case(case: G.Case) -> Verdict:
+    """`_run_case`, with the static-order twins graded.
+
+    The generator KNOWS which twin it planted (gen.static_order_case): the
+    tie one must refuse and the unique one must not, and either mistake is a
+    DIVERGE_BUILD-class finding — an over-refusal is the price of the rule
+    charged where it is not owed, an under-refusal is the rule not applied.
+    """
+    v = _run_case(case)
+    if (
+        "static_tie_unique" in case.tags
+        and v.kind == "REFUSED"
+        and v.klass == TIE_KLASS
+    ):
+        return Verdict("DIVERGE_BUILD", "tie-over-refusal", v.detail, v.tags)
+    if "static_tie_order" in case.tags and v.kind == "AGREE":
+        return Verdict(
+            "DIVERGE_BUILD",
+            "tie-under-refusal",
+            "a planted tie-producing ORDER BY was frozen and served",
+            v.tags,
+        )
+    return v
+
+
+def _run_case(case: G.Case) -> Verdict:
     """One case's verdict: build both backends, run both DuckDB readings,
     classify, then the boundary legs.
 
