@@ -65,7 +65,31 @@ pub fn built(text: &str) -> Program {
 
 /// Snapshot the output as strings, masking NULL payloads (a NULL's payload
 /// is meaningless downstream by contract). Allocates — test side only.
+///
+/// A double renders as Rust's `{:?}`, which spells every NaN `NaN`. That is
+/// the right form for a PIN: most NaNs a program can reach come out of a
+/// libm or the hardware, whose choice of sign is the platform's and not
+/// ours to freeze. It is the wrong form for comparing two of OUR runs
+/// against each other — see [`snapshot_bits`].
 pub fn snapshot(st: &RunState) -> Vec<Vec<String>> {
+    snap(st, |x| format!("{x:?}"))
+}
+
+/// [`snapshot`], except a NaN carries its bit pattern, so a sign or payload
+/// that differs between two runs is visible as different text. For
+/// run-against-run comparisons only (cranelift vs the interpreter, run vs
+/// re-run): no expectation may pin this form, for the reason above.
+pub fn snapshot_bits(st: &RunState) -> Vec<Vec<String>> {
+    snap(st, |x| {
+        if x.is_nan() {
+            format!("nan:{:#018x}", x.to_bits())
+        } else {
+            format!("{x:?}")
+        }
+    })
+}
+
+fn snap(st: &RunState, f64_text: impl Fn(f64) -> String) -> Vec<Vec<String>> {
     let ncols = st.out.len();
     let nrows = st.out.first().map(|c| c.len()).unwrap_or(0);
     (0..nrows)
@@ -74,7 +98,7 @@ pub fn snapshot(st: &RunState) -> Vec<Vec<String>> {
                 .map(|c| match &st.out[c] {
                     OutCol::I1(v) => render(v[r].0, format!("{}", v[r].1)),
                     OutCol::I64(v) => render(v[r].0, format!("{}", v[r].1)),
-                    OutCol::F64(v) => render(v[r].0, format!("{:?}", v[r].1)),
+                    OutCol::F64(v) => render(v[r].0, f64_text(v[r].1)),
                     OutCol::Str(v) => render(v[r].0, st.arena.get(v[r].1).to_string()),
                     // The SCALED integer, which is what the lane holds; the
                     // decimal point is the boundary's business.

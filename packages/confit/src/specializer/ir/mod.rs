@@ -903,7 +903,8 @@ pub enum Inst {
         start: Value,
         len: Option<Value>,
     },
-    /// `iabs` / `fabs` / `fround` — numeric unaries, operand ty == result ty.
+    /// `iabs` / `fabs` / `fneg` / `fround` and the wave-1 math unaries —
+    /// numeric unaries, operand ty == result ty.
     Num1 {
         op: NumOp1,
         dst: Value,
