@@ -17,7 +17,7 @@
 //!   width-only cast of an integer literal collapses because it cannot trap
 //!   and its provenance mark is already spent by fold time.
 
-use super::ir::{CmpPred, Lit, Ty};
+use super::ir::{CmpPred, Lit, NumOp1, Ty};
 use super::plan::{ArithOp, SExpr, SKind};
 
 /// A constant operand: a payload or a typed NULL.
@@ -179,7 +179,14 @@ pub fn fold(e: SExpr) -> SExpr {
         }
         SKind::MathF1 { op, a } => {
             let a = fold(*a);
-            e(SKind::MathF1 { op, a: Box::new(a) })
+            // Fneg alone folds: a sign-bit flip is total and exact, so the
+            // constant equals what the instruction would produce bit for
+            // bit. The libm-backed members stay run-time, one rounding.
+            match (op, as_const(&a)) {
+                (NumOp1::Fneg, Some(K::Val(Lit::F64(v)))) => lit(Lit::F64(-v), ty),
+                (NumOp1::Fneg, Some(K::Null)) => null(ty),
+                _ => e(SKind::MathF1 { op, a: Box::new(a) }),
+            }
         }
         SKind::MathF2 { op, a, b } => {
             let a = fold(*a);

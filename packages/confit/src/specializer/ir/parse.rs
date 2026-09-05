@@ -1479,12 +1479,13 @@ impl Parser {
                     len,
                 }
             }
-            "iabs" | "fabs" | "fround" | "ln" | "log2" | "log10" | "fexp" | "fsqrt" | "fcbrt"
-            | "fsin" | "fcos" | "ftan" | "ffloor" | "fceil" | "ftrunc" => {
+            "iabs" | "fabs" | "fneg" | "fround" | "ln" | "log2" | "log10" | "fexp" | "fsqrt"
+            | "fcbrt" | "fsin" | "fcos" | "ftan" | "ffloor" | "fceil" | "ftrunc" => {
                 want_dsts(1, self)?;
                 let op = match opcode.as_str() {
                     "iabs" => NumOp1::Iabs,
                     "fabs" => NumOp1::Fabs,
+                    "fneg" => NumOp1::Fneg,
                     "fround" => NumOp1::Fround,
                     "ln" => NumOp1::Ln,
                     "log2" => NumOp1::Log2,

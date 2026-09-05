@@ -3147,14 +3147,14 @@ impl Binder<'_> {
                 op: UnaryOperator::Minus,
                 expr,
             } => {
-                // DuckDB `-x`: lower as (zero) - x, reusing Sub's promotion.
-                // The zero must carry the SIGN BIT for floats: IEEE
-                // 0.0 - 0.0 is +0.0, so subtracting from +0 erased negative
-                // zero everywhere it could arise -- the literal -0.0e0, a
-                // runtime negate at x = 0.0, and the sign of infinity after
-                // dividing by the result. -0.0 - x is exact IEEE
-                // negation for every double. Integers keep 0 - x and its
-                // i64::MIN trap, which is DuckDB's own overflow behaviour.
+                // DuckDB `-x` on a DOUBLE is IEEE negation -- `NegateOperator`
+                // is a plain `-input`, a sign-bit flip -- so it lowers to
+                // Fneg. No subtraction reproduces it: `0.0 - x` loses the
+                // sign of a zero (IEEE `0.0 - 0.0` is +0.0), and `-0.0 - x`
+                // recovers that but still hands a NaN operand's own sign
+                // back, where the flip is observable as text (`-nan`).
+                // Integers keep 0 - x and its i64::MIN trap, which is
+                // DuckDB's own overflow behaviour.
                 // sqlparser parses `-a % b` as `-(a % b)`; DuckDB binds
                 // `(-a) % b` (its unary minus is tighter than mul/div/mod).
                 // The minus distributes over these ops so VALUES agree, but
@@ -3194,20 +3194,15 @@ impl Binder<'_> {
                 {
                     return Ok(null_of(Ty::I32));
                 }
-                let zero = if inner.ty == Ty::F64 {
-                    SExpr {
-                        kind: SKind::Lit(Lit::F64(-0.0)),
-                        ty: Ty::F64,
-                        nullable: false,
-                    }
-                } else {
-                    SExpr {
-                        kind: SKind::Lit(Lit::I64(0)),
-                        // A zero literal's natural width; the value-fits
-                        // promotion hands -x its operand's own width.
-                        ty: Ty::I32,
-                        nullable: false,
-                    }
+                if inner.ty == Ty::F64 {
+                    return Ok(math1_node(NumOp1::Fneg, inner));
+                }
+                let zero = SExpr {
+                    kind: SKind::Lit(Lit::I64(0)),
+                    // A zero literal's natural width; the value-fits
+                    // promotion hands -x its operand's own width.
+                    ty: Ty::I32,
+                    nullable: false,
                 };
                 self.arith(
                     ArithOp::Sub,

@@ -634,12 +634,16 @@ impl TrimSide {
 }
 
 /// One-operand numeric ops. `Iabs` traps on i64::MIN (DuckDB: Out of Range);
-/// `Fabs` clears the sign bit (abs(-0.0) = +0.0); `Fround` is half away from
-/// zero (Rust `f64::round`), total on NaN/inf/huge.
+/// `Fabs` clears the sign bit (abs(-0.0) = +0.0); `Fneg` flips it, NaN
+/// included, which is what DuckDB's unary minus on a DOUBLE does
+/// (`NegateOperator` is a plain `-input`) and what subtracting from a zero
+/// cannot do -- IEEE subtraction hands a NaN operand's own sign back;
+/// `Fround` is half away from zero (Rust `f64::round`), total on NaN/inf/huge.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NumOp1 {
     Iabs,
     Fabs,
+    Fneg,
     Fround,
     // Wave-1 math unaries (pins: packages/confit/docs/specs/2026-07-26-
     // wave1-builtin-pins.md). Ln/Log2/Log10 trap on x <= 0; Fsqrt traps on
@@ -672,6 +676,7 @@ impl NumOp1 {
         match self {
             NumOp1::Iabs => "iabs",
             NumOp1::Fabs => "fabs",
+            NumOp1::Fneg => "fneg",
             NumOp1::Fround => "fround",
             NumOp1::Ln => "ln",
             NumOp1::Log2 => "log2",

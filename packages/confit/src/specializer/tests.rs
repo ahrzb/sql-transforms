@@ -2596,6 +2596,43 @@ fn float_to_varchar_matches_duckdb_rendering() {
 }
 
 #[test]
+fn unary_minus_on_a_double_flips_the_sign_bit() {
+    // DuckDB's unary minus on a DOUBLE is `-input`, an unconditional
+    // sign-bit flip. Subtracting from a zero cannot stand in for it: IEEE
+    // subtraction returns a NaN operand with its OWN sign, so `-0.0 - nan`
+    // is `nan` where DuckDB says `-nan`. Rendering the result is what makes
+    // the difference observable — every other value class agrees either way.
+    let schema = cols(&[("x", Ty::F64, false)]);
+    let vals = [
+        Some(f64::NAN),
+        Some(-f64::NAN),
+        Some(f64::INFINITY),
+        Some(f64::NEG_INFINITY),
+        Some(0.0),
+        Some(-0.0),
+        Some(2.5),
+    ];
+    let got = run_sql(
+        "SELECT (- x) || '' AS s FROM __THIS__",
+        &schema,
+        batch(vals.len(), vec![c_f64(&vals)]),
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        rows(&[
+            &["-nan"],
+            &["nan"],
+            &["-inf"],
+            &["inf"],
+            &["-0.0"],
+            &["0.0"],
+            &["-2.5"],
+        ])
+    );
+}
+
+#[test]
 fn rowid_rejects_and_lateral_aliases_serve() {
     let schema = cols(&[("a", Ty::I64, false)]);
     match prep("SELECT rowid FROM __THIS__", &schema) {
