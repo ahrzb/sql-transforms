@@ -163,6 +163,74 @@ def test_mod_dividend_sign_vs_fmod_divisor_sign():
     )
 
 
+# The whole sign grid for the three spellings, over the domain where the
+# oracle answers one thing. Every dividend/divisor sign pairing at three
+# magnitude relations (|x| > |y| exact, |x| > |y| fractional, |x| < |y|),
+# signed-zero dividends, an infinite divisor, and NaN operands.
+#
+# Reading each result through CAST(... AS VARCHAR) as well as its value is
+# the point: the value leg alone cannot see a NaN's SIGN, because the
+# comparison contract spells every NaN 'nan', so a whole class of sign
+# divergence is invisible without the text leg. x and y are projected so a
+# mismatch names the row that produced it — the comparison is a multiset.
+#
+# The invalid-operation domain (divisor zero, infinite dividend) is
+# deliberately absent: DuckDB's `%` on DOUBLE is std::fmod in a loop the
+# compiler vectorizes, and there the wide lanes and the scalar tail hand
+# back NaNs with DIFFERENT signs, so identical rows disagree with each other
+# by position alone. There is no single answer to match there; the one-row
+# bit-agreement pin below is what covers it.
+MOD_SIGN_GRID = [
+    {"x": x, "y": y}
+    for x, y in [
+        (4.0, 2.0),
+        (-4.0, 2.0),
+        (4.0, -2.0),
+        (-4.0, -2.0),
+        (7.5, 2.0),
+        (-7.5, 2.0),
+        (7.5, -2.0),
+        (-7.5, -2.0),
+        (7.5, 2.5),
+        (-7.5, 2.5),
+        (7.5, -2.5),
+        (-7.5, -2.5),
+        (0.0, 3.0),
+        (-0.0, 3.0),
+        (0.0, -3.0),
+        (-0.0, -3.0),
+        (1.0, 3.0),
+        (-1.0, 3.0),
+        (1.0, -3.0),
+        (-1.0, -3.0),
+        (1e308, 3.0),
+        (-1e308, 3.0),
+        (2.0, INF),
+        (-2.0, INF),
+        (2.0, -INF),
+        (-2.0, -INF),
+        (NAN, 2.0),
+        (2.0, NAN),
+        (NAN, NAN),
+    ]
+]
+
+
+@pytest.mark.parametrize("interp", [False, True], ids=["cranelift", "interpreter"])
+def test_double_mod_sign_grid_value_and_text(monkeypatch, interp):
+    if interp:
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    duck_check(
+        "SELECT x, y, x % y AS p, CAST(x % y AS VARCHAR) AS ps,"
+        " mod(x, y) AS m, CAST(mod(x, y) AS VARCHAR) AS ms,"
+        " fmod(x, y) AS f, CAST(fmod(x, y) AS VARCHAR) AS fs FROM __THIS__",
+        {"x": "float", "y": "float"},
+        MOD_SIGN_GRID,
+    )
+
+
 # --------------------------------------------------------- fdiv / fmod:
 # the FLOOR-division pair, ALWAYS DOUBLE even on BIGINT inputs (repr float),
 # so INT64_MIN fdiv −1 is 9.223372036854776e18 — no trap.
