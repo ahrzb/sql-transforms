@@ -128,8 +128,10 @@ def test_bigint_and_in_range_literal_arithmetic_still_matches(sql, oracle):
 # could arise: the folded literal `-0.0e0`, runtime `(- x)` at x = 0.0, and
 # any product with a signed zero operand fed through the fold. Observable at
 # any magnitude through division (the sign of infinity) and as text through
-# CAST AS VARCHAR. The fix subtracts from -0.0 for FLOAT operands, which is
-# exact IEEE negation for every double; the integer path keeps 0 - x and its
+# CAST AS VARCHAR. A FLOAT operand now negates with a sign-bit flip, which is
+# what DuckDB's unary minus is; no subtraction reproduces it, because IEEE
+# subtraction hands a NaN operand's own sign back (see
+# tests/test_double_to_varchar.py). The integer path keeps 0 - x and its
 # i64::MIN trap, matching DuckDB.
 
 _NEG_SCHEMA = pa.schema([pa.field("x", pa.float64(), nullable=False)])
