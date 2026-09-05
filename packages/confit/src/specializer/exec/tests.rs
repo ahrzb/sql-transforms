@@ -9,7 +9,9 @@ use std::cell::Cell;
 
 use super::super::ir::{fixtures, gen, parse::parse, verify::verify, Program, StaticTy, Ty};
 use super::interp::{compile, CompileError};
-use super::testutil::{batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot, snapshot};
+use super::testutil::{
+    batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot, snapshot, snapshot_bits,
+};
 use super::{tree_ensemble, Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData, Trap};
 
 // ------------------------------------------------- counting allocator --
@@ -1039,9 +1041,14 @@ fn fuzz_cranelift_agrees_with_interpreter() {
             Ok(f) => f,
             Err(e) => panic!("seed {seed}: cranelift failed to compile: {e}"),
         };
-        let a = run_snapshot(&fi, &input);
+        // Bit-level on both sides: `{:?}` spells every NaN alike, which
+        // would hide a backend disagreeing about a sign bit — and the sign
+        // is meaning here, since `fneg` flips it and a VARCHAR cast prints
+        // it.
+        let mut sti = fi.new_state();
+        let a = fi.run(&input, &mut sti).map(|_| snapshot_bits(&sti));
         let mut st = fc.new_state();
-        let b = fc.run(&input, &mut st).map(|_| snapshot(&st));
+        let b = fc.run(&input, &mut st).map(|_| snapshot_bits(&st));
         match (a, b) {
             (Ok(x), Ok(y)) => assert_eq!(x, y, "seed {seed}: outputs diverge"),
             (Err(x), Err(y)) => assert_eq!(x, y, "seed {seed}: traps diverge"),
@@ -1053,6 +1060,53 @@ fn fuzz_cranelift_agrees_with_interpreter() {
         "the generator emitted only {predicts} predict instruction(s) — this test \
          is not covering the tree kernel on either backend"
     );
+}
+
+/// `fneg` on BOTH backends, on the bits: it flips the sign of every double,
+/// a NaN included, which is the whole reason the opcode exists (DuckDB's
+/// unary minus on a DOUBLE is `-input`). A subtraction from a signed zero
+/// agrees on every other value class and cannot stand in here, because IEEE
+/// subtraction hands a NaN operand's OWN sign back.
+///
+/// The NaNs are built from bit patterns, not from an operation: a defined
+/// constant is the same on every platform, whereas a NaN out of a libm has
+/// the platform's sign and could not be pinned.
+#[test]
+fn fneg_flips_the_sign_bit_on_both_backends() {
+    use super::cranelift;
+    let p = built(
+        "fn f(in: batch{a: f64}, out: batch{o: f64}) {\n\
+         entry:\n  %x = load in.a\n  %r = fneg %x\n  store out.o, %r\n  emit\n}",
+    );
+    let pos_nan = f64::from_bits(0x7FF8_0000_0000_0000);
+    let neg_nan = f64::from_bits(0xFFF8_0000_0000_0000);
+    let input = batch(
+        6,
+        vec![c_f64(&[
+            Some(pos_nan),
+            Some(neg_nan),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(0.0),
+            Some(2.5),
+        ])],
+    );
+    let want = rows(&[
+        &["nan:0xfff8000000000000"],
+        &["nan:0x7ff8000000000000"],
+        &["-inf"],
+        &["inf"],
+        &["-0.0"],
+        &["-2.5"],
+    ]);
+    let fi = compile(&p, vec![]).expect("interp compile");
+    let mut sti = fi.new_state();
+    fi.run(&input, &mut sti).expect("interp run");
+    assert_eq!(snapshot_bits(&sti), want, "interpreter");
+    let fc = cranelift::compile(&p, vec![]).expect("cranelift compile");
+    let mut stc = fc.new_state();
+    fc.run(&input, &mut stc).expect("cranelift run");
+    assert_eq!(snapshot_bits(&stc), want, "cranelift");
 }
 
 /// The `predict` semantics the design froze, run END TO END on BOTH

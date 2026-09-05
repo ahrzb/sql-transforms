@@ -11,6 +11,13 @@ Every string-producing path in this file shares one formatter, so they are
 checked together: a fix that reached only the explicit CAST would leave `||`
 and `concat` spelling the same value differently.
 
+Casting to text is also the ONLY way the sign is checkable from here: the
+comparison contract compares doubles by `repr`, which spells both NaNs
+`nan`, so a DOUBLE output column cannot show a flipped sign to any gate.
+That is a named blind spot -- the "NaN sign and payload" row of
+docs/oracle/10-campaign-validity-and-blind-spots.md (claim: blind-spots,
+claim: repr-equality) -- not an oversight in `confit.compare`.
+
 Which NaN a libm hands back is the platform's business, so nothing here pins
 a libm-produced sign as a constant -- those cases assert engine == oracle and
 no more. The two NaN signs that ARE deterministic get pinned: DuckDB parses
@@ -35,8 +42,8 @@ INF = float("inf")
 DOUBLES = [NAN, -NAN, INF, -INF, -0.0, 0.0, 1.0, 1e300, 1e-5, None]
 
 # The explicit cast, the two implicit ones (`||` and `concat` bind their
-# double operand through the same cast), and a struct field -- the seed-1804
-# shape.
+# double operand through the same cast), and a struct field, which is the
+# shape the divergence was found in (below).
 SQL = (
     "SELECT CAST(d AS VARCHAR) AS c,"
     " d || '|' AS bar,"
@@ -57,9 +64,11 @@ NEG_SQL = (
     " FROM __THIS__"
 )
 
-# The campaign case verbatim: a NaN out of `pow`, rendered inside the
-# struct_pack that first showed the divergence.
-SEED_1804_SQL = (
+# The case that found it, verbatim: a NaN out of `pow(-0.25, 0.1)` rendered
+# inside a struct field, which the differential fuzz campaign (fuzz/runner.py
+# over seeds 0-1999, seed 1804) graded DIVERGE_VALUE -- the engine wrote
+# `nan` into the field where DuckDB wrote `-nan`.
+FOUND_BY_SQL = (
     "SELECT struct_pack(f0 := CAST(pow(-0.25e0, 0.1e0) AS VARCHAR)) AS s FROM __THIS__"
 )
 
@@ -100,8 +109,8 @@ def test_double_to_varchar_carries_the_sign(sql, backend, monkeypatch, oracle):
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
 def test_folded_negative_nan_in_struct_pack(backend, monkeypatch, oracle):
     _force(backend, monkeypatch)
-    got, want = _both(SEED_1804_SQL, [{"d": 1.0}], oracle, backend)
-    compare.assert_rows(got, want, ordered=True, ctx=SEED_1804_SQL)
+    got, want = _both(FOUND_BY_SQL, [{"d": 1.0}], oracle, backend)
+    compare.assert_rows(got, want, ordered=True, ctx=FOUND_BY_SQL)
     # `pow`'s NaN sign is the platform libm's to choose, so only the shape is
     # stated: whichever sign it picks must have reached the text.
     assert want[0]["s"]["f0"] in {"nan", "-nan"}

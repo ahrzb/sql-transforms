@@ -397,8 +397,8 @@ pub(super) fn duck_trunc(x: f64) -> Result<f64, Trap> {
     Ok(x.trunc())
 }
 
-/// The wave-1 f64 unaries as shared fn pointers (Iabs/Fabs/Fround keep
-/// their original arms).
+/// The wave-1 f64 unaries as shared fn pointers (Iabs/Fabs/Fneg/Fround keep
+/// their original arms — each is one machine instruction, not a call).
 pub(super) fn math1_fn(op: NumOp1) -> fn(f64) -> Result<f64, Trap> {
     match op {
         NumOp1::Ln => duck_ln,

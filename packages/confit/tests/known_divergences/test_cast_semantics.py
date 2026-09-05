@@ -80,6 +80,48 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch, or
         fn.infer_rows([{"f": 1e19}])
 
 
+# The trap's TEXT, and the one word of it we do not say. DuckDB writes the
+# offending operand into the message through the same DOUBLE -> VARCHAR
+# writer a CAST AS VARCHAR uses, so the value carries its sign (`-nan`) and
+# DuckDB's exponent spelling (`1e+300`) -- ours is built from the same
+# formatter for exactly that reason.
+#
+# What ours stops short of is DuckDB's last word, the DESTINATION TYPE name
+# (`... for the destination type INT64`). The IR's `ftoi` always lands in the
+# i64 lane whatever width the SQL asked for, so the name is not at the trap
+# site to be printed. Kept, and named in known-limitations.md rather than
+# assumed: the message is DuckDB's, truncated, never a different message.
+_TRAP_VALUES = [1e300, -1e300, float("nan"), float("inf"), float("-inf")]
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize("expr", ["f", "-f"], ids=["plain", "negated"])
+def test_the_out_of_range_cast_trap_quotes_the_value_duckdbs_way(
+    expr, backend, monkeypatch
+):
+    """`-f` is in here because the negation is what makes a NaN's sign
+    observable at all: it must reach the message, not just the rows."""
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    sql = f"SELECT CAST({expr} AS BIGINT) AS i FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": CAST_SCHEMA}, static_tables={})
+    assert fn.backend == backend
+    for v in _TRAP_VALUES:
+        with pytest.raises(ValueError) as ours:
+            fn.infer_rows([{"f": v}])
+        o = Oracle()
+        o.table("__THIS__", "f DOUBLE", [(v,)])
+        theirs = o.try_answer(sql)
+        assert not isinstance(theirs, pa.Table), f"{v}: DuckDB served it"
+        assert theirs.message.startswith(str(ours.value)), (
+            f"{v}: ours is not DuckDB's message truncated\n"
+            f"  ours:  {ours.value}\n  duck:  {theirs.message}"
+        )
+        assert str(ours.value).endswith("for the destination type"), str(ours.value)
+
+
 # The refusal text must not assert DuckDB errors on an input
 # where DuckDB serves a value. Measured 2026-08-15: a numeric string that
 # fits the target is parsed and ROUNDED by DuckDB (both CAST and TRY_CAST);

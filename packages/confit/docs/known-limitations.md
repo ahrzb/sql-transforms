@@ -218,7 +218,11 @@ These are served, but with a consciously chosen surface — know them:
   boundary and in `.df()`. Verified against `.df()` in tests.
 - **Error TEXTS are approximate where noted.** Runtime traps
   (overflow, shifts, substring range) reproduce DuckDB's message bodies
-  verbatim; some bind-time rejections (star-filter zero-match, regex
+  verbatim -- except the out-of-range DOUBLE-to-integer cast, which stops
+  one word short of DuckDB's destination-type name (`... out of range for
+  the destination type` where DuckDB adds ` INT64`): the IR's `ftoi` lands
+  in the i64 lane whatever width the SQL asked for, so the name is not at
+  the trap site. Some bind-time rejections (star-filter zero-match, regex
   compile errors) use our own wording with the same error class. The
   corpus only ever compares successful results, so texts never affect
   parity.
