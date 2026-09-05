@@ -724,7 +724,11 @@ pub fn may_trap(e: &SExpr) -> bool {
         }
         // Arith overflows, CAST fails, ABS traps on i64::MIN, tree_predict
         // rejects an unknown model id — and anything not named above is
-        // simply unclassified. All of it counts as trapping.
+        // simply unclassified. All of it counts as trapping. Total ops land
+        // here too: a sign-bit flip (`MathF1{Fneg}`) cannot trap, so naming
+        // it would ACCEPT single-side residuals this refuses today. That is
+        // a widening, with its own DuckDB timing question to measure, and
+        // deliberately not part of teaching the scan about the node.
         _ => true,
     }
 }

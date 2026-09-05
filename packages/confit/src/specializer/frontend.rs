@@ -1347,10 +1347,25 @@ fn bind_residual(
         scan_residual(&bound, j, &mut right, &mut left, &mut known);
         let total = !may_trap(&bound);
         if !(total || (left && right && known)) {
-            return Err(unsup(format!(
-                "JOIN ON condition '{c}' (single-side residual with trapping \
-                 ops: DuckDB's scan-pushed evaluation order differs)"
-            )));
+            // Two different refusals wear one condition, and the message
+            // has to name the one that actually binds. A residual that
+            // reads BOTH sides would be accepted if the scan had
+            // recognised its shape, so there the classifier is the cause;
+            // anywhere else it is the trapping single-side rule, whether
+            // the scan recognised the shape or not.
+            return Err(unsup(if known || !(left && right) {
+                format!(
+                    "JOIN ON condition '{c}' (single-side residual with \
+                     trapping ops: DuckDB's scan-pushed evaluation order \
+                     differs)"
+                )
+            } else {
+                format!(
+                    "JOIN ON condition '{c}' (contains an expression the \
+                     residual classifier does not recognise, so which side \
+                     it reads is unknown)"
+                )
+            }));
         }
         acc = Some(match acc {
             None => bound,
@@ -3153,12 +3168,8 @@ impl Binder<'_> {
                 op: UnaryOperator::Minus,
                 expr,
             } => {
-                // DuckDB `-x` on a DOUBLE is IEEE negation -- `NegateOperator`
-                // is a plain `-input`, a sign-bit flip -- so it lowers to
-                // Fneg. No subtraction reproduces it: `0.0 - x` loses the
-                // sign of a zero (IEEE `0.0 - 0.0` is +0.0), and `-0.0 - x`
-                // recovers that but still hands a NaN operand's own sign
-                // back, where the flip is observable as text (`-nan`).
+                // A DOUBLE negates with Fneg, a sign-bit flip; no
+                // subtraction reproduces it (`NumOp1` in ir/mod.rs).
                 // Integers keep 0 - x and its i64::MIN trap, which is
                 // DuckDB's own overflow behaviour.
                 // sqlparser parses `-a % b` as `-(a % b)`; DuckDB binds
@@ -3201,6 +3212,18 @@ impl Binder<'_> {
                     return Ok(null_of(Ty::I32));
                 }
                 if inner.ty == Ty::F64 {
+                    // Fold FIRST and hand a folded NULL straight back as a
+                    // NullOf, exactly as `arith` does for every other
+                    // operator: DuckDB's binder folds `- <NULL>` to SQLNULL
+                    // there, and the consumers above read that NULL, not a
+                    // node — `NULL || 'x'` is INTEGER-typed SQLNULL, and
+                    // wrapping the NULL in a live negate would type the ||
+                    // VARCHAR instead. The negate is for VALUES; a NULL has
+                    // no sign to flip.
+                    let inner = fold(inner);
+                    if matches!(inner.kind, SKind::NullOf) {
+                        return Ok(null_of(Ty::F64));
+                    }
                     return Ok(math1_node(NumOp1::Fneg, inner));
                 }
                 let zero = SExpr {

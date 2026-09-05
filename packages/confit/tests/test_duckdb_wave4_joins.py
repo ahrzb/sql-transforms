@@ -219,3 +219,18 @@ def test_single_side_trapping_residual_rejects_cleanly():
             L_ROWS,
             {"r": R},
         )
+
+
+def test_unclassifiable_both_sides_residual_names_the_classifier():
+    # Reads both sides, so the trapping rule would have let it through; what
+    # stops it is a node the residual scan does not recognise. The refusal
+    # has to say so — the reader who is told "single-side" goes looking at
+    # the columns instead of at the scan.
+    with pytest.raises(ValueError, match="does not recognise"):
+        duck_check(
+            "SELECT lid FROM __THIS__ JOIN r ON lid = r.id"
+            " AND r.budget + lid > log(lid)",
+            L,
+            L_ROWS,
+            {"r": R},
+        )

@@ -128,9 +128,8 @@ def test_bigint_and_in_range_literal_arithmetic_still_matches(sql, oracle):
 # could arise: the folded literal `-0.0e0`, runtime `(- x)` at x = 0.0, and
 # any product with a signed zero operand fed through the fold. Observable at
 # any magnitude through division (the sign of infinity) and as text through
-# CAST AS VARCHAR. A FLOAT operand now negates with a sign-bit flip, which is
-# what DuckDB's unary minus is; no subtraction reproduces it, because IEEE
-# subtraction hands a NaN operand's own sign back (see
+# CAST AS VARCHAR. A FLOAT operand now negates with a sign-bit flip, which
+# is what DuckDB's unary minus is and what no subtraction reproduces (see
 # tests/test_double_to_varchar.py). The integer path keeps 0 - x and its
 # i64::MIN trap, matching DuckDB.
 
@@ -159,3 +158,51 @@ def test_negative_zero_keeps_its_sign(sql, rows, backend, monkeypatch, oracle):
     oracle.table("__THIS__", "x DOUBLE", [(r["x"],) for r in rows])
     want = oracle.answer(sql).to_pylist()
     compare.assert_rows(got, want, ctx=sql)
+
+
+# The same negation over a LITERAL NULL, where the answer is a TYPE and not a
+# value. DuckDB folds `- <literal NULL DOUBLE>` to SQLNULL at bind, and
+# SQLNULL is INTEGER wherever nothing else types it -- so `(- NULL) || 'x'`
+# comes back INTEGER there, not VARCHAR, and unary minus over THAT binds
+# (BIGINT) instead of erroring on a string. Every row here is NULL on both
+# engines, so only the schema leg can see the divergence: a lowering that
+# emits a live negate node for the literal NULL leaves a DOUBLE under the ||,
+# which types the concatenation VARCHAR and refuses the two consumers below.
+_NULL_D = "CAST(NULL AS DOUBLE)"
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize(
+    "expr",
+    [
+        f"- {_NULL_D}",
+        f"CAST(- {_NULL_D} AS VARCHAR)",
+        f"(- {_NULL_D}) || 'x'",
+        f"'x' || (- {_NULL_D})",
+        f"(- {_NULL_D}) || x",
+        f"concat(- {_NULL_D}, 'x')",
+        f"struct_pack(v := - {_NULL_D})",
+        # A NULL the FOLDER produces rather than the parser, which is the
+        # only way the short circuit can see it.
+        "(- (CASE WHEN false THEN 1.0e0 END)) || 'x'",
+        # Two consumers of that INTEGER-typed SQLNULL: the shapes that stop
+        # binding at all once the || types as VARCHAR.
+        f"- ((- {_NULL_D}) || 'x')",
+        f"abs((- {_NULL_D}) || 'x')",
+    ],
+)
+def test_negating_a_literal_null_double_stays_a_bind_time_null(
+    expr, backend, monkeypatch, oracle
+):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
+    sql = f"SELECT {expr} AS o0 FROM __THIS__"
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": _NEG_SCHEMA}, static_tables={})
+    got = fn.infer_rows([{"x": 1.0}])
+
+    oracle.table("__THIS__", "x DOUBLE", [(1.0,)])
+    want = oracle.answer(sql)
+    compare.assert_schema(fn.output_schema, want.schema, ctx=sql)
+    compare.assert_rows(got, compare.rows(want), ctx=sql)

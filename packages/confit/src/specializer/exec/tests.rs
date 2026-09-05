@@ -972,8 +972,14 @@ fn fuzz_generated_programs_execute_deterministically() {
             Err(e) => panic!("seed {seed}: generated program failed to compile: {e}"),
         };
         let input = gen_input(&mut rng, &p);
-        let first = run_snapshot(&f, &input);
-        let second = run_snapshot(&f, &input);
+        // On the bits, like the cross-backend differential: "byte-identical"
+        // has to include a NaN's sign and payload, which `{:?}` hides.
+        let run = || {
+            let mut st = f.new_state();
+            f.run(&input, &mut st).map(|_| snapshot_bits(&st))
+        };
+        let first = run();
+        let second = run();
         match (&first, &second) {
             (Ok(a), Ok(b)) => {
                 assert_eq!(a, b, "seed {seed}: nondeterministic output");
@@ -1041,10 +1047,14 @@ fn fuzz_cranelift_agrees_with_interpreter() {
             Ok(f) => f,
             Err(e) => panic!("seed {seed}: cranelift failed to compile: {e}"),
         };
-        // Bit-level on both sides: `{:?}` spells every NaN alike, which
-        // would hide a backend disagreeing about a sign bit — and the sign
-        // is meaning here, since `fneg` flips it and a VARCHAR cast prints
-        // it.
+        // Bit-level on both sides: `{:?}` spells every NaN alike, so a
+        // backend disagreeing about a sign bit would compare equal — and
+        // the sign is meaning, since `fneg` flips it and a VARCHAR cast
+        // prints it. This removes a blind spot; it is not by itself
+        // coverage of any one opcode. Measured for `fneg`: the generator
+        // reaches it a handful of times per 500 seeds and its result never
+        // lands in an output column, so replacing cranelift's `fneg` with a
+        // constant still passes here. The pin below is what catches that.
         let mut sti = fi.new_state();
         let a = fi.run(&input, &mut sti).map(|_| snapshot_bits(&sti));
         let mut st = fc.new_state();
@@ -1062,11 +1072,9 @@ fn fuzz_cranelift_agrees_with_interpreter() {
     );
 }
 
-/// `fneg` on BOTH backends, on the bits: it flips the sign of every double,
-/// a NaN included, which is the whole reason the opcode exists (DuckDB's
-/// unary minus on a DOUBLE is `-input`). A subtraction from a signed zero
-/// agrees on every other value class and cannot stand in here, because IEEE
-/// subtraction hands a NaN operand's OWN sign back.
+/// `fneg` on BOTH backends, on the bits — and the only test that catches a
+/// backend spelling it as a subtraction (see `NumOp1` in ir/mod.rs for why
+/// that is wrong, and the differential above for why it cannot see this).
 ///
 /// The NaNs are built from bit patterns, not from an operation: a defined
 /// constant is the same on every platform, whereas a NaN out of a libm has

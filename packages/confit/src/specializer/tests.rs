@@ -7,7 +7,7 @@
 use super::exec::interp::compile;
 use super::exec::testutil::{batch, c_f64, c_i64, c_str, rows, run_snapshot};
 use super::exec::{KeyBits, ScalarVal, StaticData};
-use super::ir::{parse::parse, print::print, Col, ColTy, Ty};
+use super::ir::{parse::parse, print::print, Col, ColTy, Lit, NumOp1, Ty};
 use super::plan::StaticTable;
 use super::{prepare, PrepareError};
 
@@ -2557,18 +2557,71 @@ fn substr_range_guard_traps_like_duckdb() {
     assert!(err.contains("offset outside"), "got: {err}");
 }
 
+/// The two quiet NaNs, by their bits. Nothing here may be spelled
+/// `f64::NAN`: these tests assert which side of the `-` a NaN lands on, and
+/// `f64::NAN`'s own sign bit is not part of its contract (the same reason
+/// ir/parse.rs takes the sign from the token).
+const POS_NAN: f64 = f64::from_bits(0x7FF8_0000_0000_0000);
+const NEG_NAN: f64 = f64::from_bits(0xFFF8_0000_0000_0000);
+
+#[test]
+fn negating_a_double_constant_folds_to_the_flipped_bits() {
+    use super::fold::fold;
+    use super::plan::{SExpr, SKind};
+    let f64_lit = |v: f64| SExpr {
+        kind: SKind::Lit(Lit::F64(v)),
+        ty: Ty::F64,
+        nullable: false,
+    };
+    let neg = |inner: SExpr| {
+        fold(SExpr {
+            kind: SKind::MathF1 {
+                op: NumOp1::Fneg,
+                a: Box::new(inner),
+            },
+            ty: Ty::F64,
+            nullable: false,
+        })
+    };
+    // Exact, so the fold is allowed to run at all: bit for bit what the
+    // instruction would produce, on the value classes where "negate" and
+    // "subtract from a zero" part company.
+    for (input, want) in [
+        (2.5, -2.5),
+        (0.0, -0.0),
+        (-0.0, 0.0),
+        (POS_NAN, NEG_NAN),
+        (NEG_NAN, POS_NAN),
+    ] {
+        match neg(f64_lit(input)).kind {
+            SKind::Lit(Lit::F64(got)) => assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "fold(-{input:?}): {got:?} != {want:?}"
+            ),
+            _ => panic!("fold(-{input:?}) did not fold to a literal"),
+        }
+    }
+    // A NULL has no sign to flip, and folds to the typed NULL.
+    let null = SExpr {
+        kind: SKind::NullOf,
+        ty: Ty::F64,
+        nullable: true,
+    };
+    assert!(matches!(neg(null).kind, SKind::NullOf));
+}
+
 #[test]
 fn float_to_varchar_matches_duckdb_rendering() {
     // Pins: explicit exponent sign, two-digit minimum, lowercase nan, and
-    // the sign bit reaching the text on every form that carries one — nan
-    // included, which is where DuckDB's signbit-first float writer parts
-    // company with Rust's `{:?}`.
+    // the sign bit reaching the text on every form that carries one — see
+    // `DuckF64` in exec/kernels.rs for why a NaN carries one at all.
     let schema = cols(&[("x", Ty::F64, false)]);
     let vals = [
         Some(1e300),
         Some(1e-5),
-        Some(f64::NAN),
-        Some(-f64::NAN),
+        Some(POS_NAN),
+        Some(NEG_NAN),
         Some(f64::INFINITY),
         Some(f64::NEG_INFINITY),
         Some(-0.0),
@@ -2597,15 +2650,13 @@ fn float_to_varchar_matches_duckdb_rendering() {
 
 #[test]
 fn unary_minus_on_a_double_flips_the_sign_bit() {
-    // DuckDB's unary minus on a DOUBLE is `-input`, an unconditional
-    // sign-bit flip. Subtracting from a zero cannot stand in for it: IEEE
-    // subtraction returns a NaN operand with its OWN sign, so `-0.0 - nan`
-    // is `nan` where DuckDB says `-nan`. Rendering the result is what makes
-    // the difference observable — every other value class agrees either way.
+    // Why a flip and not a subtraction: `NumOp1::Fneg` in ir/mod.rs.
+    // Rendering the result is what makes the difference observable — every
+    // other value class agrees either way.
     let schema = cols(&[("x", Ty::F64, false)]);
     let vals = [
-        Some(f64::NAN),
-        Some(-f64::NAN),
+        Some(POS_NAN),
+        Some(NEG_NAN),
         Some(f64::INFINITY),
         Some(f64::NEG_INFINITY),
         Some(0.0),
