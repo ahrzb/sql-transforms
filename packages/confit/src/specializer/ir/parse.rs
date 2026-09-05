@@ -246,10 +246,10 @@ fn lex(text: &str) -> Result<Vec<(Tok, u32)>, ParseError> {
                         let num = take_number(&mut chars);
                         out.push((Tok::Num(format!("-{num}")), line));
                     }
-                    Some('i') => {
+                    Some('i') | Some('n') => {
                         let word = take_ident(&mut chars);
-                        if word == "inf" {
-                            out.push((Tok::Num("-inf".to_string()), line));
+                        if word == "inf" || word == "nan" {
+                            out.push((Tok::Num(format!("-{word}")), line));
                         } else {
                             return Err(ParseError {
                                 line,
@@ -1712,16 +1712,17 @@ impl Parser {
 
     fn f64_literal(&mut self) -> Result<f64, ParseError> {
         match self.bump() {
-            Tok::Num(s) => {
-                if s == "-inf" {
-                    Ok(f64::NEG_INFINITY)
-                } else {
-                    s.parse::<f64>()
-                        .map_err(|_| self.err(format!("bad float literal '{s}'")))
-                }
-            }
+            Tok::Num(s) => match s.as_str() {
+                "-inf" => Ok(f64::NEG_INFINITY),
+                // The sign is taken from the token, never inherited from
+                // `f64::NAN`, whose own sign bit is not part of its contract.
+                "-nan" => Ok(f64::NAN.copysign(-1.0)),
+                _ => s
+                    .parse::<f64>()
+                    .map_err(|_| self.err(format!("bad float literal '{s}'"))),
+            },
             Tok::Ident(s) if s == "inf" => Ok(f64::INFINITY),
-            Tok::Ident(s) if s == "nan" => Ok(f64::NAN),
+            Tok::Ident(s) if s == "nan" => Ok(f64::NAN.copysign(1.0)),
             other => Err(self.err(format!("expected a float literal, found {}", other.show()))),
         }
     }
