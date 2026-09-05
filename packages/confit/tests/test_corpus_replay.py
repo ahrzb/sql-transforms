@@ -17,7 +17,11 @@ classifies:
 
 The gate requires zero FAILs. The match count is the growth ladder: every
 construct the engine learns flips cases from clean-unsupported to match
-(see scripts/mine_duckdb_corpus.py).
+(see scripts/mine_duckdb_corpus.py). MATCH_FLOOR gates that ladder the way
+the dialect gate's SUPPORTED_FLOOR gates its own -- raise it when the
+surface grows, never lower it. A tightening that legitimately gives a case
+back moves the floor down only with the reason written next to it, which is
+the whole point: the count may not shrink SILENTLY.
 """
 
 from __future__ import annotations
@@ -31,6 +35,16 @@ from confit import DuckDBInferFn
 from confit.oracle import Oracle
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
+
+# Measured. The ladder's stage-B rung read 550; the arrow row surface then
+# bound every column at its DECLARED width instead of collapsing it to a
+# width-less int64, and the three UTINYINT/USMALLINT/UINTEGER join-key
+# statements of test/sql/join/inner/equality_join_limits.test stopped
+# matching -- correctly, because DuckDB answers them UTINYINT/USMALLINT/
+# UINTEGER and this engine has no unsigned lane, so what looked like a match
+# was a value comparison over a diverging output TYPE. A drop below this is
+# a regression.
+MATCH_FLOOR = 547
 
 # Build-time errors that are documented v0 contract limits, not bugs.
 _CLEAN = ("unsupported:", "parse error:", "duplicate map key", "NULL in value column")
@@ -187,4 +201,9 @@ def test_corpus_replay_three_outcomes():
         f"{len(fails)} corpus FAILs "
         f"({counts['match']} match / {counts['unsupported']} unsupported):\n"
         + "\n".join(fails[:25])
+    )
+    assert counts["match"] >= MATCH_FLOOR, (
+        f"corpus match count fell to {counts['match']}, below the "
+        f"{MATCH_FLOOR} floor -- name the construct that stopped matching "
+        f"and why before moving the floor"
     )

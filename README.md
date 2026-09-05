@@ -109,7 +109,7 @@ raises and names the construct it will not serve — see
 The expression surface, joins to static tables, the row-shape contract
 (`map`/`filter`/`many`) and the Arrow boundary are documented in
 [`packages/confit`](packages/confit) and
-[packages/confit/docs/known-limitations.md](packages/confit/docs/known-limitations.md): **550 of 678** statements
+[packages/confit/docs/known-limitations.md](packages/confit/docs/known-limitations.md): **547 of 678** statements
 mined from DuckDB's own test suite replay bit-exact, with the remainder clean,
 named build-time rejections.
 
