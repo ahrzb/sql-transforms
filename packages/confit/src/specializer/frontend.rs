@@ -2261,6 +2261,122 @@ pub(crate) fn row_limit_clause(sql: &str) -> Option<&'static str> {
     })
 }
 
+/// The two halves of the tie probe: a query to wrap, and the keys to group
+/// its rows by. Rows landing in one group are rows the ORDER BY leaves in an
+/// order the query does not state.
+pub(crate) struct TieProbe {
+    /// The original SQL, or a copy carrying the sort keys as extra columns.
+    pub(crate) inner: String,
+    /// Already-quoted column references into `inner`'s result.
+    pub(crate) keys: Vec<String>,
+}
+
+/// The sort keys of a static-tables-only query, as the probe that asks
+/// DuckDB whether any two rows tie on them. The constant emitter freezes ONE
+/// evaluation, and a tie is an order the query does not fix, so it may not be
+/// frozen (goal.md exclusion: whole-relation-shapes).
+///
+/// `None`: nothing to test — no top-level ORDER BY (an inner one orders no
+/// output), or SQL that does not parse here, which falls through to DuckDB as
+/// before, the way a row limit does. `Err`: the keys cannot be re-projected
+/// and the caller must refuse, because a key that cannot be measured is a tie
+/// that cannot be ruled out.
+///
+/// Keys resolve as DuckDB resolves them (measured): an integer is a position
+/// in the output; a bare name is the OUTPUT alias when one matches, and a
+/// column of the input otherwise; anything else is an expression over the
+/// input. The first two are read off the frozen result. The rest have to be
+/// computed where the ORDER BY computes them, so they join that query's own
+/// projection under a generated name -- in the SELECT list a real column
+/// wins over a same-named alias (measured), so a name that IS an output
+/// column must never take this path.
+pub(crate) fn order_by_tie_probe(
+    sql: &str,
+    out_names: &[String],
+) -> Option<Result<TieProbe, &'static str>> {
+    use sqlparser::ast::{Ident, OrderByKind};
+
+    fn quoted(name: &str) -> String {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+
+    let dialect = GenericDialect {};
+    let statements = Parser::new(&dialect).try_with_sql(sql).ok()?.parse_statements().ok()?;
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return None;
+    };
+    let exprs = match &query.order_by.as_ref()?.kind {
+        // ORDER BY ALL sorts by every output column, so a tie is a repeated
+        // output row.
+        OrderByKind::All(_) => {
+            return Some(Ok(TieProbe {
+                inner: sql.to_string(),
+                keys: out_names.iter().map(|n| quoted(n)).collect(),
+            }));
+        }
+        OrderByKind::Expressions(exprs) => exprs,
+    };
+    let mut keys = Vec::with_capacity(exprs.len());
+    let mut hidden = Vec::new();
+    for (i, ob) in exprs.iter().enumerate() {
+        let out_col = match &ob.expr {
+            SqlExpr::Value(v) => match &v.value {
+                // A position out of range is a query DuckDB itself refuses,
+                // so it never reaches a frozen result; any other literal is a
+                // constant key, which is the `hidden` arm and ties everything.
+                SqlValue::Number(text, _) => text
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|p| out_names.get(p.checked_sub(1)?)),
+                _ => None,
+            },
+            SqlExpr::Identifier(id) => {
+                out_names.iter().find(|n| n.eq_ignore_ascii_case(&id.value))
+            }
+            _ => None,
+        };
+        match out_col {
+            Some(name) => keys.push(quoted(name)),
+            None => {
+                let alias = format!("__confit_k{i}");
+                keys.push(quoted(&alias));
+                hidden.push((alias, ob.expr.clone()));
+            }
+        }
+    }
+    if hidden.is_empty() {
+        return Some(Ok(TieProbe {
+            inner: sql.to_string(),
+            keys,
+        }));
+    }
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        // A set operation sorts by its OUTPUT columns, and a key that is not
+        // one of them has no projection to join.
+        return Some(Err("a sort key that is not one of its output columns"));
+    };
+    if select.distinct.is_some() {
+        // An added column changes what DISTINCT collapses, and with it the
+        // rows whose keys would be compared.
+        return Some(Err("DISTINCT and a sort key outside its output"));
+    }
+    let mut probe = query.as_ref().clone();
+    probe.order_by = None;
+    let SetExpr::Select(select) = probe.body.as_mut() else {
+        unreachable!("the body was just matched as a SELECT")
+    };
+    for (alias, expr) in hidden {
+        select.projection.push(SelectItem::ExprWithAlias {
+            expr,
+            alias: Ident::new(alias),
+        });
+    }
+    Some(Ok(TieProbe {
+        inner: probe.to_string(),
+        keys,
+    }))
+}
+
 /// `AS x(p, q)` on a joined relation: a positional rename over the DECLARED
 /// columns (the star list), the same rule the driving-table arm applies. A
 /// PARTIAL list is legal (prefix rename); more names than declared columns is

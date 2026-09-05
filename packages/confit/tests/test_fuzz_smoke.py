@@ -77,6 +77,16 @@ def test_planted_over_modifier_diverges_or_refuses():
     assert v.kind in ("DIVERGE_BUILD", "REFUSED"), v
 
 
+def test_planted_static_only_tie_order_refuses_under_its_own_name():
+    """A refusal the campaign reports has to arrive as REFUSED under a class
+    of its own, or it hides in another refusal's bucket. This one is planted
+    because the grammar cannot reach it (gen.planted_tie_order_case says
+    why), so the campaign would otherwise never see the shape at all."""
+    v = oracle.run_case(gen.planted_tie_order_case())
+    assert v.kind == "REFUSED", v
+    assert v.klass == "unsupported: tie-producing ORDER BY on a", v
+
+
 def _decimal_lit_case(pack: bool) -> gen.Case:
     """A bare decimal literal: DuckDB types `1.5` as DECIMAL(2,1) and we map
     it to f64, decimal arithmetic being unshipped. `pack` puts the literal in

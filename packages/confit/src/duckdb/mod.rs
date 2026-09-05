@@ -1170,16 +1170,34 @@ fn materialize_statics(
     Ok(data)
 }
 
+/// A frozen ORDER BY that leaves two rows tied: the query states no order
+/// between them, so two builds of the same function could freeze different
+/// sequences (goal.md exclusion: whole-relation-shapes).
+const TIE_ORDER_REFUSAL: &str = "unsupported: tie-producing ORDER BY on a \
+     static-tables-only query -- which of the tied rows comes first depends \
+     on scan order, not the query";
+
+/// The same refusal when the keys could not be measured at all: an unruled-out
+/// tie is refused like a found one. `why` names what stopped the reading.
+fn unmeasurable_order_refusal(why: &str) -> String {
+    format!(
+        "unsupported: ORDER BY on a static-tables-only query with {why} -- a \
+         tie among its rows could not be ruled out, and which of two tied rows \
+         comes first depends on scan order, not the query"
+    )
+}
+
 /// The constant emitter: a static-tables-only query is evaluated ONCE, here
 /// at build time, by DuckDB itself — nothing dynamic remains and no IR is
 /// built at all. Statics materialize as native tables (duckdb's
 /// registered-arrow scan path has divergent filter semantics — see the
-/// builtin-pins spec). Returns the fixed row dicts plus the result schema.
+/// builtin-pins spec). Returns the fixed row dicts plus the result schema, or
+/// the refusal message for a frozen order the query does not fix.
 fn eval_static_only(
     py: Python<'_>,
     sql: &str,
     static_tables: &HashMap<String, Py<PyAny>>,
-) -> PyResult<(Vec<Py<PyAny>>, Py<PyAny>)> {
+) -> PyResult<Result<(Vec<Py<PyAny>>, Py<PyAny>), String>> {
     let duckdb = PyModule::import(py, "duckdb")?;
     let con = duckdb.call_method0("connect")?;
     for (name, table) in static_tables {
@@ -1194,12 +1212,43 @@ fn eval_static_only(
     let arrow = con
         .call_method1("execute", (sql,))?
         .call_method0("to_arrow_table")?;
-    let schema_obj = arrow.getattr("schema")?.unbind();
+    let schema = arrow.getattr("schema")?;
+    // A row limit refuses because which rows survive is not a function of the
+    // query; the same rule reaches an ORDER BY that leaves rows tied, so the
+    // question goes to DuckDB itself, on this connection, over the result it
+    // just produced. Fewer than two rows cannot tie.
     let mut rows = Vec::new();
     for r in arrow.call_method0("to_pylist")?.try_iter()? {
         rows.push(r?.unbind());
     }
-    Ok((rows, schema_obj))
+    if rows.len() > 1 {
+        let names: Vec<String> = schema.getattr("names")?.extract()?;
+        if let Some(probe) = crate::specializer::frontend::order_by_tie_probe(sql, &names) {
+            let probe = match probe {
+                Ok(p) => p,
+                Err(why) => return Ok(Err(unmeasurable_order_refusal(why))),
+            };
+            let sql = format!(
+                "SELECT 1 FROM ({}) AS __confit_t GROUP BY {} HAVING count(*) > 1",
+                probe.inner,
+                probe.keys.join(", ")
+            );
+            match con.call_method1("execute", (sql,)) {
+                // One group of two is one pair of rows in no stated order.
+                Ok(cur) => {
+                    if !cur.call_method0("fetchone")?.is_none() {
+                        return Ok(Err(TIE_ORDER_REFUSAL.to_string()));
+                    }
+                }
+                Err(_) => {
+                    return Ok(Err(unmeasurable_order_refusal(
+                        "a sort key DuckDB would not re-project",
+                    )));
+                }
+            }
+        }
+    }
+    Ok(Ok((rows, schema.unbind())))
 }
 
 /// The execution backend: cranelift when it compiles, the interpreter as
@@ -1724,7 +1773,10 @@ impl DuckDBInferFn {
                     )));
                 }
                 match eval_static_only(py, &sql, &static_tables) {
-                    Ok((rows, schema)) => {
+                    // A refusal the fold itself decided: it names the frozen
+                    // query, not the prepare error that got us here.
+                    Ok(Err(msg)) => return Err(build_err(msg)),
+                    Ok(Ok((rows, schema))) => {
                         if strict_map {
                             // Fixed rows regardless of input — the exact
                             // opposite of out[i] <-> in[i].

@@ -108,8 +108,11 @@ one-row-in/one-row-out:
 
 The exception is a **static-tables-only query** (nothing dynamic remains):
 it is evaluated once at build by DuckDB itself and frozen, so aggregation,
-`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. One carve-out
-(TASK-128, decided 2026-08-19): a **row limit refuses** — `LIMIT`, `OFFSET`,
+`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. Two
+carve-outs, and one rule under both: what a whole-relation construct selects
+may be frozen only when it is a function of the query.
+
+A **row limit refuses** (TASK-128, decided 2026-08-19) — `LIMIT`, `OFFSET`,
 `FETCH`, `TOP`, anywhere in the statement, `ORDER BY` or not. Which rows
 survive a limit is not a function of the query: measured, the same
 `GROUP BY … FETCH FIRST 1 ROWS ONLY` over the same four rows answered
@@ -118,6 +121,16 @@ not fix ties (a tie fed from a `GROUP BY` flipped in 20 runs). Freezing
 whichever answer the build-time run happened to get would make two builds of
 the same function disagree with each other. You'll see:
 `row limit (LIMIT/OFFSET) on a static-tables-only query`.
+
+A **tie-producing `ORDER BY` refuses**, by the same rule: two rows that tie
+on the sort keys are left in an order the query does not state, so freezing
+whichever sequence this build's run produced would let two builds disagree.
+Ties are measured at build, by DuckDB, over the result it has just frozen —
+so an `ORDER BY` whose keys separate every row serves exactly as before, and
+zero-row and one-row results cannot tie. `NULL` and `NaN` are ordinary
+tie-capable values, and the tie is read off the KEYS, so two rows that carry
+equal values everywhere refuse too. You'll see:
+`tie-producing ORDER BY on a static-tables-only query`.
 
 ## 3. Type-system boundaries
 

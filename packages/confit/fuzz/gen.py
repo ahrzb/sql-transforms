@@ -1312,6 +1312,48 @@ def _walk(n: Node):
         yield from _walk(k)
 
 
+def planted_tie_order_case() -> Case:
+    """The planted static-tables-only tie: two groups total the same, and the
+    ORDER BY says nothing about which of them comes first. The constant
+    emitter freezes ONE DuckDB evaluation, so an order the query does not
+    state may not be frozen, and the verdict is REFUSED.
+
+    Planted because the grammar cannot reach it: a generated ORDER BY is
+    always the FIRST output item's alias, which in a static-only case is
+    either the group key (unique by construction) or the lone aggregate of a
+    one-row result -- neither can tie. Measured over seeds 0-39999: 28
+    static-only ORDER BY cases, no tie among them."""
+    q = Q(
+        [],
+        Sel(
+            [
+                (Col("g", None, "str"), "o"),
+                (Call("sum", [Col("v", None, "int")]), "t"),
+            ],
+            "ties",
+        ),
+    )
+    q.body.group_by = [Col("g", None, "str")]
+    q.body.order_by = "t"
+    return Case(
+        -1,
+        {"k": "int"},
+        [{"k": 1}],
+        {
+            "ties": (
+                {"g": "string", "v": "int64"},
+                [{"g": "x", "v": 1}, {"g": "y", "v": 1}, {"g": "z", "v": 2}],
+            )
+        },
+        [],
+        None,
+        q,
+        None,
+        None,
+        ["planted_tie_order"],
+    )
+
+
 def planted_over_case() -> Case:
     """The planted case that must never come back AGREE: `abs(k) OVER ()` is
     a call-node modifier on a scalar call, which DuckDB refuses. Confit
