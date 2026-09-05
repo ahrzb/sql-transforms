@@ -108,16 +108,52 @@ one-row-in/one-row-out:
 
 The exception is a **static-tables-only query** (nothing dynamic remains):
 it is evaluated once at build by DuckDB itself and frozen, so aggregation,
-`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. One carve-out
-(TASK-128, decided 2026-08-19): a **row limit refuses** — `LIMIT`, `OFFSET`,
-`FETCH`, `TOP`, anywhere in the statement, `ORDER BY` or not. Which rows
-survive a limit is not a function of the query: measured, the same
-`GROUP BY … FETCH FIRST 1 ROWS ONLY` over the same four rows answered
-**four different ways across twelve fresh connections**, and `ORDER BY` does
-not fix ties (a tie fed from a `GROUP BY` flipped in 20 runs). Freezing
-whichever answer the build-time run happened to get would make two builds of
-the same function disagree with each other. You'll see:
-`row limit (LIMIT/OFFSET) on a static-tables-only query`.
+`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. Two
+carve-outs, and one rule under both: what a whole-relation construct selects
+may be frozen only when it is a function of the query.
+
+**Selection by position refuses** — `LIMIT`, `OFFSET`, `FETCH`, `TOP`,
+`USING SAMPLE`, `DISTINCT ON`, `QUALIFY`, and the row-position window
+functions (`row_number`, `ntile`, `lead`, `lag`, `first_value`, `last_value`,
+`nth_value`) — anywhere in the statement, `ORDER BY` or not (row limits
+decided 2026-08-19). Which rows survive is not a function of the query:
+measured over a 60k-row static table fed through a tying `GROUP BY`, the same
+statement under five DuckDB settings a build machine picks for itself
+(default, `threads` 1/2/8, `preserve_insertion_order=false`) answered a
+`LIMIT` in a derived table **four ways**, one in a CTE **five**, `DISTINCT ON`
+**five**, `QUALIFY` over `row_number()` **five**, `row_number()` over tied
+keys **five**, and `USING SAMPLE` differently on **all twelve of twelve fresh
+connections**. Freezing whichever answer the build-time run happened to get
+would make two builds of the same function disagree with each other. You'll
+see: `row limit (LIMIT/OFFSET) on a static-tables-only query`,
+`DISTINCT ON on a static-tables-only query`, and their kind.
+
+A **tie-producing `ORDER BY` refuses**, by the same rule: two rows that tie
+on the sort keys are left in an order the query does not state, so freezing
+whichever sequence this build's run produced would let two builds disagree
+(measured: five sequences under those same five settings). Ties are measured
+at build, by DuckDB, over the result it has just frozen — so an `ORDER BY`
+whose keys separate every row serves exactly as before, and zero-row and
+one-row results cannot tie. `NULL` and `NaN` are ordinary tie-capable values,
+and the tie is read off the KEYS, so two rows that carry equal values
+everywhere refuse too. A key the output does not carry is added to the
+query's own projection and measured there; where it cannot be (a `DISTINCT`
+would collapse a different tuple), the query refuses rather than guess.
+You'll see: `tie-producing ORDER BY on a static-tables-only query`.
+
+An **`ORDER BY` below the top serves**, and always has: row order on this
+path is not part of the contract at all (see the nondeterminism chapter of
+the oracle spec — the differential compares static-only results as an
+unordered multiset), so an inner sort orders nothing anybody was promised.
+Measured, it moved the sequence and left the row SET identical under all
+five settings.
+
+All of the above is read off **DuckDB's own parse** of the statement
+(`json_serialize_sql`), because this carve-out exists for the DuckDB dialect
+another parser cannot read. A statement DuckDB runs but will not serialize —
+`PIVOT` is one — is read by its TOKENS instead, and any of those words in it
+refuses rather than falling silent:
+`ORDER BY in a statement DuckDB would not expose for inspection`.
 
 ## 3. Type-system boundaries
 

@@ -1170,18 +1170,414 @@ fn materialize_statics(
     Ok(data)
 }
 
+/// A frozen ORDER BY that leaves two rows tied: the query states no order
+/// between them, so two builds of the same function could freeze different
+/// sequences (goal.md exclusion: whole-relation-shapes).
+const TIE_ORDER_REFUSAL: &str = "unsupported: tie-producing ORDER BY on a \
+     static-tables-only query -- which of the tied rows comes first depends \
+     on scan order, not the query";
+
+/// The same refusal when the keys could not be measured at all: an unruled-out
+/// tie is refused like a found one. `why` names what stopped the reading.
+fn unmeasurable_order_refusal(why: &str) -> String {
+    format!(
+        "unsupported: {why} on a static-tables-only query -- a tie among its \
+         rows could not be ruled out, and which of two tied rows comes first \
+         depends on scan order, not the query"
+    )
+}
+
+/// A clause that keeps only some of the rows. `clause` is the clause as the
+/// statement spells it, so the message quotes the query back.
+fn row_limit_refusal(clause: &str) -> String {
+    format!(
+        "unsupported: row limit ({clause}) on a static-tables-only query -- \
+         which rows survive depends on scan order, not the query"
+    )
+}
+
+/// A shape whose answer follows scan position: it picks one row out of a
+/// group, or numbers rows, and the query says nothing about which row that
+/// is. `shape` names it, so the refusal points at the clause to remove.
+fn positional_refusal(shape: &str) -> String {
+    format!(
+        "unsupported: {shape} on a static-tables-only query -- what it picks \
+         out of the rows depends on scan order, not the query"
+    )
+}
+
+/// A statement DuckDB runs but will not hand back for inspection. Nothing
+/// can be ruled out about a shape that cannot be read, so the word that
+/// raised the question is named and the query refuses.
+fn unreadable_refusal(word: &str) -> String {
+    format!(
+        "unsupported: {word} in a statement DuckDB would not expose for \
+         inspection -- what a static-tables-only query selects may be frozen \
+         only when it is a function of the query, and this shape could not be \
+         read"
+    )
+}
+
+/// What DuckDB's own parse of a statement says about the shapes a constant
+/// fold may not freeze.
+struct Shapes {
+    /// The row-limiting clause, spelled the way the statement spells it.
+    row_limit: Option<&'static str>,
+    /// A positional shape, as the whole refusal it earns.
+    positional: Option<String>,
+    /// Whether the sort keys can be read at all: false when DuckDB would not
+    /// serialize the statement, in which case `positional` already carries a
+    /// refusal for any ordering word the tokens showed.
+    readable: bool,
+}
+
+/// The shapes of a statement, read off DuckDB's OWN parse of it.
+///
+/// A static-tables-only query is evaluated once at build and frozen, and what
+/// a whole-relation construct selects may be frozen only when it is a
+/// function of the query (goal.md exclusion: whole-relation-shapes). Measured
+/// over a 60k-row static table fed through a tying `GROUP BY`, the same
+/// statement under five DuckDB settings a build machine picks for itself
+/// (default, `threads` 1/2/8, `preserve_insertion_order=false`) answered: a
+/// `LIMIT` in a derived table four ways, in a CTE five, `DISTINCT ON` five,
+/// `QUALIFY` over `row_number()` five, `row_number()` over tied keys five,
+/// and `USING SAMPLE` differently on all twelve of twelve fresh connections.
+/// None of those is a function of the query, so all of them refuse.
+///
+/// The reading is DuckDB's because this carve-out exists FOR DuckDB syntax:
+/// `json_serialize_sql` is the parser that will run the query, so no clause
+/// can hide behind dialect another parser has never seen. Its output is
+/// minified and JSON-escaped, so the markers below can only come from real
+/// structure — a string literal spelling one out arrives with its quotes
+/// escaped and cannot forge one (measured).
+///
+/// When DuckDB will not serialize a statement it still runs — `PIVOT` is one
+/// — the reading falls back to DuckDB's TOKENS, and that fallback refuses
+/// rather than falling silent: a shape nobody could read is a shape nobody
+/// ruled out.
+fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Shapes> {
+    /// One round trip: the parse status, and every marker the scan turns on,
+    /// gathered from anywhere in the tree by JSON recursive descent.
+    const SHAPE_SQL: &str = "SELECT json_extract(j, '$.error')::VARCHAR, \
+         json_array_length(json_extract(j, '$.statements')), \
+         json_extract(j, '$..type')::VARCHAR, \
+         json_extract(j, '$..qualify')::VARCHAR, \
+         json_extract(j, '$..sample')::VARCHAR, \
+         json_extract(j, '$..distinct_on_targets')::VARCHAR \
+         FROM (SELECT json_serialize_sql(?) AS j)";
+    /// Window functions whose value is a row's POSITION among its peers.
+    /// `rank` and its family are functions of the key and stay out; a plain
+    /// aggregate over a whole partition is a set and stays out too.
+    const POSITIONAL_WINDOWS: [&str; 7] = [
+        "\"WINDOW_ROW_NUMBER\"",
+        "\"WINDOW_NTILE\"",
+        "\"WINDOW_FIRST_VALUE\"",
+        "\"WINDOW_LAST_VALUE\"",
+        "\"WINDOW_NTH_VALUE\"",
+        "\"WINDOW_LEAD\"",
+        "\"WINDOW_LAG\"",
+    ];
+
+    // The clause NAME always comes from the tokens: DuckDB's parse folds
+    // LIMIT, OFFSET and FETCH into one node, and the message quotes back the
+    // clause the query actually wrote.
+    let (limit_word, other_word) = ordering_words(py, sql)?;
+    let row = con
+        .call_method1("execute", (SHAPE_SQL, (sql,)))?
+        .call_method0("fetchone")?;
+    let (error, n_statements, types, qualify, sample, distinct_on): (
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = row.extract()?;
+    // A serialized value object opens with a brace; the absence of one is
+    // DuckDB's `null` for that field, and an empty DISTINCT list is plain
+    // DISTINCT, which collapses a set rather than picking out of a group.
+    let present = |field: &Option<String>| field.as_deref().is_some_and(|s| s.contains('{'));
+    if error.as_deref() != Some("false") || n_statements != Some(1) {
+        return Ok(Shapes {
+            row_limit: limit_word,
+            positional: other_word.map(unreadable_refusal),
+            readable: false,
+        });
+    }
+    let types = types.unwrap_or_default();
+    let row_limit = types
+        .contains("\"LIMIT_")
+        .then(|| limit_word.unwrap_or("LIMIT/OFFSET"));
+    let positional = if present(&sample) {
+        // A sample keeps a share of the rows, which is a row limit — but it
+        // is answered on the far side of the fold, because the row path has
+        // its own name for the clause and owes the caller that one.
+        Some(row_limit_refusal("USING SAMPLE"))
+    } else if present(&distinct_on) {
+        Some(positional_refusal("DISTINCT ON"))
+    } else if present(&qualify) {
+        Some(positional_refusal("QUALIFY"))
+    } else if POSITIONAL_WINDOWS.iter().any(|w| types.contains(w)) {
+        Some(positional_refusal(
+            "a row-position window function (row_number/ntile/lead/lag/first_value/last_value/nth_value)",
+        ))
+    } else {
+        None
+    };
+    Ok(Shapes {
+        row_limit,
+        positional,
+        readable: true,
+    })
+}
+
+/// The clause words a statement spells, from DuckDB's own tokenizer: the
+/// first row-limiting one, and the first that raises a question about order.
+///
+/// The tokenizer, not the text: a string literal or a quoted identifier
+/// keeps its quotes in the token's own span, so `'limit'` and `"limit"`
+/// cannot be mistaken for the clause. `TOP` arrives as an identifier because
+/// DuckDB has no such clause at all — which is exactly the statement whose
+/// shape nothing else can read.
+fn ordering_words(
+    py: Python<'_>,
+    sql: &str,
+) -> PyResult<(Option<&'static str>, Option<&'static str>)> {
+    let toks: Vec<(usize, Bound<'_, PyAny>)> = PyModule::import(py, "duckdb")?
+        .call_method1("tokenize", (sql,))?
+        .extract()?;
+    let mut limit = None;
+    let mut other = None;
+    for (i, (start, kind)) in toks.iter().enumerate() {
+        // 2 is duckdb.token_type.string_const, whose span swallows any
+        // trailing comment; every other token starts with its own word.
+        if kind.getattr("value")?.extract::<i64>()? == 2 {
+            continue;
+        }
+        let end = toks.get(i + 1).map_or(sql.len(), |(s, _)| *s);
+        let Some(word) = sql.get(*start..end).and_then(|s| s.split_whitespace().next()) else {
+            continue;
+        };
+        let word = word.to_ascii_uppercase();
+        let named = match word.as_str() {
+            "TOP" => Some("SELECT TOP"),
+            "FETCH" => Some("FETCH FIRST/NEXT"),
+            "LIMIT" | "OFFSET" => Some("LIMIT/OFFSET"),
+            _ => None,
+        };
+        if named.is_some() {
+            limit = limit.or(named);
+            continue;
+        }
+        other = other.or(match word.as_str() {
+            "ORDER" => Some("ORDER BY"),
+            "DISTINCT" => Some("DISTINCT"),
+            "QUALIFY" => Some("QUALIFY"),
+            "OVER" => Some("OVER"),
+            "SAMPLE" | "TABLESAMPLE" => Some("USING SAMPLE"),
+            _ => None,
+        });
+    }
+    Ok((limit, other))
+}
+
+/// Where one sort key can be read: off the frozen result, or only by
+/// computing it where the ORDER BY computes it.
+enum OrderKey {
+    /// A column of the frozen result, by POSITION — so two output columns
+    /// sharing a name are still two distinct, measurable keys.
+    Out(usize),
+    /// A key the result does not carry, named by its place in the ORDER BY.
+    Hidden(usize),
+}
+
+/// The query whose rows carry every sort key, and the keys to group them by:
+/// the probe that asks DuckDB whether the top-level ORDER BY leaves two rows
+/// in an order the query does not state. `None` when the query sorts nothing;
+/// `Err` names what stopped the reading, and an unruled-out tie refuses like
+/// a found one.
+///
+/// Keys resolve as DuckDB resolves them, off DuckDB's own reading: an integer
+/// literal is a position; `ALL` is every output column (and arrives as the
+/// star it is, so a column actually NAMED `all` is not mistaken for it); a
+/// bare name is the output alias when one matches, case-insensitively.
+/// Anything else is computed over the query's own input, so it is added to
+/// that query's projection — by rewriting DuckDB's parse of the statement and
+/// asking DuckDB to print it back, which is why syntax no other parser reads
+/// still measures. Its resolution is unchanged by the move: a bare name that
+/// is not an output alias means the input column in both places.
+///
+/// An ORDER BY below the top is not read at all: it orders nothing that this
+/// path promises. Row order on the constant path is not part of the contract
+/// — the differential compares static-only results as an unordered multiset
+/// (`fuzz/oracle.py` compare_mode `constant-unordered`, and the oracle spec's
+/// nondeterminism chapter) — so an inner sort changes only a sequence nobody
+/// was promised. Measured, it left the SET identical under every setting.
+fn tie_probe(
+    con: &Bound<'_, PyAny>,
+    sql: &str,
+    names: &[String],
+) -> PyResult<Result<Option<String>, &'static str>> {
+    /// The top-level sort terms, one row each, reduced to the fields the
+    /// reading turns on.
+    const ORDER_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
+         m(mo) AS (SELECT unnest(CAST(json_extract(j, '$.statements[0].node.modifiers') \
+             AS JSON[])) FROM a), \
+         o(x) AS (SELECT unnest(CAST(json_extract(mo, '$.orders') AS JSON[])) FROM m \
+             WHERE json_extract_string(mo, '$.type') = 'ORDER_MODIFIER') \
+         SELECT json_extract_string(x, '$.expression.type'), \
+             json_extract_string(x, '$.expression.columns'), \
+             json_array_length(json_extract(x, '$.expression.column_names')), \
+             json_extract_string(x, '$.expression.column_names[0]'), \
+             json_extract_string(x, '$.expression.value.value') \
+         FROM o";
+    /// The statement with its top-level ORDER BY dropped and the named sort
+    /// terms appended to its projection — DuckDB's own parse in, DuckDB's own
+    /// SQL out. Also reports the two shapes an appended column would change
+    /// the meaning of: a DISTINCT collapses on a different tuple, and a set
+    /// operation has no projection to append to at all.
+    const KEYED_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
+         n(j, node) AS (SELECT j, json_extract(j, '$.statements[0].node') FROM a), \
+         m(j, node, mods) AS ( \
+             SELECT j, node, CAST(json_extract(node, '$.modifiers') AS JSON[]) FROM n), \
+         k(j, node, kept, orders) AS ( \
+             SELECT j, node, \
+                 list_filter(mods, x -> json_extract_string(x, '$.type') <> 'ORDER_MODIFIER'), \
+                 flatten(list_transform( \
+                     list_filter(mods, x -> json_extract_string(x, '$.type') = 'ORDER_MODIFIER'), \
+                     x -> CAST(json_extract(x, '$.orders') AS JSON[]))) \
+             FROM m) \
+         SELECT json_deserialize_sql(json_merge_patch(j, json_object('statements', \
+                 json_array(json_merge_patch(json_extract(j, '$.statements[0]'), \
+                     json_object('node', json_object( \
+                         'modifiers', to_json(kept), \
+                         'select_list', to_json(list_concat( \
+                             CAST(json_extract(node, '$.select_list') AS JSON[]), \
+                             list_transform( \
+                                 list_filter( \
+                                     list_transform(orders, (o, i) -> {'o': o, 'i': i - 1}), \
+                                     p -> list_contains(CAST(? AS BIGINT[]), p.i)), \
+                                 p -> json_merge_patch(json_extract(p.o, '$.expression'), \
+                                     json_object('alias', '__confit_k' || p.i)))))))))))), \
+             list_contains(list_transform(kept, x -> json_extract_string(x, '$.type')), \
+                 'DISTINCT_MODIFIER') \
+                 OR json_extract(node, '$.select_list') IS NULL \
+         FROM k";
+    type Term = (
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    );
+    let terms: Vec<Term> = con
+        .call_method1("execute", (ORDER_SQL, (sql,)))?
+        .call_method0("fetchall")?
+        .extract()?;
+    let mut keys = Vec::with_capacity(terms.len());
+    for (i, (ty, star_columns, n_names, first_name, literal)) in terms.into_iter().enumerate() {
+        match ty.as_deref() {
+            // `ORDER BY ALL` sorts by every output column, so a tie under it
+            // is a repeated output row.
+            Some("STAR") if star_columns.as_deref() == Some("true") => {
+                keys.clear();
+                keys.extend((0..names.len()).map(OrderKey::Out));
+                break;
+            }
+            // An integer literal in range is a position in the output. Any
+            // other literal is a constant key, which orders nothing and
+            // therefore ties everything — so it takes the `Hidden` arm below
+            // and is measured as the tie it is.
+            Some("VALUE_CONSTANT")
+                if literal
+                    .as_deref()
+                    .and_then(|t| t.parse::<usize>().ok())
+                    .is_some_and(|p| (1..=names.len()).contains(&p)) =>
+            {
+                let p: usize = literal.unwrap_or_default().parse().expect("just parsed");
+                keys.push(OrderKey::Out(p - 1));
+            }
+            // A repeated output name resolves to the FIRST of them, which is
+            // DuckDB's own rule (measured).
+            Some("COLUMN_REF")
+                if n_names == Some(1)
+                    && names
+                        .iter()
+                        .any(|n| n.eq_ignore_ascii_case(first_name.as_deref().unwrap_or_default())) =>
+            {
+                let name = first_name.unwrap_or_default();
+                let p = names.iter().position(|n| n.eq_ignore_ascii_case(&name));
+                keys.push(OrderKey::Out(p.expect("just matched")));
+            }
+            _ => keys.push(OrderKey::Hidden(i)),
+        }
+    }
+    if keys.is_empty() {
+        return Ok(Ok(None));
+    }
+    let hidden: Vec<i64> = keys
+        .iter()
+        .filter_map(|k| match k {
+            OrderKey::Hidden(i) => Some(*i as i64),
+            OrderKey::Out(_) => None,
+        })
+        .collect();
+    // The wrapper renames the inner result POSITIONALLY: the output columns
+    // first, then one column per key the projection had to grow.
+    let mut cols: Vec<String> = (0..names.len()).map(|i| format!("__confit_c{i}")).collect();
+    cols.extend(hidden.iter().map(|i| format!("__confit_k{i}")));
+    let inner = if hidden.is_empty() {
+        sql.to_string()
+    } else {
+        let (rewritten, blocked): (Option<String>, Option<bool>) = con
+            .call_method1("execute", (KEYED_SQL, (sql, &hidden)))?
+            .call_method0("fetchone")?
+            .extract()?;
+        match rewritten {
+            Some(s) if blocked != Some(true) => s,
+            _ => return Ok(Err("a sort key its projection cannot carry")),
+        }
+    };
+    let group: Vec<&str> = keys
+        .iter()
+        .map(|k| match k {
+            OrderKey::Out(p) => cols[*p].as_str(),
+            OrderKey::Hidden(i) => cols[names.len()
+                + hidden
+                    .iter()
+                    .position(|h| *h == *i as i64)
+                    .expect("every hidden key is listed")]
+            .as_str(),
+        })
+        .collect();
+    Ok(Ok(Some(format!(
+        "SELECT 1 FROM ({inner}) AS __confit_t({}) GROUP BY {} HAVING count(*) > 1",
+        cols.join(", "),
+        group.join(", ")
+    ))))
+}
+
 /// The constant emitter: a static-tables-only query is evaluated ONCE, here
 /// at build time, by DuckDB itself — nothing dynamic remains and no IR is
 /// built at all. Statics materialize as native tables (duckdb's
 /// registered-arrow scan path has divergent filter semantics — see the
-/// builtin-pins spec). Returns the fixed row dicts plus the result schema.
+/// builtin-pins spec). Returns the fixed row dicts plus the result schema, or
+/// the refusal message for a frozen shape the query does not fix.
 fn eval_static_only(
     py: Python<'_>,
     sql: &str,
     static_tables: &HashMap<String, Py<PyAny>>,
-) -> PyResult<(Vec<Py<PyAny>>, Py<PyAny>)> {
+) -> PyResult<Result<(Vec<Py<PyAny>>, Py<PyAny>), String>> {
     let duckdb = PyModule::import(py, "duckdb")?;
     let con = duckdb.call_method0("connect")?;
+    let shapes = read_shapes(py, &con, sql)?;
+    // The row limit is answered BEFORE the query runs, because a statement
+    // that never folds at all still owes the caller the name of the clause
+    // that stopped it — the error a row-path query with a LIMIT has always
+    // seen. Everything below is about a query that DID fold.
+    if let Some(clause) = shapes.row_limit {
+        return Ok(Err(row_limit_refusal(clause)));
+    }
     for (name, table) in static_tables {
         con.call_method1("register", (format!("__arrow_{name}"), table))?;
         con.call_method1(
@@ -1194,12 +1590,44 @@ fn eval_static_only(
     let arrow = con
         .call_method1("execute", (sql,))?
         .call_method0("to_arrow_table")?;
-    let schema_obj = arrow.getattr("schema")?.unbind();
+    let schema = arrow.getattr("schema")?;
+    if let Some(msg) = shapes.positional {
+        return Ok(Err(msg));
+    }
     let mut rows = Vec::new();
     for r in arrow.call_method0("to_pylist")?.try_iter()? {
         rows.push(r?.unbind());
     }
-    Ok((rows, schema_obj))
+    // Ties are measured, not assumed: the question goes to DuckDB itself, on
+    // this connection, over the result it has just produced. Fewer than two
+    // rows cannot tie.
+    if rows.len() > 1 && shapes.readable {
+        let names: Vec<String> = schema.getattr("names")?.extract()?;
+        let probe = match tie_probe(&con, sql, &names)? {
+            Ok(p) => p,
+            Err(why) => return Ok(Err(unmeasurable_order_refusal(why))),
+        };
+        if let Some(probe) = probe {
+            match con.call_method1("execute", (probe,)) {
+                // One group of two is one pair of rows in no stated order.
+                Ok(cur) => {
+                    if !cur.call_method0("fetchone")?.is_none() {
+                        return Ok(Err(TIE_ORDER_REFUSAL.to_string()));
+                    }
+                }
+                // The probe is DuckDB's own statement re-projected, so the
+                // only way it does not run is a key that cannot be computed
+                // beside the rows it orders — which is a tie left unruled-out.
+                Err(e) => {
+                    return Ok(Err(format!(
+                        "{} ({e})",
+                        unmeasurable_order_refusal("a sort key its projection cannot carry")
+                    )))
+                }
+            }
+        }
+    }
+    Ok(Ok((rows, schema.unbind())))
 }
 
 /// The execution backend: cranelift when it compiles, the interpreter as
@@ -1711,20 +2139,11 @@ impl DuckDBInferFn {
             // which DuckDB does not know, so evaluation fails and the
             // original clean error surfaces unchanged. Bind errors stay hard.
             Err(e @ (PrepareError::Unsupported(_) | PrepareError::Parse(_))) => {
-                // A row limit picks which rows survive, and that pick is not
-                // a function of the query (four answers over twelve
-                // connections, measured; ORDER BY does not fix ties).
-                // Refused WHOLESALE (decided 2026-08-19) rather than frozen
-                // from whichever evaluation the build happened to run.
-                if let Some(clause) =
-                    crate::specializer::frontend::row_limit_clause(&sql)
-                {
-                    return Err(build_err(format!(
-                        "unsupported: row limit ({clause}) on a                          static-tables-only query -- which rows survive                          depends on scan order, not the query"
-                    )));
-                }
                 match eval_static_only(py, &sql, &static_tables) {
-                    Ok((rows, schema)) => {
+                    // A refusal the fold itself decided: it names the frozen
+                    // query, not the prepare error that got us here.
+                    Ok(Err(msg)) => return Err(build_err(msg)),
+                    Ok(Ok((rows, schema))) => {
                         if strict_map {
                             // Fixed rows regardless of input — the exact
                             // opposite of out[i] <-> in[i].
