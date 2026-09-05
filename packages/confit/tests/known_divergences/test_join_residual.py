@@ -155,3 +155,46 @@ def test_a_genuinely_trapping_one_sided_on_residual_is_still_refused(residual):
     so they can trap after all, and refusing them is right."""
     with pytest.raises(ValueError, match="single-side residual with trapping ops"):
         _one_sided(residual, [(0, 5)])
+
+
+# The other arm of the same rule: a residual mentioning BOTH sides may trap,
+# because DuckDB evaluates it per candidate pair. Reaching that arm needs the
+# residual to be CLASSIFIABLE -- `scan_residual` walks it to see which sides
+# it touches, and a node the walk does not know is refused rather than
+# guessed at. So every shape the frontend can put in a residual has to be a
+# shape the walk knows; unary minus on a DOUBLE is one of them.
+_NEG_STATIC = pa.table(
+    {"id": pa.array([0, 1], pa.int64()), "v": pa.array([1.0, 2.0], pa.float64())}
+)
+
+
+@pytest.mark.parametrize(
+    "residual",
+    [
+        "r.v > (- t.d)",
+        "(- r.v) < t.d",
+        "(- t.d) + r.v > 0.0e0",
+        "r.v > (- (t.d * 2.0e0))",
+    ],
+)
+def test_both_sides_residual_over_a_negated_double_builds(residual, oracle):
+    schema = pa.schema(
+        [
+            pa.field("k", pa.int64(), nullable=False),
+            pa.field("d", pa.float64(), nullable=False),
+        ]
+    )
+    rows = [(0, -3.0), (1, 0.5), (0, 2.0)]
+    sql = (
+        "SELECT t.d AS d, r.v AS v FROM __THIS__ AS t "
+        f"JOIN r ON t.k = r.id AND {residual}"
+    )
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": schema}, static_tables={"r": _NEG_STATIC}
+    )
+    got = [
+        tuple(x.values()) for x in fn.infer_rows([{"k": k, "d": d} for k, d in rows])
+    ]
+    oracle.table("__THIS__", "k BIGINT, d DOUBLE", rows)
+    oracle.table("r", "id BIGINT, v DOUBLE", [(0, 1.0), (1, 2.0)])
+    assert got == oracle.execute(sql).fetchall()
