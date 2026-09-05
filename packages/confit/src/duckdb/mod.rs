@@ -1294,10 +1294,6 @@ struct Shapes {
     /// A shape whose frozen answer would not be a function of the query, as
     /// the whole refusal it earns.
     refusal: Option<String>,
-    /// Whether the sort keys can be read at all: false when DuckDB would not
-    /// serialize the statement, in which case `refusal` already carries a
-    /// refusal for any ordering word the tokens showed.
-    readable: bool,
 }
 
 /// The aggregate names DuckDB itself declares order-free for EVERY overload
@@ -1553,14 +1549,12 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         return Ok(Shapes {
             row_limit: limit_word,
             refusal: Some(unreadable_refusal(other_word)),
-            readable: false,
         });
     }
     if n_statements != Some(1) {
         return Ok(Shapes {
             row_limit: limit_word,
             refusal: Some(multi_statement_refusal(other_word)),
-            readable: false,
         });
     }
     let types = types.unwrap_or_default();
@@ -1593,11 +1587,7 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     } else {
         None
     };
-    Ok(Shapes {
-        row_limit,
-        refusal,
-        readable: true,
-    })
+    Ok(Shapes { row_limit, refusal })
 }
 
 /// The clause words a statement spells, from DuckDB's own tokenizer: the
@@ -1605,9 +1595,13 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
 ///
 /// The tokenizer, not the text: a string literal or a quoted identifier
 /// keeps its quotes in the token's own span, so `'limit'` and `"limit"`
-/// cannot be mistaken for the clause. `TOP` arrives as an identifier because
-/// DuckDB has no such clause at all — which is exactly the statement whose
-/// shape nothing else can read.
+/// cannot be mistaken for the clause.
+///
+/// `TOP` is deliberately not among them, although a row path elsewhere names
+/// `SELECT TOP` as a limit. DuckDB has no such clause, so it never runs one —
+/// and this reading is only ever reached AFTER DuckDB has run the statement,
+/// which leaves `top` as an identifier every time it arrives here. Reading it
+/// as a clause reported a row limit for a static column's name.
 fn ordering_words(
     py: Python<'_>,
     sql: &str,
@@ -1629,7 +1623,6 @@ fn ordering_words(
         };
         let word = word.to_ascii_uppercase();
         let named = match word.as_str() {
-            "TOP" => Some("SELECT TOP"),
             "FETCH" => Some("FETCH FIRST/NEXT"),
             "LIMIT" | "OFFSET" => Some("LIMIT/OFFSET"),
             _ => None,
@@ -1667,14 +1660,16 @@ enum OrderKey {
 /// a found one.
 ///
 /// Keys resolve as DuckDB resolves them, off DuckDB's own reading: an integer
-/// literal is a position; `ALL` is every output column (and arrives as the
-/// star it is, so a column actually NAMED `all` is not mistaken for it); a
-/// bare name is the output alias when one matches, case-insensitively.
+/// literal and a bare `#N` are both a position in the OUTPUT; `ALL` is every
+/// output column (and arrives as the star it is, so a column actually NAMED
+/// `all` is not mistaken for it); a bare name is the output alias when one
+/// matches, case-insensitively.
 /// Anything else is computed over the query's own input, so it is added to
 /// that query's projection — by rewriting DuckDB's parse of the statement and
 /// asking DuckDB to print it back, which is why syntax no other parser reads
 /// still measures. Its resolution is unchanged by the move: a bare name that
-/// is not an output alias means the input column in both places.
+/// is not an output alias, and a `#N` written inside a larger expression,
+/// both mean the input column in either place.
 ///
 /// An ORDER BY below the top is not read at all: it orders nothing that this
 /// path promises. Row order on the constant path is not part of the contract
@@ -1688,7 +1683,9 @@ fn tie_probe(
     names: &[String],
 ) -> PyResult<Result<Option<String>, &'static str>> {
     /// The top-level sort terms, one row each, reduced to the fields the
-    /// reading turns on.
+    /// reading turns on. The two spellings of a position share a column:
+    /// an integer literal carries it in `value.value` and DuckDB's `#N`
+    /// positional reference in `index`, and only one of the two is ever set.
     const ORDER_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
          m(mo) AS (SELECT unnest(CAST(json_extract(j, '$.statements[0].node.modifiers') \
              AS JSON[])) FROM a), \
@@ -1697,7 +1694,8 @@ fn tie_probe(
          SELECT json_extract_string(x, '$.expression.type'), \
              json_array_length(json_extract(x, '$.expression.column_names')), \
              json_extract_string(x, '$.expression.column_names[0]'), \
-             json_extract_string(x, '$.expression.value.value'), \
+             coalesce(json_extract_string(x, '$.expression.value.value'), \
+                 json_extract_string(x, '$.expression.index')), \
              json_extract_string(x, '$.expression.expr') IS NOT NULL \
                  OR coalesce(json_array_length( \
                      json_extract(x, '$.expression.exclude_list')), 0) > 0 \
@@ -1743,7 +1741,7 @@ fn tie_probe(
         .extract()?;
     let n_terms = terms.len();
     let mut keys = Vec::with_capacity(n_terms);
-    for (i, (ty, n_names, first_name, literal, narrowed)) in terms.into_iter().enumerate() {
+    for (i, (ty, n_names, first_name, position, narrowed)) in terms.into_iter().enumerate() {
         match ty.as_deref() {
             // A star sorts by every OUTPUT column, so a tie under it is a
             // repeated output row — but only in the shape DuckDB itself reads
@@ -1759,17 +1757,32 @@ fn tie_probe(
                 break;
             }
             Some("STAR") => return Ok(Err("a star sort key this reading cannot expand")),
-            // An integer literal in range is a position in the output. Any
-            // other literal is a constant key, which orders nothing and
+            // A position in the OUTPUT, in either of DuckDB's two spellings:
+            // an integer literal, and `#N`. Both resolve the same way in an
+            // ORDER BY — its binder answers them from one function, which
+            // indexes the projection (`order_binder.cpp`,
+            // `TryGetProjectionReference`) — and the distinction matters
+            // because `#N` means something ELSE in a select list, where it is
+            // the Nth column of the FROM. So a `#N` sort key must be read
+            // here rather than computed beside the rows, which would measure
+            // a different column under the same name.
+            //
+            // Only a BARE one. Inside a larger expression DuckDB's binder
+            // never reaches that function, and `#N` there IS the input
+            // column — the same column the `Hidden` arm computes it in.
+            //
+            // Any other literal is a constant key, which orders nothing and
             // therefore ties everything — so it takes the `Hidden` arm below
-            // and is measured as the tie it is.
-            Some("VALUE_CONSTANT")
-                if literal
+            // and is measured as the tie it is. Out of range never arrives:
+            // DuckDB refuses `ORDER BY 3` and `ORDER BY #3` over two output
+            // columns at bind, before this statement has run.
+            Some("VALUE_CONSTANT") | Some("POSITIONAL_REFERENCE")
+                if position
                     .as_deref()
                     .and_then(|t| t.parse::<usize>().ok())
                     .is_some_and(|p| (1..=names.len()).contains(&p)) =>
             {
-                let p: usize = literal.unwrap_or_default().parse().expect("just parsed");
+                let p: usize = position.unwrap_or_default().parse().expect("just parsed");
                 keys.push(OrderKey::Out(p - 1));
             }
             // A repeated output name resolves to the FIRST of them, which is
@@ -1885,8 +1898,9 @@ fn eval_static_only(
     }
     // Ties are measured, not assumed: the question goes to DuckDB itself, on
     // this connection, over the result it has just produced. Fewer than two
-    // rows cannot tie.
-    if rows.len() > 1 && shapes.readable {
+    // rows cannot tie, and a statement whose parse could not be read has
+    // already refused above.
+    if rows.len() > 1 {
         let names: Vec<String> = schema.getattr("names")?.extract()?;
         let probe = match tie_probe(&con, sql, &names)? {
             Ok(p) => p,

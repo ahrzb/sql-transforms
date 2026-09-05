@@ -456,7 +456,7 @@ decision), **resource** (it would cost more than a serving engine may spend per 
 judgement with a number attached). See `packages/confit/docs/oracle/`
 claim: refusal-grounds.
 
-**Not in this ledger, deliberately:** the rows of `known-limitations.md:282-346` ("deliberate
+**Not in this ledger, deliberately:** the rows of `known-limitations.md:377-441` ("deliberate
 contract choices") that *serve* with a consciously different surface (duplicate-column
 rename, approximate error texts, schema-qualifier resolution, the platform-libm NaN bit
 pattern). Those are divergences, not exclusions, and they belong to the oracle spec's
@@ -590,7 +590,7 @@ says which functions are a draw or a clock, and the aggregate source's
 opt out of is refused, so `count`/`min`/`max`/`median` serve and `sum`/`avg`/`first`/`list`
 do not.
 
-*Verified-by:* `packages/confit/docs/known-limitations.md:95-229`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:95-288`;
 `packages/confit/tests/test_known_limitations.py:1-7, :98-117`;
 `packages/confit/tests/test_arrow_schema_api.py:604-630` (the row-limit refusal);
 `packages/confit/tests/test_static_only_order.py` (the tie refusal, and the ORDER BY
@@ -655,7 +655,7 @@ fn = DuckDBInferFn("SELECT lpad(s, 8, 'x') AS o FROM __THIS__",
 fn.infer_rows([{"s": "ab"}])   # [{'o': 'xxxxxxab'}]
 ```
 
-*Verified-by:* `packages/confit/docs/known-limitations.md:278`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:373`;
 `packages/confit/tests/known_divergences/test_string_budget.py:145-146`;
 `packages/confit/docs/oracle/` divergence: string-builder-budget,
 divergence: arrow-batch-ceiling.
@@ -692,7 +692,7 @@ The reader's own DuckDB answers `[(True,)]` for that row, because
 `expression_rewriter` turns `(i + 1) > 5` into `i > 4` and the addition never runs;
 `PRAGMA disable_optimizer` reproduces confit's trap
 (`Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!`).
-*Verified-by:* `packages/confit/docs/known-limitations.md:20-39`, `:304-330`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:20-39`, `:399-425`;
 `packages/confit/docs/oracle/` claim: oracle-identity, claim: optimizer-bracket.
 
 **exclusion: statistics-dependent-kernels.** Behaviors that depend on column *statistics*
@@ -716,7 +716,7 @@ DuckDB answers `True` here only when the column's statistics are pure-ASCII; a s
 non-ASCII sibling row selects its generic kernel, whose fold NUL-truncates, and the same
 row answers `False`. There is no sibling row at this API — `infer_rows` sees one row's
 values — so the statistic is unreachable by construction.
-*Verified-by:* `packages/confit/docs/known-limitations.md:298-303`;
+*Verified-by:* `packages/confit/docs/known-limitations.md:393-398`;
 `packages/confit/tests/test_corpus_replay.py:150-151` (`_KNOWN_DIVERGENT_SOURCES`);
 `packages/confit/docs/oracle/` claim: statistics-dependent-exclusion.
 
