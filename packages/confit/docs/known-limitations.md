@@ -153,6 +153,32 @@ table froze **four different sequences**. A `CONSISTENT` function is a
 function of its arguments and serves unchanged. You'll see:
 `the non-deterministic function random() on a static-tables-only query`.
 
+Two kinds the catalogue cannot answer for refuse under that same message.
+A **MACRO** has no stability at all — `duckdb_functions().stability` is NULL
+for all 131 macro rows — so its DEFINITION is read instead, one level: a
+macro whose body names a `VOLATILE`/`CONSISTENT_WITHIN_QUERY` function or a
+clock keyword refuses under its own name. Measured, that is exactly `ago`,
+`current_catalog`, `current_database`, `current_query`, `current_schema`,
+`current_schemas`, `pg_conf_load_time`, `pg_postmaster_start_time` and
+`pg_sleep` of the 122; `pg_postmaster_start_time()` used to freeze this
+build's wall clock into every row. `error` is left out of the names a
+definition is matched against — it is `VOLATILE` so DuckDB never folds it,
+but it never RETURNS a value either, and including it refused `histogram`
+and `json_group_object` for their failure branches.
+And **four functions DuckDB's own flag calls `CONSISTENT`** are refused by a
+list kept in the code, because no flag in DuckDB answers the question this
+path asks. `current_localtime`/`current_localtimestamp` are DuckDB's own
+inconsistency: its binder maps the bare words `localtime`/`localtimestamp`
+onto them, and ICU registers them with no stability at all — measured, the
+value moves between two connections milliseconds apart. `version` and
+`current_setting` are a function of the wheel and of the build machine: two
+machines, two frozen answers for one query.
+
+**Not covered, named**: a TABLE function that reads the machine. `SELECT ...
+FROM duckdb_settings()` freezes the build machine's settings and serves. The
+readings above are all about the functions a statement CALLS; a reading of
+DuckDB's 127 table functions is a separate piece of work.
+
 An **order-sensitive aggregate refuses**, by name. DuckDB classifies this
 itself, and defaults to order-DEPENDENT: an aggregate is order-free only
 where its source calls `SetOrderDependent(NOT_ORDER_DEPENDENT)`, which in
@@ -170,12 +196,18 @@ the rows within each group, and measuring that per group is a probe this
 reading does not build. You'll see: `order-sensitive aggregate list on a
 static-tables-only query`.
 
-Two costs of reading that by NAME, both deliberate, both fail-closed.
-`sum` is refused whole although DuckDB opts its integer and DECIMAL overloads
-out, because the parse does not say which overload a call binds to and the
-DOUBLE one is order-dependent; reading the bound overload back off the result
-type is the upgrade path. And `bit_and`/`bit_or`/`bit_xor`/`histogram` refuse
-although they are order-free in arithmetic, because DuckDB does not say so.
+The cost of reading that by NAME, deliberate and fail-closed: **65 of
+DuckDB's 88 aggregate names refuse**. `sum` is refused whole although DuckDB
+opts its integer and DECIMAL overloads out, because the parse does not say
+which overload a call binds to and the DOUBLE one is order-dependent; reading
+the bound overload back off the result type is the upgrade path. The rest
+refuse for the one reason DuckDB does not flag them, however order-free the
+arithmetic looks: `bit_and`/`bit_or`/`bit_xor`, `histogram`, the counters
+`count_if`/`countif`/`regr_count`/`approx_count_distinct`, `entropy`, and the
+compensated accumulators `fsum`/`kahan_sum`/`sumkahan`/`favg`, which exist to
+BE order-stable. `sum_no_overflow` IS opted out at both overloads and is
+absent from the served list anyway, because no query can name it — binding
+one is `sum_no_overflow is for internal use only!`.
 
 A **row-based window frame refuses**. `ROWS BETWEEN ... PRECEDING/FOLLOWING/
 CURRENT ROW` counts NEIGHBOURS, so which rows are in the frame is the arrival
@@ -210,7 +242,19 @@ measure the wrong ones. You'll see: `a star sort key this reading cannot
 expand on a static-tables-only query`.
 
 A clause that removes no row is **not** a row limit: `LIMIT ALL` and
-`OFFSET 0` serve.
+`OFFSET 0` serve. That is read off the parse, not guessed: `LIMIT ALL` is a
+NULL-typed constant, `OFFSET 0` a zero, and the side of the modifier the
+query did not spell is the JSON literal `null`. A limit that is any other
+node — `LIMIT 1+1`, `LIMIT CAST(2 AS BIGINT)`, `LIMIT (SELECT 2)` — is one
+this reading cannot evaluate, and it counts as the real limit it is.
+
+**`rowid` refuses.** A static table is materialized by `CREATE TABLE ... AS
+SELECT`, so `rowid` is whatever physical position that produced — the same
+selection-by-position that refuses when it is spelled `row_number()`, and a
+row limit besides when it is used in a `WHERE`. Bare and qualified (`s.rowid`)
+both refuse. The cost, the same one the bare clock keywords pay: a static
+column actually NAMED `rowid` refuses too, and DuckDB would have bound the
+column. You'll see: `the rowid pseudo-column on a static-tables-only query`.
 
 A static-only refusal is only ever pinned on a query that IS one. A query
 that reads a dynamic table cannot fold at all, and the error that reaches the
@@ -219,14 +263,22 @@ caller is the row path's own — `unsupported: LIMIT/OFFSET`,
 path the query never took.
 
 All of the above is read off **DuckDB's own parse** of the statement
-(`json_serialize_sql`) and its own catalogue (`duckdb_functions()`), because
-this carve-out exists for the DuckDB dialect another parser cannot read. A
-statement DuckDB runs but will not serialize — `PIVOT` is one — is read by
-its TOKENS instead, and any of those words in it refuses rather than falling
-silent: `ORDER BY in a statement DuckDB would not expose for inspection`. A
-string holding more than one statement refuses under its own count, not under
-that message: `ORDER BY in a statement string holding more than one
-statement`.
+(`json_serialize_sql`) and its own catalogue (`duckdb_functions()`), asked of
+the connection the statement has already run on so that a function DuckDB
+autoloaded an extension for at bind time is in the catalogue that answers.
+The parse is DuckDB's because this carve-out exists for the DuckDB dialect
+another parser cannot read.
+
+Both ways a statement can go unread refuse it **whole**, because a statement
+nobody could read is a statement in which nothing was ruled out — no draw, no
+order-sensitive aggregate, no frame, no limit. A statement DuckDB runs but
+will not serialize (`PIVOT` is one) refuses under its serialization:
+`a statement DuckDB would not expose for inspection`, or `ORDER BY in a
+statement DuckDB would not expose for inspection` when the tokens named a
+clause. A string holding more than one statement refuses under its own count
+— only one statement of it is read — as `a statement string holding more than
+one statement`. The cost is that a deterministic `PIVOT s ON g USING max(v)`
+refuses along with the `USING first(v)` that froze a scan-order pick.
 
 ## 3. Type-system boundaries
 

@@ -679,3 +679,114 @@ def test_a_dynamic_query_whose_only_problem_is_dialect_says_so():
             static_tables={"s": UNIQ},
         )
     assert "unsupported: FROM-first SELECT" in str(e.value), str(e.value)
+
+
+# ------------------------------- a shape the reading could not rule out --
+
+
+def test_a_limit_that_is_not_a_bare_constant_refuses():
+    # LIMIT ALL and OFFSET 0 remove no row because DuckDB's parse SAYS so: a
+    # NULL-typed constant and a zero. Any other limit expression is one this
+    # reading cannot evaluate, and an unevaluated limit is a row subset
+    # nobody ruled out -- so it counts as the limit it is.
+    for sql in (
+        "SELECT g AS o FROM s LIMIT 1+1",
+        "SELECT g AS o FROM s OFFSET 1+0",
+        "SELECT g AS o FROM s LIMIT (SELECT 2)",
+        "SELECT g AS o FROM s LIMIT CAST(2 AS BIGINT)",
+    ):
+        msg = refuses(sql, UNIQ)
+        assert msg.startswith("unsupported: row limit (LIMIT/OFFSET)"), (sql, msg)
+
+
+def test_more_than_one_statement_refuses_even_without_an_ordering_word():
+    # Only one statement of the string is read, so every value rule was asked
+    # of the wrong statement: these three froze a draw, a scan-order pick and
+    # three more draws. The COUNT alone is the refusal; no clause word has to
+    # appear for it to fire.
+    for sql in (
+        "SELECT 1 AS o; SELECT random() AS o FROM s",
+        "SELECT 1 AS o; SELECT first(g) AS o FROM s",
+    ):
+        msg = refuses(sql)
+        assert "statement string holding more than one statement" in msg, (sql, msg)
+    # A DDL statement in front of the SELECT does not serialize at all, so
+    # this one refuses one reading earlier -- under the serialization, not
+    # under the count. Either way it is refused, which is the point: it froze
+    # three draws through a macro of its own making.
+    msg = refuses("CREATE MACRO m(x) AS random(); SELECT m(v) AS o FROM s")
+    assert "would not expose for inspection" in msg, msg
+
+
+def test_a_statement_duckdb_will_not_expose_refuses_without_an_ordering_word():
+    # PIVOT runs but does not serialize, so NOTHING about it was read -- not
+    # its limits, not its aggregates, not its draws. `USING first(v)` froze a
+    # scan-order pick. A shape nobody could read is a shape nobody ruled out,
+    # which costs the deterministic `USING max(v)` its answer as well.
+    for sql in (
+        "PIVOT s ON g USING first(v)",
+        "PIVOT s ON g USING sum(v)",
+        "PIVOT s ON g USING max(v)",
+    ):
+        msg = refuses(sql)
+        assert "would not expose for inspection" in msg, (sql, msg)
+
+
+def test_a_macro_that_reads_the_clock_refuses_like_the_clock_it_reads():
+    # duckdb_functions().stability is NULL for every macro, so the catalogue
+    # lookup cannot answer for one -- but the same catalogue keeps the macro's
+    # DEFINITION, and pg_postmaster_start_time expands to current_timestamp.
+    for name, call in (
+        ("pg_postmaster_start_time", "pg_postmaster_start_time()"),
+        ("ago", "ago(INTERVAL 1 DAY)"),
+        ("current_query", "current_query()"),
+    ):
+        msg = refuses(f"SELECT {call}::VARCHAR AS o FROM s")
+        assert msg.startswith(
+            f"unsupported: the non-deterministic function {name}()"
+        ), msg
+
+
+def test_a_macro_that_reads_nothing_of_the_run_still_serves():
+    # The reading is the macro's own definition, not its family: fdiv expands
+    # to arithmetic and current_user to the constant 'duckdb'.
+    fn = build(
+        "SELECT v AS t, fdiv(v, 2) AS o, current_user AS u FROM s ORDER BY t", UNIQ
+    )
+    assert fn.backend == "constant"
+    assert [r["u"] for r in fn.infer_rows([])] == ["duckdb"] * 3
+
+
+def test_a_clock_function_duckdbs_own_flag_calls_consistent_refuses_anyway():
+    # ICU registers current_localtime/current_localtimestamp with no
+    # SetStability (extension/icu/icu-timezone.cpp), so they inherit
+    # CONSISTENT -- and measured, the value moves between two connections 50ms
+    # apart. DuckDB's own binder maps the bare words `localtime` and
+    # `localtimestamp` to exactly these two functions
+    # (bind_columnref_expression.cpp), and those already refused; the call
+    # spelling of the same function refuses with them.
+    for call in ("current_localtimestamp()", "current_localtime()"):
+        msg = refuses(f"SELECT {call}::VARCHAR AS o FROM s")
+        assert "on a static-tables-only query" in msg, (call, msg)
+
+
+def test_a_value_that_is_a_function_of_the_build_refuses():
+    # Both are CONSISTENT within one run and a function of the MACHINE across
+    # runs: two builds of the same query freeze two different answers, which
+    # is the skew this path exists to close.
+    for call in ("version()", "current_setting('threads')"):
+        msg = refuses(f"SELECT {call}::VARCHAR AS o FROM s")
+        assert "on a static-tables-only query" in msg, (call, msg)
+
+
+def test_rowid_is_selection_by_position_under_another_name():
+    # A static table is materialized by CREATE TABLE AS SELECT, so rowid is
+    # whatever physical position that produced: the same reading row_number()
+    # gets, spelled as an ordinary column -- and in a WHERE it is a row limit
+    # as well.
+    for sql in (
+        "SELECT rowid AS o FROM s",
+        "SELECT s.rowid AS o FROM s",
+        "SELECT g AS o FROM s WHERE rowid < 2",
+    ):
+        assert "rowid" in refuses(sql, UNIQ), sql
