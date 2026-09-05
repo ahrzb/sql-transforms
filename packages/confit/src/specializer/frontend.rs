@@ -2305,15 +2305,14 @@ pub(crate) fn order_by_tie_probe(
     let [Statement::Query(query)] = statements.as_slice() else {
         return None;
     };
+    // ORDER BY ALL sorts by every output column, so a tie there is a repeated
+    // output row.
+    let all_columns = || TieProbe {
+        inner: sql.to_string(),
+        keys: out_names.iter().map(|n| quoted(n)).collect(),
+    };
     let exprs = match &query.order_by.as_ref()?.kind {
-        // ORDER BY ALL sorts by every output column, so a tie is a repeated
-        // output row.
-        OrderByKind::All(_) => {
-            return Some(Ok(TieProbe {
-                inner: sql.to_string(),
-                keys: out_names.iter().map(|n| quoted(n)).collect(),
-            }));
-        }
+        OrderByKind::All(_) => return Some(Ok(all_columns())),
         OrderByKind::Expressions(exprs) => exprs,
     };
     let mut keys = Vec::with_capacity(exprs.len());
@@ -2337,6 +2336,15 @@ pub(crate) fn order_by_tie_probe(
         };
         match out_col {
             Some(name) => keys.push(quoted(name)),
+            // This dialect has no ALL kind of its own, so DuckDB's
+            // sort-by-every-output-column arrives here as a bare name -- and
+            // a name that IS an output column was taken by the arm above,
+            // which is the precedence DuckDB gives a real column too.
+            None if matches!(&ob.expr, SqlExpr::Identifier(id)
+                if id.value.eq_ignore_ascii_case("all")) =>
+            {
+                return Some(Ok(all_columns()));
+            }
             None => {
                 let alias = format!("__confit_k{i}");
                 keys.push(quoted(&alias));

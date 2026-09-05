@@ -3980,3 +3980,56 @@ fn a_wide_scale_decimal_key_against_an_int_probe_refuses_by_name() {
     .to_string();
     assert!(e.contains("cannot join") && e.contains("dec(38,30)"), "{e}");
 }
+
+// --------------------------------------------------------------- tie probe --
+//
+// The static-tables-only fold reads its ORDER BY through
+// `frontend::order_by_tie_probe`, and what that reading can see is decided by
+// how this dialect parses the clause. These pin the shapes it turns on.
+
+/// Keys that name output columns are read straight off the frozen result, so
+/// the query itself is what gets wrapped -- an alias and a position alike.
+#[test]
+fn a_tie_probe_reads_output_columns_off_the_result() {
+    let names = ["o".to_string(), "t".to_string()];
+    let sql = "SELECT g AS o, v AS t FROM s ORDER BY t, 1";
+    let probe = super::frontend::order_by_tie_probe(sql, &names)
+        .unwrap()
+        .unwrap();
+    assert_eq!(probe.keys, ["\"t\"", "\"o\""]);
+    assert_eq!(probe.inner, sql);
+}
+
+/// A key that is not in the output has to be computed where the ORDER BY
+/// computes it: in the query's own projection, under a generated name.
+#[test]
+fn a_tie_probe_computes_a_hidden_key_in_the_projection() {
+    let names = ["o".to_string()];
+    let probe = super::frontend::order_by_tie_probe("SELECT g AS o FROM s ORDER BY abs(v)", &names)
+        .unwrap()
+        .unwrap();
+    assert_eq!(probe.keys, ["\"__confit_k0\""]);
+    assert_eq!(probe.inner, "SELECT g AS o, abs(v) AS __confit_k0 FROM s");
+}
+
+/// `ORDER BY ALL` is DuckDB's sort-by-every-output-column. This dialect has
+/// no ALL kind, so it arrives as a bare identifier -- and reading it as one
+/// key named `all` would ask DuckDB about a column that is not there.
+#[test]
+fn a_tie_probe_reads_order_by_all_as_every_output_column() {
+    let names = ["o".to_string(), "t".to_string()];
+    let probe =
+        super::frontend::order_by_tie_probe("SELECT g AS o, v AS t FROM s ORDER BY ALL", &names)
+            .unwrap()
+            .unwrap();
+    assert_eq!(probe.keys, ["\"o\"", "\"t\""]);
+}
+
+/// An ORDER BY below the top orders nothing in the output, so there is
+/// nothing to test and the query serves as it always did.
+#[test]
+fn a_tie_probe_ignores_an_order_by_below_the_top() {
+    let names = ["o".to_string()];
+    let sql = "SELECT * FROM (SELECT g AS o FROM s ORDER BY g) q";
+    assert!(super::frontend::order_by_tie_probe(sql, &names).is_none());
+}
