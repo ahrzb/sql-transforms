@@ -1908,7 +1908,13 @@ fn scan_residual(e: &SExpr, j: u32, right: &mut bool, left: &mut bool, known: &m
         | SKind::IntToFloat(a)
         | SKind::DecToFloat(a)
         | SKind::IntToDec { a, .. }
-        | SKind::IntToFloat32(a) => {
+        | SKind::IntToFloat32(a)
+        // A DOUBLE unary minus is arithmetic this scan has always read: it
+        // was a subtraction from a signed zero until the NaN sign made the
+        // two spellings differ. The libm-backed f64 unaries were never
+        // classifiable and are left that way — widening them is a separate
+        // question, to be measured separately.
+        | SKind::MathF1 { op: NumOp1::Fneg, a } => {
             scan_residual(a, j, right, left, known);
         }
         SKind::Case { arms, default } => {
