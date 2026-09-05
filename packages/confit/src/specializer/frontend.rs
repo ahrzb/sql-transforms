@@ -1348,12 +1348,13 @@ fn bind_residual(
         let total = !may_trap(&bound);
         if !(total || (left && right && known)) {
             // Two different refusals wear one condition, and the message
-            // has to name the one that actually binds. A residual that
-            // reads BOTH sides would be accepted if the scan had
-            // recognised its shape, so there the classifier is the cause;
-            // anywhere else it is the trapping single-side rule, whether
-            // the scan recognised the shape or not.
-            return Err(unsup(if known || !(left && right) {
+            // has to name the one that actually binds. An unrecognised
+            // node is always the cause where there is one: the scan does
+            // not descend into it, so the sides it reports are the sides
+            // OUTSIDE that node and cannot be used to tell the reader
+            // which rule applies. Only where every node was recognised is
+            // the trapping single-side rule the honest answer.
+            return Err(unsup(if known {
                 format!(
                     "JOIN ON condition '{c}' (single-side residual with \
                      trapping ops: DuckDB's scan-pushed evaluation order \
@@ -3220,6 +3221,17 @@ impl Binder<'_> {
                     // wrapping the NULL in a live negate would type the ||
                     // VARCHAR instead. The negate is for VALUES; a NULL has
                     // no sign to flip.
+                    //
+                    // Sharing arith's rule shares its ceiling, unguarded by
+                    // `bind_foldable`: our fold dead-arm-eliminates a CASE
+                    // holding a COLUMN, which DuckDB's binder does not, so
+                    // `- (CASE WHEN false THEN x END) || 'y'` is INTEGER
+                    // here and VARCHAR there. Every binary spelling of that
+                    // shape diverges the same way, so the gate belongs on
+                    // the fold both arms share rather than on this one arm,
+                    // where it would buy one operator's correctness at the
+                    // price of the surface being inconsistent about which
+                    // operators fold. Pinned open in test_open_divergences.
                     let inner = fold(inner);
                     if matches!(inner.kind, SKind::NullOf) {
                         return Ok(null_of(Ty::F64));

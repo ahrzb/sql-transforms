@@ -211,25 +211,51 @@ def test_cross_join_to_multirow_static_rejects_cleanly():
         )
 
 
-def test_single_side_trapping_residual_rejects_cleanly():
+@pytest.mark.parametrize(
+    "residual",
+    [
+        # Every node RECOGNISED (Arith under a Cmp) and every one on one
+        # side, so the scan's answer is complete and the trapping
+        # single-side rule really is what binds. Both sides, so neither
+        # gets the diagnosis by accident of which one the scan looks at.
+        "r.budget + 1 > 0",
+        "lid + 1 > 0",
+    ],
+)
+def test_single_side_trapping_residual_rejects_cleanly(residual):
     with pytest.raises(ValueError, match="trapping"):
         duck_check(
-            "SELECT lid FROM __THIS__ JOIN r ON lid = r.id AND log(r.budget) > 0",
+            f"SELECT lid FROM __THIS__ JOIN r ON lid = r.id AND {residual}",
             L,
             L_ROWS,
             {"r": R},
         )
 
 
-def test_unclassifiable_both_sides_residual_names_the_classifier():
-    # Reads both sides, so the trapping rule would have let it through; what
-    # stops it is a node the residual scan does not recognise. The refusal
-    # has to say so — the reader who is told "single-side" goes looking at
-    # the columns instead of at the scan.
+@pytest.mark.parametrize(
+    "residual",
+    [
+        # Both sides visible OUTSIDE the unrecognised node.
+        "r.budget + lid > log(lid)",
+        # Only ONE side visible outside it: the other is buried in the node
+        # the scan refuses to descend into. The sides the scan reports are
+        # therefore the sides outside that node, which say nothing about
+        # what the condition really reads -- diagnosing off them tells the
+        # reader "single-side" about a residual that plainly reads both.
+        "r.budget > log(lid)",
+        "lid > log(r.budget)",
+        # Neither side visible outside it.
+        "log(lid + r.budget) > 0",
+    ],
+)
+def test_unclassifiable_residual_names_the_classifier(residual):
+    # What stops these is a node the residual scan does not recognise, not
+    # the trapping single-side rule. The refusal has to say so -- the reader
+    # who is told "single-side" goes looking at the columns instead of at
+    # the scan.
     with pytest.raises(ValueError, match="does not recognise"):
         duck_check(
-            "SELECT lid FROM __THIS__ JOIN r ON lid = r.id"
-            " AND r.budget + lid > log(lid)",
+            f"SELECT lid FROM __THIS__ JOIN r ON lid = r.id AND {residual}",
             L,
             L_ROWS,
             {"r": R},

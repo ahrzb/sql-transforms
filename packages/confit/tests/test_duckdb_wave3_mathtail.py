@@ -178,8 +178,12 @@ def test_mod_dividend_sign_vs_fmod_divisor_sign():
 # deliberately absent: DuckDB's `%` on DOUBLE is std::fmod in a loop the
 # compiler vectorizes, and there the wide lanes and the scalar tail hand
 # back NaNs with DIFFERENT signs, so identical rows disagree with each other
-# by position alone. There is no single answer to match there; the one-row
-# bit-agreement pin below is what covers it.
+# by position alone. Measured on the pinned oracle over 2050 identical rows,
+# both halves do it: `2.0 % 0.0` and `1e400 % 2.0` each return 'nan' AND
+# '-nan'. There is no single answer to match anywhere in that domain, so
+# nothing here can pin it; the one-row bit-agreement pin below covers the
+# divisor-zero half of it, and the infinite-dividend half is untested by
+# design rather than by oversight.
 MOD_SIGN_GRID = [
     {"x": x, "y": y}
     for x, y in [
