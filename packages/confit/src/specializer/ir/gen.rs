@@ -433,6 +433,7 @@ fn compute(rng: &mut Rng, b: &mut Builder, scope: &mut Scope, insts: &mut Vec<In
                 // signal, but programs should mostly run to completion).
                 let total = [
                     NumOp1::Fabs,
+                    NumOp1::Fneg,
                     NumOp1::Fround,
                     NumOp1::Ffloor,
                     NumOp1::Fceil,

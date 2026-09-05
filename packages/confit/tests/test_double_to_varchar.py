@@ -5,12 +5,18 @@ src/common/operator/string_cast.cpp). The bundled fmt float writer reads
 `std::signbit` BEFORE it branches on finiteness -- its own comment says
 "value < 0 is false for NaN so use signbit" -- so the sign is prefixed to
 `nan` exactly as it is to `inf` and to a zero. A NaN carrying the sign bit
-therefore prints `-nan`, and `pow(-0.25, 0.1)` is one of the many ways a
-query reaches one.
+therefore prints `-nan`.
 
 Every string-producing path in this file shares one formatter, so they are
 checked together: a fix that reached only the explicit CAST would leave `||`
 and `concat` spelling the same value differently.
+
+Which NaN a libm hands back is the platform's business, so nothing here pins
+a libm-produced sign as a constant -- those cases assert engine == oracle and
+no more. The two NaN signs that ARE deterministic get pinned: DuckDB parses
+`'nan'` / `'-nan'` through fast_float, which builds the value from
+`std::numeric_limits<double>::quiet_NaN()` and a sign flip, and unary minus
+is IEEE negation.
 """
 
 from __future__ import annotations
@@ -29,23 +35,49 @@ INF = float("inf")
 DOUBLES = [NAN, -NAN, INF, -INF, -0.0, 0.0, 1.0, 1e300, 1e-5, None]
 
 # The explicit cast, the two implicit ones (`||` and `concat` bind their
-# double operand through the same cast), a struct field -- the seed-1804
-# shape -- and a length, which is what makes a dropped sign fail even where
-# repr-comparison of the strings would not.
+# double operand through the same cast), and a struct field -- the seed-1804
+# shape.
 SQL = (
     "SELECT CAST(d AS VARCHAR) AS c,"
     " d || '|' AS bar,"
     " concat(d, '|') AS cat,"
-    " struct_pack(v := CAST(d AS VARCHAR)) AS s,"
-    " length(CAST(d AS VARCHAR)) AS n"
+    " struct_pack(v := CAST(d AS VARCHAR)) AS s"
     " FROM __THIS__"
 )
 
-# The campaign case verbatim: a constant NaN, folded at build time and only
-# then rendered, inside the struct_pack that first showed the divergence.
+# The same rendering over a NEGATED operand. Unary minus is IEEE negation on
+# DuckDB (`-(TR)input` in NegateOperator, v1.5.5), which flips the sign bit of
+# a NaN like any other; a lowering that subtracts from a zero instead cannot,
+# because IEEE subtraction propagates the operand's NaN sign unchanged.
+NEG_SQL = (
+    "SELECT CAST(-d AS VARCHAR) AS c,"
+    " (-d) || '|' AS bar,"
+    " concat(-d, '|') AS cat,"
+    " struct_pack(v := CAST(-d AS VARCHAR)) AS s"
+    " FROM __THIS__"
+)
+
+# The campaign case verbatim: a NaN out of `pow`, rendered inside the
+# struct_pack that first showed the divergence.
 SEED_1804_SQL = (
     "SELECT struct_pack(f0 := CAST(pow(-0.25e0, 0.1e0) AS VARCHAR)) AS s FROM __THIS__"
 )
+
+# Both NaN signs without a libm in the way: fast_float spells the parse, and
+# IEEE negation spells the flip.
+PINNED_SQL = (
+    "SELECT CAST(CAST('-nan' AS DOUBLE) AS VARCHAR) AS parsed,"
+    " CAST(-CAST('nan' AS DOUBLE) AS VARCHAR) AS negated,"
+    " CAST(-CAST('-nan' AS DOUBLE) AS VARCHAR) AS twice"
+    " FROM __THIS__"
+)
+
+
+def _force(backend, monkeypatch):
+    if backend == "interpreter":
+        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
+    else:
+        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
 
 
 def _both(sql, rows, oracle, backend):
@@ -57,27 +89,27 @@ def _both(sql, rows, oracle, backend):
     return got, compare.rows(oracle.answer(sql))
 
 
-@pytest.fixture
-def backend(request, monkeypatch):
-    if request.param == "interpreter":
-        monkeypatch.setenv("SPECIALIZER_FORCE_INTERP", "1")
-    else:
-        monkeypatch.delenv("SPECIALIZER_FORCE_INTERP", raising=False)
-    return request.param
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+@pytest.mark.parametrize("sql", [SQL, NEG_SQL], ids=["plain", "negated"])
+def test_double_to_varchar_carries_the_sign(sql, backend, monkeypatch, oracle):
+    _force(backend, monkeypatch)
+    got, want = _both(sql, [{"d": v} for v in DOUBLES], oracle, backend)
+    compare.assert_rows(got, want, ordered=True, ctx=sql)
 
 
-@pytest.mark.parametrize("backend", ["cranelift", "interpreter"], indirect=True)
-def test_double_to_varchar_carries_the_sign(backend, oracle):
-    rows = [{"d": v} for v in DOUBLES]
-    got, want = _both(SQL, rows, oracle, backend)
-    compare.assert_rows(got, want, ordered=True, ctx=SQL)
-
-
-@pytest.mark.parametrize("backend", ["cranelift", "interpreter"], indirect=True)
-def test_folded_negative_nan_in_struct_pack(backend, oracle):
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_folded_negative_nan_in_struct_pack(backend, monkeypatch, oracle):
+    _force(backend, monkeypatch)
     got, want = _both(SEED_1804_SQL, [{"d": 1.0}], oracle, backend)
     compare.assert_rows(got, want, ordered=True, ctx=SEED_1804_SQL)
-    # State the value rather than only comparing it: if DuckDB's `pow` ever
-    # stops handing back a signed NaN here, this test would otherwise keep
-    # passing while checking nothing.
-    assert want == [{"s": {"f0": "-nan"}}]
+    # `pow`'s NaN sign is the platform libm's to choose, so only the shape is
+    # stated: whichever sign it picks must have reached the text.
+    assert want[0]["s"]["f0"] in {"nan", "-nan"}
+
+
+@pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
+def test_parsed_and_negated_nan_signs_are_pinned(backend, monkeypatch, oracle):
+    _force(backend, monkeypatch)
+    got, want = _both(PINNED_SQL, [{"d": 1.0}], oracle, backend)
+    compare.assert_rows(got, want, ordered=True, ctx=PINNED_SQL)
+    assert want == [{"parsed": "-nan", "negated": "-nan", "twice": "nan"}]

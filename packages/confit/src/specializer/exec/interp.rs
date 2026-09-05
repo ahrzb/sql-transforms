@@ -1015,7 +1015,9 @@ fn compile_inst(
                     ctx.regs[dst] = RegVal::I64(r as i64);
                     Ok(())
                 } else {
-                    Err(Trap(format!("Conversion Error: Type DOUBLE with value {x:?} can't be cast because the value is out of range for the destination type")))
+                    // Same spelling as the VARCHAR cast: DuckDB's own cast
+                    // error text quotes the operand through StringCast.
+                    Err(Trap(format!("Conversion Error: Type DOUBLE with value {} can't be cast because the value is out of range for the destination type", DuckF64(x))))
                 }
             })
         }
@@ -1386,6 +1388,10 @@ fn compile_inst(
                 }),
                 NumOp1::Fabs => Box::new(move |ctx| {
                     ctx.regs[dst] = RegVal::F64(as_f64(ctx.regs[a]).abs());
+                    Ok(())
+                }),
+                NumOp1::Fneg => Box::new(move |ctx| {
+                    ctx.regs[dst] = RegVal::F64(-as_f64(ctx.regs[a]));
                     Ok(())
                 }),
                 NumOp1::Fround => Box::new(move |ctx| {

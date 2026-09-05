@@ -212,15 +212,27 @@ pub(super) fn substr_range_ok(v: i64) -> bool {
     (-(1i64 << 32)..(1i64 << 32)).contains(&v)
 }
 
-/// DuckDB's DOUBLE -> VARCHAR text (measured 1.5.5): Rust's shortest
-/// round-trip form, except the exponent carries an explicit sign and at
-/// least two digits (`1e+300`, `1e-05`) and NaN is lowercase `nan`.
+/// DuckDB's DOUBLE -> VARCHAR text. DuckDB renders a double as
+/// `duckdb_fmt::format("{}", v)` (1.5.5, string_cast.cpp), and two things
+/// are settled by that writer's source rather than by measurement:
 ///
-/// The sign comes off the SIGN BIT, not off `< 0`, so it survives onto a
-/// NaN: DuckDB renders a double through its bundled fmt, whose float writer
-/// reads `std::signbit` before it branches on finiteness. `-nan` is
-/// therefore as reachable as `-inf` and `-0.0` — `pow(-0.25, 0.1)` returns
-/// one — while Rust's own `{:?}` spells every NaN alike, sign dropped.
+/// * the sign is read off `std::signbit` BEFORE the finiteness branch — its
+///   own comment is "value < 0 is false for NaN so use signbit" — so a sign
+///   is prefixed to a NaN exactly as it is to an infinity or to a zero,
+///   where Rust's `{:?}` spells every NaN alike and drops it;
+/// * a non-finite value is then written as lower-case `inf` or `nan` behind
+///   that sign, and nothing else.
+///
+/// The finite spelling is a PIN, not a derivation: the digits and the choice
+/// of exponent form are taken to be Rust's shortest round-trip `{:?}` with
+/// the exponent respelled — explicit sign, at least two digits (`1e+300`,
+/// `1e-05`) — and that correspondence is held by comparison against the
+/// oracle, not read out of fmt's grisu.
+///
+/// A signed NaN needs no libm to reach: `'-nan'` parses to one and unary
+/// minus flips one. Which sign a libm hands back from a domain error —
+/// `pow(-0.25, 0.1)` and friends — is the platform's own business, so it is
+/// compared against the oracle and never pinned.
 pub(super) struct DuckF64(pub(super) f64);
 
 impl std::fmt::Display for DuckF64 {
@@ -401,7 +413,7 @@ pub(super) fn math1_fn(op: NumOp1) -> fn(f64) -> Result<f64, Trap> {
         NumOp1::Ffloor => duck_floor,
         NumOp1::Fceil => duck_ceil,
         NumOp1::Ftrunc => duck_trunc,
-        NumOp1::Iabs | NumOp1::Fabs | NumOp1::Fround => {
+        NumOp1::Iabs | NumOp1::Fabs | NumOp1::Fneg | NumOp1::Fround => {
             unreachable!("legacy unaries keep dedicated arms")
         }
     }

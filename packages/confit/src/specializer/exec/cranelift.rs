@@ -400,7 +400,11 @@ extern "C" fn h_ftoi(p: *mut Cx, x: f64, nearest: i64) -> i64 {
     if r.is_finite() && r >= -(2f64.powi(63)) && r < 2f64.powi(63) {
         r as i64
     } else {
-        unsafe { cx(p) }.set_trap(format!("Conversion Error: Type DOUBLE with value {x:?} can't be cast because the value is out of range for the destination type"));
+        // The value is quoted in DuckDB's own spelling: its cast error text
+        // renders the operand through the same StringCast the VARCHAR cast
+        // uses (convert_to_string.cpp), so `{:?}` would spell one double two
+        // ways depending on which message the row reached.
+        unsafe { cx(p) }.set_trap(format!("Conversion Error: Type DOUBLE with value {} can't be cast because the value is out of range for the destination type", DuckF64(x)));
         0
     }
 }
@@ -1950,6 +1954,7 @@ fn translate_inst(
                     v
                 }
                 NumOp1::Fabs => b.ins().fabs(x),
+                NumOp1::Fneg => b.ins().fneg(x),
                 NumOp1::Fround => call_h(b, module, "h_fround", &[x]).unwrap(),
                 // Wave-1: floor/ceil/trunc are single CLIF instructions;
                 // total transcendentals are plain helpers; trapping ones
