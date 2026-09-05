@@ -108,9 +108,10 @@ one-row-in/one-row-out:
 
 The exception is a **static-tables-only query** (nothing dynamic remains):
 it is evaluated once at build by DuckDB itself and frozen, so aggregation,
-`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. Two
-carve-outs, and one rule under both: what a whole-relation construct selects
-may be frozen only when it is a function of the query.
+`ORDER BY` and DuckDB dialect beyond sqlparser all serve there. One rule
+governs everything under it: the frozen answer may be frozen only when it is
+a function of the query text and the static tables. Anything that lets scan
+order, thread scheduling or a draw pick among valid answers refuses by name.
 
 **Selection by position refuses** — `LIMIT`, `OFFSET`, `FETCH`, `TOP`,
 `USING SAMPLE`, `DISTINCT ON`, `QUALIFY`, and the row-position window
@@ -141,19 +142,91 @@ query's own projection and measured there; where it cannot be (a `DISTINCT`
 would collapse a different tuple), the query refuses rather than guess.
 You'll see: `tie-producing ORDER BY on a static-tables-only query`.
 
+A **non-deterministic function refuses**, anywhere in the statement. DuckDB's
+own catalogue names them: `duckdb_functions().stability` is `VOLATILE` for a
+fresh draw (`random`, `gen_random_uuid`, `uuid`, `nextval`) and
+`CONSISTENT_WITHIN_QUERY` for one reading of a clock or a session per query
+(`now`, `current_date`, and the bare keywords `current_timestamp`,
+`localtimestamp`, `current_time`, `localtime`). Either way the value belongs
+to the RUN: measured, eight builds of `ORDER BY random()` over one static
+table froze **four different sequences**. A `CONSISTENT` function is a
+function of its arguments and serves unchanged. You'll see:
+`the non-deterministic function random() on a static-tables-only query`.
+
+An **order-sensitive aggregate refuses**, by name. DuckDB classifies this
+itself, and defaults to order-DEPENDENT: an aggregate is order-free only
+where its source calls `SetOrderDependent(NOT_ORDER_DEPENDENT)`, which in
+v1.5.5 is `count`, `count_star`, `min`, `max`, `bool_and`, `bool_or`, `mad`,
+`median` and the `quantile` family — those still serve. Everything else
+refuses: the ones that pick a row (`first`, `last`, `any_value`, `arbitrary`,
+`arg_max`, `arg_min`, `mode`), the ones that build a sequence (`list`,
+`array_agg`, `string_agg`, `group_concat`), and the ones that accumulate in
+floating point, where association is not a law (`avg`, `sum`, `stddev`,
+`product`, `corr`). Measured over 200k rows arriving in a hash order the
+settings move: `first` four answers, `list` six, `avg` six, `sum` six, while
+`min`/`max`/`count`/`median` gave one. An aggregate's OWN `ORDER BY` is not
+read as a fix — DuckDB's optimizer uses one, but only where its keys separate
+the rows within each group, and measuring that per group is a probe this
+reading does not build. You'll see: `order-sensitive aggregate list on a
+static-tables-only query`.
+
+Two costs of reading that by NAME, both deliberate, both fail-closed.
+`sum` is refused whole although DuckDB opts its integer and DECIMAL overloads
+out, because the parse does not say which overload a call binds to and the
+DOUBLE one is order-dependent; reading the bound overload back off the result
+type is the upgrade path. And `bit_and`/`bit_or`/`bit_xor`/`histogram` refuse
+although they are order-free in arithmetic, because DuckDB does not say so.
+
+A **row-based window frame refuses**. `ROWS BETWEEN ... PRECEDING/FOLLOWING/
+CURRENT ROW` counts NEIGHBOURS, so which rows are in the frame is the arrival
+order of the current row's peers: measured, a running `sum` over a
+`ROWS`-framed window answered **six ways** while the same window spelled
+`RANGE` answered **one**. `RANGE` and `GROUPS` frames move by peer group and
+are functions of the key, so they serve even over tied keys — and so does
+`ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`, which is the whole
+partition however it is spelled. The `rank` family (`rank`, `dense_rank`,
+`percent_rank`, `cume_dist`) is a function of the key and serves over ties.
+You'll see: `a row-based window frame (ROWS PRECEDING/FOLLOWING/CURRENT ROW)
+on a static-tables-only query`.
+
 An **`ORDER BY` below the top serves**, and always has: row order on this
 path is not part of the contract at all (see the nondeterminism chapter of
 the oracle spec — the differential compares static-only results as an
 unordered multiset), so an inner sort orders nothing anybody was promised.
 Measured, it moved the sequence and left the row SET identical under all
-five settings.
+five settings. The consumers that could have turned an inner order into a
+frozen VALUE — an order-sensitive aggregate above it, a row-framed window —
+now refuse under their own names, which is what leaves this carve-out
+nothing to be wrong about.
+
+A **star sort key** is read the way DuckDB reads it. `ORDER BY ALL` and a
+bare `ORDER BY *` both take DuckDB's ORDER-BY-ALL path (no `EXCLUDE`, no
+`REPLACE`, no `COLUMNS(...)` expression, and the only sort term), so they sort
+by every OUTPUT column and a tie under them is a repeated output row. Any
+other star — `COLUMNS('v')` in all four spellings, `* EXCLUDE (c)`,
+`* REPLACE (...)` — DuckDB expands over the FROM's INPUT columns instead;
+those keys are not in the frozen result, so the query refuses rather than
+measure the wrong ones. You'll see: `a star sort key this reading cannot
+expand on a static-tables-only query`.
+
+A clause that removes no row is **not** a row limit: `LIMIT ALL` and
+`OFFSET 0` serve.
+
+A static-only refusal is only ever pinned on a query that IS one. A query
+that reads a dynamic table cannot fold at all, and the error that reaches the
+caller is the row path's own — `unsupported: LIMIT/OFFSET`,
+`unsupported: FROM-first SELECT` — naming the same clause without claiming a
+path the query never took.
 
 All of the above is read off **DuckDB's own parse** of the statement
-(`json_serialize_sql`), because this carve-out exists for the DuckDB dialect
-another parser cannot read. A statement DuckDB runs but will not serialize —
-`PIVOT` is one — is read by its TOKENS instead, and any of those words in it
-refuses rather than falling silent:
-`ORDER BY in a statement DuckDB would not expose for inspection`.
+(`json_serialize_sql`) and its own catalogue (`duckdb_functions()`), because
+this carve-out exists for the DuckDB dialect another parser cannot read. A
+statement DuckDB runs but will not serialize — `PIVOT` is one — is read by
+its TOKENS instead, and any of those words in it refuses rather than falling
+silent: `ORDER BY in a statement DuckDB would not expose for inspection`. A
+string holding more than one statement refuses under its own count, not under
+that message: `ORDER BY in a statement string holding more than one
+statement`.
 
 ## 3. Type-system boundaries
 

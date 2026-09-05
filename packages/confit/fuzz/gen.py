@@ -1324,6 +1324,14 @@ def _walk(n: Node):
 # it does not claim generate byte-for-byte what they generated before.
 _ORDER_STREAM = 0x71E5
 
+# A case every value of which is fixed by the query and the static tables, so
+# the static-tables-only path owes it an ANSWER. Any refusal of a case
+# carrying this tag is an over-refusal whatever rule raised it, which is what
+# the oracle grades -- the tag is the generator saying what it knows, so a
+# false refusal of any kind arrives as a finding instead of as one more
+# REFUSED nobody reads.
+DETERMINED_TAG = "static_determined"
+
 
 def static_order_case(seed: int) -> Case | None:
     """The static-tables-only ORDER BY twins, or None when this seed is not
@@ -1339,7 +1347,23 @@ def static_order_case(seed: int) -> Case | None:
 
     Both twins matter. The tie one is the rule; the unique one is the guard
     against paying for it with an over-refusal, which the oracle turns into a
-    finding rather than a quiet REFUSED.
+    finding rather than a quiet REFUSED. The unique twin carries
+    `static_determined` too: every value in it is fixed by the query and the
+    static table, so ANY refusal of it is an over-refusal, whichever
+    static-only rule fires -- which is what the oracle grades.
+
+    The cost, named: 1% + 1% of every seed range generates these two fixed
+    queries instead of a random one -- 44 of seeds 0-1999, ~400 of a 20k run
+    -- and a seed the stream claims no longer generates what it generated
+    before. Repros cited by seed in older findings therefore have to be
+    checked against the claimed set; none of the seeds in fuzz/findings.jsonl
+    or in the baseline report is claimed (checked). Two fixed queries are
+    worth 2% because the grammar reaches neither shape at all: without them
+    the campaign has no view of this rule in either direction.
+
+    The aggregate is `min`, not `sum`: an order-sensitive aggregate refuses on
+    this path under its own name, which would answer the tie question before
+    the ORDER BY ever got asked.
     """
     aux = random.Random(seed ^ _ORDER_STREAM)  # noqa: S311 -- fuzzing
     r = aux.random()
@@ -1349,7 +1373,7 @@ def static_order_case(seed: int) -> Case | None:
     n = aux.randrange(3, 7)
     vals = aux.sample(range(1, 40), n)
     if ties:
-        # one group totals what another already does, and the ORDER BY says
+        # one group answers what another already does, and the ORDER BY says
         # nothing about which of the two comes first
         vals[aux.randrange(1, n)] = vals[0]
     rows = [{"g": f"g{i}", "v": v} for i, v in enumerate(vals)]
@@ -1359,7 +1383,7 @@ def static_order_case(seed: int) -> Case | None:
         Sel(
             [
                 (Col("g", None, "str"), "o"),
-                (Call("sum", [Col("v", None, "int")]), "t"),
+                (Call("min", [Col("v", None, "int")]), "t"),
             ],
             "ties",
         ),
@@ -1376,7 +1400,7 @@ def static_order_case(seed: int) -> Case | None:
         q,
         None,
         None,
-        ["static_tie_order" if ties else "static_tie_unique"],
+        ["static_tie_order"] if ties else ["static_tie_unique", DETERMINED_TAG],
     )
 
 

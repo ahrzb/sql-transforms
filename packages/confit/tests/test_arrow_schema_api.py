@@ -411,12 +411,12 @@ def test_foreign_type_unreferenced_builds_referenced_refuses():
 def test_constant_static_only_query_serves_via_infer_rows():
     statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
     fn = DuckDBInferFn(
-        "SELECT sum(v) AS o FROM s",
+        "SELECT max(v) AS o FROM s",
         row_tables={"__THIS__": SCHEMA},
         static_tables=statics,
     )
     assert fn.backend == "constant"
-    assert fn.infer_rows([]) == [{"o": 6}]
+    assert fn.infer_rows([]) == [{"o": 3}]
 
 
 def test_empty_rows_in_empty_rows_out():
@@ -453,7 +453,7 @@ def _constant_fn(shape=None):
     statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
     kw = {"shape": shape} if shape else {}
     return DuckDBInferFn(
-        "SELECT sum(v) AS o FROM s",
+        "SELECT max(v) AS o FROM s",
         row_tables={"__THIS__": SCHEMA},
         static_tables=statics,
         **kw,
@@ -471,8 +471,8 @@ def test_constant_build_refuses_rows_it_cannot_read():
 
 def test_constant_build_still_serves_on_empty_rows():
     fn = _constant_fn()
-    assert fn.infer_rows([]) == [{"o": 6}]
-    assert fn.infer_rows([]) == [{"o": 6}]  # repeatable, fresh dict each call
+    assert fn.infer_rows([]) == [{"o": 3}]
+    assert fn.infer_rows([]) == [{"o": 3}]  # repeatable, fresh dict each call
 
 
 def test_constant_refusal_names_the_query_shape():
@@ -491,7 +491,7 @@ def test_constant_refusal_holds_under_shape_many():
     assert fn.backend == "constant"
     with pytest.raises(ValueError, match="infer_rows"):
         fn.infer_rows([ROW])
-    assert fn.infer_rows([]) == [{"o": 6}]
+    assert fn.infer_rows([]) == [{"o": 3}]
 
 
 def test_compiled_build_is_untouched_by_the_constant_guard():
@@ -633,12 +633,12 @@ def test_a_row_limit_on_the_constant_path_refuses(sql):
 def test_the_constant_path_without_a_limit_is_untouched():
     statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
     fn = DuckDBInferFn(
-        "SELECT sum(v) AS o FROM s ORDER BY 1",
+        "SELECT max(v) AS o FROM s ORDER BY 1",
         row_tables={"__THIS__": SCHEMA},
         static_tables=statics,
     )
     assert fn.backend == "constant"
-    assert fn.infer_rows([]) == [{"o": 6}]
+    assert fn.infer_rows([]) == [{"o": 3}]
 
 
 # ------------------------------------------------------ bare-name ambiguity --
