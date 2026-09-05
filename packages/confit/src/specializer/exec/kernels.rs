@@ -215,12 +215,18 @@ pub(super) fn substr_range_ok(v: i64) -> bool {
 /// DuckDB's DOUBLE -> VARCHAR text (measured 1.5.5): Rust's shortest
 /// round-trip form, except the exponent carries an explicit sign and at
 /// least two digits (`1e+300`, `1e-05`) and NaN is lowercase `nan`.
+///
+/// The sign comes off the SIGN BIT, not off `< 0`, so it survives onto a
+/// NaN: DuckDB renders a double through its bundled fmt, whose float writer
+/// reads `std::signbit` before it branches on finiteness. `-nan` is
+/// therefore as reachable as `-inf` and `-0.0` — `pow(-0.25, 0.1)` returns
+/// one — while Rust's own `{:?}` spells every NaN alike, sign dropped.
 pub(super) struct DuckF64(pub(super) f64);
 
 impl std::fmt::Display for DuckF64 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.0.is_nan() {
-            return f.write_str("nan");
+            return f.write_str(if self.0.is_sign_negative() { "-nan" } else { "nan" });
         }
         // Stack-render the shortest round-trip form (≤ 24 bytes for any
         // f64) so the hot path never builds a temp String.
