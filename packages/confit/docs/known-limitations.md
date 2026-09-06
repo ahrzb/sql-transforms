@@ -187,20 +187,29 @@ v1.5.5 is `count`, `count_star`, `min`, `max`, `bool_and`, `bool_or`, `mad`,
 refuses: the ones that pick a row (`first`, `last`, `any_value`, `arbitrary`,
 `arg_max`, `arg_min`, `mode`), the ones that build a sequence (`list`,
 `array_agg`, `string_agg`, `group_concat`), and the ones that accumulate in
-floating point, where association is not a law (`avg`, `sum`, `stddev`,
-`product`, `corr`). Measured over 200k rows arriving in a hash order the
-settings move: `first` four answers, `list` six, `avg` six, `sum` six, while
+floating point, where association is not a law (`avg`, `stddev`,
+`product`, `corr`, and `sum` over a `DOUBLE`). Measured over 200k rows
+arriving in a hash order the settings move: `first` four answers, `list` six,
+`avg` six, `sum` six, while
 `min`/`max`/`count`/`median` gave one. An aggregate's OWN `ORDER BY` is not
 read as a fix — DuckDB's optimizer uses one, but only where its keys separate
 the rows within each group, and measuring that per group is a probe this
 reading does not build. You'll see: `order-sensitive aggregate list on a
 static-tables-only query`.
 
-The cost of reading that by NAME, deliberate and fail-closed: **65 of
-DuckDB's 88 aggregate names refuse**. `sum` is refused whole although DuckDB
-opts its integer and DECIMAL overloads out, because the parse does not say
-which overload a call binds to and the DOUBLE one is order-dependent; reading
-the bound overload back off the result type is the upgrade path. The rest
+`sum` is the one name read by OVERLOAD rather than by name, because the flag
+is not the same at all of them: DuckDB opts the `BOOLEAN`, integer, `HUGEINT`
+and `DECIMAL` sums out and leaves the `DOUBLE` one order-dependent. Which one
+bound is not in the parse, so DuckDB's BINDER is asked — the statement is
+re-projected onto its bare `sum` outputs and `DESCRIBE`d, and the return type
+names the overload: `HUGEINT` or `DECIMAL` serves, `DOUBLE` refuses. That
+includes `sum` over a `UHUGEINT`, which has no exact overload to bind and so
+accumulates in `DOUBLE` like any float. A sum whose overload the reading
+cannot get at keeps refusing whole: nested in a larger expression, in a
+`HAVING`, in a set operation or a subquery, or spelled as a window function.
+
+The cost of reading the REST by NAME, deliberate and fail-closed: **64 of
+DuckDB's 88 aggregate names refuse**. The rest of them
 refuse for the one reason DuckDB does not flag them, however order-free the
 arithmetic looks: `bit_and`/`bit_or`/`bit_xor`, `histogram`, the counters
 `count_if`/`countif`/`regr_count`/`approx_count_distinct`, `entropy`, and the
@@ -238,6 +247,19 @@ frozen VALUE — an order-sensitive aggregate above it, a row-framed window —
 now refuse under their own names, which is what leaves this carve-out
 nothing to be wrong about.
 
+A **sort key spelled as a name** goes where DuckDB's binder sends it, which
+matters when two output columns answer to the same name. A `SELECT` fills its
+alias map in select-list order and lets a later entry overwrite an earlier
+one, so `ORDER BY c` over `SELECT g AS c, v AS c` sorts by **v** — measured,
+its `DESC` comes back `2, 1, 1`. Only aliases are in that map: a name matched
+because a column happens to carry it binds only when exactly one column does,
+and otherwise the key is computed over the query's own input. A SET OPERATION
+is the other binder — it gathers its children's output names and keeps the
+FIRST of a repeat — and this reading keeps the two apart by whether the node
+has a select list of its own. The cost is one shape: an alias sitting behind
+two stars has no output position this reading can compute, and refuses as
+`a repeated output name this reading cannot place`.
+
 A **star sort key** is read the way DuckDB reads it. `ORDER BY ALL` and a
 bare `ORDER BY *` both take DuckDB's ORDER-BY-ALL path (no `EXCLUDE`, no
 `REPLACE`, no `COLUMNS(...)` expression, and the only sort term), so they sort
@@ -254,6 +276,17 @@ NULL-typed constant, `OFFSET 0` a zero, and the side of the modifier the
 query did not spell is the JSON literal `null`. A limit that is any other
 node — `LIMIT 1+1`, `LIMIT CAST(2 AS BIGINT)`, `LIMIT (SELECT 2)` — is one
 this reading cannot evaluate, and it counts as the real limit it is.
+
+A **`POSITIONAL JOIN` refuses.** It pairs row *i* of one relation with row
+*i* of the other and asks nothing of their values, so which rows meet is the
+scan order itself — selection by position wearing a join's clothes. Measured
+over a 300k-row static table fed through a tying `GROUP BY`, one such join
+answered **five ways** across those five settings, and so did a scalar
+`count(*)` over it — a VALUE, not a sequence, so "row order is not the
+contract" does not cover it. DuckDB-only syntax, so it reaches this path
+precisely because the row path's parser cannot read it. You'll see:
+`POSITIONAL JOIN on a static-tables-only query`. `ASOF JOIN` is NOT covered
+by this rule and is the next thing to probe.
 
 **`rowid` refuses.** A static table is materialized by `CREATE TABLE ... AS
 SELECT`, so `rowid` is whatever physical position that produced — the same

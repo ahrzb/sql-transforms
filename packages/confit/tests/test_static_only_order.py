@@ -58,6 +58,8 @@ TIES = pa.table({"g": ["x", "y", "z"], "v": pa.array([1, 1, 2], pa.int64())})
 APART = pa.table({"g": ["x", "y", "z"], "v": pa.array([1, 2, 1], pa.int64())})
 # Nothing ties, on any single column.
 UNIQ = pa.table({"g": ["x", "y", "z"], "v": pa.array([3, 1, 2], pa.int64())})
+# The same shape carrying a DOUBLE, where addition is not associative.
+DBL = pa.table({"g": ["x", "y", "z"], "d": pa.array([0.1, 0.2, 0.3], pa.float64())})
 
 TIE_MSG = (
     "unsupported: tie-producing ORDER BY on a static-tables-only query -- "
@@ -521,7 +523,7 @@ def test_a_floating_point_accumulator_refuses_because_association_is_not_a_law()
     # earn it: over 200k rows arriving in a hash order the settings move, avg
     # and sum each answered six ways.
     for name in ("sum", "avg", "stddev", "product"):
-        msg = refuses(f"SELECT {name}(v) AS o FROM s")
+        msg = refuses(f"SELECT {name}(d) AS o FROM s", DBL)
         assert msg.startswith(AGG_MSG_HEAD + name + " on a"), (name, msg)
 
 
@@ -853,3 +855,175 @@ def test_rowid_is_selection_by_position_under_another_name():
         "SELECT g AS o FROM s WHERE rowid < 2",
     ):
         assert "rowid" in refuses(sql, UNIQ), sql
+
+
+# ------------------------------------------ which overload the sum bound --
+#
+# DuckDB flags `sum` ORDER_DEPENDENT by name because ONE of its overloads is:
+# the DOUBLE one, where association is not a law. Every other overload --
+# BOOLEAN, SMALLINT, INTEGER, BIGINT and HUGEINT, all returning HUGEINT, and
+# DECIMAL -- is opted out with SetOrderDependent(NOT_ORDER_DEPENDENT) in
+# extension/core_functions/aggregate/distributive/sum.cpp, and is exact.
+#
+# Which one bound is not in DuckDB's parse, so it is asked of DuckDB's own
+# BINDER: the statement is re-projected onto its bare `sum` outputs and
+# DESCRIBEd, and the answer is the sum's own return type. HUGEINT or DECIMAL
+# is an exact overload and serves; DOUBLE is the floating accumulator and
+# refuses.
+
+
+def test_an_integer_sum_serves_and_matches_the_oracle(oracle):
+    sql = "SELECT sum(v) AS o FROM s"
+    fn = build(sql)
+    assert fn.backend == "constant"
+    oracle.load("s", TIES)
+    compare.assert_rows(fn.infer_rows([]), compare.rows(oracle.answer(sql)))
+
+
+def test_a_grouped_integer_sum_serves():
+    fn = build("SELECT g AS k, sum(v) AS o FROM s GROUP BY g ORDER BY k")
+    assert fn.backend == "constant"
+    assert [r["o"] for r in fn.infer_rows([])] == [1, 1, 2]
+
+
+def test_a_double_sum_refuses_by_name():
+    msg = refuses("SELECT sum(d) AS o FROM s", DBL)
+    assert msg.startswith(AGG_MSG_HEAD + "sum on a"), msg
+
+
+def test_a_sum_over_an_unsigned_hugeint_refuses_because_duckdb_sums_it_double():
+    # UHUGEINT has no exact overload and does not cast to one: DuckDB binds
+    # sum(DOUBLE) for it (measured, typeof(sum(x)) is DOUBLE). Reading
+    # integrality off the ARGUMENT would have served this; reading the bound
+    # overload's own return type refuses it.
+    msg = refuses("SELECT sum(v::UHUGEINT) AS o FROM s")
+    assert msg.startswith(AGG_MSG_HEAD + "sum on a"), msg
+
+
+def test_a_decimal_sum_serves_because_duckdb_opts_that_overload_out_too():
+    fn = build("SELECT sum(v::DECIMAL(9,2)) AS o FROM s")
+    assert fn.backend == "constant"
+    assert fn.infer_rows([]) == [{"o": 4}]
+
+
+def test_an_integer_average_still_refuses_because_its_mean_is_a_double():
+    # avg has no exact overload at all -- every one of them returns DOUBLE --
+    # so the name stays order-dependent whatever it is given.
+    msg = refuses("SELECT avg(v) AS o FROM s")
+    assert msg.startswith(AGG_MSG_HEAD + "avg on a"), msg
+
+
+def test_a_sum_the_frozen_result_does_not_type_still_refuses():
+    # The reading needs the sum's OWN return type, which the result carries
+    # only where a bare sum is the whole output column. Wrapped in an
+    # expression, hidden in a HAVING, or one branch of a set operation, the
+    # overload is unread -- and unread is refused.
+    for sql in (
+        "SELECT sum(v) + 1 AS o FROM s",
+        "SELECT g AS o FROM s GROUP BY g HAVING sum(v) > 0",
+        "SELECT sum(v) AS o FROM s UNION ALL SELECT sum(v) AS o FROM s",
+        "SELECT o FROM (SELECT sum(v) AS o FROM s) q",
+    ):
+        assert refuses(sql).startswith(AGG_MSG_HEAD + "sum on a"), sql
+
+
+def test_an_exact_sum_does_not_hide_a_later_offender():
+    # The message names the alphabetically first offender. Once `sum` is not
+    # one, the name that IS one has to surface -- `var_pop` sorts after `sum`,
+    # so a reading that only blanked the found name would have served this.
+    msg = refuses("SELECT sum(v) AS a, var_pop(v) AS b FROM s")
+    assert msg.startswith(AGG_MSG_HEAD + "var_pop on a"), msg
+
+
+def test_a_double_sum_beside_a_later_offender_is_still_named_first():
+    msg = refuses("SELECT sum(d) AS a, var_pop(d) AS b FROM s", DBL)
+    assert msg.startswith(AGG_MSG_HEAD + "sum on a"), msg
+
+
+def test_a_windowed_sum_keeps_refusing_by_name():
+    # A window call is not a bare output column, so its overload is unread.
+    msg = refuses("SELECT sum(v) OVER () AS o FROM s")
+    assert msg.startswith(AGG_MSG_HEAD + "sum on a"), msg
+
+
+# -------------------------------------- a name two output columns answer to --
+#
+# `bind_select_node.cpp` fills the alias map in select-list order and lets a
+# later entry overwrite an earlier one, so an ORDER BY name binds the LAST
+# output column ALIASED to it. Only aliases are in that map: a name matched
+# because a column happens to carry it resolves through the expression list
+# instead, and only when exactly one column does (`order_binder.cpp`). A SET
+# OPERATION gathers its aliases from its children's output names and keeps
+# the FIRST (`bind_setop_node.cpp`), which is a different rule and stays one.
+
+
+def test_a_repeated_alias_binds_the_last_of_them_and_its_tie_refuses():
+    # Measured: `... ORDER BY c DESC` comes back 2,1,1 -- sorted by v, the
+    # SECOND c. Reading the first would have measured g, found no tie, and
+    # frozen a sequence DuckDB picks by scan order.
+    assert refuses("SELECT g AS c, v AS c FROM s ORDER BY c") == TIE_MSG
+
+
+def test_a_repeated_alias_whose_last_column_separates_the_rows_serves():
+    # Both columns separate the rows here, so it serves either way -- but the
+    # SEQUENCE says which one was the key: sorted by the second c (g) the rows
+    # come x, y, z; sorted by the first (v = 3, 1, 2) they would come y, z, x.
+    fn = build("SELECT v AS c, g AS c FROM s ORDER BY c", UNIQ)
+    assert fn.backend == "constant"
+    assert [r["c"] for r in fn.infer_rows([])] == ["x", "y", "z"]
+
+
+def test_an_alias_wins_over_a_later_column_of_the_same_name():
+    # Only the aliased entry is in the alias map, so the raw column that
+    # shares its name does not take the key from it -- the alias ties.
+    assert refuses("SELECT v AS g, g FROM s ORDER BY g") == TIE_MSG
+
+
+def test_an_alias_after_a_star_is_found_at_its_expanded_position():
+    # The star pushes the aliased column to output position 3; the key is g,
+    # which separates every row.
+    fn = build("SELECT *, g AS c FROM s ORDER BY c")
+    assert fn.backend == "constant"
+    assert [r["c"] for r in fn.infer_rows([])] == ["x", "y", "z"]
+
+
+def test_an_alias_after_a_star_that_ties_refuses():
+    assert refuses("SELECT *, v AS c FROM s ORDER BY c") == TIE_MSG
+
+
+def test_a_set_operation_keeps_the_first_of_two_names():
+    # The setop binder inserts a name only when it is not already there, so
+    # the FIRST column wins -- here v, which ties.
+    sql = "SELECT v AS c, g AS c FROM s UNION ALL SELECT v AS c, g AS c FROM s"
+    assert refuses(sql + " ORDER BY c") == TIE_MSG
+
+
+# ------------------------------------------ a join that pairs by position --
+
+
+def test_a_positional_join_refuses_because_it_pairs_row_i_with_row_i():
+    # POSITIONAL JOIN pairs the two relations by SCAN POSITION and nothing
+    # else, so its answer is a pure function of the order the rows arrive in
+    # -- the class every other refusal here exists to catch. It is DuckDB-only
+    # syntax, so it reaches this path by way of a parse the row path cannot
+    # read.
+    other = pa.table({"w": ["a", "b", "c"], "t": pa.array([9, 8, 7], pa.int64())})
+    with pytest.raises(ValueError) as e:
+        DuckDBInferFn(
+            "SELECT max(v + t) AS o FROM s POSITIONAL JOIN u",
+            row_tables={"__THIS__": ROW},
+            static_tables={"s": TIES, "u": other},
+        )
+    msg = " ".join(str(e.value).split())
+    assert msg.startswith("unsupported: POSITIONAL JOIN on a"), msg
+
+
+def test_an_ordinary_join_is_untouched():
+    other = pa.table({"w": ["x", "y", "z"], "t": pa.array([9, 8, 7], pa.int64())})
+    fn = DuckDBInferFn(
+        "SELECT max(v + t) AS o FROM s JOIN u ON s.g = u.w",
+        row_tables={"__THIS__": ROW},
+        static_tables={"s": TIES, "u": other},
+    )
+    assert fn.backend == "constant"
+    assert fn.infer_rows([]) == [{"o": 10}]

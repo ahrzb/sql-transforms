@@ -1302,13 +1302,13 @@ struct Shapes {
 /// extension/core_functions/aggregate). Every other aggregate keeps the
 /// AggregateFunction constructor's default, which is ORDER_DEPENDENT.
 ///
-/// `sum` is deliberately absent although DuckDB opts its integer and DECIMAL
-/// overloads out: the DOUBLE overload is NOT opted out, and DuckDB's parse
-/// does not say which overload a call binds to. Measured, `sum` over doubles
-/// arriving in a hash order answered six ways. The reading is therefore by
-/// NAME and one step coarser than DuckDB's own flag; reading the bound
-/// overload back off the result type would recover the exact sums, and is
-/// the upgrade path if that matters.
+/// `sum` is absent from this list because the flag is not its whole name's:
+/// DuckDB opts its BOOLEAN, integer, HUGEINT and DECIMAL overloads out and
+/// leaves the DOUBLE one order-dependent, where association is not a law
+/// (measured, `sum` over doubles arriving in a hash order answered six ways).
+/// Which overload a call bound is not in DuckDB's parse, so `exact_sum` asks
+/// DuckDB's binder for it instead and this list gains `sum` for that
+/// statement when the answer is an exact overload.
 ///
 /// `sum_no_overflow` is opted out at both its overloads and is still absent,
 /// because no query can name it: it is in the catalogue but binding one is
@@ -1436,13 +1436,17 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
          lim(x) AS (SELECT unnest(coalesce(CAST(json_extract(j, '$..limit') \
              AS JSON[]), [])) FROM a), \
          off(x) AS (SELECT unnest(coalesce(CAST(json_extract(j, '$..offset') \
-             AS JSON[]), [])) FROM a) \
+             AS JSON[]), [])) FROM a), \
+         ag(n) AS (SELECT n FROM f WHERE n IN (SELECT lower(function_name) \
+             FROM duckdb_functions() WHERE function_type = 'aggregate' \
+                 AND lower(function_name) NOT IN (__ORDER_FREE__))) \
          SELECT json_extract(j, '$.error')::VARCHAR, \
          json_array_length(json_extract(j, '$.statements')), \
          json_extract(j, '$..type')::VARCHAR, \
          json_extract(j, '$..qualify')::VARCHAR, \
          json_extract(j, '$..sample')::VARCHAR, \
          json_extract(j, '$..distinct_on_targets')::VARCHAR, \
+         json_extract(j, '$..ref_type')::VARCHAR, \
          json_extract(j, '$..start')::VARCHAR || \
              json_extract(j, '$..end')::VARCHAR, \
          (SELECT min(n) FROM ( \
@@ -1462,9 +1466,7 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
                                         AND lower(function_name) <> 'error' \
                                 UNION SELECT unnest([__CLOCK__])))) \
              UNION ALL SELECT n FROM c WHERE n IN (__CLOCK__))), \
-         (SELECT min(n) FROM f WHERE n IN (SELECT lower(function_name) \
-             FROM duckdb_functions() WHERE function_type = 'aggregate' \
-                 AND lower(function_name) NOT IN (__ORDER_FREE__))), \
+         [(SELECT min(n) FROM ag), (SELECT min(n) FROM ag WHERE n <> 'sum')], \
          coalesce((SELECT bool_and(json_type(x) = 'NULL' OR coalesce( \
              json_extract_string(x, '$.value.is_null'), 'false') = 'true') \
              FROM lim), true) \
@@ -1518,9 +1520,10 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         qualify,
         sample,
         distinct_on,
+        joins,
         frame,
         drawn,
-        agg,
+        aggs,
         no_op_limit,
         rowid,
     ): (
@@ -1533,6 +1536,7 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         Option<String>,
         Option<String>,
         Option<String>,
+        Vec<Option<String>>,
         bool,
         bool,
     ) = row.extract()?;
@@ -1561,6 +1565,18 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     let row_limit = (types.contains("\"LIMIT_") && !no_op_limit)
         .then(|| limit_word.unwrap_or("LIMIT/OFFSET"));
     let frame = frame.unwrap_or_default();
+    // The offender the message names, and the one it names once `sum` is not
+    // one: `sum`'s order-dependence is its OVERLOAD's rather than its name's,
+    // so it leaves the set when DuckDB bound an exact overload. Only ever
+    // asked when `sum` is the name the message would carry -- where another
+    // offender sorts before it, that one refuses either way.
+    let mut aggs = aggs.into_iter();
+    let agg = aggs.next().flatten();
+    let agg = if agg.as_deref() == Some("sum") && exact_sum(con, sql)? {
+        aggs.next().flatten()
+    } else {
+        agg
+    };
     let refusal = if let Some(name) = drawn {
         Some(nondeterministic_refusal(&name))
     } else if let Some(name) = agg {
@@ -1582,12 +1598,72 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         Some(positional_refusal(
             "a row-position window function (row_number/ntile/lead/lag/first_value/last_value/nth_value)",
         ))
+    } else if joins.is_some_and(|j| j.contains("\"POSITIONAL\"")) {
+        // A POSITIONAL JOIN pairs row i of one relation with row i of the
+        // other and asks nothing of their values, so which rows meet is the
+        // scan order itself. Measured over a 300k static fed through a tying
+        // GROUP BY, one such join answered five ways across the five settings
+        // -- as a SCALAR count, not only as a sequence.
+        Some(positional_refusal("POSITIONAL JOIN"))
     } else if rowid {
         Some(positional_refusal("the rowid pseudo-column"))
     } else {
         None
     };
     Ok(Shapes { row_limit, refusal })
+}
+
+/// Whether every `sum` this statement names bound one of DuckDB's EXACT
+/// overloads — the ones it declares NOT_ORDER_DEPENDENT — rather than the
+/// DOUBLE one that accumulates in floating point.
+///
+/// The question is answered by the RETURN TYPE, because that is what names
+/// the overload: DuckDB's exact sums return HUGEINT (from BOOLEAN, SMALLINT,
+/// INTEGER, BIGINT and HUGEINT) or DECIMAL, and only the order-dependent
+/// overloads return anything else (DOUBLE from FLOAT and DOUBLE, and — this
+/// is why the argument's own integrality does not answer it — DOUBLE from
+/// UHUGEINT, which has no exact overload to cast to; BIGNUM from BIGNUM).
+///
+/// DuckDB's parse does not carry types, so its BINDER is asked: the statement
+/// is re-projected onto its bare `sum` outputs with its modifiers dropped —
+/// DuckDB's own parse in, DuckDB's own SQL out, as the tie probe does — and
+/// DESCRIBEd, which binds without running. A sum the re-projection cannot
+/// carry is one whose overload goes unread: nested in a larger expression, in
+/// a HAVING, in a set operation or a subquery, or called as a window. Those
+/// keep refusing, which is what the count check enforces — every `sum` the
+/// parse names has to be one of the bare outputs, or the answer is no.
+fn exact_sum(con: &Bound<'_, PyAny>, sql: &str) -> PyResult<bool> {
+    const SUM_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
+         q(j, node, sums) AS (SELECT j, json_extract(j, '$.statements[0].node'), \
+             list_filter(coalesce(CAST(json_extract(j, \
+                 '$.statements[0].node.select_list') AS JSON[]), []), \
+                 x -> json_extract_string(x, '$.class') = 'FUNCTION' \
+                     AND lower(json_extract_string(x, '$.function_name')) = 'sum') \
+             FROM a), \
+         f(n) AS (SELECT lower(unnest(coalesce( \
+             json_extract_string(j, '$..function_name'), []))) FROM a) \
+         SELECT json_deserialize_sql(json_merge_patch(j, json_object('statements', \
+             json_array(json_merge_patch(json_extract(j, '$.statements[0]'), \
+                 json_object('node', json_object('select_list', to_json(sums), \
+                     'modifiers', to_json([]::JSON[])))))))), \
+             len(sums) > 0 AND len(sums) = (SELECT count(*) FROM f WHERE n = 'sum') \
+         FROM q";
+    let (projected, all_bare): (Option<String>, bool) = con
+        .call_method1("execute", (SUM_SQL, (sql,)))?
+        .call_method0("fetchone")?
+        .extract()?;
+    let Some(projected) = projected.filter(|_| all_bare) else {
+        return Ok(false);
+    };
+    let described = con.call_method1(
+        "execute",
+        (format!("SELECT column_type FROM (DESCRIBE {projected})"),),
+    );
+    let Ok(cur) = described else { return Ok(false) };
+    let types: Vec<(String,)> = cur.call_method0("fetchall")?.extract()?;
+    Ok(types
+        .iter()
+        .all(|(ty,)| ty == "HUGEINT" || ty.starts_with("DECIMAL")))
 }
 
 /// The clause words a statement spells, from DuckDB's own tokenizer: the
@@ -1643,6 +1719,77 @@ fn ordering_words(
     Ok((limit, other))
 }
 
+/// The top-level select list, in the two fields an ORDER BY NAME resolves
+/// against: each entry's EXPLICIT alias (empty where it has none, and a star
+/// never has one) and whether the entry is a star.
+struct SelectList {
+    aliases: Vec<String>,
+    stars: Vec<bool>,
+}
+
+/// Which column DuckDB's binder answers an ORDER BY NAME with.
+enum NameBinding {
+    /// A column of the frozen result, by position.
+    Out(usize),
+    /// Not the output at all: the binder falls through to the query's own
+    /// input, where the key has to be computed beside the rows.
+    Input,
+    /// An alias whose output position this reading cannot place.
+    Unplaceable,
+}
+
+/// Where DuckDB's binder sends `ORDER BY <name>`, read off its own source.
+///
+/// A SELECT fills its alias map in select-list order and lets a later entry
+/// OVERWRITE an earlier one (`bind_select_node.cpp`), so a name two columns
+/// answer to binds the LAST one ALIASED to it. Only aliases are in that map:
+/// a name that matches because a column happens to carry it goes to the
+/// expression list instead, which binds it only when exactly one column
+/// matches and otherwise leaves the term to the input (`order_binder.cpp`,
+/// `TryGetProjectionReference`). Measured, `SELECT g AS c, v AS c FROM s
+/// ORDER BY c DESC` comes back sorted by v.
+///
+/// A SET OPERATION is a different binder: it gathers the names of its
+/// children's OUTPUT columns, aliased or not, and keeps the FIRST of a repeat
+/// (`bind_setop_node.cpp`). It has no select list of its own, which is how
+/// this reading tells the two apart.
+///
+/// An alias sits at its own place in the select list, which is its output
+/// position until a star stands in front of it — a star expands to whatever
+/// the result has left over, and one star's expansion is that count exactly.
+/// Two stars split an unknown count two ways, so an alias behind them cannot
+/// be placed, and an unplaceable key refuses rather than guessing.
+fn resolve_name(names: &[String], sel: Option<&SelectList>, name: &str) -> NameBinding {
+    let sole_match = || {
+        let mut it = names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.eq_ignore_ascii_case(name));
+        match (it.next(), it.next()) {
+            (Some((p, _)), None) => NameBinding::Out(p),
+            _ => NameBinding::Input,
+        }
+    };
+    let Some(sel) = sel else {
+        return names
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
+            .map_or(NameBinding::Input, NameBinding::Out);
+    };
+    let Some(i) = sel.aliases.iter().rposition(|a| a.eq_ignore_ascii_case(name)) else {
+        return sole_match();
+    };
+    let star = sel.stars.iter().position(|s| *s);
+    match star {
+        None if sel.aliases.len() == names.len() => NameBinding::Out(i),
+        Some(k) if sel.stars[k + 1..].iter().all(|s| !*s) && names.len() + 1 >= sel.aliases.len() => {
+            let expanded = names.len() + 1 - sel.aliases.len();
+            NameBinding::Out(if i < k { i } else { i - 1 + expanded })
+        }
+        _ => NameBinding::Unplaceable,
+    }
+}
+
 /// Where one sort key can be read: off the frozen result, or only by
 /// computing it where the ORDER BY computes it.
 enum OrderKey {
@@ -1662,8 +1809,8 @@ enum OrderKey {
 /// Keys resolve as DuckDB resolves them, off DuckDB's own reading: an integer
 /// literal and a bare `#N` are both a position in the OUTPUT; `ALL` is every
 /// output column (and arrives as the star it is, so a column actually NAMED
-/// `all` is not mistaken for it); a bare name is the output alias when one
-/// matches, case-insensitively.
+/// `all` is not mistaken for it); a bare name goes where DuckDB's binder
+/// sends it, which `resolve_name` reads off that binder's own source.
 /// Anything else is computed over the query's own input, so it is added to
 /// that query's projection — by rewriting DuckDB's parse of the statement and
 /// asking DuckDB to print it back, which is why syntax no other parser reads
@@ -1734,12 +1881,30 @@ fn tie_probe(
                  'DISTINCT_MODIFIER') \
                  OR json_extract(node, '$.select_list') IS NULL \
          FROM k";
+    /// The select list an ORDER BY NAME resolves against, entry by entry.
+    /// NULL for a node that has none, which is the set operations.
+    const SELECT_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
+         n(sl) AS (SELECT CAST(json_extract(j, '$.statements[0].node.select_list') \
+             AS JSON[]) FROM a) \
+         SELECT list_transform(sl, x -> json_extract_string(x, '$.alias')), \
+             list_transform(sl, x -> json_extract_string(x, '$.class') = 'STAR') \
+         FROM n";
     type Term = (Option<String>, Option<i64>, Option<String>, Option<String>, bool);
     let terms: Vec<Term> = con
         .call_method1("execute", (ORDER_SQL, (sql,)))?
         .call_method0("fetchall")?
         .extract()?;
     let n_terms = terms.len();
+    if n_terms == 0 {
+        return Ok(Ok(None));
+    }
+    let (aliases, stars): (Option<Vec<String>>, Option<Vec<bool>>) = con
+        .call_method1("execute", (SELECT_SQL, (sql,)))?
+        .call_method0("fetchone")?
+        .extract()?;
+    let select_list = aliases
+        .zip(stars)
+        .map(|(aliases, stars)| SelectList { aliases, stars });
     let mut keys = Vec::with_capacity(n_terms);
     for (i, (ty, n_names, first_name, position, narrowed)) in terms.into_iter().enumerate() {
         match ty.as_deref() {
@@ -1785,8 +1950,9 @@ fn tie_probe(
                 let p: usize = position.unwrap_or_default().parse().expect("just parsed");
                 keys.push(OrderKey::Out(p - 1));
             }
-            // A repeated output name resolves to the FIRST of them, which is
-            // DuckDB's own rule (measured).
+            // A bare name is an output column where DuckDB's binder makes it
+            // one -- `resolve_name` is that rule, and a name two columns
+            // answer to is where the two readings differ.
             Some("COLUMN_REF")
                 if n_names == Some(1)
                     && names
@@ -1794,8 +1960,13 @@ fn tie_probe(
                         .any(|n| n.eq_ignore_ascii_case(first_name.as_deref().unwrap_or_default())) =>
             {
                 let name = first_name.unwrap_or_default();
-                let p = names.iter().position(|n| n.eq_ignore_ascii_case(&name));
-                keys.push(OrderKey::Out(p.expect("just matched")));
+                match resolve_name(names, select_list.as_ref(), &name) {
+                    NameBinding::Out(p) => keys.push(OrderKey::Out(p)),
+                    NameBinding::Input => keys.push(OrderKey::Hidden(i)),
+                    NameBinding::Unplaceable => {
+                        return Ok(Err("a repeated output name this reading cannot place"))
+                    }
+                }
             }
             _ => keys.push(OrderKey::Hidden(i)),
         }
