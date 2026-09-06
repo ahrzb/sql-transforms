@@ -310,9 +310,19 @@ costs a refusal only where the projection cannot carry the key — under a
 OPERATION
 is the other binder — it gathers its children's output names and keeps the
 FIRST of a repeat — and this reading keeps the two apart by whether the node
-has a select list of its own. The cost is one shape: an alias sitting behind
-two stars has no output position this reading can compute, and refuses as
-`a repeated output name this reading cannot place`.
+has a select list of its own.
+
+An entry keeps its own place in the select list until an **expanding** entry
+stands in front of it, and a star is not the only one that expands: a
+top-level `unnest(<struct>)` expands to one output column per field, and
+DuckDB's parse calls it a FUNCTION rather than a star. Both are counted for
+placement — `SELECT unnest(st), a AS k ... ORDER BY k` reads `k` at the
+output position the fields pushed it to — while only a star also SOURCES
+names, because what an unnest expands to is not a column reference and the
+binder's second pass counts only those. The cost is one shape: an alias
+sitting behind TWO expanding entries has no output position this reading can
+compute, and refuses as
+`a sort key whose output position this reading cannot place`.
 
 A **star sort key** is read the way DuckDB reads it. `ORDER BY ALL` and a
 bare `ORDER BY *` both take DuckDB's ORDER-BY-ALL path (no `EXCLUDE`, no
