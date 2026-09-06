@@ -2179,7 +2179,8 @@ fn empty_for_nonnull(subject: SExpr) -> SExpr {
 
 /// Fold an arithmetic operand, and say whether it folded to a typed NULL.
 ///
-/// Every strict numeric operator shares one rule, and this is it. Folding
+/// Every arithmetic operator shares one rule, and this is it; comparisons
+/// deliberately do not elide a NULL operand, and `cmp` says why. Folding
 /// comes FIRST so that a NULL PRODUCED by constant folding (a
 /// constant-condition CASE landing on NULL) is visible to the caller's NULL
 /// check, exactly as DuckDB's folder sees it; `fold` is pure and idempotent.
@@ -5331,8 +5332,8 @@ impl Binder<'_> {
         let Ret::Fixed(ret) = sig::op_ret(cmp_sym(pred)) else {
             unreachable!("comparisons are Fixed rows")
         };
-        // Same reason as `arith`: a folded constant NULL must reach the
-        // strict-op elision below.
+        // Folded as `arith` folds. The NULL elision `arith` then performs on
+        // the folded operands is deliberately absent here; see below.
         let (a, b) = (fold(a), fold(b));
         let (a, b) = match (a.ty, b.ty) {
             (x, y) if x == y => (a, b),

@@ -1486,7 +1486,9 @@ impl<'a> FB<'a> {
                             let n = self.fresh();
                             self.inst(Inst::Const {
                                 dst: n,
-                                lit: super::ir::Lit::F64(f64::NAN),
+                                // Sign chosen, not inherited from `f64::NAN`
+                                // (see `Lit` in ir/mod.rs).
+                                lit: super::ir::Lit::F64(f64::NAN.copysign(1.0)),
                             });
                             nan = Some(n);
                             n
