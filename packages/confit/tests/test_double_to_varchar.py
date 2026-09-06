@@ -3,7 +3,9 @@
 DuckDB's float writer takes the sign off `std::signbit` before it branches on
 finiteness, so a NaN carrying the sign bit prints `-nan` exactly as an
 infinity or a zero would. The source that settles it is cited once, at the
-formatter these tests exercise (`DuckF64` in src/specializer/exec/kernels.rs).
+formatter these tests exercise (`DuckF64` in src/specializer/exec/kernels.rs);
+why the sign is carried that far is argued once at `Lit` in
+src/specializer/ir/mod.rs.
 
 Every string-producing path in this file shares one formatter, so they are
 checked together: a fix that reached only the explicit CAST would leave `||`

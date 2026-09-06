@@ -88,10 +88,10 @@ fn rand_lit(rng: &mut Rng, ty: Ty) -> Lit {
             1 => -0.0,
             // Both NaN signs, spelled from a sign the generator chooses
             // rather than from `f64::NAN` (whose sign bit Rust does not
-            // contract). The sign is program meaning — a DOUBLE's VARCHAR
-            // cast spells it, and unary minus flips it — so a menu with
-            // only one sign leaves the round trip and the cross-backend
-            // differential blind to a printer or a kernel that drops it.
+            // contract). A menu with only one sign leaves the round trip
+            // and the cross-backend differential blind to a printer or a
+            // kernel that drops it — see `Lit` in mod.rs for why the sign
+            // is carried.
             2 => f64::NAN.copysign(1.0),
             3 => f64::NAN.copysign(-1.0),
             4 => f64::INFINITY,

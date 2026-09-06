@@ -171,19 +171,16 @@ def test_mod_dividend_sign_vs_fmod_divisor_sign():
 # Reading each result through CAST(... AS VARCHAR) as well as its value is
 # the point: the value leg alone cannot see a NaN's SIGN, because the
 # comparison contract spells every NaN 'nan', so a whole class of sign
-# divergence is invisible without the text leg. x and y are projected so a
+# divergence is invisible without the text leg. (Why the sign is worth
+# seeing: `Lit` in src/specializer/ir/mod.rs.) x and y are projected so a
 # mismatch names the row that produced it — the comparison is a multiset.
 #
 # The invalid-operation domain (divisor zero, infinite dividend) is
-# deliberately absent: DuckDB's `%` on DOUBLE is std::fmod in a loop the
-# compiler vectorizes, and there the wide lanes and the scalar tail hand
-# back NaNs with DIFFERENT signs, so identical rows disagree with each other
-# by position alone. Measured on the pinned oracle over 2050 identical rows,
-# both halves do it: `2.0 % 0.0` and `1e400 % 2.0` each return 'nan' AND
-# '-nan'. There is no single answer to match anywhere in that domain, so
-# nothing here can pin it; the one-row bit-agreement pin below covers the
-# divisor-zero half of it, and the infinite-dividend half is untested by
-# design rather than by oversight.
+# deliberately absent: measured on the pinned oracle over 2050 identical
+# rows, `2.0 % 0.0` and `1e400 % 2.0` each return both 'nan' and '-nan', so
+# no single answer exists to match; the domain is excluded. The one-row
+# bit-agreement pin below covers the divisor-zero half of it, and the
+# infinite-dividend half is untested by design rather than by oversight.
 MOD_SIGN_GRID = [
     {"x": x, "y": y}
     for x, y in [

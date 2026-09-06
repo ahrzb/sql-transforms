@@ -1015,9 +1015,7 @@ fn compile_inst(
                     ctx.regs[dst] = RegVal::I64(r as i64);
                     Ok(())
                 } else {
-                    // Same spelling as the VARCHAR cast: DuckDB's own cast
-                    // error text quotes the operand through StringCast.
-                    Err(Trap(format!("Conversion Error: Type DOUBLE with value {} can't be cast because the value is out of range for the destination type", DuckF64(x))))
+                    Err(Trap(out_of_range_trap(x)))
                 }
             })
         }

@@ -247,15 +247,14 @@ fn lex(text: &str) -> Result<Vec<(Tok, u32)>, ParseError> {
                         out.push((Tok::Num(format!("-{num}")), line));
                     }
                     Some('i') | Some('n') => {
-                        let word = take_ident(&mut chars);
-                        if word == "inf" || word == "nan" {
-                            out.push((Tok::Num(format!("-{word}")), line));
-                        } else {
+                        let word = format!("-{}", take_ident(&mut chars));
+                        if special_f64(&word).is_none() {
                             return Err(ParseError {
                                 line,
-                                msg: format!("unexpected '-{word}'"),
+                                msg: format!("unexpected '{word}'"),
                             });
                         }
+                        out.push((Tok::Num(word), line));
                     }
                     _ => {
                         return Err(ParseError {
@@ -283,6 +282,26 @@ fn lex(text: &str) -> Result<Vec<(Tok, u32)>, ParseError> {
     }
     out.push((Tok::Eof, line));
     Ok(out)
+}
+
+/// The four spellings an f64 special has in the text form, and their values.
+/// One home for the set: the lexer asks it which words may follow a `-`, and
+/// `f64_literal` turns any of the four back into a value, so a fifth
+/// spelling could never be accepted by one and not the other. The sign comes
+/// from the token and is never inherited from `f64::NAN`, whose own sign bit
+/// Rust does not contract.
+///
+/// A bare `inf`/`nan` still reaches the parser as an identifier rather than
+/// as a number: they are identifier-shaped, and a column named `inf` prints
+/// bare and has to lex back as its own name.
+fn special_f64(word: &str) -> Option<f64> {
+    match word {
+        "inf" => Some(f64::INFINITY),
+        "-inf" => Some(f64::NEG_INFINITY),
+        "nan" => Some(f64::NAN.copysign(1.0)),
+        "-nan" => Some(f64::NAN.copysign(-1.0)),
+        _ => None,
+    }
 }
 
 fn show_esc(c: Option<char>) -> String {
@@ -1711,18 +1730,21 @@ impl Parser {
     }
 
     fn f64_literal(&mut self) -> Result<f64, ParseError> {
-        match self.bump() {
-            Tok::Num(s) => match s.as_str() {
-                "-inf" => Ok(f64::NEG_INFINITY),
-                // The sign is taken from the token, never inherited from
-                // `f64::NAN`, whose own sign bit is not part of its contract.
-                "-nan" => Ok(f64::NAN.copysign(-1.0)),
-                _ => s
-                    .parse::<f64>()
-                    .map_err(|_| self.err(format!("bad float literal '{s}'"))),
-            },
-            Tok::Ident(s) if s == "inf" => Ok(f64::INFINITY),
-            Tok::Ident(s) if s == "nan" => Ok(f64::NAN.copysign(1.0)),
+        let tok = self.bump();
+        // The specials share one path whichever token kind carried them: the
+        // signed pair arrives as a number (a `-` cannot start an identifier)
+        // and the bare pair as an identifier.
+        let word = match &tok {
+            Tok::Num(s) | Tok::Ident(s) => Some(s.as_str()),
+            _ => None,
+        };
+        if let Some(v) = word.and_then(special_f64) {
+            return Ok(v);
+        }
+        match tok {
+            Tok::Num(s) => s
+                .parse::<f64>()
+                .map_err(|_| self.err(format!("bad float literal '{s}'"))),
             other => Err(self.err(format!("expected a float literal, found {}", other.show()))),
         }
     }

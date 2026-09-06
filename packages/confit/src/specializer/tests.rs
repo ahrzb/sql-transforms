@@ -5,7 +5,9 @@
 //! overflow traps).
 
 use super::exec::interp::compile;
-use super::exec::testutil::{batch, c_f64, c_i64, c_str, rows, run_snapshot};
+use super::exec::testutil::{
+    batch, c_f64, c_i64, c_str, rows, run_snapshot, NEG_NAN, POS_NAN,
+};
 use super::exec::{KeyBits, ScalarVal, StaticData};
 use super::ir::{parse::parse, print::print, Col, ColTy, Lit, NumOp1, Ty};
 use super::plan::StaticTable;
@@ -2556,13 +2558,6 @@ fn substr_range_guard_traps_like_duckdb() {
     .unwrap_err();
     assert!(err.contains("offset outside"), "got: {err}");
 }
-
-/// The two quiet NaNs, by their bits. Nothing here may be spelled
-/// `f64::NAN`: these tests assert which side of the `-` a NaN lands on, and
-/// `f64::NAN`'s own sign bit is not part of its contract (the same reason
-/// ir/parse.rs takes the sign from the token).
-const POS_NAN: f64 = f64::from_bits(0x7FF8_0000_0000_0000);
-const NEG_NAN: f64 = f64::from_bits(0xFFF8_0000_0000_0000);
 
 #[test]
 fn negating_a_double_constant_folds_to_the_flipped_bits() {

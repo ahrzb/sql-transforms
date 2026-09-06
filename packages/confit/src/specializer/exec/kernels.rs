@@ -229,10 +229,7 @@ pub(super) fn substr_range_ok(v: i64) -> bool {
 /// `1e-05`) — and that correspondence is held by comparison against the
 /// oracle, not read out of fmt's grisu.
 ///
-/// A signed NaN needs no libm to reach: `'-nan'` parses to one and unary
-/// minus flips one. Which sign a libm hands back from a domain error —
-/// `pow(-0.25, 0.1)` and friends — is the platform's own business, so it is
-/// compared against the oracle and never pinned.
+/// See `Lit` in ir/mod.rs for why a NaN's sign is carried this far.
 pub(super) struct DuckF64(pub(super) f64);
 
 impl std::fmt::Display for DuckF64 {
@@ -262,6 +259,23 @@ impl std::fmt::Display for DuckF64 {
             }
         }
     }
+}
+
+/// DuckDB's message for a DOUBLE that will not fit the integer it is cast
+/// to. One home because both backends must emit the same bytes, and because
+/// the value is quoted in DuckDB's own spelling: its cast error renders the
+/// operand through the same StringCast the VARCHAR cast uses
+/// (convert_to_string.cpp), so `{:?}` would spell one double two ways
+/// depending on which message the row reached.
+///
+/// Ours stops before DuckDB's closing words; the gap is recorded at the test
+/// that pins the text (tests/known_divergences/test_cast_semantics.py).
+pub(super) fn out_of_range_trap(x: f64) -> String {
+    format!(
+        "Conversion Error: Type DOUBLE with value {} can't be cast \
+         because the value is out of range for the destination type",
+        DuckF64(x)
+    )
 }
 
 /// Fixed-capacity ASCII scratch for `write!` — errors instead of growing.

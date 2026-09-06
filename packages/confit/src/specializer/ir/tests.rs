@@ -3,6 +3,7 @@
 //! seeded fuzz pins `parse(print(p)) == p` across the generator's whole
 //! surface.
 
+use super::super::exec::testutil::{NEG_NAN, POS_NAN};
 use super::{fixtures, gen, parse::parse, print::print, verify::verify, Program};
 
 fn parsed(text: &str) -> Program {
@@ -798,11 +799,10 @@ fn rejects_non_identifier_function_name() {
     }
 }
 
-/// A NaN's SIGN is program meaning — unary minus on a DOUBLE flips it and a
-/// VARCHAR cast prints it — so the text form must carry it through; a
-/// PAYLOAD is meaning to nothing and canonicalizes away. `Lit`'s equality
-/// draws the same line, so a whole-program `assert_eq!` sees the sign but
-/// not the payload: this reads the constant's BITS back for both.
+/// The text form carries a NaN's sign and drops its payload (see `Lit` in
+/// ir/mod.rs for why). `Lit`'s equality draws the same line, so a
+/// whole-program `assert_eq!` sees the sign but not the payload: this reads
+/// the constant's BITS back for both.
 #[test]
 fn nan_sign_survives_the_round_trip_and_the_payload_does_not() {
     use super::{Block, Col, ColTy, Inst, Lit, Term, Ty, Value};
@@ -834,12 +834,13 @@ fn nan_sign_survives_the_round_trip_and_the_payload_does_not() {
             term: Term::Emit,
         }],
     };
+    let (pos, neg) = (POS_NAN.to_bits(), NEG_NAN.to_bits());
     for (bits, want) in [
-        (0x7FF8_0000_0000_0000u64, 0x7FF8_0000_0000_0000u64),
-        (0xFFF8_0000_0000_0000, 0xFFF8_0000_0000_0000),
+        (pos, pos),
+        (neg, neg),
         // ... and the same two carrying a payload, which does not survive.
-        (0x7FF8_0000_0BAD_BEEF, 0x7FF8_0000_0000_0000),
-        (0xFFF8_0000_0BAD_BEEF, 0xFFF8_0000_0000_0000),
+        (pos | 0x0BAD_BEEF, pos),
+        (neg | 0x0BAD_BEEF, neg),
     ] {
         let p = program(bits);
         verify(&p).expect("NaN const is legal");
