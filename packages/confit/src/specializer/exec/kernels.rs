@@ -907,27 +907,23 @@ pub(super) fn duck_fmod(x: f64, y: f64) -> f64 {
     x - (x / y).floor() * y
 }
 
-/// C nextafter, bit-exact; x == y returns y (incl. signed zeros). A NaN
-/// operand comes back as ITSELF, x before y: that is what `std::nextafter`
-/// hands DuckDB on the pinned oracle (measured on both positions and both
-/// signs), and the sign it carries is meaning (see `Lit` in ir/mod.rs).
+/// C `nextafter`, answered by the platform's own C runtime -- the same
+/// library DuckDB's wheel calls through `std::nextafter` on this machine.
+/// Every finite answer is IEEE-determined, so any correct implementation
+/// agrees there; the NaN cases are why the call is not reimplemented. A
+/// lone NaN operand comes back as itself, sign included (the sign is
+/// meaning, see `Lit` in ir/mod.rs). Which operand comes back when BOTH are
+/// NaN is a choice the runtime's compiler made -- measured, the pinned wheel
+/// answers with the first on Windows and the second on Linux -- and calling
+/// the same runtime matches it by construction rather than by a rule that
+/// would be right on one platform.
 pub(super) fn duck_nextafter(x: f64, y: f64) -> f64 {
-    if x.is_nan() {
-        return x;
+    extern "C" {
+        fn nextafter(x: f64, y: f64) -> f64;
     }
-    if y.is_nan() {
-        return y;
-    }
-    if x == y {
-        return y;
-    }
-    if x == 0.0 {
-        // toward y from zero: the smallest denormal with y's direction.
-        return f64::from_bits(1).copysign(y - x);
-    }
-    let bits = x.to_bits();
-    let up = (y > x) == (x > 0.0); // move away from zero?
-    f64::from_bits(if up { bits + 1 } else { bits - 1 })
+    // SAFETY: a pure function of two doubles from the C runtime; no pointers,
+    // no state.
+    unsafe { nextafter(x, y) }
 }
 
 /// i64 `<<` per the wave-5 pins ladder: negative value first (even << 0),

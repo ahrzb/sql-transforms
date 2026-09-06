@@ -80,11 +80,13 @@ PINNED_SQL = (
     " FROM __THIS__"
 )
 
-# A NaN OPERAND comes back out of nextafter as itself, x before y. DuckDB's
-# nextafter is `std::nextafter`, and on the pinned oracle that hands the NaN
-# operand back with its sign (measured on both argument positions and both
-# signs), so a kernel that answered with a NaN of its own would spell `nan`
-# where DuckDB spells `-nan`.
+# A NaN OPERAND comes back out of nextafter as itself. DuckDB's nextafter is
+# `std::nextafter`, and the pinned oracle hands a lone NaN operand back with
+# its sign in either position (measured), so a kernel that answered with a
+# NaN of its own would spell `nan` where DuckDB spells `-nan`. Which operand
+# comes back when BOTH are NaN is the platform's choice -- the same wheel
+# answers with the first on Windows and the second on Linux -- so that column
+# is compared against this machine's own oracle and never pinned.
 NEXTAFTER_SQL = (
     "SELECT CAST(nextafter(d, 1.0e0) AS VARCHAR) AS x_first,"
     " CAST(nextafter(1.0e0, d) AS VARCHAR) AS y_second,"
@@ -122,11 +124,10 @@ def test_nextafter_hands_a_nan_operand_back_sign_included(backend, monkeypatch, 
     _force(backend, monkeypatch)
     got, want = _both(NEXTAFTER_SQL, [{"d": v} for v in DOUBLES], oracle, backend)
     compare.assert_rows(got, want, ordered=True, ctx=NEXTAFTER_SQL)
-    # The propagation is the operand's own bits, not a libm's choice, so the
-    # two signed rows are pinned: x before y in the both-NaN column.
+    # A lone NaN operand's propagation is the operand's own bits, not a libm's
+    # choice, so those two rows are pinned; the both-NaN column is not.
     assert [r["x_first"] for r in want[:2]] == ["nan", "-nan"]
     assert [r["y_second"] for r in want[:2]] == ["nan", "-nan"]
-    assert [r["both_nan"] for r in want[:2]] == ["nan", "-nan"]
 
 
 @pytest.mark.parametrize("backend", ["cranelift", "interpreter"])
