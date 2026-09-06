@@ -576,7 +576,12 @@ DuckDBInferFn("SELECT list(g) AS o FROM ties",
 # ValueError: unsupported: order-sensitive aggregate list on a
 #             static-tables-only query -- its answer follows scan order, and
 #             an ORDER BY inside the aggregate is not read as a fix
+```
 
+SERVES — a window frame counted in key peers (the default `RANGE` frame) is a function of
+the key, ties included, and `ORDER BY g` separates every row:
+
+```python
 fn = DuckDBInferFn("SELECT g AS o, max(v) OVER (ORDER BY v) AS w FROM ties ORDER BY g",
                    row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
 fn.backend, [r["w"] for r in fn.infer_rows([])]   # ('constant', [1, 1, 2])
