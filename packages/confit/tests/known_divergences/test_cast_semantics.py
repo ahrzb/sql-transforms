@@ -80,17 +80,29 @@ def test_plain_cast_double_to_bigint_traps_out_of_range(backend, monkeypatch, or
         fn.infer_rows([{"f": 1e19}])
 
 
-# The trap's TEXT, and the one word of it we do not say. DuckDB writes the
-# offending operand into the message through the same DOUBLE -> VARCHAR
-# writer a CAST AS VARCHAR uses, so the value carries its sign (`-nan`) and
-# DuckDB's exponent spelling (`1e+300`) -- ours is built from the same
-# formatter for exactly that reason.
+# NOT A DIVERGENCE. A trap's TEXT is outside the comparison contract: when
+# both engines error at run time the verdict is AGREE_TRAP, and the two
+# messages are never compared -- DuckDB's first six words become the
+# verdict's class label and ours rides along as free-text detail (claim:
+# verdict-taxonomy, docs/oracle/04-verdicts-agreement-abstention-refusal.md;
+# the AGREE_TRAP branch of `against()` in fuzz/oracle.py). The corpus gate
+# compares successful results only. So there is nothing here for the two
+# engines to disagree about; what this pins is the shape of OUR OWN message,
+# because the text is what a caller debugs with:
 #
-# What ours stops short of is DuckDB's last word, the DESTINATION TYPE name
-# (`... for the destination type INT64`). The IR's `ftoi` always lands in the
-# i64 lane whatever width the SQL asked for, so the name is not at the trap
-# site to be printed. Kept, and named in known-limitations.md rather than
-# assumed: the message is DuckDB's, truncated, never a different message.
+#   - the offending value is written by the same DOUBLE -> VARCHAR writer a
+#     CAST AS VARCHAR uses, so it carries its sign (`-nan`) and DuckDB's
+#     exponent spelling (`1e+300`) instead of Rust's default float format;
+#   - the prose ahead of it is DuckDB's verbatim, checked as a prefix, so a
+#     reworded message fails here instead of drifting quietly.
+#
+# Ours stops before DuckDB's closing words -- the destination type name
+# (`... for the destination type INT64`) and, for a bare-column operand,
+# ` when casting from source column <name>`. The IR's `ftoi` lands in the i64
+# lane whatever width the SQL asked for and the operand's provenance is gone
+# by then, so neither is at the trap site to print. That is a fixable gap in
+# our diagnostics, recorded as one: it is not a reason the text is allowed to
+# differ, and not a divergence being justified.
 _TRAP_VALUES = [1e300, -1e300, float("nan"), float("inf"), float("-inf")]
 
 

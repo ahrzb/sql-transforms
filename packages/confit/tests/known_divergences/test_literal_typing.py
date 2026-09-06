@@ -160,6 +160,9 @@ def test_negative_zero_keeps_its_sign(sql, rows, backend, monkeypatch, oracle):
     compare.assert_rows(got, want, ctx=sql)
 
 
+# A parity pin, not a divergence: schema and rows are both asserted equal to
+# the oracle's. It sits here because it guards the signed-zero fix above.
+#
 # The same negation over a LITERAL NULL, where the answer is a TYPE and not a
 # value. DuckDB folds `- <literal NULL DOUBLE>` to SQLNULL at bind, and
 # SQLNULL is INTEGER wherever nothing else types it -- so `(- NULL) || 'x'`

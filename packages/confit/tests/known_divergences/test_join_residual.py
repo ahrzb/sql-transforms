@@ -157,6 +157,9 @@ def test_a_genuinely_trapping_one_sided_on_residual_is_still_refused(residual):
         _one_sided(residual, [(0, 5)])
 
 
+# A parity pin, not a divergence: it asserts engine == oracle, and sits here
+# because it is the other arm of the refusal rule above.
+#
 # The other arm of the same rule: a residual mentioning BOTH sides may trap,
 # because DuckDB evaluates it per candidate pair. Reaching that arm needs the
 # residual to be CLASSIFIABLE -- `scan_residual` walks it to see which sides
