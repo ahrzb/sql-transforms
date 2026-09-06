@@ -587,8 +587,10 @@ fn.backend, [r["w"] for r in fn.infer_rows([])]   # ('constant', [1, 1, 2])
 The classification is DuckDB's own, not a list kept here: `duckdb_functions().stability`
 says which functions are a draw or a clock, and the aggregate source's
 `SetOrderDependent` says which aggregates follow the scan — everything DuckDB does not
-opt out of is refused, so `count`/`min`/`max`/`median` serve and `sum`/`avg`/`first`/`list`
-do not.
+opt out of is refused, so `count`/`min`/`max`/`median` serve and `avg`/`first`/`list`
+do not. `sum` is opted out at some of its overloads and not at the `DOUBLE` one, so it is
+read per OVERLOAD: which one bound comes back from DuckDB's binder as the sum's own
+return type, and a sum over integers serves where a sum over doubles refuses.
 
 *Verified-by:* `packages/confit/docs/known-limitations.md:95-288`;
 `packages/confit/tests/test_known_limitations.py:1-7, :98-117`;
