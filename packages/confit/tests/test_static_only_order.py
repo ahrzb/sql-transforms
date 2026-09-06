@@ -1273,6 +1273,72 @@ def test_a_star_still_places_the_name_it_expanded():
     assert " ".join(str(e.value).split()) == TIE_MSG
 
 
+# ----------------------------------------- what expands is not only a star --
+#
+# An entry sits at its own place in the select list until an entry in FRONT
+# of it expands to several output columns, and a star is not the only entry
+# that does: a top-level `unnest(<struct>)` expands to one output column per
+# field. DuckDB's parse calls that entry a FUNCTION and not a STAR, so the
+# two have to be counted together -- read only the stars and an alias behind
+# an unnest lands on a column the query never sorted by, and the tie is
+# measured on the wrong values.
+#
+# The unnest counts for PLACEMENT and not as a source of candidates: what it
+# expands to is not a column reference, and the second pass DuckDB makes
+# after the alias map misses counts only column references.
+
+STRUCT_TIE = pa.table(
+    {
+        "st": [{"f1": 1, "f2": 0}, {"f1": 2, "f2": 0}],
+        "a": pa.array([5, 5], pa.int64()),
+    }
+)
+# The same shape with the sort key separating the two rows.
+STRUCT_UNIQ = pa.table(
+    {
+        "st": [{"f1": 1, "f2": 0}, {"f1": 2, "f2": 0}],
+        "a": pa.array([5, 6], pa.int64()),
+    }
+)
+UNPLACEABLE_MSG = (
+    "unsupported: a sort key whose output position this reading cannot place "
+    "on a static-tables-only query -- a tie among its rows could not be ruled "
+    "out, and which of two tied rows comes first depends on scan order, not "
+    "the query"
+)
+
+
+def test_an_alias_behind_two_expansions_cannot_be_placed():
+    # Output is st, a, k, f1, f2. Two entries expand, and the count they
+    # share cannot be split between them, so the alias standing behind both
+    # has no position to read and refuses rather than guessing at one.
+    sql = "SELECT *, a AS k, unnest(st) FROM s ORDER BY k"
+    assert refuses(sql, STRUCT_TIE) == UNPLACEABLE_MSG
+
+
+def test_an_alias_behind_an_unnest_is_placed_and_its_tie_refuses():
+    # Output is f1, f2, k, and the unnest is what pushed k to the end.
+    # Placing k at its own select-list index instead lands on f2, which
+    # separates the rows -- and would freeze a sequence DuckDB picks by scan
+    # order. The key is a, which is 5 twice.
+    sql = "SELECT unnest(st), a AS k FROM s ORDER BY k"
+    assert refuses(sql, STRUCT_TIE) == TIE_MSG
+
+
+def test_the_same_alias_behind_an_unnest_serves_when_its_rows_are_apart():
+    # The over-refusal guard: the placement is the same arithmetic, and the
+    # answer here is a key that separates every row.
+    fn = build("SELECT unnest(st), a AS k FROM s ORDER BY k", STRUCT_UNIQ)
+    assert fn.backend == "constant"
+    assert [r["k"] for r in fn.infer_rows([])] == [5, 6]
+
+
+def test_an_alias_behind_a_star_alone_is_still_placed():
+    # The control on the shape that always worked: one expander, placed by
+    # the same arithmetic that now reads the unnest above.
+    assert refuses("SELECT *, a AS k FROM s ORDER BY k", STRUCT_TIE) == TIE_MSG
+
+
 # --------------------------------------------- what a table function reads --
 #
 # duckdb_functions().stability is NULL for every table function, so the

@@ -1812,15 +1812,21 @@ fn ordering_words(
     Ok((limit, other))
 }
 
-/// The top-level select list, in the three fields an ORDER BY NAME resolves
+/// The top-level select list, in the four fields an ORDER BY NAME resolves
 /// against: each entry's EXPLICIT alias (empty where it has none, and a star
-/// never has one), whether the entry is a star, and the column it is a BARE
+/// never has one), whether the entry is a star, the column it is a BARE
 /// reference to — `None` for everything that is not an unqualified column
-/// reference, which is what the binder's second pass counts.
+/// reference, which is what the binder's second pass counts — and whether the
+/// entry expands to a number of output columns the select list does not state.
 struct SelectList {
     aliases: Vec<String>,
     stars: Vec<bool>,
     refs: Vec<Option<String>>,
+    /// The stars, plus a top-level `unnest` of a struct, which the parse
+    /// calls a FUNCTION and which expands to one column per field. `stars`
+    /// is the subset that also SOURCES candidate names; an entry that only
+    /// expands shifts what stands behind it and names nothing itself.
+    expands: Vec<bool>,
 }
 
 /// Which column DuckDB's binder answers an ORDER BY NAME with.
@@ -1869,12 +1875,18 @@ enum NameBinding {
 /// this reading tells the two apart.
 ///
 /// An entry sits at its own place in the select list, which is its output
-/// position until a star stands in front of it — a star expands to whatever
-/// the result has left over, and one star's expansion is that count exactly.
+/// position until an EXPANDING entry stands in front of it, and two shapes
+/// expand: a star — which is how `COLUMNS(...)` arrives as well — and a
+/// top-level `unnest` of a struct, a FUNCTION in the parse, which expands to
+/// one output column per field. Either takes whatever the result has left
+/// over, so one expander's expansion is that count exactly.
+///
 /// A star expands to unaliased column references, so its own output columns
-/// are candidates too, under the names the result gives them. Two stars split
-/// an unknown count two ways: an ALIAS behind them cannot be placed and
-/// refuses rather than guessing, while a fallback name needs no placing.
+/// are candidates too, under the names the result gives them. An unnest's
+/// are not column references by the time the binder's second pass looks, so
+/// it counts for PLACEMENT and sources no candidate. Two expanders split an
+/// unknown count two ways: an ALIAS behind them cannot be placed and refuses
+/// rather than guessing, while a fallback name needs no placing.
 fn resolve_name(names: &[String], sel: Option<&SelectList>, name: &str) -> NameBinding {
     let Some(sel) = sel else {
         return names
@@ -1883,11 +1895,11 @@ fn resolve_name(names: &[String], sel: Option<&SelectList>, name: &str) -> NameB
             .map_or(NameBinding::Input, NameBinding::Out);
     };
     let alias = sel.aliases.iter().rposition(|a| a.eq_ignore_ascii_case(name));
-    let star = sel.stars.iter().position(|s| *s);
-    let expanded = match star {
+    let expander = sel.expands.iter().position(|e| *e);
+    let expanded = match expander {
         None if sel.aliases.len() == names.len() => Some(0),
         Some(k)
-            if sel.stars[k + 1..].iter().all(|s| !*s)
+            if sel.expands[k + 1..].iter().all(|e| !*e)
                 && names.len() + 1 >= sel.aliases.len() =>
         {
             Some(names.len() + 1 - sel.aliases.len())
@@ -1900,8 +1912,10 @@ fn resolve_name(names: &[String], sel: Option<&SelectList>, name: &str) -> NameB
             None => NameBinding::Input,
         };
     };
-    // Never asked of the star's own index, which is the one it cannot answer.
-    let place = |i: usize| match star {
+    // The expander's own index answers with the first column of its
+    // expansion, which is where it stands: everything in front of it is one
+    // output column each.
+    let place = |i: usize| match expander {
         Some(k) if i > k => i - 1 + expanded,
         _ => i,
     };
@@ -1911,8 +1925,9 @@ fn resolve_name(names: &[String], sel: Option<&SelectList>, name: &str) -> NameB
     let mut matched = Vec::new();
     for i in 0..sel.aliases.len() {
         if sel.stars[i] {
-            // Everything in front of the star is one column each, so the
-            // star's own expansion starts where it stands.
+            // The expansion starts where the entry stands. Only a true star
+            // is read for names here: an unnest expands to struct fields,
+            // which the binder's second pass does not count.
             matched.extend((i..i + expanded).filter(|p| names[*p].eq_ignore_ascii_case(name)));
         } else if sel.aliases[i].is_empty()
             && sel.refs[i]
@@ -2021,6 +2036,12 @@ fn tie_probe(
          FROM k";
     /// The select list an ORDER BY NAME resolves against, entry by entry.
     /// NULL for a node that has none, which is the set operations.
+    ///
+    /// The last list is the one home for what EXPANDS to a column count the
+    /// select list does not state: a star, which is how `COLUMNS(...)`
+    /// arrives too, and a top-level `unnest`, which the parse calls a
+    /// FUNCTION. An `unnest` of a list expands to one column and is counted
+    /// with them, because the count is read off the result either way.
     const SELECT_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
          n(sl) AS (SELECT CAST(json_extract(j, '$.statements[0].node.select_list') \
              AS JSON[]) FROM a) \
@@ -2029,7 +2050,11 @@ fn tie_probe(
              list_transform(sl, x -> CASE WHEN json_extract_string(x, '$.class') \
                  = 'COLUMN_REF' AND json_array_length(json_extract(x, \
                      '$.column_names')) = 1 \
-                 THEN json_extract_string(x, '$.column_names[0]') END) \
+                 THEN json_extract_string(x, '$.column_names[0]') END), \
+             list_transform(sl, x -> json_extract_string(x, '$.class') = 'STAR' \
+                 OR (json_extract_string(x, '$.class') = 'FUNCTION' \
+                     AND lower(json_extract_string(x, '$.function_name')) \
+                         = 'unnest')) \
          FROM n";
     type Term = (Option<String>, Option<i64>, Option<String>, Option<String>, bool);
     let terms: Vec<Term> = con
@@ -2040,19 +2065,21 @@ fn tie_probe(
     if n_terms == 0 {
         return Ok(Ok(None));
     }
-    let (aliases, stars, refs): (
+    let (aliases, stars, refs, expands): (
         Option<Vec<String>>,
         Option<Vec<bool>>,
         Option<Vec<Option<String>>>,
+        Option<Vec<bool>>,
     ) = con
         .call_method1("execute", (SELECT_SQL, (sql,)))?
         .call_method0("fetchone")?
         .extract()?;
-    let select_list = match (aliases, stars, refs) {
-        (Some(aliases), Some(stars), Some(refs)) => Some(SelectList {
+    let select_list = match (aliases, stars, refs, expands) {
+        (Some(aliases), Some(stars), Some(refs), Some(expands)) => Some(SelectList {
             aliases,
             stars,
             refs,
+            expands,
         }),
         _ => None,
     };
@@ -2115,7 +2142,9 @@ fn tie_probe(
                     NameBinding::Out(p) => keys.push(OrderKey::Out(p)),
                     NameBinding::Input => keys.push(OrderKey::Hidden(i)),
                     NameBinding::Unplaceable => {
-                        return Ok(Err("a repeated output name this reading cannot place"))
+                        return Ok(Err(
+                            "a sort key whose output position this reading cannot place",
+                        ))
                     }
                 }
             }
