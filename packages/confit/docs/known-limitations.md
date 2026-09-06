@@ -218,12 +218,7 @@ These are served, but with a consciously chosen surface — know them:
   boundary and in `.df()`. Verified against `.df()` in tests.
 - **Error TEXTS are approximate where noted.** Runtime traps
   (overflow, shifts, substring range) reproduce DuckDB's message bodies
-  verbatim -- except the out-of-range DOUBLE-to-integer cast, which stops
-  at `... out of range for the destination type`, dropping DuckDB's type
-  name and, where the cast operand is a bare column, its trailing ` when
-  casting from source column <name>` clause: the IR's `ftoi` lands in the
-  i64 lane whatever width the SQL asked for, so the name is not at the
-  trap site, and the operand's provenance is gone by then too. Some bind-time rejections (star-filter zero-match, regex
+  verbatim; some bind-time rejections (star-filter zero-match, regex
   compile errors) use our own wording with the same error class. The
   corpus only ever compares successful results, so texts never affect
   parity.
