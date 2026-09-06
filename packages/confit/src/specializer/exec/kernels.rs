@@ -907,10 +907,16 @@ pub(super) fn duck_fmod(x: f64, y: f64) -> f64 {
     x - (x / y).floor() * y
 }
 
-/// C nextafter, bit-exact; x == y returns y (incl. signed zeros).
+/// C nextafter, bit-exact; x == y returns y (incl. signed zeros). A NaN
+/// operand comes back as ITSELF, x before y: that is what `std::nextafter`
+/// hands DuckDB on the pinned oracle (measured on both positions and both
+/// signs), and the sign it carries is meaning (see `Lit` in ir/mod.rs).
 pub(super) fn duck_nextafter(x: f64, y: f64) -> f64 {
-    if x.is_nan() || y.is_nan() {
-        return f64::NAN;
+    if x.is_nan() {
+        return x;
+    }
+    if y.is_nan() {
+        return y;
     }
     if x == y {
         return y;
