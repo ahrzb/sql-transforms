@@ -1260,6 +1260,20 @@ fn nondeterministic_refusal(name: &str) -> String {
     )
 }
 
+/// A table function that produces its rows from somewhere the query does not
+/// name: the catalogue, the settings, the build, the file system. The
+/// catalogue cannot answer for one — `duckdb_functions().stability` is NULL
+/// for EVERY table function — so the rule is the other way round from the
+/// scalar one: `PURE_TABLE_FUNCTIONS` says which are a function of their
+/// arguments, and everything else refuses under its own name.
+fn outside_the_query_refusal(name: &str) -> String {
+    format!(
+        "unsupported: the table function {name}() on a static-tables-only \
+         query -- what it returns is read off the machine, the catalogue or \
+         the file system when the query runs, not fixed by the query"
+    )
+}
+
 /// An aggregate whose answer depends on the order its rows arrive in.
 ///
 /// DuckDB classifies this itself and defaults to ORDER_DEPENDENT: an
@@ -1296,11 +1310,25 @@ struct Shapes {
     refusal: Option<String>,
 }
 
-/// The aggregate names DuckDB itself declares order-free for EVERY overload
-/// it has (v1.5.5, `SetOrderDependent(AggregateOrderDependent::
-/// NOT_ORDER_DEPENDENT)` in src/function/aggregate and
-/// extension/core_functions/aggregate). Every other aggregate keeps the
-/// AggregateFunction constructor's default, which is ORDER_DEPENDENT.
+/// The aggregate names DuckDB declares order-free (v1.5.5,
+/// `SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT)` in
+/// src/function/aggregate and extension/core_functions/aggregate). Every
+/// other aggregate keeps the AggregateFunction constructor's default, which
+/// is ORDER_DEPENDENT.
+///
+/// The flag belongs to the whole NAME for all of these but `min` and `max`,
+/// which reach that call only on `BindMinMax`'s fall-through. Two overloads
+/// miss it, and the two are answered differently because the measurement
+/// answers them differently. A COLLATED argument makes DuckDB bind
+/// `arg_min`/`arg_max` and return before the call (minmax.cpp:333-372,
+/// against :381), and that one IS nondeterministic — measured over a static
+/// where every value has a NOCASE twin, `min(g COLLATE NOCASE)` answered two
+/// ways across settings where plain `min(g)` answered one — so a statement
+/// carrying a collation anywhere takes `min` and `max` off this list. The
+/// two-argument `min(x, n)` never calls it either, but measured over ties
+/// that are equal and still distinguishable (0.0 against -0.0, INTERVAL
+/// 1 MONTH against 30 DAYS, 200k of each) it answered one way; a flag with
+/// no measurement behind it does not earn a refusal.
 ///
 /// `sum` is absent from this list because the flag is not its whole name's:
 /// DuckDB opts its BOOLEAN, integer, HUGEINT and DECIMAL overloads out and
@@ -1360,11 +1388,60 @@ const CLOCK_KEYWORDS: &str =
 /// the build's wheel and the build machine's settings — two machines, two
 /// frozen answers for one query.
 ///
-/// A list, so not a proof of exhaustion: a TABLE function that reads the
-/// machine (`duckdb_settings()`) is the same class and is not covered, which
-/// known-limitations.md names.
+/// A list, so not a proof of exhaustion — but the TABLE function of the same
+/// class (`duckdb_settings()`, `pragma_version()`) is not left to it:
+/// `PURE_TABLE_FUNCTIONS` answers those the other way round.
 const RUN_STATE_FUNCTIONS: &str =
     "'current_localtime','current_localtimestamp','version','current_setting'";
+
+/// The table functions whose rows are a function of their ARGUMENTS. Every
+/// other one refuses, which is the opposite polarity from every list above
+/// and is the polarity the class deserves: a table function is in the FROM
+/// to produce rows from somewhere the query does not name — the catalogue,
+/// the settings, the build, the file system — and DuckDB's catalogue cannot
+/// sort them, because `duckdb_functions().stability` is NULL for every table
+/// function it lists (measured, all 90 rows).
+///
+/// What the inversion buys, over naming the offenders: the 37 nullary table
+/// functions v1.5.5 will run are ALL of that class — `pragma_version`,
+/// `pragma_platform` and `pragma_user_agent` freeze the wheel, the OS and
+/// the Python that built it, `pragma_database_size` the free disk,
+/// `duckdb_settings` the core count and the timezone, `duckdb_extensions`
+/// and `pragma_collations` what this machine has installed, `duckdb_memory`
+/// and `duckdb_temporary_files` a live reading, the two dozen catalogue
+/// views the schema they happen to be asked in, and `checkpoint` and
+/// `disable_logging` are not readings at all — and so is every one that
+/// takes arguments and reads a FILE (`read_csv`, `read_parquet`, `glob`,
+/// `sniff_csv`), or a string of SQL (`query`, `query_table`), or a sample
+/// (`duckdb_table_sample`). Naming those would be a list to keep; naming the
+/// five generators is a list that stops growing.
+///
+/// Read from the FROM position alone (`$..function.function_name`), which
+/// costs nothing: a table function used as a scalar is a binder error
+/// (measured), so a scalar `repeat('a', 3)` or `range(3)` is never mistaken
+/// for the table function that shares its name.
+const PURE_TABLE_FUNCTIONS: &str =
+    "'range','generate_series','unnest','repeat','repeat_row'";
+
+/// The joins that pair rows by their VALUES, and so by the query: DuckDB's
+/// `JoinRefType` has exactly six values (`GetJoinRefTypeValues`,
+/// common/enum_util.cpp) and these are the three whose condition is a
+/// condition — REGULAR's own `ON`, NATURAL's shared column names, CROSS's
+/// nothing at all. The `join_type` written in front of one
+/// (INNER/LEFT/RIGHT/FULL/SEMI/ANTI) chooses which rows of that pairing
+/// survive, which is set-based too.
+///
+/// The other three refuse, and the reading serves this list rather than
+/// rejecting theirs so a seventh value a later DuckDB adds refuses until
+/// somebody measures it. POSITIONAL pairs row i with row i. ASOF picks ONE
+/// of the right rows that tie on its inequality — measured, 3000 left rows
+/// joined to 150000 right rows with 50 tied matches each answered 15 ways
+/// over seven settings, as a SCALAR sum and not only as a sequence, so no
+/// ORDER BY rescues it and the tie probe over the output never sees it.
+/// DEPENDENT no query can spell: LATERAL, which would be its syntax,
+/// serializes as CROSS or REGULAR and the planner makes the dependent ref
+/// itself (measured), so refusing it costs nothing.
+const SET_BASED_JOINS: &str = "'REGULAR','NATURAL','CROSS'";
 
 /// The shapes of a statement, read off DuckDB's OWN parse of it.
 ///
@@ -1437,16 +1514,25 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
              AS JSON[]), [])) FROM a), \
          off(x) AS (SELECT unnest(coalesce(CAST(json_extract(j, '$..offset') \
              AS JSON[]), [])) FROM a), \
+         tf(n) AS (SELECT lower(unnest(coalesce(json_extract_string(j, \
+             '$..function.function_name'), []))) FROM a), \
+         jr(n) AS (SELECT unnest(coalesce(json_extract_string(j, \
+             '$..ref_type'), [])) FROM a), \
+         col(x) AS (SELECT len(coalesce(json_extract_string(j, \
+             '$..collation'), [])) > 0 FROM a), \
          ag(n) AS (SELECT n FROM f WHERE n IN (SELECT lower(function_name) \
              FROM duckdb_functions() WHERE function_type = 'aggregate' \
-                 AND lower(function_name) NOT IN (__ORDER_FREE__))) \
+                 AND lower(function_name) NOT IN (__ORDER_FREE__)) \
+             UNION ALL SELECT n FROM f \
+                 WHERE n IN ('min', 'max') AND (SELECT x FROM col)) \
          SELECT json_extract(j, '$.error')::VARCHAR, \
          json_array_length(json_extract(j, '$.statements')), \
          json_extract(j, '$..type')::VARCHAR, \
          json_extract(j, '$..qualify')::VARCHAR, \
          json_extract(j, '$..sample')::VARCHAR, \
          json_extract(j, '$..distinct_on_targets')::VARCHAR, \
-         json_extract(j, '$..ref_type')::VARCHAR, \
+         [(SELECT min(n) FROM jr WHERE n NOT IN (__SET_BASED__)), \
+          (SELECT min(n) FROM tf WHERE n NOT IN (__PURE_TABLE__))], \
          json_extract(j, '$..start')::VARCHAR || \
              json_extract(j, '$..end')::VARCHAR, \
          (SELECT min(n) FROM ( \
@@ -1506,6 +1592,8 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     let shape_sql = SHAPE_SQL
         .replace("__CLOCK__", CLOCK_KEYWORDS)
         .replace("__RUN_STATE__", RUN_STATE_FUNCTIONS)
+        .replace("__PURE_TABLE__", PURE_TABLE_FUNCTIONS)
+        .replace("__SET_BASED__", SET_BASED_JOINS)
         .replace(
             "__ORDER_FREE__",
             &format!("{ORDER_FREE_AGGREGATES},{WINDOW_ONLY_FUNCTIONS}"),
@@ -1520,7 +1608,9 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         qualify,
         sample,
         distinct_on,
-        joins,
+        // The join reference and the table function this statement names
+        // that the served lists do not, in that order.
+        reached,
         frame,
         drawn,
         aggs,
@@ -1533,13 +1623,14 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         Option<String>,
         Option<String>,
         Option<String>,
-        Option<String>,
+        Vec<Option<String>>,
         Option<String>,
         Option<String>,
         Vec<Option<String>>,
         bool,
         bool,
     ) = row.extract()?;
+    let [join_ref, table_fn] = reached.try_into().expect("two names, both nullable");
     // A serialized value object opens with a brace; the absence of one is
     // DuckDB's `null` for that field, and an empty DISTINCT list is plain
     // DISTINCT, which collapses a set rather than picking out of a group.
@@ -1579,6 +1670,8 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     };
     let refusal = if let Some(name) = drawn {
         Some(nondeterministic_refusal(&name))
+    } else if let Some(name) = table_fn {
+        Some(outside_the_query_refusal(&name))
     } else if let Some(name) = agg {
         Some(order_sensitive_agg_refusal(&name))
     } else if ROW_FRAME_BOUNDS.iter().any(|b| frame.contains(b)) {
@@ -1598,13 +1691,13 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         Some(positional_refusal(
             "a row-position window function (row_number/ntile/lead/lag/first_value/last_value/nth_value)",
         ))
-    } else if joins.is_some_and(|j| j.contains("\"POSITIONAL\"")) {
-        // A POSITIONAL JOIN pairs row i of one relation with row i of the
-        // other and asks nothing of their values, so which rows meet is the
-        // scan order itself. Measured over a 300k static fed through a tying
-        // GROUP BY, one such join answered five ways across the five settings
-        // -- as a SCALAR count, not only as a sequence.
-        Some(positional_refusal("POSITIONAL JOIN"))
+    } else if let Some(kind) = join_ref {
+        // A join whose pairing is not a condition over the two sides' values:
+        // POSITIONAL pairs row i with row i, ASOF draws one of the rows tied
+        // on its inequality. Both answered a SCALAR aggregate several ways
+        // across settings (measured, see SET_BASED_JOINS), so which rows meet
+        // is the scan order and no ORDER BY reaches it.
+        Some(positional_refusal(&format!("{kind} JOIN")))
     } else if rowid {
         Some(positional_refusal("the rowid pseudo-column"))
     } else {
@@ -1719,12 +1812,15 @@ fn ordering_words(
     Ok((limit, other))
 }
 
-/// The top-level select list, in the two fields an ORDER BY NAME resolves
+/// The top-level select list, in the three fields an ORDER BY NAME resolves
 /// against: each entry's EXPLICIT alias (empty where it has none, and a star
-/// never has one) and whether the entry is a star.
+/// never has one), whether the entry is a star, and the column it is a BARE
+/// reference to — `None` for everything that is not an unqualified column
+/// reference, which is what the binder's second pass counts.
 struct SelectList {
     aliases: Vec<String>,
     stars: Vec<bool>,
+    refs: Vec<Option<String>>,
 }
 
 /// Which column DuckDB's binder answers an ORDER BY NAME with.
@@ -1742,51 +1838,93 @@ enum NameBinding {
 ///
 /// A SELECT fills its alias map in select-list order and lets a later entry
 /// OVERWRITE an earlier one (`bind_select_node.cpp`), so a name two columns
-/// answer to binds the LAST one ALIASED to it. Only aliases are in that map:
-/// a name that matches because a column happens to carry it goes to the
-/// expression list instead, which binds it only when exactly one column
-/// matches and otherwise leaves the term to the input (`order_binder.cpp`,
-/// `TryGetProjectionReference`). Measured, `SELECT g AS c, v AS c FROM s
-/// ORDER BY c DESC` comes back sorted by v.
+/// answer to binds the LAST one ALIASED to it. Measured, `SELECT g AS c,
+/// v AS c FROM s ORDER BY c DESC` comes back sorted by v.
+///
+/// Only aliases are in that map. On a miss the binder makes a SECOND pass,
+/// over the select list itself, and it counts far less of it than the output
+/// names do: an entry is a candidate only where it is a COLUMN REFERENCE
+/// carrying no alias of its own, matched on the name that reference names,
+/// and the term binds only where exactly one entry matches
+/// (`order_binder.cpp`, `TryGetProjectionReference`). Everything else is
+/// left to the input. The entries that pass a name to the output WITHOUT
+/// being column references are where the two readings come apart: a struct
+/// field written `st.a` is named `a` in the result and is not a column
+/// reference by the time the binder looks, so DuckDB sorts by the input
+/// column `a` while the output column called `a` holds something else
+/// entirely.
+///
+/// A QUALIFIED reference is not a candidate here although DuckDB counts one,
+/// because `st.a` and `t.a` are the same shape in the parse and only the
+/// binder tells them apart. Missing a candidate costs nothing that matters:
+/// a candidate IS an unaliased column reference, so the output column it
+/// would have named carries the input column's own values, and leaving the
+/// key to the projection measures the same thing. It costs a refusal only
+/// where the projection cannot carry it — under a DISTINCT, or where the
+/// bare name is ambiguous across the FROM.
 ///
 /// A SET OPERATION is a different binder: it gathers the names of its
 /// children's OUTPUT columns, aliased or not, and keeps the FIRST of a repeat
 /// (`bind_setop_node.cpp`). It has no select list of its own, which is how
 /// this reading tells the two apart.
 ///
-/// An alias sits at its own place in the select list, which is its output
+/// An entry sits at its own place in the select list, which is its output
 /// position until a star stands in front of it — a star expands to whatever
 /// the result has left over, and one star's expansion is that count exactly.
-/// Two stars split an unknown count two ways, so an alias behind them cannot
-/// be placed, and an unplaceable key refuses rather than guessing.
+/// A star expands to unaliased column references, so its own output columns
+/// are candidates too, under the names the result gives them. Two stars split
+/// an unknown count two ways: an ALIAS behind them cannot be placed and
+/// refuses rather than guessing, while a fallback name needs no placing.
 fn resolve_name(names: &[String], sel: Option<&SelectList>, name: &str) -> NameBinding {
-    let sole_match = || {
-        let mut it = names
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.eq_ignore_ascii_case(name));
-        match (it.next(), it.next()) {
-            (Some((p, _)), None) => NameBinding::Out(p),
-            _ => NameBinding::Input,
-        }
-    };
     let Some(sel) = sel else {
         return names
             .iter()
             .position(|n| n.eq_ignore_ascii_case(name))
             .map_or(NameBinding::Input, NameBinding::Out);
     };
-    let Some(i) = sel.aliases.iter().rposition(|a| a.eq_ignore_ascii_case(name)) else {
-        return sole_match();
-    };
+    let alias = sel.aliases.iter().rposition(|a| a.eq_ignore_ascii_case(name));
     let star = sel.stars.iter().position(|s| *s);
-    match star {
-        None if sel.aliases.len() == names.len() => NameBinding::Out(i),
-        Some(k) if sel.stars[k + 1..].iter().all(|s| !*s) && names.len() + 1 >= sel.aliases.len() => {
-            let expanded = names.len() + 1 - sel.aliases.len();
-            NameBinding::Out(if i < k { i } else { i - 1 + expanded })
+    let expanded = match star {
+        None if sel.aliases.len() == names.len() => Some(0),
+        Some(k)
+            if sel.stars[k + 1..].iter().all(|s| !*s)
+                && names.len() + 1 >= sel.aliases.len() =>
+        {
+            Some(names.len() + 1 - sel.aliases.len())
         }
-        _ => NameBinding::Unplaceable,
+        _ => None,
+    };
+    let Some(expanded) = expanded else {
+        return match alias {
+            Some(_) => NameBinding::Unplaceable,
+            None => NameBinding::Input,
+        };
+    };
+    // Never asked of the star's own index, which is the one it cannot answer.
+    let place = |i: usize| match star {
+        Some(k) if i > k => i - 1 + expanded,
+        _ => i,
+    };
+    if let Some(i) = alias {
+        return NameBinding::Out(place(i));
+    }
+    let mut matched = Vec::new();
+    for i in 0..sel.aliases.len() {
+        if sel.stars[i] {
+            // Everything in front of the star is one column each, so the
+            // star's own expansion starts where it stands.
+            matched.extend((i..i + expanded).filter(|p| names[*p].eq_ignore_ascii_case(name)));
+        } else if sel.aliases[i].is_empty()
+            && sel.refs[i]
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case(name))
+        {
+            matched.push(place(i));
+        }
+    }
+    match matched[..] {
+        [p] => NameBinding::Out(p),
+        _ => NameBinding::Input,
     }
 }
 
@@ -1887,7 +2025,11 @@ fn tie_probe(
          n(sl) AS (SELECT CAST(json_extract(j, '$.statements[0].node.select_list') \
              AS JSON[]) FROM a) \
          SELECT list_transform(sl, x -> json_extract_string(x, '$.alias')), \
-             list_transform(sl, x -> json_extract_string(x, '$.class') = 'STAR') \
+             list_transform(sl, x -> json_extract_string(x, '$.class') = 'STAR'), \
+             list_transform(sl, x -> CASE WHEN json_extract_string(x, '$.class') \
+                 = 'COLUMN_REF' AND json_array_length(json_extract(x, \
+                     '$.column_names')) = 1 \
+                 THEN json_extract_string(x, '$.column_names[0]') END) \
          FROM n";
     type Term = (Option<String>, Option<i64>, Option<String>, Option<String>, bool);
     let terms: Vec<Term> = con
@@ -1898,13 +2040,22 @@ fn tie_probe(
     if n_terms == 0 {
         return Ok(Ok(None));
     }
-    let (aliases, stars): (Option<Vec<String>>, Option<Vec<bool>>) = con
+    let (aliases, stars, refs): (
+        Option<Vec<String>>,
+        Option<Vec<bool>>,
+        Option<Vec<Option<String>>>,
+    ) = con
         .call_method1("execute", (SELECT_SQL, (sql,)))?
         .call_method0("fetchone")?
         .extract()?;
-    let select_list = aliases
-        .zip(stars)
-        .map(|(aliases, stars)| SelectList { aliases, stars });
+    let select_list = match (aliases, stars, refs) {
+        (Some(aliases), Some(stars), Some(refs)) => Some(SelectList {
+            aliases,
+            stars,
+            refs,
+        }),
+        _ => None,
+    };
     let mut keys = Vec::with_capacity(n_terms);
     for (i, (ty, n_names, first_name, position, narrowed)) in terms.into_iter().enumerate() {
         match ty.as_deref() {

@@ -49,6 +49,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn, compare
+from confit.oracle import Trap
 
 ROW = pa.schema([pa.field("k", pa.int64(), nullable=False)])
 
@@ -1027,3 +1028,336 @@ def test_an_ordinary_join_is_untouched():
     )
     assert fn.backend == "constant"
     assert fn.infer_rows([]) == [{"o": 10}]
+
+
+# ---------------------------------------------- which JOIN pairs which rows --
+#
+# `$..ref_type` is DuckDB's JoinRefType, and its serializer has exactly six
+# values (common/enum_util.cpp, GetJoinRefTypeValues): REGULAR, NATURAL,
+# CROSS, POSITIONAL, ASOF and DEPENDENT. Three of them pair rows by their
+# VALUES -- REGULAR by its ON, NATURAL by the columns the two sides share,
+# CROSS by nothing at all -- so which rows meet is a function of the query,
+# whatever join_type (INNER/LEFT/RIGHT/FULL/SEMI/ANTI) is written in front of
+# it. POSITIONAL pairs row i with row i, and ASOF picks ONE row out of the
+# right side's inequality matches and says nothing about which. Both refuse,
+# and so does any seventh value a later DuckDB adds: the reading serves an
+# allow-list, not a deny-list.
+
+SIDE = pa.table({"w": ["x", "y", "z"], "t": pa.array([9, 8, 7], pa.int64())})
+SHARED = pa.table({"g": ["x", "y", "z"], "t": pa.array([9, 8, 7], pa.int64())})
+
+
+def joined(sql, other=SIDE):
+    return DuckDBInferFn(
+        sql, row_tables={"__THIS__": ROW}, static_tables={"s": TIES, "u": other}
+    )
+
+
+def joined_refuses(sql, other=SIDE):
+    with pytest.raises(ValueError) as e:
+        joined(sql, other)
+    return " ".join(str(e.value).split())
+
+
+def test_an_asof_join_refuses_because_it_picks_one_of_the_tied_matches():
+    # ASOF takes the closest row on the inequality, and when several right
+    # rows tie at that distance it takes one of them by scan order. Measured:
+    # 3000 left rows ASOF-joined to 150000 right rows with 50 tied matches
+    # each answered 15 different ways over seven settings x three connections
+    # -- as a SCALAR sum, not only as a sequence, so an ORDER BY does not
+    # rescue it and a tie probe over the OUTPUT never sees the draw.
+    msg = joined_refuses(
+        "SELECT s.g AS o, u.t AS p FROM s ASOF JOIN u ON s.g = u.w AND s.v >= u.t"
+    )
+    assert msg.startswith("unsupported: ASOF JOIN on a"), msg
+
+
+def test_an_asof_left_join_refuses_under_the_same_name():
+    msg = joined_refuses(
+        "SELECT s.g AS o, u.t AS p FROM s ASOF LEFT JOIN u ON s.g = u.w AND s.v >= u.t"
+    )
+    assert msg.startswith("unsupported: ASOF JOIN on a"), msg
+
+
+def test_every_set_based_join_type_still_serves():
+    # The join_type in front of a REGULAR ref is set-based whichever it is:
+    # each of these pairs rows by the ON condition and by nothing else.
+    for kind in ("JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL OUTER JOIN"):
+        fn = joined(f"SELECT count(*) AS o FROM s {kind} u ON s.g = u.w")
+        assert fn.backend == "constant", kind
+    for kind in ("SEMI JOIN", "ANTI JOIN"):
+        fn = joined(f"SELECT count(*) AS o FROM s {kind} u ON s.g = u.w")
+        assert fn.backend == "constant", kind
+
+
+def test_a_natural_join_serves_because_its_condition_is_the_shared_columns():
+    fn = joined("SELECT count(*) AS o FROM s NATURAL JOIN u", SHARED)
+    assert fn.backend == "constant"
+    assert fn.infer_rows([]) == [{"o": 3}]
+
+
+def test_a_cross_join_serves_in_both_spellings():
+    for frm in ("s CROSS JOIN u", "s, u"):
+        fn = joined(f"SELECT count(*) AS o FROM {frm}")
+        assert fn.backend == "constant", frm
+        assert fn.infer_rows([]) == [{"o": 9}], frm
+
+
+def test_lateral_is_not_the_user_spelling_of_a_dependent_join(oracle):
+    # DEPENDENT is the sixth JoinRefType and the one no query can write: the
+    # syntax that would be its spelling, LATERAL, serializes as CROSS or
+    # REGULAR and the planner makes the DEPENDENT ref itself. It is refused
+    # anyway, because the reading names what it serves rather than what it
+    # rejects -- this pins that the refusal costs no reachable query.
+    def ref_types(sql):
+        j = oracle.execute("SELECT json_serialize_sql(?)", (sql,)).fetchone()[0]
+        return oracle.execute(
+            "SELECT json_extract(?::JSON, '$..ref_type')::VARCHAR", (j,)
+        ).fetchone()[0]
+
+    assert ref_types("SELECT * FROM s, LATERAL (SELECT s.v + 1 AS m)") == '["CROSS"]'
+    assert (
+        ref_types("SELECT * FROM s JOIN LATERAL (SELECT s.v AS m) t ON true")
+        == '["REGULAR"]'
+    )
+
+
+# ------------------------------------------- min and max, under a collation --
+#
+# `min` and `max` are on the order-free list because DuckDB declares them
+# NOT_ORDER_DEPENDENT -- except that it does not, for every overload. Its
+# BindMinMax swaps min/max for arg_min/arg_max when the argument is a VARCHAR
+# carrying a collation and RETURNS before the SetOrderDependent call
+# (src/function/aggregate/distributive/minmax.cpp:333-372, versus :381 on the
+# fall-through), so the bound function is order-dependent by DuckDB's own
+# flag while the catalogue name stays free. arg_min/arg_max refuse under
+# their own names; this is the same function under a name that does not.
+#
+# Measured over a 400k-row static where every value has a NOCASE twin 200k
+# rows away: `min(g COLLATE NOCASE)` answered two ways and `max` two ways
+# over seven settings x three connections, while plain `min(g)` answered one.
+#
+# A collation can only enter through the query TEXT here. Statics are
+# materialized by CREATE TABLE AS SELECT off an Arrow schema, which carries
+# no collation, and DuckDB exposes none in DESCRIBE or duckdb_columns anyway
+# (measured: a `VARCHAR COLLATE NOCASE` column reads back plain VARCHAR). So
+# the parse is the whole reading, and it is deliberately coarse: a collation
+# ANYWHERE in the statement takes min and max off the free list, which
+# over-refuses a collated WHERE beside an integer min and is the cost of not
+# tracking which expression the aggregate's argument came from.
+
+
+def test_a_collated_min_refuses_because_duckdb_binds_arg_min_for_it():
+    msg = refuses("SELECT min(g COLLATE NOCASE) AS o FROM s")
+    assert msg.startswith(AGG_MSG_HEAD + "min on a"), msg
+
+
+def test_a_collated_max_refuses_too():
+    msg = refuses("SELECT max(g COLLATE NOCASE) AS o FROM s")
+    assert msg.startswith(AGG_MSG_HEAD + "max on a"), msg
+
+
+def test_a_collation_anywhere_takes_min_off_the_free_list():
+    # The documented over-refusal: the collation is in the WHERE and the min
+    # is over an integer, and it refuses all the same.
+    msg = refuses("SELECT min(v) AS o FROM s WHERE g COLLATE NOCASE = 'x'")
+    assert msg.startswith(AGG_MSG_HEAD + "min on a"), msg
+
+
+def test_a_collation_without_a_min_or_max_still_serves():
+    fn = build("SELECT g AS o FROM s WHERE g COLLATE NOCASE = 'X' ORDER BY g")
+    assert fn.backend == "constant"
+    assert fn.infer_rows([]) == [{"o": "x"}]
+
+
+def test_an_uncollated_min_and_max_still_serve():
+    fn = build("SELECT min(g) AS a, max(g) AS b FROM s")
+    assert fn.backend == "constant"
+    assert fn.infer_rows([]) == [{"a": "x", "b": "z"}]
+
+
+# ------------------------------- where a bare ORDER BY name is not an alias --
+#
+# After the alias map misses, DuckDB's OrderBinder scans the ORIGINAL select
+# list and counts only the entries that are COLUMN REFERENCES with no alias
+# of their own, matching on the name the reference names; it binds to the
+# output only when exactly one entry matches (order_binder.cpp:77-108). The
+# entries it skips are the interesting ones: an output whose NAME is a bare
+# identifier although its expression is not a column reference -- `st.a` over
+# a struct is one -- does not take the key, and DuckDB sorts by the query's
+# own input column of that name instead.
+#
+# A qualified reference is left to the input here as well. `st.a` and `t.a`
+# are the same shape in the parse and only the BINDER tells them apart, so
+# the key is measured beside the rows rather than read off the frozen output
+# -- which measures the same values wherever the two agree, and refuses
+# rather than guessing where the projection cannot carry it.
+
+STRUCTY = pa.table(
+    {"a": pa.array([1, 1, 2], pa.int64()), "k": pa.array([10, 20, 30], pa.int64())}
+)
+STRUCT_SQL = "WITH sq AS (SELECT {'a': k} AS st, a FROM q) SELECT st.a, st AS z FROM sq"
+
+
+def test_an_expression_named_output_does_not_take_the_key_from_the_input():
+    # Output names are ['a','z'] and the sort name is 'a' -- but entry one is
+    # a struct field reference, not a column reference, so DuckDB sorts by
+    # the INPUT column a, which has two rows at 1. Reading the output column
+    # called 'a' would have measured st.a = k, found it unique, and frozen a
+    # sequence DuckDB picks by scan order.
+    with pytest.raises(ValueError) as e:
+        build(f"{STRUCT_SQL} ORDER BY a", STRUCTY, "q")
+    assert " ".join(str(e.value).split()) == TIE_MSG
+
+
+def test_the_bracket_spelling_of_the_same_field_refuses_as_well():
+    # `st['a']` names the output `st['a']` instead of `a`, so the name never
+    # looked like an output column at all -- the control that says the
+    # divergence above was the NAME reading and nothing else.
+    sql = (
+        "WITH sq AS (SELECT {'a': k} AS st, a FROM q) "
+        "SELECT st['a'], st AS z FROM sq ORDER BY a"
+    )
+    with pytest.raises(ValueError) as e:
+        build(sql, STRUCTY, "q")
+    assert " ".join(str(e.value).split()) == TIE_MSG
+
+
+def test_a_sole_unaliased_column_reference_still_takes_the_key():
+    # The fallback DuckDB does make: one unaliased column reference named k,
+    # and it separates every row.
+    fn = build("SELECT a, k FROM q ORDER BY k", STRUCTY, "q")
+    assert fn.backend == "constant"
+    assert [r["k"] for r in fn.infer_rows([])] == [10, 20, 30]
+
+
+def test_a_sole_unaliased_column_reference_that_ties_refuses():
+    with pytest.raises(ValueError) as e:
+        build("SELECT k, a FROM q ORDER BY a", STRUCTY, "q")
+    assert " ".join(str(e.value).split()) == TIE_MSG
+
+
+def test_an_alias_beats_the_column_that_shares_its_name():
+    # The alias map is asked first, so `a` is the aliased k -- which
+    # separates every row -- and not the raw column a, which ties. Both
+    # output columns answer to `a`, so the third carries the witness.
+    fn = build("SELECT k AS a, a, k AS seen FROM q ORDER BY a", STRUCTY, "q")
+    assert fn.backend == "constant"
+    assert [r["seen"] for r in fn.infer_rows([])] == [10, 20, 30]
+
+
+def test_two_matching_column_references_bind_neither_and_measure_the_input():
+    # Two entries match, so DuckDB binds none of them and sorts by the input
+    # column -- the same values either way, which is why this reading may
+    # leave the key to the projection instead of placing it.
+    fn = build("SELECT k, k FROM q ORDER BY k", STRUCTY, "q")
+    assert fn.backend == "constant"
+    with pytest.raises(ValueError) as e:
+        build("SELECT a, a FROM q ORDER BY a", STRUCTY, "q")
+    assert " ".join(str(e.value).split()) == TIE_MSG
+
+
+def test_a_qualified_select_item_leaves_the_key_to_the_input():
+    fn = build("SELECT q.k FROM q ORDER BY k", STRUCTY, "q")
+    assert fn.backend == "constant"
+    with pytest.raises(ValueError) as e:
+        build("SELECT q.a FROM q ORDER BY a", STRUCTY, "q")
+    assert " ".join(str(e.value).split()) == TIE_MSG
+
+
+def test_a_star_still_places_the_name_it_expanded():
+    fn = build("SELECT * FROM q ORDER BY k", STRUCTY, "q")
+    assert fn.backend == "constant"
+    with pytest.raises(ValueError) as e:
+        build("SELECT * FROM q ORDER BY a", STRUCTY, "q")
+    assert " ".join(str(e.value).split()) == TIE_MSG
+
+
+# --------------------------------------------- what a table function reads --
+#
+# duckdb_functions().stability is NULL for every table function, so the
+# volatile/consistent reading cannot answer for one. It does not have to: a
+# table function is in the FROM to produce rows from somewhere OUTSIDE the
+# query -- the catalogue, the settings, the build, the file system -- with
+# the pure generators as the exception. So the reading serves an allow-list
+# of generators and refuses every other table function by name, which also
+# covers the ones that take arguments (read_csv, glob, query_table) without
+# naming them one at a time.
+#
+# The name is read from the FROM position alone ($..function.function_name),
+# because a table function used as a scalar is a binder error (measured) --
+# so a scalar `repeat('a', 3)` or `range(3)` is never mistaken for the table
+# function that shares its name.
+
+TABLE_FN_HEAD = "unsupported: the table function "
+
+
+def test_a_table_function_that_freezes_the_build_machine_refuses_by_name():
+    # Every one of these is a constant per BUILD MACHINE: the wheel version,
+    # the OS, the Python that built it, the free disk, the core count.
+    for name in (
+        "pragma_version",
+        "pragma_platform",
+        "pragma_user_agent",
+        "pragma_database_size",
+        "duckdb_settings",
+        "duckdb_extensions",
+        "duckdb_memory",
+    ):
+        msg = refuses(f"SELECT count(*) AS o FROM {name}()")
+        assert msg.startswith(f"{TABLE_FN_HEAD}{name}() on a"), (name, msg)
+
+
+def test_a_setting_read_through_a_where_refuses_too():
+    msg = refuses("SELECT value AS o FROM duckdb_settings() WHERE name = 'threads'")
+    assert msg.startswith(f"{TABLE_FN_HEAD}duckdb_settings() on a"), msg
+
+
+def test_a_table_function_buried_in_a_cte_refuses():
+    msg = refuses(
+        "WITH t AS (SELECT * FROM duckdb_settings()) SELECT count(*) AS o FROM t"
+    )
+    assert msg.startswith(f"{TABLE_FN_HEAD}duckdb_settings() on a"), msg
+
+
+def test_every_nullary_table_function_reads_something_outside_the_query(oracle):
+    # The whole class, enumerated from DuckDB's own catalogue rather than
+    # asserted: catalogue views, pragmas, the ICU and timezone tables, the
+    # log and memory readers, the checkpoint entry points. Not one of them is
+    # a function of the query text and the statics.
+    names = [
+        r[0]
+        for r in oracle.execute(
+            "SELECT DISTINCT function_name FROM duckdb_functions() "
+            "WHERE function_type = 'table' AND len(parameters) = 0 ORDER BY 1"
+        ).fetchall()
+    ]
+    assert len(names) >= 37, names
+    refused = []
+    for name in names:
+        if isinstance(oracle.try_answer(f"SELECT * FROM {name}()"), Trap):
+            continue  # DuckDB will not run it at all; there is nothing to freeze
+        msg = refuses(f"SELECT count(*) AS o FROM {name}()")
+        assert msg.startswith(f"{TABLE_FN_HEAD}{name}() on a"), (name, msg)
+        refused.append(name)
+    assert len(refused) == 37, refused
+
+
+def test_the_pure_generators_still_serve():
+    # range/generate_series/unnest/repeat are functions of their ARGUMENTS
+    # and of nothing else, which is the whole allow-list.
+    for frm, n in (
+        ("range(3)", 3),
+        ("generate_series(1, 3)", 3),
+        ("unnest([1, 2, 3])", 3),
+        ("repeat('a', 3)", 3),
+    ):
+        fn = build(f"SELECT count(*) AS o FROM {frm}")
+        assert fn.backend == "constant", frm
+        assert fn.infer_rows([]) == [{"o": n}], frm
+
+
+def test_a_scalar_that_shares_a_table_functions_name_still_serves():
+    fn = build("SELECT repeat(g, 2) AS o, range(v) AS r FROM s ORDER BY g")
+    assert fn.backend == "constant"
+    assert [r["o"] for r in fn.infer_rows([])] == ["xx", "yy", "zz"]

@@ -174,10 +174,31 @@ value moves between two connections milliseconds apart. `version` and
 `current_setting` are a function of the wheel and of the build machine: two
 machines, two frozen answers for one query.
 
-**Not covered, named**: a TABLE function that reads the machine. `SELECT ...
-FROM duckdb_settings()` freezes the build machine's settings and serves. The
-readings above are all about the functions a statement CALLS; a reading of
-DuckDB's 127 table functions is a separate piece of work.
+A **TABLE function refuses unless it is a generator**, which is the opposite
+polarity from every list above and is the polarity the class deserves.
+`duckdb_functions().stability` is NULL for every one of them (all 90 catalogue
+rows), so the catalogue
+cannot sort them — and it does not have to: a table function is in the `FROM`
+to produce rows from somewhere the query does not name. The served list is
+`range`, `generate_series`, `unnest`, `repeat`, `repeat_row`, whose rows are
+a function of their arguments; every other name refuses under its own. That
+covers the 37 nullary ones v1.5.5 will run — `pragma_version`,
+`pragma_platform` and `pragma_user_agent` freeze the wheel, the OS and the
+Python that built it, `pragma_database_size` the free disk,
+`duckdb_settings` the core count and the timezone, `duckdb_extensions` and
+`pragma_collations` what this machine has installed, `duckdb_memory` a live
+reading, two dozen catalogue views the schema they were asked in — and every
+one that takes arguments and reads a FILE (`read_csv`, `read_parquet`,
+`glob`), a string of SQL (`query`, `query_table`), or a sample. The name is
+read from the `FROM` position alone, so a scalar `repeat('a', 3)` or
+`range(3)` is never mistaken for the table function sharing its name (a
+table function used as a scalar is a binder error). You'll see: `the table
+function duckdb_settings() on a static-tables-only query`.
+
+The cost is one corpus statement, named at `MATCH_FLOOR`: `test_all_types()`
+refuses with the rest, because it carries a `TIMESTAMP WITH TIME ZONE`
+column that renders in the build machine's timezone (measured, four
+timezones, four answers).
 
 An **order-sensitive aggregate refuses**, by name. DuckDB classifies this
 itself, and defaults to order-DEPENDENT: an aggregate is order-free only
@@ -207,6 +228,25 @@ includes `sum` over a `UHUGEINT`, which has no exact overload to bind and so
 accumulates in `DOUBLE` like any float. A sum whose overload the reading
 cannot get at keeps refusing whole: nested in a larger expression, in a
 `HAVING`, in a set operation or a subquery, or spelled as a window function.
+
+`min` and `max` are the other two whose flag is not the whole name's, and
+they are answered by the STATEMENT rather than by the call. DuckDB's
+`BindMinMax` swaps them for `arg_min`/`arg_max` when the argument carries a
+COLLATION and returns before the `SetOrderDependent` call (minmax.cpp:333-372
+against :381), so `min(x COLLATE NOCASE)` is order-dependent by DuckDB's own
+flag under a name that is not. Measured over a 400k-row static where every
+value has a `NOCASE` twin 200k rows away, `min(g COLLATE NOCASE)` answered
+two ways across settings and plain `min(g)` answered one. So a collation
+ANYWHERE in the statement takes `min` and `max` off the served list — coarse
+on purpose, since it over-refuses an integer `min` beside a collated `WHERE`,
+and the alternative is tracking which expression an argument came from. A
+collation can only enter through the query TEXT: statics are materialized
+from an Arrow schema, which carries none, and DuckDB exposes no column
+collation in `DESCRIBE` or `duckdb_columns()` anyway. The two-argument
+`min(x, n)` misses the same call and is left serving: measured over ties that
+are equal and still distinguishable (`0.0` against `-0.0`, `INTERVAL 1 MONTH`
+against `30 DAYS`, 200k of each) it answered one way, and a flag with no
+measurement behind it does not earn a refusal.
 
 The cost of reading the REST by NAME, deliberate and fail-closed: **64 of
 DuckDB's 88 aggregate names refuse**. The rest of them
@@ -251,9 +291,23 @@ A **sort key spelled as a name** goes where DuckDB's binder sends it, which
 matters when two output columns answer to the same name. A `SELECT` fills its
 alias map in select-list order and lets a later entry overwrite an earlier
 one, so `ORDER BY c` over `SELECT g AS c, v AS c` sorts by **v** — measured,
-its `DESC` comes back `2, 1, 1`. Only aliases are in that map: a name matched
-because a column happens to carry it binds only when exactly one column does,
-and otherwise the key is computed over the query's own input. A SET OPERATION
+its `DESC` comes back `2, 1, 1`. Only aliases are in that map. On a miss
+DuckDB makes a SECOND pass, over the select list itself, and it counts far
+less of that list than the output NAMES do: an entry is a candidate only
+where it is a column reference carrying no alias of its own, and the term
+binds only where exactly one entry matches — everything else is left to the
+query's own input. The entries it skips are where the two readings would come
+apart: `SELECT st.a, st AS z ... ORDER BY a` names its first output `a`
+although it is a struct field and not a column reference, so DuckDB sorts by
+the INPUT column `a` while the output column called `a` holds something else.
+A star is read as the unaliased column references it expands to, under the
+names the result gives them. A QUALIFIED entry is left to the input here too,
+although DuckDB counts one: `st.a` and `t.a` are the same shape in the parse
+and only the binder tells them apart, and a candidate IS an unaliased column
+reference, so measuring the key beside the rows measures the same values. It
+costs a refusal only where the projection cannot carry the key — under a
+`DISTINCT`, or where the bare name is ambiguous across the `FROM`. A SET
+OPERATION
 is the other binder — it gathers its children's output names and keeps the
 FIRST of a repeat — and this reading keeps the two apart by whether the node
 has a select list of its own. The cost is one shape: an alias sitting behind
@@ -277,16 +331,29 @@ query did not spell is the JSON literal `null`. A limit that is any other
 node — `LIMIT 1+1`, `LIMIT CAST(2 AS BIGINT)`, `LIMIT (SELECT 2)` — is one
 this reading cannot evaluate, and it counts as the real limit it is.
 
-A **`POSITIONAL JOIN` refuses.** It pairs row *i* of one relation with row
-*i* of the other and asks nothing of their values, so which rows meet is the
-scan order itself — selection by position wearing a join's clothes. Measured
-over a 300k-row static table fed through a tying `GROUP BY`, one such join
-answered **five ways** across those five settings, and so did a scalar
-`count(*)` over it — a VALUE, not a sequence, so "row order is not the
-contract" does not cover it. DuckDB-only syntax, so it reaches this path
-precisely because the row path's parser cannot read it. You'll see:
-`POSITIONAL JOIN on a static-tables-only query`. `ASOF JOIN` is NOT covered
-by this rule and is the next thing to probe.
+A **join whose pairing is not a condition refuses.** DuckDB's `JoinRefType`
+has exactly six values, and three of them pair rows by the two sides' VALUES
+— `REGULAR` by its own `ON`, `NATURAL` by the shared column names, `CROSS` by
+nothing at all — whichever `join_type` (INNER/LEFT/RIGHT/FULL/SEMI/ANTI) is
+written in front. Those serve. The reading holds that list rather than the
+list of offenders, so a seventh value a later DuckDB adds refuses until
+somebody measures it.
+
+`POSITIONAL JOIN` pairs row *i* of one relation with row *i* of the other
+and asks nothing of their values — selection by position wearing a join's
+clothes. Measured over a 300k-row static table fed through a tying
+`GROUP BY`, one answered **five ways** across those five settings, and so did
+a scalar `count(*)` over it — a VALUE, not a sequence, so "row order is not
+the contract" does not cover it. `ASOF JOIN` draws one of the right rows
+tied on its inequality: 3000 left rows joined to 150000 right rows with 50
+tied matches each answered **15 ways** over seven settings, again as a scalar
+`sum`, so no `ORDER BY` reaches it and a tie probe over the OUTPUT never sees
+it. `DEPENDENT` no query can spell — `LATERAL`, which would be its syntax,
+serializes as `CROSS` or `REGULAR` and the planner makes the dependent ref
+itself — so refusing it costs nothing. All three are DuckDB-only shapes that
+reach this path precisely because the row path's parser cannot read them.
+You'll see: `POSITIONAL JOIN on a static-tables-only query`, `ASOF JOIN on a
+static-tables-only query`.
 
 **`rowid` refuses.** A static table is materialized by `CREATE TABLE ... AS
 SELECT`, so `rowid` is whatever physical position that produced — the same
