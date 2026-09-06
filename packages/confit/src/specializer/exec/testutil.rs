@@ -63,6 +63,13 @@ pub fn built(text: &str) -> Program {
     p
 }
 
+/// The two quiet NaNs, by their bits. A test that asserts which side of a
+/// `-` a NaN lands on may not spell `f64::NAN`: Rust does not contract that
+/// value's own sign bit (the same reason ir/parse.rs takes the sign from the
+/// token). See `Lit` in ir/mod.rs for why the sign is carried at all.
+pub const POS_NAN: f64 = f64::from_bits(0x7FF8_0000_0000_0000);
+pub const NEG_NAN: f64 = f64::from_bits(0xFFF8_0000_0000_0000);
+
 /// Snapshot the output as strings, masking NULL payloads (a NULL's payload
 /// is meaningless downstream by contract). Allocates — test side only.
 ///
@@ -76,12 +83,13 @@ pub fn snapshot(st: &RunState) -> Vec<Vec<String>> {
 }
 
 /// [`snapshot`], except a NaN carries its bit pattern, so a sign or payload
-/// that differs between two runs is visible as different text. Its first use
-/// is run-against-run comparison (cranelift vs the interpreter, run vs
-/// re-run). A CONSTANT expectation may pin this form only where the IR
-/// itself defines the bits — literals and total bit operations such as
-/// `fneg`, whose sign flip is ours and not the platform's — never where a
-/// libm or the hardware chose them, for the reason above.
+/// that differs between two runs is visible as different text (see `Lit` in
+/// ir/mod.rs for why the sign is worth seeing). Its first use is
+/// run-against-run comparison (cranelift vs the interpreter, run vs re-run).
+/// A CONSTANT expectation may pin this form only where the IR itself defines
+/// the bits — literals and total bit operations such as `fneg`, whose sign
+/// flip is ours and not the platform's — never where a libm or the hardware
+/// chose them, for the reason above.
 pub fn snapshot_bits(st: &RunState) -> Vec<Vec<String>> {
     snap(st, |x| {
         if x.is_nan() {

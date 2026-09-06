@@ -10,7 +10,8 @@ use std::cell::Cell;
 use super::super::ir::{fixtures, gen, parse::parse, verify::verify, Program, StaticTy, Ty};
 use super::interp::{compile, CompileError};
 use super::testutil::{
-    batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot, snapshot, snapshot_bits,
+    batch, built, c_f64, c_i1, c_i64, c_str, rows, run_snapshot, snapshot, snapshot_bits, NEG_NAN,
+    POS_NAN,
 };
 use super::{tree_ensemble, Batch, ColData, KeyBits, OutCol, ScalarVal, StaticData, Trap};
 
@@ -1049,9 +1050,9 @@ fn fuzz_cranelift_agrees_with_interpreter() {
         };
         // Bit-level on both sides: `{:?}` spells every NaN alike, so a
         // backend disagreeing about a sign bit would compare equal — and
-        // the sign is meaning, since `fneg` flips it and a VARCHAR cast
-        // prints it. This removes a blind spot; it is not by itself
-        // coverage of any one opcode. Measured for `fneg`: the generator
+        // the sign is meaning (see `Lit` in ir/mod.rs). This removes a
+        // blind spot; it is not by itself coverage of any one opcode.
+        // Measured for `fneg`: the generator
         // reaches it a handful of times per 500 seeds and its result never
         // lands in an output column, so replacing cranelift's `fneg` with a
         // constant still passes here. The pin below is what catches that.
@@ -1086,13 +1087,11 @@ fn fneg_flips_the_sign_bit_on_both_backends() {
         "fn f(in: batch{a: f64}, out: batch{o: f64}) {\n\
          entry:\n  %x = load in.a\n  %r = fneg %x\n  store out.o, %r\n  emit\n}",
     );
-    let pos_nan = f64::from_bits(0x7FF8_0000_0000_0000);
-    let neg_nan = f64::from_bits(0xFFF8_0000_0000_0000);
     let input = batch(
         6,
         vec![c_f64(&[
-            Some(pos_nan),
-            Some(neg_nan),
+            Some(POS_NAN),
+            Some(NEG_NAN),
             Some(f64::INFINITY),
             Some(f64::NEG_INFINITY),
             Some(0.0),

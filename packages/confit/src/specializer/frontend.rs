@@ -2177,6 +2177,31 @@ fn empty_for_nonnull(subject: SExpr) -> SExpr {
     }
 }
 
+/// Fold an arithmetic operand, and say whether it folded to a typed NULL.
+///
+/// Every strict numeric operator shares one rule, and this is it. Folding
+/// comes FIRST so that a NULL PRODUCED by constant folding (a
+/// constant-condition CASE landing on NULL) is visible to the caller's NULL
+/// check, exactly as DuckDB's folder sees it; `fold` is pure and idempotent.
+/// A folded NULL then goes back to the caller's consumer as a typed NULL and
+/// not as a live node, because that is what DuckDB's binder hands upward and
+/// what the consumers above read: `NULL || 'x'` is INTEGER-typed SQLNULL,
+/// while wrapping the NULL in a live op would type the `||` VARCHAR instead.
+///
+/// The rule's ceiling, unguarded by `bind_foldable`: our fold
+/// dead-arm-eliminates a CASE holding a COLUMN, which DuckDB's binder does
+/// not, so `- (CASE WHEN false THEN x END) || 'y'` is INTEGER here and
+/// VARCHAR there. Every operator that folds diverges the same way, so the
+/// gate belongs on the shared fold rather than on any one caller, where it
+/// would buy one operator's correctness at the price of the surface being
+/// inconsistent about which operators fold. Pinned open in
+/// test_open_divergences.
+fn fold_operand(e: SExpr) -> (SExpr, bool) {
+    let e = fold(e);
+    let is_null = matches!(e.kind, SKind::NullOf);
+    (e, is_null)
+}
+
 fn math1_node(op: NumOp1, inner: SExpr) -> SExpr {
     let nullable = inner.nullable;
     SExpr {
@@ -3213,27 +3238,11 @@ impl Binder<'_> {
                     return Ok(null_of(Ty::I32));
                 }
                 if inner.ty == Ty::F64 {
-                    // Fold FIRST and hand a folded NULL straight back as a
-                    // NullOf, exactly as `arith` does for every other
-                    // operator: DuckDB's binder folds `- <NULL>` to SQLNULL
-                    // there, and the consumers above read that NULL, not a
-                    // node — `NULL || 'x'` is INTEGER-typed SQLNULL, and
-                    // wrapping the NULL in a live negate would type the ||
-                    // VARCHAR instead. The negate is for VALUES; a NULL has
-                    // no sign to flip.
-                    //
-                    // Sharing arith's rule shares its ceiling, unguarded by
-                    // `bind_foldable`: our fold dead-arm-eliminates a CASE
-                    // holding a COLUMN, which DuckDB's binder does not, so
-                    // `- (CASE WHEN false THEN x END) || 'y'` is INTEGER
-                    // here and VARCHAR there. Every binary spelling of that
-                    // shape diverges the same way, so the gate belongs on
-                    // the fold both arms share rather than on this one arm,
-                    // where it would buy one operator's correctness at the
-                    // price of the surface being inconsistent about which
-                    // operators fold. Pinned open in test_open_divergences.
-                    let inner = fold(inner);
-                    if matches!(inner.kind, SKind::NullOf) {
+                    // The shared strict-NULL rule (`fold_operand`), which
+                    // `arith` applies to every other operator: the negate is
+                    // for VALUES, and a NULL has no sign to flip.
+                    let (inner, is_null) = fold_operand(inner);
+                    if is_null {
                         return Ok(null_of(Ty::F64));
                     }
                     return Ok(math1_node(NumOp1::Fneg, inner));
@@ -5134,21 +5143,19 @@ impl Binder<'_> {
         b: SExpr,
         lits: (Option<i64>, Option<i64>),
     ) -> Result<SExpr, PrepareError> {
-        // A STRICT operator with a literal-NULL operand folds to
-        // NULL at build, exactly as DuckDB's optimizer folds it — which
+        // The shared strict-NULL rule (`fold_operand`). Folding to NULL
         // ELIMINATES the sibling subexpression, so a trapping ln/overflow/
-        // giant-string under it never executes there and must not here.
+        // giant-string under it never executes on DuckDB and must not here.
         // Measured (2026-08-11): DuckDB's elision is literal-NULL only; a
         // runtime NULL does not spare the trap on either engine, so eager
-        // per-row evaluation stays as it is. Checked BEFORE promotion —
-        // promote_f64 wraps NullOf in a cast, hiding it. Type errors still
-        // refuse first, below, exactly as DuckDB binder-errors before it
-        // folds.
-        // Folding the operands first makes a NULL PRODUCED
-        // by constant folding (a constant-condition CASE landing on NULL)
-        // visible to the strict-op check below, exactly as DuckDB's folder
-        // sees it. fold() is pure and idempotent.
-        let (a, b) = (fold(a), fold(b));
+        // per-row evaluation stays as it is. The nullness is read BEFORE
+        // promotion — promote_f64 wraps NullOf in a cast, hiding it — but
+        // acted on after, since the NULL takes the PROMOTED type. Type
+        // errors still refuse first, below, exactly as DuckDB binder-errors
+        // before it folds.
+        let (a, a_null) = fold_operand(a);
+        let (b, b_null) = fold_operand(b);
+        let null_operand = a_null || b_null;
         // Decimal ARITHMETIC is m-8 lattice phase 5. Refuse by name here,
         // before the promotion below turns it into the generic
         // "arithmetic needs numeric operands" — the column and its (p,s)
@@ -5156,8 +5163,6 @@ impl Binder<'_> {
         if let Some(d) = dec_operand(&a, &b) {
             return Err(self.dec_refusal(&format!("{} ", arith_sym(op)).trim(), d));
         }
-        let null_operand =
-            matches!(a.kind, SKind::NullOf) || matches!(b.kind, SKind::NullOf);
         if matches!(
             op,
             ArithOp::Shl | ArithOp::Shr | ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor

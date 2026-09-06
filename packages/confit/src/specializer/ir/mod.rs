@@ -319,15 +319,22 @@ pub struct Value(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct BlockId(pub u32);
 
-/// Literal for `const.*`. `F64` equality is bitwise — so `-0.0 != 0.0`
-/// survives a round-trip — EXCEPT that two NaNs of the SAME SIGN compare
-/// equal whatever their payloads: equality has to distinguish exactly what
-/// the text form does, no more and no less. A payload is not in the text
-/// (every payload collapses to the one token) so demanding it would fail
-/// `parse(print(p)) == p` for non-canonical payloads, found by adversarial
-/// fuzzing. A SIGN is in the text (`nan` vs `-nan`) and is program meaning,
-/// so ignoring it would let `parse(print(p)) == p` hold across a printer
-/// that silently dropped the sign — which is the round trip's whole job.
+/// Literal for `const.*`.
+///
+/// A NaN's SIGN is program meaning; its PAYLOAD is not. This is the one
+/// place that argument is made, and every other site that turns on it points
+/// here. A sign is READABLE: `fneg` flips it, a DOUBLE's VARCHAR cast spells
+/// it `-nan`, and DuckDB parses `'-nan'` into it — so an IR that dropped it
+/// would change what a program computes. A payload is readable by nothing:
+/// no op in this IR inspects one, and the libm or hardware that produced it
+/// picked it on its own, so carrying it would pin a platform's choice.
+///
+/// `F64` equality follows that line exactly, no more and no less: bitwise —
+/// so `-0.0 != 0.0` survives a round-trip — EXCEPT that two NaNs of the same
+/// sign compare equal whatever their payloads. Demanding the payload would
+/// fail `parse(print(p)) == p` for non-canonical ones (found by adversarial
+/// fuzzing); ignoring the sign would let `parse(print(p)) == p` hold across
+/// a printer that silently dropped it, which is the round trip's whole job.
 #[derive(Clone, Debug)]
 pub enum Lit {
     I1(bool),
@@ -644,8 +651,9 @@ impl TrimSide {
 /// `Fabs` clears the sign bit (abs(-0.0) = +0.0); `Fneg` flips it, NaN
 /// included, which is what DuckDB's unary minus on a DOUBLE does
 /// (`NegateOperator` is a plain `-input`) and what subtracting from a zero
-/// cannot do -- IEEE subtraction hands a NaN operand's own sign back;
-/// `Fround` is half away from zero (Rust `f64::round`), total on NaN/inf/huge.
+/// cannot do -- IEEE subtraction hands a NaN operand's own sign back, and
+/// that sign is meaning (see [`Lit`]); `Fround` is half away from zero
+/// (Rust `f64::round`), total on NaN/inf/huge.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NumOp1 {
     Iabs,
