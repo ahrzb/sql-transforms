@@ -45,15 +45,14 @@ CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 # was a value comparison over a diverging output TYPE. A drop below this is
 # a regression.
 #
-# 547 -> 546, one statement, and the tightening earned it:
-# test/sql/function/numeric/test_round_integers.test's `select round(100, int)
-# from test_all_types()` now refuses with every other TABLE function that
-# reads something the query does not name. test_all_types() is one of them,
-# not a constant of the wheel: it carries a TIMESTAMP WITH TIME ZONE column,
-# and rendering that column reads the build machine's timezone -- measured,
-# its max value prints four ways under TimeZone unset / UTC / Asia/Tehran /
-# America/New_York, which is exactly the two-machines-two-answers skew this
-# path exists to close. The case is clean-unsupported, not a FAIL.
+# 547 -> 546, one statement, the price of a rule rather than a skew of its
+# own: test/sql/function/numeric/test_round_integers.test's `select round(100,
+# int) from test_all_types()` now refuses with every table function that is
+# not on the short list of pure generators. This statement's own answer is a
+# constant of the pinned wheel -- it never touches the TIMESTAMP WITH TIME
+# ZONE column whose rendering reads the build machine's timezone -- but
+# naming the safe table functions is a list that stops growing, and naming
+# the unsafe ones is not. The case is clean-unsupported, not a FAIL.
 MATCH_FLOOR = 546
 
 # Build-time errors that are documented v0 contract limits, not bugs.

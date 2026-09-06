@@ -484,9 +484,7 @@ and neither is any other selection by position; a tie-producing `ORDER BY` is no
 (five sequences under five settings a build machine picks for itself,
 `known-limitations.md:132-143`), and freezing one would let two builds of the same function
 disagree — goal: serving-without-skew's failure in its build-to-build face rather than its
-train-to-serve one. **Both must refuse**, and both now do: the tie half was
-finding: static-only-tie-order in the dated report, and closing it is what makes this
-sentence a statement rather than a target.
+train-to-serve one. **Both must refuse.**
 *Re-decided by:* nothing intended — the output-shape argument would have to change first.
 *Rings:* nothing rings — there is no trigger. Lifting one breaks
 `packages/confit/tests/test_known_limitations.py` — which is the executable twin of
@@ -583,14 +581,6 @@ fn = DuckDBInferFn("SELECT g AS o, max(v) OVER (ORDER BY v) AS w FROM ties ORDER
                    row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
 fn.backend, [r["w"] for r in fn.infer_rows([])]   # ('constant', [1, 1, 2])
 ```
-
-The classification is DuckDB's own, not a list kept here: `duckdb_functions().stability`
-says which functions are a draw or a clock, and the aggregate source's
-`SetOrderDependent` says which aggregates follow the scan — everything DuckDB does not
-opt out of is refused, so `count`/`min`/`max`/`median` serve and `avg`/`first`/`list`
-do not. `sum` is opted out at some of its overloads and not at the `DOUBLE` one, so it is
-read per OVERLOAD: which one bound comes back from DuckDB's binder as the sum's own
-return type, and a sum over integers serves where a sum over doubles refuses.
 
 *Verified-by:* `packages/confit/docs/known-limitations.md:95-288`;
 `packages/confit/tests/test_known_limitations.py:1-7, :98-117`;
