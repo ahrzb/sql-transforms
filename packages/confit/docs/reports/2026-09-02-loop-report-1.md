@@ -1,4 +1,4 @@
-# The loop's first report: iterations 1-7 (2026-09-02, amended 2026-09-06)
+# The loop's first report: iterations 1-8 (2026-09-02, amended 2026-09-06 and 2026-09-07)
 
 **What this is.** A dated report of one loop's work against `packages/confit/docs/goal.md`,
 read through the yardsticks the baseline reading measured
@@ -26,6 +26,16 @@ enumerating. That repetition is itself a measurement and has its own section bel
 (enumeration-not-terminated); it is stated there as a **fork put to the owner**, not as a
 decision this loop took.
 
+**What the third amendment changed.** Iteration 8 (2026-09-07) closed the parity item and ran
+a fifth round on the tie branch. The parity branch **merged** on the owner's approval, so its
+row here is a record rather than a candidate; between its ship gate and that merge a design
+pass and the orchestrator's own read of the whole diff found a **real parity bug** no gate had,
+so that closure is written up with what found it. The tie branch closed the seventh fail-open
+that same reading habit had found, then closed the round-4 review's six — three of the five
+closures are **allow-lists and metadata reads** rather than longer name lists — and was gated
+**PASS** again. A sixth review then found four more shapes that serve a value which is not a
+function of the query. The enumeration section below says what that does to the sequence.
+
 **Slugs.** `gap:` and `finding:` citations resolve in the baseline reading; `goal:`,
 `kpi:`, `exclusion:` and `ask:` in `goal.md`; `claim:` and `divergence:` without a local
 definition in `packages/confit/docs/oracle/`. Sections here carry kebab-case anchors and are
@@ -46,13 +56,21 @@ priorities give. Its working rules:
 - **Gated PRs and dated reports are the only outputs.** A branch is not done when its author
   says so; it is done when an independent gate has rebuilt both legs and reproduced or
   refuted every clause of its promise.
-- **A merge needs the owner's own GitHub approval.** Nothing in this loop merged itself. One
-  branch merged in this window, on his click.
+- **A merge needs the owner's own GitHub approval.** Nothing in this loop merged itself. **Two**
+  branches merged in this window, each on his click.
 
 The shape each iteration took: one implementer per item, then an independent **review** and
 an independent **gate**, each in its own worktree, each building master and the branch from
 source rather than trusting a shipped artifact. That structure is the reason this report can
 name a gate for every number: the gate legs are what produced them.
+
+**A fourth leg was added at the owner's correction, and it paid immediately.** From 2026-09-06
+the orchestrator reads every diff itself rather than treating a PASS gate as the review. That
+reading is what found the `nextafter` NaN-sign parity bug on a branch two gates had passed, the
+tie branch's seventh fail-open, and four doctrine slips in `goal.md` — none of which a gate or
+a probing review had. Gates are evidence; they are not the review. The rule that follows from
+it is also now standing practice: findings are closed **before** a PR is presented, so a branch
+goes back to draft rather than forward with a list.
 
 **One measurement about the loop itself, worth keeping.** Every master leg the loop ran —
 **eleven of them across iterations 1-4, and every leg since** — reproduced the baseline's
@@ -64,6 +82,13 @@ further master legs iterations 3 and 4 ran, each of which also re-checked the sa
 found 1804 the `DIVERGE_VALUE`. Iteration 7's gate reproduced the same six counts at the same
 tip four days later, seed 1804 included. claim: campaign-verdicts-today is reproducible on
 this machine, and a single seed flipping is therefore signal, not scheduling noise.
+
+**Iteration 8 is where that census finally moves, and it moves for the stated reason.** Master
+advanced a third time, to `8796bb2`, and the counts went to `AGREE` **1014** / `DIVERGE_VALUE`
+**0** — one seed, 1804, the one the parity branch was chartered to fix. Every other count is
+unchanged. So the invariant this loop has been leaning on holds in the strongest form
+available: eleven-plus master legs held the census fixed while master moved for docs, and the
+one master change that was supposed to move it moved exactly the one seed it named.
 
 ---
 
@@ -214,9 +239,9 @@ the gate found clean; none is a wrong answer.
 *Shipped (iteration 5).* All three mediums are the subject of `5819c3a` — `Lit` equality and
 the IR round trip can both see a NaN's sign now, the generator emits both signs and `-0.0`,
 and the join-residual refusal names the node it actually failed to recognise — and the
-**ship gate** read that tip and returned **PASS**. The branch is **PR #202, open, awaiting the
-owner's approval click**, and it is the loop's only candidate for kpi: engine-parity. Its
-final gate numbers over the same seeds 0-1999 at `--workers 8 --timeout 20`: master `AGREE`
+**ship gate** read that tip and returned **PASS**. The branch became **PR #202** and stood open
+for the owner's approval click, the loop's only candidate for kpi: engine-parity. Its
+ship-gate numbers over the same seeds 0-1999 at `--workers 8 --timeout 20`: master `AGREE`
 1013 / `REFUSED` 944 / `AGREE_TRAP` 21 / `UNSHIPPED` 14 / `DIVERGE_OPT` 7 /
 `DIVERGE_VALUE` 1, against branch `DIVERGE_VALUE` **0** and `AGREE` **1014** — **one flip**,
 seed 1804 — with the suite outcome-identical on every shared node id on release **and** debug,
@@ -231,7 +256,40 @@ divergence** — both engines erroring at run time is `AGREE_TRAP` and the two m
 never compared, so that pin was never recording a divergence — and drops the
 `known-limitations.md` row that listed it as a limitation. It touches no production code and
 it closes one of the four lows above by reclassifying it, but no gate record in this loop's
-journal names that tip.
+journal named that tip when it was written. Iteration 8 closed that gap the only way it can be
+closed: a gate read the **final** tip, after the design pass and the review fixes, and it is
+the histogram quoted below.
+
+**Merged (iteration 8, 2026-09-06).** PR #202 is on master, rebased, at tip `8796bb2`, on the
+owner's approval click. kpi: engine-parity now reads `DIVERGE_VALUE` **0** on master rather
+than on a branch. The final-tip gate over seeds 0-1999 reads `AGREE` **1014** / `REFUSED`
+**944** / `AGREE_TRAP` **21** / `UNSHIPPED` **14** / `DIVERGE_OPT` **7** / `DIVERGE_VALUE`
+**0** — a histogram **identical** to the ship gate's, so nothing the merge window added moved
+a verdict — with the root suite at **3326** passed / 1 skipped / 9 xfailed / 2 errors (the
+same absent-`pyspark` collection pair) and `cargo test` on release **and** debug showing the
+five pre-existing failures and no others.
+
+**What the merge window found, and it was not the gate that found it.** Between the ship gate
+at `5819c3a` and the merge the branch took a **design pass** — one home per duplicated rule:
+`fold_operand`, `out_of_range_trap`, the NaN-sign argument stated once at `Lit`, one
+`inf`/`nan` token path — and then the orchestrator's own read of the whole diff. That read
+returned four items a **PASS** gate had not: a doc over-claim (`fold_operand` said *every*
+strict numeric operator, while comparisons deliberately elide no NULL), a stale `cmp` comment,
+one production `f64::NAN` literal, and a **real parity bug**. `duck_nextafter` answered every
+NaN input with a fresh **positive** NaN, where DuckDB hands a NaN operand back **with its own
+sign**: `nextafter(-nan, 1.0)::VARCHAR` printed `nan` against DuckDB's `-nan`. The campaign
+could not have caught it — it never feeds a NaN into `nextafter`, and that blind spot is now
+named rather than assumed.
+
+**The fix took two attempts, and the second one is the lesson.** The first pinned *which*
+operand is returned when **both** are NaN, measured on Windows; Linux CI measured the **other**
+operand, because that choice belongs to the platform's C runtime and its compiler. The kernel
+now calls the platform's own C `nextafter` — the function DuckDB's `std::nextafter` calls — so
+it matches by construction wherever it is built: lone-NaN rows are pinned, both-NaN rows are
+**compared against the machine's own oracle and never pinned**. Three facts carry forward. A
+sign a libm or a compiler picked is compared, never pinned. A pin measured on one platform is
+not a pin, and **CI is the cross-platform leg**. And a gate that rebuilds both legs is
+evidence, not a review: reading the diff is what found this one.
 
 ### 2.3 finding: static-only-tie-order
 
@@ -515,6 +573,188 @@ aggregate catalogue, deep nesting and 300-call select lists, and values that com
 but stay **distinguishable** (`0.0` vs `-0.0`, `'a'` vs `'A' COLLATE NOCASE`, 200k of each) —
 each measured across all seven settings, each giving a single answer.
 
+**The seventh fail-open, and what found it (`04f113a`).** Before round 5 opened, the
+orchestrator's read of the whole diff — not a probe, not a gate — found one more, and it is
+the only one in this branch's history found by **reading the rule** rather than by asking
+DuckDB questions. An alias behind a star is placed by counting from the wrong end when a
+top-level `unnest(struct)` also expands: `SELECT *, a AS k, unnest(st) FROM s ORDER BY k`
+served a **tied** `k`. Closed test-first, with the suite at **3419** passed and the campaign
+**byte-identical**. Three doctrine slips in `goal.md` went with it — a today-state sentence
+and a mechanism paragraph, neither of which belongs in a target document, and the serving
+example that sat under a `REFUSES:` heading, now labelled `SERVES:` — and so did the
+`MATCH_FLOOR` comment, which argued a skew for a statement whose answer has none: the loss is
+the table-function allow-list's price, and the comment now says so. The owner paused the loop
+when PR #202 merged and restarted it for this iteration.
+
+**Round 5 (iteration 8, `36ae02e`): the six the round-4 review found, closed by reading
+DuckDB's own metadata rather than by listing more names.** Five rules, and the shape of three
+of them is the point — this round stopped extending name lists and started reading the
+catalogue and the parse.
+
+- **The `FROM` allow-list.** Every `BASE_TABLE` must name a **static or a CTE**; everything
+  else refuses by name. That closes the implicit file scan (a `BASE_TABLE` whose name **is**
+  the path), the catalogue views reached as tables (`duckdb_tables`,
+  `information_schema.tables`), and the harness's own `__arrow_s` registration name, with one
+  rule instead of three lists.
+- **`SHOW_REF` refuses by node.** `SUMMARIZE`, `DESCRIBE` and `SHOW` serialize as a node that
+  names none of the aggregates it runs, so the node itself is the refusal.
+- **A macro is read as its call.** The aggregate, stability, clock and maker readings are fed
+  from the **parsed definitions** of the catalogue macros a statement names, so
+  `json_group_array`, `json_group_object`, `weighted_avg` and `geomean` refuse through a macro
+  exactly as they do when spelled directly.
+- **One-argument `age()` refuses by arity**, read out of the statement's own parse.
+- **Zoned types refuse by DuckDB's own metadata**, in three sightings: a static column's
+  declared type, a `cast_type` node in the parse, and a maker function's `return_type` from
+  the catalogue.
+
+*One reading, not two.* The macro rule's parse-based stability read reproduces the old
+regex-based one name for name — `ago`, `current_catalog`, `current_database`, `current_query`,
+`current_schema`, `current_schemas`, `pg_conf_load_time`, `pg_postmaster_start_time`,
+`pg_sleep` — so the regex is **deleted** and the branch carries a single reading of that
+question. Four table-macro bodies do not parse as their definition text
+(`duckdb_logs_parsed`, `duckdb_profiling_settings`, `histogram`, `histogram_values`);
+`histogram` is caught by the aggregate catalogue under its own name and the other three by the
+table-function rule, so that gap costs nothing. One implementation ceiling is recorded rather
+than hidden: pyo3's 12-tuple extraction limit put the new names into the existing one-column
+name list rather than into columns of their own.
+
+*Gate (branch `36ae02e`, master `8796bb2`):* **PASS**, with a caveat the gate raised first and
+this report keeps first: **the branch is not rebased**. Its merge-base is `f81e17c` and master
+has advanced **13 commits** past it, so every number below measures the branch **as pushed**,
+not the merged result. Suite: master **3326** passed / 1 skipped / 9 xfailed / 2 errors over
+3338 ids, branch **3435** / 1 / 3 / 2 over 3441 ids, with **3286 shared ids and zero outcome
+changes**, 155 branch-only ids all passing, and 52 master-only ids every one of which sits in a
+file only master touched since the merge-base. The branch deletes no `def test_` and no
+`#[test]`. A separately built **debug** engine gives the identical 3441 ids and the identical
+outcomes. `cargo test --release --lib` reads master 269 / 5 and branch 266 / 5 with the **same
+five names** on both sides — the three-test gap is master's own new Rust tests, not a branch
+deletion — `cargo check --all-targets` is byte-identical to the baseline at 2 warnings, `ruff`
+is clean, and the public API diff is empty.
+
+*Campaign, and the one flip that is master's rather than the branch's.* Seeds 0-1999 at
+`--workers 8 --timeout 60`: `AGREE` **1007** / `REFUSED` **951** / `AGREE_TRAP` **20** /
+`UNSHIPPED` **14** / `DIVERGE_OPT` **7** / `DIVERGE_VALUE` **1**, against master's 7 findings
+in 3 classes and the branch's 8 in 4. **Against `04f113a` the delta is zero** — the round adds
+no flip, and the findings are byte-identical after sorting, 8 on each side. Against master the
+per-seed delta is **81**: 44 planted-twin seeds whose SQL itself changed (35 of them changing
+verdict), 41 identical-SQL `REFUSED` -> `REFUSED` message renames, 4 identical-SQL `AGREE` ->
+`REFUSED` on the order-sensitive aggregate rule (seeds 113 / 1036 / 1314 / 1967), and **seed
+1804** `AGREE` -> `DIVERGE_VALUE`. That last one is **not the branch's**: it reproduces at the
+merge-base with the identical `nan` versus `-nan` detail, so it is the NaN-sign work master has
+merged and this branch does not yet carry. It is the first time the two lines have met, and it
+is the gate's own argument for rebasing before merging.
+
+*Corpus: **546 -> 540**, with a reproduced reason per statement.* Against master's 547 the gate
+attributes **seven** moved, all `match` -> `unsupported`, zero FAIL: one is round 4's
+`test_all_types()` statement, and six are new. Five are the same `SELECT COUNT(*) FROM t` from
+`test_issue_1812.test` over the **driving** table, and the reason is measured rather than
+argued — the replay's own caller frame held a pyarrow table named `t` and the unqualified name
+resolved against it, so the build was handed **zero** statics and still produced a constant.
+With one more Python frame between, the same statement refuses; the gate reproduced both
+directions (`backend='constant'` rows `[6]` equal to the mined answer with that local present,
+refused without it). The sixth is `geomean`, whose catalogue body is `exp(avg(ln(x)))` and
+whose `avg` is order-dependent — the macro rule reaching a statement the corpus mined. **Zero**
+statements moved because of the zoned rule.
+
+*Mutation, on both legs.* The author reverted each of the five rules by re-edit, rebuilt,
+re-ran and restored by re-edit: the `FROM` allow-list gives 2 red, the `SHOW_REF` marker 1, the
+aggregate read taken back to the statement's own names 1, the `age` arity arm 1, and the zoned
+marker 4. The gate ran its own five against the standing rules and got 2, 16, 4, 37 and 16 red
+— every rule fenced, each restored with a zero-byte `git diff` afterwards. **48 hand probes**
+beyond the suite, 29 must-serve (required to be on backend `constant` **and** to equal DuckDB's
+own rows as an unordered multiset) and 19 must-refuse-by-name: **48/48**.
+
+*Two over-refusals disclosed, both stated as prices.* `TIME WITH TIME ZONE` is sighted with the
+zoned class although it renders **without** the session zone (measured) — because
+`DATE + TIMETZ` produces a `TIMESTAMPTZ`, and separating the two would require the reading to
+type every expression rather than to read declared types. And a static column carrying the
+zoned marker is sighted wherever it sits **among the query's own statics**, not only where the
+statement selects it. Both are in `known-limitations.md` and in the test section's own header;
+the collation that takes `min` / `max` off the order-free list is carried forward unchanged.
+
+*The review that followed (round 6) found **five** shapes and one over-refusal, and its method
+is why the count carries weight.* It rebuilt the branch's shape reading, its exact-sum reading,
+its ordering-word reading and its refusal ladder as a **Python replica**, mined every SQL-shaped
+literal out of the branch's own test file (162 candidates, 41 not runnable as a single
+statement), and ran the remaining **121 against the built branch across five static-table
+shapes**: **121/121 agreement, zero disagreements**. Then it probed for what the replica and the
+branch **both** miss. It re-ran the gate itself first: 3435 passed / 1 skipped / 3 xfailed / 2
+errors, the rule's own file **150 passed**, corpus replay green at `MATCH_FLOOR` 540.
+
+1. **HIGH — a `TIMESTAMPTZ` built from a string argument escapes all three zoned sightings.**
+   `strptime` / `try_strptime` with `%z`, and `json_transform` / `from_json` and their
+   `_strict` forms with a `"TIMESTAMP WITH TIME ZONE"` structure string, are typed at **bind**
+   time from an argument, so the catalogue's `return_type` says `TIMESTAMP` or `ANY`, the parse
+   carries no `cast_type`, and no static column is involved. Measured: one such select froze
+   `'2019-12-31 20:00:00+01'` on a Europe/Berlin machine while raw DuckDB over seven settings x
+   two reps gave **three** answers across zones; `date_part('hour', ...)` freezes 20 against
+   19 / 14 / 4. The control is exact — the same instant written as a `TIMESTAMPTZ` literal cast,
+   same statics, same connection, **refuses**.
+2. **HIGH — a macro whose body calls another macro is classified by nothing.** The expansion is
+   exactly **one level** deep, and the inner name is itself a macro, so the aggregate, stability
+   and maker reads all see a macro with a `NULL` stability. `geometric_mean` froze one value
+   where raw DuckDB gave **4** distinct answers over 300k rows, and `wavg` froze one where raw
+   gave **5**; the controls one level shallower — `geomean`, `weighted_avg` — refuse by name on
+   identical data.
+3. **HIGH — the `FROM` allow-list is flat and unscoped.** CTE names are gathered by recursive
+   descent over the whole parse, so a CTE declared inside **any** subquery whitelists that bare
+   name for an outer `FROM` that cannot see it. `FROM 'e2e.csv'` with an inner CTE quoted to the
+   same name serves and freezes the **file system**: the identical query text froze `o=1` in one
+   working directory and `o=5` in another. Without the CTE, the same statement refuses in both.
+4. **MEDIUM — the allow-list compares only the last path segment.** A static named `tables`
+   whitelists `information_schema.tables`, and one named `duckdb_tables` whitelists
+   `system.main.duckdb_tables`; the qualifier the query wrote is dropped before the membership
+   test, so the frozen counts (4 and 2) move with how many statics the caller happened to
+   register. Removing the colliding static is the only difference between serving and refusing.
+5. **LOW — the `age` arity reading is the one name reading that stops at the statement**, and
+   its arm reports the **inner** name where the four beside it report the outer one. Nothing
+   escapes today: all 131 catalogue macro definitions were enumerated and **zero** call `age`
+   or any zoned maker, and every direct spelling — bare, schema-qualified, named-argument, and
+   inside a lambda — refuses.
+6. **MEDIUM, and the opposite of an escape — one zoned column in any static refuses every query
+   on that build.** The static-column sighting asks the catalogue about all of the caller's
+   statics with no reference to the statement and sits above the other arms, so `SELECT 1 AS o`
+   refuses when an unrelated static carries a `TIMESTAMPTZ`. Drop that static and the same three
+   statements serve. The disclosure above reads as a projection-level cost; measured, it is a
+   per-build switch, and this report states it that way.
+
+*The review's clean list, by the same method.* The whole over-refusal battery serves: naive
+`TIMESTAMP` / `DATE` arithmetic, `strptime` **without** `%z`, `epoch_ms`, `INTERVAL`,
+two-argument `age`, `list_sum` / `list_avg` / `array_to_string`, schema- and catalog-qualified
+statics, quoted and aliased statics, CTEs used only in nested subqueries and in set-operation
+branches, `WITH RECURSIVE` self-reference, a CTE named like a file, a static named like a
+catalogue view, and a struct field literally spelled `with time zone`. A systematic sweep of
+**all 1343 `CONSISTENT` catalogue scalars** across seven environments (three time zones, a
+non-Gregorian calendar, one and eight threads, a default collation) x two working directories
+found **24** that answer more than one way, and the fold refuses **22** — the two exceptions are
+the bind-time zoned pair above. The calendar setting reaches ICU only through `TIMESTAMPTZ`, which refuses, so
+naive temporal types are unaffected by it. `DESCRIBE` nested in a subquery still refuses;
+`sqlite_master`, `pg_catalog.pg_class`, `__arrow_s`, `query_table()`, `duckdb_settings` and the
+file and glob scans all refuse by name; and the exact-sum rule behaves as it did at `04f113a`.
+
+*Its design findings, kept because they are about maintainability rather than answers.* Six,
+one of them clean. The six offenders the shape reading returns travel as a **positional array**
+whose position-to-meaning binding lives in three places no compiler checks, where named columns
+and a named struct would make a seventh sighting a compile error rather than a swapped message.
+The arity arm's odd column is unmarked, so a reader cannot tell a decision from a typo. The
+macro paragraph in `known-limitations.md` over-claims completeness — it is the stability, clock,
+aggregate and maker reads only, stopping at one level, which is exactly the
+macro-inside-a-macro hole — and the
+eight maker names beside it are a hand-copied snapshot of a catalogue query that no test pins.
+The `age` paragraph argues about a third party's own classification where a **measured** fact is
+available and stronger, which is both the house rule and the better sentence. And four comments
+carry two different counts of "three" and "four" readings for two different groupings, where
+naming the three zoned sightings once and referring to them by that name would never go stale.
+The clean one is the comment policy: **zero** ticket or PR references and **zero** dates across
+the whole diff, and the `MATCH_FLOOR` comment names its six statements as standing facts rather
+than as a changelog.
+
+*Status:* gated **PASS** at `36ae02e`, and **not a merge candidate**, for two separate reasons
+this time. Four of round 6's shapes serve a value that is not a function of the query — three
+HIGH and one MEDIUM — which is the same control violation the branch exists to close. And the
+branch is 13 commits behind master, so its numbers describe a tree that exists nowhere else:
+rebase onto `8796bb2` and re-gate is a precondition, not a tidy-up.
+
 ---
 
 ## 3. Gate state, branch by branch {#gate-state}
@@ -522,20 +762,22 @@ each measured across all seven settings, each giving a single answer.
 | branch | tip | gate verdict | campaign delta vs master (2000 seeds) | corpus | state |
 |---|---|---|---|---|---|
 | `fix-corpus-slip` | `a7c5798` | PASS WITH FINDINGS | 0 flips; census identical | 547 / 131 / 0 both legs | **merged** (PR #200) |
-| `fix-nan-sign-varchar` | `5819c3a` (PR head `81e8fa2`) | **PASS** (ship gate) | 1 flip: seed 1804 `DIVERGE_VALUE` -> `AGREE`; `DIVERGE_VALUE` 1 -> 0, `AGREE` 1013 -> 1014 | 547 / 131 / 0 both legs | **PR #202, open, awaiting the owner's approval click** |
+| `fix-nan-sign-varchar` | `5819c3a` gated; merged, master `8796bb2` | **PASS** (ship gate, then a final-tip gate at the merged tree) | 1 flip: seed 1804 `DIVERGE_VALUE` -> `AGREE`; final tip `AGREE` **1014** / `REFUSED` 944 / `AGREE_TRAP` 21 / `UNSHIPPED` 14 / `DIVERGE_OPT` 7 / `DIVERGE_VALUE` **0**, histogram identical to the ship gate's | 547 / 131 / 0 both legs | **merged** (PR #202, 2026-09-06, on the owner's click) |
 | `fix-fmod-sign` | `ec71979` | PASS, then read as redundant | its one flip was the same seed 1804, already carried by the branch above | 547 / 131 / 0 both legs | **dropped**; grid salvaged |
-| `refuse-static-tie-order` | `2d24744` | **PASS** (two disclosed over-refusals, 4-5x static-only build cost) | 89 flips, all attributed; `AGREE` 1013 -> 1007, `REFUSED` 944 -> 951, `AGREE_TRAP` 21 -> 20 | 546 / 132 / 0; floor moved once, earned | **not a merge candidate**: six review findings, four HIGH |
+| `refuse-static-tie-order` | `36ae02e` | **PASS** (two disclosed over-refusals, 4-5x static-only build cost; **not rebased** — 13 commits behind master) | 81-seed delta vs master `8796bb2`, all attributed, one of them master's own; **zero** vs the branch's previous tip `04f113a`; `AGREE` **1007** / `REFUSED` **951** / `AGREE_TRAP` **20** | 540 / 138 / 0; floor moved twice, each statement's reason reproduced | **not a merge candidate**: round-6 review found four shapes that answer wrongly, three HIGH; and a rebase is a precondition |
 
 Suite counts, each from the gate that produced it: master **3281** passed / 1 skipped / 3
-xfailed / 2 errors on every leg; `fix-nan-sign-varchar` **3320** at `550f949` and
+xfailed / 2 errors on every leg up to `f81e17c`, and **3326** / 1 / **9** / 2 at `8796bb2`
+once the parity branch merged; `fix-nan-sign-varchar` **3320** at `550f949` and
 outcome-identical on every shared node id at its ship gate; `refuse-static-tie-order` **3366**
-at `a08147e` and **3415** at `2d24744`; `fix-fmod-sign` stood at **3284** when it was gated,
-and is moot now. Every branch was also run on a separately built **debug** engine with
-identical results and no `debug_assert` firing. Dialect L2 reads **288/678** with 0 FAIL
-wherever it was taken. The public API diff is empty on all four, and `cargo test`'s failing
-**set** is master's five on all four. The corpus reads 547 / 131 / 0 on every leg of every
-branch except `refuse-static-tie-order` at `2d24744`, which is **546 / 132 / 0** — one
-statement, moved for a reproduced reason.
+at `a08147e`, **3415** at `2d24744`, **3419** at `04f113a` and **3435** at `36ae02e`;
+`fix-fmod-sign` stood at **3284** when it was gated, and is moot now. Every branch was also run
+on a separately built **debug** engine with identical results and no `debug_assert` firing.
+Dialect L2 reads **288/678** with 0 FAIL wherever it was taken. The public API diff is empty on
+all four, and `cargo test`'s failing **set** is master's five on all four. The corpus reads
+547 / 131 / 0 on every leg of every branch except `refuse-static-tie-order`, which reads
+**546 / 132 / 0** at `2d24744` and **540 / 138 / 0** at `36ae02e` — seven statements against
+master, each moved for a reason the gate reproduced rather than relayed.
 
 **The contention resolved by measurement, not by a choice.** `fix-fmod-sign` and
 `fix-nan-sign-varchar` both changed the same `DuckF64` NaN arm and both flipped the same
@@ -543,20 +785,22 @@ single seed, and the first text left the pick to the owner. Iteration 4 removed 
 `fix-fmod-sign`'s production change **was** that one line, already carried on the other
 branch, so there was nothing to choose between. Its 29-row sign grid over `%` / `mod` /
 `fmod` now lives on `fix-nan-sign-varchar` as tests, and the branch is dropped. One candidate
-remains for kpi: engine-parity, and it is a click away rather than a decision away.
+remained for kpi: engine-parity, and iteration 8 spent the click: it is master's now.
 
-**Both live branches carry review findings their gates did not raise, and the two are still
-not the same weight.** On `fix-nan-sign-varchar` the seven were naming, coverage and comment
-defects over a production diff the gate found clean — an equality that could not see a NaN
-sign, a generator that never emitted one, a refusal selector that misdiagnosed a shape it
-already refused correctly. None answered a query wrongly; the three mediums closed in
-iteration 5 and one low closed by reclassification, and what is left of the branch is a click.
-On `refuse-static-tie-order`, **four of the six do** answer a query wrongly: a file scan, a
-macro over an order-dependent aggregate, a clock read the catalogue calls `CONSISTENT`, and
-`SUMMARIZE` each freeze something that is not a function of the query. A control violation
-inside the branch chartered to close that control is a different class of open item from a
-stale comment, and the table above states the two differently on purpose. What is new at
-iteration 7 is that the **repetition**, rather than any one of the four, is the finding.
+**One live branch is left, and its open items are still a different class from the parity
+branch's were.** On `fix-nan-sign-varchar` the review findings were naming, coverage and
+comment defects over a production diff the gate found clean — an equality that could not see a
+NaN sign, a generator that never emitted one, a refusal selector that misdiagnosed a shape it
+already refused correctly. None answered a query wrongly. The one thing on that branch that
+did was found by neither a gate nor a review but by **reading the diff**, and it was fixed
+before the merge (the NaN-sign `nextafter` bug above). On `refuse-static-tie-order`, four of
+round 6's items **do** answer a query wrongly: a `TIMESTAMPTZ` built from a string argument, a
+macro one level too deep, a CTE name escaping its scope, and a catalogue view reached past its
+qualifier each freeze something that is not a function of the query. A control violation inside
+the branch chartered to close that control is a different class of open item from a stale
+comment, and the table above states the two differently on purpose. What was new at iteration 7
+is that the **repetition**, rather than any one finding, is the measurement; iteration 8 adds a
+fifth round to it without ending it.
 
 ---
 
@@ -565,32 +809,57 @@ iteration 7 is that the **repetition**, rather than any one of the four, is the 
 This is a measurement about the tie branch's **method**, not a finding against it, and it is
 the reason a design question already put to the owner now has evidence under it.
 
-**What four review rounds did.** Each round closed every fail-open the last one found, and
-each next round found more — from the same surface, by the same method: an independent reader
+**What five review rounds did.** Each round closed every fail-open the last one found, and each
+next round found more — from the same surface, by the same method: an independent reader
 probing DuckDB for shapes whose answer is not a function of the query text and the statics.
 
 ```
 ties -> ORDER BY #N -> the LAST alias -> POSITIONAL JOIN -> ASOF JOIN ->
 collated min/max -> the OrderBinder fallback -> machine-state table functions ->
 the implicit file scan -> a macro over an order-dependent aggregate ->
-one-argument age() -> SUMMARIZE -> any rendered TIMESTAMPTZ
+one-argument age() -> SUMMARIZE -> any rendered TIMESTAMPTZ ->
+an alias behind a star that unnest(struct) displaces ->
+a TIMESTAMPTZ typed at bind time from a string argument ->
+a macro whose body calls another macro ->
+a CTE name escaping its subquery -> a catalogue view reached past its qualifier
 ```
 
-Every entry is closed or open on its own merits, and every fix is right. What the **sequence**
-measures is the shape of the work: four rounds, no round empty, no round's findings predicted
-by the one before it, and the newest four reaching a file system, a macro body, a transaction
-clock and a statement whose serialization names nothing a rule can read. The rule is chasing a
-surface — DuckDB's whole function, join, table-function and session-setting catalogue — that
-neither the branch nor four rounds of independent review have been able to enumerate, and
-nothing this loop measured says the next round is empty.
+**Round 6 adds to the sequence; it is not the round that came back empty.** Of its five
+shapes, three are HIGH and one is MEDIUM, and each of those four **serves** a value that is not
+a function of the query — a frozen session time zone, a frozen order-dependent aggregate, a
+frozen file system, a frozen catalogue count. Only the fifth is different in kind: the
+one-argument `age` reading is statement-only, but all 131 catalogue macro definitions were
+enumerated and none calls `age`, so nothing escapes through it **today** — a latent hole, not a
+wrong answer. The sixth item is an over-refusal, which is the fail-closed direction. So the
+count of rounds that came back with nothing wrongly served is still **zero**.
 
-**Why that reads as structural rather than as a run of bad luck.** Two things. The findings get
-**narrower in kind** each round — a clause a parser can see, then a binder rule, then a
-catalogue flag, then a serialization node — so the question has moved from "did we cover the
-shapes" to "can this reading see the shape at all". And the last two rounds both found cases
-where **no name appears anywhere in the parse**: `SUMMARIZE`'s `SHOW_REF`, `FROM '<path>'`'s
-`BASE_TABLE`, and a `TIMESTAMPTZ` rendered by a plain cast. A rule that decides by reading
-names cannot be completed against shapes that carry none.
+Every entry is closed or open on its own merits, and every fix is right. What the **sequence**
+measures is the shape of the work: five rounds, no round empty, no round's findings predicted
+by the one before it. The rule is chasing a surface — DuckDB's whole function, join,
+table-function, macro and session-setting catalogue — that neither the branch nor five rounds of
+independent review have been able to enumerate, and nothing this loop measured says the next
+round is empty.
+
+**Why that reads as structural rather than as a run of bad luck.** Three things now. The
+findings get **narrower in kind** each round — a clause a parser can see, then a binder rule,
+then a catalogue flag, then a serialization node, then a type the catalogue does not carry — so
+the question has moved from "did we cover the shapes" to "can this reading see the shape at
+all". Rounds 4 and 5 both found cases where **no name appears anywhere in the parse**:
+`SUMMARIZE`'s `SHOW_REF`, `FROM '<path>'`'s `BASE_TABLE`, and a `TIMESTAMPTZ` rendered by a
+plain cast. And round 6 goes one step past that: `strptime('...','%z')` carries a name the
+reading **does** find, in a catalogue that reports its return type as naive, because the zoned
+type is chosen at bind time from a **string argument**. A rule that decides by reading names and
+declared types cannot be completed against shapes whose type is a value.
+
+**One thing round 5 does change, and it is a point for the enumerating side.** Three of its
+five closures are **allow-lists and metadata reads** rather than longer name lists: every
+`BASE_TABLE` must name a static or a CTE, macros are read through their own parsed definitions,
+and zoned types are read off DuckDB's declared types. Each of those covers a class rather than a
+list, and the corpus and campaign price them exactly. Round 6's two allow-list findings are then
+**defects in that reading itself** — scope and qualification — not new shapes to enumerate,
+which is a smaller kind of open item than the shapes rounds 1-4 kept producing. The
+two HIGHs that are not of that kind (bind-time zoned types, macros one level too deep) are the
+ones that keep the sequence going.
 
 **The fork, stated as a fork.** The alternative already on the table is to stop deciding
 *which shapes are pure* and instead **pin the build-time fold's configuration through the
@@ -605,7 +874,7 @@ covers order *inside* a value). Both are **stated, not ruled**, and both are the
 What this loop is claiming, and what it is not. It is **not** claiming the fork is decided,
 that enumeration is the wrong approach, or that the tie branch should be abandoned — the
 branch closes a real silent-wrongness class, every rule in it is measured, and its gate is
-PASS. It **is** recording that four consecutive rounds of enumeration have not terminated,
+PASS. It **is** recording that five consecutive rounds of enumeration have not terminated,
 that what they find trends away from what a name-reading rule can see, and that this is the
 first evidence the loop has produced bearing on those two asks. The fork's own claim is that
 pinning the configuration changes what the rule must enumerate from "every impure shape DuckDB
@@ -631,7 +900,11 @@ change meaning. Separately, **4** of the flips are a deliberate over-refusal —
 a rule the loop chose, not a population artefact and not a defect. Any next census over this
 generator is measuring a slightly different population under a slightly stricter rule; the
 baseline's validity caveat under acceptance-reading now has two reasons to bite rather than
-one.
+one. A third arrives with iteration 8: **master itself moved**. At `8796bb2` master reads
+`AGREE` **1014** and `DIVERGE_VALUE` **0**, so the tie branch's 1007 is a delta against a
+baseline the parity merge changed, and the 81-seed comparison the gate ran includes one flip
+(seed 1804) that belongs to master rather than to the branch. Whichever leg reading N=2 takes,
+it should name the master tip beside the number.
 
 **The over-refusal detector is class-agnostic; the generator is not, and that is now an
 argued position rather than an oversight.** A test pins the detector as reading every refusal
@@ -658,16 +931,29 @@ relayed. Every other leg of every branch this loop gated still reads 547 / 131 /
 mechanism is now demonstrated rather than argued: the ladder cannot shrink in silence, and a
 correct new refusal costs one documented line each time it lands.
 
+**And it moved again, six times at once, which is the first test of that mechanism at scale.**
+Round 5 takes the floor **546 -> 540**. Five of the six are the same `SELECT COUNT(*) FROM t`
+whose constant the build produced with **zero** statics in hand, because the replay's own caller
+frame carried a pyarrow table of that name; the sixth is `geomean`, whose catalogue body is
+`exp(avg(ln(x)))`. Every one has a reproduced reason beside it and none is a FAIL. Two things
+follow for reading N=2. The ratchet's cost is **not** one line per refusal in general — a rule
+that covers a class costs however many mined statements that class holds — and five of these six
+say as much about the **replay harness** as about the engine, since the same statement refuses
+when one more Python frame stands between the replay and the build. kpi: coverage-ladder is
+measured through that harness, so the harness's own name resolution is part of what the number
+means.
+
 **The Rust unit gate is red on master and CI cannot see it.** `cargo test` is 266 passed / 5
 failed on every master leg the loop ran, the same five names each time
 (`pin_ftoi_rounding_and_traps`, `pin_ssubstr_window_arithmetic`,
 `pin_stoi_trims_whitespace_like_duckdb_cast`, `table_and_custom_partition_the_catalogue`,
 `substr_window_arithmetic_via_sql`), and CI runs only `pytest`. **Seven** separate gate
-records said so by iteration 4, and every gate leg since has added another — iteration 7's
-reads the same five names on both legs. A regression inside `exec::tests` would pass a green-bar
-check today. This is an **enforcement fault**, the shape the baseline reading calls a finding
-rather than a gap, and no item in this loop owned it — iterations 3 and 4 included, which
-added four more records of it and no owner.
+records said so by iteration 4, and every gate leg since has added another — iteration 8's
+reads the same five names on both legs, at master `8796bb2` (269 passed / 5 failed) and on the
+tie branch (266 / 5). A regression inside `exec::tests` would pass a green-bar check today.
+This is an **enforcement fault**, the shape the baseline reading calls a finding rather than a
+gap, and no item in this loop owned it — eight iterations in, which is now itself the
+measurement.
 
 **Closed since the first text, each by a gate leg rather than by an author's claim:** the
 `- <DOUBLE NULL>` collapse; the trailing-`;` and trailing-comment false refusals; the three
@@ -690,27 +976,57 @@ sits outside the comparison contract — both engines erroring at run time is `A
 the messages are never compared — so that pin was never recording a divergence, and the
 `known-limitations.md` row went with it.
 
+**Closed in iteration 8, each by a gate leg or by a reading of the diff rather than an author's
+claim:** on the parity branch, the `nextafter` NaN-sign bug and the doc, comment and literal
+items the design pass and the diff read found — and the branch itself, **merged**. On the tie
+branch, all seven the round-4 review and the diff read had left open: DuckDB's implicit file
+scan and the catalogue views and `__arrow_s` with it (one `FROM` allow-list); `SUMMARIZE` /
+`DESCRIBE` / `SHOW` (one node); macros over order-dependent aggregates (macro bodies parsed and
+fed into the same readings); one-argument `age()` (by arity); every `TIMESTAMPTZ` a static
+column, a cast node or a catalogue return type can name; and the alias behind a star that a
+top-level `unnest(struct)` displaced. One duplicate reading is **deleted** rather than fixed:
+the regex-based macro stability read reproduced the parse-based one name for name, so the branch
+carries one reading of that question instead of two.
+
 **Still open, each measured, none acted on:**
 
-- **Four fail-open shapes on `refuse-static-tie-order` at `2d24744`**, each measured by a
-  review of the gated tip, each answering a query wrongly rather than refusing: DuckDB's
-  implicit file scan `FROM '<path>'`, a `BASE_TABLE` whose name **is** the path, so CSV,
-  parquet and **globs** freeze the build machine's file system while `read_csv()` on the same
-  file refuses; a **macro** whose body calls an order-dependent aggregate
-  (`json_group_array`, `json_group_object`, `weighted_avg`, `geomean` — 2, 2, 4 and 7 distinct
-  answers across settings); one-argument **`age()`**, which reads the transaction clock while
-  DuckDB's catalogue calls it `CONSISTENT`; and **`SUMMARIZE`**, whose `SHOW_REF` node names
-  none of the aggregates it runs — seven settings, seven answers.
-- **Two lesser ones with them:** any **`TIMESTAMPTZ` rendered or decomposed** freezes the
-  build machine's session time zone with no function name involved anywhere — the effect
-  `known-limitations.md` already names as disqualifying for `test_all_types()`, now reaching
-  ordinary queries — and `SHOW TABLES` / `DESCRIBE` leak the harness's own `__arrow_s`
-  registration name into a user-visible constant.
-- **Three low review findings left on `fix-nan-sign-varchar`**, none answering a query
-  wrongly: a `snapshot_bits` doc that forbids what a test in the same crate correctly pins, a
-  bind-time `fold` that reproduces arith's over-fold, and the infinite-dividend half of the
-  mod grid's excluded domain, covered by nothing. The three mediums closed in `5819c3a`; the
-  fourth low closed by reclassification in `81e8fa2`.
+- **Four fail-open shapes on `refuse-static-tie-order` at `36ae02e`**, each measured by the
+  round-6 review of the gated tip against a refusing control on identical data, each answering
+  a query wrongly rather than refusing. A **`TIMESTAMPTZ` typed at bind time from a string
+  argument** — `strptime` / `try_strptime` with `%z`, `json_transform` / `from_json` and their
+  `_strict` forms with a zoned structure string — escapes all three zoned sightings, because
+  the catalogue's return type is naive, the parse carries no cast node and no static column is
+  involved: one frozen value against **three** raw answers across zones. A **macro whose body
+  calls another macro** is classified by nothing, since expansion stops at one level:
+  `geometric_mean` froze one value against **4** raw answers and `wavg` one against **5**,
+  while `geomean` and `weighted_avg` one level shallower refuse. A **CTE declared in any
+  subquery** whitelists its bare name for an outer `FROM` that cannot see it, so `FROM
+  'e2e.csv'` froze `o=1` in one working directory and `o=5` in another. And the allow-list
+  compares only the **last path segment**, so a static named `tables` or `duckdb_tables`
+  whitelists the qualified catalogue view and freezes a count of what the build's own database
+  holds.
+- **Two lesser round-6 items with them.** The `age` arity reading is the one name reading that
+  stops at the statement and never reaches a macro body, and its arm reports the inner name
+  where the four beside it report the outer one — a latent hole rather than a live one, since
+  all 131 catalogue macro definitions were enumerated and none calls `age` or a zoned maker.
+  And its **design** findings: a positional array whose position-to-meaning binding lives in
+  three unchecked places, an over-claiming macro paragraph in `known-limitations.md` beside an
+  unpinned hand-copied maker list, an `age` paragraph that argues where a measured fact is
+  available, and four comments carrying two different counts for two different groupings.
+- **One over-refusal that is wider than its disclosure says.** A single zoned column in **any**
+  static refuses **every** query on that build, `SELECT 1 AS o` included, because the
+  static-column sighting reads the caller's statics with no reference to the statement.
+  `known-limitations.md` describes it as a projection-level cost; measured, it is a per-build
+  switch.
+- **Three low review findings left on `fix-nan-sign-varchar`**, now on master, none answering a
+  query wrongly: a `snapshot_bits` doc that forbids what a test in the same crate correctly
+  pins, a bind-time `fold` that reproduces arith's over-fold, and the infinite-dividend half of
+  the mod grid's excluded domain, covered by nothing. The three mediums closed in `5819c3a`;
+  the fourth low closed by reclassification in `81e8fa2`.
+- **The tie branch is 13 commits behind master and must be rebased before it can be gated for
+  merge.** Its gate proved the two lines have already met: seed 1804 flips `AGREE` ->
+  `DIVERGE_VALUE` against `8796bb2` and reproduces at the merge-base, so that flip is the
+  NaN-sign work the branch does not yet carry rather than anything the branch did.
 - **The by-name aggregate coarsening, narrowed but not closed.** Round 3 gave `sum` its typed
   rule through DuckDB's own overload resolution, so every **exact** accumulator serves. The
   by-name list was **65 of 88**, and `sum`'s exact overloads are all that came off it:
@@ -718,15 +1034,20 @@ the messages are never compared — so that pin was never recording a divergence
   accumulators `fsum` / `kahan_sum` / `favg` that exist to **be** order-stable all still
   refuse by name, and `first(v ORDER BY k)` with a unique `k` still refuses whole. The same
   overload reading is the upgrade path for the rest; the trade is the owner's to price.
-- **The table-function allow-list is deliberately conservative:** five names serve and
+- **Three allow-lists are deliberately conservative, and every one of them is an over-refusal
+  the campaign cannot see**, by the blindness above. Five table-function names serve and
   everything else refuses, so a genuinely pure table function DuckDB adds later refuses until
-  someone lists it. That is the fail-closed direction and it is disclosed — but it is an
-  over-refusal the campaign cannot see, by the same blindness above.
+  someone lists it; every `BASE_TABLE` must name a static or a CTE, which is what costs the
+  corpus its `test_all_types()` statement; and `TIME WITH TIME ZONE` is sighted with the zoned
+  class although it renders **without** the session zone, because `DATE + TIMETZ` produces a
+  `TIMESTAMPTZ` and separating them would require typing every expression rather than reading
+  declared types. All three are the fail-closed direction and all three are disclosed.
 - **Four `known-limitations.md` line citations in `goal.md` are wrong** — rebased by +73 when
   the real shift is +161, so each now points at unrelated text. `goal.md`'s whole verified-by
-  mechanism is line citations, which makes this a small edit against a load-bearing claim. A
-  gate read one presentation defect beside them: the third code block under `goal.md`'s
-  `REFUSES:` heading is a **serving** counter-example, correct output and all.
+  mechanism is line citations, which makes this a small edit against a load-bearing claim. The
+  presentation defect that stood beside them is closed: the serving counter-example under a
+  `REFUSES:` heading now reads `SERVES:`, along with two other doctrine slips in the target
+  document.
 - **One lesser tie-branch finding left:** a `readable` guard that can never be false (one
   field, one initializer per arm, one dead `&&`).
 - `x % y`'s NaN sign is **unmatchable in principle**, not merely unfixed: two gates
@@ -756,7 +1077,8 @@ the messages are never compared — so that pin was never recording a divergence
 | 4 (seed 1804 review closure and salvage, the tie fix round — two implementers, two gates, two reviews) | not recorded on a comparable basis |
 | 5 (the parity branch's ship gate and PR, the tie branch's positional-key round) | ~1.0M |
 | 6 (the tie branch's typed sum, last alias and positional join — one implementer, one gate, one review) | ~0.75M |
-| 7 (the tie branch's round 4, its gate, its review, and this amendment) | this run, not closed |
+| 7 (the tie branch's round 4, its gate, its review, and the second amendment) | not closed when it was written; the 2026-09-06 status reading puts iterations 1-7 together at ~9.0M+ |
+| 8 (the parity branch's merge with its design pass and diff read, the tie branch's seventh fail-open and round 5, its gate, its review, and this amendment) | this run, not closed |
 
 Iteration 3's figure is now recorded: **~1.76M**, the largest of the three, which is what a
 gate that rebuilds both legs from source and a review that probes a built branch cost when
@@ -767,9 +1089,18 @@ two reviews and one fix round, on the same three-role shape.
 
 Iterations 5 and 6 are recorded: **~1.0M** and **~0.75M**, both smaller than any of the first
 four, because each ran a single item through the three roles rather than three items at once.
-Iteration 7 is this run and is not closed as this is written. **Cumulative across the loop:
-~8.8M+ agent tokens** — the `+` is iterations 4 and 7, the two figures without a comparable
-basis.
+Iterations 7 and 8 are not: 7 was open when it was written up, and 8 is this run. The nearest
+figure on a stated basis is the 2026-09-06 status reading's **~9.0M+ across iterations 1-7**,
+plus **~0.4M** in subagents for that session's own orchestrator-driven review, fixes and gates,
+which is not a workflow and does not compare with the rows above. **Cumulative across the loop:
+~9.4M+ agent tokens**, where the `+` covers iterations 4, 7 and 8 and the orchestrator's own
+context throughout.
+
+**A cost that is not in the table, and iteration 8 is the reason to name it.** The diff read
+that found the `nextafter` parity bug and the seventh tie-branch fail-open is the
+orchestrator's own context rather than a subagent's, so it is invisible to every figure above
+while being the leg that found the two items no gate did. Any future accounting of this loop's
+shape should say so rather than compare gate costs alone.
 
 **One operational cost, recorded because it is not free.** The loop's worktree-per-role shape
 put `C:` at 100% on 2026-09-06, and **35 finished workflow worktrees** were removed to clear
@@ -779,8 +1110,9 @@ own cost rather than an accident. It wants a sweep between iterations rather tha
 disk.
 
 **The standing stop rule is unchanged: roughly 70% of the owner's weekly credit, and it is
-owner-signalled** — the loop does not infer it from its own accounting, and has not been
-signalled to stop, through iteration 7 included.
+owner-signalled** — the loop does not infer it from its own accounting. It has not been
+signalled to stop, through iteration 8 included; it was **paused** once, when PR #202 merged,
+and restarted for this iteration.
 
 ---
 
@@ -789,15 +1121,18 @@ signalled to stop, through iteration 7 included.
 `goal.md` orders controls before drives, so the queue does too. Nothing here is chosen; it is
 what the loop's own measurements rank.
 
-1. **The parity control needs a click, not a decision.** kpi: engine-parity has
-   `DIVERGE_VALUE` at **0** on exactly one branch — `fix-nan-sign-varchar`, ship gate **PASS**
-   at `5819c3a`, now **PR #202**, open. What the first text posed as a choice between two
-   branches was settled by measurement (the loser had no production change of its own), and
-   what the first amendment left as a hold is settled too: every review finding that could
-   answer a query wrongly is closed, and three lows remain. The one thing to look at before
-   clicking is that the PR head is `81e8fa2`, one docs-and-comments commit past the gated tip,
-   which no gate record in this journal names.
-2. **kpi: named-refusal-share, and the refusal registry it would need.** This loop roughly
+1. **The parity control is closed; what is left of it is three lows.** kpi: engine-parity reads
+   `DIVERGE_VALUE` **0** on **master** at `8796bb2`, not on a branch: PR #202 merged on the
+   owner's click and a final-tip gate reproduced the ship gate's histogram exactly. The three
+   low review findings above ride on master now and none answers a query wrongly. Two facts
+   from the merge window belong in the next reading rather than in a queue item: the campaign
+   never feeds a NaN into `nextafter`, so that class of parity bug is invisible to it, and a
+   sign a platform's C runtime picked is compared, never pinned.
+2. **The tie branch needs a rebase before it needs anything else.** It is 13 commits behind
+   `8796bb2`, and its own gate showed the two lines have met — seed 1804 flips against master
+   for a reason that is master's. Rebase and re-gate is a precondition for reading any of its
+   numbers as a merge candidate's; closing round 6's four shapes is the work after that.
+3. **kpi: named-refusal-share, and the refusal registry it would need.** This loop roughly
    doubled the engine's refusal vocabulary and nothing lists it. `refuse-static-tie-order`
    alone refuses by name across the aggregate catalogue, three of six join reference types,
    every table function outside a five-name allow-list, collations, macros and the clock
@@ -808,31 +1143,38 @@ what the loop's own measurements rank.
    and the test that pins it — is what makes that vocabulary auditable, and it is exactly what
    kpi: named-refusal-share would measure. Adopting the KPI routes through
    ask: kpi-set-change; building the registry does not, and the naming half of
-   kpi: no-third-mode is the loop's largest untested claim without it.
-3. **gap: undocumented-boolean-comparison, and the unsigned class that belongs with it.** Same
+   kpi: no-third-mode is the loop's largest untested claim without it. Round 5 widens the case:
+   the vocabulary now includes a `FROM` allow-list, a node-level refusal, macro expansion and
+   three zoned sightings, and the round-6 review had to **rebuild the reading as a replica**
+   to audit it at all.
+4. **gap: undocumented-boolean-comparison, and the unsigned class that belongs with it.** Same
    bookkeeping shape, both small, both against load-bearing claims: boolean comparison is
    undocumented, and the **unsigned-column** refusal — the reason three mined statements
    stopped matching, and the loop's clearest worked example of a refusal that is a correctness
    *gain* — is named nowhere in `known-limitations.md`. The cheapest items on this list, and
    the first two rows any registry would want.
-4. **The fork: the oracle spec's ask: engine-fold-reading and ask: threads-and-value-order.**
-   Four rounds of enumeration have not terminated (enumeration-not-terminated above), and the
-   last two found shapes that carry **no name for a rule to read**. That is measured evidence
-   bearing on two questions that are stated and not ruled, and the tie branch's disposition
-   hangs on the answer: enumerate a fifth round, or pin the build-time fold's configuration
-   through the oracle so the answer is deterministic by construction. This report takes no
-   position. It states the fork and prices what the enumerating side has cost so far — three
-   iterations, four review rounds, **4-5x** static-only build time, and a branch that is gated
-   PASS and still not mergeable.
-5. **The enforcement faults nobody owns.** The red Rust unit gate above, and finding:
-   c1-depth, untouched by this loop and still routed to ask: kpi-set-change.
-6. **gap: bench-baseline-flip's cheapest cause is still untested.** One re-run after
+5. **The fork: the oracle spec's ask: engine-fold-reading and ask: threads-and-value-order.**
+   Five rounds of enumeration have not terminated (enumeration-not-terminated above); rounds 4
+   and 5 found shapes that carry **no name for a rule to read**, and round 6 found one whose
+   zoned type is chosen at bind time from a **string argument**, so neither a name nor a
+   declared type reaches it. That is measured evidence bearing on two questions that are stated
+   and not ruled, and the tie branch's disposition hangs on the answer: enumerate a sixth round,
+   or pin the build-time fold's configuration through the oracle so the answer is deterministic
+   by construction. This report takes no position. It states the fork and prices what the
+   enumerating side has cost so far — four iterations, five review rounds, **4-5x** static-only
+   build time, seven mined statements off the corpus floor, and a branch that is gated PASS and
+   still not mergeable.
+6. **The enforcement faults nobody owns.** The red Rust unit gate above — eight iterations of
+   gate records and no owner — and finding: c1-depth, untouched by this loop and still routed
+   to ask: kpi-set-change.
+7. **gap: bench-baseline-flip's cheapest cause is still untested.** One re-run after
    `--reinstall-package` rules out the stale-wheel signature (d). No iteration in this loop
    touched it, and kpi: bench-refresh-cadence should not be adopted before it is settled.
-7. **Then the gap ledger, in whatever order ask: next-query-classes gets answered.** That
+8. **Then the gap ledger, in whatever order ask: next-query-classes gets answered.** That
    question is the owner's and remains open; the loop has added no evidence that reorders its
    candidates, only evidence that gap: corpus-match-slip's ratchet half is real, that its
-   bookkeeping half is not, and that the ratchet now has one earned move on the record.
+   bookkeeping half is not, and that the ratchet now has **seven** earned moves on the record —
+   one statement at round 4 and six at round 5, each with its reason reproduced by a gate.
 
 **Reading N=2 replaces none of this.** This report is what moved between readings; the next
 full reading is what the numbers are.
