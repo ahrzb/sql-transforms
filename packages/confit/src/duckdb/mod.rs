@@ -1417,13 +1417,11 @@ const CLOCK_KEYWORDS: &str =
 /// question. `stability` says "constant within one query"; the rule here is
 /// "a function of the query text and the statics", and these four are not.
 ///
-/// The two clocks are DuckDB's own inconsistency, not a judgement call: its
-/// binder maps the bare words `localtime` and `localtimestamp` onto
-/// `current_localtime`/`current_localtimestamp`
-/// (`bind_columnref_expression.cpp`), which ICU registers with no stability
-/// at all and so inherits CONSISTENT (`extension/icu/icu-timezone.cpp`).
-/// Measured, the value moves between two connections milliseconds apart, and
-/// the bare spellings already refuse. `version` and `current_setting` freeze
+/// The two clocks are the calls DuckDB's binder maps the bare words
+/// `localtime` and `localtimestamp` onto (`bind_columnref_expression.cpp`);
+/// their catalogue rows say CONSISTENT while, measured, the value moves
+/// between two connections milliseconds apart, and the bare spellings
+/// already refuse. `version` and `current_setting` freeze
 /// the build's wheel and the build machine's settings — two machines, two
 /// frozen answers for one query.
 ///
@@ -1438,8 +1436,9 @@ const RUN_STATE_FUNCTIONS: &str =
 /// gives the name one stability for both. Each pair is a name and the arity
 /// that picks the offending overload out of DuckDB's parse.
 ///
-/// `age(x)` reads the transaction's start timestamp -- its source never calls
-/// SetStability, so the catalogue calls it CONSISTENT, and freezing one
+/// `age(x)` answers with the transaction's clock -- measured, it moves across
+/// transactions and across TimeZone settings -- while the catalogue carries
+/// one stability for both overloads, so freezing the one-argument call
 /// freezes the day the build ran. `age(a, b)` is the difference of its two
 /// arguments and is pure, so the arity is the whole reading.
 const RUN_STATE_ARITIES: &str = "('age', 1)";

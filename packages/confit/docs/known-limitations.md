@@ -159,8 +159,10 @@ for all 131 macro rows — so its DEFINITION is read instead, and read the way
 a statement is read: the catalogue keeps DuckDB's own printed SQL for the
 body, `json_serialize_sql('SELECT ' || definition)` parses it, and the calls
 that parse makes go through the SAME reads the statement's own names go
-through. A macro is therefore classified as exactly a call, one level deep,
-and the refusal names the MACRO, because that is what the user wrote.
+through. A macro is therefore classified as a call for the stability, clock,
+aggregate and maker reads, one level deep -- a body that itself calls a
+macro is not expanded again -- and the refusal names the MACRO, because that
+is what the user wrote.
 Measured, the stability answer is `ago`, `current_catalog`,
 `current_database`, `current_query`, `current_schema`, `current_schemas`,
 `pg_conf_load_time`, `pg_postmaster_start_time` and `pg_sleep`;
@@ -176,18 +178,18 @@ but it never RETURNS a value either, and including it refused
 `json_group_object` for its NULL-key failure branch.
 And **four functions DuckDB's own flag calls `CONSISTENT`** are refused by a
 list kept in the code, because no flag in DuckDB answers the question this
-path asks. `current_localtime`/`current_localtimestamp` are DuckDB's own
-inconsistency: its binder maps the bare words `localtime`/`localtimestamp`
-onto them, and ICU registers them with no stability at all — measured, the
-value moves between two connections milliseconds apart. `version` and
+path asks. `current_localtime`/`current_localtimestamp` are the calls DuckDB's binder
+maps the bare words `localtime`/`localtimestamp` onto; their catalogue rows
+say `CONSISTENT` while, measured, the value moves between two connections
+milliseconds apart. `version` and
 `current_setting` are a function of the wheel and of the build machine: two
 machines, two frozen answers for one query.
 
-**One-argument `age` refuses too**, and by ARITY rather than by name. DuckDB's
-catalogue calls both overloads `CONSISTENT`, and one of them is not: `age(x)`
-reads the transaction's start timestamp, so freezing it freezes the day the
-build ran, while `age(a, b)` is the difference of its two arguments and is
-pure. The name cannot separate them, so DuckDB's parse is walked to the
+**One-argument `age` refuses too**, and by ARITY rather than by name. Measured,
+`age(x)` answers differently across transactions and across `TimeZone`
+settings while `age(a, b)` answers one way, and the catalogue carries one
+stability for both overloads, so the name cannot separate them: freezing the
+one-argument call freezes the day the build ran, and DuckDB's parse is walked to the
 FUNCTION node that carries the argument list and the call is read there.
 `age(a, b)` serves unchanged.
 

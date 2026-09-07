@@ -824,9 +824,8 @@ def test_a_macro_that_reads_nothing_of_the_run_still_serves():
 
 
 def test_a_clock_function_duckdbs_own_flag_calls_consistent_refuses_anyway():
-    # ICU registers current_localtime/current_localtimestamp with no
-    # SetStability (extension/icu/icu-timezone.cpp), so they inherit
-    # CONSISTENT -- and measured, the value moves between two connections 50ms
+    # current_localtime/current_localtimestamp carry CONSISTENT in the
+    # catalogue while, measured, the value moves between two connections 50ms
     # apart. DuckDB's own binder maps the bare words `localtime` and
     # `localtimestamp` to exactly these two functions
     # (bind_columnref_expression.cpp), and those already refused; the call
@@ -1578,11 +1577,11 @@ def test_the_parse_based_read_still_refuses_every_clock_macro():
 
 # ---------------------------------------------- age, by how many arguments --
 #
-# DuckDB's catalogue calls both `age` overloads CONSISTENT, and one of them is
-# not: the one-argument `age(x)` reads the transaction start timestamp (its
-# source never calls SetStability), so freezing it freezes the day the build
-# ran. `age(a, b)` is a difference of its two arguments and is pure. The name
-# cannot separate them and the catalogue will not, so the reading is the
+# Measured, the one-argument `age(x)` answers differently across transactions
+# and across TimeZone settings while `age(a, b)` answers one way, and the
+# catalogue carries one stability for both overloads. Freezing `age(x)`
+# freezes the day the build ran; `age(a, b)` is a difference of its two
+# arguments and is pure. The name cannot separate them, so the reading is the
 # ARITY: DuckDB's parse carries the argument list, and `json_tree` walks to
 # the FUNCTION node that holds it.
 
