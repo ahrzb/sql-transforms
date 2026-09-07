@@ -9,7 +9,8 @@ story. Slugs resolve as in that report: `goal:` / `kpi:` / `exclusion:` / `ask:`
 `finding:` and `gap:` in the baseline reading, `claim:` in the oracle spec.
 
 **Where the tree stands.** Master is `8796bb2`. The one live branch is
-`refuse-static-tie-order` at `36ae02e`, gated PASS and **13 commits behind** that master.
+`refuse-static-tie-order` at `e6a3cd8`: the gated `36ae02e` rebased onto that master (eleven
+commits, no conflicts), with its clock rules restated as measurements, and re-gated there.
 
 ---
 
@@ -52,7 +53,7 @@ cross-platform leg; a gate is evidence, not the review.
 build and frozen, and what a whole-relation construct selects is frozen only when it is a
 function of the query text and the statics.
 
-**Branch `refuse-static-tie-order`, tip `36ae02e`, gated PASS.** Five fix-and-review rounds have
+**Branch `refuse-static-tie-order`, tip `e6a3cd8`, gated PASS on master.** Five fix-and-review rounds have
 closed, each gated PASS, in order: tie-producing `ORDER BY` (measured by DuckDB over the frozen
 result); every selection by position (`LIMIT`/`OFFSET`/`FETCH`/`SAMPLE`/`DISTINCT ON`/
 `QUALIFY`/row-position window functions); non-deterministic functions by DuckDB's own stability
@@ -120,10 +121,19 @@ reason each and zero FAIL. Mutation: five rules reverted one at a time, 2 / 16 /
 red, each restored by re-edit. **48/48** hand probes, 29 must-serve on backend `constant` and
 19 must-refuse-by-name.
 
-**Why it is still not a merge candidate.** Two reasons, and the second is new. Four of round
-six's shapes answer a query wrongly, which is the control the branch exists to close. And the
-branch is 13 commits behind master, so a rebase onto `8796bb2` and a re-gate are a
-precondition, not a tidy-up — the gate proved the two lines have already met.
+**The re-gate on the rebased tip `e6a3cd8`, taken by the orchestrator.** Root suite **3480**
+passed / 1 skipped / 9 xfailed / 2 errors (absent `pyspark`): master's 3338 collected ids are
+all present with their outcomes, and the branch adds exactly **154** (150 in the static-only
+test file, 4 in the fuzz smoke file), so the count is master's 3326 plus those. `cargo test
+--release --lib` 269 / 5, the five pre-existing names. Corpus **540** holds. Campaign seeds
+0-1999: `AGREE` **1008** / `REFUSED` **951** / `AGREE_TRAP` **20** / `UNSHIPPED` 14 /
+`DIVERGE_OPT` 7 / `DIVERGE_VALUE` **0** — the seven findings are master's own optimizer-bracket
+seeds, and the single seed that moved against the pre-rebase gate is 1804, now `AGREE` because
+the rebased tree carries master's NaN-sign fix.
+
+**Why it is still not a merge candidate.** Four of round six's shapes answer a query wrongly,
+which is the control the branch exists to close; the rebase precondition the gate named is
+met.
 
 **The enumeration has not terminated.** That is the report's own section, and round six adds to
 the sequence rather than ending it: four of its five shapes serve wrongly, so the count of
@@ -205,9 +215,9 @@ removed and a sweep between iterations is now part of the routine.
 
 ## 6. Next, in the goal's order {#next}
 
-1. Rebase the tie branch onto `8796bb2` and re-gate; its current numbers describe a tree that
-   exists nowhere else.
-2. Iteration 9 on the tie branch: close round six's four serving shapes by the closures in the
+1. The owner's answer to the fork (the RFC put to him at the close of iteration 8): it
+   decides whether iteration 9 enumerates round six's shapes or pins the fold.
+2. Iteration 9 on the tie branch, under whichever answer: close round six's four serving shapes by the closures in the
    table, decide the over-refusal (fix or restate), re-gate, re-read the whole diff.
 3. Open the report PR (`loop-report-1`: the iterations 1-8 narrative plus this status file).
 4. Then, unchanged from the report's queue: the refusal registry behind kpi:
