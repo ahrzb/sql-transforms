@@ -378,10 +378,9 @@ read the clock (`stability` is `NULL` for all 131 scalar-macro rows, so nine clo
 served a frozen value), the catalogue being read before the query binds, `rowid` projecting a
 physical scan position as an ordinary value, and the class the review named as `stability`
 answering "constant within one query" rather than "a function of the query text". That last
-one was **worse than reported**, and the fix round found the extra case in the pinned source
-rather than by probing: `current_localtimestamp` is registered in
-`extension/icu/icu-timezone.cpp` with no `SetStability`, so it inherits `CONSISTENT` — and
-its value **moved between two connections 50 ms apart**, measured. The bare words
+one was **worse than reported**, and the fix round found the extra case by reading rather than
+by probing: `current_localtimestamp`'s catalogue row says `CONSISTENT`, and its value
+**moved between two connections 50 ms apart**, measured. The bare words
 `localtime` / `localtimestamp` were already refused; the call spelling of the same function
 was not.
 
@@ -548,10 +547,9 @@ an order-dependent aggregate serves, because the aggregate scan matches
 `function_type = 'aggregate'` and a macro is `'macro'`: `json_group_array`,
 `json_group_object`, `weighted_avg` and `geomean` leak at 2, 2, 4 and 7 distinct answers
 across settings, each wrapping an aggregate that refuses when spelled directly. One-argument
-`age(TIMESTAMP)` reads the transaction clock, but DuckDB's catalogue calls it `CONSISTENT`, so
-it passes every stability rule — `AgeFunctionStandard` takes
-`MetaTransaction::Get(...).start_timestamp` and never calls `SetStability`, read in the pinned
-source, unlike `now()` — and two builds a day apart freeze two different constants. And
+`age(TIMESTAMP)` answers with the transaction clock (measured: it moves across transactions and
+time zones while `age(a, b)` does not) and its catalogue row says `CONSISTENT`, so it passes
+every stability rule, and two builds a day apart freeze two different constants. And
 `SUMMARIZE` serializes as an opaque `SHOW_REF` node that names none of the `avg` / `stddev` /
 `approx_quantile` aggregates it actually runs, so no value rule reaches them: seven settings,
 **seven** distinct answers. A medium and a low ride with them — **any `TIMESTAMPTZ` rendered
