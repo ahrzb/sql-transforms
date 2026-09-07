@@ -1274,6 +1274,45 @@ fn outside_the_query_refusal(name: &str) -> String {
     )
 }
 
+/// A base table the query does not name among its own. A static-tables-only
+/// query is frozen over the tables it was HANDED, and DuckDB's FROM reaches
+/// well past those: a bare path string is a file scan, the catalogue views are
+/// ordinary base tables, and so is the arrow registration the statics are
+/// materialized from. `name` is the name the query wrote, so the message
+/// points at the FROM entry to remove.
+fn outside_table_refusal(name: &str) -> String {
+    format!(
+        "unsupported: the table {name} on a static-tables-only query -- it is \
+         not one of the query's static tables, so its rows are read off the \
+         file system or the catalogue when the query runs, not fixed by the \
+         query"
+    )
+}
+
+/// SUMMARIZE, DESCRIBE and SHOW, which DuckDB serializes as a SHOW_REF node.
+/// What they compute is DuckDB's choice rather than the statement's:
+/// SUMMARIZE runs `avg`, `stddev` and `approx_quantile` over every column
+/// while naming none of them anywhere in the parse, so every value rule below
+/// is asked about a statement that computes something else (measured, seven
+/// settings gave seven answers). DESCRIBE and SHOW read the catalogue instead
+/// of the rows.
+const SHOW_REFUSAL: &str = "unsupported: a SUMMARIZE, DESCRIBE or SHOW statement on \
+     a static-tables-only query -- what it computes is chosen by DuckDB and read \
+     off the catalogue, not stated by the query";
+
+/// A value that carries a time zone. A TIMESTAMPTZ is stored as an instant and
+/// RENDERED in the session's TimeZone -- measured, one instant under three
+/// zones printed three strings and `date_part('hour', ...)` moved with them --
+/// so freezing one freezes the build machine's zone into the answer. No name
+/// is involved, so `sighting` says which of the three readings found it.
+fn zoned_refusal(sighting: &str) -> String {
+    format!(
+        "unsupported: a value WITH TIME ZONE ({sighting}) on a \
+         static-tables-only query -- its rendering reads the build machine's \
+         time zone, not the query"
+    )
+}
+
 /// An aggregate whose answer depends on the order its rows arrive in.
 ///
 /// DuckDB classifies this itself and defaults to ORDER_DEPENDENT: an
@@ -1394,6 +1433,24 @@ const CLOCK_KEYWORDS: &str =
 const RUN_STATE_FUNCTIONS: &str =
     "'current_localtime','current_localtimestamp','version','current_setting'";
 
+/// The same class read at the level of a CALL rather than a name, because
+/// only one OVERLOAD of these is a run-state reading and DuckDB's catalogue
+/// gives the name one stability for both. Each pair is a name and the arity
+/// that picks the offending overload out of DuckDB's parse.
+///
+/// `age(x)` reads the transaction's start timestamp -- its source never calls
+/// SetStability, so the catalogue calls it CONSISTENT, and freezing one
+/// freezes the day the build ran. `age(a, b)` is the difference of its two
+/// arguments and is pure, so the arity is the whole reading.
+const RUN_STATE_ARITIES: &str = "('age', 1)";
+
+/// The marker DuckDB spells into every piece of metadata that carries a time
+/// zone: a column's `data_type`, a `cast_type` subtree, and a catalogue row's
+/// `return_type` and `parameter_types`. One string, so the four readings
+/// below cannot drift apart, and a LIKE rather than an equality because the
+/// marker also arrives nested inside a STRUCT or LIST type's spelling.
+const ZONED_LIKE: &str = "'%WITH TIME ZONE%'";
+
 /// The table functions whose rows are a function of their ARGUMENTS. Every
 /// other one refuses, which is the opposite polarity from every list above
 /// and is the polarity the class deserves: a table function is in the FROM
@@ -1468,20 +1525,36 @@ const SET_BASED_JOINS: &str = "'REGULAR','NATURAL','CROSS'";
 /// rather than falling silent: a shape nobody could read is a shape nobody
 /// ruled out.
 ///
-/// Three of the readings are about a VALUE rather than a row's position, and
+/// Four of the readings are about a VALUE rather than a row's position, and
 /// they answer the same question: a function whose value is a draw or a
-/// clock, an aggregate whose value follows the arrival order, and a window
-/// frame counted in ROWS rather than in key peers. Each is asked of DuckDB's
-/// own catalogue or its own frame flavour, not of a list kept here — with
-/// the two exceptions the catalogue cannot answer, which say so where they
-/// are written (`RUN_STATE_FUNCTIONS`, and a macro read through its
-/// definition).
+/// clock, an aggregate whose value follows the arrival order, a window frame
+/// counted in ROWS rather than in key peers, and a value carrying a time
+/// zone, whose rendering is the build machine's setting. Each is asked of
+/// DuckDB's own catalogue, its own frame flavour or its own type metadata,
+/// not of a list kept here — with the exceptions the catalogue cannot
+/// answer, which say so where they are written (`RUN_STATE_FUNCTIONS`,
+/// `RUN_STATE_ARITIES`, and a macro read through its definition).
+///
+/// One reading comes before all of those, because it is about where the rows
+/// come from rather than what is computed over them: a base table this query
+/// does not name among its own statics or its own CTEs produces rows off the
+/// file system or the catalogue, and nothing below can rule on those.
 ///
 /// Asked of the connection the statement has ALREADY run on, so the
 /// catalogue is the one that bound it: `json_serialize_sql` only parses, and
 /// a function DuckDB autoloads an extension for at BIND time is in no
 /// catalogue before then.
-fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Shapes> {
+///
+/// `statics` is the names the caller materialized, which two of the readings
+/// need: the FROM allow-list, because a base table that is not one of them
+/// produces its rows from outside the query, and the zoned-column sighting,
+/// which asks DuckDB what types those tables ended up with.
+fn read_shapes(
+    py: Python<'_>,
+    con: &Bound<'_, PyAny>,
+    sql: &str,
+    statics: &[String],
+) -> PyResult<Shapes> {
     /// One round trip: the parse status, and every marker the scan turns on,
     /// gathered from anywhere in the tree by JSON recursive descent.
     ///
@@ -1501,6 +1574,15 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     /// that is any other node — an arithmetic expression, a CAST, a subquery
     /// — is one this reading cannot evaluate, so it counts as the real limit
     /// it is rather than defaulting to a no-op.
+    ///
+    /// A MACRO is classified exactly as a call: `mdef` parses its catalogue
+    /// definition the way a statement is parsed, `body` reads the calls that
+    /// parse makes, and `fx` puts those names beside the statement's own so
+    /// one set feeds every name reading below. It carries the OUTER name too,
+    /// because the refusal has to name what the user wrote. One level deep,
+    /// and `error` is left out of a body's names: it is VOLATILE so DuckDB
+    /// never folds it, but it never RETURNS a value either, and matching it
+    /// refuses `json_group_object` for its NULL-key failure branch.
     const SHAPE_SQL: &str = "WITH a(j) AS (SELECT json_serialize_sql(?)), \
          f(n) AS (SELECT lower(unnest(coalesce( \
              json_extract_string(j, '$..function_name'), []))) FROM a), \
@@ -1520,10 +1602,39 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
              '$..ref_type'), [])) FROM a), \
          col(x) AS (SELECT len(coalesce(json_extract_string(j, \
              '$..collation'), [])) > 0 FROM a), \
-         ag(n) AS (SELECT n FROM f WHERE n IN (SELECT lower(function_name) \
+         mdef(o, b) AS (SELECT DISTINCT f.n, \
+             json_serialize_sql('SELECT ' || d.macro_definition) \
+             FROM f, duckdb_functions() d \
+             WHERE lower(d.function_name) = f.n \
+                 AND d.macro_definition IS NOT NULL), \
+         body(o, n) AS (SELECT o, lower(unnest( \
+             coalesce(json_extract_string(b, '$..function_name'), []) || \
+             list_transform(list_filter(coalesce(CAST(json_extract(b, \
+                 '$..column_names') AS JSON[]), []), \
+                 x -> json_array_length(x) = 1), \
+                 x -> json_extract_string(x, '$[0]')))) FROM mdef), \
+         fx(o, n) AS (SELECT n, n FROM f \
+             UNION ALL SELECT o, n FROM body WHERE n <> 'error'), \
+         tree(n, k) AS (SELECT lower(json_extract_string(value, \
+                 '$.function_name')), \
+             json_array_length(json_extract(value, '$.children')) \
+             FROM a, json_tree(j) \
+             WHERE json_extract_string(value, '$.class') = 'FUNCTION'), \
+         stat(n) AS (SELECT lower(unnest(?::VARCHAR[]))), \
+         tab(n, ln) AS (SELECT x, lower(x) FROM (SELECT unnest(coalesce( \
+             json_extract_string(j, '$..table_name'), [])) AS x FROM a)), \
+         cte(n) AS (SELECT lower(unnest(coalesce(json_extract_string(j, \
+             '$..cte_map.map[*].key'), []))) FROM a), \
+         mk(n) AS (SELECT lower(function_name) FROM duckdb_functions() \
+             WHERE return_type LIKE __ZONED__ AND NOT EXISTS ( \
+                 SELECT 1 FROM unnest(parameter_types) p(t) \
+                 WHERE t LIKE __ZONED__)), \
+         ct(x) AS (SELECT unnest(coalesce(CAST(json_extract(j, '$..cast_type') \
+             AS JSON[]), [])) FROM a), \
+         ag(o, n) AS (SELECT o, n FROM fx WHERE n IN (SELECT lower(function_name) \
              FROM duckdb_functions() WHERE function_type = 'aggregate' \
                  AND lower(function_name) NOT IN (__ORDER_FREE__)) \
-             UNION ALL SELECT n FROM f \
+             UNION ALL SELECT o, n FROM fx \
                  WHERE n IN ('min', 'max') AND (SELECT x FROM col)) \
          SELECT json_extract(j, '$.error')::VARCHAR, \
          json_array_length(json_extract(j, '$.statements')), \
@@ -1532,27 +1643,27 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
          json_extract(j, '$..sample')::VARCHAR, \
          json_extract(j, '$..distinct_on_targets')::VARCHAR, \
          [(SELECT min(n) FROM jr WHERE n NOT IN (__SET_BASED__)), \
-          (SELECT min(n) FROM tf WHERE n NOT IN (__PURE_TABLE__))], \
+          (SELECT min(n) FROM tf WHERE n NOT IN (__PURE_TABLE__)), \
+          (SELECT min(n) FROM tab WHERE ln NOT IN (SELECT n FROM stat) \
+              AND ln NOT IN (SELECT n FROM cte)), \
+          (SELECT min(table_name || '.' || column_name) FROM duckdb_columns() \
+              WHERE data_type LIKE __ZONED__ \
+                  AND lower(table_name) IN (SELECT n FROM stat)), \
+          (SELECT min(json_extract_string(x, '$.id')) FROM ct \
+              WHERE CAST(x AS VARCHAR) LIKE __ZONED__), \
+          (SELECT min(o) FROM fx WHERE n IN (SELECT n FROM mk))], \
          json_extract(j, '$..start')::VARCHAR || \
              json_extract(j, '$..end')::VARCHAR, \
-         (SELECT min(n) FROM ( \
-             SELECT n FROM f WHERE n IN (SELECT lower(function_name) \
+         (SELECT min(o) FROM ( \
+             SELECT o FROM fx WHERE n IN (SELECT lower(function_name) \
                  FROM duckdb_functions() \
                  WHERE stability IN ('VOLATILE', 'CONSISTENT_WITHIN_QUERY')) \
-             UNION ALL SELECT n FROM f WHERE n IN (__RUN_STATE__) \
-             UNION ALL SELECT f.n FROM f, duckdb_functions() d \
-                 WHERE lower(d.function_name) = f.n \
-                     AND d.macro_definition IS NOT NULL \
-                     AND regexp_matches(lower(d.macro_definition), \
-                         (SELECT '\\b(' || string_agg(DISTINCT v, '|') || ')\\b' \
-                          FROM (SELECT lower(function_name) AS v \
-                                    FROM duckdb_functions() \
-                                    WHERE stability IN ('VOLATILE', \
-                                        'CONSISTENT_WITHIN_QUERY') \
-                                        AND lower(function_name) <> 'error' \
-                                UNION SELECT unnest([__CLOCK__])))) \
+             UNION ALL SELECT o FROM fx WHERE n IN (__RUN_STATE__) \
+             UNION ALL SELECT o FROM fx WHERE n IN (__CLOCK__) \
+             UNION ALL SELECT n FROM tree WHERE (n, k) IN (__RUN_STATE_ARITY__) \
              UNION ALL SELECT n FROM c WHERE n IN (__CLOCK__))), \
-         [(SELECT min(n) FROM ag), (SELECT min(n) FROM ag WHERE n <> 'sum')], \
+         [(SELECT min(o) FROM ag), \
+          (SELECT min(o) FROM ag WHERE n <> 'sum' OR o <> 'sum')], \
          coalesce((SELECT bool_and(json_type(x) = 'NULL' OR coalesce( \
              json_extract_string(x, '$.value.is_null'), 'false') = 'true') \
              FROM lim), true) \
@@ -1591,15 +1702,17 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     let (limit_word, other_word) = ordering_words(py, sql)?;
     let shape_sql = SHAPE_SQL
         .replace("__CLOCK__", CLOCK_KEYWORDS)
+        .replace("__RUN_STATE_ARITY__", RUN_STATE_ARITIES)
         .replace("__RUN_STATE__", RUN_STATE_FUNCTIONS)
         .replace("__PURE_TABLE__", PURE_TABLE_FUNCTIONS)
         .replace("__SET_BASED__", SET_BASED_JOINS)
+        .replace("__ZONED__", ZONED_LIKE)
         .replace(
             "__ORDER_FREE__",
             &format!("{ORDER_FREE_AGGREGATES},{WINDOW_ONLY_FUNCTIONS}"),
         );
     let row = con
-        .call_method1("execute", (shape_sql, (sql,)))?
+        .call_method1("execute", (shape_sql, (sql, statics)))?
         .call_method0("fetchone")?;
     let (
         error,
@@ -1608,8 +1721,11 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         qualify,
         sample,
         distinct_on,
-        // The join reference and the table function this statement names
-        // that the served lists do not, in that order.
+        // Every offender that is a NAME, gathered into one column so the
+        // reading stays one round trip: the join reference and the table
+        // function the served lists do not carry, the base table that is
+        // neither a static nor a CTE, and the three sightings of a value WITH
+        // TIME ZONE (a static column, a cast, a maker call), in that order.
         reached,
         frame,
         drawn,
@@ -1630,7 +1746,8 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
         bool,
         bool,
     ) = row.extract()?;
-    let [join_ref, table_fn] = reached.try_into().expect("two names, both nullable");
+    let [join_ref, table_fn, outside_table, zoned_col, zoned_cast, zoned_fn] =
+        <[Option<String>; 6]>::try_from(reached).expect("six names, all nullable");
     // A serialized value object opens with a brace; the absence of one is
     // DuckDB's `null` for that field, and an empty DISTINCT list is plain
     // DISTINCT, which collapses a set rather than picking out of a group.
@@ -1668,12 +1785,25 @@ fn read_shapes(py: Python<'_>, con: &Bound<'_, PyAny>, sql: &str) -> PyResult<Sh
     } else {
         agg
     };
-    let refusal = if let Some(name) = drawn {
+    // Where the rows come from is answered before what is computed over them:
+    // a SHOW_REF computes something the parse does not carry at all, and a
+    // base table from outside the statics is rows nothing below can rule on.
+    let refusal = if types.contains("\"SHOW_REF\"") {
+        Some(SHOW_REFUSAL.to_string())
+    } else if let Some(name) = outside_table {
+        Some(outside_table_refusal(&name))
+    } else if let Some(name) = drawn {
         Some(nondeterministic_refusal(&name))
     } else if let Some(name) = table_fn {
         Some(outside_the_query_refusal(&name))
     } else if let Some(name) = agg {
         Some(order_sensitive_agg_refusal(&name))
+    } else if let Some(sighting) = zoned_col {
+        Some(zoned_refusal(&format!("the static column {sighting}")))
+    } else if let Some(id) = zoned_cast {
+        Some(zoned_refusal(&format!("a cast to {id}")))
+    } else if let Some(name) = zoned_fn {
+        Some(zoned_refusal(&format!("the function {name}()")))
     } else if ROW_FRAME_BOUNDS.iter().any(|b| frame.contains(b)) {
         Some(positional_refusal(
             "a row-based window frame (ROWS PRECEDING/FOLLOWING/CURRENT ROW)",
@@ -2236,7 +2366,8 @@ fn eval_static_only(
     // against is the one that answered it — an extension DuckDB autoloads for
     // an unknown function name is loaded by this execute and by nothing
     // earlier.
-    let shapes = read_shapes(py, &con, sql)?;
+    let static_names: Vec<String> = static_tables.keys().cloned().collect();
+    let shapes = read_shapes(py, &con, sql, &static_names)?;
     if let Some(clause) = shapes.row_limit {
         return Ok(Err(row_limit_refusal(clause)));
     }

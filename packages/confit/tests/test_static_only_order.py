@@ -1427,3 +1427,292 @@ def test_a_scalar_that_shares_a_table_functions_name_still_serves():
     fn = build("SELECT repeat(g, 2) AS o, range(v) AS r FROM s ORDER BY g")
     assert fn.backend == "constant"
     assert [r["o"] for r in fn.infer_rows([])] == ["xx", "yy", "zz"]
+
+
+# ------------------------------------------- which tables the FROM may name --
+#
+# A static-tables-only query is frozen over the tables it was HANDED, and
+# DuckDB's FROM reaches much further than those. A bare path string is a file
+# scan (`FROM 'e2e.csv'`, a parquet, a glob), the catalogue views are ordinary
+# base tables (`duckdb_tables`, `information_schema.tables`), and the harness's
+# own arrow registration is one too. All of them arrive in the parse as a
+# BASE_TABLE whose table_name is what the query wrote, and none of their rows
+# is fixed by the query: the file is whatever is on disk at build, the
+# catalogue whatever this database happens to hold.
+#
+# So the reading is an ALLOW-LIST rather than a list of offenders, the same
+# polarity a table function gets: every base table the statement names has to
+# be one of the query's own static tables or one of its CTE names, and
+# anything else refuses under the name the query wrote. A schema qualifier and
+# an alias are not part of that name -- `main.s` and `s AS t` are the static
+# `s` -- and a WITH RECURSIVE self-reference is a CTE name like any other.
+
+OUTSIDE_TABLE_HEAD = "unsupported: the table "
+
+
+def test_a_file_in_the_from_refuses_although_duckdb_would_read_it(tmp_path):
+    # DuckDB reads this file happily, and freezing what it read would freeze
+    # whatever the file system held at build.
+    csv = tmp_path / "e2e.csv"
+    csv.write_text("g,v\nx,1\n")
+    for frm in (csv.as_posix(), f"{tmp_path.as_posix()}/*.csv"):
+        msg = refuses(f"SELECT count(*) AS o FROM '{frm}'")
+        assert msg.startswith(f"{OUTSIDE_TABLE_HEAD}{frm} on a"), (frm, msg)
+
+
+def test_a_catalogue_view_in_the_from_refuses_by_name():
+    for frm, named in (
+        ("duckdb_tables", "duckdb_tables"),
+        ("information_schema.tables", "tables"),
+        ("__arrow_s", "__arrow_s"),
+    ):
+        msg = refuses(f"SELECT count(*) AS o FROM {frm}")
+        assert msg.startswith(f"{OUTSIDE_TABLE_HEAD}{named} on a"), (frm, msg)
+
+
+def test_a_static_named_through_its_schema_or_an_alias_still_serves():
+    for sql in (
+        "SELECT g AS o FROM main.s ORDER BY g",
+        "SELECT t.g AS o FROM s AS t ORDER BY o",
+    ):
+        fn = build(sql, UNIQ)
+        assert fn.backend == "constant", sql
+        assert [r["o"] for r in fn.infer_rows([])] == ["x", "y", "z"], sql
+
+
+def test_a_cte_name_is_a_name_the_query_states_including_a_recursive_one():
+    fn = build("WITH t AS (SELECT g AS o FROM s) SELECT o FROM t ORDER BY o", UNIQ)
+    assert fn.backend == "constant"
+    assert [r["o"] for r in fn.infer_rows([])] == ["x", "y", "z"]
+    rec = build(
+        "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) "
+        "SELECT n AS o FROM r ORDER BY o"
+    )
+    assert rec.backend == "constant"
+    assert [r["o"] for r in rec.infer_rows([])] == [1, 2, 3]
+
+
+# ---------------------------------------- what a SUMMARIZE decides for you --
+#
+# SUMMARIZE, DESCRIBE and SHOW are not queries over the statics: DuckDB picks
+# what they compute. SUMMARIZE runs `avg`, `stddev` and `approx_quantile` over
+# every column without the statement naming one of them -- measured, seven
+# settings gave seven answers, and none of those aggregates appears anywhere
+# in the parse for the value rules to read. DESCRIBE and SHOW read the
+# CATALOGUE instead of the rows, which is how the harness's own `__arrow_s`
+# registration leaked out of a frozen answer. All three serialize with a
+# SHOW_REF node, which is the whole reading.
+
+SHOW_MSG = (
+    "unsupported: a SUMMARIZE, DESCRIBE or SHOW statement on a "
+    "static-tables-only query -- what it computes is chosen by DuckDB and "
+    "read off the catalogue, not stated by the query"
+)
+
+
+def test_summarize_describe_and_show_refuse_under_one_name():
+    for sql in ("SUMMARIZE s", "DESCRIBE s", "SHOW TABLES", "SHOW ALL TABLES"):
+        assert refuses(sql) == SHOW_MSG, sql
+
+
+# ---------------------------------------------- a macro is exactly its call --
+#
+# `duckdb_functions().stability` is NULL for every macro, and the catalogue
+# keeps its DEFINITION instead. That definition is DuckDB's own printed SQL,
+# so it is read the way a statement is read: `json_serialize_sql('SELECT ' ||
+# definition)` parses it, and its `$..function_name` plus its bare column
+# names are the calls the body makes. Those names go through the SAME reads
+# the statement's own names go through -- the stability read and the aggregate
+# read -- so a macro is classified exactly as a call, one level deep.
+#
+# The refusal names the MACRO, because that is what the user wrote:
+# `json_group_array` wraps `string_agg`, `weighted_avg` sums DOUBLEs and
+# `geomean` averages, and naming the inner aggregate would point at a function
+# nobody spelled.
+#
+# `error` is left out of the names a body is matched against: it is VOLATILE
+# so DuckDB never folds it, but it never RETURNS a value either, and matching
+# it refuses `json_group_object` for its NULL-key failure branch.
+
+
+def test_a_macro_over_an_order_sensitive_aggregate_refuses_under_its_own_name():
+    for name, call in (
+        ("json_group_array", "json_group_array(v)"),
+        ("json_group_object", "json_group_object(g, v)"),
+        ("weighted_avg", "weighted_avg(v, v)"),
+        ("geomean", "geomean(v)"),
+    ):
+        msg = refuses(f"SELECT {call}::VARCHAR AS o FROM s")
+        assert msg.startswith(f"{AGG_MSG_HEAD}{name} on a"), (name, msg)
+
+
+def test_a_macro_that_only_names_an_aggregate_in_a_string_still_serves():
+    # list_sum and its family pass an aggregate NAME to list_aggr as a string
+    # literal. The body CALLS list_aggr and nothing else, so these are
+    # functions of their list argument and keep serving.
+    fn = build(
+        "SELECT g AS o, list_sum([v, v]) AS a, list_avg([v]) AS b, "
+        "array_to_string([g, g], ',') AS c FROM s ORDER BY g",
+        UNIQ,
+    )
+    assert fn.backend == "constant"
+    assert [r["a"] for r in fn.infer_rows([])] == [6, 2, 4]
+    assert [r["c"] for r in fn.infer_rows([])] == ["x,x", "y,y", "z,z"]
+
+
+def test_the_parse_based_read_still_refuses_every_clock_macro():
+    # The same reading answers the stability question the regex over the
+    # definition text used to answer, and answers it identically.
+    for call in (
+        "ago(INTERVAL 1 DAY)",
+        "current_query()",
+        "pg_postmaster_start_time()",
+        "current_schema()",
+    ):
+        msg = refuses(f"SELECT {call}::VARCHAR AS o FROM s")
+        assert msg.startswith("unsupported: the non-deterministic function "), (
+            call,
+            msg,
+        )
+
+
+# ---------------------------------------------- age, by how many arguments --
+#
+# DuckDB's catalogue calls both `age` overloads CONSISTENT, and one of them is
+# not: the one-argument `age(x)` reads the transaction start timestamp (its
+# source never calls SetStability), so freezing it freezes the day the build
+# ran. `age(a, b)` is a difference of its two arguments and is pure. The name
+# cannot separate them and the catalogue will not, so the reading is the
+# ARITY: DuckDB's parse carries the argument list, and `json_tree` walks to
+# the FUNCTION node that holds it.
+
+
+def test_one_argument_age_refuses_because_it_reads_the_transaction_clock():
+    msg = refuses("SELECT age(TIMESTAMP '2020-01-01')::VARCHAR AS o FROM s")
+    assert msg.startswith("unsupported: the non-deterministic function age()"), msg
+
+
+def test_two_argument_age_serves_because_it_is_a_difference():
+    fn = build(
+        "SELECT g AS o, age(TIMESTAMP '2021-01-01', TIMESTAMP '2020-01-01')::VARCHAR "
+        "AS d FROM s ORDER BY g",
+        UNIQ,
+    )
+    assert fn.backend == "constant"
+    assert {r["d"] for r in fn.infer_rows([])} == {"1 year"}
+
+
+# ------------------------------------------------- a value WITH TIME ZONE --
+#
+# A TIMESTAMPTZ is stored as an instant and RENDERED in the session's
+# TimeZone: measured, one instant under three zones printed three strings, and
+# `date_part('hour', tstz)` moved with them. The build machine's zone is not
+# part of the query, so freezing anything zoned freezes the machine.
+#
+# No name is involved, so the reading is DuckDB's own metadata in three
+# sightings, all under one refusal: a static COLUMN whose data_type carries
+# the marker (nested struct and list fields included), a CAST in the parse
+# whose cast_type subtree carries it (which is how a typed literal, an
+# explicit CAST and a `::` cast all arrive), and a called MAKER -- a function
+# the catalogue says returns a zoned type from no zoned parameter.
+#
+# TIME WITH TIME ZONE is sighted with the class although it renders WITHOUT
+# the session zone (measured), because `DATE + TIMETZ` makes a TIMESTAMPTZ.
+# That is a deliberate over-refusal, pinned below.
+#
+# A static column is sighted wherever it sits in the query's own statics, not
+# only where the statement selects it -- also a deliberate over-refusal, and
+# the one that keeps the sighting a single question about the tables the query
+# was handed rather than a second reading of the projection.
+
+ZONED_HEAD = "unsupported: a value WITH TIME ZONE ("
+ZONED_TAIL = (
+    "on a static-tables-only query -- its rendering reads the build machine's "
+    "time zone, not the query"
+)
+TZ = pa.table(
+    {"g": ["x", "y", "z"], "t": pa.array([1, 2, 3], pa.timestamp("us", tz="UTC"))}
+)
+TZ_NESTED = pa.table(
+    {
+        "g": ["x", "y", "z"],
+        "st": pa.array(
+            [{"a": 1}, {"a": 2}, {"a": 3}],
+            pa.struct([("a", pa.timestamp("us", tz="UTC"))]),
+        ),
+    }
+)
+
+
+def test_a_cast_to_a_zoned_type_refuses_in_all_three_spellings():
+    for expr in (
+        "TIMESTAMPTZ '2020-01-01 00:00:00'",
+        "CAST(TIMESTAMP '2020-01-01' AS TIMESTAMP WITH TIME ZONE)",
+        "(TIMESTAMP '2020-01-01')::TIMESTAMPTZ",
+    ):
+        msg = refuses(f"SELECT {expr}::VARCHAR AS o FROM s")
+        assert msg.startswith(f"{ZONED_HEAD}a cast to TIMESTAMP WITH TIME ZONE) "), (
+            expr,
+            msg,
+        )
+        assert msg.endswith(ZONED_TAIL), (expr, msg)
+
+
+def test_a_static_column_that_carries_the_marker_refuses_by_its_own_name():
+    assert refuses("SELECT g AS o FROM s ORDER BY g", TZ).startswith(
+        f"{ZONED_HEAD}the static column s.t) "
+    )
+    # ... including one buried in a struct, which duckdb_columns spells out.
+    assert refuses("SELECT g AS o FROM s ORDER BY g", TZ_NESTED).startswith(
+        f"{ZONED_HEAD}the static column s.st) "
+    )
+
+
+def test_a_maker_refuses_although_none_of_its_arguments_is_zoned():
+    for call, name in (
+        ("make_timestamptz(2020, 1, 1, 0, 0, 0)", "make_timestamptz"),
+        ("to_timestamp(0)", "to_timestamp"),
+        ("timezone('UTC', TIMESTAMP '2020-01-01')", "timezone"),
+        (
+            "uuid_extract_timestamp(UUID '018f6f7e-0000-7000-8000-000000000000')",
+            "uuid_extract_timestamp",
+        ),
+    ):
+        msg = refuses(f"SELECT {call}::VARCHAR AS o FROM s")
+        assert msg.startswith(f"{ZONED_HEAD}the function {name}()) "), (name, msg)
+
+
+def test_addition_is_not_a_maker_although_one_overload_returns_zoned():
+    # `+` returns a TIMESTAMPTZ only from DATE + TIMETZ, and a TIMETZ IS a
+    # zoned parameter -- so the maker read, which asks for no zoned parameter
+    # at all, leaves `+` and `add` alone and date arithmetic keeps serving.
+    fn = build(
+        "SELECT g AS o, (DATE '2020-01-01' + INTERVAL 1 DAY)::VARCHAR AS d FROM s "
+        "ORDER BY g",
+        UNIQ,
+    )
+    assert fn.backend == "constant"
+    assert {r["d"] for r in fn.infer_rows([])} == {"2020-01-02 00:00:00"}
+
+
+def test_the_unzoned_temporal_types_all_still_serve():
+    fn = build(
+        "SELECT g AS o, (DATE '2020-01-01')::VARCHAR AS a, "
+        "(TIMESTAMP '2020-01-01 00:00:00')::VARCHAR AS b, "
+        "(INTERVAL 1 DAY)::VARCHAR AS c, epoch_ms(1000)::VARCHAR AS d, "
+        "strptime('2020-01-01', '%Y-%m-%d')::VARCHAR AS e FROM s ORDER BY g",
+        UNIQ,
+    )
+    assert fn.backend == "constant"
+    row = fn.infer_rows([])[0]
+    assert row["a"] == "2020-01-01"
+    assert row["d"] == "1970-01-01 00:00:01"
+
+
+def test_a_zone_free_timetz_is_refused_with_the_class_on_purpose():
+    # The disclosed over-refusal: a TIME WITH TIME ZONE renders WITHOUT the
+    # session zone (measured), so this value alone is safe -- but DATE +
+    # TIMETZ is a TIMESTAMPTZ, and separating the two would need the reading
+    # to type every expression rather than read the marker.
+    msg = refuses("SELECT (TIMETZ '12:00:00')::VARCHAR AS o FROM s")
+    assert msg.startswith(f"{ZONED_HEAD}a cast to TIME WITH TIME ZONE) "), msg

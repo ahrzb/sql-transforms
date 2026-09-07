@@ -155,16 +155,25 @@ function of its arguments and serves unchanged. You'll see:
 
 Two kinds the catalogue cannot answer for refuse under that same message.
 A **MACRO** has no stability at all — `duckdb_functions().stability` is NULL
-for all 131 macro rows — so its DEFINITION is read instead, one level: a
-macro whose body names a `VOLATILE`/`CONSISTENT_WITHIN_QUERY` function or a
-clock keyword refuses under its own name. Measured, that is exactly `ago`,
-`current_catalog`, `current_database`, `current_query`, `current_schema`,
-`current_schemas`, `pg_conf_load_time`, `pg_postmaster_start_time` and
-`pg_sleep` of the 122; `pg_postmaster_start_time()` used to freeze this
-build's wall clock into every row. `error` is left out of the names a
-definition is matched against — it is `VOLATILE` so DuckDB never folds it,
-but it never RETURNS a value either, and including it refused `histogram`
-and `json_group_object` for their failure branches.
+for all 131 macro rows — so its DEFINITION is read instead, and read the way
+a statement is read: the catalogue keeps DuckDB's own printed SQL for the
+body, `json_serialize_sql('SELECT ' || definition)` parses it, and the calls
+that parse makes go through the SAME reads the statement's own names go
+through. A macro is therefore classified as exactly a call, one level deep,
+and the refusal names the MACRO, because that is what the user wrote.
+Measured, the stability answer is `ago`, `current_catalog`,
+`current_database`, `current_query`, `current_schema`, `current_schemas`,
+`pg_conf_load_time`, `pg_postmaster_start_time` and `pg_sleep`;
+`pg_postmaster_start_time()` used to freeze this build's wall clock into
+every row. The aggregate answer is `json_group_array` and
+`json_group_object` (both wrap `string_agg`), `weighted_avg` (sums
+`DOUBLE`s) and `geomean` (`exp(avg(ln(x)))`) — while `list_sum`, `list_avg`,
+`list_first`, `array_to_string` and the rest of that family keep serving,
+because their bodies only pass an aggregate NAME to `list_aggr` as a string
+literal and are functions of their list argument. `error` is left out of the
+names a body is matched against — it is `VOLATILE` so DuckDB never folds it,
+but it never RETURNS a value either, and including it refused
+`json_group_object` for its NULL-key failure branch.
 And **four functions DuckDB's own flag calls `CONSISTENT`** are refused by a
 list kept in the code, because no flag in DuckDB answers the question this
 path asks. `current_localtime`/`current_localtimestamp` are DuckDB's own
@@ -173,6 +182,14 @@ onto them, and ICU registers them with no stability at all — measured, the
 value moves between two connections milliseconds apart. `version` and
 `current_setting` are a function of the wheel and of the build machine: two
 machines, two frozen answers for one query.
+
+**One-argument `age` refuses too**, and by ARITY rather than by name. DuckDB's
+catalogue calls both overloads `CONSISTENT`, and one of them is not: `age(x)`
+reads the transaction's start timestamp, so freezing it freezes the day the
+build ran, while `age(a, b)` is the difference of its two arguments and is
+pure. The name cannot separate them, so DuckDB's parse is walked to the
+FUNCTION node that carries the argument list and the call is read there.
+`age(a, b)` serves unchanged.
 
 A **TABLE function refuses unless it is a generator**, which is the opposite
 polarity from every list above and is the polarity the class deserves.
@@ -195,10 +212,73 @@ read from the `FROM` position alone, so a scalar `repeat('a', 3)` or
 table function used as a scalar is a binder error). You'll see: `the table
 function duckdb_settings() on a static-tables-only query`.
 
-The cost is one corpus statement, named at `MATCH_FLOOR`: `test_all_types()`
-refuses with the rest, because it carries a `TIMESTAMP WITH TIME ZONE`
-column that renders in the build machine's timezone (measured, four
-timezones, four answers).
+The cost is one corpus statement, named at `MATCH_FLOOR`: `select round(100,
+int) from test_all_types()` refuses with every other table function. Its own
+answer is a constant of the pinned wheel — it never selects a column of that
+table at all — so nothing about this statement is skewed. The refusal is the
+allow-list's price, paid because naming the safe table functions is a list
+that stops growing and naming the unsafe ones is not.
+
+A **base table the query does not name among its own refuses**, under the
+same polarity. A static-tables-only query is frozen over the tables it was
+handed, and DuckDB's `FROM` reaches much further: a bare path string is a
+file scan (`FROM 'e2e.csv'`, a parquet, a glob `'*.csv'`), the catalogue
+views are ordinary base tables (`duckdb_tables`,
+`information_schema.tables`, the `pg_catalog` views), and so is the arrow
+registration the statics are materialized from. None of those rows is a
+function of the query: the file is whatever is on disk at build, the
+catalogue whatever this database happens to hold. So every base table the
+parse names has to be one of the query's own static tables or one of its CTE
+names. A schema qualifier and an alias are not part of that name (`main.s`
+and `s AS t` are the static `s`), and a `WITH RECURSIVE` self-reference is a
+CTE name like any other. You'll see: `the table e2e.csv on a
+static-tables-only query`.
+
+That rule costs five corpus statements, all `SELECT COUNT(*) FROM t` over the
+replay's DRIVING table (`MATCH_FLOOR` names them). They were matching for a
+reason that is the fail-open itself: DuckDB's Python client resolves an
+unqualified table name against the variables of the frame that called
+`execute`, and the replay leaves a pyarrow table called `t` in that frame, so
+the frozen answer came off a harness variable rather than off the query
+(measured: one more Python frame between the two and the same statement
+refuses).
+
+**SUMMARIZE, DESCRIBE and SHOW refuse.** What they compute is DuckDB's
+choice, not the statement's: `SUMMARIZE s` runs `avg`, `stddev` and
+`approx_quantile` over every column while naming none of them anywhere in
+the parse, so every value rule below is asked about a statement that computes
+something else (measured, seven settings gave seven answers). `DESCRIBE` and
+`SHOW` read the catalogue instead of the rows. All three serialize with a
+`SHOW_REF` node, which is the whole reading. You'll see: `a SUMMARIZE,
+DESCRIBE or SHOW statement on a static-tables-only query`.
+
+A **value `WITH TIME ZONE` refuses**, and no name is involved. A
+`TIMESTAMPTZ` is stored as an instant and RENDERED in the session's
+`TimeZone` — measured, one instant under three zones printed three strings,
+and `date_part('hour', ...)` moved with them — so freezing one freezes the
+build machine's zone into the answer. The reading is DuckDB's own metadata in
+three sightings under one refusal: a static COLUMN whose `data_type` carries
+the marker (nested `STRUCT` and `LIST` fields included, which is why it is
+read off `duckdb_columns()` after the tables are materialized), a CAST in the
+parse whose `cast_type` subtree carries it (which is how a typed literal, an
+explicit `CAST` and a `::` cast all arrive), and a called MAKER — a function
+the catalogue says returns a zoned type from no zoned parameter, which is
+`get_current_time`, `get_current_timestamp`, `make_timestamptz`, `now`,
+`timezone`, `to_timestamp`, `transaction_timestamp` and
+`uuid_extract_timestamp`, and pointedly not `+`: its zoned overload is
+`DATE + TIMETZ`, whose parameter is zoned. `DATE`, naive `TIMESTAMP`,
+`INTERVAL`, `epoch_ms`, `strptime` and arithmetic over those serve
+unchanged. You'll see: `a value WITH TIME ZONE (the static column s.t) on a
+static-tables-only query`.
+
+Two over-refusals are deliberate there. `TIME WITH TIME ZONE` is sighted with
+the class although it renders WITHOUT the session zone (measured), because
+`DATE + TIMETZ` makes a `TIMESTAMPTZ` and separating the two would need the
+reading to type every expression rather than read the marker. And a static
+column is sighted wherever it sits among the query's own statics, not only
+where the statement selects it, which keeps the sighting one question about
+the tables the query was handed rather than a second reading of the
+projection.
 
 An **order-sensitive aggregate refuses**, by name. DuckDB classifies this
 itself, and defaults to order-DEPENDENT: an aggregate is order-free only

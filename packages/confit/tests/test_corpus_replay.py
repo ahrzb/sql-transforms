@@ -53,7 +53,26 @@ CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 # ZONE column whose rendering reads the build machine's timezone -- but
 # naming the safe table functions is a list that stops growing, and naming
 # the unsafe ones is not. The case is clean-unsupported, not a FAIL.
-MATCH_FLOOR = 546
+#
+# 546 -> 540, six statements, each reproduced:
+#
+# Five from test/sql/function/string/test_issue_1812.test, all of the form
+# `SELECT COUNT(*) FROM t` over the DRIVING table, which the constant fold
+# registers nothing for. They were matching because DuckDB's Python client
+# resolves an unqualified table name against the variables of the frame that
+# called `execute`, and this replay leaves a pyarrow table named `t` in that
+# frame -- so the frozen answer came off a variable of the harness rather
+# than off the query (measured: the same statement refuses as soon as one
+# more Python frame stands between the replay and the fold). Rows from
+# outside the query is exactly what the FROM allow-list refuses, and the
+# statement itself is a dynamic COUNT the row path rejects on its own terms.
+#
+# One from test/sql/function/numeric/test_geomean.test, `SELECT geomean(i)`:
+# `geomean` is a macro whose body is `exp(avg(ln(x)))`, and `avg` accumulates
+# in floating point, where association is not a law. A macro is now
+# classified as exactly the calls its body makes, so this refuses under the
+# macro's own name like any other order-sensitive aggregate.
+MATCH_FLOOR = 540
 
 # Build-time errors that are documented v0 contract limits, not bugs.
 _CLEAN = ("unsupported:", "parse error:", "duplicate map key", "NULL in value column")
