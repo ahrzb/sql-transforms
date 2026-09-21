@@ -2,7 +2,8 @@
 
 The concise oracle definition lives in [README.md](README.md). This chapter explains why
 that reference was chosen, how repository comparisons reach it, and where enforcement is
-still incomplete. It does not define an alternative configuration.
+still incomplete. It does not define an alternative configuration. Settled reference
+policy comes from the [oracle policy record](../decisions/oracle-policy.md).
 
 ## Why the optimizer is disabled
 
@@ -94,17 +95,16 @@ without an assertion.
 *Evidence:* `packages/confit/confit/oracle.py:74-82`; the cited manifests; and
 `uv.lock:368-370`. No test reads `Oracle.VERSION`.
 
-> ### ask: version-pin — which version policy becomes enforceable?
->
-> Choose both:
->
-> 1. hard-pin `duckdb==1.5.5`, or retain a dependency floor and assert
->    `duckdb.__version__ == Oracle.VERSION` in `Oracle.__init__`; and
-> 2. retain 1.5.5, or deliberately move to LTS; the broader
->    [version-change workflow](09-version-bumps-and-mutability.md) remains proposed.
->
-> This binds the README identity, claim: oracle-version-constant,
-> claim: capture-outside-the-oracle, and every pin. See the [decision index](12-ask-index.md).
+**claim: version-policy.** DuckDB 1.5.5 remains the reference. The reproducible
+oracle/test environment must pin that version exactly, and opening the oracle must
+assert `duckdb.__version__ == Oracle.VERSION`. Unrelated DuckDB consumers are not
+constrained by this rule. Leaving 1.5.5 is a separate reviewed reference change;
+the generic re-recording tools in [version changes](09-version-bumps-and-mutability.md)
+remain proposals, not prerequisites adopted by this rule.
+
+The assertion is the rule, not the current behavior: claim: oracle-version-constant
+above records **[FACT]** that construction still performs no comparison, and
+**ticket: version-assert** tracks the implementation.
 
 **claim: one-door-bypass.** **[FACT, current implementation only]** The legacy
 static-only engine path is the comparison-path bypass: `eval_static_only` calls
@@ -132,8 +132,11 @@ P16 in `packages/confit/docs/properties.md`.
 uses ANSI mode, UTC, `local[1]`, and `pins-dialect/spark-ansi.json`; it compares names
 and row multisets. Exact comparison is separate from its reserved float-accumulation
 epsilon tier. BigQuery skips loudly without credentials and is recorded as
-unversionable. The Spark support floor is a ratchet, and the corpus gate currently uses
-the same mechanism with `MATCH_FLOOR = 547`; broader acceptance policy remains open.
+unversionable. The Spark support floor is a ratchet, and the corpus gate uses the same
+mechanism with `MATCH_FLOOR = 547`. Both follow claim: stable-corpus-ratchet in
+[campaign validity](10-campaign-validity-and-blind-spots.md): no unexplained decrease in
+support. A floor is a regression threshold, not a fresh measurement or a universal
+compatibility claim.
 
 *Evidence:* `packages/confit/tests/test_dialect_cross_engine_gate.py:1-31`,
 `packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md:32-36,244-248`,

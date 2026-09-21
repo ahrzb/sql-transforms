@@ -1,11 +1,20 @@
 # Version changes and evidence mutability
 
+## Adopted version rule
+
+The [reference enforcement rule](01-what-the-oracle-is.md) retains DuckDB 1.5.5
+and requires an exact oracle/test-environment pin plus a startup version assertion.
+An upgrade remains a separate reviewed change. The current implementation gaps
+below are not evidence that this policy is still open.
+
+*Decision:* [oracle policy](../decisions/oracle-policy.md#reference-and-comparison).
+
 ## Current constraints
 
-**claim: bump-object.** **[FACT]** A DuckDB version change changes
-`confit.oracle.Oracle.VERSION`. The constant is not compared with
-`duckdb.__version__`, and pin provenance remains partial, so neither the runtime version
-nor all captured evidence is mechanically bound today.
+**claim: bump-object.** `confit.oracle.Oracle.VERSION` names the intended reference.
+A deliberate reference upgrade must update that identity along with its environment.
+Currently, the constant is not compared with `duckdb.__version__`, and pin provenance
+is partial, so the recorded identity is not fully enforced.
 
 *Evidence:* `confit/oracle.py:74-76`; claim: oracle-version-constant; claim:
 pin-provenance.
@@ -27,7 +36,8 @@ useful for a narrower optimizer-on, historical, or provenance-only purpose must 
 stated case by case; this fact does not establish general acceptability.
 
 *Evidence:* the named scripts; `scripts/mine_duckdb_corpus.py:111`;
-`docs/specs/pins-stageB/order-contract.json`. See ask: version-pin and proposed ticket:
+`docs/specs/pins-stageB/order-contract.json`. Enforcing the asserted version is
+ticket: version-assert; the missing common header remains proposed ticket:
 uniform-pin-header.
 
 **claim: mined-corpus-provenance.** **[FACT]** The miner ignores sqllogictest expected
@@ -42,7 +52,10 @@ support a narrower purpose only when that purpose and provenance are explicit.
 
 ## Proposed re-recording discipline
 
-The following claims are proposals, not an adopted workflow.
+New campaign evidence must be dated and provenance-bearing (claim: dated-provenance
+in [pins](06-pins.md)). That rule does not adopt the workflow below: the diff-report
+command, the triage classes, and the mutability classes with their memberships remain
+proposals, and the provenance facts recorded above stay facts rather than approvals.
 
 **claim: re-record-diff-report.** Capture new answers with one command and emit a
 reviewable diff; do not silently replace the corpus. `scripts/pin_ast_shapes.py`

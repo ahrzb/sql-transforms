@@ -1,5 +1,8 @@
 # Ordering and nondeterminism
 
+Settled ordering and nondeterminism policy comes from the
+[oracle policy record](../decisions/oracle-policy.md).
+
 ## Decision rule
 
 **claim: nondeterminism-axiom.** An exact answer must be a function of the query and its
@@ -31,18 +34,23 @@ of variation into a general tolerance.
 | two DuckDB evaluation paths disagree and the identity selects neither | refuse the construct by name | claim: evaluation-path-disagreement |
 | scalar `cbrt` differs across DuckDB builds | allow at most 1 ulp for that family | claim: cbrt-ulp-tolerance, in force |
 | future per-row `sum` / `avg` reduces matched `DOUBLE` rows | apply the addend-dependent bound after its open domain is resolved | claim: float-reduction-bound, adopted but unimplemented |
-| another order-sensitive value family | no disposition yet | ask: threads-and-value-order |
+| another order-sensitive value family | define a justified family contract before serving it, or refuse the family | claim: order-sensitive-family-contract |
 
 The optimizer-on bracket is diagnostic, not an accepted alternative answer. A case that
 only matches optimizer-off is still reported against the ordinary DuckDB surface as
 `DIVERGE_OPT`.
 
-**claim: target-status-vocabulary.** **[PROPOSED]** Require every target to be
-`PINNED` (stable contracted behavior), `IMPL-DEFINED` (stable for a named build or
-configuration), or `UNSPECIFIED` (no unique contracted answer). Neither the mandatory
-classification nor the proposed ledger assignments is adopted. Decide whether to
-classify all existing claims or limit the scheme to the ledger under
-**ask: proposed-rules-adoption** in the [decision index](12-ask-index.md).
+**claim: target-status-vocabulary.** `PINNED` (stable contracted behavior),
+`IMPL-DEFINED` (stable for a named build or configuration), and `UNSPECIFIED` (no unique
+contracted answer) are available vocabulary, used where they clarify how a target may
+vary. They are not a mandatory label on every claim, ledger row, or pin, and no
+retroactive classification pass of existing claims is required.
+
+`UNSPECIFIED` and **unresolved** are not synonyms. `UNSPECIFIED` means the contract
+deliberately leaves that aspect unconstrained; an unresolved observation is one not yet
+understood. An unclassified difference stays unresolved and separately counted, as the
+[ledger](07-the-divergence-ledger.md) records it; it is never relabelled unspecified to
+retire it.
 
 ## Row ordering
 
@@ -147,27 +155,26 @@ default is machine-derived. On 2026-08-25, DuckDB 1.5.5 with the optimizer disab
 12 threads on the measured machine, and `string_agg` element order over 400k rows differed
 between thread settings. The independent fit/serving path uses `threads = 1`.
 
-The 2026-09-21 fold decision did **not** adopt `threads = 1` for the retired fold or as
-part of the fixed oracle identity. That does not permanently reject a future identity
-change motivated by a retained order-sensitive family. Any such setting would apply to
-the oracle as a whole: it is not a caller, campaign, or per-case choice. The other
-available directions are a named family-specific comparison or refusal. No direction is
-adopted for the remaining families.
+These settings are unchanged. Neither the retired fold nor the fixed oracle identity
+adopts `threads = 1`, and no global thread setting is pinned speculatively. A future
+identity change stays available, but only as the justified contract of a specific
+retained family; any such setting would apply to the oracle as a whole, never as a
+caller, campaign, or per-case choice.
 
 *Evidence:* the dated measurement above, P11 in
 `packages/confit/docs/properties.md:118-121`, `confit.oracle.Oracle.__init__`, and the
 fold-retirement decision.
 
-> ### ask: threads-and-value-order — what governs a future order-sensitive family?
->
-> The frozen-fold question is superseded, and `threads = 1` was not adopted as part of
-> the fixed oracle identity. For a future retained family such as `string_agg`, `list`,
-> variance, or another order-sensitive reduction, choose among:
->
-> 1. amend the fixed oracle identity by pinning the necessary setting for every
->    comparison, never per caller or case;
-> 2. adopt a named, family-specific bound or comparison relation; or
-> 3. refuse the family.
->
-> The adopted `DOUBLE` `sum` / `avg` bound is already a separate ruling and does not
-> settle other families. See the [decision index](12-ask-index.md).
+**claim: order-sensitive-family-contract.** An order-sensitive value family is refused
+until its comparison contract is clear. That contract is defined when the family is
+implemented, and it names either the oracle setting the family requires — pinned for
+every comparison, never per caller or case — or a family-specific bound or comparison
+relation. Nothing is pinned ahead of such a family, because single-thread execution
+alone does not make unordered SQL ordered.
+
+The relational `DOUBLE` `sum` / `avg`
+[reduction bound](05-the-comparison-contract.md#floating-point-comparisons) is one such
+family contract and settles no other family. `string_agg`, `list`, variance, and
+standard deviation have no contract yet, so each needs one before it can be served.
+The speculative global-pin work under **ticket: threads-one-setting** is not
+scheduled; revisit settings only when a retained family's justified design needs it.

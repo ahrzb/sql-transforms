@@ -3,6 +3,8 @@
 The [goal](../goal.md) defines the target. This document supplies the API and
 scope details; the [oracle](../oracle/README.md) defines SQL compatibility.
 Current refusals are not automatically permanent product exclusions.
+The [oracle policy decision](../decisions/oracle-policy.md) adopts the scope
+classification and output-nullability rule below.
 
 ## API and output shape
 
@@ -17,10 +19,16 @@ build profile. The exact interface is in `packages/confit/confit/_engine.pyi`.
 | `static_tables` | Named Arrow tables frozen at construction |
 | `udfs` | Declared callable objects, described below |
 | `shape` | Output multiplicity proved at construction |
-| `output_schema` | Output names, Arrow types, and field order |
+| `output_schema` | Output names, Arrow types, field order, and truthful nullability metadata |
 | `infer_rows(rows)` | Dict-or-object rows in, dict rows out |
 | `infer_arrow(batch)` | Arrow table in, Arrow table out |
 | `backend`, `boundary` | Execution and Python-boundary diagnostics, not caller-selected modes |
+
+Nullability must be sound: a field declared non-null must not produce NULL on a
+valid successful execution. Conservative nullable metadata is permitted; its flag
+need not equal DuckDB's inferred flag. This is an adopted requirement, not a claim
+of complete enforcement. The [comparison contract](../oracle/05-the-comparison-contract.md#output-names-and-schemas)
+records the current checks.
 
 | Shape | Output per input row | Sequence |
 |---|---|---|
@@ -60,20 +68,19 @@ with aggregate/window modifiers. A CTE, for example, can describe a row-local
 computation. These forms are excluded when they violate row locality; retaining
 blanket bans on otherwise row-local uses still needs a product justification.
 
-The following restrictions retain their existing evidence and proposed grounds.
-The general exclusion classification awaits **ask: exclusion-ratification**;
-explicit reference and scope decisions above are not reopened by that question.
+The inventory below records existing restrictions and their grounds. The adopted
+classification does not blanket-approve every numeric budget, syntax ban, or
+served divergence; each needs its own justification.
 
 | Restriction | Rule or current behavior | Ground and status |
 |---|---|---|
 | **exclusion: per-row-general-work** | Refuse constructs requiring general compilation or binding per row; regex patterns, replacements, options, and group indexes must meet construction-time requirements | Specialization-inherent under the goal; complete enforcement not established |
-| **exclusion: resource-ceilings** | 1 GiB string-builder budget, regex program-size guard, and 2 GiB Arrow-batch ceiling associated with 32-bit string offsets; known violations refuse construction, data-dependent violations may fail at runtime | Proposed resource grounds; these are Confit limits, not DuckDB nondeterminism |
-| **exclusion: optimizer-on-answers** | Target the optimizer-off oracle, not optimizer rewrites that can elide a trapping expression | Reference choice decided 2026-08-17; proposed exclusion ground `scope-by-product-decision` |
-| **exclusion: statistics-dependent-kernels** | The measured `ILIKE`/embedded-NUL case serves NUL-transparent behavior instead of reproducing a kernel choice affected by other rows | Proposed specialization-inherent ground; a served difference, not a constructor refusal |
+| **exclusion: resource-ceilings** | 1 GiB string-builder budget, regex program-size guard, and 2 GiB Arrow-batch ceiling associated with 32-bit string offsets; known violations refuse construction, data-dependent violations may fail at runtime | Resource restrictions, not DuckDB nondeterminism; individual budgets and enforcement need their stated evidence |
+| **exclusion: optimizer-on-answers** | Target the optimizer-off oracle, not optimizer rewrites that can elide a trapping expression | Fixed reference choice, decided 2026-08-17 |
+| **exclusion: statistics-dependent-kernels** | The measured `ILIKE`/embedded-NUL case serves NUL-transparent behavior instead of reproducing a kernel choice affected by other rows | Measured non-row-local dependency; a served difference whose disposition remains in the ledger, not a constructor refusal |
 
-The proposed ground for whole-relation shapes and explicit multiplicity is
-`scope-by-product-decision`. The batch-dependence boundary itself is already
-decided; blanket syntax bans need justification beyond that boundary.
+Batch dependence defines the semantic boundary. Explicit multiplicity is a
+separate API choice. Neither justifies blanket bans on otherwise row-local syntax.
 
 Evidence is partial: `tests/test_shape_contract.py` checks multiplicity;
 `tests/known_divergences/test_string_budget.py` checks literal-count refusal;
@@ -83,13 +90,18 @@ check is identified here. The [divergence ledger](../oracle/07-the-divergence-le
 records the corresponding measured differences and unresolved dispositions.
 Paths in this paragraph are relative to `packages/confit/`.
 
-### Open scope decision
+### Scope classification
 
-**ask: exclusion-ratification.** Ratify permanent restrictions and their grounds
-without turning missing features into exclusions. Which syntax bans are independent
-product choices? Which limits need checks? How should invalid SQL and caller-declaration
-errors be classified and counted in acceptance rates? Those errors do not fit the
-three proposed grounds for product exclusions.
+**ask: exclusion-ratification — RULED.** Classify cases as:
+
+1. **Outside the model:** depends on other request rows, or reads no request table.
+2. **Unimplemented:** potentially valid within the model; a gap, not a permanent exclusion.
+3. **Explicit product/resource restriction:** deliberately excluded for a stated reason.
+4. **Invalid input:** malformed SQL or an inconsistent caller declaration, not a missing feature.
+
+Do not count invalid declarations as ordinary unsupported SQL when measuring
+product acceptance. Individual restrictions still need evidence; the classification
+does not make the current refusal inventory a permanent product definition.
 
 Implementation priorities are separate: **ask: next-query-classes** and the gap
 inventory live in the [baseline report](../reports/2026-09-02-goal-baseline.md).

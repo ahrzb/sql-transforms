@@ -27,8 +27,8 @@ Historical reports use these names for sections formerly in `goal.md`.
 | `controls-in-force` | [Correctness controls](../specs/success-measures.md#correctness-controls) |
 | `drives-in-force` | [Optimization measures](../specs/success-measures.md#optimization-measures) |
 | `enforcing-suites` | [Controls and their gates](../specs/success-measures.md#correctness-controls) |
-| `proposed-kpis` | [Proposed additions](../specs/success-measures.md#proposed-additions-and-open-decisions) |
-| `ask-index` | [Measurement decisions](../specs/success-measures.md#proposed-additions-and-open-decisions) · [Scope decision](../specs/serving-contract.md#open-scope-decision) |
+| `proposed-kpis` | [Measurement policy and deferred additions](../specs/success-measures.md#measurement-policy) |
+| `ask-index` | [Measurement decisions](../specs/success-measures.md#measurement-policy) · [Scope classification](../specs/serving-contract.md#scope-classification) |
 | `document-set` | [Supporting specifications](../goal.md#supporting-specifications) |
 
 ## Moved or merged goal identifiers
@@ -48,9 +48,9 @@ Historical reports use these names for sections formerly in `goal.md`.
 | `exclusion: unshipped-decimal-arithmetic`, `exclusion: wide-integer-lanes`, `exclusion: non-scalar-values`, `exclusion: parse-divergence-guards` | [Gap ledger](../reports/2026-09-02-goal-baseline.md#gap-ledger); each retains its subject slug under `gap:`, not as a permanent exclusion |
 | `kpi: training-round-trip`, `kpi: engine-parity`, `kpi: binding-parity`, `kpi: transformer-parity`, `kpi: no-third-mode` | [C1–C5](../specs/success-measures.md#correctness-controls) |
 | `kpi: coverage-ladder`, `kpi: serving-latency` | [D1–D2](../specs/success-measures.md#optimization-measures) |
-| `kpi: acceptance-rate`, `kpi: findings-per-campaign`, `kpi: unshipped-burndown`, `kpi: named-refusal-share`, `kpi: ladder-ratchet`, `kpi: bench-refresh-cadence` | [Proposed measures](../specs/success-measures.md#proposed-additions-and-open-decisions) |
-| `ask: acceptance-target`, `ask: kpi-set-change` | [Open measurement decisions](../specs/success-measures.md#proposed-additions-and-open-decisions) |
-| `ask: exclusion-ratification` | [Open scope decision](../specs/serving-contract.md#open-scope-decision) |
+| `kpi: acceptance-rate`, `kpi: findings-per-campaign`, `kpi: unshipped-burndown`, `kpi: named-refusal-share`, `kpi: ladder-ratchet`, `kpi: bench-refresh-cadence` | [Measurement policy and deferred additions](../specs/success-measures.md#measurement-policy) |
+| `ask: acceptance-target`, `ask: kpi-set-change` | [Adopted measurement decisions](../specs/success-measures.md#measurement-policy) |
+| `ask: exclusion-ratification` | [Adopted scope classification](../specs/serving-contract.md#scope-classification) |
 | `ask: kpis-absorb-or-defer` | Historical ruling consolidated the KPI set; its definitions now live in [success measures](../specs/success-measures.md), with the set unchanged |
 
 ## Merged oracle identifiers
@@ -59,7 +59,7 @@ Historical reports use these names for sections formerly in `goal.md`.
 |---|---|
 | `claim: pseudo-oracle`, `claim: oracle-identity` | [Oracle definition](README.md) |
 | `claim: duckdb-three-roles` | [Reference and nearby uses](01-what-the-oracle-is.md); the retired fold's alternatives remain in the [decision record](../decisions/trustworthy-fold.md) |
-| `claim: row-limit-refusal`, `claim: build-vs-build-repeatability` | Retired-fold concerns superseded by the [scope decision](../decisions/trustworthy-fold.md); historical measurements remain in [TASK-128](../../../../backlog/tasks/task-128%20-%20A-row-limit-without-ORDER-BY-freezes-an-answer-DuckDB-itself-cannot-repeat.md) and [TASK-129](../../../../backlog/tasks/task-129%20-%20Define-order-sensitivity-per-query-and-make-the-oracle-honor-it.md) |
+| `claim: row-limit-refusal`, `claim: build-vs-build-repeatability` | Retired-fold concerns superseded by the [scope decision](../decisions/trustworthy-fold.md); historical measurements remain in [TASK-128](https://github.com/ahrzb/sql-transforms/blob/dc1f45721f73947e4c052dc7c94829007fbf9ce9/backlog/tasks/task-128%20-%20A-row-limit-without-ORDER-BY-freezes-an-answer-DuckDB-itself-cannot-repeat.md) and [TASK-129](https://github.com/ahrzb/sql-transforms/blob/dc1f45721f73947e4c052dc7c94829007fbf9ce9/backlog/tasks/task-129%20-%20Define-order-sensitivity-per-query-and-make-the-oracle-honor-it.md) in Git history |
 | `claim: multiset-default` | Retired duplicate of [compare modes](03-nondeterminism.md#row-ordering) and [value canonicalization](05-the-comparison-contract.md#rows-and-values) |
 | `ask: engine-fold-reading`, `ask: frozen-row-order`, `ask: unshipped-never-compared` | [Resolved decisions](12-ask-index.md#resolved) |
 

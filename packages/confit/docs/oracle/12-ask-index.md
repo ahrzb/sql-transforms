@@ -1,51 +1,79 @@
 # Decision index
 
-An ASK changes status only through an owner ruling or an explicit superseding product
-decision. Shipped code is evidence, not a ruling.
+The owner accepted the recommendations in the [oracle policy decision](../decisions/oracle-policy.md)
+on 2026-09-21. The questions below are resolved as policy; that does not mean all
+implementation work is complete. Current gaps belong in the
+[work register](11-proposed-tickets.md), not in repeated owner-choice questions.
 
 ## Resolved
 
-| ask | result | authoritative detail |
+### Reference, scope, and comparison
+
+| Former question | Adopted decision | Definition |
 |---|---|---|
-| **ask: unshipped-never-compared** | **ruled:** normalization is outside the oracle answer and verdict; an unshipped feature fails or is classified, and raw equality changes only under a named reviewed bound | claim: unshipped-verdict and divergence: decimal-cast-artifact; numeric bounds remain governed by [the comparison contract](05-the-comparison-contract.md) |
-| **ask: engine-fold-reading** | **superseded:** no optimizer reading was selected; the fold left the target and current removal remains an implementation gap | [trustworthy-fold decision](../decisions/trustworthy-fold.md) |
-| **ask: frozen-row-order** | **superseded:** fold retirement removed the target freeze-order question | [trustworthy-fold decision](../decisions/trustworthy-fold.md) |
+| **ask: version-pin** | Keep 1.5.5; pin the oracle/test environment and assert the runtime version. Review upgrades separately. | [Reference enforcement](01-what-the-oracle-is.md) |
+| **ask: threads-and-value-order** | No speculative global thread change. Require a justified contract before serving each order-sensitive family. | [Ordering](03-nondeterminism.md) |
+| **ask: float-tolerance-list** | Explicitly approved numerical exceptions only; behavioral coverage without mandatory duplicate xfails; resolve the adopted reduction bound's domain before implementation. | [Comparison](05-the-comparison-contract.md) |
+| **ask: exclusion-ratification** | Separate semantic scope, unimplemented features, explicit product/resource restrictions, and invalid inputs. Do not blanket-ratify current bans. | [Scope classification](../specs/serving-contract.md#scope-classification) |
+| Output nullability, previously unindexed | Require truthful metadata, not identical DuckDB nullable flags. A non-null promise must be sound. | [Serving output](../specs/serving-contract.md#api-and-output-shape) |
 
-## Open
+### Reporting and evidence
 
-| ask | decision required | principal bindings |
+| Former question | Adopted decision | Definition |
 |---|---|---|
-| **ask: version-pin** | choose exact dependency pinning, runtime assertion, or both; separately decide whether to retain 1.5.5 or deliberately move to LTS through a reviewed reference change | claim: oracle-identity; claim: oracle-version-constant; claim: capture-outside-the-oracle; pins |
-| **ask: threads-and-value-order** | decide the disposition of future retained order-sensitive families; pinning oracle `threads=1` remains a candidate change to the fixed identity, not a per-case override | claim: disposition-table; claim: threads-setting; ticket: threads-one-setting |
-| **ask: refusal-cost-counting** | measure accepted severity-4 refusal cost or amend the RFC to call it unmeasured | claim: refusal-absorb; claim: countable-rung-four; divergence: bind-time-constant-refusals |
-| **ask: opt-emulated-branch** | decide whether `OPT_EMULATED` should continue to boundary self-checks; it remains a finding, not agreement or coverage | claim: opt-emulated-classification; claim: unshipped-verdict |
-| **ask: reason-code-visibility** | keep refusal reason codes internal or expose them in user-visible text | claim: refusal-message-prefixes |
-| **ask: float-tolerance-list** | govern every exception to bit equality, including the edge domain required before the adopted but unimplemented float-reduction bound can ship, and decide whether `_type_delta`'s `UNSHIPPED` arm needs its own gate | [comparison contract](05-the-comparison-contract.md); claim: feature-in-flight; divergence: decimal-literal-typing; divergence: decimal-cast-rounding |
-| **ask: exclusion-ratification** | ratify, narrow, or reject the proposed serving exclusions | [serving contract](../specs/serving-contract.md) |
-| **ask: doc-twin-overstatement** | complete TASK-95 and totality checking, or narrow prose to enumerated twin coverage | claim: doc-twin-totality |
-| **ask: unlisted-divergence** | decide whether every unlisted divergence is a bug by definition | claim: ledger-adjudication |
-| **ask: tentative-bucket** | admit a measured-but-unruled tag or require classification before campaign closure | future threads disposition; divergence: phase-two-width-residuals; divergence: snapshot-baseline |
-| **ask: baseline-as-evidence** | regenerate the campaign baseline, freeze it as named dated history, or replace it with dated reports | claim: regexp-fuzz-gate; divergence: snapshot-baseline; ask: width-residual-classification |
-| **ask: width-residual-classification** | rerun and classify width residuals before treating the unreconstructible historical count as defects | divergence: phase-two-width-residuals; divergence: snapshot-baseline |
-| **ask: match-count-ratchet** | ratify the shipped `MATCH_FLOOR = 547` mechanism as policy or keep it as implementation evidence, and define approved adjustments | claim: zero-fails-gate; claim: dialect-gate-oracle |
-| **ask: proposed-rules-adoption** | rule independently on target-status vocabulary, countable cost, multi-answer sets, standing rejections, divergence placement, absolute severity rungs 1/2, countable rung four, and unspecified residuals | individual proposal sections in [ordering](03-nondeterminism.md), [verdicts](04-verdicts-agreement-abstention-refusal.md), [comparison](05-the-comparison-contract.md), [ledger](07-the-divergence-ledger.md), [severity](08-the-severity-ladder.md), and [campaigns](10-campaign-validity-and-blind-spots.md) |
+| **ask: refusal-cost-counting** | Retain and summarize the already-computed oracle outcome by refusal reason; do not make every oracle-serves refusal a correctness defect. | [Refusal reporting](04-verdicts-agreement-abstention-refusal.md) |
+| **ask: opt-emulated-branch** | Stop at the primary `OPT_EMULATED` finding instead of allowing a later self-leg to replace it. | [Verdicts](04-verdicts-agreement-abstention-refusal.md) |
+| **ask: reason-code-visibility** | Keep audit codes internal; public diagnostics remain actionable and construct-naming. | [Refusal diagnostics](04-verdicts-agreement-abstention-refusal.md) |
+| **ask: doc-twin-overstatement** | State demonstrated test coverage and fill important behavioral gaps; no universal test-totality claim or registry requirement. | [Coverage evidence](07-the-divergence-ledger.md) |
+| **ask: unlisted-divergence** | Judge against the contract, not ledger membership. Neither listing nor omitting an entry changes correctness. | [Divergence ledger](07-the-divergence-ledger.md) |
+| **ask: tentative-bucket** | Allow visible, separately counted unresolved observations, never implicit passes or approved exceptions. | [Evidence classification](07-the-divergence-ledger.md) |
+| **ask: baseline-as-evidence** | Freeze historical runs; use dated, provenance-bearing future runs with SQL and inputs, not seeds alone. | [Evidence lifecycle](09-version-bumps-and-mutability.md) |
+| **ask: width-residual-classification** | Retire the unsupported historical count from current evidence; replay available stored cases or produce a labelled fresh measurement. | [Campaign evidence](10-campaign-validity-and-blind-spots.md) |
+| **ask: match-count-ratchet** | Stable-corpus support may not decrease without a reviewed reason and affected cases; totals do not replace case-level checks. | [Corpus gates](10-campaign-validity-and-blind-spots.md) |
+| **ask: acceptance-target** | Ratchets for stable corpora, reporting for generated campaigns, no arbitrary percentage target. | [Measurement policy](../specs/success-measures.md#measurement-policy) |
+| **ask: kpi-set-change** | Keep C1–C5 and D1–D2; prioritize refusal-quality and unsupported-width reporting without new blocking KPIs. | [Measurement policy](../specs/success-measures.md#measurement-policy) |
 
-Proposed KPIs and their acceptance decisions are indexed in
-[success measures](../specs/success-measures.md); API, UDF, restriction, and exclusion
-decisions are indexed in [the serving contract](../specs/serving-contract.md).
+### Process proposals
 
-## Ledger rulings
+**ask: proposed-rules-adoption — RULED individually, not as a blanket package.**
 
-A proposed ledger disposition is not an ASK ruling, and a blank ruling remains unruled.
-Divergence: decimal-cast-artifact is ruled through ask: unshipped-never-compared. The
-phase-two width residuals and snapshot baseline remain unruled; decimal literal typing
-and cast rounding remain tied to ask: float-tolerance-list. No other status may be
-inferred from tests, directories, or proposed text. See
-[the divergence index](07-the-divergence-ledger.md).
+| Proposal | Disposition |
+|---|---|
+| Mandatory target-status labels | Not adopted; use distinctions only where they clarify variation. |
+| Count every accepted cost | Not adopted as a universal rule; disclose tradeoffs and measure important costs. |
+| Multiple expected answers | Permit justified platform/build-selected expectations, never nearest-answer selection. |
+| Blanket mechanism bans | Reject concealed mismatches and reference substitution, not incidental hashing. |
+| Divergence placement | Approved exceptions live beside the comparison rule; the ledger links to them and holds investigations/defects. |
+| Never retain severity-1/2 defects | Blanket policy rejected; an open defect remains a defect, not agreement. |
+| Count conservative refusals | Merged into refusal-outcome reporting, not a second process rule. |
+| Unspecified residuals | Differences in genuinely unconstrained aspects are not parity defects; unexplained differences remain unresolved. |
+
+Details live in [ordering](03-nondeterminism.md), [verdicts](04-verdicts-agreement-abstention-refusal.md),
+[comparison](05-the-comparison-contract.md), [ledger](07-the-divergence-ledger.md),
+[severity](08-the-severity-ladder.md), and [campaigns](10-campaign-validity-and-blind-spots.md).
+
+### Earlier decisions
+
+| Question | Result |
+|---|---|
+| **ask: unshipped-never-compared** | Normalization stays outside the oracle answer and verdict; unsupported widths are classified, never cast into agreement. |
+| **ask: engine-fold-reading** | Superseded by [fold retirement](../decisions/trustworthy-fold.md), not a choice of optimizer for a retained fold. |
+| **ask: frozen-row-order** | Superseded by the same scope decision. |
+
+## Remaining work, not reopened policy
+
+- Establish the reduction bound's valid algorithms and edge domain before implementing it.
+- Define and justify a contract when adding another order-sensitive value family.
+- Implement version enforcement, refusal reporting, early mismatch return, nullability
+  checks, and evidence/reporting improvements where the current code falls short.
+- Review individual restrictions and ledger entries against their evidence; the policy
+  decision did not approve every historical disposition or numeric resource limit.
+
+The remaining proposals for corpus-wide pin metadata, generic re-record tooling,
+and mutability classes were not blanket-adopted. They remain optional engineering
+proposals, not prerequisites to understanding the core oracle contract.
 
 ## Stable names
 
-Claims, ASK blocks, divergences, and tickets use semantic slugs. Retired numeric IDs
-remain resolvable through [old ID aliases](13-old-ids.md). Retired claim:
-multiset-default remains a tombstone, and closed or refuted ticket slugs remain in the
-ticket register.
+Old ASK slugs identify the decisions above rather than still-open questions.
+[The citation map](13-old-ids.md) preserves numeric IDs and merged subjects.
