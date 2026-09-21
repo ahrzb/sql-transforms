@@ -1,292 +1,173 @@
-## 3. Nondeterminism
+# Ordering and nondeterminism
 
-This is the section that converts future arguments into lookups. Read 3.1 and 3.2
-before ruling on anything new.
+## Decision rule
 
-### 3.1 The axiom
+**claim: nondeterminism-axiom.** An exact answer must be a function of the query and its
+declared inputs. A result that also depends on hidden table history, an unselected
+evaluation path, or an uncontrolled run is not an exact target.
 
-**claim: nondeterminism-axiom.** *An answer that is not a function of the query — plus
-the frozen statics — is not a target.* This is the single axiom under every
-nondeterminism ruling in the project. It is why the oracle is optimizer-off
-(claim: optimizer-on-reading), why row limits on the constant path refuse
-(claim: row-limit-refusal), why row order is compared per mode rather than by
-byte-equality (claim: compare-modes), and why statistics-dependent behavior is excluded
-(claim: statistics-dependent-exclusion).
-*Verified-by:* two existing phrasings of the same rule outside the enforcement modules —
-`packages/confit/docs/known-limitations.md:39` and `backlog/tasks/task-128 ...md`'s
-description ("The doctrine already exists"). `confit/oracle.py`'s module docstring
-phrases it a third time ("the optimizer-on reading is NOT matchable in principle"); that
-is the module mirroring this claim, not evidence for it, and is named here only so the
-next editor keeps the three in step.
-*Note:* `packages/confit/docs/properties.md` ends at P20, so **P21** is the free number
-if the owner wants this numbered as a project property and the three sites made to cite
-it. Proposed ticket: axiom-as-property.
+Two ruled exceptions are narrower than a general nondeterminism allowance:
 
-### 3.2 The disposition table
+- confit defines serving-row order even where DuckDB's join-match sequence is
+  unspecified; and
+- future per-row `sum` / `avg` over matched `DOUBLE` values uses the adopted
+  [float-reduction bound](05-the-comparison-contract.md#floating-point-comparisons)
+  rather than exact bits.
 
-**claim: disposition-table.** Five kinds of nondeterminism, five dispositions, all five
-already in force. The last column is the operating instruction: what a *new* case of
-that kind gets, without re-litigating from the axiom.
 
-| what is nondeterministic | disposition | in force as | a NEW case gets |
-|---|---|---|---|
-| **which rows exist** | REFUSE by name at build | TASK-128 row limits (claim: row-limit-refusal) | a named build-time refusal, `ORDER BY` or not |
-| **row order** | declare unspecified, compare per mode | TASK-129 compare modes (claim: compare-modes) | a compare mode plus a DuckDB-free self-leg, never byte-equality |
-| **values, from data outside the query** | structurally removed where possible, otherwise excluded by source name | optimizer-off structurally (claim: optimizer-on-reading); the three named exclusion sets (claim: statistics-dependent-exclusion) | exclusion by name, carrying a measured reason |
-| **the oracle disagrees with itself, across evaluation paths** | reject the construct by name | regex anchor families (claim: evaluation-path-disagreement) | a named refusal — there is no behavior to match |
-| **the oracle disagrees with itself, across its own builds** | a bounded, named tolerance | `cbrt` at <= 1 ulp (claim: cbrt-ulp-tolerance) | a declared bound, named in the pin as the only such exception |
+*Evidence:* `packages/confit/docs/known-limitations.md:39`, claim:
+optimizer-on-reading, and the fold-retirement decision.
+*Gap:* `packages/confit/confit/oracle.py` still carries an older summary; proposed
+**ticket: axiom-as-property** would also record this rule as P21.
 
-Two things this table does not yet do, both real and both owner-reserved. It has **no
-tiebreaker** when more than one row applies — the optimizer gap fits rows 3 and 4 and is
-dispositioned as neither (claim: contract-surface-gap reports it as a finding). And it
-has **no row for nondeterminism inside a single value** — order within a `string_agg` or
-`list`, which `sort-at-freeze` cannot fix because sorting rows does not sort inside a
-string. Both are ask: threads-and-value-order.
-*Verified-by:* each row's own claim below.
+**claim: disposition-table.** Apply the narrowest ruled action. Do not convert a source
+of variation into a general tolerance.
 
-**claim: target-status-vocabulary.** **[PROPOSED]** Not in force. Every comparison
-target carries one status from the vocabulary in the front matter (`PINNED` /
-`IMPL-DEFINED` / `UNSPECIFIED`), and a target with no status is not yet a target. Today
-the vocabulary is applied to **seven** claims and to the section 7 ledger's `proposed
-status` column; claim: serving-row-order, claim: float-bit-equality, claim: signed-zero,
-claim: duplicate-name-dedup, claim: schema-comparison, claim: error-texts,
-claim: repr-equality, claim: unshipped-verdict, claim: native-tables and every quirk in
-claim: enumerated-quirks carry no status, so under this rule as written they are
-not targets — which they plainly are. Adopting the rule means either statusing them or
-narrowing the rule to the ledger. (The seven, counted 2026-09-02:
-claim: row-limit-refusal, claim: compare-modes, claim: join-output-order,
-claim: statistics-dependent-exclusion, claim: evaluation-path-disagreement,
-claim: modulo-nan-sign, claim: cbrt-ulp-tolerance. Every other `PINNED` / `IMPL-DEFINED`
-/ `UNSPECIFIED` outside the section 7 ledger is a reference to the vocabulary, not an
-application of it.)
-*Verified-by:* Unverified — no rule outside this document requires a status. Part of
-ask: proposed-rules-adoption.
-
-### 3.3 Which rows exist
-
-**claim: serving-row-order.** Row order on the *serving* path is not nondeterministic
-and is part of the contract: output rows follow input rows — `map` exactly (`out[i] <->
-in[i]`), `filter` as a subsequence, `many` as per-input-row blocks in input order. That
-order comes from the serving contract, not from SQL, and is checked by DuckDB-free
-self-legs.
-*Enforced-by:* `fuzz.oracle._extra_legs` (the batch-vs-single and reversal legs, both
-compared with `confit.compare.sequence`).
-*Verified-by:* `packages/confit/tests/test_fuzz_order_legs.py` (the capability test that
-proves the legs catch a scrambler); `packages/confit/docs/known-limitations.md:41-51`.
-
-**claim: row-limit-refusal.** A row limit on a static-tables-only query refuses at
-build, by name, `ORDER BY` or not: `LIMIT`, `OFFSET`, `FETCH`, `TOP`, anywhere in the
-statement including CTEs, derived tables and both sides of a set operation. Which rows
-survive a limit is not a function of the query — measured, the same `GROUP BY ... FETCH
-FIRST 1 ROWS ONLY` over the same four rows answered **four different ways across twelve
-fresh connections**, and `ORDER BY` does not fix ties (a tie fed from a `GROUP BY`
-flipped in 20 runs, while a unique sort key was stable at 1/20). Freezing whichever
-answer the build-time run happened to get would make two builds of the same function
-disagree. Status: `UNSPECIFIED`, refused.
-*Verified-by:* `packages/confit/docs/known-limitations.md:109-120`;
-`backlog/tasks/task-128 ...md` (Done, decision (a), AC #1-#5);
-`packages/confit/tests/test_arrow_schema_api.py:614-639`.
-*Residual hole, named:* a query sqlparser cannot parse cannot be inspected and falls
-through as before. Believed tiny — every row-limit spelling sqlparser knows does parse.
-
-### 3.4 Row order
-
-**claim: compare-modes.** Order sensitivity is determined per query, and there are
-exactly three compare modes. Values are bit-for-bit in all three; only the *sequence*
-rule differs.
-
-| mode | when | the check |
+| variation source | required action | authority |
 |---|---|---|
-| `row-path` | any query with a dynamic table | multiset against DuckDB (its order is not a function of the query even here), plus the sequence self-legs of claim: serving-row-order |
-| `constant-ordered` | static-only with a top-level `ORDER BY` | multiset equality **plus** our-side sortedness on the key — never byte-equality, because ties make DuckDB's sequence one of several valid answers |
-| `constant-unordered` | static-only, no `ORDER BY` | multiset; SQL defines no order and neither do we |
+| request-batch dependence, or no request table | refuse construction | serving-contract scope; fold-retirement decision |
+| unspecified DuckDB row sequence | compare DuckDB as a multiset; enforce confit's order through self-legs | claim: compare-modes; claim: serving-row-order |
+| hidden table statistics | remove the dependency where possible; otherwise exclude only the measured source | claim: optimizer-on-reading; claim: statistics-dependent-exclusion |
+| two DuckDB evaluation paths disagree and the identity selects neither | refuse the construct by name | claim: evaluation-path-disagreement |
+| scalar `cbrt` differs across DuckDB builds | allow at most 1 ulp for that family | claim: cbrt-ulp-tolerance, in force |
+| future per-row `sum` / `avg` reduces matched `DOUBLE` rows | apply the addend-dependent bound after its open domain is resolved | claim: float-reduction-bound, adopted but unimplemented |
+| another order-sensitive value family | no disposition yet | ask: threads-and-value-order |
 
-Status: `UNSPECIFIED` for the sequence outside the row path and outside a total
-`ORDER BY`; `PINNED` for values in all three modes.
-*Enforced-by:* `fuzz.oracle.compare_mode` (which mode a case is owed) and
-`fuzz.oracle._sorted_by` (DuckDB defaults: ASC, NULLS LAST, NaN above every number);
-`confit.compare.assert_rows`'s `ordered` flag is the same axis for a test.
-*Verified-by:*
-`packages/confit/tests/test_compare.py::test_assert_rows_default_accepts_reordered_rows`
-and `::test_assert_rows_ordered_rejects_reordered_rows`; `backlog/tasks/task-129 ...md`
-(Done, AC #1-#7); `packages/confit/docs/known-limitations.md:41-51`.
+The optimizer-on bracket is diagnostic, not an accepted alternative answer. A case that
+only matches optimizer-off is still reported against the ordinary DuckDB surface as
+`DIVERGE_OPT`.
 
-**claim: join-output-order.** Join output order is a measured hash-join accident on
-three independent axes (cost-chosen streamed side, LIFO chains emitting duplicate-key
-matches in reverse build-insertion order in per-2048-row lockstep passes, and run-to-run
-variation at multiple threads with ~500k+ rows). Parity for `shape='many'` is therefore
-**multiset**, and the engine defines its own documented deterministic order: probe rows
-in input order, matches contiguous in build-insertion order. Chasing byte-order parity
-here would mean chasing a nondeterministic target. Status: `UNSPECIFIED` upstream,
-`PINNED` on our side as our own published order.
-*Verified-by:* `packages/confit/docs/specs/pins-stageB/order-contract.json`;
-`packages/confit/docs/specs/2026-07-28-stageB-multiplicity-pins.md`;
+**claim: target-status-vocabulary.** **[PROPOSED]** Require every target to be
+`PINNED` (stable contracted behavior), `IMPL-DEFINED` (stable for a named build or
+configuration), or `UNSPECIFIED` (no unique contracted answer). Neither the mandatory
+classification nor the proposed ledger assignments is adopted. Decide whether to
+classify all existing claims or limit the scheme to the ledger under
+**ask: proposed-rules-adoption** in the [decision index](12-ask-index.md).
+
+## Row ordering
+
+**claim: serving-row-order.** Serving preserves request-row order:
+
+- `map`: output row `i` corresponds to input row `i`;
+- `filter`: output is an input-order subsequence; and
+- `many`: each input row's matches are contiguous, with input-row blocks in input order.
+
+This is a confit contract, not a claim about DuckDB's output sequence.
+
+*Enforced-by:* `fuzz.oracle._extra_legs`, using ordered batch-versus-single and input
+reversal checks.
+*Evidence:* `packages/confit/tests/test_fuzz_order_legs.py` and
+`packages/confit/docs/known-limitations.md:41-51`.
+
+**claim: join-output-order.** DuckDB hash-join match order is not a stable sequence. It
+varies with streamed-side selection, LIFO duplicate-key chains in 2048-row passes, and,
+at roughly 500k rows or more, thread scheduling. DuckDB parity for `shape="many"` is
+therefore a multiset. Confit still promises the deterministic serving order above: probe
+rows follow input order and each probe row's matches follow build insertion order.
+
+*Evidence:* `packages/confit/docs/specs/pins-stageB/order-contract.json`,
+`packages/confit/docs/specs/2026-07-28-stageB-multiplicity-pins.md`, and
 `packages/confit/docs/reports/pins-first-methodology.md:35`.
 
-### 3.5 Values from outside the query
+**claim: compare-modes.** For a target row-path case, the campaign uses one value
+comparison relation for both DuckDB readings and separate ordering checks:
 
-**claim: statistics-dependent-exclusion.** Statistics-dependent behavior is excluded
-from the oracle, by source name, each exclusion citing a measured reason it is
-irreproducible row-locally. It is **one of three** exclusion sets in the corpus gate,
-not the only one — see claim: corpus-exclusion-sets. The measured exemplar: DuckDB's
-`ILIKE` result for a NUL-containing row depends on *sibling* rows — pure-ASCII column
-statistics select a NUL-safe ASCII kernel (the row matches itself, TRUE) while any
-non-ASCII sibling selects the generic kernel whose fold NUL-truncates (same row, FALSE).
-A row-at-a-time engine cannot reproduce this even in principle; the engine is
-NUL-transparent (the ASCII-kernel behavior). Status: `UNSPECIFIED`, excluded.
-*Verified-by:* `packages/confit/tests/test_corpus_replay.py:38-49`
-(`_KNOWN_DIVERGENT_SOURCES`, with the reason in-file);
-`packages/confit/docs/specs/pins-wave1/pins_like.json` (measured 2026-07-26);
+1. compare confit with each DuckDB reading as a row multiset; then
+2. use confit-only self-legs to enforce claim: serving-row-order.
+
+Both legs use the [same value canonicalization](05-the-comparison-contract.md#rows-and-values).
+DuckDB's unspecified sequence therefore cannot weaken confit's own ordering promise.
+
+*Enforced-by:* `fuzz.oracle.compare_mode`, `confit.compare.multiset`, and
+`fuzz.oracle._extra_legs`.
+*Evidence:* `packages/confit/tests/test_compare.py::test_assert_rows_default_accepts_reordered_rows`,
+`::test_assert_rows_ordered_rejects_reordered_rows`, and
+`packages/confit/tests/test_fuzz_order_legs.py`.
+
+## Value sources that cannot be exact targets
+
+**claim: statistics-dependent-exclusion.** Exclude a statistics-dependent behavior by
+source name only after measuring why a row-local engine cannot reproduce it. The known
+case is DuckDB `ILIKE` over NUL-containing text: an all-ASCII column selects a NUL-safe
+ASCII kernel, while a non-ASCII sibling row selects a generic kernel whose fold
+NUL-truncates. The same row can therefore change value because of a sibling row. Confit
+uses NUL-transparent row-local behavior.
+
+The corpus set contains one source file and two statements, measured 2026-08-25. Older
+text saying “two sources” is incorrect; see **ticket: exclusion-count-correction**.
+
+*Evidence:* `packages/confit/tests/test_corpus_replay.py:38-49`,
+`packages/confit/docs/specs/pins-wave1/pins_like.json`, and
 `packages/confit/docs/known-limitations.md:225-230`.
-*Correction:* the exclusion set holds **one** source file, contributing two corpus
-statements (measured 2026-08-25 over `tests/corpus/duckdb_mined.jsonl`).
-`pins-first-methodology.md:89` says "Two such sources exist" — false;
-`known-limitations.md:225` says "Two known oracle divergences", which is true only if
-read as statements, not sources. See proposed ticket: exclusion-count-correction.
 
-**claim: corpus-exclusion-sets.** The corpus gate carries **three** decided exclusion
-sets, and only the first is about statistics. (a) `_KNOWN_DIVERGENT_SOURCES` —
-irreproducible-row-locally, one source, two statements
-(claim: statistics-dependent-exclusion). (b) The **f32 base-table blanket rule**: any
-mined case whose input table has a FLOAT column is clean-unsupported, because widening
-to f64 is value-exact but every f32-*grid*-sensitive operation (`nextafter`'s ulp steps,
-`FLOAT`->`VARCHAR` shortest round-trip, FLOAT rounding) then computes on the wrong grid;
-the blanket rule was chosen over a per-operation one on the measured ground that
-"comparisons happen to survive" (wave-3: 3 sources, 5 cases). (c)
-`_INEXPRESSIBLE_INPUTS` — the SQL is fine, the *declared* input schema is not; one
-entry, whose in-file comment records that its original ground (the width-less pydantic
-row surface) has since gone away.
-*Verified-by:* `packages/confit/tests/test_corpus_replay.py:38-49` (a), `:103-110` (b —
-the measured comment and the `is_float32` check it guards), `:60-65` (c). Sets (b) and
-(c) were absent from an earlier version of this document; (c) is a live instance of the
-claim: keep-entry-reason REASON rule and is named in ask: proposed-rules-adoption.
+**claim: corpus-exclusion-sets.** **[FACT]** The corpus gate currently has three
+mechanisms, with different reasons:
 
-### 3.6 The oracle disagreeing with itself
+1. `_KNOWN_DIVERGENT_SOURCES`: the one statistics-dependent source above, covering two
+   statements;
+2. a blanket input-`FLOAT` rule, because widening f32 to f64 preserves a value but
+   changes the grid observed by `nextafter`, shortest-round-trip text, and rounding;
+   Wave 3 measured three sources and five cases; and
+3. `_INEXPRESSIBLE_INPUTS`: one declared schema the test surface could not express. Its
+   original width-less-pydantic explanation may be stale and must be reviewed rather
+   than silently removed.
 
-**claim: evaluation-path-disagreement.** Where DuckDB's own evaluation paths return
-different answers for the same input, there is no behavior to be bit-exact *with*, so
-the construct is rejected by name with the measurement recorded. The two measured
-families are anchor-only multi-anchor patterns and `$` anchors in non-final position,
-where the row path literal-optimizes into a PREFIX match while DuckDB's own constant
-fold matches normally. Status: `UNSPECIFIED`, refused.
-*Verified-by:* `packages/confit/docs/reports/pins-first-methodology.md:78, :87`;
-`packages/confit/docs/specs/pins-waveB/fuzzer-20260728.json`;
+*Evidence:* `packages/confit/tests/test_corpus_replay.py:38-65,103-110`.
+
+**claim: evaluation-path-disagreement.** If two DuckDB evaluation paths in the same
+build return different values and the reference identity selects neither path, refuse
+the construct by name. Measured examples are anchor-only multi-anchor regexes and `$`
+in non-final position: row evaluation may literal-optimize to PREFIX while constant
+evaluation performs a normal regex match.
+
+This differs from claim: native-tables, where the identity selects one input path, and
+from claim: cbrt-ulp-tolerance, where separate builds differ within a named bound.
+
+*Evidence:* `packages/confit/docs/reports/pins-first-methodology.md:78,87`,
+`packages/confit/docs/specs/pins-waveB/fuzzer-20260728.json`, and
 `packages/confit/docs/known-limitations.md:200`.
-*Scope:* this covers the oracle disagreeing across its own **evaluation paths** within
-one build, where neither answer can be preferred. Where one *can* be — because the
-engine follows one of them — the identity names it instead of refusing: that is
-claim: native-tables. The oracle disagreeing across its own **builds** is a third
-species with a third, already-decided disposition — claim: cbrt-ulp-tolerance.
 
-**claim: native-tables.** The oracle's tables are **native tables**, never registered
-arrow relations, and the difference is semantic rather than a convenience. DuckDB pushes
-constant filters into a registered-arrow scan with IEEE NaN semantics, which disagrees
-with its own native-table comparison order; the engine follows the native-table reading,
-so a bare `register` is a *different* oracle wearing the same name. Column widths
-survive the materialization; `NOT NULL` does not, which is why a fixture that needs a
-constraint declares it in SQL instead.
-*Enforced-by:* `confit.oracle.Oracle.load` (register, CTAS, unregister) and
-`confit.oracle.Oracle.table` (the SQL declaration is kept verbatim).
-*Verified-by:* the **materialization** —
-`packages/confit/tests/test_oracle.py::test_load_materializes_a_native_table_with_widths_intact`,
-`::test_load_unregisters_its_alias`,
-`::test_table_keeps_the_declaration_including_not_null` (catalogue shape, TINYINT
-survival, the `NOT NULL` flag). The **semantic ground** is recorded at
-`packages/confit/docs/specs/2026-07-26-stretch4-builtin-pins.md:114-117` ("duckdb-python
-pushes constant filters into REGISTERED-ARROW scans with IEEE NaN semantics, disagreeing
-with its own native-table order ... duck_check now materializes native tables") — the
-stretch4 file, not wave1 or wave3. No test in `packages/confit/tests/` runs that NaN
-comparison against a registered relation, so the semantic half is pinned by the recorded
-measurement rather than by a gate.
+**claim: native-tables.** Oracle inputs are native DuckDB tables, not registered Arrow
+relations. DuckDB can push constant filters into a registered-Arrow scan using IEEE NaN
+semantics that differ from native-table ordering. `Oracle.load` therefore registers the
+Arrow data, creates a native table, and unregisters the relation. Column widths survive;
+`NOT NULL` does not, so a constraint-sensitive fixture declares its table in SQL.
 
-**claim: cbrt-ulp-tolerance.** Where DuckDB's own wheels disagree with each other, the
-disposition is a **bounded, named tolerance**, not refusal. The measured instance:
-`cbrt`. The Windows wheel matches Rust/ucrt bit-exactly while the Linux wheel's bundled
-`std::cbrt` is one ulp off (`cbrt(27)` = `3.0000000000000004`), CI-discovered
-2026-07-26. The oracle is platform-inconsistent there, so repr-exact parity is
-unpinnable; oracle parity for `cbrt` is pinned at **<= 1 ulp**, and the wave-1 pins spec
-records it as "the only such exception". The engine itself stays deterministic (Rust
-`cbrt`). Status: `IMPL-DEFINED`, discriminator = the oracle's own build.
-*Verified-by:* `packages/confit/tests/test_duckdb_interpreter.py:913-946`
-(`duck_check_ulp`, `max_ulp=1` by default), used by `test_sqrt_cbrt_bigint` (`:949`) and
-`test_cbrt_total_function` (`:958`) — both in the normal test gate;
-`packages/confit/docs/specs/2026-07-26-wave1-builtin-pins.md:47-52` (the ground and the
-"only such exception" wording).
+*Enforced-by:* `confit.oracle.Oracle.load` and `.table`.
+*Evidence:* `packages/confit/tests/test_oracle.py::test_load_materializes_a_native_table_with_widths_intact`,
+`::test_load_unregisters_its_alias`, and
+`::test_table_keeps_the_declaration_including_not_null`. The semantic measurement is in
+`packages/confit/docs/specs/2026-07-26-stretch4-builtin-pins.md:114-117`; no
+registered-relation NaN regression gate was identified.
 
-### 3.7 Two holes that are not ruled
+## Thread count and order-sensitive values
 
-**claim: build-vs-build-repeatability.** **[FACT]** Build-vs-build repeatability of a
-frozen artifact is **explicitly undecided**, and recorded as such rather than as a
-guarantee. Two builds of the same function disagreeing on frozen row order would flake
-downstream golden tests. Raw DuckDB gave 12 distinct row orders over 12 fresh
-connections on an unordered 200-group `GROUP BY`; our arrow materialization measured
-stable over 6 builds, which the ticket records honestly as "luck, not contract".
-`sort-at-freeze` is the named artifact-level fix and is orthogonal to the oracle
-definition.
-*Verified-by:* `backlog/tasks/task-129 ...md` (the SEPARATE-but-adjacent paragraph and
-AC #3's probe carried over from `task-128`).
-*Scope, named:* this hole is about frozen **row** order. The adjacent hole about order
-*inside a frozen value* is claim: threads-setting, and `sort-at-freeze` does not reach
-it. See ask: frozen-row-order and ask: threads-and-value-order.
+**claim: threads-setting.** **[FACT]** `Oracle.__init__` does not set `threads`; DuckDB's
+default is machine-derived. On 2026-08-25, DuckDB 1.5.5 with the optimizer disabled used
+12 threads on the measured machine, and `string_agg` element order over 400k rows differed
+between thread settings. The independent fit/serving path uses `threads = 1`.
 
-**claim: threads-setting.** **[FACT]** The `threads` setting changes frozen answers, and
-the oracle constant leaves it at DuckDB's core-derived default. Measured 2026-08-25
-under `PRAGMA disable_optimizer`, DuckDB 1.5.5: `current_setting('threads')` is **12**
-on this machine, and the within-group element order of `string_agg(v, ',') ... GROUP BY
-g` over a 400k-row table is a function of it — stable per setting, different between 1/2
-and 4/8. The construct is live rather than hypothetical: a `string_agg` over a static
-table builds today on the constant path (backend `constant`) and freezes whatever order
-that machine produced. So "all other settings default" (claim: oracle-identity) makes
-the oracle machine-dependent for thread-sensitive aggregates, and a 4-core runner and a
-12-core dev box are different oracles for them. The project already has the
-counter-setting in force on its other oracle — `SET threads = 1`, on the measured ground
-that DuckDB's parallel window aggregation is not bit-deterministic for floats (1/500
-fuzz drift) — but on the fit side only (claim: fit-serving-oracle).
-*Verified-by:* measured 2026-08-25 as described;
-`packages/confit/docs/properties.md:118-121` (P11) and
-`packages/confit/docs/goal.md` kpi: training-round-trip for the existing `threads = 1`
-decision;
-`confit.oracle.Oracle.__init__` sets no `threads`.
-*Status:* stated, not ruled. See ask: threads-and-value-order.
+The 2026-09-21 fold decision did **not** adopt `threads = 1` for the retired fold or as
+part of the fixed oracle identity. That does not permanently reject a future identity
+change motivated by a retained order-sensitive family. Any such setting would apply to
+the oracle as a whole: it is not a caller, campaign, or per-case choice. The other
+available directions are a named family-specific comparison or refusal. No direction is
+adopted for the remaining families.
 
-> ### ask: threads-and-value-order — does `threads` join the oracle constant, and what disposition covers
-> order *inside* a value?
+*Evidence:* the dated measurement above, P11 in
+`packages/confit/docs/properties.md:118-121`, `confit.oracle.Oracle.__init__`, and the
+fold-retirement decision.
+
+> ### ask: threads-and-value-order — what governs a future order-sensitive family?
 >
-> **(a) The constant.** claim: oracle-identity says "all other settings default" and
-> DuckDB's `threads` default is core-count-derived, so a 4-core runner and a 12-core dev
-> box are different oracles for thread-sensitive aggregates. Either the constant names
-> `threads` (the obvious value is `1`, which the fit side already runs —
-> claim: fit-serving-oracle) or the document says hardware-derived defaults are part of
-> the identity and those constructs are `IMPL-DEFINED` with the machine as
-> discriminator. The landing spot is one line in `Oracle.__init__`, beside the pragma:
-> `self.con.execute("SET threads = 1")`.
+> The frozen-fold question is superseded, and `threads = 1` was not adopted as part of
+> the fixed oracle identity. For a future retained family such as `string_agg`, `list`,
+> variance, or another order-sensitive reduction, choose among:
 >
-> **(b) The disposition.** The table in claim: disposition-table has four keys that can
-> all fire on one case and no tiebreaker, and no row at all for nondeterminism *inside*
-> a value. `string_agg` element order fits all four and is seen by none: the assigned
-> mode (`constant-ordered`) cannot see it because the multiset differs in the *values*,
-> and a frozen build-time artifact has no corpus source file to exclude by name. Ruling
-> (b) means an ordering rule for the keys, a fifth row for intra-value order, or both.
+> 1. amend the fixed oracle identity by pinning the necessary setting for every
+>    comparison, never per caller or case;
+> 2. adopt a named, family-specific bound or comparison relation; or
+> 3. refuse the family.
 >
-> *Binds:* claim: oracle-identity, claim: disposition-table,
-> claim: build-vs-build-repeatability, claim: threads-setting, and every static-only
-> query with an order-sensitive aggregate.
-
-> ### ask: frozen-row-order — build-vs-build repeatability: decide it or park it formally
->
-> This is the last live hole in the frozen-artifact story. Three options:
->
-> - **adopt sort-at-freeze** — the artifact sorts its frozen rows, so two builds
->   agree by construction. Cost: a total order must exist and be cheap.
-> - **declare it out of contract** — an unordered constant result is unspecified
->   between builds too, and downstream golden tests must not depend on it.
-> - **park it in a `tentative` bucket with a review trigger** (see
->   ask: tentative-bucket) — measured, not ruled, with a named condition that reopens
->   it.
->
-> Doing nothing keeps a measured-by-luck property carrying downstream weight.
->
-> *Binds:* claim: build-vs-build-repeatability, and any golden-file test over a
-> static-only result.
-
----
+> The adopted `DOUBLE` `sum` / `avg` bound is already a separate ruling and does not
+> settle other families. See the [decision index](12-ask-index.md).

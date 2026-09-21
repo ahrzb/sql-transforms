@@ -1,17 +1,74 @@
-## 13. Old ids
+# Citation map
 
-Every claim, ASK block, divergence-ledger row and proposed ticket in this document used
-to carry a numeric code - `ORC-NN`, `ASK-NN`, `D-N`, `T-N`. Those codes are cited from
-outside this directory, where nothing here can update them: merged PR bodies, review
-threads, backlog tickets, dated triage reports, and at least one code comment
-(`packages/confit/confit/oracle.py` cites "oracle spec ASK-1"). They are retired as
-*names* and kept here as *pointers*, so every one of those references still resolves.
+These are navigation aliases, not additional requirements. Old names retain their
+subjects when definitions move or merge; no identifier is reassigned.
 
-Nothing below is a claim. This chapter is editorial, and it is append-only: a code that
-appears here keeps the slug it is mapped to, because renaming a slug is the same
-ceremony as retiring a claim - the old name stays, in a tombstone naming both.
+`goal:` and `exclusion:` name product intent; `kpi:` names a measure; `claim:` can
+name a rule or an observation. `ask:` names a decision, `divergence:` a recorded
+difference, and `ticket:` proposed work. `gap:` and `finding:` name dated report
+entries. Status comes from the text, not the prefix: evidence does not adopt a
+proposal, and an open decision is not a rule.
 
-### 13.1 Claims
+## Former goal sections
+
+Historical reports use these names for sections formerly in `goal.md`.
+
+| Former section | Current location |
+|---|---|
+| `engine-purpose` | [Goal](../goal.md) |
+| `public-surface` | [API and output shape](../specs/serving-contract.md#api-and-output-shape) |
+| `scope-edge` | [Scope and restrictions](../specs/serving-contract.md#scope-and-restrictions) |
+| `scope-redirects` | [Implementation gap ledger](../reports/2026-09-02-goal-baseline.md#gap-ledger) |
+| `beyond-duckdb` | [UDF and model boundary](../specs/serving-contract.md#udf-and-model-boundary) |
+| `acceptance-frame` | [Acceptance and measurement](../specs/success-measures.md#acceptance-and-measurement) |
+| `four-yardsticks` | [Measurement methods](../specs/success-measures.md#measurement-methods) |
+| `measurement-and-kpis` | [Success measures](../specs/success-measures.md) |
+| `standing-law` | [Standing rule](../specs/success-measures.md#standing-rule) |
+| `controls-in-force` | [Correctness controls](../specs/success-measures.md#correctness-controls) |
+| `drives-in-force` | [Optimization measures](../specs/success-measures.md#optimization-measures) |
+| `enforcing-suites` | [Controls and their gates](../specs/success-measures.md#correctness-controls) |
+| `proposed-kpis` | [Proposed additions](../specs/success-measures.md#proposed-additions-and-open-decisions) |
+| `ask-index` | [Measurement decisions](../specs/success-measures.md#proposed-additions-and-open-decisions) · [Scope decision](../specs/serving-contract.md#open-scope-decision) |
+| `document-set` | [Supporting specifications](../goal.md#supporting-specifications) |
+
+## Moved or merged goal identifiers
+
+| Former identifier | Current location |
+|---|---|
+| `goal: serving-without-skew`, `goal: two-outcome-contract` | [Required behavior](../goal.md#required-behavior) |
+| `goal: pack-time-only-work` | [Construction-time preparation](../goal.md) |
+| `goal: growing-accepted-surface`, `goal: request-latency-budget` | [Correctness and optimization priorities](../goal.md#required-behavior) |
+| `goal: engine-half-only` | [Package ownership](../goal.md#scope) |
+| `claim: model-surface-split`, `claim: udf-parity-is-still-the-oracle` | [UDF and model boundary](../specs/serving-contract.md#udf-and-model-boundary) |
+| `claim: kpi-pointers-resolve` | [Gate evidence](../specs/success-measures.md#measurement-methods); a resolving path does not establish execution |
+| `claim: float-reduction-bound` | [Comparison contract](05-the-comparison-contract.md) |
+| `claim: sklearn-is-the-reference` | [Independent model references](../specs/success-measures.md#transformer-parity-c4) |
+| `exclusion: whole-relation-shapes`, `exclusion: per-row-general-work`, `exclusion: resource-ceilings`, `exclusion: optimizer-on-answers`, `exclusion: statistics-dependent-kernels` | [Scope and proposed grounds](../specs/serving-contract.md#scope-and-restrictions) |
+| `exclusion: multiplicity-by-default` | [Output multiplicity](../specs/serving-contract.md#api-and-output-shape) |
+| `exclusion: unshipped-decimal-arithmetic`, `exclusion: wide-integer-lanes`, `exclusion: non-scalar-values`, `exclusion: parse-divergence-guards` | [Gap ledger](../reports/2026-09-02-goal-baseline.md#gap-ledger); each retains its subject slug under `gap:`, not as a permanent exclusion |
+| `kpi: training-round-trip`, `kpi: engine-parity`, `kpi: binding-parity`, `kpi: transformer-parity`, `kpi: no-third-mode` | [C1–C5](../specs/success-measures.md#correctness-controls) |
+| `kpi: coverage-ladder`, `kpi: serving-latency` | [D1–D2](../specs/success-measures.md#optimization-measures) |
+| `kpi: acceptance-rate`, `kpi: findings-per-campaign`, `kpi: unshipped-burndown`, `kpi: named-refusal-share`, `kpi: ladder-ratchet`, `kpi: bench-refresh-cadence` | [Proposed measures](../specs/success-measures.md#proposed-additions-and-open-decisions) |
+| `ask: acceptance-target`, `ask: kpi-set-change` | [Open measurement decisions](../specs/success-measures.md#proposed-additions-and-open-decisions) |
+| `ask: exclusion-ratification` | [Open scope decision](../specs/serving-contract.md#open-scope-decision) |
+| `ask: kpis-absorb-or-defer` | Historical ruling consolidated the KPI set; its definitions now live in [success measures](../specs/success-measures.md), with the set unchanged |
+
+## Merged oracle identifiers
+
+| Earlier identifier | Current location |
+|---|---|
+| `claim: pseudo-oracle`, `claim: oracle-identity` | [Oracle definition](README.md) |
+| `claim: duckdb-three-roles` | [Reference and nearby uses](01-what-the-oracle-is.md); the retired fold's alternatives remain in the [decision record](../decisions/trustworthy-fold.md) |
+| `claim: row-limit-refusal`, `claim: build-vs-build-repeatability` | Retired-fold concerns superseded by the [scope decision](../decisions/trustworthy-fold.md); historical measurements remain in [TASK-128](../../../../backlog/tasks/task-128%20-%20A-row-limit-without-ORDER-BY-freezes-an-answer-DuckDB-itself-cannot-repeat.md) and [TASK-129](../../../../backlog/tasks/task-129%20-%20Define-order-sensitivity-per-query-and-make-the-oracle-honor-it.md) |
+| `claim: multiset-default` | Retired duplicate of [compare modes](03-nondeterminism.md#row-ordering) and [value canonicalization](05-the-comparison-contract.md#rows-and-values) |
+| `ask: engine-fold-reading`, `ask: frozen-row-order`, `ask: unshipped-never-compared` | [Resolved decisions](12-ask-index.md#resolved) |
+
+## Numeric aliases
+
+Earlier PRs, tickets, reports, and `confit/oracle.py` (`ASK-1`) use these IDs.
+Each keeps its original semantic subject below.
+
+### Claims
 
 | was | cited now as |
 |---|---|
@@ -50,7 +107,7 @@ ceremony as retiring a claim - the old name stays, in a tombstone naming both.
 | `ORC-33` | `claim: signed-zero` |
 | `ORC-34` | `claim: modulo-nan-sign` |
 | `ORC-35` | `claim: multi-answer-sets` |
-| `ORC-36` | `claim: multiset-default`  (retired; the tombstone is in chapter 5) |
+| `ORC-36` | `claim: multiset-default` (retired; see merged oracle identifiers above) |
 | `ORC-37` | `claim: duplicate-name-dedup` |
 | `ORC-38` | `claim: schema-comparison` |
 | `ORC-39` | `claim: error-texts` |
@@ -109,7 +166,7 @@ ceremony as retiring a claim - the old name stays, in a tombstone naming both.
 | `ORC-92` | `claim: unshipped-verdict` |
 | `ORC-93` | `claim: native-tables` |
 
-### 13.2 ASK blocks
+### ASK blocks
 
 | was | cited now as |
 |---|---|
@@ -130,7 +187,7 @@ ceremony as retiring a claim - the old name stays, in a tombstone naming both.
 | `ASK-15` | `ask: proposed-rules-adoption` |
 | `ASK-16` | `ask: engine-fold-reading` |
 
-### 13.3 Divergence-ledger rows
+### Divergence-ledger rows
 
 | was | cited now as |
 |---|---|
@@ -151,7 +208,7 @@ ceremony as retiring a claim - the old name stays, in a tombstone naming both.
 | `D15` | `divergence: arrow-batch-ceiling` |
 | `D16` | `divergence: snapshot-baseline` |
 
-### 13.4 Proposed tickets
+### Proposed tickets
 
 | was | cited now as |
 |---|---|
@@ -181,4 +238,3 @@ ceremony as retiring a claim - the old name stays, in a tombstone naming both.
 | `T-24` | `ticket: verdict-tuple-test` |
 | `T-25` | `ticket: static-only-schema-check` |
 
----

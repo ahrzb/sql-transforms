@@ -1,55 +1,53 @@
-## 11. Proposed tickets
+# Proposed ticket register
 
-Everything this document wants changed in code or in another document. **This document
-applies none of it** — the deliverable is this chapter directory and nothing else. Two
-rows are nevertheless struck through: ticket: value-preserving-normalization was applied
-in code by the ask: unshipped-never-compared ruling, which shipped separately, and
-ticket: static-only-schema-check was refuted by measurement. Both are kept struck rather
-than deleted so the slugs stay resolvable.
+A row records proposed work, not authorization. `editorial` means correcting a measured
+falsehood; an ASK or `owner ruling` is an unresolved blocker.
 
-| ticket | change | claim | blocked on |
-|---|---|---|---|
-| **ticket: oracle-docstring-corrections** | correct two statements in `confit/oracle.py`'s module docstring and their twins in `known-limitations.md`: (a) `disable_optimizer` also changes behavior at **twelve** sites outside the 33-pass list, two of them in `src/planner/binder/`; (b) "constant folding still happens" is an observation, not a mechanism — the folder is an `EXPRESSION_REWRITER` rule, so the pragma removes it | claim: disable-optimizer-scope | editorial, no ruling needed |
-| **ticket: version-assert** | assert `duckdb.__version__ == Oracle.VERSION` in `Oracle.__init__`, on the reserved line beside the pragma | claim: oracle-version-constant | ask: version-pin |
-| **ticket: axiom-as-property** | number the axiom as P21 in `properties.md`; make its three existing sites cite it | claim: nondeterminism-axiom | owner's go |
-| **ticket: exclusion-count-correction** | correct the source count: `pins-first-methodology.md:89` says two sources, the set holds one (two statements) | claim: statistics-dependent-exclusion | editorial |
-| **ticket: split-refused-verdict** | split `REFUSED` into `REFUSED_ORACLE_TRAPS` / `REFUSED_ORACLE_SERVES`, the latter in `INTERESTING` | claim: refusal-absorb | ask: refusal-cost-counting |
-| **ticket: phase-probing-in-methodology** | put phase-separated probing into the methodology report, where "how we measure DuckDB" lives | claim: phase-separated-probes | owner's go |
-| **ticket: uniform-pin-header** | uniform provenance header on every pin file | claim: pin-provenance | owner's go |
-| **ticket: pin-decision-field** | decision back-reference (a claim slug) field on every pin | claim: pin-back-reference | owner's go |
-| **ticket: pin-field-token** | an inline under-determined-field token in the pin format | claim: under-determined-token | owner's go |
-| **ticket: ambiguity-class-closed** | correct `2026-08-17-fuzz-triage.md:56-58, :70-72`: the ambiguous-reference class is TASK-121, Done | section 7.3 | editorial |
-| **ticket: severity-definition-merge** | delete the two parenthetical severity-ladder definitions; cite claim: severity-ladder | claim: severity-ladder | editorial |
-| **ticket: corpus-drift-report** | generalize `pin_ast_shapes.py`'s drift-report pattern to the pins corpus | claim: re-record-diff-report | owner's go — **not** ask: version-pin(b), which an earlier version listed. Which version the corpus targets has no bearing on whether a re-record tool exists, and that spurious dependency is what made section 9 read as having no first step |
-| **ticket: match-count-single-home** | generate the corpus match count with a date stamp in exactly one place, and correct the **six** unhedged sites claim: zero-fails-gate enumerates | claim: zero-fails-gate | ask: match-count-ratchet |
-| **ticket: coverage-triples** | extend the coverage histogram to (operator, arg-type, edge-class) triples | claim: coverage-denominator | owner's go |
-| **ticket: per-kind-abstention-report** | report an abstention rate per kind per campaign, and classify oracle-side vs engine-side timeouts in the runner rather than by hand (claim: timeout-attribution's recorded follow-up, plus recording the SQL before executing) | claim: abstention-rate, claim: timeout-attribution | ask: reason-code-visibility |
-| **ticket: threads-one-setting** | `SET threads = 1` in `Oracle.__init__`, beside the pragma, if ask: threads-and-value-order(a) takes that option | claim: threads-setting | ask: threads-and-value-order |
-| **ticket: clean-prefix-reconcile** | reconcile `_CLEAN`'s two unprefixed messages with the documented three-prefix rule, either way | claim: refusal-message-prefixes | editorial |
-| ~~**ticket: value-preserving-normalization**~~ | ~~make the campaign's schema normalization value-preserving~~ — **done**. ask: unshipped-never-compared ruled that normalization leaves the answer and the verdict; the cast is deleted and `UNSHIPPED` replaces it (claim: unshipped-verdict) | claim: schema-comparison, claim: unshipped-verdict | closed |
-| **ticket: string-budget-ground-fix** | correct `known-limitations.md:205`: DuckDB is deterministic on pad/repeat budgets; the "spelling-dependent" ground was measured false and restated 2026-08-16 | claim: keep-entry-reason, divergence: string-builder-budget | editorial |
-| **ticket: convert-unrunnable-pins** | enumerate the pins that cannot be re-run mechanically and convert them; this is the bump's actual first task | claim: pin-re-runnability | owner's go |
-| **ticket: mined-corpus-stamp** | stamp provenance onto `duckdb_mined.jsonl` at mining time (version, date, settings profile) | claim: mined-corpus-provenance | owner's go |
-| **ticket: fuzzer-gate-correction** | correct `known-limitations.md:301-307`: the campaign fuzzer is a manual CLI, not a gate mechanism; what runs is `test_fuzz_smoke.py`, and its invariant is machinery | claim: regexp-fuzz-gate | editorial |
-| **ticket: fold-reading-decision** | decide whether the engine's build-time fold moves to the oracle's reading, and write the answer into claim: oracle-identity — today the constant reads as though it had no exceptions. First step is the unmeasured half: run the suite under both readings | claim: one-door-bypass | ask: engine-fold-reading |
-| **ticket: verdict-tuple-test** | give `fuzz.runner`'s `INTERESTING` / `COVERED` tuples a test. Nothing in `packages/confit/tests/` imports `fuzz.runner`, so which verdict kinds become findings and which count as coverage — the substance of claim: contract-surface-gap, claim: optimizer-bracket, claim: opt-emulated-classification, claim: abstention-reporting and claim: coverage-accounting — is enforced by an untested tuple | claim: contract-surface-gap, claim: optimizer-bracket, claim: opt-emulated-classification, claim: abstention-reporting, claim: coverage-accounting | owner's go |
-| ~~**ticket: static-only-schema-check**~~ | ~~compare schemas on the campaign's static-only path too, where a bare-decimal literal was reported to value-compare across an unshipped width~~ — **refuted by measurement**: a static-tables-only query never prepares, so `Engine::Constant` hands back DuckDB's own rows *and schema* verbatim and no our-side width exists there to classify. Pinned by `packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`, merged on master | claim: schema-comparison, claim: unshipped-verdict | closed |
+## Active proposals
 
-Two further editorial corrections found while writing, no ticket needed if fixed in
-place: `known-limitations.md:248-249` says a 4000-seed campaign puts trap elision at
-"8 seeds in 28 findings; all eight are labelled `DIVERGE_OPT`" — the committed snapshot
-holds **7** `DIVERGE_OPT` seeds (312, 812, 1196, 1563, 1564, 2174, 2805) of 28 findings
-(counted 2026-08-25 over `packages/confit/findings.jsonl`), and
-`2026-08-17-fuzz-triage.md:102` names only five of them in prose, while its table at
-`:87` says `OPT_EMULATED = 0` and its prose at `:89-94` says one remains.
+| ticket | proposed work | basis / blocker |
+|---|---|---|
+| **ticket: oracle-docstring-corrections** | correct the stated `disable_optimizer` scope and remove the stale claim that `OPT_EMULATED` is purposeful coverage | claim: disable-optimizer-scope; claim: opt-emulated-classification / editorial |
+| **ticket: version-assert** | assert `duckdb.__version__ == Oracle.VERSION` beside oracle setup | claim: oracle-version-constant / ask: version-pin |
+| **ticket: axiom-as-property** | add the nondeterminism axiom to `properties.md` and cite it from its three sites | claim: nondeterminism-axiom / owner ruling |
+| **ticket: exclusion-count-correction** | correct `pins-first-methodology.md:89`: one excluded source covers two statements, not two sources | claim: statistics-dependent-exclusion / editorial |
+| **ticket: split-refused-verdict** | split `REFUSED` into oracle-traps and oracle-serves; make the latter interesting | claim: refusal-absorb / ask: refusal-cost-counting |
+| **ticket: phase-probing-in-methodology** | document PREPARE/EXECUTE and zero-row phase probes | claim: phase-separated-probes / owner ruling |
+| **ticket: uniform-pin-header** | add version, settings profile, capture date, and harness commit | claim: pin-provenance / owner ruling |
+| **ticket: pin-decision-field** | record the evidentiary claim slug in every pin | claim: pin-back-reference / owner ruling |
+| **ticket: pin-field-token** | mark under-determined or discriminator-dependent fields | claim: under-determined-token / owner ruling |
+| **ticket: ambiguity-class-closed** | correct the dated triage report: the ambiguous-reference class is TASK-121, Done, though its acceptance criteria remain unchecked | [ledger evidence](07-the-divergence-ledger.md#evidence-notes) / editorial |
+| **ticket: severity-definition-merge** | replace partial ladder copies with claim: severity-ladder | editorial |
+| **ticket: corpus-drift-report** | generalize `pin_ast_shapes.py`'s reviewable diff to the pin corpus | claim: re-record-diff-report / owner ruling, independent of ask: version-pin |
+| **ticket: match-count-single-home** | generate dated displayed match counts in one place; keep the test floor separate | claim: zero-fails-gate / ask: match-count-ratchet for lasting policy |
+| **ticket: coverage-triples** | report `(operator, argument-type, edge-class)` coverage | claim: coverage-denominator / owner ruling |
+| **ticket: per-kind-abstention-report** | report abstention rates, record SQL before execution, and attribute timeout side in the runner | claim: abstention-rate; claim: timeout-attribution / ask: reason-code-visibility |
+| **ticket: threads-one-setting** | consider pinning oracle `threads=1` to support future retained order-sensitive families | claim: threads-setting / ask: threads-and-value-order; an unadopted change to the fixed identity, not a per-case override |
+| **ticket: clean-prefix-reconcile** | reconcile `_CLEAN`'s two unprefixed messages with the three-prefix rule | claim: refusal-message-prefixes / editorial |
+| **ticket: string-budget-ground-fix** | replace the false spelling-dependent reason with the measured deterministic DuckDB behavior | claim: keep-entry-reason; divergence: string-builder-budget / editorial |
+| **ticket: convert-unrunnable-pins** | inventory and convert pins that cannot be replayed mechanically | claim: pin-re-runnability / owner ruling |
+| **ticket: mined-corpus-stamp** | stamp DuckDB version, date, and settings profile during mining | claim: mined-corpus-provenance / owner ruling |
+| **ticket: fuzzer-gate-correction** | state that the campaign fuzzer is a manual CLI and smoke tests gate machinery, not zero findings | claim: regexp-fuzz-gate / editorial |
+| **ticket: verdict-tuple-test** | test `fuzz.runner.INTERESTING` and `COVERED`, whose memberships currently lack a direct test | claims: contract-surface-gap, optimizer-bracket, opt-emulated-classification, abstention-reporting, coverage-accounting / owner ruling |
 
-And one comment that is *not* merely editorial, because it states the opposite of a
-claim in force: the `OPT_EMULATED` block in `fuzz.runner.report` still opens "The passes
-we reproduce **on purpose** ... Empty here means no emulation was exercised at all,
-which is **a coverage hole rather than good news**", sitting directly above the comment
-that corrects it ("Since the oracle became optimizer-off DuckDB these are **BUGS**, not
-notes") and above a printed header that says "(each one is a bug)". A reader who stops
-at the first comment gets claim: opt-emulated-classification backwards. Fold into
-ticket: oracle-docstring-corrections' editorial pass.
+The fold decision did not adopt `threads=1`; it does not settle that candidate
+for future retained families.
 
----
+## Closed, refuted, or superseded slugs
+
+These concise entries remain so old references resolve; the fold history lives only in
+[the decision record](../decisions/trustworthy-fold.md).
+
+| ticket | result |
+|---|---|
+| **ticket: value-preserving-normalization** | **closed:** ask: unshipped-never-compared kept normalization outside the answer and verdict; the cast was deleted and `UNSHIPPED` replaced it |
+| **ticket: static-only-schema-check** | **refuted by measurement:** the current static-only path returns DuckDB rows and schema; that path is nevertheless outside the target and remains an implementation gap until removed |
+| **ticket: fold-reading-decision** | **superseded, not implemented:** fold retirement removed the target optimizer-choice question |
+
+## Dated evidence correction
+
+The committed 2026-08-17 snapshot contained 7 `DIVERGE_OPT` seeds among 28 findings when
+counted on 2026-08-25 (312, 812, 1196, 1563, 1564, 2174, 2805).
+`known-limitations.md:248-249` says 8, while
+`2026-08-17-fuzz-triage.md:87, :89-94, :102` disagrees with itself. Correcting those
+historical documents would not create a fresh campaign result.

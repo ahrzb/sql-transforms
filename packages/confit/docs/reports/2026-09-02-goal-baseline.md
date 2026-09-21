@@ -1,5 +1,10 @@
 # Goal yardsticks, baseline reading (2026-09-02)
 
+> Current specification locations: [serving contract](../specs/serving-contract.md)
+> and [success measures](../specs/success-measures.md). Historical goal-section
+> names below are mapped in the [citation map](../oracle/13-old-ids.md#former-goal-sections).
+> The dated measurements and findings below are unchanged.
+
 **What this is.** The first reading of the goal document's yardsticks — reading **N=1**.
 `packages/confit/docs/goal.md` is the **target**: what confit is for, where its scope edge is
 drawn, and *how each of those is measured*; it deliberately holds no number. This file is the

@@ -1,380 +1,281 @@
-## 5. The comparison contract
+# Comparison contract
 
-This is what "same as the oracle" means, mechanically. It has been the strictest
-contract in the project from the start. It now has one shipped implementation —
-`confit.compare` — which the tests and the campaign both import
-(`tests/test_compare.py:19`, `fuzz/oracle.py:68`, measured 2026-09-02), so the question
-"is this leg as strict as that one?" has stopped being answerable by reading two call
-sites for **those** two.
+Exact agreement is the default. This chapter defines the row, schema, numeric, and error
+comparisons that make that statement operational. A weaker comparison applies only to
+the named family and surface that adopted it.
 
-*One leg is still outside it, and it is not a copy.* `tests/test_corpus_replay.py`
-imports neither, and canonicalizes with its own `_norm_row` (`:70-72`) — `tuple(repr(v)
-for v in row)` over `list(r.values())`, compared as `sorted(map(_norm_row, ...))` at
-`:166`. That is a **positional** read, not a name-keyed one, so it is materially a
-different leg from `confit.compare.multiset` rather than a duplicate of it; its own
-comment records the same `repr` ground ("makes NaN self-equal"). Whether it folds into
-`confit.compare` is not ruled and is not asked here — it is recorded so the count of
-comparison vocabularies in the repo stays honest at **two**.
+For UDF-bearing SQL, the reference leg registers the same declared UDFs. That
+parameterization is defined by the [oracle](README.md) and
+[serving contract](../specs/serving-contract.md#udf-and-model-boundary); it is not a
+numeric tolerance or a second oracle.
 
-**claim: repr-equality.** Two answers are equal when their canonical forms are equal,
-and a caller declares exactly **one** axis: whether row order is part of the claim. What
-makes two *values* the same is not an option — `repr` is the contract everywhere,
-because the project's claim is bit-exactness and `repr` is stricter than `==` in
-precisely the places bit-exactness differs from arithmetic agreement:
+## Rows and values
 
-| the case | `==` says | `repr` says | why the strict reading is the right one |
-|---|---|---|---|
-| `NaN` against itself | not equal | equal | a bit-exact answer returned the same NaN |
-| `-0.0` against `0.0` | equal | not equal | the bits differ, and so does `1/x` |
-| `1`, `1.0`, `True` | all equal | all distinct | the output *type* is half of what is being checked |
-| `Decimal('0.50')` against `Decimal('0.5')` | equal | not equal | the scale is exactly what a decimal contract owes |
+**claim: repr-equality.** `confit.compare` is the shared row-comparison vocabulary for
+tests and the differential campaign. Values are canonicalized with `repr`; a caller then
+chooses sequence comparison or multiset comparison.
 
-A leg that wants a weaker check does not get one by omission — the strength of a leg is
-declared, not inferred from a `sorted()` that somebody did or did not write.
-*Enforced-by:* `confit.compare.sequence` (order-preserving) and
-`confit.compare.multiset` (order-insensitive), through
-`confit.compare.assert_rows(ordered=...)`; `confit.compare.rows` is the
-duplicate-name-safe read that feeds them.
-*Verified-by:*
-`packages/confit/tests/test_compare.py::test_multiset_makes_nan_self_equal`,
-`::test_multiset_keeps_signed_zero_distinct`,
-`::test_multiset_keeps_equal_but_differently_typed_values_distinct`,
-`::test_multiset_is_order_insensitive_where_sequence_is_not`, and
-`::test_sequence_is_byte_identical_to_the_fuzzers_canonical_form` (the campaign and the
-tests canonicalize identically, because they call the same function).
-*Scope:* the module raises plain `AssertionError` and imports stdlib only at run time,
-so a campaign running outside pytest uses the same definition of equal that the suite
-does. Both halves are pinned: the imports by
-`packages/confit/tests/test_compare.py::test_compare_imports_stdlib_and_pyarrow_only`
-(an AST read of the source), and the exception type by the eight
-`pytest.raises(AssertionError)` sites in the same file — a `pytest.fail` or a custom
-error class would escape every one of them.
-
-**claim: float-bit-equality.** Floats compare by **bit pattern**, and the pin records
-the bits, not a rendering. No rounding, no `%.3f`. **Three exceptions are in force**,
-all named and all narrow; there are no others, and a fourth would be a decision
-(claim: unshipped-verdict):
-
-| exception | bound | why |
+| values | Python `==` | canonical `repr` comparison |
 |---|---|---|
-| `cbrt` (claim: cbrt-ulp-tolerance) | `<= 1` ulp | the oracle's own wheels disagree by one ulp across platforms; repr-exact is unpinnable |
-| the fuzzer's sklearn second-ground-truth leg | `1e-9` absolute | sklearn is a second reference, not the oracle; the leg exists where the oracle abstains (claim: metamorphic-self-legs) |
-| matvec-tier parity (DRAFT-23, when native families land) | a declared per-family ulp bound | and the governance rule with it: "Loosening a control is a design decision, never a fix ... the new bound named — through review, not through a failing test" |
+| `NaN`, itself | false | equal |
+| `-0.0`, `0.0` | equal | different |
+| `1`, `1.0`, `True` | equal | different |
+| `Decimal('0.50')`, `Decimal('0.5')` | equal | different |
 
-One mechanical limit is worth naming beside them, because it is *not* an exception — it
-is a place where the contract says "bits" and the gate compares something else. The
-canonical form is `repr`, which makes every NaN self-equal and its **sign and payload
-invisible**; only the explicit bit pins see those.
-*Enforced-by:* `confit.compare.multiset` / `.sequence` for the repr form;
-`confit.oracle.Oracle.answer`, which normalizes nothing at all, so a comparison site
-sees the oracle's own bits and decides its own equality.
-*Verified-by:* `packages/confit/tests/test_duckdb_wave3_mathtail.py:204-232`
-(`test_computed_nan_bits_match_oracle` — explicit bit pinning, since `repr` collapses
-every NaN to `nan`); `packages/confit/tests/test_duckdb_interpreter.py:913-946`
-(`duck_check_ulp`, `max_ulp=1`, the cbrt bound); `fuzz.oracle._extra_legs:833-851` (the
-sklearn `1e-9` leg);
-`packages/confit/tests/test_oracle.py::test_answer_returns_arrow_unnormalized`;
-`packages/confit/docs/goal.md`'s standing-law section (the loosening rule) and kpi: transformer-parity
-(DRAFT-23's declared per-family ulp bound). Float bit patterns are a recorded field across the pins
-corpus.
+This is exact canonical-value comparison, not universal bit comparison. Python renders
+NaNs as `nan`, hiding payload and sign. Generic row equality therefore distinguishes
+signed zero and type-sensitive spellings but cannot establish NaN payload/sign identity.
+That limitation is not an accepted NaN tolerance; bit-sensitive claims require explicit
+bit pins.
 
-**claim: signed-zero.** `-0.0` is distinguished from `+0.0`, and this is **fixed, not
-tolerated**. Unary minus was lowered as `0 - x`; IEEE `0.0 - 0.0` is `+0.0`, so the sign
-vanished everywhere it could arise — 113 of 963 findings in the 2026-08-11 campaign. The
-fix subtracts from `-0.0` for FLOAT operands (exact IEEE negation for every double) and
-keeps `0 - x` with its `i64::MIN` trap on the integer path, matching DuckDB.
-*Enforced-by:* `confit.compare.multiset` is what makes the difference visible to a gate
-at all — under `==` the class would be invisible.
-*Verified-by:* `packages/confit/tests/known_divergences/test_literal_typing.py:133-165`
-(a passing regression pin over both backends);
-`packages/confit/tests/test_compare.py::test_multiset_keeps_signed_zero_distinct`;
-`backlog/tasks/task-80 ...md:46` (the 113/963 measurement).
-*Scope, and it is narrower than it reads.* All five parametrizations of the pin use the
-**`e0` (DOUBLE) spelling** — `-0.0e0`, a DOUBLE column, `-1.5e0`. A bare `-0.0` is
-`DECIMAL(2,1)` in DuckDB, and a decimal zero has no sign, so `SELECT (c * (- 0.0))`
-answers `0.0` on DuckDB and `-0.0` here. That is not a regression of the fixed class —
-it is the **opposite direction**: the fix now *keeps* a sign DuckDB's decimal path
-discards, and it is the divergence: decimal-literal-typing literal-typing mechanism
-wearing a third face.
+*Enforced-by:* `confit.compare.sequence`, `.multiset`, `.rows`, and
+`.assert_rows(ordered=...)`.
+*Evidence:* `packages/confit/tests/test_compare.py` covers NaN self-equality,
+signed-zero and type distinction, order sensitivity, and canonical-form parity with the
+fuzzer. The module uses only stdlib at runtime and raises plain `AssertionError`.
 
-**claim: modulo-nan-sign.** `%`-by-zero produces a NaN whose **sign bit is
-platform-libm** (`7ff8...` on Windows ucrt, `fff8...` on Linux glibc), so the pin is
-*engine == oracle bit agreement per platform*, not a constant. `fmod`'s NaN, by
-contrast, comes from hardware arithmetic and is `fff8...` on every x86 platform, so it
-is pinned as a constant. Status: `IMPL-DEFINED`, platform is the discriminator.
-*Verified-by:* `packages/confit/tests/test_duckdb_wave3_mathtail.py:204-232`
-(`test_computed_nan_bits_match_oracle`; the engine == oracle assertion is
-`assert bits(got["m"]) == bits(m)` at `:232`);
-`packages/confit/docs/specs/pins-wave3/math_tail.json` (the wave-3 correction);
+Ordering is selected by [claim: compare-modes](03-nondeterminism.md): the DuckDB row leg
+is a multiset, while confit's serving sequence is checked by self-legs. The mined corpus
+remains a separate positional vocabulary: `test_corpus_replay.py` normalizes each row as
+`tuple(repr(v) for v in row)` and sorts rows. It is positional rather than name-keyed.
+
+## Output names and schemas
+
+**claim: duplicate-name-dedup.** Duplicate output names are renamed on both sides,
+left-to-right, to `<name>_N` using the smallest case-insensitively free `N`, including
+names generated earlier in the same pass. DuckDB performs such renaming at
+subquery/CTE/CTAS boundaries and in `.df()`, while top-level Arrow export preserves
+duplicates. Renaming before `to_pylist()` prevents a dict row from retaining only the
+last duplicate column.
+
+*Enforced-by:* `confit.compare.dedup_names` and `.rows`, mirroring
+`specializer/frontend.rs::dedup_output_names`; the fuzzer imports the same helper.
+*Evidence:* duplicate-name tests in `packages/confit/tests/test_compare.py`,
+`packages/confit/docs/specs/pins-wave5/dup-names-client-contract.json`, and
+`packages/confit/tests/test_known_limitations.py:255`.
+
+**claim: schema-comparison.** Output names, Arrow types, and field order are part of
+the [serving output contract](../specs/serving-contract.md#api-and-output-shape).
+Compare schemas, not just values. The current checks differ on nullability:
+
+- `confit.compare.assert_schema` compares field count, name, type, and nullability;
+- campaign `_schema_delta` compares deduplicated names and recursively compares types,
+  but does **not** compare field nullability; and
+- a campaign name or non-exempt type difference is `DIVERGE_VALUE` with class `schema`.
+
+This observed difference is not an independently settled requirement that campaign
+nullability must match, and it is not an approved nullability omission. No owner ruling
+identified in this specification chooses either policy for the universal contract.
+Schema-nullability policy therefore remains unresolved; it must be decided before the
+`assert_schema` behavior or `_schema_delta` omission is described as normative.
+
+*Evidence:* `confit.compare.assert_schema`; `fuzz.oracle._schema_delta` and
+`_type_delta`; `packages/confit/tests/test_fuzz_smoke.py::test_a_real_schema_difference_is_still_a_divergence`;
+and `packages/confit/tests/test_compare.py::test_assert_schema_names_the_first_differing_field_and_attribute`.
+
+**claim: unshipped-verdict.** An enumerated unshipped width is classified, never cast
+into comparability. `UNSHIPPED` names the feature and lane, performs no value comparison,
+does not enter `findings.jsonl`, and does not count as agreement. A real name or type
+difference in another field outranks the exempt width. Confit-only boundary self-legs
+still run because an unshipped DuckDB width cannot excuse internal inconsistency.
+
+`UNSHIPPED` also outranks the optimizer bracket: without a value comparison, neither
+DuckDB reading says anything about optimizer rewriting. `_type_delta` currently has one
+delete-when-shipped arm for DuckDB decimal versus confit float64.
+
+*Enforced-by:* `fuzz.oracle.run_case`, `_schema_delta`, and `_type_delta`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`
+and `::test_a_real_schema_difference_is_still_a_divergence`.
+
+The ruled **ask: unshipped-never-compared** prohibits harness normalization from
+manufacturing agreement. Any weaker comparison requires its own named, reviewed bound.
+
+## Floating-point comparisons
+
+**claim: float-bit-equality.** Where a float property is bit-sensitive, exact pins record
+bit patterns. Do not substitute rounding, `%.3f`, arithmetic `==`, or generic `repr` when
+NaN sign or payload matters. The generic comparator's NaN collapse is an enforcement
+limit, not a tolerance.
+
+Approved, independent, and proposed bounds must not be conflated:
+
+| surface and family | comparison | status |
+|---|---|---|
+| DuckDB scalar `cbrt` | at most 1 ulp | **in force and gated**; claim: cbrt-ulp-tolerance |
+| campaign sklearn second-reference leg | absolute `1e-9` | in force for that self-leg only; sklearn is not DuckDB |
+| `sql_transform` transformer references | family-specific bounds; tree scoring has a bit-exact target with a numerical-equality test | independent C4 contract; see [success measures](../specs/success-measures.md#transformer-parity-c4) |
+| future per-row relational `sum` / `avg` over matched `DOUBLE` values | claim: float-reduction-bound below | **adopted target, unimplemented and unverified** |
+| DRAFT-23 native transformer/matvec families | proposed per-family ulp bounds | **not adopted and unimplemented** |
+
+`confit.compare.assert_rows_close` is positional and ulp-based. It distinguishes signed
+zero and treats NaN as self-equal, but at one ulp it can place `DBL_MAX` next to infinity.
+Its current contract use is the measured `cbrt` wobble, not a general float default.
+
+**claim: cbrt-ulp-tolerance.** Scalar `cbrt` parity permits at most one ulp. The Windows
+DuckDB wheel matched Rust/ucrt, while the Linux wheel returned, for example,
+`3.0000000000000004` for `cbrt(27)`. This is a measured cross-build scalar allowance.
+It is distinct from exact-default comparison, sklearn references, and relational
+reduction order.
+
+*Enforced-by:* `assert_rows_close` / `duck_check_ulp(max_ulp=1)` for `cbrt`.
+*Evidence:* `packages/confit/tests/test_duckdb_interpreter.py:913-958` and
+`packages/confit/docs/specs/2026-07-26-wave1-builtin-pins.md:47-52`.
+
+**claim: float-reduction-bound.** The 2026-09-21 decision adopts a future exception for
+order-dependent `sum` and `avg` over the relation of `DOUBLE` values matched by one
+request row. For `n` non-NULL addends $v_i$ and $\mathrm{eps}=2^{-52}$, the declared sum
+bound is
+
+$$
+\left|\mathrm{ours}-\mathrm{oracle}\right|
+\le 2(n-1)\,\mathrm{eps}\sum_i |v_i|.
+$$
+
+Equivalently, in checker notation: `2*(n-1)*eps*sum(abs(v_i))`, with
+`eps = 2^-52`.
+
+For `avg`, divide that sum bound by `n`. The bound is data-dependent because cancellation
+makes a fixed relative tolerance unsuitable.
+
+**Status: adopted target, not implemented or verified.** It applies only to future
+per-row relational `sum` / `avg` over matched `DOUBLE` rows. It does not cover scalar
+arithmetic, casts, comparisons, integer or decimal aggregates, ordered list-value
+reductions, variance, standard deviation, or another order-sensitive family. It also
+does **not** amend or implicitly extend training-round-trip KPI C1, which remains
+bit-exact under its own fixed-thread comparison. Any C1 change requires its own explicit
+reviewed decision.
+
+Before implementation, the checker and its justification must resolve assumptions about
+reduction algorithm and length, non-finite addends/results, intermediate or
+`sum(abs(v_i))` overflow and underflow, empty/all-NULL reductions, `n = 0` and `n = 1`,
+and the final `avg` division. The formula cannot be applied literally at `n = 0`; the
+first-order argument has not proved these edge domains.
+
+*Enforced-by:* none; **gap: per-row-aggregation** remains.
+*Evidence:* the premise is **finding: float-sum-run-variance** in
+`packages/confit/docs/reports/2026-09-21-per-row-aggregation-and-the-fold.md`: on one
+measured table, twenty multi-threaded runs produced twenty `sum` and `avg` bit patterns,
+while a single-threaded reading matched an in-order loop. That dated observation is not
+verification of the bound.
+
+**claim: signed-zero.** `-0.0` and `+0.0` are distinct results. Unary float negation
+subtracts from `-0.0`, preserving exact IEEE negation; integer negation retains `0 - x`
+and its `i64::MIN` trap. The defect accounted for 113 of 963 findings in the 2026-08-11
+campaign.
+
+Regression pins use DOUBLE spellings such as `-0.0e0`. Bare `-0.0` is
+`DECIMAL(2,1)` in DuckDB and has no sign; divergence involving that literal belongs to
+divergence: decimal-literal-typing, not a relaxation of signed-zero equality.
+
+*Evidence:* `packages/confit/tests/known_divergences/test_literal_typing.py:133-165`,
+`packages/confit/tests/test_compare.py::test_multiset_keeps_signed_zero_distinct`, and
+[TASK-80](../../../../backlog/tasks/task-80%20-%20Negative-zero-loses-its-sign-in-constant-folding-and-unary-minus.md).
+
+## Platform-discriminated exactness
+
+**claim: modulo-nan-sign.** `%` by zero obtains a NaN sign from platform libm:
+`7ff8...` on Windows ucrt and `fff8...` on Linux glibc. The pin compares engine bits with
+oracle bits on the same platform. `fmod` uses hardware arithmetic and is pinned to
+`fff8...` on x86. This is per-platform exact agreement, not a tolerance.
+
+*Evidence:* `packages/confit/tests/test_duckdb_wave3_mathtail.py:204-232`,
+`packages/confit/docs/specs/pins-wave3/math_tail.json`, and
 `packages/confit/docs/known-limitations.md:258-259`.
 
-**claim: platform-libm.** Platform is a discriminator for **every libm-backed
-function**, not only for `%`-by-zero. The wave-1 trig pins say so in-file — "the oracle
-is platform-libm-dependent, so cross-OS bit-identity of pins must be re-verified on the
-CI/serving platform" — and the `pow10` modifier behind `floor`/`ceil`/`trunc`/`round` is
-the DuckDB binary's own `std::pow`, "neither correctly-rounded nor ucrt pow", which
-"must be extracted from the oracle binary" and is named in-file as a cross-platform
-divergence hazard for CI. Those pins record a single value today while being
-per-platform in substance; if claim: multi-answer-sets or claim: mutability-classes
-lands they are the next `IMPL-DEFINED` candidates.
-*Verified-by:*
-`packages/confit/docs/specs/pins-wave1/pins_trig-sin-x-cos-x-tan-x-p.json` (the
-platform-libm note); `pins-wave1/pins_floor-ceil-trunc-round.json` (the `pow10`
-extraction rule).
+**claim: platform-libm.** Platform can discriminate every libm-backed function, not only
+modulo-by-zero. Trig pins require remeasurement on the CI/serving platform. The `pow10`
+table used by `floor` / `ceil` / `trunc` / `round` must be extracted from the DuckDB
+binary because its `std::pow` result is neither guaranteed correctly rounded nor equal
+to the host Python library's result. Existing pins record one platform; a broader
+classification remains proposed rather than inferred.
 
-**claim: oracle-extracted-tables.** Data tables that stand in for oracle behavior are
-**extracted from the oracle**, never from a host library. `strip_accents`' per-codepoint
-map, the case map and the `pow10` table are all generated by querying DuckDB; DuckDB's
-own Unicode tables lag Unicode 16 by 57 codepoints, so a host `unicodedata` would be a
-different oracle wearing the same name. This is claim: reproduce-not-fix (reproduce the
-quirk) at the level of data rather than behavior, and it is the strongest form of
-pins-first in the repo.
-*Verified-by:* `packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md:129-142`;
-`scripts/gen_strip_accents.py`, `scripts/gen_casemap.py`, `scripts/gen_pow10.py`.
+*Evidence:* `packages/confit/docs/specs/pins-wave1/pins_trig-sin-x-cos-x-tan-x-p.json`
+and `packages/confit/docs/specs/pins-wave1/pins_floor-ceil-trunc-round.json`.
 
-**claim: multi-answer-sets.** **[PROPOSED]** Not in force. The multi-answer rule: a set
-of accepted answers is legitimate **only when every member is acceptable in every
-context**, and every set-valued pin names the predicate that selects a member (platform,
-profile, oracle version). Shortest-diff or best-match selection is never legitimate: it
-makes the suite pick the answer that happens to be closest, which is indistinguishable
-from picking the answer that hides the bug. claim: modulo-nan-sign is the nearest
-existing practice — platform is a real discriminator, evaluable before the comparison
-runs — though claim: modulo-nan-sign is strictly a *pinned agreement relation* (engine
-== oracle, per platform) rather than an enumerated set of accepted answers, so no pin in
-force today is set-valued in the sense this rule describes. claim: cbrt-ulp-tolerance's
-bounded tolerance is a second shape the rule as written does not cover.
-*Verified-by:* Unverified — no decision outside this document states the rule. The
-survey it comes from is external. Part of ask: proposed-rules-adoption.
+**claim: oracle-extracted-tables.** Behavioral tables are extracted from DuckDB, never
+recreated from a host library. This applies to `strip_accents`, case mapping, and
+`pow10`. DuckDB's Unicode tables lag Unicode 16 by 57 codepoints, so host `unicodedata`
+would silently select another reference.
 
-**claim: multiset-default.** **RETIRED** (formerly ORC-36). It said "rows compare as a
-multiset except where a compare mode says otherwise", which was the mode table
-(claim: compare-modes) plus a default. With one comparison vocabulary shipped, order is
-a declared axis rather than a property of each call site, and the claim has no content
-of its own. Replaced by **claim: repr-equality** (what equal means, and the one axis)
-and **claim: compare-modes** (which mode a query is owed).
+*Evidence:* `packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md:129-142`,
+`scripts/gen_strip_accents.py`, `scripts/gen_casemap.py`, and `scripts/gen_pow10.py`.
 
-**claim: duplicate-name-dedup.** Duplicate output names are normalized through the
-**same rule on both sides** before comparison, which is what makes the rename a contract
-rather than a divergence — duplicates rename left-to-right to `<name>_N`, smallest free
-N, case-insensitive, generated candidates included. DuckDB itself applies exactly this
-at every subquery / CTE / CTAS boundary and in `.df()`; only its top-level arrow export
-keeps duplicates, so the oracle leg is renamed before comparing.
-*Enforced-by:* `confit.compare.dedup_names`, which mirrors
-`packages/confit/src/specializer/frontend.rs`'s `dedup_output_names` and is the single
-Python home — the campaign imports it rather than carrying a copy. `confit.compare.rows`
-applies it on the read, where a duplicate name would otherwise cost half the answer with
-no error: `to_pylist()` builds one dict per row, so two columns named `a` collapse to
-one key, last one wins.
-*Verified-by:*
-`packages/confit/tests/test_compare.py::test_dedup_names_renames_left_to_right_case_insensitively`,
-`::test_dedup_names_skips_a_generated_candidate_already_taken`,
-`::test_rows_keeps_both_columns_that_to_pylist_collapses`;
-`packages/confit/docs/specs/pins-wave5/dup-names-client-contract.json`;
-`packages/confit/tests/test_known_limitations.py:255` (the twin).
+**claim: multi-answer-sets.** **[PROPOSED]** An accepted-answer set would be legitimate
+only if every member were acceptable in every context and a predicate known before
+comparison selected the member, such as platform, profile, or oracle version. Choosing
+the nearest answer is forbidden by the proposal because it is most likely to conceal a
+defect. No current pin is such a set: claim: modulo-nan-sign is per-platform agreement,
+and claim: cbrt-ulp-tolerance is a bound.
 
-**claim: schema-comparison.** Output **schemas** are compared, not just values: a name
-mismatch or a type mismatch is a `DIVERGE_VALUE` in its own right, and a comparison that
-only looked at values would pass a query whose answer has the wrong type. The single
-exception is an enumerated unshipped-feature width, which is classified rather than
-compared — claim: unshipped-verdict.
-*Enforced-by:* `fuzz.oracle._schema_delta` and `fuzz.oracle._type_delta` (which recurse
-into structs, so a decimal lane inside `struct_pack` classifies too); a real difference
-anywhere outranks an unshipped width sitting in another column.
-`confit.compare.assert_schema` is the same check for a test, and it names the first
-differing field and the attribute that differs on it rather than printing two schema
-dumps.
-*Verified-by:*
-`packages/confit/tests/test_fuzz_smoke.py::test_a_real_schema_difference_is_still_a_divergence`;
-`packages/confit/tests/test_compare.py::test_assert_schema_names_the_first_differing_field_and_attribute`.
-*Scope, measured 2026-09-02, and the scope is complete.* In the campaign the schema
-comparison runs on the **row path**, and the row path is the only path where our engine
-contributes types. `fuzz.oracle.run_case`'s `against()` does return inside `if
-static_only:` at `:662-684`, before `_schema_delta` is reached at `:686` — but nothing is
-missed by it: a static-tables-only query never prepares, so `eval_static_only` folds it
-into `Engine::Constant` and both the rows and the schema on that leg are DuckDB's own
-answer handed back verbatim. There is no our-side schema there to compare against
-DuckDB's, and no width of ours that could be wrong. What that leg does compare is the
-engine's build-time fold against the oracle's readings (claim: one-door-bypass). The
-claim is in force for tests either way (`confit.compare.assert_schema` has no such
-branch). An earlier version of this note read the missing `_schema_delta` call as a gap;
-it is not one, and the ticket it raised is struck (section 11).
-*Verified-by (the scope):*
-`packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`,
-which pins the static-only leg's answer as DuckDB's verbatim decimal and goes red the day
-our own evaluator answers that path.
+## Errors and internal backends
 
-**claim: unshipped-verdict.** An unshipped feature **fails or is classified — never
-absorbed by weakening a comparison.** Where the engine has not shipped a width the
-oracle emits, there is no honest value comparison across the gap, so the case gets its
-own verdict (`UNSHIPPED`, carrying the class and the lane that differs) and **no value
-comparison happens at all**. Such a case is not agreement, is not a finding, and never
-enters `findings.jsonl`. The general rule it instances: a deviation from raw equality
-happens only through a **named bound in a reviewed draft** — the precedents are
-claim: cbrt-ulp-tolerance, the sklearn leg's `1e-9` and DRAFT-23's declared
-bounds (claim: float-bit-equality's table) — never through a cast, a normalization or a
-tolerance introduced inside a comparison harness.
+**claim: error-texts.** Error text is not oracle-compared output. Runtime traps may copy
+DuckDB messages, while construction refusals may use confit's wording. The corpus
+compares successful rows, not full message identity; DuckDB's own tests use substring
+matching.
 
-Two consequences worth stating, because both were live questions before the ruling. An
-`UNSHIPPED` verdict **outranks the optimizer bracket** (claim: optimizer-bracket):
-neither reading was value-compared, so neither is evidence about a plan-rewrite pass.
-And it still earns the boundary self-legs, which are ours-against-ours with no DuckDB in
-them — an unshipped width cannot excuse a self-inconsistency, so a real `DIVERGE_VALUE`
-there outranks the class.
-*Enforced-by:* `fuzz.oracle.run_case` (the `UNSHIPPED` exit and its ranking) and
-`fuzz.oracle._type_delta`, which carries one arm per unshipped feature — today exactly
-one, decimal-against-float64, deleted when the feature lands.
-*Verified-by:*
-`packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`
-and `::test_a_real_schema_difference_is_still_a_divergence` (only the named classes take
-the exit).
-*Scope, measured 2026-09-02, and the scope is complete.* The `UNSHIPPED` exit is on the
-**row path**, which is the only path where an unshipped width can exist. On the
-static-only path the exit is unreachable — `against()` returns at `fuzz/oracle.py:662-684`
-before `_schema_delta` at `:686` — and nothing is absorbed by that, because a
-static-tables-only query never prepares: the answer is `Engine::Constant`, DuckDB's own
-rows and schema verbatim, so we ship no width there that could be unshipped. The planted
-case `SELECT 1.5 AS o0 FROM s0` is `decimal128(2,1)` on both sides and grades `AGREE`.
-The combination is also unreachable by construction rather than by luck: `fuzz.gen.lit`
-(`fuzz/gen.py:588-593`) plants a `bare_decimal` literal into any float literal with
-p = 0.05, but the generator's one static-only template emits aggregate calls over static
-columns and never calls `lit()`, so no seed produces a bare-decimal static-only case
-(seeds 0-1999: 63 static-only cases, 35 building and 28 refusing, 0 bare-decimal). An
-earlier version of this note recorded the opposite as a defect against the ruling; that
-reading is refuted and its ticket is struck (section 11).
-*Verified-by (the scope):*
-`packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`.
+*Enforced-by:* `confit.oracle.Trap` stores exception class and text separately.
+*Evidence:* `packages/confit/tests/test_corpus_replay.py:173-176` and
+`packages/confit/docs/known-limitations.md:219-224`.
 
-> ### ask: unshipped-never-compared — RULED. Is the comparison harness's own normalization part of the
-> oracle's answer?
+**claim: backend-agreement.** Cranelift and interpreter agreement is settled before
+either result is compared with DuckDB. `backend-split`, `backend-values`, and
+`backend-trap-split` identify the failure. Their public verdict remains
+`DIVERGE_BUILD` or `DIVERGE_VALUE`, so they enter the same finding totals.
+
+`backend-split` returns before DuckDB executes. The value and trap splits occur after the
+two DuckDB readings have executed but before value comparison. “Settled first” refers
+to comparison precedence, not always execution order.
+
+*Enforced-by:* `fuzz.oracle.run_case`.
+*Evidence:* P19 in `packages/confit/docs/properties.md:240-245`.
+
+**claim: interpreter-backend.** The interpreter is confit's coverage-oriented internal
+oracle backend. A 500-seed random-IR differential requires Cranelift to agree with it
+byte-for-byte. This internal invariant is additional to, not a replacement for, DuckDB
+comparison.
+
+*Evidence:* P19, [engine parity C2](../specs/success-measures.md#engine-parity-c2),
+`packages/confit/src/specializer/exec/tests.rs`, and
+[TASK-42](../../../../backlog/tasks/task-42%20-%20Specializer-M-interp-closure-compiled-IR-interpreter-the-oracle-backend.md).
+
+## Unadopted generalizations
+
+**claim: unadopted-mechanisms.** Exact comparison already rules out rounded `%.3f`
+rendering as equality. The other four mechanisms below have neither been adopted
+nor formally rejected; their drawbacks are a survey, not rulings.
+
+| mechanism | problem for this contract |
+|---|---|
+| `%.3f` rendering | discards exact float information |
+| MD5 for large results | hides the values needed to diagnose a failing pin |
+| nearest/shortest-diff alternative | chooses the answer most likely to conceal a defect |
+| cross-engine majority vote | creates another authority rather than checking the configured reference |
+| growing expected-error allowlist | can turn each false-positive suppression into a hidden defect |
+
+**claim: standing-rejections.** **[PROPOSED]** Make the remaining four mechanisms
+standing rejections. This proposal must not reject the in-force `cbrt` bound, independent sklearn
+reference checks, the adopted future float-reduction bound, or a separately adopted
+transformer-family bound. It remains part of ask: proposed-rules-adoption.
+
+> ### ask: float-tolerance-list — what remains open?
 >
-> **Ruling: no.** Normalization is out of the oracle's answer and out of the verdict. An
-> unshipped feature FAILS or is CLASSIFIED (`UNSHIPPED`, or an xfail), never absorbed by
-> weakening a comparison; deviations from raw equality happen only via a **named bound
-> in a reviewed draft**, on the precedent of the cbrt 1-ulp, the sklearn `1e-9` and
-> DRAFT-23's bounds. The 1-ulp decimal deltas reported in past campaigns were artifacts
-> of the harness's own cast, **manufactured by neither engine**.
+> Exact comparison remains the default, with the generic comparator's explicit NaN-bit
+> enforcement limit. Scalar `cbrt` has its in-force one-ulp rule. The relational
+> `DOUBLE` `sum` / `avg` bound is adopted but cannot ship until its domain above is
+> resolved. Sklearn comparisons are independent references, and DRAFT-23 native-family
+> bounds remain proposals.
 >
-> *Implemented by:* the decimal-to-float64 cast is **deleted** from `fuzz/oracle.py`;
-> the `UNSHIPPED` verdict kind replaces it, with its own report section in
-> `fuzz/runner.py`. The rule is claim: unshipped-verdict; `confit.oracle.Oracle.answer`
-> normalizes nothing on the oracle's side either.
+> Rule the remaining questions:
 >
-> *Consequences already applied:* claim: schema-comparison no longer authorizes a cast;
-> divergence: decimal-cast-artifact's value deltas are resolved (section 7.3); the
-> normalization blind spot in claim: blind-spots is replaced by the honest one, which is
-> that an unshipped width leaves the values unchecked.
-
-**claim: error-texts.** Error **texts** are not compared. Runtime traps reproduce
-DuckDB's message bodies verbatim; some bind-time rejections use our own wording with the
-same error class. The corpus compares successful results only, so texts never affect
-parity. Error text is therefore *not oracle-decided output* — which is also a named
-blind spot (claim: severity-ladder). Upstream does the same thing: DuckDB's own test
-infrastructure matches error text by substring containment.
-*Enforced-by:* `confit.oracle.Trap`, which carries the exception's class name and
-message as two separate fields, so a caller can compare the class without touching the
-text.
-*Verified-by:* `packages/confit/tests/test_corpus_replay.py:173-176` (only successful
-rows compared); `packages/confit/docs/known-limitations.md:219-224`.
-
-**claim: backend-agreement.** Backend agreement is settled **before either reading is
-compared against**: cranelift vs interpreter is a question about us, not about the
-oracle, so it is checked once and short-circuits. A split there carries **its own
-`klass`** — `backend-split`, `backend-values`, `backend-trap-split` — so it is never
-confused with a DuckDB disagreement when reading a finding. Its *kind* is still a
-divergence kind (`DIVERGE_BUILD` or `DIVERGE_VALUE`), which is what `findings.jsonl` and
-the ledger census key on, so a backend split does count into those totals.
-*Enforced-by:* `fuzz.oracle.run_case` (the backend checks, upstream of `against`).
-*Verified-by:* P19 in `packages/confit/docs/properties.md:240-245`.
-*Precision, and it differs per klass.* `backend-split` really is settled before DuckDB
-is touched at all: it returns at `fuzz/oracle.py:563-569`, above the `_duck_run` call at
-`:571`. The other two — `backend-trap-split` (`:611-617`) and `backend-values`
-(`:620-627`) — fire after `_duck_run` has executed both readings, so there "settled
-first" means before either reading is *compared*, not before either is *executed*.
-
-**claim: interpreter-backend.** The interpreter is the **internal oracle backend** for
-the engine's own two-backend differential: correctness and coverage over speed, never
-optimized, and cranelift is checked against it byte-for-byte over a 500-seed random-IR
-sweep. It is why claim: backend-agreement can settle backend agreement without DuckDB at
-all.
-*Verified-by:* P19 in `packages/confit/docs/properties.md:240-245`;
-`packages/confit/docs/goal.md` kpi: engine-parity (the 500-seed random-IR sub-invariant, in
-`packages/confit/src/specializer/exec/tests.rs`); `backlog/tasks/task-42 -
-Specializer-M-interp-closure-compiled-IR-interpreter-the-oracle-backend.md`.
-
-**claim: unadopted-mechanisms.** Mechanisms other cross-engine suites use that **this
-project has never adopted**, and the reason each one is a bad fit here. This is a survey
-with an argument, not a list of past decisions: only the first row corresponds to a rule
-in force (claim: float-bit-equality), and none of the other four was ever proposed here,
-so none was ever rejected here. Turning the four into standing rejections would itself
-be a decision — that is claim: standing-rejections.
-
-| mechanism | where it comes from | why it is a bad fit here |
-|---|---|---|
-| float rendering at `%.3f` | sqllogictest's cross-engine rendering contract | directly destroys bit-for-bit, which **is** in force (claim: float-bit-equality); it trades float fidelity for cross-engine agreement, and we have exactly one engine to agree with |
-| MD5 hashing result streams above a threshold | sqllogictest | hashes make a failure undebuggable; pins-as-data (reprs, float bits, verbatim error heads, the exact SQL) is strictly better evidence, and DuckDB's own docs advise using the hash form sparingly |
-| shortest-diff variant matching | Postgres's `resultmap` driver, which admits it "cannot tell which variant is actually correct" | picks the closest answer, which is the answer most likely to hide the defect; claim: multi-answer-sets is the proposed replacement |
-| cross-engine agreement or majority vote as the oracle | sqllogictest, Csmith | creates a second authority; the contract delegates to exactly one engine on purpose (claim: pseudo-oracle). Note the dialect gates (claim: dialect-gate-oracle) *do* run a second engine — as a target for a printed query, never as an authority over DuckDB |
-| a growing expected-errors allowlist | SQLancer's `ExpectedErrors` | every entry added to silence a false positive is a place a real bug can hide; structurally the same shape as claim: refusal-absorb. The nearest thing we have is `_CLEAN` (claim: refusal-message-prefixes), which is four entries and has not grown |
-
-*Verified-by:* claim: float-bit-equality for the first row. The other four are
-`Unverified` as decisions — no spec, ticket or review in this repo records adopting or
-rejecting them (searched 2026-08-25). They are here as an argument, and the argument is
-what claim: standing-rejections asks about.
-
-**claim: standing-rejections.** **[PROPOSED]** Not in force. The four unadopted
-mechanisms in claim: unadopted-mechanisms become **standing rejections**, so that
-proposing one later is a contradiction of the spec rather than a fresh idea. The cost of
-adopting this is real: a standing rejection of "tolerance" has to be written so that it
-does not contradict the three tolerances already in force (claim: float-bit-equality's
-exception table) or the dialect gate's designed epsilon tier
-(claim: dialect-gate-oracle). claim: unshipped-verdict is the half of it that is now
-decided — a deviation needs a named bound in a reviewed draft — so what
-claim: standing-rejections adds is the *rejection* of the four named shapes, not the
-requirement that deviations be named.
-*Verified-by:* Unverified. Part of ask: proposed-rules-adoption, and the substance is
-ask: float-tolerance-list.
-
-> ### ask: float-tolerance-list — is bit-for-bit float equality the contract, and what governs its exceptions?
+> 1. Is the set of weaker legs closed, so every addition requires an owner decision and
+>    a named discriminator or bound?
+> 2. Must `_type_delta`'s delete-when-shipped decimal arm have a strict-xfail twin, or is
+>    the non-empty `UNSHIPPED` report plus the lattice definition of done sufficient?
+> 3. Which finite/non-finite, overflow/underflow, empty/all-NULL, and `n = 0/1` domain
+>    makes claim: float-reduction-bound enforceable?
 >
-> Every cross-engine suite surveyed quietly relaxes floats. The question is *not*
-> whether this project has exceptions — it has three, all named in
-> claim: float-bit-equality's table — but whether the rule is "bit pattern, with a
-> closed list of declared bounds" and what it takes to add a fourth entry to that list.
->
-> **(a) The rule.** Is it "bit pattern, no exceptions" — in which case
-> claim: cbrt-ulp-tolerance, the sklearn leg's `1e-9` and DRAFT-23's
-> declared bound are three contradictions that need re-ruling — or is it "bit pattern,
-> with a closed list of declared bounds, each naming its discriminator", in which case
-> claim: float-bit-equality's table *is* the list and adding to it is a decision like
-> loosening any other control? claim: unshipped-verdict has ruled the *procedure* for a
-> fourth entry (a named bound, through review); what is still open is whether the closed
-> list is the rule.
->
-> **(b) Future float accumulation.** If parallel float accumulation ever lands, is its
-> `UNSPECIFIED` region **refused** (the strict reading) or given a declared bound the
-> way the dialect gate's epsilon tier already is (claim: dialect-gate-oracle)?
->
-> **(c) The unenforced third home.** claim: feature-in-flight's feature-in-flight rule
-> wants a phase's markers deleted in three homes, and the fuzzer's was the unenforced
-> one. It has since **changed shape rather than been enforced**: the marker is no longer
-> a suppression tag that hides a comparison — it is the `UNSHIPPED` verdict, which
-> classifies loudly and gets its own report section (claim: unshipped-verdict), so a tag
-> outliving its phase now shows as a non-empty bucket instead of swallowing a regression
-> silently. What is still not in place is a *gate*: nothing fails when `_type_delta`'s
-> decimal arm outlives the feature. Does that arm get a strict-xfail twin now, or stay
-> owned by the lattice phase's own definition of done, on the record?
->
-> *Verified-by (the facts, not the ruling):*
-> `packages/confit/docs/known-limitations.md:166-174`; `fuzz.oracle._type_delta` (the
-> one arm, with its delete-when-it-ships note); `packages/confit/tests/test_decimals.py`
-> (the shipped decimal *static* path, whose expectations are the live oracle compared on
-> rows and on schema through `confit.compare`);
-> `packages/confit/docs/specs/2026-08-11-duckdb-type-lattice-design.md:110-131` (the
-> feature-in-flight rule and the three homes).
->
-> *Binds:* claim: float-bit-equality, claim: cbrt-ulp-tolerance,
-> claim: feature-in-flight, claim: standing-rejections, claim: unshipped-verdict,
-> divergence: decimal-literal-typing and divergence: decimal-cast-rounding, and every
-> future float-accumulation feature.
-
----
+> This binds claim: float-bit-equality, claim: cbrt-ulp-tolerance, claim:
+> float-reduction-bound, claim: standing-rejections, claim: unshipped-verdict,
+> divergence: decimal-literal-typing, and divergence: decimal-cast-rounding.
+> The [decision index](12-ask-index.md) summarizes this question.

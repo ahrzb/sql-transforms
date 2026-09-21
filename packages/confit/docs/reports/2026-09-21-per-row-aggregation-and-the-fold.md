@@ -1,5 +1,9 @@
 # Per-row aggregation and the static-only fold, reading (2026-09-21)
 
+> Current definitions: [scope](../goal.md#scope) and the
+> [comparison contract](../oracle/05-the-comparison-contract.md).
+> The dated measurements below are unchanged.
+
 **What this is.** The dated reading behind three changes to `packages/confit/docs/goal.md`
 made on this date: claim: float-reduction-bound, the move of per-row aggregation out of
 exclusion: whole-relation-shapes, and the retirement of that row's static-tables-only

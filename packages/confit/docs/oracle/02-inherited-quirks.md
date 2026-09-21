@@ -1,46 +1,45 @@
-## 2. Inherited quirks
+# Inherited DuckDB quirks
 
-**claim: reproduce-not-fix.** Where DuckDB's behavior is a quirk, the quirk is
-reproduced, not fixed. Because the contract is bit-for-bit DuckDB rather than the SQL
-standard, DuckDB's oddities *are* our normative behavior, including ones DuckDB would
-call bugs.
-*Verified-by:* `packages/confit/docs/reports/pins-first-methodology.md:39` ("pins are
-engine==oracle contracts").
+## Default disposition
 
-**claim: enumerated-quirks.** The enumerated quirks — *the oddities whose disposition
-needed a decision*, not every descoped construct. This list exists so a future reader
-who meets an inherited oddity has something to check it against before "fixing" it. It
-is short today and cheap to write; reconstructing it later is not. The fuller descope
-list, including `#`, `NOT GLOB` and the twelve fuzzer-found regex reject classes, is
-`known-limitations.md:190-207`; a construct there but not here was descoped without an
-inherited-oddity ruling to record.
+**claim: reproduce-not-fix.** Reproduce the configured DuckDB reference unless a
+recorded decision explicitly refuses the construct. This is a compatibility contract,
+not a correction layer for DuckDB or the SQL standard. A DuckDB bug can therefore be
+the required confit behavior.
 
-| quirk | DuckDB's behavior | what we do | evidence |
+*Evidence:* `packages/confit/docs/reports/pins-first-methodology.md:39` defines pins as
+engine-equals-reference contracts.
+
+## Ruled quirks
+
+**claim: enumerated-quirks.** These oddities have specific dispositions. This is not the
+complete unsupported-syntax inventory; that remains in
+`packages/confit/docs/known-limitations.md:190-207`.
+
+| quirk | reference behavior | disposition | evidence |
 |---|---|---|---|
-| `^` | is `pow`, not bit-xor | descoped: sqlparser's precedence differs, so mapping it computes a wrong tree silently. Use `pow()`. | `known-limitations.md:197` |
-| `~` | full-match, not search | reproduced | `pins-first-methodology.md:39` |
-| `SIMILAR TO` | no wildcard translation | reproduced | `pins-first-methodology.md:39` |
-| `SIMILAR TO ... ESCAPE` | not implemented in DuckDB itself | refused | `known-limitations.md:201` |
-| `reverse()` | byte-reverses all-ASCII input, splitting CRLF (`'a\r\nb'` -> `'b\n\ra'`), violating UAX-29; only non-ASCII takes the grapheme path | both paths reproduced | `pins-waveA/reverse-graphemes.json`; `specs/2026-07-28-waveA-structural-tails.md` section 4 |
-| paren-less `* REPLACE e AS c` | consumes exactly one item; a following comma starts a new select item, yielding a duplicate name | reproduced | `pins-waveA/columns-replace.json` |
-| double-quoted identifiers in struct `EXCLUDE` | still case-insensitive: `a.* EXCLUDE("J")` removes field `j` | reproduced | `pins-waveA/struct-star.json` |
-| `* EXCLUDE (t.key)` on a `USING` join | UNMERGES the coalesced column, which reappears at the right table's position | descoped (measured, not modeled) | `known-limitations.md:202` |
-| `BETWEEN`/`IN` mixing non-numeric strings with numbers | converts at EXECUTION time, so an empty input succeeds | conservatively refused | `known-limitations.md:203` |
-| `repeat(NULL, n)` on a bare NULL | picks the **BLOB** overload | refused; `CAST(NULL AS VARCHAR)` types identically on both | `known-limitations.md:207` |
-| `\B` in a regex | crashes DuckDB at runtime on non-ASCII | reject-listed | `known-limitations.md:199` |
-| `$` anchor in non-final position | the row path literal-optimizes `$`+literal into a PREFIX match while DuckDB's own constant fold matches normally — the oracle disagrees with itself | rejected by name (section 3.6) | `pins-waveB/fuzzer-20260728.json` |
+| `^` | power, not bit-xor | refuse: `sqlparser` assigns different precedence, so mapping it would change the tree; use `pow()` | `known-limitations.md:197` |
+| `~` | full match, not search | reproduce | `reports/pins-first-methodology.md:39` |
+| `SIMILAR TO` | no wildcard translation | reproduce | `reports/pins-first-methodology.md:39` |
+| `SIMILAR TO ... ESCAPE` | unimplemented in DuckDB | refuse | `known-limitations.md:201` |
+| `reverse()` | ASCII uses byte reversal, including splitting CRLF; non-ASCII uses graphemes | reproduce both paths | `specs/pins-waveA/reverse-graphemes.json`; `specs/2026-07-28-waveA-structural-tails.md` §4 |
+| paren-less `* REPLACE e AS c` | consumes one item; a following comma starts another select item and may duplicate the name | reproduce | `specs/pins-waveA/columns-replace.json` |
+| quoted struct `EXCLUDE` names | still case-insensitive | reproduce | `specs/pins-waveA/struct-star.json` |
+| `* EXCLUDE (t.key)` after `USING` | unmerges the coalesced column and restores the right copy at its original position | refuse; measured but not modeled | `known-limitations.md:202` |
+| `BETWEEN` / `IN` mixing non-numeric strings and numbers | conversion happens at execution, so empty input succeeds | conservatively refuse | `known-limitations.md:203` |
+| `repeat(NULL, n)` with bare `NULL` | selects the BLOB overload | refuse; `CAST(NULL AS VARCHAR)` is supported and types equally | `known-limitations.md:207` |
+| regex `\B` | can crash DuckDB on non-ASCII | reject-list | `known-limitations.md:199` |
+| non-final regex `$` | row evaluation may literal-optimize to PREFIX while constant evaluation performs a normal match | refuse by name under claim: evaluation-path-disagreement | `specs/pins-waveB/fuzzer-20260728.json` |
 
-*Verified-by:* each row cites its own evidence; the reproduce-don't-fix rule is
-claim: reproduce-not-fix.
+*Evidence:* each row's cited measurement or limitation. The disposition, rather than the
+surprising behavior alone, is the contract.
 
-**claim: unlisted-oddity.** Meeting an inherited oddity that is not in the table above
-is a report, not a fix. Adding a row is a decision and goes through the owner, because
-"this looks wrong" and "this is a divergence" are the same observation until somebody
-measures.
-*Verified-by:* the owner's standing governance rule — the oracle spec states what is
-considered correct, and every contradiction goes through the owner — which is what makes
-adding a row a decision rather than an edit; `known-limitations.md:284-285` ("If a
-message you hit isn't in this document or the tests, that's a bug in our bookkeeping —
-file it") is the existing half that makes it a report.
+## New oddities
 
----
+**claim: unlisted-oddity.** Report and measure a newly observed oddity; neither silently
+“fix” it nor silently inherit it. Until its behavior and scope are established,
+“DuckDB looks wrong” and “confit diverges” are the same observation. Adding a new
+reproduction or refusal is a disposition decision.
+
+*Evidence:* `packages/confit/docs/known-limitations.md:284-285` requires behavior absent
+from both documentation and tests to be reported.
