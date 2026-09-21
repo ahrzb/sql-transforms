@@ -1,8 +1,8 @@
 # Properties of the system
 
 The laws this system holds — semantic guarantees, stated as invariants.
-Companion to `packages/confit/docs/goal.md`'s measurement-and-kpis section: KPIs are what we *measure*; properties are
-what must remain *true*. Each entry says where the property is argued
+Companion to the [success measures](specs/success-measures.md): KPIs are what we
+*measure*; properties are what must remain *true*. Each entry says where the property is argued
 (spec/draft) and where it is pinned (test). A change that repeals one of
 these is a design decision and goes through a draft, not a diff.
 
@@ -232,10 +232,10 @@ narrowing to referenced columns is a known future widening.)
 DuckDB — with the declared udfs registered, when any — or refuse at build
 with a named error. There is no third mode. (Control C2 measures this.)
 
-*Which DuckDB*: the optimizer-off reading (`PRAGMA disable_optimizer`),
-decided 2026-08-17 — it is the only one of the two that is a function of the
-query. See kpi: engine-parity in goal.md for why, and known-limitations.md §5 for what it
-costs.
+*Reference and comparison rules:* the [oracle contract](oracle/README.md).
+[C2: engine parity](specs/success-measures.md#engine-parity-c2) specifies the control,
+including its narrow approved bounds; known-limitations.md §5 records the
+optimizer-off choice's user-visible cost.
 
 **P19 — The backends cannot drift where they share code.** Everything with
 nontrivial semantics executes through helpers shared by the interpreter

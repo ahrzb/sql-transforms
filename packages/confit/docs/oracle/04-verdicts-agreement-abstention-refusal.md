@@ -1,263 +1,191 @@
-## 4. Verdicts: agreement, abstention, refusal
+# Campaign verdicts, refusal, and abstention
 
-### 4.1 The taxonomy
+## Case-classification pipeline
 
-**claim: verdict-taxonomy.** One case in, one verdict out. Every outcome — refusal,
-trap, disagreement, and the oracle's own failure — comes back *as* a verdict rather than
-as an exception, so nothing is classified by a human reading a stack trace. The oracle
-module emits eleven kinds; a **campaign** emits thirteen, because the runner synthesizes
-two more for a worker that never answered.
+A campaign case is classified rather than allowed to disappear as an exception.
+Unexpected construction exceptions and backend splits exit before DuckDB runs;
+otherwise the order is:
 
-| kind | meaning | emitted by |
-|---|---|---|
-| `AGREE` | ours == off == on | oracle |
-| `AGREE_TRAP` | both sides error at run time | oracle |
-| `DIVERGE_VALUE` | wrong value, wrong schema, a self-leg failure, **or a cranelift-vs-interpreter split** (klass `backend-values` / `backend-trap-split`, no DuckDB involved) | oracle |
-| `DIVERGE_BUILD` | confit builds what DuckDB refuses, **or the two backends disagree about whether the build succeeds** (klass `backend-split`, no DuckDB involved) | oracle |
-| `DIVERGE_TRAP` | one side traps where the other serves rows | oracle |
-| `DIVERGE_OPT` | we match the optimizer-off baseline; an optimizer pass changes what the user sees | oracle |
-| `OPT_EMULATED` | we match optimizer-ON against a baseline that disagrees: a plan-rewrite pass we are reproducing, which is a bug | oracle |
-| `BUILD_EXC` | a build raised something other than the contract's `ValueError` | oracle |
-| `REFUSED` | confit refused at build | oracle |
-| `UNSHIPPED` | the answer has a width we have not shipped, so nothing was compared (claim: unshipped-verdict) | oracle |
-| `SKIP` | the oracle harness itself raised | oracle |
-| `TIMEOUT` | the worker did not answer inside the per-case budget; the detail is an 800-byte stderr tail | **runner** |
-| `PANIC` | the worker died without answering; same detail shape | **runner** |
+1. construct both confit backends;
+2. execute optimizer-off and optimizer-on DuckDB on one connection;
+3. classify construction refusal or execute both confit backends;
+4. settle backend agreement;
+5. compare confit separately with each DuckDB reading;
+6. form the optimizer bracket; and
+7. for eligible row-path results, run confit-only boundary and ordering legs.
 
-`TIMEOUT` and `PANIC` are in `INTERESTING` and reach `findings.jsonl` by the same path
-as every other verdict, so any statement about "what a campaign reports" has to include
-them — the abstention story in claim: abstention-reporting and the table in
-claim: blind-spots both do now. Three of the eleven kinds are in neither `INTERESTING`
-nor `COVERED` — `AGREE_TRAP`, `REFUSED` and `UNSHIPPED` — and each is silent for a
-different reason: `AGREE_TRAP` is agreement the histogram does not count, `REFUSED` is
-absorbed (claim: refusal-absorb), and `UNSHIPPED` is the one where **nothing was
-compared at all**, which is why it alone gets a report section of its own
-(claim: coverage-accounting).
-*Enforced-by:* `fuzz.oracle.KINDS` and `fuzz.oracle.run_case`; `fuzz.runner` synthesizes
-`TIMEOUT` / `PANIC` and writes every `INTERESTING` verdict to `findings.jsonl`. The same
-shape holds one level down, on the oracle's own side: `confit.oracle.Oracle.try_answer`
-returns a frozen `Trap` (the exception's class name and message) instead of raising, so
-a refusal by DuckDB is data a caller classifies rather than control flow it must catch.
-*Verified-by:*
-`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`;
-`packages/confit/tests/test_oracle.py::test_try_answer_returns_a_trap_when_the_query_fails`
-and `::test_trap_is_frozen`.
+**claim: optimizer-bracket.** The two DuckDB readings share one connection and loaded
+tables. This keeps table statistics fixed while changing optimizer state. `UNSHIPPED`
+outranks the bracket because no value comparison occurred; neither reading can then be
+evidence about an optimizer pass.
 
-**claim: optimizer-bracket.** Every case is run against DuckDB twice on **one**
-connection, off then on. Sharing the connection is not just a saving:
-`statistics_propagation` reads per-column statistics, so two separate connections could
-differ for reasons that have nothing to do with the optimizer. The pair therefore
-brackets the answer and a finding classifies itself. An `UNSHIPPED` verdict outranks the
-bracket: neither reading was value-compared, so neither can be evidence for or against a
-plan-rewrite pass (claim: unshipped-verdict).
-*Enforced-by:* `fuzz.oracle._duck_run` (one connection, `Oracle` then
-`Oracle.optimizer_on`) and the ranking at the end of `fuzz.oracle.run_case`.
-*Verified-by:* the **ranking** half —
-`packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
-The **one-connection** half is `Unverified`:
-`packages/confit/tests/test_oracle.py::test_optimizer_on_flips_the_same_connection` pins
-that `Oracle.optimizer_on` flips in place (`assert oracle.con is con`), but no test
-exercises `fuzz.oracle._duck_run`, so changing it to open two connections would fail
-nothing. Proposed ticket: verdict-tuple-test.
+*Enforced-by:* `fuzz.oracle._duck_run` and `fuzz.oracle.run_case`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
 
-**claim: opt-emulated-classification.** `OPT_EMULATED` is a bug, not an accepted class,
-and it is excluded from coverage. Counting it as agreement would hide it twice: once as
-a finding and once as coverage.
-*Enforced-by:* `fuzz.runner.INTERESTING` (contains it) and `fuzz.runner.COVERED`
-(`("AGREE",)`, which does not).
-*Verified-by:* `Unverified` — no test imports `fuzz.runner` (measured 2026-09-02), so
-adding `OPT_EMULATED` to `COVERED` or dropping it from `INTERESTING` breaks nothing. The
-`fuzz.oracle` half — that the kind exists and is emitted — is
-`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
-Proposed ticket: verdict-tuple-test.
+## Verdict meanings
 
-### 4.2 Abstention is a verdict
+**claim: verdict-taxonomy.** `fuzz.oracle` emits eleven kinds; the runner adds two
+worker-failure kinds.
 
-**claim: abstention-reporting.** Abstention is reported, never silently downgraded to a
-pass. `SKIP` — the oracle harness's own failure — is a finding and reaches
-`findings.jsonl`; it is not allowed to look like agreement, because an error bucket that
-quietly grows is how a suite hides real bugs behind a green bar. `TIMEOUT` and `PANIC`
-(claim: verdict-taxonomy) are the same species and are treated the same way.
-*Enforced-by:* `fuzz.oracle.run_case_json` (an exception escaping `run_case` becomes
-`SKIP`, blaming the oracle rather than the engine) and `fuzz.runner.INTERESTING`, which
-holds all three.
-*Verified-by:* the kinds exist and are reachable —
-`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
-Their **membership in `INTERESTING`** is `Unverified` for the same reason as
-claim: contract-surface-gap and claim: opt-emulated-classification: nothing in
-`packages/confit/tests/` imports `fuzz.runner`. Proposed ticket: verdict-tuple-test.
+| kind | exact campaign meaning |
+|---|---|
+| `AGREE` | confit returns the same compared schema/values as optimizer-off and optimizer-on DuckDB |
+| `AGREE_TRAP` | confit and both DuckDB readings fail at execution rather than return rows |
+| `DIVERGE_VALUE` | compared schema/value mismatch, failed confit self-leg, or backend value/trap split |
+| `DIVERGE_BUILD` | confit builds where DuckDB rejects at bind/build, or the confit backends split during construction |
+| `DIVERGE_TRAP` | confit and DuckDB disagree on returning rows versus failing at execution |
+| `DIVERGE_OPT` | confit matches optimizer-off; optimizer-on differs |
+| `OPT_EMULATED` | confit matches optimizer-on while the optimizer-off reference differs; this is a finding |
+| `BUILD_EXC` | confit construction raises something other than the contract `ValueError` |
+| `REFUSED` | both confit backends reject construction with `ValueError` |
+| `UNSHIPPED` | an enumerated missing width prevents value comparison |
+| `SKIP` | an exception escapes the case harness |
+| `TIMEOUT` | a worker exceeds the per-case budget; detail is an 800-byte stderr tail |
+| `PANIC` | a worker exits without returning a verdict; detail has the same shape |
 
-**claim: timeout-attribution.** A timeout is attributed before it is counted: **an
-oracle-side timeout and an engine-side timeout mean opposite things.** Measured
-2026-08-14 on seed 4395 — `lpad(c1, 2147483647, 'NULL') LIKE '...'` — we refuse in 0.00s
-at bind ("lpad count 2147483647 exceeds the 1 GiB string-builder budget") while DuckDB
-takes 9.0s actually building the 2 GiB pad and answering `false`. Under eight workers
-that exceeds the per-case budget, which *is* the finding: no engine hang, no liveness
-bug. Three further seeds are the same story. The recorded follow-ups are that the runner
-must record the SQL *before* executing (a timeout currently loses it, so the case has to
-be recovered from the generator by seed) and that oracle-side timeouts must classify
-apart from engine-side ones.
-*Verified-by:* `packages/confit/docs/2026-08-13-fuzz-triage.md:124-149`.
+*Enforced-by:* `fuzz.oracle.KINDS`, `fuzz.oracle.run_case`, and `fuzz.runner`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
 
-**claim: logged-fallback.** A comparison the checker cannot evaluate falls back to the
-weaker check **with a logged tag**, never silently. The one instance today: an `ORDER
-BY` over an expression that is not an output column cannot have its key evaluated, so
-the multiset check stands and the case carries an `order-by-unevaluated` tag.
-*Enforced-by:* `fuzz.oracle.run_case`'s static-only branch.
-*Verified-by:* `backlog/tasks/task-129 ...md` AC #4.
+**claim: opt-emulated-classification.** `OPT_EMULATED` is a finding, never agreement or
+coverage. It means confit reproduced an optimizer result that differs from the configured
+reference; calling it agreement would hide the same defect in both reporting views.
 
-**claim: coverage-accounting.** `AGREE` is the only kind counted as coverage. A
-construct-coverage histogram runs over agreeing cases only, so a grammar hole is visible
-rather than absorbed by refusals — and `UNSHIPPED` is excluded for the stronger reason
-that nothing was compared at all (claim: unshipped-verdict). It is not a finding either,
-so it is reported in a section of its own: an empty one means either the feature shipped
-or the grammar stopped reaching it, and both are worth seeing.
-*Enforced-by:* `fuzz.runner.COVERED` and the unshipped-feature section of
-`fuzz.runner.report` (`fuzz/runner.py:43`, `:168-176`).
-*Verified-by:* that `UNSHIPPED` is the verdict such a case gets —
-`packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`.
-What the **runner** then does with it — `COVERED`'s membership and the report section —
-is `Unverified`: no test imports `fuzz.runner`. Proposed ticket: verdict-tuple-test.
+*Enforced-by:* intended membership in `fuzz.runner.INTERESTING` and exclusion from
+`COVERED`.
+*Evidence:* emission is tested by `test_verdicts_cover_the_contract_and_reproduce`;
+runner tuple membership remains **Unverified** because no test imports `fuzz.runner`.
 
-### 4.3 Refusals
+## Construction refusal versus runtime trap
 
-**claim: refusal-message-prefixes.** A build-time refusal is the engine's second legal
-outcome and is always a named `ValueError` at `DuckDBInferFn(...)` construction. Three
-documented message prefixes classify it: `unsupported:` (real SQL, deliberately not
-served), `parse error:` (the dialect surface ends here), `bind error:` (the query is
-wrong against your schema). Refusal is cheap, named and testable by construction.
-*Verified-by:* `packages/confit/docs/known-limitations.md:274-285`; P7 and P18 in
-`packages/confit/docs/properties.md:63, :231-235`.
-*Correction:* the prefix set is not exhaustive in code. The corpus gate's clean set is
-`_CLEAN = ("unsupported:", "parse error:", "duplicate map key", "NULL in value column")`
-(`test_corpus_replay.py:36`) — two real engine messages that carry none of the three
-prefixes (`interp.rs` "@{i}: duplicate map key"; `duckdb/mod.rs` "static table '...' has
-a NULL in value column '...'"), and `bind error:` is absent from that set entirely.
-Either the two messages gain a prefix or the documented set gains them. See proposed
-ticket ticket: clean-prefix-reconcile.
+Construction and execution are separate contract phases.
 
-**claim: refusal-grounds.** Refusal *grounds* are a decided three-way taxonomy,
-orthogonal to the message prefix: **specialization-inherent** (the engine model cannot
-express it), **scope-by-product-decision** (it could be served and we chose not to), and
-**resource** (it would cost more than a serving engine may spend per row). The split is
-what makes "we refuse" auditable — the first is permanent, the second is reversible by a
-decision, the third is a judgement with a number attached.
-*Verified-by:* `backlog/milestones/m-8 - duckdbs-type-lattice.md:30-36`; mirrored by
-`known-limitations.md` section 1 ("The specialization bargain (inherent to the engine
-model)", `:65`) vs section 2 ("Out of scope for row-serving (by decision, not
-difficulty)", `:80`), with the resource class at `known-limitations.md:205` and
-`known_divergences/test_arrow_boundary.py:34-36` (divergence: string-builder-budget and
-divergence: arrow-batch-ceiling).
+- A confit `ValueError` during construction is a refusal. A non-`ValueError` is
+  `BUILD_EXC`; disagreement between Cranelift and interpreter construction is
+  `DIVERGE_BUILD`.
+- A DuckDB exception is classified as bind/build only for the named DuckDB build-error
+  classes. Other exceptions are runtime failures. Confit building where DuckDB rejects
+  at bind/build is `DIVERGE_BUILD`.
+- After successful construction, an exception from `infer_arrow` or `infer_rows` is a
+  runtime trap. Agreement or divergence then depends on whether DuckDB also fails at
+  execution. Error-message identity is not part of the value comparison.
 
-**claim: refusal-absorb.** **[FACT]** Current behavior of the campaign's refusal path:
-both DuckDB readings are computed and then **discarded unconditionally** when confit
-refused. `REFUSED` carries only a class derived from the first six words of the message,
-and it is not in `INTERESTING`, so it never reaches `findings.jsonl` — only a "top
-refusal classes" histogram at the end of a run.
+Thus construction success does not promise that every input returns rows, and a runtime
+trap must not be rewritten as a construction refusal. The serving-level statement lives
+in [the serving contract](../specs/serving-contract.md).
 
-```python
-# fuzz.oracle.run_case
-    duck_off, duck_on = _duck_run(sql, case, udf_objs)
+**claim: refusal-message-prefixes.** The documented construction-refusal surface intends
+three `ValueError` prefixes:
 
-    if fn_cl is None:
-        klass = _refusal_class(cl_err)
-        return Verdict("REFUSED", klass, cl_err, tags)
-```
+- `unsupported:` — valid SQL outside the served product;
+- `parse error:` — outside the accepted dialect; and
+- `bind error:` — invalid against the declared schema.
 
-*Verified-by:* `fuzz.oracle.run_case` (the block above) and
-`fuzz.oracle._refusal_class`; `fuzz.runner.INTERESTING`, which does not contain
-`REFUSED`, and `fuzz.runner.report`'s refusal-class histogram.
+Current corpus classification does not match that set. `_CLEAN` accepts `unsupported:`,
+`parse error:`, `duplicate map key`, and `NULL in value column`; it omits `bind error:`,
+and the final two messages have no documented prefix. This is an implementation/document
+inconsistency, not permission to infer a fourth settled policy. See
+**ticket: clean-prefix-reconcile**.
 
-**claim: countable-cost.** **[PROPOSED]** Not in force. The general rule this exposes,
-and the one this document would like written down: **an accepted cost must be countable,
-and the counting mechanism is named in the decision that accepts it.** Without that,
-"deliberate strictness" and "unnoticed over-refusal" are the same observation. The rule
-is not in force anywhere today; the live instance is ask: refusal-cost-counting, and
-adopting the rule itself is part of ask: proposed-rules-adoption.
-*Verified-by:* Unverified — no decision outside this document states it. The nearest
-existing practice is the m-8 phase rule that each phase's markers must be deleted in the
-phase's own PR and certified by a campaign (claim: feature-in-flight), which is a
-counting mechanism for a different kind of cost.
+*Evidence:* `packages/confit/docs/known-limitations.md:274-285`, P7 and P18 in
+`packages/confit/docs/properties.md`, and
+`packages/confit/tests/test_corpus_replay.py:36`.
 
-> ### ask: refusal-cost-counting — the accepted severity-4 cost is currently uncountable. Which way?
+**claim: refusal-grounds.** Message prefix and product ground are separate axes. The
+three grounds used to discuss scope are:
+
+1. **specialization-inherent** — the serving model cannot express it;
+2. **scope-by-product-decision** — expressible, but deliberately not served; and
+3. **resource** — too expensive per serving row, with a stated budget.
+
+These grounds classify scope choices, not every invalid caller declaration. Their use in
+the restriction inventory remains subject to
+**ask: exclusion-ratification** in [the serving contract](../specs/serving-contract.md).
+
+*Evidence:* `backlog/milestones/m-8 - duckdbs-type-lattice.md:30-36`,
+`packages/confit/docs/known-limitations.md` §§1-2, and
+`packages/confit/tests/known_divergences/test_arrow_boundary.py:34-36`.
+
+**claim: refusal-absorb.** **[FACT]** The campaign executes both DuckDB readings before
+returning a confit refusal, then discards those readings unconditionally. `REFUSED`
+carries a class derived from the first six message words, is absent from `INTERESTING`,
+and appears only in the refusal histogram. It does not distinguish “DuckDB serves” from
+“DuckDB traps.”
+
+*Evidence:* `fuzz.oracle.run_case`, `fuzz.oracle._refusal_class`,
+`fuzz.runner.INTERESTING`, and `fuzz.runner.report`.
+
+## Findings, abstention, and coverage
+
+**claim: abstention-reporting.** Harness failure is `SKIP`, never a pass. `SKIP`,
+`TIMEOUT`, and `PANIC` are intended findings and must reach `findings.jsonl`; otherwise a
+growing blind spot can look green.
+
+**claim: coverage-accounting.** Only `AGREE` contributes to the construct-coverage
+histogram. `AGREE_TRAP` establishes a matched runtime outcome but is not counted as
+construct coverage. `REFUSED` is summarized separately, `UNSHIPPED` has its own report
+section because values were not compared, and `OPT_EMULATED` remains a finding.
+
+*Enforced-by:* `fuzz.runner.INTERESTING`, `COVERED`, and `report`.
+*Evidence:* oracle verdict reachability and `UNSHIPPED` behavior are covered in
+`packages/confit/tests/test_fuzz_smoke.py`; runner membership remains **Unverified** under
+**ticket: verdict-tuple-test**.
+
+**claim: logged-fallback.** If a checker cannot evaluate its strongest condition,
+it may use a weaker check only with an explicit tag. The current legacy example is
+an `ORDER BY` expression absent from the output: multiset comparison still runs,
+but sortedness is not established and the case receives `order-by-unevaluated`.
+That tag must not be reported as evidence that the stronger check passed.
+
+*Evidence:* `fuzz.oracle.run_case` and the ordering work recorded in TASK-129.
+
+**claim: timeout-attribution.** **[FACT]** The current timeout identifies neither the
+side nor the SQL. Oracle work timing out and confit work timing out imply opposite
+problems, so recovery requires regenerating the seed. On 2026-08-14, seed 4395 made
+DuckDB spend 9.0 seconds building a 2 GiB `lpad` while confit refused immediately under
+its 1 GiB budget; three other seeds had the same shape.
+
+*Evidence:* `packages/confit/docs/2026-08-13-fuzz-triage.md:124-149`.
+*Open work:* record SQL before execution and split oracle-side from engine-side timeout.
+
+**claim: countable-cost.** **[PROPOSED]** An accepted cost should be measurable, and the
+decision accepting it should name the counting mechanism. This proposal is not in force;
+its live instance is ask: refusal-cost-counting.
+
+## Open campaign decisions
+
+> ### ask: refusal-cost-counting — how will accepted over-refusal be visible?
 >
-> You accepted the bind-time constant refusals twice (2026-08-24, re-affirmed
-> 2026-08-25 on corrected facts). The RFC justifies the accepted cost three times by
-> asserting the campaign will measure it:
+> The 2026-08-24 refusal decision, reaffirmed 2026-08-25, assumed the campaign records
+> refusal where DuckDB serves. Claim: refusal-absorb shows that it cannot.
 >
-> - `rfcs/2026-08-19-keep-the-bind-time-refusals.md:95-96` — "Under the fuzzer's
->   refusal-absorb rule (a refusal is acceptable **where the oracle traps**)"
-> - `:100-102` — "A campaign that generates those shapes will (correctly) log
->   refuse-where-oracle-serves findings"
-> - `:146-149` — "a campaign that generates them will log severity-4 findings, which
->   are attributed to this RFC"
+> Choose one:
 >
-> Verified: it cannot. The absorb rule in code is **total, not conditional**
-> (claim: refusal-absorb) — a refusal is absorbed even when both oracle readings serve
-> rows — and `REFUSED` never reaches the findings file. The decision itself is not in
-> question; only whether its price is observable.
+> 1. split `REFUSED` into `REFUSED_ORACLE_SERVES` and `REFUSED_ORACLE_TRAPS`, and add the
+>    former to `INTERESTING`; or
+> 2. amend the decision to state that the accepted cost is unmeasured.
 >
-> **(a) Split the verdict** so the cost becomes measurable:
->
-> ```python
-> # fuzz.oracle.run_case, replacing the refusal return quoted in claim: refusal-absorb
-> if fn_cl is None:
->     klass = _refusal_class(cl_err)
->     oracle_serves = duck_off[0] is not None
->     kind = "REFUSED_ORACLE_SERVES" if oracle_serves else "REFUSED_ORACLE_TRAPS"
->     return Verdict(kind, klass, cl_err, tags)
-> ```
->
-> with `REFUSED_ORACLE_SERVES` added to `runner.INTERESTING`. Three lines. It may
-> reveal the class is larger than assumed, which is the point.
->
-> **(b) Amend the RFC** to say the cost is accepted unmeasured. Honest and free.
->
-> Not applied here — docs-only. Proposed ticket: split-refused-verdict.
->
-> *Binds:* claim: refusal-absorb, divergence: bind-time-constant-refusals, and the
-> severity ladder's rung 4 in section 8.
+> The accepted refusal itself is not reopened. Proposed implementation:
+> **ticket: split-refused-verdict**. This binds claim: refusal-absorb,
+> divergence: bind-time-constant-refusals, and severity rung 4.
 
-> ### ask: opt-emulated-branch — `OPT_EMULATED` gets `AGREE` treatment at one branch
+> ### ask: opt-emulated-branch — should `OPT_EMULATED` receive self-legs?
 >
-> Behaviorally the code is on the "bug" side everywhere
-> (claim: opt-emulated-classification) except one branch, where `OPT_EMULATED` is
-> grouped with `AGREE` for the purpose of running the boundary legs:
+> `run_case` currently continues into boundary self-legs for `OPT_EMULATED`, alongside
+> `AGREE` and `UNSHIPPED`. `UNSHIPPED` has a recorded reason: an unshipped DuckDB width
+> cannot excuse inconsistency between confit paths. No equivalent reason is recorded for
+> `OPT_EMULATED`.
 >
-> ```python
-> # fuzz.oracle.run_case, just before the boundary legs
-> if v.kind not in ("AGREE", "OPT_EMULATED", "UNSHIPPED"):
->     return v
-> ```
->
-> Deliberate — run the extra legs anyway, since the values matched *something* — or a
-> survivor of the pre-2026-08-17 doctrine, when `OPT_EMULATED` meant expected? One fact
-> has arrived since this was first asked: `UNSHIPPED` joined the same branch **on a
-> stated ground** — the boundary legs are ours-against-ours with no DuckDB in them, so
-> an unshipped width cannot excuse a self-inconsistency (claim: unshipped-verdict). That
-> ground does not transfer to `OPT_EMULATED`, which is a DuckDB disagreement, so the
-> branch now holds one member with a reason and one without.
->
-> One recorded fact the ruling should have: the **only** observed `OPT_EMULATED`
-> instance outside regex was a **mislabel, not an emulation**. Seed 1784's `FETCH FIRST
-> 1 ROWS ONLY` without an `ORDER BY` had the two DuckDB reads lawfully pick different
-> groups, and the triage records it as "mislabelled by this category because the
-> readings disagree with each other" — filed as fuzzer QoL for TASK-94, not as a bug in
-> the engine (`packages/confit/docs/2026-08-17-fuzz-triage.md:89-94`).
-> claim: opt-emulated-classification's "a bug, not an accepted class" is the right rule
-> and has never yet had a true positive.
->
-> *Binds:* claim: opt-emulated-classification.
+> Rule whether this continuation is deliberate or stale. The only observed non-regex
+> `OPT_EMULATED`, seed 1784, was a misclassification caused by unordered
+> `FETCH FIRST 1 ROWS ONLY`; no true positive is recorded. This binds claim:
+> opt-emulated-classification.
 
-> ### ask: reason-code-visibility — do abstention and refusal reason codes become user-visible?
+> ### ask: reason-code-visibility — where do reason codes live?
 >
-> If a reason-code vocabulary (`unspecified-order`, `tie-break`, `fp-association`,
-> `session-dependent`, `oracle-errored`) is adopted for campaign reporting and the
-> ledger, it must not leak into build-error text without your explicit approval —
-> refusal messages are product surface and fall under the API-change rule. Cleanest
-> split, and my recommendation: internal codes for the ledger and reports, existing
-> prose refusal messages unchanged.
->
-> *Binds:* claim: refusal-message-prefixes.
+> If codes such as `unspecified-order`, `tie-break`, `fp-association`,
+> `session-dependent`, and `oracle-errored` are adopted, choose whether they remain
+> internal report/ledger vocabulary or enter user-facing build errors. The current
+> recommendation is to keep them internal unless an API decision changes refusal text.
+> This binds claim: refusal-message-prefixes.
 
----
+The [decision index](12-ask-index.md) summarizes these asks; the full questions live here.

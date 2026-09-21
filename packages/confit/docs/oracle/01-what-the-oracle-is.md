@@ -1,276 +1,144 @@
-## 1. What the oracle is
+# Reference rationale and enforcement
 
-### 1.1 It is a pseudo-oracle
+The concise oracle definition lives in [README.md](README.md). This chapter explains why
+that reference was chosen, how repository comparisons reach it, and where enforcement is
+still incomplete. It does not define an alternative configuration.
 
-**claim: pseudo-oracle.** The oracle answers exactly one question: *does confit produce
-the same answer as this DuckDB build, run this way?* It never answers *is this correct?*
-Authority is delegated to a reference implementation, so DuckDB's bugs are inherited by
-construction and reproducing one is conformance, not a defect. An argument that DuckDB's
-answer is wrong is out of scope of this document by design; it is an upstream matter,
-and it changes nothing here until the pinned build changes.
-*Verified-by:* the two-outcome contract,
-`packages/confit/docs/reports/pins-first-methodology.md:5-16`; P18 in
-`packages/confit/docs/properties.md:231-235`.
+## Why the optimizer is disabled
 
-**claim: oracle-identity.** The oracle is one constant, and both halves are
-load-bearing:
+**claim: optimizer-on-reading.** Optimizer-on DuckDB is not always a function of the
+query and current rows. `statistics_propagation` can read stored column statistics, so
+two tables with identical contents but different insert/delete histories can answer the
+same query differently. Confit compiles against a schema and cannot reproduce that table
+history.
 
-```
-ORACLE = DuckDB 1.5.5, PRAGMA disable_optimizer, all other settings default
-```
-
-Neither half is a per-test choice, a per-campaign flag, or a thing a caller may
-vary. A comparison run against anything else is not a comparison against the oracle.
-*Enforced-by:* `confit.oracle.Oracle.__init__` — the constructor applies the pragma,
-and it is the only way to build an oracle.
-*Verified-by:* the **pragma** half at
-`packages/confit/tests/test_oracle.py::test_construction_applies_the_pragma` (the probe
-is plan-shaped, because `PRAGMA disable_optimizer` writes no setting `current_setting`
-can read back). The **version** half is recorded as `Oracle.VERSION` and asserted
-nowhere — see claim: oracle-version-constant. The **"all other settings default"** half
-is `Unverified` and is measurably weaker than it reads: DuckDB's `threads` default is
-derived from core count (measured 12 on this machine), and it changes answers — see
-claim: threads-setting and ask: threads-and-value-order.
-
-### 1.2 Why optimizer-off
-
-**claim: optimizer-on-reading.** The optimizer-on reading is not a function of the
-query, so it cannot be a target. `statistics_propagation` reads a column's stored null
-statistic, so DuckDB answers the same query over the same rows differently depending on
-the table's insert history — measured: a table built as `[-128, NULL]` with the NULL
-then deleted answers differently from one built as `[-128]`, with identical contents.
-confit compiles once against a *schema* and serves many batches; it never sees a table,
-let alone its history.
-*Verified-by:* `packages/confit/tests/known_divergences/test_trap_elision.py`;
+*Evidence:* `packages/confit/tests/known_divergences/test_trap_elision.py` and
 `packages/confit/docs/known-limitations.md:32-39`.
 
-**claim: unoptimized-verifier.** Optimizer-off is a *sanctioned* reference leg upstream,
-not our invention. `PRAGMA enable_verification` registers an `UNOPTIMIZED` statement
-verifier alongside COPIED / DESERIALIZED / NO_OPERATOR_CACHING and compares its result
-against the original's; the function's own comment states the purpose as "Correctness of
-plans both with and without optimizers". DuckDB itself treats disagreement between the
-two legs as a bug in DuckDB.
-*Verified-by:* DuckDB v1.5.5 source, `src/function/pragma/pragma_functions.cpp:134`
-(`enable_verification` pragma), `src/main/client_verify.cpp:45` (the comment), `:55`
-(the UNOPTIMIZED verifier), `:187` -> `src/verification/statement_verifier.cpp:155`
-(`CompareResults`).
+**claim: unoptimized-verifier.** Optimizer-off is also an upstream DuckDB verification
+leg. `PRAGMA enable_verification` registers an `UNOPTIMIZED` verifier and compares its
+result with the original plan; DuckDB describes this as checking correctness with and
+without optimizers.
 
-**claim: disable-optimizer-scope.** What `PRAGMA disable_optimizer` removes, precisely.
-It disables the 33 named optimizer passes (`OptimizerType` enumerates
-`EXPRESSION_REWRITER = 1` through `WINDOW_SELF_JOIN = 33`), **and additionally** changes
-behavior at **twelve** sites that read `enable_optimizer` directly, outside the pass
-list, in three groups:
+*Evidence:* DuckDB v1.5.5
+`src/function/pragma/pragma_functions.cpp:134`,
+`src/main/client_verify.cpp:45,55,187`, and
+`src/verification/statement_verifier.cpp:155`.
 
-| group | sites | what changes with the optimizer off |
+**claim: disable-optimizer-scope.** `PRAGMA disable_optimizer` disables more than the 33
+named `OptimizerType` passes. In DuckDB v1.5.5, twelve additional source sites read
+`enable_optimizer` directly:
+
+| area | sites | observed effect |
 |---|---|---|
-| physical-operator selection | `plan_distinct.cpp:66`, `plan_window.cpp:31` (read into a local, used at `:35` — **one** site, two lines), `sorted_aggregate_function.cpp:686` and `:744` (both reached from `plan_aggregate.cpp:318`) | the DISTINCT-ON ordered-aggregate rewrite, streaming-vs-blocking window operators, sorted-aggregate `ORDER BY` simplification in two places |
-| window-function execution | `window_aggregate_function.cpp:32` and `:56`, `window_rank_function.cpp:24`, `window_rownumber_function.cpp:26`, `window_value_function.cpp:207` and `:849` | window aggregation strategy and the rank/rownumber/value fast paths |
-| logical-plan construction inside the binder | `plan_subquery.cpp:255`, `plan_joinref.cpp:411` | with the optimizer off, correlated subqueries **always** take a delim join; and a `RIGHT` outer join is **not** flipped to a `LEFT` with the sides swapped |
+| physical selection | `plan_distinct.cpp:66`; `plan_window.cpp:31,35`; `sorted_aggregate_function.cpp:686,744` via `plan_aggregate.cpp:318` | DISTINCT-ON rewrite, window operator choice, sorted-aggregate simplification |
+| window execution | `window_aggregate_function.cpp:32,56`; `window_rank_function.cpp:24`; `window_rownumber_function.cpp:26`; `window_value_function.cpp:207,849` | aggregate strategy and rank/row-number/value fast paths |
+| logical-plan construction | `plan_subquery.cpp:255`; `plan_joinref.cpp:411` | delim-join choice and whether a RIGHT join is flipped |
 
-What is genuinely untouched is **expression binding**: nothing in name resolution,
-overload selection or type inference reads the flag, so output types and bind-time
-errors are identical, and so is execution-level laziness (an untaken `CASE` arm,
-`AND`/`OR` short-circuit in a filter). The two `src/planner/binder/` sites are logical
-*plan* construction performed by the binder, not binding, which is why types survive
-them — but "none in binding" is the wrong sentence for them, and the join flip is the
-axis that claim: join-output-order says decides hash-join output order. Both are
-reachable from the **row path**, not only from the static-tables-only path.
-*Verified-by:* DuckDB v1.5.5 source,
-`src/include/duckdb/common/enums/optimizer_type.hpp:16-50` (33 members;
-`EXPRESSION_REWRITER = 1` at `:18`, `WINDOW_SELF_JOIN = 33` at `:50`); the twelve
-sites above, enumerated by grep over `src/` 2026-08-25, each line read — thirteen line
-references, because `plan_window.cpp:31` and `:35` are one site.
-*Correction, two parts, both against `confit/oracle.py`'s module docstring — which is
-where the rationale now lives.* (a) "`PRAGMA disable_optimizer` == disabling all 33
-named optimizers" (and `known-limitations.md:30`'s "What it removes is the 33
-plan-rewrite passes") is incomplete by these twelve sites. (b) "constant folding still
-happens (`1 + 2` is int32 3)" is true as an **observation** and wrong as a
-**mechanism**: DuckDB's only constant folder is
-`src/optimizer/rule/constant_folding.cpp`, an `EXPRESSION_REWRITER` rule, so the pragma
-removes it — `1 + 2` is still int32 3 because the expression is evaluated at run time
-instead of folded into the plan. Where that distinction is observable, it is observable:
-`SELECT 2147483647 + 1 ... LIMIT 0` errors with the optimizer off and serves `[]` with
-it on, because with the optimizer on the plan collapses to `EMPTY_RESULT`.
-claim: phase-separated-probes' own source says the same thing. See proposed
-ticket: oracle-docstring-corrections.
+Expression binding, overload selection, type inference, and execution-level laziness do
+not read this flag. The binder-directory sites above construct logical plans; they do
+not change binding semantics. The join flip can change hash-join output order; the
+[ordering contract](03-nondeterminism.md) separates DuckDB multiset parity from
+confit's serving-order promise.
 
-**claim: contract-surface-gap.** The user-facing contract still names what a user's
-DuckDB returns, which is optimizer-*on*. The gap between the two readings is therefore
-user-visible and stays a reported finding (`DIVERGE_OPT`) rather than an accepted class.
-The oracle and the contract surface are deliberately not the same thing.
-*Enforced-by:* `fuzz.runner.INTERESTING` (which contains `DIVERGE_OPT`).
-*Verified-by:* the *kind* exists and is reachable —
-`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`
-(`v.kind in oracle.KINDS`). Its **membership in `INTERESTING`** is `Unverified`: no test
-in `packages/confit/tests/` imports `fuzz.runner` at all (measured 2026-09-02), so
-deleting `DIVERGE_OPT` from that tuple breaks nothing. Proposed
-ticket: verdict-tuple-test.
+Disabling the optimizer also disables DuckDB's constant-folding rewrite. `SELECT 1 + 2`
+still returns `3`, but by execution rather than that optimizer rule. This is observable
+for `2147483647 + 1 ... LIMIT 0`, where optimizer-on can replace the plan with
+`EMPTY_RESULT`.
 
-### 1.3 How the identity is enforced
+*Evidence:* DuckDB v1.5.5
+`src/include/duckdb/common/enums/optimizer_type.hpp:16-50` and the sites above, inspected
+2026-08-25. Proposed corrections to older summaries are tracked by
+**ticket: oracle-docstring-corrections** and **claim: phase-separated-probes**.
 
-**claim: no-raw-connections.** Everything that compares against DuckDB gets its
-connection from `confit.oracle.Oracle`, and a raw `duckdb.connect(` anywhere in `tests/`
-or `fuzz/` is a gate failure. The oracle is a property of the repo rather than a
-per-call-site choice that can be forgotten, and a new comparison site gets the oracle by
-construction.
-*Enforced-by:* `confit.oracle.Oracle.__init__`; the ban itself is read off the
-**sources** rather than applied at run time, because the door is shared — see
-claim: one-door-bypass.
-*Verified-by:*
-`packages/confit/tests/test_oracle.py::test_no_raw_connections_in_the_sources`, which
-walks `tests/**/*.py` and `fuzz/**/*.py` and so also covers the tests a run never
-reaches.
+## How comparison code reaches the reference
 
-**claim: one-door-bypass.** **[FACT]** On the **comparison** path the one-door property
-has exactly **one** known bypass, and it is the engine's own. `eval_static_only`
-(`packages/confit/src/duckdb/mod.rs:1178`) folds a static-tables-only query at build
-time by calling `duckdb.connect()` itself, with the optimizer **on**, which is what
-production does; the oracle it is then compared against is optimizer-off. Pin *capture*
-is a second, separate family and is outside claim: no-raw-connections' `tests/` and
-`fuzz/` scope entirely — claim: capture-outside-the-oracle counts four `scripts/`
-connects there, and none of them is covered by this claim.
+**claim: no-raw-connections.** Comparison code in `tests/` and `fuzz/` obtains DuckDB
+through `confit.oracle.Oracle`. A source gate rejects raw `duckdb.connect(` calls in
+those trees.
 
-The bypass is why the ban on raw connections cannot be a runtime patch of
-`duckdb.connect`: a Python frame cannot tell the engine's fold from a test's connection,
-so a patch either refuses the engine's own fold or silently folds those queries
-optimizer-off while production folds them optimizer-on. The second is what the deleted
-autouse fixture did.
-*Verified-by:* `packages/confit/src/duckdb/mod.rs`, `eval_static_only` — the bare
-`connect` at `:1184` with no pragma, which is the fact itself. The
-*frame-indistinguishability* measurement behind the second paragraph is recorded only in
-`packages/confit/tests/conftest.py`'s module docstring (`:7-19`), so by the front
-matter's rule that half reads `Unverified`: nothing fails if it stops being true.
-*Measured in part, and the half a ruling turns on is still the missing one.* One bounded
-measurement of observability exists, and it is the campaign's static-only leg: that leg
-**is** this comparison, grading the engine's optimizer-on fold against both oracle
-readings, and over seeds 0-1999 all **35** static-only cases that build agree under both
-readings with 0 schema deltas (the other 28 refuse at build). Its limits are the point:
-that is one generated grammar — aggregates over static columns, no literals — not a run
-of the suite. **No run of the suite under both readings is recorded anywhere in the
-tree** — searched 2026-09-02 across `packages/confit/docs/`, `backlog/` and the tests. So
-observability beyond the campaign grammar is still an assumption, and
-ask: engine-fold-reading should not be answered on it.
-*Verified-by (the campaign half):* the leg's nature is pinned by
-`packages/confit/tests/test_fuzz_smoke.py::test_the_static_only_leg_has_no_unshipped_width_to_classify`;
-the 35/35 count is a dated measurement (2026-09-02, seeds 0-1999), not a gate.
-*Status:* stated, not ruled. See ask: engine-fold-reading.
+*Enforced-by:* `confit.oracle.Oracle.__init__` and
+`packages/confit/tests/test_oracle.py::test_no_raw_connections_in_the_sources`.
 
-> ### ask: engine-fold-reading — does the engine's build-time fold move to the oracle's reading?
+**claim: optimizer-flip-in-place.** A comparison that also needs the ordinary
+optimizer-on reading calls `Oracle.optimizer_on()` on the same connection. Reusing the
+connection holds loaded tables and their statistics fixed, so the bracket measures the
+optimizer rather than two table histories.
+
+*Evidence:* `packages/confit/tests/test_oracle.py::test_optimizer_on_flips_the_same_connection`,
+`packages/confit/tests/known_divergences/test_trap_elision.py`, and
+`fuzz.oracle._duck_run`. [Campaign verdicts](04-verdicts-agreement-abstention-refusal.md)
+define the consequence of comparing both readings.
+
+
+**claim: contract-surface-gap.** Ordinary DuckDB has the optimizer on. A case where
+confit agrees with the optimizer-off reference but differs from optimizer-on DuckDB is
+reported as `DIVERGE_OPT`, not accepted as agreement with both surfaces.
+
+*Enforced-by:* `fuzz.oracle.run_case`; `fuzz.runner.INTERESTING` is the intended findings
+membership.
+*Evidence:* emission is covered by
+`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
+No test imports `fuzz.runner`, so findings membership remains **Unverified**; see
+**ticket: verdict-tuple-test**.
+
+## Known identity-enforcement gaps
+
+**claim: oracle-version-constant.** **[FACT]** `Oracle.VERSION` records `"1.5.5"`, but
+construction does not compare it with `duckdb.__version__`. The root and
+`packages/sql-transform` manifests use `duckdb>=1.5.5`,
+`packages/confit/pyproject.toml` declares only `pyarrow>=19.0`, and `uv.lock` currently
+resolves DuckDB 1.5.5. A lock upgrade can therefore move the executable reference
+without an assertion.
+
+*Evidence:* `packages/confit/confit/oracle.py:74-82`; the cited manifests; and
+`uv.lock:368-370`. No test reads `Oracle.VERSION`.
+
+> ### ask: version-pin — which version policy becomes enforceable?
 >
-> claim: one-door-bypass is a fact, not a disposition. The engine folds a static-only
-> query with the optimizer ON (production's reading), and every gate then compares that
-> frozen answer against an optimizer-OFF oracle. This is a question about which reading
-> the frozen artifact is *supposed* to be. Three shapes it could take: the fold stays
-> optimizer-on and the spec says the constant path deliberately freezes the user-visible
-> reading (claim: contract-surface-gap's surface, not claim: oracle-identity's oracle);
-> the fold moves to optimizer-off so that one identity covers both paths; or the
-> difference is declared unobservable and gated by a test that says so.
+> Choose both:
 >
-> **First, the measurement — taken in part, and the cheap remainder is still cheap.**
-> The campaign's static-only leg already runs this comparison, and it bounds the answer
-> inside the generated grammar: 35 of 35 static-only cases that build over seeds 0-1999
-> agree across both readings, with 0 schema deltas (claim: one-door-bypass). That grammar
-> reaches aggregates over static columns and nothing else, so it is evidence that the
-> difference is hard to observe, not evidence that it is unobservable. Whether the two
-> readings differ on today's **suite** is still unrecorded, and the third option above
-> cannot be chosen without it — a test asserting unobservability is only writable once
-> someone has run the suite both ways. It is one pragma in `eval_static_only` and one
-> run.
+> 1. hard-pin `duckdb==1.5.5`, or retain a dependency floor and assert
+>    `duckdb.__version__ == Oracle.VERSION` in `Oracle.__init__`; and
+> 2. retain 1.5.5, or deliberately move to LTS; the broader
+>    [version-change workflow](09-version-bumps-and-mutability.md) remains proposed.
 >
-> Whichever way it goes, the answer belongs in claim: oracle-identity, because today the
-> constant is stated as though it had no exceptions.
->
-> *Binds:* claim: oracle-identity, claim: contract-surface-gap,
-> claim: no-raw-connections, claim: row-limit-refusal,
-> claim: build-vs-build-repeatability, claim: duckdb-three-roles' role (b),
-> claim: one-door-bypass.
+> This binds the README identity, claim: oracle-version-constant,
+> claim: capture-outside-the-oracle, and every pin. See the [decision index](12-ask-index.md).
 
-**claim: optimizer-flip-in-place.** A caller that *wants* the optimizer says so in its
-own body, which reads as the deliberate exception it is. The flip happens in place, on
-the same connection, so that the two readings of a differential comparison cannot differ
-because `statistics_propagation` read different per-column statistics.
-*Enforced-by:* `confit.oracle.Oracle.optimizer_on`.
-*Verified-by:*
-`packages/confit/tests/test_oracle.py::test_optimizer_on_flips_the_same_connection`;
-`packages/confit/tests/known_divergences/test_trap_elision.py:458, :560` holds exactly
-two such exceptions and is the test that documents what the optimizer does. Measured
-2026-09-02, `optimizer_on` has exactly four call sites: those two, the campaign's
-`fuzz.oracle._duck_run:433`, and the flip's own test above.
+**claim: one-door-bypass.** **[FACT, current implementation only]** The legacy
+static-only engine path is the comparison-path bypass: `eval_static_only` calls
+`duckdb.connect()` directly and folds with the optimizer on. The target now refuses
+queries that read no request table, but that removal is not implemented; the remaining
+path is **gap: static-only-fold**. Pin-capture scripts are a separate family described by
+**claim: capture-outside-the-oracle**.
 
-**claim: oracle-version-constant.** **[FACT]** The version half of the identity is
-**recorded, not asserted**. `confit.oracle.Oracle.VERSION` is `"1.5.5"` and nothing
-compares it to `duckdb.__version__`; the manifests declare a floor (`duckdb>=1.5.5` at
-`pyproject.toml:15` and `packages/sql-transform/pyproject.toml:10`;
-`packages/confit/pyproject.toml` declares no duckdb dependency at all), and only
-`uv.lock` resolves 1.5.5 exactly. A `uv lock --upgrade` silently re-points the oracle
-and no gate notices. **36 markdown files outside `backlog/`** name DuckDB 1.5.5 in prose
-(48 counting `backlog/`), measured 2026-08-25.
-*Verified-by:* `packages/confit/confit/oracle.py:74-76` (the constant and the comment
-reserving the assert — source, not prose); measured 2026-08-25 — `pyproject.toml:15`,
-`packages/sql-transform/pyproject.toml:10`, `packages/confit/pyproject.toml`
-(dependencies: `pyarrow>=19.0` only), `uv.lock:368-370`. No test in
-`packages/confit/tests/` reads `Oracle.VERSION`. The fix is ask: version-pin.
+*Evidence:* `packages/confit/src/duckdb/mod.rs:1173-1203,1707-1743` and the
+[fold-retirement decision](../decisions/trustworthy-fold.md). The decision record is the
+sole history of alternatives considered for this fold.
 
-> ### ask: version-pin — pin `==1.5.5` or keep the floor; and 1.5.5 or the LTS line?
->
-> **(a)** Hard-pin `duckdb==1.5.5` in the manifests, or keep the floor and assert. The
-> landing spot is reserved and is one line in `Oracle.__init__`, beside the pragma it
-> already applies:
->
-> ```python
-> assert duckdb.__version__ == VERSION, f"oracle is {VERSION}, got {duckdb.__version__}"
-> ```
->
-> **(b)** 1.5.5, or the LTS line? DuckDB ships minor versions on a roughly 4-month
-> cadence, semantics have already moved inside a patch release, and v2.0 brings a new
-> SQL parser. Section 9's bump protocol is cheap now and expensive during a migration;
-> which version it targets is your call.
->
-> *Binds:* claim: oracle-identity, claim: oracle-version-constant,
-> claim: capture-outside-the-oracle, and every pin in the corpus.
+## Nearby DuckDB uses with different contracts
 
-### 1.4 The three excluded neighbours
+**claim: fit-serving-oracle.** `sql_transform`'s fit/serving checks are independent.
+Its projection path uses optimizer-on DuckDB with `SET threads = 1`; training round-trip
+and transformer parity are defined in
+[success measures](../specs/success-measures.md). Fit reproducibility is not a v0
+contract.
 
-**claim: fit-serving-oracle.** The **fit/serving oracle** is out of scope here.
-`sql_transform`'s projection path runs DuckDB with the optimizer **on** and at `SET
-threads = 1`, and its parity targets are KPI C1 (fit + serving over the training set is
-bit-exact against the original SQL) and KPI C4 (transformer columns, which DuckDB cannot
-run at all, gate against an independent clone-per-group sklearn reference). Fit
-reproducibility itself is explicitly out of contract in v0. None of that is this
-document's oracle, and none of it is a gap here.
-*Verified-by:* `packages/sql-transform/sql_transform/_projection.py:188-189, :410`
-(`SET threads = 1`); `packages/confit/docs/goal.md` kpi: training-round-trip (C1) and
-kpi: transformer-parity (C4); `packages/confit/docs/properties.md:118-121` (P11);
-`docs/specs/2026-08-05-fit-transform-split-design.md:124` and P16 (fit reproducibility
-is practice, not contract).
+*Evidence:* `packages/sql-transform/sql_transform/_projection.py:188-189,410` and P11,
+P16 in `packages/confit/docs/properties.md`.
 
-**claim: dialect-gate-oracle.** The **dialect gates** are out of scope here, and they
-run a *second* pinned oracle: the L3 gate executes the printed query on Spark under a
-pinned configuration (`ansi=true`, UTC, `local[1]`, pinned in
-`pins-dialect/spark-ansi.json`), compares column names plus the row multiset, keeps an
-exact tier with a *designed* epsilon tier reserved for float-accumulation aggregates
-("extend `rows_of`, do not weaken the exact tier"), skips loudly without BigQuery
-credentials, and carries a **ratchet**: "The match floor is the measured count at
-introduction — raise it when the surface grows, never lower it." Two of this document's
-open questions have their nearest precedent here — a tiered comparison
-(ask: float-tolerance-list) and a ratchet (ask: match-count-ratchet).
-*Verified-by:* `packages/confit/tests/test_dialect_cross_engine_gate.py:1-31`;
-`packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md:32-36, :244-248`
-(the per-dialect oracle identity table, including BigQuery as "unversionable").
+**claim: dialect-gate-oracle.** Dialect gates have their own pinned targets. Spark L3
+uses ANSI mode, UTC, `local[1]`, and `pins-dialect/spark-ansi.json`; it compares names
+and row multisets. Exact comparison is separate from its reserved float-accumulation
+epsilon tier. BigQuery skips loudly without credentials and is recorded as
+unversionable. The Spark support floor is a ratchet, and the corpus gate currently uses
+the same mechanism with `MATCH_FLOOR = 547`; broader acceptance policy remains open.
 
-**claim: duckdb-three-roles.** DuckDB fills **three** roles in this project and this
-document defines only one of them. Besides the differential oracle it is (a) the
-**parser and printer** — `json_serialize_sql` / `json_deserialize_sql`, pinned per
-DuckDB version in `sql_transform/model/_shapes.json`, with the corollary that an
-identifier means what the oracle binds; and (b) the **build-time evaluator** on the
-static-tables-only path, where the query is handed to DuckDB once at build and the
-answer frozen. Role (b) is why claim: row-limit-refusal and
-claim: build-vs-build-repeatability exist at all: on that path parity is *identity*, not
-comparison — and it is the one place the engine opens its own DuckDB connection, which
-is claim: one-door-bypass.
-*Verified-by:* `packages/confit/docs/properties.md:86-112` (P9, role (a));
-`scripts/pin_ast_shapes.py`; `packages/confit/src/duckdb/mod.rs` `eval_static_only`,
-`packages/confit/docs/known-limitations.md:109-112`, and the founding design
-`packages/confit/docs/specs/2026-07-25-sql-specializer-design.md:97` (three roles).
+*Evidence:* `packages/confit/tests/test_dialect_cross_engine_gate.py:1-31`,
+`packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md:32-36,244-248`,
+and `packages/confit/tests/test_corpus_replay.py:18-24,39-47,205-209`.
 
----
+DuckDB also supplies the parser/printer used by `sql_transform`; serialized shapes are
+pinned per DuckDB version in `sql_transform/model/_shapes.json`. That role does not make
+parser shape capture a differential-oracle comparison.

@@ -4,6 +4,12 @@ status: decided
 date: 2026-09-10
 decided: 2026-09-21
 ---
+
+Current definitions: [scope](../goal.md#scope),
+[reduction bound](../oracle/05-the-comparison-contract.md), and
+[success measures](../specs/success-measures.md). The decision and its historical
+options below are unchanged.
+
 ## Context
 
 A static-tables-only query is evaluated once at build by DuckDB and frozen; serving

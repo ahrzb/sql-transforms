@@ -1,87 +1,61 @@
-## 6. Pins
+# Pins
 
-### 6.1 What a pin is
+Pins are measured oracle evidence. They do not define confit's implementation or turn an
+unmeasured generalization into oracle behavior.
 
-**claim: pin-as-data.** A pin is **one measured oracle fact**: a behavioral claim backed
-by the exact SQL that was run and the exact result that came back — query text, input
-reprs, result reprs, float bit patterns, verbatim error heads. A pin is spec-as-data. It
-is not a test of our code; it is a recording of the oracle's answer, which our code is
-then written to.
-*Verified-by:* `packages/confit/docs/reports/pins-first-methodology.md:20-22`;
-the corpus at `packages/confit/docs/specs/pins-*/` (53 files measured 2026-08-25).
+## What a pin establishes
 
-**claim: no-semantics-from-memory.** Pins-first: **no semantics are implemented from
-memory, documentation, or intuition — only from executed queries against the oracle,
-recorded verbatim.** Implementation starts only after the pins exist. A summary sentence
-with no query behind it is treated as a guess.
-*Verified-by:* `packages/confit/docs/reports/pins-first-methodology.md:20-22, :28`.
+**claim: pin-as-data.** A pin records the exact SQL and inputs sent to DuckDB and the
+exact answer returned, including reprs, float bits, or verbatim error heads when those
+details matter. It specifies an oracle fact; it is not a test of confit.
 
-**claim: over-generalized-summary.** The rule was bought, not designed. During wave 3 a
-fleet summary claimed `%`-by-zero returns NULL, generalizing from integer probes; the
-DOUBLE case was never run and returns NaN. The correction is appended to the pin file
-with the honest note that "raw probes never covered this cell ... the summary
-over-generalized", and every wave dispatched since carries the rule explicitly.
-*Verified-by:* `packages/confit/docs/specs/pins-wave3/math_tail.json` (the
-`corrections` key); `packages/confit/docs/reports/pins-first-methodology.md:24-28`.
+**claim: no-semantics-from-memory.** Implement semantics only after recording an
+executed oracle query. Documentation, memory, intuition, and unsupported summaries are
+not measurements. **claim: over-generalized-summary** is the concrete warning: a wave-3
+summary extended integer `%`-by-zero results to DOUBLE without probing it. The integers
+return NULL, the missed DOUBLE case returns NaN, and
+`docs/specs/pins-wave3/math_tail.json` now records both the correction and the original
+coverage gap.
 
-**claim: phase-separated-probes.** Phase separation is required for any claim about
-*when* DuckDB does something. `con.execute` conflates prepare and execute, so a
-bind-time claim needs a PREPARE/EXECUTE split, a zero-row leg, and the pinned source.
-This is the same genus as the wave-3 incident with a larger blast radius: it killed the
-stated premise of an already-accepted RFC.
-*Scope, precisely:* `confit.oracle.Oracle.answer` is one `con.execute`, so it inherits
-the conflation by construction — that is the right shape for a value claim and the wrong
-tool for a phase claim. A phase claim goes through the connection directly (the
-`__getattr__` passthrough exists so no wrapper has to be invented for it) and says in
-the pin which phase it measured.
-*Verified-by:*
-`packages/confit/docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58` (the
-corrected facts, and the phase-confusion admission at `:31-35`);
-`packages/confit/tests/test_oracle.py::test_connection_passthrough`.
-*Note:* this rule lives in memory and in one RFC's body. The methodology report owns
-"how we measure DuckDB" and does not carry it. Proposed
-ticket: phase-probing-in-methodology.
+*Evidence:* `docs/reports/pins-first-methodology.md:20-28`; the pin corpus under
+`docs/specs/pins-*/` (inventory measured 2026-08-25).
 
-### 6.2 Provenance
+**claim: phase-separated-probes.** A claim about *when* DuckDB acts needs a
+phase-separated probe. Because `con.execute` combines preparation and execution, a
+bind-time claim requires PREPARE/EXECUTE, a zero-row leg, a pinned source, and the
+measured phase. Value probes may use `confit.oracle.Oracle.answer`; phase probes may use
+the underlying connection.
 
-**claim: pin-provenance.** A pin's provenance is what makes a disagreement
-re-verifiable: without the oracle version that produced a recorded answer, a future
-disagreement cannot be re-run, only argued about. The version a pin should carry now has
-a name in code — `confit.oracle.Oracle.VERSION` — so "which oracle recorded this" and
-"which oracle is installed" are at least the same string in two places, even though
-nothing yet compares them (claim: oracle-version-constant). Measured state of the corpus
-today: of 53 pin files, **41 carry a `duckdb_version` field, 10 mention a capture date
-anywhere, and 3 mention a harness or commit**; the version field itself is free text
-with at least four spellings in use (`1.5.5`, `v1.5.5`, `v1.5.5 (python pkg 1.5.5)`, and
-a sentence).
-*Verified-by:* measured 2026-08-25 over `packages/confit/docs/specs/pins-*/*.json`.
-Best existing examples: `pins-dialect/joins.json` `_meta` (date, engine, task, spec,
-how) and `pins-waveB/fuzzer-task54.json` `meta` (task, measured, method, contract).
-*Proposed:* a uniform header — oracle version, settings profile, capture date, capture
-harness commit — on every pin file. Not applied here. Proposed
-ticket: uniform-pin-header.
+*Evidence:* `docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58`;
+`tests/test_oracle.py::test_connection_passthrough`. The methodology report does not yet
+state this rule; proposed **ticket: phase-probing-in-methodology** tracks that gap.
 
-**claim: generator-version-stamps.** Generation scripts already stamp the oracle version
-into their outputs, and two already say to regenerate after a duckdb bump — the right
-instinct, without a uniform shape and without covering the pins corpus.
-*Verified-by:* `scripts/pin_ast_shapes.py:29, :36`; `scripts/gen_casemap.py:152, :159`
-("regenerate after a duckdb bump"); `scripts/gen_strip_accents.py:135` (same).
+## Provenance required for replay
 
-**claim: pin-back-reference.** **[PROPOSED]** Not in force. Every pin carries a
-**decision back-reference** — the slug of the claim it evidences. This is the mechanical
-instrument for this project's own definition of completeness: with back-references,
-"decisions with zero pins" is the uncovered set and is computable in one query; without
-them, decision coverage is a promise nobody can audit. Slugs in this document are
-assigned once and never reused, precisely so a pin can point at one.
-*Verified-by:* Unverified — no pin carries such a field today (measured 2026-08-25).
-Proposed ticket: pin-decision-field.
+**claim: pin-provenance.** A replayable pin identifies the oracle version, settings
+profile, capture date, and capture-harness commit. `Oracle.VERSION` records an intended
+version but is not itself a runtime assertion (claim: oracle-version-constant).
 
-**claim: under-determined-token.** **[PROPOSED]** Not in force. The pin format gains an
-inline token for an under-determined field, so "this field is not part of the contract"
-or "this field is contract per-platform" is written *in the pin* rather than in prose
-beside it. claim: modulo-nan-sign is the existing instance and is currently a special
-case explained in a comment. Without a token, every re-measurement pass must re-derive
-which fields were deliberate.
-*Verified-by:* Unverified — no such token exists. Proposed ticket: pin-field-token.
+The 2026-08-25 inventory found 41 of 53 files with `duckdb_version`, 10 with a capture
+date, and 3 with a harness or commit; version spelling and metadata shape varied.
+`pins-dialect/joins.json` and `pins-waveB/fuzzer-task54.json` are concrete partial
+examples. **claim: generator-version-stamps** records the narrower existing practice:
+`pin_ast_shapes.py`, `gen_casemap.py`, and `gen_strip_accents.py` stamp a DuckDB version,
+and the latter two call for regeneration after a bump, but that does not standardize the
+pin corpus.
 
----
+*Evidence:* `scripts/pin_ast_shapes.py:29, :36`; `scripts/gen_casemap.py:152, :159`;
+`scripts/gen_strip_accents.py:135`; `docs/specs/pins-*/*.json` (measured 2026-08-25).
+Proposed **ticket: uniform-pin-header** covers the missing common header.
+
+## Metadata proposals
+
+Neither proposal below is in force.
+
+| proposal | proposed addition | ticket |
+|---|---|---|
+| **claim: pin-back-reference** | record the stable slug of the decision the pin evidences | **ticket: pin-decision-field** |
+| **claim: under-determined-token** | mark a field outside the contract or varying by a named discriminator such as platform | **ticket: pin-field-token** |
+
+No surveyed pin had either field on 2026-08-25. The current modulo-NaN-sign exception is
+explained beside the data and therefore does not supply a general token format.
