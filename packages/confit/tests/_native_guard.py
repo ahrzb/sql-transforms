@@ -63,12 +63,10 @@ def ensure_native_built() -> None:
         return
     maturin = _maturin()
     if maturin is None:
-        print(
-            "native guard: src/*.rs is newer than the built _engine, but "
-            "maturin was not found -- skipping rebuild (confit may be stale).",
-            file=sys.stderr,
+        raise RuntimeError(
+            "native guard: _engine is missing or stale and maturin is unavailable; "
+            "install the workspace dev dependencies before running tests"
         )
-        return
     print(
         "native guard: src/*.rs newer than _engine -- rebuilding "
         "(maturin develop, DEBUG profile; benchmarks will refuse this build "

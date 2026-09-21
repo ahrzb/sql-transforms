@@ -48,5 +48,6 @@ typing and rounding remain severity-2 features in flight on exactly those terms.
 counting the cost of conservative refusals is that same work, not another rule.
 The [policy decision](../decisions/oracle-policy.md#reporting-and-measurement)
 does not require a new verdict kind or make every such refusal a correctness defect.
-*Gap:* no refusal-reason summary is produced today, so divergence:
-bind-time-constant-refusals remains the live unmeasured case.
+The runner now summarizes refusal reasons with their reference outcomes. The remaining
+gap for divergence: bind-time-constant-refusals is a fresh family-specific measurement,
+not missing summary machinery.

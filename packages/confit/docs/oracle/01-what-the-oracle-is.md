@@ -49,17 +49,17 @@ for `2147483647 + 1 ... LIMIT 0`, where optimizer-on can replace the plan with
 
 *Evidence:* DuckDB v1.5.5
 `src/include/duckdb/common/enums/optimizer_type.hpp:16-50` and the sites above, inspected
-2026-08-25. Proposed corrections to older summaries are tracked by
-**ticket: oracle-docstring-corrections** and **claim: phase-separated-probes**.
+2026-08-25. The source summaries now use this narrower scope; phase-sensitive claims
+still require **claim: phase-separated-probes**.
 
 ## How comparison code reaches the reference
 
 **claim: no-raw-connections.** Comparison code in `tests/` and `fuzz/` obtains DuckDB
-through `confit.oracle.Oracle`. A source gate rejects raw `duckdb.connect(` calls in
-those trees.
+through `confit.oracle.Oracle`. This is a construction convention, not a source-text
+test or a global monkeypatch of DuckDB.
 
-*Enforced-by:* `confit.oracle.Oracle.__init__` and
-`packages/confit/tests/test_oracle.py::test_no_raw_connections_in_the_sources`.
+*Evidence:* the oracle fixture and `fuzz.oracle._duck_con`; constructor behavior is
+exercised by `packages/confit/tests/test_oracle.py`.
 
 **claim: optimizer-flip-in-place.** A comparison that also needs the ordinary
 optimizer-on reading calls `Oracle.optimizer_on()` on the same connection. Reusing the
@@ -76,24 +76,20 @@ define the consequence of comparing both readings.
 confit agrees with the optimizer-off reference but differs from optimizer-on DuckDB is
 reported as `DIVERGE_OPT`, not accepted as agreement with both surfaces.
 
-*Enforced-by:* `fuzz.oracle.run_case`; `fuzz.runner.INTERESTING` is the intended findings
-membership.
-*Evidence:* emission is covered by
-`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
-No test imports `fuzz.runner`, so findings membership remains **Unverified**; see
-**ticket: verdict-tuple-test**.
+*Enforced-by:* `fuzz.oracle.run_case` and `fuzz.runner.report`.
+*Evidence:* `test_verdicts_cover_the_contract_and_reproduce` exercises emission;
+`test_fuzz_runner.py::test_the_report_keeps_agreement_refusal_cost_and_unshipped_apart`
+checks persisted diagnostic findings and AGREE-only coverage.
 
-## Known identity-enforcement gaps
+## Reference identity and remaining gaps
 
-**claim: oracle-version-constant.** **[FACT]** `Oracle.VERSION` records `"1.5.5"`, but
-construction does not compare it with `duckdb.__version__`. The root and
-`packages/sql-transform` manifests use `duckdb>=1.5.5`,
-`packages/confit/pyproject.toml` declares only `pyarrow>=19.0`, and `uv.lock` currently
-resolves DuckDB 1.5.5. A lock upgrade can therefore move the executable reference
-without an assertion.
+**claim: oracle-version-constant.** `Oracle.__init__` rejects a runtime whose
+`duckdb.__version__` differs from `Oracle.VERSION` before opening a connection.
+The root dev environment pins `duckdb==1.5.5`; the published `sql-transform`
+dependency keeps its floor, and Confit's runtime dependencies remain unchanged.
 
-*Evidence:* `packages/confit/confit/oracle.py:74-82`; the cited manifests; and
-`uv.lock:368-370`. No test reads `Oracle.VERSION`.
+*Evidence:* `confit.oracle.Oracle.__init__`, root `pyproject.toml`, `uv.lock`, and
+`test_oracle.py::test_construction_refuses_a_duckdb_that_is_not_the_reference`.
 
 **claim: version-policy.** DuckDB 1.5.5 remains the reference. The reproducible
 oracle/test environment must pin that version exactly, and opening the oracle must
@@ -102,9 +98,8 @@ constrained by this rule. Leaving 1.5.5 is a separate reviewed reference change;
 the generic re-recording tools in [version changes](09-version-bumps-and-mutability.md)
 remain proposals, not prerequisites adopted by this rule.
 
-The assertion is the rule, not the current behavior: claim: oracle-version-constant
-above records **[FACT]** that construction still performs no comparison, and
-**ticket: version-assert** tracks the implementation.
+The guard is an explicit runtime check, so optimized Python cannot remove it.
+Version enforcement is implemented; historical pin provenance remains a separate gap.
 
 **claim: one-door-bypass.** **[FACT, current implementation only]** The legacy
 static-only engine path is the comparison-path bypass: `eval_static_only` calls

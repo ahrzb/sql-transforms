@@ -13,11 +13,11 @@ below are not evidence that this policy is still open.
 
 **claim: bump-object.** `confit.oracle.Oracle.VERSION` names the intended reference.
 A deliberate reference upgrade must update that identity along with its environment.
-Currently, the constant is not compared with `duckdb.__version__`, and pin provenance
-is partial, so the recorded identity is not fully enforced.
+The constructor now rejects a different installed version. Legacy pin provenance
+remains partial; runtime enforcement does not retroactively identify old captures.
 
-*Evidence:* `confit/oracle.py:74-76`; claim: oracle-version-constant; claim:
-pin-provenance.
+*Evidence:* `confit.oracle.Oracle.__init__`; claim: oracle-version-constant;
+claim: pin-provenance.
 
 **claim: pin-re-runnability.** **[FACT, measured 2026-08-25]** Re-recording first
 requires mechanical replay. The 53 pin files used 21 top-level shapes; claims appeared
@@ -36,9 +36,8 @@ useful for a narrower optimizer-on, historical, or provenance-only purpose must 
 stated case by case; this fact does not establish general acceptability.
 
 *Evidence:* the named scripts; `scripts/mine_duckdb_corpus.py:111`;
-`docs/specs/pins-stageB/order-contract.json`. Enforcing the asserted version is
-ticket: version-assert; the missing common header remains proposed ticket:
-uniform-pin-header.
+`docs/specs/pins-stageB/order-contract.json`. Version enforcement is implemented;
+the missing common header remains proposed **ticket: uniform-pin-header**.
 
 **claim: mined-corpus-provenance.** **[FACT]** The miner ignores sqllogictest expected
 blocks, obtains rows through fresh optimizer-on connections, and writes no DuckDB

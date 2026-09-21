@@ -4,9 +4,9 @@
 //! node is built stays a small arm in `Binder::function`. Rows marked
 //! [`NullArg::WholeCallNull`] are resolved entirely by the head there
 //! (arity, eager binding, the bare-NULL short-circuit, per-arg type
-//! checks, the result type); rows marked [`NullArg::Custom`] and the
-//! names in [`CUSTOM_NAMES`] keep every gate in their arm verbatim — for
-//! those the table only records the audited facts.
+//! checks, the result type). Custom rows and builtins without a table row
+//! keep their validation in `Binder::function`; parser desugaring can also
+//! lower a builtin to another expression class before dispatch.
 
 use super::ir::Ty;
 
@@ -31,8 +31,8 @@ pub enum Ret {
     /// (operators: + - * // % and the bitwise family).
     Widen,
     /// Full numeric unification incl. f64 — coalesce/least/greatest's
-    /// rule. Those stay CUSTOM_NAMES today (guarded lazy binding), so no
-    /// row constructs this yet; the width branch's Unify helper will.
+    /// rule. Those use guarded lazy binding, so no row constructs this yet;
+    /// the width branch's Unify helper will.
     #[allow(dead_code)]
     Unify,
 }
@@ -85,10 +85,7 @@ const STR3: &[ArgTy] = &[
 const NUM1: &[ArgTy] = &[ArgTy::Num];
 const NUM2: &[ArgTy] = &[ArgTy::Num, ArgTy::Num];
 
-/// The signature table: `(aliases, Sig)`. Every alias is a
-/// `BUILTIN_NAMES` entry; together with [`CUSTOM_NAMES`] the aliases
-/// partition the catalogue exactly (enforced by the totality test below).
-/// The rows ARE the audited catalogue (fleet audit 2026-08-13).
+/// Declarative signatures for overloads dispatched by `Binder::function`.
 pub const SIGS: &[(&[&str], Sig)] = &[
     (
         &["upper", "lower", "ucase", "lcase"],
@@ -121,7 +118,10 @@ pub const SIGS: &[(&[&str], Sig)] = &[
     // DuckDB refuses the VARCHAR sibling — looser than the oracle for this
     // math2 family (pow/power, fdiv, fmod, nextafter; log's 2-arg form
     // shares it via the math2 helper). Preserved.
-    (&["pow", "power", "fdiv", "fmod", "nextafter"], whole(NUM2, Ret::Fixed(Ty::F64))),
+    (
+        &["pow", "power", "fdiv", "fmod", "nextafter"],
+        whole(NUM2, Ret::Fixed(Ty::F64)),
+    ),
     (&["pi"], whole(&[], Ret::Fixed(Ty::F64))),
     (&["abs"], whole(NUM1, Ret::Arg(0))),
     (
@@ -137,7 +137,10 @@ pub const SIGS: &[(&[&str], Sig)] = &[
     (&["jaccard"], whole(STR2, Ret::Fixed(Ty::F64))),
     (&["replace", "translate"], whole(STR3, Ret::Fixed(Ty::Str))),
     // m-8 phase 2: a codepoint is INTEGER on DuckDB, all three names.
-    (&["unicode", "ord", "ascii"], whole(STR1, Ret::Fixed(Ty::I32))),
+    (
+        &["unicode", "ord", "ascii"],
+        whole(STR1, Ret::Fixed(Ty::I32)),
+    ),
     (&["bit_length"], whole(STR1, Ret::Fixed(Ty::I64))),
     (&["strip_accents"], whole(STR1, Ret::Fixed(Ty::Str))),
     (&["reverse"], whole(STR1, Ret::Fixed(Ty::Str))),
@@ -171,30 +174,6 @@ pub const SIGS: &[(&[&str], Sig)] = &[
             Ret::Fixed(Ty::Str),
         ),
     ),
-];
-
-/// Builtins whose arm owns everything (variadic desugars, arity ranges,
-/// AST-shape gates, unconditional refusals) — no expressible fixed Sig.
-/// Consumed only by the totality test, which is its whole job.
-#[cfg_attr(not(test), allow(dead_code))]
-pub const CUSTOM_NAMES: &[&str] = &[
-    // arity-range rows (1-or-2 / 2-to-4 args)
-    "ltrim", "rtrim", "log", "round", "trunc",
-    // variadic desugars and unification
-    "concat", "concat_ws", "coalesce", "least", "greatest",
-    // cmp-delegated comparability, Arg(0) result
-    "nullif",
-    // operator aliases: NULL adopts the OTHER operand's type (not the
-    // whole-call rule), arity error is unsup, arith owns folds/guards
-    "add", "subtract", "multiply", "divide", "mod", "xor",
-    // constant-pattern/option gates, pinned NULL asymmetries
-    "regexp_matches", "regexp_full_match", "regexp_extract", "regexp_replace",
-    // unconditional named refusals
-    "regexp_split_to_array", "regexp_extract_all",
-    "sum", "count", "avg", "min", "max", "geomean", "product", "string_agg",
-    "first", "last", "any_value",
-    // AST-shape gate over a declared extern
-    "struct_extract",
 ];
 
 /// The single place a bound argument type meets its declared [`ArgTy`].
@@ -244,43 +223,4 @@ pub fn op_ret(sym: &str) -> Ret {
         .find(|(s, _)| *s == sym)
         .map(|(_, r)| *r)
         .expect("every operator symbol has a table row")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::specializer::frontend::BUILTIN_NAMES;
-
-    /// Totality: SIGS aliases plus CUSTOM_NAMES partition the
-    /// builtin catalogue exactly — every builtin is either a table alias
-    /// or explicitly custom, every alias is a real builtin, and no alias
-    /// appears twice.
-    #[test]
-    fn table_and_custom_partition_the_catalogue() {
-        let mut aliases: Vec<&str> = SIGS
-            .iter()
-            .flat_map(|(names, _)| names.iter().copied())
-            .collect();
-        aliases.extend(CUSTOM_NAMES.iter().copied());
-        for a in &aliases {
-            assert!(
-                BUILTIN_NAMES.contains(a),
-                "alias {a} is not in BUILTIN_NAMES"
-            );
-        }
-        let mut deduped = aliases.clone();
-        deduped.sort_unstable();
-        deduped.dedup();
-        assert_eq!(
-            deduped.len(),
-            aliases.len(),
-            "an alias appears twice across SIGS/CUSTOM_NAMES"
-        );
-        for b in BUILTIN_NAMES {
-            assert!(
-                aliases.contains(b),
-                "builtin {b} has neither a table row nor a CUSTOM_NAMES entry"
-            );
-        }
-    }
 }

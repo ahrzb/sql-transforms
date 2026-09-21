@@ -65,7 +65,7 @@ must say so explicitly.
 | `order-by-unevaluated` fallback | sortedness on a non-output key | visible logged tag, never silent |
 | approximate bind errors | message body | compare error class; bodies are outside claim: error-texts |
 | named exclusions | statistics-dependent kernels, f32-grid operations, or inexpressible schemas | measured source and input exclusions, classified under [scope classification](../specs/serving-contract.md#scope-classification); classification does not ratify each individual exclusion |
-| absorbed refusal | whether DuckDB would have served | no current measure; the adopted refusal-outcome reporting is unimplemented |
+| conservative refusal | correctness of unserved output | reference outcome retained and summarized by reason; this is not automatic defect or scope adjudication |
 | canonicalized NaN | sign and payload | repr equality self-equalizes NaNs; explicit bit pins remain exact |
 | `UNSHIPPED` width | whether values would agree | separately reported; neither coverage nor finding; no value normalization |
 | output nullability | soundness of non-null promises | exact DuckDB nullable flags are not required; `_schema_delta` omits flags and `assert_schema` compares them, but neither behavior establishes the adopted truthfulness invariant |
@@ -110,9 +110,10 @@ generator or denominator. C1–C5 and D1–D2 remain unchanged.
 *Decision:* [oracle policy](../decisions/oracle-policy.md#reporting-and-measurement);
 dispositions in [success measures](../specs/success-measures.md#measurement-policy).
 
-The adopted reporting intent does not adopt a schema for it. The runner reports raw
-verdict counts and an AGREE-only construct histogram; neither proposal below exists in
-code, and neither is approved beyond that intent.
+The runner preserves prepared inputs, all verdicts, and dated source/environment
+provenance, and reports refusal reasons with their reference outcomes. Coverage is
+still an AGREE-only construct histogram. Neither proposal below exists in code,
+and neither is approved beyond the reporting intent.
 
 | proposal | proposed effect | status |
 |---|---|---|
@@ -130,7 +131,7 @@ These are implementation gaps, not open decisions:
 - replace the retired “79 of 84” phase-2 figure by replaying stored SQL or by a clearly
   labelled fresh campaign, then classify the residuals; seeds cannot recreate the
   2026-08-17 baseline after generator changes;
-- emit the refusal-reason summary and the separately counted unresolved category;
+- add the separately counted unresolved category without downgrading known mismatches;
 - keep dated displayed match counts apart from the shipped floor (ticket:
   match-count-single-home).
 

@@ -8,28 +8,44 @@ This is the active TODO list for oracle follow-through. The legacy `backlog/task
 directory was removed by owner request; `TASK-*` citations elsewhere are historical
 evidence, not active instructions or dependencies.
 
+Use the [implementation-loop procedure](../implementation-loop.md) to execute one
+bounded outcome and record its evidence here.
+
 ## Completed policy work
 
 - [x] Record the [accepted decisions](../decisions/oracle-policy.md).
 - [x] Resolve the discussed questions in the [decision index](12-ask-index.md).
 - [x] Keep the core goal and oracle entry point unchanged while updating supporting rules.
 
+## Next product outcome
+
+- [ ] **ticket: retire-static-only-fold** — Refuse queries reading no request
+  table and remove the legacy query-level `constant` backend. Preserve
+  construction-time preparation and constant-expression folding inside valid
+  request-dependent transforms. Record affected corpus cases as an explicit
+  scope change; do not disguise the reclassification as support growth.
+  The dated loop baseline still exercises this path at seed 95.
+
 ## Follow-through from adopted policy
 
-- [ ] **ticket: version-assert** — Pin the oracle/test environment to 1.5.5 and
+- [x] **ticket: version-assert** — Pin the oracle/test environment to 1.5.5 and
   assert `duckdb.__version__ == Oracle.VERSION` at startup. Keep upgrades separate
   and unrelated consumers unconstrained.
-- [ ] **ticket: stop-on-opt-emulated** — Preserve the primary `OPT_EMULATED`
+- [x] **ticket: stop-on-opt-emulated** — Preserve the primary `OPT_EMULATED`
   finding by stopping before boundary self-legs can replace it.
-- [ ] **ticket: split-refused-verdict** — Retain the already-computed oracle
+- [x] **ticket: split-refused-verdict** — Retain the already-computed oracle
   outcome and summarize by refusal reason. The historical name does not require
   a new verdict kind or make every oracle-serves refusal a correctness defect.
+  Verified by the focused oracle/fuzzer/runner regression run; see the
+  [readiness evidence](../reports/2026-09-21-loop-readiness.md).
 - [ ] **ticket: truthful-output-nullability** — Enforce sound non-null promises,
   not equality with DuckDB's nullable flags. The existing checkers do not
   establish the adopted invariant in full.
-- [ ] **ticket: dated-campaign-evidence** — Keep old runs historical; record SQL,
+- [x] **ticket: dated-campaign-evidence** — Keep old runs historical; record SQL,
   inputs, generator revision where applicable, engine revision, and reference
   configuration in dated future results. Seeds are not durable case identities.
+  Verified by the 2026-09-21 baseline: 100 prepared-case/result pairs, full
+  reference-outcome counts, source changes, and matching source/native hashes.
 - [ ] **ticket: unresolved-observation-reporting** — Show unresolved observations
   separately from agreement and confirmed defects. Do not downgrade established
   mismatches or manufacture cases from retired counts.
@@ -56,7 +72,6 @@ These correct recorded inaccuracies without creating new oracle policy.
 
 | Ticket | Correction |
 |---|---|
-| **ticket: oracle-docstring-corrections** | Correct the stated `disable_optimizer` scope and remove the stale claim that `OPT_EMULATED` is purposeful coverage |
 | **ticket: exclusion-count-correction** | Correct `pins-first-methodology.md:89`: one excluded source covers two statements, not two sources |
 | **ticket: ambiguity-class-closed** | Correct the dated triage description of TASK-121, distinguishing its completed status from unchecked acceptance criteria; see [ledger evidence](07-the-divergence-ledger.md#evidence-notes) |
 | **ticket: severity-definition-merge** | Replace partial severity definitions with the common rule; no blanket never-retain-defects policy |
@@ -82,7 +97,6 @@ They are not owner-decision blockers for the settled contract.
 | **ticket: per-kind-abstention-report** | Choose a reporting format for unanswered cases, preserve SQL before execution, and attribute timeout side; audit codes remain internal |
 | **ticket: convert-unrunnable-pins** | Inventory and convert old pins that cannot be replayed mechanically; do not rewrite history as a fresh run |
 | **ticket: mined-corpus-stamp** | Add provenance during future corpus mining; existing optimizer-on expectations do not become optimizer-off evidence |
-| **ticket: verdict-tuple-test** | Historical name for missing finding/coverage checks; prefer observable reporting regressions over assertions about tuple membership |
 
 ## Closed or superseded mechanisms
 
@@ -92,6 +106,8 @@ They are not owner-decision blockers for the settled contract.
 | **ticket: value-preserving-normalization** | Closed: normalization stays outside the answer and verdict; the cast was deleted and `UNSHIPPED` replaced it. |
 | **ticket: static-only-schema-check** | Refuted by measurement: the current static-only path returns DuckDB rows and schema; its removal remains a separate implementation gap. |
 | **ticket: fold-reading-decision** | Superseded by fold retirement, not a selected optimizer reading for a retained fold. |
+| **ticket: oracle-docstring-corrections** | Implemented: constructor and fuzzer summaries distinguish optimizer-off reference behavior from optimizer-on diagnostics; emulation is not desired coverage. |
+| **ticket: verdict-tuple-test** | Implemented as observable regressions: primary and diagnostic findings persist, AGREE coverage excludes emulation and unsupported-width cases, and refusal outcomes remain separate. |
 
 ## Historical evidence correction
 

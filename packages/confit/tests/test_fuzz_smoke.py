@@ -7,6 +7,11 @@ seed range (with both AGREE and REFUSED present, else the grammar or the
 oracle is broken), verdicts are reproducible, the planted known-live case
 diverges-or-refuses, and the shrinker preserves a verdict while shrinking.
 
+Also pinned, because both are about what a campaign REPORTS rather than
+what it finds: a primary `OPT_EMULATED` survives the boundary legs that run
+after it, and a refusal carries the reference outcome already computed for
+it without that outcome changing the verdict.
+
 And — added after a struct column in a static table turned out to be
 unreachable by any seed — that the generator's table-column vocabulary is
 not narrower than the boundary's. A campaign can only find bugs in the
@@ -141,6 +146,96 @@ def test_a_real_schema_difference_is_still_a_divergence():
     assert oracle._schema_delta(duck, pa.schema([("o0", pa.string())]))[0] == "diff"
     assert oracle._schema_delta(duck, pa.schema([("o1", pa.int64())]))[0] == "diff"
     assert oracle._schema_delta(duck, duck) is None
+
+
+# ---------------------------------------------- the PRIMARY finding, kept
+
+
+def _identity_case(seed: int = -4) -> gen.Case:
+    """`SELECT k AS o0 FROM __THIS__` over two rows: the smallest case that
+    still takes the row path, so the whole boundary battery runs on it."""
+    q = gen.Q([], gen.Sel([(gen.Col("k", ty="int"), "o0")], "__THIS__"))
+    return gen.Case(
+        seed, {"k": "int"}, [{"k": 1}, {"k": 2}], {}, [], None, q, None, None, []
+    )
+
+
+def _our_own_answer(case: gen.Case) -> pa.Table:
+    """The case's confit answer, reusable AS a DuckDB reading: a reading made
+    of it agrees with us by construction, so the planted disagreement on the
+    OTHER reading is the only thing the verdict can be about."""
+    fn = oracle._build(
+        gen.render(case.query),
+        oracle._arrow_schema(case.row_schema),
+        {},
+        [],
+        None,
+        False,
+    )
+    return fn.infer_arrow(oracle._arrow_table(case.row_schema, case.rows))
+
+
+def test_an_optimizer_emulation_is_not_replaced_by_a_later_boundary_leg(monkeypatch):
+    """OPT_EMULATED is a mismatch, and a mismatch stops at its primary
+    finding. The planted readings are the historical shape of one: the eager
+    baseline traps, the optimizer elides the trap, and we answer like the
+    optimizer. The boundary legs are OUR side against itself, so letting one
+    of them overwrite the verdict would report a different bug than the one
+    the case actually found, and the emulation would vanish from the counts.
+    """
+    case = _identity_case()
+    served = (_our_own_answer(case), None, None)
+    trapped = (None, "run", "ConversionException: planted eager trap")
+    leg = oracle.Verdict("DIVERGE_VALUE", "hostile-sliced", "planted leg", [])
+    monkeypatch.setattr(oracle, "_extra_legs", lambda *a: leg)
+
+    monkeypatch.setattr(oracle, "_duck_run", lambda sql, c, u: (trapped, served))
+    assert oracle.run_case(case).kind == "OPT_EMULATED"
+
+    # The planted leg is live, not a disabled battery: with both readings
+    # agreeing there is no primary finding to protect, and the leg lands.
+    monkeypatch.setattr(oracle, "_duck_run", lambda sql, c, u: (served, served))
+    assert oracle.run_case(case).kind == "DIVERGE_VALUE"
+
+
+def test_a_refusal_keeps_the_reference_outcome_without_reclassifying(monkeypatch):
+    """Both DuckDB readings are executed before a refusal can be returned,
+    and the campaign used to discard them — so a refusal could not say
+    whether the reference served the query, rejected it too, or trapped on
+    the data, and the cost of refusing was unmeasurable. Keeping it is
+    REPORTING: a query DuckDB serves and confit declines is still REFUSED,
+    not a correctness verdict, so the kind does not move.
+    """
+    case = _identity_case()
+
+    def refuse(*args, **kwargs):
+        raise ValueError("unsupported: planted construction refusal")
+
+    monkeypatch.setattr(oracle, "_build", refuse)
+    for reading, want in (
+        ((pa.table({"o0": [1, 2]}), None, None), "served"),
+        ((None, "build", "BinderException: no function matches"), "build-error"),
+        ((None, "run", "ConversionException: out of range"), "run-error"),
+    ):
+        monkeypatch.setattr(oracle, "_duck_run", lambda s, c, u, r=reading: (r, r))
+        v = oracle.run_case(case)
+        assert (v.kind, v.oracle_outcome) == ("REFUSED", want), v
+        assert oracle.run_case_json(case)["oracle_outcome"] == want
+
+
+def test_run_case_json_answers_for_the_case_it_is_handed(monkeypatch):
+    """The worker generates once and reports the prepared SQL and inputs
+    BEFORE evaluating, so that a crash or a timeout still leaves the repro
+    behind. A second generation here could answer about a different query
+    than the one that was reported."""
+
+    def _never(*a, **k):
+        raise AssertionError("run_case_json generated a case of its own")
+
+    monkeypatch.setattr(gen, "gen", _never)
+    case = _identity_case(seed=7)
+    line = oracle.run_case_json(case)
+    assert line["kind"] == "AGREE", line
 
 
 def _walk_schema(schema: dict) -> tuple[set[str], bool, bool]:

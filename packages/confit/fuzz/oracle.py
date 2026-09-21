@@ -1,59 +1,23 @@
-"""One Case in, one Verdict out.
+"""One Case in, one Verdict out, against the fixed optimizer-off oracle.
 
-The contract under test: confit either matches DuckDB bit-for-bit — with the
-same UDFs registered — or refuses at build with a named ValueError. Anything
-else is a finding. Extra legs beyond the three-way comparison: infer_rows vs
-infer_arrow, hostile Arrow input (sliced / chunked / empty), single-row vs
-batch concatenation, rebuild determinism, and sklearn as a second ground
-truth on tree cases.
+The optimizer-on reading is diagnostic, not a second serving contract:
 
-# TWO DuckDB readings, and the BASELINE is the optimizer-off one
+    ours == off == on       AGREE
+    ours == off, off != on  DIVERGE_OPT (the two DuckDB surfaces differ)
+    ours == on, off != on   OPT_EMULATED (we disagree with the reference)
+    ours differs from both report the optimizer-off comparison
 
-Every case is run against DuckDB twice, on one connection:
+The two readings share one connection and loaded tables. Disabling the
+optimizer does not make all SQL deterministic; the comparison contract still
+governs ordering, unsupported widths, and approved numerical exceptions.
 
-    PRAGMA disable_optimizer   the BASELINE — eager evaluation, and a
-                               function of the QUERY alone
-    PRAGMA enable_optimizer    what a user actually sees
+Eligible results also receive our-side row/Arrow, batch, ordering, and sklearn
+checks. A primary mismatch stops before those checks can replace it.
+Conservative refusals retain the reference outcome without becoming defects.
 
-Measured 2026-08-17: every trap-elision divergence in the record collapses to
-a TRAP with the optimizer off, which is what this engine does natively. The
-two readings therefore bracket the answer, and a finding classifies itself
-instead of needing a human to reason about fold visibility:
-
-  ours == off == on        AGREE.
-  ours != off, ours != on  a real bug, and the baseline says so with the
-                           optimizer out of the picture.
-  ours == off, off != on   DIVERGE_OPT. We match eager semantics; an optimizer
-                           pass makes the user's DuckDB answer differently, so
-                           this is user-visible and needs a decision.
-  ours == on, off != on    OPT_EMULATED. We answer like the optimizer and
-                           unlike the oracle, which means we are reproducing
-                           a plan-rewrite pass. That is a BUG, not a note:
-                           the class is empty, and if it refills something
-                           reintroduced an emulation.
-
-Why the optimizer-off run is the BASELINE and not merely a second opinion: it
-is the only one of the two whose answer is a function of the query. The
-optimizer's is not — `statistics_propagation` reads the column's null
-statistic, so the same query over the same rows answers differently depending
-on the table's insert history (see
-tests/known_divergences/test_trap_elision.py). A baseline you cannot compute
-from the query is not a baseline.
-
-Note this does NOT restate the user-facing contract, which still names what a
-user's DuckDB returns — optimizer on. `DIVERGE_OPT` is exactly the gap
-between the two, which is why it stays a finding.
-
-The connection is `confit.oracle.Oracle` and the canonical forms every
-comparison below is written in -- `multiset`, `sequence`, `dedup_names` --
-are `confit.compare`'s. Both are the ones the tests compare against, so
-neither the baseline nor the meaning of "equal" can drift from theirs, and
-both come from the PACKAGE, which is what keeps the standing rule intact:
-fuzz/ must not import from tests/. What is NOT shared is the UDF
-`create_function` recipe: it mirrors tests/test_udfs.py `udf_check` and stays
-duplicated on purpose, under that same rule and because writing it a second
-time from the documented protocol alone is itself the check that the protocol
-doc suffices.
+Connections and canonical comparison forms come from confit.oracle and
+confit.compare. The UDF registration recipe is independently implemented from
+the public protocol; fuzz code does not import test helpers.
 """
 
 from __future__ import annotations
@@ -153,6 +117,11 @@ class Verdict:
     # the case's own construct tags, plus oracle-side notes (`cmp=`, a known
     # width class, `fallback`)
     tags: list[str] = dfield(default_factory=list)
+    # what the ORACLE did with the same query, when the campaign has an
+    # answer worth keeping: "served" | "build-error" | "run-error", and None
+    # when there is none to report. Only REFUSED fills it -- every other
+    # verdict IS a statement about the comparison itself.
+    oracle_outcome: str | None = None
 
     def to_json(self):
         return {
@@ -160,6 +129,7 @@ class Verdict:
             "klass": self.klass,
             "detail": self.detail[:500],
             "tags": self.tags,
+            "oracle_outcome": self.oracle_outcome,
         }
 
 
@@ -415,6 +385,20 @@ def _exec(con, sql):
         return None, phase, f"{type(e).__name__}: {e}"
 
 
+def _oracle_outcome(reading) -> str:
+    """What the reference did, read off one `_exec` tuple: "served",
+    "build-error", or "run-error".
+
+    Both readings are executed before a refusal can be returned, so keeping
+    one costs nothing — and without it a refusal cannot say whether DuckDB
+    served the query, rejected it too, or trapped on the data.
+    """
+    out, phase, _detail = reading
+    if out is not None:
+        return "served"
+    return "build-error" if phase == "build" else "run-error"
+
+
 def _duck_run(sql, case: G.Case, udf_objs):
     """Both readings, on ONE connection: `(optimizer_off, optimizer_on)`.
 
@@ -572,7 +556,11 @@ def run_case(case: G.Case) -> Verdict:
 
     if fn_cl is None:
         klass = _refusal_class(cl_err)
-        return Verdict("REFUSED", klass, cl_err, tags)
+        # The baseline reading is already paid for above, so the refusal
+        # carries what the oracle made of the same query. That is REPORTING:
+        # a query DuckDB serves and we decline is still a refusal, not a
+        # correctness verdict, so the kind does not move.
+        return Verdict("REFUSED", klass, cl_err, tags, _oracle_outcome(duck_off))
     # "constant" is the third legitimate backend: the whole query folded at
     # build time, so there is nothing left to compile OR interpret.
     if fn_cl.backend not in ("cranelift", "constant"):
@@ -712,7 +700,9 @@ def run_case(case: G.Case) -> Verdict:
             v_on.tags,
         )
     elif v_on.kind in agreed and v_off.kind not in agreed:
-        # A pass we reproduce on purpose. Expected, and counted.
+        # We answer like the optimizer against a baseline that disagrees, so
+        # we are reproducing a plan rewrite. A FINDING, not coverage we
+        # sought: the class is empty, and a refill means an emulation is back.
         v = Verdict(
             "OPT_EMULATED",
             v_off.klass,
@@ -729,7 +719,10 @@ def run_case(case: G.Case) -> Verdict:
     # UNSHIPPED still earns the boundary legs: they are OUR side against
     # itself, with no DuckDB in them, so an unshipped width cannot excuse a
     # self-inconsistency and a real DIVERGE_VALUE there outranks the class.
-    if v.kind not in ("AGREE", "OPT_EMULATED", "UNSHIPPED"):
+    # OPT_EMULATED does not: it is already a mismatch, and a mismatch stops
+    # at its primary finding rather than being overwritten by a later leg
+    # that would report a different bug than the one the case found.
+    if v.kind not in ("AGREE", "UNSHIPPED"):
         return v
     if trap_cl is not None or static_only:
         return v  # the boundary legs all need a non-trapping row run
@@ -875,11 +868,17 @@ def _first_words(s: str, n: int = 6) -> str:
     return " ".join(s.split()[:n])[:80]
 
 
-def run_case_json(seed: int) -> dict:
-    """`gen(seed)` through `run_case`, as the JSON line the worker prints."""
-    case = G.gen(seed)
+def run_case_json(case: G.Case) -> dict:
+    """One already-generated case through `run_case`, as the JSON line the
+    worker prints.
+
+    The CALLER generates. The worker needs the case in hand anyway — it
+    reports the prepared SQL and inputs before evaluating, so a crash or a
+    timeout still leaves the repro behind — and generating a second time
+    here would be a second chance to disagree with what it reported.
+    """
     try:
         v = run_case(case)
     except Exception as e:  # noqa: BLE001 — oracle's own bug, not the engine's
         v = Verdict("SKIP", f"oracle:{type(e).__name__}", str(e), case.tags)
-    return {"seed": seed, "sql": G.render(case.query), **v.to_json()}
+    return {"seed": case.seed, "sql": G.render(case.query), **v.to_json()}

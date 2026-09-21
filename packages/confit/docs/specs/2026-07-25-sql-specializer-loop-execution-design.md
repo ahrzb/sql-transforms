@@ -1,8 +1,8 @@
 # Building the SQL Specializer with a Loop / Dynamic Workflow
 
-**Status:** draft for review — the "how we build it" companion to
-`2026-07-25-sql-specializer-design.md`. Covers (a) what must be prepared before
-any unattended execution starts, and (b) the design of the loop itself.
+**Status:** historical proposal, superseded by the
+[current implementation-loop procedure](../implementation-loop.md).
+The old task registry and scheduling APIs below are not current instructions.
 
 ## 0. The shape of the problem
 

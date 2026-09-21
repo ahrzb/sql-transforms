@@ -58,13 +58,12 @@ finding is what the campaign reports, and no later leg may replace it. Additiona
 diagnostics on such a case may be reconsidered only if they preserve that original
 finding.
 
-*Enforced-by:* intended membership in `fuzz.runner.INTERESTING` and exclusion from
-`COVERED`.
-*Evidence:* emission is tested by `test_verdicts_cover_the_contract_and_reproduce`;
-runner tuple membership remains **Unverified** because no test imports `fuzz.runner`.
-*Gap:* **[FACT]** `fuzz.oracle.run_case` still continues into confit-only boundary
-self-legs after `OPT_EMULATED`, so a later leg can still replace the finding. The
-stopping rule is the contract, not the current behavior.
+*Enforced-by:* `fuzz.oracle.run_case` stops primary mismatches before `_extra_legs`;
+`fuzz.runner.report` preserves findings and uses only AGREE for coverage.
+*Evidence:* `test_an_optimizer_emulation_is_not_replaced_by_a_later_boundary_leg`
+plants a conflicting later leg, and
+`test_the_report_keeps_agreement_refusal_cost_and_unshipped_apart` checks the
+persisted findings and report populations.
 
 ## Construction refusal versus runtime trap
 
@@ -125,12 +124,11 @@ restrictions without ratifying every existing limit.
 `packages/confit/docs/known-limitations.md` §§1-2, and
 `packages/confit/tests/known_divergences/test_arrow_boundary.py:34-36`.
 
-**claim: refusal-absorb.** **[FACT]** The campaign executes both DuckDB readings before
-returning a confit refusal, then discards those readings unconditionally. `REFUSED`
-carries a class derived from the first six message words, is absent from `INTERESTING`,
-and appears only in the refusal histogram. It does not distinguish “DuckDB serves” from
-“DuckDB traps.” This is the implementation gap under claim: refusal-outcome-reporting,
-tracked as **ticket: split-refused-verdict**.
+**claim: refusal-absorb.** The campaign executes both DuckDB readings before returning
+a confit refusal. `REFUSED` carries its refusal class and retains the optimizer-off
+outcome as `served`, `build-error`, or `run-error`. It remains outside findings and
+AGREE coverage. All-result artifacts preserve it, and reports group it by reason and
+reference outcome; unavailable outcomes remain visibly unknown.
 
 *Evidence:* `fuzz.oracle.run_case`, `fuzz.oracle._refusal_class`,
 `fuzz.runner.INTERESTING`, and `fuzz.runner.report`.
@@ -156,8 +154,8 @@ section because values were not compared, and `OPT_EMULATED` remains a finding.
 
 *Enforced-by:* `fuzz.runner.INTERESTING`, `COVERED`, and `report`.
 *Evidence:* oracle verdict reachability and `UNSHIPPED` behavior are covered in
-`packages/confit/tests/test_fuzz_smoke.py`; runner membership remains **Unverified** under
-**ticket: verdict-tuple-test**.
+`test_fuzz_smoke.py`; `test_fuzz_runner.py` exercises persisted findings, separate
+report populations, and failure accounting.
 
 **claim: logged-fallback.** If a checker cannot evaluate its strongest condition,
 it may use a weaker check only with an explicit tag. The current legacy example is
@@ -167,14 +165,15 @@ That tag must not be reported as evidence that the stronger check passed.
 
 *Evidence:* `fuzz.oracle.run_case` and the ordering work recorded in TASK-129.
 
-**claim: timeout-attribution.** **[FACT]** The current timeout identifies neither the
-side nor the SQL. Oracle work timing out and confit work timing out imply opposite
-problems, so recovery requires regenerating the seed. On 2026-08-14, seed 4395 made
-DuckDB spend 9.0 seconds building a 2 GiB `lpad` while confit refused immediately under
-its 1 GiB budget; three other seeds had the same shape.
+**claim: timeout-attribution.** Workers now announce SQL and full case inputs before
+evaluation; the parent persists them before awaiting the result. A timeout or crash
+after that point retains those inputs. A failure before announcement is explicitly
+marked `case_announced: false`; there is no fabricated input record.
 
-*Evidence:* `packages/confit/docs/2026-08-13-fuzz-triage.md:124-149`.
-*Open work:* record SQL before execution and split oracle-side from engine-side timeout.
+*Evidence:* `test_fuzz_runner.py::test_a_failed_worker_keeps_the_case_it_announced`
+exercises both crashes and deadlines. Historical oracle-side timeout examples remain in
+`packages/confit/docs/2026-08-13-fuzz-triage.md:124-149`.
+*Open work:* attribute the timeout to reference-side versus engine-side evaluation.
 
 **claim: countable-cost.** Disclose an accepted cost honestly and measure the ones that
 matter, starting with refusal outcomes under claim: refusal-outcome-reporting. No

@@ -33,8 +33,8 @@ state this rule; proposed **ticket: phase-probing-in-methodology** tracks that g
 ## Provenance required for replay
 
 **claim: pin-provenance.** A replayable pin identifies the oracle version, settings
-profile, capture date, and capture-harness commit. `Oracle.VERSION` records an intended
-version but is not itself a runtime assertion (claim: oracle-version-constant).
+profile, capture date, and capture-harness commit. `Oracle.__init__` now enforces
+`Oracle.VERSION`; that does not add missing provenance to old captures.
 
 **claim: dated-provenance.** New campaign results must be dated and record the executed
 SQL, inputs, generator revision where generated, engine revision, and reference
@@ -42,9 +42,13 @@ configuration. A seed is an aid, not a durable identity after a generator change
 Earlier runs remain frozen history, not rewritten to appear current.
 
 *Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
-Adoption does not establish enforcement or choose a file format. It does not convert
-the existing pin corpus or adopt the metadata proposals below; the existing
-pin-provenance rule still applies to pins.
+*Implementation:* `fuzz.worker` announces tagged case inputs before evaluation;
+`fuzz.runner` writes dated, non-overwriting findings, all-result, case, and provenance
+artifacts. Provenance includes source hashes, working source changes, the native
+binary hash/profile, dependency versions, and reference settings.
+
+This does not convert the existing pin corpus or adopt the metadata proposals below;
+the existing pin-provenance rule still applies to pins.
 
 The 2026-08-25 inventory found 41 of 53 files with `duckdb_version`, 10 with a capture
 date, and 3 with a harness or commit; version spelling and metadata shape varied.

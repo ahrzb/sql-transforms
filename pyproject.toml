@@ -12,7 +12,12 @@ sql-transform = { workspace = true }
 dev = [
     "confit",
     "sql-transform",
-    "duckdb>=1.5.5",
+    # Exact, not a floor: this environment IS the oracle's reference build, and
+    # confit.oracle.Oracle refuses to open against anything else. Published
+    # packages keep their own `duckdb>=1.5.5` floor -- the pin binds this repo's
+    # measurements, not its consumers. Moving it is a reviewed reference change
+    # that also moves Oracle.VERSION.
+    "duckdb==1.5.5",
     "ipdb>=0.13.13",
     "ipython>=9.2.0",
     "maturin>=1.14,<2.0",

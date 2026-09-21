@@ -5,9 +5,7 @@
 //! overflow traps).
 
 use super::exec::interp::compile;
-use super::exec::testutil::{
-    batch, c_f64, c_i64, c_str, rows, run_snapshot, NEG_NAN, POS_NAN,
-};
+use super::exec::testutil::{batch, c_f64, c_i64, c_str, rows, run_snapshot, NEG_NAN, POS_NAN};
 use super::exec::{KeyBits, ScalarVal, StaticData};
 use super::ir::{parse::parse, print::print, Col, ColTy, Lit, NumOp1, Ty};
 use super::plan::StaticTable;
@@ -173,7 +171,16 @@ fn presence_lanes_are_minted_lazily() {
     }];
     let prep = |sql: &str| {
         super::prepare_opaque(
-            sql, "__THIS__", &schema, &[], &structs, &[t.clone()], false, &[], &[], &[],
+            sql,
+            "__THIS__",
+            &schema,
+            &[],
+            &structs,
+            &[t.clone()],
+            false,
+            &[],
+            &[],
+            &[],
         )
         .unwrap()
     };
@@ -881,8 +888,13 @@ fn a_lossy_key_column_is_also_a_value_lane() {
     let dim = stat("dim", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
     let sql = "SELECT v FROM __THIS__ JOIN dim ON k = dim.id";
 
-    let lossy = prepare(sql, "__THIS__", &cols(&[("k", Ty::F64, false)]), &[dim.clone()])
-        .unwrap();
+    let lossy = prepare(
+        sql,
+        "__THIS__",
+        &cols(&[("k", Ty::F64, false)]),
+        &[dim.clone()],
+    )
+    .unwrap();
     let s = &lossy.statics[0];
     assert_eq!(key_paths(s), vec![vec!["id".to_string()]]);
     assert_eq!(
@@ -1042,10 +1054,7 @@ fn indf_left_join_null_key_joins_null_bucket() {
         batch(3, vec![c_i64(&[Some(1), None, Some(2)])]),
     )
     .unwrap();
-    assert_eq!(
-        got,
-        rows(&[&["1", "10"], &["NULL", "99"], &["2", "NULL"]])
-    );
+    assert_eq!(got, rows(&[&["1", "10"], &["NULL", "99"], &["2", "NULL"]]));
 }
 
 #[test]
@@ -1209,7 +1218,6 @@ fn indf_under_shape_many_refuses_by_name() {
         &[],
         &[dim],
         true,
-
         &[],
         &[],
         &[],
@@ -1273,7 +1281,18 @@ fn prep_udfs(
     statics: &[StaticTable],
     udfs: &[super::ir::ExternSpec],
 ) -> Result<super::Prepared, PrepareError> {
-    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, udfs, &[], &[])
+    super::prepare_opaque(
+        sql,
+        "__THIS__",
+        in_cols,
+        &[],
+        &[],
+        statics,
+        false,
+        udfs,
+        &[],
+        &[],
+    )
 }
 
 // ------------------------------------------------- the builtin guard --
@@ -1389,7 +1408,18 @@ fn prep_models(
     statics: &[StaticTable],
     models: &[super::plan::ModelTable],
 ) -> Result<super::Prepared, PrepareError> {
-    super::prepare_opaque(sql, "__THIS__", in_cols, &[], &[], statics, false, &[], models, &[])
+    super::prepare_opaque(
+        sql,
+        "__THIS__",
+        in_cols,
+        &[],
+        &[],
+        statics,
+        false,
+        &[],
+        models,
+        &[],
+    )
 }
 
 /// The serving shape: a tree transform is called like every other declared
@@ -1408,7 +1438,11 @@ fn tree_call_binds_features_by_position() {
          FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
         &schema,
         &[params],
-        &[model_takes("trees", &[Ty::F64, Ty::I64], super::plan::CompareGrid::F32)],
+        &[model_takes(
+            "trees",
+            &[Ty::F64, Ty::I64],
+            super::plan::CompareGrid::F32,
+        )],
     )
     .unwrap();
     assert_eq!(p.models, vec!["trees".to_string()]);
@@ -1421,7 +1455,11 @@ fn tree_call_binds_features_by_position() {
     );
     // Exactly one predict, against @1.
     assert_eq!(text.matches("predict @1,").count(), 1, "{text}");
-    assert_eq!(feature_position_of_itof(&text), 1, "sqft is passed second:\n{text}");
+    assert_eq!(
+        feature_position_of_itof(&text),
+        1,
+        "sqft is passed second:\n{text}"
+    );
 
     // Swap both the call site and the declaration: the operand order follows
     // the call, and each lane is typed by the DECLARATION at its position.
@@ -1436,11 +1474,19 @@ fn tree_call_binds_features_by_position() {
          FROM __THIS__ AS t LEFT JOIN p0 AS p ON ((t.g IS NOT DISTINCT FROM p.g))",
         &schema,
         &[params],
-        &[model_takes("trees", &[Ty::I64, Ty::F64], super::plan::CompareGrid::F32)],
+        &[model_takes(
+            "trees",
+            &[Ty::I64, Ty::F64],
+            super::plan::CompareGrid::F32,
+        )],
     )
     .unwrap();
     let text = print(&p.program);
-    assert_eq!(feature_position_of_itof(&text), 0, "sqft is passed first:\n{text}");
+    assert_eq!(
+        feature_position_of_itof(&text),
+        0,
+        "sqft is passed first:\n{text}"
+    );
 }
 
 /// The DECLARED type types the lane, not the argument's. DuckDB casts an
@@ -1492,8 +1538,14 @@ fn a_tree_transform_outranks_a_same_named_ecall() {
     )
     .unwrap();
     let text = print(&p.program);
-    assert!(text.contains("predict @0,"), "must lower to the kernel:\n{text}");
-    assert!(!text.contains("ecall"), "must not lower to an ecall:\n{text}");
+    assert!(
+        text.contains("predict @0,"),
+        "must lower to the kernel:\n{text}"
+    );
+    assert!(
+        !text.contains("ecall"),
+        "must not lower to an ecall:\n{text}"
+    );
 }
 
 /// The declared grid, not the feature's type, decides how an integer reaches
@@ -1511,8 +1563,7 @@ fn compare_grid_selects_the_integer_conversion() {
         (super::plan::CompareGrid::F64, "= itof %", "itof.f32 "),
     ] {
         // A declared BIGINT lane: the only one that narrows in one step.
-        let p = prep_models(sql, &schema, &[], &[model_takes("trees", &[Ty::I64], grid)])
-            .unwrap();
+        let p = prep_models(sql, &schema, &[], &[model_takes("trees", &[Ty::I64], grid)]).unwrap();
         let text = print(&p.program);
         assert!(text.contains(want), "{grid:?} must emit `{want}`:\n{text}");
         assert!(
@@ -1535,7 +1586,8 @@ fn feature_position_of_itof(text: &str) -> usize {
         .lines()
         .find_map(|l| {
             let (dst, rest) = l.trim().split_once(" = ")?;
-            rest.starts_with("itof.f32 ").then(|| dst.trim().to_string())
+            rest.starts_with("itof.f32 ")
+                .then(|| dst.trim().to_string())
         })
         .expect("an itof.f32 converting the i64 feature");
     let line = text
@@ -1576,7 +1628,10 @@ fn only_the_model_id_makes_a_prediction_null() {
     );
     // The NULL feature becomes NaN through an explicit select.
     let text = print(&p.program);
-    assert!(text.contains("const.f64 nan") && text.contains("select "), "{text}");
+    assert!(
+        text.contains("const.f64 nan") && text.contains("select "),
+        "{text}"
+    );
 
     let schema = cols(&[("price", Ty::F64, false), ("id", Ty::I64, true)]);
     let p = prep_models(
@@ -1599,7 +1654,11 @@ fn only_the_model_id_makes_a_prediction_null() {
 /// features are type-checked by position.
 #[test]
 fn tree_call_refuses_by_name() {
-    let schema = cols(&[("price", Ty::F64, false), ("s", Ty::Str, false), ("id", Ty::I64, false)]);
+    let schema = cols(&[
+        ("price", Ty::F64, false),
+        ("s", Ty::Str, false),
+        ("id", Ty::I64, false),
+    ]);
     let two = [model("trees", 2)];
     let one = [model("trees", 1)];
     let cases: &[(&str, &str, &[super::plan::ModelTable])] = &[
@@ -1639,7 +1698,10 @@ fn tree_call_refuses_by_name() {
             .err()
             .unwrap_or_else(|| panic!("accepted a bad call site ({needle}): {sql}"));
         let msg = e.to_string();
-        assert!(msg.contains(needle), "wanted '{needle}', got '{msg}' for: {sql}");
+        assert!(
+            msg.contains(needle),
+            "wanted '{needle}', got '{msg}' for: {sql}"
+        );
     }
 }
 
@@ -1821,7 +1883,11 @@ fn field_access_reads_lanes_off_one_ecall() {
         "SELECT (emb(x)).a AS u, (struct_extract(emb(x), 'b') + 1.0) AS v FROM __THIS__",
         &schema,
         &[],
-        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+        &[udf_named(
+            "emb",
+            &[Ty::F64],
+            &[("a", Ty::F64), ("b", Ty::F64)],
+        )],
     )
     .unwrap();
     let text = print(&p.program);
@@ -1861,7 +1927,11 @@ fn field_access_unknown_field_refuses_listing_declared() {
         "SELECT (emb(x)).c AS u FROM __THIS__",
         &schema,
         &[],
-        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+        &[udf_named(
+            "emb",
+            &[Ty::F64],
+            &[("a", Ty::F64), ("b", Ty::F64)],
+        )],
     )
     .unwrap_err();
     assert!(
@@ -1925,7 +1995,11 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
         "SELECT emb(x) AS z, x AS orig FROM __THIS__",
         &schema,
         &[],
-        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+        &[udf_named(
+            "emb",
+            &[Ty::F64],
+            &[("a", Ty::F64), ("b", Ty::F64)],
+        )],
     )
     .unwrap();
     assert_eq!(p.wide_outputs.len(), 1);
@@ -2020,7 +2094,9 @@ fn struct_pack_item_is_a_struct_output() {
         "SELECT struct_pack(a := x, a := x) AS th FROM __THIS__",
         "SELECT struct_pack(a := x, A := x) AS th FROM __THIS__",
     ] {
-        let err = prepare(sql, "__THIS__", &schema, &[]).unwrap_err().to_string();
+        let err = prepare(sql, "__THIS__", &schema, &[])
+            .unwrap_err()
+            .to_string();
         assert!(err.to_lowercase().contains("duplicate"), "{sql}: {err}");
     }
     // A _-leading field cannot cross the row-path model boundary (pydantic
@@ -2096,7 +2172,11 @@ fn whole_item_and_field_read_share_one_ecall() {
             sql,
             &schema,
             &[],
-            &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+            &[udf_named(
+                "emb",
+                &[Ty::F64],
+                &[("a", Ty::F64), ("b", Ty::F64)],
+            )],
         )
         .unwrap();
         let text = print(&p.program);
@@ -2131,7 +2211,11 @@ fn named_extern_programs_are_canonical_ir() {
         "SELECT (emb(x)).a AS u, (emb(x)).b AS v FROM __THIS__",
         &schema,
         &[],
-        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+        &[udf_named(
+            "emb",
+            &[Ty::F64],
+            &[("a", Ty::F64), ("b", Ty::F64)],
+        )],
     )
     .unwrap()
     .program;
@@ -2157,7 +2241,11 @@ fn lateral_reference_to_a_duplicated_alias_refuses() {
         "SELECT 1.0 AS z, (emb(z)).a AS p, 2.0 AS z, (emb(z)).b AS q FROM __THIS__",
         &schema,
         &[],
-        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+        &[udf_named(
+            "emb",
+            &[Ty::F64],
+            &[("a", Ty::F64), ("b", Ty::F64)],
+        )],
     )
     .unwrap_err();
     assert!(
@@ -2176,7 +2264,11 @@ fn distinct_args_to_the_same_extern_get_distinct_ecalls() {
         "SELECT (emb(x)).a AS xa, (emb(y)).a AS ya FROM __THIS__",
         &schema,
         &[],
-        &[udf_named("emb", &[Ty::F64], &[("a", Ty::F64), ("b", Ty::F64)])],
+        &[udf_named(
+            "emb",
+            &[Ty::F64],
+            &[("a", Ty::F64), ("b", Ty::F64)],
+        )],
     )
     .unwrap();
     let text = print(&p.program);
@@ -2191,10 +2283,7 @@ fn distinct_args_to_the_same_extern_get_distinct_ecalls() {
     });
     let f = super::exec::interp::compile_ext(&p.program, vec![], vec![emb]).unwrap();
     let input = batch(1, vec![c_f64(&[Some(3.0)]), c_f64(&[Some(10.0)])]);
-    assert_eq!(
-        run_snapshot(&f, &input).unwrap(),
-        rows(&[&["4.0", "11.0"]])
-    );
+    assert_eq!(run_snapshot(&f, &input).unwrap(), rows(&[&["4.0", "11.0"]]));
 }
 
 #[test]
@@ -2302,7 +2391,7 @@ fn substr_window_arithmetic_via_sql() {
         batch(1, vec![c_i64(&[Some(0)])]),
     )
     .unwrap();
-    assert_eq!(got, rows(&[&["he", "lo", "hello", "", "el"]]));
+    assert_eq!(got, rows(&[&["he", "lo", "hel", "", "el"]]));
 }
 
 #[test]
@@ -2764,10 +2853,7 @@ fn bracket_subscripts_extract_codepoints() {
         "SELECT s[2] AS a, s[-1] AS b, s[0] AS z, s[100] AS oor, s[off] AS dy \
          FROM __THIS__",
         &schema,
-        batch(
-            1,
-            vec![c_str(&[Some("h\u{e9}llo")]), c_i64(&[Some(3)])],
-        ),
+        batch(1, vec![c_str(&[Some("h\u{e9}llo")]), c_i64(&[Some(3)])]),
     )
     .unwrap();
     assert_eq!(got, rows(&[&["\u{e9}", "o", "", "", "l"]]));
@@ -3194,11 +3280,23 @@ fn regexp_family_end_to_end() {
         got,
         rows(&[
             &[
-                "true", "false", "true", "false", "", "world", "heLlo world",
+                "true",
+                "false",
+                "true",
+                "false",
+                "",
+                "world",
+                "heLlo world",
                 "heLLo worLd"
             ],
             &[
-                "false", "false", "false", "false", "123", "", "abc123def",
+                "false",
+                "false",
+                "false",
+                "false",
+                "123",
+                "",
+                "abc123def",
                 "abc123def"
             ],
             &["NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL"],
@@ -3238,7 +3336,10 @@ fn regexp_family_end_to_end() {
         other => panic!("wrong outcome: {:?}", other.err()),
     }
     // Divergence guard: \B rejects cleanly.
-    match prep("SELECT regexp_matches(s, 'a\\B') AS x FROM __THIS__", &schema) {
+    match prep(
+        "SELECT regexp_matches(s, 'a\\B') AS x FROM __THIS__",
+        &schema,
+    ) {
         Err(PrepareError::Unsupported(m)) => assert!(m.contains("\\B"), "{m}"),
         other => panic!("wrong outcome: {:?}", other.err()),
     }
@@ -3295,18 +3396,25 @@ fn opaque_row_columns_reject_only_on_reference() {
     let schema = cols(&[("a", Ty::I64, false), ("s", Ty::Str, true)]);
     let opaque = vec![(1usize, "d".to_string())];
     let prep_o = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &opaque, &[], &[], false, &[], &[], &[])
-            .map(|p| p.program)
+        super::prepare_opaque(
+            sql,
+            "__THIS__",
+            &schema,
+            &opaque,
+            &[],
+            &[],
+            false,
+            &[],
+            &[],
+            &[],
+        )
+        .map(|p| p.program)
     };
 
     // Untouched -> serves end to end.
     let p = prep_o("SELECT a + 1 AS x FROM __THIS__").unwrap();
     let f = compile(&p, vec![]).unwrap();
-    let got = run_snapshot(
-        &f,
-        &batch(1, vec![c_i64(&[Some(4)]), c_str(&[Some("k")])]),
-    )
-    .unwrap();
+    let got = run_snapshot(&f, &batch(1, vec![c_i64(&[Some(4)]), c_str(&[Some("k")])])).unwrap();
     assert_eq!(got, rows(&[&["5"]]));
 
     // Any reference path rejects with the same named error as before.
@@ -3335,7 +3443,10 @@ fn opaque_row_columns_reject_only_on_reference() {
     assert_eq!(names("SELECT * LIKE 'a%' FROM __THIS__"), ["a"]);
     assert_eq!(names("SELECT COLUMNS('a|s') FROM __THIS__"), ["a", "s"]);
     // REPLACE keeps d's position but gives it a real lane.
-    assert_eq!(names("SELECT * REPLACE (7 AS d) FROM __THIS__"), ["a", "d", "s"]);
+    assert_eq!(
+        names("SELECT * REPLACE (7 AS d) FROM __THIS__"),
+        ["a", "d", "s"]
+    );
 
     // Column-list alias is positional over the FULL model: stopping before
     // d serves, reaching d rejects, and the count error includes d.
@@ -3389,7 +3500,10 @@ fn from_colon_prefix_alias_matches_as_form() {
         "SELECT * FROM r : range(3)",
     ] {
         let e = prep(sql, &schema).unwrap_err().to_string();
-        assert!(e.contains("parse error") || e.contains("unsupported"), "{sql}: {e}");
+        assert!(
+            e.contains("parse error") || e.contains("unsupported"),
+            "{sql}: {e}"
+        );
     }
 }
 
@@ -3400,7 +3514,12 @@ fn parenless_star_replace_consumes_one_item() {
     // all). Multiplication by a column named replace is untouched.
     let schema = cols(&[("i", Ty::I64, false), ("j", Ty::I64, false)]);
     let input = || batch(1, vec![c_i64(&[Some(1)]), c_i64(&[Some(2)])]);
-    let got = run_sql("SELECT * REPLACE i+100 AS i FROM __THIS__", &schema, input()).unwrap();
+    let got = run_sql(
+        "SELECT * REPLACE i+100 AS i FROM __THIS__",
+        &schema,
+        input(),
+    )
+    .unwrap();
     assert_eq!(got, rows(&[&["101", "2"]]));
     let got = run_sql(
         "SELECT integers.* REPLACE i+100 AS i FROM __THIS__ AS integers",
@@ -3417,7 +3536,10 @@ fn parenless_star_replace_consumes_one_item() {
     )
     .unwrap();
     assert_eq!(
-        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        p.out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
         ["i", "j", "j_1"]
     );
     let f = compile(&p, vec![]).unwrap();
@@ -3484,7 +3606,7 @@ fn reverse_ascii_byte_path_and_grapheme_path() {
     let cases: &[(&str, &str)] = &[
         ("", ""),
         ("abc", "cba"),
-        ("a\r\nb", "b\n\ra"),          // ASCII: CRLF SPLITS (fast path)
+        ("a\r\nb", "b\n\ra"),           // ASCII: CRLF SPLITS (fast path)
         ("\u{f6}\r\nb", "b\r\n\u{f6}"), // non-ASCII: CRLF holds
         ("Mot\u{f6}rHead", "daeHr\u{f6}toM"),
         ("e\u{301}x", "xe\u{301}"), // combining mark stays attached
@@ -3551,7 +3673,10 @@ fn columns_star_with_modifiers() {
     )
     .unwrap();
     assert_eq!(
-        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        p.out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
         ["a", "b"]
     );
     for (sql, want) in [
@@ -3560,7 +3685,10 @@ fn columns_star_with_modifiers() {
     ] {
         let p = prep(sql, &schema).unwrap();
         assert_eq!(
-            p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            p.out_cols
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             want,
             "{sql}"
         );
@@ -3572,14 +3700,23 @@ fn columns_star_with_modifiers() {
     )
     .unwrap();
     assert_eq!(
-        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        p.out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
         ["x", "x_1"]
     );
     // COLUMNS('re' REPLACE ...) is a DuckDB parser error — stays rejected.
-    let e = prep("SELECT COLUMNS('a' REPLACE (a+1 AS a)) FROM __THIS__", &schema)
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("parse error") || e.contains("unsupported"), "{e}");
+    let e = prep(
+        "SELECT COLUMNS('a' REPLACE (a+1 AS a)) FROM __THIS__",
+        &schema,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        e.contains("parse error") || e.contains("unsupported"),
+        "{e}"
+    );
 }
 
 fn struct_field(name: &str, node: super::plan::StructNode) -> super::plan::StructField {
@@ -3607,8 +3744,19 @@ fn structs_flatten_to_lanes() {
         ],
     }];
     let prep_s = |sql: &str| {
-        super::prepare_opaque(sql, "__THIS__", &schema, &[], &structs, &[], false, &[], &[], &[])
-            .map(|p| p.program)
+        super::prepare_opaque(
+            sql,
+            "__THIS__",
+            &schema,
+            &[],
+            &structs,
+            &[],
+            false,
+            &[],
+            &[],
+            &[],
+        )
+        .map(|p| p.program)
     };
     let run = |sql: &str| -> Result<Vec<Vec<String>>, String> {
         let p = prep_s(sql).map_err(|e| e.to_string())?;
@@ -3631,7 +3779,10 @@ fn structs_flatten_to_lanes() {
     // a.* expands in place to bare field names; NULL struct -> NULL fields.
     let p = prep_s("SELECT a.* FROM __THIS__").unwrap();
     assert_eq!(
-        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        p.out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
         ["i", "j"]
     );
     assert_eq!(
@@ -3682,12 +3833,18 @@ fn structs_flatten_to_lanes() {
     // Star still serves once the struct is excluded or replaced.
     let p = prep_s("SELECT * EXCLUDE (a) FROM __THIS__").unwrap();
     assert_eq!(
-        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        p.out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
         ["x"]
     );
     let p = prep_s("SELECT * REPLACE (7 AS a) FROM __THIS__").unwrap();
     assert_eq!(
-        p.out_cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        p.out_cols
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
         ["x", "a"]
     );
     // EXCLUDE-all on the struct star is legal beside another item; alone
@@ -3799,7 +3956,12 @@ fn many_shape_dup_key_joins_fan_out() {
     // still null-extends (measured).
     assert_eq!(
         run_many("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id AND d.v > 10"),
-        rows(&[&["1", "11"], &["2", "20"], &["3", "NULL"], &["NULL", "NULL"]])
+        rows(&[
+            &["1", "11"],
+            &["2", "20"],
+            &["3", "NULL"],
+            &["NULL", "NULL"]
+        ])
     );
     assert_eq!(
         run_many("SELECT pid, v FROM __THIS__ LEFT JOIN d ON pid = d.id AND d.v > 100"),
@@ -3844,7 +4006,6 @@ fn many_shape_dup_key_joins_fan_out() {
         &[],
         &[dim_b, dim2],
         true,
-
         &[],
         &[],
         &[],
@@ -3939,8 +4100,8 @@ fn many_shape_self_joins() {
     };
     let run_many = |sql: &str| -> Result<Vec<Vec<String>>, String> {
         let p = prep_many(sql).map_err(|e| e.to_string())?;
-        let f = compile(&p.program, vec![StaticData::Map(Vec::new())])
-            .map_err(|e| e.to_string())?;
+        let f =
+            compile(&p.program, vec![StaticData::Map(Vec::new())]).map_err(|e| e.to_string())?;
         run_snapshot(&f, &input()).map_err(|e| e.to_string())
     };
 
@@ -3951,21 +4112,17 @@ fn many_shape_self_joins() {
     );
     // Equi conjuncts stay WHERE (cross-then-filter).
     assert_eq!(
-        run_many("SELECT i1.i, i2.j FROM __THIS__ i1, __THIS__ i2 WHERE i1.i = i2.i")
-            .unwrap(),
+        run_many("SELECT i1.i, i2.j FROM __THIS__ i1, __THIS__ i2 WHERE i1.i = i2.i").unwrap(),
         rows(&[&["1", "10"], &["2", "20"]])
     );
     // ON self-join, inequality + LEFT null-extension.
     assert_eq!(
-        run_many("SELECT i1.i, i2.i FROM __THIS__ i1 JOIN __THIS__ i2 ON i1.i > i2.i")
-            .unwrap(),
+        run_many("SELECT i1.i, i2.i FROM __THIS__ i1 JOIN __THIS__ i2 ON i1.i > i2.i").unwrap(),
         rows(&[&["2", "1"]])
     );
     assert_eq!(
-        run_many(
-            "SELECT i1.i, i2.i FROM __THIS__ i1 LEFT JOIN __THIS__ i2 ON i1.i > i2.i"
-        )
-        .unwrap(),
+        run_many("SELECT i1.i, i2.i FROM __THIS__ i1 LEFT JOIN __THIS__ i2 ON i1.i > i2.i")
+            .unwrap(),
         rows(&[&["1", "NULL"], &["2", "1"]])
     );
     // Star EXCLUDE over the self-join (the corpus shapes): unqualified
@@ -3990,12 +4147,9 @@ fn many_shape_self_joins() {
         ["j", "i"]
     );
     // Default shapes: still the named rejection.
-    let e = prep(
-        "SELECT i1.i FROM __THIS__ i1, __THIS__ i2",
-        &schema,
-    )
-    .unwrap_err()
-    .to_string();
+    let e = prep("SELECT i1.i FROM __THIS__ i1, __THIS__ i2", &schema)
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("dynamic table"), "{e}");
     // USING self-join: named stage-B follow-up.
     let e = match prep_many("SELECT * FROM __THIS__ i1 JOIN __THIS__ i2 USING (i)") {
@@ -4011,10 +4165,7 @@ fn many_shape_self_joins() {
 /// the type, not a side channel, so the program header says so.
 #[test]
 fn a_decimal_static_value_lowers_to_a_dec_probe_dst() {
-    let t = stat(
-        "s",
-        &[("id", Ty::I64, false), ("d", Ty::Dec(6, 2), false)],
-    );
+    let t = stat("s", &[("id", Ty::I64, false), ("d", Ty::Dec(6, 2), false)]);
     let schema = cols(&[("k", Ty::I64, false)]);
     let p = prepare(
         "SELECT d AS o FROM __THIS__ JOIN s ON k = s.id",
@@ -4037,10 +4188,7 @@ fn a_decimal_static_value_lowers_to_a_dec_probe_dst() {
 /// already set.
 #[test]
 fn a_decimal_key_against_an_int_probe_keeps_the_int_key_lane() {
-    let t = stat(
-        "s",
-        &[("dk", Ty::Dec(6, 2), false), ("v", Ty::Str, false)],
-    );
+    let t = stat("s", &[("dk", Ty::Dec(6, 2), false), ("v", Ty::Str, false)]);
     let schema = cols(&[("k", Ty::I64, false)]);
     let p = prepare(
         "SELECT v AS o FROM __THIS__ JOIN s ON k = s.dk",

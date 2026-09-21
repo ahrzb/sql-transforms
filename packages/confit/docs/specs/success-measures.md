@@ -169,6 +169,8 @@ construct-naming diagnostic requirement or C1's specified widening-run depth.
 | **kpi: ladder-ratchet** | Adopt no unexplained support decrease for stable corpora | Preserve package ownership, environment requirements, and reviewed scope changes |
 | **kpi: bench-refresh-cadence** | No fixed maximum age adopted | Stable within-run baseline and a justified cadence before introducing a threshold |
 
-Reporting improvements remain implementation work; this decision does not assert
-that new measurements exist. Scope classification lives in the
+The campaign runner now records prepared inputs, every outcome, and dated provenance,
+and reports refusal reasons with their reference outcomes. This is not an acceptance
+percentage, a refusal-quality score, or proof of unsupported-width reachability;
+those measurements remain implementation work. Scope classification lives in the
 [serving contract](serving-contract.md#scope-classification).

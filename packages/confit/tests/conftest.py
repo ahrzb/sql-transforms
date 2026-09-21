@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import pytest
 from _native_guard import ensure_native_built
-from confit.oracle import Oracle
 
 ensure_native_built()
+
+from confit.oracle import Oracle  # noqa: E402 — rebuild before loading the extension
 
 
 @pytest.fixture

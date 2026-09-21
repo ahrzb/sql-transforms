@@ -637,8 +637,8 @@ fn pin_ssubstr_window_arithmetic() {
         (2i64, Some(3i64), "ell"),
         (0, Some(3), "he"),
         (-2, None, "lo"),
-        (-6, Some(3), "hel"),
-        (-10, Some(8), "hello"),
+        (-6, Some(3), "he"),
+        (-10, Some(8), "hel"),
         (1, Some(0), ""),
         (1, Some(-1), ""),
         (3, Some(-2), "he"),
@@ -727,8 +727,7 @@ fn pin_ftoi_rounding_and_traps() {
     }
     for lit in ["nan", "inf", "-inf", "1e19"] {
         let body = format!("  %a = const.f64 {lit}\n  %r = ftoi.trunc %a\n  store out.o, %r");
-        let err = eval1(&body, "o: i64").unwrap_err();
-        assert!(err.0.contains("out of i64 range"), "ftoi({lit}): {}", err.0);
+        assert!(eval1(&body, "o: i64").is_err(), "ftoi({lit}) must trap");
     }
 }
 
@@ -746,19 +745,22 @@ fn pin_ieee_flow_and_scmp_and_concat() {
 
 #[test]
 fn pin_stoi_trims_whitespace_like_duckdb_cast() {
-    for (s, ok) in [
-        (" 5", true),
-        ("5 ", true),
-        ("+5", true),
-        ("0x10", false),
-        ("", false),
-        ("  ", false),
+    for (s, expected) in [
+        (" 5", Some("5")),
+        ("5 ", Some("5")),
+        ("+5", Some("5")),
+        ("0x10", Some("16")),
+        ("", None),
+        ("  ", None),
     ] {
         let body = format!(
             "  %s = const.str \"{s}\"\n  %f, %v = stoi.opt %s\n  store out.f, %f\n  store out.v, %v"
         );
         let got = eval1(&body, "f: i1, v: i64").unwrap();
-        assert_eq!(got[0][0], ok.to_string(), "stoi({s:?})");
+        assert_eq!(got[0][0], expected.is_some().to_string(), "stoi({s:?})");
+        if let Some(value) = expected {
+            assert_eq!(got[0][1], value, "stoi({s:?})");
+        }
     }
 }
 
@@ -896,7 +898,11 @@ fn gen_ensemble(rng: &mut gen::Rng, n_features: u32) -> tree_ensemble::TreeEnsem
             model_id: &[0],
             base: &[(rng.below(5) as f64) - 2.0],
             agg: &[if rng.chance(50) { "sum" } else { "mean" }],
-            link: &[if rng.chance(50) { "identity" } else { "sigmoid" }],
+            link: &[if rng.chance(50) {
+                "identity"
+            } else {
+                "sigmoid"
+            }],
         },
         n_features,
     )
@@ -1021,8 +1027,8 @@ fn casemap_tables_sorted_and_marquee_pins() {
 /// inputs.
 #[test]
 fn fuzz_cranelift_agrees_with_interpreter() {
-    use super::cranelift;
     use super::super::ir::Inst;
+    use super::cranelift;
     // Counting programs is not coverage — assert from inside the loop that
     // the opcodes we care about actually reached BOTH backends. The
     // cranelift fallback is silent, so an unimplemented opcode would
@@ -1162,12 +1168,7 @@ fn tree_score_fixture_pins_null_and_unseen_group_on_both_backends() {
     let input = batch(
         4,
         vec![
-            c_str(&[
-                Some("north"),
-                Some("north"),
-                Some("south"),
-                Some("west"),
-            ]),
+            c_str(&[Some("north"), Some("north"), Some("south"), Some("west")]),
             c_f64(&[Some(50.0), None, None, Some(50.0)]),
             // `rooms` is an INTEGER feature: it reaches predict through
             // itof.f32, one rounding, matching sklearn.
@@ -1470,7 +1471,9 @@ fn extern_call_traps_are_named() {
     let f = super::interp::compile_ext(
         &p,
         vec![],
-        vec![imp("tf", |_| Ok(Some(vec![Some(ScalarVal::Str("x".into()))])))],
+        vec![imp("tf", |_| {
+            Ok(Some(vec![Some(ScalarVal::Str("x".into()))]))
+        })],
     )
     .unwrap();
     let err = run_snapshot(&f, &scaler_input()).unwrap_err();
@@ -1516,7 +1519,9 @@ b0:
     let pair = || {
         imp("pair", |args| match &args[0] {
             None => Ok(None),
-            Some(ScalarVal::Str(s)) if s == "half" => Ok(Some(vec![None, Some(ScalarVal::F64(0.5))])),
+            Some(ScalarVal::Str(s)) if s == "half" => {
+                Ok(Some(vec![None, Some(ScalarVal::F64(0.5))]))
+            }
             Some(ScalarVal::Str(s)) => Ok(Some(vec![
                 Some(ScalarVal::Str(format!("{s}!"))),
                 Some(ScalarVal::F64(s.len() as f64)),

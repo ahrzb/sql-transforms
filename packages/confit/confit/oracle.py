@@ -1,42 +1,20 @@
-"""THE ORACLE: DuckDB with the optimizer off, behind one constructor.
+"""The fixed DuckDB reference, behind one optimizer-off constructor.
 
-Anything that compares this engine against DuckDB -- tests, corpus gates, the
-differential fuzzer -- gets its connection from here, so the oracle is a
-property of the REPO rather than a per-call-site choice that can be forgotten.
+Tests, corpus gates, and the differential fuzzer obtain reference connections
+here. Opening against another DuckDB version fails before connecting.
 
-Why optimizer-off is the oracle at all, measured 2026-08-17:
+Disabling the optimizer removes its plan-rewrite passes, including
+statistics-driven rewrites that can elide traps. It does not disable binding
+or guarantee a unique answer for unordered or order-sensitive computations.
+The oracle contract defines those comparison boundaries.
 
-  * `PRAGMA disable_optimizer` == disabling all 33 named optimizers.
-  * The BINDER is untouched, so output TYPES are identical (checked across
-    narrow ints and decimals), constant folding still happens (`1 + 2` is
-    int32 3), and bind-time constant errors still fire.
-  * Execution-level LAZINESS is untouched: an untaken CASE arm, AND/OR
-    short-circuit in both operand orders, and coalesce's later arguments all
-    behave exactly as with the optimizer on.
-  * What is removed is the plan rewriting -- statistics_propagation,
-    expression_rewriter, filter pushdown/pullup, CSE, join reordering.
+Tables are materialized as native tables: registered Arrow scans can have
+different comparison behavior (see `load`). A diagnostic optimizer-on reading
+uses `optimizer_on()` on the same connection, preserving loaded table state.
 
-So the oracle is "the query as written, run by DuckDB's execution model, with
-no plan rewriting" -- the same shape as this engine, and that is what makes it
-matchable. The optimizer-on reading is NOT matchable in principle:
-`statistics_propagation` reads a column's null statistic, so it answers the
-same query over the same rows differently depending on the table's insert
-history (proved in tests/known_divergences/test_trap_elision.py).
-
-The oracle's tables are NATIVE tables, never registered arrow relations --
-see `load`, where the difference is a semantic one, not a convenience.
-
-`_raw_connect` is captured at import, before any test patches `duckdb`, and
-every connection here goes through it. The connection is per-instance for the
-same reason the module never assigns to `duckdb.connect`: `duckdb` is a shared
-module, so an import-time assignment leaks into every other package's tests
-for the rest of the session. It did once -- sql_transform's
-single-evaluation tests count sklearn calls made through DuckDB, and losing
-CSE doubled them.
-
-A caller that WANTS the optimizer -- because it is documenting what the
-optimizer does -- says so in its own body with `optimizer_on()`, which reads
-as the deliberate exception it is.
+Capture `_raw_connect` without replacing `duckdb.connect` globally: other
+packages need ordinary DuckDB behavior, and a global patch once changed
+sql_transform's sklearn call counts by removing common-subexpression elimination.
 """
 
 from __future__ import annotations
@@ -71,13 +49,20 @@ class Oracle:
     unknown attributes forward to it, so the escape hatch is always open and
     no wrapper method has to be invented for it."""
 
-    # Recorded, not asserted. Whether the gate pins ==VERSION or a floor is
-    # the owner's ruling (oracle spec ASK-1); it lands as one assert here.
+    # Keep this aligned with the reviewed dev-environment pin. Use a runtime
+    # check, not assert: optimized Python must not silently change the oracle.
     VERSION = "1.5.5"
 
     Error = duckdb.Error
 
     def __init__(self) -> None:
+        if duckdb.__version__ != self.VERSION:
+            raise RuntimeError(
+                f"the oracle is DuckDB {self.VERSION}, but this interpreter "
+                f"imports duckdb {duckdb.__version__}. Run inside the pinned "
+                "environment (`uv sync --locked --group spark` at the repo root). "
+                "Changing the reference version requires a separate reviewed decision."
+            )
         self.con = _raw_connect()
         self.con.execute("PRAGMA disable_optimizer")
 

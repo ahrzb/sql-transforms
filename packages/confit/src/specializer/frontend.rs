@@ -33,11 +33,11 @@ use sqlparser::parser::Parser;
 use super::exec::{ExternImpl, ScalarVal};
 use super::fold::fold;
 use super::ir::{BinOp, CmpPred, Col, Lit, NumOp1, StrOp2, StrOp2i, StrOp3, TrimSide, Ty};
-use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 use super::plan::{
-    ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc, Rel, SExpr, SKind,
-    StaticTable, StructCol, StructField, StructNode, bind_foldable, may_trap,
+    bind_foldable, may_trap, ArithOp, CompareGrid, JoinKey, JoinKind, JoinSpec, KeyCmp, KeySrc,
+    Rel, SExpr, SKind, StaticTable, StructCol, StructField, StructNode,
 };
+use super::sig::{self, ArgTy, NullArg, Ret, Sig};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrepareError {
@@ -104,9 +104,7 @@ fn dec_operand<'a>(a: &'a SExpr, b: &'a SExpr) -> Option<&'a SExpr> {
 ///
 /// Every field other than `name`/`alias` refuses by name. Returns `None` for
 /// a non-`Table` relation so each caller keeps its own wording for that.
-fn plain_table(
-    tf: &TableFactor,
-) -> Result<Option<(String, Option<&TableAlias>)>, PrepareError> {
+fn plain_table(tf: &TableFactor) -> Result<Option<(String, Option<&TableAlias>)>, PrepareError> {
     let TableFactor::Table {
         name,
         alias,
@@ -173,22 +171,100 @@ enum SigArgs {
 /// `builtin_names_match_the_catalogue` re-derives this list from the match
 /// itself, so a new arm cannot silently escape the guard.
 pub const BUILTIN_NAMES: &[&str] = &[
-    "abs", "add", "any_value", "array_extract", "array_slice", "ascii", "avg",
-    "bit_length", "cbrt", "ceil", "ceiling", "char_length", "character_length",
-    "coalesce", "concat", "concat_ws", "contains", "cos", "count",
-    "damerau_levenshtein", "divide", "editdist3", "ends_with", "exp", "fdiv",
-    "first", "floor", "fmod", "geomean", "greatest", "hamming", "if",
-    "ifnull", "instr",
-    "jaccard", "last", "lcase", "least", "len", "length", "levenshtein",
-    "list_extract", "list_slice", "ln", "log", "log10", "log2", "lower",
-    "lpad", "ltrim", "max", "min", "mismatches", "mod", "multiply",
-    "nextafter", "nullif", "ord", "pi", "position", "pow", "power", "prefix",
-    "product", "regexp_extract", "regexp_extract_all", "regexp_full_match",
-    "regexp_matches", "regexp_replace", "regexp_split_to_array", "repeat",
-    "replace", "reverse", "round", "rpad", "rtrim", "sin", "sqrt",
-    "starts_with", "string_agg", "strip_accents", "strlen", "strpos",
-    "struct_extract", "subtract", "suffix", "sum", "tan", "translate",
-    "trunc", "ucase", "unicode", "upper", "xor",
+    "abs",
+    "add",
+    "any_value",
+    "array_extract",
+    "array_slice",
+    "ascii",
+    "avg",
+    "bit_length",
+    "cbrt",
+    "ceil",
+    "ceiling",
+    "char_length",
+    "character_length",
+    "coalesce",
+    "concat",
+    "concat_ws",
+    "contains",
+    "cos",
+    "count",
+    "damerau_levenshtein",
+    "divide",
+    "editdist3",
+    "ends_with",
+    "exp",
+    "fdiv",
+    "first",
+    "floor",
+    "fmod",
+    "geomean",
+    "greatest",
+    "hamming",
+    "if",
+    "ifnull",
+    "instr",
+    "jaccard",
+    "last",
+    "lcase",
+    "least",
+    "len",
+    "length",
+    "levenshtein",
+    "list_extract",
+    "list_slice",
+    "ln",
+    "log",
+    "log10",
+    "log2",
+    "lower",
+    "lpad",
+    "ltrim",
+    "max",
+    "min",
+    "mismatches",
+    "mod",
+    "multiply",
+    "nextafter",
+    "nullif",
+    "ord",
+    "pi",
+    "position",
+    "pow",
+    "power",
+    "prefix",
+    "product",
+    "regexp_extract",
+    "regexp_extract_all",
+    "regexp_full_match",
+    "regexp_matches",
+    "regexp_replace",
+    "regexp_split_to_array",
+    "repeat",
+    "replace",
+    "reverse",
+    "round",
+    "rpad",
+    "rtrim",
+    "sin",
+    "sqrt",
+    "starts_with",
+    "string_agg",
+    "strip_accents",
+    "strlen",
+    "strpos",
+    "struct_extract",
+    "subtract",
+    "suffix",
+    "sum",
+    "tan",
+    "translate",
+    "trunc",
+    "ucase",
+    "unicode",
+    "upper",
+    "xor",
 ];
 
 /// Whether a call-site name is claimed by the builtin catalogue. Matching is
@@ -451,11 +527,11 @@ pub fn frontend(
     // step 2), a struct keyed by the declared names for a named one
     // (slice 5).
     let push_wide = |out_cols: &mut Vec<Col>,
-                         exprs: &mut Vec<SExpr>,
-                         wide_outs: &mut Vec<super::WideOut>,
-                         base: String,
-                         lanes: Vec<(String, SExpr)>,
-                         names: Vec<String>|
+                     exprs: &mut Vec<SExpr>,
+                     wide_outs: &mut Vec<super::WideOut>,
+                     base: String,
+                     lanes: Vec<(String, SExpr)>,
+                     names: Vec<String>|
      -> Result<(), PrepareError> {
         let first = out_cols.len() as u32;
         let width = (lanes.len() - 1) as u32;
@@ -500,7 +576,14 @@ pub fn frontend(
                 _ => default_name(e),
             };
             if let Some((lanes, names)) = binder.struct_pack_lanes(e, &base)? {
-                push_wide(&mut out_cols, &mut exprs, &mut wide_outs, base, lanes, names)?;
+                push_wide(
+                    &mut out_cols,
+                    &mut exprs,
+                    &mut wide_outs,
+                    base,
+                    lanes,
+                    names,
+                )?;
                 continue;
             }
         }
@@ -696,9 +779,7 @@ fn bind_from<'a>(
                     // landing on an opaque/struct column has no plain lane
                     // to rename.
                     if let Some((_, oname)) = opaque.iter().find(|(p, _)| *p < a.columns.len()) {
-                        return Err(unsup(format!(
-                            "row column '{oname}' has a non-scalar type"
-                        )));
+                        return Err(unsup(format!("row column '{oname}' has a non-scalar type")));
                     }
                     if let Some(sc) = structs.iter().find(|s| s.pos < a.columns.len()) {
                         return Err(unsup(format!(
@@ -774,9 +855,7 @@ fn bind_from<'a>(
                 return Err(unsup("joining the dynamic table to itself"));
             }
             if !opaque.is_empty() || !structs.is_empty() {
-                return Err(unsup(
-                    "self-join over a row model with non-scalar columns",
-                ));
+                return Err(unsup("self-join over a row model with non-scalar columns"));
             }
             if binder.this_name.eq_ignore_ascii_case(&scope_name)
                 || binder
@@ -793,13 +872,9 @@ fn bind_from<'a>(
             let on = match constraint {
                 JoinConstraint::On(e) => Some(e),
                 JoinConstraint::Using(_) | JoinConstraint::Natural => {
-                    return Err(unsup(
-                        "self-join USING/NATURAL (stage-B follow-up; use ON)",
-                    ))
+                    return Err(unsup("self-join USING/NATURAL (stage-B follow-up; use ON)"))
                 }
-                JoinConstraint::None => {
-                    return Err(unsup("JOIN without ON (cross join)"))
-                }
+                JoinConstraint::None => return Err(unsup("JOIN without ON (cross join)")),
             };
             let n_batch = binder.n_plain as u32;
             binder.joins.push(ScopeJoin {
@@ -993,9 +1068,7 @@ fn bind_from<'a>(
                 return Err(unsup("joining the dynamic table to itself"));
             }
             if !opaque.is_empty() || !structs.is_empty() {
-                return Err(unsup(
-                    "self-join over a row model with non-scalar columns",
-                ));
+                return Err(unsup("self-join over a row model with non-scalar columns"));
             }
             if binder.this_name.eq_ignore_ascii_case(&scope_name)
                 || binder
@@ -1143,11 +1216,7 @@ fn bind_from<'a>(
 /// A static column the catalogue could not serve is PRESENT but unusable.
 /// Saying "does not exist" about it sends the reader hunting a typo in a
 /// correct query; name the type instead, the way the row path does.
-fn opaque_static_refusal(
-    st: &StaticTable,
-    name: &str,
-    table: &str,
-) -> Option<PrepareError> {
+fn opaque_static_refusal(st: &StaticTable, name: &str, table: &str) -> Option<PrepareError> {
     // This engine serves a struct's LEAVES, so the struct name refuses for
     // a different reason than a timestamp does: the fields are right there,
     // only the whole value is unserved. Struct heads live in `structs`,
@@ -1454,18 +1523,11 @@ fn bind_on<'e>(
                     .structs
                     .iter()
                     .any(|s| s.name.eq_ignore_ascii_case(head));
-            let head_in_static = st
-                .cols
-                .iter()
-                .enumerate()
-                .any(|(ci, c)| {
+            let head_in_static =
+                st.cols.iter().enumerate().any(|(ci, c)| {
                     !st.is_leaf_lane(ci as u32) && c.name.eq_ignore_ascii_case(head)
-                })
-                || st
-                    .structs
-                    .iter()
-                    .any(|s| s.name.eq_ignore_ascii_case(head))
-                || st.opaque.iter().any(|(c, _)| c.eq_ignore_ascii_case(head));
+                }) || st.structs.iter().any(|s| s.name.eq_ignore_ascii_case(head))
+                    || st.opaque.iter().any(|(c, _)| c.eq_ignore_ascii_case(head));
             if head_in_outer && head_in_static {
                 return Err(PrepareError::Bind(format!(
                     "ambiguous column '{head}' in JOIN ON (qualify it)"
@@ -1631,7 +1693,11 @@ fn shared_key(
         Scalar,
         Opaque(String),
     }
-    let st_side = if let Some(s) = st.structs.iter().find(|s| s.name.eq_ignore_ascii_case(name)) {
+    let st_side = if let Some(s) = st
+        .structs
+        .iter()
+        .find(|s| s.name.eq_ignore_ascii_case(name))
+    {
         Some(Side::Struct(s))
     } else if let Some((c, aty)) = st.opaque.iter().find(|(c, _)| c.eq_ignore_ascii_case(name)) {
         Some(Side::Opaque(format!(
@@ -1656,7 +1722,11 @@ fn shared_key(
         .find(|s| s.name.eq_ignore_ascii_case(name))
     {
         Some(Side::Struct(s))
-    } else if binder.opaque.iter().any(|(_, c)| c.eq_ignore_ascii_case(name)) {
+    } else if binder
+        .opaque
+        .iter()
+        .any(|(_, c)| c.eq_ignore_ascii_case(name))
+    {
         Some(Side::Opaque(format!(
             "a non-scalar type on row table '{}'",
             binder.this_name
@@ -1666,7 +1736,11 @@ fn shared_key(
             .structs
             .iter()
             .any(|s| s.name.eq_ignore_ascii_case(name))
-            || sj.table.opaque.iter().any(|(c, _)| c.eq_ignore_ascii_case(name))
+            || sj
+                .table
+                .opaque
+                .iter()
+                .any(|(c, _)| c.eq_ignore_ascii_case(name))
     }) {
         Some(Side::Opaque(format!(
             "a non-scalar type on the already-joined table '{}'",
@@ -2282,8 +2356,8 @@ pub(crate) fn row_limit_clause(sql: &str) -> Option<&'static str> {
                     return Some("SELECT TOP");
                 }
                 for twj in &s.from {
-                    for rel in std::iter::once(&twj.relation)
-                        .chain(twj.joins.iter().map(|j| &j.relation))
+                    for rel in
+                        std::iter::once(&twj.relation).chain(twj.joins.iter().map(|j| &j.relation))
                     {
                         if let TableFactor::Derived { subquery, .. } = rel {
                             if let Some(c) = in_query(subquery) {
@@ -2295,14 +2369,16 @@ pub(crate) fn row_limit_clause(sql: &str) -> Option<&'static str> {
                 None
             }
             SetExpr::Query(q) => in_query(q),
-            SetExpr::SetOperation { left, right, .. } => {
-                in_body(left).or_else(|| in_body(right))
-            }
+            SetExpr::SetOperation { left, right, .. } => in_body(left).or_else(|| in_body(right)),
             _ => None,
         }
     }
     let dialect = GenericDialect {};
-    let statements = Parser::new(&dialect).try_with_sql(sql).ok()?.parse_statements().ok()?;
+    let statements = Parser::new(&dialect)
+        .try_with_sql(sql)
+        .ok()?
+        .parse_statements()
+        .ok()?;
     statements.iter().find_map(|s| match s {
         Statement::Query(q) => in_query(q),
         _ => None,
@@ -2334,9 +2410,7 @@ fn apply_column_alias(
     let mut t = st.clone();
     for (def, sc) in a.columns.iter().zip(&t.star) {
         match sc {
-            super::plan::StarCol::Real(ci) => {
-                t.cols[*ci as usize].name = def.name.value.clone()
-            }
+            super::plan::StarCol::Real(ci) => t.cols[*ci as usize].name = def.name.value.clone(),
             super::plan::StarCol::Opaque(oname) => {
                 return Err(unsup(format!(
                     "column-list alias over non-scalar column '{oname}'"
@@ -2351,9 +2425,7 @@ fn finalize_star(cols: Vec<(String, StarLane)>) -> Result<Vec<(String, SExpr)>, 
     cols.into_iter()
         .map(|(n, l)| match l {
             StarLane::Real(e) => Ok((n, e)),
-            StarLane::Opaque(orig) => Err(unsup(format!(
-                "column '{orig}' has a non-scalar type"
-            ))),
+            StarLane::Opaque(orig) => Err(unsup(format!("column '{orig}' has a non-scalar type"))),
         })
         .collect()
 }
@@ -2399,11 +2471,16 @@ fn like_match(s: &str, p: &str, ci: bool) -> bool {
 /// LIKE / NOT LIKE / GLOB / NOT ILIKE there with a \u{1} marker; an
 /// unmarked pattern is a genuine * ILIKE).
 enum StarFilter {
-    Like { ci: bool, neg: bool },
+    Like {
+        ci: bool,
+        neg: bool,
+    },
     Glob,
     /// Wave-B pins: positive = unanchored RE2 SEARCH over names; NOT =
     /// NOT full-match — independent predicates, never complements.
-    Similar { neg: bool },
+    Similar {
+        neg: bool,
+    },
 }
 
 /// Decoded star filter + any EXCLUDE entries the rewrite absorbed into the
@@ -2417,9 +2494,27 @@ struct DecodedFilter {
 fn decode_star_filter(pattern: &str) -> DecodedFilter {
     if let Some(rest) = pattern.strip_prefix('\u{1}') {
         for (code, op) in [
-            ("L:", StarFilter::Like { ci: false, neg: false }),
-            ("NL:", StarFilter::Like { ci: false, neg: true }),
-            ("NI:", StarFilter::Like { ci: true, neg: true }),
+            (
+                "L:",
+                StarFilter::Like {
+                    ci: false,
+                    neg: false,
+                },
+            ),
+            (
+                "NL:",
+                StarFilter::Like {
+                    ci: false,
+                    neg: true,
+                },
+            ),
+            (
+                "NI:",
+                StarFilter::Like {
+                    ci: true,
+                    neg: true,
+                },
+            ),
             ("G:", StarFilter::Glob),
             ("S:", StarFilter::Similar { neg: false }),
             ("NS:", StarFilter::Similar { neg: true }),
@@ -2444,7 +2539,10 @@ fn decode_star_filter(pattern: &str) -> DecodedFilter {
         }
     }
     DecodedFilter {
-        op: StarFilter::Like { ci: true, neg: false },
+        op: StarFilter::Like {
+            ci: true,
+            neg: false,
+        },
         pat: pattern.to_string(),
         excludes: Vec::new(),
     }
@@ -2861,9 +2959,7 @@ impl Binder<'_> {
                 if let Some(sc) = self.structs.iter().find(|s| s.name.eq_ignore_ascii_case(q)) {
                     matched = true;
                     if filter.is_some() || opts.opt_rename.is_some() {
-                        return Err(unsup(
-                            "struct star with a name filter or RENAME (unpinned)",
-                        ));
+                        return Err(unsup("struct star with a name filter or RENAME (unpinned)"));
                     }
                     use super::plan::StructNode;
                     for f in &sc.fields {
@@ -3090,9 +3186,7 @@ impl Binder<'_> {
             SqlExpr::CompoundFieldAccess { root, access_chain } => {
                 matches!(access_chain.as_slice(), [AccessExpr::Dot(_)]) && over_udf(root)
             }
-            SqlExpr::Function(f) => {
-                f.name.to_string().eq_ignore_ascii_case("struct_extract")
-            }
+            SqlExpr::Function(f) => f.name.to_string().eq_ignore_ascii_case("struct_extract"),
             _ => false,
         }
     }
@@ -3103,10 +3197,7 @@ impl Binder<'_> {
     /// 1::SMALLINT` SMALLINT; fleet 2026-08-13). The second argument still
     /// binds so its own errors fire. Builtin names cannot be UDF-shadowed
     /// (see [`BUILTIN_NAMES`]), so the name test is enough.
-    fn nullif_sqlnull(
-        &self,
-        f: &sqlparser::ast::Function,
-    ) -> Result<bool, PrepareError> {
+    fn nullif_sqlnull(&self, f: &sqlparser::ast::Function) -> Result<bool, PrepareError> {
         use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
         if !f.name.to_string().eq_ignore_ascii_case("nullif")
             || f.uses_odbc_syntax
@@ -3255,12 +3346,7 @@ impl Binder<'_> {
                     ty: Ty::I32,
                     nullable: false,
                 };
-                self.arith(
-                    ArithOp::Sub,
-                    zero,
-                    inner,
-                    (Some(0), ast_int_literal(expr)),
-                )
+                self.arith(ArithOp::Sub, zero, inner, (Some(0), ast_int_literal(expr)))
             }
             SqlExpr::UnaryOp {
                 op: UnaryOperator::Plus,
@@ -3529,7 +3615,9 @@ impl Binder<'_> {
                 escape_char,
             } => {
                 if escape_char.is_some() {
-                    return Err(unsup("Custom escape in SIMILAR TO (DuckDB: not implemented)"));
+                    return Err(unsup(
+                        "Custom escape in SIMILAR TO (DuckDB: not implemented)",
+                    ));
                 }
                 self.regex_full_predicate("SIMILAR TO", expr, pattern, *negated)
             }
@@ -3611,9 +3699,7 @@ impl Binder<'_> {
         regex::RegexBuilder::new(&pattern)
             .octal(true)
             .build()
-            .map_err(|e| {
-                PrepareError::Bind(format!("Failed to compile regex \"{pat}\": {e}"))
-            })
+            .map_err(|e| PrepareError::Bind(format!("Failed to compile regex \"{pat}\": {e}")))
     }
 
     /// Expand a `COLUMNS('re')` / `COLUMNS(*)` SELECT item (wave-B):
@@ -3747,9 +3833,7 @@ impl Binder<'_> {
             // regexp_replace NULL result).
             Some(b) if matches!(b.kind, SKind::NullOf) && b.ty == Ty::Str => Ok(None),
             Some(b) => match b.kind {
-                SKind::Lit(Lit::Str(s)) => {
-                    super::retrans::parse_options(&s, allow_g).map(Some)
-                }
+                SKind::Lit(Lit::Str(s)) => super::retrans::parse_options(&s, allow_g).map(Some),
                 _ => Err(PrepareError::Bind(
                     "Regex options field must be a constant".into(),
                 )),
@@ -3793,7 +3877,9 @@ impl Binder<'_> {
             }
             // Column patterns compile per row in DuckDB; the engine model
             // is prepare-time compilation only.
-            return Err(unsup("non-constant regex pattern (compiled at prepare in v0)"));
+            return Err(unsup(
+                "non-constant regex pattern (compiled at prepare in v0)",
+            ));
         };
         let translated = if o.literal {
             regex::escape(&raw)
@@ -3832,12 +3918,7 @@ impl Binder<'_> {
     /// s[i] / array_extract / list_extract on a bound VARCHAR subject:
     /// exec handles negatives (len+1+i), 0/out-of-range -> '' and the
     /// runtime +-2^32 offset trap (pins-wave5/subscripts-extended.json).
-    fn apply_extract(
-        &self,
-        name: &str,
-        bs: SExpr,
-        n: &SqlExpr,
-    ) -> Result<SExpr, PrepareError> {
+    fn apply_extract(&self, name: &str, bs: SExpr, n: &SqlExpr) -> Result<SExpr, PrepareError> {
         if bs.ty != Ty::Str {
             // The LIST overload has different out-of-range semantics
             // (NULL, not '') — only the VARCHAR path ships in v0.
@@ -4476,9 +4557,7 @@ impl Binder<'_> {
                          project its fields instead"
                     )
                 } else {
-                    format!(
-                        "static table '{tname}' column '{cname}' has a non-scalar type: {aty}"
-                    )
+                    format!("static table '{tname}' column '{cname}' has a non-scalar type: {aty}")
                 }));
             }
             return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
@@ -5032,8 +5111,9 @@ impl Binder<'_> {
         if !trying && self.in_guarded.get() == 0 {
             if let SKind::Lit(Lit::Str(s)) = &inner.kind {
                 let ok = match to {
-                    t if t.is_int() => super::exec::kernels::duck_stoi(s)
-                        .is_some_and(|v| fits_width(t, v)),
+                    t if t.is_int() => {
+                        super::exec::kernels::duck_stoi(s).is_some_and(|v| fits_width(t, v))
+                    }
                     Ty::F64 => s.trim_ascii().parse::<f64>().is_ok(),
                     _ => true,
                 };
@@ -5205,9 +5285,7 @@ impl Binder<'_> {
         // execution there — even over zero rows — while a row-driven
         // engine would serve. Refuse by name. % and // are guarded below;
         // float arithmetic is IEEE and always folds.
-        if let (SKind::Lit(Lit::I64(x)), SKind::Lit(Lit::I64(y))) =
-            (&a.kind, &b.kind)
-        {
+        if let (SKind::Lit(Lit::I64(x)), SKind::Lit(Lit::I64(y))) = (&a.kind, &b.kind) {
             // Width-aware: the op traps in the RESULT's width (an i32 lane
             // overflows at ±2^31 on DuckDB, not ±2^63).
             let fits = |r: i64| fits_width(ty, r);
@@ -5234,8 +5312,7 @@ impl Binder<'_> {
         // guard with a CASE unless the divisor is a provably non-zero
         // literal. The idiv/irem traps stay reachable only for MIN op -1,
         // where DuckDB traps too. Float % is IEEE (x % 0.0 = NaN), no guard.
-        let needs_guard =
-            (op == ArithOp::Rem && ty.is_int()) || op == ArithOp::IDiv;
+        let needs_guard = (op == ArithOp::Rem && ty.is_int()) || op == ArithOp::IDiv;
         let nonzero_lit = matches!(b.kind, SKind::Lit(Lit::I64(n)) if n != 0)
             || matches!(b.kind, SKind::Lit(Lit::F64(x)) if x != 0.0);
         if needs_guard && !nonzero_lit {
@@ -5564,15 +5641,11 @@ impl Binder<'_> {
     /// construction — the substitute AST re-binds wherever the ORIGINAL
     /// stood (`- (struct_pack(a := NULL)).a` is BIGINT on DuckDB, the bare
     /// field INTEGER; measured 2026-08-13).
-    fn desugar_struct_field(
-        &self,
-        e: &SqlExpr,
-    ) -> Result<Option<SqlExpr>, PrepareError> {
+    fn desugar_struct_field(&self, e: &SqlExpr) -> Result<Option<SqlExpr>, PrepareError> {
         let SqlExpr::CompoundFieldAccess { root, access_chain } = e else {
             return Ok(None);
         };
-        let Some((AccessExpr::Dot(SqlExpr::Identifier(id)), rest)) =
-            access_chain.split_first()
+        let Some((AccessExpr::Dot(SqlExpr::Identifier(id)), rest)) = access_chain.split_first()
         else {
             return Ok(None);
         };
@@ -5608,10 +5681,8 @@ impl Binder<'_> {
         let FunctionArguments::List(list) = &f.args else {
             return Ok(None);
         };
-        let [
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(target)),
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(SqlExpr::Value(v))),
-        ] = list.args.as_slice()
+        let [FunctionArg::Unnamed(FunctionArgExpr::Expr(target)), FunctionArg::Unnamed(FunctionArgExpr::Expr(SqlExpr::Value(v)))] =
+            list.args.as_slice()
         else {
             return Ok(None);
         };
@@ -6119,11 +6190,7 @@ impl Binder<'_> {
     ///
     /// Features bind by POSITION, in the order the transform declared its
     /// `takes`. A call site is free to name its columns anything.
-    fn tree_call(
-        &self,
-        cat: usize,
-        args: &[&SqlExpr],
-    ) -> Result<SExpr, PrepareError> {
+    fn tree_call(&self, cat: usize, args: &[&SqlExpr]) -> Result<SExpr, PrepareError> {
         let decl = &self.models[cat];
         let name = &decl.name;
         let Some((id, feats)) = args.split_first() else {
@@ -6360,8 +6427,8 @@ impl Binder<'_> {
         }
         // Names with a WholeCallNull signature row resolve here
         // (sig.rs is the catalogue of what they accept and return); their
-        // arms below only build nodes. Custom rows and CUSTOM_NAMES keep
-        // every gate in their arm, verbatim.
+        // arms below only build nodes. Custom rows and builtins without a
+        // table row keep every gate in their arm, verbatim.
         let resolved: Option<(Vec<SExpr>, Ty)> = match sig::lookup(&name) {
             Some(s) if s.null_arg == NullArg::WholeCallNull => {
                 match self.sig_resolve(&name, s, &args)? {
@@ -6404,8 +6471,7 @@ impl Binder<'_> {
             // Wave-1 string search (pins): instr/strpos/2-arg position are
             // one op with (haystack, needle) order; prefix/suffix alias
             // starts_with/ends_with; positions are 1-based codepoints.
-            "instr" | "strpos" | "position" | "starts_with" | "prefix" | "ends_with"
-            | "suffix" => {
+            "instr" | "strpos" | "position" | "starts_with" | "prefix" | "ends_with" | "suffix" => {
                 let op = match name.as_str() {
                     "instr" | "strpos" | "position" => StrOp2::Find,
                     "starts_with" | "prefix" => StrOp2::Starts,
@@ -6506,7 +6572,7 @@ impl Binder<'_> {
             }
             "pi" => {
                 let _ = resolved.expect("signature row"); // arity 0 checked
-                // Bit-equal to DuckDB's pi() (measured 0x400921FB54442D18).
+                                                          // Bit-equal to DuckDB's pi() (measured 0x400921FB54442D18).
                 Ok(SExpr {
                     kind: SKind::Lit(Lit::F64(std::f64::consts::PI)),
                     ty: Ty::F64,
@@ -6807,9 +6873,7 @@ impl Binder<'_> {
                         (u, t) if u.is_int() && t == Ty::F64 => Ty::F64,
                         (Ty::F64, t) if t.is_int() => Ty::F64,
                         (u, t) => {
-                            if let Some((d, _)) =
-                                bound.iter().find(|(x, _)| x.ty.dec().is_some())
-                            {
+                            if let Some((d, _)) = bound.iter().find(|(x, _)| x.ty.dec().is_some()) {
                                 return Err(refuse_dec(
                                     &format!("{name} unification"),
                                     d.ty,
@@ -6907,7 +6971,11 @@ impl Binder<'_> {
             }
             // Wave-3 similarity: all raw UTF-8 BYTE-based (measured);
             // editdist3 == levenshtein and mismatches == hamming exactly.
-            "levenshtein" | "editdist3" | "damerau_levenshtein" | "jaccard" | "hamming"
+            "levenshtein"
+            | "editdist3"
+            | "damerau_levenshtein"
+            | "jaccard"
+            | "hamming"
             | "mismatches" => {
                 let op = match name.as_str() {
                     "levenshtein" | "editdist3" => StrOp2::Levenshtein,
@@ -7027,17 +7095,14 @@ impl Binder<'_> {
                 // narrower binds, BIGINT refuses. The NULL short-circuit
                 // below must not skip this check (certification seed 1589);
                 // a bare-NULL count itself is fine: DuckDB types it INTEGER.
-                let count_is_int32 =
-                    |e: &SExpr| e.ty.is_int() && e.ty != Ty::I64;
+                let count_is_int32 = |e: &SExpr| e.ty.is_int() && e.ty != Ty::I64;
                 let bad_count = format!(
                     "no function matches {name}(VARCHAR, BIGINT, VARCHAR) — \
                      DuckDB's {name} count is INTEGER and a BIGINT does not \
                      implicitly narrow; spell a constant count as a plain \
                      literal or CAST(.. AS INTEGER)"
                 );
-                if bl.as_ref().is_some_and(|e| e.ty == Ty::I64)
-                    && (bs.is_none() || bp.is_none())
-                {
+                if bl.as_ref().is_some_and(|e| e.ty == Ty::I64) && (bs.is_none() || bp.is_none()) {
                     return Err(PrepareError::Bind(bad_count));
                 }
                 let (Some(bs), Some(bl), Some(bp)) = (bs, bl, bp) else {
@@ -7323,11 +7388,7 @@ impl Binder<'_> {
                 let (s, p, opts) = match args[..] {
                     [s, p] => (s, p, None),
                     [s, p, o] => (s, p, Some(o)),
-                    _ => {
-                        return Err(PrepareError::Bind(format!(
-                            "{name} takes 2 or 3 arguments"
-                        )))
-                    }
+                    _ => return Err(PrepareError::Bind(format!("{name} takes 2 or 3 arguments"))),
                 };
                 let o = self.regex_options(opts, false)?;
                 let Some(bs) = self.expr_or_null(s)? else {
@@ -7355,11 +7416,7 @@ impl Binder<'_> {
                     [s, p] => (s, p, None, None),
                     [s, p, g] => (s, p, Some(g), None),
                     [s, p, g, o] => (s, p, Some(g), Some(o)),
-                    _ => {
-                        return Err(PrepareError::Bind(format!(
-                            "{name} takes 2 to 4 arguments"
-                        )))
-                    }
+                    _ => return Err(PrepareError::Bind(format!("{name} takes 2 to 4 arguments"))),
                 };
                 let o = self.regex_options(opts, false)?;
                 let Some(bs) = self.expr_or_null(s)? else {
@@ -7379,11 +7436,7 @@ impl Binder<'_> {
                                     "Group index must be between 0 and 9!".into(),
                                 ))
                             }
-                            _ => {
-                                return Err(unsup(
-                                    "non-constant regexp_extract group index",
-                                ))
-                            }
+                            _ => return Err(unsup("non-constant regexp_extract group index")),
                         },
                     },
                 };
@@ -7404,11 +7457,7 @@ impl Binder<'_> {
                 let (s, p, r, opts) = match args[..] {
                     [s, p, r] => (s, p, r, None),
                     [s, p, r, o] => (s, p, r, Some(o)),
-                    _ => {
-                        return Err(PrepareError::Bind(format!(
-                            "{name} takes 3 or 4 arguments"
-                        )))
-                    }
+                    _ => return Err(PrepareError::Bind(format!("{name} takes 3 or 4 arguments"))),
                 };
                 // Pinned asymmetry: for regexp_replace ANY NULL argument
                 // (including the options string) -> NULL result.
@@ -8048,7 +8097,11 @@ fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
                 // when it fits (never narrower), else BIGINT. `-2147483648`
                 // parses as -(2147483648) and stays BIGINT there too — that
                 // falls out of unary minus binding, not of this rule.
-                let ty = if i32::try_from(i).is_ok() { Ty::I32 } else { Ty::I64 };
+                let ty = if i32::try_from(i).is_ok() {
+                    Ty::I32
+                } else {
+                    Ty::I64
+                };
                 (Lit::I64(i), ty)
             }
         }
@@ -8195,9 +8248,7 @@ fn ast_decimal_literal(e: &SqlExpr) -> bool {
         } => {
             !conditions.is_empty()
                 && conditions.iter().all(|w| ast_decimal_literal(&w.result))
-                && else_result
-                    .as_ref()
-                    .is_none_or(|e| ast_decimal_literal(e))
+                && else_result.as_ref().is_none_or(|e| ast_decimal_literal(e))
         }
         _ => false,
     }
@@ -8237,7 +8288,8 @@ fn wider_int(a: Ty, b: Ty) -> Ty {
 
 /// Whether `v` is representable at width `t` (always true for lane types).
 fn fits_width(t: Ty, v: i64) -> bool {
-    t.int_range().map_or(true, |(lo, hi)| (lo..=hi).contains(&v))
+    t.int_range()
+        .map_or(true, |(lo, hi)| (lo..=hi).contains(&v))
 }
 
 /// DuckDB's name for an integer width, for refusal messages.

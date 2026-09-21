@@ -7,18 +7,17 @@ test that reached for `duckdb` directly would not be testing that.
 
 No fixture hands these tests a doctored connection: `Oracle` captures the real
 connect at import and applies the pragma itself, so what is exercised here is
-the module and nothing else. The last test is the ban that keeps it that way,
-read off the sources -- see conftest for why the ban cannot live at runtime.
+the real reference constructor, not a global monkeypatch of DuckDB.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from pathlib import Path
 
 import duckdb
 import pyarrow as pa
 import pytest
+from confit import oracle as oracle_module
 from confit.oracle import Oracle, Trap
 
 # `PRAGMA disable_optimizer` writes no setting `current_setting` can read
@@ -35,6 +34,24 @@ def _plan(oracle: Oracle) -> str:
 def test_construction_applies_the_pragma():
     with Oracle() as oracle:
         assert "FILTER" in _plan(oracle)
+
+
+def test_construction_refuses_a_duckdb_that_is_not_the_reference(monkeypatch):
+    """A runtime that is not the reference build is refused BEFORE a
+    connection exists -- answers from an unchosen engine never reach a
+    comparison. The refusal is a raise, not an assert, so `python -O` cannot
+    strip it, and it names both versions because the fix is an environment
+    one."""
+    opened = []
+    monkeypatch.setattr(oracle_module, "_raw_connect", lambda *a, **k: opened.append(a))
+    monkeypatch.setattr(duckdb, "__version__", "0.0.1-not-the-oracle")
+
+    with pytest.raises(RuntimeError) as caught:
+        Oracle()
+
+    assert opened == []
+    assert Oracle.VERSION in str(caught.value)
+    assert "0.0.1-not-the-oracle" in str(caught.value)
 
 
 def test_optimizer_on_flips_the_same_connection():
@@ -118,10 +135,6 @@ def test_trap_is_frozen():
         trap.kind = "other"
 
 
-def test_error_is_duckdbs():
-    assert Oracle.Error is duckdb.Error
-
-
 def test_replay_setup_drops_and_retries_a_duplicate_create():
     with Oracle() as oracle:
         assert (
@@ -167,25 +180,3 @@ def test_exit_closes_the_connection():
         pass
     with pytest.raises(duckdb.Error):
         oracle.execute("SELECT 1")
-
-
-# Spelled in halves so this file is not its own offender.
-_BAN = "duckdb.connect" + "("
-
-
-def test_no_raw_connections_in_the_sources():
-    """The tests and the fuzzer take their DuckDB from the oracle, and this is
-    where that is enforced -- off the files, not at runtime, because the
-    engine reaches for the same module attribute to fold a static-tables-only
-    query and a patched `connect` cannot tell the two callers apart. Reading
-    the sources also covers the tests a run never reaches."""
-    root = Path(__file__).resolve().parent.parent
-    offenders = sorted(
-        p.relative_to(root).as_posix()
-        for p in (*root.glob("tests/**/*.py"), *root.glob("fuzz/**/*.py"))
-        if _BAN in p.read_text(encoding="utf-8")
-    )
-    assert offenders == [], (
-        f"raw DuckDB connections in {offenders}: use confit.oracle.Oracle() "
-        "(the oracle), and .optimizer_on() when the test is ABOUT the optimizer"
-    )

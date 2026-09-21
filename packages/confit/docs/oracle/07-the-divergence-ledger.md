@@ -125,10 +125,10 @@ These notes supply the evidence that the concise index intentionally does not re
 - **divergence: bind-time-constant-refusals.** Confit refuses some trapping constants at
   construction even when `WHERE FALSE` or empty input would prevent evaluation; this is
   not a blanket refusal of `WHERE FALSE`. Two owner-accepted measurements appear in
-  `rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58`, and no twin measures the
-  DuckDB-serves cost. Refusing where DuckDB serves is not by itself a correctness
-  defect; the cost is reported by refusal reason under claim: refusal-outcome-reporting,
-  which is not implemented, so it remains unmeasured and the proposed status unruled.
+  `rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58`. Refusal reports now retain
+  the reference outcome, but no fresh family-specific measurement establishes this
+  historical family's DuckDB-serves cost. A served reference alone does not make a
+  refusal a correctness defect; the proposed ledger status remains unruled.
 - **divergence: regex-size-guard.** Confit's guard can fire before DuckDB's RE2 limit; it
   may over-refuse but cannot serve a query DuckDB rejects. Evidence:
   `pins-waveB/fuzzer-20260728.json`; `pins-first-methodology.md:79`.
@@ -204,9 +204,9 @@ The [comparison contract](05-the-comparison-contract.md) lists the existing appr
 bounds separately from independent references and unadopted proposals.
 
 Remaining prerequisites for this chapter are technical, not decisional: a fresh or
-replayed measurement to replace the retired width-residual count, the refusal-reason
-summary behind divergence: bind-time-constant-refusals, an executable twin for
-divergence: schema-qualifiers, and verification of the unenforced Arrow batch ceiling.
+replayed measurement to replace the retired width-residual count, a family-specific
+refusal-cost measurement for divergence: bind-time-constant-refusals, an executable twin
+for divergence: schema-qualifiers, and verification of the unenforced Arrow batch ceiling.
 
 The compact status of every decision is in [the decision index](12-ask-index.md), and
 the accepted policy itself in [the oracle policy decision](../decisions/oracle-policy.md).
