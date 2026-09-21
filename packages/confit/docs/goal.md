@@ -119,11 +119,13 @@ Every schema is arrow, so a declared width is real: `pa.int32()` binds INTEGER e
 DuckDB DDL does. `shape` is the output-multiplicity contract — `"map"` / `"filter"` (the
 default) / `"many"` — proven at build, never checked at runtime. `output_schema` is the
 output contract: the field names, arrow types and order of `infer_arrow`'s table and the
-keys of every `infer_rows` dict. `backend` is `"cranelift"`, `"interpreter"` or
-`"constant"`, and the last of those is the static-tables-only carve-out the scope-edge
-section turns on. `boundary` is how rows cross into Python — `"marshaller"` (generated at
-prepare), `"generic"` (the env-pinned baseline) or `"constant"`; it is a second axis, not a
-restatement of `backend`, and both are readable state, never a mode anyone selects.
+keys of every `infer_rows` dict. `backend` is `"cranelift"` or `"interpreter"`. `boundary`
+is how rows cross into Python — `"marshaller"` (generated at prepare) or `"generic"` (the
+env-pinned baseline); it is a second axis, not a restatement of `backend`, and both are
+readable state, never a mode anyone selects. **target: two values on each axis** — today's
+engine reports a third, `"constant"`, on both, for a query that reads no row table; the
+scope-edge section says why that is not served, and the mismatch is gap: static-only-fold in
+the dated report.
 
 **One build, both call paths.** SERVES:
 
@@ -195,6 +197,11 @@ approximately. Train/serve skew is the failure this engine exists to make imposs
 "bit-exact" rather than "close" is the whole point: an engine that is 99% compatible does
 not fail on 1% of queries, it silently corrupts a fraction of rows on queries it appears
 to support.
+**One bound is declared, and it is declared rather than discovered.** Bit-for-bit identity
+needs an oracle answer that is a function of the query, and an order-dependent float
+reduction over a relation does not have one — the oracle's own runs differ. That family, and
+only that family, serves within claim: float-reduction-bound (the standing-law section),
+which is the standing law's written, named tolerance and not a relaxation of anything else.
 *Enforced-by:* the two-outcome contract below, and the fit-side gates in
 `packages/sql-transform` (kpi: training-round-trip).
 *Verified-by:* `packages/confit/README.md:11-22` (the contract and this argument);
@@ -203,7 +210,9 @@ kpi: training-round-trip and kpi: engine-parity (the controls-in-force section).
 **goal: two-outcome-contract.** For any SQL handed to `DuckDBInferFn`, exactly one of two
 things happens: it serves bit-for-bit identical to the oracle, or it refuses at build with
 a `ValueError` naming the construct. Nothing is approximated, silently dropped, or widened
-at inference time. This is the load-bearing goal, and everything in the acceptance-frame
+at inference time — the one family whose oracle answer is not a function of the query serves
+inside the declared bound of claim: float-reduction-bound, and that is a named term of
+"serves", not a third outcome. This is the load-bearing goal, and everything in the acceptance-frame
 section follows from it.
 
 **The two outcomes are the two things `DuckDBInferFn(...)` can do**, which is why the
@@ -473,19 +482,32 @@ modifiers on a scalar call** — `OVER`, `FILTER`, `IGNORE NULLS`, `WITHIN GROUP
 constructs the campaign reaches often, and a modifier on a scalar call is the shape that
 gets *dropped* rather than refused if nobody is watching for it. How often, and where they
 rank, is a reading and the report's.
-*Why:* scope-by-product-decision. Their output shape is not one-row-in / 0..N-out, so they
-are not row-at-a-time feature transforms.
-*The carve-out, which is part of the decision and not an exception to it:* a
-**static-tables-only** query is evaluated once by DuckDB at build and frozen, so aggregation
-and `ORDER BY` serve there. Its edge is the same decision applied twice — **what a
-whole-relation construct selects is frozen only when it is a function of the query.** A row
-limit is not (measured: four different answers across twelve connections) and refuses; a
-tie-producing `ORDER BY` is not either (a tie fed from a `GROUP BY` flipped in 20 runs,
-`known-limitations.md:116-117`), and freezing one would let two builds of the same function
-disagree — goal: serving-without-skew's failure in its build-to-build face rather than its
-train-to-serve one. **Both must refuse.** Whether today's engine refuses both is a reading,
-and it is the report's: finding: static-only-tie-order.
-*Re-decided by:* nothing intended — the output-shape argument would have to change first.
+*Why:* scope-by-product-decision. What these constructs compute is a property of the
+**relation**, not of a row: the answer for one input row would depend on which other rows
+share its batch, so `infer_rows([a, b])` would stop being `infer_rows([a])` followed by
+`infer_rows([b])` — and a row arriving at request time has no batch to be relative to. That
+is the ground, and it is narrower than the list's spelling: an aggregate is out **because it
+ranges over the input rows**, not because it is an aggregate.
+*Not in this row — per-row aggregation.* An aggregate whose input is, for each input row,
+the **static rows that row matches** yields one value per input row and depends on no other
+row in the batch. It is a row-at-a-time feature transform ("the mean price in this row's
+category"), so it is not out of scope by decision; it refuses today only because it is not
+built, which makes it gap: per-row-aggregation in the dated report, and the redirects at the
+end of this section record the move. Its float members serve under
+claim: float-reduction-bound. (A reduction over a list value *inside* the row —
+`list_sum(items)` — was never in this row: it is a scalar function over a non-scalar value,
+and lists are gap: non-scalar-values.)
+*No static-tables-only carve-out.* A query that reads no row table is not a feature
+transform — nothing about a request reaches it — and DuckDB is the engine for it. It
+**refuses**, by the names below. An earlier revision of this row froze such a query's DuckDB
+answer at build, which made the engine answerable for a question that is about DuckDB
+executions and not about feature transforms: whether a whole-relation answer is a function of
+the query at all (row limits, tie orders and run state are not). The record of that decision
+is `packages/confit/docs/decisions/trustworthy-fold.md`. **target: refuses** — today's engine
+still builds these, which is gap: static-only-fold in the dated report;
+finding: static-only-tie-order is a symptom of the same path and closes with it.
+*Re-decided by:* nothing intended — a row's answer would have to stop depending on its batch
+first.
 *Rings:* nothing rings — there is no trigger. Lifting one breaks
 `packages/confit/tests/test_known_limitations.py` — which is the executable twin of
 `known-limitations.md`, **not of this row**. Its docstring says so (`:1-7`, "Section
@@ -513,51 +535,36 @@ build("SELECT price FROM __THIS__ QUALIFY price > 1")
 # ValueError: unsupported: QUALIFY
 ```
 
-The same shapes over a **frozen static** are a different query: nothing dynamic remains, so
-DuckDB evaluates them once at build and the result is the function. SERVES, and
-`backend == "constant"` is how you can tell:
+The same shapes over a **static alone** read no row table, so there is no per-row work left
+to serve and the target is the same refusal. **target: refuses** — today it builds, and
+`backend == "constant"` is how you can tell (gap: static-only-fold):
 
 ```python
 S = pa.table({"v": pa.array([1, 2, 3], pa.int64())})
 fn = DuckDBInferFn("SELECT max(v) AS top FROM s",
                    row_tables={"__THIS__": ROW}, static_tables={"s": S})
-fn.backend, fn.infer_rows([])   # ('constant', [{'top': 3}])
-
-fn = DuckDBInferFn("SELECT v AS o FROM s ORDER BY v DESC",
-                   row_tables={"__THIS__": ROW}, static_tables={"s": S})
-fn.backend, fn.infer_rows([])   # ('constant', [{'o': 3}, {'o': 2}, {'o': 1}])
+# target: refuses (no row table is read)
+# today:  fn.backend, fn.infer_rows([]) == ('constant', [{'top': 3}])
 ```
 
-**The not-a-function-of-the-query rule, shown.** A row limit picks *which* rows survive, and
-that pick is not in the query — so it refuses even where the aggregation it sits on serves.
-REFUSES:
+**Per-row aggregation is the other side of the line.** The aggregate below ranges over the
+static rows *this* row matches, so its value depends on no other input row. REFUSES today,
+and not by decision — gap: per-row-aggregation:
 
 ```python
-DuckDBInferFn("SELECT v AS o FROM s ORDER BY v LIMIT 1",
-              row_tables={"__THIS__": ROW}, static_tables={"s": S})
-# ValueError: unsupported: row limit (LIMIT/OFFSET) on a
-#             static-tables-only query -- which rows survive
-#             depends on scan order, not the query
-```
-
-The same rule reaches a tie: two groups with equal sort keys have no order in the query
-either, so freezing whichever one this build's DuckDB run produced would let two builds of
-the same function disagree. **target: refuses** — today it builds and freezes the order,
-which is finding: static-only-tie-order in the dated report:
-
-```python
-TIES = pa.table({"g": ["x", "y", "z"], "v": pa.array([1, 1, 2], pa.int64())})
-DuckDBInferFn("SELECT g AS o, sum(v) AS t FROM ties GROUP BY g ORDER BY t",
-              row_tables={"__THIS__": ROW}, static_tables={"ties": TIES})
-# target: refuses (x and y tie at t=1, and the query does not order them)
-# today:  backend 'constant', infer_rows([]) ==
-#         [{'o': 'x', 't': Decimal('1')}, {'o': 'y', 't': Decimal('1')},
-#          {'o': 'z', 't': Decimal('2')}]
+PRICES = pa.table({"city": ["de", "de", "fr"], "price": [1.0, 3.0, 5.0]})
+DuckDBInferFn(
+    "SELECT (SELECT avg(p.price) FROM prices AS p WHERE p.city = t.city) AS city_avg "
+    "FROM __THIS__ AS t",
+    row_tables={"__THIS__": ROW}, static_tables={"prices": PRICES})
+# ValueError: unsupported: expression: (SELECT avg(p.price) FROM prices AS p
+#             WHERE p.city = t.city)
 ```
 
 *Verified-by:* `packages/confit/docs/known-limitations.md:95-120`;
-`packages/confit/tests/test_known_limitations.py:1-7, :98-117`;
-`packages/confit/tests/test_arrow_schema_api.py:604-630` (the row-limit refusal).
+`packages/confit/tests/test_known_limitations.py:1-7, :98-117`. The static-alone refusal is
+`Unverified` — nothing can check a refusal the engine does not yet make, and
+gap: static-only-fold carries it until it does.
 
 **exclusion: per-row-general-work.** Non-constant regex patterns, replacement strings,
 regex options and extract-group indexes; anything that would compile or bind per row.
@@ -726,9 +733,10 @@ are unbuilt work, and they are gap: join-composition-limits in the report.
 
 ### 4.1 Rows that left this section {#scope-redirects}
 
-Each of these was here because something is **not built yet**, which is distance from the
-target rather than the target's edge. They are gap entries in the dated report, under the
-same slug, and a citation of the old name lands here:
+Each of these was here because something is **not built yet** — or, for the last row, is
+built and no longer wanted — which is distance from the target rather than the target's
+edge. They are gap entries in the dated report, under the same slug, and a citation of the
+old name lands here:
 
 | was | is now | carries |
 |---|---|---|
@@ -737,6 +745,8 @@ same slug, and a citation of the old name lands here:
 | exclusion: non-scalar-values | gap: non-scalar-values | lists, whole structs, bracket access, BLOB, `decimal256` |
 | exclusion: parse-divergence-guards | gap: parse-divergence-guards | `^`, prefix `~`, `#`, `NOT GLOB`, the regex reject list |
 | part of exclusion: multiplicity-by-default | gap: join-composition-limits | one join per query, `USING`/`NATURAL` self-joins |
+| part of exclusion: whole-relation-shapes | gap: per-row-aggregation | an aggregate over the static rows one input row matches — per-row, so never out by decision |
+| the static-tables-only carve-out of exclusion: whole-relation-shapes | gap: static-only-fold | the build-time fold of a query that reads no row table, and the `"constant"` value of `backend` and `boundary` — served today, refused by the target |
 
 The rule that produced this split is the front matter's: a construct we **chose** not to
 serve is scope; a construct we have **not got to** is a gap. The refusal a user sees today is
@@ -955,6 +965,38 @@ needs it, never a bar relaxed by a failing test. And the rule that governs every
 > Never trade a control for a drive gain. If a bar seems in the way, the move is a
 > written, named tolerance — or a refusal.
 
+**claim: float-reduction-bound.** The rule above, used once on the DuckDB surface. A float
+reduction over a **relation** whose result depends on the order its addends are combined in
+— `sum` and `avg` over `DOUBLE` — has no single oracle answer: the order DuckDB combines
+them in is a property of the run (thread count, morsel boundaries) and not of the query, so
+the same query over the same table returns different bit patterns from one run to the next.
+Bit-for-bit identity with a value that is not a function of the query is a bar nothing can
+meet, the oracle included, and refusing every float aggregate to keep the sentence pure would
+trade the product for the wording. So this family, and only this family, serves within:
+
+> `|ours - oracle| <= 2 * (n - 1) * eps * sum(|v_i|)`
+
+over the `n` non-NULL addends `v_i` of one reduction, with `eps = 2^-52`; for `avg`, the
+same bound divided by `n`. Every one of the `n - 1` additions in *any* combining order
+rounds by at most half of `eps` relative to a partial sum no larger than `sum(|v_i|)`, so any
+two orders sit within `(n - 1) * eps * sum(|v_i|)` of each other to first order; the factor
+of two absorbs the higher-order term. That makes the bound a statement about the addends
+rather than a numeral someone picked — a fixed `rtol` was rejected because a sum that
+cancels has unbounded relative error and would flake on exactly the data that needs the
+check.
+*What it does not cover:* anything that **is** a function of its inputs stays bit-for-bit —
+scalar arithmetic, casts, comparisons, integer and decimal aggregates, and a reduction over
+a list value, whose order the value fixes. The variance and `stddev` family
+is order-dependent too, but this formula is not its bound; it stays refused until its own is
+written here, which is the standing law's order of events.
+*Enforced-by:* nothing yet — no float reduction is served (gap: per-row-aggregation), so the
+bound is written before the code that needs it. The change that first serves one carries the
+comparison-contract entry (`packages/confit/docs/oracle/05-the-comparison-contract.md`) and
+the test that holds the bound.
+*Verified-by:* `Unverified` as a bound, for the reason above. Its premise — that the
+oracle's runs differ — is a dated measurement: finding: float-sum-run-variance in
+`packages/confit/docs/reports/2026-09-21-per-row-aggregation-and-the-fold.md`.
+
 **Three of the six candidates in the proposed-kpis section are bars, not drives, and one of
 them lands on kpi: no-third-mode.** Saying otherwise here would be an unforced error in the
 one paragraph whose job is to show the standing law is respected, so it is said plainly
@@ -987,6 +1029,9 @@ with a named error**. No third behavior.
 The ground and the user-visible cost are exclusion: optimizer-on-answers; the oracle spec's
 claim: oracle-identity is the authority on the oracle's identity, and this entry does not
 restate it.
+*Declared bound:* claim: float-reduction-bound (the standing-law section) — the one family
+whose oracle answer is not a function of the query. Nothing else is bounded; everything else
+is identical or refused.
 *Enforced-by:* `packages/confit/tests/test_duckdb_*.py` (the wave suites),
 `test_params_joins.py`, `test_udfs.py` (`udf_check` — the parameterized form of the
 contract), `packages/confit/docs/known-limitations.md` (each refusal has an executable

@@ -1,7 +1,8 @@
 ---
 title: 'What makes a frozen fold trustworthy: enumerate impure shapes vs pin the fold configuration'
-status: proposed
+status: decided
 date: 2026-09-10
+decided: 2026-09-21
 ---
 ## Context
 
@@ -118,8 +119,27 @@ What the owner must supply is the answer to **question 2**, since it rewrites a 
 
 ## Decision
 
-**OPEN — the owner's call.** This record captures the fork and the framework, not a
-ruling.
+**Decided 2026-09-21 by the owner: none of A to D. The fold is retired.**
+
+The options above all answer "how does a frozen fold earn trust", and the ruling rejects the
+premise: a query that reads no row table is not a feature transform, nobody serving in
+production would hand one to confit rather than to DuckDB, and so there is no fold to make
+trustworthy. The reading that went with the ruling is
+`packages/confit/docs/reports/2026-09-21-per-row-aggregation-and-the-fold.md`: of the
+corpus's matches, none is a query over a static table the caller supplied.
+
+What the ruling changed in `packages/confit/docs/goal.md`:
+
+- **exclusion: whole-relation-shapes** loses its static-tables-only carve-out; the target
+  refuses such a query, and today's behaviour is gap: static-only-fold. Its ground is
+  restated as batch dependence, so an aggregate over the static rows one input row matches
+  leaves the row and becomes gap: per-row-aggregation.
+- **claim: float-reduction-bound** is new: `sum` and `avg` over `DOUBLE` have no single
+  oracle answer (finding: float-sum-run-variance), so that family serves within a declared
+  bound. Pinning `threads=1` into the oracle, which option B needed, is not adopted.
+
+What it supersedes: the unmerged branch `refuse-static-tie-order` (option A, six rounds) is
+not to be merged, and finding: static-only-tie-order closes with the path it describes.
 
 ## The four goal asks, and why two of them wait
 
