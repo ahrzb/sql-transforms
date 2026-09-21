@@ -138,28 +138,37 @@ capture lacks sufficient provenance and is not interchangeable with a live
 optimizer-off oracle comparison. See [campaign validity](../oracle/10-campaign-validity-and-blind-spots.md)
 for enforcement limits. A test path resolving does not show that its gate ran.
 
-## Proposed additions and open decisions
+## Measurement policy
 
-None of these proposed KPIs changes the adopted set without a decision.
+The [oracle policy decision](../decisions/oracle-policy.md) retains C1–C5 and
+D1–D2. It adopts reporting priorities and reviewable corpus ratchets, not new
+blocking KPIs or arbitrary numeric targets.
 
-| Identifier | Candidate | Required decision or prerequisite |
+**ask: acceptance-target — RULED.** Use ratchets for stable corpora and reporting
+for generated campaigns. Define each population and show unknown outcomes and
+invalid declarations separately; do not improve an acceptance rate by silently
+changing the generator or denominator.
+
+Stable-corpus support may not decrease without a reviewed reason and the affected
+cases. Raise floors as support grows. A total can hide one regression offset by
+one new match, so it does not replace case-level checks. This is the oracle's
+[stable-corpus ratchet](../oracle/10-campaign-validity-and-blind-spots.md), not a
+separate rule.
+
+**ask: kpi-set-change — RULED.** Improve refusal-quality and unsupported-width
+reporting before introducing additional blocking KPIs. Existing correctness
+requirements remain binding; declining new metrics does not relax C5's
+construct-naming diagnostic requirement or C1's specified widening-run depth.
+
+| Identifier | Disposition | Measurement prerequisite |
 |---|---|---|
-| **kpi: acceptance-rate** | Drive or reported successful-construction rate | Define population and unknown/invalid outcomes |
-| **kpi: findings-per-campaign** | Zero-control at a campaign or release cadence | Keep `DIVERGE_OPT` visible; attribute timeout/panic; choose cadence |
-| **kpi: unshipped-burndown** | Drive unsupported widths toward zero | Verify generator reachability, not just an empty bucket |
-| **kpi: named-refusal-share** | 100% actionable, construct-naming refusals | Measure diagnostic quality, not prefix presence alone |
-| **kpi: ladder-ratchet** | Consistent non-regression policy across ladders | Preserve package ownership, environment requirements, and deliberate scope changes |
-| **kpi: bench-refresh-cadence** | Maximum benchmark age | Stable within-run baseline and chosen cadence |
+| **kpi: acceptance-rate** | Reporting, not a generated-campaign percentage target | Explicit population and unknown/invalid outcomes |
+| **kpi: findings-per-campaign** | No new zero-finding control adopted | Meaningful cadence, visible `DIVERGE_OPT`, timeout/panic attribution, and no disappearing skipped cases |
+| **kpi: unshipped-burndown** | Prioritize reporting unsupported widths; no new blocking KPI | Verify generator reachability, not just an empty bucket |
+| **kpi: named-refusal-share** | Prioritize diagnostic-quality reporting; no new blocking KPI | Measure construct-naming and actionability, not prefix presence alone |
+| **kpi: ladder-ratchet** | Adopt no unexplained support decrease for stable corpora | Preserve package ownership, environment requirements, and reviewed scope changes |
+| **kpi: bench-refresh-cadence** | No fixed maximum age adopted | Stable within-run baseline and a justified cadence before introducing a threshold |
 
-**ask: acceptance-target.** For each surface, choose reporting only, a ratchet,
-or a numeric target. The existing recommendation is campaign reporting until the
-denominator is defined and ratchets for stable corpora; it is not an adopted
-campaign target. Resolve with oracle **ask: match-count-ratchet**.
-
-**ask: kpi-set-change.** Adopt any proposed KPIs and identify them as controls,
-drives, or reporting requirements; adopting none leaves C1–C5 and D1–D2 unchanged.
-The previous recommendation prioritized diagnostic quality, unsupported-width
-progress, ratchets and benchmark cadence, then campaign rates and finding controls
-once their populations and cadence are meaningful. Also resolve run-depth gaps by
-explicitly changing or enforcing the requirement, not by equating different depths.
-Scope ratification remains in the [serving contract](serving-contract.md#open-scope-decision).
+Reporting improvements remain implementation work; this decision does not assert
+that new measurements exist. Scope classification lives in the
+[serving contract](serving-contract.md#scope-classification).

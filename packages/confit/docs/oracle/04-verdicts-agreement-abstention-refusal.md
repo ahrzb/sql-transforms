@@ -1,5 +1,8 @@
 # Campaign verdicts, refusal, and abstention
 
+Settled verdict and refusal-reporting policy comes from the
+[oracle policy record](../decisions/oracle-policy.md).
+
 ## Case-classification pipeline
 
 A campaign case is classified rather than allowed to disappear as an exception.
@@ -50,10 +53,18 @@ worker-failure kinds.
 coverage. It means confit reproduced an optimizer result that differs from the configured
 reference; calling it agreement would hide the same defect in both reporting views.
 
+A case classified `OPT_EMULATED` stops there, as any other mismatch does: the primary
+finding is what the campaign reports, and no later leg may replace it. Additional
+diagnostics on such a case may be reconsidered only if they preserve that original
+finding.
+
 *Enforced-by:* intended membership in `fuzz.runner.INTERESTING` and exclusion from
 `COVERED`.
 *Evidence:* emission is tested by `test_verdicts_cover_the_contract_and_reproduce`;
 runner tuple membership remains **Unverified** because no test imports `fuzz.runner`.
+*Gap:* **[FACT]** `fuzz.oracle.run_case` still continues into confit-only boundary
+self-legs after `OPT_EMULATED`, so a later leg can still replace the finding. The
+stopping rule is the contract, not the current behavior.
 
 ## Construction refusal versus runtime trap
 
@@ -90,6 +101,14 @@ inconsistency, not permission to infer a fourth settled policy. See
 `packages/confit/docs/properties.md`, and
 `packages/confit/tests/test_corpus_replay.py:36`.
 
+**claim: reason-code-placement.** Audit classifications — codes such as
+`unspecified-order`, `tie-break`, `fp-association`, `session-dependent`, and
+`oracle-errored` — remain internal report and ledger vocabulary. A public diagnostic
+instead names the unsupported construct and explains what the caller can do. These
+audit classifications are not a public API. Publishing stable machine-readable codes
+requires a concrete consumer and a separate API decision; this does not remove the
+existing refusal prefixes.
+
 **claim: refusal-grounds.** Message prefix and product ground are separate axes. The
 three grounds used to discuss scope are:
 
@@ -97,9 +116,10 @@ three grounds used to discuss scope are:
 2. **scope-by-product-decision** — expressible, but deliberately not served; and
 3. **resource** — too expensive per serving row, with a stated budget.
 
-These grounds classify scope choices, not every invalid caller declaration. Their use in
-the restriction inventory remains subject to
-**ask: exclusion-ratification** in [the serving contract](../specs/serving-contract.md).
+These grounds classify scope choices, not every invalid caller declaration. The
+restriction inventory applies them through
+[scope classification](../specs/serving-contract.md#scope-classification), which sorts
+restrictions without ratifying every existing limit.
 
 *Evidence:* `backlog/milestones/m-8 - duckdbs-type-lattice.md:30-36`,
 `packages/confit/docs/known-limitations.md` §§1-2, and
@@ -109,10 +129,19 @@ the restriction inventory remains subject to
 returning a confit refusal, then discards those readings unconditionally. `REFUSED`
 carries a class derived from the first six message words, is absent from `INTERESTING`,
 and appears only in the refusal histogram. It does not distinguish “DuckDB serves” from
-“DuckDB traps.”
+“DuckDB traps.” This is the implementation gap under claim: refusal-outcome-reporting,
+tracked as **ticket: split-refused-verdict**.
 
 *Evidence:* `fuzz.oracle.run_case`, `fuzz.oracle._refusal_class`,
 `fuzz.runner.INTERESTING`, and `fuzz.runner.report`.
+
+**claim: refusal-outcome-reporting.** A refusal retains the oracle outcome the campaign
+has already computed, and the report summarizes refusals by reason: whether DuckDB
+served or trapped, and under which refusal class. That is reporting, not adjudication.
+A query DuckDB serves but confit refuses is not automatically a correctness defect — its
+status follows from the refusal grounds above and from severity rung 4 — so neither a
+new top-level verdict kind nor a failure status for every such refusal is required. The
+accepted refusal itself, divergence: bind-time-constant-refusals, is unchanged.
 
 ## Findings, abstention, and coverage
 
@@ -147,45 +176,7 @@ its 1 GiB budget; three other seeds had the same shape.
 *Evidence:* `packages/confit/docs/2026-08-13-fuzz-triage.md:124-149`.
 *Open work:* record SQL before execution and split oracle-side from engine-side timeout.
 
-**claim: countable-cost.** **[PROPOSED]** An accepted cost should be measurable, and the
-decision accepting it should name the counting mechanism. This proposal is not in force;
-its live instance is ask: refusal-cost-counting.
-
-## Open campaign decisions
-
-> ### ask: refusal-cost-counting — how will accepted over-refusal be visible?
->
-> The 2026-08-24 refusal decision, reaffirmed 2026-08-25, assumed the campaign records
-> refusal where DuckDB serves. Claim: refusal-absorb shows that it cannot.
->
-> Choose one:
->
-> 1. split `REFUSED` into `REFUSED_ORACLE_SERVES` and `REFUSED_ORACLE_TRAPS`, and add the
->    former to `INTERESTING`; or
-> 2. amend the decision to state that the accepted cost is unmeasured.
->
-> The accepted refusal itself is not reopened. Proposed implementation:
-> **ticket: split-refused-verdict**. This binds claim: refusal-absorb,
-> divergence: bind-time-constant-refusals, and severity rung 4.
-
-> ### ask: opt-emulated-branch — should `OPT_EMULATED` receive self-legs?
->
-> `run_case` currently continues into boundary self-legs for `OPT_EMULATED`, alongside
-> `AGREE` and `UNSHIPPED`. `UNSHIPPED` has a recorded reason: an unshipped DuckDB width
-> cannot excuse inconsistency between confit paths. No equivalent reason is recorded for
-> `OPT_EMULATED`.
->
-> Rule whether this continuation is deliberate or stale. The only observed non-regex
-> `OPT_EMULATED`, seed 1784, was a misclassification caused by unordered
-> `FETCH FIRST 1 ROWS ONLY`; no true positive is recorded. This binds claim:
-> opt-emulated-classification.
-
-> ### ask: reason-code-visibility — where do reason codes live?
->
-> If codes such as `unspecified-order`, `tie-break`, `fp-association`,
-> `session-dependent`, and `oracle-errored` are adopted, choose whether they remain
-> internal report/ledger vocabulary or enter user-facing build errors. The current
-> recommendation is to keep them internal unless an API decision changes refusal text.
-> This binds claim: refusal-message-prefixes.
-
-The [decision index](12-ask-index.md) summarizes these asks; the full questions live here.
+**claim: countable-cost.** Disclose an accepted cost honestly and measure the ones that
+matter, starting with refusal outcomes under claim: refusal-outcome-reporting. No
+universal rule requires every accepted cost to name a counting mechanism, and
+conservative-refusal counting is that same reporting work rather than a second rule.

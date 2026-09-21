@@ -4,6 +4,9 @@ Exact agreement is the default. This chapter defines the row, schema, numeric, a
 comparisons that make that statement operational. A weaker comparison applies only to
 the named family and surface that adopted it.
 
+Settled comparison policy comes from the
+[oracle policy record](../decisions/oracle-policy.md).
+
 For UDF-bearing SQL, the reference leg registers the same declared UDFs. That
 parameterization is defined by the [oracle](README.md) and
 [serving contract](../specs/serving-contract.md#udf-and-model-boundary); it is not a
@@ -63,11 +66,12 @@ Compare schemas, not just values. The current checks differ on nullability:
   but does **not** compare field nullability; and
 - a campaign name or non-exempt type difference is `DIVERGE_VALUE` with class `schema`.
 
-This observed difference is not an independently settled requirement that campaign
-nullability must match, and it is not an approved nullability omission. No owner ruling
-identified in this specification chooses either policy for the universal contract.
-Schema-nullability policy therefore remains unresolved; it must be decided before the
-`assert_schema` behavior or `_schema_delta` omission is described as normative.
+Output names, Arrow types, and field order keep their existing contract. Nullability
+metadata must be truthful rather than identical to DuckDB's flags: a non-null promise
+must be sound, while conservative nullable metadata need not reproduce another engine's
+inference. The two checker behaviors above are facts about those checkers, not evidence
+that either the `assert_schema` comparison or the `_schema_delta` omission is the
+invariant.
 
 *Evidence:* `confit.compare.assert_schema`; `fuzz.oracle._schema_delta` and
 `_type_delta`; `packages/confit/tests/test_fuzz_smoke.py::test_a_real_schema_difference_is_still_a_divergence`;
@@ -88,7 +92,13 @@ delete-when-shipped arm for DuckDB decimal versus confit float64.
 and `::test_a_real_schema_difference_is_still_a_divergence`.
 
 The ruled **ask: unshipped-never-compared** prohibits harness normalization from
-manufacturing agreement. Any weaker comparison requires its own named, reviewed bound.
+manufacturing agreement, and any weaker comparison requires its own named, reviewed
+bound. The standing requirement is behavioral: coverage must show that an unshipped
+width is classified rather than counted as agreement. Coverage that already demonstrates
+this satisfies the requirement, and a duplicate strict-xfail test is not required as
+bookkeeping. A strict xfail remains the right tool for a concrete defect whose repair
+should expire the exception. Remove `_type_delta`'s delete-when-shipped decimal arm
+when support lands and exercise actual parity instead of unsupported classification.
 
 ## Floating-point comparisons
 
@@ -97,7 +107,10 @@ bit patterns. Do not substitute rounding, `%.3f`, arithmetic `==`, or generic `r
 NaN sign or payload matters. The generic comparator's NaN collapse is an enforcement
 limit, not a tolerance.
 
-Approved, independent, and proposed bounds must not be conflated:
+Only explicitly approved exceptions may weaken exact comparison. Each must name its
+operation, comparison rule, valid inputs, and rationale; tests do not choose new
+tolerances independently. The inventory below distinguishes approved exceptions from
+independent references and proposals—it does not approve every row.
 
 | surface and family | comparison | status |
 |---|---|---|
@@ -149,7 +162,8 @@ Before implementation, the checker and its justification must resolve assumption
 reduction algorithm and length, non-finite addends/results, intermediate or
 `sum(abs(v_i))` overflow and underflow, empty/all-NULL reductions, `n = 0` and `n = 1`,
 and the final `avg` division. The formula cannot be applied literally at `n = 0`; the
-first-order argument has not proved these edge domains.
+first-order argument has not proved these edge domains, and no general epsilon
+substitutes for resolving them.
 
 *Enforced-by:* none; **gap: per-row-aggregation** remains.
 *Evidence:* the premise is **finding: float-sum-run-variance** in
@@ -169,7 +183,7 @@ divergence: decimal-literal-typing, not a relaxation of signed-zero equality.
 
 *Evidence:* `packages/confit/tests/known_divergences/test_literal_typing.py:133-165`,
 `packages/confit/tests/test_compare.py::test_multiset_keeps_signed_zero_distinct`, and
-[TASK-80](../../../../backlog/tasks/task-80%20-%20Negative-zero-loses-its-sign-in-constant-folding-and-unary-minus.md).
+[historical TASK-80](https://github.com/ahrzb/sql-transforms/blob/dc1f45721f73947e4c052dc7c94829007fbf9ce9/backlog/tasks/task-80%20-%20Negative-zero-loses-its-sign-in-constant-folding-and-unary-minus.md).
 
 ## Platform-discriminated exactness
 
@@ -200,12 +214,13 @@ would silently select another reference.
 *Evidence:* `packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md:129-142`,
 `scripts/gen_strip_accents.py`, `scripts/gen_casemap.py`, and `scripts/gen_pow10.py`.
 
-**claim: multi-answer-sets.** **[PROPOSED]** An accepted-answer set would be legitimate
-only if every member were acceptable in every context and a predicate known before
-comparison selected the member, such as platform, profile, or oracle version. Choosing
-the nearest answer is forbidden by the proposal because it is most likely to conceal a
-defect. No current pin is such a set: claim: modulo-nan-sign is per-platform agreement,
-and claim: cbrt-ulp-tolerance is a bound.
+**claim: multi-answer-sets.** An expected answer may be selected by a justified
+platform/build predicate known before comparison, within the fixed oracle identity.
+Each selected answer must be correct for that case. Choosing the nearest answer after
+seeing Confit's output is forbidden. This does not permit per-case changes of oracle
+version or configuration. Claim: modulo-nan-sign is an example of platform-selected
+exactness; claim: cbrt-ulp-tolerance remains a separate numerical bound, not a choice
+among expected answers.
 
 ## Errors and internal backends
 
@@ -237,45 +252,24 @@ comparison.
 
 *Evidence:* P19, [engine parity C2](../specs/success-measures.md#engine-parity-c2),
 `packages/confit/src/specializer/exec/tests.rs`, and
-[TASK-42](../../../../backlog/tasks/task-42%20-%20Specializer-M-interp-closure-compiled-IR-interpreter-the-oracle-backend.md).
+[historical TASK-42](https://github.com/ahrzb/sql-transforms/blob/dc1f45721f73947e4c052dc7c94829007fbf9ce9/backlog/tasks/task-42%20-%20Specializer-M-interp-closure-compiled-IR-interpreter-the-oracle-backend.md).
 
-## Unadopted generalizations
+## Rejected shortcuts and unadopted tools
+
+**claim: standing-rejections.** Two mechanisms are standing rejections, because each
+replaces the contract instead of measuring against it: a nearest or shortest-diff
+alternative conceals a mismatch, and a cross-engine majority vote substitutes another
+authority for the configured reference. A growing expected-error allowlist is not a
+third comparison rule either — an exception enters the approved list above with its
+operation, comparison rule, valid inputs, and rationale, or the mismatch stays a
+finding.
+
+These rejections leave untouched the in-force `cbrt` bound, the independent sklearn
+reference checks, the adopted float-reduction bound, and any separately adopted
+transformer-family bound.
 
 **claim: unadopted-mechanisms.** Exact comparison already rules out rounded `%.3f`
-rendering as equality. The other four mechanisms below have neither been adopted
-nor formally rejected; their drawbacks are a survey, not rulings.
-
-| mechanism | problem for this contract |
-|---|---|
-| `%.3f` rendering | discards exact float information |
-| MD5 for large results | hides the values needed to diagnose a failing pin |
-| nearest/shortest-diff alternative | chooses the answer most likely to conceal a defect |
-| cross-engine majority vote | creates another authority rather than checking the configured reference |
-| growing expected-error allowlist | can turn each false-positive suppression into a hidden defect |
-
-**claim: standing-rejections.** **[PROPOSED]** Make the remaining four mechanisms
-standing rejections. This proposal must not reject the in-force `cbrt` bound, independent sklearn
-reference checks, the adopted future float-reduction bound, or a separately adopted
-transformer-family bound. It remains part of ask: proposed-rules-adoption.
-
-> ### ask: float-tolerance-list — what remains open?
->
-> Exact comparison remains the default, with the generic comparator's explicit NaN-bit
-> enforcement limit. Scalar `cbrt` has its in-force one-ulp rule. The relational
-> `DOUBLE` `sum` / `avg` bound is adopted but cannot ship until its domain above is
-> resolved. Sklearn comparisons are independent references, and DRAFT-23 native-family
-> bounds remain proposals.
->
-> Rule the remaining questions:
->
-> 1. Is the set of weaker legs closed, so every addition requires an owner decision and
->    a named discriminator or bound?
-> 2. Must `_type_delta`'s delete-when-shipped decimal arm have a strict-xfail twin, or is
->    the non-empty `UNSHIPPED` report plus the lattice definition of done sufficient?
-> 3. Which finite/non-finite, overflow/underflow, empty/all-NULL, and `n = 0/1` domain
->    makes claim: float-reduction-bound enforceable?
->
-> This binds claim: float-bit-equality, claim: cbrt-ulp-tolerance, claim:
-> float-reduction-bound, claim: standing-rejections, claim: unshipped-verdict,
-> divergence: decimal-literal-typing, and divergence: decimal-cast-rounding.
-> The [decision index](12-ask-index.md) summarizes this question.
+rendering as equality, because it discards exact float information. Hashing is not
+banned: a digest alone is poor evidence, since it hides the values needed to diagnose a
+failing pin, but it remains available as an incidental tool beside evidence that does
+show those values.

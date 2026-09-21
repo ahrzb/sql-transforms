@@ -29,14 +29,24 @@ under claim: feature-in-flight does not turn it into agreement. Separate referen
 must not be conflated: trap elision is severity 1 against optimizer-on behavior but
 agrees with the optimizer-off oracle.
 
-The stronger proposal that rungs 1 and 2 may never be retained remains unadopted
-(ask: proposed-rules-adoption). Decimal literal typing and rounding remain severity-2
-features in flight, not approved exceptions to the target.
+**claim: retainable-open-defect.** The stronger rule that a
+rung-1 or rung-2 mismatch may never be retained is **rejected**: an existing bug may
+stay open, scheduled, or unfixed while it is worked. Rejecting that rule accepts no
+defect as a result — a retained rung-1 or rung-2 mismatch is still a contract violation,
+not agreement, not an approved exception, and not a satisfied target. Decimal literal
+typing and rounding remain severity-2 features in flight on exactly those terms.
+
+*Decision:* [oracle policy](../decisions/oracle-policy.md#limits-on-process-rules).
 
 *Evidence:* `docs/reports/pins-first-methodology.md:79` and the indexed divergences in
 [the ledger](07-the-divergence-ledger.md).
 
-**claim: countable-rung-four.** **[PROPOSED]** A deliberate rung-4 refusal should report
-how many otherwise-serving cases it excludes. This is not in force because claim:
-countable-cost is also proposed. Divergence: bind-time-constant-refusals is the live
-unmeasured case; ask: refusal-cost-counting requests the ruling.
+## Reporting a conservative refusal
+
+**claim: countable-rung-four.** Merged into
+[refusal-outcome reporting](04-verdicts-agreement-abstention-refusal.md):
+counting the cost of conservative refusals is that same work, not another rule.
+The [policy decision](../decisions/oracle-policy.md#reporting-and-measurement)
+does not require a new verdict kind or make every such refusal a correctness defect.
+*Gap:* no refusal-reason summary is produced today, so divergence:
+bind-time-constant-refusals remains the live unmeasured case.

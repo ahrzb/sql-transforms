@@ -3,6 +3,17 @@
 This chapter indexes recorded divergences and the evidence behind them. It does not turn
 a proposed disposition, a passing test, or a directory name into an owner ruling.
 
+**claim: unresolved-observations.** A measured observation that is not yet understood
+is reported in a visible, separately counted `unresolved`
+category. Unresolved is neither agreement, nor an approved exception, nor by itself a
+confirmed defect, and an unclassified difference stays unresolved rather than being
+relabelled contract-unspecified. The unresolved/unspecified distinction itself is
+defined in [ordering and status vocabulary](03-nondeterminism.md).
+
+*Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
+Reporting this category remains implementation work. An untraceable historical
+summary or a future feature design is not itself a measured case to count.
+
 ## Historical executable-ledger practice
 
 **claim: keep-vs-change.** The repository historically separated intent as follows:
@@ -32,8 +43,8 @@ the correction.
 **claim: feature-in-flight.** A scheduled m-8 phase or ticket is temporary feature work,
 not an accepted permanent divergence. Completion replaces strict xfail with a parity
 test, removes the limitation and fuzzer marker, and certifies only after the suppression
-is gone. The visible `UNSHIPPED` bucket is not independently gated; see ask:
-float-tolerance-list.
+is gone. The visible `UNSHIPPED` bucket is not independently gated; see
+[the comparison contract](05-the-comparison-contract.md).
 
 *Evidence:* `docs/specs/2026-08-11-duckdb-type-lattice-design.md:110-131` (owner
 decision, 2026-08-11), applying to decimal literal typing, decimal cast rounding, and
@@ -43,8 +54,17 @@ narrow-lane overflow.
 
 **claim: ledger-adjudication.** This is the dated index found by the 2026-08-25 sweep.
 A proposed disposition is a recommendation. A blank ruling is **unruled**; neither code,
-tests, directory placement, nor the proposal itself supplies approval. Only divergence:
-decimal-cast-artifact has a recorded owner ruling.
+tests, directory placement, nor the proposal itself supplies approval.
+
+Correctness is judged against the contract, never against
+membership in this index. A confirmed in-contract mismatch is a defect unless an
+explicit approved exception permits it; listing a mismatch here never approves it; and
+an invalid comparison is not by itself an engine defect. An unlisted divergence is
+therefore neither excused nor a bug by definition — the contract decides, and index
+completeness carries no service-level promise. The policy rules only the rows whose
+subject it names; every other ruling stays blank.
+
+*Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
 
 Severity follows [the four-rung ladder](08-the-severity-ladder.md). Trap elision and the
 snapshot baseline are evidence/contract entries rather than engine-versus-oracle value
@@ -58,16 +78,16 @@ divergences, but remain indexed where readers expect them.
 | **divergence: trap-elision** | optimizer-on contract gap / 1 | `PINNED`, permanent | unruled |
 | **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | `IMPL-DEFINED`, permanent | unruled |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | `PINNED`, permanent | unruled |
-| **divergence: decimal-literal-typing** | feature in flight / 2 | tied to ask: float-tolerance-list | unruled |
+| **divergence: decimal-literal-typing** | feature in flight / 2 | severity-2 bug in flight; not an approved exception | unruled |
 | **divergence: decimal-cast-rounding** | same literal-typing mechanism / 2 | tied to parent | unruled |
-| **divergence: bind-time-constant-refusals** | conservative refusal / 4 | `PINNED`, permanent; cost uncounted | unruled |
+| **divergence: bind-time-constant-refusals** | conservative refusal / 4 | `PINNED`, permanent; cost belongs in the refusal-reason summary | unruled |
 | **divergence: regex-size-guard** | one-sided safety guard / 4 | `PINNED`, permanent | unruled |
 | **divergence: narrow-lane-overflow** | feature in flight / 3 on row path | `PINNED` until m-8 phase 3 | unruled |
 | **divergence: decimal-cast-artifact** | attributed historical residuals / 2 | attributed, not a residual set | **ruled** by ask: unshipped-never-compared |
-| **divergence: phase-two-width-residuals** | unreconstructed historical count / unknown | classify before use | unruled |
+| **divergence: phase-two-width-residuals** | unreconstructed historical count / unknown | retired from current evidence; no current count or classification inferred | **ruled** by [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations) |
 | **divergence: string-builder-budget** | resource refusal / 4 | `PINNED`, permanent | unruled |
 | **divergence: arrow-batch-ceiling** | resource refusal / 4 | `PINNED`, permanent | unruled |
-| **divergence: snapshot-baseline** | evidence hygiene / n/a | choose evidence lifecycle | unruled |
+| **divergence: snapshot-baseline** | evidence hygiene / n/a | frozen as named dated history | **ruled** by [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations) |
 
 The sweep covered `known-limitations.md` sections 3 and 5,
 `tests/known_divergences/`, and the committed snapshot at master `85b4739`. It is not a
@@ -105,9 +125,10 @@ These notes supply the evidence that the concise index intentionally does not re
 - **divergence: bind-time-constant-refusals.** Confit refuses some trapping constants at
   construction even when `WHERE FALSE` or empty input would prevent evaluation; this is
   not a blanket refusal of `WHERE FALSE`. Two owner-accepted measurements appear in
-  `rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58`, but no twin measures the
-  DuckDB-serves cost, and the proposed ledger status remains unruled. See ask:
-  refusal-cost-counting.
+  `rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58`, and no twin measures the
+  DuckDB-serves cost. Refusing where DuckDB serves is not by itself a correctness
+  defect; the cost is reported by refusal reason under claim: refusal-outcome-reporting,
+  which is not implemented, so it remains unmeasured and the proposed status unruled.
 - **divergence: regex-size-guard.** Confit's guard can fire before DuckDB's RE2 limit; it
   may over-refuse but cannot serve a query DuckDB rejects. Evidence:
   `pins-waveB/fuzzer-20260728.json`; `pins-first-methodology.md:79`.
@@ -127,8 +148,8 @@ These notes supply the evidence that the concise index intentionally does not re
   harness cast. Evidence: `known-limitations.md:166-174`; `fuzz.oracle._type_delta`.
 - **divergence: narrow-lane-overflow.** The row path serves an i64 value where the
   intended narrow lane should overflow; `infer_arrow` refuses it by name. Evidence:
-  `known-limitations.md:177-188`; `test_integer_widths.py`. An accepted until-fixed
-  disposition would require a strict-xfail twin.
+  `known-limitations.md:177-188`; `test_integer_widths.py`. Behavioral coverage must
+  expose the defect; a strict xfail may track its repair without approving the mismatch.
 - **divergence: decimal-cast-artifact.** In the 2026-08-17 baseline, seeds 869, 1554,
   and 3269 were 1-ulp deltas created by the harness cast and now classify `UNSHIPPED`;
   seed 998 was the signed-zero face of literal typing; seed 2668 was closed TASK-122.
@@ -137,13 +158,17 @@ These notes supply the evidence that the concise index intentionally does not re
   outside the oracle answer and verdict. Evidence: `findings.jsonl`;
   `2026-08-17-fuzz-triage.md:62-63`; claim: unshipped-verdict.
 - **divergence: phase-two-width-residuals.** The quoted “79 of 84” was not found in
-  `docs/`, `backlog/`, or committed `findings.jsonl` on 2026-08-25. It has no defect or
-  severity meaning until remeasured and classified.
+  `docs/`, `backlog/`, or committed `findings.jsonl` on 2026-08-25. It is retired from
+  current defect evidence, not converted into a count of unresolved cases. A replay of
+  stored cases where available, or a clearly labelled fresh measurement, may supply a
+  replacement; neither is recovery of the missing historical run.
 - **divergence: snapshot-baseline.** `findings.jsonl` is a dated 2026-08-17 snapshot,
-  not live evidence. An 8% static draw changed RNG addressing, while closed TASK-121 and
-  TASK-122 seeds remain. After generator changes, stored SQL—not a seed—is the
-  reproducible identity. Evidence: TASK-129 `:148-150`; TASK-121 `:84`; TASK-122
-  `:86-88`.
+  not live evidence. It must remain frozen as named dated history rather
+  than regenerated in place, and later evidence comes from dated, provenance-bearing
+  runs (claim: dated-provenance). An 8% static draw changed RNG addressing, while closed
+  TASK-121 and TASK-122 seeds remain: after a generator change the stored SQL, not the
+  seed, is the reproducible identity. Evidence: TASK-129 `:148-150`; TASK-121 `:84`;
+  TASK-122 `:86-88`.
 
 TASK-121's ambiguous-reference family is deliberately not another divergence row: its
 note says all 78 findings in the 20k campaign reclassified `REFUSED`, but acceptance
@@ -153,30 +178,35 @@ ambiguity-class-closed** corrects the conflicting dated triage prose.
 ## Executable-twin coverage
 
 **claim: doc-twin-totality.** The executable-twin mechanism is partial, not total.
-TASK-95 remains open; the 2026-08-25 inventory found twins across
+At the 2026-08-25 audit, TASK-95 was open; that inventory found twins across
 `test_known_limitations.py`, `test_arrow_schema_api.py`, `test_corpus_replay.py`,
 `test_duckdb_wave3_mathtail.py`, and `known_divergences/`, while schema qualifiers had
 none. Removing an in-code admission during the `UNSHIPPED` change did not establish
 totality.
 
-**ask: doc-twin-overstatement** remains open: either complete TASK-95 and its totality
-check or narrow all prose to the enumerated executable coverage.
+**claim: honest-coverage-claims.** State demonstrated coverage and important gaps;
+do not claim totality without evidence. Fill behavioral gaps rather than require a
+one-test-per-paragraph registry. The recorded schema-qualifier gap had no twin on
+2026-08-25. Current follow-through is **ticket: behavioral-coverage-gaps** in the
+[work register](11-proposed-tickets.md), not the removed task directory.
 
-## Proposed governance and open decisions
+*Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
 
-**claim: divergence-placement.** **[PROPOSED]** Put a deliberate divergence beside the
-requirement it violates and keep this chapter as its index. No ruling adopts that
-placement rule; ask: proposed-rules-adoption owns it.
+## Where a decision is written down
 
-- **ask: unlisted-divergence** — decide whether every unlisted divergence is a bug. This
-  would make index completeness contractual without creating an SLA.
-- **ask: tentative-bucket** — decide whether measured but unruled facts receive a
-  `tentative` tag or must be classified before campaign closure. Current candidates are
-  the future-family threads disposition, phase-two width residuals, and the snapshot
-  baseline. The retired static-only fold is not a candidate; see
-  [the decision record](../decisions/trustworthy-fold.md).
-- **ask: baseline-as-evidence** — regenerate `findings.jsonl` on a cadence, freeze it as
-  named dated history, or replace it with dated triage reports. In every option, stored
-  SQL is the identity after generator changes.
+**claim: divergence-placement.** An approved exception has one
+home, beside the comparison rule that it qualifies, and is linked from this chapter.
+Open bugs and unfinished investigations stay in the ledger. Indexing a divergence here
+never approves it.
 
-The compact status of every ASK is in [the decision index](12-ask-index.md).
+*Decision:* [oracle policy](../decisions/oracle-policy.md#limits-on-process-rules).
+The [comparison contract](05-the-comparison-contract.md) lists the existing approved
+bounds separately from independent references and unadopted proposals.
+
+Remaining prerequisites for this chapter are technical, not decisional: a fresh or
+replayed measurement to replace the retired width-residual count, the refusal-reason
+summary behind divergence: bind-time-constant-refusals, an executable twin for
+divergence: schema-qualifiers, and verification of the unenforced Arrow batch ceiling.
+
+The compact status of every decision is in [the decision index](12-ask-index.md), and
+the accepted policy itself in [the oracle policy decision](../decisions/oracle-policy.md).

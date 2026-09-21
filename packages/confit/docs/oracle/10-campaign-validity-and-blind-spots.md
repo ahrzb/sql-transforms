@@ -32,9 +32,19 @@ documented rejection class. The shipped test also enforces `MATCH_FLOOR = 547`.
 
 The code records why the former 550 headline became 547: declared unsigned widths
 exposed three type divergences that value-only comparison had counted as matches. That
-explains the current constant. The test's comment permits a deliberate tightening
-with a reason recorded beside the adjusted floor. A general owner-ratified policy
-remains open under ask: match-count-ratchet.
+explains the current constant.
+
+**claim: stable-corpus-ratchet.** A stable corpus allows no
+unexplained decrease in support: floors rise as support grows, and a reduction requires
+a reviewed reason recorded beside the adjusted floor together with the affected cases.
+The shipped `MATCH_FLOOR = 547` is an existing instance of that mechanism, not a new
+one, and its total is not universal SQL compatibility: a regression offset by a new
+match leaves the total unchanged, so the floor never replaces case-level regression
+checks. Adopting the rule measures nothing by itself.
+
+*Decision:* [oracle policy](../decisions/oracle-policy.md#reporting-and-measurement);
+population and reporting detail in
+[success measures](../specs/success-measures.md#measurement-policy).
 
 *Enforced by:* `tests/test_corpus_replay.py:39-47, :185-208`. Proposed **ticket:
 match-count-single-home** separates dated headline counts from the shipped constant.
@@ -51,14 +61,14 @@ must say so explicitly.
 | blind spot | what is not compared | current mitigation or limit |
 |---|---|---|
 | no total `ORDER BY` | DuckDB row sequence | multiset comparison; our-side self-legs check serving order, not oracle order |
-| future order-sensitive aggregate values | element order that may vary with `threads` | ask: threads-and-value-order remains open for future retained families; `threads=1` is not adopted |
+| future order-sensitive aggregate values | element order that may vary with `threads` | each such family needs a justified contract before it is supported, and is refused until then (claim: order-sensitive-family-contract in [ordering](03-nondeterminism.md)); the global `threads` setting is unchanged |
 | `order-by-unevaluated` fallback | sortedness on a non-output key | visible logged tag, never silent |
 | approximate bind errors | message body | compare error class; bodies are outside claim: error-texts |
-| named exclusions | statistics-dependent kernels, f32-grid operations, or inexpressible schemas | measured source and input exclusions; see ask: exclusion-ratification |
-| absorbed refusal | whether DuckDB would have served | no current measure; ask: refusal-cost-counting |
+| named exclusions | statistics-dependent kernels, f32-grid operations, or inexpressible schemas | measured source and input exclusions, classified under [scope classification](../specs/serving-contract.md#scope-classification); classification does not ratify each individual exclusion |
+| absorbed refusal | whether DuckDB would have served | no current measure; the adopted refusal-outcome reporting is unimplemented |
 | canonicalized NaN | sign and payload | repr equality self-equalizes NaNs; explicit bit pins remain exact |
 | `UNSHIPPED` width | whether values would agree | separately reported; neither coverage nor finding; no value normalization |
-| campaign field nullability | top-level output-field nullability | `_schema_delta` compares names and types, while `confit.compare.assert_schema` checks nullability in tests; this observed comparator difference does **not** prove a breach of any normative nullability guarantee |
+| output nullability | soundness of non-null promises | exact DuckDB nullable flags are not required; `_schema_delta` omits flags and `assert_schema` compares them, but neither behavior establishes the adopted truthfulness invariant |
 | timeout or panic | all semantics for the unanswered case | finding with manual oracle-side versus engine-side attribution |
 
 
@@ -83,31 +93,46 @@ agreement; `tests/test_fuzz_order_legs.py`; P19 in `docs/properties.md:240-245`.
 Dedicated hostile-Arrow, rows-versus-Arrow, and sklearn tests were absent when measured
 2026-09-02.
 
-## Unadopted campaign proposals
+## Reporting rules and what is not built
 
-None of these proposals is in force.
+**claim: unspecified-residuals.** Unknown observations are reported separately as
+unresolved, not counted as confirmed parity defects or agreement. Differences in a
+genuinely unconstrained aspect are not parity defects; unexplained differences must
+not be relabelled unspecified. A confirmed in-contract mismatch remains a defect.
+The retired “79 of 84” summary supplies no current cases or count for any category.
+See [unresolved observations](07-the-divergence-ledger.md).
 
-| proposal | proposed effect | path to decision |
+**claim: acceptance-reporting.** Report generated-campaign acceptance; no percentage
+target is adopted. Each rate states its population and shows unknown outcomes and
+invalid declarations separately. Do not improve it by silently changing the
+generator or denominator. C1–C5 and D1–D2 remain unchanged.
+
+*Decision:* [oracle policy](../decisions/oracle-policy.md#reporting-and-measurement);
+dispositions in [success measures](../specs/success-measures.md#measurement-policy).
+
+The adopted reporting intent does not adopt a schema for it. The runner reports raw
+verdict counts and an AGREE-only construct histogram; neither proposal below exists in
+code, and neither is approved beyond that intent.
+
+| proposal | proposed effect | status |
 |---|---|---|
-| **claim: unspecified-residuals** | do not count an `UNSPECIFIED` residual as a parity defect until classified as determined-and-wrong or under-determined | ask: proposed-rules-adoption; currently affects phase-two width residuals |
-| **claim: coverage-denominator** | report distinct `(operator, argument-type, edge-class)` triples rather than raw query count | ticket: coverage-triples |
-| **claim: abstention-rate** | report rates for `SKIP`, `TIMEOUT`, `PANIC`, and `order-by-unevaluated`; keep `UNSHIPPED` separate | ticket: per-kind-abstention-report; ask: reason-code-visibility |
+| **claim: coverage-denominator** | report distinct `(operator, argument-type, edge-class)` triples rather than raw query count | proposed schema, unimplemented; ticket: coverage-triples |
+| **claim: abstention-rate** | report rates for `SKIP`, `TIMEOUT`, `PANIC`, and `order-by-unevaluated`, keeping `UNSHIPPED` separate | proposed schema, unimplemented; ticket: per-kind-abstention-report |
 
-The runner already reports raw verdict counts and an AGREE-only construct histogram; it
-does not implement the proposed triples or rates. Proposed KPIs and measurement
-acceptance are centralized in [success measures](../specs/success-measures.md).
+Refusal-quality and unsupported-width reporting come before any new blocking KPI, and
+none is adopted here. Where reason codes may appear is claim: reason-code-placement in
+[verdicts](04-verdicts-agreement-abstention-refusal.md).
 
-## Open campaign decisions
+## Remaining campaign prerequisites
 
-- **ask: width-residual-classification** — run a fresh campaign and classify stored SQL
-  before using the unreconstructible “79 of 84” phase-2 figure as a defect count. Seeds
-  cannot recreate the baseline after generator changes.
-- **ask: match-count-ratchet** — decide whether the shipped `MATCH_FLOOR = 547` becomes
-  policy or remains an implementation observation, and define how approved adjustments
-  are made.
-- **ask: proposed-rules-adoption** — rule on each listed proposal independently. A
-  citation does not adopt target-status vocabulary, countable cost, multi-answer sets,
-  standing rejections, divergence placement, absolute severity rungs 1/2,
-  countable-rung-four, or unspecified residuals.
+These are implementation gaps, not open decisions:
 
-See [the decision index](12-ask-index.md) for bindings and the other open decisions.
+- replace the retired “79 of 84” phase-2 figure by replaying stored SQL or by a clearly
+  labelled fresh campaign, then classify the residuals; seeds cannot recreate the
+  2026-08-17 baseline after generator changes;
+- emit the refusal-reason summary and the separately counted unresolved category;
+- keep dated displayed match counts apart from the shipped floor (ticket:
+  match-count-single-home).
+
+See [the decision index](12-ask-index.md) for the compact status of every decision and
+[the oracle policy decision](../decisions/oracle-policy.md) for the accepted policy.

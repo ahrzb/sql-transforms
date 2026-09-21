@@ -149,6 +149,11 @@ not to be merged, and finding: static-only-tie-order closes with the path it des
 
 ## The four goal asks, and why two of them wait
 
+**Policy update, 2026-09-21:** the [oracle policy decision](oracle-policy.md)
+resolves acceptance/ratchets, KPI policy, and scope classification. It does not
+ratify every old exclusion or adopt a new blocking KPI. The recommendations below
+remain historical; query-class prioritization is separate.
+
 Written in `goal.md` with their options; recommendations with the dependency stated:
 
 - **`ask: acceptance-target`** — option (b), ratchet without a target: the dialect floors
