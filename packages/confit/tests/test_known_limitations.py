@@ -162,10 +162,11 @@ def test_struct_whole_value_rejects_but_fields_serve():
         DuckDBInferFn(
             "SELECT a FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
         )
-    with pytest.raises(ValueError, match="unsupported"):
-        DuckDBInferFn(
-            "SELECT a['i'] FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
-        )
+    # the bracket spelling is the same field (test_struct_column_access.py)
+    fn = DuckDBInferFn(
+        "SELECT a['i'] FROM __THIS__", row_tables={"__THIS__": M}, static_tables={}
+    )
+    assert fn.infer_rows([{"a": {"i": 5}}]) == [{"a['i']": 5}]
 
 
 def test_list_valued_regexp_forms_reject():

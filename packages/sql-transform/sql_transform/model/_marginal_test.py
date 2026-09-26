@@ -543,15 +543,16 @@ def test_projection_theta_misses_are_null():
     assert by["NEW"] is None  # P14, through the leaf: NULL θ in, NULL out
 
 
-def test_a_projection_scope_serves_in_batch_and_refuses_the_row_path_loudly():
+@pytest.mark.parametrize(
+    "text", PROJECTION_LAWFUL.values(), ids=PROJECTION_LAWFUL.keys()
+)
+def test_a_projection_scope_serves_on_the_row_path(text):
     """The frozen θ crosses the derived join as a struct, and the residual
-    reads it with struct_extract — which Confit's v0 catalogue lacks. Batch
-    is unaffected; compile() refuses with Confit's own message, by name
-    (recorded gap: spec Deferred)."""
-    fitted = SQLProjection.marginalize(PROJECTION_LAWFUL["split_per_key"]).fit(F)
-    assert fitted.transform(X).to_pylist()[1] == {"store": "NEW", "z": None}
-    with pytest.raises(ValueError, match="struct_extract"):
-        fitted.compile()
+    reads it with struct_extract; the compiled row path answers exactly what
+    batch does."""
+    fitted = SQLProjection.marginalize(text).fit(F)
+    rows = fitted.compile().infer_rows(X.to_pylist())
+    assert rows == fitted.transform(X).to_pylist()
 
 
 PROJECTION_REFUSED = [

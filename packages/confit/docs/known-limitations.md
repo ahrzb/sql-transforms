@@ -153,13 +153,16 @@ bool. Measured consequences:
   Comparisons, joins, `CAST(d AS DOUBLE)` and `SELECT *` all serve.
   `decimal256` statics refuse (DuckDB itself refuses them at arrow
   register, at any precision), and decimal ROW columns are opaque.
-- **Structs of scalars SERVE**: struct row columns are
-  flattened to scalar lanes at build time — field access (`a.i`, deep
-  `t.t.t.t` paths) and struct-star (`a.*` incl. EXCLUDE/REPLACE) are
-  bit-identical to DuckDB. What rejects, by name: the struct as a
-  WHOLE value (`SELECT a` — non-scalar output), bracket field access
-  (`a['i']` — DuckDB names such outputs by full expression text, not
-  modeled), and struct fields whose own types are non-scalar.
+- **Structs of scalars SERVE**: struct row and static columns are
+  flattened to scalar lanes at build time — field access in every spelling
+  (`a.i`, deep `t.t.t.t` paths, `a['i']`, `(a).i`, `struct_extract(a, 'i')`
+  and chains mixing them, output names as DuckDB prints them) and
+  struct-star (`a.*` incl. EXCLUDE/REPLACE) are bit-identical to DuckDB. A
+  field name may contain a dot (`a."x.y"`). What rejects, by name: the
+  struct as a WHOLE value (`SELECT a`, `a['n']` of a nested struct —
+  non-scalar output), struct fields whose own types are non-scalar, and
+  `a['i']` when `a` also names a relation in scope (there `a.i` would be
+  the relation's column, so the two spellings differ).
 - **Lists reject** (`row column 'x' has a non-scalar type`) — list types
   are out of the row-schema vocabulary and are opaque: unreferenced
   (star expansion included) they cost nothing to declare, an
