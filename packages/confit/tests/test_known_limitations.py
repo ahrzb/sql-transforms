@@ -236,13 +236,87 @@ def test_measured_descopes_reject(sql, needle):
     rejects(sql, needle)
 
 
-def test_using_unmerge_exclude_rejects():
+@pytest.mark.parametrize("qual", ["d.a", "__THIS__.a"])
+def test_using_unmerge_exclude_rejects(qual):
     d = static({"a": "int", "v": "int"}, [{"a": 1, "v": 10}])
-    # DuckDB UNMERGES the coalesced column here — measured, not modeled.
+    # DuckDB UNMERGES the coalesced column under either qualifier (it comes
+    # back at the right table's position with its values) — measured, not
+    # modeled. The left-qualified form once served (w, v) where DuckDB
+    # answers (w, a, v).
     rejects(
-        "SELECT * EXCLUDE (d.a) FROM __THIS__ JOIN d USING (a)",
+        f"SELECT * EXCLUDE ({qual}) FROM __THIS__ JOIN d USING (a)",
         "USING-merged",
         {"d": d},
+    )
+
+
+def test_unqualified_exclude_of_a_using_key_serves():
+    d = static({"a": "int", "v": "int"}, [{"a": 1, "v": 10}])
+    duck_check(
+        "SELECT * EXCLUDE (a) FROM __THIS__ JOIN d USING (a)",
+        {"a": "int", "s": "str?"},
+        [{"a": 1, "s": "x"}, {"a": 2, "s": None}],
+        {"d": d},
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "HUGEINT",
+        "UHUGEINT",
+        "FLOAT",
+        "REAL",
+        "FLOAT4",
+        "DECIMAL(3,1)",
+        "NUMERIC",
+        "INTERVAL",
+        "DATE",
+    ],
+)
+@pytest.mark.parametrize("form", ["CAST({e} AS {t})", "TRY_CAST({e} AS {t})"])
+def test_a_cast_target_without_a_lane_refuses(target, form):
+    # Computing these in the nearest lane served values DuckDB does not:
+    # CAST(-1 AS UINTEGER) errors there, CAST(16777217 AS FLOAT) rounds to
+    # 16777216, CAST(1.25 AS DECIMAL(3,1)) is 1.3, INTERVAL is no integer.
+    rejects(f"SELECT {form.format(e='a', t=target)} FROM __THIS__", "CAST target type")
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "TINYINT",
+        "INT1",
+        "SMALLINT",
+        "INT2",
+        "SHORT",
+        "INTEGER",
+        "INT",
+        "INT4",
+        "SIGNED",
+        "BIGINT",
+        "INT8",
+        "LONG",
+        "DOUBLE",
+        "FLOAT8",
+        "VARCHAR",
+        "TEXT",
+        "STRING",
+        "BOOLEAN",
+        "BOOL",
+    ],
+)
+def test_every_served_cast_spelling_matches_duckdb(target):
+    # VARCHAR -> BOOLEAN is its own named refusal; the integer side covers it.
+    y = "" if target.startswith("BOOL") else f", TRY_CAST(s AS {target}) AS y"
+    duck_check(
+        f"SELECT TRY_CAST(a AS {target}) AS x{y} FROM __THIS__",
+        {"a": "int", "s": "str?"},
+        [{"a": 1, "s": "7"}, {"a": 300, "s": "x"}, {"a": -40000, "s": None}],
     )
 
 
