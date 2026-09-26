@@ -11,8 +11,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
      casts.
    - Mixed-type join keys (`BIGINT` vs `VARCHAR` under `USING`/`NATURAL`/`ON`):
      `cannot join i64 with str` here, DuckDB casts.
-   - `IS [NOT] DISTINCT FROM` as an expression: refused (named) although the
-     join-key path and the dialect plan already model it.
    - All-NULL `CASE`/`COALESCE`/`least`/`greatest`: refused; DuckDB binds
      INTEGER.
    - A column qualified through a schema-qualified relation (`d.v` over
