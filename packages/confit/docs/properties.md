@@ -248,6 +248,20 @@ into probe maps at construction; nothing re-reads them at serve time. A
 declared-non-nullable NULL, a duplicated unique key, or a shape-violating
 UDF result is a named build error or trap — never a wrong value.
 
+**P21 — An exact answer is a function of the query and its declared
+inputs.** A reading that also depends on hidden table history, an
+unselected evaluation path, or an uncontrolled run is not an exact target:
+it is refused, or served under a narrower ruled contract, never frozen as
+whichever answer one run happened to give. The two ruled exceptions are
+confit's own serving-row order and the adopted float-reduction bound for
+future per-row `sum`/`avg` over matched `DOUBLE` values.
+
+*Argued:* [claim: nondeterminism-axiom](oracle/03-nondeterminism.md#decision-rule).
+*Pinned:* `tests/known_divergences/test_trap_elision.py::test_duckdbs_is_null_elision_is_not_a_function_of_the_query_or_the_rows`
+(the optimizer-on reading depends on insert history, so the oracle is
+optimizer-off) and `tests/test_arrow_schema_api.py::test_a_row_limit_on_the_constant_path_refuses`
+(a row limit without a total order is refused, not frozen).
+
 ---
 
 ## Agreed direction, not yet law

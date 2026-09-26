@@ -20,8 +20,8 @@ Two ruled exceptions are narrower than a general nondeterminism allowance:
 
 *Evidence:* `packages/confit/docs/known-limitations.md:39`, claim:
 optimizer-on-reading, and the fold-retirement decision.
-*Gap:* `packages/confit/confit/oracle.py` still carries an older summary; proposed
-**ticket: axiom-as-property** would also record this rule as P21.
+The rule is also law P21 in [properties](../properties.md) (**ticket:
+axiom-as-property**, done), with its pinning tests.
 
 **claim: disposition-table.** Apply the narrowest ruled action. Do not convert a source
 of variation into a general tolerance.

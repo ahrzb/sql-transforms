@@ -72,7 +72,7 @@ They are not owner-decision blockers for the settled contract.
 
 | Ticket | Proposed mechanism and boundary |
 |---|---|
-| **ticket: axiom-as-property** | Add the nondeterminism axiom to `properties.md`; the rule already has a canonical definition |
+| ~~**ticket: axiom-as-property**~~ done | Add the nondeterminism axiom to `properties.md`; the rule already has a canonical definition |
 | **ticket: phase-probing-in-methodology** | Add the existing PREPARE/EXECUTE and zero-row probe guidance to the methodology report |
 | **ticket: uniform-pin-header** | Standardize metadata across the legacy pin corpus; provenance for new campaign runs does not imply a full retrospective conversion |
 | **ticket: pin-decision-field** | Add a claim back-reference to every pin; mandatory per-pin governance metadata remains unadopted |
