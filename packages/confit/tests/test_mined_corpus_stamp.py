@@ -32,4 +32,3 @@ def test_the_stamp_names_the_reference_and_its_optimizer_state():
         assert stamp[key], key
     assert (stamp["kept"], stamp["seen"], stamp["files"]) == (3, 5, 2)
     assert miner.STAMP.name == "duckdb_mined.provenance.json"
-
