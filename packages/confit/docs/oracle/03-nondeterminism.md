@@ -101,8 +101,9 @@ ASCII kernel, while a non-ASCII sibling row selects a generic kernel whose fold
 NUL-truncates. The same row can therefore change value because of a sibling row. Confit
 uses NUL-transparent row-local behavior.
 
-The corpus set contains one source file and two statements, measured 2026-08-25. Older
-text saying “two sources” is incorrect; see **ticket: exclusion-count-correction**.
+The corpus set contains one source file and two statements, measured 2026-08-25. The
+older “two sources” wording in the methodology report and `known-limitations.md` is
+corrected (**ticket: exclusion-count-correction**, done).
 
 *Evidence:* `packages/confit/tests/test_corpus_replay.py:38-49`,
 `packages/confit/docs/specs/pins-wave1/pins_like.json`, and

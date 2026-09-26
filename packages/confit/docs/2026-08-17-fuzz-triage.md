@@ -8,6 +8,21 @@ landed. It is the gate for the sweep, not a discovery run.
 outcome the match-or-refuse contract has no room for, and after the sweep the
 class is empty.
 
+> **Correction, 2026-09-26** (ticket: ambiguity-class-closed). This report is
+> frozen history; the note corrects two statements it makes about the
+> 16-seed ambiguous-reference class without changing the run it describes.
+> "Not yet ticketed" and "has no ticket" were superseded the same week: the
+> class became TASK-121 ("An ambiguous struct-path column binds instead of
+> refusing"), whose status is Done and whose implementation notes record the
+> fix on 2026-08-19 (`bind_on`, `bare_col_with_fields`, and `column()` in
+> `frontend.rs`), with all 78 ambiguous findings of a later 20k-seed campaign
+> re-run individually as `REFUSED`. Its acceptance criteria were never
+> checked off, so "Done" rests on those notes and on the permanent tests in
+> `tests/test_arrow_schema_api.py`, not on a ticked checklist. The 16 seeds in
+> the 2026-08-17 `findings.jsonl` snapshot are that snapshot's contents, not
+> evidence the class is still open. See the
+> [ledger](oracle/07-the-divergence-ledger.md#evidence-notes).
+
 ## Before vs after
 
 | | before | after |
