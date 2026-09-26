@@ -185,7 +185,10 @@ def _replay(case: dict) -> tuple[str, str]:
     return "match", ""
 
 
-def test_corpus_replay_three_outcomes():
+def replay_counts() -> tuple[dict[str, int], list[str], int]:
+    """`(counts, fails, total)` over the whole corpus: the one computation
+    both this gate and `scripts/corpus_counts.py` (the dated display count)
+    read, so the two cannot disagree about what a match is."""
     cases = [json.loads(line) for line in CORPUS.open(encoding="utf-8")]
     counts = {"match": 0, "unsupported": 0, "FAIL": 0}
     fails: list[str] = []
@@ -194,11 +197,16 @@ def test_corpus_replay_three_outcomes():
         counts[outcome] += 1
         if outcome == "FAIL":
             fails.append(f"[{i}] {case['source']}: {case['sql']}\n    {detail}")
+    return counts, fails, len(cases)
+
+
+def test_corpus_replay_three_outcomes():
+    counts, fails, total = replay_counts()
 
     print(
         f"\ncorpus replay: {counts['match']} match, "
         f"{counts['unsupported']} clean-unsupported, {counts['FAIL']} FAIL "
-        f"of {len(cases)}"
+        f"of {total}"
     )
     assert not fails, (
         f"{len(fails)} corpus FAILs "

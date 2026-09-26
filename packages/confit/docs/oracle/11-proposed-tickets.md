@@ -78,7 +78,7 @@ They are not owner-decision blockers for the settled contract.
 | **ticket: pin-decision-field** | Add a claim back-reference to every pin; mandatory per-pin governance metadata remains unadopted |
 | **ticket: pin-field-token** | Add a general token for discriminator-dependent or unspecified fields; the semantic distinction does not require this encoding |
 | **ticket: corpus-drift-report** | Generalize `pin_ast_shapes.py`'s reviewable diff to the whole pin corpus; reference upgrades still need separate review |
-| **ticket: match-count-single-home** | Generate dated display counts in one place; the adopted floor policy does not require generated documentation |
+| ~~**ticket: match-count-single-home**~~ done | Generate dated display counts in one place; the adopted floor policy does not require generated documentation |
 | ~~**ticket: coverage-triples**~~ done | Report `(operator, argument-type, edge-class)` coverage; no universal coverage-metadata scheme was adopted |
 | ~~**ticket: per-kind-abstention-report**~~ done | Choose a reporting format for unanswered cases, preserve SQL before execution, and attribute timeout side; audit codes remain internal |
 | **ticket: convert-unrunnable-pins** | Inventory and convert old pins that cannot be replayed mechanically; do not rewrite history as a fresh run |

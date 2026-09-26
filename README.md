@@ -110,6 +110,7 @@ The expression surface, joins to static tables, the row-shape contract
 (`map`/`filter`/`many`) and the Arrow boundary are documented in
 [`packages/confit`](packages/confit) and
 [packages/confit/docs/known-limitations.md](packages/confit/docs/known-limitations.md): **547 of 678** statements
+(as of 2026-09-26, [recorded here](packages/confit/docs/reports/corpus-counts.json))
 mined from DuckDB's own test suite replay bit-exact, with the remainder clean,
 named build-time rejections.
 

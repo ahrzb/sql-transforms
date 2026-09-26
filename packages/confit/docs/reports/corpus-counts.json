@@ -1,0 +1,11 @@
+{
+  "date": "2026-09-26",
+  "engine_revision": "f4f996d5807ab5dc194a54594befd0836b4e8989",
+  "reference": "expected rows as mined (optimizer-on, unstamped); installed duckdb 1.5.5",
+  "corpus": "packages/confit/tests/corpus/duckdb_mined.jsonl",
+  "total": 678,
+  "match": 547,
+  "unsupported": 131,
+  "fail": 0,
+  "floor": 547
+}

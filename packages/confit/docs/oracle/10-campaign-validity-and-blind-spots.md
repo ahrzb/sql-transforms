@@ -47,8 +47,11 @@ checks. Adopting the rule measures nothing by itself.
 population and reporting detail in
 [success measures](../specs/success-measures.md#measurement-policy).
 
-*Enforced by:* `tests/test_corpus_replay.py:39-47, :185-208`. Proposed **ticket:
-match-count-single-home** separates dated headline counts from the shipped constant.
+*Enforced by:* `tests/test_corpus_replay.py` (`MATCH_FLOOR`, `replay_counts`). The dated
+headline count lives apart from that constant in `docs/reports/corpus-counts.json`,
+written by `scripts/corpus_counts.py` from the same replay, and
+`tests/test_corpus_counts.py` keeps every displayed count equal to it and dated
+(**ticket: match-count-single-home**, done).
 
 The expected rows were recorded optimizer-on without capture metadata (claim:
 mined-corpus-provenance). A replay match remains an observation about that corpus, but
@@ -132,8 +135,8 @@ These are implementation gaps, not open decisions:
 - replace the retired “79 of 84” phase-2 figure by replaying stored SQL or by a clearly
   labelled fresh campaign, then classify the residuals; seeds cannot recreate the
   2026-08-17 baseline after generator changes;
-- keep dated displayed match counts apart from the shipped floor (ticket:
-  match-count-single-home).
+- keep dated displayed match counts apart from the shipped floor (done:
+  `docs/reports/corpus-counts.json`).
 
 See [the decision index](12-ask-index.md) for the compact status of every decision and
 [the oracle policy decision](../decisions/oracle-policy.md) for the accepted policy.

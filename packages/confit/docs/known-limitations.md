@@ -11,7 +11,8 @@ the ones still without one.
 **The contract.** For any SQL you hand it, the engine does exactly one of:
 
 1. **Serve it bit-for-bit identical to DuckDB** (verified continuously
-   against DuckDB's own test corpus: 550 of 678 statements as of stage B), or
+   against DuckDB's own test corpus: 547 of 678 statements as of 2026-09-26,
+   recorded in [`reports/corpus-counts.json`](reports/corpus-counts.json)), or
 2. **Refuse loudly at BUILD time** — `DuckDBInferFn(...)` raises a
    `ValueError` naming the construct. Nothing is ever silently wrong or
    silently dropped at inference time.
