@@ -240,8 +240,8 @@ def _git(*args: str) -> str:
 
 def provenance(start: int, n: int) -> dict:
     """What a dated campaign result must say about itself: when it ran, which
-    engine and generator produced it, and against which reference. Old runs
-    stay history; this is what makes a new one comparable to the next."""
+    engine and generator produced it, and against which reference. This is
+    what makes one run comparable to the next."""
     gen_src = Path(G.__file__).read_bytes()
     return {
         "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),

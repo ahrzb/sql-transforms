@@ -8,11 +8,11 @@ classifies:
   clean-unsupported -- the engine rejects at BUILD time, naming the limit:
                        an "unsupported: ..." error, a parse error (DuckDB
                        dialect beyond sqlparser, e.g. `SELECT * LIKE`,
-                       `COLUMNS(...)`), or the documented v0 static-data
+                       `COLUMNS(...)`), or the documented static-data
                        contracts (unique join keys, no NULL in a value
                        column). Cases whose FROM is a table function
-                       (`range(...)`) have no base tables and can never be
-                       v0 -- also clean.
+                       (`range(...)`) have no base tables and are out of
+                       scope -- also clean.
   FAIL              -- mismatch, wrong error, or crash
 
 The gate requires zero FAILs. The match count is the growth ladder: every
@@ -36,17 +36,12 @@ from confit.oracle import Oracle
 
 CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 
-# Measured. The ladder's stage-B rung read 550; the arrow row surface then
-# bound every column at its DECLARED width instead of collapsing it to a
-# width-less int64, and the three UTINYINT/USMALLINT/UINTEGER join-key
-# statements of test/sql/join/inner/equality_join_limits.test stopped
-# matching -- correctly, because DuckDB answers them UTINYINT/USMALLINT/
-# UINTEGER and this engine has no unsigned lane, so what looked like a match
-# was a value comparison over a diverging output TYPE. Raised to 548 on
-# 2026-09-26 by USING/NATURAL self-joins under shape='many': case 14,
-# select_star_exclude.test `SELECT * EXCLUDE (i) FROM integers i1 JOIN
-# integers i2 USING (i)`, flipped from clean-unsupported to match. A drop
-# below this is a regression.
+# Measured. The arrow row surface binds every column at its DECLARED width,
+# so the three UTINYINT/USMALLINT/UINTEGER join-key statements of
+# test/sql/join/inner/equality_join_limits.test do not match -- correctly,
+# because DuckDB answers them UTINYINT/USMALLINT/UINTEGER and this engine has
+# no unsigned lane, so a value match there would hide a diverging output
+# TYPE. A drop below this is a regression.
 MATCH_FLOOR = 548
 
 # Build-time errors that are documented contract limits, not bugs: the
@@ -62,7 +57,7 @@ _KNOWN_DIVERGENT_SOURCES = {
     # ROWS: pure-ASCII column stats select a NUL-safe ASCII kernel (row
     # matches itself -> TRUE), while any non-ASCII sibling selects the
     # generic kernel whose fold NUL-truncates (same row -> FALSE); measured
-    # 2026-07-26, pins-wave1/pins_like.json. Statistics-dependent semantics
+    # in pins-wave1/pins_like.json. Statistics-dependent semantics
     # cannot be reproduced by a row-at-a-time engine even in principle; the
     # engine is NUL-transparent (the ASCII-kernel behavior).
     "test/sql/function/string/test_ilike_embedded_null.test",
@@ -72,11 +67,9 @@ _KNOWN_DIVERGENT_SOURCES = {
 # express — clean, not a divergence: the SQL is fine, the declaration is
 # not.
 #
-# The one entry dates from the width-less pydantic row surface: `int` could
-# not spell INTEGER, so this corpus column bound as int64 and round(f64,
-# i64) refused HERE exactly as round(DOUBLE, BIGINT) refuses on DuckDB
-# (probe 2026-08-13). Row schemas are arrow declarations now and carry the
-# INTEGER straight through.
+# The one entry: a column that binds as int64 makes round(f64, i64) refuse
+# HERE exactly as round(DOUBLE, BIGINT) refuses on DuckDB. Row schemas are
+# arrow declarations and carry INTEGER straight through.
 _INEXPRESSIBLE_INPUTS = {
     (
         "test/sql/function/numeric/test_round.test",
@@ -106,7 +99,7 @@ def _replay(case: dict) -> tuple[str, str]:
         return "FAIL", f"setup failed: {e}"
     named = o.execute("SELECT schema_name, table_name FROM duckdb_tables()").fetchall()
     if not named:
-        return "unsupported", "FROM is a table function; no base tables, never v0"
+        return "unsupported", "FROM is a table function; no base tables"
 
     m = _FROM_RE.search(case["sql"])
     by_lower = {t.lower(): (s, t) for s, t in named}
@@ -124,7 +117,7 @@ def _replay(case: dict) -> tuple[str, str]:
     # is value-exact, but every f32-GRID-sensitive op (nextafter's ulp
     # steps, FLOAT->VARCHAR shortest-round-trip, FLOAT rounding) computes
     # on the wrong grid. Comparisons happen to survive; the blanket rule
-    # is the defensible one (wave-3: 3 sources, 5 cases).
+    # is the defensible one (3 sources, 5 cases).
     for t in arrow.values():
         if any(pa.types.is_float32(f.type) for f in t.schema):
             return "unsupported", "f32 base-table column (engine is f64-only)"

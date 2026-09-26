@@ -1,14 +1,14 @@
 # Success measures
 
-The [goal](../goal.md) sets the priorities. These are the adopted five correctness
+The [goal](../goal.md) sets the priorities. These are the five correctness
 controls (C1–C5) and two optimization measures (D1–D2), including checks owned by
-`sql_transform`. Their location here does not move implementation ownership.
+`sql_transform`, which keeps ownership of its checks.
 
 ## Standing rule
 
 Never weaken a correctness control to improve coverage or latency. Changing a
 bound requires an explicit reviewed decision, not a tolerance adjustment to make
-a failing test pass. An implementation gap is not an exception to the requirement.
+a failing test pass. Missing implementation is not an exception to a requirement.
 
 ## Correctness controls
 
@@ -21,10 +21,8 @@ instead of the DuckDB reference.
 
 Gate: `packages/sql-transform/sql_transform/_projection_test.py`, `gate()` and
 the seeded differential controlled by `MARGINALIZE_FUZZ_N` (seed 20260729).
-The specified widening loop includes 1,500–2,000-case runs. The
-[baseline report](../reports/2026-09-02-goal-baseline.md) records a smaller default
-run depth; default execution is not evidence that the widening requirement ran.
-The serving reduction bound in the oracle contract does not amend this control.
+A widening run is 1,500–2,000 cases; the default depth is 25, so a default
+run is not evidence that a widening run happened.
 
 ### Engine parity (C2)
 
@@ -32,9 +30,8 @@ The serving reduction bound in the oracle contract does not amend this control.
 [optimizer-off DuckDB oracle](../oracle/README.md), with the same declared UDFs
 registered, or refuse construction with an error naming the unsupported construct.
 The [comparison contract](../oracle/05-the-comparison-contract.md) specifies the
-order axis and narrow approved exceptions: the in-force `cbrt` bound and the
-adopted, unimplemented bound for relational `DOUBLE` `sum`/`avg`. Neither a known
-implementation gap nor an unruled ledger entry permits a further deviation.
+order axis and the one approved value exception, the `cbrt` bound. No ledger
+entry permits a further deviation.
 
 Gates: `packages/confit/tests/test_duckdb_*.py`, `test_params_joins.py`,
 `test_udfs.py`, and the refusal suites. The internal byte-for-byte
@@ -70,10 +67,8 @@ The first three paths are in `packages/sql-transform/sql_transform/`.
 `_transformers_test.py::_reference()` constructs the independent reference.
 The tree test uses exact numerical equality, not a bit-view comparison, so it does
 not independently verify signed-zero bits. The campaign bound is a separate
-self-leg, not a replacement for C4; no dedicated bound test was identified in the
-oracle audit. A SQL-window/NumPy mean assertion does not define transformer parity.
-Native-transform-family extensions remain unimplemented proposals, not additional
-bounds in force.
+self-leg, not a replacement for C4, and has no dedicated bound test. A
+SQL-window/NumPy mean assertion does not define transformer parity.
 
 ### No third mode (C5)
 
@@ -106,7 +101,8 @@ This is the authoring package's ladder, not Confit's constructor-acceptance rate
 alternatives within a run and record the environment. Cross-run ratios require
 a stable baseline measured in each run; absolute numbers alone are load-sensitive.
 The goal's single-digit-microsecond objective has no enforced numeric threshold.
-Measurements and baseline changes belong in dated reports.
+Measurements and baseline changes belong in dated reports; the
+[performance report](../reports/performance-report.md) holds the method.
 
 ## Acceptance and measurement
 
@@ -140,35 +136,14 @@ for enforcement limits. A test path resolving does not show that its gate ran.
 
 ## Measurement policy
 
-The [oracle policy decision](../decisions/oracle-policy.md) retains C1–C5 and
-D1–D2. It adopts reporting priorities and reviewable corpus ratchets, not new
-blocking KPIs or arbitrary numeric targets.
-
-**ask: acceptance-target — RULED.** Use ratchets for stable corpora and reporting
-for generated campaigns. Define each population and show unknown outcomes and
-invalid declarations separately; do not improve an acceptance rate by silently
-changing the generator or denominator.
+C1–C5 and D1–D2 are the blocking set; there are no numeric acceptance targets.
+Stable corpora are held by reviewable ratchets and generated campaigns are
+reported. Each reported population is defined, with unknown outcomes and invalid
+declarations shown separately; an acceptance rate is never improved by changing
+the generator or denominator.
 
 Stable-corpus support may not decrease without a reviewed reason and the affected
-cases. Raise floors as support grows. A total can hide one regression offset by
-one new match, so it does not replace case-level checks. This is the oracle's
-[stable-corpus ratchet](../oracle/10-campaign-validity-and-blind-spots.md), not a
-separate rule.
-
-**ask: kpi-set-change — RULED.** Improve refusal-quality and unsupported-width
-reporting before introducing additional blocking KPIs. Existing correctness
-requirements remain binding; declining new metrics does not relax C5's
-construct-naming diagnostic requirement or C1's specified widening-run depth.
-
-| Identifier | Disposition | Measurement prerequisite |
-|---|---|---|
-| **kpi: acceptance-rate** | Reporting, not a generated-campaign percentage target | Explicit population and unknown/invalid outcomes |
-| **kpi: findings-per-campaign** | No new zero-finding control adopted | Meaningful cadence, visible `DIVERGE_OPT`, timeout/panic attribution, and no disappearing skipped cases |
-| **kpi: unshipped-burndown** | Prioritize reporting unsupported widths; no new blocking KPI | Verify generator reachability, not just an empty bucket |
-| **kpi: named-refusal-share** | Prioritize diagnostic-quality reporting; no new blocking KPI | Measure construct-naming and actionability, not prefix presence alone |
-| **kpi: ladder-ratchet** | Adopt no unexplained support decrease for stable corpora | Preserve package ownership, environment requirements, and reviewed scope changes |
-| **kpi: bench-refresh-cadence** | No fixed maximum age adopted | Stable within-run baseline and a justified cadence before introducing a threshold |
-
-Reporting improvements remain implementation work; this decision does not assert
-that new measurements exist. Scope classification lives in the
-[serving contract](serving-contract.md#scope-classification).
+cases. A total can hide one regression offset by one new match, so it does not
+replace case-level checks. This is the oracle's
+[stable-corpus ratchet](../oracle/10-campaign-validity-and-blind-spots.md). Scope
+classification lives in the [serving contract](serving-contract.md#scope-classification).

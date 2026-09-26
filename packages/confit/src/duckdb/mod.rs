@@ -32,8 +32,8 @@ use crate::specializer::{prepare_opaque, StaticSpec, WideOut};
 ///
 /// A refusal about a column the caller declared `pa.int32()` says `int32`,
 /// not `INTEGER`, so the message quotes the declaration back instead of
-/// making them translate it. Decided 2026-08-15. The DuckDB spellings live
-/// on in `dialect/`, where they belong: that module emits SQL text.
+/// making them translate it. The DuckDB spellings live
+/// in `dialect/`, where they belong: that module emits SQL text.
 pub(super) fn arrow_ty_name(t: Ty) -> std::borrow::Cow<'static, str> {
     use std::borrow::Cow;
     match t {
@@ -238,12 +238,11 @@ fn flatten_static(
     use crate::specializer::plan::{StructField, StructNode};
     let mut tree = Vec::with_capacity(fields.len());
     for (fname, rf) in fields {
-        // A retained choice, not something the encoding forces: lanes carry
-        // a structured path, so a dotted segment is no longer ambiguous and
-        // this skip could be lifted soundly. Until someone decides to,
-        // dotted names stay opaque here. (The row path keeps such a field as
-        // an `Opaque` node instead, so it refuses by name rather than going
-        // missing.)
+        // A retained choice, not something the encoding forces: lanes carry a
+        // structured path, so a dotted segment is not ambiguous and this skip
+        // could be lifted soundly; dotted names stay opaque here. (The row path
+        // keeps such a field as an `Opaque` node instead, so it refuses by name
+        // rather than going missing.)
         if fname.contains('.') {
             continue;
         }
@@ -278,15 +277,13 @@ fn flatten_static(
 }
 
 /// A narrow out column's value must fit its declared width on EVERY
-/// boundary — infer and infer_arrow answer identically or not at all
-/// (fleet 2026-08-13: the row path served what the arrow path refused).
+/// boundary — infer and infer_arrow answer identically or not at all.
 fn narrow_check(ty: Ty, name: &str, v: i64) -> PyResult<()> {
     if let Some((lo, hi)) = ty.int_range() {
         if !(lo..=hi).contains(&v) {
             let ty_name = arrow_ty_name(ty);
             return Err(InterpError::Eval(format!(
-                "column '{name}' value {v} is outside its {ty_name} range — \
-                 the {ty_name} overflow trap lands with m-8 phase 3"
+                "column '{name}' value {v} is outside its {ty_name} range"
             ))
             .into());
         }
@@ -377,7 +374,7 @@ fn dec_py(py: Python<'_>, v: i128, ty: Ty) -> PyResult<Py<PyAny>> {
 
 /// One field of the output boundary: a plain scalar lane, or a wide UDF
 /// field assembled from its whole-validity lane plus k component lanes.
-/// Empty `names` is the DRAFT-22 unnamed boundary (the field is
+/// Empty `names` is the unnamed boundary (the field is
 /// `list | None`); non-empty assembles a STRUCT keyed by the declared
 /// names. Either way a NULL whole-validity is the NULL field —
 /// distinct from a container of NULLs.
@@ -575,7 +572,7 @@ fn parse_takes(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec
 /// * a scalar type — an ordinary scalar expression;
 /// * `pa.struct([...])` — width-k with addressable field names,
 ///   struct-valued at EVERY width including 1;
-/// * `pa.list_(t, k)` — width-k unnamed, the DRAFT-22 list boundary. Fixed
+/// * `pa.list_(t, k)` — width-k unnamed, the list boundary. Fixed
 ///   size because the width is part of the declaration; a variable-length
 ///   list would leave it unsaid.
 fn parse_returns(name: &str, obj: &Bound<'_, PyAny>) -> PyResult<(Vec<String>, Vec<Ty>)> {
@@ -675,7 +672,7 @@ fn parse_udfs(py: Python<'_>, udfs: Vec<Py<PyAny>>) -> PyResult<(Vec<UdfDecl>, V
             build_err(format!("bind error: udf '{name}': `returns` must be a pyarrow DataType"))
         })?)?;
         let mut params = Vec::with_capacity(take_tys.len() + 1);
-        // The implicit leading instance id (DRAFT-22): objects with an
+        // The implicit leading instance id: objects with an
         // `instances` attribute are fitted transformers whose first SQL
         // argument is the nullable i64 id — never written in `takes`.
         if b.hasattr("instances")? {
@@ -749,8 +746,7 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                                 Some(ScalarVal::Str(x)) => {
                                     x.into_py_any(py).map_err(|e| e.to_string())?
                                 }
-                                // A UDF over DECIMAL refuses at bind (m-8
-                                // lattice phase 5).
+                                // A UDF over DECIMAL refuses at bind.
                                 Some(ScalarVal::Dec(..)) => {
                                     return Err(format!(
                                         "udf '{name}' was handed a DECIMAL argument, which \
@@ -804,9 +800,8 @@ fn make_externs(py: Python<'_>, decls: &[UdfDecl]) -> Vec<ExternImpl> {
                                 }
                                 Ty::F64 => ScalarVal::F64(item.extract().map_err(bad)?),
                                 Ty::Str => ScalarVal::Str(item.extract().map_err(bad)?),
-                                // A UDF over DECIMAL refuses at bind (m-8
-                                // lattice phase 5), so no declaration
-                                // reaches here carrying one.
+                                // A UDF over DECIMAL refuses at bind, so
+                                // no declaration reaches here carrying one.
                                 Ty::Dec(..) => {
                                     return Err(format!(
                                         "udf '{name}' declares a DECIMAL return, which                                          this build does not serve"
@@ -1108,7 +1103,7 @@ fn materialize_statics(
     // Program statics and StaticSpecs are both indexed by join id.
     for (spec, sty) in prepared.statics.iter().zip(&prepared.program.statics) {
         if spec.batch {
-            // Stage-B self-join: built per call by the executor.
+            // Multiplicity self-join: built per call by the executor.
             data.push(StaticData::Map(Vec::new()));
             continue;
         }
@@ -1119,18 +1114,17 @@ fn materialize_statics(
             .get(&spec.table)
             .expect("spec names come from the catalog");
         // The recipe and the lowered type vector are two derivations of one
-        // slot layout, and the materializer now takes its types off the
+        // slot layout, and the materializer takes its types off the
         // recipe alone — so this is where the two are compared.
         //
-        // MEASURED, against the spec's claim that a disagreement would
-        // otherwise be silent: it would not. `interp::prepare_statics`
-        // type-checks EVERY entry's flat key and value vectors against the
-        // declaration in release, for `Map` and `MultiMap` alike, and a
-        // shortened build tuple fails there with "static data mismatch".
-        // What this assert buys is WHERE and WHEN: it fires at the
-        // recipe/declaration seam naming the two derivations, before any
-        // row is read, instead of downstream naming one row's shape — and
-        // it covers the zero-row table the entry loop walks vacuously.
+        // Without this assert a disagreement is still not silent (measured):
+        // `interp::prepare_statics` type-checks EVERY entry's flat key and
+        // value vectors against the declaration in release, for `Map` and
+        // `MultiMap` alike, and a shortened build tuple fails there with
+        // "static data mismatch". What this assert buys is WHERE and WHEN: it
+        // fires at the recipe/declaration seam naming the two derivations,
+        // before any row is read, instead of downstream naming one row's shape
+        // — and it covers the zero-row table the entry loop walks vacuously.
         // Debug-only, so release behavior is untouched.
         debug_assert_eq!(
             spec.keys.iter().map(|k| k.map.slots().len()).sum::<usize>(),
@@ -1173,8 +1167,9 @@ fn materialize_statics(
 /// The constant emitter: a static-tables-only query is evaluated ONCE, here
 /// at build time, by DuckDB itself — nothing dynamic remains and no IR is
 /// built at all. Statics materialize as native tables (duckdb's
-/// registered-arrow scan path has divergent filter semantics — see the
-/// builtin-pins spec). Returns the fixed row dicts plus the result schema.
+/// registered-arrow scan path has divergent filter semantics — see
+/// docs/specs/2026-07-26-stretch4-builtin-pins.md). Returns the fixed row
+/// dicts plus the result schema.
 fn eval_static_only(
     py: Python<'_>,
     sql: &str,
@@ -1204,7 +1199,7 @@ fn eval_static_only(
 
 /// The execution backend: cranelift when it compiles, the interpreter as
 /// the always-available fallback — an uncovered op must not fail prepare.
-/// Both agree byte-for-byte by the 500-seed differential.
+/// Both agree byte-for-byte under the 500-seed differential test.
 enum Backend {
     Cranelift(CraneliftFn),
     Interp(InterpFn),
@@ -1231,7 +1226,7 @@ impl Backend {
     }
 }
 
-/// The generated row marshaller (design doc §3 flag 1): everything about the
+/// The generated row marshaller: everything about the
 /// boundary that is knowable at prepare time is done at prepare time —
 /// interned attribute-name objects in fixed field order, `model_construct`
 /// resolved once, input buffers and run state owned and reused (cleared, not
@@ -1455,8 +1450,7 @@ enum Engine {
         /// boundary at construction (the bench baseline). RefCell so infer
         /// stays `&self`: a reentrant call (a row property calling infer on
         /// the same object mid-marshal) finds the cell borrowed and falls
-        /// through to the per-call generic path instead of erroring —
-        /// master behavior (adversarial-review finding, 2026-07-26). The
+        /// through to the per-call generic path instead of erroring. The
         /// pyclass is unsendable, so single-threaded RefCell suffices.
         marsh: Option<RefCell<Marshaller>>,
     },
@@ -1489,11 +1483,11 @@ impl DuckDBInferFn {
         shape: Option<String>,
     ) -> PyResult<Self> {
         let (udf_decls, tree_decls) = parse_udfs(py, udfs.unwrap_or_default())?;
-        // The row-shape contract: "filter" (default) is today's
-        // 0..1 rows out per row in; "map" statically PROVES exactly-one
-        // (out[i] <-> in[i]) or refuses at build; "many" is reserved for
-        // join multiplicity (stage B) and is the only shape under which
-        // those constructs will ever build.
+        // The row-shape contract: "filter" (default) is 0..1 rows out per
+        // row in; "map" statically PROVES exactly-one
+        // (out[i] <-> in[i]) or refuses at build; "many" is for join
+        // multiplicity and is the only shape under which those constructs
+        // build.
         let many = shape.as_deref() == Some("many");
         let shape_kind: u8 = match shape.as_deref() {
             None | Some("filter") => 0,
@@ -1714,7 +1708,7 @@ impl DuckDBInferFn {
                 // A row limit picks which rows survive, and that pick is not
                 // a function of the query (four answers over twelve
                 // connections, measured; ORDER BY does not fix ties).
-                // Refused WHOLESALE (decided 2026-08-19) rather than frozen
+                // Refused WHOLESALE rather than frozen
                 // from whichever evaluation the build happened to run.
                 if let Some(clause) =
                     crate::specializer::frontend::row_limit_clause(&sql)
@@ -1899,9 +1893,9 @@ impl DuckDBInferFn {
             } => (fun, lanes, out_cols, plan, marsh),
             Engine::Constant { rows: fixed, .. } => {
                 // This build reads only static tables, so it cannot see
-                // input rows at all — and silently dropping them was the one
-                // mistake at this boundary that did not refuse by name. It
-                // hides a real caller bug: N request rows through a
+                // input rows at all — and silently dropping them would be the
+                // one mistake at this boundary that does not refuse by name.
+                // It would hide a real caller bug: N request rows through a
                 // function that structurally cannot read them returns 1 fixed
                 // row, and the caller's positional assumption breaks
                 // somewhere downstream instead of here.
@@ -1941,7 +1935,7 @@ impl DuckDBInferFn {
             let bound = row_obj.bind(py);
             // Dict rows are part of the API surface; the baseline path must
             // accept the same inputs as the marshaller, differing only in
-            // cost (adversarial-review finding, 2026-07-26).
+            // cost.
             let dict = bound.cast::<PyDict>().ok();
             for (lane, col) in lanes.iter().zip(&mut cols) {
                 let mut segs = lane.path.iter().map(|s| s.as_str());

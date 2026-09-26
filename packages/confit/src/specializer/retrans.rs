@@ -155,8 +155,8 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
     // Character-class member tracking for range-endpoint rejects.
     let mut class_members = 0usize;
     let mut rangey_dash = false; // last member was a bare '-' with a left operand
-    // RE2 program-size budget (fuzzer 2026-07-28 seed 20260728: DuckDB
-    // errors "pattern too large" on '(\p{L}){1,500}' while rust serves).
+    // RE2 program-size budget (differential fuzzer: DuckDB errors "pattern
+    // too large" on '(\p{L}){1,500}' while rust serves).
     // One-sided over-estimate in "range units": \p/\P weigh 800 (above any
     // property's real range count), a class two per member plus two,
     // literals a flat 4; a counted repetition whose weight product clears
@@ -326,8 +326,7 @@ pub fn translate_pattern(p: &str) -> Result<String, PrepareError> {
                 // or the end): DuckDB's row path literal-optimizes a
                 // leading '$'+literal into a PREFIX match ('$hello' matches
                 // 'hello world'!) while its own constant fold matches
-                // normally — self-inconsistent, unservable (fuzzer-measured
-                // 2026-07-28, seed 20260728 case 4275).
+                // normally — self-inconsistent, unservable (fuzzer-measured).
                 let benign = match b.get(i + 1) {
                     None | Some(b'|') | Some(b')') | Some(b'$') => true,
                     // Another anchor right after keeps both paths agreeing
@@ -637,8 +636,8 @@ mod tests {
         assert_eq!(translate_pattern(r"[-\d]").unwrap(), "[-0-9]");
         assert_eq!(translate_pattern(r"[\d-]").unwrap(), "[0-9-]");
         assert_eq!(translate_pattern(r"[\1]").unwrap(), r"[\1]"); // in-class octal
-        // POSIX elements pass through atomically — the tracker no longer
-        // desyncs, so a following Perl class still rewrites in-class.
+        // POSIX elements pass through atomically — the tracker stays in
+        // sync, so a following Perl class still rewrites in-class.
         assert_eq!(translate_pattern(r"[[:alpha:]\d]").unwrap(), "[[:alpha:]0-9]");
         assert_eq!(translate_pattern("[[:^digit:]x]").unwrap(), "[[:^digit:]x]");
         // Leading-']' ranges; the trailing-'-' literal form stays fine.

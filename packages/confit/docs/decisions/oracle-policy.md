@@ -1,38 +1,37 @@
 ---
 title: 'Oracle policy: a fixed reference, explicit exceptions, and honest evidence'
 status: decided
-decided: 2026-09-21
 ---
 # Oracle policy decisions
 
-The owner accepted all recommendations in the review of the oracle's open
-questions. The choices below settle policy without claiming that the corresponding
-implementation work has landed. They preserve a small core contract rather than
-make current limitations or documentation machinery part of its definition.
+These choices settle the oracle's policy. They keep a small core contract rather
+than make current limitations or documentation machinery part of its definition.
+Where the implementation differs, the [oracle chapters](../oracle/README.md) state
+what is true of the code.
 
 ## Reference and comparison
 
-- **Version:** retain DuckDB 1.5.5. Pin the reproducible oracle/test environment
+- **Version:** DuckDB 1.5.5. Pin the reproducible oracle/test environment
   and assert its version when opening the oracle. Do not unnecessarily constrain
   unrelated DuckDB consumers. An upgrade is a separate reviewed change.
-- **Platform** (owner ruling, 2026-09-26): the reference is DuckDB as it behaves on
+- **Platform:** the reference is DuckDB as it behaves on
   Linux. Behavior DuckDB shows only on another platform, platform-specific bugs
   included, is not replicated. Tests that pin Linux-measured DuckDB behavior may be
   marked Linux-only; CI runs on Linux.
 - **Execution order:** do not change the global thread setting speculatively.
   Define a justified contract when implementing each order-sensitive family;
   refuse a family until that contract is clear. Single-thread execution alone
-  does not make unordered SQL ordered. The existing relational `DOUBLE`
-  reduction decision remains in force.
+  does not make unordered SQL ordered. Relational `DOUBLE` `sum` / `avg` is
+  compared under the float-reduction bound.
 - **Numerical exceptions:** maintain an explicit approved list, with operation,
   comparison rule, valid inputs, and rationale. Tests do not choose new
-  tolerances independently. Resolve the adopted reduction bound's algorithms
-  and edge domain before implementing it; no general epsilon substitutes for
-  that work. Empty/all-NULL and non-finite outcomes need explicit oracle behavior.
+  tolerances independently. The reduction bound applies only once its algorithms
+  and edge domain are defined; no general epsilon substitutes for them.
+  Empty/all-NULL and non-finite outcomes need explicit oracle behavior.
 - **Unsupported widths:** require behavioral coverage showing that they are
   classified rather than counted as agreement. Reuse existing coverage; do not
   require a duplicate strict-xfail test merely as bookkeeping. A strict xfail
-  remains useful for a concrete defect whose repair should expire the exception.
+  is useful for a concrete defect whose repair should expire the exception.
 - **Scope:** distinguish outside-the-model computation, unimplemented in-scope
   features, explicit product/resource restrictions, and invalid inputs. Current
   syntax bans do not define permanent scope. This classifies restrictions; it
@@ -40,7 +39,7 @@ make current limitations or documentation machinery part of its definition.
 - **Output nullability:** metadata must be truthful, but exact identity with
   DuckDB's nullable flags is not required. A non-null promise must be sound;
   conservative nullable metadata need not match another engine's inference.
-  Output names, types, and field order retain their existing contract.
+  Output names, types, and field order must match exactly.
 
 ## Reporting and measurement
 
@@ -75,12 +74,10 @@ make current limitations or documentation machinery part of its definition.
   category. It is neither agreement nor an approved exception nor necessarily
   a confirmed defect. `Unresolved` means not yet understood; `unspecified` means
   the contract deliberately leaves the particular aspect unconstrained.
-- **Baselines:** freeze old runs as history and use dated, provenance-bearing
-  future results: SQL, inputs, generator revision where generated, engine revision,
-  and reference configuration. Seeds are not durable identities after generator changes.
-- **Historical residuals:** retire the unreconstructible “79 of 84” count from
-  current evidence. Replay stored cases where available, or produce a clearly
-  labelled fresh measurement; do not present it as recovery of the old run.
+- **Baselines:** a recorded run is never rewritten. Results are dated and
+  provenance-bearing: SQL, inputs, generator revision where generated, engine
+  revision, and reference configuration. Seeds are not durable identities after
+  generator changes. A count whose run cannot be reconstructed is not evidence.
 
 ## Limits on process rules
 
@@ -96,12 +93,7 @@ substituting another authority for the oracle; do not ban hashing as an incident
 tool merely because a hash alone is poor diagnostic evidence.
 
 Approved exceptions have one home beside their comparison rule, linked from the
-ledger; investigations and defects stay in the ledger. Reject the blanket policy
-that severity-1/2 defects may never be retained: an existing bug can remain open
-without becoming an accepted result. Differences in genuinely unspecified aspects
-are not parity defects; unclassified differences remain unresolved, not silently
+ledger; investigations and defects stay in the ledger. A severity-1/2 defect may
+remain open while it is worked without becoming an accepted result. Differences in
+genuinely unspecified aspects are not parity defects; unclassified differences remain unresolved, not silently
 relabelled unspecified.
-
-The [decision index](../oracle/12-ask-index.md) maps the former questions to their
-current definitions. The [work register](../oracle/11-proposed-tickets.md)
-distinguishes implementation follow-through from proposals not adopted here.

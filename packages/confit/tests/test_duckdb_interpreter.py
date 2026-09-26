@@ -42,9 +42,9 @@ def static(schema: dict[str, str], rows: list[dict[str, Any]]) -> pa.Table:
 
 
 def _norm(spec: str, v: Any) -> Any:
-    # Pydantic used to coerce an int literal into a float field automatically;
-    # the arrow boundary refuses that coercion, so replicate it here at the
-    # test-data edge instead of rewriting every literal in the corpus.
+    # The arrow boundary refuses int-literal-into-float-field coercion, so
+    # apply it here at the test-data edge instead of rewriting every literal
+    # in the corpus.
     if spec.rstrip("?") == "float" and isinstance(v, int) and not isinstance(v, bool):
         return float(v)
     return v
@@ -70,7 +70,7 @@ def _legs(
     o = Oracle()
     # Materialize NATIVE tables: duckdb pushes constant filters into
     # registered-arrow scans with IEEE NaN semantics, which disagrees with
-    # its own native-table comparison order (adversarial probe, 2026-07-26).
+    # its own native-table comparison order (measured).
     # The engine follows native-table semantics — the corpus's world.
     for name, table in statics.items():
         o.load(name, table)
@@ -203,10 +203,9 @@ def test_bad_sql_is_a_build_error():
 
 
 def test_unknown_infer_table_is_rejected():
-    # MIGRATION-NOTE: infer(tables={...}) named-table dispatch is deleted;
-    # infer_rows(rows) takes no table-name argument at all, so the runtime
-    # "wrong table key" error this test used to pin can no longer be
-    # constructed. The remaining "unknown table" refusals are build-time
+    # infer_rows(rows) takes no table-name argument at all, so there is no
+    # runtime "wrong table key" error to construct. The "unknown table"
+    # refusals are build-time
     # (SQL referencing an undeclared table name) and stay covered by
     # test_alias_shadows_original_name and
     # test_unknown_driving_table_stays_clean_unsupported.
@@ -218,10 +217,8 @@ def test_unknown_infer_table_is_rejected():
 
 
 def test_output_schema_is_synthesized():
-    # MIGRATION-NOTE: output_model= and the synthesized pydantic model are
-    # deleted; output_schema (a pa.Schema) is the replacement contract. The
-    # old assertions on pydantic field annotations have no equivalent, so
-    # this checks the same shape (names + types) through the new surface.
+    # output_schema (a pa.Schema) is the output contract; this checks its
+    # shape (names + types).
     fn = DuckDBInferFn(
         "SELECT a + 1 AS x, b AS y FROM __THIS__",
         row_tables={"__THIS__": _row_schema({"a": "int", "b": "float?"})},
@@ -312,8 +309,8 @@ def test_nan_comparison_differential():
 
 
 def test_simple_case_mapping_matches_duckdb():
-    # Formerly a strict xfail: DuckDB uses utf8proc SIMPLE case maps, Rust
-    # std only has full maps. src/specializer/exec/casemap.rs now carries the
+    # DuckDB uses utf8proc SIMPLE case maps, Rust std only has full maps.
+    # src/specializer/exec/casemap.rs carries the
     # measured exception table (see scripts/gen_casemap.py for why it exists
     # and why it is dependency-free).
     duck_check(
@@ -341,8 +338,8 @@ def test_simple_case_mapping_full_codepoint_census():
     duck_check("SELECT upper(s) AS u, lower(s) AS l FROM __THIS__", {"s": "str"}, rows)
 
 
-# --------------------------------------------- adversarial-fleet fixes:
-# each case below was a measured divergence, now pinned differentially.
+# --------------------------------------------- adversarial cases:
+# each case below is a measured divergence risk, pinned differentially.
 
 
 def test_trim_zs_set_differential():
@@ -379,11 +376,11 @@ def test_substr_negative_length_differential():
 
 
 def test_substr_negative_start_column_path_differential():
-    # The adversarial review's "parity bug" triples, through the path real
-    # queries take (column input -> DuckDB's vectorized substr). builtin-pins
-    # \u00a74 read these as "negative start clamps to 1 BEFORE the length window";
-    # that was measured on the one DuckDB path which disagrees with its other three
-    # (see test_substr_constant_fold_divergence below). The rule is the WINDOW:
+    # The "parity bug" triples, through the path real queries take (column
+    # input -> DuckDB's vectorized substr). "Negative start clamps to 1 BEFORE
+    # the length window" holds only on the one DuckDB path which disagrees
+    # with its other three (see test_substr_constant_fold_divergence below).
+    # The rule is the WINDOW:
     # map a negative start end-relative, then intersect [pos, pos+len) with the
     # string -- so ('ab', -4, 2) is '' here, not 'ab'.
     duck_check(
@@ -399,7 +396,7 @@ def test_substr_negative_start_column_path_differential():
 
 # DuckDB's constant-fold substr disagrees with its own OPTIMIZED vectorized
 # path on negative starts, so pinning the vectorized path makes the
-# pure-literal spelling diverge. Measured 2026-08-17 across all four paths
+# pure-literal spelling diverge. Measured across all four paths
 # for `substr('hello', -10, 8)`:
 #
 #   optimizer ON,  literal args   'hel'
@@ -533,17 +530,15 @@ def test_static_only_backend_is_constant():
 
 
 # --------------------------------------------------------- M-boundary:
-# the generated row marshaller. These pin the adversarial-review fixes
-# (2026-07-26): the default boundary is the generated marshaller, the
+# the generated row marshaller. These pin that the default boundary is the
+# generated marshaller, the
 # generic baseline accepts the same inputs, and reentrancy degrades to the
 # generic path instead of erroring.
 
 
 def test_default_boundary_is_the_marshaller():
-    # MIGRATION-NOTE: output_model= (and the pydantic-validate semantics it
-    # pinned — coercion, defaults, field_validator) is deleted along with the
-    # pydantic surface; dict-out has no per-field custom-validation hook.
-    # The generated marshaller is now simply the unconditional default
+    # There is no output_model= and no per-field custom-validation hook on
+    # dict-out. The generated marshaller is the unconditional default
     # boundary (see test_generic_boundary_accepts_dict_rows for the only
     # other boundary, pinned by the SPECIALIZER_GENERIC_BOUNDARY env var).
     fn = DuckDBInferFn(
@@ -629,7 +624,7 @@ def test_star_over_joined_table_expands():
 
 
 # ------------------------------------------------- BETWEEN / IN desugars --
-# Measured DuckDB 1.5.5 truth tables (wave-1 pins).
+# Measured DuckDB 1.5.5 truth tables (pins-wave1).
 nan, inf = float("nan"), float("inf")
 
 
@@ -755,7 +750,7 @@ def test_in_strings_and_bools():
     )
 
 
-# ---------------------------------------------------- wave-1 math builtins --
+# ----------------------------------------------------------- math builtins --
 # Measured DuckDB 1.5.5 pins as oracle tests.
 
 
@@ -939,10 +934,10 @@ def test_sqrt_non_negative_domain():
 def duck_check_ulp(sql, row_schema, row_rows, max_ulp=1):
     """duck_check with a float ulp tolerance, POSITIONAL compare (no joins).
 
-    Exists for exactly one reason so far: DuckDB's own wheels disagree with
+    Exists for one reason: DuckDB's own wheels disagree with
     each other on cbrt by one ulp across platforms (Windows wheel matches
     Rust/ucrt bit-exactly; the Linux wheel's bundled std::cbrt is one ulp
-    off on e.g. cbrt(27)) — CI-discovered 2026-07-26. The oracle itself is
+    off on e.g. cbrt(27)). The oracle itself is
     platform-inconsistent here, so repr-exact parity is unpinnable.
     """
     got, want = _legs(sql, row_schema, row_rows, None)
@@ -1097,7 +1092,7 @@ def test_floor_ceil_int64_go_through_double():
     )
 
 
-# Shared constants for the wave-1 math oracle tests.
+# Shared constants for the math oracle tests.
 
 NAN = float("nan")
 INF = float("inf")
@@ -1197,8 +1192,8 @@ def test_pow_operator_rejects_cleanly():
         )
 
 
-# ---------------------------------------------------- wave-1 string search --
-# Contract pins measured against DuckDB 1.5.5 (2026-07-26). Every value below
+# ----------------------------------------------------------- string search --
+# Contract pins measured against DuckDB 1.5.5. Every value below
 # was probed through the vectorized path (table columns); literal-fold agreed
 # on every pair (0 divergences).
 
@@ -1469,8 +1464,7 @@ def test_alias_shadows_original_name():
             row_tables={"__THIS__": _row_schema({"a": "int"})},
             static_tables={},
         )
-    # t(y) column renaming serves since wave 5 (prefix rename, old name
-    # shadowed).
+    # t(y) column renaming serves (prefix rename, original name shadowed).
     duck_check("SELECT y + 1 AS p FROM __THIS__ t(y)", {"a": "int"}, [{"a": 4}])
     with pytest.raises(ValueError, match="does not exist"):
         DuckDBInferFn(
@@ -1482,7 +1476,7 @@ def test_alias_shadows_original_name():
 
 # ------------------------------------------------ LIKE / NOT LIKE / ILIKE --
 # Pinned via duck_check (engine vs live DuckDB 1.5.5); every SQL below was
-# validated against a native-table DuckDB oracle on 2026-07-26.
+# validated against a native-table DuckDB oracle.
 # NOT expressible here: the error pins (dangling escape with chars left, multi-byte
 # ESCAPE string) — those raise SyntaxException per-row; cover them with pytest.raises.
 
@@ -1723,7 +1717,7 @@ def test_like_dangling_escape_is_data_dependent():
 
 # BOOLEAN comparisons. DuckDB orders false < true, propagates NULL, and
 # compares a BOOLEAN against an integer by CAST(bool AS INTEGER) -- the
-# EXPLAIN shows `(CAST(a AS INTEGER) = i)` (measured 2026-09-26). Against a
+# EXPLAIN shows `(CAST(a AS INTEGER) = i)` (measured). Against a
 # DOUBLE column DuckDB refuses at bind, and so do we.
 _BOOLS = [
     {"a": True, "b": False, "i": 2},
@@ -1794,7 +1788,7 @@ def test_a_foldable_null_argument_makes_the_whole_call_null_differential():
 def test_a_constant_try_cast_folds_and_spares_its_sibling_differential():
     # TRY_CAST of a string literal is foldable: DuckDB evaluates it at bind,
     # and a NULL result folds the strict operator around it, so ln(-x) never
-    # runs (campaign seed 2253). A successful constant cast folds to its value.
+    # runs. A successful constant cast folds to its value.
     duck_check(
         "SELECT TRY_CAST('x' AS DOUBLE) * ln(-x) AS a, "
         "TRY_CAST('300' AS TINYINT) + CAST(ln(-x) AS INTEGER) AS b, "

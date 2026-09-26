@@ -1,5 +1,5 @@
 {
- "_pin": {"schema": 1, "subject": "fuzzer deep-run classes, seed 20260728 (overnight run, TASK-56 branch)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28", "evidences": ["claim: enumerated-quirks", "claim: evaluation-path-disagreement", "divergence: regex-size-guard", "packages/confit/docs/known-limitations.md", "packages/confit/docs/reports/pins-first-methodology.md", "packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md"]},
+ "_pin": {"schema": 1, "subject": "fuzzer deep-run classes, seed 20260728 (overnight run, TASK-56 branch)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28", "evidences": ["claim: enumerated-quirks", "claim: evaluation-path-disagreement", "divergence: regex-size-guard", "packages/confit/docs/known-limitations.md", "packages/confit/docs/reports/pins-first-methodology.md", "packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md", "packages/confit/src/specializer/frontend.rs"]},
  "topic": "fuzzer deep-run classes, seed 20260728 (overnight run, TASK-56 branch)",
  "duckdb_version": "1.5.5",
  "pins": [

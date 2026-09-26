@@ -1,8 +1,8 @@
 """Random tree ensembles, built straight into the engine's tree protocol.
 
-The campaign used to fit sklearn estimators and wrap them in
-sql_transform's TreeBasedTransform. Confit does not depend on sql_transform
-(the arrow runs the other way), so the fuzzer owns its models: random trees
+Confit does not depend on sql_transform (the arrow runs the other way), so
+the fuzzer owns its models rather than fitting sklearn estimators through
+sql_transform's TreeBasedTransform: random trees
 generated directly as the `(nodes, models, compare_grid)` tables the
 protocol takes, plus `__call__`, a pure-Python walk of those same tables
 that DuckDB calls as the UDF. The native kernel is then checked against that

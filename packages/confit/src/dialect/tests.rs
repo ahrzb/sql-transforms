@@ -46,7 +46,7 @@ fn lit(ty: DTy, lexeme: &str) -> Expr {
     }
 }
 
-/// A plan exercising every v0 node once.
+/// A plan exercising every node kind once.
 fn kitchen_sink() -> Rel {
     Rel::Project {
         input: Box::new(Rel::Filter {
@@ -212,7 +212,7 @@ fn derivation_follows_the_pins() {
         r: Box::new(i()),
     };
     assert_eq!(idiv.ty().unwrap(), DTy::I32);
-    // Named refusals, not guesses: decimal arithmetic (lattice phase 5)…
+    // Named refusals, not guesses: decimal arithmetic…
     let dec = Expr::Bin {
         op: BinOp::Add,
         l: Box::new(lit(DTy::Dec(3, 1), "1.5")),
@@ -370,8 +370,7 @@ fn printer_quotes_and_parenthesizes() {
 #[test]
 fn literal_typing_follows_the_lattice() {
     // typeof(1)=INTEGER, typeof(3000000000)=BIGINT, decimal by digits,
-    // exponent = DOUBLE (2026-08-11-duckdb-type-lattice-design.md +
-    // pins-dialect).
+    // exponent = DOUBLE (pins-dialect).
     let c = cat();
     let sql = "SELECT 1 AS a, 3000000000 AS b, 1.50 AS c, 0.1 AS d, 1e3 AS e FROM t";
     let p = super::duckdb::parse_sql(sql, &c).unwrap();
@@ -384,7 +383,7 @@ fn literal_typing_follows_the_lattice() {
     );
 }
 
-// --- Join (2026-08-13-dialect-join-node-design.md) --------------------------
+// --- Join -------------------------------------------------------------------
 
 fn cat2() -> Catalog {
     let t = |name: &str, cols: Vec<(&str, DTy)>| Table {
@@ -482,7 +481,7 @@ fn join_right_full_cross_comma_and_chains() {
 
 #[test]
 fn join_using_and_natural_follow_the_probe() {
-    // Measured 2026-08-13 (pins-dialect/joins.json, probe_joins.py): USING
+    // Measured (pins-dialect/joins.json, probe_joins.py): USING
     // merges the key column at its LEFT-side position; then the remaining
     // left columns, then the remaining right ones.
     let c = cat2();
@@ -549,11 +548,10 @@ fn join_named_refusals_and_bind_errors() {
 
 #[test]
 fn spark_refuses_scans_over_unbought_types() {
-    // The type table says HUGEINT -> Spark refuse: its only landing zone,
-    // DECIMAL(38,0), cannot even represent -2^127 (CI caught the L3 gate
-    // crashing on exactly that value once joins made such statements
-    // printable). A scan whose table carries an unbought type refuses at
-    // print time, by name — even when the query never touches the column.
+    // HUGEINT -> Spark refuses: its only landing zone, DECIMAL(38,0), cannot
+    // even represent -2^127. A scan whose table carries an unbought type
+    // refuses at print time, by name — even when the query never touches the
+    // column.
     let mut c = cat2();
     c.tables.push(Table {
         name: "th".into(),
@@ -606,7 +604,7 @@ fn join_prints_on_spark_with_portable_spellings() {
     );
 }
 
-// --- BigQuery printer (documented-semantics; phase-4 remote gate owed) ------
+// --- BigQuery printer (documented semantics, unprobed) ---------------------
 
 #[test]
 fn bigquery_prints_the_forced_spellings() {

@@ -1,9 +1,9 @@
 # Reference rationale and enforcement
 
 The concise oracle definition lives in [README.md](README.md). This chapter explains why
-that reference was chosen, how repository comparisons reach it, and where enforcement is
-still incomplete. It does not define an alternative configuration. Settled reference
-policy comes from the [oracle policy record](../decisions/oracle-policy.md).
+that reference was chosen and how repository comparisons reach it. It does not define an
+alternative configuration. Settled reference policy comes from the
+[oracle policy record](../decisions/oracle-policy.md).
 
 ## Why the optimizer is disabled
 
@@ -14,7 +14,7 @@ same query differently. Confit compiles against a schema and cannot reproduce th
 history.
 
 *Evidence:* `packages/confit/tests/known_divergences/test_trap_elision.py` and
-`packages/confit/docs/known-limitations.md:32-39`.
+`packages/confit/docs/known-limitations.md` (introduction).
 
 **claim: unoptimized-verifier.** Optimizer-off is also an upstream DuckDB verification
 leg. `PRAGMA enable_verification` registers an `UNOPTIMIZED` verifier and compares its
@@ -48,10 +48,9 @@ for `2147483647 + 1 ... LIMIT 0`, where optimizer-on can replace the plan with
 `EMPTY_RESULT`.
 
 *Evidence:* DuckDB v1.5.5
-`src/include/duckdb/common/enums/optimizer_type.hpp:16-50` and the sites above, inspected
-2026-08-25. The `confit/oracle.py` docstring and `known-limitations.md` carry this
-scope (**ticket: oracle-docstring-corrections**, done); see also
-**claim: phase-separated-probes**.
+`src/include/duckdb/common/enums/optimizer_type.hpp:16-50` and the sites above. The
+`confit/oracle.py` module docstring and `known-limitations.md` state this scope; see also
+**claim: phase-separated-probes** in [pins](06-pins.md).
 
 ## How comparison code reaches the reference
 
@@ -72,19 +71,15 @@ optimizer rather than two table histories.
 `fuzz.oracle._duck_run`. [Campaign verdicts](04-verdicts-agreement-abstention-refusal.md)
 define the consequence of comparing both readings.
 
-
 **claim: contract-surface-gap.** Ordinary DuckDB has the optimizer on. A case where
 confit agrees with the optimizer-off reference but differs from optimizer-on DuckDB is
 reported as `DIVERGE_OPT`, not accepted as agreement with both surfaces.
 
-*Enforced-by:* `fuzz.oracle.run_case`; `fuzz.runner.INTERESTING` is the intended findings
-membership.
-*Evidence:* emission is covered by
-`packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
-Findings membership is checked by what the report writes:
-`packages/confit/tests/test_fuzz_report.py::test_findings_and_coverage_are_what_the_contract_says`.
+*Enforced-by:* `fuzz.oracle.run_case`; `DIVERGE_OPT` is in `fuzz.runner.INTERESTING`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`
+and `packages/confit/tests/test_fuzz_report.py::test_findings_and_coverage_are_what_the_contract_says`.
 
-## Known identity-enforcement gaps
+## Reference identity
 
 **claim: oracle-version-constant.** `Oracle.VERSION` records `"1.5.5"`, and
 construction raises `RuntimeError` unless `duckdb.__version__` equals it. The root
@@ -104,56 +99,49 @@ Linux-measured DuckDB behavior carry `#[cfg(target_os = "linux")]`, and Python o
 `skipif(sys.platform != "linux")`; CI (`.github/workflows/ci.yml`) runs on
 `ubuntu-latest`.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#reference-and-comparison),
-owner ruling 2026-09-26.
+*Decision:* [oracle policy](../decisions/oracle-policy.md#reference-and-comparison).
 *Evidence:* `src/specializer/exec/tests.rs` (`pin_ssubstr_window_arithmetic`,
 `pin_ftoi_rounding_and_traps`, `pin_stoi_trims_whitespace_like_duckdb_cast`),
 `src/specializer/tests.rs::substr_window_arithmetic_via_sql`, and
 `tests/test_duckdb_interpreter.py::test_two_arg_substr_is_a_uint32_max_window_differential`.
 
-**claim: version-policy.** DuckDB 1.5.5 remains the reference. The reproducible
-oracle/test environment must pin that version exactly, and opening the oracle must
-assert `duckdb.__version__ == Oracle.VERSION`. Unrelated DuckDB consumers are not
-constrained by this rule. Leaving 1.5.5 is a separate reviewed reference change that
-moves `Oracle.VERSION` and the dev pin together; the generic re-recording tools in
-[version changes](09-version-bumps-and-mutability.md) remain proposals, not
-prerequisites adopted by this rule.
+**claim: version-policy.** DuckDB 1.5.5 is the reference. The reproducible
+oracle/test environment pins that version exactly, and opening the oracle asserts
+`duckdb.__version__ == Oracle.VERSION`. Unrelated DuckDB consumers are not
+constrained by this rule. Changing the reference version is a separate reviewed change
+that moves `Oracle.VERSION` and the dev pin together.
 
-**claim: one-door-bypass.** **[FACT, current implementation only]** The legacy
-static-only engine path is the comparison-path bypass: `eval_static_only` calls
-`duckdb.connect()` directly and folds with the optimizer on. The target now refuses
-queries that read no request table, but that removal is not implemented; the remaining
-path is **gap: static-only-fold**. Pin-capture scripts are a separate family described by
-**claim: capture-outside-the-oracle**.
+**claim: one-door-bypass.** The static-only engine path bypasses the oracle:
+`eval_static_only` in `packages/confit/src/duckdb/mod.rs` calls `duckdb.connect()`
+directly and evaluates, with the optimizer on, a query that reads no request table.
+The [goal](../goal.md#scope) places such queries outside the model. Pin-capture scripts
+are a separate family described by **claim: capture-outside-the-oracle** in
+[version changes](09-version-bumps-and-mutability.md).
 
-*Evidence:* `packages/confit/src/duckdb/mod.rs:1173-1203,1707-1743` and the
-[fold-retirement decision](../decisions/trustworthy-fold.md). The decision record is the
-sole history of alternatives considered for this fold.
+*Evidence:* `eval_static_only` and its caller in `packages/confit/src/duckdb/mod.rs`;
+the [fold decision](../decisions/trustworthy-fold.md).
 
 ## Nearby DuckDB uses with different contracts
 
 **claim: fit-serving-oracle.** `sql_transform`'s fit/serving checks are independent.
 Its projection path uses optimizer-on DuckDB with `SET threads = 1`; training round-trip
 and transformer parity are defined in
-[success measures](../specs/success-measures.md). Fit reproducibility is not a v0
-contract.
+[success measures](../specs/success-measures.md). Fit reproducibility is not part of
+the contract.
 
-*Evidence:* `packages/sql-transform/sql_transform/_projection.py:188-189,410` and P11,
-P16 in `packages/confit/docs/properties.md`.
+*Evidence:* `packages/sql-transform/sql_transform/_projection.py` and P11, P16 in
+`packages/confit/docs/properties.md`.
 
 **claim: dialect-gate-oracle.** Dialect gates have their own pinned targets. Spark L3
 uses ANSI mode, UTC, `local[1]`, and `pins-dialect/spark-ansi.json`; it compares names
-and row multisets. Exact comparison is separate from its reserved float-accumulation
-epsilon tier. BigQuery skips loudly without credentials and is recorded as
-unversionable. The Spark support floor is a ratchet, and the corpus gate uses the same
-mechanism with `MATCH_FLOOR = 547`. Both follow claim: stable-corpus-ratchet in
-[campaign validity](10-campaign-validity-and-blind-spots.md): no unexplained decrease in
-support. A floor is a regression threshold, not a fresh measurement or a universal
-compatibility claim.
+and row multisets exactly. BigQuery skips loudly without credentials. The Spark support
+floor (`SPARK_MATCH_FLOOR`) and the corpus gate's `MATCH_FLOOR` are ratchets that follow
+claim: stable-corpus-ratchet in [campaign validity](10-campaign-validity-and-blind-spots.md):
+no unexplained decrease in support. A floor is a regression threshold, not a fresh
+measurement or a universal compatibility claim.
 
-*Evidence:* `packages/confit/tests/test_dialect_cross_engine_gate.py:1-31`,
-`packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md:32-36,244-248`,
-and `packages/confit/tests/test_corpus_replay.py:18-24,39-47,205-209`.
+*Evidence:* `packages/confit/tests/test_dialect_cross_engine_gate.py` module docstring
+and `SPARK_MATCH_FLOOR`; `packages/confit/tests/test_corpus_replay.py` (`MATCH_FLOOR`).
 
 DuckDB also supplies the parser/printer used by `sql_transform`; serialized shapes are
 pinned per DuckDB version in `sql_transform/model/_shapes.json`. That role does not make

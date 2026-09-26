@@ -1,4 +1,4 @@
-"""Wave-3 math tail — oracle pins vs DuckDB 1.5.5.
+"""Math tail — oracle pins vs DuckDB 1.5.5.
 
 Family: add/subtract/multiply/divide/mod aliases, the // operator, fdiv,
 fmod, nextafter. Measured pins live in
@@ -275,7 +275,7 @@ def test_computed_nan_bits_match_oracle(oracle):
     # NaN comes from hardware arithmetic (0*inf under SSE) and is fff8…
     # on every x86 platform. The %-by-zero NaN comes from LIBM fmod and
     # its SIGN is platform-dependent (Windows ucrt 7ff8…, Linux glibc
-    # fff8… — CI-discovered, the cbrt situation again): both engines use
+    # fff8…, like cbrt): both engines use
     # the platform libm, so the pin is ENGINE == ORACLE bit agreement,
     # not a constant.
     def bits(v: float) -> str:

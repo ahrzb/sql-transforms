@@ -1,7 +1,7 @@
 //! The closure-compiled interpreter backend — the oracle. One pre-traversal
 //! of a VERIFIED program builds a vector of instruction closures per block;
 //! execution is plain dispatch. Never optimized: correctness and coverage
-//! over speed, and it stays that way (design doc §7).
+//! over speed.
 //!
 //! # What this module is, and is not
 //!
@@ -25,7 +25,7 @@
 //!
 //! What it is NOT is a coverage fallback for instructions Cranelift cannot
 //! lower: that dispatch is an exhaustive `match` over `Inst`, so a new
-//! instruction cannot compile without a Cranelift arm. Measured 2026-08-14:
+//! instruction cannot compile without a Cranelift arm. Measured:
 //! of 137 fuzz-generated programs that built, 137 chose Cranelift.
 //!
 //! # Semantics pins (measured against DuckDB 1.5.5)
@@ -101,7 +101,7 @@ impl std::fmt::Display for CompileError {
     }
 }
 
-/// Compile every [`ir::ReSpec`] in the program with the wave-B builder
+/// Compile every [`ir::ReSpec`] in the program with the pinned builder
 /// settings (octal(true), default Unicode — see retrans.rs).
 pub(super) fn compile_regexes(p: &Program) -> Result<Vec<std::rc::Rc<regex::Regex>>, String> {
     p.regexes
@@ -131,7 +131,7 @@ struct Ctx<'a> {
     statics: &'a [PreparedStatic],
     /// Extern (UDF) implementations, one per program `extern @N`.
     externs: &'a [super::ExternImpl],
-    /// Stage-B self-join: the batch's rows flattened like multimap values
+    /// Multiplicity self-join: the batch's rows flattened like multimap values
     /// (nullable -> validity+payload). Empty unless the program declares a
     /// batchmap static.
     batch_rows: &'a [Vec<ScalarVal>],
@@ -150,13 +150,13 @@ pub(super) enum PreparedStatic {
     Map {
         entries: Vec<(Vec<KeyBits>, Vec<ScalarVal>)>,
     },
-    /// Stage-B: sorted by key with DUPLICATES ADJACENT; probe.range finds
+    /// Multiplicity: sorted by key with DUPLICATES ADJACENT; probe.range finds
     /// the equal-key run, probe.read indexes into it. Keyless multimaps
     /// (cross/inequality joins) range over the whole table.
     MultiMap {
         entries: Vec<(Vec<KeyBits>, Vec<ScalarVal>)>,
     },
-    /// Stage-B self-join: the rows come from the BATCH, flattened per call
+    /// Multiplicity self-join: the rows come from the BATCH, flattened per call
     /// in `run` (see `build_batch_rows`) — nothing is prepared here.
     BatchMap,
     /// A fitted ensemble; the packed layout is the kernel's own.
@@ -206,7 +206,7 @@ pub struct InterpFn {
     in_decl: Vec<(Ty, bool)>,
     out_decl: Vec<Ty>,
     /// True when a batchmap static exists: `run` flattens the batch's
-    /// rows before the row loop (stage-B self-joins).
+    /// rows before the row loop (multiplicity self-joins).
     has_batch_map: bool,
 }
 
@@ -245,8 +245,8 @@ pub fn compile_ext(
 
     // Register slots are assigned densely in definition order, decoupling
     // the frame size from raw value ids — a verified program with sparse ids
-    // (they are legal) must not force a huge register vector (adversarial
-    // finding: Value(u32::MAX) would have demanded a 64 GiB frame).
+    // (they are legal) must not force a huge register vector
+    // (Value(u32::MAX) would demand a 64 GiB frame).
     let mut slots: HashMap<u32, u32> = HashMap::new();
     for b in &p.blocks {
         for (v, _) in &b.params {
@@ -1446,7 +1446,7 @@ fn compile_inst(
         Inst::StoreOpt { col, flag, val } => {
             let (col, flag, val) = (col as usize, sl(slots, flag), sl(slots, val));
             // Spec: on a false flag the stored payload is the type default —
-            // never the live register (adversarial finding).
+            // never the live register.
             let default = default_reg(p.out_cols[col].ty.ty);
             Box::new(move |ctx| {
                 let valid = as_i1(ctx.regs[flag]);

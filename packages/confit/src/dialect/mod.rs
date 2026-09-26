@@ -1,12 +1,11 @@
-//! The dialect logical plan — the hub of Query ⇄ Plan conversion
-//! (packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md).
+//! The dialect logical plan — the hub of Query ⇄ Plan conversion.
 //!
 //! A bound, typed, order-free relational plan whose semantics are DuckDB's,
-//! as measured (design decision D1; pins in specs/pins-dialect/). Dialect
+//! as measured (pins in docs/specs/pins-dialect/). Dialect
 //! frontends parse SQL into it; dialect printers emit SQL out of it, forcing
 //! the plan's explicit semantics in the target's syntax. This module is the
 //! plan CORE: nodes, the type lattice, type derivation, the verifier, and
-//! the canonical plan text. Frontends and printers are siblings, per phase.
+//! the canonical plan text. Frontends and printers are siblings.
 //!
 //! The module carries the `specializer/ir` recipe's three mandatory
 //! properties:
@@ -29,11 +28,9 @@
 //! [`DialectError::Text`] sits outside that contract: only hand-written or
 //! printer-drifted canonical plan text can raise it.
 //!
-//! v0 deliberate coarseness, each a named refusal, none a silent guess:
-//! decimal arithmetic result scales are not derived (lattice-spec phase 5
-//! owns the measurements), f32 arithmetic is not derived, expression
-//! nullability is not tracked (columns carry it; expressions will when
-//! confit lowers from this plan).
+//! Deliberate coarseness, each a named refusal, none a silent guess:
+//! decimal arithmetic result scales are not derived, f32 arithmetic is not
+//! derived, expression nullability is not tracked (columns carry it).
 
 pub mod bigquery;
 pub mod duckdb;

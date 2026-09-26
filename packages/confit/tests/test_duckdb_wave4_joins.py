@@ -1,4 +1,4 @@
-"""Wave-4 join forms vs the duckdb oracle.
+"""Join forms vs the duckdb oracle.
 
 Pins: packages/confit/docs/specs/2026-07-26-wave4-join-pins.md — USING
 desugar (merged column = left value at the left position), residual ON

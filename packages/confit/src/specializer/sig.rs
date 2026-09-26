@@ -31,8 +31,8 @@ pub enum Ret {
     /// (operators: + - * // % and the bitwise family).
     Widen,
     /// Full numeric unification incl. f64 — coalesce/least/greatest's
-    /// rule. Those stay CUSTOM_NAMES today (guarded lazy binding), so no
-    /// row constructs this yet; the width branch's Unify helper will.
+    /// rule. Those are CUSTOM_NAMES (guarded lazy binding), so no row
+    /// constructs this.
     #[allow(dead_code)]
     Unify,
 }
@@ -88,7 +88,7 @@ const NUM2: &[ArgTy] = &[ArgTy::Num, ArgTy::Num];
 /// The signature table: `(aliases, Sig)`. Every alias is a
 /// `BUILTIN_NAMES` entry; together with [`CUSTOM_NAMES`] the aliases
 /// partition the catalogue exactly (enforced by the totality test below).
-/// The rows ARE the audited catalogue (fleet audit 2026-08-13).
+/// The rows ARE the audited catalogue.
 pub const SIGS: &[(&[&str], Sig)] = &[
     (
         &["upper", "lower", "ucase", "lcase"],
@@ -98,7 +98,7 @@ pub const SIGS: &[(&[&str], Sig)] = &[
         &["length", "len", "char_length", "character_length", "strlen"],
         whole(STR1, Ret::Fixed(Ty::I64)),
     ),
-    // audit 2026-08-13: DuckDB's parser refuses the bare 2-arg call form
+    // DuckDB's parser refuses the bare 2-arg call form
     // position(h, n) (only POSITION(n IN h) parses); binding that spelling
     // here is laxer than the oracle — preserved.
     (
@@ -116,7 +116,7 @@ pub const SIGS: &[(&[&str], Sig)] = &[
         ],
         whole(NUM1, Ret::Fixed(Ty::F64)),
     ),
-    // audit 2026-08-13: the whole-call-NULL short-circuit runs before the
+    // The whole-call-NULL short-circuit runs before the
     // per-arg type checks, so pow(s, NULL) binds NULL::DOUBLE here where
     // DuckDB refuses the VARCHAR sibling — looser than the oracle for this
     // math2 family (pow/power, fdiv, fmod, nextafter; log's 2-arg form
@@ -136,7 +136,7 @@ pub const SIGS: &[(&[&str], Sig)] = &[
     ),
     (&["jaccard"], whole(STR2, Ret::Fixed(Ty::F64))),
     (&["replace", "translate"], whole(STR3, Ret::Fixed(Ty::Str))),
-    // m-8 phase 2: a codepoint is INTEGER on DuckDB, all three names.
+    // A codepoint is INTEGER on DuckDB, all three names.
     (&["unicode", "ord", "ascii"], whole(STR1, Ret::Fixed(Ty::I32))),
     (&["bit_length"], whole(STR1, Ret::Fixed(Ty::I64))),
     (&["strip_accents"], whole(STR1, Ret::Fixed(Ty::Str))),
@@ -181,7 +181,7 @@ pub const CUSTOM_NAMES: &[&str] = &[
     // arity-range rows (1-or-2 / 2-to-4 args)
     "ltrim", "rtrim", "log", "round", "trunc",
     // variadic desugars and unification (`if` is the ternary CASE, `ifnull`
-    // 2-arg coalesce: both desugar in the frontend, 2026-08-24)
+    // 2-arg coalesce: both desugar in the frontend)
     "concat", "concat_ws", "coalesce", "least", "greatest", "if", "ifnull",
     // cmp-delegated comparability, Arg(0) result
     "nullif",
@@ -199,7 +199,7 @@ pub const CUSTOM_NAMES: &[&str] = &[
 ];
 
 /// The single place a bound argument type meets its declared [`ArgTy`].
-/// m-8 phase 2: `Int` is any width of DuckDB's integer lattice — narrow
+/// `Int` is any width of DuckDB's integer lattice — narrow
 /// widths upcast implicitly into a wider slot, never the reverse.
 pub fn arg_ok(want: ArgTy, got: Ty) -> bool {
     match want {
@@ -218,8 +218,7 @@ pub fn lookup(name: &str) -> Option<&'static Sig> {
 
 /// Operator result-type rules: the RULE lookup consumed by
 /// `numeric_promote` and `cmp`; all machinery (constant folds/refusals,
-/// NULL-op-NULL, zero-divisor guards) stays with the operators. m-8
-/// phase 5 turns DECIMAL scale propagation into more data here.
+/// NULL-op-NULL, zero-divisor guards) stays with the operators.
 pub const OPS: &[(&str, Ret)] = &[
     ("+", Ret::Widen),
     ("-", Ret::Widen),

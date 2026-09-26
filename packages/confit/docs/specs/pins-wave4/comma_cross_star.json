@@ -1,5 +1,5 @@
 {
- "_pin": {"schema": 1, "subject": "comma_cross_star", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-26", "evidences": ["packages/confit/docs/specs/2026-07-26-wave4-join-pins.md"]},
+ "_pin": {"schema": 1, "subject": "comma_cross_star", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-26", "evidences": ["packages/confit/docs/specs/2026-07-26-wave4-join-pins.md", "packages/confit/src/specializer/frontend.rs"]},
  "family": "comma_cross_star",
  "duckdb_version": "1.5.5",
  "decisions": [

@@ -1,8 +1,7 @@
 //! End-to-end specializer tests: SQL text -> prepare -> interpreter oracle.
-//! Sections run in the order the features landed and each banner names its
-//! own pin source; the first section's expected values follow the DuckDB
-//! pins measured 2026-07-26 (`/` is float division, `%` stays integral,
-//! overflow traps).
+//! Each section banner names its own pin source; the first section's
+//! expected values follow the measured DuckDB pins (`/` is float division,
+//! `%` stays integral, overflow traps).
 
 use super::exec::interp::compile;
 use super::exec::testutil::{
@@ -38,7 +37,7 @@ fn stat(name: &str, spec: &[(&str, Ty, bool)]) -> StaticTable {
 }
 
 /// The build-side key / value SEGMENT paths of one join recipe. The paths
-/// now ride inside `StaticKey` / `StaticVal` beside each column's slot
+/// ride inside `StaticKey` / `StaticVal` beside each column's slot
 /// layout, and these tests only ever ask about the paths.
 fn key_paths(s: &super::StaticSpec) -> Vec<Vec<String>> {
     s.keys.iter().map(|k| k.path.clone()).collect()
@@ -48,7 +47,7 @@ fn val_paths(s: &super::StaticSpec) -> Vec<Vec<String>> {
     s.vals.iter().map(|v| v.path.clone()).collect()
 }
 
-/// The lane-encoding RFC's collision table at the unit level — a struct leaf
+/// The lane-encoding collision case at the unit level — a struct leaf
 /// and a literal column SHARE the dotted display spelling and stay
 /// different lanes, because resolution walks the tree while the name is
 /// display-only.
@@ -134,8 +133,8 @@ fn an_unqualified_head_reaches_a_static_struct_leaf() {
 
 /// The boundary contract behind the LAZY minting decision. A
 /// struct-node PRESENCE lane costs ~25 ns/row at the marshalling boundary,
-/// so a query that does not key a join on the struct must marshal exactly
-/// the lanes it marshalled before; only the keyed query pays. Asserted on
+/// so a query that does not key a join on the struct must marshal no
+/// presence lane; only the keyed query pays. Asserted on
 /// `program.in_cols` itself rather than by timing.
 #[test]
 fn presence_lanes_are_minted_lazily() {
@@ -477,7 +476,7 @@ fn cast_matrix() {
     // ' 5' trims (DuckDB CAST); -2.5 rounds half-to-EVEN to -2; 2 -> true,
     // 0 -> false; TRY_CAST failures -> NULL.
     //
-    // The -2 is measured, and the earlier -3 here was measured WRONG: a bare
+    // The -2 is measured: a bare
     // `CAST(-2.5 AS BIGINT)` in DuckDB is a DECIMAL cast (half away from
     // zero, -3), while `f` is a DOUBLE column and DOUBLE->BIGINT is
     // half-to-even (-2). Check DOUBLE casts with a DOUBLE, never a literal.
@@ -625,9 +624,8 @@ fn star_expands_in_declared_order_with_exclude() {
 
 #[test]
 fn star_over_joined_table_rejects_by_name() {
-    // Wave-4: joined-table stars expand (key columns reconstruct from the
-    // dynamic side); only DUPLICATE output names still reject — DuckDB
-    // emits them verbatim, the typed output model cannot hold them.
+    // Joined-table stars expand (key columns reconstruct from the dynamic
+    // side).
     let schema = cols(&[("a", Ty::I64, false)]);
     let st = stat("dim", &[("id", Ty::I64, false), ("v", Ty::F64, false)]);
     for (sql, want) in [
@@ -646,7 +644,7 @@ fn star_over_joined_table_rejects_by_name() {
         let names: Vec<&str> = p.out_cols.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, want, "'{sql}'");
     }
-    // A star producing duplicate names now renames per the wave-5 dup-name
+    // A star producing duplicate names renames per the wave-5 dup-name
     // contract (DuckDB's own boundary rename). (The bare `id = dim.id`
     // spelling is an ambiguity error in DuckDB too — qualify.)
     let clash = cols(&[("id", Ty::I64, false)]);
@@ -680,20 +678,20 @@ fn unsupported_constructs_are_named_cleanly() {
             "join type",
         ),
         // Bare aggregates parse as plain function calls; they reject via the
-        // function arm until the catalogue distinguishes aggregation.
+        // function arm.
         ("SELECT sum(a) FROM __THIS__", "aggregate function sum"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
-        // Scalar regexp serves since wave B; list-valued forms stay named.
+        // Scalar regexp serves; list-valued forms refuse by name.
         (
             "SELECT regexp_extract_all('x', 'y') FROM __THIS__",
             "list-valued",
         ),
         ("SELECT jaro_similarity('x', 'y') FROM __THIS__", "function"),
-        // Bare COLUMNS expands since wave B; expression forms stay named.
+        // Bare COLUMNS expands; expression forms refuse by name.
         ("SELECT COLUMNS('a') + 1 FROM __THIS__", "COLUMNS"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
-        // Bare NULL serves since m-8 phase 2 (int32, DuckDB's SQLNULL
-        // surface); only the all-NULL family forms stay refused.
+        // Bare NULL serves (int32, DuckDB's SQLNULL surface); only the
+        // all-NULL family forms refuse.
         ("SELECT coalesce(NULL, NULL) FROM __THIS__", "NULL"),
         ("SELECT a FROM other_table", "must be the dynamic table"),
     ] {
@@ -854,9 +852,9 @@ fn join_key_promotion_float_dyn_against_int_col() {
     assert_eq!(got, rows(&[&["20"]]));
 }
 
-/// `promote_key`'s F64-probe arm once admitted only I64, so an
-/// int8/int16/int32 static key refused the WHOLE join (severity 4 — DuckDB
-/// serves every one of them, comparing in double space).
+/// `promote_key`'s F64-probe arm admits every integer width: an
+/// int8/int16/int32 static key refusing the WHOLE join would be severity 4
+/// (DuckDB serves every one of them, comparing in double space).
 #[test]
 fn promote_key_accepts_every_integer_width_under_an_f64_probe() {
     let schema = cols(&[("k", Ty::F64, false)]);
@@ -992,7 +990,7 @@ fn join_programs_are_canonical_ir() {
 
 #[test]
 fn join_shape_errors() {
-    // Wave-4: both former rejections now prepare — the key column
+    // Both shapes prepare — the key column
     // reconstructs from the dynamic side, and all-key (semi) joins probe
     // with zero value lanes.
     let schema = cols(&[("k", Ty::I64, false)]);
@@ -1017,7 +1015,7 @@ fn join_shape_errors() {
 }
 
 // ------------------------------------------------------- params-join wiring
-// (DRAFT-22 step 3): IS NOT DISTINCT FROM join keys — NULL is an ordinary
+// IS NOT DISTINCT FROM join keys — NULL is an ordinary
 // key value, encoded as a (validity i1, masked payload) key PAIR on both
 // sides — and the keyless always-true LEFT JOIN against a one-row static.
 
@@ -1152,7 +1150,7 @@ fn keyless_join_two_row_build_refuses() {
 
 #[test]
 fn indf_and_keyless_joins_are_map_shape_provable() {
-    // The serving_sql shape (DRAFT-22): both param joins are LEFT, so the
+    // The serving_sql shape: both param joins are LEFT, so the
     // exactly-one-row proof holds and shape='map' builds.
     let schema = cols(&[("k", Ty::I64, true)]);
     let dim = stat("dim", &[("id", Ty::I64, true), ("v", Ty::I64, true)]);
@@ -1243,7 +1241,7 @@ fn indf_join_programs_are_canonical_ir() {
 }
 
 // ------------------------------------------------------------ UDF externs
-// (DRAFT-22 step 2): declared UDFs bind as extern calls; unknown functions
+// Declared UDFs bind as extern calls; unknown functions
 // keep the named refusal; width-k calls are bare-item-only and expand to a
 // whole-validity lane plus k component lanes for the output boundary.
 
@@ -1528,7 +1526,7 @@ fn compare_grid_selects_the_integer_conversion() {
 ///
 /// It must be `itof.f32`, not a plain `itof`: a tree feature rounds through
 /// f32 ONCE, the way sklearn narrows an integer feature array. A
-/// plain `itof` here would be the two-rounding bug back again, so this
+/// plain `itof` here would round twice, so this
 /// helper deliberately does not accept one.
 fn feature_position_of_itof(text: &str) -> usize {
     let itof = text
@@ -1604,7 +1602,7 @@ fn tree_call_refuses_by_name() {
     let one = [model("trees", 1)];
     let cases: &[(&str, &str, &[super::plan::ModelTable])] = &[
         (
-            "not in the v0 catalogue",
+            "not in the builtin catalogue",
             "SELECT nope(id, price) FROM __THIS__",
             &one,
         ),
@@ -1645,7 +1643,7 @@ fn tree_call_refuses_by_name() {
 
 #[test]
 fn udf_call_serves_the_marginalizer_shape() {
-    // The DRAFT-22 serving_sql shape: params join by INDF, the transformer
+    // The serving_sql shape: params join by INDF, the transformer
     // call takes the joined instance id plus a row feature (i64 age
     // promoted to the declared f64 like DuckDB's implicit cast).
     let schema = cols(&[("g", Ty::Str, true), ("age", Ty::I64, true)]);
@@ -1900,7 +1898,7 @@ fn field_access_on_a_width1_named_extern_binds_lane_zero() {
 fn named_extern_mid_expression_refuses() {
     // A named extern is struct-valued — width-1 included: a MID-EXPRESSION
     // position refuses (DuckDB's struct registration would binder-error on
-    // the arithmetic). Bare items take the struct boundary (slice 5).
+    // the arithmetic). Bare items take the struct boundary.
     let schema = cols(&[("x", Ty::F64, true)]);
     let err = prep_udfs(
         "SELECT (sc(x) + 1.0) AS u FROM __THIS__",
@@ -1917,7 +1915,7 @@ fn named_extern_mid_expression_refuses() {
 
 #[test]
 fn named_extern_bare_item_expands_to_struct_lanes() {
-    // Slice 5 (DRAFT-25): a NAMED extern as a bare item serves its whole
+    // A NAMED extern as a bare item serves its whole
     // output struct — whole-validity lane + one lane per declared field,
     // the names riding the WideOut for the boundary to key the struct.
     let schema = cols(&[("x", Ty::F64, true)]);
@@ -1977,7 +1975,7 @@ fn named_extern_bare_item_expands_to_struct_lanes() {
 
 #[test]
 fn struct_pack_item_is_a_struct_output() {
-    // θ export (slice 6): a struct_pack item takes the wide-lane boundary
+    // θ export: a struct_pack item takes the wide-lane boundary
     // — one validity lane plus a component lane per named field. Guarded
     // by CASE WHEN g IS NULL THEN NULL, the guard IS the validity lane, so
     // an unseen group's handle is wholly NULL (measured against DuckDB).
@@ -2235,9 +2233,9 @@ fn constant_arithmetic_folds_at_prepare() {
 fn dominating_constant_keeps_the_dynamic_side() {
     // fold() must not rewrite `false AND <dyn>` to false: the dynamic side
     // may trap and folding it away would change behavior. The dynamic trap
-    // here is an i64 overflow reachable only through the COLUMN — the
-    // earlier `a % 0` spelling stopped serving the purpose once constant
-    // folding legitimately reduced it (rem-by-zero is NULL on both engines,
+    // here is an i64 overflow reachable only through the COLUMN — an
+    // `a % 0` spelling would not serve, since constant folding
+    // legitimately reduces it (rem-by-zero is NULL on both engines,
     // never a trap, so `false AND NULL` folding to false IS DuckDB's
     // answer).
     let schema = cols(&[("a", Ty::I64, false)]);
@@ -2358,7 +2356,7 @@ fn abs_min_traps_like_duckdb() {
 
 #[test]
 fn int_rem_by_zero_is_null_not_error() {
-    // DuckDB pin (2026-07-26): 5 % 0 is NULL. MIN % -1 still traps.
+    // DuckDB pin: 5 % 0 is NULL. MIN % -1 traps.
     let schema = cols(&[("a", Ty::I64, false), ("b", Ty::I64, false)]);
     let got = run_sql(
         "SELECT a % b AS r FROM __THIS__",
@@ -2467,13 +2465,13 @@ fn builtin_programs_are_canonical_ir() {
     );
 }
 
-// ------------------------------------------------- adversarial-fleet fixes:
-// divergences found by the 6-agent differential probe (2026-07-26).
+// ------------------------------------------------ differential divergences:
+// cases found by differential probing against DuckDB.
 
 #[test]
 fn null_divisor_rem_is_null_not_trap() {
-    // The `b = 0` guard alone is NULL for a NULL divisor, which fell through
-    // to irem on the garbage zero payload. IS NULL now shields it.
+    // The `b = 0` guard alone is NULL for a NULL divisor, which would fall
+    // through to irem on the garbage zero payload; IS NULL shields it.
     let schema = cols(&[("a", Ty::I64, true), ("b", Ty::I64, true)]);
     let got = run_sql(
         "SELECT a % b AS r FROM __THIS__",
@@ -3748,7 +3746,7 @@ fn nested_struct_resolution_matches_pins() {
 
 #[test]
 fn many_shape_dup_key_joins_fan_out() {
-    // Stage-B loop lowering (pins-stageB): per-pair emission in probe
+    // Multiplicity loop lowering (pins-stageB): per-pair emission in probe
     // order outer / build INSERTION order inner; LEFT null-extends
     // zero-match rows (NULL keys and residual-filters-all included);
     // WHERE composes per emitted candidate, null-extension included.
@@ -3836,7 +3834,7 @@ fn many_shape_dup_key_joins_fan_out() {
         Ok(_) => panic!("dup keys under the default shape must error"),
     };
     assert!(e.contains("duplicate map key"), "{e}");
-    // Multi-join under 'many' is the named stage-B restriction.
+    // Multi-join under 'many' is a named restriction.
     let dim_b = stat("d", &[("id", Ty::I64, false), ("v", Ty::I64, false)]);
     let dim2 = stat("d2", &[("id", Ty::I64, false), ("w", Ty::I64, false)]);
     let e = match super::prepare_opaque(
@@ -3927,7 +3925,7 @@ fn many_shape_keyless_and_inequality_joins() {
 
 #[test]
 fn many_shape_self_joins() {
-    // Stage-B self-joins: the batch is BOTH sides — a keyless batchmap
+    // Multiplicity self-joins: the batch is BOTH sides — a keyless batchmap
     // built per call, the whole ON as residual (cross-then-filter is
     // bit-identical under multiplicity; pins-stageB).
     let schema = cols(&[("i", Ty::I64, false), ("j", Ty::I64, false)]);
@@ -4070,7 +4068,7 @@ fn a_decimal_key_against_an_int_probe_keeps_the_int_key_lane() {
 }
 
 /// The one key shape that refuses: the CAPPED comparison width, where
-/// DuckDB's own integer cast can fail per row (source item 6).
+/// DuckDB's own integer cast can fail per row.
 #[test]
 fn a_wide_scale_decimal_key_against_an_int_probe_refuses_by_name() {
     let t = stat(

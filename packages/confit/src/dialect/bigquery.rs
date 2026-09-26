@@ -1,25 +1,23 @@
 //! The BigQuery printer: plan → GoogleSQL, forcing the plan's DuckDB-pinned
-//! semantics in BigQuery's syntax (design D1/D3).
+//! semantics in BigQuery's syntax.
 //!
 //! STATUS: documented-semantics, unprobed. Every spelling below follows
 //! BigQuery's published GoogleSQL reference; none has run against the real
-//! service yet — that is the design's phase-4 remote gate, still owed
-//! (tests/test_dialect_cross_engine_gate.py carries the credential-gated
-//! seam). Until it runs, the refusal set stays conservative: anything whose
+//! service (tests/test_dialect_cross_engine_gate.py carries the
+//! credential-gated seam). The refusal set is conservative: anything whose
 //! BigQuery behavior could diverge from the pinned DuckDB semantics in a
 //! way documentation cannot settle refuses by name. There is no BigQuery
 //! frontend; this dialect is print-only (the pushdown direction).
 //!
-//! The load-bearing decisions, each traceable to the design's type table
-//! or a pin:
+//! The load-bearing choices, each traceable to documented semantics or a
+//! pin:
 //!
 //! * **Narrow-int arithmetic refuses.** BigQuery has only INT64; DuckDB's
 //!   i8/i16/i32 operators trap at their own width (pinned error class), and
 //!   widening erases the trap threshold — a value-vs-error divergence, not
 //!   an ε. INT64 arithmetic is fine: both engines error on 64-bit overflow.
 //!   Narrow-int columns may still be selected, compared, filtered — no trap
-//!   exists on those paths. Guard expressions via `ERROR()` are the named
-//!   phase-4 upgrade path.
+//!   exists on those paths.
 //! * **`/` prints as `IEEE_DIVIDE`** over FLOAT64-cast operands: DuckDB `/`
 //!   is IEEE double division INCLUDING zero divisors (1/0 = inf, 0/0 =
 //!   NaN — review-confirmed), and BigQuery's bare `/` errors there while
@@ -36,13 +34,12 @@
 //!   prints a CASE on IS_NAN reproducing the total order.
 //! * **CAST pairs are an allow-list.** DECIMAL→INT64 rounds half-away on
 //!   both engines (documented) and prints bare; FLOAT64→INT64 rounds
-//!   half-even in DuckDB but half-away in BigQuery and REFUSES until a
-//!   forcing lands; string sources refuse (parse domains differ).
-//! * **Known unforced divergence, phase 4:** FLOAT64 `+ - *` that overflow
+//!   half-even in DuckDB but half-away in BigQuery and REFUSES; string
+//!   sources refuse (parse domains differ).
+//! * **Known unforced divergence:** FLOAT64 `+ - *` that overflow
 //!   a finite operand pair to non-finite return inf in DuckDB but error in
 //!   BigQuery. No cheap post-hoc guard exists (the operation itself
-//!   errors); magnitude pre-guards via `ERROR()` are the named upgrade.
-//!   Until then this divergence exists only beyond ±1.8e308 intermediate
+//!   errors). This divergence exists only beyond ±1.8e308 intermediate
 //!   results and the module documents rather than hides it.
 //! * **Decimal literals print typed** (`NUMERIC '1.5'` / `BIGNUMERIC`):
 //!   a bare decimal-pointed literal is FLOAT64 in BigQuery but DECIMAL(p,s)
@@ -65,9 +62,8 @@ pub fn print_sql(rel: &Rel, cat: &Catalog) -> Result<String, DialectError> {
 
 struct BigQuery;
 
-/// The type's BigQuery landing zone (design table, "to pin by probe"):
-/// used for CAST targets and typed literals. Refusals are the design's
-/// rows, verbatim.
+/// The type's BigQuery landing zone (documented semantics, unprobed):
+/// used for CAST targets and typed literals.
 fn bq_name(ty: &DTy) -> Result<String, DialectError> {
     Ok(match ty {
         DTy::Bool => "BOOL".into(),
@@ -326,8 +322,8 @@ fn nan_forced_compare(op: BinOp, lt: &DTy, rt: &DTy, ls: &str, rs: &str) -> Stri
 
 /// CAST pairs the BigQuery printer has bought. DECIMAL→INT64 rounds
 /// half-away on both engines (documented) and prints bare; FLOAT64→int
-/// rounds half-even in DuckDB but half-away in BigQuery — REFUSED until a
-/// forcing lands; string sources refuse (parse domains differ, and
+/// rounds half-even in DuckDB but half-away in BigQuery — REFUSED; string
+/// sources refuse (parse domains differ, and
 /// SAFE_CAST/TRY_CAST NULL domains differ with them).
 fn bq_cast(strict: bool, src: &DTy, target: &DTy, inner: String) -> Result<String, DialectError> {
     let kw = if strict { "CAST" } else { "SAFE_CAST" };

@@ -3,10 +3,9 @@
 //! Ingest walks pyarrow buffers directly (address + size via the Python
 //! buffer API — no arrow-rs dependency) into the engine's `ColData` lanes;
 //! emit builds `pa.Array.from_buffers` per OUTPUT COLUMN from rust-built
-//! buffers. Zero per-value Python objects on either side — the measured
-//! ~1.4 µs/row of boxing at 31-column width simply disappears. v1 copies
-//! buffers (the proposal's copy-first recommendation); zero-copy lanes are
-//! a measured follow-up, not assumed.
+//! buffers. Zero per-value Python objects on either side, which avoids the
+//! measured ~1.4 µs/row of boxing at 31-column width. Buffers are copied;
+//! there are no zero-copy lanes.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
@@ -485,7 +484,7 @@ fn strings(table: &Bound<'_, PyAny>, what: &str, name: &str) -> PyResult<Vec<Str
 
 /// The `models=` boundary: a node table and a header table in, a validated
 /// [`TreeEnsemble`] out. Nothing but Arrow crosses — no estimator object, no
-/// pickle, no live model reference. Column layout is the spec's:
+/// pickle, no live model reference. Column layout:
 ///
 /// ```text
 /// nodes:  model_id | tree_id | node_id | feature (-1 = leaf) | threshold
@@ -657,8 +656,8 @@ pub fn emit(
                 let lane_ty = |t: crate::specializer::ir::Ty| match t {
                     crate::specializer::ir::Ty::I1 => pa.call_method0("bool_"),
                     // struct_pack fields are arbitrary expressions, so the
-                    // width is real here (m-8 phase-2 campaign, 423 schema
-                    // findings: ord() inside a struct is int32 on DuckDB).
+                    // width is real here (ord() inside a struct is int32 on
+                    // DuckDB).
                     // wide_py refuses out-of-range children by name before
                     // pa.array ever sees the values.
                     crate::specializer::ir::Ty::I8 => pa.call_method0("int8"),
@@ -670,7 +669,7 @@ pub fn emit(
                     // below for why.
                     crate::specializer::ir::Ty::Str => pa.call_method0("string"),
                     // A struct_pack / UDF child over a DECIMAL refuses at
-                    // bind (m-8 lattice phase 5).
+                    // bind.
                     crate::specializer::ir::Ty::Dec(..) => {
                         unreachable!("a wide field child is never a decimal")
                     }
@@ -728,8 +727,7 @@ pub fn emit(
                         let ty_name = super::arrow_ty_name(ty);
                         err(format!(
                             "infer_arrow: column '{}' value {x} is outside its \
-                             {ty_name} range — the {ty_name} overflow trap lands \
-                             with m-8 phase 3",
+                             {ty_name} range",
                             c.name,
                         ))
                     };

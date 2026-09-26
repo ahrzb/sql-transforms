@@ -1,6 +1,6 @@
 """Model-table structure refusals.
 
-Split out of test_known_divergences.py 2026-08-16; see README.md for what
+See README.md for what
 belongs here (kept behaviour + its ground) versus in
 ../test_open_divergences.py (behaviour we intend to change).
 """
@@ -15,26 +15,19 @@ from _helpers import (
 
 # ------------------------------------------ model-table structure checks --
 #
-# DISPUTED by the sweep's own verifiers — one refuter broke it, one did not.
-# ADJUDICATED by hand 2026-08-08, then FIXED. Two separate things.
-#
-# The spec's bullet was wrong and is corrected: it read "a cycle: a node
-# reachable from two parents, or unreachable from its tree's root", and a node
-# with two parents is NOT a cycle. Children are already forced to strictly
+# A node with two parents is NOT a cycle. Children are forced to strictly
 # follow their parent, which rules out cycles by construction and is what makes
 # traversal terminate without a depth counter. Under that rule a shared child
 # is a decision DAG — the walk from the root still takes exactly one path, and
-# it scores exactly what the table names. It was never a wrong-answer bug.
+# it scores exactly what the table names. It is not a wrong-answer bug.
 #
-# It is refused anyway, because the validator was half-checking tree-ness.
-# Given children that strictly follow their parent, a table is a tree exactly
-# when every non-root node has ONE parent: one parent each makes the parent
+# It is refused anyway, because the validator checks full tree-ness. Given
+# children that strictly follow their parent, a table is a tree exactly when
+# every non-root node has ONE parent: one parent each makes the parent
 # function total, and the ordering makes walking parents strictly decrease, so
-# every node has a unique path back to node 0. The validator already kept a
-# saturating parent count (it called it `reachable`) and rejected the ZERO
-# case; rejecting zero but allowing two was an arbitrary place to stop. The
-# other end is the same array, so full tree-ness costs one line and no extra
-# pass.
+# every node has a unique path back to node 0. The validator keeps a
+# saturating parent count (`reachable`) and rejects both the ZERO and the
+# two-or-more case from the same array, with no extra pass.
 
 
 def test_a_shared_child_is_refused_as_not_a_tree():

@@ -1,19 +1,17 @@
 """Dialect L3 gate: printed queries EXECUTE equivalently on the target engine.
 
-Law L3 of 2026-08-13-dialect-logical-plan-design.md, executed live for
-Spark: for every corpus statement the frontend admits and the Spark
-printer prints, build the EQUIVALENT tables on both engines (DuckDB's data
-shipped to Spark through Arrow, so widths and nullability survive), run
+Law L3, executed live for Spark: for every corpus statement the frontend
+admits and the Spark printer prints, build the EQUIVALENT tables on both
+engines (DuckDB's data shipped to Spark through Arrow, so widths and
+nullability survive), run
 the original SQL on DuckDB and the printed SQL on Spark under the PINNED
 config (ansi=true, UTC, local[1] — pins-dialect/spark-ansi.json), and
-compare column names plus the row multiset (plan semantics are multisets,
-design D4).
+compare column names plus the row multiset (plan semantics are multisets).
 
-The v0 plan surface has no aggregates or windows, so there is NO epsilon
-tier yet: every admitted statement is exact-tier and the comparison is
-value equality. When float-accumulation aggregates land (phase 2+), their
-outputs move to the tolerance comparison the design defines — extend
-`rows_of`, do not weaken the exact tier.
+The plan surface has no aggregates or windows, so there is NO epsilon
+tier: every admitted statement is exact-tier and the comparison is value
+equality. A float-accumulation output belongs in a separate tolerance
+comparison in `rows_of`, not in a weakened exact tier.
 
 Outcomes, three, as everywhere:
 
@@ -24,10 +22,9 @@ Outcomes, three, as everywhere:
                        the gate requires zero
 
 BigQuery runs through the same seam when credentials exist; without them
-its leg SKIPS LOUDLY (design phase 4 — the remote gate is owed, not
-forgotten). Set CONFIT_BIGQUERY_PROJECT to arm it.
+its leg SKIPS LOUDLY. Set CONFIT_BIGQUERY_PROJECT to arm it.
 
-The match floor is the measured count at introduction — raise it when the
+The match floor is a measured count — raise it when the
 surface grows, never lower it.
 """
 
@@ -92,9 +89,9 @@ def run_duckdb(con, sql):
 @pytest.fixture(scope="module")
 def spark():
     # The Spark leg is a REQUIRED gate: without pyspark it fails loudly
-    # (review-confirmed blind spot: importorskip let every Spark-side
-    # divergence pass green). CONFIT_ALLOW_NO_SPARK=1 is the explicit,
-    # visible opt-out for environments that cannot run a JVM.
+    # (importorskip would let every Spark-side divergence pass green).
+    # CONFIT_ALLOW_NO_SPARK=1 is the explicit, visible opt-out for
+    # environments that cannot run a JVM.
     try:
         from pyspark.sql import SparkSession
     except ImportError:
@@ -174,7 +171,7 @@ def test_spark_execution_equivalence(spark):
     assert counts["match"] >= SPARK_MATCH_FLOOR, summary
 
 
-# Review-confirmed divergences, forced in the printers - each scenario is
+# Measured divergences, forced in the printers - each scenario is
 # data the mined corpus never contains, executed on both engines per
 # commit. "Both engines error" is a matching outcome (same trap class);
 # a value on one side and an error on the other is the divergence the
@@ -284,13 +281,9 @@ def test_spark_synthetic_divergences(spark):
 
 @pytest.mark.skipif(
     not os.environ.get("CONFIT_BIGQUERY_PROJECT"),
-    reason="design phase 4: the BigQuery leg of the L3 gate needs credentials "
+    reason="the BigQuery leg of the L3 gate needs credentials "
     "(set CONFIT_BIGQUERY_PROJECT and provide ADC) - the printer ships "
     "documented-semantics until this runs",
 )
 def test_bigquery_execution_equivalence():
-    raise NotImplementedError(
-        "phase 4: wire the same seam as the Spark leg through the BigQuery "
-        "client - ship tables via load_table_from_dataframe, run printed "
-        "SQL, compare rows_of() outputs"
-    )
+    raise NotImplementedError("the BigQuery execution leg is not implemented")

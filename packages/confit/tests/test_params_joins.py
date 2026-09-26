@@ -1,4 +1,4 @@
-"""Params-join wiring vs the duckdb oracle (DRAFT-22 step 3).
+"""Params-join wiring vs the duckdb oracle.
 
 The marginalizer's serving_sql joins params tables with
 `IS NOT DISTINCT FROM` keys (NULL joins NULL — one bucket) and, for
@@ -105,8 +105,8 @@ def test_keyless_one_row_left_join():
 
 
 def test_serving_sql_shape_end_to_end():
-    # The marginalizer's exact aliased shape, minus the UDF call (step 2 of
-    # DRAFT-22 wires the extern; the join layer is identical).
+    # The marginalizer's exact aliased shape, minus the UDF call (the join
+    # layer is identical with it).
     params = static(
         {"country": "str?", "__cf_est": "int?"},
         [{"country": "de", "__cf_est": 0}, {"country": None, "__cf_est": 1}],

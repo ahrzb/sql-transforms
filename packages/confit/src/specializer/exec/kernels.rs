@@ -100,8 +100,8 @@ pub(super) fn call_extern(
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => ScalarVal::I64(0),
         Ty::F64 => ScalarVal::F64(0.0),
         Ty::Str => ScalarVal::Str(String::new()),
-        // A UDF taking or returning a DECIMAL refuses at bind (m-8 lattice
-        // phase 5), so no Dec ever reaches an extern boundary.
+        // A UDF taking or returning a DECIMAL refuses at bind, so no Dec
+        // ever reaches an extern boundary.
         Ty::Dec(dp, ds) => ScalarVal::Dec(0, dp, ds),
     };
     match (imp.fun)(args).map_err(Trap)? {
@@ -136,10 +136,9 @@ pub(super) fn call_extern(
     }
 }
 
-/// DuckDB's substr window arithmetic (measured 1.5.5) — the VECTORIZED
-/// path, which columns (and therefore every real query and the mined
-/// corpus) take; DuckDB's own constant-fold path disagrees with it on
-/// negative starts (measured 2026-07-26, see the builtin-pins spec).
+/// DuckDB's substr window arithmetic (measured 1.5.5). On negative starts
+/// DuckDB's own paths disagree with each other; this follows three of the
+/// four, including its constant folder (see the body).
 /// Codepoints, NOT grapheme clusters (substr slices inside ZWJ emoji).
 /// 1-based positions: a negative start counts from the end
 /// (`rs = n + start + 1`, NOT clamped -- see the body) while start 0 stays
@@ -155,17 +154,16 @@ pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> std::ops::
     // of 'hel'. The intersection below is what clamps, exactly as it does for
     // the `start = 0` case which shares this rule.
     //
-    // This used to clamp (`.max(1)`), pinned as builtin-pins §4 "negative start
-    // clamps to 1 BEFORE the length window". That pin measured the one DuckDB
-    // path that disagrees with its own other three. Measured 2026-08-17,
-    // `substr(s, -10, 8)` over 'hello':
+    // builtin-pins §4 ("negative start clamps to 1 BEFORE the length window")
+    // measured the one DuckDB path that disagrees with its own other three.
+    // Measured, `substr(s, -10, 8)` over 'hello':
     //
     //   optimizer ON,  literal args   'hel'
     //   optimizer ON,  column args    'hello'   <- the outlier, and the pin
     //   optimizer OFF, literal args   'hel'
     //   optimizer OFF, column args    'hel'
     //
-    // so the clamp reproduced a DuckDB self-inconsistency. The window rule
+    // so a clamp would reproduce a DuckDB self-inconsistency. The window rule
     // agrees with three of its four paths, including its own constant folder.
     let rs = if start < 0 { n + start + 1 } else { start };
     let (lo, hi) = match len {
@@ -415,8 +413,8 @@ pub(super) fn duck_trunc(x: f64) -> Result<f64, Trap> {
     Ok(x.trunc())
 }
 
-/// The wave-1 f64 unaries as shared fn pointers (Iabs/Fabs/Fneg/Fround keep
-/// their original arms — each is one machine instruction, not a call).
+/// The f64 math unaries as shared fn pointers (Iabs/Fabs/Fneg/Fround have
+/// their own arms — each is one machine instruction, not a call).
 pub(super) fn math1_fn(op: NumOp1) -> fn(f64) -> Result<f64, Trap> {
     match op {
         NumOp1::Ln => duck_ln,
@@ -966,13 +964,13 @@ pub(super) fn overflow_msg(op: BinOp, x: i64, y: i64) -> String {
     }
 }
 
-/// DuckDB's abs(i64::MIN) trap text, verbatim (measured 2026-07-26 — no
+/// DuckDB's abs(i64::MIN) trap text, verbatim (measured — no
 /// trailing '!', unlike the binary-op overflow family).
 pub(super) fn abs_overflow_msg(x: i64) -> String {
     format!("Overflow on abs({x})")
 }
 
-/// Wave-1 string search (pins: 1-based CODEPOINT positions, empty needle
+/// String search (wave-1 pins: 1-based CODEPOINT positions, empty needle
 /// matches everything, byte-wise comparison, zero unicode intelligence).
 pub(super) fn str_find(s: &str, n: &str) -> i64 {
     if n.is_empty() {
@@ -1143,9 +1141,9 @@ pub(in crate::specializer) fn duck_shr(x: i64, y: i64) -> i64 {
 
 /// DuckDB's VARCHAR -> integer grammar: a transliteration of
 /// `integer_cast_operator.hpp` (TryIntegerCast + IntegerDecimalCastOperation)
-/// from the v1.5.5 source, re-measured against the live oracle 2026-08-24
-/// when the first cut's invented bounds (u128 accumulator, 39-digit cap,
-/// +-10000 exponent) turned out observable.
+/// from the v1.5.5 source, measured against the live oracle (invented
+/// bounds such as a u128 accumulator, a 39-digit cap or a +-10000 exponent
+/// are observable).
 /// The shape that matters:
 ///
 ///   - space, tab, \n, \v, \f, \r trim at the FRONT; trailing spaces are the
@@ -1477,11 +1475,11 @@ pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
-    /// Source item 5, pinned: `TryCastDecimalToFloatingPoint`
+    /// Pinned: `TryCastDecimalToFloatingPoint`
     /// (cast_operators.cpp:2908-2924) is NOT a correctly-rounded
     /// conversion. Past 2^53 the unscaled integer goes down the div/mod
     /// path, and the two answers DIFFER on real payloads -- measured live
-    /// on DuckDB 1.5.5, optimizer off, 2026-08-25:
+    /// on DuckDB 1.5.5, optimizer off:
     ///
     ///   CAST(CAST('9007199254740993.5' AS DECIMAL(38,1)) AS DOUBLE)
     ///     DuckDB            9007199254740992.0

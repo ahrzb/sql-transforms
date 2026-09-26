@@ -23,8 +23,8 @@
 //! paths that end in `trap`.
 //!
 //! `|out| == |in|` therefore holds exactly when `skip` is unreachable, which
-//! is statically known — the design doc's "filter is the one allowed
-//! divergence and must declare it".
+//! is statically known: filter is the one allowed divergence and must
+//! declare it.
 //!
 //! # The null lane
 //!
@@ -45,8 +45,8 @@
 //! defines it (after its definition) or received as a block parameter.
 //! Cross-block direct uses are illegal — everything flowing between blocks
 //! rides on branch arguments. This removes the need for dominance analysis in
-//! the verifier; the CFG must also be acyclic in v0 (no operator we lower
-//! needs a loop yet; lift when one does, e.g. QuickScorer).
+//! the verifier. Cycles are legal only as multiplicity loops (see
+//! [`verify`]).
 //!
 //! # Statics
 //!
@@ -179,7 +179,7 @@ mod tests;
 /// | `Dec(p,s)` | `decimal128(p,s)` | `DECIMAL(p,s)` |
 ///
 /// A SQL type with no Arrow spelling never needs one as long as it stays
-/// internal: measured 2026-08-15, `('12:00:00+02'::TIMETZ)::VARCHAR` serves
+/// internal: measured, `('12:00:00+02'::TIMETZ)::VARCHAR` serves
 /// the offset back intact, because the loss is in Arrow *materialization*,
 /// not in the type. So an internal-only type can stay virtual — a
 /// compile-time tag with no lane — and only a type that reaches the
@@ -293,11 +293,11 @@ pub struct Col {
 pub enum StaticTy {
     Scalar(ColTy),
     Map { keys: Vec<Ty>, values: Vec<Ty> },
-    /// Stage-B (shape='many'): a map whose keys may REPEAT — probed as a
+    /// Multiplicity (shape='many'): a map whose keys may REPEAT — probed as a
     /// flat row range (ProbeRange -> [start, end), ProbeRead per index).
     /// Zero keys = the keyless one-bucket join (cross/inequality).
     MultiMap { keys: Vec<Ty>, values: Vec<Ty> },
-    /// Stage-B self-join: the BATCH as build side, assembled per call by
+    /// Multiplicity self-join: the BATCH as build side, assembled per call by
     /// the executor (always keyless; the ON is the join's residual).
     /// `values` = the batch's columns flattened like multimap values
     /// (nullable -> validity+payload pairs).
@@ -329,12 +329,12 @@ pub struct BlockId(pub u32);
 /// no op in this IR inspects one, and the libm or hardware that produced it
 /// picked it on its own, so carrying it would pin a platform's choice.
 ///
-/// `F64` equality follows that line exactly, no more and no less: bitwise —
-/// so `-0.0 != 0.0` survives a round-trip — EXCEPT that two NaNs of the same
-/// sign compare equal whatever their payloads. Demanding the payload would
-/// fail `parse(print(p)) == p` for non-canonical ones (found by adversarial
-/// fuzzing); ignoring the sign would let `parse(print(p)) == p` hold across
-/// a printer that silently dropped it, which is the round trip's whole job.
+/// `F64` equality follows that line exactly, no more and no less: bitwise — so
+/// `-0.0 != 0.0` survives a round-trip — EXCEPT that two NaNs of the same sign
+/// compare equal whatever their payloads. Demanding the payload would fail
+/// `parse(print(p)) == p` for non-canonical ones; ignoring the sign would let
+/// `parse(print(p)) == p` hold across a printer that silently dropped it, which
+/// is the round trip's whole job.
 #[derive(Clone, Debug)]
 pub enum Lit {
     I1(bool),
@@ -422,7 +422,7 @@ pub enum BinOp {
 }
 
 impl BinOp {
-    /// (operand type, result type). Uniform for all v0 binary ops.
+    /// (operand type, result type). Uniform for all binary ops.
     pub fn sig(self) -> (Ty, Ty) {
         match self {
             BinOp::Iadd
@@ -512,7 +512,8 @@ pub enum RoundMode {
 }
 
 /// One-operand string ops (Str -> Str). Case mapping is SIMPLE (per-codepoint
-/// 1:1) to track DuckDB/utf8proc — see the 2026-07-26 builtin-pins spec.
+/// 1:1) to track DuckDB/utf8proc — see
+/// docs/specs/2026-07-26-stretch4-builtin-pins.md.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StrOp1 {
     Upper,
@@ -537,9 +538,9 @@ impl StrOp1 {
     }
 }
 
-/// Two-string ops, NULL-strict via lanes. The wave-1 search ops are TOTAL
-/// with 1-based CODEPOINT positions and empty-needle-matches-everything;
-/// the wave-3 similarity ops are raw UTF-8 BYTE-based (all of them —
+/// Two-string ops, NULL-strict via lanes. The search ops are TOTAL with
+/// 1-based CODEPOINT positions and empty-needle-matches-everything; the
+/// similarity ops are raw UTF-8 BYTE-based (all of them —
 /// measured), and `Jaccard`/`Hamming` TRAP (empty inputs / byte-length
 /// mismatch, DuckDB messages verbatim).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -660,7 +661,7 @@ pub enum NumOp1 {
     Fabs,
     Fneg,
     Fround,
-    // Wave-1 math unaries (pins: packages/confit/docs/specs/2026-07-26-
+    // Math unaries (pins: packages/confit/docs/specs/2026-07-26-
     // wave1-builtin-pins.md). Ln/Log2/Log10 trap on x <= 0; Fsqrt traps on
     // negatives; Fsin/Fcos/Ftan trap on +-inf (NaN passes through
     // bit-exactly); Fexp/Fcbrt/Ffloor/Fceil/Ftrunc are total.
@@ -679,7 +680,7 @@ pub enum NumOp1 {
 }
 
 impl NumOp1 {
-    /// Operand type == result type for all v0 numeric unaries.
+    /// Operand type == result type for all numeric unaries.
     pub fn sig(self) -> Ty {
         match self {
             NumOp1::Iabs => Ty::I64,
@@ -807,7 +808,7 @@ pub enum Inst {
         a: Value,
         b: Value,
     },
-    /// Wave-1 string search / wave-3 similarity — `a` is the haystack
+    /// String search / similarity — `a` is the haystack
     /// (resp. first argument), `b` the needle (second argument).
     Str2 {
         op: StrOp2,
@@ -918,7 +919,7 @@ pub enum Inst {
         start: Value,
         len: Option<Value>,
     },
-    /// `iabs` / `fabs` / `fneg` / `fround` and the wave-1 math unaries —
+    /// `iabs` / `fabs` / `fneg` / `fround` and the math unaries —
     /// numeric unaries, operand ty == result ty.
     Num1 {
         op: NumOp1,
@@ -1049,7 +1050,7 @@ pub enum Term {
     },
     /// Output row complete; advance both cursors.
     Emit,
-    /// Stage-B: emit the completed output row AND continue at `to` (the
+    /// Multiplicity: emit the completed output row AND continue at `to` (the
     /// multiplicity loop's back-edge). The stored-output state resets —
     /// blocks after an EmitTo store the NEXT output row.
     EmitTo {
@@ -1074,7 +1075,7 @@ pub struct Block {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Program {
     pub statics: Vec<StaticTy>,
-    /// Prepare-time-compiled regexes (wave-B): patterns already translated
+    /// Prepare-time-compiled regexes: patterns already translated
     /// to rust-regex syntax (retrans.rs), full-match forms pre-anchored.
     pub regexes: Vec<ReSpec>,
     /// Declared opaque extern (UDF) signatures, addressed by `ecall @N`.
@@ -1087,7 +1088,7 @@ pub struct Program {
 }
 
 /// One declared extern: a scalar UDF in Confit's type vocabulary. Every
-/// param and return is nullable by contract (DRAFT-22), so nullability is
+/// param and return is nullable by contract, so nullability is
 /// not spelled here — the `ecall` operand layout carries the flags.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ExternSpec {

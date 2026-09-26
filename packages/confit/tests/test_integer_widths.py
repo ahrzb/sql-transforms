@@ -1,11 +1,10 @@
-"""The integer-widths feature (m-8 phase 2).
+"""The integer-widths feature.
 
-DuckDB types in a width lattice (TINYINT..HUGEINT); this engine typed every
-integer BIGINT, so infer_arrow's schema diverged wherever DuckDB says
-INTEGER (literals, ascii, CASE over literals, ::INTEGER casts). Phase 2
-types the widths for real in the frontend, erased to the i64 lane at
-compute; the width is observable exactly where DuckDB's is — the trap
-threshold (phase 3) and the Arrow schema (here).
+DuckDB types in a width lattice (TINYINT..HUGEINT), and infer_arrow's schema
+must say INTEGER wherever DuckDB does (literals, ascii, CASE over literals,
+::INTEGER casts). The frontend types the widths for real, erased to the i64
+lane at compute; the width is observable exactly where DuckDB's is — the
+trap threshold and the Arrow schema.
 
 Every schema expectation below is the live oracle, never a hardcoded width:
 the assert is `ours == DuckDB's`, so a wrong row here is impossible.
@@ -27,7 +26,7 @@ IN_SCHEMA = pa.schema(
 )
 ROWS = [{"k": 0, "s": "ab"}, {"k": 2, "s": "Z"}, {"k": 30000, "s": "!"}]
 
-# The measured catalogue (spec 2026-08-11 + probe 2026-08-13). Mix of rows
+# The measured catalogue. Mix of rows
 # that must NARROW (int32/int16/int8) and controls that must stay int64 or
 # double — the oracle decides which is which.
 CATALOGUE = [
@@ -82,7 +81,7 @@ CATALOGUE = [
     "SELECT -(CAST(NULL AS INTEGER)) AS o FROM __THIS__",
     # The -2147483648 corners: the only value that is BIGINT-typed as a
     # spelling yet fits int32, so DuckDB's value-fits promotion is visible
-    # on it alone (9-probe matrix 2026-08-13, all binder-level).
+    # on it alone (all binder-level).
     "SELECT unicode(s) % -2147483648 AS o FROM __THIS__",
     "SELECT (2147483647 % -2147483648) AS o FROM __THIS__",
     "SELECT ((49 % 9007199254740991) % unicode(s)) AS o FROM __THIS__",
@@ -98,8 +97,8 @@ CATALOGUE = [
     "SELECT CASE WHEN NULL THEN -2147483648 ELSE (14 - -13) END AS o FROM __THIS__",
     "SELECT CASE WHEN NULL THEN (14 - -13) ELSE -2147483648 END AS o FROM __THIS__",
     "SELECT CASE WHEN k > 1 THEN unicode(s) ELSE -2147483648 END AS o FROM __THIS__",
-    # Adversarial-fleet pins (2026-08-13): the CASE fold seeds from the
-    # ELSE; hints are syntactic-only; SQLNULL propagates through nullif.
+    # Adversarial pins: the CASE fold seeds from the ELSE; hints are
+    # syntactic-only; SQLNULL propagates through nullif.
     "SELECT CASE WHEN k > 1 THEN -2147483648 WHEN k > 0 THEN (2147483647 + -13)"
     " END AS o FROM __THIS__",
     "SELECT coalesce(CASE WHEN k > 9 THEN 5 ELSE 44 END, 9007199254740993)"
@@ -111,7 +110,7 @@ CATALOGUE = [
     "SELECT nullif(NULL, 1) * CAST(1 AS SMALLINT) AS o FROM __THIS__",
     "SELECT CAST(TRUE AS INTEGER) % coalesce(-2147483648, 7) AS o FROM __THIS__",
     # DECIMAL literal (+|-|*|%) bare NULL folds to SQLNULL = INTEGER on
-    # DuckDB; division stays DOUBLE (campaign seed 617691).
+    # DuckDB; division stays DOUBLE.
     "SELECT (-2.681 + NULL) AS o FROM __THIS__",
     "SELECT 2.5 * NULL AS o FROM __THIS__",
     "SELECT NULL - 2.681 AS o FROM __THIS__",
@@ -150,7 +149,7 @@ def test_output_width_matches_duckdb(sql):
 
 def test_try_cast_to_integer_nulls_out_of_range():
     """TRY_CAST out of the target's range is NULL on DuckDB — not a trap, so
-    it is phase-2 value semantics, not phase-3 trap work."""
+    it is value semantics, not trap semantics."""
     sql = "SELECT TRY_CAST(k AS INTEGER) AS o FROM __THIS__"
     big = [{"k": 9007199254740993, "s": "x"}, {"k": 5, "s": "y"}]
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
@@ -159,9 +158,8 @@ def test_try_cast_to_integer_nulls_out_of_range():
 
 
 def test_row_and_arrow_boundaries_agree_on_narrow_widths():
-    """Fleet 2026-08-13: infer() served a value infer_arrow refused. The
-    width contract holds on EVERY boundary — both refuse an out-of-range
-    narrow value (DuckDB traps the same input; our trap is phase 3)."""
+    """The width contract holds on EVERY boundary — both refuse an
+    out-of-range narrow value (DuckDB traps the same input)."""
     sql = "SELECT CAST(k AS TINYINT) AS o FROM __THIS__"
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
     ok = [{"k": 5, "s": "a"}]
@@ -178,8 +176,7 @@ def test_struct_children_hold_narrow_widths_on_both_boundaries():
     """A struct_pack child is an arbitrary expression, so it can carry a
     narrow width (int32 here via ::INTEGER). The width contract holds for
     struct children exactly as for scalar columns: BOTH boundaries refuse
-    an out-of-range value by name (the row path served it silently; the
-    arrow path refused with pyarrow's wording instead of ours)."""
+    an out-of-range value by name, in our wording rather than pyarrow's."""
     sql = "SELECT struct_pack(v := CAST(k AS INTEGER)) AS o FROM __THIS__"
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
     ok = [{"k": 5, "s": "a"}]
@@ -194,7 +191,7 @@ def test_struct_children_hold_narrow_widths_on_both_boundaries():
 
 def test_unary_plus_refuses_non_numerics():
     """DuckDB's + is a real unary function over numerics; +'a' is a binder
-    error there (fleet 2026-08-13 — we built and served it)."""
+    error there, and here."""
     for sql in [
         "SELECT + s AS o FROM __THIS__",
         "SELECT +('a') AS o FROM __THIS__",
@@ -204,20 +201,19 @@ def test_unary_plus_refuses_non_numerics():
 
 
 def test_out_of_range_dynamic_int32_refuses_at_emit_not_wraps():
-    """CAST(k AS INTEGER) on an out-of-range k TRAPS on DuckDB. Our dynamic
-    trap is phase 3; until then the int32 EMIT must refuse by name rather
-    than wrap — every input this refuses is an input DuckDB errors on too."""
+    """CAST(k AS INTEGER) on an out-of-range k TRAPS on DuckDB, so ours must
+    fail by name rather than wrap — every input this refuses is an input
+    DuckDB errors on too."""
     sql = "SELECT CAST(k AS INTEGER) AS o FROM __THIS__"
     fn = DuckDBInferFn(sql, row_tables={"__THIS__": IN_SCHEMA}, static_tables={})
     with pytest.raises(Exception, match="int32|INT32|INTEGER"):
         fn.infer_arrow(pa.Table.from_pylist([{"k": 9007199254740993, "s": "x"}]))
 
 
-# ---- Decided divergences, pinned against the live oracle ----
-# (AmirHossein 2026-08-13: "do what duckdb does" — bug-for-bug.)
+# ---- Decided behaviour, pinned against the live oracle ----
+# "Do what duckdb does" — bug-for-bug.
 
 
-# Decided 2026-08-13 (spec 2026-08-13-bind-fold-alignment):
 # DuckDB executes a pure (side_effects=False, its default) UDF at BIND when
 # a fold context asks for its constant-args value, honoring special null
 # handling — the real result is used, never assumed. A whole-call-None
@@ -227,7 +223,7 @@ def test_out_of_range_dynamic_int32_refuses_at_emit_not_wraps():
 
 
 class _StructUdf:
-    """The seed-601418 family: None on any NULL arg, else a real struct."""
+    """None on any NULL arg, else a real struct."""
 
     name = "udf9"
     takes = pa.schema([("a", pa.int64()), ("b", pa.int64())])
@@ -331,11 +327,11 @@ def test_side_effects_udf_is_never_executed_at_build():
 
 
 def test_raising_pure_udf_keeps_the_runtime_call():
-    """DuckDB's fold SWALLOWS a raising callable UNIFORMLY (review
-    2026-08-13: DESCRIBE succeeds typed by the declaration, a zero-row
-    batch answers empty, the error fires at RUN with rows — an earlier
-    'errors at bind' probe was FROM-less eager evaluation, not the
-    binder). So: build succeeds, schema stays int64, rows raise at run."""
+    """DuckDB's fold SWALLOWS a raising callable UNIFORMLY (DESCRIBE
+    succeeds typed by the declaration, a zero-row batch answers empty, the
+    error fires at RUN with rows; a FROM-less query errors at bind only
+    because it is eager evaluation, not the binder). So: build succeeds,
+    schema stays int64, rows raise at run."""
 
     class Boom(_StructUdf):
         def __call__(self, a, b):
@@ -364,7 +360,7 @@ def test_raising_pure_udf_keeps_the_runtime_call():
 ADOPTION_BATTERY = [
     # SQLNULL re-promotes by signature on DuckDB: these are BIGINT there,
     # NOT int32 — the fold result must ride the adoptable-NULL channel
-    # (review 2026-08-13; `abs(CAST(NULL AS INTEGER))` is the int32
+    # (`abs(CAST(NULL AS INTEGER))` is the int32
     # control, a genuinely TYPED null).
     "SELECT abs((udf9(1, NULL)).f1) AS o FROM __THIS__",
     "SELECT - ((udf9(1, NULL)).f1) AS o FROM __THIS__",
@@ -440,7 +436,7 @@ def test_pure_scalar_udf_value_under_concat_bakes_once():
     compare.assert_rows(compare.rows(ours), duck_rows, ordered=True, ctx=sql)
 
 
-# Measured 2026-08-19: the bind-fold finishes what DuckDB's does
+# Measured: the bind-fold finishes what DuckDB's does
 # on these spellings — Abs and upper/lower fold over literals (same
 # kernels as the runtime), and a pure extern bakes under a stack of
 # unary wrappers, so the || SQLNULL collapse sees through upper(us9(..)).
@@ -458,7 +454,7 @@ def test_bind_fold_composition_gaps(sql):
     assert ours.schema == duck.schema, f"{sql}: {ours.schema} != {duck.schema}"
 
 
-# Decided 2026-08-13: || with an operand that FOLDS to NULL is an SQLNULL
+# || with an operand that FOLDS to NULL is an SQLNULL
 # constant on DuckDB — int32 at the boundary, the column side
 # notwithstanding (|| propagates NULL to every row). Concat-specific:
 # +, LIKE, unary minus and function calls keep their promoted type, and
@@ -630,14 +626,14 @@ def test_a_left_miss_on_the_key_is_still_null(oracle):
 # when projected, is read as a real probe VALUE lane (its own declared type,
 # its own real values) and never rebuilt from the comparison.
 #
-# Measured 2026-08-25 against optimizer-off DuckDB, static {2**53, 2**53+1}
+# Measured against optimizer-off DuckDB, static {2**53, 2**53+1}
 # (both float() to 9007199254740992.0), probe 9007199254740992.0:
 #
 #   SELECT s.c0, s.v   ->  (9007199254740993, 71), (9007199254740992, 70)
 #
 # i.e. TWO output rows, each carrying its OWN i64 — the fan-out our 'many'
-# shape already produces, and the duplicate-key refusal the unique shapes
-# already give. Only the projection was ever wrong.
+# shape produces, and the duplicate-key refusal the unique shapes give. Only
+# the projection needs the value lane.
 _P53 = 9007199254740992  # 2**53
 _P53_1 = 9007199254740993  # 2**53+1, float() == float(_P53)
 _P53_2 = 9007199254740994  # 2**53+2, exactly representable
@@ -666,7 +662,7 @@ def _double_probe_duck(sql, static, ddl="k DOUBLE", probe=((float(_P53),),)):
 
 
 def test_a_double_probe_against_an_integer_key_serves_the_static_value():
-    """AC #4, the rewrite: the pairing that used to refuse now serves."""
+    """A DOUBLE probe against an INTEGER static key serves."""
     static = pa.table({"c0": pa.array([5], pa.int64()), "v": pa.array([7], pa.int64())})
     sql = "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0"
     want = _double_probe_duck(sql, static, probe=((5.0,),))
@@ -684,7 +680,7 @@ def test_a_double_probe_key_serves_the_i64_its_double_cannot_name():
     """THE regression test: one static row, so no multiplicity is involved —
     only whether the projected key is the REAL i64 or the probe's double read
     back. The oracle says 9007199254740993; a reconstruction says ...992."""
-    # The premise the whole ticket rides on: above 2**53 an i64 shares its
+    # The premise this rides on: above 2**53 an i64 shares its
     # double with a neighbour, so no double names one i64.
     assert float(_P53) == float(_P53_1) != float(_P53_2), "the 2**53 boundary moved"
     sql = "SELECT s.c0 AS o FROM __THIS__ JOIN s ON k = s.c0"
@@ -703,8 +699,8 @@ def test_a_double_probe_key_serves_the_i64_its_double_cannot_name():
 @pytest.mark.parametrize("proj", ["s.c0", "s.v"])
 @pytest.mark.parametrize("static_ty", [pa.int8(), pa.int16(), pa.int32(), pa.int64()])
 def test_a_double_probe_serves_every_integer_static_key_width(static_ty, proj, kind):
-    """`promote_key` used to serve only the i64 arm, so int8/int16/int32
-    static keys refused the WHOLE join. Schema equality carries the width."""
+    """`promote_key` serves every integer arm, so int8/int16/int32 static
+    keys serve the join. Schema equality carries the width."""
     static = pa.table({"c0": pa.array([5], static_ty), "v": pa.array([7], pa.int64())})
     sql = f"SELECT {proj} AS o FROM __THIS__ {kind} s ON k = s.c0"
     want = _double_probe_duck(sql, static, probe=((5.0,),))
@@ -721,7 +717,7 @@ def test_a_double_probe_serves_every_integer_static_key_width(static_ty, proj, k
 
 def test_f64_colliding_static_keys_fan_out_under_shape_many():
     """Two i64 build rows sharing one double are TWO rows, each with its own
-    key value. Sorted-multiset compare, the stage-B multiplicity contract."""
+    key value. Sorted-multiset compare, the multiplicity contract."""
     sql = "SELECT s.c0 AS o, s.v AS w FROM __THIS__ JOIN s ON k = s.c0"
     want = _double_probe_duck(sql, _D_PAIR)
     fn = DuckDBInferFn(
@@ -832,15 +828,14 @@ def test_a_left_miss_on_a_double_probe_key_is_still_null():
 
 
 # A static column whose arrow type the engine does not serve at that type
-# must REFUSE BY NAME, not get widened into a neighbouring lane. Measured
-# 2026-08-15, the widening was a live divergence in both directions:
+# must REFUSE BY NAME, not get widened into a neighbouring lane. Measured,
+# widening diverges in both directions:
 #
 #   float32 static, s.v * 3.0   duck 0.30000001192092896 FLOAT
 #                               ours 0.30000000447034836 DOUBLE
 #   uint64  static, s.v         duck 7 UINT64   ours 7 INT64
 #
-# The ROW path already refuses both for exactly this reason; only the
-# catalogue widened them, because it used to run its own parser.
+# The ROW path and the static catalogue refuse both for exactly this reason.
 _STATIC_ROW = pa.schema([pa.field("k", pa.int64(), nullable=False)])
 
 
@@ -867,8 +862,8 @@ def test_unserved_static_type_refuses_by_name(arrow_ty, val):
     with pytest.raises(ValueError, match="'v'") as e:
         _static_fn(arrow_ty, val)
     msg = str(e.value)
-    # "does not exist" is the lie the catalogue used to tell: it dropped the
-    # column, so the binder truthfully could not find a column that IS there.
+    # "does not exist" would be a lie: the column IS there, and a catalogue
+    # that dropped it would leave the binder unable to find it.
     assert "does not exist" not in msg, msg
     assert str(arrow_ty) in msg, msg
 
@@ -899,7 +894,7 @@ def test_large_string_static_still_serves():
 
 
 # ===========================================================================
-# The range trap (m-8 phase 3, the trap half of the width feature)
+# The range trap (the trap half of the width feature)
 #
 # The erase strategy — narrow widths compute in the i64 lane — is sound
 # exactly while the range trap fires wherever DuckDB's does. Checking only
@@ -909,13 +904,12 @@ def test_large_string_static_still_serves():
 # anywhere. A comparison, a function argument and a float promotion
 # hid it the same way.
 #
-# The check now lands on the RESULT, at the point of production, which
-# immediately raises the harder half: DuckDB's optimizer SIMPLIFIES
-# `x ± c <cmp> k` to `x <cmp> k∓c`, so the addition never runs there and
-# `(i + 1) > 5` serves where `(i + 1)` alone traps. That rewrite is
-# reproduced in the frontend — it is exact arithmetic, not an approximation,
-# and its guard (the shifted constant must stay in the subject's width) is
-# what DuckDB's is.
+# The check lands on the RESULT, at the point of production. DuckDB's
+# optimizer SIMPLIFIES `x ± c <cmp> k` to `x <cmp> k∓c`, so on optimizer-ON
+# DuckDB the addition never runs and `(i + 1) > 5` serves where `(i + 1)`
+# alone traps. The oracle is optimizer-OFF DuckDB, which runs the addition
+# and traps, and so does the engine: there is no constant shift in the
+# frontend (see known_divergences/test_trap_elision.py).
 #
 # Every row below is `ours == DuckDB`, trap included, so there is no
 # hardcoded expectation to go stale.
@@ -956,8 +950,8 @@ def _width_ours(sql):
 @pytest.mark.parametrize(
     "sql",
     [
-        # ---- the trap must survive every consumer (AC #1) ----
-        "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__",  # the reported one
+        # ---- the trap must survive every consumer ----
+        "SELECT CAST((i + 1) AS BIGINT) AS o FROM __THIS__",
         "SELECT (i + 1) AS o FROM __THIS__",
         "SELECT abs(i + 1) AS o FROM __THIS__",
         "SELECT nullif(i + 1, 5) AS o FROM __THIS__",
@@ -968,13 +962,14 @@ def _width_ours(sql):
         # DuckDB materialises `i + 1` for the second item, so the first one
         # traps with it -- our per-item evaluation lands in the same place
         "SELECT (i + 1) > 5 AS a, (i + 1) AS b FROM __THIS__",
-        # ---- int8 and int16 by the same rule, not just int32 (AC #3) ----
+        # ---- int8 and int16 by the same rule, not just int32 ----
         "SELECT CAST((t + 1) AS BIGINT) AS o FROM __THIS__",
         "SELECT CAST((t * 2) AS BIGINT) AS o FROM __THIS__",
         "SELECT CAST((h + 1) AS BIGINT) AS o FROM __THIS__",
         "SELECT (t + 1) > 5 AS o FROM __THIS__",
         "SELECT (h + 1) > 5 AS o FROM __THIS__",
-        # ---- the comparison rewrite, every predicate and both orders ----
+        # ---- the optimizer's comparison rewrite shapes, every predicate and
+        # both orders: evaluated, not rewritten ----
         "SELECT (i + 1) > 5 AS o FROM __THIS__",
         "SELECT (i + 1) >= 5 AS o FROM __THIS__",
         "SELECT (i + 1) < 5 AS o FROM __THIS__",
@@ -990,7 +985,7 @@ def _width_ours(sql):
         "SELECT (i + 1) BETWEEN 5 AND 9 AS o FROM __THIS__",  # through BETWEEN
         "SELECT (b + 1) > 5 AS o FROM __THIS__",  # BIGINT too, not just narrow
         "SELECT (b * 2) > 5 AS o FROM __THIS__",
-        # ---- the rewrite's own guards ----
+        # ---- the optimizer rewrite's guards ----
         # shifted constant leaves the width: the addition runs and traps
         "SELECT (i + 2) > -2147483648 AS o FROM __THIS__",
         # the constant does not fit INTEGER, so the comparison is at BIGINT
@@ -998,7 +993,7 @@ def _width_ours(sql):
         "SELECT (i + 1) = 2147483648 AS o FROM __THIS__",
         # ... but a BIGINT SPELLING whose value fits does rewrite
         "SELECT (i + 1) > CAST(5 AS BIGINT) AS o FROM __THIS__",
-        # ---- in-range arithmetic still serves, on every consumer (AC #4) ----
+        # ---- in-range arithmetic still serves, on every consumer ----
         "SELECT CAST((i - 1) AS BIGINT) AS o FROM __THIS__",
         "SELECT CAST((t - 1) AS BIGINT) AS o FROM __THIS__",
         "SELECT (i - 1) AS o FROM __THIS__",
@@ -1040,20 +1035,17 @@ def test_a_null_narrow_value_does_not_trap():
     assert fn.infer_rows([{"i": None}]) == [{"o": None}]
 
 
-# The range trap has to stay invisible in one more place, found by a
-# 4000-seed differential campaign (seeds 1564, 2174):
-# `<arithmetic> IS [NOT] NULL` reads only the OPERANDS' nullness on DuckDB,
-# so the arithmetic never runs and never overflows. Rewriting it as the
-# disjunction of the leaves' nullness is exact for a strict operator — "the
-# result is NULL" and "some operand is NULL" are the same statement — and it
-# also closes a divergence that predates the trap, since DuckDB elides an
-# i64 overflow under IS NULL too.
+# `<arithmetic> IS [NOT] NULL`: optimizer-ON DuckDB can read only the
+# OPERANDS' nullness, so the arithmetic never runs and never overflows. That
+# elision is driven by the column's null STATISTICS — a batch containing a
+# NULL makes it evaluate and trap instead — so it is data-dependent,
+# unrepresentable in a compile-once artifact, and pinned as a kept
+# divergence in known_divergences/test_trap_elision.py. The oracle
+# (optimizer off) evaluates the arithmetic, and so does the engine: every row
+# below is `ours == oracle`, trap included.
 #
-# The rows here are deliberately NULL-FREE. DuckDB's elision is driven by the
-# column's null STATISTICS, so a batch containing a NULL makes it evaluate and
-# trap instead; that split is data-dependent, unrepresentable in a
-# compile-once artifact, and pinned as a kept divergence in
-# known_divergences/test_trap_elision.py.
+# The rows here are deliberately NULL-FREE, the case where optimizer-ON
+# DuckDB elides.
 _NULLNESS_ROW = pa.schema(
     [
         pa.field("c0", pa.int8()),  # declared nullable, but no NULLs below
@@ -1072,7 +1064,7 @@ _NULLNESS_ROWS = [
 @pytest.mark.parametrize(
     "sql",
     [
-        # elided: the operand overflows its width and is never evaluated
+        # the operand overflows its width (optimizer-ON DuckDB elides it)
         "SELECT (c0 * 32) IS NOT NULL AS o FROM __THIS__",
         "SELECT (c0 * 32) IS NULL AS o FROM __THIS__",
         "SELECT ((c0 * 32) + 1) IS NOT NULL AS o FROM __THIS__",  # nested
@@ -1082,11 +1074,10 @@ _NULLNESS_ROWS = [
         "SELECT (b + 1) IS NOT NULL AS o FROM __THIS__",  # BIGINT: no narrow trap
         "SELECT (c0 / 0) IS NOT NULL AS o FROM __THIS__",  # not even a zero divisor
         "SELECT 1 AS o FROM __THIS__ WHERE ((c0 * 32) IS NOT NULL)",
-        # NOT elided — outside the measured vocabulary, so it evaluates and
-        # traps on both engines
+        # not elided on any reading: it evaluates and traps
         "SELECT nullif(c0 * 32, 3) IS NOT NULL AS o FROM __THIS__",
         "SELECT CAST(s AS DOUBLE) IS NOT NULL AS o FROM __THIS__",
-        # and the plain forms still answer about nullness, elision or not
+        # and the plain forms answer about nullness
         "SELECT c0 IS NULL AS o FROM __THIS__",
         "SELECT c0 IS NOT NULL AS o FROM __THIS__",
         "SELECT NULL IS NULL AS o FROM __THIS__",
@@ -1117,7 +1108,7 @@ def test_is_null_over_arithmetic_reads_the_operands_not_the_result(
     assert got == want, sql
 
 
-# Measured 2026-08-19. `MIN % -1` is the one narrow overflow a
+# Measured. `MIN % -1` is the one narrow overflow a
 # RESULT-range check structurally cannot see: the mathematical result (0) is
 # in range, but DuckDB computes the modulo through the checked division,
 # which overflows at the width. The guard is on the OPERATION -- dividend at
@@ -1178,14 +1169,14 @@ def test_constant_narrow_modulo_at_min_traps_like_the_column():
 # A bare NULL arm and an integer literal, meeting inside a fold.
 #
 # DuckDB's CASE types by folding ELSE first, then the THEN arms in order,
-# through TryGetMaxLogicalType (bind_case_expression.cpp). The one rule our
-# fold missed (types.cpp): Max(SQLNULL, X) = NormalizeType(X) -- an
+# through TryGetMaxLogicalType (bind_case_expression.cpp). The rule our fold
+# follows from types.cpp: Max(SQLNULL, X) = NormalizeType(X) -- an
 # INTEGER_LITERAL that meets a NULL is normalized to its base type
 # (INTEGER), losing its shrink-to-fit. So NULL alone never widens, a
 # literal alone shrinks into a column's width, but a NULL meeting a
 # LITERAL-seeded accumulator hardens it: that is the whole "width floor".
 # COALESCE folds the same way but seeds from its first argument.
-# Measured 2026-08-24, source-verified against the v1.5.5 checkout.
+# Measured, and source-verified against the v1.5.5 sources.
 # ---------------------------------------------------------------------------
 _T131_SCHEMA = pa.schema(
     [
@@ -1206,7 +1197,7 @@ _T131_GRID = [
     f"SELECT (CASE {_W} NULL {_W} i8 ELSE 5 END) AS o FROM __THIS__",
     f"SELECT (CASE {_W} NULL {_W} i32 ELSE -1 END) AS o FROM __THIS__",
     f"SELECT (CASE {_W} NULL {_W} i64 ELSE -1 END) AS o FROM __THIS__",
-    # the seed 12745 shape (constant TRUE arms)
+    # constant TRUE arms
     "SELECT (CASE WHEN TRUE THEN NULL WHEN TRUE THEN i16 ELSE -22 END) AS o"
     " FROM __THIS__",
     # NULL after the literal already shrank: no floor

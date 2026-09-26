@@ -43,7 +43,7 @@ def test_non_constant_regex_pattern_rejects():
 def test_static_tables_are_frozen_unique_key_maps():
     dup = static({"id": "int", "v": "int"}, [{"id": 1, "v": 1}, {"id": 1, "v": 2}])
     # Duplicate keys = 1:N multiplicity: rejected under the DEFAULT shapes,
-    # served under the opt-in shape='many' (stage B).
+    # served under the opt-in shape='many'.
     rejects(
         "SELECT v FROM __THIS__ JOIN d ON a = d.id",
         "duplicate map key",
@@ -69,8 +69,8 @@ def test_static_tables_are_frozen_unique_key_maps():
 
 
 def test_dynamic_self_join_rejects():
-    # Default shapes: the original named rejection. Under shape='many' the
-    # batch becomes the build side and ON self-joins SERVE (stage B).
+    # Default shapes: the named rejection. Under shape='many' the batch
+    # becomes the build side and ON self-joins SERVE.
     rejects(
         "SELECT t2.a FROM __THIS__ JOIN __THIS__ t2 ON __THIS__.a = t2.a",
         "dynamic table",
@@ -96,7 +96,7 @@ def test_dynamic_self_join_rejects():
 @pytest.mark.parametrize(
     ("sql", "needle"),
     [
-        ("SELECT sum(a) FROM __THIS__", "no aggregation"),
+        ("SELECT sum(a) FROM __THIS__", "aggregation is not served"),
         ("SELECT a FROM __THIS__ GROUP BY a", "aggregation"),
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         ("SELECT a FROM __THIS__ LIMIT 5", "LIMIT"),
@@ -169,16 +169,16 @@ def test_struct_whole_value_rejects_but_fields_serve():
 
 
 def test_list_valued_regexp_forms_reject():
-    # Gated on list types (wave C), not on regex semantics.
+    # Gated on list types, not on regex semantics.
     rejects("SELECT regexp_extract_all(s, 'a') FROM __THIS__", "list-valued")
     rejects("SELECT regexp_split_to_array(s, 'a') FROM __THIS__", "regexp_split")
 
 
 def test_ubigint_static_payloads_reject():
-    """Refused at the TYPE now, not at the value's range (2026-08-15).
+    """Refused at the TYPE, not at the value's range.
 
-    A uint64 static used to ride the i64 lane, so only a payload past i64
-    was caught — while every in-range one emitted int64 where DuckDB emits
+    Riding a uint64 static on the i64 lane would catch only a payload past
+    i64 — while every in-range one would emit int64 where DuckDB emits
     UINT64, a schema divergence with no refusal. Refusing the type refuses
     both, and names it."""
     big = pa.table({"id": pa.array([2**64 - 1], pa.uint64()), "v": [1]})
@@ -206,7 +206,7 @@ def test_ubigint_static_payloads_reject():
             "duplicate regex capture group",
         ),
         ("SELECT regexp_matches(s, 'a{1001}') FROM __THIS__", "repetition bound"),
-        # Standing-fuzzer classes (pins-waveB/fuzzer-task54.json): each was
+        # Standing-fuzzer classes (pins-waveB/fuzzer-task54.json): each is
         # a measured silent-wrong-answer risk in rust-regex.
         ("SELECT regexp_matches(s, '(a)x\\1') FROM __THIS__", "backref"),
         ("SELECT regexp_matches(s, 'a?*') FROM __THIS__", "quantifi"),
@@ -347,8 +347,8 @@ def _width1_list_udf():
 
 
 def test_every_refusal_family_carries_a_documented_prefix():
-    # The families that used to refuse with no prefix at all, each now under
-    # the prefix of its class; the old text rides along as a suffix.
+    # Each refusal family under the prefix of its class; the family's
+    # specific text rides along as a suffix.
     dup = pa.table(
         {"id": pa.array([1, 1], pa.int64()), "v": pa.array([1, 2], pa.int64())}
     )

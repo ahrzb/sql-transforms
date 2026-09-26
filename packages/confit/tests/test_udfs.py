@@ -1,6 +1,6 @@
-"""UDF externs (DRAFT-22 step 2): the `udfs=` surface of DuckDBInferFn.
+"""UDF externs: the `udfs=` surface of DuckDBInferFn.
 
-The contract, restated with one parameter: serve bit-for-bit identical to
+The contract, with one parameter: serve bit-for-bit identical to
 DuckDB *with the same udfs registered* (`con.create_function`), or refuse.
 The udf objects here are duck-typed to the UDF protocol confit reads (name /
 takes / returns / optional `instances` marking the implicit leading i64
@@ -286,7 +286,7 @@ PARAMS = static(
 
 
 def test_marginalizer_shape_differential():
-    # The DRAFT-22 serving_sql shape end to end: INDF params join, the call
+    # The marginalizer's serving_sql shape end to end: INDF params join, the call
     # mid-expression, unseen group -> NULL id -> NULL.
     udf_check(
         "SELECT (tf0(p.est, t.age) + 1.0) AS z, t.g AS g FROM __THIS__ AS t "
@@ -304,7 +304,7 @@ def test_marginalizer_shape_differential():
 
 
 def test_keyless_literal_id():
-    # DRAFT-23 addendum: a keyless (global) transformer inlines id 0 — no
+    # A keyless (global) transformer inlines id 0 — no
     # params table, no join.
     got = udf_check(
         "SELECT tf0(0, x) AS z FROM __THIS__",
@@ -419,9 +419,8 @@ def test_infer_arrow_wide_and_scalar():
 
 
 def test_infer_arrow_named_struct():
-    # Slice-5 review round: the named branch (pa.struct_ keyed by the
-    # declared field names; whole-NULL row stays a NULL struct) was
-    # unpinned on the columnar boundary.
+    # The named branch on the columnar boundary: pa.struct_ keyed by the
+    # declared field names; a whole-NULL row stays a NULL struct.
     import pyarrow as pa
 
     schema = _row_schema({"x": "float?"})

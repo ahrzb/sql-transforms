@@ -1,4 +1,4 @@
-"""Stage-B multiplicity vs the duckdb oracle, multiset parity.
+"""Join multiplicity vs the duckdb oracle, multiset parity.
 
 Pins: packages/confit/docs/specs/2026-07-28-stageB-multiplicity-pins.md —
 DuckDB's join output ORDER is a hash-join accident, so comparison is
@@ -76,7 +76,7 @@ def test_engine_order_contract():
 def test_value_lanes_from_both_column_sources_vs_oracle():
     """A map's value slots are laid out from ONE of two column lists, and
     which one is a property of the join, not of the layout rule: a MULTIMAP
-    reads the static catalog, a BATCHMAP (the stage-B self-join) reads the
+    reads the static catalog, a BATCHMAP (the self-join) reads the
     caller's own row schema. A nullable column rides as a validity+payload
     PAIR on both, so each source needs a NULL that survives the round trip.
 
@@ -195,7 +195,7 @@ def test_nested_splits_over_a_joined_column():
 def test_split_inside_a_multi_operand_expression():
     """The seed has to remember WHERE the join's lanes sit, not assume they
     are the trailing ones. Here `||` pushes its first operand onto the live
-    stack before the CASE splits, so the join's lanes are no longer at the
+    stack before the CASE splits, so the join's lanes are not at the
     tail — reading `live[len - nd..]` would seed the cache with the wrong
     registers and silently score the wrong column."""
     _many_check(
@@ -212,10 +212,10 @@ def test_split_inside_a_multi_operand_expression():
 def test_split_in_the_join_condition():
     """The ON residual is its own seed site, emitted before the output
     columns exist. A CASE there that reads the joined column is the case the
-    per-expression reseed could not reach.
+    per-expression reseed cannot reach.
 
     The bare `AND CASE ... END` spelling on an INNER join is refused earlier
-    by an unrelated pre-existing rule ("single-side residual with trapping
+    by an unrelated rule ("single-side residual with trapping
     ops"), so the reachable forms are a LEFT join and a comparison.
     """
     _many_check(

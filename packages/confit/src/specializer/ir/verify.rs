@@ -18,8 +18,8 @@
 //!  4. Statics: every `@N` resolves; probe/sload match the static's kind,
 //!     arity, and types.
 //!  5. CFG: all blocks reachable from entry; branch args match their target
-//!     block's params in count and type. Cycles are legal (stage-B
-//!     multiplicity loops), provided every reachable block can still reach a
+//!     block's params in count and type. Cycles are legal (multiplicity
+//!     loops), provided every reachable block can still reach a
 //!     row-ending terminator — see the back-edge notes in
 //!     `check_cfg_and_stores`.
 //!  6. Stores: no path stores a column twice, whatever its terminator
@@ -91,7 +91,7 @@ fn check_structure(p: &Program, errs: &mut Vec<VerifyError>) {
             format!("function name '{}' must be an identifier", p.name),
         );
     }
-    // Wave-4: maps may have EMPTY keys (cross join to a table whose
+    // Maps may have EMPTY keys (cross join to a table whose
     // single-entry-ness the duplicate-key check enforces at compile) and
     // EMPTY values (all-key/semi joins — the probe carries only the hit).
     // A map that is empty on BOTH axes carries no information at all.
@@ -932,9 +932,9 @@ fn check_cfg_and_stores(p: &Program, errs: &mut Vec<VerifyError>) {
     // Iterative DFS for reachability + BACK-EDGE detection (0 white, 1 gray,
     // 2 black). Explicit stack, NOT recursion: a deep-but-legal CFG (large
     // CASE/decision-tree lowerings) must not abort the process — recursion
-    // stack-overflowed at ~8k blocks under adversarial fuzzing.
+    // stack-overflows at ~8k blocks.
     //
-    // Stage-B: cycles are LEGAL (multiplicity loops jump back to their
+    // Cycles are LEGAL (multiplicity loops jump back to their
     // header via EmitTo — emit-and-continue — or a plain Jump on a
     // residual-filtered iteration). Back-edges are excluded from the topo
     // order below; the store dataflow stays sound because a back-edge's

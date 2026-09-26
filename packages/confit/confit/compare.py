@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 
 def dedup_names(names: list[str]) -> list[str]:
-    """The wave-5 client contract (pins-wave5/dup-names-client-contract.json,
+    """The client contract (pins-wave5/dup-names-client-contract.json,
     mirrored from frontend.rs::dedup_output_names): duplicate OUTPUT names
     rename left-to-right to `<name>_N`, smallest free N, case-insensitive,
     generated candidates included. DuckDB itself applies exactly this at

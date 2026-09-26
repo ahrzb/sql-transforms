@@ -1,5 +1,5 @@
 {
-  "_pin": {"schema": 1, "subject": "division-cast-nan-edges", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-08-13", "harness": "unknown", "committed": "2026-08-13", "evidences": ["packages/confit/docs/specs/2026-08-13-dialect-logical-plan-design.md", "packages/confit/src/dialect/mod.rs", "packages/confit/src/dialect/plan.rs"]},
+  "_pin": {"schema": 1, "subject": "division-cast-nan-edges", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-08-13", "harness": "unknown", "committed": "2026-08-13", "evidences": ["packages/confit/src/dialect/mod.rs", "packages/confit/src/dialect/plan.rs"]},
   "area": "division-cast-nan-edges",
   "duckdb_version": "v1.5.5",
   "setup": "none  -- multi-statement pins as elsewhere; measured 2026-08-13 while verifying the adversarial review's findings",

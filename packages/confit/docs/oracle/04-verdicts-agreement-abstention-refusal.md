@@ -59,7 +59,7 @@ diagnostics on such a case may be reconsidered only if they preserve that origin
 finding.
 
 *Enforced-by:* `fuzz.oracle.run_case`, which returns `OPT_EMULATED` before the
-confit-only boundary legs; intended membership in `fuzz.runner.INTERESTING` and
+confit-only boundary legs; membership in `fuzz.runner.INTERESTING` and
 exclusion from `COVERED`.
 *Evidence:* emission is tested by `test_verdicts_cover_the_contract_and_reproduce`;
 the stopping rule by
@@ -85,24 +85,22 @@ Thus construction success does not promise that every input returns rows, and a 
 trap must not be rewritten as a construction refusal. The serving-level statement lives
 in [the serving contract](../specs/serving-contract.md).
 
-**claim: refusal-message-prefixes.** The documented construction-refusal surface intends
-three `ValueError` prefixes:
+**claim: refusal-message-prefixes.** Every construction refusal is a `ValueError`
+carrying one of three prefixes:
 
 - `unsupported:` — valid SQL outside the served product;
 - `parse error:` — outside the accepted dialect; and
 - `bind error:` — invalid against the declared schema.
 
-The engine's formerly unprefixed build-time families now carry the prefix of their
-class (**ticket: clean-prefix-reconcile**, done 2026-09-26), keeping their old text as a
-suffix: a duplicate key in a 1:1 static map is `unsupported: duplicate map key …`
+A duplicate key in a 1:1 static map is `unsupported: duplicate map key …`
 (multiplicity restriction), `shape='map'` blockers are `unsupported: shape='map': …`,
 and a NULL in a declared non-null static value column and the build-time UDF
 declaration errors (`udf '<name>': …`) are `bind error: …` (inconsistent caller
-declaration). UDF errors raised while serving a row are runtime traps and keep their
-text. The corpus gate's `_CLEAN` is now exactly `unsupported:` and `parse error:`;
-`bind error:` stays a corpus FAIL on purpose, because every corpus statement is one
-DuckDB answered, so "invalid against the declared schema" cannot be its reason. No
-public error-code API was added.
+declaration). UDF errors raised while serving a row are runtime traps, not
+refusals. The corpus gate's `_CLEAN` is exactly `unsupported:` and `parse error:`;
+`bind error:` is a corpus FAIL, because every corpus statement is one DuckDB answered,
+so "invalid against the declared schema" cannot be its reason. There is no public
+error-code API.
 
 *Evidence:* `packages/confit/docs/known-limitations.md` §6, P7 and P18 in
 `packages/confit/docs/properties.md`, and
@@ -141,17 +139,15 @@ restriction inventory applies them through
 [scope classification](../specs/serving-contract.md#scope-classification), which sorts
 restrictions without ratifying every existing limit.
 
-*Evidence:* `backlog/milestones/m-8 - duckdbs-type-lattice.md:30-36`,
-`packages/confit/docs/known-limitations.md` §§1-2, and
-`packages/confit/tests/known_divergences/test_arrow_boundary.py:34-36`.
+*Evidence:* `packages/confit/docs/known-limitations.md` §§1-2 and
+`packages/confit/tests/known_divergences/test_arrow_boundary.py`.
 
 **claim: refusal-absorb.** The campaign executes both DuckDB readings before returning
 a confit refusal. `REFUSED` keeps the optimizer-off reading's outcome — `serves`,
 `rejects` (bind/build), or `traps` (run time) — as its `oracle` field, carries a class
 derived from the first six message words, and stays absent from `INTERESTING`. The
 report groups refusals by that outcome, then by class, so "DuckDB serves, confit
-refuses" is visible per refusal class without being promoted to a finding. This closed
-**ticket: split-refused-verdict**.
+refuses" is visible per refusal class without being promoted to a finding.
 
 *Enforced-by:* `fuzz.oracle.run_case`, `fuzz.oracle._oracle_outcome`, and
 `fuzz.runner.report`.
@@ -169,8 +165,8 @@ accepted refusal itself, divergence: bind-time-constant-refusals, is unchanged.
 ## Findings, abstention, and coverage
 
 **claim: abstention-reporting.** Harness failure is `SKIP`, never a pass. `SKIP`,
-`TIMEOUT`, and `PANIC` are intended findings and must reach `findings.jsonl`; otherwise a
-growing blind spot can look green.
+`TIMEOUT`, and `PANIC` are findings and reach `findings.jsonl`, so a growing blind spot
+cannot look green.
 
 **claim: coverage-accounting.** Only `AGREE` contributes to the construct-coverage
 histogram. `AGREE_TRAP` establishes a matched runtime outcome but is not counted as
@@ -184,12 +180,12 @@ feed coverage is observed through the report by
 `packages/confit/tests/test_fuzz_report.py::test_findings_and_coverage_are_what_the_contract_says`.
 
 **claim: logged-fallback.** If a checker cannot evaluate its strongest condition,
-it may use a weaker check only with an explicit tag. The current legacy example is
+it may use a weaker check only with an explicit tag. The example is
 an `ORDER BY` expression absent from the output: multiset comparison still runs,
 but sortedness is not established and the case receives `order-by-unevaluated`.
 That tag must not be reported as evidence that the stronger check passed.
 
-*Evidence:* `fuzz.oracle.run_case` and the ordering work recorded in TASK-129.
+*Evidence:* `fuzz.oracle.run_case`.
 
 **claim: timeout-attribution.** A `TIMEOUT` or `PANIC` names its SQL and its side.
 The worker writes a phase marker to stderr before each stage — `harness:startup`,
@@ -197,9 +193,9 @@ The worker writes a phase marker to stderr before each stage — `harness:startu
 reads the last marker a killed worker wrote: the finding's `side` is `oracle`, `confit`,
 `harness` or `unknown`, and its class is `timeout:<side>` / `panic:<side>`. The SQL and
 inputs are regenerated from the seed in the parent, so they are preserved even though
-the worker never returned. Oracle-side and confit-side timeouts imply opposite problems;
-on 2026-08-14, seed 4395 made DuckDB spend 9.0 seconds building a 2 GiB `lpad` while
-confit refused immediately under its 1 GiB budget. The markers are internal audit
+the worker never returned. Oracle-side and confit-side timeouts imply opposite problems:
+a generated 2 GiB `lpad` makes DuckDB spend seconds building it while confit refuses
+immediately under its 1 GiB budget. The markers are internal audit
 vocabulary, not a public API.
 
 *Enforced-by:* `fuzz.oracle._phase`, `fuzz.worker`, `fuzz.runner.side_of`, and

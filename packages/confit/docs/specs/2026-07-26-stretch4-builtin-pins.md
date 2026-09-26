@@ -1,146 +1,114 @@
-# Stretch 4: builtin catalogue — measured DuckDB 1.5.5 pins + implementation spec
+# Builtin pins: modulo, DOUBLE order, case mapping, trim, substr, concat
 
-All values below were MEASURED against duckdb-python 1.5.5 (workflow fan-out of 8
-pin agents + local micro-pins, 2026-07-26). DuckDB is the oracle; when in doubt,
+Measured against duckdb-python 1.5.5. DuckDB is the oracle; when in doubt,
 re-measure, never assume.
 
-## Divergences found in already-landed code (fix in this stretch, with pin tests)
+## Modulo
 
-1. **`%` by zero**: `5 % 0` → NULL (NOT an error). `MIN % -1` → traps
-   ("Out of Range Error: Overflow in division"). Our irem traps on both; keep the
-   IR inst trapping (MIN % -1 stays a trap ✓) and guard the SQL lowering:
-   `a % b` → `CASE WHEN b = 0 THEN NULL ELSE a irem b END` (skip the guard when b
-   is a non-zero literal). Result becomes nullable when guarded.
-2. **Float `%`**: currently rejected at bind. DuckDB: `5.0 % 2.0` = 1.0,
-   `-5.5 % 2.5` = -0.5 (sign of dividend), `5.0 % 0.0` = NaN — exactly Rust's
-   `%` on f64. Add `BinOp::Frem` (never traps), un-reject at bind. No guard.
-3. **F64 comparison order** (interp.rs Cmp F64 + fold.rs cmp mirror are IEEE —
-   wrong): DuckDB order = IEEE except NaN: `nan = nan` TRUE, `nan > 1` TRUE,
-   `nan > inf` TRUE, `nan <= nan` TRUE, `nan <> nan` FALSE, `1 <= nan` TRUE;
-   `-0.0 = 0.0` TRUE, `-0.0 < 0.0` FALSE. Implementation:
-   both NaN → Equal; one NaN → NaN is Greater; else IEEE partial_cmp.
+- **Integer `%` by zero** → NULL (not an error). `MIN % -1` traps ("Out of
+  Range Error: Overflow in division"). confit lowers `a % b` as
+  `CASE WHEN b IS NULL OR b = 0 THEN NULL ELSE a irem b END` (the guard is
+  skipped for a non-zero literal divisor; `b IS NULL` is needed because
+  `NULL = 0` is NULL and would fall through to `irem` on a garbage payload).
+  The `irem` instruction itself traps on `MIN % -1`.
+- **DOUBLE `%`**: `5.0 % 2.0` = 1.0, `-5.5 % 2.5` = -0.5 (sign of dividend),
+  `5.0 % 0.0` = NaN — exactly Rust's `%` on f64. confit: `BinOp::Frem`,
+  never traps, no guard.
 
-## New IR instructions (each lands in ir/mod + verify + print + parse + gen + interp)
+## DOUBLE comparison order
 
-- `supper` / `slower` (Str→Str): DuckDB uses SIMPLE (1:1) case mapping:
-  `upper('ß')` = 'ẞ' U+1E9E (NOT 'SS'), `lower('İ' U+0130)` = plain 'i' (dot
-  dropped), emoji pass through. Rust std is FULL mapping → v0: per char, use
-  to_uppercase()/to_lowercase() iff it yields exactly 1 char, else keep the char
-  unchanged. KNOWN divergence on ß (we keep 'ß', DuckDB 'ẞ') and İ→lower (we keep
-  'İ', DuckDB 'i'): xfail-strict differential case + ticket note. ASCII exact.
-- `strim.both|lead|trail s, chars` (Str,Str→Str): removes chars in the SET
-  `chars` from the side(s). 1-arg SQL trim = chars " " (ONLY space 0x20 — tab/
-  newline NOT trimmed). Empty set = no-op. NULL either arg → NULL (flag algebra
-  at lowering, inst itself total).
-- `ssubstr s, start, len` (Str,I64,I64→Str): codepoint-based (NOT grapheme —
-  slices inside ZWJ emoji). Algorithm (1-based virtual window):
-  if len < 0 → ""; if start < 0 → start = char_len + start + 1;
-  window [start, start.saturating_add(len)); intersect with [1, char_len];
-  missing SQL len → Lit(i64::MAX) (saturating add makes it "rest of string").
-  Pins: substr('hello',0)='hello', (0,3)='he', (-2)='lo', (-6,3)='he',
-  (-10,8)='hel', (1,0)='', (1,-1)='', (10)=''.
-- `iabs` (I64→I64): traps on i64::MIN ("Out of Range"-style). `fabs` (F64→F64):
-  Rust f64::abs — clears sign bit, abs(-0.0)=+0.0, abs(nan)=nan, abs(-inf)=inf.
-- `fround` (F64→F64): Rust f64::round = half AWAY from zero ✓ (2.5→3, -2.5→-3),
-  nan→nan, inf→inf, 1e300→1e300, -0.4→-0.0 (sign KEPT on double). round(int) is
-  identity at the FRONTEND (no inst); round(x, digits) → clean unsupported
-  (scale-then-round algorithm deferred).
-- `frem` BinOp (F64,F64→F64): Rust `%`. Never traps.
+IEEE except NaN: `nan = nan` TRUE, `nan > 1` TRUE, `nan > inf` TRUE,
+`nan <= nan` TRUE, `nan <> nan` FALSE, `1 <= nan` TRUE; `-0.0 = 0.0` TRUE,
+`-0.0 < 0.0` FALSE. Rule: both NaN → Equal; one NaN → NaN is Greater; else
+IEEE `partial_cmp`. confit's interpreter `fcmp` (`exec::duck_fcmp`) and the
+`fold.rs` mirror implement this order and must stay bit-identical.
 
-## Frontend dispatch (new SKind variants + lowerings)
+## upper / lower
 
-- `Expr::Trim` (sqlparser: trim_where BOTH/LEADING/TRAILING, trim_what,
-  trim_characters) + `ltrim`/`rtrim`/2-arg functions → SKind::Trim{side}.
-  All forms NULL-propagating on both args.
-- `Expr::Substring` (SUBSTR and SUBSTRING both route here) → SKind::Substr.
-  NULL-propagating on all three args.
-- `Expr::Function` name dispatch (case-insensitive):
-  - upper/lower → SKind::StrCase{upper} — arg must be Str (DuckDB: upper(123)
-    is a Binder Error, NO numeric coercion).
-  - abs → SKind::Abs; I64 or F64 only (abs('5')/abs(true) = binder errors).
-    Result type = arg type.
-  - round (1-arg) → identity for I64; SKind::Round for F64. 2-arg → unsupported.
-  - concat(a,...) → NULL-SKIPPING: each nullable arg wraps in
-    CASE WHEN x IS NULL THEN '' ELSE cast_to_varchar(x) END, chain SKind::Concat.
-    Result never NULL. concat() zero args → Bind error. Non-string args render
-    via VARCHAR cast (1→'1', 1.5→'1.5', true→'true').
-  - coalesce(a,...) → nested CASE WHEN a IS NOT NULL THEN a ELSE rest END.
-    Lazy per-row (pinned: untaken erroring arm does NOT fire). Args unify under
-    existing promotion (I64+F64→F64); else Bind error. coalesce() → parser
-    error in DuckDB; here Bind error fine.
-  - nullif(a,b) → CASE WHEN a = b THEN NULL ELSE a END; comparison at PROMOTED
-    type, result type = FIRST arg's type (never unified!). nullif(nan,nan) →
-    NULL (needs divergence fix #3).
-- `BinaryOperator::StringConcat` (`||`): ALWAYS string concat in DuckDB — even
-  `1 || 2` = '12', `true || true` = 'truetrue'. NULL-PROPAGATING (unlike
-  CONCAT). Cast non-Str operands to VARCHAR: bool → 'true'/'false' (measured).
-- CONCAT vs ||: CONCAT skips NULLs (all-NULL → ''), || propagates.
+DuckDB uses SIMPLE (1:1) case mapping from its bundled utf8proc:
+`upper('ß')` = 'ẞ' U+1E9E (not 'SS'), `lower('İ' U+0130)` = plain 'i',
+`upper('ᾀ')` (U+1F88 class) maps 1:1, emoji pass through. Arg must be
+VARCHAR (`upper(123)` is a Binder Error — no numeric coercion).
 
-## fold.rs
+confit: `src/specializer/exec/casemap.rs`, GENERATED by
+`scripts/gen_casemap.py`, carries an exception table over Rust's full maps
+(Rust's map when it yields exactly one char, else identity). The table
+covers two measured classes: simple-vs-full divergence (ß/İ/ypogegrammeni
+block) and Unicode version skew in both directions (including Unicode-16
+case pairs Rust maps but DuckDB 1.5.5's utf8proc leaves unchanged). The
+full-codepoint census in `tests/test_duckdb_interpreter.py`
+(`test_simple_case_mapping_full_codepoint_census`) is the authority; a
+DuckDB bump that shifts utf8proc fails it, and the generator is idempotent.
 
-New kinds: fold children only (like Case). Update the f64 cmp mirror to the
-DuckDB order (divergence #3) — fold and interp MUST stay bit-identical.
+## trim / ltrim / rtrim
 
-## Out of scope (clean unsupported), deliberate
+`trim(s, chars)` removes codepoints in the SET `chars` from the side(s);
+empty set = no-op. The 1-arg form's set is exactly the Unicode Zs space
+separators (per-codepoint census): NBSP, ideographic space etc. trim;
+tab/newline/ZWSP/BOM do not. NULL in either arg → NULL. SQL `TRIM(BOTH|
+LEADING|TRAILING ...)`, `ltrim`, `rtrim` and their 2-arg forms all map to
+one op.
 
-round(x, digits); DECIMAL anything (literals stay F64 — known v0 ceiling);
-upper/lower non-simple-map codepoints byte-exactness (xfail + ticket).
+## substr / substring
 
-## Adversarial-fleet addendum (6 probe agents, ~1,400 probes, 2026-07-26)
+Codepoint-based (not grapheme — slices inside ZWJ emoji). DuckDB's
+constant-fold path and vectorized path DISAGREE on negative starts; confit
+implements the VECTORIZED path (columns and real queries):
 
-Divergences FOUND and FIXED (each now pinned in Rust + differentially):
+- negative start resolves from the end and clamps to 1:
+  `rs = max(n + start + 1, 1)`; start 0 stays virtual;
+- a NEGATIVE length slices backwards `[rs+len, rs)`;
+- offsets/lengths outside ±2^32 trap ("Out of Range");
+- the 2-arg form never length-traps (the length is `Option`, not a
+  sentinel).
 
-1. **NULL divisor `%`**: the `b = 0` CASE guard alone is NULL for b NULL —
-   fell through to irem on the garbage zero payload. `b IS NULL OR b = 0`
-   shields it (TRUE OR NULL = TRUE).
-2. **Trap-under-false-flag class bug** (predates stretch 4): computed
-   garbage payloads are unbounded (`(x + MAX) + MAX` with x NULL overflows
-   its payload lane). FIX: `FB::masked` forces nullable payloads to the type
-   default before every trapping instruction (integer arith, iabs, ssubstr
-   positions, ftoi cast input).
-3. **1-arg trim set**: exactly the Unicode Zs space separators (per-codepoint
-   census) — NBSP/ideographic space etc. trim; tab/newline/ZWSP/BOM do not.
-4. **substr**: DuckDB's constant-fold path and vectorized path DISAGREE on
-   negative starts. We implement the VECTORIZED path (what columns, real
-   queries, and the mined corpus use): negative start clamps to 1 after
-   end-resolution (`rs = max(n+start+1, 1)`), start 0 stays virtual, a
-   NEGATIVE length slices BACKWARDS `[rs+len, rs)`, offsets/lengths outside
-   ±2^32 trap ("Out of Range"), the 2-arg form never length-traps (why
-   `len` is `Option`, not a sentinel). Known residual: pure-literal
-   negative-start substr goes through DuckDB's constant path and can differ.
-5. **Float -> VARCHAR**: DuckDB writes an explicit exponent sign with at
-   least two digits (`1e+300`, `1e-05`) and lowercase `nan` (DuckF64 in
-   interp.rs).
-6. **Oracle artifact, harness-fixed, no engine change**: duckdb-python
-   pushes constant filters into REGISTERED-ARROW scans with IEEE NaN
-   semantics, disagreeing with its own native-table order (and violating
-   3VL for `x <= NaN`). duck_check now materializes native tables.
-7. **Simple-case-map divergence extended**: `upper('ᾀ')` (ypogegrammeni
-   titlecase U+1F88) joins ß/İ in the strict xfail.
+A pure-literal negative-start `substr` goes through DuckDB's constant path
+and can differ from confit. NULL in any arg → NULL.
 
-Also landed with this pass (corpus-driven): implicit numeric->BOOLEAN in
-conditional contexts (WHERE/AND/OR/NOT/CASE WHEN; nonzero -> true incl.
-NaN, NULL -> NULL); `rowid` and DuckDB lateral aliases reject as clean
-unsupported; corpus replay wired into pytest with the three-outcome
-contract at 49 match / 629 clean-unsupported / 0 FAIL of 678.
+## abs / round
 
-## Case-mapping divergence: RESOLVED dependency-free (2026-07-26, post-review)
+- `abs` on BIGINT traps on i64::MIN ("Overflow on abs(x)"); on DOUBLE it
+  clears the sign bit (abs(-0.0) = +0.0, abs(nan) = nan, abs(-inf) = inf).
+  Result type = arg type; `abs('5')` / `abs(true)` are binder errors.
+- `round(DOUBLE)` = Rust `f64::round`, half AWAY from zero (2.5→3, -2.5→-3),
+  nan→nan, inf→inf, -0.4→-0.0 (sign kept). `round(int)` is identity.
+  `round(x, n)` is specified in `2026-07-26-wave1-builtin-pins.md`.
 
-Decision (AmirHossein): no dependency for the ~100 codepoints; do it measured
-and documented. `packages/confit/src/specializer/exec/casemap.rs` (GENERATED by
-`scripts/gen_casemap.py`) carries the exception table over Rust's full maps —
-139 entries (83 upper, 56 lower) from TWO measured classes:
-  1. simple-vs-full mapping divergence (ß/İ/ypogegrammeni block);
-  2. Unicode VERSION skew, both directions: codepoints utf8proc maps that
-     Rust doesn't matter (fallback handles), and Unicode-16 case pairs RUST
-     maps but duckdb 1.5.5's utf8proc predates (identity there — 56 entries
-     Python couldn't even see; the generator's phase 2 measures the actual
-     compiled engine to catch them).
-A unicode-data crate would be the wrong spec twice over: some other Unicode
-version's tables, and blind to utf8proc's vintage. The full-codepoint census
-in packages/confit/tests/test_duckdb_interpreter.py (every scalar value through both engines,
-chunked into long strings) is the standing authority — a duckdb bump that
-shifts utf8proc fails the census, and the generator is idempotent to rerun.
-The former strict xfail is now two passing tests. DataFusion note: per the
-same review, DataFusion is the legacy serving line's oracle only — likely
-retired later, possibly a supported dialect; the specializer ignores it.
+## concat / || / coalesce / nullif
+
+- `concat(a, ...)` SKIPS NULLs (all-NULL → ''), never returns NULL;
+  `concat()` is a Bind error. Non-string args render via VARCHAR cast
+  (1→'1', 1.5→'1.5', true→'true').
+- `||` is ALWAYS string concat (`1 || 2` = '12', `true || true` =
+  'truetrue') and NULL-PROPAGATING. Non-string operands cast to VARCHAR.
+- `coalesce(a, ...)` is lazy per row (an untaken erroring arm does not
+  fire). Args unify under numeric promotion (I64+F64→F64); otherwise Bind
+  error. `coalesce()` is a parser error in DuckDB, a Bind error in confit.
+- `nullif(a, b)` = `CASE WHEN a = b THEN NULL ELSE a END`; comparison at the
+  PROMOTED type, result type = FIRST arg's type. `nullif(nan, nan)` → NULL.
+
+## DOUBLE → VARCHAR
+
+DuckDB writes an explicit exponent sign with at least two digits
+(`1e+300`, `1e-05`) and lowercase `nan`; confit's `DuckF64` renderer in
+`interp.rs` reproduces it.
+
+## Engine invariants
+
+- Computed payloads under a false validity flag are unbounded
+  (`(x + MAX) + MAX` with x NULL overflows its payload lane). confit's
+  lowering (`FB::masked`) forces nullable payloads to the type default
+  before every trapping instruction (integer arith, abs, substr positions,
+  DOUBLE→integer cast input).
+- Numeric values coerce to BOOLEAN in conditional contexts
+  (WHERE/AND/OR/NOT/CASE WHEN): nonzero → true including NaN, NULL → NULL.
+- confit types decimal literals (`1.5`) as DOUBLE; DuckDB types them
+  DECIMAL.
+- confit refuses the `rowid` pseudo-column by name.
+
+## Oracle harness
+
+duckdb-python pushes constant filters into REGISTERED-ARROW scans with IEEE
+NaN semantics, disagreeing with its own native-table order (and violating
+3VL for `x <= NaN`). `duck_check` therefore materializes native tables
+before comparing.

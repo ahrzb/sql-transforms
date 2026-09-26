@@ -2,9 +2,8 @@
 
 "map" is a STATIC build-time proof of exactly one output row per input row
 (out[i] <-> in[i]) — the serving-path guarantee. "filter" is the default
-0..1 behavior, byte-identical to before the flag existed. "many" is
-reserved for join multiplicity (stage B) and is the only shape under which
-those constructs will ever build.
+0..1 behavior. "many" is reserved for join multiplicity and is the only
+shape under which those constructs build.
 """
 
 from __future__ import annotations
@@ -64,7 +63,7 @@ def test_filter_default_unchanged():
 
 
 def test_many_enables_multiplicity_and_bad_values_are_named():
-    # 'many' is the stage-B opt-in: dup-key joins build ONLY under it.
+    # 'many' is the multiplicity opt-in: dup-key joins build ONLY under it.
     dup = pa.table({"id": [1, 1], "v": [10, 11]})
     with pytest.raises(ValueError, match="duplicate map key"):
         build("SELECT a, v FROM __THIS__ JOIN d ON a = d.id", statics={"d": dup})

@@ -1,4 +1,4 @@
-"""Wave-3 similarity builtins vs the duckdb oracle.
+"""Similarity builtins vs the duckdb oracle.
 
 Pins: packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md — the
 levenshtein / editdist3 / damerau_levenshtein / jaccard / hamming /

@@ -357,7 +357,7 @@ def build(models, sql=SQL, row_schema=None):
 
 
 def test_undeclared_transform_refuses():
-    with pytest.raises(Exception, match="not in the v0 catalogue"):
+    with pytest.raises(Exception, match="not in the builtin catalogue"):
         build({"other": STUMP})
 
 
@@ -629,8 +629,8 @@ def test_split_in_the_model_id(backend):
 
 
 def test_split_outside_the_call_still_works(backend):
-    """The control: the same expression one level out has always built, so a
-    fix that breaks this has moved the bug rather than removed it."""
+    """The control: the same expression one level out builds, so a change
+    that breaks this has moved the bug rather than removed it."""
     got = run(
         "SELECT trees(id, x, y) AS p, COALESCE(x, 0.0) AS c FROM __THIS__",
         FORK_SCHEMA,

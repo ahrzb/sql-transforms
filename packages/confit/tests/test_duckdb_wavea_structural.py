@@ -1,4 +1,4 @@
-"""Wave-A structural tails vs the duckdb oracle.
+"""Structural tails vs the duckdb oracle.
 
 Pins: packages/confit/docs/specs/2026-07-28-waveA-structural-tails.md +
 pins-waveA/*.json — structs-as-lanes, FROM colon alias, reverse()

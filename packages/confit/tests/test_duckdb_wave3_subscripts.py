@@ -1,4 +1,4 @@
-"""Wave-3 builtin pins: VARCHAR subscripts, codepoint probes, strip_accents.
+"""Builtin pins: VARCHAR subscripts, codepoint probes, strip_accents.
 
 Pins measured against duckdb 1.5.5 per
 packages/confit/docs/specs/2026-07-26-wave3-builtin-pins.md:

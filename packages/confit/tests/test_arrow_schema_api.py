@@ -1,8 +1,8 @@
-"""The arrow schema surface (spec: 2026-08-13-arrow-schema-api-design.md).
+"""The arrow schema surface.
 
 Every row-table schema is a pa.Schema; rows are dict-or-object in, dict
 out. Strict totality, no coercion, input range checks, nullability from
-the arrow field flag. The pydantic surface is deleted.
+the arrow field flag. There is no pydantic surface.
 """
 
 from types import SimpleNamespace
@@ -93,7 +93,7 @@ def test_extra_dict_keys_are_ignored():
 )
 def test_no_coercion(col, value, arrow_type):
     """The refusal names the ARROW type the caller declared, not DuckDB's
-    spelling of it (decided 2026-08-15)."""
+    spelling of it."""
     fn = build("SELECT a AS o FROM __THIS__")
     with pytest.raises(ValueError, match=f"column '{col}'.*{arrow_type}"):
         fn.infer_rows([{**ROW, col: value}])
@@ -135,8 +135,8 @@ def test_infer_arrow_serves_a_struct_row_column():
 
 def test_input_range_refuses_by_name():
     """The message quotes the DECLARATION back — the caller wrote
-    `pa.int32()`, so the refusal says `int32`, not DuckDB's `INTEGER`
-    (decided 2026-08-15). Arrow is the physical vocabulary at this boundary;
+    `pa.int32()`, so the refusal says `int32`, not DuckDB's `INTEGER`.
+    Arrow is the physical vocabulary at this boundary;
     DuckDB spellings stay in dialect/, which emits SQL text."""
     fn = build("SELECT b AS o FROM __THIS__")
     with pytest.raises(
@@ -605,12 +605,11 @@ def test_a_scalar_only_static_star_expands_in_declared_order(oracle):
 #
 # A static-tables-only query is evaluated ONCE at build by DuckDB and frozen.
 # A row limit picks WHICH rows survive, and without a total order
-# that pick is not a function of the query: measured 2026-08-19, the same
+# that pick is not a function of the query: measured, the same
 # `GROUP BY ... FETCH FIRST 1 ROWS ONLY` over the same four rows returned
 # FOUR distinct answers across twelve fresh connections -- and ORDER BY does
 # not fix it in general (a tie fed from a GROUP BY flipped in 20 runs). So
-# the constant path refuses EVERY row limit, ORDER BY or not (decision (a),
-# 2026-08-19); the provably-total case can be layered on if ever needed.
+# the constant path refuses EVERY row limit, ORDER BY or not.
 @pytest.mark.parametrize(
     "sql",
     [
@@ -620,7 +619,7 @@ def test_a_scalar_only_static_star_expands_in_declared_order(oracle):
         "SELECT v AS o FROM s FETCH FIRST 1 ROWS ONLY",
         "SELECT TOP 1 v AS o FROM s",
         "SELECT v AS o, sum(v) AS t FROM s GROUP BY v FETCH FIRST 1 ROWS ONLY",
-        # ORDER BY does NOT lift the refusal -- decision (a)
+        # ORDER BY does NOT lift the refusal
         "SELECT v AS o FROM s ORDER BY v LIMIT 1",
     ],
 )
@@ -645,9 +644,7 @@ def test_the_constant_path_without_a_limit_is_untouched():
 #
 # DuckDB decides AMBIGUITY on the bare HEAD name before it looks at struct
 # fields or lanes, and a static STRUCT's name binds for that purpose even
-# though we serve no struct value. Three spellings, one rule -- measured
-# 2026-08-19 as the largest single divergence class the campaign had seen
-# (78 of 161 findings at 20k seeds).
+# though we serve no struct value. Three spellings, one rule (measured).
 def _ambig(sql, row, static):
     """Assert BOTH engines refuse `sql` as ambiguous, over a fixed row table
     (`c0 STRUCT(f0 BIGINT), v BIGINT`) joined to static `s0`."""

@@ -1,4 +1,4 @@
-"""Wave-B regexp family vs the duckdb oracle.
+"""Regexp family vs the duckdb oracle.
 
 Pins: packages/confit/docs/specs/2026-07-27-waveB-regexp-pins.md — the rust
 `regex` crate behind the bind-time RE2 translation layer; ~ / SIMILAR TO

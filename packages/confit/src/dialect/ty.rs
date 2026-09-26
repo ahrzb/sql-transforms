@@ -1,5 +1,5 @@
-//! The plan's type lattice: DuckDB's types, unconditionally representable
-//! (design D2). Printers buy landing zones per dialect by reachability;
+//! The plan's type lattice: DuckDB's types, unconditionally representable.
+//! Printers buy landing zones per dialect by reachability;
 //! nothing here is about any target engine.
 //!
 //! Two text forms live here:
@@ -9,9 +9,9 @@
 //!   from `DESCRIBE` speak, ingested by [`DTy::from_duckdb`] and emitted
 //!   back by [`DTy::duckdb_name`] (CAST targets in the DuckDB printer).
 //!
-//! Types not yet ingestible (MAP, UNION, ENUM, BIT) refuse by name at the
-//! boundary — the design's rule that representable grows with a verifier,
-//! both text forms, and a printer row, never ad hoc.
+//! Types not ingestible (MAP, UNION, ENUM, BIT) refuse by name at the
+//! boundary: a type becomes representable with a verifier, both text
+//! forms, and a printer row, never ad hoc.
 
 use super::{unsup, DialectError};
 

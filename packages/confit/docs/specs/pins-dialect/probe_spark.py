@@ -1,9 +1,8 @@
 # ruff: noqa: E501  -- pin claims and queries are single-line by format (query lines map 1:1 to observed segments)
-"""Phase-0 Spark probes for the dialect logical plan
-(2026-08-13-dialect-logical-plan-design.md).
+"""Spark probes behind the dialect logical plan (`src/dialect/plan.rs`).
 
 Emits spark-ansi.json. The dialect under measurement is Spark PLUS the pinned
-configuration below (design decision D6) — a probe run under different flags
+configuration below — a probe run under different flags
 measures a different dialect and must not overwrite these pins.
 
 Run from the repo root:  uv run python packages/confit/docs/specs/pins-dialect/probe_spark.py
@@ -130,7 +129,7 @@ PINS = [
 
 
 def main() -> None:
-    builder = SparkSession.builder.appName("dialect-phase0-pins")
+    builder = SparkSession.builder.appName("dialect-pins")
     for k, v in PINNED_CONFIG.items():
         if k == "master":
             builder = builder.master(v)

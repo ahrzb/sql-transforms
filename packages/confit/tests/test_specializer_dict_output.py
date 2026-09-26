@@ -1,8 +1,7 @@
 """The dict row-output surface: DuckDBInferFn.infer_rows returns per-row
-dicts. Dict is now the only mode (the pydantic typed contract and its
-opt-in `output="dict"` are both deleted); these tests assert the
-dict-shape invariants that survive the mode collapse — fresh dicts per
-call, join/NULL field values, constant-engine serving.
+dicts, the only output mode. These tests assert the dict-shape
+invariants — fresh dicts per call, join/NULL field values, constant-engine
+serving.
 """
 
 from __future__ import annotations
