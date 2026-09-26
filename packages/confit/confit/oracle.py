@@ -71,13 +71,21 @@ class Oracle:
     unknown attributes forward to it, so the escape hatch is always open and
     no wrapper method has to be invented for it."""
 
-    # Recorded, not asserted. Whether the gate pins ==VERSION or a floor is
-    # the owner's ruling (oracle spec ASK-1); it lands as one assert here.
+    # Asserted on every open (oracle policy: retain 1.5.5, pin the test
+    # environment, assert when opening). An upgrade is a separate reviewed
+    # change that moves this and the dev pin together.
     VERSION = "1.5.5"
 
     Error = duckdb.Error
 
     def __init__(self) -> None:
+        if duckdb.__version__ != self.VERSION:
+            msg = (
+                f"the oracle is DuckDB {self.VERSION}, but duckdb "
+                f"{duckdb.__version__} is installed; an upgrade is a separate "
+                "reviewed change"
+            )
+            raise RuntimeError(msg)
         self.con = _raw_connect()
         self.con.execute("PRAGMA disable_optimizer")
 

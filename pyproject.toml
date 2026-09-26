@@ -12,7 +12,8 @@ sql-transform = { workspace = true }
 dev = [
     "confit",
     "sql-transform",
-    "duckdb>=1.5.5",
+    # the oracle's version, asserted by confit.oracle.Oracle; bump both together
+    "duckdb==1.5.5",
     "ipdb>=0.13.13",
     "ipython>=9.2.0",
     "maturin>=1.14,<2.0",

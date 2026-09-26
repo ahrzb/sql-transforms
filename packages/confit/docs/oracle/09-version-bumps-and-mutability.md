@@ -36,9 +36,9 @@ useful for a narrower optimizer-on, historical, or provenance-only purpose must 
 stated case by case; this fact does not establish general acceptability.
 
 *Evidence:* the named scripts; `scripts/mine_duckdb_corpus.py:111`;
-`docs/specs/pins-stageB/order-contract.json`. Enforcing the asserted version is
-ticket: version-assert; the missing common header remains proposed ticket:
-uniform-pin-header.
+`docs/specs/pins-stageB/order-contract.json`. `Oracle` now asserts its version on
+open (ticket: version-assert, done), which does not reach these bare connections; the
+missing common header remains proposed ticket: uniform-pin-header.
 
 **claim: mined-corpus-provenance.** **[FACT]** The miner ignores sqllogictest expected
 blocks, obtains rows through fresh optimizer-on connections, and writes no DuckDB

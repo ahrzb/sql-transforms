@@ -37,6 +37,13 @@ def test_construction_applies_the_pragma():
         assert "FILTER" in _plan(oracle)
 
 
+def test_construction_asserts_the_pinned_version(monkeypatch):
+    assert duckdb.__version__ == Oracle.VERSION
+    monkeypatch.setattr(duckdb, "__version__", "0.0.0")
+    with pytest.raises(RuntimeError, match=r"DuckDB 1\.5\.5.*0\.0\.0"):
+        Oracle()
+
+
 def test_optimizer_on_flips_the_same_connection():
     with Oracle() as oracle:
         con = oracle.con
