@@ -107,9 +107,6 @@ Questions waiting on a ruling are records in `docs/decisions/open/`, not items h
   `PrepareError` sites exist, and nothing ties each one to a class in the
   restriction inventory (`docs/specs/serving-contract.md`). A new refusal can
   therefore appear in no document.
-- **Leafless-struct presence lanes.** The `Present` arm in
-  `src/duckdb/arrow.rs::ingest` does not check that the batch column is a
-  struct, so a leafless struct lane reads any column's validity.
 
 ## Oracle, evidence and gates
 
