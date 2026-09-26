@@ -20,8 +20,8 @@ instead of carrying their own; two of those copies omitted rung 1
 
 **claim: directional-rungs.** Rungs 3 and 4 are not symmetric errors. Rung 4 may be a
 deliberate conservative refusal, as with divergence: regex-size-guard. Rung 3 is unsafe
-and appears only where DuckDB cannot be run, including divergence: schema-qualifiers and
-the row path of divergence: narrow-lane-overflow.
+and appears only where DuckDB cannot be run, including divergence: schema-qualifiers (and,
+until 2026-08-17, the row path of divergence: narrow-lane-overflow).
 
 A rung-1 or rung-2 mismatch fails parity with the chosen reference. Scheduling a fix
 under claim: feature-in-flight does not turn it into agreement. Separate references

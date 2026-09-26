@@ -124,7 +124,6 @@ product boundary. "DuckDB rejects" was measured on DuckDB 1.5.5 (2026-09-26).
 | Decimal expressions and decimal-literal arithmetic (`UNSHIPPED` decimals) | 2 unimplemented | m-8 lattice phase 5 |
 | `f32` row columns, lists, whole-struct output, bracket field access, `HUGEINT`/unsigned | 2 unimplemented | type-lattice width not built |
 | `decimal256` static columns | 4 invalid | DuckDB refuses them at Arrow registration |
-| Narrow-integer overflow trap on the row path | 2 unimplemented | m-8 phase 3 |
 | All-NULL `CASE`/`COALESCE`/`least`/`greatest`, bare `NULL` as `repeat`'s string (BLOB) | 2 unimplemented | DuckDB binds them; the BLOB type is not built |
 | `^`, prefix `~`, `#`, `NOT GLOB`; `COLUMNS(...)` in expressions; `* EXCLUDE (t.key)` on `USING`; mixed string/number `BETWEEN`/`IN` | 2 unimplemented | parser precedence or binding not reproduced; refused rather than served wrong |
 | Regex reject list and fuzzer-found regex classes | 2 unimplemented | RE2 semantics not reproduced by rust-regex on these constructs; DuckDB-self-inconsistent cases stay refused for that reason |

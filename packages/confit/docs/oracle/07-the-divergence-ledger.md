@@ -92,7 +92,7 @@ divergences, but remain indexed where readers expect them.
 | **divergence: decimal-cast-rounding** | same literal-typing mechanism / 2 | tied to parent | unruled |
 | **divergence: bind-time-constant-refusals** | conservative refusal / 4 | `PINNED`, permanent; cost belongs in the refusal-reason summary | unruled |
 | **divergence: regex-size-guard** | one-sided safety guard / 4 | `PINNED`, permanent | unruled |
-| **divergence: narrow-lane-overflow** | feature in flight / 3 on row path | `PINNED` until m-8 phase 3 | unruled |
+| **divergence: narrow-lane-overflow** | closed / was 3 on row path | closed by m-8 phase 3 (2026-08-17) | n/a |
 | **divergence: decimal-cast-artifact** | attributed historical residuals / 2 | attributed, not a residual set | **ruled** by ask: unshipped-never-compared |
 | **divergence: phase-two-width-residuals** | unreconstructed historical count / unknown | retired from current evidence; no current count or classification inferred | **ruled** by [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations) |
 | **divergence: string-builder-budget** | resource refusal / 4 | `PINNED`, permanent | unruled |
@@ -161,10 +161,10 @@ These notes supply the evidence that the concise index intentionally does not re
   `CAST(-2.5 AS BIGINT)`, `-2` instead of DuckDB DECIMAL's `-3`. The casts agree when
   given the same input type. The earlier 1-ulp value difference came from a deleted
   harness cast. Evidence: `known-limitations.md:166-174`; `fuzz.oracle._type_delta`.
-- **divergence: narrow-lane-overflow.** The row path serves an i64 value where the
-  intended narrow lane should overflow; `infer_arrow` refuses it by name. Evidence:
-  `known-limitations.md:177-188`; `test_integer_widths.py`. Behavioral coverage must
-  expose the defect; a strict xfail may track its repair without approving the mismatch.
+- **divergence: narrow-lane-overflow.** Closed. The row path used to serve an i64 value
+  where the narrow lane overflows; since `df918de` (2026-08-17) the overflow traps where it
+  is produced, on both output paths and inside wider expressions, exactly where DuckDB
+  raises (re-measured 2026-09-26). Evidence: `tests/test_integer_widths.py::test_narrow_overflow_traps_exactly_where_duckdbs_does` and `::test_the_narrow_trap_names_the_width`.
 - **divergence: decimal-cast-artifact.** In the 2026-08-17 baseline, seeds 869, 1554,
   and 3269 were 1-ulp deltas created by the harness cast and now classify `UNSHIPPED`;
   seed 998 was the signed-zero face of literal typing; seed 2668 was closed TASK-122.

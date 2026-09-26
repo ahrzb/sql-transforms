@@ -189,10 +189,12 @@ bool. Measured consequences:
   COMPUTES in two machine widths, i64 and f64. The width is observable
   exactly where DuckDB's is: the Arrow schema (shipped, TASK-79/m-8
   phase 2, catalogue pinned in `test_integer_widths.py`) and the overflow
-  trap threshold — the trap half is m-8 phase 3, so until it lands a
-  narrow lane that overflows serves the i64 value on the row path and
-  refuses by name at the `infer_arrow` boundary; every input this refuses
-  is one DuckDB itself errors on. HUGEINT and the unsigned family are not
+  trap threshold (m-8 phase 3, shipped 2026-08-17): a narrow value that
+  overflows traps where it is PRODUCED, on both output paths and inside a
+  wider expression (`a + a > 0`, `CAST(a + a AS BIGINT)`), exactly where
+  DuckDB raises. The trap text names the width (`value out of range for
+  INTEGER`) rather than DuckDB's operator wording, which the error-text
+  rule permits. HUGEINT and the unsigned family are not
   served at all — they refuse by name rather than collapse to i64 (see the
   static-column entry above); serving them is the i128 lane, whose
   cranelift dependency was verified GO on 2026-08-15 (TASK-100).
