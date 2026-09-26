@@ -162,8 +162,8 @@ class Verdict:
     kind: str  # one of KINDS
     klass: str = ""  # dedup key within the kind
     detail: str = ""
-    # the case's own construct tags, plus oracle-side notes (`cmp=`, a known
-    # width class, `fallback`)
+    # the case's own construct tags, plus oracle-side notes (a known width
+    # class, `fallback`)
     tags: list[str] = dfield(default_factory=list)
     # REFUSED only: what the baseline reading did with the same query, one of
     # ORACLE_OUTCOMES. Reporting, not adjudication — a query DuckDB serves and
@@ -419,41 +419,6 @@ def _duck_run(sql, case: G.Case, udf_objs):
         con.close()
 
 
-def compare_mode(case, static_only: bool) -> str:
-    """Which comparison the ORACLE owes this case.
-
-    row-path             order is defined by the SERVING contract (output
-                         follows input rows), not by SQL -- so DuckDB legs
-                         stay multiset (DuckDB's own order is not a function
-                         of the query), and the order half is checked by the
-                         batch-vs-single and reversal SELF-legs instead.
-    constant-ordered     static-only with a top-level ORDER BY. Ties make
-                         DuckDB's sequence one of several valid answers, so
-                         the check is multiset equality PLUS our-side
-                         sortedness on the key -- never byte-equality.
-    constant-unordered   static-only, no ORDER BY: SQL defines no order at
-                         all. Multiset, and known-limitations.md says so.
-    """
-    if not static_only:
-        return "row-path"
-    return "constant-ordered" if case.query.body.order_by else "constant-unordered"
-
-
-def _sorted_by(rows: list[dict], col: str) -> bool:
-    """Non-decreasing on `col`, DuckDB defaults: ASC, NULLS LAST, NaN last
-    but before NULL is not a thing -- DuckDB sorts NaN ABOVE every number."""
-
-    def k(v):
-        if v is None:
-            return (2, 0)
-        if isinstance(v, float) and v != v:
-            return (1, 0)
-        return (0, v)
-
-    vals = [k(r[col]) for r in rows if col in r]
-    return all(a <= b for a, b in zip(vals, vals[1:], strict=False))
-
-
 def _schema_delta(duck: pa.Schema, ours: pa.Schema):
     """`(kind, klass, detail)`, or None when the schemas agree.
 
@@ -559,11 +524,9 @@ def run_case(case: G.Case) -> Verdict:
         # discarding it, so the report can say what each refusal costs.
         klass = _refusal_class(cl_err)
         return Verdict("REFUSED", klass, cl_err, tags, _oracle_outcome(duck_off))
-    # "constant" is the third legitimate backend: the whole query folded at
-    # build time, so there is nothing left to compile OR interpret.
-    if fn_cl.backend not in ("cranelift", "constant"):
+    if fn_cl.backend != "cranelift":
         tags.append("fallback")
-    if fn_in.backend not in ("interpreter", "constant"):
+    if fn_in.backend != "interpreter":
         return Verdict(
             "DIVERGE_VALUE",
             "force-interp-ignored",
@@ -573,10 +536,6 @@ def run_case(case: G.Case) -> Verdict:
 
     # --- execute --------------------------------------------------------
     table = _arrow_table(case.row_schema, case.rows)
-    static_only = (
-        case.query.body.frm not in (None, "__THIS__") and not case.query.body.joins
-    )
-    tags.append(f"cmp={compare_mode(case, static_only)}")
 
     # No escape hatch for struct row columns: infer_arrow takes a struct row
     # schema, so a struct-bearing case runs through the SAME boundary as
@@ -584,8 +543,6 @@ def run_case(case: G.Case) -> Verdict:
     def run_fn(fn):
         """(rows, output schema, error) — one shape whichever entry point."""
         try:
-            if static_only:
-                return fn.infer_rows([]), fn.output_schema, None
             out = fn.infer_arrow(table)
             return out.to_pylist(), out.schema, None
         except Exception as e:  # noqa: BLE001
@@ -652,30 +609,6 @@ def run_case(case: G.Case) -> Verdict:
                 f"DuckDB errors, confit returns rows: {duck_err}",
                 t,
             )
-        if static_only:
-            want = duck_out.to_pylist()
-            if multiset(got_cl) != multiset(want):
-                return Verdict(
-                    "DIVERGE_VALUE", "static-only-values", f"{got_cl} != {want}", t
-                )
-            # constant-ordered: the multiset matched; the sequence must
-            # SATISFY the ORDER BY, not equal DuckDB's (ties make its
-            # sequence one of several valid answers).
-            ob = case.query.body.order_by
-            if ob is not None:
-                if got_cl and ob not in got_cl[0]:
-                    # not an output column -- cannot evaluate the key here;
-                    # multiset stands, and the fallback is LOGGED, not silent
-                    t.append("order-by-unevaluated")
-                elif not _sorted_by(got_cl, ob):
-                    return Verdict(
-                        "DIVERGE_VALUE",
-                        "constant-order",
-                        f"rows do not satisfy ORDER BY {ob}: {got_cl[:4]}",
-                        t,
-                    )
-            return Verdict("AGREE", "", "", t)
-
         delta = _schema_delta(duck_out.schema, sch_cl)
         if delta is not None:
             dkind, klass, detail = delta
@@ -727,7 +660,7 @@ def run_case(case: G.Case) -> Verdict:
     # it is the primary finding, which no later leg may replace.
     if v.kind not in ("AGREE", "UNSHIPPED"):
         return v
-    if trap_cl is not None or static_only:
+    if trap_cl is not None:
         return v  # the boundary legs all need a non-trapping row run
     _phase("confit:legs")
     extra = _extra_legs(fn_cl, case, table, got_cl, v.tags)

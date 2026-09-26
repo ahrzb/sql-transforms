@@ -1211,39 +1211,6 @@ fn materialize_statics(
     Ok(data)
 }
 
-/// The constant emitter: a static-tables-only query is evaluated ONCE, here
-/// at build time, by DuckDB itself — nothing dynamic remains and no IR is
-/// built at all. Statics materialize as native tables (duckdb's
-/// registered-arrow scan path has divergent filter semantics — see
-/// docs/specs/2026-07-26-stretch4-builtin-pins.md). Returns the fixed row
-/// dicts plus the result schema.
-fn eval_static_only(
-    py: Python<'_>,
-    sql: &str,
-    static_tables: &HashMap<String, Py<PyAny>>,
-) -> PyResult<(Vec<Py<PyAny>>, Py<PyAny>)> {
-    let duckdb = PyModule::import(py, "duckdb")?;
-    let con = duckdb.call_method0("connect")?;
-    for (name, table) in static_tables {
-        con.call_method1("register", (format!("__arrow_{name}"), table))?;
-        con.call_method1(
-            "execute",
-            (format!(
-                "CREATE TABLE \"{name}\" AS SELECT * FROM \"__arrow_{name}\""
-            ),),
-        )?;
-    }
-    let arrow = con
-        .call_method1("execute", (sql,))?
-        .call_method0("to_arrow_table")?;
-    let schema_obj = arrow.getattr("schema")?.unbind();
-    let mut rows = Vec::new();
-    for r in arrow.call_method0("to_pylist")?.try_iter()? {
-        rows.push(r?.unbind());
-    }
-    Ok((rows, schema_obj))
-}
-
 /// The execution backend: cranelift when it compiles, the interpreter as
 /// the always-available fallback — an uncovered op must not fail prepare.
 /// Both agree byte-for-byte under the 500-seed differential test.
@@ -1504,12 +1471,6 @@ enum Engine {
         /// pyclass is unsendable, so single-threaded RefCell suffices.
         marsh: Option<RefCell<Marshaller>>,
     },
-    /// Fixed row dicts from a static-only query (already dict-shaped), plus
-    /// the result's `pa.Schema` for `output_schema`.
-    Constant {
-        rows: Vec<Py<PyAny>>,
-        schema: Py<PyAny>,
-    },
 }
 
 #[pyclass(unsendable)]
@@ -1713,7 +1674,6 @@ impl DuckDBInferFn {
             });
         }
 
-        use super::specializer::PrepareError;
         let extern_specs: Vec<ExternSpec> = udf_decls.iter().map(|d| d.spec.clone()).collect();
         let model_catalog: Vec<super::specializer::plan::ModelTable> = tree_decls
             .iter()
@@ -1739,50 +1699,6 @@ impl DuckDBInferFn {
             &bind_impls,
         ) {
             Ok(p) => p,
-            // With declared UDFs the constant-emitter fallback is off: DuckDB
-            // cannot evaluate the udf calls, so surface the prepare error.
-            Err(e) if !udf_decls.is_empty() || !tree_decls.is_empty() => {
-                return Err(build_err(e.to_string()))
-            }
-            // Unsupported/unparseable SQL might still be a static-tables-only
-            // query (static driving table, aggregation, ORDER BY, DuckDB
-            // dialect beyond sqlparser): try the constant-emitter path. It
-            // self-validates — a dynamic query references the row table,
-            // which DuckDB does not know, so evaluation fails and the
-            // original clean error surfaces unchanged. Bind errors stay hard.
-            Err(e @ (PrepareError::Unsupported(_) | PrepareError::Parse(_))) => {
-                // A row limit picks which rows survive, and that pick is not
-                // a function of the query (four answers over twelve
-                // connections, measured; ORDER BY does not fix ties).
-                // Refused WHOLESALE rather than frozen
-                // from whichever evaluation the build happened to run.
-                if let Some(clause) =
-                    crate::specializer::frontend::row_limit_clause(&sql)
-                {
-                    return Err(build_err(format!(
-                        "unsupported: row limit ({clause}) on a static-tables-only query -- \
-                         which rows survive depends on scan order, not the query"
-                    )));
-                }
-                match eval_static_only(py, &sql, &static_tables) {
-                    Ok((rows, schema)) => {
-                        if strict_map {
-                            // Fixed rows regardless of input — the exact
-                            // opposite of out[i] <-> in[i].
-                            return Err(pyo3::exceptions::PyValueError::new_err(
-                                "unsupported: shape='map': a static-tables-only query emits fixed \
-                                 rows unrelated to the input rows",
-                            ));
-                        }
-                        return Ok(DuckDBInferFn {
-                            engine: Engine::Constant { rows, schema },
-                            row_table,
-                            shape_kind,
-                        });
-                    }
-                    Err(_) => return Err(build_err(e.to_string())),
-                }
-            }
             Err(e) => return Err(build_err(e.to_string())),
         };
         if strict_map {
@@ -1866,34 +1782,28 @@ impl DuckDBInferFn {
     fn output_schema(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.engine {
             Engine::Compiled { out_cols, plan, .. } => arrow::output_schema(py, out_cols, plan),
-            Engine::Constant { schema, .. } => Ok(schema.clone_ref(py)),
         }
     }
 
-    /// Which engine executes: "cranelift", "interpreter", or "constant".
+    /// Which engine executes: "cranelift" or "interpreter".
     #[getter]
     fn backend(&self) -> &'static str {
         match &self.engine {
             Engine::Compiled { fun, .. } => fun.name(),
-            Engine::Constant { .. } => "constant",
         }
     }
 
     /// How rows cross the Python boundary: "marshaller" (generated at
-    /// prepare), "generic" (env-pinned baseline), or "constant".
+    /// prepare) or "generic" (env-pinned baseline).
     #[getter]
     fn boundary(&self) -> &'static str {
         match &self.engine {
             Engine::Compiled { marsh: Some(_), .. } => "marshaller",
             Engine::Compiled { marsh: None, .. } => "generic",
-            Engine::Constant { .. } => "constant",
         }
     }
 
-    /// The row path: dict-or-object rows in, dict rows out. A
-    /// static-tables-only build emits fixed rows and cannot read input, so
-    /// it REFUSES anything but `infer_rows([])` rather than dropping what it
-    /// was handed.
+    /// The row path: dict-or-object rows in, dict rows out.
     fn infer_rows(&self, py: Python<'_>, rows: Vec<Py<PyAny>>) -> PyResult<Vec<Py<PyAny>>> {
         self.run_rows(py, &rows)
     }
@@ -1913,12 +1823,6 @@ impl DuckDBInferFn {
                 plan,
                 ..
             } => (fun, lanes, out_cols, plan),
-            Engine::Constant { .. } => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "infer_arrow: a static-tables-only query emits fixed rows — \
-                     use infer_rows([])",
-                ))
-            }
         };
         let input = arrow::ingest(py, &batch, lanes)?;
         let mut st = fun.new_state();
@@ -1938,35 +1842,6 @@ impl DuckDBInferFn {
                 plan,
                 marsh,
             } => (fun, lanes, out_cols, plan, marsh),
-            Engine::Constant { rows: fixed, .. } => {
-                // This build reads only static tables, so it cannot see
-                // input rows at all — and silently dropping them would be the
-                // one mistake at this boundary that does not refuse by name.
-                // It would hide a real caller bug: N request rows through a
-                // function that structurally cannot read them returns 1 fixed
-                // row, and the caller's positional assumption breaks
-                // somewhere downstream instead of here.
-                if !rows.is_empty() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "this query reads only static tables, so it emits {} \
-                         fixed row(s) and cannot see the {} row(s) given — \
-                         call infer_rows([])",
-                        fixed.len(),
-                        rows.len(),
-                    )));
-                }
-                let mut out = Vec::with_capacity(fixed.len());
-                for r in fixed.iter() {
-                    // A fresh copy per call: callers may mutate.
-                    let d = r.bind(py).cast::<PyDict>().map_err(|_| {
-                        pyo3::exceptions::PyValueError::new_err(
-                            "internal: constant rows are dicts",
-                        )
-                    })?;
-                    out.push(d.copy()?.unbind().into_any());
-                }
-                return Ok(out);
-            }
         };
         if let Some(cell) = marsh {
             // A reentrant call (row property re-entering infer mid-marshal)

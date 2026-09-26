@@ -41,8 +41,12 @@ CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 # test/sql/join/inner/equality_join_limits.test do not match -- correctly,
 # because DuckDB answers them UTINYINT/USMALLINT/UINTEGER and this engine has
 # no unsigned lane, so a value match there would hide a diverging output
-# TYPE. A drop below this is a regression.
-MATCH_FLOOR = 548
+# TYPE. The 9 table-function statements (`FROM range(1) ...`, no base
+# table) matched only through the static-only fold; a query that reads no
+# request table is outside the model and the fold is removed
+# (docs/decisions/closed/static-only-queries.md), so they refuse now. A
+# drop below this is a regression.
+MATCH_FLOOR = 539
 
 # Build-time errors that are documented contract limits, not bugs: the
 # documented prefixes. `bind error:` is deliberately NOT clean here -- every
@@ -163,14 +167,7 @@ def _replay(case: dict) -> tuple[str, str]:
     if case.get("source") in _KNOWN_DIVERGENT_SOURCES:
         return "unsupported", "known oracle divergence (see _KNOWN_DIVERGENT_SOURCES)"
     try:
-        # A constant build reads only static tables and refuses rows it
-        # cannot see, so the replay hands it the empty call it documents
-        # rather than the driving table.
-        rows_in = (
-            []
-            if fn.backend == "constant"
-            else arrow[driving].to_pylist()  # already TOTAL against row_schema
-        )
+        rows_in = arrow[driving].to_pylist()  # already TOTAL against row_schema
         got = [list(r.values()) for r in fn.infer_rows(rows_in)]
     except Exception as e:  # noqa: BLE001
         return "FAIL", f"run error: {type(e).__name__}: {e}"

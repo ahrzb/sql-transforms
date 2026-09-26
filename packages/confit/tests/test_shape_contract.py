@@ -49,8 +49,8 @@ def test_map_rejects_row_dropping_constructs():
             shape="map",
             statics={"d": DIM},
         )
-    # A static-only query emits fixed rows unrelated to the input.
-    with pytest.raises(ValueError, match="shape='map'.*static-tables-only"):
+    # A static-only query is outside the model under every shape.
+    with pytest.raises(ValueError, match="driving relation"):
         build("SELECT max(id) FROM d", shape="map", statics={"d": DIM})
 
 

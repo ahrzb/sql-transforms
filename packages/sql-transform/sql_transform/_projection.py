@@ -500,12 +500,12 @@ class SQLProjection:
 
     @property
     def backend(self) -> str:
-        """Execution backend: "cranelift", "interpreter", or "constant"."""
+        """Execution backend: "cranelift" or "interpreter"."""
         return self._serving_fn().backend
 
     @property
     def boundary(self) -> str:
-        """Boundary path: "marshaller", "generic", or "constant"."""
+        """Boundary path: "marshaller" or "generic"."""
         return self._serving_fn().boundary
 
     @property

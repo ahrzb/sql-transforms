@@ -786,7 +786,7 @@ fn bind_from<'a>(
     let n_plain = in_cols.len() - structs.iter().map(|s| s.leaf_count()).sum::<usize>();
     let from = cross_joins_as_commas(&select.from);
     let Some((table, comma_rels)) = from.split_first() else {
-        return Err(unsup("FROM-less SELECT"));
+        return Err(unsup("FROM-less SELECT -- a query must read the request table"));
     };
     let dyn_name = match plain_table(&table.relation)? {
         Some((n, alias)) => {
@@ -2586,66 +2586,6 @@ fn dedup_output_names(cols: &mut [Col]) {
 enum StarLane {
     Real(SExpr),
     Opaque(String),
-}
-
-/// Does this statement carry a row limit ANYWHERE -- top level,
-/// CTE, derived table, set-operation side? The constant emitter freezes ONE
-/// DuckDB evaluation, and which rows survive a limit is not a function of
-/// the query: measured, the same `GROUP BY .. FETCH FIRST 1` over the same
-/// rows answered four ways across twelve fresh connections, and ORDER BY
-/// does not fix ties. Returns the clause's name for the refusal, None when
-/// there is none or the SQL does not parse (an unparseable query cannot be
-/// inspected and falls through to DuckDB).
-pub(crate) fn row_limit_clause(sql: &str) -> Option<&'static str> {
-    use sqlparser::ast::{Query, SetExpr, Statement, TableFactor};
-    fn in_query(q: &Query) -> Option<&'static str> {
-        if q.limit_clause.is_some() {
-            return Some("LIMIT/OFFSET");
-        }
-        if q.fetch.is_some() {
-            return Some("FETCH FIRST/NEXT");
-        }
-        if let Some(w) = &q.with {
-            for cte in &w.cte_tables {
-                if let Some(c) = in_query(&cte.query) {
-                    return Some(c);
-                }
-            }
-        }
-        in_body(&q.body)
-    }
-    fn in_body(b: &SetExpr) -> Option<&'static str> {
-        match b {
-            SetExpr::Select(s) => {
-                if s.top.is_some() {
-                    return Some("SELECT TOP");
-                }
-                for twj in &s.from {
-                    for rel in std::iter::once(&twj.relation)
-                        .chain(twj.joins.iter().map(|j| &j.relation))
-                    {
-                        if let TableFactor::Derived { subquery, .. } = rel {
-                            if let Some(c) = in_query(subquery) {
-                                return Some(c);
-                            }
-                        }
-                    }
-                }
-                None
-            }
-            SetExpr::Query(q) => in_query(q),
-            SetExpr::SetOperation { left, right, .. } => {
-                in_body(left).or_else(|| in_body(right))
-            }
-            _ => None,
-        }
-    }
-    let dialect = GenericDialect {};
-    let statements = Parser::new(&dialect).try_with_sql(sql).ok()?.parse_statements().ok()?;
-    statements.iter().find_map(|s| match s {
-        Statement::Query(q) => in_query(q),
-        _ => None,
-    })
 }
 
 /// `AS x(p, q)` on a joined relation: a positional rename over the DECLARED

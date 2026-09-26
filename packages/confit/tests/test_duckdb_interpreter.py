@@ -456,49 +456,21 @@ def test_nan_filter_differential_on_native_tables():
 
 
 # ----------------------------------------------------- static-only queries --
-# Evaluated once at build time by DuckDB; nothing dynamic remains.
+# A query that reads no request table is outside the model: it refuses at
+# build, naming the driving relation (docs/decisions/closed/static-only-queries.md).
 
 
-def test_static_only_query_is_a_constant_emitter():
-    dim = static(
-        {"id": "int", "name": "str"},
-        [
-            {"id": 1, "name": "one"},
-            {"id": 2, "name": "two"},
-            {"id": 3, "name": "three"},
-        ],
-    )
-    schema = _row_schema({"a": "int"})
-    fn = DuckDBInferFn(
-        "SELECT name, id * 10 AS x FROM dim WHERE id <> 2 ORDER BY id DESC",
-        row_tables={"__THIS__": schema},
-        static_tables={"dim": dim},
-    )
-    # The result is fixed at build time — constructs like ORDER BY work
-    # because DuckDB itself evaluated it. Input rows are not "irrelevant"
-    # though: this build cannot READ them, so handing it any is a refusal
-    # rather than a silent drop.
-    assert fn.infer_rows([]) == [
-        {"name": "three", "x": 30},
-        {"name": "one", "x": 10},
-    ]
-    for rows_in in ([{"a": 1}], [{"a": 1}, {"a": 2}]):
-        with pytest.raises(ValueError, match="infer_rows"):
-            fn.infer_rows(rows_in)
-
-
-def test_static_only_aggregation_works_via_duckdb():
+def test_a_static_only_aggregation_refuses_at_build():
     dim = static({"v": "int"}, [{"v": 1}, {"v": 2}, {"v": 3}])
-    fn = DuckDBInferFn(
-        "SELECT sum(v) AS s FROM dim",
-        row_tables={"__THIS__": _row_schema({"a": "int"})},
-        static_tables={"dim": dim},
-    )
-    assert fn.infer_rows([]) == [{"s": 6}]
+    with pytest.raises(ValueError, match="driving relation"):
+        DuckDBInferFn(
+            "SELECT sum(v) AS s FROM dim",
+            row_tables={"__THIS__": _row_schema({"a": "int"})},
+            static_tables={"dim": dim},
+        )
 
 
 def test_unknown_driving_table_stays_clean_unsupported():
-    # Not a static table either -> the original clean unsupported surfaces.
     with pytest.raises(ValueError, match="driving relation"):
         DuckDBInferFn(
             "SELECT x FROM nope",
@@ -518,15 +490,6 @@ def test_v0_queries_run_on_cranelift():
         static_tables={"dim": DIM},
     )
     assert fn.backend == "cranelift"
-
-
-def test_static_only_backend_is_constant():
-    fn = DuckDBInferFn(
-        "SELECT sum(v) AS s FROM dim",
-        row_tables={"__THIS__": _row_schema({"a": "int"})},
-        static_tables={"dim": static({"v": "int"}, [{"v": 1}, {"v": 2}])},
-    )
-    assert fn.backend == "constant"
 
 
 # --------------------------------------------------------- M-boundary:

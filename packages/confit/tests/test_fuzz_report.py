@@ -113,7 +113,7 @@ def test_every_kind_lands_in_exactly_one_outcome_category():
 def test_unresolved_is_counted_apart_from_agreement_and_mismatch(tmp_path, capsys):
     results = [
         _r(1, "AGREE"),
-        _r(2, "AGREE", tags=["order-by-unevaluated"]),
+        _r(2, "AGREE"),
         _r(3, "AGREE_TRAP"),
         _r(4, "DIVERGE_VALUE", "values"),
         _r(5, "OPT_EMULATED", "x"),
@@ -127,7 +127,6 @@ def test_unresolved_is_counted_apart_from_agreement_and_mismatch(tmp_path, capsy
     sec = _section(capsys.readouterr().out, "outcomes")
     assert sec.splitlines() == [
         f"  {'agreement':11} {3:6}",
-        f"  {'':11} {1:6}  of them order-by-unevaluated: sortedness not established",
         f"  {'mismatch':11} {2:6}",
         f"  {'unresolved':11} {2:6}  "
         "no verdict: neither agreement nor a confirmed defect",
@@ -278,7 +277,7 @@ def test_the_last_phase_marker_attributes_the_side(stderr, side):
 def test_abstentions_are_reported_as_rates_by_kind_and_side(tmp_path, capsys):
     results = [_r(i, "AGREE") for i in range(6)]
     results += [
-        _r(6, "AGREE", tags=["order-by-unevaluated"]),
+        _r(6, "AGREE"),
         _r(7, "SKIP", "oracle:KeyError"),
         {**_r(8, "TIMEOUT", "timeout:oracle"), "side": "oracle"},
         {**_r(9, "PANIC", "panic:confit"), "side": "confit"},
@@ -289,5 +288,4 @@ def test_abstentions_are_reported_as_rates_by_kind_and_side(tmp_path, capsys):
         f"  {'SKIP':22} {1:6}  {10.0:5.1f}%",
         f"  {'TIMEOUT':22} {1:6}  {10.0:5.1f}%  oracle 1",
         f"  {'PANIC':22} {1:6}  {10.0:5.1f}%  confit 1",
-        f"  {'order-by-unevaluated':22} {1:6}  {10.0:5.1f}%",
     ]

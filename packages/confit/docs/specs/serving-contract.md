@@ -40,9 +40,8 @@ not inferred from a sample batch. Within-block join ordering follows the
 [ordering contract](../oracle/03-nondeterminism.md), not a promise to reproduce
 DuckDB's hash-join traversal.
 
-`backend` is `cranelift`, `interpreter`, or `constant`; `boundary` is
-`marshaller`, `generic`, or `constant`. `constant` is the static-tables-only
-path: DuckDB evaluates the query once at construction and the answer is frozen.
+`backend` is `cranelift` or `interpreter`; `boundary` is `marshaller` or
+`generic`.
 
 Construction refusal is a `ValueError` identifying the unsupported construct.
 The [refusal specification](../oracle/04-verdicts-agreement-abstention-refusal.md)
@@ -103,7 +102,7 @@ DuckDB 1.5.5.
 |---|---|---|
 | Aggregation, `GROUP BY`/`HAVING`, windows, `QUALIFY` over request rows | 1 outside | answer depends on sibling request rows |
 | `ORDER BY`, `LIMIT`/`OFFSET`/`FETCH`/`TOP`, `DISTINCT` over request rows | 1 outside | order, count or identity across the batch |
-| Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; the static-only path serves them by one construction-time DuckDB evaluation (claim: one-door-bypass) |
+| Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; refused at construction |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | CTEs, subqueries (incl. derived tables), set operations, named windows used row-locally | 2 inside, refused | DuckDB serves them; syntax refusals, not scope |
 | More than one join under `shape='many'` | 2 inside, refused | named rejection |
@@ -116,7 +115,6 @@ DuckDB 1.5.5.
 | Non-constant regex patterns, replacements, options, group indexes | 3 restriction | specialization-inherent: per-row compilation (exclusion: per-row-general-work) |
 | 1 GiB string-builder budget, regex program-size guard, 2 GiB Arrow batch | 3 restriction | resource (exclusion: resource-ceilings) |
 | Default-shape refusals: duplicate join keys, inner joins and `WHERE` under `shape='map'` | 3 restriction | explicit multiplicity API; `shape='many'`/`'filter'` opt in |
-| Static-only row limits | 3 restriction | nondeterministic frozen answer; also class 1 as a static-only query |
 | Scalar calls with `OVER`/`FILTER`/`IGNORE NULLS`/`WITHIN GROUP`; `SIMILAR TO … ESCAPE`; `QUALIFY` without a window | 4 invalid | DuckDB rejects |
 | `bind error:` refusals: unknown or ambiguous column, constant cast or constant overflow DuckDB errors on at plan time | 4 invalid | wrong against the declared schema, or DuckDB rejects |
 | Static table not provided; UDF declarations inconsistent with their use (width-1 list return, argument width) | 4 invalid | inconsistent caller declaration |

@@ -242,6 +242,6 @@ confit's own serving-row order.
 *Argued:* [claim: nondeterminism-axiom](oracle/03-nondeterminism.md#decision-rule).
 *Pinned:* `tests/known_divergences/test_trap_elision.py::test_duckdbs_is_null_elision_is_not_a_function_of_the_query_or_the_rows`
 (the optimizer-on reading depends on insert history, so the oracle is
-optimizer-off) and `tests/test_arrow_schema_api.py::test_a_row_limit_on_the_constant_path_refuses`
-(a row limit without a total order is refused, not frozen).
+optimizer-off) and `tests/test_arrow_schema_api.py::test_a_static_tables_only_query_refuses_at_build`
+(nothing is frozen at construction: a query with no request row refuses).
 

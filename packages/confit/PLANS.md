@@ -12,12 +12,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Waiting on the owner
 
-- Removing the static-only fold (`eval_static_only`/`Engine::Constant`,
-  `backend == "constant"`): ruled out of the model
-  (`docs/decisions/closed/static-only-queries.md`), removal changes
-  user-visible behavior, drops the corpus floor by the table-function matches
-  it serves, and touches `sql_transform/_projection.py`'s documented `backend`
-  values and the fuzzer's `static_agg` arm and `constant-*` modes.
 - `docs/decisions/open/`: next query classes (reading N=3 ranks derived
   tables first: 144 of 525 refusals of queries DuckDB answers), C1 depth,
   native-transform parity bounds.

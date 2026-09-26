@@ -1303,21 +1303,6 @@ def _query(rng, env: Env, statics, tags, hostile_ids) -> Q:
             sub=inner,
         )
         env = oenv
-    elif r < 0.87 and statics:  # static-only aggregation
-        tags.append("static_agg")
-        sname = rng.choice(list(statics))
-        sch, _ = statics[sname]
-        sleaves = leaves(sch)
-        if not sleaves:
-            return _query(rng, env, {}, tags, hostile_ids)  # opaque-only static
-        nums = [c for c, t, _ in sleaves if t in ("int", "float")]
-        col = rng.choice(nums) if nums else sleaves[0][0]
-        agg, _ = rng.choice(list(AGGS.items()))
-        body = Sel([(Call(agg, [Col(col, None, "float")]), "v")], sname)
-        if rng.random() < 0.5:
-            g = rng.choice(sleaves)[0]
-            body.items.insert(0, (Col(g, None, "float"), "g"))
-            body.group_by = [Col(g, None, "float")]
     else:  # struct_pack projection
         tags.append("struct")
         k = rng.randrange(1, 4)

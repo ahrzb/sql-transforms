@@ -408,15 +408,35 @@ def test_foreign_type_unreferenced_builds_referenced_refuses():
         build("SELECT v AS o FROM __THIS__", schema=schema)
 
 
-def test_constant_static_only_query_serves_via_infer_rows():
+# A query that reads no request table is outside the model
+# (docs/decisions/closed/static-only-queries.md): it refuses at build, naming
+# why -- whatever else it carries (aggregates, ORDER BY, row limits) and
+# under every shape.
+@pytest.mark.parametrize(
+    ("sql", "shape"),
+    [
+        ("SELECT sum(v) AS o FROM s", None),
+        ("SELECT sum(v) AS o FROM s", "many"),
+        ("SELECT sum(v) AS o FROM s ORDER BY 1", None),
+        ("SELECT v AS o FROM s LIMIT 1", None),
+        ("SELECT v AS o FROM s ORDER BY v LIMIT 1", None),
+        ("SELECT TOP 1 v AS o FROM s", None),
+    ],
+)
+def test_a_static_tables_only_query_refuses_at_build(sql, shape):
     statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
-    fn = DuckDBInferFn(
-        "SELECT sum(v) AS o FROM s",
-        row_tables={"__THIS__": SCHEMA},
-        static_tables=statics,
-    )
-    assert fn.backend == "constant"
-    assert fn.infer_rows([]) == [{"o": 6}]
+    kw = {"shape": shape} if shape else {}
+    # The first construct the binder meets is the one named: a clause the
+    # row path never serves (ORDER BY, a row limit) or the driving relation.
+    with pytest.raises(
+        ValueError, match="^unsupported: (.*driving relation|ORDER BY|LIMIT|SELECT TOP)"
+    ):
+        DuckDBInferFn(sql, row_tables={"__THIS__": SCHEMA}, static_tables=statics, **kw)
+
+
+def test_a_from_less_query_refuses_at_build():
+    with pytest.raises(ValueError, match="FROM-less SELECT -- a query must read"):
+        build("SELECT 1 + 2 AS o")
 
 
 def test_empty_rows_in_empty_rows_out():
@@ -441,63 +461,6 @@ def test_non_arrow_schema_refuses_by_name():
 
     with pytest.raises(ValueError, match="pyarrow.Schema"):
         build("SELECT a AS o FROM __THIS__", schema=Row)
-
-
-# A static-tables-only query compiles to a fixed answer, so it structurally
-# cannot see input rows. Dropping them silently would be the one input mistake
-# at this boundary that does not refuse by name, and the one that hides a real
-# caller bug: serving N request rows through a function that cannot read them
-# returns 1 fixed row, and the caller's zip/positional assumption breaks
-# somewhere downstream instead of here.
-def _constant_fn(shape=None):
-    statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
-    kw = {"shape": shape} if shape else {}
-    return DuckDBInferFn(
-        "SELECT sum(v) AS o FROM s",
-        row_tables={"__THIS__": SCHEMA},
-        static_tables=statics,
-        **kw,
-    )
-
-
-def test_constant_build_refuses_rows_it_cannot_read():
-    fn = _constant_fn()
-    assert fn.backend == "constant"
-    with pytest.raises(ValueError, match="infer_rows"):
-        fn.infer_rows([ROW])
-    with pytest.raises(ValueError, match="infer_rows"):
-        fn.infer_rows([ROW] * 3)
-
-
-def test_constant_build_still_serves_on_empty_rows():
-    fn = _constant_fn()
-    assert fn.infer_rows([]) == [{"o": 6}]
-    assert fn.infer_rows([]) == [{"o": 6}]  # repeatable, fresh dict each call
-
-
-def test_constant_refusal_names_the_query_shape():
-    fn = _constant_fn()
-    with pytest.raises(ValueError) as e:
-        fn.infer_rows([ROW])
-    msg = str(e.value)
-    assert "static" in msg and "infer_rows([])" in msg, msg
-
-
-def test_constant_refusal_holds_under_shape_many():
-    """shape='map' already refuses to BUILD a constant engine (fixed rows
-    cannot be one-out-per-row-in), so only the default and 'many' shapes
-    reach this boundary at all."""
-    fn = _constant_fn(shape="many")
-    assert fn.backend == "constant"
-    with pytest.raises(ValueError, match="infer_rows"):
-        fn.infer_rows([ROW])
-    assert fn.infer_rows([]) == [{"o": 6}]
-
-
-def test_compiled_build_is_untouched_by_the_constant_guard():
-    fn = build("SELECT a + 1.0 AS o FROM __THIS__")
-    assert fn.backend != "constant"
-    assert fn.infer_rows([ROW, ROW]) == [{"o": 2.5}, {"o": 2.5}]
 
 
 # --------------------------------------------------------- the static star --
@@ -599,45 +562,6 @@ def test_a_scalar_only_static_star_expands_in_declared_order(oracle):
     rows = fn.infer_rows([{"k": 1}])
     assert list(rows[0].keys()) == names
     assert [tuple(x.values()) for x in rows] == want
-
-
-# ------------------------------------------- row limits on the constant path --
-#
-# A static-tables-only query is evaluated ONCE at build by DuckDB and frozen.
-# A row limit picks WHICH rows survive, and without a total order
-# that pick is not a function of the query: measured, the same
-# `GROUP BY ... FETCH FIRST 1 ROWS ONLY` over the same four rows returned
-# FOUR distinct answers across twelve fresh connections -- and ORDER BY does
-# not fix it in general (a tie fed from a GROUP BY flipped in 20 runs). So
-# the constant path refuses EVERY row limit, ORDER BY or not.
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "SELECT v AS o FROM s LIMIT 1",
-        "SELECT v AS o FROM s LIMIT 1 OFFSET 1",
-        "SELECT v AS o FROM s OFFSET 1",
-        "SELECT v AS o FROM s FETCH FIRST 1 ROWS ONLY",
-        "SELECT TOP 1 v AS o FROM s",
-        "SELECT v AS o, sum(v) AS t FROM s GROUP BY v FETCH FIRST 1 ROWS ONLY",
-        # ORDER BY does NOT lift the refusal
-        "SELECT v AS o FROM s ORDER BY v LIMIT 1",
-    ],
-)
-def test_a_row_limit_on_the_constant_path_refuses(sql):
-    statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
-    with pytest.raises(ValueError, match="row limit"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": SCHEMA}, static_tables=statics)
-
-
-def test_the_constant_path_without_a_limit_is_untouched():
-    statics = {"s": pa.table({"v": pa.array([1, 2, 3], pa.int64())})}
-    fn = DuckDBInferFn(
-        "SELECT sum(v) AS o FROM s ORDER BY 1",
-        row_tables={"__THIS__": SCHEMA},
-        static_tables=statics,
-    )
-    assert fn.backend == "constant"
-    assert fn.infer_rows([]) == [{"o": 6}]
 
 
 # ------------------------------------------------------ bare-name ambiguity --

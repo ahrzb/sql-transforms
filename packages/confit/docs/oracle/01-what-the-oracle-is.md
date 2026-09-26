@@ -111,15 +111,15 @@ oracle/test environment pins that version exactly, and opening the oracle assert
 constrained by this rule. Changing the reference version is a separate reviewed change
 that moves `Oracle.VERSION` and the dev pin together.
 
-**claim: one-door-bypass.** The static-only engine path bypasses the oracle:
-`eval_static_only` in `packages/confit/src/duckdb/mod.rs` calls `duckdb.connect()`
-directly and evaluates, with the optimizer on, a query that reads no request table.
-The [goal](../goal.md#scope) places such queries outside the model. Pin-capture scripts
-are a separate family described by **claim: capture-outside-the-oracle** in
+**claim: engine-never-calls-duckdb.** The engine does not call DuckDB: it
+serves from compiled code and refuses at construction what it cannot serve,
+including every query that reads no request table. DuckDB is reached only
+through the oracle. Pin-capture scripts are a separate family described by
+**claim: capture-outside-the-oracle** in
 [version changes](09-version-bumps-and-mutability.md).
 
-*Evidence:* `eval_static_only` and its caller in `packages/confit/src/duckdb/mod.rs`;
-the [fold decision](../decisions/closed/static-only-queries.md).
+*Evidence:* no `duckdb` import in `packages/confit/src/`; the
+[fold decision](../decisions/closed/static-only-queries.md).
 
 ## Nearby DuckDB uses with different contracts
 

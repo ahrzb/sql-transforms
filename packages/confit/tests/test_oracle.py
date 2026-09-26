@@ -182,10 +182,8 @@ _BAN = "duckdb.connect" + "("
 
 def test_no_raw_connections_in_the_sources():
     """The tests and the fuzzer take their DuckDB from the oracle, and this is
-    where that is enforced -- off the files, not at runtime, because the
-    engine reaches for the same module attribute to fold a static-tables-only
-    query and a patched `connect` cannot tell the two callers apart. Reading
-    the sources also covers the tests a run never reaches."""
+    where that is enforced -- off the files, which also covers the tests a
+    run never reaches."""
     root = Path(__file__).resolve().parent.parent
     offenders = sorted(
         p.relative_to(root).as_posix()
