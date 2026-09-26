@@ -80,7 +80,9 @@ QUERIES = {
 def registry() -> dict:
     return {
         "half": PythonUDF(
-            "half", lambda x: None if x is None else x * 0.5, ("f64",), ("f64",)
+            "half",
+            lambda x: None if x is None else x * 0.5,
+            pa.schema([("x", pa.float64())]),
         ),
         "sc": StandardScaler(),
         "pca": PCA(n_components=2),
