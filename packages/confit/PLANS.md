@@ -6,15 +6,16 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **Actionable refusals.** 53% of refusals say what to do (reading N=3).
-   Walk the largest classes that do not (derived tables, CTEs, DISTINCT,
-   ORDER BY, row limits) and add the concrete alternative where one exists.
+Nothing autonomous remains that moves a KPI; the largest gains wait on the
+owner's rulings below. Refusals left without a remedy (WITH, derived tables,
+DISTINCT, ORDER BY, GROUP BY, row limits) have no row-path alternative to
+name until their query class is served.
 
 ## Waiting on the owner
 
-- `docs/decisions/open/`: next query classes (reading N=3 ranks derived
-  tables first: 144 of 525 refusals of queries DuckDB answers), C1 depth,
-  native-transform parity bounds.
+- `docs/decisions/open/`: next query classes (derived tables and row-local
+  CTEs: 238 of 251 such refusals are row-local, about 12% of the campaign),
+  C1 depth, native-transform parity bounds.
 
 ## Query classes (large; order is the owner's call)
 
