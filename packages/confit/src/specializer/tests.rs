@@ -692,7 +692,10 @@ fn unsupported_constructs_are_named_cleanly() {
         ("SELECT a FROM __THIS__ ORDER BY a", "ORDER BY"),
         // Bare NULL serves (int32, DuckDB's SQLNULL surface); only the
         // all-NULL family forms refuse.
-        ("SELECT coalesce(NULL, NULL) FROM __THIS__", "NULL"),
+        (
+            "SELECT CASE WHEN (a + 9223372036854775807) > 0 THEN NULL END FROM __THIS__",
+            "every branch is NULL",
+        ),
         ("SELECT a FROM other_table", "must be the dynamic table"),
     ] {
         match prep(sql, &schema) {

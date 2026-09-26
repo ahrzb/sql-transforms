@@ -1797,3 +1797,47 @@ def test_a_constant_try_cast_folds_and_spares_its_sibling_differential():
         {"x": "float"},
         [{"x": 2.0}, {"x": 0.5}],
     )
+
+
+_ALL_NULL = [
+    "CASE WHEN a > 0 THEN NULL END",
+    "CASE a WHEN 1 THEN NULL ELSE NULL END",
+    "coalesce(NULL, NULL)",
+    "ifnull(NULL, NULL)",
+    "least(NULL, NULL)",
+    "greatest(NULL, NULL)",
+    "coalesce(CASE WHEN a > 0 THEN NULL END, NULL)",
+]
+_NULL_CONTEXTS = [
+    "{}",
+    "-({})",
+    "coalesce({}, 'x')",
+    "coalesce({}, 2.5e0)",
+    "upper({})",
+    "{} = s",
+    "abs({})",
+    "{} || 'x'",
+    "concat({}, 'x')",
+    "CASE WHEN a > 0 THEN {} ELSE 'z' END",
+    "{} + 1",
+]
+
+
+@pytest.mark.parametrize("form", _ALL_NULL)
+@pytest.mark.parametrize("ctx", _NULL_CONTEXTS)
+def test_an_all_null_form_types_as_a_bare_null_differential(form, ctx):
+    # DuckDB types each all-NULL form exactly as a bare NULL literal: it
+    # adopts its context's type, and is INTEGER at the top level.
+    sql = f"SELECT {ctx.format(form)} AS o FROM __THIS__"
+    got, want = _legs(
+        sql, {"a": "int", "s": "str"}, [{"a": 1, "s": "q"}, {"a": -1, "s": "r"}], None
+    )
+    compare.assert_rows(got, want, ctx=sql)
+    fn = DuckDBInferFn(
+        sql,
+        row_tables={"__THIS__": _row_schema({"a": "int", "s": "str"})},
+        static_tables={},
+    )
+    o = Oracle()
+    o.load("__THIS__", static({"a": "int", "s": "str"}, [{"a": 1, "s": "q"}]))
+    compare.assert_schema(fn.output_schema, o.answer(sql).schema, ctx=sql)
