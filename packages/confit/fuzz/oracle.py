@@ -62,6 +62,7 @@ import dataclasses
 import decimal
 import math
 import os
+import re
 from dataclasses import dataclass
 from dataclasses import field as dfield
 
@@ -914,6 +915,22 @@ def _first_words(s: str, n: int = 6) -> str:
     return " ".join(s.split()[:n])[:80]
 
 
+# Generator reach, per unshipped feature: does the SQL contain the construct
+# that yields the width? Read off the rendered text, string literals removed,
+# so a verdict of any kind still says whether the width was in play.
+# `decimals`: a bare decimal literal (`2.5`, DECIMAL on DuckDB), not `2.5e0`.
+_STRING_LIT = re.compile(r"'(?:[^']|'')*'")
+_UNSHIPPED_REACH = {
+    "decimals": re.compile(r"(?<![\w.])\d+\.\d+(?![\w.])"),
+}
+UNSHIPPED_FEATURES = tuple(_UNSHIPPED_REACH)
+
+
+def unshipped_reach(sql: str) -> set[str]:
+    code = _STRING_LIT.sub("''", sql)
+    return {f for f, rx in _UNSHIPPED_REACH.items() if rx.search(code)}
+
+
 def plain(x):
     """`x` as JSON-safe data: dataclasses become dicts, tuples lists, and the
     values JSON has no type for (Decimal, bytes) their exact text."""
@@ -951,9 +968,7 @@ def run_case_json(seed: int) -> dict:
         v = run_case(case)
     except Exception as e:  # noqa: BLE001 — oracle's own bug, not the engine's
         v = Verdict("SKIP", f"oracle:{type(e).__name__}", str(e), case.tags)
-    return {
-        "seed": seed,
-        "sql": G.render(case.query),
-        **v.to_json(),
-        "inputs": case_inputs(case),
-    }
+    sql = G.render(case.query)
+    out = {"seed": seed, "sql": sql, **v.to_json(), "inputs": case_inputs(case)}
+    out["tags"] = out["tags"] + [f"reaches:{f}" for f in sorted(unshipped_reach(sql))]
+    return out
