@@ -447,3 +447,30 @@ def test_every_refusal_family_carries_a_documented_prefix():
         with pytest.raises(ValueError) as e:
             DuckDBInferFn(sql, row_tables={"__THIS__": T}, static_tables=statics, **kw)
         assert str(e.value).startswith(prefix), str(e.value)
+
+
+@pytest.mark.parametrize(
+    ("sql", "named"),
+    [
+        ("SELECT o FROM (SELECT a AS o FROM __THIS__) AS sub", "FROM a derived table"),
+        (
+            "SELECT a FROM __THIS__ RIGHT JOIN __THIS__ AS b ON true",
+            "join type RIGHT JOIN",
+        ),
+        (
+            "SELECT a FROM __THIS__ FULL JOIN __THIS__ AS b ON true",
+            "join type FULL OUTER JOIN",
+        ),
+        ("SELECT (SELECT 1) FROM __THIS__", "expression a scalar subquery"),
+        ("SELECT a IN (SELECT 1) FROM __THIS__", "IN \\(SELECT"),
+        ("SELECT EXISTS (SELECT 1) FROM __THIS__", "EXISTS \\(SELECT"),
+        ("SELECT DATE '2020-01-01' FROM __THIS__", "a typed literal"),
+        ("SELECT a IS DISTINCT FROM 1 FROM __THIS__", "IS \\[NOT\\] DISTINCT FROM"),
+    ],
+)
+def test_refusals_name_the_construct_instead_of_echoing_it(sql, named):
+    with pytest.raises(ValueError, match=named) as e:
+        build(sql)
+    # No echoed SQL and no Rust Debug dump of the AST.
+    assert "SELECT 1" not in str(e.value).split("--")[0].replace("(SELECT ...)", "")
+    assert "On(" not in str(e.value)

@@ -99,13 +99,10 @@ Questions waiting on a ruling are records in `docs/decisions/open/`, not items h
 
 ## Refusal quality
 
-- **Echoing refusals.** The expression catch-all
-  (`unsupported: expression: {other}`) echoes SQL text instead of naming the
-  construct. Examples: `IS DISTINCT FROM`, scalar and correlated subqueries,
-  `IN (SELECT ...)`, struct literals, and `DATE '...'`. Derived tables echo the
-  subquery (`unsupported: FROM (SELECT ...) AS x`). C5 requires construct
-  naming, and `fuzz/runner.py::refusal_quality` measures it. Each echo needs a
-  named refusal site.
+- **Echo fallback.** `expr_refusal` in `src/specializer/frontend.rs` names
+  the expression forms the campaign and tests reach; any other unbound form
+  still prints itself (`unsupported: expression: ...`). Add a name when one
+  shows up in `fuzz/runner.py::refusal_quality`'s echo list.
 - **No mapping from refusal sites to inventory rows.** About 164
   `PrepareError` sites exist, and nothing ties each one to a class in the
   restriction inventory (`docs/specs/serving-contract.md`). A new refusal can
