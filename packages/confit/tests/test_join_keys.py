@@ -637,3 +637,96 @@ def test_a_leafless_struct_key_refuses_a_non_struct_input_on_both_paths():
     for v in (5, "x", [1]):
         with pytest.raises(ValueError, match="the schema declares a struct"):
             fn.infer_rows([{"w": v, "z": 1}])
+
+
+# A number joined with a VARCHAR key: DuckDB casts the VARCHAR side to the
+# numeric side's exact type (CAST's parse, so ' 3' matches 3). A static key
+# that cannot convert errors on every query, zero request rows included; a
+# request key that cannot convert errors on that row.
+_MIX_R = pa.schema(
+    [
+        ("a", pa.int64()),
+        ("k", pa.int64()),
+        ("i", pa.int32()),
+        ("x", pa.float64()),
+        ("sk", pa.string()),
+    ]
+)
+_MIX_ROWS = [
+    {"a": 1, "k": 1, "i": 1, "x": 1.0, "sk": "1"},
+    {"a": 2, "k": 2, "i": 2, "x": 2.5, "sk": " 2"},
+    {"a": 3, "k": 3, "i": 3, "x": 3.0, "sk": "3"},
+    {"a": 4, "k": None, "i": None, "x": None, "sk": None},
+]
+_MIX_D = pa.table(
+    {
+        "k": pa.array(["1", "2", " 3", None], pa.string()),
+        "v": pa.array([10, 20, 30, 40], pa.int64()),
+        "n": pa.array([1, 2, 3, 4], pa.int64()),
+    }
+)
+
+
+def _mix_outcome(sql, statics, rows, **kw):
+    o = Oracle()
+    for n, t in statics.items():
+        o.load(n, t)
+    o.load("__THIS__", pa.Table.from_pylist(rows, schema=_MIX_R))
+    try:
+        w = o.answer(sql)
+        want = (w.schema.types, sorted(map(str, w.to_pylist())))
+    except Exception:  # noqa: BLE001 -- any DuckDB error is the outcome
+        want = "ERR"
+    try:
+        fn = DuckDBInferFn(
+            sql, row_tables={"__THIS__": _MIX_R}, static_tables=statics, **kw
+        )
+        got = (fn.output_schema.types, sorted(map(str, fn.infer_rows(rows))))
+    except ValueError:
+        got = "ERR"
+    return got, want
+
+
+@pytest.mark.parametrize(
+    ("sql", "shape"),
+    [
+        ("SELECT a, v FROM __THIS__ JOIN d ON __THIS__.k = d.k", None),
+        ("SELECT a, v FROM __THIS__ LEFT JOIN d ON __THIS__.k = d.k", None),
+        ("SELECT a, v FROM __THIS__ JOIN d USING (k)", None),
+        ("SELECT * FROM __THIS__ JOIN d USING (k)", None),
+        ("SELECT a, v FROM __THIS__ JOIN d ON __THIS__.i = d.k", None),
+        ("SELECT a, v FROM __THIS__ JOIN d ON __THIS__.x = d.k", None),
+        ("SELECT a, v FROM __THIS__ JOIN d ON __THIS__.sk = d.n", None),
+        ("SELECT a, v FROM __THIS__ LEFT JOIN d ON __THIS__.sk = d.n", None),
+        ("SELECT a, v FROM __THIS__ JOIN d ON __THIS__.k = d.k", "many"),
+        ("SELECT a, v FROM __THIS__ JOIN d ON __THIS__.sk = d.n", "many"),
+    ],
+)
+def test_a_number_joins_a_varchar_key_as_duckdb_casts_it(sql, shape):
+    kw = {"shape": shape} if shape else {}
+    got, want = _mix_outcome(sql, {"d": _MIX_D}, _MIX_ROWS, **kw)
+    assert got == want
+
+
+def test_a_request_varchar_key_that_cannot_convert_errors_like_duckdb():
+    rows = [*_MIX_ROWS, {"a": 5, "k": 5, "i": 5, "x": 5.0, "sk": "zz"}]
+    got, want = _mix_outcome(
+        "SELECT a, v FROM __THIS__ JOIN d ON __THIS__.sk = d.n", {"d": _MIX_D}, rows
+    )
+    assert got == want == "ERR"
+
+
+@pytest.mark.parametrize(
+    ("probe", "bad"),
+    [("k", "zz"), ("x", "zz"), ("i", "3000000000")],
+)
+def test_a_static_varchar_key_that_cannot_convert_refuses_at_build(probe, bad):
+    # DuckDB errors on every query, with no request rows at all; the probe's
+    # declared width decides (INTEGER: '3000000000' does not fit).
+    e = pa.table(
+        {"k": pa.array(["1", bad], pa.string()), "v": pa.array([10, 99], pa.int64())}
+    )
+    sql = f"SELECT a, v FROM __THIS__ JOIN e ON __THIS__.{probe} = e.k"
+    for rows in ([], _MIX_ROWS):
+        got, want = _mix_outcome(sql, {"e": e}, rows)
+        assert got == want == "ERR"

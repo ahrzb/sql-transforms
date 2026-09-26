@@ -1671,6 +1671,24 @@ fn promote_key(key: SExpr, st: &StaticTable, col: u32) -> Result<SExpr, PrepareE
         // The lane stays F64 and the build side converts with DuckDB's own
         // algorithm, reproducing the loss rather than hiding it.
         (Ty::F64, Ty::Dec(..)) => Ok(key),
+        // Numeric probe vs VARCHAR build key: the build side converts while
+        // the probe table is built (duckdb::materialize_map), to the probe's
+        // type, as DuckDB casts it.
+        (a, Ty::Str) if a.is_int() || a == Ty::F64 => Ok(key),
+        // VARCHAR probe vs numeric build key: DuckDB casts the probe per row
+        // to the build column's type; a value that cannot convert traps,
+        // as CAST does.
+        (Ty::Str, b) if b.is_int() || b == Ty::F64 => {
+            let nullable = key.nullable;
+            Ok(SExpr {
+                kind: SKind::Cast {
+                    inner: Box::new(key),
+                    trying: false,
+                },
+                ty: b,
+                nullable,
+            })
+        }
         (a, b) => Err(PrepareError::Bind(format!(
             "cannot join {} with {} (ON '{}')",
             a.name(),

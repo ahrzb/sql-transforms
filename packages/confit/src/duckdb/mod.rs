@@ -912,6 +912,39 @@ fn materialize_map(py: Python<'_>, table: &Py<PyAny>, spec: &StaticSpec) -> PyRe
                 let is_dec = |v: &pyo3::Bound<'_, PyAny>| -> PyResult<bool> {
                     Ok(v.get_type().name()?.to_string_lossy() == "Decimal")
                 };
+                // A VARCHAR build key against a numeric probe: DuckDB casts
+                // the VARCHAR to the probe's type, with CAST's parse
+                // (measured: ' 3' matches 3). A value that cannot convert
+                // errors on EVERY query there, zero request rows included,
+                // so it fails the build.
+                if (ty.is_int() || ty == Ty::F64) && v.is_instance_of::<pyo3::types::PyString>() {
+                    let s: String = v.extract()?;
+                    use crate::specializer::exec::kernels::{duck_stof, duck_stoi};
+                    let kb = if ty == Ty::F64 {
+                        duck_stof(&s).map(|f| KeyBits::F64(f.to_bits()))
+                    } else {
+                        duck_stoi(&s)
+                            .filter(|i| {
+                                k.probe_ty.int_range().is_none_or(|(lo, hi)| (lo..=hi).contains(i))
+                            })
+                            .map(KeyBits::I64)
+                    };
+                    return match kb {
+                        Some(kb) => Ok(Some(kb)),
+                        None => Err(build_err(format!(
+                            "static table '{}' key column '{name}' value '{s}' cannot \
+                             convert to {} -- DuckDB errors on every query",
+                            spec.table,
+                            match k.probe_ty {
+                                Ty::F64 => "DOUBLE",
+                                Ty::I8 => "TINYINT",
+                                Ty::I16 => "SMALLINT",
+                                Ty::I32 => "INTEGER",
+                                _ => "BIGINT",
+                            }
+                        ))),
+                    };
+                }
                 Ok(Some(match ty {
                     Ty::I1 => KeyBits::I1(v.extract()?),
                     // A DECIMAL build key against an INTEGER probe: DuckDB
