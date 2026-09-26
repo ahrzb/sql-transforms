@@ -6,10 +6,15 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-Nothing autonomous remains that moves a KPI; the largest gains wait on the
-owner's rulings below. Refusals left without a remedy (WITH, derived tables,
-DISTINCT, ORDER BY, GROUP BY, row limits) have no row-path alternative to
-name until their query class is served.
+1. **Live defects from the 50k-seed campaign** (report
+   `docs/reports/2026-09-26-change-cost-review.md`, section 4), each pinned
+   first: an overflow check on a NULL row's payload (seed 22366); CASE and
+   COALESCE unification casting a narrow arm's operands instead of its result
+   (seed 5008); `udf(NULL, …).f` typed DOUBLE (seed 40473); a constant CASE
+   that traps under a NULL divisor (seed 16617).
+2. **Change-cost review, steps 2–4** (same report): gate speed, metamorphic
+   spelling suite, parity harness and `confit.probe`, nightly deep campaign,
+   `frontend.rs` split, one relation resolver, explicit Cranelift fallback.
 
 ## Waiting on the owner
 
