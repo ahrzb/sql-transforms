@@ -1,193 +1,139 @@
 # Confit plans
 
-Open work only: gaps, defects, proposals and open questions. Facts about what
-Confit does today live in `docs/`; this file lists only what it does not do yet.
-Remove an item when it lands.
-Questions waiting on a ruling are records in `docs/decisions/open/`, not items here.
+My working list: open work only, highest value first within each section.
+Facts about what confit does live in `docs/`; questions waiting on a ruling are
+records in `docs/decisions/open/`. Remove an item when it lands.
 
-## SQL surface gaps (refused, DuckDB serves)
+## Next
 
-- **Row-local CTEs, scalar/correlated/`IN` subqueries, derived tables
-  (`FROM (SELECT ...)`) and set operations** are blanket syntax bans. The scope
-  rule only excludes the batch-dependent forms of these, so each row-local
-  form is a gap to close. `WITH` is the largest refusal class the campaign
-  generator reaches.
-- **Per-row aggregation over matched static rows.** This is inside the model
-  but refused under both spellings: a correlated scalar subquery, and
-  `JOIN` + `GROUP BY` under `shape='many'`. It needs an accumulator over the
-  `many` fan-out walk, plus a ruling on whether `JOIN`+`GROUP BY` is per-row
-  only when it yields one group per input row. `DOUBLE` `sum`/`avg` then needs
-  the float-reduction bound. Its algorithm and edge domain (n=0/1,
-  non-finite values, overflow, all-NULL input) must be settled before
-  implementation (`docs/oracle/05-the-comparison-contract.md`).
-- **`IS [NOT] DISTINCT FROM`** is refused through the expression catch-all,
-  although the dialect plan already models it (`src/dialect/plan.rs`).
-- **`BOOLEAN` compared with `VARCHAR`** (`b = 'true'`) is a bind error
-  (`cannot compare BOOLEAN with VARCHAR`), but DuckDB casts and serves it.
-- **Mixed-type join keys.** A `NATURAL`/`USING`/`ON` join of `BIGINT` against
-  `VARCHAR` refuses (`cannot join i64 with str`), but DuckDB casts and serves it.
-- **Struct join keys under `shape='many'`.** The fan-out loop implements plain
-  equality only (no NOT-DISTINCT form, `src/specializer/lower.rs`). Struct
-  keys whose field-name sets differ also refuse, where DuckDB serves a
-  constant-empty join.
-- **`BETWEEN`/`IN` mixing non-numeric string literals with numbers** refuses,
-  because DuckDB converts these at execution time and a bind-time conversion
-  is over-eager.
-- **All-NULL `CASE`/`COALESCE`/`least`/`greatest`** refuses. DuckDB binds these
-  as INTEGER.
-- **`COLUMNS(...)` inside expressions, and lambda/list forms.** Only bare
-  select-item `COLUMNS` serves.
-- **`SELECT w.*` over a static struct and `SELECT s.*` over a struct-carrying
-  table** refuse. A whole struct is not a servable value (see type lattice).
-- **Struct fields whose own name contains a dot** are silently skipped on the
-  static side and treated as opaque on the row side (`src/duckdb/mod.rs`).
-  Lanes carry structured paths, so the skip can be lifted.
-- **A column qualified through a schema-qualified relation** (`d.v` over
-  `JOIN main.d`, 3-part `s1.d.v`) refuses where DuckDB serves.
-- **Parse-divergence guards.** `^`, prefix `~`, `#` and `NOT GLOB` refuse
-  because sqlparser's precedence differs from DuckDB's. Closing this needs the
-  dialect frontend's own parser to replace sqlparser. The regex reject list
-  needs an RE2-compatible engine to close.
-- **Zero-row shapes with trapping constants** (`WHERE FALSE`, empty input)
-  refuse at build, where DuckDB serves `[]`. This is kept as deliberate
-  strictness. An optional cleanup is to make `fold` fallible and delete the
-  duplicate `eval_i32_literal` walker, so that one evaluator knows constant
-  semantics.
+1. **Small surface wins DuckDB serves and we refuse.**
+   - `BOOLEAN` vs `VARCHAR` comparison (`b = 'true'`): bind error here, DuckDB
+     casts.
+   - Mixed-type join keys (`BIGINT` vs `VARCHAR` under `USING`/`NATURAL`/`ON`):
+     `cannot join i64 with str` here, DuckDB casts.
+   - `IS [NOT] DISTINCT FROM` as an expression: refused (named) although the
+     join-key path and the dialect plan already model it.
+   - All-NULL `CASE`/`COALESCE`/`least`/`greatest`: refused; DuckDB binds
+     INTEGER.
+   - A column qualified through a schema-qualified relation (`d.v` over
+     `JOIN main.d`, `s1.d.v`).
+   - Struct fields whose own name contains a dot: skipped on the static side,
+     opaque on the row side (`src/duckdb/mod.rs`).
+2. **Generator reach.** `fuzz/gen.py` renders only BIGINT, INTEGER, DOUBLE,
+   VARCHAR and BOOLEAN CAST targets, and never the forms in item 1. Widen it
+   together with a fresh dated reading (a generator change re-deals every
+   seed).
+3. **Dead code.** `wider_int` in `src/specializer/frontend.rs` is unused
+   (cargo warns); `dialect::printer::ColRef::name` is never read.
 
-## Type lattice
+## Waiting on the owner
 
-- **Decimal expressions.** Arithmetic, `CAST` to anything but `DOUBLE`, and
-  `COALESCE`/`CASE` unification over DECIMAL refuse. Bare decimal literals
-  serve as f64, where DuckDB uses `DECIMAL(p,s)`, which makes
-  `CAST(-2.5 AS BIGINT)` round differently. Decimal row columns are opaque.
-  Closing this needs DuckDB's per-operator result-scale rules measured, and
-  `Dec(p,s)` threaded through the expression tree. It empties the `UNSHIPPED`
-  bucket.
-- **i128 lane and the unsigned family.** `HUGEINT`, `UHUGEINT` and unsigned row
-  and static columns refuse. This needs i128 arithmetic plus overflow traps on
-  both backends, and exact `sum`/`product` accumulation at decimal128(38,0).
-- **`float32`.** Row columns and statics refuse (`engine is f64-only`). A
-  served FLOAT needs f32 arithmetic, not widening.
-- **Temporal types.** `DATE`/`TIMESTAMP`/`TIME` row columns, casts, literals and
-  functions (`year`, date arithmetic) all refuse. Opaque scalar join keys
-  (TIMESTAMP, DATE, FLOAT32, UINT64, LIST, row-side DECIMAL) refuse by name.
-  They could serve through a key-only lane kind with per-type equality proofs.
-- **Non-scalar values.** Whole-struct output, struct literals (`{'a': v}`),
-  bracket field access (`a['i']`), lists (`list_value`, `regexp_extract_all`,
-  `regexp_split_to_array`, the STRUCT form of `regexp_extract`), and struct
-  fields of non-scalar type all refuse. These need nested output support at
-  the Arrow boundary.
-- **BLOB.** There is no lane, so a bare `NULL` as `repeat`'s string (the BLOB
-  overload) refuses. `decimal256` statics are upstream-blocked, because DuckDB
-  refuses them at Arrow registration.
-- **`RowTy` newtype.** This would delete the `Ty::Dec(..) => unreachable!` arms
-  and belongs with the change that makes DECIMAL a row lane.
+- Removing the static-only fold (`eval_static_only`/`Engine::Constant`,
+  `backend == "constant"`): ruled out of the model
+  (`docs/decisions/closed/static-only-queries.md`), removal changes
+  user-visible behavior, drops the corpus floor by the table-function matches
+  it serves, and touches `sql_transform/_projection.py`'s documented `backend`
+  values and the fuzzer's `static_agg` arm and `constant-*` modes.
+- `docs/decisions/open/`: next query classes, C1 depth, native-transform
+  parity bounds.
 
-## Joins and multiplicity
+## Query classes (large; order is the owner's call)
 
-- **More than one join under `shape='many'`.** One join per query is enforced
-  (`src/specializer/lower.rs`). Composing multiplicity across joins is the
-  hardest open join item.
-- **Remove the static-only fold.** Queries that read no request table are
-  outside the model, but `eval_static_only`/`Engine::Constant`
-  (`src/duckdb/mod.rs`) still serve them with `backend == "constant"`. Removal
-  touches `backend`/`boundary`'s public `"constant"` value (documented in
-  `sql_transform/_projection.py`), the fuzzer's `static_agg` arm and
-  `constant-*` compare modes, the static-only row-limit refusal and its tests,
-  and the corpus floor. The floor drops by the table-function matches this
-  path serves.
+- **Row-local CTEs, scalar/correlated/`IN` subqueries, derived tables, set
+  operations.** Blanket bans today; only batch-dependent forms are out of
+  scope. `WITH` is the largest refusal class the generator reaches (86 of 526
+  refusals of queries DuckDB answers, 2026-09-26).
+- **Per-row aggregation over matched static rows** (correlated scalar
+  subquery; `JOIN` + `GROUP BY` under `shape='many'`). Needs an accumulator
+  over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the
+  float-reduction bound's algorithm and edge domain
+  (`docs/oracle/05-the-comparison-contract.md`).
+- **Decimal expressions.** Arithmetic, casts to anything but DOUBLE and
+  unification over DECIMAL refuse; bare decimal literals serve as f64 (the
+  `UNSHIPPED` bucket). Needs DuckDB's per-operator scale rules and `Dec(p,s)`
+  through the expression tree. A `RowTy` newtype belongs with making DECIMAL
+  a row lane.
+- **i128 lane.** HUGEINT/UHUGEINT and the unsigned family (columns, statics,
+  CAST targets) refuse. Needs i128 arithmetic and traps on both backends and
+  exact `sum`/`product` at decimal128(38,0). The literal 9223372036854775808
+  alone is 34 of the 526.
+- **float32** (needs f32 arithmetic, not widening), **temporal types**
+  (columns, casts, literals, functions; opaque temporal join keys could use a
+  key-only lane), **BLOB**.
+- **Non-scalar values.** Whole structs, struct literals, bracket access, lists
+  and list-valued regex forms; `SELECT s.*` over struct-carrying statics.
+  Needs nested output at the Arrow boundary. `decimal256` statics are blocked
+  upstream (DuckDB refuses them at Arrow registration).
+- **More than one join under `shape='many'`** (`src/specializer/lower.rs`);
+  struct keys under `many` (plain equality only in the fan-out loop); struct
+  keys whose field-name sets differ refuse where DuckDB serves a constant-empty
+  join.
+- **Parse-divergence guards.** `^`, prefix `~`, `#`, `NOT GLOB` wait on the
+  dialect frontend's parser replacing sqlparser; the regex reject list on an
+  RE2-compatible engine.
 
-## Refusal quality
+## Refusals
 
-- **Echo fallback.** `expr_refusal` in `src/specializer/frontend.rs` names
-  the expression forms the campaign and tests reach; any other unbound form
-  still prints itself (`unsupported: expression: ...`). Add a name when one
-  shows up in `fuzz/runner.py::refusal_quality`'s echo list.
-- **No mapping from refusal sites to inventory rows.** About 164
-  `PrepareError` sites exist, and nothing ties each one to a class in the
-  restriction inventory (`docs/specs/serving-contract.md`). A new refusal can
-  therefore appear in no document.
-- **Leafless-struct presence lanes.** The `Present` arm in
-  `src/duckdb/arrow.rs::ingest` does not check that the batch column is a
-  struct, so a leafless struct lane reads any column's validity.
+- **Echo fallback.** `expr_refusal` names the expression forms seen so far; an
+  unlisted form still prints itself. Add names as `refusal_quality`'s echo
+  list shows them.
+- **No site-to-inventory mapping.** About 164 `PrepareError` sites, none tied
+  to a class of the restriction inventory (`docs/specs/serving-contract.md`).
+- **Executable twins missing** for `HAVING`, `OFFSET`/`FETCH`/`TOP`,
+  `INTERSECT`/`EXCEPT`, subqueries, multiple statements, table functions,
+  `QUALIFY`, and the 2 GiB Arrow batch ceiling (`tests/test_known_limitations.py`).
+- Zero-row shapes with trapping constants (`WHERE FALSE`, empty input) refuse
+  at build where DuckDB serves `[]` (deliberate). Optional: make `fold`
+  fallible and delete the duplicate `eval_i32_literal` walker.
+- `BETWEEN`/`IN` mixing non-numeric string literals with numbers refuses
+  (DuckDB converts at execution; a bind-time conversion is over-eager).
+- `COLUMNS(...)` inside expressions and lambda/list forms refuse.
 
-## Oracle, evidence and gates
+## Evidence and gates
 
-- **The generator never emits most CAST targets.** `fuzz/gen.py` renders
-  only BIGINT, INTEGER, DOUBLE, VARCHAR and BOOLEAN, so the campaign never
-  checks the refusal of the others (pinned in `test_known_limitations.py`)
-  nor TINYINT/SMALLINT. Adding targets changes every seed's query: do it
-  together with a fresh dated reading.
-- **No debug-build pytest pass.** CI builds the release extension, so the
-  lowering invariants, which are `debug_assert!`s, never run under pytest.
-- **816 pin queries cannot be replayed mechanically.** 460 have an untyped
-  `input_repr` (a bare value that names no column or type), and 356 describe
-  their tables only in prose (`docs/specs/pins-drift.json`,
-  `scripts/pin_corpus.py`). Giving each a typed setup would bring them under
-  the drift report.
-- **IR generator coverage.** `ir::gen::gen_program` never emits 10 of the IR
-  instructions (`Dtof`, `Itod`, `StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`,
-  `ReReplace`, `ExternCall`, `ProbeRange`, `ProbeRead`), so the backend
-  differential cannot see them. A totality test belongs beside the
+- **No debug-build pytest pass.** Lowering invariants are `debug_assert!`s the
+  release extension compiles out.
+- **IR generator coverage.** `ir::gen::gen_program` never emits `Dtof`, `Itod`,
+  `StoiOpt`, `StofOpt`, `ReMatch`, `ReExtract`, `ReReplace`, `ExternCall`,
+  `ProbeRange`, `ProbeRead`; add them and a totality test beside the
   differential in `src/specializer/exec/tests.rs`.
-- **Campaign cadence.** The generated-grammar campaign is a manual CLI with no
-  standing schedule. The retired phase-2 width-residual count needs a replay
-  of stored SQL or a fresh labelled run, followed by classification.
-- **Unruled ledger entries.** Most rows of
-  `docs/oracle/07-the-divergence-ledger.md` carry a proposed disposition
-  without a ruling.
-- **Order-sensitive families.** Each new one (beyond the join multiset rule)
-  needs a justified ordering contract before it serves
+- **816 pin queries are not mechanically replayable** (460 untyped
+  `input_repr`, 356 prose-only tables; `docs/specs/pins-drift.json`).
+- **Campaign cadence.** Manual CLI, no schedule.
+- **Unruled ledger rows** in `docs/oracle/07-the-divergence-ledger.md`; each
+  new order-sensitive family needs an ordering contract first
   (`docs/oracle/03-nondeterminism.md`).
-- **Executable twins.** `HAVING`, `OFFSET`/`FETCH`/`TOP`,
-  `INTERSECT`/`EXCEPT`, subqueries, multiple statements, table functions and
-  `QUALIFY` refuse without a twin in `tests/test_known_limitations.py`. No
-  executable check covers the 2 GiB Arrow batch ceiling.
 
 ## Performance
 
-- **Native transform families.** A fitted transformer costs about 118 µs per
-  row against 1.4 µs for the same query without it (`bench_transforms.py`,
-  2026-09-26, n=1); nearly all of it is sklearn's own `transform()`. Native
-  typed entries (`PCA`, `StandardScaler`, and so on, behind the existing
-  extern slots) are the lever. They wait on the ruling in
-  `docs/decisions/open/native-transform-parity-bounds.md`.
-- **Vectorized `apply_batch` for `infer_arrow`.** UDFs are called once per row
-  through the scalar protocol even on the Arrow path.
-- **Serving bench against the Python twin.** The engine reads 1.20–1.80x
-  slower than the `python_dict` twin at n=64 on a fresh release wheel
-  (2026-09-26 reading), so a stale wheel is not the cause. The cause is
-  unsettled between a baseline that changed identity and a real regression;
-  bisect against `a6fa318`. The n=1 twin cell swings up to 2x between runs,
-  so a recorded ratio should be the n=64 one. Settle this before adopting any
-  bench refresh cadence.
-- **Tree scoring.** Not built: `HistGradientBoosting*` (binned thresholds),
-  MLP (`mat_stack`), a QuickScorer or vectorized multi-tree walk that keeps
-  the accumulation sequential in `tree_span` order, and kNN/kernel SVM
-  (training set as state).
-
-## Authoring boundary (`sql_transform`)
-
-- **Admission-ladder headroom**, roughly by value:
-  - step semantics for order-keyed windows off the training support
-  - static-table joins with frozen composition
-  - IN-subqueries as fitted sets
-  - star bundles into transformers
-  - typed takes (string features)
-- **Composition directions not yet law** (`docs/properties.md`):
-  FROM-position templates, frozen-artifact inlining, `as_udf()`, and the
-  leakage/cross-fitting question.
-- **Arrow-hostile partition keys.** BIT, TIMETZ and UNION keys cannot round-trip
-  through the params table (xfail in `sql_transform/model/_marginal_test.py`).
-- **Dialect reverse frontends.** `parse(sql, dialect=SPARK|BIGQUERY)` is
-  demand-driven and unbuilt. The BigQuery L3 gate runs only when
-  `CONFIT_BIGQUERY_PROJECT` is set, and its execution leg is not written:
-  wire the Spark leg's seam through the BigQuery client (ship tables with
-  `load_table_from_dataframe`, run the printed SQL, compare `rows_of()`).
+- **Native transform families.** A fitted transformer costs ~118 µs per row
+  against 1.4 µs without it (`bench_transforms.py`, 2026-09-26); nearly all is
+  sklearn's `transform()`. Waits on the parity-bound ruling.
+- **Serving vs the Python twin.** 1.20–1.80x slower at n=64 on a fresh
+  release wheel. Bisect against `a6fa318` (regression vs the twin's change of
+  identity). Record the n=64 ratio; the n=1 twin cell swings 2x.
+- **Vectorized `apply_batch`** for `infer_arrow` (UDFs are called per row).
+- **Tree scoring** not built: `HistGradientBoosting*`, MLP, a vectorized
+  multi-tree walk keeping `tree_span` accumulation order, kNN/kernel SVM.
 
 ## Code health
 
-- `src/specializer/frontend.rs` is about 8,500 lines and wants splitting.
-- `DuckDBInferFn::new` represents the shape three ways (`many`, `shape_kind`,
-  `strict_map`). Unifying them into one `Shape` enum gets easier once the
-  static-only fold is gone.
+- `src/specializer/frontend.rs` is ~8,500 lines. Split by concern (scope and
+  binding, expressions, star expansion, joins, casts/literals) before the next
+  large query class lands in it.
+- `DuckDBInferFn::new` carries the shape three ways (`many`, `shape_kind`,
+  `strict_map`); one `Shape` enum, easier once the static-only fold is gone.
+
+## Authoring boundary (`sql_transform`)
+
+- Admission-ladder headroom: step semantics for order-keyed windows off the
+  training support; static-table joins with frozen composition; IN-subqueries
+  as fitted sets; star bundles into transformers; typed takes.
+- Composition directions not yet law (`docs/properties.md`): FROM-position
+  templates, frozen-artifact inlining, `as_udf()`, leakage/cross-fitting.
+- BIT, TIMETZ and UNION partition keys cannot round-trip through the params
+  table (xfail in `sql_transform/model/_marginal_test.py`).
+- Reverse dialect frontends (`parse(sql, dialect=SPARK|BIGQUERY)`) are unbuilt;
+  the BigQuery L3 execution leg is not written (wire the Spark leg's seam
+  through the BigQuery client: `load_table_from_dataframe`, run the printed
+  SQL, compare `rows_of()`).

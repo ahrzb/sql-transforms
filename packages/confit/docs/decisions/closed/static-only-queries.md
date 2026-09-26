@@ -42,4 +42,4 @@ The engine still serves a static-tables-only query: `eval_static_only` in
 `packages/confit/src/duckdb/mod.rs` evaluates it once at construction and freezes
 the rows (claim: one-door-bypass in [the oracle](../../oracle/01-what-the-oracle-is.md)).
 A row-limit clause on such a query and `shape='map'` are refused. Removing the path
-is tracked in `packages/confit/PLANS.md` ("Remove the static-only fold").
+is tracked in `packages/confit/PLANS.md` ("Removing the static-only fold").
