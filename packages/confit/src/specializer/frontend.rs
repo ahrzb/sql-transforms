@@ -1982,7 +1982,7 @@ fn walk_key_fields(
             (StructNode::Opaque, _) | (_, StructNode::Opaque) => {
                 return Err(unsup(format!(
                     "shared join column '{name}': field '{}' has no scalar lane \
-                     (a non-vocabulary type, or a dotted field name), so this \
+                     (a non-vocabulary type), so this \
                      engine cannot key on the struct",
                     rp.join(".")
                 )))
