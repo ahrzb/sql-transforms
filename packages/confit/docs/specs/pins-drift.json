@@ -1,0 +1,2175 @@
+{
+ "_meta": {
+  "duckdb": "1.5.5",
+  "reference": "confit.oracle.Oracle (optimizer off), fresh per pin",
+  "platform": "Linux x86_64",
+  "replayed": 640,
+  "not_replayable": 1287
+ },
+ "answers": {
+  "pins-dialect/aggregate-tiers.json#/pins/0/query": [
+   "['DOUBLE'] [(0.0,)]",
+   "['DOUBLE'] [(2.0,)]"
+  ],
+  "pins-dialect/aggregate-tiers.json#/pins/1/query": [
+   "['DOUBLE'] [(0.0,)]",
+   "['DOUBLE'] [(0.5,)]"
+  ],
+  "pins-dialect/aggregate-tiers.json#/pins/2/query": [
+   "['HUGEINT'] [(1,)]",
+   "['HUGEINT'] [(1,)]"
+  ],
+  "pins-dialect/aggregate-tiers.json#/pins/3/query": [
+   "['DOUBLE', 'DOUBLE', 'BIGINT'] [(-1e+16, 1e+16, 3)]",
+   "['DOUBLE', 'DOUBLE', 'BIGINT'] [(-1e+16, 1e+16, 3)]"
+  ],
+  "pins-dialect/aggregate-tiers.json#/pins/4/query": [
+   "['DOUBLE'] [(7071067811865475.0,)]",
+   "['DOUBLE'] [(7071067811865475.0,)]"
+  ],
+  "pins-dialect/aggregate-tiers.json#/pins/5/query": [
+   "['BOOLEAN', 'VARCHAR'] [(True, 'DECIMAL(3,1)')]",
+   "['BOOLEAN'] [(False,)]"
+  ],
+  "pins-dialect/aggregate-tiers.json#/pins/6/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/0/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/1/query": [
+   "['TINYINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/2/query": [
+   "['SMALLINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/3/query": [
+   "['INTEGER'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/4/query": [
+   "['BIGINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/5/query": [
+   "['HUGEINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/6/query": [
+   "['UTINYINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/7/query": [
+   "['USMALLINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/8/query": [
+   "['UINTEGER'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/9/query": [
+   "['UBIGINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/10/query": [
+   "['UHUGEINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/11/query": [
+   "['FLOAT'] [(1.5,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/12/query": [
+   "['DOUBLE'] [(1.5,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/13/query": [
+   "['DECIMAL(18,3)'] [(Decimal('1.234'),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/14/query": [
+   "['DECIMAL(38,9)'] [(Decimal('1.234000000'),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/15/query": [
+   "['VARCHAR'] [('x',)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/16/query": [
+   "['BLOB'] [(b'\\xaa',)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/17/query": [
+   "['DATE'] [(datetime.date(2026, 8, 13),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/18/query": [
+   "['TIME'] [(datetime.time(11, 30),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/19/query": [
+   "['TIME WITH TIME ZONE'] [(datetime.time(11, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=7200))),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/20/query": [
+   "['TIMESTAMP'] [(datetime.datetime(2026, 8, 13, 11, 30),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/21/query": [
+   "['TIMESTAMP_S'] [(datetime.datetime(2026, 8, 13, 11, 30),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/22/query": [
+   "['TIMESTAMP_MS'] [(datetime.datetime(2026, 8, 13, 11, 30),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/23/query": [
+   "['TIMESTAMP_NS'] [(datetime.datetime(2026, 8, 13, 11, 30),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/24/query": [
+   "InvalidInputException: Invalid Input Error: Required module 'pytz' failed to import, due to the following Python exception:"
+  ],
+  "pins-dialect/arrow-export.json#/pins/25/query": [
+   "['INTERVAL'] [(datetime.timedelta(days=94, seconds=5),)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/26/query": [
+   "<unstable>"
+  ],
+  "pins-dialect/arrow-export.json#/pins/27/query": [
+   "[\"ENUM('sad', 'happy')\"] [('happy',)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/28/query": [
+   "['BIT'] [('101',)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/29/query": [
+   "['INTEGER[]'] [([1, 2],)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/30/query": [
+   "['STRUCT(a INTEGER)'] [({'a': 1},)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/31/query": [
+   "['MAP(INTEGER, INTEGER)'] [({1: 2},)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/32/query": [
+   "['UNION(num INTEGER)'] [(2,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/33/query": [
+   "['HUGEINT'] [(1,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/34/query": [
+   "['DOUBLE'] [(1.5,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/35/query": [
+   "['DOUBLE'] [(1.0,)]"
+  ],
+  "pins-dialect/arrow-export.json#/pins/36/query": [
+   "['BIGINT'] [(1,)]"
+  ],
+  "pins-dialect/auto-naming.json#/pins/0/query": [
+   "['INTEGER'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/1/query": [
+   "['BIGINT'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/2/query": [
+   "['INTEGER'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/3/query": [
+   "['VARCHAR'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/4/query": [
+   "['VARCHAR'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/5/query": [
+   "['DECIMAL(3,1)'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/6/query": [
+   "['VARCHAR'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/7/query": [
+   "['INTEGER'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/8/query": [
+   "['DOUBLE'] []"
+  ],
+  "pins-dialect/auto-naming.json#/pins/9/query": [
+   "['BOOLEAN'] []"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/0/query": [
+   "['DOUBLE', 'DOUBLE'] [(inf, nan)]",
+   "['DOUBLE'] [(inf,)]"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/1/query": [
+   "['INTEGER', 'INTEGER'] [(None, None)]"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/2/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1",
+   "OutOfRangeException: Out of Range Error: Overflow in division of -2147483648 / -1"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/3/query": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(3, 2, 2, -2)]"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/4/query": [
+   "['INTEGER', 'INTEGER', 'INTEGER'] [(3, -3, 2)]"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/5/query": [
+   "['INTEGER', 'INTEGER'] [(2, 2)]"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/6/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, False, True)]"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/7/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('DECIMAL(2,1)', 'DECIMAL(3,2)', 'DECIMAL(3,1)')]"
+  ],
+  "pins-dialect/division-cast-edges.json#/pins/8/query": [
+   "['VARCHAR'] [('FLOAT',)]"
+  ],
+  "pins-dialect/scalar-functions.json#/pins/0/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'BIGINT', 'BIGINT', 'VARCHAR'] [('HÉLLO', 'héllo', '☃ba', 2, 40, 'x')]"
+  ],
+  "pins-dialect/scalar-functions.json#/pins/1/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BIGINT', 'BIGINT', 'BIGINT'] [(True, False, True, 2, 0, 1)]"
+  ],
+  "pins-dialect/scalar-functions.json#/pins/2/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('a-b-c', 'abc', 'ababab', '', 'xyyx')]"
+  ],
+  "pins-dialect/scalar-functions.json#/pins/3/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('ac', 'a-c', None)]"
+  ],
+  "pins-dialect/scalar-functions.json#/pins/4/query": [
+   "['BIGINT', 'BIGINT', 'BIGINT'] [(2, 3, 2)]"
+  ],
+  "pins-dialect/sort-window-defaults.json#/pins/0/query": [
+   "['INTEGER'] [(1,), (2,), (None,)]"
+  ],
+  "pins-dialect/sort-window-defaults.json#/pins/1/query": [
+   "['INTEGER'] [(2,), (1,), (None,)]"
+  ],
+  "pins-dialect/sort-window-defaults.json#/pins/2/query": [
+   "['INTEGER'] [(None,), (1,), (2,)]",
+   "['INTEGER'] [(None,), (2,), (1,)]"
+  ],
+  "pins-dialect/sort-window-defaults.json#/pins/3/query": [
+   "['INTEGER', 'BIGINT'] [(1, 1), (2, 2), (None, 3)]"
+  ],
+  "pins-dialect/sort-window-defaults.json#/pins/4/query": [
+   "['INTEGER', 'INTEGER', 'HUGEINT'] [(1, 10, 30), (1, 20, 30), (2, 5, 35)]"
+  ],
+  "pins-dialect/sort-window-defaults.json#/pins/5/query": [
+   "['INTEGER', 'INTEGER', 'HUGEINT'] [(1, 10, 10), (1, 20, 30), (2, 5, 35)]"
+  ],
+  "pins-dialect/sort-window-defaults.json#/pins/6/query": [
+   "['INTEGER', 'HUGEINT'] [(1, 30), (1, 30), (2, 5)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/0/query": [
+   "['INTEGER'] [(1,), (2,), (None,)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/1/query": [
+   "['INTEGER'] [(2,), (1,), (None,)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/2/query": [
+   "['INTEGER'] [(1,), (2,), (None,)]",
+   "['INTEGER'] [(None,), (2,), (1,)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/3/query": [
+   "['INTEGER', 'INTEGER', 'HUGEINT'] [(1, 10, 30), (1, 20, 30), (2, 5, 35)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/4/query": [
+   "['VARCHAR'] [('B',), ('Z',), ('a',), ('e',), ('ss',), ('ß',), ('é',), ('☃',)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/5/query": [
+   "BinderException: Binder Error: Could not choose a best candidate function for the function call \"<=>(\"NULL\", \"NULL\")\". In order to select one, please add explicit type casts.",
+   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/6/query": [
+   "ParserException: Parser Error: syntax error at or near \"2\""
+  ],
+  "pins-dialect/spark-ansi.json#/pins/7/query": [
+   "ParserException: Parser Error: syntax error at or near \"2\""
+  ],
+  "pins-dialect/spark-ansi.json#/pins/8/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/9/query": [
+   "ConversionException: Conversion Error: Could not convert string 'x' to INT32",
+   "['INTEGER'] [(None,)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/10/query": [
+   "ConversionException: Conversion Error: Type INT64 with value 3000000000 can't be cast because the value is out of range for the destination type INT32",
+   "['INTEGER'] [(None,)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/11/query": [
+   "['BOOLEAN', 'VARCHAR'] [(True, 'DECIMAL(3,1)')]",
+   "ParserException: Parser Error: syntax error at or near \"+\""
+  ],
+  "pins-dialect/spark-ansi.json#/pins/12/query": [
+   "ParserException: Parser Error: syntax error at or near \"D\"",
+   "ParserException: Parser Error: syntax error at or near \"D\""
+  ],
+  "pins-dialect/spark-ansi.json#/pins/13/query": [
+   "ParserException: Parser Error: syntax error at or near \"L\"",
+   "ParserException: Parser Error: syntax error at or near \"L\""
+  ],
+  "pins-dialect/spark-ansi.json#/pins/14/query": [
+   "['DOUBLE'] [(inf,)]",
+   "ParserException: Parser Error: syntax error at or near \"0\"",
+   "['INTEGER'] [(None,)]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/15/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/17/query": [
+   "['DECIMAL(3,0)', 'DECIMAL(3,0)'] [(Decimal('3'), Decimal('-3'))]"
+  ],
+  "pins-dialect/spark-ansi.json#/pins/18/query": [
+   "ParserException: Parser Error: syntax error at or near \"<\""
+  ],
+  "pins-dialect/strings-operators.json#/pins/0/query": [
+   "['VARCHAR'] [('B',), ('Z',), ('a',), ('e',), ('ss',), ('ß',), ('é',), ('☃',)]"
+  ],
+  "pins-dialect/strings-operators.json#/pins/1/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, True)]"
+  ],
+  "pins-dialect/strings-operators.json#/pins/2/query": [
+   "['DOUBLE', 'INTEGER', 'VARCHAR', 'VARCHAR'] [(0.5, 0, 'DOUBLE', 'INTEGER')]"
+  ],
+  "pins-dialect/strings-operators.json#/pins/3/query": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(-3, -1, -3, 1)]"
+  ],
+  "pins-dialect/strings-operators.json#/pins/4/query": [
+   "['INTEGER'] [(None,)]",
+   "ConversionException: Conversion Error: Could not convert string 'x' to INT32"
+  ],
+  "pins-dialect/strings-operators.json#/pins/5/query": [
+   "ConversionException: Conversion Error: Type INT64 with value 3000000000 can't be cast because the value is out of range for the destination type INT32",
+   "['INTEGER'] [(None,)]"
+  ],
+  "pins-stageB/left-join-1172.json#/pins/0/q": [
+   "ParserException: Parser Error: syntax error at or near \"setup\"",
+   "['BOOLEAN'] []",
+   "['BIGINT'] []",
+   "['BIGINT'] []",
+   "['BIGINT'] [(1,)]",
+   "['BIGINT'] [(2,)]"
+  ],
+  "pins-stageB/left-join-1172.json#/pins/4/q": [
+   "ParserException: Parser Error: syntax error at or near \"<\""
+  ],
+  "pins-stageB/left-join-1172.json#/pins/5/q": [
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-stageB/left-join-1172.json#/pins/6/q": [
+   "ParserException: Parser Error: syntax error at or near \"VARIANT\"",
+   "ParserException: Parser Error: syntax error at or near \"then\""
+  ],
+  "pins-stageB/left-join-1172.json#/pins/7/q": [
+   "ParserException: Parser Error: syntax error at or near \"VARIANT\""
+  ],
+  "pins-stageB/order-contract.json#/pins/4/q": [
+   "InvalidInputException: Invalid Input Error: Python Object \"s\" of type \"str\" found on line \"/home/user/sql-transforms/scripts/pin_corpus.py:342\" not suitable for replacement scans."
+  ],
+  "pins-wave3/math_tail.json#/probes/169/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/170/sql": [
+   "['INTEGER', 'VARCHAR'] [(3, 'INTEGER')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/171/sql": [
+   "['INTEGER', 'VARCHAR'] [(3, 'INTEGER')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/172/sql": [
+   "['INTEGER', 'VARCHAR'] [(-1, 'INTEGER')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/173/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-4.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/174/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/175/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/176/sql": [
+   "['DECIMAL(2,1)', 'VARCHAR'] [(Decimal('1.0'), 'DECIMAL(2,1)')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/177/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/178/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/179/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/180/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/181/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/182/sql": [
+   "['INTEGER', 'VARCHAR'] [(None, 'INTEGER')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/183/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0000000000000002, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/184/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0000000000000002, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/196/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/197/sql": [
+   "['DECIMAL(2,1)', 'VARCHAR'] [(Decimal('0.0'), 'DECIMAL(2,1)')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/198/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/199/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-0.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/similarity.json#/probes/0/sql": [
+   "ParserException: Parser Error: syntax error at or near \"duckdb\""
+  ],
+  "pins-wave3/similarity.json#/probes/16/sql": [
+   "ParserException: Parser Error: syntax error at or near \"'a\\x00b'\""
+  ],
+  "pins-wave3/similarity.json#/probes/17/sql": [
+   "['BIGINT', 'VARCHAR'] [(2, 'BIGINT')]"
+  ],
+  "pins-wave3/similarity.json#/probes/18/sql": [
+   "['BIGINT', 'VARCHAR'] [(1, 'BIGINT')]"
+  ],
+  "pins-wave3/similarity.json#/probes/34/sql": [
+   "['BIGINT', 'VARCHAR'] [(2, 'BIGINT')]"
+  ],
+  "pins-wave3/similarity.json#/probes/50/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.3333333333333333, 'DOUBLE')]"
+  ],
+  "pins-wave3/similarity.json#/probes/51/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/similarity.json#/probes/67/sql": [
+   "InvalidInputException: Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  ],
+  "pins-wave3/similarity.json#/probes/69/sql": [
+   "ParserException: Parser Error: syntax error at or near \"python\""
+  ],
+  "pins-wave3/similarity.json#/probes/75/sql": [
+   "InvalidInputException: Invalid Input Error: Jaccard Function: An argument too short!"
+  ],
+  "pins-wave3/similarity.json#/probes/76/sql": [
+   "InvalidInputException: Invalid Input Error: Mismatch Function: Strings must be of length > 0!"
+  ],
+  "pins-wave3/similarity.json#/probes/77/sql": [
+   "InvalidInputException: Invalid Input Error: Mismatch Function: Strings must be of equal length!"
+  ],
+  "pins-wave3/string_builders.json#/probes/9/sql": [
+   "['VARCHAR', 'VARCHAR'] [('ababab', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/37/sql": [
+   "InvalidInputException: Invalid Input Error: Insufficient padding in LPAD."
+  ],
+  "pins-wave3/string_builders.json#/probes/62/sql": [
+   "['VARCHAR', 'VARCHAR'] [('aé', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/88/sql": [
+   "['VARCHAR', 'VARCHAR'] [('x,y', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/98/sql": [
+   "['VARCHAR', 'VARCHAR'] [('xy', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/99/sql": [
+   "['VARCHAR', 'VARCHAR'] [('\\x00', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/109/sql": [
+   "['VARCHAR', 'VARCHAR'] [('xyabc', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/110/sql": [
+   "['VARCHAR', 'VARCHAR'] [('abcxy', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/111/sql": [
+   "['VARCHAR', 'VARCHAR'] [('abc', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_builders.json#/probes/112/sql": [
+   "['VARCHAR', 'VARCHAR'] [('x', 'VARCHAR')]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/209/sql": [
+   "['INTEGER', 'VARCHAR'] [(-1, 'INTEGER')]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/210/sql": [
+   "['INTEGER', 'VARCHAR'] [(97, 'INTEGER')]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/211/sql": [
+   "['INTEGER', 'VARCHAR'] [(233, 'INTEGER')]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/212/sql": [
+   "['INTEGER'] [(97,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/213/sql": [
+   "['INTEGER'] [(97,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/214/sql": [
+   "['BIGINT'] [(16,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/215/sql": [
+   "['VARCHAR'] [('ẞ',)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/216/sql": [
+   "['VARCHAR'] [('i',)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/217/sql": [
+   "['INTEGER', 'VARCHAR'] [(None, 'INTEGER')]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/218/sql": [
+   "['BIGINT'] [(1112063,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/219/sql": [
+   "['INTEGER'] []"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/220/sql": [
+   "['INTEGER'] []"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/221/sql": [
+   "['INTEGER'] []"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/222/sql": [
+   "['INTEGER'] []"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/223/sql": [
+   "['INTEGER'] []"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/224/sql": [
+   "['BIGINT'] [(1451,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/225/sql": [
+   "['BIGINT'] [(1433,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/226/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/227/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/228/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/229/sql": [
+   "['VARCHAR'] [('\\x00',)]"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/230/sql": [
+   "InvalidInputException: Invalid Input Error: Invalid UTF8 Codepoint 55296"
+  ],
+  "pins-wave3/string_inspection_case_aliases.json#/probes/231/sql": [
+   "InvalidInputException: Invalid Input Error: Invalid UTF8 Codepoint 1114112"
+  ],
+  "pins-wave3/strip_accents.json#/probes/25/sql": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-wave3/strip_accents.json#/probes/26/sql": [
+   "['VARCHAR', 'VARCHAR'] [('e', 'VARCHAR')]"
+  ],
+  "pins-wave3/strip_accents.json#/probes/27/sql": [
+   "['VARCHAR'] [('VARCHAR',)]"
+  ],
+  "pins-wave3/strip_accents.json#/probes/28/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'strip_accents()'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/strip_accents.json#/probes/29/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'strip_accents(STRING_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/strip_accents.json#/probes/30/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'strip_accents(INTEGER_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/strip_accents.json#/probes/32/sql": [
+   "['VARCHAR'] [('\\x00',)]"
+  ],
+  "pins-wave3/strip_accents.json#/probes/33/sql": [
+   "InvalidInputException: Invalid Input Error: Invalid UTF8 Codepoint 55296"
+  ],
+  "pins-wave3/strip_accents.json#/probes/34/sql": [
+   "InvalidInputException: Invalid Input Error: Invalid UTF8 Codepoint 1114112"
+  ],
+  "pins-wave3/strip_accents.json#/probes/35/sql": [
+   "['VARCHAR'] [('\\x00',)]"
+  ],
+  "pins-wave3/strip_accents.json#/probes/51/sql": [
+   "['VARCHAR'] [('a',)]"
+  ],
+  "pins-wave3/strip_accents.json#/probes/52/sql": [
+   "['VARCHAR'] [('a\\x00b',)]"
+  ],
+  "pins-wave3/strip_accents.json#/probes/81/sql": [
+   "ParserException: Parser Error: syntax error at or near \"..\""
+  ],
+  "pins-wave3/strip_accents.json#/probes/82/sql": [
+   "ParserException: Parser Error: syntax error at or near \"518\""
+  ],
+  "pins-wave3/strip_accents.json#/probes/83/sql": [
+   "ParserException: Parser Error: syntax error at or near \"python\""
+  ],
+  "pins-wave3/varchar_subscripts.json#/probes/7/sql": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-wave3/varchar_subscripts.json#/probes/28/sql": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('e', 'e', 'ell', 'ell')]"
+  ],
+  "pins-wave3/varchar_subscripts.json#/probes/29/sql": [
+   "['VARCHAR', 'VARCHAR'] [('é', 'é')]"
+  ],
+  "pins-wave3/varchar_subscripts.json#/probes/30/sql": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('o', '', '')]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/29/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/30/sql": [
+   "['DOUBLE'] [(inf,)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/31/sql": [
+   "['INTEGER'] [(None,)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/19/sql": [
+   "ParserException: Parser Error: syntax error at or near \")\""
+  ],
+  "pins-wave5/binder-tail.json#/pins/0/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('add_', 'BIGINT', 'YES', None, None, None), ('sub_', 'BIGINT', 'YES', None, None, None), ('mul_', 'BIGINT', 'YES', None, None, None), ('div_', 'DOUBLE', 'YES', None, None, None), ('mod_', 'BIGINT', 'YES', None, None, None), ('eq_', 'BOOLEAN', 'YES', None, None, None), ('lt_', 'BOOLEAN', 'YES', None, None, None), ('cat_', 'INTEGER', 'YES', None, None, None), ('neg_', 'BIGINT', 'YES', None, None, None), ('not_', 'BOOLEAN', 'YES', None, None, None)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/1/query": [
+   "['BIGINT', 'BIGINT', 'BIGINT', 'DOUBLE', 'BIGINT', 'BOOLEAN', 'BOOLEAN', 'INTEGER'] [(None, None, None, None, None, None, None, None)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/2/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('BIGINT', '\"NULL\"', 'BOOLEAN', 'BIGINT')]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/3/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('x', 'INTEGER', 'YES', None, None, None)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/4/query": [
+   "['INTEGER', 'INTEGER'] [(11, 200)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/5/query": [
+   "['INTEGER', 'INTEGER', 'INTEGER'] [(11, 12, 13)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/6/query": [
+   "['INTEGER'] [(11,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/7/query": [
+   "['INTEGER'] []"
+  ],
+  "pins-wave5/binder-tail.json#/pins/8/query": [
+   "['INTEGER'] [(11,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/9/query": [
+   "BinderException: Binder Error: Column \"b\" referenced that exists in the SELECT clause - but this column cannot be referenced before it is defined"
+  ],
+  "pins-wave5/binder-tail.json#/pins/10/query": [
+   "['INTEGER'] [(101,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/11/query": [
+   "['HUGEINT', 'HUGEINT'] [(10, 11)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/12/query": [
+   "BinderException: Binder Error: Referenced column \"b\" not found in FROM clause!"
+  ],
+  "pins-wave5/binder-tail.json#/pins/13/query": [
+   "['INTEGER'] [(1,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/14/query": [
+   "['INTEGER', 'INTEGER'] [(1, 2)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/15/query": [
+   "BinderException: Binder Error: table \"t2\" has 2 columns available but 3 columns specified"
+  ],
+  "pins-wave5/binder-tail.json#/pins/16/query": [
+   "BinderException: Binder Error: Referenced column \"p\" not found in FROM clause!"
+  ],
+  "pins-wave5/binder-tail.json#/pins/17/query": [
+   "BinderException: Binder Error: Table \"u\" does not have a column named \"p\""
+  ],
+  "pins-wave5/binder-tail.json#/pins/18/query": [
+   "BinderException: Binder Error: Referenced table \"t2\" not found!"
+  ],
+  "pins-wave5/binder-tail.json#/pins/19/query": [
+   "['INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 100)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/20/query": [
+   "['INTEGER', 'INTEGER'] [(1, 1)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/21/query": [
+   "['INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 7)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/22/query": [
+   "BinderException: Binder Error: No columns found to join on in NATURAL JOIN."
+  ],
+  "pins-wave5/binder-tail.json#/pins/23/query": [
+   "['INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 100), (2, 20, None)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/24/query": [
+   "['INTEGER'] [(42,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/27/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/28/query": [
+   "ConversionException: Conversion Error: Could not convert string 'abc' to INT32"
+  ],
+  "pins-wave5/binder-tail.json#/pins/29/query": [
+   "ConversionException: Conversion Error: Could not convert string 'a' to INT32"
+  ],
+  "pins-wave5/binder-tail.json#/pins/30/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/31/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/32/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/33/query": [
+   "ConversionException: Conversion Error: Could not convert string 'abc' to INT32"
+  ],
+  "pins-wave5/binder-tail.json#/pins/34/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/35/query": [
+   "['BOOLEAN'] [(None,)]"
+  ],
+  "pins-wave5/binder-tail.json#/pins/36/query": [
+   "ConversionException: Conversion Error: Could not convert string '9223372036854775808' to INT64"
+  ],
+  "pins-wave5/binder-tail.json#/pins/38/query": [
+   "BinderException: Binder Error: * expression without FROM clause!"
+  ],
+  "pins-wave5/binder-tail.json#/pins/39/query": [
+   "['INTEGER'] [(10,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/0/query": [
+   "['BIGINT', 'VARCHAR'] [(8, 'BIGINT')]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/1/query": [
+   "['BIGINT'] [(4611686018427387904,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/2/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (1 << 63)"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/3/query": [
+   "OutOfRangeException: Out of Range Error: Left-shift value 64 is out of range",
+   "OutOfRangeException: Out of Range Error: Left-shift value 100 is out of range"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/4/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (2 << 62)",
+   "['BIGINT'] [(9223372036854775806,)]",
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (4611686018427387904 << 1)"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/5/query": [
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -5",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -1",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -9223372036854775808"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/6/query": [
+   "OutOfRangeException: Out of Range Error: Cannot left-shift by negative number -1"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/7/query": [
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -5",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -5",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift by negative number -1"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/8/query": [
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift by negative number -1"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/9/query": [
+   "['BIGINT', 'BIGINT'] [(5, 5)]",
+   "['BIGINT', 'BIGINT'] [(0, 0)]",
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/10/query": [
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/11/query": [
+   "['BIGINT'] [(-4,)]",
+   "['BIGINT'] [(-2,)]",
+   "['BIGINT'] [(-1,)]",
+   "['BIGINT'] [(-1,)]",
+   "['BIGINT'] [(-1,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/12/query": [
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/13/query": [
+   "['BIGINT'] [(4,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(1,)]",
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/14/query": [
+   "['INTEGER'] [(None,)]",
+   "['INTEGER'] [(None,)]",
+   "['INTEGER'] [(None,)]",
+   "['INTEGER'] [(None,)]",
+   "['INTEGER'] [(None,)]",
+   "['INTEGER'] [(None,)]",
+   "['INTEGER'] [(None,)]",
+   "['INTEGER'] [(None,)]",
+   "['BIGINT'] [(None,)]",
+   "['BIGINT'] [(None,)]",
+   "['BIGINT'] [(None,)]",
+   "['VARCHAR'] [('BIGINT',)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/15/query": [
+   "['BIGINT'] [(4,), (None,), (None,), (None,), (0,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/16/query": [
+   "OutOfRangeException: Out of Range Error: Left-shift value 100 is out of range",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -5",
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (2 << 62)"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/17/query": [
+   "['BIGINT'] [(255,)]",
+   "['BIGINT'] [(254,)]",
+   "['BIGINT'] [(-7,)]",
+   "['BIGINT'] [(-8,)]",
+   "['BIGINT'] [(-2,)]",
+   "['BIGINT'] [(-9223372036854775808,)]",
+   "['BIGINT'] [(-1,)]",
+   "['BIGINT', 'BIGINT'] [(2, 7)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/18/query": [
+   "['BIGINT', 'VARCHAR'] [(6, 'BIGINT')]",
+   "ParserException: Parser Error: syntax error at or near \"#\"",
+   "['DOUBLE'] [(125.0,)]",
+   "ParserException: Parser Error: syntax error at or near \"3\"",
+   "BinderException: Binder Error: No function matches the given name and argument types 'regexp_full_match(INTEGER_LITERAL, INTEGER_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/19/query": [
+   "['BIGINT'] [(-1,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(-7,)]",
+   "['BIGINT'] [(-1,)]",
+   "['BIGINT', 'VARCHAR'] [(0, 'BIGINT')]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/20/query": [
+   "['INTEGER'] [(-6,)]",
+   "['BIGINT'] [(-1,)]",
+   "['BIGINT'] [(0,)]",
+   "['BIGINT'] [(-9223372036854775808,)]",
+   "['BIGINT'] [(9223372036854775807,)]",
+   "['BIGINT', 'VARCHAR'] [(-6, 'BIGINT')]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/21/query": [
+   "['VARCHAR'] [('BIGINT',)]",
+   "['VARCHAR'] [('BIGINT',)]",
+   "['VARCHAR'] [('SMALLINT',)]",
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('BIGINT', 'BIGINT', 'BIGINT', 'BIGINT', 'BIGINT')]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/22/query": [
+   "['VARCHAR'] [('TINYINT',)]",
+   "['VARCHAR'] [('INTEGER',)]",
+   "['VARCHAR'] [('INTEGER',)]",
+   "['VARCHAR'] [('INTEGER',)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/23/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (127 << 1)",
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (64 << 1)",
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (1 << 7)",
+   "OutOfRangeException: Out of Range Error: Left-shift value 8 is out of range",
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (1 << 15)",
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (1 << 31)",
+   "OutOfRangeException: Out of Range Error: Left-shift value 32 is out of range",
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (1073741824 << 1)"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/24/query": [
+   "['BIGINT'] [(254,)]",
+   "['VARCHAR'] [('BIGINT',)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/25/query": [
+   "['TINYINT'] [(-1,)]",
+   "['TINYINT'] [(0,)]",
+   "['SMALLINT'] [(0,)]",
+   "['INTEGER'] [(0,)]",
+   "['INTEGER'] [(-1,)]",
+   "['BIGINT'] [(-1,)]",
+   "['BIGINT'] [(-1,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/26/query": [
+   "['TINYINT'] [(-64,)]",
+   "['TINYINT'] [(64,)]",
+   "['SMALLINT'] [(128,)]",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -1"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/27/query": [
+   "OutOfRangeException: Out of Range Error: Left-shift value 9223372036854775807 is out of range",
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/28/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types '&(DECIMAL(2,1), INTEGER_LITERAL)'. You might need to add explicit type casts.",
+   "BinderException: Binder Error: No function matches the given name and argument types '<<(DOUBLE, INTEGER_LITERAL)'. You might need to add explicit type casts.",
+   "BinderException: Binder Error: No function matches the given name and argument types 'xor(DECIMAL(2,1), INTEGER_LITERAL)'. You might need to add explicit type casts.",
+   "BinderException: Binder Error: No function matches the given name and argument types '~(DECIMAL(2,1))'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/29/query": [
+   "['INTEGER'] [(2,)]",
+   "ConversionException: Conversion Error: Could not convert string '' to INT32",
+   "BinderException: Binder Error: No function matches the given name and argument types '&(VARCHAR, INTEGER_LITERAL)'. You might need to add explicit type casts.",
+   "BinderException: Binder Error: Could not choose a best candidate function for the function call \"<<(STRING_LITERAL, INTEGER_LITERAL)\". In order to select one, please add explicit type casts."
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/30/query": [
+   "['INTEGER'] [(1,)]",
+   "['INTEGER'] [(2,)]",
+   "['INTEGER'] [(3,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/31/query": [
+   "['INTEGER'] [(4,)]",
+   "['INTEGER'] [(16,)]",
+   "['INTEGER'] [(2,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/32/query": [
+   "['INTEGER'] [(-3,)]",
+   "['INTEGER'] [(-5,)]",
+   "['INTEGER'] [(-6,)]",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -2",
+   "OutOfRangeException: Out of Range Error: Cannot left-shift negative number -1"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/33/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in left shift (1 << 31)",
+   "['INTEGER', 'VARCHAR'] [(1073741824, 'INTEGER')]",
+   "OutOfRangeException: Out of Range Error: Left-shift value 62 is out of range"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/34/query": [
+   "['HUGEINT'] [(1267650600228229401496703205376,)]"
+  ],
+  "pins-wave5/bitwise-int-ops.json#/pins/35/query": [
+   "ConversionException: Conversion Error: Type INT128 with value 9223372036854775808 can't be cast because the value is out of range for the destination type INT64",
+   "['BIGINT'] [(-1,)]"
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/0/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/1/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/2/query": [
+   "ParserException: Parser Error: syntax error at or near \"list\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/3/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/4/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/5/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/6/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/7/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/8/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/9/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/10/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/11/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/12/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\"",
+   "ParserException: Parser Error: syntax error at or near \".\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/13/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/14/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \"same\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/15/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/16/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/17/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/18/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/19/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\"",
+   "ParserException: Parser Error: syntax error at or near \".\"",
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/20/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/21/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/22/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/23/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \"\"SELECT id_1 FROM (SELECT 1 AS id, 2 AS id) t\"\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/24/query": [
+   "ParserException: Parser Error: syntax error at or near \"descriptions\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/25/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/26/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \"..\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/27/query": [
+   "['BIGINT'] [(1,)]",
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('id', 'INTEGER', 'YES', None, None, None), ('id_1', 'INTEGER', 'YES', None, None, None)]"
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/28/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \"..\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/29/query": [
+   "['INTEGER', 'INTEGER'] [(1, 2)]",
+   "['INTEGER', 'INTEGER'] [(2, 1)]",
+   "['INTEGER', 'INTEGER'] [(1, 2)]"
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/30/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/31/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \"\"SELECT *, v FROM g\"\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/32/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/33/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\"",
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/36/query": [
+   "ParserException: Parser Error: syntax error at or near \"tests\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/37/query": [
+   "ParserException: Parser Error: syntax error at or near \"_replay\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/38/query": [
+   "ParserException: Parser Error: syntax error at or near \"_replay\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/39/query": [
+   "ParserException: Parser Error: syntax error at or near \"_replay\""
+  ],
+  "pins-wave5/dup-names-client-contract.json#/pins/40/query": [
+   "ParserException: Parser Error: syntax error at or near \"read\""
+  ],
+  "pins-wave5/slices.json#/pins/0/query": [
+   "['VARCHAR'] [('ell',)]"
+  ],
+  "pins-wave5/slices.json#/pins/1/query": [
+   "['VARCHAR'] [('él',)]"
+  ],
+  "pins-wave5/slices.json#/pins/2/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('😀', '😀b€', '€', 'c')]",
+   "['BIGINT', 'BIGINT'] [(5, 10)]"
+  ],
+  "pins-wave5/slices.json#/pins/3/query": [
+   "['VARCHAR', 'VARCHAR'] [('e', '́')]"
+  ],
+  "pins-wave5/slices.json#/pins/4/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR')]"
+  ],
+  "pins-wave5/slices.json#/pins/5/query": [
+   "['VARCHAR', 'BOOLEAN'] [('hel', True)]"
+  ],
+  "pins-wave5/slices.json#/pins/6/query": [
+   "['VARCHAR', 'BOOLEAN'] [('ello', True)]"
+  ],
+  "pins-wave5/slices.json#/pins/7/query": [
+   "['VARCHAR', 'BOOLEAN'] [('hello', True)]"
+  ],
+  "pins-wave5/slices.json#/pins/8/query": [
+   "['VARCHAR', 'VARCHAR'] [('llo', 'b€c')]"
+  ],
+  "pins-wave5/slices.json#/pins/9/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('ello', 'llo', '😀b€')]"
+  ],
+  "pins-wave5/slices.json#/pins/10/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('he', 'hel', 'he', 'hello', 'hello')]"
+  ],
+  "pins-wave5/slices.json#/pins/11/query": [
+   "['VARCHAR'] [('llo',)]"
+  ],
+  "pins-wave5/slices.json#/pins/12/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('', '', '', '')]"
+  ],
+  "pins-wave5/slices.json#/pins/13/query": [
+   "['VARCHAR', 'VARCHAR'] [('l', 'o')]"
+  ],
+  "pins-wave5/slices.json#/pins/14/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('', '', '', '', '')]"
+  ],
+  "pins-wave5/slices.json#/pins/16/query": [
+   "['VARCHAR', 'VARCHAR'] [(None, None)]"
+  ],
+  "pins-wave5/slices.json#/pins/17/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [(None, None, None)]"
+  ],
+  "pins-wave5/slices.json#/pins/18/query": [
+   "['VARCHAR', 'VARCHAR'] [(None, None)]"
+  ],
+  "pins-wave5/slices.json#/pins/19/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-wave5/slices.json#/pins/22/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('ello', 'ello', 'ello', 'hel', '', 'hello')]"
+  ],
+  "pins-wave5/slices.json#/pins/24/query": [
+   "ConversionException: Conversion Error: Type INT128 with value 9223372036854775808 can't be cast because the value is out of range for the destination type INT64"
+  ],
+  "pins-wave5/slices.json#/pins/25/query": [
+   "ConversionException: Conversion Error: Type INT128 with value -9223372036854775809 can't be cast because the value is out of range for the destination type INT64"
+  ],
+  "pins-wave5/slices.json#/pins/26/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('ell', 'hell', 'cd', 'de', 'abc', 'ell', 'hell')]",
+   "['BIGINT', 'BIGINT', 'BIGINT', 'BIGINT'] [(3, 4, 1, -3)]"
+  ],
+  "pins-wave5/slices.json#/pins/27/query": [
+   "ConversionException: Conversion Error: Could not convert string 'a' to INT64"
+  ],
+  "pins-wave5/slices.json#/pins/28/query": [
+   "['VARCHAR'] [('ell',)]"
+  ],
+  "pins-wave5/slices.json#/pins/29/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('ell', 'ell', None, None, '😀b€', 'ello', 'he', '', '')]"
+  ],
+  "pins-wave5/slices.json#/pins/30/query": [
+   "NotImplementedException: Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:",
+   "NotImplementedException: Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:",
+   "NotImplementedException: Not implemented Error: Slice with steps has not been implemented for string types, you can consider rewriting your query as follows:"
+  ],
+  "pins-wave5/slices.json#/pins/31/query": [
+   "['INTEGER[]', 'INTEGER[]', 'INTEGER[]', 'INTEGER[]', 'INTEGER[]', 'INTEGER[]', 'VARCHAR'] [([], [], [1, 2], [2, 3], None, [1, 3], 'INTEGER[]')]"
+  ],
+  "pins-wave5/slices.json#/pins/32/query": [
+   "['BLOB', 'BLOB'] [(b'\\xc3', b'\\xa9')]",
+   "['VARCHAR'] [('BLOB',)]"
+  ],
+  "pins-wave5/slices.json#/pins/33/query": [
+   "['VARCHAR', 'VARCHAR'] [('ell', 'el')]"
+  ],
+  "pins-wave5/sqlparser-spike.json#/forms/5/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(8, 4, 1, 7)]"
+  ],
+  "pins-wave5/sqlparser-spike.json#/forms/19/sql": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/star-forms.json#/pins/15/query": [
+   "ParserException: Parser Error: Duplicate entry \"abc\" in EXCLUDE list"
+  ],
+  "pins-wave5/star-forms.json#/pins/22/query": [
+   "ParserException: Parser Error: Column \"abc\" cannot occur in both EXCLUDE and REPLACE list"
+  ],
+  "pins-wave5/star-forms.json#/pins/24/query": [
+   "ParserException: Parser Error: syntax error at or near \"EXCLUDE\""
+  ],
+  "pins-wave5/star-forms.json#/pins/25/query": [
+   "ParserException: Parser Error: syntax error at or near \"REPLACE\""
+  ],
+  "pins-wave5/star-forms.json#/pins/29/query": [
+   "ParserException: Parser Error: Column \"abc\" cannot occur in both EXCLUDE and RENAME list"
+  ],
+  "pins-wave5/star-forms.json#/extra_pins/14/query": [
+   "ParserException: Parser Error: syntax error at or near \".\""
+  ],
+  "pins-wave5/star-forms.json#/extra_pins/15/query": [
+   "ParserException: Parser Error: Duplicate entry \"abc\" in REPLACE list"
+  ],
+  "pins-wave5/star-forms.json#/extra_pins/17/query": [
+   "ParserException: Parser Error: Column \"abc\" cannot occur in both REPLACE and RENAME list"
+  ],
+  "pins-wave5/star-forms.json#/extra_pins/22/query": [
+   "ParserException: Parser Error: syntax error at or near \"EXCLUDE\""
+  ],
+  "pins-wave5/star-forms.json#/extra_pins/35/query": [
+   "['INTEGER'] [(1,)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/3/query": [
+   "['VARCHAR', 'VARCHAR'] [('h', 'l')]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/7/query": [
+   "['VARCHAR'] [('',)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/12/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/13/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/14/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('', '', '')]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/25/query": [
+   "['VARCHAR'] [('x',)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/26/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/27/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/28/query": [
+   "OutOfRangeException: Out of Range Error: Substring offset outside of supported range (> 4294967295)"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/31/query": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/32/query": [
+   "['VARCHAR', 'VARCHAR', 'BIGINT', 'BIGINT'] [('é', 'l', 6, 5)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/33/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'BIGINT', 'BIGINT'] [('😀', 'b', '😀', 6, 3)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/34/query": [
+   "['BIGINT', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(6, 'e', '́', 'o')]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/35/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('e', 'e', 'e')]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/36/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, HUGEINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/37/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, UBIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/38/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, DOUBLE)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/39/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, DECIMAL(2,1))'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/40/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'array_extract(STRING_LITERAL, BOOLEAN)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/41/query": [
+   "['VARCHAR'] [('e',)]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/42/query": [
+   "ConversionException: Conversion Error: Could not convert string 'a' to INT64"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/43/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('e', 'o', '')]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/44/query": [
+   "['VARCHAR', 'VARCHAR'] [('o', '')]"
+  ],
+  "pins-wave5/subscripts-extended.json#/pins/46/query": [
+   "['VARCHAR'] [('e',)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/3/query": [
+   "['BOOLEAN'] [(None,)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/4/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/5/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/6/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, True, True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/7/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/8/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types '^@(BLOB, BLOB)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/text-operators.json#/pins/9/query": [
+   "['VARCHAR'] [('BOOLEAN',)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/10/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types '^@(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/text-operators.json#/pins/18/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/19/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/20/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/21/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/22/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/23/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/24/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/27/query": [
+   "ParserException: Parser Error: syntax error at or near \"GLOB\""
+  ],
+  "pins-wave5/text-operators.json#/pins/28/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/29/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/30/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, False, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/31/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/32/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/33/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/34/query": [
+   "ParserException: Parser Error: syntax error at or near \"GLOB\""
+  ],
+  "pins-wave5/text-operators.json#/pins/35/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/36/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/37/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/38/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/39/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/40/query": [
+   "BinderException: Binder Error: Function \"glob\" is a table function but it was used as a scalar function. This function has to be called in a FROM clause (similar to a table)."
+  ],
+  "pins-wave5/text-operators.json#/pins/41/query": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/43/query": [
+   "['VARCHAR'] [('BOOLEAN',)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/44/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types '~~~(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-wave5/text-operators.json#/pins/45/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/46/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/47/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/48/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/49/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/50/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/52/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/53/query": [
+   "['VARCHAR'] [('^@',), ('prefix',), ('starts_with',), ('~~~',)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/54/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/55/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/56/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/57/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/58/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/59/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/60/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/61/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/62/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/63/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/64/query": [
+   "['BOOLEAN'] [(None,)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/66/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, True)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/67/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, False, False)]"
+  ],
+  "pins-wave5/text-operators.json#/pins/68/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, False)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/nested/25/sql": [
+   "['BIGINT', 'DOUBLE'] [(-4, -4.0), (-3, -4.0), (-2, -2.0), (-1, -2.0), (0, 2.0), (1, 2.0), (2, 4.0), (3, 4.0), (4, 6.0)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/nested/26/sql": [
+   "['BIGINT', 'DOUBLE'] [(-4, -4.0), (-3, -4.0), (-2, -2.0), (-1, -2.0), (0, 2.0), (1, 2.0), (2, 4.0), (3, 4.0), (4, 6.0)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/nested/27/sql": [
+   "['BIGINT', 'DOUBLE'] [(-2, -2.0), (-1, -0.0), (0, 0.0), (1, 2.0), (2, 2.0), (3, 4.0), (4, 4.0)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/nested/28/sql": [
+   "['BIGINT', 'DOUBLE'] [(-2, -1.0), (-1, 0.0), (0, 1.0), (1, 2.0), (2, 3.0), (3, 4.0), (4, 5.0)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/nested/29/sql": [
+   "['BIGINT', 'DOUBLE'] [(-2, -1.0), (-1, 0.0), (0, 1.0), (1, 2.0), (2, 3.0), (3, 4.0), (4, 5.0)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/7/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/8/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/9/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/10/sql": [
+   "['BIGINT'] [(1,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/11/sql": [
+   "['BIGINT'] [(0,), (2,), (4,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/12/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/13/sql": [
+   "['BIGINT'] [(1,), (2,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/14/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/42/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/43/sql": [
+   "['BIGINT'] [(0,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/44/sql": [
+   "['VARCHAR'] [('j',)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/45/sql": [
+   "['VARCHAR'] [('hel lo',)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/81/sql": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('FFFFFFFFFFFFFF80', 'FFFFFFFFFFFF8000', 'FFFFFFFF80000000', '8000000000000000', '80000000000000000000000000000000', '0', '0', '0', '0', '0', '7FFF7F00000000000007FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'F09FA686F09FA686F09FA686F09FA686F09FA686F09FA686'), ('7F', '7FFF', '7FFFFFFF', '7FFFFFFFFFFFFFFF', '7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'FF', 'FFFF', 'FFFFFFFF', 'FFFFFFFFFFFFFFFF', '800080FFFFFFFFFFFFF800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000', '676F6F007365'), (None, None, None, None, None, None, None, None, None, None, None, None)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/82/sql": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('1111111111111111111111111111111111111111111111111111111110000000', '1111111111111111111111111111111111111111111111111000000000000000', '1111111111111111111111111111111110000000000000000000000000000000', '1000000000000000000000000000000000000000000000000000000000000000', '10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000', '0', '0', '0', '0', '0', '0111111111111111011111110000000000000000000000000000000000000000000000000000011111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111', '111100001001111110100110100001101111000010011111101001101000011011110000100111111010011010000110111100001001111110100110100001101111000010011111101001101000011011110000100111111010011010000110'), ('1111111', '111111111111111', '1111111111111111111111111111111', '111111111111111111111111111111111111111111111111111111111111111', '1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111', '11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111', '11111111', '1111111111111111', '11111111111111111111111111111111', '1111111111111111111111111111111111111111111111111111111111111111', '1000000000000000100000001111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000', '011001110110111101101111000000000111001101100101'), (None, None, None, None, None, None, None, None, None, None, None, None)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/89/sql": [
+   "['VARCHAR'] [('                                                                                ',), ('▊                                                                               ',), ('███▏                                                                            ',), ('███████▏                                                                        ',), ('████████████▊                                                                   ',), ('████████████████████                                                            ',), ('████████████████████████████▊                                                   ',), ('███████████████████████████████████████▏                                        ',), ('███████████████████████████████████████████████████▏                            ',), ('████████████████████████████████████████████████████████████████▊               ',), ('████████████████████████████████████████████████████████████████████████████████',)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/100/sql": [
+   "['BIGINT'] [(1000,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/106/sql": [
+   "['INTEGER'] [(None,), (1,), (None,), (1,), (None,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/107/sql": [
+   "['INTEGER'] [(None,), (None,), (None,), (None,), (None,)]"
+  ],
+  "pins-waveA/census-all-nonmatches.json#/other/109/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR'] [(1, 2, 'foo'), (1, 2, 'foo'), (1, 2, 'foo')]"
+  ],
+  "pins-waveA/columns-replace.json#/pins/8/q": [
+   "ParserException: Parser Error: syntax error at or near \"REPLACE\""
+  ],
+  "pins-waveA/from-colon-alias.json#/pins/9/q": [
+   "ParserException: Parser Error: syntax error at or near \":\""
+  ],
+  "pins-waveA/from-colon-alias.json#/pins/14/q": [
+   "['INTEGER'] [(1,)]"
+  ],
+  "pins-waveA/from-colon-alias.json#/pins/15/q": [
+   "ParserException: Parser Error: syntax error at or near \"AS\""
+  ],
+  "pins-waveA/from-colon-alias.json#/pins/16/q": [
+   "ParserException: Parser Error: syntax error at or near \":\""
+  ],
+  "pins-waveA/from-colon-alias.json#/pins/19/q": [
+   "['BIGINT'] [(0,), (1,), (2,)]"
+  ],
+  "pins-waveA/regex-null-pattern.json#/pins/2/q": [
+   "['BOOLEAN'] [(None,)]"
+  ],
+  "pins-waveA/regex-null-pattern.json#/pins/3/q": [
+   "['BOOLEAN'] [(None,)]"
+  ],
+  "pins-waveA/regex-null-pattern.json#/pins/4/q": [
+   "['BOOLEAN'] [(None,)]"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/3/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/4/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/5/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/6/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/7/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/8/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1",
+   "ParserException: Parser Error: syntax error at or near \"and\""
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/9/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/10/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/11/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/12/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/13/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/14/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/15/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/16/q": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/17/q": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'reverse(INTEGER_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-waveA/reverse-graphemes.json#/pins/18/q": [
+   "InvalidInputException: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1, 2"
+  ],
+  "pins-waveA/struct-nested.json#/pins/30/q": [
+   "ParserException: Parser Error: syntax error at or near \"/\""
+  ],
+  "pins-waveA/struct-star.json#/pins/21/q": [
+   "ParserException: Parser Error: syntax error at or near \"*\""
+  ],
+  "pins-waveB/extract.json#/pins/0/query": [
+   "['VARCHAR'] [('ll',)]",
+   "['VARCHAR'] [('hello world',)]"
+  ],
+  "pins-waveB/extract.json#/pins/1/query": [
+   "['VARCHAR'] [('hello world',)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/extract.json#/pins/2/query": [
+   "['VARCHAR', 'VARCHAR'] [('hello', 'world')]"
+  ],
+  "pins-waveB/extract.json#/pins/3/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('', '', '')]"
+  ],
+  "pins-waveB/extract.json#/pins/4/query": [
+   "InvalidInputException: Invalid Input Error: Group index must be between 0 and 9!",
+   "['VARCHAR'] [('i',)]"
+  ],
+  "pins-waveB/extract.json#/pins/5/query": [
+   "InvalidInputException: Invalid Input Error: Group index must be between 0 and 9!",
+   "InvalidInputException: Invalid Input Error: Group index must be between 0 and 9!"
+  ],
+  "pins-waveB/extract.json#/pins/6/query": [
+   "['VARCHAR', 'BOOLEAN', 'BOOLEAN'] [('', False, True)]",
+   "['VARCHAR', 'BOOLEAN'] [('', False)]"
+  ],
+  "pins-waveB/extract.json#/pins/7/query": [
+   "['VARCHAR', 'VARCHAR'] [('123', 'lo wo')]"
+  ],
+  "pins-waveB/extract.json#/pins/8/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('', 'hello', 'world')]"
+  ],
+  "pins-waveB/extract.json#/pins/9/query": [
+   "['VARCHAR', 'VARCHAR'] [('1', 'a')]"
+  ],
+  "pins-waveB/extract.json#/pins/10/query": [
+   "['VARCHAR', 'BOOLEAN', 'VARCHAR', 'BOOLEAN'] [(None, True, None, True)]"
+  ],
+  "pins-waveB/extract.json#/pins/11/query": [
+   "['VARCHAR', 'BOOLEAN', 'BOOLEAN'] [('', False, True)]"
+  ],
+  "pins-waveB/extract.json#/pins/12/query": [
+   "['VARCHAR', 'BOOLEAN', 'VARCHAR', 'VARCHAR'] [('', False, '', '')]",
+   "['VARCHAR', 'BOOLEAN', 'VARCHAR', 'BOOLEAN'] [('', True, '', True)]",
+   "['VARCHAR', 'VARCHAR'] [('', '')]"
+  ],
+  "pins-waveB/extract.json#/pins/13/query": [
+   "['VARCHAR', 'VARCHAR'] [('VARCHAR', 'VARCHAR')]"
+  ],
+  "pins-waveB/extract.json#/pins/14/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('abc', 'abc', 'b', '')]"
+  ],
+  "pins-waveB/extract.json#/pins/15/query": [
+   "['VARCHAR', 'BOOLEAN', 'VARCHAR'] [('', False, 'b')]",
+   "['VARCHAR', 'BOOLEAN'] [('', True)]"
+  ],
+  "pins-waveB/extract.json#/pins/16/query": [
+   "['STRUCT(y VARCHAR, m VARCHAR, d VARCHAR)'] [({'y': '2023', 'm': '04', 'd': '15'},)]",
+   "['VARCHAR'] [('STRUCT(y VARCHAR, m VARCHAR, d VARCHAR)',)]",
+   "['STRUCT(second_named_first VARCHAR, other VARCHAR)'] [({'second_named_first': '2023', 'other': '04'},)]"
+  ],
+  "pins-waveB/extract.json#/pins/17/query": [
+   "['STRUCT(a VARCHAR, b VARCHAR)'] [({'a': '', 'b': ''},)]",
+   "['STRUCT(a VARCHAR)', 'BOOLEAN'] [(None, True)]"
+  ],
+  "pins-waveB/extract.json#/pins/18/query": [
+   "['STRUCT(a VARCHAR)'] [({'a': '2023'},)]"
+  ],
+  "pins-waveB/extract.json#/pins/19/query": [
+   "BinderException: Binder Error: Not enough capturing groups (2) for provided names (3)",
+   "BinderException: Binder Error: Group name list must be non-empty",
+   "BinderException: Binder Error: Duplicate group name 'x' in regexp_extract",
+   "BinderException: Binder Error: NULL group name in regexp_extract"
+  ],
+  "pins-waveB/extract.json#/pins/20/query": [
+   "['STRUCT(VARCHAR, VARCHAR)'] [(('a', 'b'),)]",
+   "['VARCHAR'] [('STRUCT(VARCHAR, VARCHAR)',)]"
+  ],
+  "pins-waveB/extract.json#/pins/21/query": [
+   "BinderException: Binder Error: regexp_extract with LIST of group names requires a constant pattern",
+   "InvalidInputException: Invalid Input Error: Group specification field must be a constant!"
+  ],
+  "pins-waveB/extract.json#/pins/22/query": [
+   "['VARCHAR', 'VARCHAR'] [('ABC', 'ABC')]",
+   "['STRUCT(w VARCHAR, n VARCHAR)'] [({'w': 'ABC', 'n': '12'},)]"
+  ],
+  "pins-waveB/extract.json#/pins/23/query": [
+   "BinderException: Binder Error: Could not choose a best candidate function for the function call \"regexp_extract(STRING_LITERAL, STRING_LITERAL, STRING_LITERAL)\". In order to select one, please add explicit type casts.",
+   "BinderException: Binder Error: No function matches the given name and argument types 'regexp_extract(STRING_LITERAL, STRING_LITERAL, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-waveB/extract.json#/pins/24/query": [
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option q",
+   "InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace",
+   "InvalidInputException: Invalid Input Error: Regex options field must not be NULL",
+   "InvalidInputException: Invalid Input Error: Regex options field must be a constant"
+  ],
+  "pins-waveB/extract.json#/pins/25/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('', '', 'ABC', '')]",
+   "['VARCHAR', 'VARCHAR'] [('a.c', '')]"
+  ],
+  "pins-waveB/extract.json#/pins/26/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('', 'a\\nb', '')]"
+  ],
+  "pins-waveB/extract.json#/pins/27/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('', '', '', '')]",
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('b', 'a\\nb', 'ABC')]"
+  ],
+  "pins-waveB/extract.json#/pins/28/query": [
+   "['VARCHAR', 'VARCHAR'] [('héllo', 'é')]",
+   "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('😀', 'a', '٣')]"
+  ],
+  "pins-waveB/extract.json#/pins/29/query": [
+   "['VARCHAR', 'VARCHAR', 'BOOLEAN'] [('', '', True)]",
+   "['VARCHAR'] [('h',)]"
+  ],
+  "pins-waveB/extract.json#/pins/30/query": [
+   "['VARCHAR', 'BOOLEAN'] [('', True)]",
+   "['VARCHAR'] [('İ',)]"
+  ],
+  "pins-waveB/extract.json#/pins/31/query": [
+   "InvalidInputException: Invalid Input Error: missing ): (",
+   "InvalidInputException: Invalid Input Error: missing ]: ["
+  ],
+  "pins-waveB/extract.json#/pins/32/query": [
+   "['VARCHAR', 'VARCHAR'] [('hello world', 'hello'), ('abc123def', 'abc123def'), ('', ''), (None, None), ('héllo', 'h')]",
+   "['VARCHAR', 'VARCHAR'] [('hello world', 'll'), ('abc123def', ''), ('', ''), (None, None), ('héllo', 'll')]"
+  ],
+  "pins-waveB/extract.json#/pins/33/query": [
+   "['VARCHAR'] [('123',), ('',), (None,)]",
+   "InvalidInputException: Invalid Input Error: Group specification field must be a constant!",
+   "['VARCHAR'] [('123',)]"
+  ],
+  "pins-waveB/extract.json#/pins/34/query": [
+   "['VARCHAR'] [('abc',)]",
+   "['STRUCT(l VARCHAR, n VARCHAR)'] [({'l': 'abc', 'n': '123'},)]"
+  ],
+  "pins-waveB/fuzzer-20260728.json#/pins/1/q": [
+   "BinderException: Binder Error: Referenced column \"s\" was not found because the FROM clause is missing"
+  ],
+  "pins-waveB/matches-operators.json#/pins/0/query": [
+   "['INTEGER', 'VARCHAR', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(1, 'hello', True, False, False, True), (2, 'hello world', True, False, False, True), (3, '', False, False, False, True), (4, None, None, None, None, None), (5, 'héllo', False, False, False, True), (6, 'HELLO', False, False, False, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/1/query": [
+   "['INTEGER', 'VARCHAR', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(1, 'hello', True, True, True, False), (2, 'hello world', True, False, False, True), (3, '', False, False, False, True), (4, None, None, None, None, None), (5, 'héllo', False, False, False, True), (6, 'HELLO', False, False, False, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/2/query": [
+   "['INTEGER', 'VARCHAR', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(1, 'hello', True, False, False), (2, 'hello world', True, False, False), (3, '', True, True, True), (4, None, None, None, None), (5, 'héllo', True, False, False), (6, 'HELLO', True, False, False)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/3/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, True, False), (True, True, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/4/query": [
+   "['INTEGER', 'VARCHAR', 'BOOLEAN', 'BOOLEAN'] [(1, 'hello', True, True), (2, 'hello world', True, True), (3, '', True, True), (4, None, None, None), (5, 'héllo', True, True), (6, 'HELLO', True, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/5/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(None, None, None, None)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/6/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(None, None, None, None)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/7/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(None, None, None)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/8/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN')]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/9/query": [
+   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('m', 'BOOLEAN', 'YES', None, None, None), ('o', 'BOOLEAN', 'YES', None, None, None), ('st', 'BOOLEAN', 'YES', None, None, None)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/10/query": [
+   "['INTEGER', 'VARCHAR', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(1, 'hello', False, False, False, True, True), (2, 'hello world', False, False, False, False, True), (3, '', False, False, False, False, True), (4, None, None, None, None, None, None), (5, 'héllo', False, False, False, False, True), (6, 'HELLO', False, False, False, False, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/11/query": [
+   "['INTEGER', 'VARCHAR', 'BOOLEAN'] [(1, 'hello', False), (2, 'hello world', False), (3, '', False), (4, None, None), (5, 'héllo', False), (6, 'HELLO', False)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/12/query": [
+   "['INTEGER', 'VARCHAR', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(1, 'hello', True, True, True, True), (2, 'hello world', True, False, False, False), (3, '', False, False, False, False), (4, None, None, None, None, None), (5, 'héllo', True, True, True, True), (6, 'HELLO', False, False, False, False)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/13/query": [
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/14/query": [
+   "NotImplementedException: Not implemented Error: Custom escape in SIMILAR TO"
+  ],
+  "pins-waveB/matches-operators.json#/pins/15/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/16/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/17/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/18/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, False)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/19/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(False, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/20/query": [
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option z"
+  ],
+  "pins-waveB/matches-operators.json#/pins/21/query": [
+   "InvalidInputException: Invalid Input Error: Regex options field must not be NULL"
+  ],
+  "pins-waveB/matches-operators.json#/pins/22/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'regexp_matches(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-waveB/matches-operators.json#/pins/23/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'regexp_full_match(VARCHAR, INTEGER_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-waveB/matches-operators.json#/pins/24/query": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'regexp_full_match(INTEGER_LITERAL, STRING_LITERAL)'. You might need to add explicit type casts."
+  ],
+  "pins-waveB/matches-operators.json#/pins/25/query": [
+   "InvalidInputException: Invalid Input Error: missing ): ("
+  ],
+  "pins-waveB/matches-operators.json#/pins/26/query": [
+   "InvalidInputException: Invalid Input Error: missing ): ("
+  ],
+  "pins-waveB/matches-operators.json#/pins/27/query": [
+   "InvalidInputException: Invalid Input Error: missing ): ("
+  ],
+  "pins-waveB/matches-operators.json#/pins/28/query": [
+   "InvalidInputException: Invalid Input Error: missing ): ("
+  ],
+  "pins-waveB/matches-operators.json#/pins/29/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/30/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, False, True)]"
+  ],
+  "pins-waveB/matches-operators.json#/pins/31/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(False, True, True)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/0/query": [
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option q",
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option q",
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option q"
+  ],
+  "pins-waveB/options-errors.json#/pins/1/query": [
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option x",
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option I"
+  ],
+  "pins-waveB/options-errors.json#/pins/2/query": [
+   "['BOOLEAN'] [(False,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/3/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['VARCHAR'] [('ABC',)]",
+   "['VARCHAR'] [('xaAa',)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/4/query": [
+   "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, False, True)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/5/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/6/query": [
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/7/query": [
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(False,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/8/query": [
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(False,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/9/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/10/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/11/query": [
+   "InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace",
+   "InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace",
+   "InvalidInputException: Invalid Input Error: Option 'g' (global replace) is only valid for regexp_replace"
+  ],
+  "pins-waveB/options-errors.json#/pins/12/query": [
+   "['VARCHAR'] [('AxAa',)]",
+   "['VARCHAR'] [('AxAx',)]",
+   "['VARCHAR'] [('xxxx',)]",
+   "['VARCHAR'] [('xxxx',)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/13/query": [
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(False,)]",
+   "['VARCHAR'] [('',)]",
+   "['VARCHAR'] [('AxAa',)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/14/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(False,)]",
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option ,"
+  ],
+  "pins-waveB/options-errors.json#/pins/15/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/16/query": [
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/17/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['VARCHAR'] [('xxx',)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/18/query": [
+   "InvalidInputException: Invalid Input Error: Regex options field must not be NULL"
+  ],
+  "pins-waveB/options-errors.json#/pins/19/query": [
+   "['BOOLEAN'] [(None,)]",
+   "['BOOLEAN'] [(None,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/20/query": [
+   "InvalidInputException: Invalid Input Error: Regex options field must be a constant",
+   "InvalidInputException: Invalid Input Error: Regex options field must be a constant"
+  ],
+  "pins-waveB/options-errors.json#/pins/21/query": [
+   "['BOOLEAN', 'BOOLEAN'] [(True, True)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/22/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/23/query": [
+   "['VARCHAR'] [('a',)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/24/query": [
+   "InvalidInputException: Invalid Input Error: invalid perl operator: (?x"
+  ],
+  "pins-waveB/options-errors.json#/pins/25/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(False,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['VARCHAR'] [('xxxx',)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/26/query": [
+   "InvalidInputException: Invalid Input Error: missing ]: ["
+  ],
+  "pins-waveB/options-errors.json#/pins/27/query": [
+   "InvalidInputException: Invalid Input Error: missing ): ("
+  ],
+  "pins-waveB/options-errors.json#/pins/28/query": [
+   "InvalidInputException: Invalid Input Error: invalid repetition size: {2,1}"
+  ],
+  "pins-waveB/options-errors.json#/pins/29/query": [
+   "InvalidInputException: Invalid Input Error: invalid named capture group: (?P<n"
+  ],
+  "pins-waveB/options-errors.json#/pins/30/query": [
+   "InvalidInputException: Invalid Input Error: bad repetition operator: **"
+  ],
+  "pins-waveB/options-errors.json#/pins/31/query": [
+   "InvalidInputException: Invalid Input Error: trailing \\"
+  ],
+  "pins-waveB/options-errors.json#/pins/32/query": [
+   "InvalidInputException: Invalid Input Error: invalid escape sequence: \\1"
+  ],
+  "pins-waveB/options-errors.json#/pins/33/query": [
+   "InvalidInputException: Invalid Input Error: invalid perl operator: (?=",
+   "InvalidInputException: Invalid Input Error: invalid perl operator: (?<"
+  ],
+  "pins-waveB/options-errors.json#/pins/34/query": [
+   "['BOOLEAN'] [(False,)]",
+   "InvalidInputException: Invalid Input Error: invalid repetition size: {1001}"
+  ],
+  "pins-waveB/options-errors.json#/pins/35/query": [
+   "ParserException: Parser Error: syntax error at or near \"EXPLAIN\""
+  ],
+  "pins-waveB/options-errors.json#/pins/36/query": [
+   "['BOOLEAN'] []",
+   "InvalidInputException: Invalid Input Error: missing ]: ["
+  ],
+  "pins-waveB/options-errors.json#/pins/37/query": [
+   "ParserException: Parser Error: syntax error at or near \"EXPLAIN\""
+  ],
+  "pins-waveB/options-errors.json#/pins/38/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(False,)]"
+  ],
+  "pins-waveB/options-errors.json#/pins/39/query": [
+   "['BOOLEAN'] [(True,)]",
+   "['BOOLEAN'] [(True,)]",
+   "['VARCHAR'] [('a-b-c',)]",
+   "['BOOLEAN', 'BOOLEAN'] [(False, False)]"
+  ],
+  "pins-waveB/replace.json#/pins/0/query": [
+   "['VARCHAR'] [('Xaa',)]"
+  ],
+  "pins-waveB/replace.json#/pins/2/query": [
+   "['VARCHAR'] [('VARCHAR',)]"
+  ],
+  "pins-waveB/replace.json#/pins/3/query": [
+   "['VARCHAR'] [('XXX',)]"
+  ],
+  "pins-waveB/replace.json#/pins/4/query": [
+   "['VARCHAR'] [('XXX',)]"
+  ],
+  "pins-waveB/replace.json#/pins/5/query": [
+   "['VARCHAR'] [('XXX',)]"
+  ],
+  "pins-waveB/replace.json#/pins/6/query": [
+   "['VARCHAR'] [('Xaa',)]"
+  ],
+  "pins-waveB/replace.json#/pins/7/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-waveB/replace.json#/pins/9/query": [
+   "['VARCHAR'] [('[hello] world',)]"
+  ],
+  "pins-waveB/replace.json#/pins/10/query": [
+   "['VARCHAR'] [('[$1] world',)]"
+  ],
+  "pins-waveB/replace.json#/pins/11/query": [
+   "['VARCHAR'] [('he[ll]o world',)]"
+  ],
+  "pins-waveB/replace.json#/pins/12/query": [
+   "['VARCHAR'] [('he[$0]o world',)]"
+  ],
+  "pins-waveB/replace.json#/pins/13/query": [
+   "['VARCHAR'] [('he[&]o world',)]"
+  ],
+  "pins-waveB/replace.json#/pins/14/query": [
+   "['VARCHAR'] [('ehllo',)]"
+  ],
+  "pins-waveB/replace.json#/pins/15/query": [
+   "['VARCHAR'] [('hello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/16/query": [
+   "['VARCHAR'] [('hello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/17/query": [
+   "['VARCHAR'] [('aaa',)]"
+  ],
+  "pins-waveB/replace.json#/pins/18/query": [
+   "['VARCHAR'] [('\\\\ello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/19/query": [
+   "['VARCHAR'] [('hello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/20/query": [
+   "['VARCHAR'] [('hello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/21/query": [
+   "['VARCHAR'] [('ello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/22/query": [
+   "['VARCHAR'] [('Aello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/23/query": [
+   "['VARCHAR'] [('hello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/24/query": [
+   "['VARCHAR'] [('',)]"
+  ],
+  "pins-waveB/replace.json#/pins/25/query": [
+   "['VARCHAR'] [('Qello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/26/query": [
+   "['VARCHAR'] [('aaa',)]"
+  ],
+  "pins-waveB/replace.json#/pins/27/query": [
+   "['VARCHAR'] [('a0b',)]"
+  ],
+  "pins-waveB/replace.json#/pins/28/query": [
+   "['VARCHAR'] [('$ello',)]"
+  ],
+  "pins-waveB/replace.json#/pins/29/query": [
+   "['VARCHAR'] [('a[1]b[2]c[3]',)]"
+  ],
+  "pins-waveB/replace.json#/pins/30/query": [
+   "['VARCHAR'] [('XaXbXcX',)]"
+  ],
+  "pins-waveB/replace.json#/pins/31/query": [
+   "['VARCHAR'] [('Xabc',)]"
+  ],
+  "pins-waveB/replace.json#/pins/32/query": [
+   "['VARCHAR'] [('XbXbX',)]"
+  ],
+  "pins-waveB/replace.json#/pins/33/query": [
+   "['VARCHAR'] [('X',)]"
+  ],
+  "pins-waveB/replace.json#/pins/34/query": [
+   "['VARCHAR'] [('X',)]"
+  ],
+  "pins-waveB/replace.json#/pins/35/query": [
+   "['VARCHAR'] [('XaX😀XbX',)]"
+  ],
+  "pins-waveB/replace.json#/pins/36/query": [
+   "['VARCHAR'] [('hello world',)]"
+  ],
+  "pins-waveB/replace.json#/pins/37/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-waveB/replace.json#/pins/38/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-waveB/replace.json#/pins/39/query": [
+   "['VARCHAR'] [(None,)]"
+  ],
+  "pins-waveB/replace.json#/pins/40/query": [
+   "['VARCHAR'] [('[]',)]"
+  ],
+  "pins-waveB/replace.json#/pins/41/query": [
+   "['VARCHAR'] [('ab',)]"
+  ],
+  "pins-waveB/replace.json#/pins/42/query": [
+   "['VARCHAR'] [('[a][][b]',)]"
+  ],
+  "pins-waveB/replace.json#/pins/43/query": [
+   "['VARCHAR'] [('X',)]"
+  ],
+  "pins-waveB/replace.json#/pins/44/query": [
+   "['VARCHAR'] [('İstanbul',)]"
+  ],
+  "pins-waveB/replace.json#/pins/45/query": [
+   "['VARCHAR'] [('İXtanbul',)]"
+  ],
+  "pins-waveB/replace.json#/pins/46/query": [
+   "InvalidInputException: Invalid Input Error: Unrecognized Regex option z"
+  ],
+  "pins-waveB/replace.json#/pins/47/query": [
+   "InvalidInputException: Invalid Input Error: missing ): ("
+  ],
+  "pins-waveB/replace.json#/pins/48/query": [
+   "['VARCHAR'] [('hEllo',)]"
+  ],
+  "pins-waveB/replace.json#/pins/49/query": [
+   "['VARCHAR'] [('XXX',)]"
+  ],
+  "pins-waveB/replace.json#/pins/50/query": [
+   "['VARCHAR'] [('a[😀]b',)]"
+  ],
+  "pins-waveB/replace.json#/pins/51/query": [
+   "['VARCHAR'] [('٣٤',)]"
+  ],
+  "pins-waveB/replace.json#/pins/52/query": [
+   "['VARCHAR'] [('٣٤',)]"
+  ],
+  "pins-waveB/replace.json#/pins/53/query": [
+   "['VARCHAR'] [('Istanbul',)]"
+  ],
+  "pins-waveB/star-similar-columns.json#/pins/16/query": [
+   "ParserException: Parser Error: syntax error at or near \"python\""
+  ],
+  "pins-waveB/star-similar-columns.json#/pins/20/query": [
+   "NotImplementedException: Not implemented Error: Custom escape in SIMILAR TO"
+  ],
+  "pins-waveB/star-similar-columns.json#/pins/33/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ],
+  "pins-waveB/star-similar-columns.json#/pins/34/query": [
+   "ParserException: Parser Error: syntax error at or near \"con\""
+  ]
+ }
+}

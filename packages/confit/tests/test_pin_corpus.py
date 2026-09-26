@@ -57,3 +57,36 @@ def test_the_token_marks_the_platform_dependent_nan_sign():
     d = json.loads((PC.PINS / "pins-wave3/math_tail.json").read_text("utf-8"))
     (v,) = [v for v in d["_pin"]["varies"] if v["mark"] == "by:platform"]
     assert PC.resolve(d, v["at"]) == [["7ff8000000000000"] * 4] * 2
+
+
+@pytest.mark.parametrize(
+    ("sql", "want"),
+    [
+        ("SELECT 1", ["SELECT 1"]),
+        ("SELECT 1; SELECT 2;", ["SELECT 1", "SELECT 2"]),
+        (
+            "SELECT sum(x) FROM a\nSELECT sum(x) FROM b",
+            ["SELECT sum(x) FROM a", "SELECT sum(x) FROM b"],
+        ),
+        ("SELECT uuid() AS v  -- observed = str(type)", ["SELECT uuid() AS v"]),
+    ],
+)
+def test_a_pin_query_splits_into_its_statements(sql, want):
+    assert PC.statements(sql) == want
+
+
+def test_the_drift_manifest_names_real_pins_and_this_reference():
+    m = json.loads(PC.DRIFT.read_text(encoding="utf-8"))
+    import duckdb
+
+    assert m["_meta"]["duckdb"] == duckdb.__version__
+    assert m["_meta"]["replayed"] == len(m["answers"])
+    for key in m["answers"]:
+        rel, ptr = key.split("#")
+        d = json.loads((PC.PINS / rel).read_text(encoding="utf-8"))
+        assert PC.resolve(d, ptr), key
+
+
+def test_a_replayable_pin_answers_and_a_prose_table_does_not():
+    assert PC.answer([], ["SELECT 1 + 1 AS v"]) == ["['INTEGER'] [(2,)]"]
+    assert PC.answer([], ["SELECT x FROM table_only_in_prose"]) is None

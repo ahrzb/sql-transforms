@@ -2,7 +2,17 @@
 uniform header per file, derived only from what the file and git already say.
 
     uv run python scripts/pin_corpus.py header     # add or refresh `_pin`
+    uv run python scripts/pin_corpus.py drift      # re-run every replayable pin
     git diff                                       # the review surface
+
+`drift` generalizes `pin_ast_shapes.py` to the whole corpus: every pin query
+that replays mechanically is executed against the installed DuckDB through
+`confit.oracle.Oracle`, and its answer written to `specs/pins-drift.json`.
+The manifest carries no date, so re-running it on an unchanged reference is
+a no-op; after a reference upgrade its `git diff` IS the drift report, and
+each changed answer still needs review (claim: re-record-diff-report). The
+answers are the optimizer-off oracle's, whatever the capture used, and a
+platform-marked field (`varies`) may legitimately differ across platforms.
 
 Each file gains a `_pin` object as its first key. It is inserted as text, so
 the rest of the file stays byte-identical. Nothing is invented: a field the
@@ -260,6 +270,123 @@ def write_header(p: Path, h: dict) -> None:
     p.write_text(new, encoding="utf-8")
 
 
+DRIFT = PINS / "pins-drift.json"
+SQL_KEYS = ("query", "sql", "q")
+
+
+def pin_queries(d: dict):
+    """`(pointer, sql)` for every entry in a pin file that carries SQL."""
+
+    def walk(o, ptr):
+        if isinstance(o, dict):
+            k = next((k for k in SQL_KEYS if isinstance(o.get(k), str)), None)
+            if k is not None:
+                yield f"{ptr}/{k}", o[k]
+            for kk, v in o.items():
+                if kk != "_pin":
+                    yield from walk(v, f"{ptr}/{kk}")
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                yield from walk(v, f"{ptr}/{i}")
+
+    yield from walk(d, "")
+
+
+def statements(sql: str) -> list[str]:
+    """One pin's SQL as statements: split on `;` outside string literals,
+    and before a line starting SELECT/WITH/FROM where a pin lists several
+    queries without separators. A trailing `--` note is dropped."""
+    parts, cur, quoted = [], [], False
+    for i, ch in enumerate(sql):
+        if ch == "'":
+            quoted = not quoted
+        if not quoted and (
+            ch == ";"
+            or (
+                ch == "\n"
+                and re.match(r"\s*(?:SELECT|WITH|FROM)\b", sql[i + 1 :], re.I)
+            )
+        ):
+            parts.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    parts.append("".join(cur))
+    out = []
+    for part in parts:
+        part = re.sub(r"\s+--[^\n']*$", "", part.strip()).strip()
+        if part and not part.startswith("--"):
+            out.append(part)
+    return out
+
+
+def _setup(d: dict) -> list[str]:
+    s = d.get("setup")
+    if not isinstance(s, str) or s.strip().lower().startswith("none"):
+        return []
+    return statements(s)
+
+
+def answer(setup: list[str], stmts: list[str]) -> list[str] | None:
+    """Each statement's answer as text, on a fresh oracle; None when the
+    pin cannot replay mechanically (a table it needs exists only in prose)."""
+    import duckdb  # noqa: PLC0415 — only the drift command needs DuckDB
+    from confit.oracle import Oracle  # noqa: PLC0415
+
+    out = []
+    with Oracle() as o:
+        for s in setup:
+            o.execute(s)
+        for s in stmts:
+            try:
+                cur = o.execute(s)
+                types = [str(c[1]) for c in cur.description or []]
+                out.append(f"{types} {cur.fetchall()!r}")
+            except duckdb.CatalogException:
+                return None
+            except Exception as e:  # noqa: BLE001 — an error IS the answer
+                out.append(f"{type(e).__name__}: {str(e).splitlines()[0]}")
+    return out
+
+
+def drift_manifest() -> dict:
+    import platform  # noqa: PLC0415
+
+    import duckdb  # noqa: PLC0415
+
+    answers, unrunnable = {}, 0
+    for p in pin_files():
+        d = json.loads(p.read_text(encoding="utf-8"))
+        setup = _setup(d)
+        for ptr, sql in pin_queries(d):
+            stmts = statements(sql)
+            first = answer(setup, stmts)
+            if first is None:
+                unrunnable += 1
+                continue
+            again = answer(setup, stmts)
+            answers[f"{_rel(p)}#{ptr}"] = first if first == again else ["<unstable>"]
+    return {
+        "_meta": {
+            "duckdb": duckdb.__version__,
+            "reference": "confit.oracle.Oracle (optimizer off), fresh per pin",
+            "platform": f"{platform.system()} {platform.machine()}",
+            "replayed": len(answers),
+            "not_replayable": unrunnable,
+        },
+        "answers": answers,
+    }
+
+
+def cmd_drift() -> None:
+    m = drift_manifest()
+    DRIFT.write_text(
+        json.dumps(m, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    meta = m["_meta"]
+    print(f"{meta['replayed']} replayed, {meta['not_replayable']} not -> {DRIFT}")
+
+
 def cmd_header() -> None:
     for p in pin_files():
         d = json.loads(p.read_text(encoding="utf-8"))
@@ -268,7 +395,7 @@ def cmd_header() -> None:
 
 
 def main(argv: list[str]) -> int:
-    cmds = {"header": cmd_header}
+    cmds = {"header": cmd_header, "drift": cmd_drift}
     if len(argv) != 1 or argv[0] not in cmds:
         print(f"usage: pin_corpus.py {{{','.join(cmds)}}}", file=sys.stderr)
         return 2

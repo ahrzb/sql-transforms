@@ -65,8 +65,16 @@ proposals, and the provenance facts recorded above stay facts rather than approv
 
 **claim: re-record-diff-report.** Capture new answers with one command and emit a
 reviewable diff; do not silently replace the corpus. `scripts/pin_ast_shapes.py`
-demonstrates this only for the AST-shape manifest. Proposed **ticket:
-corpus-drift-report** would generalize it.
+does this for the AST-shape manifest, and `scripts/pin_corpus.py drift` generalizes it to
+the pin corpus (**ticket: corpus-drift-report**, done): every pin query that replays
+mechanically is re-run on a fresh `Oracle` and its answer written to
+`docs/specs/pins-drift.json`, which carries the DuckDB version and platform but no date,
+so an unchanged reference re-runs to an identical file and a changed one shows up as the
+file's `git diff`. A query answering differently on two runs is recorded `<unstable>`
+(the one today is `uuid()`). On 2026-09-26, 640 of 1927 pin queries replay; the rest need
+tables that exist only in prose (claim: pin-re-runnability). The tool is manual, not a
+gate: platform-marked fields legitimately differ across platforms, and each changed
+answer still needs the review this chapter describes.
 
 **claim: diff-triage-classes.** Classify each changed row exactly once:
 
