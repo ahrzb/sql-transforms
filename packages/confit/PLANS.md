@@ -115,6 +115,11 @@ Remove an item when it lands.
 
 ## Oracle, evidence and gates
 
+- **The generator never emits most CAST targets.** `fuzz/gen.py` renders
+  only BIGINT, INTEGER, DOUBLE, VARCHAR and BOOLEAN, so the campaign never
+  checks the refusal of the others (pinned in `test_known_limitations.py`)
+  nor TINYINT/SMALLINT. Adding targets changes every seed's query: do it
+  together with a fresh dated reading.
 - **CI runs neither `cargo test` nor a debug-build pytest pass.** The
   random-IR interpreter-vs-cranelift differential and the Rust unit suites
   (`src/**/tests.rs`) never run in CI. Lowering invariants are
@@ -150,9 +155,9 @@ Remove an item when it lands.
 
 ## Performance
 
-- **Native transform families.** About 93% of a fitted transformer's per-row
-  cost is sklearn's own `transform()` (≈60 µs, against ≈1.5 µs for the same
-  arithmetic in numpy). Native typed entries (`PCA`, `StandardScaler`, and so
+- **Native transform families.** A fitted transformer costs about 118 µs per
+  row against 1.4 µs for the same query without it (`bench_transforms.py`,
+  2026-09-26, n=1); nearly all of it is sklearn's own `transform()`. Native typed entries (`PCA`, `StandardScaler`, and so
   on, behind the existing extern slots) are the ~100x lever. They are blocked
   on adopting per-family parity bounds by review: bit-exact for scaler/tree
   tiers, a declared ulp bound for matvec tiers, gated by swap-the-entry.
@@ -165,9 +170,6 @@ Remove an item when it lands.
   bisect against `a6fa318`. The n=1 twin cell swings up to 2x between runs,
   so a recorded ratio should be the n=64 one. Settle this before adopting any
   bench refresh cadence.
-- **`benchmarks/bench_transforms.py` does not run.** It declares UDF types as
-  a tuple of strings; the declaration takes an Arrow schema. Port the
-  declarations, then take the transformer-path reading.
 - **Tree scoring.** Not built: `HistGradientBoosting*` (binned thresholds),
   MLP (`mat_stack`), a QuickScorer or vectorized multi-tree walk that keeps
   the accumulation sequential in `tree_span` order, and kNN/kernel SVM

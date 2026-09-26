@@ -19,10 +19,8 @@
 //! unsupported.
 //!
 //! Decimal literals: DuckDB types `1.5` as DECIMAL(2,1); this frontend types
-//! them f64. CAST targets without a lane collapse — HUGEINT and the unsigned
-//! family to i64; FLOAT, REAL, DECIMAL and NUMERIC to f64 — and serve values
-//! DuckDB does not (finding: cast-target-collapse,
-//! docs/reports/2026-09-26-goal-reading.md).
+//! them f64. CAST targets without a lane (HUGEINT, the unsigned family,
+//! FLOAT/REAL, DECIMAL/NUMERIC, ...) refuse by name.
 
 use sqlparser::ast::{
     AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator,
@@ -2773,17 +2771,22 @@ impl Binder<'_> {
                 )));
             }
         }
-        // A qualified EXCLUDE of a self-join's merged USING column UNMERGES
-        // it on DuckDB (measured: EXCLUDE (i1.i) puts `i` back at the right
-        // side's position) -- not modeled, refused by name like the static
-        // USING join's.
-        if exclude.iter().any(|(q, e)| {
-            q.is_some()
-                && self
-                    .joins
-                    .iter()
-                    .any(|sj| sj.merged.iter().any(|m| m.eq_ignore_ascii_case(e)))
-        }) {
+        // A qualified EXCLUDE of a merged USING column UNMERGES it on DuckDB,
+        // whichever side the qualifier names (measured: EXCLUDE (i1.i) and
+        // EXCLUDE (__THIS__.k) both put the key back at the right side's
+        // position, with the right side's values) -- not modeled, refused.
+        let using_key = |sj: &ScopeJoin, e: &str| {
+            sj.merged.iter().any(|m| m.eq_ignore_ascii_case(e))
+                || (sj.using
+                    && sj.key_cols.iter().any(|k| match k.src {
+                        KeySrc::Lane(ci) => sj.table.cols[ci as usize].name.eq_ignore_ascii_case(e),
+                        _ => false,
+                    }))
+        };
+        if exclude
+            .iter()
+            .any(|(q, e)| q.is_some() && self.joins.iter().any(|sj| using_key(sj, e)))
+        {
             return Err(unsup("EXCLUDE of a USING-merged column (DuckDB unmerges it)"));
         }
         let excluded_lists_conflict = |list: &str, name: &str| -> Result<(), PrepareError> {
@@ -8099,34 +8102,30 @@ fn null_context_ty(op: &BinaryOperator, other: Ty) -> Ty {
 
 fn cast_target(dt: &sqlparser::ast::DataType) -> Result<Ty, PrepareError> {
     let name = dt.to_string().to_uppercase();
-    if name.contains("INT") {
-        // DuckDB's named widths. INT8 is BIGINT (eight BYTES); HUGEINT and
-        // the unsigned family still collapse to i64 (range divergence noted
-        // in the module docs).
-        Ok(match name.as_str() {
-            "TINYINT" | "INT1" => Ty::I8,
-            "SMALLINT" | "INT2" | "SHORT" => Ty::I16,
-            "INTEGER" | "INT" | "INT4" | "SIGNED" => Ty::I32,
-            _ => Ty::I64,
-        })
-    } else if name.starts_with("DOUBLE")
-        || name.starts_with("FLOAT")
-        || name.starts_with("REAL")
-        || name.starts_with("DECIMAL")
-        || name.starts_with("NUMERIC")
-    {
-        Ok(Ty::F64)
-    } else if name.starts_with("VARCHAR")
-        || name.starts_with("TEXT")
-        || name.starts_with("STRING")
-        || name.starts_with("CHAR")
-    {
-        Ok(Ty::Str)
-    } else if name.starts_with("BOOL") {
-        Ok(Ty::I1)
-    } else {
-        Err(unsup(format!("CAST target type {name}")))
-    }
+    // DuckDB's spellings of the widths that have a lane, matched exactly
+    // (INT8 is BIGINT: eight BYTES). Every other target -- HUGEINT, the
+    // unsigned family, FLOAT/REAL (f32), DECIMAL/NUMERIC, INTERVAL, dates --
+    // refuses: computing it in the nearest lane serves values DuckDB does
+    // not (measured: CAST(-1 AS UINTEGER) errors there, CAST(16777217 AS
+    // FLOAT) rounds to 16777216, CAST(1.25 AS DECIMAL(3,1)) is 1.3).
+    let base = name.split('(').next().unwrap_or("").trim();
+    Ok(match base {
+        "TINYINT" | "INT1" => Ty::I8,
+        "SMALLINT" | "INT2" | "SHORT" => Ty::I16,
+        "INTEGER" | "INT" | "INT4" | "SIGNED" => Ty::I32,
+        "BIGINT" | "INT8" | "LONG" => Ty::I64,
+        "DOUBLE" | "DOUBLE PRECISION" | "FLOAT8" => Ty::F64,
+        "VARCHAR" | "TEXT" | "STRING" | "CHAR" | "CHARACTER" | "CHARACTER VARYING" | "BPCHAR" => {
+            Ty::Str
+        }
+        "BOOLEAN" | "BOOL" | "LOGICAL" => Ty::I1,
+        _ => {
+            return Err(unsup(format!(
+                "CAST target type {name} -- served targets are TINYINT, SMALLINT, \
+                 INTEGER, BIGINT, DOUBLE, VARCHAR and BOOLEAN"
+            )))
+        }
+    })
 }
 
 fn literal(v: &SqlValue) -> Result<SExpr, PrepareError> {
