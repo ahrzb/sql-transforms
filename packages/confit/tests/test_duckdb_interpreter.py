@@ -1850,3 +1850,32 @@ def test_boolean_against_an_unconvertible_constant_refuses_at_build():
             row_tables={"__THIS__": _row_schema({"b": "bool"})},
             static_tables={},
         )
+
+
+def test_is_not_distinct_from_is_null_safe_equality_differential():
+    duck_check(
+        "SELECT a IS DISTINCT FROM b AS d, a IS NOT DISTINCT FROM b AS nd,"
+        " x IS NOT DISTINCT FROM y AS fx, a IS NOT DISTINCT FROM x AS mixed,"
+        " a IS NOT DISTINCT FROM NULL AS an, NULL IS DISTINCT FROM NULL AS nn"
+        " FROM __THIS__",
+        {"a": "int?", "b": "int?", "x": "float?", "y": "float?"},
+        [
+            {"a": 1, "b": 1, "x": float("nan"), "y": float("nan")},
+            {"a": 1, "b": 2, "x": -0.0, "y": 0.0},
+            {"a": None, "b": 1, "x": None, "y": 1.0},
+            {"a": None, "b": None, "x": None, "y": None},
+        ],
+    )
+
+
+def test_is_distinct_from_filters_differential():
+    duck_check(
+        "SELECT a FROM __THIS__ WHERE a IS DISTINCT FROM b",
+        {"a": "int?", "b": "int?"},
+        [
+            {"a": 1, "b": 1},
+            {"a": 1, "b": None},
+            {"a": None, "b": None},
+            {"a": 2, "b": 3},
+        ],
+    )

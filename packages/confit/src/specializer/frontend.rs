@@ -146,7 +146,6 @@ fn join_refusal(op: &JoinOperator) -> String {
 fn expr_refusal(e: &SqlExpr) -> String {
     let kind = match e {
         SqlExpr::Subquery(_) => "a scalar subquery",
-        SqlExpr::IsDistinctFrom(..) | SqlExpr::IsNotDistinctFrom(..) => "IS [NOT] DISTINCT FROM",
         SqlExpr::InSubquery { .. } => "IN (SELECT ...)",
         SqlExpr::Exists { .. } => "EXISTS (SELECT ...)",
         SqlExpr::TypedString { .. } => "a typed literal (e.g. DATE '...')",
@@ -3449,6 +3448,8 @@ impl Binder<'_> {
             SqlExpr::UnaryOp { op, .. } => Err(unsup(format!("unary operator {op:?}"))),
             SqlExpr::IsNull(inner) => self.is_null(inner, false),
             SqlExpr::IsNotNull(inner) => self.is_null(inner, true),
+            SqlExpr::IsDistinctFrom(l, r) => self.not_distinct(l, r, true),
+            SqlExpr::IsNotDistinctFrom(l, r) => self.not_distinct(l, r, false),
             SqlExpr::Case {
                 operand,
                 conditions,
@@ -5497,6 +5498,58 @@ impl Binder<'_> {
             },
             ty: Ty::I1,
             nullable,
+        })
+    }
+
+    /// `l IS [NOT] DISTINCT FROM r`: NULL-safe equality, never NULL
+    /// (measured). The equality itself is `=`'s, with its type rules; the
+    /// NULL cases wrap it: both NULL are not distinct, one NULL is.
+    fn not_distinct(
+        &self,
+        l: &SqlExpr,
+        r: &SqlExpr,
+        distinct: bool,
+    ) -> Result<SExpr, PrepareError> {
+        let is_null = |e: SExpr| SExpr {
+            kind: SKind::IsNull {
+                negated: false,
+                inner: Box::new(e),
+            },
+            ty: Ty::I1,
+            nullable: false,
+        };
+        let same = match (self.expr_or_null(l)?, self.expr_or_null(r)?) {
+            (None, None) => SExpr {
+                kind: SKind::Lit(Lit::I1(true)),
+                ty: Ty::I1,
+                nullable: false,
+            },
+            (Some(e), None) | (None, Some(e)) => is_null(e),
+            (Some(a), Some(b)) => {
+                let eq = self.cmp(CmpPred::Eq, a.clone(), b.clone())?;
+                let f = SExpr {
+                    kind: SKind::Lit(Lit::I1(false)),
+                    ty: Ty::I1,
+                    nullable: false,
+                };
+                SExpr {
+                    kind: SKind::Case {
+                        arms: vec![(is_null(a), is_null(b.clone())), (is_null(b), f)],
+                        default: Some(Box::new(eq)),
+                    },
+                    ty: Ty::I1,
+                    nullable: false,
+                }
+            }
+        };
+        Ok(if distinct {
+            SExpr {
+                kind: SKind::Not(Box::new(same)),
+                ty: Ty::I1,
+                nullable: false,
+            }
+        } else {
+            same
         })
     }
 
