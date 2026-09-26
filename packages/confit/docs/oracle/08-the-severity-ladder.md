@@ -11,11 +11,10 @@
 | **3** | serves where DuckDB refuses | unsafe direction; DuckDB cannot run the query |
 | **4** | refuses where DuckDB serves | conservative direction; may be deliberate |
 
-*Evidence:* compatible partial definitions in
-`docs/specs/2026-08-25-task-114-design.md:140-142` and
-`docs/specs/2026-08-25-task-127-remainders-design.md:154-156`; use in
-`src/specializer/frontend.rs:64-73` and the two refusal RFCs. Proposed
-**ticket: severity-definition-merge** replaces the partial copies with this definition.
+*Evidence:* use in `src/specializer/frontend.rs` (`refuse_dec`) and the two refusal
+RFCs. The design specs for TASK-91, TASK-114, TASK-120 and TASK-127 cite this definition
+instead of carrying their own; two of those copies omitted rung 1
+(**ticket: severity-definition-merge**, done).
 
 ## Direction and disposition
 
@@ -48,5 +47,6 @@ typing and rounding remain severity-2 features in flight on exactly those terms.
 counting the cost of conservative refusals is that same work, not another rule.
 The [policy decision](../decisions/oracle-policy.md#reporting-and-measurement)
 does not require a new verdict kind or make every such refusal a correctness defect.
-*Gap:* no refusal-reason summary is produced today, so divergence:
-bind-time-constant-refusals remains the live unmeasured case.
+The campaign report now groups refusals by DuckDB's outcome for the same query
+(claim: refusal-absorb); divergence: bind-time-constant-refusals still has no twin
+measuring its DuckDB-serves cost directly.
