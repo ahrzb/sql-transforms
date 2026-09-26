@@ -78,6 +78,7 @@ from confit.compare import (
 )
 from confit.oracle import Oracle
 
+from . import coverage
 from . import gen as G
 
 KINDS = (
@@ -987,4 +988,5 @@ def run_case_json(seed: int) -> dict:
     sql = G.render(case.query)
     out = {"seed": seed, "sql": sql, **v.to_json(), "inputs": case_inputs(case)}
     out["tags"] = out["tags"] + [f"reaches:{f}" for f in sorted(unshipped_reach(sql))]
+    out["triples"] = sorted(coverage.key(t) for t in coverage.triples(case.query))
     return out

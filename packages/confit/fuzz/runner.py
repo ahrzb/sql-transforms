@@ -28,6 +28,7 @@ from pathlib import Path
 import duckdb
 from confit.oracle import Oracle
 
+from . import coverage
 from . import gen as G
 from .oracle import PHASE_MARK, UNSHIPPED_FEATURES, case_inputs, unshipped_reach
 
@@ -172,9 +173,11 @@ def blame(seed: int, kind: str, detail: str, stderr: str | None = None) -> dict:
     try:
         case = G.gen(seed)
         sql, inputs = G.render(case.query), case_inputs(case)
+        trip = sorted(coverage.key(t) for t in coverage.triples(case.query))
         tags = case.tags + [f"reaches:{f}" for f in sorted(unshipped_reach(sql))]
     except Exception as e:  # noqa: BLE001 — the blame must still be recorded
         sql, inputs, tags = "", {"error": f"{type(e).__name__}: {e}"}, []
+        trip = []
     return {
         "seed": seed,
         "kind": kind,
@@ -184,6 +187,7 @@ def blame(seed: int, kind: str, detail: str, stderr: str | None = None) -> dict:
         "sql": sql,
         "tags": list(tags),
         "inputs": inputs,
+        "triples": trip,
     }
 
 
@@ -366,6 +370,24 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
     print("\n== AGREE coverage by construct ==")
     for k, c in cover.most_common():
         print(f"  {c:6}  {k}")
+
+    # (operator, argument-type, edge-class) triples: reached by any case,
+    # agreed by an AGREE. Distinct triples, not query counts, so a thousand
+    # cases of `abs(ordinary int)` count once. Operators sorted by the gap.
+    reached: dict[str, set] = collections.defaultdict(set)
+    agreed: dict[str, set] = collections.defaultdict(set)
+    for r in results:
+        for k in r.get("triples", ()):
+            op = coverage.parse(k)[0]
+            reached[op].add(k)
+            if r["kind"] == "AGREE":
+                agreed[op].add(k)
+    n_reached = sum(len(v) for v in reached.values())
+    n_agreed = sum(len(v) for v in agreed.values())
+    print("\n== coverage triples (reached: any verdict, agreed: AGREE) ==")
+    print(f"  {'distinct triples':18} reached {n_reached:6}  agreed {n_agreed:6}")
+    for op in sorted(reached, key=lambda o: (len(agreed[o]) - len(reached[o]), o)):
+        print(f"    {op:24} reached {len(reached[op]):4}  agreed {len(agreed[op]):4}")
 
     # Cases whose answer has a width we have not shipped: classified, never
     # value-compared, never counted as agreement. An empty bucket proves

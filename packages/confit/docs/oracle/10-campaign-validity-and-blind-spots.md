@@ -118,7 +118,7 @@ proposal is implemented.
 
 | proposal | proposed effect | status |
 |---|---|---|
-| **claim: coverage-denominator** | report distinct `(operator, argument-type, edge-class)` triples rather than raw query count | proposed schema, unimplemented; ticket: coverage-triples |
+| **claim: coverage-denominator** | report distinct `(operator, argument-type, edge-class)` triples rather than raw query count | implemented in `fuzz.coverage` and the report's triples section, reached versus agreed per operator (ticket: coverage-triples); reporting only, no universal coverage-metadata scheme |
 | **claim: abstention-rate** | report rates for `SKIP`, `TIMEOUT`, `PANIC`, and `order-by-unevaluated`, keeping `UNSHIPPED` separate | implemented as claim: abstention-report (ticket: per-kind-abstention-report) |
 
 Refusal-quality and unsupported-width reporting come before any new blocking KPI, and
