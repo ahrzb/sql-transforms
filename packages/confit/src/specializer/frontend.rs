@@ -141,6 +141,36 @@ fn join_refusal(op: &JoinOperator) -> String {
     format!("join type {kind} -- served joins are [INNER] JOIN and LEFT [OUTER] JOIN")
 }
 
+/// `a CROSS JOIN b` IS `a, b` on DuckDB (measured: same rows, same column
+/// order). The driving relation's TRAILING cross joins become comma
+/// relations, in order, so the comma path binds them -- its WHERE-key
+/// extraction and multiplicity rules included -- and a star expands in the
+/// same order. A cross join followed by another join stays where it is,
+/// and refuses by name.
+fn cross_joins_as_commas(
+    from: &[sqlparser::ast::TableWithJoins],
+) -> Vec<sqlparser::ast::TableWithJoins> {
+    use sqlparser::ast::TableWithJoins;
+    let Some((first, rest)) = from.split_first() else {
+        return Vec::new();
+    };
+    let is_cross = |j: &sqlparser::ast::Join| {
+        matches!(j.join_operator, JoinOperator::CrossJoin(JoinConstraint::None))
+    };
+    let tail = first.joins.iter().rev().take_while(|j| is_cross(j)).count();
+    let keep = first.joins.len() - tail;
+    let mut out = vec![TableWithJoins {
+        relation: first.relation.clone(),
+        joins: first.joins[..keep].to_vec(),
+    }];
+    out.extend(first.joins[keep..].iter().map(|j| TableWithJoins {
+        relation: j.relation.clone(),
+        joins: Vec::new(),
+    }));
+    out.extend(rest.iter().cloned());
+    out
+}
+
 /// The refusal for an expression form with no binding: names the form;
 /// only an unrecognised form falls back to printing it.
 fn expr_refusal(e: &SqlExpr) -> String {
@@ -754,7 +784,8 @@ fn bind_from<'a>(
     // Plain scalar columns occupy in_cols[..n_plain]; struct leaf lanes
     // follow and are addressable ONLY through their struct paths.
     let n_plain = in_cols.len() - structs.iter().map(|s| s.leaf_count()).sum::<usize>();
-    let Some((table, comma_rels)) = select.from.split_first() else {
+    let from = cross_joins_as_commas(&select.from);
+    let Some((table, comma_rels)) = from.split_first() else {
         return Err(unsup("FROM-less SELECT"));
     };
     let dyn_name = match plain_table(&table.relation)? {
