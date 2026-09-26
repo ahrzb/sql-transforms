@@ -473,3 +473,13 @@ def test_refusals_name_the_construct_instead_of_echoing_it(sql, named):
     # No echoed SQL and no Rust Debug dump of the AST.
     assert "SELECT 1" not in str(e.value).split("--")[0].replace("(SELECT ...)", "")
     assert "On(" not in str(e.value)
+
+
+def test_an_all_null_case_over_a_trapping_condition_refuses():
+    # DuckDB evaluates the conditions of an all-NULL CASE, so an overflow
+    # there errors per row; serving the constant NULL would hide it.
+    rejects(
+        "SELECT CASE WHEN (a + 9223372036854775807) > 0 THEN NULL END AS o"
+        " FROM __THIS__",
+        "every branch is NULL, over a condition that can trap",
+    )
