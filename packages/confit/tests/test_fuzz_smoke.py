@@ -214,3 +214,46 @@ def test_shrinker_preserves_the_verdict_and_shrinks():
     after = oracle.run_case(small)
     assert (after.kind, after.klass) == (before.kind, before.klass)
     assert len(gen.render(small.query)) <= len(gen.render(case.query))
+
+
+def _row_path_agree_seed(monkeypatch) -> int:
+    """The first smoke seed that AGREEs on the row path, i.e. one whose
+    verdict went on through the confit-only boundary legs."""
+    calls = []
+    real = oracle._extra_legs
+
+    def spy(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(oracle, "_extra_legs", spy)
+    for seed in range(N):
+        calls.clear()
+        if oracle.run_case(gen.gen(seed)).kind == "AGREE" and calls:
+            monkeypatch.setattr(oracle, "_extra_legs", real)
+            return seed
+    raise AssertionError("no row-path AGREE seed in the smoke range")
+
+
+def test_opt_emulated_is_final_and_no_self_leg_replaces_it(monkeypatch):
+    """OPT_EMULATED stops the case like any other mismatch: the boundary
+    self-legs never run, so none of them can overwrite the primary finding.
+
+    The class is empty in practice, so it is planted: the baseline reading is
+    emptied (it now disagrees with us) while the optimizer-on reading is left
+    alone (it still agrees), and a self-leg that would report DIVERGE_VALUE is
+    standing by."""
+    seed = _row_path_agree_seed(monkeypatch)
+    real_run = oracle._duck_run
+
+    def off_disagrees(*a, **k):
+        (out, phase, err), on = real_run(*a, **k)
+        return (out.slice(0, 0) if len(out) else out, phase, err), on
+
+    def poisoned_leg(fn, case, table, got, ests, tags):
+        return oracle.Verdict("DIVERGE_VALUE", "self-leg", "must not run", tags)
+
+    monkeypatch.setattr(oracle, "_duck_run", off_disagrees)
+    monkeypatch.setattr(oracle, "_extra_legs", poisoned_leg)
+    v = oracle.run_case(gen.gen(seed))
+    assert v.kind == "OPT_EMULATED", v
