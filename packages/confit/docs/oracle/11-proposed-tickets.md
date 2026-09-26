@@ -19,7 +19,7 @@ evidence, not active instructions or dependencies.
 - [x] **ticket: version-assert** — Pin the oracle/test environment to 1.5.5 and
   assert `duckdb.__version__ == Oracle.VERSION` at startup. Keep upgrades separate
   and unrelated consumers unconstrained.
-- [ ] **ticket: stop-on-opt-emulated** — Preserve the primary `OPT_EMULATED`
+- [x] **ticket: stop-on-opt-emulated** — Preserve the primary `OPT_EMULATED`
   finding by stopping before boundary self-legs can replace it.
 - [ ] **ticket: split-refused-verdict** — Retain the already-computed oracle
   outcome and summarize by refusal reason. The historical name does not require

@@ -175,15 +175,13 @@ def report(results: list[dict], out: Path):
         ex = next(x for x in uns if x["klass"] == k)
         print(f"  {c:6}  {k}   e.g. seed {ex['seed']}: {ex['detail'][:60]}")
 
-    # The passes we reproduce on purpose, by the eager-baseline disagreement
-    # they resolve. Empty here means no emulation was exercised at all, which
-    # is a coverage hole rather than good news.
+    # Optimizer passes we reproduce, by the eager-baseline disagreement they
+    # resolve. Each one is a BUG, not coverage: an emulation means we answer
+    # like the optimizer and unlike the oracle, and the class should be
+    # empty. Print a seed with each so it is reproducible, the way the
+    # findings section does.
     emul = [r for r in results if r["kind"] == "OPT_EMULATED"]
     if emul:
-        # Since the oracle became optimizer-off DuckDB these are BUGS, not
-        # notes: an emulation means we answer like the optimizer and unlike the
-        # oracle. Print a seed with each so it is reproducible, the way the
-        # findings section does.
         print("\n== optimizer passes we still reproduce (each one is a bug) ==")
         seen: dict[str, dict] = {}
         for r in emul:

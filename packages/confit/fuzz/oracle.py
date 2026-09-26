@@ -712,7 +712,8 @@ def run_case(case: G.Case) -> Verdict:
             v_on.tags,
         )
     elif v_on.kind in agreed and v_off.kind not in agreed:
-        # A pass we reproduce on purpose. Expected, and counted.
+        # We answer like a plan-rewrite pass and unlike the oracle: a finding,
+        # never agreement or coverage.
         v = Verdict(
             "OPT_EMULATED",
             v_off.klass,
@@ -729,7 +730,9 @@ def run_case(case: G.Case) -> Verdict:
     # UNSHIPPED still earns the boundary legs: they are OUR side against
     # itself, with no DuckDB in them, so an unshipped width cannot excuse a
     # self-inconsistency and a real DIVERGE_VALUE there outranks the class.
-    if v.kind not in ("AGREE", "OPT_EMULATED", "UNSHIPPED"):
+    # OPT_EMULATED does not: it is a mismatch, and like every other mismatch
+    # it is the primary finding, which no later leg may replace.
+    if v.kind not in ("AGREE", "UNSHIPPED"):
         return v
     if trap_cl is not None or static_only:
         return v  # the boundary legs all need a non-trapping row run

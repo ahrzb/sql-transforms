@@ -58,13 +58,13 @@ finding is what the campaign reports, and no later leg may replace it. Additiona
 diagnostics on such a case may be reconsidered only if they preserve that original
 finding.
 
-*Enforced-by:* intended membership in `fuzz.runner.INTERESTING` and exclusion from
-`COVERED`.
+*Enforced-by:* `fuzz.oracle.run_case`, which returns `OPT_EMULATED` before the
+confit-only boundary legs; intended membership in `fuzz.runner.INTERESTING` and
+exclusion from `COVERED`.
 *Evidence:* emission is tested by `test_verdicts_cover_the_contract_and_reproduce`;
-runner tuple membership remains **Unverified** because no test imports `fuzz.runner`.
-*Gap:* **[FACT]** `fuzz.oracle.run_case` still continues into confit-only boundary
-self-legs after `OPT_EMULATED`, so a later leg can still replace the finding. The
-stopping rule is the contract, not the current behavior.
+the stopping rule by
+`packages/confit/tests/test_fuzz_smoke.py::test_opt_emulated_is_final_and_no_self_leg_replaces_it`.
+Runner tuple membership remains **Unverified** because no test imports `fuzz.runner`.
 
 ## Construction refusal versus runtime trap
 
