@@ -189,7 +189,11 @@ bool. Measured consequences:
   INTEGER`) rather than DuckDB's operator wording, which the error-text
   rule permits. HUGEINT and the unsigned family are not
   served — they refuse by name rather than collapse to i64 (see the
-  static-column entry above).
+  static-column entry above). The same holds for CAST targets: only
+  TINYINT, SMALLINT, INTEGER, BIGINT, DOUBLE, VARCHAR and BOOLEAN (and
+  DuckDB's aliases for them) are served; every other target — HUGEINT, the
+  unsigned family, FLOAT/REAL, DECIMAL/NUMERIC, INTERVAL, dates — refuses
+  with `CAST target type <T>`.
 
 ## 4. Semantics descoped after measurement
 
@@ -204,7 +208,7 @@ wrong answer or require semantics we can't reproduce exactly:
 | Regex reject list: `\B`, `\Q…\E`, `(?<name>…)`, duplicate group names, bounds > 1000, stacked quantifiers (`a*+`), `\u` escapes, negated Perl classes inside `[...]` | The RE2↔rust-regex differential battery (98 entries) proved these are the constructs where the engines disagree or DuckDB itself is broken (`\B` crashes DuckDB at runtime on non-ASCII). Everything else is byte-identical. |
 | Fuzzer-found regex rejects: `\1`–`\9` backrefs outside classes, the full stacked-quantifier grammar (`{2}*`, `?*`, `a???` — one lazy `?` is the only legal follower), nested repetition products > 1000, whitespace inside `{m, n}` bounds, class set-op lookalikes (`--`/`&&`/`~~`), non-POSIX `[` inside classes, Perl-class range endpoints (`[a-\d]`), capturing `(x){0}`, anchor-only multi-anchor patterns (DuckDB is SELF-inconsistent on these — its row path disagrees with its own constant fold), `$` anchors in non-final position (`'$hello'` — DuckDB's row path literal-optimizes the leading `$`+literal into a PREFIX match, matching "hello world", while its own constant fold matches normally; found by the standing fuzzer on seed 20260728), and counted repetitions over RE2's PROGRAM-SIZE budget (`(\p{L}){1,500}` is "pattern too large" in DuckDB while rust-regex serves it — rejected via a one-sided weight estimate that always fires before DuckDB's real budget; same seed, pins `pins-waveB/fuzzer-20260728.json`) | The standing differential fuzzer (`packages/confit/tests/test_duckdb_regexp_fuzz.py`, in the normal gate) found these 12 classes — each one a silent-wrong-answer risk in rust-regex. With them rejected, a 40k-case sweep across 8 seeds shows zero divergences. Pins: `pins-waveB/fuzzer-task54.json`. |
 | `SIMILAR TO ... ESCAPE` | Not implemented in DuckDB itself. |
-| `* EXCLUDE (t.key)` on a USING join | DuckDB UNMERGES the coalesced column (it reappears at the right table's position) — measured, not modeled. Unqualified EXCLUDE works. |
+| `* EXCLUDE (t.key)` on a USING join, either qualifier | DuckDB UNMERGES the coalesced column (it reappears at the right table's position, with the right table's values) — measured, not modeled. Unqualified EXCLUDE works. |
 | `BETWEEN`/`IN` mixing non-numeric string literals with numbers | DuckDB converts at EXECUTION time (an empty input succeeds!); a bind-time conversion was measured to be over-eager. Numeric literals convert fine. |
 | `COLUMNS(...)` inside expressions, lambda/list forms | Only bare `COLUMNS('re')` / `COLUMNS(*)` as select items are served. |
 | Pad/repeat counts past the 1 GiB string-builder budget | A LITERAL count that can exceed the budget refuses at build; a DATA-DRIVEN count (column, `CAST(k AS INTEGER)`) keeps the runtime cap and traps at 1 GiB. DuckDB is deterministic here (measured): `repeat` serves up to a 4294967295-byte string and raises Out of Range above it; `lpad`/`rpad` take an INTEGER count, so a count above 2147483647 is a Binder Error. Between 1 GiB and those bounds DuckDB serves and we refuse or trap — the ground is Confit's resource limit, not DuckDB instability: no gigabyte allocations per serving row, by decision. |
