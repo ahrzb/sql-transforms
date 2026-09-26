@@ -1148,7 +1148,7 @@ fn keyless_join_two_row_build_refuses() {
         batch(1, vec![c_i64(&[Some(1)])]),
     )
     .unwrap_err();
-    assert!(err.contains("duplicate map key"), "got: {err}");
+    assert!(err.contains("has no equality key"), "got: {err}");
 }
 
 #[test]

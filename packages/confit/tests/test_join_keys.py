@@ -738,3 +738,102 @@ def test_a_static_varchar_key_that_cannot_convert_refuses_at_build(probe, bad):
     for rows in ([], _MIX_ROWS):
         got, want = _mix_outcome(sql, {"e": e}, rows)
         assert got == want == "ERR"
+
+
+# --- a static struct LEAF as an ON key ---------------------------------------
+#
+# `k = v.x` keys the join on the leaf lane, exactly like `k = id`: through
+# the struct head, the relation, its alias, or its schema. Before, a leaf was
+# never a key candidate, the condition went residual, and any static table of
+# two or more rows refused as a "duplicate map key".
+
+_LEAF_ROW = pa.schema(
+    [
+        pa.field("k", pa.int64()),
+        pa.field("w", pa.struct([("x", pa.int64())])),
+        pa.field("x", pa.int64()),
+    ]
+)
+_LEAF_ROWS = [
+    {"k": 1, "w": {"x": 1}, "x": 7},
+    {"k": 2, "w": {"x": 9}, "x": 8},
+    {"k": None, "w": None, "x": None},
+    {"k": 4, "w": None, "x": 1},
+]
+_LEAF_D = pa.table(
+    {
+        "id": pa.array([1, 2, 3, 4], pa.int64()),
+        "v": pa.array(
+            [{"x": 1, "y": 5}, {"x": 2, "y": 6}, None, {"x": None, "y": 1}],
+            pa.struct([("x", pa.int64()), ("y", pa.int64())]),
+        ),
+        "w": pa.array([{"x": 1}, {"x": 2}, None, None], pa.struct([("x", pa.int64())])),
+        "z": pa.array([10, 20, 30, 40], pa.int64()),
+    }
+)
+
+
+def _leaf_parity(sql, **kw):
+    o = Oracle()
+    o.load("__THIS__", pa.Table.from_pylist(_LEAF_ROWS, schema=_LEAF_ROW))
+    o.load("d", _LEAF_D)
+    res = o.execute(sql)
+    names = [c[0] for c in res.description]
+    want = [dict(zip(names, r, strict=True)) for r in res.fetchall()]
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _LEAF_ROW}, static_tables={"d": _LEAF_D}, **kw
+    )
+    got = fn.infer_rows(_LEAF_ROWS)
+    key = lambda r: repr(sorted(r.items()))  # noqa: E731
+    assert sorted(got, key=key) == sorted(want, key=key), sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT z FROM __THIS__ JOIN d ON k = v.x",
+        "SELECT z FROM __THIS__ JOIN d ON v.x = k",
+        "SELECT z FROM __THIS__ JOIN d ON k = d.v.x",
+        "SELECT z FROM __THIS__ JOIN d ON k = main.d.v.x",
+        "SELECT z FROM __THIS__ JOIN d ON k = memory.main.d.v.x",
+        "SELECT z FROM __THIS__ JOIN d AS q ON k = q.v.x",
+        # `v` is the relation's alias with no column `v.x`: the struct head
+        "SELECT z FROM __THIS__ JOIN d AS v ON k = v.x",
+        "SELECT z, v.x, v.y FROM __THIS__ LEFT JOIN d ON k = v.x",
+        "SELECT z FROM __THIS__ JOIN d ON k = v.x AND v.y > 0",
+        "SELECT z FROM __THIS__ JOIN d ON k + 1 = v.y",
+        "SELECT z FROM __THIS__, d WHERE k = v.x",
+        # the scalar spelling through the schema keys too
+        "SELECT z FROM __THIS__ JOIN d ON k = main.d.id",
+    ],
+)
+def test_a_static_struct_leaf_keys_the_join(sql):
+    _leaf_parity(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # `v` is the ROW table here, so `v.x` is its column: no static key
+        "SELECT z FROM __THIS__ AS v JOIN d ON k = v.x",
+        "SELECT z FROM __THIS__ JOIN d ON v.x = v.y",
+        "SELECT z FROM __THIS__ JOIN d ON v.x = d.id",
+    ],
+)
+def test_a_join_with_no_equality_key_names_that_cause(sql):
+    with pytest.raises(ValueError, match="has no equality key") as e:
+        DuckDBInferFn(
+            sql, row_tables={"__THIS__": _LEAF_ROW}, static_tables={"d": _LEAF_D}
+        )
+    assert "duplicate map key" not in str(e.value)
+    _leaf_parity(sql, shape="many")
+
+
+def test_a_struct_leaf_head_in_both_relations_is_ambiguous():
+    # DuckDB: Ambiguous reference to column name "w"
+    with pytest.raises(ValueError, match="ambiguous column 'w'"):
+        DuckDBInferFn(
+            "SELECT z FROM __THIS__ JOIN d ON k = w.x",
+            row_tables={"__THIS__": _LEAF_ROW},
+            static_tables={"d": _LEAF_D},
+        )

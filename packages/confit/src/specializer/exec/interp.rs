@@ -75,6 +75,10 @@ pub enum CompileError {
     /// multiplicity contract, not a data mismatch, so it refuses as
     /// `unsupported:` and names the opt-in.
     DuplicateKey(usize),
+    /// Static table `@i` has two or more rows and its join has NO equality
+    /// key (the ON only filters), so every input row meets every static
+    /// row: the same multiplicity contract, worded for its actual cause.
+    KeylessRows(usize),
     /// A ReSpec pattern failed to compile — the frontend validates patterns
     /// at bind, so this only fires on hand-written IR.
     Regex(String),
@@ -95,6 +99,13 @@ impl std::fmt::Display for CompileError {
                 f,
                 "unsupported: duplicate map key in static table @{i} -- a 1:N join \
                  builds only under shape='many'"
+            ),
+            CompileError::KeylessRows(i) => write!(
+                f,
+                "unsupported: static table @{i} has more than one row and the join \
+                 has no equality key against it (its ON only filters), so each \
+                 input row matches every row -- a 1:N join builds only under \
+                 shape='many'"
             ),
             CompileError::Regex(msg) => write!(f, "regex table entry failed to compile: {msg}"),
         }
@@ -571,6 +582,9 @@ pub(super) fn prepare_statics(
                     }
                 }
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
+                if keys.is_empty() && entries.len() > 1 {
+                    return Err(CompileError::KeylessRows(i));
+                }
                 if entries.windows(2).any(|w| w[0].0 == w[1].0) {
                     return Err(CompileError::DuplicateKey(i));
                 }

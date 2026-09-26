@@ -202,7 +202,7 @@ def test_cross_join_to_empty_static_annihilates():
 
 def test_cross_join_to_multirow_static_rejects_cleanly():
     two = static({"base": "int"}, [{"base": 1}, {"base": 2}])
-    with pytest.raises(ValueError, match="duplicate map key"):
+    with pytest.raises(ValueError, match="has no equality key"):
         duck_check(
             "SELECT lid, base FROM __THIS__, two",
             L,

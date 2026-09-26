@@ -147,7 +147,7 @@ def test_chained_indf_and_keyless_joins_under_shape_map():
 
 def test_keyless_join_multi_row_params_refuses():
     params = static({"w": "int"}, [{"w": 7}, {"w": 8}])
-    with pytest.raises(ValueError, match="duplicate map key"):
+    with pytest.raises(ValueError, match="has no equality key"):
         DuckDBInferFn(
             "SELECT k, w FROM __THIS__ LEFT JOIN p ON ((1 = 1))",
             row_tables={"__THIS__": _row_schema({"k": "int"})},

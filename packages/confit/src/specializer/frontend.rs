@@ -951,7 +951,9 @@ fn bind_from<'a>(
         let st = renamed.as_ref().unwrap_or(&statics[table_idx]);
         let (keys, key_cols, residual_raw, using) = match constraint {
             JoinConstraint::On(e) => {
-                let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, e)?;
+                let schema =
+                    if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) };
+                let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, &schema, e)?;
                 (keys, key_cols, res, false)
             }
             // USING desugar (pins-wave4/): each column pairs the LEFT
@@ -1183,8 +1185,9 @@ fn bind_from<'a>(
             else {
                 continue;
             };
-            let l = static_col_of(left, st, &scope_name)?;
-            let r = static_col_of(right, st, &scope_name)?;
+            let schema = if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) };
+            let l = static_col_of(left, st, &scope_name, &schema, &binder)?;
+            let r = static_col_of(right, st, &scope_name, &schema, &binder)?;
             let (col, dyn_side, static_side) = match (l, r) {
                 (Some(c), None) => (c, right.as_ref(), left.as_ref()),
                 (None, Some(c)) => (c, left.as_ref(), right.as_ref()),
@@ -1530,6 +1533,7 @@ fn bind_on<'e>(
     binder: &Binder<'_>,
     st: &StaticTable,
     scope_name: &str,
+    scope_schema: &str,
     on: &'e SqlExpr,
 ) -> Result<(Vec<SExpr>, Vec<JoinKey>, Vec<&'e SqlExpr>), PrepareError> {
     let mut conjuncts = Vec::new();
@@ -1552,8 +1556,8 @@ fn bind_on<'e>(
                 continue;
             }
         };
-        let l = static_col_of(left, st, scope_name)?;
-        let r = static_col_of(right, st, scope_name)?;
+        let l = static_col_of(left, st, scope_name, scope_schema, binder)?;
+        let r = static_col_of(right, st, scope_name, scope_schema, binder)?;
         let (col, dyn_side, static_side) = match (l, r) {
             (Some(c), None) => (c, right.as_ref(), left.as_ref()),
             (None, Some(c)) => (c, left.as_ref(), right.as_ref()),
@@ -2111,6 +2115,66 @@ fn collect_conjuncts<'e>(e: &'e SqlExpr, out: &mut Vec<&'e SqlExpr>) {
     }
 }
 
+/// A struct-LEAF spelling of this static table's column, as an ON-key
+/// candidate: `v.x` (bare struct head), `d.v.x` (through the relation), or
+/// `d.v` where `d` has no column `v` but a struct `d` (DuckDB retries a
+/// qualifier that misses as a struct head). The walk is by segment, so a
+/// leaf's dotted display name never matches. A bare head that names a
+/// relation in scope is that relation (measured: `FROM t AS v ... v.x` is
+/// t's column x), and one that also binds as a column elsewhere in scope is
+/// DuckDB's ambiguity error, decided on the head alone. A path that does not
+/// reach a leaf is not a key; the residual binder then words the refusal.
+fn static_leaf_of(
+    parts: &[sqlparser::ast::Ident],
+    st: &StaticTable,
+    scope_name: &str,
+    binder: &Binder<'_>,
+) -> Result<Option<u32>, PrepareError> {
+    let is = |a: &sqlparser::ast::Ident, b: &str| a.value.eq_ignore_ascii_case(b);
+    let walk = |head: &sqlparser::ast::Ident, fields: &[sqlparser::ast::Ident]| {
+        st.structs
+            .iter()
+            .find(|sc| is(head, &sc.name))
+            .and_then(|sc| walk_fields(&sc.fields, fields).ok())
+    };
+    let (head, rest) = parts.split_first().expect("a compound identifier has parts");
+    if is(head, scope_name) {
+        // `d.c` with a real column `c` is the column, never a struct path.
+        let column = rest.len() == 1
+            && st
+                .cols
+                .iter()
+                .enumerate()
+                .any(|(ci, c)| !st.is_leaf_lane(ci as u32) && is(&rest[0], &c.name));
+        if column {
+            return Ok(None);
+        }
+        if rest.len() >= 2 {
+            if let Some(leaf) = walk(&rest[0], &rest[1..]) {
+                return Ok(Some(leaf));
+            }
+        }
+        return Ok(if rest.len() == 1 { walk(head, rest) } else { None });
+    }
+    let Some(leaf) = walk(head, rest) else {
+        return Ok(None);
+    };
+    let is_rel = is(head, &binder.this_name)
+        || binder.joins.iter().any(|sj| is(head, &sj.name));
+    if is_rel {
+        return Ok(None);
+    }
+    let elsewhere = binder.this_col_with_fields(&head.value, rest).is_some()
+        || binder.joins.iter().any(|sj| head_hits_in_join(sj, &head.value) > 0);
+    if elsewhere {
+        return Err(PrepareError::Bind(format!(
+            "ambiguous column '{}' (qualify it)",
+            head.value
+        )));
+    }
+    Ok(Some(leaf))
+}
+
 /// Does `e` name a column of the static table being joined? Qualified form
 /// matches on the join's scope name; a bare identifier matches if the table
 /// has that column.
@@ -2118,20 +2182,53 @@ fn static_col_of(
     e: &SqlExpr,
     st: &StaticTable,
     scope_name: &str,
+    scope_schema: &str,
+    binder: &Binder<'_>,
 ) -> Result<Option<u32>, PrepareError> {
     let name = match e {
         SqlExpr::Identifier(id) => &id.value,
-        SqlExpr::CompoundIdentifier(parts) => match parts.as_slice() {
-            [t, c] if t.value.eq_ignore_ascii_case(scope_name) => &c.value,
-            _ => return Ok(None),
-        },
-        SqlExpr::Nested(inner) => return static_col_of(inner, st, scope_name),
+        SqlExpr::CompoundIdentifier(parts) => {
+            // Through the schema the relation lives in (and the `memory`
+            // catalog): DuckDB's FIRST reading of `a.b.c` is schema.table.
+            // column, so the stripped spelling is tried before any other.
+            // An aliased relation has no schema (`scope_schema` empty).
+            let is = |i: usize, name: &str| {
+                !name.is_empty() && parts[i].value.eq_ignore_ascii_case(name)
+            };
+            let skip = if parts.len() >= 4
+                && is(0, "memory")
+                && is(1, scope_schema)
+                && is(2, scope_name)
+            {
+                2
+            } else if parts.len() >= 3 && is(0, scope_schema) && is(1, scope_name) {
+                1
+            } else {
+                0
+            };
+            if skip > 0 {
+                let stripped = SqlExpr::CompoundIdentifier(parts[skip..].to_vec());
+                if let Ok(Some(c)) = static_col_of(&stripped, st, scope_name, "", binder) {
+                    return Ok(Some(c));
+                }
+            }
+            if let Some(leaf) = static_leaf_of(parts, st, scope_name, binder)? {
+                return Ok(Some(leaf));
+            }
+            match parts.as_slice() {
+                [t, c] if t.value.eq_ignore_ascii_case(scope_name) => &c.value,
+                _ => return Ok(None),
+            }
+        }
+        SqlExpr::Nested(inner) => {
+            return static_col_of(inner, st, scope_name, scope_schema, binder)
+        }
         _ => return Ok(None),
     };
     let mut hit = None;
     for (i, c) in st.cols.iter().enumerate() {
-        // A struct leaf is not an ON-key candidate: its dotted display
-        // name is not an identifier.
+        // A struct leaf is reached by PATH (`static_leaf_of` above), never
+        // here: its dotted display name is not an identifier.
         if st.is_leaf_lane(i as u32) {
             continue;
         }

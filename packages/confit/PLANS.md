@@ -7,11 +7,12 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Next
 
 1. **Small surface wins DuckDB serves and we refuse.**
-   - A static struct LEAF as an ON key (`JOIN d ON k = v.x`): `static_col_of`
-     skips leaf lanes, so the condition goes residual, the map builds with
-     zero keys, and any static table of 2+ rows refuses as "duplicate map
-     key". Key it through the struct-path walk (`walk_fields`) under the
-     binder's head-ambiguity rules (`src/specializer/frontend.rs`).
+   - Struct field access by subscript and function over a struct COLUMN:
+     `s['f']` refuses as "struct column as a whole value" and
+     `struct_extract(s, 'f')` as "not in the builtin catalogue"; both are
+     `s.f` in DuckDB (the `struct_pack` desugar already serves them).
+   - `s.*` over a struct column (DuckDB expands the fields; a nested struct
+     field is a whole value and still refuses).
 2. **Generator reach.** `fuzz/gen.py` renders only BIGINT, INTEGER, DOUBLE,
    VARCHAR and BOOLEAN CAST targets, and never the forms in item 1. Widen it
    together with a fresh dated reading (a generator change re-deals every

@@ -140,7 +140,7 @@ def _replay(case: dict) -> tuple[str, str]:
         # while letting the corpus exercise the multiplicity path; rows
         # compare as a sorted multiset below, which is exactly the pinned
         # parity contract (DuckDB's join order is a hash-join accident).
-        if "duplicate map key" in msg or "dynamic table to itself" in msg:
+        if "builds only under shape='many'" in msg or "dynamic table to itself" in msg:
             try:
                 fn = DuckDBInferFn(
                     case["sql"],
