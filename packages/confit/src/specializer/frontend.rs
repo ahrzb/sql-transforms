@@ -790,13 +790,41 @@ fn bind_from<'a>(
             }
             // Stage-B self-join: the build side is the BATCH — a keyless
             // batchmap (built per call) with the WHOLE ON as residual.
-            let on = match constraint {
-                JoinConstraint::On(e) => Some(e),
-                JoinConstraint::Using(_) | JoinConstraint::Natural => {
-                    return Err(unsup(
-                        "self-join USING/NATURAL (stage-B follow-up; use ON)",
-                    ))
+            // USING/NATURAL is the equality residual `left.c = right.c` per
+            // merged name, plus the merge itself (see `ScopeJoin::merged`).
+            // NATURAL over the same table merges every column.
+            let row_names: Vec<String> = in_cols[..binder.n_plain]
+                .iter()
+                .map(|c| c.name.clone())
+                .collect();
+            let (on, merged) = match constraint {
+                JoinConstraint::On(e) => (Some(e.clone()), Vec::new()),
+                JoinConstraint::Using(cols) => {
+                    let mut names: Vec<String> = Vec::new();
+                    for obj in cols {
+                        let [part] = obj.0.as_slice() else {
+                            return Err(unsup("qualified name in JOIN USING"));
+                        };
+                        let name = part
+                            .as_ident()
+                            .map(|i| i.value.clone())
+                            .ok_or_else(|| unsup("JOIN USING entry form"))?;
+                        let Some(c) = row_names.iter().find(|c| c.eq_ignore_ascii_case(&name))
+                        else {
+                            return Err(PrepareError::Bind(format!(
+                                "column \"{name}\" does not exist on right side of join!"
+                            )));
+                        };
+                        if !names.iter().any(|n| n.eq_ignore_ascii_case(c)) {
+                            names.push(c.clone()); // USING (a, a) dedupes
+                        }
+                    }
+                    (Some(using_equalities(&scope_name, &names)?), names)
                 }
+                JoinConstraint::Natural => (
+                    Some(using_equalities(&scope_name, &row_names)?),
+                    row_names.clone(),
+                ),
                 JoinConstraint::None => {
                     return Err(unsup("JOIN without ON (cross join)"))
                 }
@@ -813,8 +841,9 @@ fn bind_from<'a>(
                 val_cols: (0..n_batch).collect(),
                 keys: Vec::new(),
                 using: false,
+                merged,
             });
-            let residual = match on {
+            let residual = match &on {
                 None => None,
                 Some(e) => Some(fold(bool_context(binder.expr(e)?, "JOIN condition")?)),
             };
@@ -943,6 +972,7 @@ fn bind_from<'a>(
             val_cols: val_cols.clone(),
             keys: keys.clone(),
             using,
+            merged: Vec::new(),
         });
         // Residual conjuncts bind with THIS join in scope.
         let j = (binder.joins.len() - 1) as u32;
@@ -1022,6 +1052,7 @@ fn bind_from<'a>(
                 val_cols: (0..n_batch).collect(),
                 keys: Vec::new(),
                 using: false,
+                merged: Vec::new(),
             });
             specs.push(JoinSpec {
                 table: 0,
@@ -1108,6 +1139,7 @@ fn bind_from<'a>(
             val_cols: val_cols.clone(),
             keys: keys.clone(),
             using: false,
+            merged: Vec::new(),
         });
         specs.push(JoinSpec {
             table: table_idx,
@@ -1181,6 +1213,9 @@ fn opaque_static_refusal(
 /// this engine cannot serve. Ambiguity counts bindings, not lanes we can
 /// answer with.
 fn head_hits_in_join(sj: &ScopeJoin, name: &str) -> usize {
+    if sj.merged.iter().any(|m| m.eq_ignore_ascii_case(name)) {
+        return 0; // merged into the left occurrence
+    }
     let named = |ci: &&u32| sj.table.cols[**ci as usize].name.eq_ignore_ascii_case(name);
     sj.val_cols
         .iter()
@@ -2044,6 +2079,12 @@ struct ScopeJoin<'a> {
     /// expansion (measured: merged col sits at the LEFT position with the
     /// LEFT value; `t2.a` stays addressable and is NULL on a LEFT miss).
     using: bool,
+    /// A USING/NATURAL SELF-join's merged names. The batch side has no probe
+    /// keys (the equality is a residual), so the merge is recorded by name:
+    /// these value columns are hidden from bare-name binds and the
+    /// UNQUALIFIED star, and stay addressable qualified (`u.k`, `u.*`) --
+    /// measured, including a LEFT miss answering NULL.
+    merged: Vec<String>,
 }
 
 struct Binder<'a> {
@@ -2721,13 +2762,35 @@ impl Binder<'_> {
         if let Some(f) = &filter {
             exclude.extend(f.excludes.iter().cloned());
         }
-        for (i, (_, a)) in exclude.iter().enumerate() {
-            if exclude[..i].iter().any(|(_, b)| b.eq_ignore_ascii_case(a)) {
+        // Measured: two entries clash when the names match and either is
+        // unqualified or both carry the same qualifier -- (i, i), (i, a.i)
+        // and (A.i, a.I) are duplicates, (a.i, b.i) is not.
+        for (i, (qa, a)) in exclude.iter().enumerate() {
+            if exclude[..i].iter().any(|(qb, b)| {
+                b.eq_ignore_ascii_case(a)
+                    && match (qa, qb) {
+                        (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+                        _ => true,
+                    }
+            }) {
                 // DuckDB rejects this at parse; ours surfaces at bind.
                 return Err(PrepareError::Bind(format!(
                     "duplicate entry \"{a}\" in EXCLUDE list"
                 )));
             }
+        }
+        // A qualified EXCLUDE of a self-join's merged USING column UNMERGES
+        // it on DuckDB (measured: EXCLUDE (i1.i) puts `i` back at the right
+        // side's position) -- not modeled, refused by name like the static
+        // USING join's.
+        if exclude.iter().any(|(q, e)| {
+            q.is_some()
+                && self
+                    .joins
+                    .iter()
+                    .any(|sj| sj.merged.iter().any(|m| m.eq_ignore_ascii_case(e)))
+        }) {
+            return Err(unsup("EXCLUDE of a USING-merged column (DuckDB unmerges it)"));
         }
         let excluded_lists_conflict = |list: &str, name: &str| -> Result<(), PrepareError> {
             if exclude.iter().any(|(_, e)| e.eq_ignore_ascii_case(name)) {
@@ -2820,6 +2883,9 @@ impl Binder<'_> {
                 // `val_cols` as a shadow lane, and taking that branch here
                 // would unmerge a USING key. `key_lane` reads the shadow.
                 let kp = sj.key_cols.iter().position(|k| k.src == KeySrc::Lane(ci));
+                if qualifier.is_none() && sj.merged.iter().any(|m| m.eq_ignore_ascii_case(&c.name)) {
+                    continue; // a self-join's merged USING column
+                }
                 if kp.is_none() {
                     let pos = sj
                         .val_cols
@@ -4447,6 +4513,7 @@ impl Binder<'_> {
                 if sj.table.cols[sj.val_cols[pos] as usize]
                     .name
                     .eq_ignore_ascii_case(name)
+                    && !sj.merged.iter().any(|m| m.eq_ignore_ascii_case(name))
                 {
                     hits.push(self.static_lane(j, pos));
                 }
@@ -8326,6 +8393,32 @@ fn duck_int_name(t: Ty) -> &'static str {
 /// return type at bind, so its other arguments never run.
 fn folds_to_null(e: &SExpr) -> bool {
     bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
+}
+
+/// `left.c = right.c AND ...` over `names`, as SQL: the residual a
+/// USING/NATURAL self-join binds. The LEFT reference is the name as the
+/// scope to the left of this join resolves it (so a USING chain keys on
+/// the merged column, as DuckDB does); the right is qualified by the
+/// self-join's own scope name.
+fn using_equalities(right: &str, names: &[String]) -> Result<SqlExpr, PrepareError> {
+    let ident = |s: &str| sqlparser::ast::Ident::new(s);
+    let mut conj: Option<SqlExpr> = None;
+    for n in names {
+        let eq = SqlExpr::BinaryOp {
+            left: Box::new(SqlExpr::Identifier(ident(n))),
+            op: BinaryOperator::Eq,
+            right: Box::new(SqlExpr::CompoundIdentifier(vec![ident(right), ident(n)])),
+        };
+        conj = Some(match conj {
+            None => eq,
+            Some(c) => SqlExpr::BinaryOp {
+                left: Box::new(c),
+                op: BinaryOperator::And,
+                right: Box::new(eq),
+            },
+        });
+    }
+    conj.ok_or_else(|| unsup("JOIN USING with no columns"))
 }
 
 /// A BOOLEAN as the INTEGER DuckDB casts it to for a comparison: 0 or 1,

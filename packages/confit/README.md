@@ -103,7 +103,7 @@ Confit's regime is serving.
 
 ## Correctness
 
-- **547 of 678** statements (as of 2026-09-26, recorded in
+- **548 of 678** statements (as of 2026-09-26, recorded in
   [`docs/reports/corpus-counts.json`](docs/reports/corpus-counts.json))
   mined from DuckDB's own test suite replay
   bit-exact, with **zero wrong answers** at every point in the project's

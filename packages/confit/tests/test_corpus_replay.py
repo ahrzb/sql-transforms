@@ -42,9 +42,12 @@ CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 # statements of test/sql/join/inner/equality_join_limits.test stopped
 # matching -- correctly, because DuckDB answers them UTINYINT/USMALLINT/
 # UINTEGER and this engine has no unsigned lane, so what looked like a match
-# was a value comparison over a diverging output TYPE. A drop below this is
-# a regression.
-MATCH_FLOOR = 547
+# was a value comparison over a diverging output TYPE. Raised to 548 on
+# 2026-09-26 by USING/NATURAL self-joins under shape='many': case 14,
+# select_star_exclude.test `SELECT * EXCLUDE (i) FROM integers i1 JOIN
+# integers i2 USING (i)`, flipped from clean-unsupported to match. A drop
+# below this is a regression.
+MATCH_FLOOR = 548
 
 # Build-time errors that are documented contract limits, not bugs: the
 # documented prefixes. `bind error:` is deliberately NOT clean here -- every

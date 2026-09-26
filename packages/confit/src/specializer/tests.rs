@@ -4000,12 +4000,12 @@ fn many_shape_self_joins() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("dynamic table"), "{e}");
-    // USING self-join: named stage-B follow-up.
-    let e = match prep_many("SELECT * FROM __THIS__ i1 JOIN __THIS__ i2 USING (i)") {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("USING self-join must stay a named rejection"),
-    };
-    assert!(e.contains("USING/NATURAL"), "{e}");
+    // USING self-join: served, the key merged into the left occurrence --
+    // `*` names it once (differential against DuckDB in
+    // tests/test_duckdb_stageb_many.py).
+    let p = prep_many("SELECT * FROM __THIS__ i1 JOIN __THIS__ i2 USING (i)").unwrap();
+    let names: Vec<&str> = p.program.out_cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names.iter().filter(|n| **n == "i").count(), 1, "{names:?}");
 }
 
 // --------------------------------------------------- DECIMAL statics --

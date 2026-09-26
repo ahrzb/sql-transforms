@@ -120,7 +120,7 @@ product boundary. "DuckDB rejects" was measured on DuckDB 1.5.5 (2026-09-26).
 | Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; the static-only path still serves today (claim: one-door-bypass) |
 | `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
 | CTEs, subqueries (incl. derived tables), set operations, named windows used row-locally | 2 unimplemented | DuckDB serves them; blanket syntax bans, not scope |
-| Row-local `USING`/`NATURAL` self-joins, more than one join under `shape='many'` | 2 unimplemented | named follow-ups |
+| More than one join under `shape='many'` | 2 unimplemented | named follow-up (`USING`/`NATURAL` self-joins served since 2026-09-26) |
 | Decimal expressions and decimal-literal arithmetic (`UNSHIPPED` decimals) | 2 unimplemented | m-8 lattice phase 5 |
 | `f32` row columns, lists, whole-struct output, bracket field access, `HUGEINT`/unsigned | 2 unimplemented | type-lattice width not built |
 | `decimal256` static columns | 4 invalid | DuckDB refuses them at Arrow registration |

@@ -85,14 +85,9 @@ def test_dynamic_self_join_rejects():
         r["a"] for r in fn.infer_rows([{"a": 1, "s": None}, {"a": 2, "s": None}])
     )
     assert got == [1, 2]
-    # USING/NATURAL self-joins stay a named follow-up rejection.
-    with pytest.raises(ValueError, match="USING/NATURAL"):
-        DuckDBInferFn(
-            "SELECT * FROM __THIS__ t1 JOIN __THIS__ t2 USING (a)",
-            row_tables={"__THIS__": T},
-            static_tables={},
-            shape="many",
-        )
+    # USING/NATURAL self-joins serve too (differentials in
+    # test_duckdb_stageb_many.py); the default shapes still reject them.
+    rejects("SELECT * FROM __THIS__ t1 JOIN __THIS__ t2 USING (a)", "dynamic table")
 
 
 # ---- 2. Out of scope for row-serving --------------------------------------

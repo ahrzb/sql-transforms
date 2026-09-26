@@ -226,3 +226,85 @@ def test_split_in_the_join_condition():
         "SELECT pid, v FROM __THIS__ AS t JOIN d "
         "ON t.pid = d.id AND (CASE WHEN d.id > 1 THEN d.v ELSE 'a' END) <> 'b'"
     )
+
+
+# USING / NATURAL self-joins: the equality is a residual against the batch,
+# the merge is by name. Measured on DuckDB 1.5.5: the merged column is the
+# LEFT occurrence (star shows it once, unqualified `k` is it), the right
+# side stays addressable qualified (`u.k`, `u.*`), NULL keys never match,
+# and NATURAL over the same table merges every column.
+T2 = pa.schema([pa.field("k", pa.int64()), pa.field("v", pa.string())])
+ROWS2 = [
+    {"k": 1, "v": "a"},
+    {"k": 1, "v": "b"},
+    {"k": 2, "v": "c"},
+    {"k": None, "v": "d"},
+]
+
+
+def _self_check(sql: str):
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": T2}, static_tables={}, shape="many")
+    got = fn.infer_rows(ROWS2)
+    o = Oracle()
+    o.table("__THIS__", "k BIGINT, v VARCHAR", [(r["k"], r["v"]) for r in ROWS2])
+    want = compare.rows(o.answer(sql))
+    compare.assert_rows(got, want, ctx=sql)
+    assert list(got[0]) == list(want[0]) if got else not want, sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM __THIS__ JOIN __THIS__ AS u USING (k)",
+        "SELECT * FROM __THIS__ LEFT JOIN __THIS__ AS u USING (k)",
+        "SELECT k, __THIS__.v, u.v, u.k "
+        "FROM __THIS__ LEFT JOIN __THIS__ AS u USING (k)",
+        "SELECT k FROM __THIS__ JOIN __THIS__ AS u USING (k, v)",
+        "SELECT * FROM __THIS__ JOIN __THIS__ AS u USING (k, k)",
+        "SELECT u.* FROM __THIS__ JOIN __THIS__ AS u USING (k)",
+        "SELECT * EXCLUDE (v) FROM __THIS__ JOIN __THIS__ AS u USING (k)",
+        "SELECT * FROM __THIS__ NATURAL JOIN __THIS__ AS u",
+        "SELECT * FROM __THIS__ NATURAL LEFT JOIN __THIS__ AS u",
+        "SELECT k, upper(u.v) AS w FROM __THIS__ JOIN __THIS__ AS u USING (k) "
+        "WHERE u.v <> 'a'",
+    ],
+)
+def test_using_and_natural_self_joins_vs_oracle(sql):
+    _self_check(sql)
+
+
+def test_a_using_column_missing_on_the_right_is_duckdbs_bind_error():
+    with pytest.raises(ValueError, match='column "z" does not exist on right side'):
+        DuckDBInferFn(
+            "SELECT * FROM __THIS__ JOIN __THIS__ AS u USING (z)",
+            row_tables={"__THIS__": T2},
+            static_tables={},
+            shape="many",
+        )
+
+
+def test_a_qualified_exclude_of_a_merged_column_is_refused_by_name():
+    # DuckDB UNMERGES it (EXCLUDE (i1.i) puts the key back at the right
+    # side's position): not modeled, and refused like the static USING join.
+    with pytest.raises(ValueError, match="EXCLUDE of a USING-merged column"):
+        DuckDBInferFn(
+            "SELECT * EXCLUDE (t.k, u.k) "
+            "FROM __THIS__ AS t JOIN __THIS__ AS u USING (k)",
+            row_tables={"__THIS__": T2},
+            static_tables={},
+            shape="many",
+        )
+
+
+def test_exclude_entries_clash_only_under_the_same_or_no_qualifier():
+    _many_check(
+        "SELECT * EXCLUDE (t.pid, d.id) FROM __THIS__ AS t JOIN d ON t.pid = d.id"
+    )
+    for dup in ("(pid, pid)", "(pid, t.pid)", "(T.pid, t.PID)"):
+        with pytest.raises(ValueError, match="duplicate entry"):
+            DuckDBInferFn(
+                f"SELECT * EXCLUDE {dup} FROM __THIS__ AS t JOIN d ON t.pid = d.id",
+                row_tables={"__THIS__": T},
+                static_tables={"d": DIM},
+                shape="many",
+            )
