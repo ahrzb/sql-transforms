@@ -21,7 +21,7 @@ evidence, not active instructions or dependencies.
   and unrelated consumers unconstrained.
 - [x] **ticket: stop-on-opt-emulated** — Preserve the primary `OPT_EMULATED`
   finding by stopping before boundary self-legs can replace it.
-- [ ] **ticket: split-refused-verdict** — Retain the already-computed oracle
+- [x] **ticket: split-refused-verdict** — Retain the already-computed oracle
   outcome and summarize by refusal reason. The historical name does not require
   a new verdict kind or make every oracle-serves refusal a correctness defect.
 - [ ] **ticket: truthful-output-nullability** — Enforce sound non-null promises,

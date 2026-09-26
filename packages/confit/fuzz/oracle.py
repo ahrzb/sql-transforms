@@ -153,14 +153,33 @@ class Verdict:
     # the case's own construct tags, plus oracle-side notes (`cmp=`, a known
     # width class, `fallback`)
     tags: list[str] = dfield(default_factory=list)
+    # REFUSED only: what the baseline reading did with the same query, one of
+    # ORACLE_OUTCOMES. Reporting, not adjudication — a query DuckDB serves and
+    # we refuse is not by itself a defect.
+    oracle: str = ""
 
     def to_json(self):
-        return {
+        out = {
             "kind": self.kind,
             "klass": self.klass,
             "detail": self.detail[:500],
             "tags": self.tags,
         }
+        if self.oracle:
+            out["oracle"] = self.oracle
+        return out
+
+
+# What the baseline reading did: returned rows, refused at bind/build, or
+# trapped at run time. The same split `_exec` phases on.
+ORACLE_OUTCOMES = ("serves", "rejects", "traps")
+
+
+def _oracle_outcome(duck) -> str:
+    out, phase, _ = duck
+    if out is not None:
+        return "serves"
+    return "rejects" if phase == "build" else "traps"
 
 
 # ------------------------------------------------------------- materialize
@@ -571,8 +590,10 @@ def run_case(case: G.Case) -> Verdict:
     duck_off, duck_on = _duck_run(sql, case, udf_objs)
 
     if fn_cl is None:
+        # Both readings already ran; keep the baseline's outcome rather than
+        # discarding it, so the report can say what each refusal costs.
         klass = _refusal_class(cl_err)
-        return Verdict("REFUSED", klass, cl_err, tags)
+        return Verdict("REFUSED", klass, cl_err, tags, _oracle_outcome(duck_off))
     # "constant" is the third legitimate backend: the whole query folded at
     # build time, so there is nothing left to compile OR interpret.
     if fn_cl.backend not in ("cranelift", "constant"):

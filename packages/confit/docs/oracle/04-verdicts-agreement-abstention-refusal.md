@@ -64,7 +64,8 @@ exclusion from `COVERED`.
 *Evidence:* emission is tested by `test_verdicts_cover_the_contract_and_reproduce`;
 the stopping rule by
 `packages/confit/tests/test_fuzz_smoke.py::test_opt_emulated_is_final_and_no_self_leg_replaces_it`.
-Runner tuple membership remains **Unverified** because no test imports `fuzz.runner`.
+Runner tuple membership remains **Unverified**: `tests/test_fuzz_report.py` drives
+`fuzz.runner.report`, but no test asserts `INTERESTING` or `COVERED` membership.
 
 ## Construction refusal versus runtime trap
 
@@ -125,15 +126,18 @@ restrictions without ratifying every existing limit.
 `packages/confit/docs/known-limitations.md` §§1-2, and
 `packages/confit/tests/known_divergences/test_arrow_boundary.py:34-36`.
 
-**claim: refusal-absorb.** **[FACT]** The campaign executes both DuckDB readings before
-returning a confit refusal, then discards those readings unconditionally. `REFUSED`
-carries a class derived from the first six message words, is absent from `INTERESTING`,
-and appears only in the refusal histogram. It does not distinguish “DuckDB serves” from
-“DuckDB traps.” This is the implementation gap under claim: refusal-outcome-reporting,
-tracked as **ticket: split-refused-verdict**.
+**claim: refusal-absorb.** The campaign executes both DuckDB readings before returning
+a confit refusal. `REFUSED` keeps the optimizer-off reading's outcome — `serves`,
+`rejects` (bind/build), or `traps` (run time) — as its `oracle` field, carries a class
+derived from the first six message words, and stays absent from `INTERESTING`. The
+report groups refusals by that outcome, then by class, so "DuckDB serves, confit
+refuses" is visible per refusal class without being promoted to a finding. This closed
+**ticket: split-refused-verdict**.
 
-*Evidence:* `fuzz.oracle.run_case`, `fuzz.oracle._refusal_class`,
-`fuzz.runner.INTERESTING`, and `fuzz.runner.report`.
+*Enforced-by:* `fuzz.oracle.run_case`, `fuzz.oracle._oracle_outcome`, and
+`fuzz.runner.report`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_refusal_keeps_the_oracle_outcome_it_already_computed`
+and `packages/confit/tests/test_fuzz_report.py::test_refusals_are_summarized_by_oracle_outcome_and_class`.
 
 **claim: refusal-outcome-reporting.** A refusal retains the oracle outcome the campaign
 has already computed, and the report summarizes refusals by reason: whether DuckDB
