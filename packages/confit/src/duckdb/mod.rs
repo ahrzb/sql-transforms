@@ -276,6 +276,28 @@ fn flatten_static(
     tree
 }
 
+/// A presence lane's row value must be a struct node (a mapping or an object
+/// with attributes) or None. A scalar or a sequence where the schema declares
+/// a struct is a wrong input, not a present node: a struct with no leaf lanes
+/// has nothing else that would catch it.
+fn present_node(v: &Bound<'_, PyAny>, lane: &str) -> PyResult<()> {
+    use pyo3::types::{PyBool, PyBytes, PyFloat, PyInt, PyList, PyString, PyTuple};
+    if v.is_instance_of::<PyBool>()
+        || v.is_instance_of::<PyInt>()
+        || v.is_instance_of::<PyFloat>()
+        || v.is_instance_of::<PyString>()
+        || v.is_instance_of::<PyBytes>()
+        || v.is_instance_of::<PyList>()
+        || v.is_instance_of::<PyTuple>()
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "column '{lane}' is {}, the schema declares a struct",
+            v.get_type().name()?
+        )));
+    }
+    Ok(())
+}
+
 /// A narrow out column's value must fit its declared width on EVERY
 /// boundary — infer and infer_arrow answer identically or not at all.
 fn narrow_check(ty: Ty, name: &str, v: i64) -> PyResult<()> {
@@ -1334,7 +1356,10 @@ impl Marshaller {
                 match lane.kind {
                     // A PRESENCE lane's VALUE is that validity: its path
                     // walked to a struct NODE, not to a scalar.
-                    plan::LaneKind::Present => col.push_present(!null),
+                    plan::LaneKind::Present => {
+                        present_node(&attr, &lane.name)?;
+                        col.push_present(!null)
+                    }
                     plan::LaneKind::Value(ct) => {
                         if null && !ct.nullable {
                             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -1977,7 +2002,10 @@ impl DuckDBInferFn {
                 let null = attr.is_none();
                 match lane.kind {
                     // A PRESENCE lane's VALUE is that validity.
-                    plan::LaneKind::Present => col.push_present(!null),
+                    plan::LaneKind::Present => {
+                        present_node(&attr, &lane.name)?;
+                        col.push_present(!null)
+                    }
                     plan::LaneKind::Value(ct) => {
                         if null && !ct.nullable {
                             return Err(pyo3::exceptions::PyValueError::new_err(format!(
