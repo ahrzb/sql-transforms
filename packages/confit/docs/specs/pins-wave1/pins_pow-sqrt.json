@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "pow-sqrt", "engine": "unknown", "engine_version": "unknown", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-26"},
  "family": "pow-sqrt",
  "pins": [
   {

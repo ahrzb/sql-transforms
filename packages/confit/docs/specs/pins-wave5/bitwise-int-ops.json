@@ -1,4 +1,5 @@
 {
+  "_pin": {"schema": 1, "subject": "bitwise-int-ops", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-27"},
   "area": "bitwise-int-ops",
   "duckdb_version": "1.5.5",
   "note": "Every observed value below is the raw fetchall() repr or the verbatim str(exception) from duckdb 1.5.5, executed in this session. Raw per-query logs: bitwise_raw.json, bitwise_raw2.json, bitwise_raw3.json, bitwise_raw4.json, bitwise_raw5.json in this directory.",

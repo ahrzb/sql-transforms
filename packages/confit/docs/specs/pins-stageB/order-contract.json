@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "Join output order: contract or accident? (stage B: join multiplicity)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "on", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28", "optimizer_evidence": "records the optimizer's stream/build choice"},
  "topic": "Join output order: contract or accident? (stage B: join multiplicity)",
  "duckdb_version": "1.5.5",
  "pins": [

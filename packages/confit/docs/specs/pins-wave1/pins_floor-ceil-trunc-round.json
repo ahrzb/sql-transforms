@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "floor-ceil-trunc-round", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-26"},
  "family": "floor-ceil-trunc-round",
  "pins": [
   {

@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "reverse() grapheme-cluster semantics — exhaustive adversarial pin set", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28"},
  "topic": "reverse() grapheme-cluster semantics — exhaustive adversarial pin set",
  "duckdb_version": "1.5.5",
  "pins": [

@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "pins_like", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-26", "harness": "unknown", "committed": "2026-07-26"},
  "pins": [
   {
    "expr": "s LIKE '%' / '%%' / '%%%'",

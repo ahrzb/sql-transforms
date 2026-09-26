@@ -1,4 +1,5 @@
 {
+  "_pin": {"schema": 1, "subject": "spark-ansi-baseline", "engine": "spark", "engine_version": "4.2.0", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-08-13"},
   "area": "spark-ansi-baseline",
   "spark_version": "4.2.0",
   "pinned_config": {

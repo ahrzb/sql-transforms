@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "NULL as a constant regex pattern/argument across the regexp family (regexp_matches/replace/extract/full_match, SIMILAR TO, ~/!~)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28"},
  "topic": "NULL as a constant regex pattern/argument across the regexp family (regexp_matches/replace/extract/full_match, SIMILAR TO, ~/!~)",
  "duckdb_version": "1.5.5",
  "pins": [

@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "cross joins and inequality-ON joins (keyless multiplicity)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28"},
  "topic": "cross joins and inequality-ON joins (keyless multiplicity)",
  "duckdb_version": "1.5.5",
  "pins": [

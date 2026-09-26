@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "struct-star expansion (a.*) semantics", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28"},
  "topic": "struct-star expansion (a.*) semantics",
  "duckdb_version": "1.5.5",
  "pins": [

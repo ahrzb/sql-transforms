@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "left_join_issue_1172.test corpus family (9 cases): LEFT JOIN null-extension with an all-NULL probe side, dup-key build side, predicates =, >, <>", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28"},
  "topic": "left_join_issue_1172.test corpus family (9 cases): LEFT JOIN null-extension with an all-NULL probe side, dup-key build side, predicates =, >, <>",
  "duckdb_version": "1.5.5",
  "pins": [

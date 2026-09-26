@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "string_inspection_case_aliases", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-26"},
  "family": "string_inspection_case_aliases",
  "duckdb_version": "1.5.5",
  "decisions": [

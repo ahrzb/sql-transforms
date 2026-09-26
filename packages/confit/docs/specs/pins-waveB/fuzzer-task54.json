@@ -1,4 +1,5 @@
 {
+  "_pin": {"schema": 1, "subject": "fuzzer-task54", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-27", "harness": "unknown", "committed": "2026-07-27"},
   "meta": {
     "task": "TASK-54 standing differential regexp fuzzer",
     "measured": "2026-07-27, DuckDB 1.5.5 vs the engine (rust regex 1.13 behind retrans.rs), tests/test_duckdb_regexp_fuzz.py grammar",

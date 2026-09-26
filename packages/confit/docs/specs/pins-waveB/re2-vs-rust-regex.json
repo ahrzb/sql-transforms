@@ -1,4 +1,5 @@
 {
+  "_pin": {"schema": 1, "subject": "re2-vs-rust-regex", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-27"},
   "area": "re2-vs-rust-regex",
   "regex_crate_version": "1.13.1",
   "duckdb_version": "1.5.5",

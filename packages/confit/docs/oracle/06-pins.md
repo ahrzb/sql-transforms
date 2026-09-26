@@ -67,7 +67,19 @@ pin corpus.
 
 *Evidence:* `scripts/pin_ast_shapes.py:29, :36`; `scripts/gen_casemap.py:152, :159`;
 `scripts/gen_strip_accents.py:135`; `docs/specs/pins-*/*.json` (measured 2026-08-25).
-Proposed **ticket: uniform-pin-header** covers the missing common header.
+
+**claim: uniform-pin-header.** Every pin file opens with a `_pin` header of one shape:
+`schema`, `subject`, `engine`, `engine_version`, `optimizer`, `captured`, `harness`, and
+`committed`. `scripts/pin_corpus.py header` derives it from what the file and git
+already say and writes `"unknown"` for anything the file does not state; `committed` is
+the git date the file was added, never presented as a capture date, and `optimizer` is
+`on` only for the three stage-B files whose observations are optimizer plan choices.
+On 2026-09-26: 48 files name DuckDB 1.5.5 (41 by key, 7 in prose), 6 state a capture
+date, and every other field left unknown stays unknown. The legacy fields are untouched
+and no pin became a fresh observation (**ticket: uniform-pin-header**, done).
+
+*Enforced-by:* `packages/confit/tests/test_pin_corpus.py`, which re-derives every
+header and fails on a stale or missing one.
 
 ## Metadata proposals
 

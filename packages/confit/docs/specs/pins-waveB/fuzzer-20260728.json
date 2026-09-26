@@ -1,4 +1,5 @@
 {
+ "_pin": {"schema": 1, "subject": "fuzzer deep-run classes, seed 20260728 (overnight run, TASK-56 branch)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28"},
  "topic": "fuzzer deep-run classes, seed 20260728 (overnight run, TASK-56 branch)",
  "duckdb_version": "1.5.5",
  "pins": [
