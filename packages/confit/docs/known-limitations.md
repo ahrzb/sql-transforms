@@ -213,7 +213,7 @@ wrong answer or require semantics we can't reproduce exactly:
 | `* EXCLUDE (t.key)` on a USING join | DuckDB UNMERGES the coalesced column (it reappears at the right table's position) — measured, not modeled. Unqualified EXCLUDE works. |
 | `BETWEEN`/`IN` mixing non-numeric string literals with numbers | DuckDB converts at EXECUTION time (an empty input succeeds!); a bind-time conversion was measured to be over-eager. Numeric literals convert fine. |
 | `COLUMNS(...)` inside expressions, lambda/list forms | Only bare `COLUMNS('re')` / `COLUMNS(*)` as select items are served. |
-| Pad/repeat counts past the 1 GiB string-builder budget (TASK-88) | A LITERAL count that can exceed the budget refuses at build; a DATA-DRIVEN count (column, `CAST(k AS INTEGER)`) keeps the runtime cap — the engine traps at 1 GiB where DuckDB's own behaviour is spelling-dependent (a multi-GB string or its own builder error). No gigabyte allocations in a serving engine, by decision. |
+| Pad/repeat counts past the 1 GiB string-builder budget (TASK-88) | A LITERAL count that can exceed the budget refuses at build; a DATA-DRIVEN count (column, `CAST(k AS INTEGER)`) keeps the runtime cap and traps at 1 GiB. DuckDB is deterministic here (measured 2026-08-16, bounds rechecked 2026-09-26): `repeat` serves up to a 4294967295-byte string and raises Out of Range above it; `lpad`/`rpad` take an INTEGER count, so a count above 2147483647 is a Binder Error. Between 1 GiB and those bounds DuckDB serves and we refuse or trap — the ground is Confit's resource limit, not DuckDB instability: no gigabyte allocations per serving row, by decision. |
 | `CASE` where every branch is NULL, `COALESCE`/`least`/`greatest` of only NULLs | DuckDB binds the all-NULL FAMILY forms (SQLNULL → INTEGER); the engine still refuses them. A bare `NULL` select item, `nullif(NULL, x)`, and `NULL <op> NULL` all SERVE with DuckDB's types since m-8 phase 2 (bare NULL is int32, its INTEGER). |
 | Bare `NULL` as `repeat`'s string (TASK-86, BLOB face) | DuckDB picks the **BLOB** overload — a type this engine doesn't have until the m-8 Blob phase — so adopting VARCHAR answered with a different schema. Spell it `CAST(NULL AS VARCHAR)`, which both engines type identically. Adopters that agree with DuckDB — `upper(NULL)`, `coalesce(NULL, x)`, `nullif(x, NULL)`, `nullif(NULL, x)` (int32, m-8 phase 2), a NULL `repeat` count — keep serving, pinned schema-equal. |
 
@@ -304,7 +304,7 @@ our bookkeeping — file it.
 
 ## 7. How this document stays honest
 
-Four mechanisms, all in the normal test gate:
+Three mechanisms in the normal test gate, and one manual campaign:
 
 1. **The corpus replay** (678 statements mined from DuckDB's test suite):
    every statement must match bit-for-bit, reject cleanly, or be a named
@@ -319,8 +319,13 @@ Four mechanisms, all in the normal test gate:
    plus a row in this document.
 4. **The campaign fuzzer reads DuckDB TWICE** (`packages/confit/fuzz/`),
    once with the optimizer off and once on, so a finding says which kind it
-   is instead of needing a human to reason about it: a disagreement with the
+   is instead of needing a human to reason about it. It is NOT in the test
+   gate: campaigns are a manual `python -m fuzz.runner` run, and the gate's
+   `tests/test_fuzz_smoke.py` checks only its machinery (deterministic
+   generation, reproducible verdicts, the verdict rules) — a green gate says
+   nothing about zero campaign findings. Of its readings: a disagreement with the
    optimizer-off reading is a bug, a disagreement only with the optimizer-on
    one is the §5 cost above, and an agreement with optimizer-on *against*
    the oracle means the engine is reproducing a pass it should not — that
-   last category is reported as a bug and is currently empty.
+   last category is reported as a bug; it was empty after the 2026-08-17
+   sweep, the last recorded campaign.

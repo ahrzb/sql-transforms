@@ -15,8 +15,9 @@ rejection, and findings feed the reject list, pin note, and limitations row.
 
 `packages/confit/fuzz/` is instead a manual `python -m fuzz.runner` campaign.
 `tests/test_fuzz_smoke.py` gates deterministic generation, reproducible verdicts, and
-verdict rules; it does not demand zero campaign findings. Proposed **ticket:
-fuzzer-gate-correction** corrects contrary text in `known-limitations.md:301-307`.
+verdict rules; it does not demand zero campaign findings. `known-limitations.md` §7 now
+says so instead of listing the campaign among the gated mechanisms (**ticket:
+fuzzer-gate-correction**, done).
 
 **claim: campaign-as-acceptance.** An m-8 phase completes only after a campaign certifies
 it. When a feature used an xfail or fuzzer marker, certification occurs after that marker

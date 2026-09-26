@@ -64,8 +64,9 @@ Details live in [ordering](03-nondeterminism.md), [verdicts](04-verdicts-agreeme
 
 - Establish the reduction bound's valid algorithms and edge domain before implementing it.
 - Define and justify a contract when adding another order-sensitive value family.
-- Implement version enforcement, refusal reporting, early mismatch return, nullability
-  checks, and evidence/reporting improvements where the current code falls short.
+- Version enforcement, refusal reporting, early mismatch return, nullability checks,
+  and the adopted evidence/reporting improvements were implemented on 2026-09-26; see the
+  [work register](11-proposed-tickets.md). The deferred proposals there remain open.
 - Review individual restrictions and ledger entries against their evidence; the policy
   decision did not approve every historical disposition or numeric resource limit.
 

@@ -46,9 +46,9 @@ existed.
 **claim: keep-entry-reason.** A historical KEEP entry owes a measured reason, and a
 DuckDB claim in that reason remains subject to remeasurement. The string-budget entry
 was corrected on 2026-08-16: DuckDB was deterministic, while the limit was confit's
-resource judgment. `known-limitations.md:205` still repeats the disproved
-spelling-dependence explanation; proposed **ticket: string-budget-ground-fix** tracks
-the correction.
+resource judgment. `known-limitations.md` §4 now states that measured behavior and
+confit's resource limit instead of the disproved spelling-dependence explanation
+(**ticket: string-budget-ground-fix**, done).
 
 **claim: feature-in-flight.** A scheduled m-8 phase or ticket is temporary feature work,
 not an accepted permanent divergence. Completion replaces strict xfail with a parity

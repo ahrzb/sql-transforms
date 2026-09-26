@@ -52,17 +52,18 @@ floor mechanism does not need a second parallel policy system.
 
 ## Existing editorial work
 
-These correct recorded inaccuracies without creating new oracle policy.
+These correct recorded inaccuracies without creating new oracle policy. All seven
+were applied on 2026-09-26.
 
 | Ticket | Correction |
 |---|---|
-| **ticket: oracle-docstring-corrections** | Correct the stated `disable_optimizer` scope and remove the stale claim that `OPT_EMULATED` is purposeful coverage |
-| **ticket: exclusion-count-correction** | Correct `pins-first-methodology.md:89`: one excluded source covers two statements, not two sources |
-| **ticket: ambiguity-class-closed** | Correct the dated triage description of TASK-121, distinguishing its completed status from unchecked acceptance criteria; see [ledger evidence](07-the-divergence-ledger.md#evidence-notes) |
-| **ticket: severity-definition-merge** | Replace partial severity definitions with the common rule; no blanket never-retain-defects policy |
-| **ticket: clean-prefix-reconcile** | Reconcile `_CLEAN`'s two unprefixed messages with the three-prefix description without introducing a new public code API |
-| **ticket: string-budget-ground-fix** | Replace the false spelling-dependent explanation with measured deterministic DuckDB behavior and Confit's resource limit |
-| **ticket: fuzzer-gate-correction** | State that the campaign fuzzer is a manual CLI; machinery smoke tests do not establish zero campaign findings |
+| ~~**ticket: oracle-docstring-corrections**~~ done | Correct the stated `disable_optimizer` scope and remove the stale claim that `OPT_EMULATED` is purposeful coverage |
+| ~~**ticket: exclusion-count-correction**~~ done | Correct `pins-first-methodology.md:89`: one excluded source covers two statements, not two sources |
+| ~~**ticket: ambiguity-class-closed**~~ done | Correct the dated triage description of TASK-121, distinguishing its completed status from unchecked acceptance criteria; see [ledger evidence](07-the-divergence-ledger.md#evidence-notes) |
+| ~~**ticket: severity-definition-merge**~~ done | Replace partial severity definitions with the common rule; no blanket never-retain-defects policy |
+| ~~**ticket: clean-prefix-reconcile**~~ done | Reconcile `_CLEAN`'s two unprefixed messages with the three-prefix description without introducing a new public code API |
+| ~~**ticket: string-budget-ground-fix**~~ done | Replace the false spelling-dependent explanation with measured deterministic DuckDB behavior and Confit's resource limit |
+| ~~**ticket: fuzzer-gate-correction**~~ done | State that the campaign fuzzer is a manual CLI; machinery smoke tests do not establish zero campaign findings |
 
 ## Deferred implementation proposals
 
@@ -97,7 +98,7 @@ They are not owner-decision blockers for the settled contract.
 
 The committed 2026-08-17 snapshot contained 7 `DIVERGE_OPT` seeds among 28 findings
 when counted on 2026-08-25 (312, 812, 1196, 1563, 1564, 2174, 2805).
-`known-limitations.md:248-249` says 8, while
+`known-limitations.md` said 8 (corrected to 7 on 2026-09-26), while
 `2026-08-17-fuzz-triage.md:87, :89-94, :102` disagrees with itself. Correcting those
 historical descriptions would not create a fresh campaign result. The
 unreconstructible “79 of 84” residual count is retired from current evidence;
