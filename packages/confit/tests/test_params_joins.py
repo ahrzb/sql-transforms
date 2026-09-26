@@ -198,3 +198,61 @@ def test_indf_key_reconstruction_via_star():
         [{"k": 1}, {"k": None}, {"k": 2}],
         {"dim": dim},
     )
+
+
+# `a CROSS JOIN b` IS `a, b` on DuckDB: the trailing cross joins bind as
+# comma relations, WHERE-key extraction and multiplicity rules included.
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT k, w FROM __THIS__ CROSS JOIN p",
+        "SELECT * FROM __THIS__ CROSS JOIN p",
+        "SELECT k, w FROM __THIS__ CROSS JOIN p WHERE k > 1",
+    ],
+)
+def test_cross_join_to_a_one_row_static(sql):
+    params = static({"w": "int"}, [{"w": 7}])
+    duck_check(sql, {"k": "int"}, [{"k": 1}, {"k": 2}], {"p": params})
+
+
+def test_cross_join_with_a_where_key_is_an_equi_join():
+    dim = static({"id": "int", "v": "int"}, [{"id": 1, "v": 10}, {"id": 2, "v": 20}])
+    duck_check(
+        "SELECT k, v FROM __THIS__ CROSS JOIN d WHERE k = id",
+        {"k": "int"},
+        [{"k": 1}, {"k": 2}, {"k": 3}],
+        {"d": dim},
+    )
+
+
+def test_cross_join_to_a_multi_row_static_is_one_to_many():
+    from confit.oracle import Oracle
+
+    dim = static({"id": "int", "v": "int"}, [{"id": 1, "v": 10}, {"id": 2, "v": 20}])
+    sql = "SELECT k, v FROM __THIS__ CROSS JOIN d"
+    row = _row_schema({"k": "int"})
+    with pytest.raises(ValueError, match="has no equality key"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": row}, static_tables={"d": dim})
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": row}, static_tables={"d": dim}, shape="many"
+    )
+    rows = [{"k": 1}, {"k": 2}]
+    with Oracle() as o:
+        o.table("__THIS__", "k BIGINT", [(1,), (2,)])
+        o.load("d", dim)
+        want = o.answer(sql).to_pylist()
+    key = lambda r: (r["k"], r["v"])  # noqa: E731
+    assert sorted(fn.infer_rows(rows), key=key) == sorted(want, key=key)
+
+
+def test_a_cross_join_before_another_join_still_refuses():
+    params = static({"w": "int"}, [{"w": 7}])
+    dim = static({"id": "int", "v": "int"}, [{"id": 1, "v": 10}])
+    with pytest.raises(ValueError, match="CROSS JOIN"):
+        DuckDBInferFn(
+            "SELECT k FROM __THIS__ CROSS JOIN p JOIN d ON k = d.id",
+            row_tables={"__THIS__": _row_schema({"k": "int"})},
+            static_tables={"p": params, "d": dim},
+        )
