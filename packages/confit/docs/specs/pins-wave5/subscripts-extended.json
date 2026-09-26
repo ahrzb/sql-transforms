@@ -1,5 +1,5 @@
 {
-  "_pin": {"schema": 1, "subject": "subscripts-extended", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-27"},
+  "_pin": {"schema": 1, "subject": "subscripts-extended", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-27", "evidences": ["packages/confit/docs/reports/pins-first-methodology.md", "packages/confit/docs/specs/2026-07-26-wave5-structural-pins.md", "packages/confit/src/specializer/exec/interp.rs", "packages/confit/src/specializer/frontend.rs", "packages/confit/src/specializer/tests.rs"]},
   "area": "subscripts-extended",
   "duckdb_version": "1.5.5",
   "setup_sql": [

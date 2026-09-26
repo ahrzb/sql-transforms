@@ -1,5 +1,5 @@
 {
-  "_pin": {"schema": 1, "subject": "sqlparser-spike", "engine": "sqlparser", "engine_version": "0.62.0", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-27"},
+  "_pin": {"schema": 1, "subject": "sqlparser-spike", "engine": "sqlparser", "engine_version": "0.62.0", "optimizer": "unknown", "captured": "unknown", "harness": "unknown", "committed": "2026-07-27", "evidences": ["packages/confit/docs/reports/confit-architecture.md", "packages/confit/docs/reports/pins-first-methodology.md", "packages/confit/docs/specs/2026-07-26-wave5-structural-pins.md", "packages/confit/src/dialect/duckdb.rs", "packages/confit/src/specializer/frontend.rs", "packages/confit/src/specializer/rewrite.rs", "packages/confit/src/specializer/tests.rs"]},
   "area": "sqlparser-spike",
   "sqlparser_version": "0.62.0 (Cargo.lock pin; Cargo.toml says \"0.62\")",
   "repo_dialect": "DuckDbDialect (src/specializer/frontend.rs:69, Parser::parse_sql(&DuckDbDialect {}, sql)). NOTE: src/datafusion/plan.rs:73 separately parses with GenericDialect for the oracle path, so repo_dialect_result below IS the DuckDbDialect result; generic_dialect_result added as the actionable comparison.",

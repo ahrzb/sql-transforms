@@ -1,5 +1,5 @@
 {
- "_pin": {"schema": 1, "subject": "predicates: BETWEEN / NOT BETWEEN, IN / NOT IN, least(), greatest()", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-26", "harness": "unknown", "committed": "2026-07-26"},
+ "_pin": {"schema": 1, "subject": "predicates: BETWEEN / NOT BETWEEN, IN / NOT IN, least(), greatest()", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "unknown", "captured": "2026-07-26", "harness": "unknown", "committed": "2026-07-26", "evidences": ["packages/confit/docs/specs/2026-07-26-wave1-builtin-pins.md"]},
  "family": "predicates: BETWEEN / NOT BETWEEN, IN / NOT IN, least(), greatest()",
  "pins": [
   {

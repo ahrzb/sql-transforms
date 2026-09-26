@@ -83,12 +83,13 @@ header and fails on a stale or missing one.
 
 ## Metadata proposals
 
-Neither proposal below is in force, and claim: dated-provenance does not adopt either:
+The back-reference below is implemented as derived data, not as mandatory governance
+metadata; claim: dated-provenance adopts neither proposal:
 it fixes what new evidence must carry, not what shape a pin file takes.
 
 | proposal | proposed addition | ticket |
 |---|---|---|
-| **claim: pin-back-reference** | record the stable slug of the decision the pin evidences | **ticket: pin-decision-field** |
+| **claim: pin-back-reference** | record the stable slug of the decision the pin evidences | done: the header's `evidences` lists every oracle claim or divergence slug citing the pin, and every other doc, test or source file citing it by path, file name or directory; derived by `scripts/pin_corpus.py`, never hand-kept (**ticket: pin-decision-field**) |
 | **claim: under-determined-token** | mark a field outside the contract or varying by a named discriminator such as platform | **ticket: pin-field-token** |
 
 No surveyed pin had either field on 2026-08-25. The current modulo-NaN-sign exception is

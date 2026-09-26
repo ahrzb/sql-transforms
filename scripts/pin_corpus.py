@@ -14,6 +14,7 @@ optimizer-off oracle (claim: pin-provenance).
 
 from __future__ import annotations
 
+import collections
 import json
 import re
 import subprocess
@@ -116,6 +117,66 @@ def _captured(d: dict) -> str:
     return "unknown"
 
 
+# Where a pin may be cited from. The oracle spec's claims are the decisions a
+# pin evidences; any other doc or test that cites a pin is recorded by path.
+_CITERS = (
+    "packages/confit/docs",
+    "packages/confit/tests",
+    "packages/confit/src",
+    "docs",
+)
+_DIR_CITE = re.compile(r"(pins-[A-Za-z0-9]+)/(?:\*\.json|(?![\w.-]))")
+_SLUG = re.compile(r"\*\*(claim|divergence|decision|exclusion|gap): ([a-z0-9-]+)")
+
+
+def _citations() -> dict[str, set[str]]:
+    """pin path (relative to specs/) -> the back-references that cite it."""
+    rels = [_rel(p) for p in pin_files()]
+    out: dict[str, set[str]] = {r: set() for r in rels}
+    # A citation spells the pin as its specs/-relative path, or by its bare
+    # file name when that name is unique in the corpus ("pins: struct-star.json").
+    base = collections.Counter(r.split("/")[1] for r in rels)
+    names = {r: r for r in rels}
+    names.update({r.split("/")[1]: r for r in rels if base[r.split("/")[1]] == 1})
+    for base in _CITERS:
+        for f in sorted((ROOT / base).rglob("*")):
+            if f.suffix not in (".md", ".py", ".rs") or not f.is_file():
+                continue
+            if f.is_relative_to(PINS) and f.parent.name.startswith("pins-"):
+                continue
+            text = f.read_text(encoding="utf-8", errors="replace")
+            oracle = "docs/oracle/" in f.as_posix()
+            # A whole-directory citation ("the JSON files in `pins-wave3/`",
+            # "`pins-stageB/*.json`") cites every pin in that directory.
+            for m in _DIR_CITE.finditer(text):
+                for r in rels:
+                    if r.startswith(m.group(1) + "/"):
+                        out[r].add(f.relative_to(ROOT).as_posix())
+            for n in names:
+                i = text.find(n)
+                while i != -1:
+                    slug = None
+                    if oracle:
+                        last = None
+                        for m in _SLUG.finditer(text, 0, i):
+                            last = m
+                        if last is not None:
+                            slug = f"{last.group(1)}: {last.group(2)}"
+                    out[names[n]].add(slug or f.relative_to(ROOT).as_posix())
+                    i = text.find(n, i + 1)
+    return out
+
+
+_CITES: dict[str, set[str]] | None = None
+
+
+def evidences(p: Path) -> list[str]:
+    global _CITES  # noqa: PLW0603 — one scan per process
+    if _CITES is None:
+        _CITES = _citations()
+    return sorted(_CITES.get(_rel(p), ()))
+
+
 def header(p: Path, d: dict) -> dict:
     meta = d.get("_meta", {}) if isinstance(d.get("_meta"), dict) else {}
     engine, version = _engine(d)
@@ -133,6 +194,9 @@ def header(p: Path, d: dict) -> dict:
     }
     if rel in _OPTIMIZER_ON:
         h["optimizer_evidence"] = _OPTIMIZER_ON[rel]
+    # The decisions this pin is evidence for, derived from who cites it; an
+    # empty list is a finding (an orphan pin), not a gap to fill by hand.
+    h["evidences"] = evidences(p)
     return h
 
 

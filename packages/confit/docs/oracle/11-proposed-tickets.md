@@ -75,7 +75,7 @@ They are not owner-decision blockers for the settled contract.
 | ~~**ticket: axiom-as-property**~~ done | Add the nondeterminism axiom to `properties.md`; the rule already has a canonical definition |
 | ~~**ticket: phase-probing-in-methodology**~~ done | Add the existing PREPARE/EXECUTE and zero-row probe guidance to the methodology report |
 | ~~**ticket: uniform-pin-header**~~ done | Standardize metadata across the legacy pin corpus; provenance for new campaign runs does not imply a full retrospective conversion |
-| **ticket: pin-decision-field** | Add a claim back-reference to every pin; mandatory per-pin governance metadata remains unadopted |
+| ~~**ticket: pin-decision-field**~~ done | Add a claim back-reference to every pin; mandatory per-pin governance metadata remains unadopted |
 | **ticket: pin-field-token** | Add a general token for discriminator-dependent or unspecified fields; the semantic distinction does not require this encoding |
 | **ticket: corpus-drift-report** | Generalize `pin_ast_shapes.py`'s reviewable diff to the whole pin corpus; reference upgrades still need separate review |
 | ~~**ticket: match-count-single-home**~~ done | Generate dated display counts in one place; the adopted floor policy does not require generated documentation |

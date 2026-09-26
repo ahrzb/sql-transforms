@@ -1,5 +1,5 @@
 {
- "_pin": {"schema": 1, "subject": "self-joins — star expansion, EXCLUDE, USING (stage-B self-join corpus cases)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "on", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28", "optimizer_evidence": "records the optimizer's build/probe choice"},
+ "_pin": {"schema": 1, "subject": "self-joins — star expansion, EXCLUDE, USING (stage-B self-join corpus cases)", "engine": "duckdb", "engine_version": "1.5.5", "optimizer": "on", "captured": "unknown", "harness": "unknown", "committed": "2026-07-28", "optimizer_evidence": "records the optimizer's build/probe choice", "evidences": ["packages/confit/docs/reports/pins-first-methodology.md", "packages/confit/docs/specs/2026-07-28-stageB-multiplicity-pins.md"]},
  "topic": "self-joins — star expansion, EXCLUDE, USING (stage-B self-join corpus cases)",
  "duckdb_version": "1.5.5",
  "pins": [
