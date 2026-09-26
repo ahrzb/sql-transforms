@@ -103,6 +103,72 @@ fn dec_operand<'a>(a: &'a SExpr, b: &'a SExpr) -> Option<&'a SExpr> {
 ///
 /// Every field other than `name`/`alias` refuses by name. Returns `None` for
 /// a non-`Table` relation so each caller keeps its own wording for that.
+/// The refusal for a FROM item that is not a plain table: names the kind
+/// of relation instead of printing the SQL back.
+fn relation_refusal(tf: &TableFactor) -> String {
+    let kind = match tf {
+        TableFactor::Derived { .. } => "a derived table (subquery in FROM)",
+        TableFactor::TableFunction { .. } | TableFactor::Function { .. } => "a table function",
+        TableFactor::UNNEST { .. } => "UNNEST",
+        TableFactor::NestedJoin { .. } => "a parenthesized join",
+        TableFactor::Pivot { .. } => "PIVOT",
+        TableFactor::Unpivot { .. } => "UNPIVOT",
+        TableFactor::MatchRecognize { .. } => "MATCH_RECOGNIZE",
+        TableFactor::JsonTable { .. } | TableFactor::OpenJsonTable { .. } => "a JSON table",
+        TableFactor::XmlTable { .. } => "an XML table",
+        _ => "this FROM item",
+    };
+    format!("FROM {kind} -- FROM and JOIN take named tables only")
+}
+
+/// The refusal for a join operator other than INNER or LEFT.
+fn join_refusal(op: &JoinOperator) -> String {
+    let kind = match op {
+        JoinOperator::Right(_) | JoinOperator::RightOuter(_) => "RIGHT JOIN",
+        JoinOperator::FullOuter(_) => "FULL OUTER JOIN",
+        JoinOperator::CrossJoin(_) => "CROSS JOIN",
+        JoinOperator::Semi(_) | JoinOperator::LeftSemi(_) | JoinOperator::RightSemi(_) => {
+            "SEMI JOIN"
+        }
+        JoinOperator::Anti(_) | JoinOperator::LeftAnti(_) | JoinOperator::RightAnti(_) => {
+            "ANTI JOIN"
+        }
+        JoinOperator::CrossApply | JoinOperator::OuterApply => "APPLY",
+        JoinOperator::AsOf { .. } => "ASOF JOIN",
+        JoinOperator::StraightJoin(_) => "STRAIGHT_JOIN",
+        _ => "this join type",
+    };
+    format!("join type {kind} -- served joins are [INNER] JOIN and LEFT [OUTER] JOIN")
+}
+
+/// The refusal for an expression form with no binding: names the form;
+/// only an unrecognised form falls back to printing it.
+fn expr_refusal(e: &SqlExpr) -> String {
+    let kind = match e {
+        SqlExpr::Subquery(_) => "a scalar subquery",
+        SqlExpr::IsDistinctFrom(..) | SqlExpr::IsNotDistinctFrom(..) => "IS [NOT] DISTINCT FROM",
+        SqlExpr::InSubquery { .. } => "IN (SELECT ...)",
+        SqlExpr::Exists { .. } => "EXISTS (SELECT ...)",
+        SqlExpr::TypedString { .. } => "a typed literal (e.g. DATE '...')",
+        SqlExpr::Struct { .. } | SqlExpr::Dictionary(_) => "a struct literal",
+        SqlExpr::Map(_) => "a map literal",
+        SqlExpr::Array(_) => "an array literal",
+        SqlExpr::Tuple(_) => "a row/tuple value",
+        SqlExpr::Interval(_) => "an INTERVAL literal",
+        SqlExpr::Lambda(_) => "a lambda",
+        SqlExpr::AtTimeZone { .. } => "AT TIME ZONE",
+        SqlExpr::Extract { .. } => "EXTRACT",
+        SqlExpr::Collate { .. } => "COLLATE",
+        SqlExpr::InUnnest { .. } => "IN UNNEST(...)",
+        SqlExpr::AnyOp { .. } | SqlExpr::AllOp { .. } => "ANY/ALL",
+        SqlExpr::MatchAgainst { .. } => "MATCH ... AGAINST",
+        SqlExpr::GroupingSets(_) | SqlExpr::Cube(_) | SqlExpr::Rollup(_) => "a grouping set",
+        SqlExpr::Wildcard(_) | SqlExpr::QualifiedWildcard(..) => "a star outside the select list",
+        _ => return format!("expression: {e}"),
+    };
+    format!("expression {kind}")
+}
+
 fn plain_table(
     tf: &TableFactor,
 ) -> Result<Option<(String, Option<&TableAlias>)>, PrepareError> {
@@ -711,7 +777,7 @@ fn bind_from<'a>(
                 None => (n, None),
             }
         }
-        None => return Err(unsup(format!("FROM {}", table.relation))),
+        None => return Err(unsup(relation_refusal(&table.relation))),
     };
     let (dyn_name, renamed_cols) = dyn_name;
 
@@ -750,7 +816,7 @@ fn bind_from<'a>(
         let (kind, constraint) = match &join.join_operator {
             JoinOperator::Join(c) | JoinOperator::Inner(c) => (JoinKind::Inner, c),
             JoinOperator::Left(c) | JoinOperator::LeftOuter(c) => (JoinKind::Left, c),
-            other => return Err(unsup(format!("join type {other:?}"))),
+            other => return Err(unsup(join_refusal(other))),
         };
         let (raw_name, rel_alias) = match plain_table(&join.relation)? {
             Some((n, alias)) => (n, alias),
@@ -1002,7 +1068,7 @@ fn bind_from<'a>(
         }
         let (raw_name, rel_alias) = match plain_table(&rel.relation)? {
             Some((n, alias)) => (n, alias),
-            None => return Err(unsup(format!("FROM {}", rel.relation))),
+            None => return Err(unsup(relation_refusal(&rel.relation))),
         };
         let scope_name = rel_alias
             .as_ref()
@@ -3680,7 +3746,7 @@ impl Binder<'_> {
                 }
                 Ok(cur)
             }
-            other => Err(unsup(format!("expression: {other}"))),
+            other => Err(unsup(expr_refusal(other))),
         }
     }
 
