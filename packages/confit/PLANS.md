@@ -9,8 +9,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 1. **Small surface wins DuckDB serves and we refuse.**
    - Mixed-type join keys (`BIGINT` vs `VARCHAR` under `USING`/`NATURAL`/`ON`):
      `cannot join i64 with str` here, DuckDB casts.
-   - All-NULL `CASE`/`COALESCE`/`least`/`greatest`: refused; DuckDB binds
-     INTEGER.
    - A column qualified through a schema-qualified relation (`d.v` over
      `JOIN main.d`, `s1.d.v`).
    - Struct fields whose own name contains a dot: skipped on the static side,

@@ -3220,6 +3220,52 @@ impl Binder<'_> {
             }
             SqlExpr::Function(f) => {
                 f.name.to_string().eq_ignore_ascii_case("struct_extract")
+                    || self.all_null_spelling(e)
+            }
+            SqlExpr::Case { .. } => self.all_null_spelling(e),
+            _ => false,
+        }
+    }
+
+    /// Whether `e` is spelled as NULL all the way down: a NULL literal,
+    /// `nullif(NULL, x)`, or a CASE / COALESCE / IFNULL / least / greatest
+    /// whose every result or argument is such a spelling. DuckDB types each
+    /// of these as a bare NULL (measured under unary minus, abs, upper, ||,
+    /// concat, coalesce and CASE unification).
+    fn all_null_spelling(&self, e: &SqlExpr) -> bool {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        match e {
+            SqlExpr::Value(v) => matches!(v.value, SqlValue::Null),
+            SqlExpr::Nested(i) => self.all_null_spelling(i),
+            SqlExpr::Case {
+                conditions,
+                else_result,
+                ..
+            } => {
+                conditions.iter().all(|w| self.all_null_spelling(&w.result))
+                    && else_result.as_deref().is_none_or(|x| self.all_null_spelling(x))
+            }
+            SqlExpr::Function(f) => {
+                if self.nullif_sqlnull(f).unwrap_or(false) {
+                    return true;
+                }
+                let name = f.name.to_string().to_ascii_lowercase();
+                if !matches!(name.as_str(), "coalesce" | "ifnull" | "least" | "greatest")
+                    || f.over.is_some()
+                    || f.filter.is_some()
+                {
+                    return false;
+                }
+                let FunctionArguments::List(list) = &f.args else {
+                    return false;
+                };
+                !list.args.is_empty()
+                    && list.args.iter().all(|a| match a {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) => {
+                            self.all_null_spelling(x)
+                        }
+                        _ => false,
+                    })
             }
             _ => false,
         }
@@ -5112,7 +5158,16 @@ impl Binder<'_> {
             acc_lit = None;
         }
         let Some(unified) = unified else {
-            return Err(unsup("CASE where every branch is NULL"));
+            // Every branch NULL: DuckDB types the CASE as a bare NULL (the
+            // adoptable SQLNULL, measured in every context) but still
+            // evaluates its conditions, so a condition that can trap keeps
+            // the refusal.
+            if conds.iter().any(may_trap) {
+                return Err(unsup(
+                    "CASE where every branch is NULL, over a condition that can trap",
+                ));
+            }
+            return Ok(null_of(Ty::I32));
         };
 
         let coerce = |r: Option<SExpr>| -> SExpr {
@@ -7000,7 +7055,8 @@ impl Binder<'_> {
                     bound.push(e);
                 }
                 let Some(unified) = unified else {
-                    return Err(unsup("COALESCE of only NULL literals"));
+                    // Only NULLs: a bare NULL on DuckDB (adoptable SQLNULL).
+                    return Ok(null_of(Ty::I32));
                 };
                 let mut bound: Vec<SExpr> = bound
                     .into_iter()
@@ -7065,7 +7121,8 @@ impl Binder<'_> {
                     }
                 }
                 if bound.is_empty() {
-                    return Err(unsup(format!("{name} of only NULL literals")));
+                    // Only NULLs: a bare NULL on DuckDB (adoptable SQLNULL).
+                    return Ok(null_of(Ty::I32));
                 }
                 // Seed-then-combine, same fold as COALESCE above.
                 let mut unified = bound[0].0.ty;
