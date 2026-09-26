@@ -65,10 +65,10 @@ must say so explicitly.
 | `order-by-unevaluated` fallback | sortedness on a non-output key | visible logged tag, never silent |
 | approximate bind errors | message body | compare error class; bodies are outside claim: error-texts |
 | named exclusions | statistics-dependent kernels, f32-grid operations, or inexpressible schemas | measured source and input exclusions, classified under [scope classification](../specs/serving-contract.md#scope-classification); classification does not ratify each individual exclusion |
-| absorbed refusal | whether DuckDB would have served | no current measure; the adopted refusal-outcome reporting is unimplemented |
+| absorbed refusal | whether confit could have served what DuckDB serves | the refusal keeps the oracle outcome and the report groups refusals by it; reporting, not a finding |
 | canonicalized NaN | sign and payload | repr equality self-equalizes NaNs; explicit bit pins remain exact |
 | `UNSHIPPED` width | whether values would agree | separately reported; neither coverage nor finding; no value normalization |
-| output nullability | soundness of non-null promises | exact DuckDB nullable flags are not required; `_schema_delta` omits flags and `assert_schema` compares them, but neither behavior establishes the adopted truthfulness invariant |
+| output nullability | DuckDB's exact nullable flags | not required: `same_type`/`assert_schema` ignore flags at any depth; soundness of our non-null promises is checked on our own rows by `non_null_violation` (`DIVERGE_VALUE`, class `unsound-non-null`) |
 | timeout or panic | all semantics for the unanswered case | finding with manual oracle-side versus engine-side attribution |
 
 

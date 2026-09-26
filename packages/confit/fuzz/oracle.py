@@ -65,7 +65,13 @@ from dataclasses import field as dfield
 
 import duckdb
 import pyarrow as pa
-from confit.compare import dedup_names, multiset, sequence
+from confit.compare import (
+    dedup_names,
+    multiset,
+    non_null_violation,
+    same_type,
+    sequence,
+)
 from confit.oracle import Oracle
 
 from . import gen as G
@@ -516,8 +522,9 @@ def _schema_delta(duck: pa.Schema, ours: pa.Schema):
 def _type_delta(duck: pa.DataType, ours: pa.DataType) -> str | None:
     """None = equal; a class name = an unshipped feature's width (recursing
     into structs — a decimal lane inside struct_pack still classifies);
-    "diff"."""
-    if duck == ours:
+    "diff". Nullability is never a difference: it must be truthful, not
+    DuckDB's, and `run_case` checks it against our own rows instead."""
+    if same_type(duck, ours):
         return None
     # One arm per unshipped feature; delete when it ships (see note above).
     if pa.types.is_decimal(duck) and ours == pa.float64():
@@ -646,6 +653,12 @@ def run_case(case: G.Case) -> Verdict:
         return Verdict(
             "DIVERGE_VALUE", "backend-values", "cranelift != interpreter", tags
         )
+    # A non-null promise is ours to keep whatever DuckDB declares, so it is
+    # checked against our own rows, and like backend agreement it needs no
+    # DuckDB reading at all.
+    unsound = got_cl is not None and non_null_violation(sch_cl, got_cl)
+    if unsound:
+        return Verdict("DIVERGE_VALUE", "unsound-non-null", f"NULL at {unsound}", tags)
 
     # --- compare, against each reading -----------------------------------
     def against(duck) -> Verdict:
