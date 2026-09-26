@@ -151,9 +151,10 @@ Fixture B (`collide`): static `s(id BIGINT, w STRUCT(mean DOUBLE),
 Fixture C (`shared`): row and static BOTH carry `id BIGINT` and
 `w STRUCT(mean DOUBLE)`; static also has `z BIGINT`.
 
-Verdicts: MATCH = same answer or an equivalent refusal; SEV-n = the
-severity ladder (2 wrong value, 3 serve where DuckDB refuses, 4 refuse
-where DuckDB serves); MSG = both refuse, our reason is wrong.
+Verdicts: MATCH = same answer or an equivalent refusal; SEV-n = rung n of
+the [severity ladder](../oracle/08-the-severity-ladder.md) (1 trap where
+DuckDB serves, 2 wrong value, 3 serve where DuckDB refuses, 4 refuse where
+DuckDB serves); MSG = both refuse, our reason is wrong.
 
 ### a. unqualified reference, struct on the static side only (fixture A)
 
