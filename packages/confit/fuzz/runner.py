@@ -18,6 +18,7 @@ import datetime
 import hashlib
 import json
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -163,6 +164,40 @@ def blame(seed: int, kind: str, detail: str) -> dict:
     }
 
 
+# Refusal QUALITY, not prefix presence: the documented prefix is the weakest
+# property. A message that echoes source or AST text instead of saying which
+# construct is refused does not name it, and one with no remedy is not
+# actionable. Heuristics over message text, for reporting only; they back no
+# gate and no KPI.
+_PREFIXES = ("unsupported:", "parse error:", "bind error:")
+_ECHO = re.compile(
+    r"^(?:\w[\w ]*: )?(?:FROM \(SELECT |expression: )"  # echoed SQL
+    r"|\w\(\w+\(|\{ \w+: "  # a Rust Debug dump of the AST
+)
+_REMEDY = re.compile(
+    r"—|--|\((?:qualify|use|call|cast)\b|\b(?:instead|declare|spell|"
+    r"must be|make an?|use|call|project|qualify)\b"
+)
+
+
+def refusal_quality(msg: str) -> dict:
+    """`prefixed` (a documented prefix), `named` (says which construct rather
+    than echoing text) and `actionable` (says what to do) for one refusal,
+    plus `echo`: the message up to where its echo starts, or None."""
+    body = msg
+    for p in _PREFIXES:
+        if msg.startswith(p):
+            body = msg[len(p) :].lstrip()
+            break
+    m = _ECHO.search(body)
+    return {
+        "prefixed": msg.startswith(_PREFIXES),
+        "named": m is None,
+        "actionable": bool(_REMEDY.search(body)),
+        "echo": None if m is None else msg[: len(msg) - len(body) + m.end()] + "…",
+    }
+
+
 def _git(*args: str) -> str:
     try:
         return subprocess.run(  # noqa: S603 — fixed argv
@@ -264,6 +299,23 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
             r["klass"] for r in refused if r.get("oracle", "unknown") == outcome
         )
         for k, c in classes.most_common(15):
+            print(f"    {c:6}  {k}")
+
+    # Quality over every refusal, then the echoing classes by name: those are
+    # the refusal sites to give a construct name.
+    quality = [refusal_quality(r["detail"]) for r in refused]
+    print("\n== refusal quality ==")
+    print(f"  {'refusals':20} {len(refused):6}")
+    for key, label in (
+        ("prefixed", "documented prefix"),
+        ("named", "names the construct"),
+        ("actionable", "actionable"),
+    ):
+        print(f"  {label:20} {sum(q[key] for q in quality):6}")
+    echoes = collections.Counter(q["echo"] for q in quality if q["echo"])
+    if echoes:
+        print("  echoes source text instead of naming:")
+        for k, c in echoes.most_common(10):
             print(f"    {c:6}  {k}")
 
     cover = collections.Counter(

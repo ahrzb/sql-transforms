@@ -102,6 +102,18 @@ inconsistency, not permission to infer a fourth settled policy. See
 `packages/confit/docs/properties.md`, and
 `packages/confit/tests/test_corpus_replay.py:36`.
 
+**claim: refusal-quality-report.** The campaign reports refusal quality, not only
+prefix presence: of all refusals, how many carry a documented prefix, how many name the
+construct rather than echoing source or AST text, and how many say what the caller can
+do; the echoing families are listed by the text before the echo (for example
+`unsupported: FROM (SELECT …`, a derived table refused through a message that repeats
+the subquery). These are text heuristics for reporting only: they back no gate, and no
+blocking KPI is adopted from them.
+
+*Enforced-by:* `fuzz.runner.refusal_quality` and `fuzz.runner.report`.
+*Evidence:* `packages/confit/tests/test_fuzz_report.py::test_refusal_quality_reads_naming_and_actionability`
+and `::test_refusal_quality_is_reported_as_shares_of_all_refusals`.
+
 **claim: reason-code-placement.** Audit classifications — codes such as
 `unspecified-order`, `tie-break`, `fp-association`, `session-dependent`, and
 `oracle-errored` — remain internal report and ledger vocabulary. A public diagnostic

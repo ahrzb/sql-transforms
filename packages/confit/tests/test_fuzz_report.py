@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+import pytest  # noqa: E402
 from fuzz import runner  # noqa: E402
 
 
@@ -140,3 +141,72 @@ def test_unresolved_is_counted_apart_from_agreement_and_mismatch(tmp_path, capsy
         "SKIP": "unresolved",
         "TIMEOUT": "unresolved",
     }
+
+
+@pytest.mark.parametrize(
+    ("msg", "prefixed", "named", "actionable"),
+    [
+        ("unsupported: DISTINCT", True, True, False),
+        ("bind error: ambiguous column 'c0' in JOIN ON (qualify it)", True, True, True),
+        (
+            "udf 'udf0': a width-1 list return is a scalar — declare the element "
+            "type rather than pa.list_(t, 1)",
+            False,
+            True,
+            True,
+        ),
+        (
+            "unsupported: FROM (SELECT 2.5e0 AS o0 FROM __THIS__) AS sub",
+            True,
+            False,
+            False,
+        ),
+        ("unsupported: expression: a IN (SELECT b FROM s)", True, False, False),
+        (
+            "unsupported: join type FullOuter(On(Nested(BinaryOp { left: "
+            'Identifier(Ident { value: "c0", quote_style: None',
+            True,
+            False,
+            False,
+        ),
+        (
+            "unsupported: static table 's0' column 'c0' has type timestamp[us], which "
+            "this engine does not serve — project a served column instead",
+            True,
+            True,
+            True,
+        ),
+    ],
+)
+def test_refusal_quality_reads_naming_and_actionability(
+    msg, prefixed, named, actionable
+):
+    q = runner.refusal_quality(msg)
+    assert (q["prefixed"], q["named"], q["actionable"]) == (prefixed, named, actionable)
+
+
+def test_refusal_quality_is_reported_as_shares_of_all_refusals(tmp_path, capsys):
+    results = [
+        _r(1, "REFUSED", "unsupported: DISTINCT", "serves", "unsupported: DISTINCT"),
+        _r(2, "REFUSED", "x", "serves", "unsupported: FROM (SELECT 1 AS o0) AS sub"),
+        _r(
+            3,
+            "REFUSED",
+            "y",
+            "rejects",
+            "bind error: ambiguous column 'c0' (qualify it)",
+        ),
+        _r(4, "AGREE"),
+    ]
+    runner.report(results, tmp_path / "f.jsonl")
+    sec = _section(capsys.readouterr().out, "refusal quality")
+    assert sec.splitlines()[:4] == [
+        f"  {'refusals':20} {3:6}",
+        f"  {'documented prefix':20} {3:6}",
+        f"  {'names the construct':20} {2:6}",
+        f"  {'actionable':20} {1:6}",
+    ]
+    assert sec.splitlines()[4:] == [
+        "  echoes source text instead of naming:",
+        f"    {1:6}  unsupported: FROM (SELECT …",
+    ]
