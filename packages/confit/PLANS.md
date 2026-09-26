@@ -7,8 +7,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Next
 
 1. **Small surface wins DuckDB serves and we refuse.**
-   - `BOOLEAN` vs `VARCHAR` comparison (`b = 'true'`): bind error here, DuckDB
-     casts.
    - Mixed-type join keys (`BIGINT` vs `VARCHAR` under `USING`/`NATURAL`/`ON`):
      `cannot join i64 with str` here, DuckDB casts.
    - `IS [NOT] DISTINCT FROM` as an expression: refused (named) although the

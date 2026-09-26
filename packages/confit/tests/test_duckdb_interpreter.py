@@ -1797,3 +1797,56 @@ def test_a_constant_try_cast_folds_and_spares_its_sibling_differential():
         {"x": "float"},
         [{"x": 2.0}, {"x": 0.5}],
     )
+
+
+# DuckDB's VARCHAR -> BOOLEAN parse, measured: exactly true/t/1/yes/y and
+# false/f/0/no/n, ASCII case-insensitive, no trimming; the rest fail.
+_BOOL_STRINGS = [
+    "true", "TRUE", "tRuE", "t", "T", "1", "yes", "YES", "y", "Y",
+    "false", "FALSE", "f", "F", "0", "no", "NO", "n", "N",
+    "on", "off", "", " true", "true ", "tr", "01", "2", "1.0", "ｔrue",
+]  # fmt: skip
+
+
+def test_try_cast_varchar_to_boolean_differential():
+    duck_check(
+        "SELECT s, TRY_CAST(s AS BOOLEAN) AS b FROM __THIS__",
+        {"s": "str?"},
+        [{"s": v} for v in [*_BOOL_STRINGS, None]],
+    )
+
+
+def test_cast_varchar_to_boolean_differential_and_trap():
+    good = _BOOL_STRINGS[:19]
+    duck_check(
+        "SELECT s, CAST(s AS BOOLEAN) AS b, s::BOOLEAN AS c FROM __THIS__",
+        {"s": "str?"},
+        [{"s": v} for v in [*good, None]],
+    )
+    # One unconvertible row: both sides raise.
+    sql = "SELECT CAST(s AS BOOLEAN) AS b FROM __THIS__"
+    with pytest.raises(Exception, match="(?i)convert"):
+        _legs(sql, {"s": "str"}, [{"s": "true"}, {"s": "on"}], None)
+
+
+def test_boolean_against_varchar_casts_the_varchar_differential():
+    duck_check(
+        "SELECT b = 't' AS e, 'no' <> b AS n, b < 'true' AS l,"
+        " b IN ('true', 'f') AS i, b = s AS c FROM __THIS__",
+        {"b": "bool?", "s": "str?"},
+        [
+            {"b": True, "s": "yes"},
+            {"b": False, "s": "0"},
+            {"b": None, "s": "T"},
+            {"b": True, "s": None},
+        ],
+    )
+
+
+def test_boolean_against_an_unconvertible_constant_refuses_at_build():
+    with pytest.raises(ValueError, match="to BOOLEAN"):
+        DuckDBInferFn(
+            "SELECT b = 'x' AS e FROM __THIS__",
+            row_tables={"__THIS__": _row_schema({"b": "bool"})},
+            static_tables={},
+        )
