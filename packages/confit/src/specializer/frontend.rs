@@ -8579,15 +8579,6 @@ fn ast_int_literal(e: &SqlExpr) -> Option<i64> {
     }
 }
 
-/// The wider of two integer widths — family unification's promotion rule.
-fn wider_int(a: Ty, b: Ty) -> Ty {
-    if width_rank(a) >= width_rank(b) {
-        a
-    } else {
-        b
-    }
-}
-
 /// Whether `v` is representable at width `t` (always true for lane types).
 fn fits_width(t: Ty, v: i64) -> bool {
     t.int_range().map_or(true, |(lo, hi)| (lo..=hi).contains(&v))

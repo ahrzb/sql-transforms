@@ -2463,7 +2463,7 @@ impl<'a> FB<'a> {
                         dst: lo,
                         a: l.val,
                     });
-                    let mut any = |words: &[&str], this: &mut Self| {
+                    let any = |words: &[&str], this: &mut Self| {
                         let mut acc: Option<Value> = None;
                         for w in words {
                             let c = this.const_lit(Lit::Str((*w).to_string()));

@@ -19,7 +19,6 @@ use super::{unsup, DialectError};
 /// column cannot be addressed unambiguously here (duplicate name at a
 /// name-addressed boundary) — referencing it refuses by name.
 pub(crate) struct ColRef {
-    pub name: String,
     pub sql: Option<String>,
 }
 
@@ -46,7 +45,6 @@ pub(crate) fn name_refs<P: ExprPrinter + ?Sized>(
                 .filter(|(m, _)| m.eq_ignore_ascii_case(n))
                 .count();
             ColRef {
-                name: n.clone(),
                 sql: (dups == 1).then(|| p.quote_ident(n)),
             }
         })
@@ -69,7 +67,6 @@ fn qualified_refs<P: ExprPrinter + ?Sized>(
                 .filter(|(m, _)| m.eq_ignore_ascii_case(n))
                 .count();
             ColRef {
-                name: n.clone(),
                 sql: (dups == 1)
                     .then(|| format!("{}.{}", p.quote_ident(alias), p.quote_ident(n))),
             }
