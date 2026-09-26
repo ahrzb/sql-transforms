@@ -5159,9 +5159,6 @@ impl Binder<'_> {
         if inner.ty == to && !trying {
             return Ok(inner);
         }
-        if inner.ty == Ty::Str && to == Ty::I1 {
-            return Err(unsup("CAST VARCHAR -> BOOLEAN"));
-        }
         // DECIMAL -> DOUBLE is served (DuckDB's div/mod algorithm); every
         // other target refuses by name — served as doubles they would be
         // wrong values.
@@ -5186,6 +5183,7 @@ impl Binder<'_> {
                     t if t.is_int() => super::exec::kernels::duck_stoi(s)
                         .is_some_and(|v| fits_width(t, v)),
                     Ty::F64 => s.trim_ascii().parse::<f64>().is_ok(),
+                    Ty::I1 => duck_stob(s).is_some(),
                     _ => true,
                 };
                 if !ok {
@@ -5477,6 +5475,32 @@ impl Binder<'_> {
         refuse_dec(op, e.ty, self.dec_col_name(e).as_deref())
     }
 
+    /// VARCHAR -> BOOLEAN for a comparison operand. A constant that cannot
+    /// convert is DuckDB's plan-time conversion error, refused by name as
+    /// the constant CAST refuses it.
+    fn str_to_bool(&self, e: SExpr) -> Result<SExpr, PrepareError> {
+        if let SKind::Lit(Lit::Str(s)) = &e.kind {
+            if self.in_guarded.get() == 0 && duck_stob(s).is_none() {
+                return Err(PrepareError::Bind(format!(
+                    "constant cast fails on every row: '{s}' to BOOLEAN -- DuckDB \
+                     errors at plan time"
+                )));
+            }
+        }
+        if matches!(e.kind, SKind::NullOf) {
+            return Ok(null_of(Ty::I1));
+        }
+        let nullable = e.nullable;
+        Ok(SExpr {
+            kind: SKind::Cast {
+                inner: Box::new(e),
+                trying: false,
+            },
+            ty: Ty::I1,
+            nullable,
+        })
+    }
+
     /// `l IS [NOT] DISTINCT FROM r`: NULL-safe equality, never NULL
     /// (measured). The equality itself is `=`'s, with its type rules; the
     /// NULL cases wrap it: both NULL are not distinct, one NULL is.
@@ -5559,6 +5583,11 @@ impl Binder<'_> {
             // the integer lane. Against DOUBLE it refuses at bind, below.
             (Ty::I1, y) if y.is_int() => (bool_to_int(a), b),
             (x, Ty::I1) if x.is_int() => (a, bool_to_int(b)),
+            // BOOLEAN vs VARCHAR: DuckDB casts the VARCHAR to BOOLEAN
+            // (measured: `b = 't'` serves; `b = 'x'` is a conversion error
+            // even over zero rows; a column that fails traps per row).
+            (Ty::I1, Ty::Str) => (a, self.str_to_bool(b)?),
+            (Ty::Str, Ty::I1) => (self.str_to_bool(a)?, b),
             (x, y) => {
                 return Err(PrepareError::Bind(format!(
                     "cannot compare {} with {}",
@@ -8525,6 +8554,16 @@ fn using_equalities(right: &str, names: &[String]) -> Result<SqlExpr, PrepareErr
 
 /// A BOOLEAN as the INTEGER DuckDB casts it to for a comparison: 0 or 1,
 /// NULL staying NULL. A typed NULL retypes, like `promote_f64`.
+/// DuckDB's VARCHAR -> BOOLEAN parse (measured): true/t/1/yes/y and
+/// false/f/0/no/n, ASCII case-insensitive, no trimming.
+fn duck_stob(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" | "t" | "1" | "yes" | "y" => Some(true),
+        "false" | "f" | "0" | "no" | "n" => Some(false),
+        _ => None,
+    }
+}
+
 fn bool_to_int(e: SExpr) -> SExpr {
     if matches!(e.kind, SKind::NullOf) {
         return SExpr {
