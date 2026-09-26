@@ -229,3 +229,31 @@ def test_an_unreached_width_is_not_reported_as_support(tmp_path, capsys):
     runner.report([_r(1, "AGREE")], tmp_path / "f.jsonl")
     sec = _section(capsys.readouterr().out, "unshipped features")
     assert "decimals" in sec and "not reached" in sec
+
+
+def test_findings_and_coverage_are_what_the_contract_says(tmp_path, capsys):
+    """Observable, not tuple membership: one verdict of every kind through
+    the report. Every mismatch and every unanswered case reaches the findings
+    file; agreement, refusal and an unshipped width never do; and only AGREE
+    feeds the construct-coverage histogram (OPT_EMULATED is a finding, never
+    coverage)."""
+    from fuzz import oracle
+
+    kinds = list(oracle.KINDS) + ["TIMEOUT", "PANIC"]
+    results = [_r(i, k, "k", tags=[f"tag-{k}"]) for i, k in enumerate(kinds)]
+    out = tmp_path / "f.jsonl"
+    runner.report(results, out)
+    written = {json.loads(x)["kind"] for x in out.read_text().splitlines()}
+    assert written == {
+        "DIVERGE_VALUE",
+        "DIVERGE_BUILD",
+        "DIVERGE_TRAP",
+        "DIVERGE_OPT",
+        "OPT_EMULATED",
+        "BUILD_EXC",
+        "SKIP",
+        "TIMEOUT",
+        "PANIC",
+    }
+    cover = _section(capsys.readouterr().out, "AGREE coverage by construct")
+    assert cover.split() == ["1", "tag-AGREE"]

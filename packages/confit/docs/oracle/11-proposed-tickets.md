@@ -83,7 +83,7 @@ They are not owner-decision blockers for the settled contract.
 | **ticket: per-kind-abstention-report** | Choose a reporting format for unanswered cases, preserve SQL before execution, and attribute timeout side; audit codes remain internal |
 | **ticket: convert-unrunnable-pins** | Inventory and convert old pins that cannot be replayed mechanically; do not rewrite history as a fresh run |
 | **ticket: mined-corpus-stamp** | Add provenance during future corpus mining; existing optimizer-on expectations do not become optimizer-off evidence |
-| **ticket: verdict-tuple-test** | Historical name for missing finding/coverage checks; prefer observable reporting regressions over assertions about tuple membership |
+| ~~**ticket: verdict-tuple-test**~~ done | Historical name for missing finding/coverage checks; prefer observable reporting regressions over assertions about tuple membership |
 
 ## Closed or superseded mechanisms
 

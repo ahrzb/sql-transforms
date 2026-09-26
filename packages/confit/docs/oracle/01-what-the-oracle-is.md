@@ -81,8 +81,8 @@ reported as `DIVERGE_OPT`, not accepted as agreement with both surfaces.
 membership.
 *Evidence:* emission is covered by
 `packages/confit/tests/test_fuzz_smoke.py::test_verdicts_cover_the_contract_and_reproduce`.
-No test asserts `fuzz.runner.INTERESTING` membership, so it remains **Unverified**; see
-**ticket: verdict-tuple-test**.
+Findings membership is checked by what the report writes:
+`packages/confit/tests/test_fuzz_report.py::test_findings_and_coverage_are_what_the_contract_says`.
 
 ## Known identity-enforcement gaps
 

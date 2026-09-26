@@ -64,8 +64,8 @@ exclusion from `COVERED`.
 *Evidence:* emission is tested by `test_verdicts_cover_the_contract_and_reproduce`;
 the stopping rule by
 `packages/confit/tests/test_fuzz_smoke.py::test_opt_emulated_is_final_and_no_self_leg_replaces_it`.
-Runner tuple membership remains **Unverified**: `tests/test_fuzz_report.py` drives
-`fuzz.runner.report`, but no test asserts `INTERESTING` or `COVERED` membership.
+That it is written as a finding and never counted as coverage is observed through the
+report by `packages/confit/tests/test_fuzz_report.py::test_findings_and_coverage_are_what_the_contract_says`.
 
 ## Construction refusal versus runtime trap
 
@@ -179,8 +179,9 @@ section because values were not compared, and `OPT_EMULATED` remains a finding.
 
 *Enforced-by:* `fuzz.runner.INTERESTING`, `COVERED`, and `report`.
 *Evidence:* oracle verdict reachability and `UNSHIPPED` behavior are covered in
-`packages/confit/tests/test_fuzz_smoke.py`; runner membership remains **Unverified** under
-**ticket: verdict-tuple-test**.
+`packages/confit/tests/test_fuzz_smoke.py`; which kinds reach `findings.jsonl` and which
+feed coverage is observed through the report by
+`packages/confit/tests/test_fuzz_report.py::test_findings_and_coverage_are_what_the_contract_says`.
 
 **claim: logged-fallback.** If a checker cannot evaluate its strongest condition,
 it may use a weaker check only with an explicit tag. The current legacy example is
