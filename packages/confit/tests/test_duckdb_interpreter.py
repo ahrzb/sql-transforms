@@ -1803,7 +1803,8 @@ def test_is_not_distinct_from_is_null_safe_equality_differential():
     duck_check(
         "SELECT a IS DISTINCT FROM b AS d, a IS NOT DISTINCT FROM b AS nd,"
         " x IS NOT DISTINCT FROM y AS fx, a IS NOT DISTINCT FROM x AS mixed,"
-        " a IS NOT DISTINCT FROM NULL AS an, NULL IS DISTINCT FROM NULL AS nn FROM __THIS__",
+        " a IS NOT DISTINCT FROM NULL AS an, NULL IS DISTINCT FROM NULL AS nn"
+        " FROM __THIS__",
         {"a": "int?", "b": "int?", "x": "float?", "y": "float?"},
         [
             {"a": 1, "b": 1, "x": float("nan"), "y": float("nan")},
