@@ -2448,10 +2448,56 @@ impl<'a> FB<'a> {
 
         match (from, to) {
             // String parses: shared shape, differing parse op.
-            (Ty::Str, Ty::I64) | (Ty::Str, Ty::F64) => {
+            (Ty::Str, Ty::I64) | (Ty::Str, Ty::F64) | (Ty::Str, Ty::I1) => {
                 let ok = self.fresh();
                 let parsed = self.fresh();
-                if to == Ty::I64 {
+                if to == Ty::I1 {
+                    // DuckDB's TryCastToBoolean, measured: exactly true/t/1/
+                    // yes/y and false/f/0/no/n, ASCII case-insensitive, no
+                    // trimming. Unicode lowering is equivalent here: no
+                    // non-ASCII codepoint lowers to a single ASCII letter of
+                    // these words.
+                    let lo = self.fresh();
+                    self.inst(Inst::Str1 {
+                        op: StrOp1::Lower,
+                        dst: lo,
+                        a: l.val,
+                    });
+                    let mut any = |words: &[&str], this: &mut Self| {
+                        let mut acc: Option<Value> = None;
+                        for w in words {
+                            let c = this.const_lit(Lit::Str((*w).to_string()));
+                            let eq = this.fresh();
+                            this.inst(Inst::Cmp {
+                                pred: CmpPred::Eq,
+                                ty: Ty::Str,
+                                dst: eq,
+                                a: lo,
+                                b: c,
+                            });
+                            acc = Some(match acc {
+                                Some(x) => this.bin(BinOp::Or, x, eq),
+                                None => eq,
+                            });
+                        }
+                        acc.expect("non-empty word list")
+                    };
+                    let is_t = any(&["true", "t", "1", "yes", "y"], self);
+                    let is_f = any(&["false", "f", "0", "no", "n"], self);
+                    let either = self.bin(BinOp::Or, is_t, is_f);
+                    self.inst(Inst::Bin {
+                        op: BinOp::And,
+                        dst: ok,
+                        a: either,
+                        b: either,
+                    });
+                    self.inst(Inst::Bin {
+                        op: BinOp::And,
+                        dst: parsed,
+                        a: is_t,
+                        b: is_t,
+                    });
+                } else if to == Ty::I64 {
                     self.inst(Inst::StoiOpt {
                         flag: ok,
                         dst: parsed,
@@ -2546,6 +2592,8 @@ impl<'a> FB<'a> {
                                 _ => "INT64",
                             }
                         )
+                    } else if to == Ty::I1 {
+                        "Conversion Error: Could not convert string to BOOL".to_string()
                     } else {
                         "Conversion Error: could not cast VARCHAR to DOUBLE".to_string()
                     },
