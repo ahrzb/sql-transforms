@@ -6,10 +6,13 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **Generator name collisions** (reading N=3, gap: generator-name-collisions).
-   `fuzz/gen.py` names row and static columns alike (`c0`, `c1`), so 29 of 34
-   struct-leaf ON keys are queries DuckDB rejects as ambiguous. Qualify the row
-   side of a generated ON key, or draw static names from a disjoint pool.
+1. **gap: bench-baseline-flip.** `spec` is 1.2–1.7× slower than the
+   `python_dict` twin at n=64 (readings N=2, N=3). Bisect `bench_serving`
+   against `a6fa318`: a clean bisect leaves only the baseline's change of
+   identity; a regression gets fixed.
+2. **Actionable refusals.** 53% of refusals say what to do (reading N=3).
+   Walk the largest classes that do not (derived tables, CTEs, DISTINCT,
+   ORDER BY, row limits) and add the concrete alternative where one exists.
 
 ## Waiting on the owner
 
@@ -19,15 +22,17 @@ records in `docs/decisions/open/`. Remove an item when it lands.
   user-visible behavior, drops the corpus floor by the table-function matches
   it serves, and touches `sql_transform/_projection.py`'s documented `backend`
   values and the fuzzer's `static_agg` arm and `constant-*` modes.
-- `docs/decisions/open/`: next query classes, C1 depth, native-transform
-  parity bounds.
+- `docs/decisions/open/`: next query classes (reading N=3 ranks derived
+  tables first: 144 of 525 refusals of queries DuckDB answers), C1 depth,
+  native-transform parity bounds.
 
 ## Query classes (large; order is the owner's call)
 
 - **Row-local CTEs, scalar/correlated/`IN` subqueries, derived tables, set
   operations.** Blanket bans today; only batch-dependent forms are out of
-  scope. `WITH` is the largest refusal class the generator reaches (86 of 526
-  refusals of queries DuckDB answers, 2026-09-26).
+  scope. Derived tables (144) and `WITH` (87) are the two largest refusal
+  classes of queries DuckDB answers on the generated grammar (reading N=3,
+  of 525).
 - **Per-row aggregation over matched static rows** (correlated scalar
   subquery; `JOIN` + `GROUP BY` under `shape='many'`). Needs an accumulator
   over the `many` walk, a ruling on when `JOIN`+`GROUP BY` is per-row, and the
