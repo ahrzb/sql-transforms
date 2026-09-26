@@ -26,8 +26,7 @@ SCHEMA = pa.schema([pa.field("a", pa.int64(), nullable=False)])
 
 def _case():
     # the minimal Case surface _extra_legs touches: rows for the
-    # infer_rows-vs-arrow leg, a query body the sklearn leg never reaches
-    # (ests={} short-circuits it)
+    # infer_rows-vs-arrow leg and a query body
     return SimpleNamespace(
         rows=ROWS,
         row_schema={"a": "int"},
@@ -70,14 +69,14 @@ def test_a_correct_engine_passes_the_order_legs():
     fn = _fn()
     table = pa.Table.from_pylist(ROWS, schema=SCHEMA)
     got = fn.infer_arrow(table).to_pylist()
-    assert oracle._extra_legs(fn, _case(), table, got, {}, []) is None
+    assert oracle._extra_legs(fn, _case(), table, got, []) is None
 
 
 def test_a_scrambled_batch_is_caught_as_an_order_bug():
     fn = _Scrambled(_fn())
     table = pa.Table.from_pylist(ROWS, schema=SCHEMA)
     got = fn.infer_arrow(table).to_pylist()
-    v = oracle._extra_legs(fn, _case(), table, got, {}, [])
+    v = oracle._extra_legs(fn, _case(), table, got, [])
     assert v is not None, "the order legs accepted a permuted batch"
     assert "order" in v.klass or v.klass == "reversal", v.klass
     # and the bug really was order-only: the multiset never differed

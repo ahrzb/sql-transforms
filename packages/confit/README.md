@@ -49,42 +49,39 @@ silently misaligned batch.
 
 ## Fitted models
 
-A fitted tree ensemble is a transform like any other — constructed, passed in
-`udfs=`, and called by its own name with the instance id first. The only
-difference is invisible from SQL: it is scored by a native instruction with no
-Python on the row path.
+A fitted tree ensemble is a transform like any other: an object passed in
+`udfs=` and called by its own name with the instance id first. What makes it
+native is one method, `tree_tables()`, returning `(nodes, models,
+compare_grid)` — two Arrow tables (every split and leaf of every tree, and
+one header per model: base, `sum`/`mean`, `identity`/`sigmoid`) plus the
+threshold grid (`"float32"` or `"float64"`). The engine then scores it with
+a native instruction, with no Python on the row path.
 
 ```python
-from sql_transform import TreeBasedTransform
+class Trees:
+    name = "score"
+    takes = pa.schema([("price", pa.float64()), ("sqft", pa.float64())])
+    returns = pa.float64()
+    instances = {0: ..., 1: ...}           # model ids, leading argument
+
+    def tree_tables(self):
+        return nodes, models, "float32"    # pa.Table, pa.Table, grid
 
 fn = DuckDBInferFn(
     "SELECT score(p.est, t.price, t.sqft) AS p "
     "FROM __THIS__ AS t LEFT JOIN params AS p ON t.country = p.country",
-    row_tables={
-        "__THIS__": pa.schema([("price", pa.float64()), ("sqft", pa.float64())])
-    },
+    row_tables={"__THIS__": row_schema},
     static_tables={"params": params},
-    udfs=[
-        TreeBasedTransform(
-            "score",
-            instances={0: fit_de, 1: fit_fr},
-            takes=pa.schema([("price", pa.float64()), ("sqft", pa.float64())]),
-        )
-    ],
+    udfs=[Trees()],
 )
 ```
 
-Parity with sklearn is asserted at `==` on raw doubles, not at a tolerance,
-and it holds on quantized features (prices, percentages, decimal grids) as
-well as continuous ones — sklearn splits on `float32(x) <= threshold`, so the
-packing moves each threshold to the double that reproduces that comparison
-exactly. The packed thresholds therefore differ from `tree_.threshold` on
-purpose; the engine stays float64 throughout.
-
-`DecisionTreeRegressor`, `RandomForestRegressor`, `ExtraTreesRegressor` and
-`GradientBoostingRegressor` pack; everything else refuses by name. Another
-library plugs in by exposing `tree_tables()` on its own transform class — the
-engine never sees sklearn. See
+Confit knows no ML library. A packer supplies the tables: sql-transform's
+`TreeBasedTransform` packs sklearn's `DecisionTreeRegressor`,
+`RandomForestRegressor`, `ExtraTreesRegressor` and
+`GradientBoostingRegressor`, and its own tests hold sklearn parity at `==` on
+raw doubles. The dependency runs one way — sql-transform builds on confit,
+never the reverse (`tests/test_package_boundary.py`). See
 [docs/serving-fitted-models.md](../../docs/serving-fitted-models.md).
 
 ## Where it wins

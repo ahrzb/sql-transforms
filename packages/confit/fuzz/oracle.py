@@ -4,8 +4,9 @@ The contract under test: confit either matches DuckDB bit-for-bit — with the
 same UDFs registered — or refuses at build with a named ValueError. Anything
 else is a finding. Extra legs beyond the three-way comparison: infer_rows vs
 infer_arrow, hostile Arrow input (sliced / chunked / empty), single-row vs
-batch concatenation, rebuild determinism, and sklearn as a second ground
-truth on tree cases.
+batch concatenation, and rebuild determinism. Tree cases use fuzz.trees:
+random models in the engine's tree protocol, with a reference walk as the
+DuckDB-side UDF (sklearn parity is sql-transform's gate).
 
 # TWO DuckDB readings, and the BASELINE is the optimizer-off one
 
@@ -78,7 +79,7 @@ from confit.compare import (
 )
 from confit.oracle import Oracle
 
-from . import coverage
+from . import coverage, trees
 from . import gen as G
 
 KINDS = (
@@ -289,55 +290,6 @@ def make_udf(spec: G.UdfSpec):
             return tuple(_lane_val(acc + bias, t, i) for i, (_, t) in enumerate(lanes))
 
     return U()
-
-
-def make_tree(spec: G.TreeSpec, seed: int):
-    """A fitted sklearn ensemble wrapped as a TreeBasedTransform — the same
-    object confit routes to the native kernel and DuckDB calls as a python
-    UDF, with `estimators[iid].predict` as the second ground truth."""
-    import numpy as np
-    from sql_transform import TreeBasedTransform
-
-    rng = np.random.RandomState(seed % (2**31))
-    n = 40
-    x = np.round(rng.uniform(-4, 4, size=(n, spec.n_features)), 2)
-    # Integer features draw from a boundary pool (the 2**53 grid lesson) —
-    # randint cannot span the full i64 range portably.
-    pool = np.array(
-        [0, 1, -1, 7, -13, 100, 2**31 - 1, 2**53 - 1, 2**53, 2**53 + 1, -(2**53) - 1],
-        dtype=np.float64,
-    )
-    for i in spec.int_features:
-        x[:, i] = rng.choice(pool, size=n)
-    y = rng.uniform(-10, 10, size=n)
-
-    def fit(i: int):
-        from sklearn.ensemble import (
-            GradientBoostingRegressor,
-            RandomForestRegressor,
-        )
-        from sklearn.tree import DecisionTreeRegressor
-
-        cls = {
-            "dtr": DecisionTreeRegressor,
-            "rf": RandomForestRegressor,
-            "gbr": GradientBoostingRegressor,
-        }[spec.kind]
-        kw = {"max_depth": spec.depth, "random_state": i}
-        if spec.kind != "dtr":
-            kw["n_estimators"] = 3
-        est = cls(**kw)
-        est.fit(x, y + i)  # each instance is a genuinely different model
-        return est
-
-    ests = {i: fit(i) for i in range(spec.instances)}
-    takes = pa.schema(
-        [
-            (f"f{i}", pa.int64() if i in spec.int_features else pa.float64())
-            for i in range(spec.n_features)
-        ]
-    )
-    return TreeBasedTransform(name="trees", instances=ests, takes=takes), ests
 
 
 def _scalar_form(obj):
@@ -565,9 +517,8 @@ def run_case(case: G.Case) -> Verdict:
     schema = _arrow_schema(case.row_schema)
     statics = {n: _arrow_table(sch, rows) for n, (sch, rows) in case.statics.items()}
     udf_objs = [make_udf(u) for u in case.udfs]
-    ests = {}
     if case.tree is not None:
-        tree_obj, ests = make_tree(case.tree, case.seed)
+        tree_obj = trees.make_tree(case.tree, case.seed)
         udf_objs.append(tree_obj)
 
     # `case.output` is not forwarded: dict rows are the only output mode, so
@@ -779,11 +730,11 @@ def run_case(case: G.Case) -> Verdict:
     if trap_cl is not None or static_only:
         return v  # the boundary legs all need a non-trapping row run
     _phase("confit:legs")
-    extra = _extra_legs(fn_cl, case, table, got_cl, ests, v.tags)
+    extra = _extra_legs(fn_cl, case, table, got_cl, v.tags)
     return extra if extra is not None else v
 
 
-def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
+def _extra_legs(fn, case, table, got, tags) -> Verdict | None:
     """The boundary checks a plain differential run misses.
 
     `got` is the primary run's rows, which always came from infer_arrow.
@@ -875,42 +826,7 @@ def _extra_legs(fn, case, table, got, ests, tags) -> Verdict | None:
                 tags,
             )
 
-    # sklearn is a second ground truth on the plain tree template
-    if ests and _plain_tree_shape(case):
-        import numpy as np
-
-        cols = list(case.row_schema)
-        out = got
-        for i, r in enumerate(case.rows):
-            iid = r[cols[0]]
-            feats = [r[c] for c in cols[1 : 1 + case.tree.n_features]]
-            if iid in ests and all(f is not None for f in feats):
-                x = np.asarray([feats], dtype=np.float64)
-                p = float(ests[iid].predict(x)[0])
-                o = out[i][case.query.body.items[0][1]]
-                if o is None or abs(o - p) > 1e-9:
-                    return Verdict(
-                        "DIVERGE_VALUE",
-                        "sklearn",
-                        f"row {i}: kernel {o} != sklearn {p}",
-                        tags,
-                    )
     return None
-
-
-def _plain_tree_shape(case: G.Case) -> bool:
-    b = case.query.body
-    return (
-        case.tree is not None
-        and not case.query.ctes
-        and not b.joins
-        and b.where is None
-        and len(b.items) == 1
-        and isinstance(b.items[0][0], G.Call)
-        and b.items[0][0].name == "trees"
-        and b.items[0][1] is not None
-        and all(isinstance(a, G.Col) for a in b.items[0][0].args)
-    )
 
 
 def _refusal_class(msg: str) -> str:

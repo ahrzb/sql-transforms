@@ -340,9 +340,7 @@ def test_rejections_are_build_time_and_named():
 
 
 def _width1_list_udf():
-    from sql_transform._udf import UDF
-
-    class U(UDF):
+    class U:
         name = "u"
         takes = pa.schema([("x", pa.int64())])
         returns = pa.list_(pa.int64(), 1)

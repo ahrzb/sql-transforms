@@ -2,7 +2,7 @@
 
 The contract, restated with one parameter: serve bit-for-bit identical to
 DuckDB *with the same udfs registered* (`con.create_function`), or refuse.
-The udf objects here are duck-typed to the sql_transform protocol (name /
+The udf objects here are duck-typed to the UDF protocol confit reads (name /
 takes / returns / optional `instances` marking the implicit leading i64
 id / scalar ``__call__`` returning a tuple or None) — deliberately defined
 in-file, not imported: this package's contract is the protocol, not the
@@ -16,7 +16,6 @@ import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn, compare
 from confit.oracle import Oracle
-from sql_transform._udf import UDF
 from test_duckdb_interpreter import _row_schema, static
 
 
@@ -66,7 +65,7 @@ def test_an_unnamed_width_k_return_honours_its_lane_type(lane, vals):
     said, so an int64 lane came back rounded through a double while the engine
     served the integer."""
 
-    class Pack(UDF):
+    class Pack:
         name = "pk"
         takes = pa.schema([("x", pa.float64())])
         returns = pa.list_(lane, 2)
@@ -91,7 +90,7 @@ def test_a_width_one_list_return_refuses():
     list crossed as its element. There is no 1-element list boundary to serve
     it on and no reason to build one — `pa.float64()` is what it means."""
 
-    class One(UDF):
+    class One:
         name = "one"
         takes = pa.schema([("x", pa.float64())])
         returns = pa.list_(pa.float64(), 1)
@@ -196,7 +195,7 @@ class Shout:
 def _lanes(obj):
     """`(field names, lane types)` off a declared `returns` — the same reading
     the engine does, spelled here so this package's tests exercise the arrow
-    protocol rather than importing sql_transform's implementation of it."""
+    protocol rather than importing any package's implementation of it."""
     r = obj.returns
     if pa.types.is_struct(r):
         f = [r.field(i) for i in range(r.num_fields)]
