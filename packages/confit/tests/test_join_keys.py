@@ -614,3 +614,26 @@ def test_a_minted_presence_lane_names_itself_at_the_arrow_boundary():
 # boundary, so an unjoined query over a struct-carrying row model must
 # marshal exactly the lanes it did before -- is pinned on `program.in_cols`
 # itself, in specializer/tests.rs (`presence_lanes_are_minted_lazily`).
+
+
+def test_a_leafless_struct_key_refuses_a_non_struct_input_on_both_paths():
+    # A struct with no leaf lanes is read only through its presence lane, so
+    # nothing else would notice a scalar or a list where the schema declares
+    # the struct: it used to count as a present node and join.
+    wt = pa.struct([])
+    row = pa.schema([pa.field("w", wt), pa.field("z", pa.int64())])
+    s = pa.table({"w": pa.array([{}], wt), "v": pa.array([7], pa.int64())})
+    fn = DuckDBInferFn(
+        "SELECT z, v FROM __THIS__ NATURAL JOIN s",
+        row_tables={"__THIS__": row},
+        static_tables={"s": s},
+    )
+    good = pa.table({"w": pa.array([{}, None], wt), "z": [1, 2]})
+    assert fn.infer_arrow(good).to_pylist() == [{"z": 1, "v": 7}]
+    assert fn.infer_rows([{"w": {}, "z": 1}, {"w": None, "z": 2}]) == [{"z": 1, "v": 7}]
+    bad = pa.table({"w": pa.array([5, None], pa.int64()), "z": [1, 2]})
+    with pytest.raises(ValueError, match="the schema declares a struct"):
+        fn.infer_arrow(bad)
+    for v in (5, "x", [1]):
+        with pytest.raises(ValueError, match="the schema declares a struct"):
+            fn.infer_rows([{"w": v, "z": 1}])

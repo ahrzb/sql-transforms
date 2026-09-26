@@ -228,6 +228,15 @@ pub fn ingest<'py>(
         // check does not apply to it.
         let ct = match lane.kind {
             LaneKind::Present => {
+                // The node must BE a struct: a struct with no leaf lanes has
+                // no other lane whose walk would refuse a wrong column.
+                let ty: String = arr.getattr("type")?.str()?.extract()?;
+                if !ty.starts_with("struct<") {
+                    return Err(err(format!(
+                        "infer_arrow: column '{}' is {ty}, the schema declares a struct",
+                        lane.name
+                    )));
+                }
                 let raw = raw_array(arr)?;
                 if raw.len != rows {
                     return Err(err(format!(
