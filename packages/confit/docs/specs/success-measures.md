@@ -22,7 +22,8 @@ instead of the DuckDB reference.
 Gate: `packages/sql-transform/sql_transform/_projection_test.py`, `gate()` and
 the seeded differential controlled by `MARGINALIZE_FUZZ_N` (seed 20260729).
 A widening run is 1,500–2,000 cases; the default depth is 25, so a default
-run is not evidence that a widening run happened.
+run is not evidence that a widening run happened. Which depth is the control
+is [open](../decisions/open/c1-depth.md).
 
 ### Engine parity (C2)
 

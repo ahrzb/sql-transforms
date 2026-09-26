@@ -1,13 +1,12 @@
----
-title: 'Oracle policy: a fixed reference, explicit exceptions, and honest evidence'
-status: decided
----
-# Oracle policy decisions
+# Oracle policy
 
-These choices settle the oracle's policy. They keep a small core contract rather
-than make current limitations or documentation machinery part of its definition.
-Where the implementation differs, the [oracle chapters](../oracle/README.md) state
-what is true of the code.
+**Question.** What is the oracle's reference, how is it compared, and what counts as
+evidence?
+
+**Ruling.** The rules below. They keep a small core contract rather than make current
+limitations or documentation machinery part of its definition. Where the
+implementation differs, the [oracle chapters](../../oracle/README.md) state what is
+true of the code.
 
 ## Reference and comparison
 
@@ -51,8 +50,8 @@ what is true of the code.
   mismatches, rather than letting a later self-check replace it. Additional
   diagnostics may be reconsidered if they preserve the original finding.
 - **Reason codes:** keep audit classifications internal. Public diagnostics must
-  name the unsupported construct and be actionable; stable public codes require
-  a concrete consumer and a separate API decision.
+  name the unsupported construct and be actionable. Stable public codes are
+  [postponed](../postponed/public-reason-codes.md).
 - **Corpus ratchets:** stable corpora allow no unexplained decrease in support.
   Raise floors with growth; a decrease needs a reviewed reason and affected cases.
   A total is not universal SQL compatibility and does not replace case-level

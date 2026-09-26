@@ -151,4 +151,4 @@ refusal test in `test_arrow_schema_api.py`. The corpus floor drops by the nine m
 not determine — and has no subject once the path is gone. The unmerged branch
 `refuse-static-tie-order`, which refuses such shapes one class at a time, is superseded and
 is not to be merged. The decision record is
-`packages/confit/docs/decisions/trustworthy-fold.md`.
+`packages/confit/docs/decisions/closed/static-only-queries.md`.

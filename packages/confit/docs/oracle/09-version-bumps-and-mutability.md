@@ -6,7 +6,7 @@ The [reference enforcement rule](01-what-the-oracle-is.md) fixes DuckDB 1.5.5 an
 requires an exact oracle/test-environment pin plus a startup version assertion. A
 reference upgrade is a separate reviewed change.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#reference-and-comparison).
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#reference-and-comparison).
 
 ## Current constraints
 

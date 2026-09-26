@@ -1,7 +1,7 @@
 # Ordering and nondeterminism
 
 Settled ordering and nondeterminism policy comes from the
-[oracle policy record](../decisions/oracle-policy.md).
+[oracle policy record](../decisions/closed/oracle-policy.md).
 
 ## Decision rule
 
@@ -18,7 +18,7 @@ Two ruled exceptions are narrower than a general nondeterminism allowance:
   rather than exact bits.
 
 *Evidence:* `packages/confit/docs/known-limitations.md` (introduction), claim:
-optimizer-on-reading, and the [fold decision](../decisions/trustworthy-fold.md).
+optimizer-on-reading, and the [fold decision](../decisions/closed/static-only-queries.md).
 The rule is also law P21 in [properties](../properties.md), with its pinning tests.
 
 **claim: disposition-table.** Apply the narrowest ruled action. Do not convert a source
@@ -149,7 +149,7 @@ rows differs between thread settings. The independent fit/serving path uses
 would apply to the oracle as a whole, never as a caller, campaign, or per-case choice.
 
 *Evidence:* P11 in `packages/confit/docs/properties.md`, `confit.oracle.Oracle.__init__`,
-and the [fold decision](../decisions/trustworthy-fold.md).
+and the [fold decision](../decisions/closed/static-only-queries.md).
 
 **claim: order-sensitive-family-contract.** An order-sensitive value family is refused
 until its comparison contract is clear. That contract names either the oracle setting

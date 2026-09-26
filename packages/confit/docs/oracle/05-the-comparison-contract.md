@@ -5,7 +5,7 @@ comparisons that make that statement operational. A weaker comparison applies on
 the named family and surface that adopted it.
 
 Settled comparison policy comes from the
-[oracle policy record](../decisions/oracle-policy.md).
+[oracle policy record](../decisions/closed/oracle-policy.md).
 
 For UDF-bearing SQL, the reference leg registers the same declared UDFs. That
 parameterization is defined by the [oracle](README.md) and
