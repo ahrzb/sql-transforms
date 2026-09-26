@@ -193,9 +193,7 @@ entry:
     );
     match compile(&p, vec![]) {
         Err(CompileError::Verify(errs)) => assert!(!errs.is_empty()),
-        Err(CompileError::Static(m)) | Err(CompileError::Regex(m)) => {
-            panic!("wrong error kind: {m}")
-        }
+        Err(e) => panic!("wrong error kind: {e}"),
         Ok(_) => panic!("compile accepted an unverified program"),
     }
 }
@@ -228,7 +226,8 @@ fn rejects_mismatched_statics() {
         ),
     ] {
         match compile(&p, data) {
-            Err(CompileError::Static(msg)) => {
+            Err(e @ (CompileError::Static(_) | CompileError::DuplicateKey(_))) => {
+                let msg = e.to_string();
                 assert!(msg.contains(needle), "expected '{needle}' in '{msg}'")
             }
             Err(CompileError::Verify(_)) | Err(CompileError::Regex(_)) => {

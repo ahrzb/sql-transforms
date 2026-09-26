@@ -46,8 +46,11 @@ CORPUS = Path(__file__).parent / "corpus" / "duckdb_mined.jsonl"
 # a regression.
 MATCH_FLOOR = 547
 
-# Build-time errors that are documented v0 contract limits, not bugs.
-_CLEAN = ("unsupported:", "parse error:", "duplicate map key", "NULL in value column")
+# Build-time errors that are documented contract limits, not bugs: the
+# documented prefixes. `bind error:` is deliberately NOT clean here -- every
+# corpus statement is one DuckDB answered, so "invalid against the declared
+# schema" cannot be the right reason, and such a refusal is a FAIL to look at.
+_CLEAN = ("unsupported:", "parse error:")
 
 # Documented oracle divergences (clean, not FAILs). Each entry must cite a
 # measured reason the divergence is IRREPRODUCIBLE row-locally.

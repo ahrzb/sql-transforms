@@ -71,6 +71,10 @@ pub enum CompileError {
     Verify(Vec<VerifyError>),
     /// The static data does not match the program's static declarations.
     Static(String),
+    /// Static table `@i` repeats a key its 1:1 map declaration forbids: the
+    /// multiplicity contract, not a data mismatch, so it refuses as
+    /// `unsupported:` and names the opt-in.
+    DuplicateKey(usize),
     /// A ReSpec pattern failed to compile — the frontend validates patterns
     /// at bind, so this only fires on hand-written IR.
     Regex(String),
@@ -87,6 +91,11 @@ impl std::fmt::Display for CompileError {
                 Ok(())
             }
             CompileError::Static(msg) => write!(f, "static data mismatch: {msg}"),
+            CompileError::DuplicateKey(i) => write!(
+                f,
+                "unsupported: duplicate map key in static table @{i} -- a 1:N join \
+                 builds only under shape='many'"
+            ),
             CompileError::Regex(msg) => write!(f, "regex table entry failed to compile: {msg}"),
         }
     }
@@ -563,7 +572,7 @@ pub(super) fn prepare_statics(
                 }
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 if entries.windows(2).any(|w| w[0].0 == w[1].0) {
-                    return Err(CompileError::Static(format!("@{i}: duplicate map key")));
+                    return Err(CompileError::DuplicateKey(i));
                 }
                 prepared.push(PreparedStatic::Map { entries });
             }

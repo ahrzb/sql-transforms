@@ -334,3 +334,49 @@ def test_rejections_are_build_time_and_named():
             row_tables={"__THIS__": T},
             static_tables={},
         )
+
+
+# ---- 6. How to read a rejection ------------------------------------------
+
+
+def _width1_list_udf():
+    from sql_transform._udf import UDF
+
+    class U(UDF):
+        name = "u"
+        takes = pa.schema([("x", pa.int64())])
+        returns = pa.list_(pa.int64(), 1)
+
+        def __call__(self, x):
+            return (x,)
+
+    return U()
+
+
+def test_every_refusal_family_carries_a_documented_prefix():
+    # The families that used to refuse with no prefix at all, each now under
+    # the prefix of its class; the old text rides along as a suffix.
+    dup = pa.table(
+        {"id": pa.array([1, 1], pa.int64()), "v": pa.array([1, 2], pa.int64())}
+    )
+    nn = pa.table(
+        {"id": pa.array([1], pa.int64()), "v": pa.array([None], pa.int64())},
+        schema=pa.schema(
+            [("id", pa.int64()), pa.field("v", pa.int64(), nullable=False)]
+        ),
+    )
+    cases = [
+        ("SELECT v FROM __THIS__ JOIN d ON a = d.id", {"d": dup}, {}, "unsupported: "),
+        ("SELECT v FROM __THIS__ JOIN d ON a = d.id", {"d": nn}, {}, "bind error: "),
+        ("SELECT a FROM __THIS__ WHERE a > 0", {}, {"shape": "map"}, "unsupported: "),
+        (
+            "SELECT u(a) AS o FROM __THIS__",
+            {},
+            {"udfs": [_width1_list_udf()]},
+            "bind error: ",
+        ),
+    ]
+    for sql, statics, kw, prefix in cases:
+        with pytest.raises(ValueError) as e:
+            DuckDBInferFn(sql, row_tables={"__THIS__": T}, static_tables=statics, **kw)
+        assert str(e.value).startswith(prefix), str(e.value)
