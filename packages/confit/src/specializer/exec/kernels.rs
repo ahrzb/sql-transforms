@@ -1180,6 +1180,13 @@ pub(in crate::specializer) fn duck_shr(x: i64, y: i64) -> i64 {
 /// narrows to the target width BEFORE its +-1 round where we round in i64
 /// first -- not observable: both refuse exactly when the rounded value
 /// leaves the target width.
+/// DuckDB's VARCHAR -> DOUBLE parse, as every path that performs it shares
+/// it: both backends' `StofOpt` and the bind-time fold. None where the
+/// cast fails.
+pub(crate) fn duck_stof(s: &str) -> Option<f64> {
+    s.trim_ascii().parse::<f64>().ok()
+}
+
 pub(crate) fn duck_stoi(s: &str) -> Option<i64> {
     // StringUtil::CharacterIsSpace -- includes \v, which Rust's
     // is_ascii_whitespace deliberately does not.

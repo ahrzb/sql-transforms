@@ -437,12 +437,12 @@ extern "C" fn h_stoi(p: *mut Cx, off: i64, len: i64, valid_out: *mut u8) -> i64 
 extern "C" fn h_stof(p: *mut Cx, off: i64, len: i64, valid_out: *mut u8) -> f64 {
     let c = unsafe { cx(p) };
     let s = unsafe { &*c.arena }.get(span(off, len));
-    match s.trim_ascii().parse::<f64>() {
-        Ok(v) => {
+    match super::kernels::duck_stof(s) {
+        Some(v) => {
             unsafe { *valid_out = 1 };
             v
         }
-        Err(_) => {
+        None => {
             unsafe { *valid_out = 0 };
             0.0
         }

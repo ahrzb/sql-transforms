@@ -1065,12 +1065,12 @@ fn compile_inst(
             let (flag, dst, a) = (sl(slots, flag), sl(slots, dst), sl(slots, a));
             Box::new(move |ctx| {
                 let s = ctx.arena.get(as_str(ctx.regs[a]));
-                match s.trim_ascii().parse::<f64>() {
-                    Ok(v) => {
+                match super::kernels::duck_stof(s) {
+                    Some(v) => {
                         ctx.regs[flag] = RegVal::I1(true);
                         ctx.regs[dst] = RegVal::F64(v);
                     }
-                    Err(_) => {
+                    None => {
                         ctx.regs[flag] = RegVal::I1(false);
                         ctx.regs[dst] = RegVal::F64(0.0);
                     }

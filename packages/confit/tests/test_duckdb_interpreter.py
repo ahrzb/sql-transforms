@@ -1789,3 +1789,17 @@ def test_a_foldable_null_argument_makes_the_whole_call_null_differential():
         {"c0": "int32?"},
         [{"c0": 1}, {"c0": None}, {"c0": 2147483647}],
     )
+
+
+def test_a_constant_try_cast_folds_and_spares_its_sibling_differential():
+    # TRY_CAST of a string literal is foldable: DuckDB evaluates it at bind,
+    # and a NULL result folds the strict operator around it, so ln(-x) never
+    # runs (campaign seed 2253). A successful constant cast folds to its value.
+    duck_check(
+        "SELECT TRY_CAST('x' AS DOUBLE) * ln(-x) AS a, "
+        "TRY_CAST('300' AS TINYINT) + CAST(ln(-x) AS INTEGER) AS b, "
+        "TRY_CAST(' 2.5 ' AS DOUBLE) * x AS c, TRY_CAST('7' AS BIGINT) + 1 AS d "
+        "FROM __THIS__",
+        {"x": "float"},
+        [{"x": 2.0}, {"x": 0.5}],
+    )

@@ -414,6 +414,29 @@ pub fn fold(e: SExpr) -> SExpr {
                     }
                 }
             }
+            // A cast of a string literal to a number is evaluated here, as
+            // DuckDB's binder evaluates a foldable expression: through the
+            // SAME parse kernels both backends call, so fold and runtime
+            // cannot disagree. A failed TRY_CAST is NULL -- which then folds
+            // a strict operator around it, sparing its sibling (campaign
+            // seed 2253). A failed CAST is left to trap at run time, as it
+            // did before.
+            if let SKind::Lit(Lit::Str(s)) = &inner.kind {
+                let parsed = if ty == Ty::F64 {
+                    super::exec::kernels::duck_stof(s).map(Lit::F64)
+                } else if ty.is_int() {
+                    super::exec::kernels::duck_stoi(s)
+                        .filter(|v| ty.int_range().map_or(true, |(lo, hi)| (lo..=hi).contains(v)))
+                        .map(Lit::I64)
+                } else {
+                    None
+                };
+                match parsed {
+                    Some(v) => return lit(v, ty),
+                    None if trying && (ty == Ty::F64 || ty.is_int()) => return null(ty),
+                    None => {}
+                }
+            }
             e(SKind::Cast {
                 inner: Box::new(inner),
                 trying,
