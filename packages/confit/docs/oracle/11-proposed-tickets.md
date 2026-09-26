@@ -38,7 +38,7 @@ evidence, not active instructions or dependencies.
 - [x] **ticket: unsupported-width-reporting** — Report unsupported widths and
   generator reachability. An empty bucket is not proof of support; reuse
   behavioral coverage rather than require duplicate bookkeeping xfails.
-- [ ] **ticket: scope-inventory-classification** — Separate out-of-model queries,
+- [x] **ticket: scope-inventory-classification** — Separate out-of-model queries,
   implementation gaps, explicit product/resource restrictions, and invalid
   inputs. Current syntax refusals do not justify permanent exclusions by themselves.
 - [ ] **ticket: behavioral-coverage-gaps** — Correct unsupported totality claims

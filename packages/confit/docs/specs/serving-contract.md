@@ -106,6 +106,43 @@ does not make the current refusal inventory a permanent product definition.
 Implementation priorities are separate: **ask: next-query-classes** and the gap
 inventory live in the [baseline report](../reports/2026-09-02-goal-baseline.md).
 
+### Restriction inventory by class
+
+Each refusal family in [known limitations](../known-limitations.md) and the campaign's
+refusal classes, sorted into the four classes above. A row states the class and its
+ground; it does not ratify the restriction, and a class-2 row is a gap to close, not a
+product boundary. "DuckDB rejects" was measured on DuckDB 1.5.5 (2026-09-26).
+
+| Family | Class | Ground |
+|---|---|---|
+| Aggregation, `GROUP BY`/`HAVING`, windows, `QUALIFY` over request rows | 1 outside | answer depends on sibling request rows |
+| `ORDER BY`, `LIMIT`/`OFFSET`/`FETCH`/`TOP`, `DISTINCT` over request rows | 1 outside | order, count or identity across the batch |
+| Queries reading no request table (static-only), table functions as the driving relation | 1 outside | no request row to specialize on; the static-only path still serves today (claim: one-door-bypass) |
+| `FULL OUTER JOIN`, `rowid` | 1 outside | emits rows no request row produced / identifies a row by batch position |
+| CTEs, subqueries (incl. derived tables), set operations, named windows used row-locally | 2 unimplemented | DuckDB serves them; blanket syntax bans, not scope |
+| Row-local `USING`/`NATURAL` self-joins, more than one join under `shape='many'` | 2 unimplemented | named follow-ups |
+| Decimal expressions and decimal-literal arithmetic (`UNSHIPPED` decimals) | 2 unimplemented | m-8 lattice phase 5 |
+| `f32` row columns, lists, whole-struct output, bracket field access, `HUGEINT`/unsigned | 2 unimplemented | type-lattice width not built |
+| `decimal256` static columns | 4 invalid | DuckDB refuses them at Arrow registration |
+| Narrow-integer overflow trap on the row path | 2 unimplemented | m-8 phase 3 |
+| All-NULL `CASE`/`COALESCE`/`least`/`greatest`, bare `NULL` as `repeat`'s string (BLOB) | 2 unimplemented | DuckDB binds them; the BLOB type is not built |
+| `^`, prefix `~`, `#`, `NOT GLOB`; `COLUMNS(...)` in expressions; `* EXCLUDE (t.key)` on `USING`; mixed string/number `BETWEEN`/`IN` | 2 unimplemented | parser precedence or binding not reproduced; refused rather than served wrong |
+| Regex reject list and fuzzer-found regex classes | 2 unimplemented | RE2 semantics not reproduced by rust-regex on these constructs; DuckDB-self-inconsistent cases stay refused for that reason |
+| Non-constant regex patterns, replacements, options, group indexes | 3 restriction | specialization-inherent: per-row compilation (exclusion: per-row-general-work) |
+| 1 GiB string-builder budget, regex program-size guard, 2 GiB Arrow batch | 3 restriction | resource (exclusion: resource-ceilings) |
+| Default-shape refusals: duplicate join keys, inner joins and `WHERE` under `shape='map'` | 3 restriction | explicit multiplicity API; `shape='many'`/`'filter'` opt in |
+| Static-only row limits | 3 restriction | nondeterministic frozen answer (TASK-128); also class 1 as a static-only query |
+| Scalar calls with `OVER`/`FILTER`/`IGNORE NULLS`/`WITHIN GROUP`; `SIMILAR TO … ESCAPE`; `QUALIFY` without a window | 4 invalid | DuckDB rejects |
+| `bind error:` refusals: unknown or ambiguous column, constant cast or constant overflow DuckDB errors on at plan time | 4 invalid | wrong against the declared schema, or DuckDB rejects |
+| Static table not provided; UDF declarations inconsistent with their use (width-1 list return, argument width) | 4 invalid | inconsistent caller declaration |
+| `parse error:` on malformed SQL | 4 invalid | not SQL |
+| `parse error:` on DuckDB-valid SQL outside the accepted dialect | 2 unimplemented | dialect surface, not scope |
+
+Acceptance measurements count class 4 apart from classes 1-3, as the scope rule above
+requires. The campaign reports refusals by DuckDB's outcome for the same query (claim:
+refusal-outcome-reporting): a refusal whose query DuckDB rejects is class 4 by
+measurement, whatever its message prefix.
+
 ## UDF and model boundary
 
 Confit owns the UDF protocol, external calls, structured result access, and
