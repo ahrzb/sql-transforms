@@ -1,7 +1,7 @@
 # Campaign verdicts, refusal, and abstention
 
 Settled verdict and refusal-reporting policy comes from the
-[oracle policy record](../decisions/oracle-policy.md).
+[oracle policy record](../decisions/closed/oracle-policy.md).
 
 ## Case-classification pipeline
 

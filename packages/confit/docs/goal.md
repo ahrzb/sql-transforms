@@ -34,5 +34,6 @@ a reason to exclude a transform from the target.
 
 - [Serving contract](specs/serving-contract.md): API, UDFs, and detailed restrictions.
 - [Oracle](oracle/README.md): the SQL reference and comparison rules.
+- [Decisions](decisions/README.md): open questions, rulings in force, and postponed ones.
 - [Success measures](specs/success-measures.md): correctness controls, coverage, and latency.
 - [Dated reports](reports/): measurements and implementation gaps, not requirements.

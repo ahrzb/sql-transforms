@@ -52,7 +52,7 @@ inputs, generator revision where generated, engine revision, and reference
 configuration. A seed is an aid, not a durable identity after a generator change. A
 recorded run is never rewritten to appear current.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
 *Enforced-by:* the campaign runner. `fuzz.runner.campaign` opens `findings.jsonl` with
 one `{"provenance": ...}` line — UTC start date, engine revision (git `HEAD` plus a

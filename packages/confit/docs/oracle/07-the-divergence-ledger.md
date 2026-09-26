@@ -10,7 +10,7 @@ unclassified difference stays unresolved rather than being relabelled
 contract-unspecified. The unresolved/unspecified distinction itself is defined in
 [ordering and status vocabulary](03-nondeterminism.md).
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
 *Enforced-by:* `fuzz.runner.CATEGORY` and `fuzz.runner.report`. The campaign report's
 outcome section counts, over a stated population, `agreement` (`AGREE`, `AGREE_TRAP`,
@@ -63,7 +63,7 @@ itself an engine defect. An unlisted divergence is therefore neither excused nor
 definition — the contract decides, and index completeness carries no service-level
 promise.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
 Severity follows [the four-rung ladder](08-the-severity-ladder.md). Trap elision is a
 contract entry rather than an engine-versus-oracle value divergence, but is indexed
@@ -75,7 +75,7 @@ where readers expect it.
 | **divergence: approximate-error-text** | comparison scope / n/a | kept | unruled |
 | **divergence: ilike-nul** | source exclusion / n/a | kept | unruled |
 | **divergence: trap-elision** | optimizer-on contract gap / 1 | kept | unruled |
-| **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../decisions/oracle-policy.md#reference-and-comparison) |
+| **divergence: nan-sign-per-platform** | platform-dependent answer / n/a | Linux bits are the contract | **ruled** by [oracle policy](../decisions/closed/oracle-policy.md#reference-and-comparison) |
 | **divergence: schema-qualifiers** | name resolution / 3 and 4 | kept | unruled |
 | **divergence: decimal-literal-typing** | feature in flight / 2 | open severity-2 defect; not an approved exception | unruled |
 | **divergence: decimal-cast-rounding** | same literal-typing mechanism / 2 | tied to parent | unruled |
@@ -156,7 +156,7 @@ one-test-per-paragraph registry. Important gaps named in this chapter: no twin m
 the DuckDB-serves cost of divergence: bind-time-constant-refusals, and no test exercises
 the Arrow batch ceiling.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#evidence-and-unresolved-observations).
 
 ## Where a decision is written down
 
@@ -165,7 +165,7 @@ comparison rule that it qualifies, and is linked from this chapter. Open bugs an
 unfinished investigations stay in the ledger. Indexing a divergence here never
 approves it.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#limits-on-process-rules).
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#limits-on-process-rules).
 The [comparison contract](05-the-comparison-contract.md) lists the approved bounds
 separately from independent references. The accepted policy itself is
-[the oracle policy decision](../decisions/oracle-policy.md).
+[the oracle policy decision](../decisions/closed/oracle-policy.md).

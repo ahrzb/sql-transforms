@@ -3,7 +3,7 @@
 The concise oracle definition lives in [README.md](README.md). This chapter explains why
 that reference was chosen and how repository comparisons reach it. It does not define an
 alternative configuration. Settled reference policy comes from the
-[oracle policy record](../decisions/oracle-policy.md).
+[oracle policy record](../decisions/closed/oracle-policy.md).
 
 ## Why the optimizer is disabled
 
@@ -99,7 +99,7 @@ Linux-measured DuckDB behavior carry `#[cfg(target_os = "linux")]`, and Python o
 `skipif(sys.platform != "linux")`; CI (`.github/workflows/ci.yml`) runs on
 `ubuntu-latest`.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#reference-and-comparison).
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#reference-and-comparison).
 *Evidence:* `src/specializer/exec/tests.rs` (`pin_ssubstr_window_arithmetic`,
 `pin_ftoi_rounding_and_traps`, `pin_stoi_trims_whitespace_like_duckdb_cast`),
 `src/specializer/tests.rs::substr_window_arithmetic_via_sql`, and
@@ -119,7 +119,7 @@ are a separate family described by **claim: capture-outside-the-oracle** in
 [version changes](09-version-bumps-and-mutability.md).
 
 *Evidence:* `eval_static_only` and its caller in `packages/confit/src/duckdb/mod.rs`;
-the [fold decision](../decisions/trustworthy-fold.md).
+the [fold decision](../decisions/closed/static-only-queries.md).
 
 ## Nearby DuckDB uses with different contracts
 

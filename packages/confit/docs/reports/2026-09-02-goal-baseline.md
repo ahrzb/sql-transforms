@@ -2,7 +2,7 @@
 
 > Current specification locations: [serving contract](../specs/serving-contract.md)
 > and [success measures](../specs/success-measures.md). Historical goal-section
-> names below are mapped in the [citation map](../oracle/13-old-ids.md#former-goal-sections).
+> names below are mapped in the [citation map](https://github.com/ahrzb/sql-transforms/blob/24aafe8/packages/confit/docs/oracle/13-old-ids.md#former-goal-sections).
 > The dated measurements and findings below are unchanged.
 
 **What this is.** The first reading of the goal document's yardsticks — reading **N=1**.

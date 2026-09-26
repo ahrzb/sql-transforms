@@ -3,6 +3,7 @@
 Open work only: gaps, defects, proposals and open questions. Facts about what
 Confit does today live in `docs/`; this file lists only what it does not do yet.
 Remove an item when it lands.
+Questions waiting on a ruling are records in `docs/decisions/open/`, not items here.
 
 ## SQL surface gaps (refused, DuckDB serves)
 
@@ -134,9 +135,6 @@ Remove an item when it lands.
   `ReReplace`, `ExternCall`, `ProbeRange`, `ProbeRead`), so the backend
   differential cannot see them. A totality test belongs beside the
   differential in `src/specializer/exec/tests.rs`.
-- **C1 depth.** The training round-trip seeded differential defaults to 25
-  cases (`MARGINALIZE_FUZZ_N`), against a specified 1,500–2,000. Either run
-  the depth somewhere standing, or amend the control by reviewed decision.
 - **Campaign cadence.** The generated-grammar campaign is a manual CLI with no
   standing schedule. The retired phase-2 width-residual count needs a replay
   of stored SQL or a fresh labelled run, followed by classification.
@@ -150,17 +148,15 @@ Remove an item when it lands.
   `INTERSECT`/`EXCEPT`, subqueries, multiple statements, table functions and
   `QUALIFY` refuse without a twin in `tests/test_known_limitations.py`. No
   executable check covers the 2 GiB Arrow batch ceiling.
-- **Optional, not adopted.** Corpus-wide pin governance metadata, generic
-  re-record tooling, and evidence mutability classes.
 
 ## Performance
 
 - **Native transform families.** A fitted transformer costs about 118 µs per
   row against 1.4 µs for the same query without it (`bench_transforms.py`,
-  2026-09-26, n=1); nearly all of it is sklearn's own `transform()`. Native typed entries (`PCA`, `StandardScaler`, and so
-  on, behind the existing extern slots) are the ~100x lever. They are blocked
-  on adopting per-family parity bounds by review: bit-exact for scaler/tree
-  tiers, a declared ulp bound for matvec tiers, gated by swap-the-entry.
+  2026-09-26, n=1); nearly all of it is sklearn's own `transform()`. Native
+  typed entries (`PCA`, `StandardScaler`, and so on, behind the existing
+  extern slots) are the lever. They wait on the ruling in
+  `docs/decisions/open/native-transform-parity-bounds.md`.
 - **Vectorized `apply_batch` for `infer_arrow`.** UDFs are called once per row
   through the scalar protocol even on the Arrow path.
 - **Serving bench against the Python twin.** The engine reads 1.20–1.80x
@@ -200,18 +196,3 @@ Remove an item when it lands.
 - `DuckDBInferFn::new` represents the shape three ways (`many`, `shape_kind`,
   `strict_map`). Unifying them into one `Shape` enum gets easier once the
   static-only fold is gone.
-
-## Owner choice: which query classes next
-
-Candidates for the next query class, each with its cost or blocker. None is
-chosen yet.
-
-| candidate | unlocks | cost / blocker |
-|---|---|---|
-| decimal arithmetic | exact DECIMAL expressions and literals; empties `UNSHIPPED` | per-operator scale rules through the whole expression tree |
-| HUGEINT / unsigned (i128 lane) | the remaining integer widths, and exact wide aggregates | i128 arithmetic and traps on both backends |
-| struct-valued outputs | whole structs, struct literals, bracket access | nested output schema at the Arrow boundary |
-| multiple joins under `shape='many'` | multi-join serving | multiplicity composition across joins |
-| native transform families | ~100x on transformer queries | per-family parity bounds adopted by review first |
-| row-local CTEs / subqueries | the largest refusal class the generator reaches | binder support for nested scopes, and a named row-locality test |
-| per-row aggregation over statics | aggregates over matched static rows | a `many`-walk accumulator, and resolving the float-reduction bound's domain |

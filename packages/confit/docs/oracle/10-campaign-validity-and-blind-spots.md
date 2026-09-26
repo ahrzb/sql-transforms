@@ -38,7 +38,7 @@ instance of that mechanism, and its total is not universal SQL compatibility: a
 regression offset by a new match leaves the total unchanged, so the floor never replaces
 case-level regression checks.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#reporting-and-measurement);
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#reporting-and-measurement);
 population and reporting detail in
 [success measures](../specs/success-measures.md#measurement-policy).
 
@@ -102,7 +102,7 @@ target is adopted. Each rate states its population and shows unknown outcomes an
 invalid declarations separately. Do not improve it by silently changing the
 generator or denominator. C1–C5 and D1–D2 are the success measures.
 
-*Decision:* [oracle policy](../decisions/oracle-policy.md#reporting-and-measurement);
+*Decision:* [oracle policy](../decisions/closed/oracle-policy.md#reporting-and-measurement);
 dispositions in [success measures](../specs/success-measures.md#measurement-policy).
 
 The runner reports raw verdict counts, the same verdicts by outcome category over the
@@ -122,4 +122,4 @@ scheme.
 No blocking KPI is adopted from refusal-quality or unsupported-width reporting. Where
 reason codes may appear is claim: reason-code-placement in
 [verdicts](04-verdicts-agreement-abstention-refusal.md). The accepted policy is
-[the oracle policy decision](../decisions/oracle-policy.md).
+[the oracle policy decision](../decisions/closed/oracle-policy.md).
