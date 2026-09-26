@@ -23,7 +23,7 @@
 //! FLOAT/REAL, DECIMAL/NUMERIC, ...) refuse by name.
 
 use sqlparser::ast::{
-    AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, JoinConstraint, JoinOperator,
+    AccessExpr, BinaryOperator, CastKind, Expr as SqlExpr, Ident, JoinConstraint, JoinOperator,
     SelectItem, SetExpr, Statement, Subscript, TableAlias, TableFactor, UnaryOperator,
     Value as SqlValue,
 };
@@ -1370,6 +1370,24 @@ fn binds_in_join(sj: &ScopeJoin, name: &str) -> bool {
         })
 }
 
+/// A subscript/dot chain read as FIELD names: `['f']` and `.f` each name a
+/// field; anything else (an integer key, a slice) is not a field access.
+fn chain_fields(chain: &[AccessExpr]) -> Option<Vec<Ident>> {
+    chain
+        .iter()
+        .map(|acc| match acc {
+            AccessExpr::Dot(SqlExpr::Identifier(i)) => Some(i.clone()),
+            AccessExpr::Subscript(Subscript::Index {
+                index: SqlExpr::Value(v),
+            }) => match &v.value {
+                SqlValue::SingleQuotedString(f) => Some(Ident::new(f)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
 /// Where a struct-tree walk stopped: shared by the row and static
 /// paths, which render the SAME stop into their own pinned error
 /// spellings. `at` indexes the FIELD parts handed to [`walk_fields`];
@@ -2268,6 +2286,24 @@ fn default_name(e: &SqlExpr) -> String {
         SqlExpr::CompoundIdentifier(parts) if !parts.is_empty() => {
             parts.last().unwrap().value.clone()
         }
+        // DuckDB parenthesizes a dot access whose left side is already a
+        // subscripted expression (measured: `s['n'].x` is named
+        // `(s['n']).x`, while `s.n['x']` and `s['n']['x']` print as written).
+        SqlExpr::CompoundFieldAccess { root, access_chain } => {
+            let mut name = root.to_string();
+            let mut keyed = false;
+            for acc in access_chain {
+                match acc {
+                    AccessExpr::Dot(d) if keyed => name = format!("({name}).{d}"),
+                    AccessExpr::Dot(d) => name = format!("{name}.{d}"),
+                    AccessExpr::Subscript(sub) => {
+                        keyed = true;
+                        name = format!("{name}[{sub}]");
+                    }
+                }
+            }
+            name
+        }
         other => other.to_string(),
     }
 }
@@ -3141,17 +3177,40 @@ impl Binder<'_> {
             }
         }
         // Struct-star `a.*` — checked AFTER tables: a table alias with the
-        // same name WINS over the struct column (measured, silently).
+        // same name WINS over the struct column (measured, silently). The
+        // struct may be the driving table's or a joined static table's; a
+        // head in both is DuckDB's ambiguity error, as for `a.f`.
         if !matched {
             if let Some(q) = qualifier {
-                if let Some(sc) = self.structs.iter().find(|s| s.name.eq_ignore_ascii_case(q)) {
+                use super::plan::StructNode;
+                let row = self.structs.iter().find(|s| s.name.eq_ignore_ascii_case(q));
+                let statics: Vec<(usize, &super::plan::StructCol)> = self
+                    .joins
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, sj)| !key_struct(sj, q))
+                    .filter_map(|(j, sj)| {
+                        sj.table
+                            .structs
+                            .iter()
+                            .find(|s| s.name.eq_ignore_ascii_case(q))
+                            .map(|sc| (j, sc))
+                    })
+                    .collect();
+                if usize::from(row.is_some()) + statics.len() > 1 {
+                    return Err(PrepareError::Bind(format!(
+                        "ambiguous column '{q}' (qualify it)"
+                    )));
+                }
+                if row.is_some() || !statics.is_empty() {
                     matched = true;
                     if filter.is_some() || opts.opt_rename.is_some() {
                         return Err(unsup(
                             "struct star with a name filter or RENAME (unpinned)",
                         ));
                     }
-                    use super::plan::StructNode;
+                }
+                if let Some(sc) = row {
                     for f in &sc.fields {
                         let lane = match &f.node {
                             StructNode::Leaf(l) => {
@@ -3165,6 +3224,22 @@ impl Binder<'_> {
                             // Nested-struct / unmappable fields expand as
                             // non-scalar entries: EXCLUDE removes them,
                             // surviving is the named error.
+                            _ => StarLane::Opaque(f.name.clone()),
+                        };
+                        cols.push((sc.name.clone(), f.name.clone(), lane));
+                    }
+                }
+                for (j, sc) in statics {
+                    let table = self.joins[j].name.clone();
+                    for f in &sc.fields {
+                        let lane = match &f.node {
+                            StructNode::Leaf(_) => StarLane::Real(self.static_struct_lane(
+                                j,
+                                sc,
+                                &table,
+                                &sc.name,
+                                &[Ident::new(&f.name)],
+                            )?),
                             _ => StarLane::Opaque(f.name.clone()),
                         };
                         cols.push((sc.name.clone(), f.name.clone(), lane));
@@ -3911,6 +3986,11 @@ impl Binder<'_> {
                             return Ok(lane);
                         }
                     }
+                }
+                // `s['f']`, `s['n'].x`, `(s).f` over a struct COLUMN: the
+                // same path as the dotted spelling.
+                if let Some(path) = self.struct_access_path(e) {
+                    return self.expr(&SqlExpr::CompoundIdentifier(path));
                 }
                 // A bare-NULL root types Str here and the chain still
                 // applies; DuckDB agrees for (NULL)[2] (VARCHAR) but types
@@ -6109,6 +6189,83 @@ impl Binder<'_> {
         }))
     }
 
+    /// Field access over a struct COLUMN in its non-dotted spellings --
+    /// `s['f']`, `s.n['x']`, `s['n'].x`, `(s).f`, `struct_extract(s, 'f')`,
+    /// and chains of them -- as the segment path the dotted spelling binds
+    /// through, so each reads exactly what `s.f` reads (same walk, same
+    /// NULL propagation, same missing-key error; field matching is
+    /// case-insensitive in both, measured). Only a string-literal key is a
+    /// field name; an integer key on a named struct is DuckDB's binder
+    /// error and stays on the refusing path.
+    ///
+    /// The ROOT's dotted run resolves by the ordinary rules, but a key after
+    /// it is always a FIELD, never a column of a relation: `v['x']` with
+    /// `v` a relation in scope is not `v.x`. Such a root is left alone.
+    fn struct_access_path(&self, e: &SqlExpr) -> Option<Vec<Ident>> {
+        use sqlparser::ast::{FunctionArg, FunctionArgExpr, FunctionArguments};
+        let (base, fields) = match e {
+            SqlExpr::CompoundFieldAccess { root, access_chain } => {
+                // Leading dots on an unparenthesized root belong to its
+                // dotted run; everything from the first key on is a field.
+                let mut root_run = Vec::new();
+                let mut chain = access_chain.as_slice();
+                if matches!(
+                    root.as_ref(),
+                    SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_)
+                ) {
+                    while let [AccessExpr::Dot(SqlExpr::Identifier(i)), rest @ ..] = chain {
+                        root_run.push(i.clone());
+                        chain = rest;
+                    }
+                }
+                let base = self.struct_access_base(root, root_run)?;
+                (base, chain_fields(chain)?)
+            }
+            SqlExpr::Function(f) if f.name.to_string().eq_ignore_ascii_case("struct_extract") => {
+                let FunctionArguments::List(list) = &f.args else {
+                    return None;
+                };
+                let [
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(target)),
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(SqlExpr::Value(v))),
+                ] = list.args.as_slice()
+                else {
+                    return None;
+                };
+                let SqlValue::SingleQuotedString(field) = &v.value else {
+                    return None;
+                };
+                (self.struct_access_base(target, Vec::new())?, vec![Ident::new(field)])
+            }
+            _ => return None,
+        };
+        if fields.is_empty() {
+            return None;
+        }
+        Some([base, fields].concat())
+    }
+
+    /// The path a struct access starts from: a column reference's dotted
+    /// run (plus `more`, dots that continue it), or a nested access. A run
+    /// ending on a relation name in scope is refused (see
+    /// [`Self::struct_access_path`]).
+    fn struct_access_base(&self, root: &SqlExpr, more: Vec<Ident>) -> Option<Vec<Ident>> {
+        let mut path = match root {
+            SqlExpr::Nested(i) if more.is_empty() => return self.struct_access_base(i, more),
+            SqlExpr::Identifier(i) => vec![i.clone()],
+            SqlExpr::CompoundIdentifier(p) => p.clone(),
+            SqlExpr::CompoundFieldAccess { .. } | SqlExpr::Function(_) if more.is_empty() => {
+                return self.struct_access_path(root);
+            }
+            _ => return None,
+        };
+        path.extend(more);
+        let last = path.last()?;
+        let is_rel = last.value.eq_ignore_ascii_case(&self.this_name)
+            || self.joins.iter().any(|sj| last.value.eq_ignore_ascii_case(&sj.name));
+        (!is_rel).then_some(path)
+    }
+
     /// The struct_extract SPELLING of the same desugar:
     /// `struct_extract(struct_pack(a := e), 'a')` -> the field's AST.
     fn desugar_struct_extract(
@@ -8003,6 +8160,9 @@ impl Binder<'_> {
             "struct_extract" => {
                 if let Some(sub) = self.desugar_struct_extract(f)? {
                     return self.expr(&sub);
+                }
+                if let Some(path) = self.struct_access_path(&SqlExpr::Function(f.clone())) {
+                    return self.expr(&SqlExpr::CompoundIdentifier(path));
                 }
                 if let [target, SqlExpr::Value(v)] = args[..] {
                     if let SqlValue::SingleQuotedString(field) = &v.value {

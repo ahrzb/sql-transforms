@@ -323,6 +323,9 @@ vocabulary and can trail.
   transform is complete and lawful; `compile()` refuses with confit's own
   message, by name, until the row path's vocabulary grows structs. (Plain
   scopes serve fully — their frozen values are scalars.)
+  *Served since 2026-09-26:* confit reads struct columns through
+  `struct_extract`, and `compile()` answers every projection scope
+  row-for-row as batch does (`sql_transform/model/_marginal_test.py`).
 - **`FILTER`/`DISTINCT` on a projection fit scope** — the split hooks pass
   children only, so the clause would drop silently; refused by name instead.
 - **The port and the old class's deletion** — unchanged from the row-wise

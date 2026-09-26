@@ -6,17 +6,11 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **Small surface wins DuckDB serves and we refuse.**
-   - Struct field access by subscript and function over a struct COLUMN:
-     `s['f']` refuses as "struct column as a whole value" and
-     `struct_extract(s, 'f')` as "not in the builtin catalogue"; both are
-     `s.f` in DuckDB (the `struct_pack` desugar already serves them).
-   - `s.*` over a struct column (DuckDB expands the fields; a nested struct
-     field is a whole value and still refuses).
-2. **Generator reach.** `fuzz/gen.py` renders only BIGINT, INTEGER, DOUBLE,
-   VARCHAR and BOOLEAN CAST targets, and never the forms in item 1. Widen it
-   together with a fresh dated reading (a generator change re-deals every
-   seed).
+1. **Generator reach.** `fuzz/gen.py` renders only BIGINT, INTEGER, DOUBLE,
+   VARCHAR and BOOLEAN CAST targets, and none of the struct forms that now
+   serve (dotted field names, `s['f']`, `struct_extract`, static `v.*`,
+   struct-leaf ON keys, schema-qualified keys). Widen it together with a
+   fresh dated reading (a generator change re-deals every seed).
 
 ## Waiting on the owner
 
