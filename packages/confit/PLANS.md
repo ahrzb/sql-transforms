@@ -121,10 +121,8 @@ Questions waiting on a ruling are records in `docs/decisions/open/`, not items h
   checks the refusal of the others (pinned in `test_known_limitations.py`)
   nor TINYINT/SMALLINT. Adding targets changes every seed's query: do it
   together with a fresh dated reading.
-- **CI runs neither `cargo test` nor a debug-build pytest pass.** The
-  random-IR interpreter-vs-cranelift differential and the Rust unit suites
-  (`src/**/tests.rs`) never run in CI. Lowering invariants are
-  `debug_assert!`s that release builds compile out.
+- **No debug-build pytest pass.** CI builds the release extension, so the
+  lowering invariants, which are `debug_assert!`s, never run under pytest.
 - **816 pin queries cannot be replayed mechanically.** 460 have an untyped
   `input_repr` (a bare value that names no column or type), and 356 describe
   their tables only in prose (`docs/specs/pins-drift.json`,

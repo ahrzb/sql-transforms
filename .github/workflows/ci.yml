@@ -53,5 +53,8 @@ jobs:
       - name: Lint + format (pre-commit)
         run: uv run --no-sync pre-commit run --all-files --show-diff-on-failure
 
-      - name: Tests
-        run: uv run --no-sync pytest -q
+      # scripts/gate.py is the definition of done: cargo test (the Rust unit
+      # suites and the interpreter-vs-cranelift random-IR differential) and
+      # then pytest, one exit code.
+      - name: Tests (cargo test + pytest)
+        run: uv run --no-sync python scripts/gate.py
