@@ -13,8 +13,8 @@ below are not evidence that this policy is still open.
 
 **claim: bump-object.** `confit.oracle.Oracle.VERSION` names the intended reference.
 A deliberate reference upgrade must update that identity along with its environment.
-Currently, the constant is not compared with `duckdb.__version__`, and pin provenance
-is partial, so the recorded identity is not fully enforced.
+Opening the oracle compares the constant with `duckdb.__version__`; pin provenance is
+still partial, so pins recorded outside `Oracle` are not covered by that assertion.
 
 *Evidence:* `confit/oracle.py:74-76`; claim: oracle-version-constant; claim:
 pin-provenance.

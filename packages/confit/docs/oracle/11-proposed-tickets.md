@@ -27,7 +27,7 @@ evidence, not active instructions or dependencies.
 - [x] **ticket: truthful-output-nullability** — Enforce sound non-null promises,
   not equality with DuckDB's nullable flags. The existing checkers do not
   establish the adopted invariant in full.
-- [ ] **ticket: dated-campaign-evidence** — Keep old runs historical; record SQL,
+- [x] **ticket: dated-campaign-evidence** — Keep old runs historical; record SQL,
   inputs, generator revision where applicable, engine revision, and reference
   configuration in dated future results. Seeds are not durable case identities.
 - [ ] **ticket: unresolved-observation-reporting** — Show unresolved observations
