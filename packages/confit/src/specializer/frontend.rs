@@ -5212,6 +5212,20 @@ impl Binder<'_> {
             None => return Ok(null_of(to)),
         };
         if inner.ty == to && !trying {
+            // A string LITERAL cast to VARCHAR is no longer a literal on
+            // DuckDB (it binds only = / <> against a number, measured), so
+            // it stays a node the comparison rule can tell apart.
+            if matches!(inner.kind, SKind::Lit(Lit::Str(_))) {
+                let nullable = inner.nullable;
+                return Ok(SExpr {
+                    kind: SKind::Cast {
+                        inner: Box::new(inner),
+                        trying: false,
+                    },
+                    ty: to,
+                    nullable,
+                });
+            }
             return Ok(inner);
         }
         // DECIMAL -> DOUBLE is served (DuckDB's div/mod algorithm); every
@@ -5530,20 +5544,27 @@ impl Binder<'_> {
         refuse_dec(op, e.ty, self.dec_col_name(e).as_deref())
     }
 
-    /// VARCHAR -> BOOLEAN for a comparison operand. A constant that cannot
+    /// VARCHAR -> `to` (an integer width, DOUBLE or BOOLEAN) for a
+    /// comparison operand, as DuckDB casts it. A constant that cannot
     /// convert is DuckDB's plan-time conversion error, refused by name as
     /// the constant CAST refuses it.
-    fn str_to_bool(&self, e: SExpr) -> Result<SExpr, PrepareError> {
+    fn str_to(&self, to: Ty, e: SExpr) -> Result<SExpr, PrepareError> {
         if let SKind::Lit(Lit::Str(s)) = &e.kind {
-            if self.in_guarded.get() == 0 && duck_stob(s).is_none() {
+            let ok = match to {
+                Ty::I1 => duck_stob(s).is_some(),
+                Ty::F64 => super::exec::kernels::duck_stof(s).is_some(),
+                t => super::exec::kernels::duck_stoi(s).is_some_and(|v| fits_width(t, v)),
+            };
+            if self.in_guarded.get() == 0 && !ok {
                 return Err(PrepareError::Bind(format!(
-                    "constant cast fails on every row: '{s}' to BOOLEAN -- DuckDB \
-                     errors at plan time"
+                    "constant cast fails on every row: '{s}' to {} -- DuckDB \
+                     errors at plan time",
+                    duck_ty_name(to)
                 )));
             }
         }
         if matches!(e.kind, SKind::NullOf) {
-            return Ok(null_of(Ty::I1));
+            return Ok(null_of(to));
         }
         let nullable = e.nullable;
         Ok(SExpr {
@@ -5551,7 +5572,7 @@ impl Binder<'_> {
                 inner: Box::new(e),
                 trying: false,
             },
-            ty: Ty::I1,
+            ty: to,
             nullable,
         })
     }
@@ -5615,7 +5636,13 @@ impl Binder<'_> {
         };
         // Folded as `arith` folds. The NULL elision `arith` then performs on
         // the folded operands is deliberately absent here; see below.
+        // A string LITERAL (not any VARCHAR) casts to the other side under
+        // every operator; any other VARCHAR only under = and <> (measured).
+        let str_lit = |e: &SExpr| matches!(e.kind, SKind::Lit(Lit::Str(_)));
+        let (a_lit, b_lit) = (str_lit(&a), str_lit(&b));
         let (a, b) = (fold(a), fold(b));
+        let equality = matches!(pred, CmpPred::Eq | CmpPred::Ne);
+        let castable = |t: Ty| t.is_int() || t == Ty::F64 || t == Ty::I1;
         let (a, b) = match (a.ty, b.ty) {
             (x, y) if x == y => (a, b),
             // Mixed integer widths compare in the shared i64 lane.
@@ -5638,11 +5665,12 @@ impl Binder<'_> {
             // the integer lane. Against DOUBLE it refuses at bind, below.
             (Ty::I1, y) if y.is_int() => (bool_to_int(a), b),
             (x, Ty::I1) if x.is_int() => (a, bool_to_int(b)),
-            // BOOLEAN vs VARCHAR: DuckDB casts the VARCHAR to BOOLEAN
-            // (measured: `b = 't'` serves; `b = 'x'` is a conversion error
-            // even over zero rows; a column that fails traps per row).
-            (Ty::I1, Ty::Str) => (a, self.str_to_bool(b)?),
-            (Ty::Str, Ty::I1) => (self.str_to_bool(a)?, b),
+            // A number or BOOLEAN vs VARCHAR: DuckDB casts the VARCHAR to
+            // the other side's exact type (`i = '3000000000'` fails to
+            // INT32); a constant that cannot convert errors at plan time, a
+            // column that fails traps per row.
+            (x, Ty::Str) if castable(x) && (b_lit || equality) => (a, self.str_to(x, b)?),
+            (Ty::Str, y) if castable(y) && (a_lit || equality) => (self.str_to(y, a)?, b),
             (x, y) => {
                 return Err(PrepareError::Bind(format!(
                     "cannot compare {} with {}",
