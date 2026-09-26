@@ -27,6 +27,16 @@ The discipline was not designed in the abstract; it was bought. During wave 3, t
 
 Every wave dispatched since carries the rule explicitly — the task briefs for waves 5 and B (backlog/tasks/task-52\*, task-53\*) both read: *"wave-3 over-generalization precedent applies — every pin claim needs an executed query recorded."* A summary sentence with no query behind it is treated as a guess, because once, it was.
 
+### Phase-separated probes: *when* DuckDB acts is its own measurement
+
+A pin about *what* DuckDB answers can come from one execute. A pin about *when* it acts cannot: `con.execute` prepares and executes in one call, so a refusal seen there does not say whether it came from the binder or from running the plan over data. Refusing at construction is only DuckDB-faithful for a bind-time refusal, so every claim of the form "DuckDB refuses this at bind" is measured three ways, each on its own connection:
+
+1. `PREPARE p AS <sql>` — only the binder and planner run; an error here is bind-phase;
+2. a plain execute over the fixture rows; and
+3. a zero-row leg — the same query over an empty table, or with `... WHERE 1=0` — so no row reaches an expression that could trap.
+
+All three agreeing on the refusal makes it bind-phase; a refusal that appears only in the second leg is a runtime trap and must not be moved to construction. The pin records the SQL, the source it rests on, and the phase measured. Value probes may keep using `confit.oracle.Oracle.answer`; phase probes reach the underlying connection through the same `Oracle` (it forwards unknown attributes), never a bare `duckdb.connect`. The rule is claim: phase-separated-probes in the oracle spec; the 2026-08-25 designs for TASK-114, TASK-127 and TASK-133 applied it cell by cell, and `rfcs/2026-08-19-keep-the-bind-time-refusals.md` is the decision it protects.
+
 ### Four pins that would have been silently-wrong guesses
 
 The point of pins-first is best made by the pins no reasonable engineer would have predicted:

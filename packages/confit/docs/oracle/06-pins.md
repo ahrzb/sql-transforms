@@ -27,8 +27,8 @@ measured phase. Value probes may use `confit.oracle.Oracle.answer`; phase probes
 the underlying connection.
 
 *Evidence:* `docs/rfcs/2026-08-19-keep-the-bind-time-refusals.md:29-58`;
-`tests/test_oracle.py::test_connection_passthrough`. The methodology report does not yet
-state this rule; proposed **ticket: phase-probing-in-methodology** tracks that gap.
+`tests/test_oracle.py::test_connection_passthrough`. The methodology report states the
+three-leg procedure in §2 (**ticket: phase-probing-in-methodology**, done).
 
 ## Provenance required for replay
 
