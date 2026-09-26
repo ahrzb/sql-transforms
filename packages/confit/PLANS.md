@@ -4,32 +4,6 @@ Open work only: gaps, defects, proposals and open questions. Facts about what
 Confit does today live in `docs/`; this file lists only what it does not do yet.
 Remove an item when it lands.
 
-## Correctness defects (served wrong, not refused)
-
-- **`CAST` to an unbuilt width serves the nearest built lane.** `cast_target` in
-  `src/specializer/frontend.rs` maps `HUGEINT`/`UHUGEINT` and every unsigned
-  target to i64, and `FLOAT`/`REAL`/`DECIMAL` to f64. The schema differs from
-  DuckDB's, and the value can too: `CAST(x AS UINTEGER)` over `-1` serves `-1`
-  where DuckDB raises a conversion error, `CAST(x AS FLOAT)` over 16777217
-  serves 16777217.0 where DuckDB rounds to 16777216.0, and
-  `CAST(1.25 AS DECIMAL(3,1))` serves 1.25 where DuckDB serves 1.3. The match
-  is a substring test, so `INTERVAL` lands in the i64 lane too. These casts
-  must refuse by name until their lanes exist. The generator renders only
-  BIGINT, INTEGER, DOUBLE, VARCHAR and BOOLEAN targets; add the others so the
-  campaign reaches them. Its `_type_delta` classifies decimal-vs-f64 as
-  `UNSHIPPED`, which skips the value comparison, so a decimal cast needs a
-  value check of its own.
-- **`* EXCLUDE (t.k)` on a `USING` join with a static table drops `k`.** DuckDB
-  unmerges the column and keeps the right side's `k`. The refusal
-  `EXCLUDE of a USING-merged column` fires only for the right qualifier and for
-  self-joins. The left-qualified static case needs the same refusal, or needs
-  to model the unmerge.
-- **Dead `CASE` arms over-fold at bind time.** `(CASE WHEN false THEN x END)`
-  with a column `x` folds to a bare NULL, which skips the `||` binder's
-  `bind_foldable` gate. The result is typed INTEGER instead of VARCHAR, and
-  `abs`/unary minus then serve where DuckDB's binder refuses. Pinned
-  xfail-strict in `tests/test_open_divergences.py`.
-
 ## SQL surface gaps (refused, DuckDB serves)
 
 - **Row-local CTEs, scalar/correlated/`IN` subqueries, derived tables

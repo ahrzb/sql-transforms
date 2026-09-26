@@ -2223,15 +2223,16 @@ fn empty_for_nonnull(subject: SExpr) -> SExpr {
 /// what the consumers above read: `NULL || 'x'` is INTEGER-typed SQLNULL,
 /// while wrapping the NULL in a live op would type the `||` VARCHAR instead.
 ///
-/// The rule's ceiling, unguarded by `bind_foldable`: our fold
-/// dead-arm-eliminates a CASE holding a COLUMN, which DuckDB's binder does
-/// not, so `- (CASE WHEN false THEN x END) || 'y'` is INTEGER here and
-/// VARCHAR there. Every operator that folds diverges the same way, so the
-/// gate belongs on the shared fold rather than on any one caller, where it
-/// would buy one operator's correctness at the price of the surface being
-/// inconsistent about which operators fold. Pinned open in
-/// test_open_divergences.
+/// Only what DuckDB's binder can fold is folded here (`bind_foldable`): our
+/// fold dead-arm-eliminates a CASE holding a COLUMN, which DuckDB's binder
+/// does not, and folding it at bind time typed
+/// `- (CASE WHEN false THEN x END) || 'y'` INTEGER where DuckDB answers
+/// VARCHAR. Such an operand stays live here; the projection's own fold
+/// still simplifies it after typing.
 fn fold_operand(e: SExpr) -> (SExpr, bool) {
+    if !bind_foldable(&e) {
+        return (e, false);
+    }
     let e = fold(e);
     let is_null = matches!(e.kind, SKind::NullOf);
     (e, is_null)
