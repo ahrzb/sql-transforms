@@ -1760,7 +1760,8 @@ impl DuckDBInferFn {
                     crate::specializer::frontend::row_limit_clause(&sql)
                 {
                     return Err(build_err(format!(
-                        "unsupported: row limit ({clause}) on a                          static-tables-only query -- which rows survive                          depends on scan order, not the query"
+                        "unsupported: row limit ({clause}) on a static-tables-only query -- \
+                         which rows survive depends on scan order, not the query"
                     )));
                 }
                 match eval_static_only(py, &sql, &static_tables) {

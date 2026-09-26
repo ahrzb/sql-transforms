@@ -6,11 +6,7 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **gap: bench-baseline-flip.** `spec` is 1.2–1.7× slower than the
-   `python_dict` twin at n=64 (readings N=2, N=3). Bisect `bench_serving`
-   against `a6fa318`: a clean bisect leaves only the baseline's change of
-   identity; a regression gets fixed.
-2. **Actionable refusals.** 53% of refusals say what to do (reading N=3).
+1. **Actionable refusals.** 53% of refusals say what to do (reading N=3).
    Walk the largest classes that do not (derived tables, CTEs, DISTINCT,
    ORDER BY, row limits) and add the concrete alternative where one exists.
 

@@ -4969,7 +4969,7 @@ impl Binder<'_> {
                     )
                 }));
             }
-            return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
+            return Err(PrepareError::Bind(format!("ambiguous column '{name}' (qualify it)")));
         }
         match hits.len() {
             // The REAL column wins over a same-named select alias (measured
@@ -5018,7 +5018,7 @@ impl Binder<'_> {
                     "column '{name}' does not exist in scope"
                 )))
             }
-            _ => Err(PrepareError::Bind(format!("ambiguous column '{name}'"))),
+            _ => Err(PrepareError::Bind(format!("ambiguous column '{name}' (qualify it)"))),
         }
     }
 
@@ -5030,7 +5030,7 @@ impl Binder<'_> {
             for (i, c) in self.in_cols[..self.n_plain].iter().enumerate() {
                 if c.name.eq_ignore_ascii_case(name) {
                     if hit.is_some() {
-                        return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
+                        return Err(PrepareError::Bind(format!("ambiguous column '{name}' (qualify it)")));
                     }
                     hit = Some((i, c));
                 }
@@ -5082,7 +5082,7 @@ impl Binder<'_> {
                     .eq_ignore_ascii_case(name)
                 {
                     if hit.is_some() {
-                        return Err(PrepareError::Bind(format!("ambiguous column '{name}'")));
+                        return Err(PrepareError::Bind(format!("ambiguous column '{name}' (qualify it)")));
                     }
                     hit = Some(pos);
                 }

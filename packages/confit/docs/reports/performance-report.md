@@ -70,7 +70,20 @@ House_prices:
 
 Confit's per-row cost is flat from n=1,024 upward (~3–6 µs/row depending on scenario). DuckDB's per-row cost falls three orders of magnitude as its fixed cost amortises and its parallelism engages, crossing Confit at ~4k rows/call on titanic, fraud_txn and store_sales, and between 4k and 16k on house_prices. At the top end DuckDB wins by ~5× (titanic n=262,144: 700 vs 4,085 ns/row).
 
-## 6. Methodology
+## 6. The engine against the Python twins, `a6fa318` to master
+
+The serving table of 2026-08-04 (`a6fa318`) called the engine 1.5–1.7× faster than "a handwritten Python twin". That twin was the typed-model `python` row, since retired; the surviving `python_dict` row returns plain dicts. Measured on one Linux x86_64 machine, release builds of both commits, `bench_serving`, p50 per call at n=64 (2026-09-26):
+
+| scenario | `a6fa318` `spec` | master `spec` (2 runs) | `a6fa318`: `spec` / `python` | `a6fa318`: `spec` / `python_dict` | master: `spec` / `python_dict` |
+|---|---|---|---|---|---|
+| titanic | 322–329 µs | 263 / 280 µs | 0.74 | 1.91 | 1.65–1.75 |
+| house_prices | 429–443 µs | 382 / 387 µs | 0.57 | 1.39 | 1.23–1.25 |
+| fraud_txn | 611–634 µs | 556 / 569 µs | 0.66 | 1.52 | 1.38–1.47 |
+| store_sales | 618–634 µs | 541 / 556 µs | 0.81 | 1.83 | 1.60–1.64 |
+
+The engine got 9–19% faster between the two commits. Against the typed-model twin it was 1.24–1.75× faster at `a6fa318`; against the plain-dict twin it was already 1.39–1.91× slower there and is 1.23–1.75× slower on master. The direction changed because the baseline changed — the typed-model twin costs 2.3–2.6× the dict twin — not because the engine regressed. (`a6fa318`'s harness measured `python_dict` but did not print it; its `--json` output carries the row.)
+
+## 7. Methodology
 
 All figures are p50 wall-clock per call on release builds. `benchmarks/bench_serving.py` samples under a 3-second-per-cell budget with a 30-sample minimum (so the ms-scale DuckDB rows cannot starve the sample count); `scripts/bench_scaling.py` uses a 0.5–2 s budget, 5-iteration minimum, 400 maximum. The parity gate runs before any timing.
 
