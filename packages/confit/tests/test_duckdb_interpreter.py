@@ -19,6 +19,7 @@ from confit.oracle import Oracle
 
 _ARROW = {
     "int": pa.int64(),
+    "int32": pa.int32(),
     "float": pa.float64(),
     "str": pa.string(),
     "bool": pa.bool_(),
@@ -745,14 +746,13 @@ def test_in_strings_and_bools():
         {"s": "str?"},
         [{"s": "a"}, {"s": "A"}, {"s": None}],
     )
-    # BOOLEAN comparison stays the engine's pre-existing clean limit, so
-    # bool IN/BETWEEN desugar into it and reject by name.
-    with pytest.raises(ValueError, match="comparison on BOOLEAN"):
-        DuckDBInferFn(
-            "SELECT p IN (true) AS r FROM __THIS__",
-            row_tables={"__THIS__": _row_schema({"p": "bool?"})},
-            static_tables={},
-        )
+    # bool IN/BETWEEN desugar into BOOLEAN comparison, which serves.
+    duck_check(
+        "SELECT p IN (true) AS r, p IN (false, NULL) AS rn, "
+        "p BETWEEN false AND true AS b FROM __THIS__",
+        {"p": "bool?"},
+        [{"p": True}, {"p": False}, {"p": None}],
+    )
 
 
 # ---------------------------------------------------- wave-1 math builtins --
@@ -1719,3 +1719,73 @@ def test_like_dangling_escape_is_data_dependent():
             static_tables={},
         )
         fn.infer_rows([{"s": "ax"}])
+
+
+# BOOLEAN comparisons. DuckDB orders false < true, propagates NULL, and
+# compares a BOOLEAN against an integer by CAST(bool AS INTEGER) -- the
+# EXPLAIN shows `(CAST(a AS INTEGER) = i)` (measured 2026-09-26). Against a
+# DOUBLE column DuckDB refuses at bind, and so do we.
+_BOOLS = [
+    {"a": True, "b": False, "i": 2},
+    {"a": False, "b": False, "i": -1},
+    {"a": True, "b": True, "i": 1},
+    {"a": None, "b": True, "i": 0},
+    {"a": False, "b": None, "i": 0},
+]
+
+
+def test_boolean_comparisons_differential():
+    duck_check(
+        "SELECT a < b AS lt, a <= b AS le, a > b AS gt, a >= b AS ge, "
+        "a = b AS eq, a <> b AS ne, "
+        "a = true AS t, false < a AS f, (i > 0) = a AS nested FROM __THIS__",
+        {"a": "bool?", "b": "bool?", "i": "int"},
+        _BOOLS,
+    )
+
+
+def test_boolean_against_integer_casts_the_boolean_differential():
+    duck_check(
+        "SELECT a = i AS eq, a < i AS lt, i >= a AS ge, a = 1 AS one, "
+        "true = 2 AS two FROM __THIS__",
+        {"a": "bool?", "b": "bool?", "i": "int"},
+        _BOOLS,
+    )
+
+
+def test_boolean_against_double_refuses_at_bind_like_duckdb():
+    with pytest.raises(ValueError, match="bind error: cannot compare BOOLEAN"):
+        DuckDBInferFn(
+            "SELECT a = d AS x FROM __THIS__",
+            row_tables={
+                "__THIS__": pa.schema([("a", pa.bool_()), ("d", pa.float64())])
+            },
+            static_tables={},
+        )
+
+
+def test_a_negated_decimal_zero_has_no_sign_differential():
+    # DuckDB types `0.0` DECIMAL, which has no negative zero: -0.0, -(0.0) and
+    # -(1.5 - 1.5) are +0.0 once cast to DOUBLE. Negating a DOUBLE keeps the
+    # sign: -0.0::DOUBLE is -(0.0::DOUBLE) and -0.0e0 is a DOUBLE literal.
+    duck_check(
+        "SELECT CAST(-0.0 AS VARCHAR) AS a, CAST(-(0.0) AS DOUBLE) AS b, "
+        "CAST(CAST(-(1.5 - 1.5) AS DOUBLE) AS VARCHAR) AS c, "
+        "CAST(-0.0::DOUBLE AS VARCHAR) AS d, CAST(-0.0e0 AS VARCHAR) AS e, "
+        "CAST(-(x) AS VARCHAR) AS f FROM __THIS__",
+        {"x": "float"},
+        [{"x": 0.0}, {"x": 2.5}],
+    )
+
+
+def test_a_foldable_null_argument_makes_the_whole_call_null_differential():
+    # DuckDB's binder folds a constant-NULL argument of a default-NULL-handling
+    # function into a NULL call, so the other arguments never run: here
+    # c0 + c0 overflows INT32 on the last row, yet every answer is NULL.
+    duck_check(
+        "SELECT lpad(CAST(NULL AS VARCHAR), c0 + c0, 'a') AS a, "
+        "lpad(CASE WHEN TRUE THEN NULL ELSE 'x' END, c0 + c0, 'a') AS b, "
+        "repeat(CAST(NULL AS VARCHAR), c0 + c0) AS c FROM __THIS__",
+        {"c0": "int32?"},
+        [{"c0": 1}, {"c0": None}, {"c0": 2147483647}],
+    )

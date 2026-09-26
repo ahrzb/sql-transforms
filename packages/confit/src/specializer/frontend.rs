@@ -3246,7 +3246,30 @@ impl Binder<'_> {
                     if is_null {
                         return Ok(null_of(Ty::F64));
                     }
-                    return Ok(math1_node(NumOp1::Fneg, inner));
+                    let neg = math1_node(NumOp1::Fneg, inner);
+                    // DuckDB types a decimal-spelled operand DECIMAL, and a
+                    // DECIMAL has no negative zero: -0.0 and -(1.5 - 1.5)
+                    // are +0.0 once they reach a DOUBLE. Adding +0.0 after
+                    // the sign flip is exactly that (IEEE: -0.0 + 0.0 is
+                    // +0.0, every other value is unchanged). A DOUBLE operand
+                    // (-0.0e0, -0.0::DOUBLE, a column) keeps its sign.
+                    if ast_decimal_typed(expr) {
+                        let nullable = neg.nullable;
+                        return Ok(SExpr {
+                            kind: SKind::Arith {
+                                op: ArithOp::Add,
+                                a: Box::new(neg),
+                                b: Box::new(SExpr {
+                                    kind: SKind::Lit(Lit::F64(0.0)),
+                                    ty: Ty::F64,
+                                    nullable: false,
+                                }),
+                            },
+                            ty: Ty::F64,
+                            nullable,
+                        });
+                    }
+                    return Ok(neg);
                 }
                 let zero = SExpr {
                     kind: SKind::Lit(Lit::I64(0)),
@@ -5352,17 +5375,25 @@ impl Binder<'_> {
             // and the comparison is lossy — DuckDB's loss, reproduced.
             (Ty::Dec(..), Ty::F64) => (dec_to_float(a), b),
             (Ty::F64, Ty::Dec(..)) => (a, dec_to_float(b)),
+            // BOOLEAN vs an integer: DuckDB casts the BOOLEAN to INTEGER
+            // (EXPLAIN: `CAST(a AS INTEGER) = i`), so it compares as 0/1 in
+            // the integer lane. Against DOUBLE it refuses at bind, below.
+            (Ty::I1, y) if y.is_int() => (bool_to_int(a), b),
+            (x, Ty::I1) if x.is_int() => (a, bool_to_int(b)),
             (x, y) => {
                 return Err(PrepareError::Bind(format!(
                     "cannot compare {} with {}",
-                    x.name(),
-                    y.name()
+                    duck_ty_name(x),
+                    duck_ty_name(y)
                 )))
             }
         };
-        if a.ty == Ty::I1 {
-            return Err(unsup("comparison on BOOLEAN"));
-        }
+        // BOOLEAN vs BOOLEAN orders false < true: compare as 0/1.
+        let (a, b) = if a.ty == Ty::I1 {
+            (bool_to_int(a), bool_to_int(b))
+        } else {
+            (a, b)
+        };
         // NO constant shift and NO NULL-operand elision here, both
         // deliberately, and both lived here once.
         //
@@ -6302,6 +6333,14 @@ impl Binder<'_> {
                 unreachable!("no WholeCallNull table row uses these")
             }
         };
+        // Not only a bare NULL: DuckDB's binder evaluates every FOLDABLE
+        // argument of a default-NULL-handling function and, if one is NULL,
+        // replaces the whole call with a NULL of its return type -- so the
+        // other arguments never run. Measured: lpad(CAST(NULL AS VARCHAR),
+        // c0.f0 + c0.f0, 'a') is NULL where c0.f0 + c0.f0 overflows INT32.
+        if out.iter().any(folds_to_null) {
+            return Ok(SigArgs::Null(null_of(ret)));
+        }
         Ok(SigArgs::Bound(out, ret))
     }
 
@@ -6964,6 +7003,9 @@ impl Binder<'_> {
                         bn.ty.name()
                     )));
                 }
+                if folds_to_null(&bs) || folds_to_null(&bn) {
+                    return Ok(null_of(Ty::Str));
+                }
                 refuse_budget_breaking_count(&name, &bn)?;
                 let nullable = bs.nullable || bn.nullable;
                 Ok(SExpr {
@@ -7053,6 +7095,11 @@ impl Binder<'_> {
                 }
                 if !count_is_int32(&bl) {
                     return Err(PrepareError::Bind(bad_count));
+                }
+                // After the overload gates, before the budget: a foldable NULL
+                // argument makes the call NULL at bind (see `folds_to_null`).
+                if [&bs, &bl, &bp].into_iter().any(folds_to_null) {
+                    return Ok(null_of(Ty::Str));
                 }
                 refuse_budget_breaking_count(&name, &bl)?;
                 let nullable = bs.nullable || bl.nullable || bp.nullable;
@@ -8203,6 +8250,29 @@ fn ast_decimal_literal(e: &SqlExpr) -> bool {
     }
 }
 
+/// Whether DuckDB types `e` DECIMAL: a decimal-spelled literal (see
+/// [`ast_decimal_literal`]), or `+`/`-`/`*` over decimal-typed operands and
+/// integer literals with at least one decimal side.
+fn ast_decimal_typed(e: &SqlExpr) -> bool {
+    match e {
+        SqlExpr::Nested(inner) => ast_decimal_typed(inner),
+        SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => ast_decimal_typed(expr),
+        SqlExpr::BinaryOp { left, op, right }
+            if matches!(
+                op,
+                BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Multiply
+            ) =>
+        {
+            let side = |x: &SqlExpr| ast_decimal_typed(x) || ast_int_literal(x).is_some();
+            (ast_decimal_typed(left) || ast_decimal_typed(right)) && side(left) && side(right)
+        }
+        e => ast_decimal_literal(e),
+    }
+}
+
 /// The value of a SYNTACTIC integer literal, from the SQL AST: a bare
 /// Number, optionally under parentheses or unary MINUS. Never unary plus
 /// (DuckDB's `+` is a real function that erases literal-ness), never a
@@ -8248,6 +8318,44 @@ fn duck_int_name(t: Ty) -> &'static str {
         Ty::I32 => "INTEGER",
         Ty::F64 => "DOUBLE",
         _ => "BIGINT",
+    }
+}
+
+/// Whether DuckDB's binder would fold `e` to NULL: a foldable argument that
+/// evaluates to NULL turns a default-NULL-handling call into a NULL of its
+/// return type at bind, so its other arguments never run.
+fn folds_to_null(e: &SExpr) -> bool {
+    bind_foldable(e) && matches!(fold(e.clone()).kind, SKind::NullOf)
+}
+
+/// A BOOLEAN as the INTEGER DuckDB casts it to for a comparison: 0 or 1,
+/// NULL staying NULL. A typed NULL retypes, like `promote_f64`.
+fn bool_to_int(e: SExpr) -> SExpr {
+    if matches!(e.kind, SKind::NullOf) {
+        return SExpr {
+            kind: SKind::NullOf,
+            ty: Ty::I64,
+            nullable: true,
+        };
+    }
+    let nullable = e.nullable;
+    SExpr {
+        kind: SKind::Cast {
+            inner: Box::new(e),
+            trying: false,
+        },
+        ty: Ty::I64,
+        nullable,
+    }
+}
+
+/// DuckDB's name for a type, for bind-error messages.
+fn duck_ty_name(t: Ty) -> String {
+    match t {
+        Ty::I1 => "BOOLEAN".into(),
+        Ty::Str => "VARCHAR".into(),
+        Ty::Dec(p, s) => format!("DECIMAL({p},{s})"),
+        t => duck_int_name(t).into(),
     }
 }
 

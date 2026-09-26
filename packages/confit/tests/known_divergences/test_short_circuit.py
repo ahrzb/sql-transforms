@@ -211,9 +211,10 @@ def test_selection_context_matches_the_oracle(sql, oracle):
         )
     except ValueError:
         # A named BUILD refusal is contract-legal exactly where the oracle
-        # does not serve either ((b AND t) = TRUE and the nullif spelling
-        # refuse "comparison on BOOLEAN" today). Where the oracle SERVES, a
-        # refusal is a cost this matrix must show, so only "T" absorbs it.
+        # does not serve either. Where the oracle SERVES, a refusal is a
+        # cost this matrix must show, so only "T" absorbs it. (The
+        # (b AND t) = TRUE spellings refused "comparison on BOOLEAN" until
+        # 2026-09-26; they now build and are compared like the rest.)
         assert want[0] == "T", f"{sql}: refused where the oracle serves"
         return
     try:
