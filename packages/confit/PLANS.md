@@ -4,14 +4,6 @@ Open work only: gaps, defects, proposals and open questions. Facts about what
 Confit does today live in `docs/`; this file lists only what it does not do yet.
 Remove an item when it lands.
 
-## Correctness defects (served wrong, not refused)
-
-- **Dead `CASE` arms over-fold at bind time.** `(CASE WHEN false THEN x END)`
-  with a column `x` folds to a bare NULL, which skips the `||` binder's
-  `bind_foldable` gate. The result is typed INTEGER instead of VARCHAR, and
-  `abs`/unary minus then serve where DuckDB's binder refuses. Pinned
-  xfail-strict in `tests/test_open_divergences.py`.
-
 ## SQL surface gaps (refused, DuckDB serves)
 
 - **Row-local CTEs, scalar/correlated/`IN` subqueries, derived tables
