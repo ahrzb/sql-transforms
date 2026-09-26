@@ -151,12 +151,19 @@ def report(results: list[dict], out: Path):
     for k, c in kinds.most_common():
         print(f"  {k:14} {c}")
 
-    refusals = collections.Counter(
-        r["klass"] for r in results if r["kind"] == "REFUSED"
-    )
-    print("\n== top refusal classes ==")
-    for k, c in refusals.most_common(15):
-        print(f"  {c:6}  {k}")
+    # Refusals keep the baseline's outcome for the same query. Grouped by it,
+    # "DuckDB serves, we refuse" is the cost side of each refusal class; it
+    # is reporting, not a finding, so nothing here reaches `out`.
+    refused = [r for r in results if r["kind"] == "REFUSED"]
+    by_outcome = collections.Counter(r.get("oracle", "unknown") for r in refused)
+    print("\n== refusals by oracle outcome ==")
+    for outcome, n in by_outcome.most_common():
+        print(f"  {outcome:14} {n}")
+        classes = collections.Counter(
+            r["klass"] for r in refused if r.get("oracle", "unknown") == outcome
+        )
+        for k, c in classes.most_common(15):
+            print(f"    {c:6}  {k}")
 
     cover = collections.Counter(
         t for r in results if r["kind"] in COVERED for t in r["tags"]

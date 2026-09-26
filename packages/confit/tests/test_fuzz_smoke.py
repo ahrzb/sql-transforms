@@ -257,3 +257,19 @@ def test_opt_emulated_is_final_and_no_self_leg_replaces_it(monkeypatch):
     monkeypatch.setattr(oracle, "_extra_legs", poisoned_leg)
     v = oracle.run_case(gen.gen(seed))
     assert v.kind == "OPT_EMULATED", v
+
+
+def test_a_refusal_keeps_the_oracle_outcome_it_already_computed():
+    """REFUSED carries what the baseline reading did with the same query —
+    served rows, rejected it at bind/build, or trapped at run time — so the
+    campaign can report the cost of each refusal instead of discarding it."""
+    outcomes = set()
+    for seed in range(N):
+        v = oracle.run_case(gen.gen(seed))
+        if v.kind == "REFUSED":
+            assert v.oracle in oracle.ORACLE_OUTCOMES, v
+            assert v.to_json()["oracle"] == v.oracle
+            outcomes.add(v.oracle)
+        else:
+            assert v.oracle == "", v
+    assert "serves" in outcomes, outcomes
