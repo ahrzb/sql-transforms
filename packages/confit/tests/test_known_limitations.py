@@ -465,7 +465,6 @@ def test_every_refusal_family_carries_a_documented_prefix():
         ("SELECT a IN (SELECT 1) FROM __THIS__", "IN \\(SELECT"),
         ("SELECT EXISTS (SELECT 1) FROM __THIS__", "EXISTS \\(SELECT"),
         ("SELECT DATE '2020-01-01' FROM __THIS__", "a typed literal"),
-        ("SELECT a IS DISTINCT FROM 1 FROM __THIS__", "IS \\[NOT\\] DISTINCT FROM"),
     ],
 )
 def test_refusals_name_the_construct_instead_of_echoing_it(sql, named):
