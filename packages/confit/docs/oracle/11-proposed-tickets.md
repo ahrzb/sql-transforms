@@ -82,7 +82,7 @@ They are not owner-decision blockers for the settled contract.
 | ~~**ticket: coverage-triples**~~ done | Report `(operator, argument-type, edge-class)` coverage; no universal coverage-metadata scheme was adopted |
 | ~~**ticket: per-kind-abstention-report**~~ done | Choose a reporting format for unanswered cases, preserve SQL before execution, and attribute timeout side; audit codes remain internal |
 | **ticket: convert-unrunnable-pins** | Inventory and convert old pins that cannot be replayed mechanically; do not rewrite history as a fresh run |
-| **ticket: mined-corpus-stamp** | Add provenance during future corpus mining; existing optimizer-on expectations do not become optimizer-off evidence |
+| ~~**ticket: mined-corpus-stamp**~~ done | Add provenance during future corpus mining; existing optimizer-on expectations do not become optimizer-off evidence |
 | ~~**ticket: verdict-tuple-test**~~ done | Historical name for missing finding/coverage checks; prefer observable reporting regressions over assertions about tuple membership |
 
 ## Closed or superseded mechanisms

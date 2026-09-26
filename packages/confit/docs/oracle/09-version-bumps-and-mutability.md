@@ -48,7 +48,13 @@ support a narrower purpose only when that purpose and provenance are explicit.
 
 *Evidence:* `scripts/mine_duckdb_corpus.py:1-12, :111`;
 `tests/corpus/duckdb_mined.jsonl` (678 lines and no provenance field when measured
-2026-08-25). Proposed **ticket: mined-corpus-stamp** records the missing metadata.
+2026-08-25). Future mining runs write `duckdb_mined.provenance.json` beside the corpus —
+date, DuckDB version, settings profile (optimizer on, fresh default connection per
+file, threads), clone and miner revisions, mined directories and counts (**ticket:
+mined-corpus-stamp**, done; `scripts/mine_duckdb_corpus.py::provenance`,
+`tests/test_mined_corpus_stamp.py`). The current corpus predates the stamp and is not
+backfilled, and a stamp saying optimizer on does not turn its rows into optimizer-off
+evidence.
 
 ## Proposed re-recording discipline
 

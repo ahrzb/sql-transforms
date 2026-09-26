@@ -20,6 +20,13 @@ set ops, subqueries). It deliberately keeps SQL beyond the v0 builtin list
 *cleanly* today, and each one the engine learns flips from clean-unsupported to
 must-match — the corpus is the growth ladder, not a fixed pass bar.
 
+Provenance: each run also writes `duckdb_mined.provenance.json` beside the
+corpus — date, DuckDB version, the settings profile the expected rows were
+computed under (a fresh default connection per file: OPTIMIZER ON, so these
+rows are not observations of the optimizer-off oracle), the clone's and this
+script's revisions, the mined directories, and the counts. A corpus file with
+no stamp predates this and must not be given one after the fact.
+
 ponytail: line-oriented parse, no real sqllogictest grammar. Files using
 directives we don't model (require, loop, mode, ...) are skipped whole; a
 mis-parsed edge case at worst drops a case, never fabricates one, because every
@@ -28,8 +35,11 @@ kept SQL is re-executed by DuckDB before it is recorded.
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +60,7 @@ CORPUS_DIRS = [
     "function/operator",
 ]
 OUT = REPO / "packages" / "confit" / "tests" / "corpus" / "duckdb_mined.jsonl"
+STAMP = OUT.with_name("duckdb_mined.provenance.json")
 
 # A whole file is skipped when it uses machinery the replayer doesn't model.
 FILE_SKIP = re.compile(
@@ -152,6 +163,46 @@ def mine_file(path: Path, rel: str, out) -> tuple[int, int]:
     return kept, seen
 
 
+def _git(cwd: Path, *args: str) -> str:
+    try:
+        return subprocess.run(  # noqa: S603 — fixed argv
+            ["git", *args],  # noqa: S607
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def provenance(kept: int, seen: int, files: int) -> dict:
+    """The stamp a mining run writes: what produced the expected rows."""
+    con = duckdb.connect()
+    try:
+        threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+    finally:
+        con.close()
+    return {
+        "date": datetime.date.today().isoformat(),
+        "duckdb": duckdb.__version__,
+        "settings": {
+            "connection": "fresh duckdb.connect() per source file, defaults",
+            "optimizer": "on",
+            "threads": threads,
+        },
+        "expected_rows": "recomputed by DuckDB at mining time; the files' own "
+        "expected blocks are ignored",
+        "duckdb_clone_revision": _git(REPO / "duckdb", "rev-parse", "HEAD"),
+        "miner_revision": _git(REPO, "rev-parse", "HEAD"),
+        "miner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16],
+        "dirs": CORPUS_DIRS,
+        "kept": kept,
+        "seen": seen,
+        "files": files,
+    }
+
+
 def main() -> int:
     root = REPO / "duckdb" / "test" / "sql"
     if not root.is_dir():
@@ -170,8 +221,11 @@ def main() -> int:
                 total_seen += seen
                 files += 1
             print(f"{d:24s} +{dir_kept}")
+    stamp = provenance(total_kept, total_seen, files)
+    STAMP.write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
     print(f"\n{total_kept} cases kept / {total_seen} queries seen / {files} files")
     print(f"-> {OUT.relative_to(REPO)}")
+    print(f"-> {STAMP.relative_to(REPO)}")
     return 0
 
 
