@@ -90,3 +90,36 @@ def test_the_drift_manifest_names_real_pins_and_this_reference():
 def test_a_replayable_pin_answers_and_a_prose_table_does_not():
     assert PC.answer([], ["SELECT 1 + 1 AS v"]) == ["['INTEGER'] [(2,)]"]
     assert PC.answer([], ["SELECT x FROM table_only_in_prose"]) is None
+
+
+def test_a_converted_pin_reproduces_what_it_recorded():
+    """A typed input_repr turned into CREATE + INSERT must rebuild the table
+    the capture saw: every converted pin with a recorded result_repr answers
+    it exactly (the floats go through text, so -0.0 keeps its sign)."""
+    m = json.loads(PC.REPLAY.read_text(encoding="utf-8"))
+    checked = 0
+    for key, v in m["setups"].items():
+        if v["from"] != "input_repr":
+            continue
+        rel, ptr = key.split("#")
+        d = json.loads((PC.PINS / rel).read_text(encoding="utf-8"))
+        entry = PC.resolve(d, ptr.rsplit("/", 1)[0])[0]
+        if entry.get("result_repr") is None:
+            continue
+        (got,) = PC.answer(v["setup"], PC.statements(entry["sql"]))[:1]
+        rows = got.split("] ", 1)[1]
+        env = {"__builtins__": {}, "nan": float("nan"), "inf": float("inf")}
+        vals = [r[0] for r in eval(rows, env)]  # noqa: S307 — our own repr
+        rec = entry["result_repr"]
+        assert repr(vals) == rec or (len(vals) == 1 and repr(vals[0]) == rec), key
+        checked += 1
+    assert checked >= 160
+
+
+def test_every_pin_is_replayed_or_inventoried_with_a_reason():
+    m = json.loads(PC.REPLAY.read_text(encoding="utf-8"))
+    total = sum(
+        1 for p in FILES for _ in PC.pin_queries(json.loads(p.read_text("utf-8")))
+    )
+    assert sum(m["_meta"]["counts"].values()) == total
+    assert all(k.startswith("pins-") and "#/" in k for k in m["setups"])

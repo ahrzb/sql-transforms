@@ -23,8 +23,22 @@ pin-provenance.
 requires mechanical replay. The 53 pin files used 21 top-level shapes; claims appeared
 under `probes`, `pins`, `findings`, or domain keys; SQL fields used `query`, `sql`, `q`,
 or `expr`; setup often lived in prose; and only `pins-dialect/probe_joins.py` supplied a
-nearby replay harness. Proposed **ticket: convert-unrunnable-pins** tracks the inventory
-and conversion.
+nearby replay harness.
+
+**claim: pin-conversion.** Old pins are made replayable without being rewritten
+(**ticket: convert-unrunnable-pins**, done 2026-09-26). `scripts/pin_corpus.py convert`
+derives setup statements where a pin states its tables mechanically — its own `setup`,
+the file's shared `setup`, or a typed `input_repr` such as `t(a BIGINT); rows=[(7,)]` —
+and writes them to `docs/specs/pins-replay.json` keyed by JSON pointer; pin files are
+untouched, and a replay under today's oracle is not a fresh run of the original capture.
+Of 1927 pin queries: 625 replay as written, 278 are converted (181 from `input_repr`,
+97 from stated setups), and the rest are inventoried with a reason — 460 untyped
+`input_repr` values (a bare value names no column and no type), 356 tables described
+only in prose, and 208 in files whose engine is not DuckDB or is unstated. All 160
+converted pins that recorded a `result_repr` reproduce it exactly.
+
+*Enforced-by:* `packages/confit/tests/test_pin_corpus.py::test_a_converted_pin_reproduces_what_it_recorded`
+and `::test_every_pin_is_replayed_or_inventoried_with_a_reason`.
 
 **claim: capture-outside-the-oracle.** **[FACT, measured 2026-08-25]**
 `gen_casemap.py`, `gen_pow10.py`, `gen_strip_accents.py`, and
@@ -71,8 +85,9 @@ mechanically is re-run on a fresh `Oracle` and its answer written to
 `docs/specs/pins-drift.json`, which carries the DuckDB version and platform but no date,
 so an unchanged reference re-runs to an identical file and a changed one shows up as the
 file's `git diff`. A query answering differently on two runs is recorded `<unstable>`
-(the one today is `uuid()`). On 2026-09-26, 640 of 1927 pin queries replay; the rest need
-tables that exist only in prose (claim: pin-re-runnability). The tool is manual, not a
+(the one today is `uuid()`). Only files whose header engine is DuckDB are replayed; with
+the converted setups (claim: pin-conversion), 903 of their 1719 queries replay on
+2026-09-26. The tool is manual, not a
 gate: platform-marked fields legitimately differ across platforms, and each changed
 answer still needs the review this chapter describes.
 

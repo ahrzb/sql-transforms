@@ -68,7 +68,8 @@ were applied on 2026-09-26.
 ## Deferred implementation proposals
 
 These mechanisms were not blanket-adopted by resolving the policy questions.
-They are not owner-decision blockers for the settled contract.
+They are not owner-decision blockers for the settled contract. All twelve were
+implemented on 2026-09-26 on explicit owner request, each as its own PR.
 
 | Ticket | Proposed mechanism and boundary |
 |---|---|
@@ -81,7 +82,7 @@ They are not owner-decision blockers for the settled contract.
 | ~~**ticket: match-count-single-home**~~ done | Generate dated display counts in one place; the adopted floor policy does not require generated documentation |
 | ~~**ticket: coverage-triples**~~ done | Report `(operator, argument-type, edge-class)` coverage; no universal coverage-metadata scheme was adopted |
 | ~~**ticket: per-kind-abstention-report**~~ done | Choose a reporting format for unanswered cases, preserve SQL before execution, and attribute timeout side; audit codes remain internal |
-| **ticket: convert-unrunnable-pins** | Inventory and convert old pins that cannot be replayed mechanically; do not rewrite history as a fresh run |
+| ~~**ticket: convert-unrunnable-pins**~~ done | Inventory and convert old pins that cannot be replayed mechanically; do not rewrite history as a fresh run |
 | ~~**ticket: mined-corpus-stamp**~~ done | Add provenance during future corpus mining; existing optimizer-on expectations do not become optimizer-off evidence |
 | ~~**ticket: verdict-tuple-test**~~ done | Historical name for missing finding/coverage checks; prefer observable reporting regressions over assertions about tuple membership |
 

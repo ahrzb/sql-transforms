@@ -3,8 +3,8 @@
   "duckdb": "1.5.5",
   "reference": "confit.oracle.Oracle (optimizer off), fresh per pin",
   "platform": "Linux x86_64",
-  "replayed": 640,
-  "not_replayable": 1287
+  "replayed": 903,
+  "not_replayable": 816
  },
  "answers": {
   "pins-dialect/aggregate-tiers.json#/pins/0/query": [
@@ -241,69 +241,6 @@
   "pins-dialect/sort-window-defaults.json#/pins/6/query": [
    "['INTEGER', 'HUGEINT'] [(1, 30), (1, 30), (2, 5)]"
   ],
-  "pins-dialect/spark-ansi.json#/pins/0/query": [
-   "['INTEGER'] [(1,), (2,), (None,)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/1/query": [
-   "['INTEGER'] [(2,), (1,), (None,)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/2/query": [
-   "['INTEGER'] [(1,), (2,), (None,)]",
-   "['INTEGER'] [(None,), (2,), (1,)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/3/query": [
-   "['INTEGER', 'INTEGER', 'HUGEINT'] [(1, 10, 30), (1, 20, 30), (2, 5, 35)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/4/query": [
-   "['VARCHAR'] [('B',), ('Z',), ('a',), ('e',), ('ss',), ('ß',), ('é',), ('☃',)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/5/query": [
-   "BinderException: Binder Error: Could not choose a best candidate function for the function call \"<=>(\"NULL\", \"NULL\")\". In order to select one, please add explicit type casts.",
-   "['BOOLEAN', 'BOOLEAN'] [(True, False)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/6/query": [
-   "ParserException: Parser Error: syntax error at or near \"2\""
-  ],
-  "pins-dialect/spark-ansi.json#/pins/7/query": [
-   "ParserException: Parser Error: syntax error at or near \"2\""
-  ],
-  "pins-dialect/spark-ansi.json#/pins/8/query": [
-   "OutOfRangeException: Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/9/query": [
-   "ConversionException: Conversion Error: Could not convert string 'x' to INT32",
-   "['INTEGER'] [(None,)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/10/query": [
-   "ConversionException: Conversion Error: Type INT64 with value 3000000000 can't be cast because the value is out of range for the destination type INT32",
-   "['INTEGER'] [(None,)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/11/query": [
-   "['BOOLEAN', 'VARCHAR'] [(True, 'DECIMAL(3,1)')]",
-   "ParserException: Parser Error: syntax error at or near \"+\""
-  ],
-  "pins-dialect/spark-ansi.json#/pins/12/query": [
-   "ParserException: Parser Error: syntax error at or near \"D\"",
-   "ParserException: Parser Error: syntax error at or near \"D\""
-  ],
-  "pins-dialect/spark-ansi.json#/pins/13/query": [
-   "ParserException: Parser Error: syntax error at or near \"L\"",
-   "ParserException: Parser Error: syntax error at or near \"L\""
-  ],
-  "pins-dialect/spark-ansi.json#/pins/14/query": [
-   "['DOUBLE'] [(inf,)]",
-   "ParserException: Parser Error: syntax error at or near \"0\"",
-   "['INTEGER'] [(None,)]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/15/query": [
-   "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/17/query": [
-   "['DECIMAL(3,0)', 'DECIMAL(3,0)'] [(Decimal('3'), Decimal('-3'))]"
-  ],
-  "pins-dialect/spark-ansi.json#/pins/18/query": [
-   "ParserException: Parser Error: syntax error at or near \"<\""
-  ],
   "pins-dialect/strings-operators.json#/pins/0/query": [
    "['VARCHAR'] [('B',), ('Z',), ('a',), ('e',), ('ss',), ('ß',), ('é',), ('☃',)]"
   ],
@@ -346,7 +283,514 @@
    "ParserException: Parser Error: syntax error at or near \"VARIANT\""
   ],
   "pins-stageB/order-contract.json#/pins/4/q": [
-   "InvalidInputException: Invalid Input Error: Python Object \"s\" of type \"str\" found on line \"/home/user/sql-transforms/scripts/pin_corpus.py:342\" not suitable for replacement scans."
+   "InvalidInputException: Invalid Input Error: Python Object \"s\" of type \"str\" found on line \"/home/user/sql-transforms/scripts/pin_corpus.py:492\" not suitable for replacement scans."
+  ],
+  "pins-wave3/math_tail.json#/probes/0/sql": [
+   "['BIGINT', 'VARCHAR'] [(9, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/1/sql": [
+   "['BIGINT', 'VARCHAR'] [(9, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/2/sql": [
+   "['BIGINT', 'VARCHAR'] [(5, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/3/sql": [
+   "['BIGINT', 'VARCHAR'] [(5, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/4/sql": [
+   "['BIGINT', 'VARCHAR'] [(14, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/5/sql": [
+   "['BIGINT', 'VARCHAR'] [(14, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/6/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/7/sql": [
+   "['BIGINT', 'VARCHAR'] [(3, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/8/sql": [
+   "['BIGINT', 'VARCHAR'] [(3, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/9/sql": [
+   "['BIGINT', 'VARCHAR'] [(1, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/10/sql": [
+   "['BIGINT', 'VARCHAR'] [(1, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/11/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/12/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/13/sql": [
+   "['DOUBLE', 'VARCHAR'] [(49.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/14/sql": [
+   "['DOUBLE', 'VARCHAR'] [(49.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/15/sql": [
+   "['DOUBLE', 'VARCHAR'] [(49.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/16/sql": [
+   "['DOUBLE', 'VARCHAR'] [(49.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/17/sql": [
+   "['BIGINT', 'VARCHAR'] [(5, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/18/sql": [
+   "['BIGINT', 'VARCHAR'] [(7, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/19/sql": [
+   "['BIGINT', 'VARCHAR'] [(-7, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/20/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/21/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT64 (9223372036854775807 + 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/22/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in subtraction of INT64 (-9223372036854775808 - 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/23/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in subtraction of INT64 (-9223372036854775808 - 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/24/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in multiplication of INT64 (9223372036854775807 * 2)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/25/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in multiplication of INT64 (9223372036854775807 * 2)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/26/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1"
+  ],
+  "pins-wave3/math_tail.json#/probes/27/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1"
+  ],
+  "pins-wave3/math_tail.json#/probes/28/sql": [
+   "['DOUBLE', 'VARCHAR'] [(9.223372036854776e+18, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/29/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1"
+  ],
+  "pins-wave3/math_tail.json#/probes/30/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in division of -9223372036854775808 / -1"
+  ],
+  "pins-wave3/math_tail.json#/probes/31/sql": [
+   "['BIGINT', 'VARCHAR'] [(-2, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/32/sql": [
+   "['BIGINT', 'VARCHAR'] [(-2, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/33/sql": [
+   "['BIGINT', 'VARCHAR'] [(-1, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/34/sql": [
+   "['BIGINT', 'VARCHAR'] [(-1, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/35/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/36/sql": [
+   "['DOUBLE', 'VARCHAR'] [(2.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/37/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-2.3333333333333335, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/38/sql": [
+   "['BIGINT', 'VARCHAR'] [(-2, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/39/sql": [
+   "['BIGINT', 'VARCHAR'] [(-2, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/40/sql": [
+   "['BIGINT', 'VARCHAR'] [(1, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/41/sql": [
+   "['BIGINT', 'VARCHAR'] [(1, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/42/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/43/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-2.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/44/sql": [
+   "['BIGINT', 'VARCHAR'] [(-3, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/45/sql": [
+   "['BIGINT', 'VARCHAR'] [(-3, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/46/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-4.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/47/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/48/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/49/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/50/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/51/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/52/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/53/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/54/sql": [
+   "['INTEGER', 'VARCHAR'] [(9, 'INTEGER')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/55/sql": [
+   "['INTEGER', 'VARCHAR'] [(3, 'INTEGER')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/56/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/57/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/58/sql": [
+   "OutOfRangeException: Out of Range Error: Overflow in addition of INT32 (2147483647 + 1)!"
+  ],
+  "pins-wave3/math_tail.json#/probes/59/sql": [
+   "['DOUBLE', 'VARCHAR'] [(9.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/60/sql": [
+   "['DOUBLE', 'VARCHAR'] [(9.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/61/sql": [
+   "['DOUBLE', 'VARCHAR'] [(5.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/62/sql": [
+   "['DOUBLE', 'VARCHAR'] [(5.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/63/sql": [
+   "['DOUBLE', 'VARCHAR'] [(14.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/64/sql": [
+   "['DOUBLE', 'VARCHAR'] [(14.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/65/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/66/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/67/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/68/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/69/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/70/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/71/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/72/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/73/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/74/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/75/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/76/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/77/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-4.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/78/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/79/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-1.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/80/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-1.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/81/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-3.75, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/82/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-3.75, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/83/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-4.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/84/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-0.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/85/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/86/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/87/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/88/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/89/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/90/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/91/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/92/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/93/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/94/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/95/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/96/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/97/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/98/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/99/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/100/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/101/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/102/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/103/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/104/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/105/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/106/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/107/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/108/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/109/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/110/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/111/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/112/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/113/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/114/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.30000000000000004, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/115/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.30000000000000004, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/116/sql": [
+   "['DOUBLE', 'VARCHAR'] [(9.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/117/sql": [
+   "['DOUBLE', 'VARCHAR'] [(9.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/118/sql": [
+   "['DOUBLE', 'VARCHAR'] [(2.8, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/119/sql": [
+   "['DOUBLE', 'VARCHAR'] [(2.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/120/sql": [
+   "['DOUBLE', 'VARCHAR'] [(2.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/121/sql": [
+   "['DOUBLE', 'VARCHAR'] [(2.8, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/122/sql": [
+   "['DOUBLE', 'VARCHAR'] [(2.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/123/sql": [
+   "['DOUBLE', 'VARCHAR'] [(2.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/124/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/125/sql": [
+   "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/126/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0000000000000002, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/127/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.9999999999999999, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/128/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-5e-324, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/129/sql": [
+   "['DOUBLE', 'VARCHAR'] [(5e-324, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/130/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/131/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/132/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/133/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.7976931348623157e+308, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/134/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/135/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/136/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/137/sql": [
+   "['DOUBLE', 'VARCHAR'] [(0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/138/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-0.0, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/139/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.0000000000000002, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/140/sql": [
+   "['FLOAT', 'VARCHAR'] [(1.0000001192092896, 'FLOAT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/141/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/142/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/143/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/144/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/145/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/146/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE'), (None, 'DOUBLE'), (None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/147/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE'), (None, 'DOUBLE'), (None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/148/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE'), (None, 'DOUBLE'), (None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/149/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/150/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE'), (None, 'DOUBLE'), (None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/151/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/152/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT'), (None, 'BIGINT'), (None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/153/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/154/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/155/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/156/sql": [
+   "['BIGINT', 'VARCHAR'] [(None, 'BIGINT')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/157/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/158/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/159/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/160/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/161/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'add(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/162/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/163/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types 'add(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/164/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/165/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/166/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/167/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts."
+  ],
+  "pins-wave3/math_tail.json#/probes/168/sql": [
+   "BinderException: Binder Error: No function matches the given name and argument types '+(VARCHAR, BIGINT)'. You might need to add explicit type casts."
   ],
   "pins-wave3/math_tail.json#/probes/169/sql": [
    "['DOUBLE', 'VARCHAR'] [(3.5, 'DOUBLE')]"
@@ -396,6 +840,39 @@
   "pins-wave3/math_tail.json#/probes/184/sql": [
    "['DOUBLE', 'VARCHAR'] [(1.0000000000000002, 'DOUBLE')]"
   ],
+  "pins-wave3/math_tail.json#/probes/185/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/186/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/187/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/188/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/189/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/190/sql": [
+   "['DOUBLE', 'VARCHAR'] [(1.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/191/sql": [
+   "['DOUBLE', 'VARCHAR'] [(nan, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/192/sql": [
+   "['DOUBLE', 'VARCHAR'] [(inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/193/sql": [
+   "['DOUBLE', 'VARCHAR'] [(None, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/194/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-inf, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/probes/195/sql": [
+   "['DOUBLE', 'VARCHAR'] [(-inf, 'DOUBLE')]"
+  ],
   "pins-wave3/math_tail.json#/probes/196/sql": [
    "['DOUBLE', 'VARCHAR'] [(3.0, 'DOUBLE')]"
   ],
@@ -407,6 +884,9 @@
   ],
   "pins-wave3/math_tail.json#/probes/199/sql": [
    "['DOUBLE', 'VARCHAR'] [(-0.5, 'DOUBLE')]"
+  ],
+  "pins-wave3/math_tail.json#/corrections/0/probes/0/sql": [
+   "['DOUBLE'] [(nan,), (nan,), (nan,), (nan,)]"
   ],
   "pins-wave3/similarity.json#/probes/0/sql": [
    "ParserException: Parser Error: syntax error at or near \"duckdb\""
@@ -600,6 +1080,246 @@
   "pins-wave3/varchar_subscripts.json#/probes/30/sql": [
    "['VARCHAR', 'VARCHAR', 'VARCHAR'] [('o', '', '')]"
   ],
+  "pins-wave4/comma_cross_star.json#/probes/0/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 2, 15), (2, 5, 'e', 2, 15)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/1/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 2, 15), (2, 5, 'e', 2, 15)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/2/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(2, 20, 'b', 2, 15)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/3/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(2, 20, 'b', 2, 15)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/4/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 1, 100), (3, 30, 'c', 1, 100), (None, 40, 'd', 1, 100), (2, 5, 'e', 1, 100), (1, 10, 'a', 2, 15), (2, 20, 'b', 2, 15), (3, 30, 'c', 2, 15), (None, 40, 'd', 2, 15), (2, 5, 'e', 2, 15), (1, 10, 'a', 4, 400), (2, 20, 'b', 4, 400), (3, 30, 'c', 4, 400), (None, 40, 'd', 4, 400), (2, 5, 'e', 4, 400)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/5/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 1, 100), (3, 30, 'c', 1, 100), (None, 40, 'd', 1, 100), (2, 5, 'e', 1, 100), (1, 10, 'a', 2, 15), (2, 20, 'b', 2, 15), (3, 30, 'c', 2, 15), (None, 40, 'd', 2, 15), (2, 5, 'e', 2, 15), (1, 10, 'a', 4, 400), (2, 20, 'b', 4, 400), (3, 30, 'c', 4, 400), (None, 40, 'd', 4, 400), (2, 5, 'e', 4, 400)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/6/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 1, 100), (3, 30, 'c', 1, 100), (None, 40, 'd', 1, 100), (2, 5, 'e', 1, 100), (1, 10, 'a', 2, 15), (2, 5, 'e', 2, 15), (1, 10, 'a', 4, 400), (2, 20, 'b', 4, 400), (3, 30, 'c', 4, 400), (None, 40, 'd', 4, 400), (2, 5, 'e', 4, 400)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/7/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 1, 100), (3, 30, 'c', 1, 100), (None, 40, 'd', 1, 100), (2, 5, 'e', 1, 100), (1, 10, 'a', 2, 15), (2, 5, 'e', 2, 15), (1, 10, 'a', 4, 400), (2, 20, 'b', 4, 400), (3, 30, 'c', 4, 400), (None, 40, 'd', 4, 400), (2, 5, 'e', 4, 400)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/8/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 11, None, None), (2, 21, None, None), (3, 31, None, None), (None, 41, None, None), (2, 6, None, None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/9/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER'] [(1, 10, 'a', None), (2, 20, 'b', None), (3, 30, 'c', None), (None, 40, 'd', None), (2, 5, 'e', None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/10/sql": [
+   "['INTEGER', 'INTEGER'] []"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/11/sql": [
+   "['INTEGER', 'INTEGER'] [(1, None), (2, None), (3, None), (None, None), (2, None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/12/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 1, 10), (2, 20, 1, 10), (1, 10, 2, 20), (2, 20, 2, 20)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/13/sql": [
+   "['INTEGER', 'INTEGER'] [(1, 1), (2, 1), (1, 2), (2, 2)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/14/sql": [
+   "['BIGINT', 'BIGINT'] [(0, 0), (1, 0), (0, 1), (1, 1)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/15/sql": [
+   "['BIGINT', 'BIGINT'] [(0, 0), (1, 1)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/16/sql": [
+   "BinderException: Binder Error: Ambiguous reference to table \"memory.main.a\" (duplicate alias \"memory.main.a\", explicitly alias one of the tables using \"AS my_alias\")"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/17/sql": [
+   "BinderException: Binder Error: Ambiguous reference to column name \"id\" (use: \"a.id\" or \"a2.id\")"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/18/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 11, 1, 21), (2, 12, 1, 21), (1, 11, 3, 23), (2, 12, 3, 23)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/19/sql": [
+   "['INTEGER', 'INTEGER'] [(1, 21), (2, 21), (1, 23), (2, 23)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/20/sql": [
+   "BinderException: Binder Error: Ambiguous reference to table \"t1\" (use: s1.t1 or s2.t1)"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/21/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 11, 1, 21)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/22/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER'] [(11, 1, 21), (12, 1, 21), (11, 3, 23), (12, 3, 23)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/23/sql": [
+   "['INTEGER', 'INTEGER'] [(11, 21), (12, 21), (11, 23), (12, 23)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/24/sql": [
+   "['INTEGER', 'INTEGER'] [(11, 21), (12, 21), (11, 23), (12, 23)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/25/sql": [
+   "['INTEGER', 'VARCHAR', 'INTEGER', 'VARCHAR'] [(1, 'l1', 1, 'r1'), (3, 'l3', 3, 'r3')]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/26/sql": [
+   "['INTEGER', 'VARCHAR', 'INTEGER', 'VARCHAR'] [(1, 'l1', 1, 'r1'), (3, 'l3', 3, 'r3'), (2, 'l2', None, None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/27/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'l1', 'r1'), (3, 'l3', 'r3'), (2, 'l2', None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/28/sql": [
+   "BinderException: Binder Error: Ambiguous reference to column name \"k\" (use: \"t.k\" or \"u.k\")"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/29/sql": [
+   "BinderException: Binder Error: Ambiguous reference to column name \"k\" (use: \"t.k\" or \"u.k\")"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/30/sql": [
+   "BinderException: Binder Error: Ambiguous reference to column name \"k\" (use: \"t.k\" or \"u.k\")"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/31/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100, 1, 1000), (2, 20, 'b', 2, 15, 2, 2000), (2, 5, 'e', 2, 15, 2, 2000)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/32/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100, 1, 1000), (2, 20, 'b', 2, 15, 2, 2000), (2, 5, 'e', 2, 15, 2, 2000)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/33/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100, 1, 1000), (2, 20, 'b', 2, 15, 2, 2000), (2, 5, 'e', 2, 15, 2, 2000)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/34/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(2, 20, 'b', 2, 15, 2, 2000)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/35/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 1, 100), (3, 30, 'c', 1, 100), (None, 40, 'd', 1, 100), (2, 5, 'e', 1, 100), (1, 10, 'a', 2, 15), (2, 20, 'b', 2, 15), (3, 30, 'c', 2, 15), (None, 40, 'd', 2, 15), (2, 5, 'e', 2, 15), (1, 10, 'a', 4, 400), (2, 20, 'b', 4, 400), (3, 30, 'c', 4, 400), (None, 40, 'd', 4, 400), (2, 5, 'e', 4, 400)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/36/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'INTEGER', 'INTEGER'] [(1, 10, 'a', 1, 100), (2, 20, 'b', 1, 100), (3, 30, 'c', 1, 100), (None, 40, 'd', 1, 100), (2, 5, 'e', 1, 100), (1, 10, 'a', 2, 15), (2, 20, 'b', 2, 15), (3, 30, 'c', 2, 15), (None, 40, 'd', 2, 15), (2, 5, 'e', 2, 15), (1, 10, 'a', 4, 400), (2, 20, 'b', 4, 400), (3, 30, 'c', 4, 400), (None, 40, 'd', 4, 400), (2, 5, 'e', 4, 400)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/37/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR'] [(1, 10, 'a'), (2, 20, 'b'), (2, 5, 'e')]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/38/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'VARCHAR'] [(1, 100, 1, 10, 'a'), (2, 15, 2, 20, 'b'), (2, 15, 2, 5, 'e')]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/39/sql": [
+   "['INTEGER', 'VARCHAR', 'INTEGER', 'VARCHAR'] [(1, 'l1', 1, 'r1'), (3, 'l3', 3, 'r3'), (2, 'l2', None, None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/40/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'l1', 'r1'), (3, 'l3', 'r3'), (2, 'l2', None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/41/sql": [
+   "['VARCHAR', 'VARCHAR'] [('l1', 'r1'), ('l3', 'r3'), ('l2', None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/42/sql": [
+   "['INTEGER', 'VARCHAR', 'INTEGER', 'VARCHAR'] [(1, 'l1', 1, 'r1'), (3, 'l3', 3, 'r3'), (2, 'l2', None, None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/43/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 1, 10), (2, 20, 2, 20)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/44/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 1, 10), (2, 20, 1, 10), (1, 10, 2, 20), (2, 20, 2, 20)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/45/sql": [
+   "['INTEGER', 'INTEGER'] [(1, 7), (2, 7), (3, 7), (None, 7), (2, 7), (1, 8), (2, 8), (3, 8), (None, 8), (2, 8)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/46/sql": [
+   "['INTEGER', 'INTEGER'] []"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/47/sql": [
+   "['INTEGER', 'INTEGER'] [(1, None), (2, None), (3, None), (None, None), (2, None)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/48/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 11, 1, 21), (2, 12, 1, 21), (1, 11, 3, 23), (2, 12, 3, 23)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/49/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER'] [(11, 1, 21), (12, 1, 21), (11, 3, 23), (12, 3, 23)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/50/sql": [
+   "['INTEGER'] [(1,), (3,)]"
+  ],
+  "pins-wave4/comma_cross_star.json#/probes/51/sql": [
+   "BinderException: Binder Error: Referenced table \"a\" not found!"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/0/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (3, 2, 1000, 3, 1, 500)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/1/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (3, 2, 1000, 3, 1, 500)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/3/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (2, 0, 200, None, None, None), (3, 2, 1000, 3, 1, 500), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/4/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (3, 2, 1000, 3, 1, 500), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/5/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (2, 0, 200, None, None, None), (3, 2, 1000, 3, 1, 500), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/6/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (3, 2, 1000, 3, 1, 500)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/7/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (2, 0, 200, 2, 2, 60), (3, 2, 1000, 3, 1, 500)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/8/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (2, 0, 200, 2, 2, 60), (3, 2, 1000, 3, 1, 500), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/9/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] []"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/10/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, None, None, None), (2, 0, 200, None, None, None), (3, 2, 1000, None, None, None), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/11/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(3, 2, 1000, 3, 1, 500)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/12/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, None, None, None), (2, 0, 200, None, None, None), (3, 2, 1000, 3, 1, 500), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/13/sql": [
+   "['INTEGER', 'INTEGER'] [(2, 2)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/14/sql": [
+   "['INTEGER', 'INTEGER'] [(1, None), (2, 2), (None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/15/sql": [
+   "['INTEGER', 'INTEGER'] []"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/16/sql": [
+   "['INTEGER', 'INTEGER'] [(1, None), (2, None), (None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/17/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/18/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/19/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/20/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/21/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/22/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 10, 1, 1, 50), (99, 0, None, None, None)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/23/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/24/sql": [
+   "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/25/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 100, 1, 50), (2, 5, 2, 60)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/26/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 100, 1, 50), (2, 5, 2, 60)]"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/27/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] []"
+  ],
+  "pins-wave4/equi_on_residuals.json#/probes/28/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (2, 0, 200, None, None, None), (3, 2, 1000, 3, 1, 500), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
   "pins-wave4/equi_on_residuals.json#/probes/29/sql": [
    "OutOfRangeException: Out of Range Error: cannot take logarithm of zero"
   ],
@@ -609,8 +1329,146 @@
   "pins-wave4/equi_on_residuals.json#/probes/31/sql": [
    "['INTEGER'] [(None,)]"
   ],
+  "pins-wave4/equi_on_residuals.json#/probes/32/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(1, 5, 100, 1, 1, 50), (3, 2, 1000, 3, 1, 500), (2, 0, 200, None, None, None), (None, 7, 300, None, None, None), (5, 9, 400, None, None, None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/0/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1'), (2, 'x2', 'y2')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/1/sql": [
+   "['INTEGER', 'VARCHAR', 'INTEGER', 'VARCHAR'] [(1, 'x1', 1, 'y1'), (2, 'x2', 2, 'y2')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/2/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1'), (2, 'x2', 'y2'), (3, 'x3', None), (None, 'xN', None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/3/sql": [
+   "['INTEGER', 'VARCHAR', 'INTEGER', 'VARCHAR'] [(1, 'x1', 1, 'y1'), (2, 'x2', 2, 'y2'), (3, 'x3', None, None), (None, 'xN', None, None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/4/sql": [
+   "['INTEGER', 'INTEGER'] [(1, 1), (2, 2)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/5/sql": [
+   "['INTEGER'] [(1,), (2,)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/6/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 1, 1, 'x1', 'y1'), (2, 2, 2, 'x2', 'y2'), (3, 3, None, 'x3', None), (None, None, None, 'xN', None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/7/sql": [
+   "['VARCHAR'] [('x3',)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/8/sql": [
+   "['VARCHAR'] [('x3',), ('xN',)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/9/sql": [
+   "BinderException: Binder Error: Ambiguous reference to column name \"a\" (use: \"t1.a\" or \"t2.a\")"
+  ],
+  "pins-wave4/using_desugar.json#/probes/10/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 10, 'x1', 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/11/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 10, 'x1', 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/12/sql": [
+   "['INTEGER', 'INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 10, 'x1', 'y1'), (2, 20, 'x2', None), (3, 30, 'x3', None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/13/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1', 'z1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/14/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1', 'z1'), (3, 'x3', None, 'z3')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/15/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(1, 1, 1, 1, 'x1', 'y1', 'z1'), (2, 2, 2, None, 'x2', 'y2', None), (3, 3, None, 3, 'x3', None, 'z3'), (None, None, None, None, 'xN', None, None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/16/sql": [
+   "BinderException: Binder Error: Ambiguous reference to column name \"a\" (use: \"t1.a\" or \"t2.a\")"
+  ],
+  "pins-wave4/using_desugar.json#/probes/17/sql": [
+   "BinderException: Binder Error: Column \"x\" does not exist on right side of join!"
+  ],
+  "pins-wave4/using_desugar.json#/probes/18/sql": [
+   "BinderException: Binder Error: Column \"y\" does not exist on left side of join!"
+  ],
   "pins-wave4/using_desugar.json#/probes/19/sql": [
    "ParserException: Parser Error: syntax error at or near \")\""
+  ],
+  "pins-wave4/using_desugar.json#/probes/20/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1'), (2, 'x2', 'y2')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/21/sql": [
+   "BinderException: Binder Error: Column \"nope\" does not exist on left side of join!"
+  ],
+  "pins-wave4/using_desugar.json#/probes/22/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1', 'y1'), (2, 'x2', 'y2', 'y2')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/23/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1', 'y1'), (2, 'x2', 'y2', 'y2'), (3, 'x3', None, None), (None, 'xN', None, None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/24/sql": [
+   "['VARCHAR', 'VARCHAR'] [('y1', 'y1'), ('y2', 'y2')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/25/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/26/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/27/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/28/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/29/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/30/sql": [
+   "['INTEGER', 'VARCHAR'] [(1, 'x1'), (2, 'x2'), (3, 'x3'), (None, 'xN')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/31/sql": [
+   "['INTEGER', 'VARCHAR'] [(1, 'y1'), (2, 'y2'), (None, None), (None, None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/32/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1'), (9, None, 'y9')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/33/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1'), (2, 'x2', None), (3, 'x3', None), (None, 'xN', None), (9, None, 'y9')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/34/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 1, 1, 'x1', 'y1'), (2, 2, None, 'x2', None), (3, 3, None, 'x3', None), (None, None, None, 'xN', None), (9, None, 9, None, 'y9')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/35/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1'), (2, 'x2', 'y2'), (3, 'x3', None), (None, 'xN', None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/36/sql": [
+   "['BIGINT'] [(2,)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/37/sql": [
+   "['VARCHAR', 'INTEGER', 'VARCHAR'] [('x1', 1, 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/38/sql": [
+   "['VARCHAR', 'INTEGER', 'VARCHAR'] [('x1', 1, 'y1'), ('x3', 3, None)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/39/sql": [
+   "['VARCHAR', 'INTEGER', 'VARCHAR'] [('x1', 1, 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/40/sql": [
+   "['VARCHAR', 'INTEGER', 'INTEGER', 'VARCHAR'] [('x1', 10, 1, 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/41/sql": [
+   "['VARCHAR', 'INTEGER', 'INTEGER', 'VARCHAR'] [('x1', 10, 1, 'y1')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/42/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(1, 'x1', 'y1', 'z1'), (3, 'x3', None, 'z3'), (9, None, 'y9', 'z9')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/43/sql": [
+   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [(1, 1, 1, 1, 'x1', 'y1', 'z1'), (3, 3, None, 3, 'x3', None, 'z3'), (9, None, 9, 9, None, 'y9', 'z9')]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/44/sql": [
+   "['VARCHAR'] [('z9',)]"
+  ],
+  "pins-wave4/using_desugar.json#/probes/45/sql": [
+   "['INTEGER', 'VARCHAR', 'VARCHAR', 'INTEGER', 'VARCHAR'] [(1, 'x1', 'y1', 1, 'z1'), (3, 'x3', None, 3, 'z3'), (9, None, 'y9', 9, 'z9')]"
   ],
   "pins-wave5/binder-tail.json#/pins/0/query": [
    "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('add_', 'BIGINT', 'YES', None, None, None), ('sub_', 'BIGINT', 'YES', None, None, None), ('mul_', 'BIGINT', 'YES', None, None, None), ('div_', 'DOUBLE', 'YES', None, None, None), ('mod_', 'BIGINT', 'YES', None, None, None), ('eq_', 'BOOLEAN', 'YES', None, None, None), ('lt_', 'BOOLEAN', 'YES', None, None, None), ('cat_', 'INTEGER', 'YES', None, None, None), ('neg_', 'BIGINT', 'YES', None, None, None), ('not_', 'BOOLEAN', 'YES', None, None, None)]"
@@ -1175,12 +2033,6 @@
   "pins-wave5/slices.json#/pins/33/query": [
    "['VARCHAR', 'VARCHAR'] [('ell', 'el')]"
   ],
-  "pins-wave5/sqlparser-spike.json#/forms/5/sql": [
-   "['INTEGER', 'INTEGER', 'INTEGER', 'INTEGER'] [(8, 4, 1, 7)]"
-  ],
-  "pins-wave5/sqlparser-spike.json#/forms/19/sql": [
-   "['BOOLEAN'] [(True,)]"
-  ],
   "pins-wave5/star-forms.json#/pins/15/query": [
    "ParserException: Parser Error: Duplicate entry \"abc\" in EXCLUDE list"
   ],
@@ -1444,78 +2296,6 @@
   ],
   "pins-wave5/text-operators.json#/pins/68/query": [
    "['BOOLEAN', 'BOOLEAN', 'BOOLEAN'] [(True, True, False)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/nested/25/sql": [
-   "['BIGINT', 'DOUBLE'] [(-4, -4.0), (-3, -4.0), (-2, -2.0), (-1, -2.0), (0, 2.0), (1, 2.0), (2, 4.0), (3, 4.0), (4, 6.0)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/nested/26/sql": [
-   "['BIGINT', 'DOUBLE'] [(-4, -4.0), (-3, -4.0), (-2, -2.0), (-1, -2.0), (0, 2.0), (1, 2.0), (2, 4.0), (3, 4.0), (4, 6.0)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/nested/27/sql": [
-   "['BIGINT', 'DOUBLE'] [(-2, -2.0), (-1, -0.0), (0, 0.0), (1, 2.0), (2, 2.0), (3, 4.0), (4, 4.0)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/nested/28/sql": [
-   "['BIGINT', 'DOUBLE'] [(-2, -1.0), (-1, 0.0), (0, 1.0), (1, 2.0), (2, 3.0), (3, 4.0), (4, 5.0)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/nested/29/sql": [
-   "['BIGINT', 'DOUBLE'] [(-2, -1.0), (-1, 0.0), (0, 1.0), (1, 2.0), (2, 3.0), (3, 4.0), (4, 5.0)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/7/sql": [
-   "['BIGINT'] [(0,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/8/sql": [
-   "['BIGINT'] [(0,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/9/sql": [
-   "['BIGINT'] [(0,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/10/sql": [
-   "['BIGINT'] [(1,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/11/sql": [
-   "['BIGINT'] [(0,), (2,), (4,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/12/sql": [
-   "['BIGINT'] [(0,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/13/sql": [
-   "['BIGINT'] [(1,), (2,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/14/sql": [
-   "['BIGINT'] [(0,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/42/sql": [
-   "['BIGINT'] [(0,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/43/sql": [
-   "['BIGINT'] [(0,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/44/sql": [
-   "['VARCHAR'] [('j',)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/45/sql": [
-   "['VARCHAR'] [('hel lo',)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/81/sql": [
-   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('FFFFFFFFFFFFFF80', 'FFFFFFFFFFFF8000', 'FFFFFFFF80000000', '8000000000000000', '80000000000000000000000000000000', '0', '0', '0', '0', '0', '7FFF7F00000000000007FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'F09FA686F09FA686F09FA686F09FA686F09FA686F09FA686'), ('7F', '7FFF', '7FFFFFFF', '7FFFFFFFFFFFFFFF', '7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 'FF', 'FFFF', 'FFFFFFFF', 'FFFFFFFFFFFFFFFF', '800080FFFFFFFFFFFFF800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000', '676F6F007365'), (None, None, None, None, None, None, None, None, None, None, None, None)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/82/sql": [
-   "['VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR', 'VARCHAR'] [('1111111111111111111111111111111111111111111111111111111110000000', '1111111111111111111111111111111111111111111111111000000000000000', '1111111111111111111111111111111110000000000000000000000000000000', '1000000000000000000000000000000000000000000000000000000000000000', '10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000', '0', '0', '0', '0', '0', '0111111111111111011111110000000000000000000000000000000000000000000000000000011111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111', '111100001001111110100110100001101111000010011111101001101000011011110000100111111010011010000110111100001001111110100110100001101111000010011111101001101000011011110000100111111010011010000110'), ('1111111', '111111111111111', '1111111111111111111111111111111', '111111111111111111111111111111111111111111111111111111111111111', '1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111', '11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111', '11111111', '1111111111111111', '11111111111111111111111111111111', '1111111111111111111111111111111111111111111111111111111111111111', '1000000000000000100000001111111111111111111111111111111111111111111111111111100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000', '011001110110111101101111000000000111001101100101'), (None, None, None, None, None, None, None, None, None, None, None, None)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/89/sql": [
-   "['VARCHAR'] [('                                                                                ',), ('▊                                                                               ',), ('███▏                                                                            ',), ('███████▏                                                                        ',), ('████████████▊                                                                   ',), ('████████████████████                                                            ',), ('████████████████████████████▊                                                   ',), ('███████████████████████████████████████▏                                        ',), ('███████████████████████████████████████████████████▏                            ',), ('████████████████████████████████████████████████████████████████▊               ',), ('████████████████████████████████████████████████████████████████████████████████',)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/100/sql": [
-   "['BIGINT'] [(1000,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/106/sql": [
-   "['INTEGER'] [(None,), (1,), (None,), (1,), (None,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/107/sql": [
-   "['INTEGER'] [(None,), (None,), (None,), (None,), (None,)]"
-  ],
-  "pins-waveA/census-all-nonmatches.json#/other/109/sql": [
-   "['INTEGER', 'INTEGER', 'VARCHAR'] [(1, 2, 'foo'), (1, 2, 'foo'), (1, 2, 'foo')]"
   ],
   "pins-waveA/columns-replace.json#/pins/8/q": [
    "ParserException: Parser Error: syntax error at or near \"REPLACE\""

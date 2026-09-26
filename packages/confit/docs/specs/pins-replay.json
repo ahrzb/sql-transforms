@@ -1,0 +1,2273 @@
+{
+ "_meta": {
+  "counts": {
+   "converted from input_repr": 181,
+   "converted from setup": 97,
+   "direct": 625,
+   "engine not duckdb, or unstated": 208,
+   "not replayable: tables described only in prose": 356,
+   "not replayable: untyped input_repr (no column name or type recorded)": 460
+  }
+ },
+ "setups": {
+  "pins-wave3/math_tail.json#/probes/0/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/1/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/2/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/3/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/4/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/5/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/6/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/7/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/8/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/9/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/10/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/11/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/12/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/13/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/14/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/15/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/16/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/17/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/18/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/19/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/20/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (9223372036854775807, 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/21/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (9223372036854775807, 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/22/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-9223372036854775808, 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/23/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-9223372036854775808, 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/24/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (9223372036854775807, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/25/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (9223372036854775807, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/26/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-9223372036854775808, -1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/27/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-9223372036854775808, -1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/28/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-9223372036854775808, -1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/29/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-9223372036854775808, -1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/30/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-9223372036854775808, -1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/31/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/32/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/33/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/34/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/35/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/36/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/37/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/38/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, -3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/39/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, -3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/40/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, -3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/41/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, -3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/42/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, -3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/43/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, -3)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/44/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/45/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/46/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/47/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/48/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/49/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/50/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/51/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/52/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/53/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/54/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a INTEGER, b INTEGER)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/55/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a INTEGER, b INTEGER)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/56/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a INTEGER, b INTEGER)",
+    "INSERT INTO t VALUES (7, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/57/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a INTEGER, b INTEGER)",
+    "INSERT INTO t VALUES (2147483647, 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/58/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a INTEGER, b INTEGER)",
+    "INSERT INTO t VALUES (2147483647, 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/59/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/60/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/61/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/62/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/63/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/64/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/65/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/66/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/67/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/68/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/69/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/70/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/71/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/72/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/73/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/74/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/75/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/76/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/77/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/78/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/79/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/80/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/81/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/82/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/83/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '-2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/84/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '-2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/85/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '-2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/86/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/87/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-7.5'::DOUBLE, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/88/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/89/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/90/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/91/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/92/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/93/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/94/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/95/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/96/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/97/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/98/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('inf'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/99/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('inf'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/100/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, 'inf'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/101/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('nan'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/102/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('nan'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/103/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('nan'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/104/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1e+308'::DOUBLE, '1e+308'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/105/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1e+308'::DOUBLE, '1e+308'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/106/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1e+308'::DOUBLE, '1e+308'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/107/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1e+308'::DOUBLE, '1e+308'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/108/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/109/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/110/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/111/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/112/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/113/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '-0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/114/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.1'::DOUBLE, '0.2'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/115/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.1'::DOUBLE, '0.2'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/116/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/117/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/118/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/119/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/120/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/121/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/122/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/123/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.5'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/124/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/125/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/126/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/127/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/128/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.0'::DOUBLE, '-1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/129/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/130/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/131/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/132/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.7976931348623157e+308'::DOUBLE, 'inf'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/133/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('inf'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/134/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('inf'::DOUBLE, 'inf'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/135/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('nan'::DOUBLE, '1.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/136/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, 'nan'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/137/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-0.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/138/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.0'::DOUBLE, '-0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/139/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (1, 2)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/140/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(f FLOAT, g FLOAT)",
+    "INSERT INTO t VALUES ('1.0'::DOUBLE, '2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/141/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/142/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/143/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/144/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/145/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/146/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/147/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/148/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/149/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/150/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/151/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/152/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 1), (1, NULL), (NULL, NULL)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/153/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/154/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/155/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/156/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (NULL, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/157/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES (NULL, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/158/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES (NULL, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/159/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES (NULL, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/160/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('3', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/161/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('3', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/162/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('é', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/163/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('é', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/164/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('😀', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/165/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('İ', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/166/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('K', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/167/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('👨‍👩‍👧‍👦', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/168/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(v VARCHAR, b BIGINT)",
+    "INSERT INTO t VALUES ('a' || chr(0) || 'b', 1)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/185/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/186/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/187/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, b BIGINT)",
+    "INSERT INTO t VALUES (-7, 0)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/188/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/189/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('0.0'::DOUBLE, 'inf'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/190/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('7.5'::DOUBLE, '-2.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/191/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/192/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(a BIGINT, x DOUBLE)",
+    "INSERT INTO t VALUES (7, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/193/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/194/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-1.0'::DOUBLE, '0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/probes/195/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE t(x DOUBLE, y DOUBLE)",
+    "INSERT INTO t VALUES ('-1.7976931348623157e+308'::DOUBLE, '-inf'::DOUBLE)"
+   ]
+  },
+  "pins-wave3/math_tail.json#/corrections/0/probes/0/sql": {
+   "from": "input_repr",
+   "setup": [
+    "CREATE TABLE d(x DOUBLE, y DOUBLE)",
+    "INSERT INTO d VALUES ('7.5'::DOUBLE, '0.0'::DOUBLE), ('-7.5'::DOUBLE, '0.0'::DOUBLE), ('0.0'::DOUBLE, '0.0'::DOUBLE), ('7.5'::DOUBLE, '-0.0'::DOUBLE)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/0/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/1/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/2/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/3/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/4/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/5/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/6/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/7/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/8/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/9/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/10/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/11/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/12/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/13/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/14/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/15/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/16/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/17/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/18/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/19/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/20/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/21/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/22/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/23/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/24/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/25/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/26/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/27/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/28/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, w INTEGER)",
+    "INSERT INTO t VALUES (1, 10)",
+    "CREATE TABLE u(k INTEGER, z INTEGER)",
+    "INSERT INTO u VALUES (1, 100)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/29/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, w INTEGER)",
+    "INSERT INTO t VALUES (1, 10)",
+    "CREATE TABLE u(k INTEGER, z INTEGER)",
+    "INSERT INTO u VALUES (1, 100)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/30/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, w INTEGER)",
+    "INSERT INTO t VALUES (1, 10)",
+    "CREATE TABLE u(k INTEGER, z INTEGER)",
+    "INSERT INTO u VALUES (1, 100)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/31/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/32/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/33/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/34/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE v(k INTEGER, z INTEGER)",
+    "INSERT INTO v VALUES (1, 1000), (2, 2000)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/35/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/36/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/37/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/38/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/39/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/40/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/41/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/42/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE l(id INTEGER, lv VARCHAR)",
+    "INSERT INTO l VALUES (1, 'l1'), (2, 'l2'), (3, 'l3')",
+    "CREATE TABLE r(id INTEGER, rv VARCHAR)",
+    "INSERT INTO r VALUES (1, 'r1'), (3, 'r3')"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/43/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/44/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/45/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE two(m INTEGER)",
+    "INSERT INTO two VALUES (7), (8)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/46/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE e(k INTEGER)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/47/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t(k INTEGER, x INTEGER, name VARCHAR)",
+    "INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (NULL, 40, 'd'), (2, 5, 'e')",
+    "CREATE TABLE u(k INTEGER, y INTEGER)",
+    "INSERT INTO u VALUES (1, 100), (2, 15), (4, 400)",
+    "CREATE TABLE nulltable(n INTEGER)",
+    "INSERT INTO nulltable VALUES (NULL)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/48/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/49/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/50/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE SCHEMA s1",
+    "CREATE SCHEMA s2",
+    "CREATE TABLE s1.t1(t INTEGER, p INTEGER)",
+    "INSERT INTO s1.t1 VALUES (1, 11), (2, 12)",
+    "CREATE TABLE s2.t1(t INTEGER, q INTEGER)",
+    "INSERT INTO s2.t1 VALUES (1, 21), (3, 23)"
+   ]
+  },
+  "pins-wave4/comma_cross_star.json#/probes/51/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE a(id INTEGER, v INTEGER)",
+    "INSERT INTO a VALUES (1, 10), (2, 20)"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/0/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/1/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/2/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/3/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/4/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/5/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/6/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/7/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/8/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/9/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/10/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE m1(a INTEGER, b INTEGER, x VARCHAR)",
+    "INSERT INTO m1 VALUES (1,10,'x1'),(2,20,'x2'),(3,30,'x3')",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/11/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE m1(a INTEGER, b INTEGER, x VARCHAR)",
+    "INSERT INTO m1 VALUES (1,10,'x1'),(2,20,'x2'),(3,30,'x3')",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/12/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE m1(a INTEGER, b INTEGER, x VARCHAR)",
+    "INSERT INTO m1 VALUES (1,10,'x1'),(2,20,'x2'),(3,30,'x3')",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/13/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/14/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/15/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/16/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/17/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/18/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/20/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/21/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/22/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/23/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/24/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/25/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE c1(\"A\" INTEGER, x VARCHAR)",
+    "INSERT INTO c1 VALUES (1,'x1')",
+    "CREATE TABLE c2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO c2 VALUES (1,'y1')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/26/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE c1(\"A\" INTEGER, x VARCHAR)",
+    "INSERT INTO c1 VALUES (1,'x1')",
+    "CREATE TABLE c2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO c2 VALUES (1,'y1')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/27/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE d1(a INTEGER, x VARCHAR)",
+    "INSERT INTO d1 VALUES (1,'x1')",
+    "CREATE TABLE d2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO d2 VALUES (1,'y1')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/28/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE d1(a INTEGER, x VARCHAR)",
+    "INSERT INTO d1 VALUES (1,'x1')",
+    "CREATE TABLE d2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO d2 VALUES (1,'y1')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/29/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE c1(\"A\" INTEGER, x VARCHAR)",
+    "INSERT INTO c1 VALUES (1,'x1')",
+    "CREATE TABLE c2(\"A\" INTEGER, y VARCHAR)",
+    "INSERT INTO c2 VALUES (1,'y1')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/30/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/31/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/32/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/33/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/34/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/35/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/36/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(2,'x2'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE t3(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3 VALUES (1,'z1'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/37/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE w1(x VARCHAR, a INTEGER)",
+    "INSERT INTO w1 VALUES ('x1',1),('x3',3)",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE w2(y VARCHAR, a INTEGER)",
+    "INSERT INTO w2 VALUES ('y1',1)"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/38/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE w1(x VARCHAR, a INTEGER)",
+    "INSERT INTO w1 VALUES ('x1',1),('x3',3)",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE w2(y VARCHAR, a INTEGER)",
+    "INSERT INTO w2 VALUES ('y1',1)"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/39/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE w1(x VARCHAR, a INTEGER)",
+    "INSERT INTO w1 VALUES ('x1',1),('x3',3)",
+    "CREATE TABLE t2(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2 VALUES (1,'y1'),(2,'y2')",
+    "CREATE TABLE w2(y VARCHAR, a INTEGER)",
+    "INSERT INTO w2 VALUES ('y1',1)"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/40/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE m3(x VARCHAR, b INTEGER, a INTEGER)",
+    "INSERT INTO m3 VALUES ('x1',10,1),('x2',20,2)",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/41/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE m3(x VARCHAR, b INTEGER, a INTEGER)",
+    "INSERT INTO m3 VALUES ('x1',10,1),('x2',20,2)",
+    "CREATE TABLE m2(b INTEGER, a INTEGER, y VARCHAR)",
+    "INSERT INTO m2 VALUES (10,1,'y1'),(99,2,'y2')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/42/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/43/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/44/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ]
+  },
+  "pins-wave4/using_desugar.json#/probes/45/sql": {
+   "from": "setup",
+   "setup": [
+    "CREATE TABLE t1(a INTEGER, x VARCHAR)",
+    "INSERT INTO t1 VALUES (1,'x1'),(3,'x3'),(NULL,'xN')",
+    "CREATE TABLE t2r(a INTEGER, y VARCHAR)",
+    "INSERT INTO t2r VALUES (1,'y1'),(9,'y9')",
+    "CREATE TABLE t3f(a INTEGER, z VARCHAR)",
+    "INSERT INTO t3f VALUES (1,'z1'),(9,'z9'),(3,'z3')"
+   ]
+  }
+ },
+ "inventory": {
+  "tables described only in prose": {
+   "pins-dialect/joins.json": 4,
+   "pins-stageB/cross-inequality.json": 14,
+   "pins-stageB/dup-key-equi.json": 9,
+   "pins-stageB/left-join-1172.json": 3,
+   "pins-stageB/order-contract.json": 10,
+   "pins-stageB/self-join-stars.json": 15,
+   "pins-wave3/string_inspection_case_aliases.json": 11,
+   "pins-wave3/strip_accents.json": 2,
+   "pins-wave3/varchar_subscripts.json": 22,
+   "pins-wave5/binder-tail.json": 3,
+   "pins-wave5/dup-names-client-contract.json": 2,
+   "pins-wave5/slices.json": 5,
+   "pins-wave5/star-forms.json": 66,
+   "pins-wave5/subscripts-extended.json": 23,
+   "pins-wave5/text-operators.json": 15,
+   "pins-waveA/columns-replace.json": 17,
+   "pins-waveA/from-colon-alias.json": 15,
+   "pins-waveA/regex-null-pattern.json": 18,
+   "pins-waveA/reverse-graphemes.json": 3,
+   "pins-waveA/struct-nested.json": 34,
+   "pins-waveA/struct-star.json": 22,
+   "pins-waveB/fuzzer-20260728.json": 1,
+   "pins-waveB/replace.json": 2,
+   "pins-waveB/star-similar-columns.json": 40
+  },
+  "untyped input_repr (no column name or type recorded)": {
+   "pins-wave3/math_tail.json": 1,
+   "pins-wave3/similarity.json": 71,
+   "pins-wave3/string_builders.json": 103,
+   "pins-wave3/string_inspection_case_aliases.json": 212,
+   "pins-wave3/strip_accents.json": 67,
+   "pins-wave3/varchar_subscripts.json": 6
+  }
+ }
+}

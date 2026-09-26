@@ -2,15 +2,25 @@
 uniform header per file, derived only from what the file and git already say.
 
     uv run python scripts/pin_corpus.py header     # add or refresh `_pin`
+    uv run python scripts/pin_corpus.py convert    # derive replay setups
     uv run python scripts/pin_corpus.py drift      # re-run every replayable pin
     git diff                                       # the review surface
+
+`convert` makes old pins replayable without rewriting them: where a pin's
+tables are stated mechanically — its own `setup` statements, the file's
+shared `setup`, or a typed `input_repr` such as `t(a BIGINT); rows=[(7,)]` —
+the derived statements go to `specs/pins-replay.json`, keyed by the pin's
+JSON pointer, and the pin file is untouched. Every other pin is inventoried
+with the reason it cannot replay. A converted pin replays under today's
+oracle; that is not a fresh run of the original capture.
 
 `drift` generalizes `pin_ast_shapes.py` to the whole corpus: every pin query
 that replays mechanically is executed against the installed DuckDB through
 `confit.oracle.Oracle`, and its answer written to `specs/pins-drift.json`.
 The manifest carries no date, so re-running it on an unchanged reference is
 a no-op; after a reference upgrade its `git diff` IS the drift report, and
-each changed answer still needs review (claim: re-record-diff-report). The
+each changed answer still needs review (claim: re-record-diff-report). Only
+files whose header engine is DuckDB are replayed. The
 answers are the optimizer-off oracle's, whatever the capture used, and a
 platform-marked field (`varies`) may legitimately differ across platforms.
 
@@ -24,6 +34,7 @@ optimizer-off oracle (claim: pin-provenance).
 
 from __future__ import annotations
 
+import ast
 import collections
 import json
 import re
@@ -271,6 +282,7 @@ def write_header(p: Path, h: dict) -> None:
 
 
 DRIFT = PINS / "pins-drift.json"
+REPLAY = PINS / "pins-replay.json"
 SQL_KEYS = ("query", "sql", "q")
 
 
@@ -320,11 +332,146 @@ def statements(sql: str) -> list[str]:
     return out
 
 
+def _as_statements(v) -> list[str] | None:
+    """A pin's `setup` value as statements: a list, a list's repr, or SQL
+    text. None when it is prose ("none -- ...", "shared (see ...)")."""
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, str)]
+    if not isinstance(v, str):
+        return None
+    t = v.strip()
+    if t.startswith("["):
+        try:
+            got = ast.literal_eval(t)
+        except (ValueError, SyntaxError):
+            return None
+        return [x for x in got if isinstance(x, str)] if isinstance(got, list) else None
+    if re.match(r"(?:CREATE|INSERT|SET|PRAGMA)\b", t, re.I):
+        return statements(t)
+    return None
+
+
 def _setup(d: dict) -> list[str]:
-    s = d.get("setup")
-    if not isinstance(s, str) or s.strip().lower().startswith("none"):
-        return []
-    return statements(s)
+    return _as_statements(d.get("setup")) or []
+
+
+_TYPED_INPUT = re.compile(r"^\s*(\w+)\(([^()]*)\);\s*rows=(\[.*\])\s*$", re.S)
+
+
+def _literal(v) -> str:
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        # Through text, never a bare literal: SQL `-0.0` is the DECIMAL
+        # negation of 0.0 and loses the sign; '-0.0'::DOUBLE keeps every bit.
+        return f"'{v!r}'::DOUBLE"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, str):
+        # Control characters (a NUL, above all) cannot sit in a SQL literal;
+        # they are spliced in as chr(n), which DuckDB types VARCHAR the same.
+        parts = re.split(r"([\x00-\x1f])", v)
+        sql = [
+            f"chr({ord(x)})"
+            if len(x) == 1 and ord(x) < 32
+            else "'" + x.replace("'", "''") + "'"
+            for x in parts
+            if x
+        ]
+        return " || ".join(sql) if sql else "''"
+    raise ValueError(v)
+
+
+def _from_input_repr(text: str) -> list[str] | None:
+    """`t(a BIGINT, b DOUBLE); rows=[(7, 2.5)]` as CREATE + INSERT. Only the
+    typed form: a bare value names no column and no type."""
+    m = _TYPED_INPUT.match(text or "")
+    if not m:
+        return None
+    name, cols, rows_text = m.groups()
+    rows_text = re.sub(r"(?<![\w'])(-?)(nan|inf)(?![\w'])", r"float('\1\2')", rows_text)
+    try:
+        rows = eval(rows_text, {"__builtins__": {"float": float}})  # noqa: S307 — repo data, float() only
+    except Exception:  # noqa: BLE001 — unparseable rows stay unconverted
+        return None
+    out = [f"CREATE TABLE {name}({cols})"]
+    try:
+        vals = ", ".join("(" + ", ".join(_literal(v) for v in r) + ")" for r in rows)
+    except (ValueError, TypeError):
+        return None
+    if rows:
+        out.append(f"INSERT INTO {name} VALUES {vals}")  # noqa: S608 — pin data
+    return out
+
+
+def _candidates(d: dict, entry: dict):
+    """`(source, setup)` pairs to try for one pin, most specific first."""
+    own = entry.get("setup")
+    if isinstance(own, str) and own.lower().startswith("shared"):
+        own = None
+        if _setup(d):
+            yield "shared setup", _setup(d)
+    got = _as_statements(own)
+    if got:
+        yield "setup", got
+    got = _from_input_repr(entry.get("input_repr"))
+    if got:
+        yield "input_repr", got
+
+
+def _reason(entry: dict) -> str:
+    ir = entry.get("input_repr")
+    if isinstance(ir, str) and ir not in ("None", "literal path"):
+        return "untyped input_repr (no column name or type recorded)"
+    if any(k in entry for k in ("note", "claim", "pin")):
+        return "tables described only in prose"
+    return "no input recorded"
+
+
+def _is_duckdb(d: dict) -> bool:
+    return d.get("_pin", {}).get("engine") == "duckdb"
+
+
+def convert_manifest() -> dict:
+    setups, inventory = {}, collections.defaultdict(collections.Counter)
+    counts = collections.Counter()
+    for p in pin_files():
+        d = json.loads(p.read_text(encoding="utf-8"))
+        if not _is_duckdb(d):
+            counts["engine not duckdb, or unstated"] += sum(1 for _ in pin_queries(d))
+            continue
+        base = _setup(d)
+        for ptr, sql in pin_queries(d):
+            stmts = statements(sql)
+            if answer(base, stmts) is not None:
+                counts["direct"] += 1
+                continue
+            entry = resolve(d, ptr.rsplit("/", 1)[0])[0]
+            for source, setup in _candidates(d, entry):
+                if answer(setup, stmts) is not None:
+                    setups[f"{_rel(p)}#{ptr}"] = {"from": source, "setup": setup}
+                    counts[f"converted from {source}"] += 1
+                    break
+            else:
+                why = _reason(entry)
+                inventory[why][_rel(p)] += 1
+                counts[f"not replayable: {why}"] += 1
+    return {
+        "_meta": {"counts": dict(sorted(counts.items()))},
+        "setups": setups,
+        "inventory": {k: dict(sorted(v.items())) for k, v in sorted(inventory.items())},
+    }
+
+
+def cmd_convert() -> None:
+    m = convert_manifest()
+    REPLAY.write_text(
+        json.dumps(m, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    for k, v in m["_meta"]["counts"].items():
+        print(f"  {v:5}  {k}")
 
 
 def answer(setup: list[str], stmts: list[str]) -> list[str] | None:
@@ -336,7 +483,10 @@ def answer(setup: list[str], stmts: list[str]) -> list[str] | None:
     out = []
     with Oracle() as o:
         for s in setup:
-            o.execute(s)
+            try:
+                o.execute(s)
+            except duckdb.Error:
+                return None  # the stated tables do not build: not replayable
         for s in stmts:
             try:
                 cur = o.execute(s)
@@ -354,18 +504,24 @@ def drift_manifest() -> dict:
 
     import duckdb  # noqa: PLC0415
 
+    converted = {}
+    if REPLAY.exists():
+        converted = json.loads(REPLAY.read_text(encoding="utf-8"))["setups"]
     answers, unrunnable = {}, 0
     for p in pin_files():
         d = json.loads(p.read_text(encoding="utf-8"))
-        setup = _setup(d)
+        if not _is_duckdb(d):
+            continue  # another engine's pins say nothing about DuckDB drift
         for ptr, sql in pin_queries(d):
+            key = f"{_rel(p)}#{ptr}"
+            setup = converted[key]["setup"] if key in converted else _setup(d)
             stmts = statements(sql)
             first = answer(setup, stmts)
             if first is None:
                 unrunnable += 1
                 continue
             again = answer(setup, stmts)
-            answers[f"{_rel(p)}#{ptr}"] = first if first == again else ["<unstable>"]
+            answers[key] = first if first == again else ["<unstable>"]
     return {
         "_meta": {
             "duckdb": duckdb.__version__,
@@ -395,7 +551,7 @@ def cmd_header() -> None:
 
 
 def main(argv: list[str]) -> int:
-    cmds = {"header": cmd_header, "drift": cmd_drift}
+    cmds = {"header": cmd_header, "convert": cmd_convert, "drift": cmd_drift}
     if len(argv) != 1 or argv[0] not in cmds:
         print(f"usage: pin_corpus.py {{{','.join(cmds)}}}", file=sys.stderr)
         return 2

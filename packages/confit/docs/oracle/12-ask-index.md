@@ -66,7 +66,7 @@ Details live in [ordering](03-nondeterminism.md), [verdicts](04-verdicts-agreeme
 - Define and justify a contract when adding another order-sensitive value family.
 - Version enforcement, refusal reporting, early mismatch return, nullability checks,
   and the adopted evidence/reporting improvements were implemented on 2026-09-26; see the
-  [work register](11-proposed-tickets.md). The deferred proposals there remain open.
+  [work register](11-proposed-tickets.md), as were the deferred proposals listed there.
 - Review individual restrictions and ledger entries against their evidence; the policy
   decision did not approve every historical disposition or numeric resource limit.
 
