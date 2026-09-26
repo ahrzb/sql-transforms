@@ -1879,3 +1879,67 @@ def test_is_distinct_from_filters_differential():
             {"a": 2, "b": 3},
         ],
     )
+
+
+_CMP_SCHEMA = pa.schema(
+    [
+        ("a", pa.int64()),
+        ("i", pa.int32()),
+        ("x", pa.float64()),
+        ("b", pa.bool_()),
+        ("s", pa.string()),
+    ]
+)
+_CMP_ROWS = [
+    {"a": 2, "i": 2, "x": 2.0, "b": True, "s": "2"},
+    {"a": 1, "i": 1, "x": 1.5, "b": False, "s": "1.5"},
+    {"a": None, "i": None, "x": None, "b": None, "s": None},
+]
+_CMP_ROWS_BOOL = [
+    {"a": 1, "i": 1, "x": 1.0, "b": True, "s": "t"},
+    {"a": 0, "i": 0, "x": 0.0, "b": False, "s": "0"},
+]
+
+
+def _outcome(sql, rows):
+    """Sorted values, or "ERR", for each engine: DuckDB's error (binder or
+    conversion, plan time or row time) and ours must line up."""
+    o = Oracle()
+    o.load("__THIS__", pa.Table.from_pylist(rows, schema=_CMP_SCHEMA))
+    try:
+        want = sorted(map(str, [r["o"] for r in o.answer(sql).to_pylist()]))
+    except Exception:  # noqa: BLE001 -- any DuckDB error is the outcome
+        want = "ERR"
+    try:
+        fn = DuckDBInferFn(sql, row_tables={"__THIS__": _CMP_SCHEMA}, static_tables={})
+        got = sorted(map(str, [r["o"] for r in fn.infer_rows(rows)]))
+    except ValueError:
+        got = "ERR"
+    return got, want
+
+
+@pytest.mark.parametrize("side", ["a", "i", "x", "b"])
+@pytest.mark.parametrize(
+    "other",
+    [
+        "s",
+        "'2'",
+        "('2')",
+        "CAST('2' AS VARCHAR)",
+        "('1' || '2')",
+        "'1.5'",
+        "'x'",
+        "'t'",
+    ],
+)
+@pytest.mark.parametrize("op", ["=", "<>", "<", ">="])
+def test_a_number_or_boolean_against_varchar_matches_duckdb(side, other, op):
+    # A string LITERAL casts to the other side's type under every operator;
+    # any other VARCHAR only under = and <> (DuckDB: binder error otherwise).
+    rows = _CMP_ROWS_BOOL if side == "b" else _CMP_ROWS
+    for sql in (
+        f"SELECT {side} {op} {other} AS o FROM __THIS__",
+        f"SELECT {other} {op} {side} AS o FROM __THIS__",
+    ):
+        got, want = _outcome(sql, rows)
+        assert got == want, sql
