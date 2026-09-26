@@ -49,8 +49,9 @@ for `2147483647 + 1 ... LIMIT 0`, where optimizer-on can replace the plan with
 
 *Evidence:* DuckDB v1.5.5
 `src/include/duckdb/common/enums/optimizer_type.hpp:16-50` and the sites above, inspected
-2026-08-25. Proposed corrections to older summaries are tracked by
-**ticket: oracle-docstring-corrections** and **claim: phase-separated-probes**.
+2026-08-25. The `confit/oracle.py` docstring and `known-limitations.md` carry this
+scope (**ticket: oracle-docstring-corrections**, done); see also
+**claim: phase-separated-probes**.
 
 ## How comparison code reaches the reference
 

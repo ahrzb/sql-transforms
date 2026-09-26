@@ -186,8 +186,9 @@ These notes supply the evidence that the concise index intentionally does not re
 
 TASK-121's ambiguous-reference family is deliberately not another divergence row: its
 note says all 78 findings in the 20k campaign reclassified `REFUSED`, but acceptance
-criteria remain unchecked and the snapshot retains 16 seeds. Proposed **ticket:
-ambiguity-class-closed** corrects the conflicting dated triage prose.
+criteria remain unchecked and the snapshot retains 16 seeds. The dated triage report
+now carries a correction note distinguishing that Done status from the unchecked
+criteria (**ticket: ambiguity-class-closed**, done).
 
 ## Executable-twin coverage
 

@@ -4,17 +4,25 @@ Anything that compares this engine against DuckDB -- tests, corpus gates, the
 differential fuzzer -- gets its connection from here, so the oracle is a
 property of the REPO rather than a per-call-site choice that can be forgotten.
 
-Why optimizer-off is the oracle at all, measured 2026-08-17:
+Why optimizer-off is the oracle at all, measured 2026-08-17 and re-read
+against the DuckDB 1.5.5 sources 2026-08-25:
 
-  * `PRAGMA disable_optimizer` == disabling all 33 named optimizers.
+  * `PRAGMA disable_optimizer` disables all 33 named optimizers AND flips
+    twelve further sites that read `enable_optimizer` directly: physical
+    operator selection (DISTINCT ON, window operator, sorted aggregates),
+    window-execution fast paths, and logical-plan construction (delim-join
+    choice, RIGHT-join flipping).
   * The BINDER is untouched, so output TYPES are identical (checked across
-    narrow ints and decimals), constant folding still happens (`1 + 2` is
-    int32 3), and bind-time constant errors still fire.
+    narrow ints and decimals) and bind-time constant errors still fire.
+    Constant folding is an optimizer rule, so it is OFF: `1 + 2` is still
+    int32 3, but by execution -- observable where optimizer-on replaces a
+    trapping constant plan with EMPTY_RESULT (`2147483647 + 1 ... LIMIT 0`).
   * Execution-level LAZINESS is untouched: an untaken CASE arm, AND/OR
     short-circuit in both operand orders, and coalesce's later arguments all
     behave exactly as with the optimizer on.
   * What is removed is the plan rewriting -- statistics_propagation,
-    expression_rewriter, filter pushdown/pullup, CSE, join reordering.
+    expression_rewriter, constant folding, filter pushdown/pullup, CSE, join
+    reordering -- plus the physical choices above.
 
 So the oracle is "the query as written, run by DuckDB's execution model, with
 no plan rewriting" -- the same shape as this engine, and that is what makes it

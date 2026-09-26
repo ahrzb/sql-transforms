@@ -26,10 +26,13 @@ recorded in a pins spec (`packages/confit/docs/specs/`), not an accident.
 PRAGMA disable_optimizer;
 ```
 
-That is not a smaller DuckDB. The binder is untouched, so types, constant
-folding and bind-time errors are the same; execution-level laziness — an
-untaken `CASE` arm, `AND`/`OR` short-circuit in a filter — is the same. What
-it removes is the 33 plan-rewrite passes.
+That is not a smaller DuckDB. The binder is untouched, so types and
+bind-time errors are the same; execution-level laziness — an untaken `CASE`
+arm, `AND`/`OR` short-circuit in a filter — is the same. What it removes is
+the 33 plan-rewrite passes, constant folding among them (`1 + 2` still
+answers `3`, by execution), plus a dozen physical-plan choices that read the
+same switch (window and DISTINCT ON operators, join flipping); see
+[the oracle's scope](oracle/01-what-the-oracle-is.md).
 
 The reason is that the optimizer-on reading is not a function of the query.
 `statistics_propagation` decides from a column's stored null statistic, so
@@ -230,7 +233,7 @@ These are served, but with a consciously chosen surface — know them:
   compile errors) use our own wording with the same error class. The
   corpus only ever compares successful results, so texts never affect
   parity.
-- **Two known oracle divergences** (excluded from the corpus by name in
+- **One known oracle-divergent source, two statements** (excluded from the corpus by name in
   `packages/confit/tests/test_corpus_replay.py::_KNOWN_DIVERGENT_SOURCES`): DuckDB
   behaviors that depend on column STATISTICS (e.g. ILIKE's NUL handling
   selects a different kernel depending on *sibling rows*). A row-at-a-time
@@ -252,9 +255,10 @@ These are served, but with a consciously chosen surface — know them:
   measured doing this are `expression_rewriter` (constant shifting, folding
   a trapping constant, dead-range elimination) and
   `statistics_propagation` (proving `IS NOT NULL` from a column's null
-  statistic, and pruning a filter from a value range). A 4000-seed
-  differential campaign puts it at 8 seeds in 28 findings; all eight are
-  labelled `DIVERGE_OPT` by the campaign and enumerated in
+  statistic, and pruning a filter from a value range). The 2026-08-17
+  4000-seed campaign snapshot holds 7 `DIVERGE_OPT` seeds among its 28
+  findings (312, 812, 1196, 1563, 1564, 2174, 2805; recounted 2026-08-25 —
+  earlier text here said 8), described in
   `packages/confit/docs/2026-08-17-fuzz-triage.md`.
 
   The trade is deliberate: matching the optimizer means matching an
