@@ -236,7 +236,7 @@ def test_assert_schema_accepts_an_equal_schema():
     [
         (pa.field("z", pa.int64()), "name"),
         (pa.field("b", pa.int32()), "type"),
-        (pa.field("b", pa.int64(), nullable=False), "nullable"),
+        (pa.field("b", pa.struct([("x", pa.int32())])), "type"),
     ],
 )
 def test_assert_schema_names_the_first_differing_field_and_attribute(
@@ -294,3 +294,78 @@ def test_import_confit_stays_lean():
     assert "compare" not in {
         a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
     } | {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+
+
+@pytest.mark.parametrize(
+    "want_type",
+    [
+        pa.int64(),
+        pa.struct([pa.field("x", pa.int64(), nullable=False)]),
+        pa.list_(pa.field("item", pa.int64(), nullable=False)),
+        pa.map_(pa.string(), pa.field("value", pa.int64(), nullable=False)),
+    ],
+)
+def test_assert_schema_does_not_require_duckdbs_nullable_flags(want_type):
+    """Nullability must be truthful, not identical to another engine's
+    inference: conservative nullable metadata passes, at any depth."""
+
+    def loosen(t):
+        if pa.types.is_struct(t):
+            return pa.struct([pa.field(f.name, f.type) for f in t])
+        if pa.types.is_map(t):
+            return pa.map_(t.key_type, t.item_type)
+        if pa.types.is_list(t):
+            return pa.list_(t.value_type)
+        return t
+
+    got = pa.schema([pa.field("a", loosen(want_type))])
+    want = pa.schema([pa.field("a", want_type, nullable=False)])
+    assert compare.assert_schema(got, want) is None
+
+
+def _nn(name, t):
+    return pa.field(name, t, nullable=False)
+
+
+@pytest.mark.parametrize(
+    ("field", "rows", "where"),
+    [
+        (_nn("a", pa.int64()), [{"a": 1}, {"a": None}], "row 1 'a'"),
+        (
+            pa.field("s", pa.struct([_nn("x", pa.int64())])),
+            [{"s": {"x": None}}],
+            "row 0 's.x'",
+        ),
+        (
+            pa.field("l", pa.list_(_nn("item", pa.int64()))),
+            [{"l": [1, None]}],
+            "row 0 'l[]'",
+        ),
+        (
+            pa.field("m", pa.map_(pa.string(), _nn("value", pa.int64()))),
+            [{"m": [("k", None)]}],
+            "row 0 'm{}'",
+        ),
+    ],
+)
+def test_a_broken_non_null_promise_is_named(field, rows, where):
+    schema = pa.schema([field])
+    assert compare.non_null_violation(schema, rows) == where
+    with pytest.raises(AssertionError, match=r"row \d"):
+        compare.assert_nullability_sound(schema, rows, ctx="q")
+
+
+@pytest.mark.parametrize(
+    ("field", "rows"),
+    [
+        (pa.field("a", pa.int64()), [{"a": None}]),
+        (_nn("a", pa.int64()), [{"a": 0}]),
+        # a non-null child under a NULL parent holds no value to break it
+        (pa.field("s", pa.struct([_nn("x", pa.int64())])), [{"s": None}]),
+        (pa.field("l", pa.list_(_nn("item", pa.int64()))), [{"l": None}]),
+    ],
+)
+def test_a_kept_or_absent_non_null_promise_passes(field, rows):
+    schema = pa.schema([field])
+    assert compare.non_null_violation(schema, rows) is None
+    assert compare.assert_nullability_sound(schema, rows) is None

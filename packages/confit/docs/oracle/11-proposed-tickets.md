@@ -24,7 +24,7 @@ evidence, not active instructions or dependencies.
 - [x] **ticket: split-refused-verdict** — Retain the already-computed oracle
   outcome and summarize by refusal reason. The historical name does not require
   a new verdict kind or make every oracle-serves refusal a correctness defect.
-- [ ] **ticket: truthful-output-nullability** — Enforce sound non-null promises,
+- [x] **ticket: truthful-output-nullability** — Enforce sound non-null promises,
   not equality with DuckDB's nullable flags. The existing checkers do not
   establish the adopted invariant in full.
 - [ ] **ticket: dated-campaign-evidence** — Keep old runs historical; record SQL,

@@ -206,30 +206,92 @@ def assert_rows_close(got, want, *, max_ulp: int = 1, ctx: str = "") -> None:
 
 
 def assert_schema(got: pa.Schema, want: pa.Schema, *, ctx: str = "") -> None:
-    """`got` equals `want`, or AssertionError naming the FIRST field that
-    differs and the attribute that differs on it.
+    """`got` has `want`'s field names and types, or AssertionError naming the
+    FIRST field that differs and the attribute that differs on it.
+
+    Nullability is not compared, at any depth: metadata must be truthful, not
+    identical to DuckDB's inference, and conservative nullable metadata is
+    allowed. Truthfulness is a property of the rows, so it is checked against
+    them, by `assert_nullability_sound`.
 
     One field and one attribute, never two whole schema dumps: a wide schema
     printed twice makes the reader diff it by eye, which is the work this is
     supposed to have already done.
     """
-    if got.equals(want):
-        return
     where = f" [{ctx}]" if ctx else ""
     for i in range(min(len(got), len(want))):
         gf, wf = got.field(i), want.field(i)
         label = f"field {i}" + (f" '{gf.name}'" if gf.name == wf.name else "")
-        for attr in ("name", "type", "nullable"):
-            a, b = getattr(gf, attr), getattr(wf, attr)
-            if a != b:
-                raise AssertionError(
-                    f"assert_schema mismatch{where}: {label} differs on "
-                    f"{attr}: got {a}, want {b}"
-                )
-    raise AssertionError(
-        f"assert_schema mismatch{where}: got {_n(len(got), 'field')}, "
-        f"want {_n(len(want), 'field')}"
-    )
+        if gf.name != wf.name:
+            raise AssertionError(
+                f"assert_schema mismatch{where}: {label} differs on "
+                f"name: got {gf.name}, want {wf.name}"
+            )
+        if not same_type(gf.type, wf.type):
+            raise AssertionError(
+                f"assert_schema mismatch{where}: {label} differs on "
+                f"type: got {gf.type}, want {wf.type}"
+            )
+    if len(got) != len(want):
+        raise AssertionError(
+            f"assert_schema mismatch{where}: got {_n(len(got), 'field')}, "
+            f"want {_n(len(want), 'field')}"
+        )
+
+
+def same_type(a: pa.DataType, b: pa.DataType) -> bool:
+    """Arrow type equality with every nested field's nullability ignored.
+
+    Arrow's own `==` compares child-field nullability, so a struct or list
+    whose children DuckDB declares non-null would otherwise differ from a
+    conservatively nullable one on type alone.
+    """
+    if a == b:
+        return True
+    if type(a) is not type(b):
+        return False
+    if hasattr(a, "item_field"):  # map: before list, a map is a list type
+        return (
+            a.keys_sorted == b.keys_sorted
+            and same_type(a.key_type, b.key_type)
+            and same_type(a.item_type, b.item_type)
+        )
+    if hasattr(a, "value_field"):  # list, large_list, fixed_size_list
+        return getattr(a, "list_size", None) == getattr(b, "list_size", None) and (
+            same_type(a.value_type, b.value_type)
+        )
+    if getattr(a, "num_fields", 0) and a.num_fields == b.num_fields:  # struct
+        return all(
+            a.field(i).name == b.field(i).name
+            and same_type(a.field(i).type, b.field(i).type)
+            for i in range(a.num_fields)
+        )
+    return False
+
+
+def non_null_violation(schema: pa.Schema, rows) -> str | None:
+    """Where `rows` break a non-null promise `schema` makes, as
+    `row N 'path'`, or None when every promise holds.
+
+    `rows` are `to_pylist()` dicts in schema order. Recurses into struct
+    children (`s.x`), list items (`l[]`) and map values (`m{}`); a child of a
+    NULL parent holds no value, so it cannot break its promise.
+    """
+    for r, row in enumerate(rows):
+        for f, v in zip(schema, row.values(), strict=True):
+            path = _violation(f, v, f.name)
+            if path is not None:
+                return f"row {r} '{path}'"
+    return None
+
+
+def assert_nullability_sound(schema: pa.Schema, rows, *, ctx: str = "") -> None:
+    """Every non-null promise in `schema` holds on `rows`, or AssertionError
+    naming the first row and field path that breaks one."""
+    at = non_null_violation(schema, rows)
+    if at is not None:
+        where = f" [{ctx}]" if ctx else ""
+        raise AssertionError(f"unsound non-null promise{where}: NULL at {at}")
 
 
 # --------------------------------------------------------------- internals
@@ -243,6 +305,29 @@ class _Missing:
 
 
 _MISSING = _Missing()
+
+
+def _violation(field, v, path: str) -> str | None:
+    if v is None:
+        return None if field.nullable else path
+    t = field.type
+    if hasattr(t, "item_field"):
+        for _, item in v:
+            bad = _violation(t.item_field, item, f"{path}{{}}")
+            if bad is not None:
+                return bad
+    elif hasattr(t, "value_field"):
+        for item in v:
+            bad = _violation(t.value_field, item, f"{path}[]")
+            if bad is not None:
+                return bad
+    elif getattr(t, "num_fields", 0) and isinstance(v, dict):
+        for i in range(t.num_fields):
+            child = t.field(i)
+            bad = _violation(child, v.get(child.name), f"{path}.{child.name}")
+            if bad is not None:
+                return bad
+    return None
 
 
 def _n(k: int, noun: str) -> str:

@@ -273,3 +273,12 @@ def test_a_refusal_keeps_the_oracle_outcome_it_already_computed():
         else:
             assert v.oracle == "", v
     assert "serves" in outcomes, outcomes
+
+
+def test_a_broken_non_null_promise_is_a_divergence(monkeypatch):
+    """Our output schema's non-null promises are checked against our own
+    rows, not against DuckDB's flags. Planted: the check reports a NULL."""
+    seed = _row_path_agree_seed(monkeypatch)
+    monkeypatch.setattr(oracle, "non_null_violation", lambda *a: "row 0 'o0'")
+    v = oracle.run_case(gen.gen(seed))
+    assert (v.kind, v.klass) == ("DIVERGE_VALUE", "unsound-non-null"), v

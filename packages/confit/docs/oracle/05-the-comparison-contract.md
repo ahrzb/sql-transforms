@@ -59,22 +59,28 @@ last duplicate column.
 
 **claim: schema-comparison.** Output names, Arrow types, and field order are part of
 the [serving output contract](../specs/serving-contract.md#api-and-output-shape).
-Compare schemas, not just values. The current checks differ on nullability:
+Compare schemas, not just values:
 
-- `confit.compare.assert_schema` compares field count, name, type, and nullability;
-- campaign `_schema_delta` compares deduplicated names and recursively compares types,
-  but does **not** compare field nullability; and
+- `confit.compare.assert_schema` compares field count, names, and types;
+- campaign `_schema_delta` compares deduplicated names and recursively compares types;
 - a campaign name or non-exempt type difference is `DIVERGE_VALUE` with class `schema`.
 
 Output names, Arrow types, and field order keep their existing contract. Nullability
 metadata must be truthful rather than identical to DuckDB's flags: a non-null promise
 must be sound, while conservative nullable metadata need not reproduce another engine's
-inference. The two checker behaviors above are facts about those checkers, not evidence
-that either the `assert_schema` comparison or the `_schema_delta` omission is the
-invariant.
+inference. Both checkers therefore compare types through `confit.compare.same_type`,
+which ignores nullability at every depth, and soundness is checked against confit's own
+rows: `confit.compare.non_null_violation` names the first row and field path (struct
+child, list item, map value) holding a NULL under a non-null promise. The campaign
+reports such a case as `DIVERGE_VALUE` with class `unsound-non-null`; tests assert it
+with `assert_nullability_sound`. At the time of writing confit declares every output
+field nullable, so the check guards future non-null inference rather than a live gap.
 
-*Evidence:* `confit.compare.assert_schema`; `fuzz.oracle._schema_delta` and
-`_type_delta`; `packages/confit/tests/test_fuzz_smoke.py::test_a_real_schema_difference_is_still_a_divergence`;
+*Evidence:* `confit.compare.assert_schema`, `same_type`, and `non_null_violation`;
+`fuzz.oracle._schema_delta` and `_type_delta`;
+`packages/confit/tests/test_compare.py::test_a_broken_non_null_promise_is_named`;
+`packages/confit/tests/test_fuzz_smoke.py::test_a_broken_non_null_promise_is_a_divergence`;
+`packages/confit/tests/test_fuzz_smoke.py::test_a_real_schema_difference_is_still_a_divergence`;
 and `packages/confit/tests/test_compare.py::test_assert_schema_names_the_first_differing_field_and_attribute`.
 
 **claim: unshipped-verdict.** An enumerated unshipped width is classified, never cast
