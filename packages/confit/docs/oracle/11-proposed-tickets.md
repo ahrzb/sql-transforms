@@ -33,7 +33,7 @@ evidence, not active instructions or dependencies.
 - [x] **ticket: unresolved-observation-reporting** — Show unresolved observations
   separately from agreement and confirmed defects. Do not downgrade established
   mismatches or manufacture cases from retired counts.
-- [ ] **ticket: refusal-quality-reporting** — Report construct naming and
+- [x] **ticket: refusal-quality-reporting** — Report construct naming and
   actionability, not just prefix presence. No new blocking KPI is adopted.
 - [ ] **ticket: unsupported-width-reporting** — Report unsupported widths and
   generator reachability. An empty bucket is not proof of support; reuse
