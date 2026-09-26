@@ -15,8 +15,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
    VARCHAR and BOOLEAN CAST targets, and never the forms in item 1. Widen it
    together with a fresh dated reading (a generator change re-deals every
    seed).
-3. **Dead code.** `wider_int` in `src/specializer/frontend.rs` is unused
-   (cargo warns); `dialect::printer::ColRef::name` is never read.
 
 ## Waiting on the owner
 
