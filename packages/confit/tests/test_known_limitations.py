@@ -398,6 +398,28 @@ def test_a_column_qualified_through_another_schema_refuses(sql):
     rejects(sql, "not found|unknown table|does not exist", {"d": _D})
 
 
+@pytest.mark.parametrize(
+    ("name", "sql"),
+    [
+        (
+            "Dim Table",
+            'SELECT "Dim Table".v AS o FROM __THIS__ JOIN "Dim Table" ON a = id',
+        ),
+        ("Dim Table", 'SELECT v AS o FROM __THIS__ JOIN main."Dim Table" ON a = id'),
+        ("Dim Table", 'SELECT v AS o FROM __THIS__, "Dim Table" WHERE a = id'),
+        # a quoted name is ONE part, dot and all
+        ("a.b", 'SELECT "a.b".v AS o FROM __THIS__ JOIN "a.b" ON a = "a.b".id'),
+        ("d", 'SELECT v AS o FROM "__THIS__" JOIN "d" ON a = d.id'),
+    ],
+)
+def test_a_quoted_relation_name_resolves_by_its_value(name, sql):
+    # The name is resolved by its identifier value, never by its spelling:
+    # `"Dim Table"` is the table `Dim Table`.
+    row = [{"a": 1, "s": None}]
+    want = _oracle_answer(sql, T, row, {name: _D}).to_pylist()
+    assert build(sql, {name: _D}).infer_rows(row) == want == [{"o": 10}]
+
+
 def test_a_schema_like_struct_path_reads_the_struct_field():
     # `w.w.w` with table `w` (an alias, so no schema) and struct column
     # `w{w}`: the schema rung does not match, so it reads column.field.

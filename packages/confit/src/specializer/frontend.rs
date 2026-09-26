@@ -168,9 +168,40 @@ fn expr_refusal(e: &SqlExpr) -> String {
     format!("expression {kind}")
 }
 
+/// A relation's name as its identifier VALUES, quotes resolved: `"Dim Table"`
+/// is the one part `Dim Table`, `main.d` the parts `main`, `d`. Nothing
+/// splits the SQL spelling, so a quoted name may contain a space or a dot.
+#[derive(Debug, Clone)]
+struct RelName(Vec<String>);
+
+impl RelName {
+    /// The table part: the name the relation is in scope under.
+    fn bare(&self) -> &str {
+        self.0.last().map_or("", String::as_str)
+    }
+
+    /// The schema the relation lives in as named in FROM: the part before
+    /// the table (`main.d`, `memory.main.d`), `main` when unqualified. A
+    /// column may be qualified through exactly this schema (measured:
+    /// `main.t.c` binds over `FROM t`, `other.t.c` is DuckDB's
+    /// `Referenced table "other.t" not found`).
+    fn schema(&self) -> String {
+        match self.0.len() {
+            0 | 1 => "main".to_string(),
+            n => self.0[n - 2].clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for RelName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.join("."))
+    }
+}
+
 fn plain_table(
     tf: &TableFactor,
-) -> Result<Option<(String, Option<&TableAlias>)>, PrepareError> {
+) -> Result<Option<(RelName, Option<&TableAlias>)>, PrepareError> {
     let TableFactor::Table {
         name,
         alias,
@@ -208,7 +239,15 @@ fn plain_table(
     if let Some(m) = modifier {
         return Err(unsup(format!("{m} on relation '{name}'")));
     }
-    Ok(Some((name.to_string(), alias.as_ref())))
+    let Some(parts) = name
+        .0
+        .iter()
+        .map(|p| p.as_ident().map(|i| i.value.clone()))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Err(unsup(format!("relation name '{name}' built by a function")));
+    };
+    Ok(Some((RelName(parts), alias.as_ref())))
 }
 
 /// What the signature-table resolution head hands a table-resolved arm.
@@ -725,10 +764,7 @@ fn bind_from<'a>(
             // registered bare name (DuckDB's schema-existence errors are
             // unknowable to a schema-less registry; documented in
             // known-limitations.md §5).
-            let bare = match n.rsplit_once('.') {
-                Some((_, t)) => t,
-                None => &n,
-            };
+            let bare = n.bare();
             if !bare.eq_ignore_ascii_case(this_name) {
                 return Err(unsup(format!(
                     "table '{n}' as the driving relation (must be the dynamic table '{this_name}')"
@@ -773,7 +809,7 @@ fn bind_from<'a>(
                     }
                     (a.name.value.clone(), Some(renamed))
                 }
-                None => (n, None),
+                None => (n.to_string(), None),
             }
         }
         None => return Err(unsup(relation_refusal(&table.relation))),
@@ -784,7 +820,7 @@ fn bind_from<'a>(
     // binder error on DuckDB (measured), so nothing can match "".
     let this_schema = match plain_table(&table.relation)? {
         Some((_, Some(_))) => String::new(),
-        Some((n, None)) => rel_schema(&n),
+        Some((n, None)) => n.schema(),
         None => "main".to_string(),
     };
     let mut binder = Binder {
@@ -835,12 +871,8 @@ fn bind_from<'a>(
         let scope_name = rel_alias
             .as_ref()
             .map(|a| a.name.value.clone())
-            .unwrap_or_else(|| {
-                raw_name
-                    .rsplit_once('.')
-                    .map_or(raw_name.clone(), |(_, t)| t.to_string())
-            });
-        if raw_name.eq_ignore_ascii_case(this_name) {
+            .unwrap_or_else(|| raw_name.bare().to_string());
+        if raw_name.to_string().eq_ignore_ascii_case(this_name) {
             if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
                 // Dropping it answered a query with the WRONG names in
                 // scope; serving the rename on a self-join is unpinned.
@@ -908,7 +940,7 @@ fn bind_from<'a>(
             let n_batch = binder.n_plain as u32;
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
-                schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
+                schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
                 table: std::borrow::Cow::Owned(StaticTable::all_scalar(
                     scope_name,
                     in_cols[..binder.n_plain].to_vec(),
@@ -952,7 +984,7 @@ fn bind_from<'a>(
         let (keys, key_cols, residual_raw, using) = match constraint {
             JoinConstraint::On(e) => {
                 let schema =
-                    if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) };
+                    if rel_alias.is_some() { String::new() } else { raw_name.schema() };
                 let (keys, key_cols, res) = bind_on(&binder, st, &scope_name, &schema, e)?;
                 (keys, key_cols, res, false)
             }
@@ -1041,7 +1073,7 @@ fn bind_from<'a>(
 
         binder.joins.push(ScopeJoin {
             name: scope_name,
-            schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
+            schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
             table: match renamed {
                 Some(t) => std::borrow::Cow::Owned(t),
                 None => std::borrow::Cow::Borrowed(&statics[table_idx]),
@@ -1094,12 +1126,8 @@ fn bind_from<'a>(
         let scope_name = rel_alias
             .as_ref()
             .map(|a| a.name.value.clone())
-            .unwrap_or_else(|| {
-                raw_name
-                    .rsplit_once('.')
-                    .map_or(raw_name.clone(), |(_, t)| t.to_string())
-            });
-        if raw_name.eq_ignore_ascii_case(this_name) {
+            .unwrap_or_else(|| raw_name.bare().to_string());
+        if raw_name.to_string().eq_ignore_ascii_case(this_name) {
             if rel_alias.as_ref().is_some_and(|a| !a.columns.is_empty()) {
                 // Dropping it answered a query with the WRONG names in
                 // scope; serving the rename on a self-join is unpinned.
@@ -1129,7 +1157,7 @@ fn bind_from<'a>(
             let n_batch = binder.n_plain as u32;
             binder.joins.push(ScopeJoin {
                 name: scope_name.clone(),
-                schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
+                schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
                 table: std::borrow::Cow::Owned(StaticTable::all_scalar(
                     scope_name,
                     in_cols[..binder.n_plain].to_vec(),
@@ -1185,7 +1213,7 @@ fn bind_from<'a>(
             else {
                 continue;
             };
-            let schema = if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) };
+            let schema = if rel_alias.is_some() { String::new() } else { raw_name.schema() };
             let l = static_col_of(left, st, &scope_name, &schema, &binder)?;
             let r = static_col_of(right, st, &scope_name, &schema, &binder)?;
             let (col, dyn_side, static_side) = match (l, r) {
@@ -1218,7 +1246,7 @@ fn bind_from<'a>(
         let val_cols = val_cols_for(st, &key_cols, &keys);
         binder.joins.push(ScopeJoin {
             name: scope_name,
-            schema: if rel_alias.is_some() { String::new() } else { rel_schema(&raw_name) },
+            schema: if rel_alias.is_some() { String::new() } else { raw_name.schema() },
             table: match renamed {
                 Some(t) => std::borrow::Cow::Owned(t),
                 None => std::borrow::Cow::Borrowed(&statics[table_idx]),
@@ -1447,27 +1475,15 @@ fn walk_fields(
     unreachable!("the loop returns on the last part")
 }
 
-/// The schema a relation lives in as spelled in FROM: the part before the
-/// table (`main.d`, `memory.main.d`), `main` when unqualified. A column may
-/// be qualified through exactly this schema (measured: `main.t.c` binds over
-/// `FROM t`, `other.t.c` is DuckDB's `Referenced table "other.t" not found`).
-fn rel_schema(raw_name: &str) -> String {
-    let parts: Vec<&str> = raw_name.split('.').collect();
-    if parts.len() >= 2 {
-        parts[parts.len() - 2].to_string()
-    } else {
-        "main".to_string()
-    }
-}
-
-fn resolve_static(statics: &[StaticTable], raw_name: &str) -> Result<usize, PrepareError> {
+fn resolve_static(statics: &[StaticTable], raw_name: &RelName) -> Result<usize, PrepareError> {
     // Schema-less registry: an exact registered-name match wins;
-    // otherwise a single-qualifier SQL name (`s1.t1`) matches a registered
-    // bare `t1`. Ambiguity stays an error.
-    let bare = raw_name.rsplit_once('.').map(|(_, t)| t);
+    // otherwise a qualified SQL name (`s1.t1`) matches a registered bare
+    // `t1`. Ambiguity stays an error.
+    let whole = raw_name.to_string();
+    let bare = (raw_name.0.len() > 1).then(|| raw_name.bare());
     let mut table_idx = None;
     for (i, st) in statics.iter().enumerate() {
-        let hit = st.name.eq_ignore_ascii_case(raw_name)
+        let hit = st.name.eq_ignore_ascii_case(&whole)
             || bare.is_some_and(|b| st.name.eq_ignore_ascii_case(b));
         if hit {
             if table_idx.is_some() {
@@ -2313,7 +2329,7 @@ fn default_name(e: &SqlExpr) -> String {
 /// dynamic side: `r.id` ≡ CASE match THEN dyn-key ELSE NULL — pins-wave4/).
 struct ScopeJoin<'a> {
     name: String,
-    /// The schema the relation was named through (see [`rel_schema`]).
+    /// The schema the relation was named through (see [`RelName::schema`]).
     schema: String,
     table: std::borrow::Cow<'a, StaticTable>,
     kind: JoinKind,
@@ -2338,7 +2354,7 @@ struct ScopeJoin<'a> {
 struct Binder<'a> {
     /// The dynamic table's name as spelled in FROM.
     this_name: String,
-    /// The schema the driving relation was named through ([`rel_schema`]).
+    /// The schema the driving relation was named through ([`RelName::schema`]).
     this_schema: String,
     /// The dynamic table's columns AS THE BINDER SEES THEM: borrowed
     /// normally; an owned renamed copy under `t AS u(x, y)` (pins-wave5/ —

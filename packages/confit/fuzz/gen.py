@@ -1036,15 +1036,23 @@ def _equi_on(rng, env: Env, table: str, tschema: dict) -> Node | None:
     too: a lane is a column, so `w.mean = c0` is an ordinary equi-key."""
     tleaves = leaves(tschema)
     pairs = [
-        (rc, tc)
-        for _, rc, rt in env.cols
+        (rtab, rc, tc)
+        for rtab, rc, rt in env.cols
         for tc, tt, _ in tleaves
         if tt == rt and rt in ("int", "float", "str")
     ]
     if not pairs:
         return None
-    rc, tc = rng.choice(pairs)
-    on: Node = Bin("=", Col(rc, None, "float"), Col(tc, table, "float"))
+    rtab, rc, tc = rng.choice(pairs)
+    # A driving-table key whose head is also a column of a joined relation
+    # is ambiguous unqualified, and DuckDB rejects the query: qualify it, so
+    # the case exercises the key instead of the ambiguity refusal.
+    heads = {n.lower() for n in tschema} | {
+        c.split(".")[0].lower() for t, c, _ in env.cols if t is not None
+    }
+    if rtab is None and rc.split(".")[0].lower() in heads:
+        rtab = "__THIS__"
+    on: Node = Bin("=", Col(rc, rtab, "float"), Col(tc, table, "float"))
     if rng.random() < 0.4:
         resid_env = Env(
             env.cols + [(table, c, t) for c, t, _ in tleaves],

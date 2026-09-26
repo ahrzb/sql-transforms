@@ -6,10 +6,11 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 
 ## Next
 
-1. **Generator name collisions** (reading N=3, gap: generator-name-collisions).
-   `fuzz/gen.py` names row and static columns alike (`c0`, `c1`), so 29 of 34
-   struct-leaf ON keys are queries DuckDB rejects as ambiguous. Qualify the row
-   side of a generated ON key, or draw static names from a disjoint pool.
+1. **Derived tables** (`FROM (SELECT …)`): the largest refusal class of
+   queries DuckDB answers on the generated grammar (reading N=3: 144 of 525).
+   Scope the row-local subset first (a derived table over the driving table
+   whose body is itself row-local), measured against DuckDB, and record the
+   ruling in `docs/decisions/open/next-query-classes.md` before building.
 
 ## Waiting on the owner
 
