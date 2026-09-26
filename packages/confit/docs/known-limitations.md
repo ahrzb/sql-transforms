@@ -67,7 +67,8 @@ measured matrix runs against the live oracle in
 Confit's speed comes from doing ALL general work at build time:
 parse once, bind once, compile once, freeze the static tables into the
 code. Anything that would require re-doing general work per row is
-rejected, permanently by design:
+rejected by design (class 3 in the
+[restriction inventory](specs/serving-contract.md#restriction-inventory-by-class)):
 
 | Limitation | You'll see | Why |
 |---|---|---|
@@ -94,7 +95,12 @@ follow-up rejection.
 
 The engine serves **row-at-a-time feature transforms**. Whole-relation
 constructs are out of scope because their output shape is not
-one-row-in/one-row-out:
+one-row-in/one-row-out. Syntax is not the scope test, though: the refusals
+below are listed by the syntax that triggers them, and only the forms that
+depend on sibling request rows are outside the model. A row-local CTE,
+subquery or set operation is an implementation gap, not an exclusion — the
+[restriction inventory](specs/serving-contract.md#restriction-inventory-by-class)
+classifies each family.
 
 - Aggregation: `GROUP BY`, `HAVING`, `sum`/`count`/`avg`/... →
   `aggregate function ... (no aggregation in v0)`
