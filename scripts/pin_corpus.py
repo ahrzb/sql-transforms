@@ -34,6 +34,48 @@ _OPTIMIZER_ON = {
 }
 
 
+# The under-determined-field token (claim: under-determined-token): a pin
+# field whose recorded value is not THE contracted answer. `by:<discriminator>`
+# means it varies by a named discriminator (the recorded value holds for the
+# capture's); `unspecified` means the contract leaves it open (the recorded
+# value is one valid answer). `at` is a JSON pointer, `*` matching every list
+# index. Reviewed data, like _OPTIMIZER_ON: added by hand, checked by test.
+_ORDER = "row order is a hash-join artifact; the contract is the multiset"
+_VARIES = {
+    "pins-wave3/math_tail.json": [
+        {
+            "at": "/corrections/0/probes/*/bits",
+            "mark": "by:platform",
+            "note": "%/mod by zero NaN sign follows platform libm "
+            "(divergence: nan-sign-per-platform)",
+        },
+    ],
+    "pins-stageB/order-contract.json": [
+        {"at": "/pins/*/result", "mark": "unspecified", "note": _ORDER},
+    ],
+    "pins-stageB/dup-key-equi.json": [
+        {"at": "/pins/*/result", "mark": "unspecified", "note": _ORDER},
+    ],
+}
+TOKENS = ("unspecified", "by:")
+
+
+def resolve(d, pointer: str) -> list:
+    """Every value a `varies` pointer names (`*` fans out over a list)."""
+    found = [d]
+    for part in pointer.strip("/").split("/"):
+        nxt = []
+        for node in found:
+            if part == "*" and isinstance(node, list):
+                nxt.extend(node)
+            elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+                nxt.append(node[int(part)])
+            elif isinstance(node, dict) and part in node:
+                nxt.append(node[part])
+        found = nxt
+    return found
+
+
 def pin_files() -> list[Path]:
     return sorted(PINS.glob("pins-*/*.json"))
 
@@ -197,6 +239,8 @@ def header(p: Path, d: dict) -> dict:
     # The decisions this pin is evidence for, derived from who cites it; an
     # empty list is a finding (an orphan pin), not a gap to fill by hand.
     h["evidences"] = evidences(p)
+    if rel in _VARIES:
+        h["varies"] = _VARIES[rel]
     return h
 
 
