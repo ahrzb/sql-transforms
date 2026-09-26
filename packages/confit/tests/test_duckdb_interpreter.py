@@ -9,6 +9,7 @@ to map probes.
 from __future__ import annotations
 
 import math
+import sys
 from typing import Any
 
 import pyarrow as pa
@@ -348,6 +349,18 @@ def test_trim_zs_set_differential():
         "SELECT trim(s) AS t, ltrim(s) AS l, rtrim(s) AS r FROM __THIS__",
         {"s": "str"},
         [{"s": "\u00a0a\u3000"}, {"s": "\ta\n"}, {"s": " a "}, {"s": "\u2003a"}],
+    )
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reference platform is Linux")
+def test_two_arg_substr_is_a_uint32_max_window_differential():
+    # substr(s, k) is DuckDB's substr(s, k, 4294967295), not "to the end":
+    # at the -2^32 guard boundary the window's end cuts the last character.
+    duck_check(
+        "SELECT substr(s, -4294967296) AS a, substr(s, -4294967295) AS b, "
+        "substr(s, 4294967295) AS c FROM __THIS__",
+        {"s": "str"},
+        [{"s": "hello"}, {"s": "é☃x"}, {"s": ""}],
     )
 
 

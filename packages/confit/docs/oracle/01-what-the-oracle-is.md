@@ -97,6 +97,20 @@ unrelated consumers stay unconstrained.
 and `uv.lock`.
 *Evidence:* `packages/confit/tests/test_oracle.py::test_construction_asserts_the_pinned_version`.
 
+**claim: reference-platform.** The oracle is DuckDB's behavior on Linux. Where DuckDB
+answers differently on another platform — a libm-dependent NaN sign, a platform-specific
+bug — confit follows the Linux answer and does not replicate the other. Rust pins of
+Linux-measured DuckDB behavior carry `#[cfg(target_os = "linux")]`, and Python ones
+`skipif(sys.platform != "linux")`; CI (`.github/workflows/ci.yml`) runs on
+`ubuntu-latest`.
+
+*Decision:* [oracle policy](../decisions/oracle-policy.md#reference-and-comparison),
+owner ruling 2026-09-26.
+*Evidence:* `src/specializer/exec/tests.rs` (`pin_ssubstr_window_arithmetic`,
+`pin_ftoi_rounding_and_traps`, `pin_stoi_trims_whitespace_like_duckdb_cast`),
+`src/specializer/tests.rs::substr_window_arithmetic_via_sql`, and
+`tests/test_duckdb_interpreter.py::test_two_arg_substr_is_a_uint32_max_window_differential`.
+
 **claim: version-policy.** DuckDB 1.5.5 remains the reference. The reproducible
 oracle/test environment must pin that version exactly, and opening the oracle must
 assert `duckdb.__version__ == Oracle.VERSION`. Unrelated DuckDB consumers are not

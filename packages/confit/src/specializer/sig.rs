@@ -180,8 +180,9 @@ pub const SIGS: &[(&[&str], Sig)] = &[
 pub const CUSTOM_NAMES: &[&str] = &[
     // arity-range rows (1-or-2 / 2-to-4 args)
     "ltrim", "rtrim", "log", "round", "trunc",
-    // variadic desugars and unification
-    "concat", "concat_ws", "coalesce", "least", "greatest",
+    // variadic desugars and unification (`if` is the ternary CASE, `ifnull`
+    // 2-arg coalesce: both desugar in the frontend, 2026-08-24)
+    "concat", "concat_ws", "coalesce", "least", "greatest", "if", "ifnull",
     // cmp-delegated comparability, Arg(0) result
     "nullif",
     // operator aliases: NULL adopts the OTHER operand's type (not the

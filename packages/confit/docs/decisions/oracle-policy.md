@@ -15,6 +15,10 @@ make current limitations or documentation machinery part of its definition.
 - **Version:** retain DuckDB 1.5.5. Pin the reproducible oracle/test environment
   and assert its version when opening the oracle. Do not unnecessarily constrain
   unrelated DuckDB consumers. An upgrade is a separate reviewed change.
+- **Platform** (owner ruling, 2026-09-26): the reference is DuckDB as it behaves on
+  Linux. Behavior DuckDB shows only on another platform, platform-specific bugs
+  included, is not replicated. Tests that pin Linux-measured DuckDB behavior may be
+  marked Linux-only; CI runs on Linux.
 - **Execution order:** do not change the global thread setting speculatively.
   Define a justified contract when implementing each order-sensitive family;
   refuse a family until that contract is clear. Single-thread execution alone

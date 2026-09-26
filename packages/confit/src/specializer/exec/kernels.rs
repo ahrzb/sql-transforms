@@ -145,7 +145,7 @@ pub(super) fn call_extern(
 /// (`rs = n + start + 1`, NOT clamped -- see the body) while start 0 stays
 /// virtual, consuming length before character 1; a non-negative length runs
 /// forward `[rs, rs+len)`, a NEGATIVE length slices BACKWARDS
-/// `[rs+len, rs)`; `len: None` is the 2-arg rest-of-string form. The
+/// `[rs+len, rs)`; `len: None` is the 2-arg form, a UINT32_MAX-long window. The
 /// result is a BYTE range into `s`, so callers subview instead of copying.
 pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> std::ops::Range<usize> {
     let n = s.chars().count() as i64;
@@ -171,7 +171,11 @@ pub(super) fn substr_window(s: &str, start: i64, len: Option<i64>) -> std::ops::
     let (lo, hi) = match len {
         Some(l) if l >= 0 => (rs, rs.saturating_add(l)),
         Some(l) => (rs.saturating_add(l), rs),
-        None => (rs, n + 1),
+        // The 2-arg form is DuckDB's 3-arg form with length UINT32_MAX, not
+        // "to the end": measured on Linux, substr('hello', -4294967296) is
+        // 'hell' -- the window's END lands on position 5 -- while
+        // -4294967295 and above reach the whole string.
+        None => (rs, rs.saturating_add(u32::MAX as i64)),
     };
     let (lo, hi) = (lo.max(1), hi.min(n + 1));
     if hi <= lo {

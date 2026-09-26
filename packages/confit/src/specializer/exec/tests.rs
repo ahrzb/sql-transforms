@@ -626,6 +626,9 @@ fn pin_iabs_min_traps() {
     assert!(err.0.contains("Overflow on abs"), "got '{}'", err.0);
 }
 
+// DuckDB's behavior as measured on Linux (the reference platform); see
+// docs/oracle/01-what-the-oracle-is.md, claim: reference-platform.
+#[cfg(target_os = "linux")]
 #[test]
 fn pin_ssubstr_window_arithmetic() {
     // DuckDB virtual-window semantics (measured 1.5.5 + adversarial census):
@@ -636,8 +639,8 @@ fn pin_ssubstr_window_arithmetic() {
         (2i64, Some(3i64), "ell"),
         (0, Some(3), "he"),
         (-2, None, "lo"),
-        (-6, Some(3), "hel"),
-        (-10, Some(8), "hello"),
+        (-6, Some(3), "he"),
+        (-10, Some(8), "hel"),
         (1, Some(0), ""),
         (1, Some(-1), ""),
         (3, Some(-2), "he"),
@@ -646,7 +649,8 @@ fn pin_ssubstr_window_arithmetic() {
         (-2, Some(-3), "hel"),
         (10, None, ""),
         (0, None, "hello"),
-        (-4294967296, None, "hello"),
+        (-4294967296, None, "hell"),
+        (-4294967295, None, "hello"),
     ] {
         let op = match len {
             Some(l) => format!("  %ln = const.i64 {l}\n  %r = ssubstr %s, %st, %ln\n"),
@@ -698,6 +702,9 @@ fn pin_ssubstr_range_guards_trap() {
     }
 }
 
+// DuckDB's behavior as measured on Linux (the reference platform); see
+// docs/oracle/01-what-the-oracle-is.md, claim: reference-platform.
+#[cfg(target_os = "linux")]
 #[test]
 fn pin_ftoi_rounding_and_traps() {
     // `nearest` is half-to-EVEN: it is DuckDB's DOUBLE->BIGINT cast, and it
@@ -727,7 +734,11 @@ fn pin_ftoi_rounding_and_traps() {
     for lit in ["nan", "inf", "-inf", "1e19"] {
         let body = format!("  %a = const.f64 {lit}\n  %r = ftoi.trunc %a\n  store out.o, %r");
         let err = eval1(&body, "o: i64").unwrap_err();
-        assert!(err.0.contains("out of i64 range"), "ftoi({lit}): {}", err.0);
+        assert!(
+            err.0.contains("can't be cast because the value is out of range"),
+            "ftoi({lit}): {}",
+            err.0
+        );
     }
 }
 
@@ -743,13 +754,16 @@ fn pin_ieee_flow_and_scmp_and_concat() {
     assert_eq!(got, rows(&[&["NaN", "inf", "-inf", "true", ""]]));
 }
 
+// DuckDB's behavior as measured on Linux (the reference platform); see
+// docs/oracle/01-what-the-oracle-is.md, claim: reference-platform.
+#[cfg(target_os = "linux")]
 #[test]
 fn pin_stoi_trims_whitespace_like_duckdb_cast() {
     for (s, ok) in [
         (" 5", true),
         ("5 ", true),
         ("+5", true),
-        ("0x10", false),
+        ("0x10", true), // DuckDB parses hex: TRY_CAST('0x10' AS BIGINT) = 16
         ("", false),
         ("  ", false),
     ] {

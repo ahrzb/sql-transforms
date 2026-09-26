@@ -125,8 +125,9 @@ These notes supply the evidence that the concise index intentionally does not re
   `known-limitations.md:231-257`;
   `known_divergences/test_trap_elision.py`; the dated snapshot subject to divergence:
   snapshot-baseline.
-- **divergence: nan-sign-per-platform.** `%`-by-zero NaN sign follows platform libm; the
-  measured contract is per-platform bit agreement, not a universal sign. Evidence:
+- **divergence: nan-sign-per-platform.** `%`-by-zero NaN sign follows platform libm.
+  Under claim: reference-platform the contract is agreement with the Linux bits; other
+  platforms' signs are not replicated. Evidence:
   `test_duckdb_wave3_mathtail.py:204-232`; `pins-wave3/math_tail.json`.
 - **divergence: schema-qualifiers.** `s1.t1` resolves by bare table name where DuckDB
   refuses (severity 3); `w.w.w` takes a longer schema-like parse and confit refuses where
