@@ -7,8 +7,6 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Next
 
 1. **Small surface wins DuckDB serves and we refuse.**
-   - A column qualified through a schema-qualified relation (`d.v` over
-     `JOIN main.d`, `s1.d.v`).
    - Struct fields whose own name contains a dot: skipped on the static side,
      opaque on the row side (`src/duckdb/mod.rs`).
 2. **Generator reach.** `fuzz/gen.py` renders only BIGINT, INTEGER, DOUBLE,

@@ -367,31 +367,44 @@ def test_a_relation_schema_qualifier_resolves_by_bare_name():
     assert isinstance(trap, Trap) and 'schema "s1" does not exist' in trap.message
 
 
-def test_a_column_qualified_through_a_schema_qualified_relation_refuses():
-    # DuckDB serves `d.v` over `JOIN main.d`; the registry names the relation
-    # by its qualified spelling, so the bare qualifier misses -- loudly. The
-    # 3-part `s1.d.v` refuses the same way (DuckDB also refuses it: no `s1`).
-    sql = "SELECT d.v FROM __THIS__ JOIN main.d ON a = d.id"
-    rejects(sql, "unknown table 'd'", {"d": _D})
-    assert _oracle_answer(sql, T, [{"a": 1, "s": None}], {"d": _D}).to_pylist() == [
-        {"v": 10}
-    ]
-    rejects(
-        "SELECT s1.d.v FROM __THIS__ LEFT JOIN s1.d ON a = s1.d.id",
-        "unknown table 'd'",
-        {"d": _D},
-    )
+@pytest.mark.parametrize("ref", ["d.v", "main.d.v", "memory.main.d.v"])
+@pytest.mark.parametrize("rel", ["d", "main.d", "memory.main.d"])
+def test_a_column_qualified_through_its_schema_serves(rel, ref):
+    # The relation is in scope under its bare name, and a column may be
+    # qualified through the schema it lives in (and the `memory` catalog).
+    sql = f"SELECT {ref} AS o FROM __THIS__ JOIN {rel} ON a = d.id"
+    row = [{"a": 1, "s": None}]
+    want = _oracle_answer(sql, T, row, {"d": _D}).to_pylist()
+    assert build(sql, {"d": _D}).infer_rows(row) == want == [{"o": 10}]
 
 
-def test_a_schema_like_struct_path_takes_the_longer_parse_and_refuses():
-    # `w.w.w` with table `w` and struct column `w{w}`: resolution is longest-
-    # qualifier-first, so `w.w` binds as schema.table and `.w` as the whole
-    # struct column -- refused by name, where DuckDB serves `column.field`.
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # A schema the relation does not live in.
+        "SELECT other.d.v FROM __THIS__ JOIN main.d ON a = d.id",
+        "SELECT other.__THIS__.a FROM __THIS__",
+        # A catalog other than the default one.
+        "SELECT x.main.d.v FROM __THIS__ JOIN main.d ON a = d.id",
+        # An alias has no schema.
+        "SELECT main.x.a FROM __THIS__ AS x",
+        "SELECT main.y.v FROM __THIS__ JOIN main.d AS y ON a = y.id",
+    ],
+)
+def test_a_column_qualified_through_another_schema_refuses(sql):
+    # DuckDB's binder: `Referenced table "..." not found`.
+    assert isinstance(_oracle_answer(sql, T, [{"a": 1, "s": None}], {"d": _D}), Trap)
+    rejects(sql, "not found|unknown table|does not exist", {"d": _D})
+
+
+def test_a_schema_like_struct_path_reads_the_struct_field():
+    # `w.w.w` with table `w` (an alias, so no schema) and struct column
+    # `w{w}`: the schema rung does not match, so it reads column.field.
     W = pa.schema([pa.field("w", pa.struct([("w", pa.int64())]))])
     sql = "SELECT w.w.w AS o FROM __THIS__ AS w"
-    with pytest.raises(ValueError, match="struct column 'w' as a whole value"):
-        DuckDBInferFn(sql, row_tables={"__THIS__": W}, static_tables={})
-    assert _oracle_answer(sql, W, [{"w": {"w": 5}}]).to_pylist() == [{"o": 5}]
+    fn = DuckDBInferFn(sql, row_tables={"__THIS__": W}, static_tables={})
+    want = _oracle_answer(sql, W, [{"w": {"w": 5}}]).to_pylist()
+    assert fn.infer_rows([{"w": {"w": 5}}]) == want == [{"o": 5}]
 
 
 def test_rejections_are_build_time_and_named():
