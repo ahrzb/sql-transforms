@@ -324,3 +324,17 @@ def test_unshipped_reach_is_read_off_the_construct_not_the_bucket():
     )
     assert seed is not None, "the generator no longer reaches a bare decimal literal"
     assert "reaches:decimals" in oracle.run_case_json(seed)["tags"]
+
+
+def test_a_case_marks_each_phase_on_stderr_before_it_runs(capsys):
+    """A worker killed mid-case cannot say where it was, so the case says it
+    first: the last phase marker on stderr names the side that hung."""
+    seed = next(s for s in range(N) if oracle.run_case(gen.gen(s)).kind == "AGREE")
+    capsys.readouterr()
+    oracle.run_case(gen.gen(seed))
+    phases = [
+        ln.split()[1]
+        for ln in capsys.readouterr().err.splitlines()
+        if ln.startswith(oracle.PHASE_MARK)
+    ]
+    assert phases[:3] == ["confit:build", "oracle", "confit:run"], phases

@@ -191,14 +191,29 @@ That tag must not be reported as evidence that the stronger check passed.
 
 *Evidence:* `fuzz.oracle.run_case` and the ordering work recorded in TASK-129.
 
-**claim: timeout-attribution.** **[FACT]** The current timeout identifies neither the
-side nor the SQL. Oracle work timing out and confit work timing out imply opposite
-problems, so recovery requires regenerating the seed. On 2026-08-14, seed 4395 made
-DuckDB spend 9.0 seconds building a 2 GiB `lpad` while confit refused immediately under
-its 1 GiB budget; three other seeds had the same shape.
+**claim: timeout-attribution.** A `TIMEOUT` or `PANIC` names its SQL and its side.
+The worker writes a phase marker to stderr before each stage — `harness:startup`,
+`harness:gen`, `confit:build`, `oracle`, `confit:run`, `confit:legs` — and the runner
+reads the last marker a killed worker wrote: the finding's `side` is `oracle`, `confit`,
+`harness` or `unknown`, and its class is `timeout:<side>` / `panic:<side>`. The SQL and
+inputs are regenerated from the seed in the parent, so they are preserved even though
+the worker never returned. Oracle-side and confit-side timeouts imply opposite problems;
+on 2026-08-14, seed 4395 made DuckDB spend 9.0 seconds building a 2 GiB `lpad` while
+confit refused immediately under its 1 GiB budget. The markers are internal audit
+vocabulary, not a public API.
 
-*Evidence:* `packages/confit/docs/2026-08-13-fuzz-triage.md:124-149`.
-*Open work:* record SQL before execution and split oracle-side from engine-side timeout.
+*Enforced-by:* `fuzz.oracle._phase`, `fuzz.worker`, `fuzz.runner.side_of`, and
+`fuzz.runner.blame`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_a_case_marks_each_phase_on_stderr_before_it_runs`
+and `packages/confit/tests/test_fuzz_report.py::test_the_last_phase_marker_attributes_the_side`.
+
+**claim: abstention-report.** The campaign report states `SKIP`, `TIMEOUT` and `PANIC`
+counts as rates over the case population, the worker failures split by side, and the
+rate of `AGREE` cases tagged `order-by-unevaluated` (agreement whose sortedness was not
+checked). `UNSHIPPED` stays in its own section.
+
+*Enforced-by:* `fuzz.runner.report`.
+*Evidence:* `packages/confit/tests/test_fuzz_report.py::test_abstentions_are_reported_as_rates_by_kind_and_side`.
 
 **claim: countable-cost.** Disclose an accepted cost honestly and measure the ones that
 matter, starting with refusal outcomes under claim: refusal-outcome-reporting. No

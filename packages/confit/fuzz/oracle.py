@@ -63,6 +63,7 @@ import decimal
 import math
 import os
 import re
+import sys
 from dataclasses import dataclass
 from dataclasses import field as dfield
 
@@ -583,6 +584,7 @@ def run_case(case: G.Case) -> Verdict:
         except Exception as e:  # noqa: BLE001
             return None, "exc", f"{type(e).__name__}: {e}"
 
+    _phase("confit:build")
     fn_cl, cl_err_kind, cl_err = build(force=False)
     fn_in, in_err_kind, in_err = build(force=True)
 
@@ -597,6 +599,7 @@ def run_case(case: G.Case) -> Verdict:
             tags,
         )
 
+    _phase("oracle")
     duck_off, duck_on = _duck_run(sql, case, udf_objs)
 
     if fn_cl is None:
@@ -636,6 +639,7 @@ def run_case(case: G.Case) -> Verdict:
         except Exception as e:  # noqa: BLE001
             return None, None, f"{type(e).__name__}: {e}"
 
+    _phase("confit:run")
     got_cl, sch_cl, trap_cl = run_fn(fn_cl)
     got_in, sch_in, trap_in = run_fn(fn_in)
 
@@ -773,6 +777,7 @@ def run_case(case: G.Case) -> Verdict:
         return v
     if trap_cl is not None or static_only:
         return v  # the boundary legs all need a non-trapping row run
+    _phase("confit:legs")
     extra = _extra_legs(fn_cl, case, table, got_cl, ests, v.tags)
     return extra if extra is not None else v
 
@@ -929,6 +934,17 @@ UNSHIPPED_FEATURES = tuple(_UNSHIPPED_REACH)
 def unshipped_reach(sql: str) -> set[str]:
     code = _STRING_LIT.sub("''", sql)
     return {f for f, rx in _UNSHIPPED_REACH.items() if rx.search(code)}
+
+
+# Phase markers. A worker the runner kills mid-case returns nothing, so the
+# case announces each stage on stderr BEFORE running it; the last marker in
+# a dead worker's stderr names the side that hung or crashed. Internal audit
+# vocabulary, like the verdict classes: not a public API.
+PHASE_MARK = "@@phase"
+
+
+def _phase(name: str) -> None:
+    print(f"{PHASE_MARK} {name}", file=sys.stderr, flush=True)
 
 
 def plain(x):

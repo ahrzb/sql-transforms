@@ -9,7 +9,11 @@ from __future__ import annotations
 import json
 import sys
 
-from .oracle import run_case_json
+# Before the heavy imports: a worker killed while still starting up is the
+# harness's time, not DuckDB's or ours (see fuzz.oracle.PHASE_MARK).
+print("@@phase harness:startup", file=sys.stderr, flush=True)
+
+from .oracle import run_case_json  # noqa: E402
 
 
 def main() -> None:
@@ -17,6 +21,7 @@ def main() -> None:
         line = line.strip()
         if not line:
             continue
+        print("@@phase harness:gen", file=sys.stderr, flush=True)
         print(json.dumps(run_case_json(int(line))), flush=True)
 
 

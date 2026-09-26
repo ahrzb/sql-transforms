@@ -70,7 +70,7 @@ must say so explicitly.
 | canonicalized NaN | sign and payload | repr equality self-equalizes NaNs; explicit bit pins remain exact |
 | `UNSHIPPED` width | whether values would agree | separately reported; neither coverage nor finding; no value normalization |
 | output nullability | DuckDB's exact nullable flags | not required: `same_type`/`assert_schema` ignore flags at any depth; soundness of our non-null promises is checked on our own rows by `non_null_violation` (`DIVERGE_VALUE`, class `unsound-non-null`) |
-| timeout or panic | all semantics for the unanswered case | finding with manual oracle-side versus engine-side attribution |
+| timeout or panic | all semantics for the unanswered case | finding with SQL, inputs and side (`oracle`/`confit`/`harness`) attributed from the worker's last phase marker; rated in the abstention section |
 
 
 ## Self-checks when oracle comparison abstains
@@ -113,13 +113,13 @@ dispositions in [success measures](../specs/success-measures.md#measurement-poli
 
 The adopted reporting intent does not adopt a schema for it. The runner reports raw
 verdict counts, the same verdicts by outcome category over the case population, refusals
-by oracle outcome, and an AGREE-only construct histogram; neither proposal below exists
-in code, and neither is approved beyond that intent.
+by oracle outcome, and an AGREE-only construct histogram; the table below says which
+proposal is implemented.
 
 | proposal | proposed effect | status |
 |---|---|---|
 | **claim: coverage-denominator** | report distinct `(operator, argument-type, edge-class)` triples rather than raw query count | proposed schema, unimplemented; ticket: coverage-triples |
-| **claim: abstention-rate** | report rates for `SKIP`, `TIMEOUT`, `PANIC`, and `order-by-unevaluated`, keeping `UNSHIPPED` separate | proposed schema, unimplemented; ticket: per-kind-abstention-report |
+| **claim: abstention-rate** | report rates for `SKIP`, `TIMEOUT`, `PANIC`, and `order-by-unevaluated`, keeping `UNSHIPPED` separate | implemented as claim: abstention-report (ticket: per-kind-abstention-report) |
 
 Refusal-quality and unsupported-width reporting come before any new blocking KPI, and
 none is adopted here. Where reason codes may appear is claim: reason-code-placement in

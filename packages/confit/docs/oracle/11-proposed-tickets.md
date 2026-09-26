@@ -80,7 +80,7 @@ They are not owner-decision blockers for the settled contract.
 | **ticket: corpus-drift-report** | Generalize `pin_ast_shapes.py`'s reviewable diff to the whole pin corpus; reference upgrades still need separate review |
 | **ticket: match-count-single-home** | Generate dated display counts in one place; the adopted floor policy does not require generated documentation |
 | **ticket: coverage-triples** | Report `(operator, argument-type, edge-class)` coverage; no universal coverage-metadata scheme was adopted |
-| **ticket: per-kind-abstention-report** | Choose a reporting format for unanswered cases, preserve SQL before execution, and attribute timeout side; audit codes remain internal |
+| ~~**ticket: per-kind-abstention-report**~~ done | Choose a reporting format for unanswered cases, preserve SQL before execution, and attribute timeout side; audit codes remain internal |
 | **ticket: convert-unrunnable-pins** | Inventory and convert old pins that cannot be replayed mechanically; do not rewrite history as a fresh run |
 | **ticket: mined-corpus-stamp** | Add provenance during future corpus mining; existing optimizer-on expectations do not become optimizer-off evidence |
 | ~~**ticket: verdict-tuple-test**~~ done | Historical name for missing finding/coverage checks; prefer observable reporting regressions over assertions about tuple membership |

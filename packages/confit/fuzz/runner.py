@@ -29,7 +29,7 @@ import duckdb
 from confit.oracle import Oracle
 
 from . import gen as G
-from .oracle import UNSHIPPED_FEATURES, case_inputs, unshipped_reach
+from .oracle import PHASE_MARK, UNSHIPPED_FEATURES, case_inputs, unshipped_reach
 
 INTERESTING = (
     "DIVERGE_VALUE",
@@ -91,12 +91,28 @@ def _spawn():
     return proc, err
 
 
-def _stderr_tail(err_file) -> str:
+def _stderr_all(err_file) -> str:
     try:
         err_file.seek(0)
-        return err_file.read().decode(errors="replace")[-800:]
+        return err_file.read().decode(errors="replace")
     except Exception:  # noqa: BLE001
         return ""
+
+
+def side_of(stderr: str) -> str:
+    """Which side a dead worker was in: the last phase marker it wrote
+    (`fuzz.oracle.PHASE_MARK`) names DuckDB (`oracle`), us (`confit:*`), or
+    the harness itself (`harness:*`: startup, generation). `unknown` when it
+    wrote none."""
+    last = None
+    for ln in stderr.splitlines():
+        if ln.startswith(PHASE_MARK):
+            last = ln.split()[1] if len(ln.split()) > 1 else None
+    if last is None:
+        return "unknown"
+    if last.startswith("harness"):
+        return "harness"
+    return "oracle" if last == "oracle" else "confit"
 
 
 def _drive(seeds, results, timeout, lock):
@@ -134,7 +150,8 @@ def _drive(seeds, results, timeout, lock):
             results.append(json.loads(line))
             continue
         kind = "TIMEOUT" if fired.is_set() else "PANIC"
-        results.append(blame(seed, kind, _stderr_tail(err)))
+        stderr = _stderr_all(err)
+        results.append(blame(seed, kind, stderr[-800:], stderr))
         proc.kill()
         err.close()
         proc, err = _spawn()
@@ -143,11 +160,15 @@ def _drive(seeds, results, timeout, lock):
     err.close()
 
 
-def blame(seed: int, kind: str, detail: str) -> dict:
+def blame(seed: int, kind: str, detail: str, stderr: str | None = None) -> dict:
     """The finding for a worker that died or hung on `seed`. It returned
     nothing, so the case is regenerated here: generation is deterministic and
     cheap, and a finding with a bare seed is lost at the next generator change.
+    The side it died in comes from its last phase marker in `stderr` (the
+    whole stream; `detail` is only its tail) and is part of the class:
+    oracle-side and confit-side timeouts mean opposite things.
     """
+    side = side_of(detail if stderr is None else stderr)
     try:
         case = G.gen(seed)
         sql, inputs = G.render(case.query), case_inputs(case)
@@ -157,7 +178,8 @@ def blame(seed: int, kind: str, detail: str) -> dict:
     return {
         "seed": seed,
         "kind": kind,
-        "klass": kind.lower(),
+        "klass": f"{kind.lower()}:{side}",
+        "side": side,
         "detail": detail,
         "sql": sql,
         "tags": list(tags),
@@ -287,6 +309,25 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
                     f"  {'':11} {weak:6}  of them order-by-unevaluated: "
                     "sortedness not established"
                 )
+
+    # Abstentions: cases with no verdict, as rates over the population, the
+    # worker failures split by the side they died in. An AGREE whose ORDER BY
+    # went unevaluated is a partial abstention (sortedness not checked), so it
+    # is rated here too. UNSHIPPED is not an abstention; it has its own section.
+    n = max(len(results), 1)
+    print(f"\n== abstentions (rate over {len(results)} cases) ==")
+    for kind in ("SKIP", "TIMEOUT", "PANIC"):
+        hit = [r for r in results if r["kind"] == kind]
+        sides = collections.Counter(r.get("side", "unknown") for r in hit)
+        by_side = "  ".join(f"{k} {c}" for k, c in sorted(sides.items()))
+        line = f"  {kind:22} {len(hit):6}  {100 * len(hit) / n:5.1f}%"
+        print(line + (f"  {by_side}" if kind != "SKIP" and hit else ""))
+    weak = sum(
+        1
+        for r in results
+        if r["kind"] == "AGREE" and "order-by-unevaluated" in r["tags"]
+    )
+    print(f"  {'order-by-unevaluated':22} {weak:6}  {100 * weak / n:5.1f}%")
 
     # Refusals keep the baseline's outcome for the same query. Grouped by it,
     # "DuckDB serves, we refuse" is the cost side of each refusal class; it

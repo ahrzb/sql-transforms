@@ -90,7 +90,7 @@ def test_a_dead_worker_is_blamed_with_its_sql_and_inputs():
     """The worker never returned, so the parent regenerates the case: the
     finding carries SQL and inputs, not a bare seed and an empty string."""
     r = runner.blame(3, "TIMEOUT", "stderr tail")
-    assert r["kind"] == "TIMEOUT" and r["klass"] == "timeout"
+    assert r["kind"] == "TIMEOUT" and r["klass"] == "timeout:unknown"
     assert r["sql"].startswith("SELECT")
     assert "rows" in r["inputs"]
     assert r["detail"] == "stderr tail"
@@ -257,3 +257,37 @@ def test_findings_and_coverage_are_what_the_contract_says(tmp_path, capsys):
     }
     cover = _section(capsys.readouterr().out, "AGREE coverage by construct")
     assert cover.split() == ["1", "tag-AGREE"]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "side"),
+    [
+        ("@@phase confit:build\n@@phase oracle\n", "oracle"),
+        ("@@phase oracle\n@@phase confit:run\nthread panicked\n", "confit"),
+        ("@@phase confit:legs\n", "confit"),
+        ("@@phase harness:startup\n", "harness"),
+        ("no markers at all", "unknown"),
+    ],
+)
+def test_the_last_phase_marker_attributes_the_side(stderr, side):
+    assert runner.side_of(stderr) == side
+    r = runner.blame(3, "TIMEOUT", stderr)
+    assert r["side"] == side and r["klass"] == f"timeout:{side}"
+
+
+def test_abstentions_are_reported_as_rates_by_kind_and_side(tmp_path, capsys):
+    results = [_r(i, "AGREE") for i in range(6)]
+    results += [
+        _r(6, "AGREE", tags=["order-by-unevaluated"]),
+        _r(7, "SKIP", "oracle:KeyError"),
+        {**_r(8, "TIMEOUT", "timeout:oracle"), "side": "oracle"},
+        {**_r(9, "PANIC", "panic:confit"), "side": "confit"},
+    ]
+    runner.report(results, tmp_path / "f.jsonl")
+    sec = _section(capsys.readouterr().out, "abstentions")
+    assert sec.splitlines() == [
+        f"  {'SKIP':22} {1:6}  {10.0:5.1f}%",
+        f"  {'TIMEOUT':22} {1:6}  {10.0:5.1f}%  oracle 1",
+        f"  {'PANIC':22} {1:6}  {10.0:5.1f}%  confit 1",
+        f"  {'order-by-unevaluated':22} {1:6}  {10.0:5.1f}%",
+    ]
