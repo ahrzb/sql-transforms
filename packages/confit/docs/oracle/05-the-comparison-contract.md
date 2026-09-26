@@ -97,6 +97,21 @@ delete-when-shipped arm for DuckDB decimal versus confit float64.
 *Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_an_unshipped_lane_is_classified_and_never_value_compared`
 and `::test_a_real_schema_difference_is_still_a_divergence`.
 
+**claim: unshipped-reach.** An empty `UNSHIPPED` bucket is not evidence of support, so
+the campaign reports each unshipped feature's generator reach beside it. Every verdict
+line is tagged `reaches:<feature>` when its SQL contains the construct that yields the
+width (for `decimals`, a bare decimal literal such as `2.5`, string literals excluded),
+and the report prints, per feature, how many cases reached it and their verdicts, or
+says the feature was not reached. Reach is construct presence, not output width: a
+decimal literal in a `WHERE` clause reaches the feature and may still `AGREE`. This is
+the behavioral coverage the policy asks for; no bookkeeping xfail duplicates it.
+
+*Enforced-by:* `fuzz.oracle.unshipped_reach`, `fuzz.oracle.run_case_json`, and
+`fuzz.runner.report`.
+*Evidence:* `packages/confit/tests/test_fuzz_smoke.py::test_unshipped_reach_is_read_off_the_construct_not_the_bucket`,
+`packages/confit/tests/test_fuzz_report.py::test_unshipped_widths_are_reported_with_their_reach`,
+and `::test_an_unreached_width_is_not_reported_as_support`.
+
 The ruled **ask: unshipped-never-compared** prohibits harness normalization from
 manufacturing agreement, and any weaker comparison requires its own named, reviewed
 bound. The standing requirement is behavioral: coverage must show that an unshipped

@@ -299,3 +299,28 @@ def test_a_verdict_line_carries_its_inputs_not_just_a_seed():
         assert inputs["rows"] == json.loads(json.dumps(oracle.plain(case.rows)))
         assert set(inputs["statics"]) == set(case.statics)
         assert inputs["shape"] == case.shape
+
+
+def test_unshipped_reach_is_read_off_the_construct_not_the_bucket():
+    """Reachability is a property of the generated SQL, so an empty UNSHIPPED
+    bucket can be told apart from a generator that never emits the width."""
+    reach = oracle.unshipped_reach
+    assert reach("SELECT 2.5 AS o0 FROM __THIS__") == {"decimals"}
+    assert reach("SELECT -0.25 * c0 AS o0 FROM __THIS__") == {"decimals"}
+    for sql in (
+        "SELECT 2.5e0 AS o0 FROM __THIS__",
+        "SELECT c1.f0 AS o0 FROM __THIS__",
+        "SELECT '1.5' AS o0 FROM __THIS__",
+        "SELECT 1e-300 AS o0 FROM __THIS__",
+    ):
+        assert reach(sql) == set(), sql
+    seed = next(
+        (
+            seed
+            for seed in range(PARITY_SEEDS)
+            if reach(gen.render(gen.gen(seed).query))
+        ),
+        None,
+    )
+    assert seed is not None, "the generator no longer reaches a bare decimal literal"
+    assert "reaches:decimals" in oracle.run_case_json(seed)["tags"]

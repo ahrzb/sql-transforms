@@ -210,3 +210,22 @@ def test_refusal_quality_is_reported_as_shares_of_all_refusals(tmp_path, capsys)
         "  echoes source text instead of naming:",
         f"    {1:6}  unsupported: FROM (SELECT …",
     ]
+
+
+def test_unshipped_widths_are_reported_with_their_reach(tmp_path, capsys):
+    results = [
+        _r(1, "UNSHIPPED", "decimals", tags=["reaches:decimals"]),
+        _r(2, "REFUSED", "unsupported: x", "serves", tags=["reaches:decimals"]),
+        _r(3, "AGREE"),
+    ]
+    runner.report(results, tmp_path / "f.jsonl")
+    sec = _section(capsys.readouterr().out, "unshipped features")
+    assert sec.splitlines()[0] == (
+        f"  {'decimals':10} reached {2:6}  UNSHIPPED {1:6}  REFUSED {1:6}"
+    )
+
+
+def test_an_unreached_width_is_not_reported_as_support(tmp_path, capsys):
+    runner.report([_r(1, "AGREE")], tmp_path / "f.jsonl")
+    sec = _section(capsys.readouterr().out, "unshipped features")
+    assert "decimals" in sec and "not reached" in sec

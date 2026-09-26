@@ -29,7 +29,7 @@ import duckdb
 from confit.oracle import Oracle
 
 from . import gen as G
-from .oracle import case_inputs
+from .oracle import UNSHIPPED_FEATURES, case_inputs, unshipped_reach
 
 INTERESTING = (
     "DIVERGE_VALUE",
@@ -150,7 +150,8 @@ def blame(seed: int, kind: str, detail: str) -> dict:
     """
     try:
         case = G.gen(seed)
-        sql, inputs, tags = G.render(case.query), case_inputs(case), case.tags
+        sql, inputs = G.render(case.query), case_inputs(case)
+        tags = case.tags + [f"reaches:{f}" for f in sorted(unshipped_reach(sql))]
     except Exception as e:  # noqa: BLE001 — the blame must still be recorded
         sql, inputs, tags = "", {"error": f"{type(e).__name__}: {e}"}, []
     return {
@@ -326,11 +327,26 @@ def report(results: list[dict], out: Path, provenance: dict | None = None):
         print(f"  {c:6}  {k}")
 
     # Cases whose answer has a width we have not shipped: classified, never
-    # value-compared, never counted as agreement. An EMPTY section means
-    # either the feature shipped — delete its arm in fuzz/oracle.py — or the
-    # grammar stopped reaching it, and both are worth seeing.
+    # value-compared, never counted as agreement. An empty bucket proves
+    # nothing on its own, so each feature first says how many cases REACHED
+    # its construct and what they got: reached and never UNSHIPPED means the
+    # feature shipped (delete its arm in fuzz/oracle.py); not reached means
+    # the grammar stopped emitting it.
     uns = [r for r in results if r["kind"] == "UNSHIPPED"]
     print("\n== unshipped features (classified, not compared) ==")
+    for feat in UNSHIPPED_FEATURES:
+        hit = [r for r in results if f"reaches:{feat}" in r["tags"]]
+        if not hit:
+            print(
+                f"  {feat:10} not reached by the generator: an empty bucket "
+                "here is not evidence of support"
+            )
+            continue
+        got = collections.Counter(r["kind"] for r in hit).most_common()
+        print(
+            f"  {feat:10} reached {len(hit):6}  "
+            + "  ".join(f"{k} {c:6}" for k, c in got)
+        )
     for k, c in collections.Counter(r["klass"] for r in uns).most_common():
         ex = next(x for x in uns if x["klass"] == k)
         print(f"  {c:6}  {k}   e.g. seed {ex['seed']}: {ex['detail'][:60]}")
