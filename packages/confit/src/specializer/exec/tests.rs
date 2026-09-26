@@ -226,7 +226,11 @@ fn rejects_mismatched_statics() {
         ),
     ] {
         match compile(&p, data) {
-            Err(e @ (CompileError::Static(_) | CompileError::DuplicateKey(_))) => {
+            Err(
+                e @ (CompileError::Static(_)
+                | CompileError::DuplicateKey(_)
+                | CompileError::KeylessRows(_)),
+            ) => {
                 let msg = e.to_string();
                 assert!(msg.contains(needle), "expected '{needle}' in '{msg}'")
             }

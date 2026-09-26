@@ -92,7 +92,8 @@ carrying one of three prefixes:
 - `parse error:` — outside the accepted dialect; and
 - `bind error:` — invalid against the declared schema.
 
-A duplicate key in a 1:1 static map is `unsupported: duplicate map key …`
+A duplicate key in a 1:1 static map is `unsupported: duplicate map key …`,
+and a key-less join over 2+ static rows `unsupported: … has no equality key …`
 (multiplicity restriction), `shape='map'` blockers are `unsupported: shape='map': …`,
 and a NULL in a declared non-null static value column and the build-time UDF
 declaration errors (`udf '<name>': …`) are `bind error: …` (inconsistent caller
