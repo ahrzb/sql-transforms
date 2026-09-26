@@ -85,26 +85,24 @@ No test imports `fuzz.runner`, so findings membership remains **Unverified**; se
 
 ## Known identity-enforcement gaps
 
-**claim: oracle-version-constant.** **[FACT]** `Oracle.VERSION` records `"1.5.5"`, but
-construction does not compare it with `duckdb.__version__`. The root and
-`packages/sql-transform` manifests use `duckdb>=1.5.5`,
-`packages/confit/pyproject.toml` declares only `pyarrow>=19.0`, and `uv.lock` currently
-resolves DuckDB 1.5.5. A lock upgrade can therefore move the executable reference
-without an assertion.
+**claim: oracle-version-constant.** `Oracle.VERSION` records `"1.5.5"`, and
+construction raises `RuntimeError` unless `duckdb.__version__` equals it. The root
+dev dependency group pins `duckdb==1.5.5`, so the reproducible oracle/test
+environment cannot resolve any other version. `packages/sql-transform` keeps
+`duckdb>=1.5.5` and `packages/confit/pyproject.toml` declares only `pyarrow>=19.0`:
+unrelated consumers stay unconstrained.
 
-*Evidence:* `packages/confit/confit/oracle.py:74-82`; the cited manifests; and
-`uv.lock:368-370`. No test reads `Oracle.VERSION`.
+*Enforced-by:* `confit.oracle.Oracle.__init__`, the root `pyproject.toml` dev group,
+and `uv.lock`.
+*Evidence:* `packages/confit/tests/test_oracle.py::test_construction_asserts_the_pinned_version`.
 
 **claim: version-policy.** DuckDB 1.5.5 remains the reference. The reproducible
 oracle/test environment must pin that version exactly, and opening the oracle must
 assert `duckdb.__version__ == Oracle.VERSION`. Unrelated DuckDB consumers are not
-constrained by this rule. Leaving 1.5.5 is a separate reviewed reference change;
-the generic re-recording tools in [version changes](09-version-bumps-and-mutability.md)
-remain proposals, not prerequisites adopted by this rule.
-
-The assertion is the rule, not the current behavior: claim: oracle-version-constant
-above records **[FACT]** that construction still performs no comparison, and
-**ticket: version-assert** tracks the implementation.
+constrained by this rule. Leaving 1.5.5 is a separate reviewed reference change that
+moves `Oracle.VERSION` and the dev pin together; the generic re-recording tools in
+[version changes](09-version-bumps-and-mutability.md) remain proposals, not
+prerequisites adopted by this rule.
 
 **claim: one-door-bypass.** **[FACT, current implementation only]** The legacy
 static-only engine path is the comparison-path bypass: `eval_static_only` calls

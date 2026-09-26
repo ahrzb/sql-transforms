@@ -16,7 +16,7 @@ evidence, not active instructions or dependencies.
 
 ## Follow-through from adopted policy
 
-- [ ] **ticket: version-assert** — Pin the oracle/test environment to 1.5.5 and
+- [x] **ticket: version-assert** — Pin the oracle/test environment to 1.5.5 and
   assert `duckdb.__version__ == Oracle.VERSION` at startup. Keep upgrades separate
   and unrelated consumers unconstrained.
 - [ ] **ticket: stop-on-opt-emulated** — Preserve the primary `OPT_EMULATED`
