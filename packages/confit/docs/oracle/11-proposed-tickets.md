@@ -41,7 +41,7 @@ evidence, not active instructions or dependencies.
 - [x] **ticket: scope-inventory-classification** — Separate out-of-model queries,
   implementation gaps, explicit product/resource restrictions, and invalid
   inputs. Current syntax refusals do not justify permanent exclusions by themselves.
-- [ ] **ticket: behavioral-coverage-gaps** — Correct unsupported totality claims
+- [x] **ticket: behavioral-coverage-gaps** — Correct unsupported totality claims
   and fill important behavioral gaps, starting with the recorded schema-qualifier
   gap. Reuse adequate coverage; no one-test-per-document-entry registry.
 

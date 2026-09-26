@@ -130,8 +130,12 @@ These notes supply the evidence that the concise index intentionally does not re
   `test_duckdb_wave3_mathtail.py:204-232`; `pins-wave3/math_tail.json`.
 - **divergence: schema-qualifiers.** `s1.t1` resolves by bare table name where DuckDB
   refuses (severity 3); `w.w.w` takes a longer schema-like parse and confit refuses where
-  DuckDB serves (severity 4). `known-limitations.md:260-272` supports the latter only.
-  The 2026-08-25 inventory found no executable twin.
+  DuckDB serves (severity 4). Measured 2026-09-26, a column qualified through a
+  schema-qualified relation (`d.v` over `JOIN main.d`, or 3-part `s1.d.v`) also refuses
+  where DuckDB serves the first (severity 4). Twins:
+  `tests/test_known_limitations.py::test_a_relation_schema_qualifier_resolves_by_bare_name`,
+  `::test_a_column_qualified_through_a_schema_qualified_relation_refuses`, and
+  `::test_a_schema_like_struct_path_takes_the_longer_parse_and_refuses`.
 - **divergence: bind-time-constant-refusals.** Confit refuses some trapping constants at
   construction even when `WHERE FALSE` or empty input would prevent evaluation; this is
   not a blanket refusal of `WHERE FALSE`. Two owner-accepted measurements appear in
@@ -191,14 +195,17 @@ ambiguity-class-closed** corrects the conflicting dated triage prose.
 At the 2026-08-25 audit, TASK-95 was open; that inventory found twins across
 `test_known_limitations.py`, `test_arrow_schema_api.py`, `test_corpus_replay.py`,
 `test_duckdb_wave3_mathtail.py`, and `known_divergences/`, while schema qualifiers had
-none. Removing an in-code admission during the `UNSHIPPED` change did not establish
-totality.
+none; they gained one on 2026-09-26. Removing an in-code admission during the
+`UNSHIPPED` change did not establish totality, and `known-limitations.md` no longer
+claims that every limitation is asserted.
 
 **claim: honest-coverage-claims.** State demonstrated coverage and important gaps;
 do not claim totality without evidence. Fill behavioral gaps rather than require a
-one-test-per-paragraph registry. The recorded schema-qualifier gap had no twin on
-2026-08-25. Current follow-through is **ticket: behavioral-coverage-gaps** in the
-[work register](11-proposed-tickets.md), not the removed task directory.
+one-test-per-paragraph registry. The recorded schema-qualifier gap, which had no twin
+on 2026-08-25, is filled (**ticket: behavioral-coverage-gaps**). Remaining important
+gaps named in this chapter: a twin measuring the DuckDB-serves cost of
+divergence: bind-time-constant-refusals, and verification of the unenforced Arrow batch
+ceiling.
 
 *Decision:* [oracle policy](../decisions/oracle-policy.md#evidence-and-unresolved-observations).
 
@@ -215,8 +222,8 @@ bounds separately from independent references and unadopted proposals.
 
 Remaining prerequisites for this chapter are technical, not decisional: a fresh or
 replayed measurement to replace the retired width-residual count, the refusal-reason
-summary behind divergence: bind-time-constant-refusals, an executable twin for
-divergence: schema-qualifiers, and verification of the unenforced Arrow batch ceiling.
+summary behind divergence: bind-time-constant-refusals, and verification of the
+unenforced Arrow batch ceiling.
 
 The compact status of every decision is in [the decision index](12-ask-index.md), and
 the accepted policy itself in [the oracle policy decision](../decisions/oracle-policy.md).

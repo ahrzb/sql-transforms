@@ -1,7 +1,8 @@
 """Executable twin of packages/confit/docs/known-limitations.md.
 
-Every DELIBERATE limitation is asserted here: the SQL that hits it and the
+DELIBERATE limitations are asserted here: the SQL that hits each and the
 named build-time rejection (or, for contract choices, the chosen behavior).
+Coverage is partial, not total -- the divergence ledger names the gaps.
 If an engine change lifts one of these, the test fails — update the doc in
 the same commit. Section numbers mirror the document.
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pytest
 from confit import DuckDBInferFn
+from confit.oracle import Oracle, Trap
 from test_duckdb_interpreter import duck_check, static
 
 T = pa.schema([pa.field("a", pa.int64(), nullable=False), pa.field("s", pa.string())])
@@ -272,6 +274,55 @@ def test_null_op_null_serves_with_measured_types():
         {"a": "int", "s": "str?"},
         [{"a": 1, "s": None}],
     )
+
+
+# Schema qualifiers (divergence: schema-qualifiers). The registry is
+# schema-less, so both directions of the divergence are pinned against the
+# live oracle: a relation qualifier resolves by bare name where DuckDB refuses
+# the unknown schema, and the refusals where DuckDB serves stay loud.
+_D = pa.table({"id": pa.array([1], pa.int64()), "v": pa.array([10], pa.int64())})
+
+
+def _oracle_answer(sql, row_schema, rows, statics=None):
+    with Oracle() as o:
+        o.load("__THIS__", pa.Table.from_pylist(rows, schema=row_schema))
+        for name, t in (statics or {}).items():
+            o.load(name, t)
+        return o.try_answer(sql)
+
+
+def test_a_relation_schema_qualifier_resolves_by_bare_name():
+    sql = "SELECT v FROM __THIS__ LEFT JOIN s1.d ON a = id"
+    assert build(sql, {"d": _D}).infer_rows([{"a": 1, "s": None}]) == [{"v": 10}]
+    trap = _oracle_answer(sql, T, [{"a": 1, "s": None}], {"d": _D})
+    assert isinstance(trap, Trap) and 'schema "s1" does not exist' in trap.message
+
+
+def test_a_column_qualified_through_a_schema_qualified_relation_refuses():
+    # DuckDB serves `d.v` over `JOIN main.d`; the registry names the relation
+    # by its qualified spelling, so the bare qualifier misses -- loudly. The
+    # 3-part `s1.d.v` refuses the same way (DuckDB also refuses it: no `s1`).
+    sql = "SELECT d.v FROM __THIS__ JOIN main.d ON a = d.id"
+    rejects(sql, "unknown table 'd'", {"d": _D})
+    assert _oracle_answer(sql, T, [{"a": 1, "s": None}], {"d": _D}).to_pylist() == [
+        {"v": 10}
+    ]
+    rejects(
+        "SELECT s1.d.v FROM __THIS__ LEFT JOIN s1.d ON a = s1.d.id",
+        "unknown table 'd'",
+        {"d": _D},
+    )
+
+
+def test_a_schema_like_struct_path_takes_the_longer_parse_and_refuses():
+    # `w.w.w` with table `w` and struct column `w{w}`: resolution is longest-
+    # qualifier-first, so `w.w` binds as schema.table and `.w` as the whole
+    # struct column -- refused by name, where DuckDB serves `column.field`.
+    W = pa.schema([pa.field("w", pa.struct([("w", pa.int64())]))])
+    sql = "SELECT w.w.w AS o FROM __THIS__ AS w"
+    with pytest.raises(ValueError, match="struct column 'w' as a whole value"):
+        DuckDBInferFn(sql, row_tables={"__THIS__": W}, static_tables={})
+    assert _oracle_answer(sql, W, [{"w": {"w": 5}}]).to_pylist() == [{"o": 5}]
 
 
 def test_rejections_are_build_time_and_named():
