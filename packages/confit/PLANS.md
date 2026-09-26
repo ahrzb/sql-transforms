@@ -7,8 +7,11 @@ records in `docs/decisions/open/`. Remove an item when it lands.
 ## Next
 
 1. **Small surface wins DuckDB serves and we refuse.**
-   - Struct fields whose own name contains a dot: skipped on the static side,
-     opaque on the row side (`src/duckdb/mod.rs`).
+   - A static struct LEAF as an ON key (`JOIN d ON k = v.x`): `static_col_of`
+     skips leaf lanes, so the condition goes residual, the map builds with
+     zero keys, and any static table of 2+ rows refuses as "duplicate map
+     key". Key it through the struct-path walk (`walk_fields`) under the
+     binder's head-ambiguity rules (`src/specializer/frontend.rs`).
 2. **Generator reach.** `fuzz/gen.py` renders only BIGINT, INTEGER, DOUBLE,
    VARCHAR and BOOLEAN CAST targets, and never the forms in item 1. Widen it
    together with a fresh dated reading (a generator change re-deals every

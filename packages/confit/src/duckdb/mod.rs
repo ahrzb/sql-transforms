@@ -227,8 +227,8 @@ pub(crate) fn col_for_lane(lane: &plan::InputLane, cap: usize) -> ColData {
 /// Append a static struct column's scalar leaves as input lanes and return
 /// the field TREE that resolution walks. Each lane's `name` is its dotted
 /// path, carried for display only — nothing resolves by building or
-/// splitting that string. A field whose own name contains a '.' is skipped,
-/// subtree and all, so it is unreachable here by any spelling.
+/// splitting that string, so a field whose own name contains a '.' is an
+/// ordinary segment.
 fn flatten_static(
     cols: &mut Vec<Col>,
     prefix: &str,
@@ -238,14 +238,6 @@ fn flatten_static(
     use crate::specializer::plan::{StructField, StructNode};
     let mut tree = Vec::with_capacity(fields.len());
     for (fname, rf) in fields {
-        // A retained choice, not something the encoding forces: lanes carry a
-        // structured path, so a dotted segment is not ambiguous and this skip
-        // could be lifted soundly; dotted names stay opaque here. (The row path
-        // keeps such a field as an `Opaque` node instead, so it refuses by name
-        // rather than going missing.)
-        if fname.contains('.') {
-            continue;
-        }
         let path = format!("{prefix}.{fname}");
         match rf {
             schema::RowField::Scalar { ty, nullable } => {
@@ -1575,8 +1567,8 @@ impl DuckDBInferFn {
         // (the binder knows them as opaque, star expansion included) — an
         // unreferenced timestamp field must not block a scalar query.
         // Struct columns flatten to scalar leaf LANES appended after every
-        // plain column; the dotted lane name doubles as the ingest path
-        // (segments are field names without dots, so '.' is unambiguous).
+        // plain column. The dotted lane name is display only: ingest walks
+        // each lane's segment path, so a field name may itself contain '.'.
         let mut in_cols = Vec::new();
         let mut opaque: Vec<(usize, String)> = Vec::new();
         let mut struct_defs: Vec<(usize, String, bool, Vec<(String, schema::RowField)>)> =
@@ -1620,30 +1612,26 @@ impl DuckDBInferFn {
             fields
                 .iter()
                 .map(|(fname, rf)| {
-                    let node = if fname.contains('.') {
-                        StructNode::Opaque // dotted names stay unreachable
-                    } else {
-                        match rf {
-                            schema::RowField::Struct { nullable, fields } => {
-                                StructNode::Nested(build_fields(
-                                    in_cols,
-                                    &format!("{prefix}.{fname}"),
-                                    fields,
-                                    parent_nullable || *nullable,
-                                ))
-                            }
-                            schema::RowField::Scalar { ty, nullable } => {
-                                in_cols.push(Col {
-                                    name: format!("{prefix}.{fname}"),
-                                    ty: ColTy {
-                                        ty: *ty,
-                                        nullable: parent_nullable || *nullable,
-                                    },
-                                });
-                                StructNode::Leaf((in_cols.len() - 1) as u32)
-                            }
-                            schema::RowField::Opaque(_) => StructNode::Opaque,
+                    let node = match rf {
+                        schema::RowField::Struct { nullable, fields } => {
+                            StructNode::Nested(build_fields(
+                                in_cols,
+                                &format!("{prefix}.{fname}"),
+                                fields,
+                                parent_nullable || *nullable,
+                            ))
                         }
+                        schema::RowField::Scalar { ty, nullable } => {
+                            in_cols.push(Col {
+                                name: format!("{prefix}.{fname}"),
+                                ty: ColTy {
+                                    ty: *ty,
+                                    nullable: parent_nullable || *nullable,
+                                },
+                            });
+                            StructNode::Leaf((in_cols.len() - 1) as u32)
+                        }
+                        schema::RowField::Opaque(_) => StructNode::Opaque,
                     };
                     StructField {
                         name: fname.clone(),

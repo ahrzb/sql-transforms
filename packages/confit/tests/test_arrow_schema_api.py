@@ -909,6 +909,64 @@ def test_a_row_struct_leaf_and_a_dotted_sibling_both_serve(oracle):
         assert got == [{"o": want}], f"{expr}: {got}"
 
 
+_DOTS = pa.struct(
+    [("a.b", pa.int64()), ("c", pa.struct([("d.e", pa.int64()), ("f", pa.int64())]))]
+)
+_ROW_DOTS = pa.schema([pa.field("k", pa.int64()), pa.field("s", _DOTS)])
+_ROWS_DOTS = [
+    {"k": 1, "s": {"a.b": 1, "c": {"d.e": 2, "f": 3}}},
+    {"k": 2, "s": None},
+    {"k": 3, "s": {"a.b": None, "c": None}},
+]
+_STATIC_DOTS = pa.table(
+    {
+        "id": pa.array([1, 2, 3], pa.int64()),
+        "v": pa.array(
+            [{"x.y": 10, "z": {"p.q": 5}}, None, {"x.y": None, "z": None}],
+            pa.struct([("x.y", pa.int64()), ("z", pa.struct([("p.q", pa.int64())]))]),
+        ),
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'SELECT s."a.b" AS o FROM __THIS__',
+        'SELECT __THIS__.s."a.b" AS o FROM __THIS__',
+        'SELECT s."A.B" AS o FROM __THIS__',
+        'SELECT s.c."d.e" AS o, s.c.f AS f FROM __THIS__',
+        'SELECT s."a.b" + 1 AS o FROM __THIS__ WHERE s."a.b" IS NOT NULL',
+        'SELECT v."x.y" AS o, v.z."p.q" AS p FROM __THIS__ LEFT JOIN d ON k = id',
+        'SELECT d.v."x.y" AS o FROM __THIS__ JOIN d ON k = id',
+    ],
+)
+def test_a_struct_field_whose_name_contains_a_dot_serves(sql):
+    """A field name is one path SEGMENT, dots and all, on the row side and
+    the static side alike."""
+    o = Oracle()
+    o.load("__THIS__", pa.Table.from_pylist(_ROWS_DOTS, schema=_ROW_DOTS))
+    o.load("d", _STATIC_DOTS)
+    want = o.answer(sql)
+    fn = DuckDBInferFn(
+        sql, row_tables={"__THIS__": _ROW_DOTS}, static_tables={"d": _STATIC_DOTS}
+    )
+    got = fn.infer_arrow(pa.Table.from_pylist(_ROWS_DOTS, schema=_ROW_DOTS))
+    compare.assert_schema(got.schema, want.schema, ctx=sql)
+    compare.assert_rows(compare.rows(got), compare.rows(want), ordered=True, ctx=sql)
+    assert fn.infer_rows(_ROWS_DOTS) == got.to_pylist()
+
+
+def test_a_dotted_field_name_is_not_a_path():
+    """`s.a.b` walks field `a`, which does not exist -- DuckDB's wording."""
+    with pytest.raises(ValueError, match='Could not find key "a" in struct'):
+        DuckDBInferFn(
+            "SELECT s.a.b AS o FROM __THIS__",
+            row_tables={"__THIS__": _ROW_DOTS},
+            static_tables={},
+        )
+
+
 def test_two_plain_row_columns_of_the_same_name_refuse_by_name():
     """The other half of D4: a name that IS an identifier still cannot
     repeat, and it refuses at build naming the column -- not as an internal

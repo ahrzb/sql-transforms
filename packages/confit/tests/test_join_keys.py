@@ -461,15 +461,23 @@ def test_a_struct_key_with_an_unlaneable_field_refuses_by_name():
     assert "t" in msg, msg
 
 
-def test_a_struct_key_with_a_dotted_field_name_refuses_by_name():
-    """`flatten_static` / `build_fields` skip a dotted field name (it would
-    break the path encoding), so no lane exists."""
-    sty = pa.struct([("a.b", pa.float64()), ("c", pa.float64())])
-    row_schema = pa.schema(
-        [pa.field("id", pa.int64(), nullable=False), pa.field("w", sty)]
-    )
-    static = _static_w(sty, {"a.b": 1.0, "c": 2.0})
-    _refuses(_FORMS[0], row_schema, static, "'w'")
+_DOT = pa.struct([("a.b", pa.float64()), ("c", pa.struct([("d.e", pa.float64())]))])
+
+
+@pytest.mark.parametrize("sql", _FORMS)
+@pytest.mark.parametrize(
+    ("rw", "sw", "want"),
+    [
+        ({"a.b": 1.0, "c": {"d.e": 2.0}}, {"a.b": 1.0, "c": {"d.e": 2.0}}, [{"o": 7}]),
+        ({"a.b": 1.0, "c": {"d.e": 2.0}}, {"a.b": 1.0, "c": {"d.e": 3.0}}, []),
+        ({"a.b": None, "c": None}, {"a.b": None, "c": None}, [{"o": 7}]),
+        ({"a.b": None, "c": None}, {"a.b": None, "c": {"d.e": None}}, []),
+    ],
+)
+def test_a_struct_key_with_dotted_field_names_matches_duckdb(sql, rw, sw, want):
+    """A field name is one path SEGMENT, dots and all."""
+    row = pa.schema([pa.field("id", pa.int64(), nullable=False), pa.field("w", _DOT)])
+    check(sql, _row_table(row, [{"id": 5, "w": rw}]), _static_w(_DOT, sw), want)
 
 
 def test_mismatched_struct_field_name_sets_refuse_by_name():
